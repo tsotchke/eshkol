@@ -1,0 +1,422 @@
+;; SICP Chapter 5.4 — the explicit-control evaluator as a register machine.
+;; The register-machine simulator (stack-instrumented, from
+;; ch5_register_machine_stack.esk) runs the book's eval-dispatch/apply-dispatch
+;; controller over registers exp/env/val/proc/argl/continue/unev with
+;; save/restore stack discipline.  Implemented dispatch: self-evaluating,
+;; variable, quote, if, lambda, begin/sequence, definition, and application
+;; with both primitive and compound procedures over a frame-list environment
+;; model.  Omitted forms (set!, cond, let) are not needed by these probes.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ======================= register-machine simulator =======================
+(define (make-regs names)
+  (map (lambda (n) (cons n 0)) names))
+(define (reg-cell regs name)
+  (let loop ((rs regs))
+    (cond ((null? rs) (error "no register" name))
+          ((eq? (caar rs) name) (car rs))
+          (else (loop (cdr rs))))))
+(define (get-reg regs name) (cdr (reg-cell regs name)))
+(define (set-reg! regs name v) (set-cdr! (reg-cell regs name) v))
+
+(define (op-lookup ops name)
+  (let loop ((os ops))
+    (cond ((null? os) (error "no op" name))
+          ((eq? (caar os) name) (cdar os))
+          (else (loop (cdr os))))))
+
+(define (build-labels instrs)
+  (let loop ((is instrs) (i 0) (acc '()))
+    (cond ((null? is) (reverse acc))
+          ((symbol? (car is)) (loop (cdr is) (+ i 1) (cons (cons (car is) i) acc)))
+          (else (loop (cdr is) (+ i 1) acc)))))
+(define (label-index labels name)
+  (let loop ((ls labels))
+    (cond ((null? ls) (error "no label" name))
+          ((eq? (caar ls) name) (cdar ls))
+          (else (loop (cdr ls))))))
+
+(define (list->vec lst)
+  (let* ((n (length lst)) (v (make-vector n)))
+    (let loop ((i 0) (xs lst))
+      (if (null? xs) v (begin (vector-set! v i (car xs)) (loop (+ i 1) (cdr xs)))))))
+
+(define (eval-operand op regs labels)
+  (cond ((eq? (car op) 'const) (cadr op))
+        ((eq? (car op) 'reg) (get-reg regs (cadr op)))
+        ((eq? (car op) 'label) (label-index labels (cadr op)))
+        (else (error "bad operand" op))))
+
+(define (eval-opexp form regs ops labels)
+  (let ((proc (op-lookup ops (cadr form)))
+        (vals (map (lambda (a) (eval-operand a regs labels)) (cddr form))))
+    (apply proc vals)))
+
+;; Returns (list regs pushes max-depth final-depth).
+(define (run-machine reg-names ops instrs)
+  (let ((regs (make-regs reg-names))
+        (labels (build-labels instrs))
+        (code (list->vec instrs))
+        (n (length instrs)))
+    (let run ((pc 0) (flag #f) (stack '()) (depth 0) (pushes 0) (maxd 0))
+      (if (>= pc n)
+          (list regs pushes maxd depth)
+          (let ((ins (vector-ref code pc)))
+            (cond
+              ((symbol? ins) (run (+ pc 1) flag stack depth pushes maxd))
+              ((eq? (car ins) 'assign)
+               (let ((target (cadr ins)) (expr (caddr ins)))
+                 (set-reg! regs target
+                           (if (eq? (car expr) 'op)
+                               (eval-opexp expr regs ops labels)
+                               (eval-operand expr regs labels)))
+                 (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'test)
+               (run (+ pc 1) (eval-opexp (cadr ins) regs ops labels)
+                    stack depth pushes maxd))
+              ((eq? (car ins) 'branch)
+               (if (not (eq? flag #f))
+                   (run (label-index labels (cadr (cadr ins))) flag stack depth pushes maxd)
+                   (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'goto)
+               (let ((dest (cadr ins)))
+                 (if (eq? (car dest) 'label)
+                     (run (label-index labels (cadr dest)) flag stack depth pushes maxd)
+                     (run (get-reg regs (cadr dest)) flag stack depth pushes maxd))))
+              ((eq? (car ins) 'save)
+               (let ((d (+ depth 1)))
+                 (run (+ pc 1) flag
+                      (cons (get-reg regs (cadr ins)) stack)
+                      d (+ pushes 1) (max maxd d))))
+              ((eq? (car ins) 'restore)
+               (if (null? stack) (error "restore on empty stack" ins) #f)
+               (set-reg! regs (cadr ins) (car stack))
+               (run (+ pc 1) flag (cdr stack) (- depth 1) pushes maxd))
+              ((eq? (car ins) 'perform)
+               (eval-opexp (cadr ins) regs ops labels)
+               (run (+ pc 1) flag stack depth pushes maxd))
+              (else (error "bad instruction" ins))))))))
+
+(define (result-regs r) (car r))
+(define (result-depth r) (cadddr r))
+
+;; ======================= environment model =======================
+;; env = list of frames; frame = (cons 'frame binding-list); binding = (var . val)
+(define (make-frame vars vals)
+  (cons 'frame
+        (let loop ((a vars) (b vals))
+          (cond ((null? a) '())
+                ((null? b) (error "too few arguments" vars))
+                (else (cons (cons (car a) (car b)) (loop (cdr a) (cdr b))))))))
+(define (extend-env vars vals env) (cons (make-frame vars vals) env))
+(define (lookup-var var env)
+  (if (null? env)
+      (error "unbound variable" var)
+      (let scan ((bs (cdr (car env))))
+        (cond ((null? bs) (lookup-var var (cdr env)))
+              ((eq? (caar bs) var) (cdar bs))
+              (else (scan (cdr bs)))))))
+(define (define-var! var val env)
+  (let ((frame (car env)))
+    (let scan ((bs (cdr frame)))
+      (cond ((null? bs) (set-cdr! frame (cons (cons var val) (cdr frame))))
+            ((eq? (caar bs) var) (set-cdr! (car bs) val))
+            (else (scan (cdr bs)))))))
+
+(define (make-global-env)
+  (extend-env
+   '(+ - * = <)
+   (list (list 'primitive +)
+         (list 'primitive -)
+         (list 'primitive *)
+         (list 'primitive (lambda (a b) (if (= a b) #t #f)))
+         (list 'primitive (lambda (a b) (if (< a b) #t #f))))
+   '()))
+
+;; ======================= evaluator operations =======================
+(define (tagged? e tag) (if (pair? e) (eq? (car e) tag) #f))
+
+(define ece-ops
+  (list
+   (cons 'self-eval?
+         (lambda (e) (if (or (number? e) (string? e) (boolean? e)) #t #f)))
+   (cons 'variable? (lambda (e) (if (symbol? e) #t #f)))
+   (cons 'lookup-variable-value (lambda (var env) (lookup-var var env)))
+   (cons 'quoted? (lambda (e) (tagged? e 'quote)))
+   (cons 'text-of-quotation (lambda (e) (cadr e)))
+   (cons 'if? (lambda (e) (tagged? e 'if)))
+   (cons 'if-predicate (lambda (e) (cadr e)))
+   (cons 'if-consequent (lambda (e) (caddr e)))
+   (cons 'if-alternative
+         (lambda (e) (if (null? (cdddr e)) #f (cadddr e))))
+   (cons 'true? (lambda (v) (if (eq? v #f) #f #t)))
+   (cons 'lambda? (lambda (e) (tagged? e 'lambda)))
+   (cons 'lambda-parameters (lambda (e) (cadr e)))
+   (cons 'lambda-body (lambda (e) (cddr e)))
+   (cons 'make-procedure
+         (lambda (params body env) (list 'procedure params body env)))
+   (cons 'definition? (lambda (e) (tagged? e 'define)))
+   (cons 'definition-variable
+         (lambda (e) (if (symbol? (cadr e)) (cadr e) (car (cadr e)))))
+   (cons 'definition-value
+         (lambda (e)
+           (if (symbol? (cadr e))
+               (caddr e)
+               (cons 'lambda (cons (cdr (cadr e)) (cddr e))))))
+   (cons 'define-variable!
+         (lambda (var val env) (define-var! var val env)))
+   (cons 'begin? (lambda (e) (tagged? e 'begin)))
+   (cons 'begin-actions (lambda (e) (cdr e)))
+   (cons 'first-exp (lambda (seq) (car seq)))
+   (cons 'last-exp? (lambda (seq) (if (null? (cdr seq)) #t #f)))
+   (cons 'rest-exps (lambda (seq) (cdr seq)))
+   (cons 'application? (lambda (e) (if (pair? e) #t #f)))
+   (cons 'operator (lambda (e) (car e)))
+   (cons 'operands (lambda (e) (cdr e)))
+   (cons 'empty-arglist (lambda () '()))
+   (cons 'no-operands? (lambda (os) (if (null? os) #t #f)))
+   (cons 'first-operand (lambda (os) (car os)))
+   (cons 'last-operand? (lambda (os) (if (null? (cdr os)) #t #f)))
+   (cons 'rest-operands (lambda (os) (cdr os)))
+   (cons 'adjoin-arg (lambda (v argl) (append argl (list v))))
+   (cons 'primitive-procedure? (lambda (p) (tagged? p 'primitive)))
+   (cons 'compound-procedure? (lambda (p) (tagged? p 'procedure)))
+   (cons 'apply-primitive-procedure
+         (lambda (p args) (apply (cadr p) args)))
+   (cons 'procedure-parameters (lambda (p) (cadr p)))
+   (cons 'procedure-body (lambda (p) (caddr p)))
+   (cons 'procedure-environment (lambda (p) (cadddr p)))
+   (cons 'extend-environment
+         (lambda (vars vals env) (extend-env vars vals env)))))
+
+;; ======================= the controller (SICP 5.4) =======================
+(define ece-controller
+  '((assign continue (label ece-done))
+    eval-dispatch
+    (test (op self-eval? (reg exp)))
+    (branch (label ev-self-eval))
+    (test (op variable? (reg exp)))
+    (branch (label ev-variable))
+    (test (op quoted? (reg exp)))
+    (branch (label ev-quoted))
+    (test (op definition? (reg exp)))
+    (branch (label ev-definition))
+    (test (op if? (reg exp)))
+    (branch (label ev-if))
+    (test (op lambda? (reg exp)))
+    (branch (label ev-lambda))
+    (test (op begin? (reg exp)))
+    (branch (label ev-begin))
+    (test (op application? (reg exp)))
+    (branch (label ev-application))
+    (goto (label unknown-expression-type))
+
+    ev-self-eval
+    (assign val (reg exp))
+    (goto (reg continue))
+    ev-variable
+    (assign val (op lookup-variable-value (reg exp) (reg env)))
+    (goto (reg continue))
+    ev-quoted
+    (assign val (op text-of-quotation (reg exp)))
+    (goto (reg continue))
+    ev-lambda
+    (assign unev (op lambda-parameters (reg exp)))
+    (assign exp (op lambda-body (reg exp)))
+    (assign val (op make-procedure (reg unev) (reg exp) (reg env)))
+    (goto (reg continue))
+
+    ev-application
+    (save continue)
+    (save env)
+    (assign unev (op operands (reg exp)))
+    (save unev)
+    (assign exp (op operator (reg exp)))
+    (assign continue (label ev-appl-did-operator))
+    (goto (label eval-dispatch))
+    ev-appl-did-operator
+    (restore unev)
+    (restore env)
+    (assign argl (op empty-arglist))
+    (assign proc (reg val))
+    (test (op no-operands? (reg unev)))
+    (branch (label apply-dispatch))
+    (save proc)
+    ev-appl-operand-loop
+    (save argl)
+    (assign exp (op first-operand (reg unev)))
+    (test (op last-operand? (reg unev)))
+    (branch (label ev-appl-last-arg))
+    (save env)
+    (save unev)
+    (assign continue (label ev-appl-accumulate-arg))
+    (goto (label eval-dispatch))
+    ev-appl-accumulate-arg
+    (restore unev)
+    (restore env)
+    (restore argl)
+    (assign argl (op adjoin-arg (reg val) (reg argl)))
+    (assign unev (op rest-operands (reg unev)))
+    (goto (label ev-appl-operand-loop))
+    ev-appl-last-arg
+    (assign continue (label ev-appl-accum-last-arg))
+    (goto (label eval-dispatch))
+    ev-appl-accum-last-arg
+    (restore argl)
+    (assign argl (op adjoin-arg (reg val) (reg argl)))
+    (restore proc)
+    (goto (label apply-dispatch))
+
+    apply-dispatch
+    (test (op primitive-procedure? (reg proc)))
+    (branch (label primitive-apply))
+    (test (op compound-procedure? (reg proc)))
+    (branch (label compound-apply))
+    (goto (label unknown-procedure-type))
+    primitive-apply
+    (assign val (op apply-primitive-procedure (reg proc) (reg argl)))
+    (restore continue)
+    (goto (reg continue))
+    compound-apply
+    (assign unev (op procedure-parameters (reg proc)))
+    (assign env (op procedure-environment (reg proc)))
+    (assign env (op extend-environment (reg unev) (reg argl) (reg env)))
+    (assign unev (op procedure-body (reg proc)))
+    (goto (label ev-sequence))
+
+    ev-begin
+    (assign unev (op begin-actions (reg exp)))
+    (save continue)
+    (goto (label ev-sequence))
+    ev-sequence
+    (assign exp (op first-exp (reg unev)))
+    (test (op last-exp? (reg unev)))
+    (branch (label ev-sequence-last-exp))
+    (save unev)
+    (save env)
+    (assign continue (label ev-sequence-continue))
+    (goto (label eval-dispatch))
+    ev-sequence-continue
+    (restore env)
+    (restore unev)
+    (assign unev (op rest-exps (reg unev)))
+    (goto (label ev-sequence))
+    ev-sequence-last-exp
+    (restore continue)
+    (goto (label eval-dispatch))
+
+    ev-if
+    (save exp)
+    (save env)
+    (save continue)
+    (assign continue (label ev-if-decide))
+    (assign exp (op if-predicate (reg exp)))
+    (goto (label eval-dispatch))
+    ev-if-decide
+    (restore continue)
+    (restore env)
+    (restore exp)
+    (test (op true? (reg val)))
+    (branch (label ev-if-consequent))
+    ev-if-alternative
+    (assign exp (op if-alternative (reg exp)))
+    (goto (label eval-dispatch))
+    ev-if-consequent
+    (assign exp (op if-consequent (reg exp)))
+    (goto (label eval-dispatch))
+
+    ev-definition
+    (assign unev (op definition-variable (reg exp)))
+    (save unev)
+    (assign exp (op definition-value (reg exp)))
+    (save env)
+    (save continue)
+    (assign continue (label ev-definition-1))
+    (goto (label eval-dispatch))
+    ev-definition-1
+    (restore continue)
+    (restore env)
+    (restore unev)
+    (perform (op define-variable! (reg unev) (reg val) (reg env)))
+    (assign val (const ok))
+    (goto (reg continue))
+
+    unknown-expression-type
+    (assign val (const unknown-expression-type-error))
+    (goto (label ece-done))
+    unknown-procedure-type
+    (assign val (const unknown-procedure-type-error))
+    (goto (label ece-done))
+    ece-done))
+
+;; drive one expression through the machine; returns (val . final-stack-depth)
+(define (machine-eval expr env)
+  (let ((res (run-machine
+              '(exp env val proc argl continue unev)
+              ece-ops
+              (append (list (list 'assign 'exp (list 'const expr))
+                            (list 'assign 'env (list 'const env)))
+                      ece-controller))))
+    (cons (get-reg (result-regs res) 'val)
+          (result-depth res))))
+(define (ece-eval expr env) (car (machine-eval expr env)))
+
+;; ======================= the probes =======================
+(define genv (make-global-env))
+
+(check "ece self-evaluating number" 42 (ece-eval 42 genv))
+(check "ece self-evaluating string" "hi" (ece-eval "hi" genv))
+(check "ece quote" 'hello (ece-eval '(quote hello) genv))
+(check "ece quoted list" '(1 2 3) (ece-eval '(quote (1 2 3)) genv))
+
+(check "ece definition returns ok" 'ok (ece-eval '(define x 7) genv))
+(check "ece variable lookup" 7 (ece-eval 'x genv))
+(check "ece primitive variable lookup" #t
+       (tagged? (ece-eval '+ genv) 'primitive))
+
+(check "ece if true branch" 1 (ece-eval '(if #t 1 2) genv))
+(check "ece if false branch" 2 (ece-eval '(if #f 1 2) genv))
+(check "ece if with computed predicate" 'yes
+       (ece-eval '(if (< 1 2) (quote yes) (quote no)) genv))
+(check "ece if computed false predicate" 'no
+       (ece-eval '(if (< 2 1) (quote yes) (quote no)) genv))
+
+(check "ece primitive application" 3 (ece-eval '(+ 1 2) genv))
+(check "ece nested application" 14 (ece-eval '(* (+ 1 6) 2) genv))
+
+(check "ece lambda creates compound procedure" #t
+       (tagged? (ece-eval '(lambda (x) x) genv) 'procedure))
+(check "ece ((lambda (x) (* x x)) 4)" 16
+       (ece-eval '((lambda (x) (* x x)) 4) genv))
+(check "ece two-arg lambda" 7
+       (ece-eval '((lambda (a b) (- a b)) 10 3) genv))
+(check "ece lexical capture" 30
+       (ece-eval '(((lambda (a) (lambda (b) (* a b))) 5) 6) genv))
+
+(check "ece begin sequence" 3 (ece-eval '(begin 1 2 3) genv))
+(check "ece begin with side effect" 99
+       (ece-eval '(begin (define y 99) y) genv))
+
+;; recursive factorial through the machine (define, then apply)
+(check "ece define fact" 'ok
+       (ece-eval '(define fact
+                    (lambda (n) (if (= n 1) 1 (* n (fact (- n 1))))))
+                 genv))
+(let ((r (machine-eval '(fact 4) genv)))
+  (check "ece recursive fact 4" 24 (car r))
+  (check "ece fact 4 stack balanced at halt" 0 (cdr r)))
+(check "ece recursive fact 6" 720 (ece-eval '(fact 6) genv))
+
+;; shorthand define form (define (sq x) ...)
+(check "ece shorthand define" 'ok (ece-eval '(define (sq z) (* z z)) genv))
+(check "ece shorthand define call" 25 (ece-eval '(sq 5) genv))
+
+(display "ch5 explicit control evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
+(if (> fails 0) (error "failures" fails) #t)

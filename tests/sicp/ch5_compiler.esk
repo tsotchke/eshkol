@@ -1,0 +1,392 @@
+;; SICP Chapter 5.5 — the compiler.  Compiles self-evaluating expressions,
+;; quotations, variables, definitions (incl. (define (f x) ...) shorthand),
+;; if, lambda, and applications (primitive AND compiled compound procedures)
+;; into the register-machine instruction language with target registers and
+;; linkage descriptors (next / return / a label), then executes the emitted
+;; sequences on the register-machine simulator from
+;; ch5_register_machine_stack.esk.  Register preservation is conservative
+;; (always save/restore continue/env/proc/argl around subexpression code)
+;; instead of the book's needs/modifies preserving analysis — the emitted
+;; code is correct, just not minimal.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ======================= register-machine simulator =======================
+(define (make-regs names)
+  (map (lambda (n) (cons n 0)) names))
+(define (reg-cell regs name)
+  (let loop ((rs regs))
+    (cond ((null? rs) (error "no register" name))
+          ((eq? (caar rs) name) (car rs))
+          (else (loop (cdr rs))))))
+(define (get-reg regs name) (cdr (reg-cell regs name)))
+(define (set-reg! regs name v) (set-cdr! (reg-cell regs name) v))
+
+(define (op-lookup ops name)
+  (let loop ((os ops))
+    (cond ((null? os) (error "no op" name))
+          ((eq? (caar os) name) (cdar os))
+          (else (loop (cdr os))))))
+
+(define (build-labels instrs)
+  (let loop ((is instrs) (i 0) (acc '()))
+    (cond ((null? is) (reverse acc))
+          ((symbol? (car is)) (loop (cdr is) (+ i 1) (cons (cons (car is) i) acc)))
+          (else (loop (cdr is) (+ i 1) acc)))))
+(define (label-index labels name)
+  (let loop ((ls labels))
+    (cond ((null? ls) (error "no label" name))
+          ((eq? (caar ls) name) (cdar ls))
+          (else (loop (cdr ls))))))
+
+(define (list->vec lst)
+  (let* ((n (length lst)) (v (make-vector n)))
+    (let loop ((i 0) (xs lst))
+      (if (null? xs) v (begin (vector-set! v i (car xs)) (loop (+ i 1) (cdr xs)))))))
+
+(define (eval-operand op regs labels)
+  (cond ((eq? (car op) 'const) (cadr op))
+        ((eq? (car op) 'reg) (get-reg regs (cadr op)))
+        ((eq? (car op) 'label) (label-index labels (cadr op)))
+        (else (error "bad operand" op))))
+
+(define (eval-opexp form regs ops labels)
+  (let ((proc (op-lookup ops (cadr form)))
+        (vals (map (lambda (a) (eval-operand a regs labels)) (cddr form))))
+    (apply proc vals)))
+
+;; Returns (list regs pushes max-depth final-depth).
+(define (run-machine reg-names ops instrs)
+  (let ((regs (make-regs reg-names))
+        (labels (build-labels instrs))
+        (code (list->vec instrs))
+        (n (length instrs)))
+    (let run ((pc 0) (flag #f) (stack '()) (depth 0) (pushes 0) (maxd 0))
+      (if (>= pc n)
+          (list regs pushes maxd depth)
+          (let ((ins (vector-ref code pc)))
+            (cond
+              ((symbol? ins) (run (+ pc 1) flag stack depth pushes maxd))
+              ((eq? (car ins) 'assign)
+               (let ((target (cadr ins)) (expr (caddr ins)))
+                 (set-reg! regs target
+                           (if (eq? (car expr) 'op)
+                               (eval-opexp expr regs ops labels)
+                               (eval-operand expr regs labels)))
+                 (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'test)
+               (run (+ pc 1) (eval-opexp (cadr ins) regs ops labels)
+                    stack depth pushes maxd))
+              ((eq? (car ins) 'branch)
+               (if (not (eq? flag #f))
+                   (run (label-index labels (cadr (cadr ins))) flag stack depth pushes maxd)
+                   (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'goto)
+               (let ((dest (cadr ins)))
+                 (if (eq? (car dest) 'label)
+                     (run (label-index labels (cadr dest)) flag stack depth pushes maxd)
+                     (run (get-reg regs (cadr dest)) flag stack depth pushes maxd))))
+              ((eq? (car ins) 'save)
+               (let ((d (+ depth 1)))
+                 (run (+ pc 1) flag
+                      (cons (get-reg regs (cadr ins)) stack)
+                      d (+ pushes 1) (max maxd d))))
+              ((eq? (car ins) 'restore)
+               (if (null? stack) (error "restore on empty stack" ins) #f)
+               (set-reg! regs (cadr ins) (car stack))
+               (run (+ pc 1) flag (cdr stack) (- depth 1) pushes maxd))
+              ((eq? (car ins) 'perform)
+               (eval-opexp (cadr ins) regs ops labels)
+               (run (+ pc 1) flag stack depth pushes maxd))
+              (else (error "bad instruction" ins))))))))
+
+(define (result-regs r) (car r))
+(define (result-depth r) (cadddr r))
+
+;; ======================= environment model =======================
+(define (make-frame vars vals)
+  (cons 'frame
+        (let loop ((a vars) (b vals))
+          (cond ((null? a) '())
+                ((null? b) (error "too few arguments" vars))
+                (else (cons (cons (car a) (car b)) (loop (cdr a) (cdr b))))))))
+(define (extend-env vars vals env) (cons (make-frame vars vals) env))
+(define (lookup-var var env)
+  (if (null? env)
+      (error "unbound variable" var)
+      (let scan ((bs (cdr (car env))))
+        (cond ((null? bs) (lookup-var var (cdr env)))
+              ((eq? (caar bs) var) (cdar bs))
+              (else (scan (cdr bs)))))))
+(define (define-var! var val env)
+  (let ((frame (car env)))
+    (let scan ((bs (cdr frame)))
+      (cond ((null? bs) (set-cdr! frame (cons (cons var val) (cdr frame))))
+            ((eq? (caar bs) var) (set-cdr! (car bs) val))
+            (else (scan (cdr bs)))))))
+(define (make-global-env)
+  (extend-env
+   '(+ - * = <)
+   (list (list 'primitive +)
+         (list 'primitive -)
+         (list 'primitive *)
+         (list 'primitive (lambda (a b) (if (= a b) #t #f)))
+         (list 'primitive (lambda (a b) (if (< a b) #t #f))))
+   '()))
+
+;; ======================= runtime operations =======================
+(define (tagged? e tag) (if (pair? e) (eq? (car e) tag) #f))
+(define machine-ops
+  (list
+   (cons 'lookup-variable-value (lambda (var env) (lookup-var var env)))
+   (cons 'define-variable! (lambda (var val env) (define-var! var val env)))
+   (cons 'extend-environment (lambda (vars vals env) (extend-env vars vals env)))
+   (cons 'false? (lambda (v) (if (eq? v #f) #t #f)))
+   (cons 'make-compiled-procedure (lambda (entry env) (list 'compiled-procedure entry env)))
+   (cons 'compiled-procedure-entry (lambda (p) (cadr p)))
+   (cons 'compiled-procedure-env (lambda (p) (caddr p)))
+   (cons 'primitive-procedure? (lambda (p) (tagged? p 'primitive)))
+   (cons 'apply-primitive-procedure (lambda (p args) (apply (cadr p) args)))
+   (cons 'list (lambda (v) (list v)))
+   (cons 'cons (lambda (a d) (cons a d)))))
+
+;; ======================= the compiler =======================
+(define label-counter 0)
+(define (new-label base)
+  (set! label-counter (+ label-counter 1))
+  (string->symbol (string-append base (number->string label-counter))))
+
+;; linkage: 'next | 'return | <label symbol>
+(define (end-with-linkage linkage seq)
+  (cond ((eq? linkage 'next) seq)
+        ((eq? linkage 'return) (append seq '((goto (reg continue)))))
+        (else (append seq (list (list 'goto (list 'label linkage)))))))
+
+(define (self-evaluating? e) (or (number? e) (string? e) (boolean? e)))
+
+(define (comp exp-in target linkage)
+  (cond ((self-evaluating? exp-in) (compile-self-eval exp-in target linkage))
+        ((symbol? exp-in) (compile-variable exp-in target linkage))
+        ((tagged? exp-in 'quote) (compile-quoted exp-in target linkage))
+        ((tagged? exp-in 'define) (compile-definition exp-in target linkage))
+        ((tagged? exp-in 'if) (compile-if exp-in target linkage))
+        ((tagged? exp-in 'lambda) (compile-lambda exp-in target linkage))
+        ((pair? exp-in) (compile-application exp-in target linkage))
+        (else (error "compile: unknown expression type" exp-in))))
+
+(define (compile-self-eval e target linkage)
+  (end-with-linkage linkage
+    (list (list 'assign target (list 'const e)))))
+
+(define (compile-quoted e target linkage)
+  (end-with-linkage linkage
+    (list (list 'assign target (list 'const (cadr e))))))
+
+(define (compile-variable e target linkage)
+  (end-with-linkage linkage
+    (list (list 'assign target
+                (list 'op 'lookup-variable-value (list 'const e) '(reg env))))))
+
+(define (definition-variable e)
+  (if (symbol? (cadr e)) (cadr e) (car (cadr e))))
+(define (definition-value e)
+  (if (symbol? (cadr e))
+      (caddr e)
+      (cons 'lambda (cons (cdr (cadr e)) (cddr e)))))
+
+(define (compile-definition e target linkage)
+  (append
+   (comp (definition-value e) 'val 'next)
+   (end-with-linkage linkage
+     (list (list 'perform (list 'op 'define-variable!
+                                (list 'const (definition-variable e))
+                                '(reg val) '(reg env)))
+           (list 'assign target '(const ok))))))
+
+(define (compile-if e target linkage)
+  (let ((f-branch (new-label "false-branch"))
+        (after-if (new-label "after-if")))
+    (let ((consequent-linkage (if (eq? linkage 'next) after-if linkage)))
+      (append
+       (comp (cadr e) 'val 'next)                       ; predicate -> val
+       (list (list 'test (list 'op 'false? '(reg val)))
+             (list 'branch (list 'label f-branch)))
+       (comp (caddr e) target consequent-linkage)       ; consequent
+       (list f-branch)
+       (comp (cadddr e) target linkage)                 ; alternative
+       (list after-if)))))
+
+(define (compile-lambda e target linkage)
+  (let ((entry (new-label "entry"))
+        (after-lambda (new-label "after-lambda")))
+    (append
+     (end-with-linkage (if (eq? linkage 'next) after-lambda linkage)
+       (list (list 'assign target
+                   (list 'op 'make-compiled-procedure
+                         (list 'label entry) '(reg env)))))
+     (list entry
+           '(assign env (op compiled-procedure-env (reg proc)))
+           (list 'assign 'env
+                 (list 'op 'extend-environment
+                       (list 'const (cadr e)) '(reg argl) '(reg env))))
+     (compile-sequence (cddr e) 'val 'return)
+     (list after-lambda))))
+
+(define (compile-sequence seq target linkage)
+  (if (null? (cdr seq))
+      (comp (car seq) target linkage)
+      (append (comp (car seq) target 'next)
+              (compile-sequence (cdr seq) target linkage))))
+
+;; Applications.  Conservative preservation: continue is saved across
+;; operator+operand evaluation and restored before the call; env is saved
+;; around the operator and around every operand; proc is saved across the
+;; arglist construction; argl is saved around every non-last operand.
+(define (compile-application e target linkage)
+  (if (not (eq? target 'val))
+      (error "application target must be val" target)
+      #f)
+  (append
+   '((save continue))
+   '((save env))
+   (comp (car e) 'proc 'next)                           ; operator -> proc
+   '((restore env))
+   '((save proc))
+   (construct-arglist (cdr e))
+   '((restore proc))
+   '((restore continue))
+   (compile-procedure-call linkage)))
+
+(define (construct-arglist operands)
+  (if (null? operands)
+      '((assign argl (const ())))
+      (let build ((rev-ops (reverse operands)) (first #t) (acc '()))
+        ;; rev-ops walks the operands right-to-left; the rightmost operand's
+        ;; block executes FIRST (it initializes argl), so each later block is
+        ;; appended AFTER the accumulated code.
+        (if (null? rev-ops)
+            acc
+            (build (cdr rev-ops) #f
+                   (append
+                    acc
+                    (if first '() '((save argl)))
+                    '((save env))
+                    (comp (car rev-ops) 'val 'next)
+                    '((restore env))
+                    (if first
+                        '((assign argl (op list (reg val))))
+                        '((restore argl)
+                          (assign argl (op cons (reg val) (reg argl)))))))))))
+
+(define (compile-procedure-call linkage)
+  (let ((prim-branch (new-label "primitive-branch"))
+        (comp-branch (new-label "compiled-branch"))
+        (after-call (new-label "after-call")))
+    (append
+     (list (list 'test '(op primitive-procedure? (reg proc)))
+           (list 'branch (list 'label prim-branch))
+           comp-branch)
+     (if (eq? linkage 'return)
+         '((assign val (op compiled-procedure-entry (reg proc)))
+           (goto (reg val)))
+         (list (list 'assign 'continue
+                     (list 'label (if (eq? linkage 'next) after-call linkage)))
+               '(assign val (op compiled-procedure-entry (reg proc)))
+               '(goto (reg val))))
+     ;; primitive branch: with 'next linkage it falls through to after-call;
+     ;; with return/label linkage end-with-linkage emits the jump.
+     (list prim-branch
+           '(assign val (op apply-primitive-procedure (reg proc) (reg argl))))
+     (end-with-linkage (if (eq? linkage 'next) 'next linkage) '())
+     (list after-call))))
+
+;; ======================= execution harness =======================
+;; Compile a list of top-level expressions into ONE program and run it in a
+;; FRESH global environment; returns (cons final-val final-stack-depth).
+;; One program per run because a compiled procedure's entry point is an
+;; instruction index that is only meaningful inside its own program.
+(define (compile-and-run exprs)
+  (let ((code
+         (let loop ((es exprs))
+           (if (null? es)
+               '()
+               (append (comp (car es) 'val 'next) (loop (cdr es)))))))
+    (let ((res (run-machine
+                '(env val proc argl continue)
+                machine-ops
+                (cons (list 'assign 'env (list 'const (make-global-env))) code))))
+      (cons (get-reg (result-regs res) 'val)
+            (result-depth res)))))
+(define (compile-eval exprs) (car (compile-and-run exprs)))
+
+;; ---- straight-line code ----
+(check "compiled self-eval" 42 (compile-eval (list 42)))
+(check "compiled quote" 'hello (compile-eval (list ''hello)))
+(check "compiled primitive application (+ 1 2)" 3
+       (compile-eval (list '(+ 1 2))))
+(check "compiled nested application" 14
+       (compile-eval (list '(* (+ 1 6) 2))))
+(check "compiled define + variable" 7
+       (compile-eval (list '(define x 7) 'x)))
+
+;; ---- conditionals select correctly ----
+(check "compiled if selects consequent" 'yes
+       (compile-eval (list '(if (< 1 2) (quote yes) (quote no)))))
+(check "compiled if selects alternative" 'no
+       (compile-eval (list '(if (< 2 1) (quote yes) (quote no)))))
+(check "compiled if literal #f" 2 (compile-eval (list '(if #f 1 2))))
+(check "compiled if as operand" 30
+       (compile-eval (list '(* 3 (if (= 1 1) 10 20)))))
+
+;; ---- compiled lambda / compound procedures ----
+(check "compiled ((lambda (n) (* n n)) 4)" 16
+       (compile-eval (list '((lambda (n) (* n n)) 4))))
+(check "compiled (define (sq x) (* x x)); (sq 5)" 25
+       (compile-eval (list '(define (sq x) (* x x)) '(sq 5))))
+(check "compiled two-arg compound" 7
+       (compile-eval (list '(define (sub a b) (- a b)) '(sub 10 3))))
+(check "compiled compound calling compound" 81
+       (compile-eval (list '(define (sq x) (* x x))
+                           '(define (quart y) (sq (sq y)))
+                           '(quart 3))))
+
+;; ---- recursion through compiled code (return linkage + full call protocol)
+(let ((r (compile-and-run
+          (list '(define (cfact n) (if (= n 1) 1 (* n (cfact (- n 1)))))
+                '(cfact 5)))))
+  (check "compiled recursive factorial (cfact 5)" 120 (car r))
+  (check "compiled cfact stack balanced at halt" 0 (cdr r)))
+
+;; ---- structural check: compiled if contains test / branch / label in order
+(define if-seq (comp '(if (< 1 2) 1 2) 'val 'next))
+(define (find-index pred seq start)
+  (let loop ((i 0) (s seq))
+    (cond ((null? s) -1)
+          ((and (>= i start) (pred (car s))) i)
+          (else (loop (+ i 1) (cdr s))))))
+(define ti (find-index (lambda (ins) (tagged? ins 'test)) if-seq 0))
+(define bi (find-index (lambda (ins) (tagged? ins 'branch)) if-seq 0))
+(define li (find-index (lambda (ins) (symbol? ins)) if-seq 0))
+(check "compiled if has a test instruction" #t (if (>= ti 0) #t #f))
+(check "compiled if has a branch instruction" #t (if (> bi ti) #t #f))
+(check "compiled if has a label after the branch" #t (if (> li bi) #t #f))
+(check "compiled if branch targets the false branch label" #t
+       (let ((target (cadr (cadr (list-ref if-seq bi)))))
+         (if (>= (find-index (lambda (ins) (eq? ins target)) if-seq bi) 0) #t #f)))
+
+;; target-register discipline: compiling to a different target lands there
+(define to-proc (comp 42 'proc 'next))
+(check "compile honors target register" 'proc (cadr (car to-proc)))
+;; linkage discipline: return linkage ends with (goto (reg continue))
+(define ret-seq (comp 42 'val 'return))
+(check "return linkage emits (goto (reg continue))" '(goto (reg continue))
+       (list-ref ret-seq (- (length ret-seq) 1)))
+
+(display "ch5 compiler: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
+(if (> fails 0) (error "failures" fails) #t)
