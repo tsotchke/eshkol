@@ -1,0 +1,110 @@
+;; SICP 3.5.3-3.5.4 — streams as signals.
+;; integral of a stream (scaled running sums), the RC circuit model
+;; (ex 3.73), zero-crossings of a sensor signal (ex 3.74), and the
+;; delayed-integral solver for dy/dt = y reaching y(1) ~ e (3.5.4).
+
+(define fails 0)
+(define (check name ok)
+  (if ok (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1)) (display "FAIL: ") (display name) (newline))))
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+;; ---- stream primitives (3.5.1) ----
+(define-syntax cons-stream (syntax-rules () ((_ a b) (cons a (delay b)))))
+(define (stream-car s) (car s))
+(define (stream-cdr s) (force (cdr s)))
+(define the-empty-stream '())
+(define (stream-null? s) (null? s))
+(define (stream-ref s n) (if (= n 0) (stream-car s) (stream-ref (stream-cdr s) (- n 1))))
+(define (stream-map proc s)
+  (if (stream-null? s) the-empty-stream
+      (cons-stream (proc (stream-car s)) (stream-map proc (stream-cdr s)))))
+(define (stream-take s n)
+  (if (= n 0) '() (cons (stream-car s) (stream-take (stream-cdr s) (- n 1)))))
+(define (add-streams s1 s2)
+  (cond ((stream-null? s1) s2)
+        ((stream-null? s2) s1)
+        (else (cons-stream (+ (stream-car s1) (stream-car s2))
+                           (add-streams (stream-cdr s1) (stream-cdr s2))))))
+(define (scale-stream s factor) (stream-map (lambda (x) (* x factor)) s))
+(define (list->stream lst)
+  (if (null? lst) the-empty-stream
+      (cons-stream (car lst) (list->stream (cdr lst)))))
+(define ones (cons-stream 1.0 ones))
+
+;; ---- integral of a stream (3.5.3) ----
+;; int = initial, initial + dt*x0, initial + dt*(x0+x1), ...
+(define (integral integrand initial-value dt)
+  (define int
+    (cons-stream initial-value
+                 (add-streams (scale-stream integrand dt) int)))
+  int)
+
+;; integral of the constant signal 1.0 with dt=0.1 from 0: 0, 0.1, 0.2, 0.3, ...
+(define ramp (integral ones 0.0 0.1))
+(check "integral-ramp-0" (close? (stream-ref ramp 0) 0.0))
+(check "integral-ramp-1" (close? (stream-ref ramp 1) 0.1))
+(check "integral-ramp-2" (close? (stream-ref ramp 2) 0.2))
+(check "integral-ramp-10" (close? (stream-ref ramp 10) 1.0))
+;; integral of the ramp t (values 0, 0.1, 0.2, ...) approximates t^2/2:
+;; term 10 = dt * (0 + 0.1 + ... + 0.9) = 0.1 * 4.5 = 0.45
+(check "integral-of-ramp" (close? (stream-ref (integral ramp 0.0 0.1) 10) 0.45))
+
+;; ---- RC circuit (ex 3.73): v = R i + (1/C) integral(i) + v0 ----
+(define (RC R C dt)
+  (lambda (i v0)
+    (add-streams (scale-stream i R)
+                 (integral (scale-stream i (/ 1.0 C)) v0 dt))))
+
+;; R=5 ohms, C=1 farad, dt=0.5, constant current i=1A, v0=1V:
+;;   v[k] = 5*1 + (1 + 0.5*k) = 6.0, 6.5, 7.0, 7.5, ...   (hand-computed)
+(define RC1 (RC 5.0 1.0 0.5))
+(define rc-response (RC1 ones 1.0))
+(check "rc-response-0" (close? (stream-ref rc-response 0) 6.0))
+(check "rc-response-1" (close? (stream-ref rc-response 1) 6.5))
+(check "rc-response-2" (close? (stream-ref rc-response 2) 7.0))
+(check "rc-response-3" (close? (stream-ref rc-response 3) 7.5))
+
+;; ---- zero crossings (ex 3.74) ----
+(define (sign-change-detector cur last)
+  (cond ((and (< last 0.0) (>= cur 0.0)) 1)
+        ((and (>= last 0.0) (< cur 0.0)) -1)
+        (else 0)))
+(define (make-zero-crossings input last-value)
+  (if (stream-null? input) the-empty-stream
+      (cons-stream (sign-change-detector (stream-car input) last-value)
+                   (make-zero-crossings (stream-cdr input) (stream-car input)))))
+
+;; the book's sample sense-data and its exact crossing pattern
+(define sense-data
+  (list->stream (list 1.0 2.0 1.5 1.0 0.5 -0.1 -2.0 -3.0 -2.0 -0.5 0.2 3.0 4.0)))
+(define zero-crossings (make-zero-crossings sense-data 0.0))
+(check "zero-crossings-pattern"
+       (equal? (stream-take zero-crossings 13)
+               '(0 0 0 0 0 -1 0 0 0 0 1 0 0)))
+
+;; ---- delayed integral + solve (3.5.4): dy/dt = y, y(0) = 1 ----
+(define (integral-delayed delayed-integrand initial-value dt)
+  (define int
+    (cons-stream initial-value
+                 (let ((integrand (force delayed-integrand)))
+                   (add-streams (scale-stream integrand dt) int))))
+  int)
+
+(define (solve f y0 dt)
+  (define y (integral-delayed (delay dy) y0 dt))
+  (define dy (stream-map f y))
+  y)
+
+;; Euler steps: y(1) after 1000 steps of dt=0.001 is (1.001)^1000 = 2.71692...
+;; which is within 1e-2 of e = 2.71828...
+(define e 2.718281828459045)
+(define y-at-1 (stream-ref (solve (lambda (y) y) 1.0 0.001) 1000))
+(check "solve-dy=y-reaches-e" (< (abs (- y-at-1 e)) 1e-2))
+;; and it is the exact Euler value, not something else that happens to be close
+(check "solve-exact-euler-value" (< (abs (- y-at-1 2.716923932235896)) 1e-9))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_stream_signal_systems") (newline))
+    (begin (display "HAS-FAIL ch3_stream_signal_systems ") (display fails) (newline)))
