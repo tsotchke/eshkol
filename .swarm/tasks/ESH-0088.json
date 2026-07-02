@@ -1,0 +1,24 @@
+{
+  "id": "ESH-0088",
+  "title": "AOT backend large import graph fixup/branch-island limits",
+  "status": "active",
+  "priority": "high",
+  "workstream": "agent-runtime/backend",
+  "goal": "From eshkol-agent 2026-06-29 handoff: compiling an integration unit that imports the full app.agent startup graph failed during eshkol-run --compile-only with `error: <unknown>:0: fixup value out of range`, left a 0-byte test object, and production eshkol-agent builds still warn that `_main` is larger than the max branch-island cluster size. Need a focused reduction for oversized import graphs and generated entry points, sourceful diagnostics for backend fixup failures, and atomic object publication so failed compile-only runs never leave empty objects.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/*codegen*.cpp",
+    "lib/core/string_io_codegen.cpp",
+    "src/main.esk",
+    "tests/integration/"
+  ],
+  "acceptance": [
+    "A reduced large-import AOT compile no longer hits `fixup value out of range`",
+    "Backend fixup/branch-island failures include source/module context where possible",
+    "Failed compile-only/object emission leaves no 0-byte object at the destination path",
+    "Large generated entry-point builds either link cleanly or use a documented code-splitting/link strategy"
+  ],
+  "blocked_by": [],
+  "status_note": "Recorded from /Users/tyr/Desktop/eshkol-agent/plans/note-for-eshkol-agent.md after ICC readiness stayed ready/100. PR #92 / f92ba110aac98cadb8dc0f7d1f206b828e73c6db merged atomic backend object publication so failed compile-only/object emission does not publish 0-byte requested objects. PR #98 / 0dd1d2c81f89360f5a508d2b5b281f40519bcde0 merged the dump-ast robustness slice: LET-family AST printer cases no longer fall through to call_op union fields, fixing the bogus huge LET argument count/SIGSEGV around exact-integer-sqrt. PR #99 / 3f92dc55cc3726105d72e9a7c91bdf545b4091ba merged the object-emission diagnostics slice: opt-in ESHKOL_AOT_PHASE_TRACE and ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS report pass_manager.run/addPassesToEmitFile phase, source, target, temp path, opt level, and module counters; reduced broad-import probes now exit 124 with precise ESH-0088 diagnostics instead of silent hangs. Follow-up reduction found smaller repros than full app.commands: `(require test-support.testing)` plus one of `services.plugins.plugin-loader`, `agent.compaction`, or `services.api-client`; all time out in pass_manager.run after O0 cleanup at about 1.0k definitions, ~40k globals, ~2.0M instructions. Root cause remains source-inlining broad module graphs, especially default stdlib/source requires; agent-side smallest semantic triggers are services.api-client and services.plugins.plugin-loader JSON/runtime boundary bodies. `tools_test-learning` / process-error optimizer containment no longer reproduces on current origin/master with #93 merged, including -O 1 compile+run evidence; no new task needed. PR #100 / 882b7ed95c52475440617073019ae29439ba36b0 merged as a partial pressure reduction: pooling repeated raw error C strings drops the plugin-loader IR from globals=40027/private-string-constants=38313 to globals=25760/private-string-constants=24046 while preserving source-span type errors. PR #101 is in review for declaration-front-end pruning: external definitions imported from precompiled modules now register type/declaration shape without strict-type body synthesis or nested/lambda body scans; verification includes a fixture precompiled module whose intentionally bad body is ignored in compile-only strict mode. This does not reduce the plugin-loader pass_manager counters. Remaining open ESH-0088 work is true extern-only precompiled declaration metadata, module object caching/source-inlining reduction for broad imports, and the broader branch-island/code-size strategy.",
+  "campaign_payoff": "Keeps Eshkol usable for production-size agent applications instead of only focused unit graphs."
+}

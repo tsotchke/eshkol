@@ -1,0 +1,29 @@
+{
+  "id": "ESH-0072",
+  "title": "gradient of a lambda capturing LOCAL scalars: LLVM 'PtrToInt source must be pointer' (ptrtoint on tagged_value struct)",
+  "status": "in_progress",
+  "priority": "high",
+  "workstream": "edge-case-campaign/ad",
+  "owner": "deep-agent-esh0070",
+  "goal": "Noesis nested-AD report Issue 4 (HIGH). A differentiated lambda that closes over TOP-LEVEL scalars compiles fine, but one that closes over LOCAL/parameter scalars fails LLVM module verification: 'PtrToInt source must be pointer' — codegen emits `ptrtoint %eshkol_tagged_value %a to i64` on the captured local, i.e. it ptrtoint's the whole 16-byte tagged_value STRUCT (not a pointer). Confirmed repro: `(define (loss a t x) (let ((d (- x t))) (* a (* d d)))) (define (step a t w0) (gradient (lambda (x) (loss a t x)) w0)) (step 8.0 5.0 7.0)` => ERROR PtrToInt source must be pointer (%a, %t). The SAME code with a,t as top-level defines compiles and gives 32 (exact). So the AD closure-capture/lifting path treats a captured LOCAL tagged value as a pointer and ptrtoints it, whereas top-level globals are unboxed/loaded correctly.",
+  "file_globs": [
+    "lib/backend/autodiff_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "next_actions": [
+    "Find where the AD/gradient codegen materializes captured free variables of the differentiated lambda. The top-level path loads/unboxes the tagged value; the local-capture path emits ptrtoint on the %eshkol_tagged_value struct directly.",
+    "Fix the capture handling so a captured LOCAL tagged value is loaded from its slot and unboxed (extractvalue data field {4} / extractDoubleFromTagged) exactly like the global case — never ptrtoint a struct.",
+    "Add a test: gradient of a lambda capturing local params equals the top-level-capture result exactly (32 for the repro), and the nested case (outer gradient over step) also works."
+  ],
+  "acceptance": [
+    "(step 8.0 5.0 7.0) with a,t LOCAL => 32 (matches top-level-capture version), no LLVM verification error, -r AND AOT",
+    "outer gradient over a step that captures locals works",
+    "no regression in tests/ad/nested_ad_test.esk"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/ad/local_capture_grad_test.esk",
+    "./build/eshkol-run tests/ad/local_capture_grad_test.esk -o /tmp/esh0072 && /tmp/esh0072"
+  ],
+  "campaign_payoff": "Lets differentiated functions capture local/param scalars (natural module structure) instead of forcing module-level cells; removes a HIGH-severity codegen failure blocking Noesis's natural code organization."
+}

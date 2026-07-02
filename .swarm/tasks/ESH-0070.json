@@ -1,0 +1,50 @@
+{
+  "id": "ESH-0070",
+  "title": "Higher-order AD corrupted (then SIGSEGV/SIGBUS) when gradient is called inside a named-let loop body",
+  "status": "done",
+  "priority": "critical",
+  "workstream": "edge-case-campaign/ad",
+  "owner": "deep-agent",
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 8.0,
+  "goal": "DEEP, downstream-blocking (Noesis nested-AD report 2026-06-26). Differentiating a function whose body is a named-let (let loop) tail-recursion that itself calls `gradient` returns garbage instead of the true higher-order derivative, and the error COMPOUNDS with iteration count k, then SIGSEGV (-r) / SIGBUS (AOT) when iterated for real. The mathematically-identical STRAIGHT-LINE code is exact, so the bug is the interaction of named-let TCO with the post-#75 jet/perturbation machinery \u2014 NOT the jet math itself. Confirmed repro (master): straight-line post'(0.05) = -307.2 (correct); named-let post-loop'(0.05,k=1) = 3.48e36 (WRONG, k=1 is identical math to the straight-line); k=2 = 1.8e51 (diverges with k). The blow-up growing with k strongly implies a perturbation-tag / epsilon-level / tape state that the named-let recursive `loop` re-entry does NOT save/restore (it leaks/compounds across iterations), OR the loop-variable alloca does not round-trip the 4-component jet losslessly so the outer perturbation carried by `w` aliases the inner gradient's tape.",
+  "ROOT_CAUSE_FOUND": "See AD_NESTED_REUSE_ROOTCAUSE_2026-06-26.md. NOT named-let scoping and NOT the +/- jet rules (those are correct). The bug: binding a COMPUTED dual (any op result) to a local/let/loop variable and READING IT MORE THAN ONCE corrupts the 2nd-order (cross-perturbation) components. Single use is fine; inline recomputation is fine; only reuse-of-a-stored-computed-dual breaks. First-order AD is always correct. Mechanism (from -O0 IR): the `*` operator path emits reverse-mode tape nodes (arena_allocate_ad_node_with_header + arena_tape_add_node) during a pure-forward `gradient`; those tape/ad_node arena allocations alias/overwrite the forward 4-jet dual heap structs between the two reads of the bound dual, collapsing the cross term (e.g. (let ((t (* x x))) (* t t)) nested => 196, must be 588 \u2014 exactly one of four product-rule cross terms survives). This same per-op tape allocation is ALSO the per-call leak (20k-iter 2nd-order gradient SIGILLs; 5k fine) and the perf cost. The Noesis named-let blow-up is this bug amplified (loop var reread each iteration). Bug is in PR #75's branch \u2014 #75 marked do-not-merge.",
+  "FIX_DIRECTION": "Cleanest: (c) carry bound duals BY VALUE (the 4-jet) rather than via a shared heap pointer the tape can clobber; OR (a) do not build a reverse-mode tape on the pure-forward nested `gradient` path (also fixes the leak+perf in one shot \u2014 forward path should allocate O(1) not O(ops) tape memory). Prefer (a) if `gradient` is forward-mode by design; verify why tape nodes are emitted inside forward `gradient` at all.",
+  "hypotheses_RESOLVED": [
+    "REJECTED: perturbation-level counter scoping across TCO (the depth counter is correct; bug reproduces with NO named-let).",
+    "REJECTED: +/- jet rules drop a component (dualAdd/dualSub/dualMul/makeDual4/pack/unpack/struct-type all verified correct).",
+    "CONFIRMED: reverse-mode tape/ad_node arena allocations alias the forward dual heap structs when a bound computed dual is reused."
+  ],
+  "file_globs": [
+    "lib/backend/autodiff_codegen.cpp",
+    "inc/eshkol/backend/autodiff_codegen.h",
+    "lib/backend/binding_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/core/ad/tape.esk",
+    "tests/ad/nested_ad_loop_test.esk"
+  ],
+  "next_actions": [
+    "ICC-scope first: icc function-map on autodiff_codegen.cpp + binding_codegen.cpp (codegenNamedLet) ; icc find-symbol on the perturbation-level / epsilon / current-jet-level state and on the tape reset/scope entry; map every place named-let TCO save/restores codegen state vs every place AD mutates global/shared state.",
+    "Determine which of the three hypotheses holds by instrumenting: dump the perturbation level / tape depth at loop entry, inner-gradient entry/exit, and loop re-entry. The fix must make AD perturbation/tape state correctly scoped (save at inner-gradient entry, restore at exit) AND ensure named-let loop-variable storage round-trips the full jet.",
+    "Fix at the architectural root: AD nesting state must be a properly-scoped stack (push/pop per gradient call) that is invariant under TCO re-entry; named-let loop carries must preserve the full tagged jet width. Mirror the save/restore discipline already used for tco_context_ (binding_codegen letrec) and the #224 per-call capture params.",
+    "Add tests/ad/nested_ad_loop_test.esk: (a) gradient of a named-let loop calling gradient, k=1 == straight-line == -307.2 exactly; (b) k=2,3,5 finite and matching analytic/finite-difference; (c) a 25-step metric-learning loop runs without SIGSEGV/SIGBUS under BOTH -r and AOT; (d) deeper nesting (gradient of gradient of loop)."
+  ],
+  "acceptance": [
+    "(gradient (lambda (m) (post-loop m 1)) 0.05) => -307.2 (matches straight-line) under -r AND AOT",
+    "k=2..5 finite and match finite-difference within tight tolerance; no compounding blow-up",
+    "25-step iterated loop-nested gradient completes with no SIGSEGV (-r) / SIGBUS (AOT)",
+    "existing tests/ad/nested_ad_test.esk (10/10 from #75) still pass; no AD regression",
+    "ad_input2 / hessian / jacobian gates still green"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/ad/nested_ad_loop_test.esk",
+    "./build/eshkol-run tests/ad/nested_ad_loop_test.esk -o /tmp/esh0070 && /tmp/esh0070",
+    "./build/eshkol-run -r tests/ad/nested_ad_test.esk",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Unblocks Noesis iterative metric-learning / learned-optimizer / metric-flow (multi-step meta-gradient). Closes the last known higher-order AD correctness hole and a whole class of TCO-vs-AD-state scoping bugs. Single nested gradients already exact (#75); this makes ITERATED nested gradients exact + crash-free.",
+  "status_note": "MERGED #84"
+}

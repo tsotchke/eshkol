@@ -1,0 +1,19 @@
+{
+  "id": "ESH-0082",
+  "title": "Noesis v1.5 first-party release gate + ICC oracle",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "v1.5-intelligence/noesis",
+  "goal": "Treat Noesis as the first-party Eshkol v1.5 intelligence layer. Add a release gate that runs the Noesis v1.5 gate suite from Eshkol orchestration, and register a real ICC attempt-eval/oracle so readiness has runtime evidence instead of only static/generic readiness.",
+  "file_globs": [
+    "scripts/",
+    "tests/",
+    "docs/V1_3_TO_V1_5_DEPENDENCY_PLAN_2026-06-28.md"
+  ],
+  "acceptance": [
+    "Eshkol-side script runs Noesis gate_v1_5_intelligence, learned_encoder, semantic_unify, recursive, session, and live_agent gates",
+    "ICC readiness for the Noesis v1.5 target has passing runtime attempt-eval evidence",
+    "Noesis remains first-party but optional to the self-contained Eshkol core lane"
+  ],
+  "blocked_by": []
+}

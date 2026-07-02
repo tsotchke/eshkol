@@ -1,0 +1,25 @@
+{
+  "id": "ESH-0089",
+  "title": "Subprocess FFI API boundary and C string ownership review",
+  "status": "done",
+  "priority": "high",
+  "workstream": "agent-runtime/ffi",
+  "goal": "Review and harden the agent subprocess surface after the eshkol-agent handoff. Eshkol should expose explicit low-level primitives with clear contracts: process-spawn-argv means no shell, process-spawn-shell means guaranteed shell semantics, and process-spawn is either legacy-compatible or documented as optimized command execution. Also verify read-all stdout/stderr ownership: if native C returns malloc-owned buffers, Eshkol wrappers must copy and free them safely.",
+  "file_globs": [
+    "lib/agent/subprocess.esk",
+    "lib/agent/c/agent_subprocess.c",
+    "docs/breakdown/AGENT_FFI.md",
+    "tests/v1_2_edge_cases/*subprocess*",
+    "tests/agent/*subprocess*"
+  ],
+  "acceptance": [
+    "process-spawn-argv has argv-safe no-shell tests for shell metacharacters, pipes, redirects, and `exit 42` strings",
+    "process-spawn-shell has shell-semantics tests for semicolons, stderr redirects, pipelines, and exit codes",
+    "process-spawn legacy behavior is explicitly documented and covered",
+    "read-all stdout/stderr wrappers copy native strings and free native buffers exactly once",
+    "Timeout, cleanup, PID, and exit-code contracts are documented and tested"
+  ],
+  "blocked_by": [],
+  "status_note": "Recorded from /Users/tyr/Desktop/eshkol-agent/plans/note-for-eshkol-agent.md. The agent should own product policy for shell commands; Eshkol should own primitive correctness, marshalling, memory ownership, and API documentation. PR #91 / 0e263c8ea681f830a16ae8367d62f6ec7f742e3e merged the first hardening slice: `(require agent.subprocess)` now triggers supported agent-FFI link detection, shell pipelines/redirects/builtins/exit codes are covered, argv metacharacters stay literal, legacy process-spawn simple/shell-compatible behavior is covered, and read-all stdout ownership transfer requires the second read to be empty. PR #94 / 22cef2893bb46de2e4dcbf622d9783918f5a3ccb merged the ownership/docs slice: qllm_process_destroy terminates/reaps a still-running child before freeing the handle, subprocess wrappers document copy/free and destroy semantics, AGENT_FFI documents malloc-owned read-all buffers plus argv-safe/shell/legacy spawn contracts, and tests cover wait sentinels, exit/PID/timeout status, timeout exit behavior, and destroy cleanup. Follow-up a351fee7 made timeout assertions portable after Linux CI showed the child can already be reaped by the time the shell-level status check runs. Verification: local focused tests and ICC ready/100; #94 CI 14/14 SUCCESS.",
+  "campaign_payoff": "Prevents shell/argv ambiguity and native-buffer leaks from becoming production agent behavior."
+}

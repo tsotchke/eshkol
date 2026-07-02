@@ -1,0 +1,21 @@
+{
+  "id": "ESH-0086",
+  "title": "v1.3-evolve ICC smoke evidence and release-gate repair",
+  "status": "done",
+  "priority": "high",
+  "workstream": "v1.3-evolve/release",
+  "goal": "ICC readiness for eshkol_lang v1.3-evolve is blocked because the eshkol_smoke runtime criterion lacks passing runtime evidence. Wire the actual smoke command, preserve SICP/R7RS/compiler coverage, and make readiness reflect real release-gate execution.",
+  "file_globs": [
+    "scripts/",
+    "tests/",
+    "ROADMAP.md",
+    "docs/V1_3_TO_V1_5_DEPENDENCY_PLAN_2026-06-28.md"
+  ],
+  "status_note": "DONE locally: scripts/run_v1_3_readiness.sh refreshes smoke traces, passes scripts/icc_traces to ICC, and exits nonzero unless readiness status is ready. Verified v1.3-evolve readiness ready/100. Mesh used for validation: atlas local passes; enki reachable but disk-full, xavier/jack have checkouts but no build, cosbox/old-donkey are stale and require sync/rebuild before remote certification.",
+  "acceptance": [
+    "ICC readiness --repo eshkol_lang --target v1.3-evolve reports runtime evidence for the smoke gate",
+    "smoke script exits nonzero on failed SICP/core release checks",
+    "v1.3 core lane remains self-contained and does not require qLLM/attention"
+  ],
+  "blocked_by": []
+}

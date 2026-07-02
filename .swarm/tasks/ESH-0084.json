@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0084",
+  "title": "attention/GeoRefine qllm_bundle integration gate",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "v1.5-intelligence/attention",
+  "goal": "Connect the attention/GeoRefine artifact contract to Noesis/qLLM. Validate qllm_bundle.json checksums/certificates/graduation evidence, load it through qLLM, and feed the verified artifact into Noesis qllm-load-checkpoint.",
+  "file_globs": [
+    "/Users/tyr/Desktop/attention/experiments/georefine/_qllm_bundle.py",
+    "/Users/tyr/Desktop/attention/native_runtime/backends/qllm.py",
+    "/Users/tyr/Desktop/attention/native_runtime/backends/eshkol.py",
+    "/Users/tyr/Desktop/noesis/src/core/encoder/qllm_encoder.esk"
+  ],
+  "acceptance": [
+    "A fixture qllm_bundle.json is validated before load",
+    "checksum/certificate failure causes a clear failure",
+    "verified bundle can be consumed by the Noesis qLLM checkpoint path"
+  ],
+  "blocked_by": [
+    "ESH-0083"
+  ]
+}
