@@ -1,0 +1,24 @@
+{
+  "id": "ESH-0087",
+  "title": "Mesh v1.3 certification: sync/rebuild remote Eshkol checkouts and run focused v1.3 smoke",
+  "status": "done",
+  "priority": "high",
+  "workstream": "release/mesh-certification",
+  "goal": "Turn v1.3-evolve validation from atlas-local readiness into mesh-backed release evidence. Current ICC readiness is ready/100 on atlas, but remote mesh certification is blocked by node hygiene: enki is disk-full and dirty, xavier has no normal git in PATH and no build, cosbox/old-donkey are clean but stale on GPU branches, and jack-blupc has no build/eshkol-run.exe. Bring at least one Linux/CUDA node and one non-atlas macOS/Windows node to the release head, rebuild, and run the focused v1.3 smoke + ICC trace collection there.",
+  "file_globs": [
+    "scripts/run_v1_3_readiness.sh",
+    "scripts/run_icc_smoke.sh",
+    "scripts/icc_traces/mesh_v1_3_*.jsonl",
+    ".icc/completion-oracles.yaml"
+  ],
+  "acceptance": [
+    "mesh status shows intended certification nodes reachable",
+    "remote checkouts are clean or explicitly preserved before sync",
+    "at least one Linux/CUDA node runs the focused v1.3 smoke at the release head",
+    "at least one non-atlas macOS or Windows node runs the focused v1.3 smoke at the release head",
+    "scripts/icc_traces records PASS evidence for the mesh runs",
+    "ICC readiness --repo eshkol_lang --target v1.3-evolve --trace-dir scripts/icc_traces remains ready/100 after mesh evidence is added"
+  ],
+  "blocked_by": [],
+  "status_note": "2026-06-28 mesh probe: atlas local PASS; cosbox PASS after creating a separate /tmp/eshkol-v13-cert worktree at master 37eedd343, building eshkol-run, and running v1_3_smoke_features_test.esk (10/10) + ad_input2_test.esk (6/6) under -r. Old-donkey PASS after creating separate /tmp/eshkol-v13-cert worktree at master 37eedd343, building with -DESHKOL_GPU_ENABLED=OFF because nvcc rejects GCC 14, and running the same focused smokes (10/10 + 6/6). Jack-blupc PASS after creating a separate Windows temp worktree at master 37eedd3, building build/eshkol-run.exe with MSYS UCRT, -DESHKOL_GPU_ENABLED=OFF, -DESHKOL_BLAS_ENABLED=OFF, and -DESHKOL_REQUIRED_LLVM_MAJOR=22 because installed LLVM is 22.1.4; same focused smokes passed (10/10 + 6/6). Xavier PASS after creating /tmp/eshkol-v13-cert at master 37eedd3, building through nix-shell with -DESHKOL_GPU_ENABLED=OFF, and rerunning the focused smokes with llvmPackages_21.lld included so Eshkol's AArch64 Linux -fuse-ld=lld child link can find ld.lld; v1_3_smoke_features_test.esk passed 10/10 and ad_input2_test.esk passed 6/6 under -r. Cosbox needed temporary /tmp linker symlinks because runtime libsqlite3.so.0/libpcre2-8.so.0 exist but dev libsqlite3.so/libpcre2-8.so names are absent. Remaining blockers: enki reachable but dirty and disk-full (~113MiB free); georefine-research unreachable."
+}

@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0083",
+  "title": "Noesis qLLM real checkpoint/artifact loader",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "v1.5-intelligence/qllm",
+  "goal": "Replace the real-path branch of Noesis qllm-load-checkpoint with a checked loader for qLLM/GeoRefine artifacts. Stub behavior remains only for #f or explicit stub. The loader should consume a small CI fixture and later the real attention/GeoRefine qllm_bundle path.",
+  "file_globs": [
+    "/Users/tyr/Desktop/noesis/src/core/encoder/qllm_encoder.esk",
+    "/Users/tyr/Desktop/noesis/src/core/encoder/qllm_checkpoint.esk",
+    "/Users/tyr/Desktop/semiclassical_qllm/include/semiclassical_qllm/eshkol_bridge.h",
+    "/Users/tyr/Desktop/semiclassical_qllm/include/semiclassical_qllm/eshkol_ffi.h"
+  ],
+  "acceptance": [
+    "qllm-load-checkpoint returns a non-stub qLLM state for a valid fixture artifact path",
+    "invalid/missing artifact paths fail loudly instead of silently returning stub",
+    "Noesis learned encoder and semantic-unify gates pass with the fixture"
+  ],
+  "blocked_by": [
+    "ESH-0082"
+  ]
+}

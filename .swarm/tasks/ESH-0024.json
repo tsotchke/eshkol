@@ -2,15 +2,27 @@
   "id": "ESH-0024",
   "title": "Batched GEMM via cublasGemmStridedBatched ((matmul A B :batch n))",
   "campaign": "gpu-llm",
-  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md §2",
-  "status": "pending",
+  "brief": "ESHKOL_LANGUAGE_UPDATE_BRIEF.md \u00a72",
+  "status": "done",
   "priority": "high",
   "preferred_backend": "codex",
   "preferred_node": "old-donkey",
   "needs_gpu": true,
   "goal": "MoE batches 8 experts x N rows; today that is 1440 separate launches. Add cublasGemmStridedBatched-backed batched GEMM: matmul-batched / (matmul A B :batch n). One launch beats 1440.",
-  "file_globs": ["lib/backend/gpu/gpu_memory.mm","lib/backend/tensor_codegen.cpp","lib/backend/llvm_codegen.cpp"],
-  "acceptance": ["(matmul A B :batch 8) does one strided-batched launch","matches 8 separate matmuls numerically"],
-  "verification": ["ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r /tmp/batched.esk'"],
-  "blocked_by": ["ESH-0021"]
+  "file_globs": [
+    "lib/backend/gpu/gpu_memory.mm",
+    "lib/backend/tensor_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "(matmul A B :batch 8) does one strided-batched launch",
+    "matches 8 separate matmuls numerically"
+  ],
+  "verification": [
+    "ssh old-donkey 'cd src/eshkol && ./build-cuda/eshkol-run -r /tmp/batched.esk'"
+  ],
+  "blocked_by": [
+    "ESH-0021"
+  ],
+  "status_note": "MERGED #35"
 }

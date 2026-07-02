@@ -1,0 +1,75 @@
+;;
+;; eagle.esk - Native EAGLE linear-head training bridge.
+;;
+;; These wrappers expose a small qllm_ffi_* C ABI so Eshkol can train a wide
+;; linear distillation head without relying on vector-valued `gradient`.
+;;
+
+(require core.capabilities)
+
+(provide eagle-linear-create eagle-linear-destroy
+         eagle-linear-set-weight! eagle-linear-weight
+         eagle-linear-set-input! eagle-linear-set-target!
+         eagle-linear-forward! eagle-linear-pred eagle-linear-loss
+         eagle-linear-backward! eagle-linear-grad
+         eagle-linear-sgd-step! eagle-linear-train-step!)
+
+(extern ptr eagle-linear-create-raw i64 i64 :real qllm_ffi_linear_create)
+(extern void eagle-linear-destroy-raw ptr :real qllm_ffi_linear_destroy)
+(extern i32 eagle-linear-set-weight-raw ptr i64 i64 double :real qllm_ffi_linear_set_weight)
+(extern double eagle-linear-get-weight-raw ptr i64 i64 :real qllm_ffi_linear_get_weight)
+(extern i32 eagle-linear-set-input-raw ptr i64 double :real qllm_ffi_linear_set_input)
+(extern i32 eagle-linear-set-target-raw ptr i64 double :real qllm_ffi_linear_set_target)
+(extern i32 eagle-linear-forward-raw ptr :real qllm_ffi_linear_forward)
+(extern double eagle-linear-pred-raw ptr i64 :real qllm_ffi_linear_pred)
+(extern double eagle-linear-loss-raw ptr :real qllm_ffi_linear_loss)
+(extern i32 eagle-linear-backward-raw ptr :real qllm_ffi_linear_backward)
+(extern double eagle-linear-grad-raw ptr i64 i64 :real qllm_ffi_linear_grad)
+(extern i32 eagle-linear-sgd-step-raw ptr double :real qllm_ffi_linear_sgd_step)
+(extern i32 eagle-linear-train-step-raw ptr double :real qllm_ffi_linear_train_step)
+
+(define (eagle-check rc who)
+  (if (= rc 0)
+      #t
+      (error who "native EAGLE FFI call failed")))
+
+(define (eagle-linear-create in-dim out-dim)
+  (capability-require! 'ffi 'eagle-linear-create)
+  (let ((h (eagle-linear-create-raw in-dim out-dim)))
+    (if h h (error "eagle-linear-create: allocation failed"))))
+
+(define (eagle-linear-destroy h)
+  (eagle-linear-destroy-raw h))
+
+(define (eagle-linear-set-weight! h out in value)
+  (eagle-check (eagle-linear-set-weight-raw h out in value) 'eagle-linear-set-weight!))
+
+(define (eagle-linear-weight h out in)
+  (eagle-linear-get-weight-raw h out in))
+
+(define (eagle-linear-set-input! h in value)
+  (eagle-check (eagle-linear-set-input-raw h in value) 'eagle-linear-set-input!))
+
+(define (eagle-linear-set-target! h out value)
+  (eagle-check (eagle-linear-set-target-raw h out value) 'eagle-linear-set-target!))
+
+(define (eagle-linear-forward! h)
+  (eagle-check (eagle-linear-forward-raw h) 'eagle-linear-forward!))
+
+(define (eagle-linear-pred h out)
+  (eagle-linear-pred-raw h out))
+
+(define (eagle-linear-loss h)
+  (eagle-linear-loss-raw h))
+
+(define (eagle-linear-backward! h)
+  (eagle-check (eagle-linear-backward-raw h) 'eagle-linear-backward!))
+
+(define (eagle-linear-grad h out in)
+  (eagle-linear-grad-raw h out in))
+
+(define (eagle-linear-sgd-step! h lr)
+  (eagle-check (eagle-linear-sgd-step-raw h lr) 'eagle-linear-sgd-step!))
+
+(define (eagle-linear-train-step! h lr)
+  (eagle-check (eagle-linear-train-step-raw h lr) 'eagle-linear-train-step!))

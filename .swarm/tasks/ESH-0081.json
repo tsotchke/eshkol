@@ -1,0 +1,25 @@
+{
+  "id": "ESH-0081",
+  "title": "Vector-valued gradient over vector inputs throws int64 from non-int-storage cell",
+  "status": "done",
+  "priority": "high",
+  "workstream": "edge-case-campaign/ad",
+  "goal": "Scaling the native EAGLE trainer to 7168 dimensions exposed a real AD compiler/runtime bug: a vector-valued `(gradient fn vec)` path throws `int64 from non-int-storage cell (type=6)`. Scalar `(derivative fn x)` works, and the native qllm_ffi linear backward bridge now sidesteps this for production-scale EAGLE training. Root-fix the vector-gradient path so Eshkol can directly differentiate vector-parameter losses without native helper escapes.",
+  "repro": "Construct a scalar loss over a mutable/vector parameter and call `(gradient loss weights-vector)`; expected a vector of gradients, actual runtime throws `int64 from non-int-storage cell (type=6)`. Use examples/eagle_train.esk as the scalar/native comparison baseline.",
+  "file_globs": [
+    "lib/backend/autodiff_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/tensor_backward.cpp",
+    "tests/ad/**",
+    "tests/v1_2_edge_cases/**"
+  ],
+  "acceptance": [
+    "minimal vector-valued gradient repro returns a numeric gradient vector instead of throwing",
+    "scalar derivative paths from examples/eagle_train.esk still pass",
+    "native qllm_ffi bridge tests still pass",
+    "-r and AOT both pass"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Removes the compiler-side blocker behind full native EAGLE training without relying on qllm_ffi linear_backward as an escape hatch.",
+  "status_note": "MERGED #97 / 7c4a43f9549668976637dc33330271833173ca87. Design decision: do not primalize/detach shape dimensions; shape dims/reduction axes are structural integer metadata, so dual values should raise a clean guard-catchable type error. Fix guards reshape direct/list/multi dims and reduction axes, avoids the old 'Attempted to get int64 from non-int-storage cell (type=6)' path, and adds tests/integration/ad_structural_int_guard_test.esk plus CTest smoke. Verification: ICC ready/100 before/after, GPU-off configure/build, JIT focused test PASS, AOT focused test PASS, generated ./a.out PASS, ctest ad_structural_int_guard_runtime_smoke PASS, and CI 14/14 SUCCESS. Existing broader autodiff_tensor_test.esk still fails on current origin/master at line 392 with tensor-sum expected tensor/got ad-node; left out of scope."
+}

@@ -1,0 +1,29 @@
+{
+  "id": "ESH-0071",
+  "title": "JIT recompiles gradient body per fresh closure identity — memoize JIT on closure code/AST not runtime identity",
+  "status": "pending",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/ad-perf",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 5.0,
+  "goal": "Noesis nested-AD report Issue 3. `(gradient (lambda (x) ...) p)` where the lambda is CREATED INSIDE A LOOP is O(steps * compile): each fresh closure runtime-identity triggers a fresh JIT compile of the gradient body. Hoisting the closure outside the loop removed a >120s hang. Fix: memoize JIT compilation keyed on the closure's CODE/AST (structural identity), not its runtime allocation identity, so repeatedly differentiating structurally-identical closures compiles once. Relates to ESH-0044 (AD throughput).",
+  "file_globs": [
+    "lib/repl/repl_jit.cpp",
+    "lib/backend/autodiff_codegen.cpp"
+  ],
+  "next_actions": [
+    "Identify where gradient triggers JIT compilation of the differentiated body and what key is used; switch the cache key to the lambda's AST/code pointer (or a structural hash) rather than the runtime closure value.",
+    "Verify a loop that creates a fresh lambda each iteration and differentiates it compiles once, not per-iteration."
+  ],
+  "acceptance": [
+    "loop creating fresh structurally-identical gradient lambda compiles once (no per-step recompile), large step counts no longer hang",
+    "no correctness regression in AD results"
+  ],
+  "blocked_by": ["ESH-0070"],
+  "verification": [
+    "timing test: 100-step loop differentiating an in-loop lambda finishes in O(1) compiles"
+  ],
+  "campaign_payoff": "Makes iterative meta-learning loops practical (perf), complements ESH-0070 (correctness) and ESH-0044 (throughput)."
+}

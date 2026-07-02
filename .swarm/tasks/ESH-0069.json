@@ -1,0 +1,36 @@
+{
+  "id": "ESH-0069",
+  "title": "Tensor ops SIGSEGV on non-tensor (vector) input instead of raising a type error",
+  "status": "in_review",
+  "priority": "high",
+  "workstream": "edge-case-campaign/ml",
+  "owner": null,
+  "preferred_backend": "codex",
+  "preferred_node": "cosbox",
+  "max_cost_usd": 4.0,
+  "goal": "DEEP finding. Tensor activation/ops codegen assumes a HEAP_SUBTYPE_TENSOR input and does NOT validate the type; given a heterogeneous vector (HEAP_SUBTYPE_VECTOR) it misreads the memory layout and SIGSEGVs instead of raising a type error. Confirmed: (softmax (reshape (vector 0.0 0.0 0.0 0.0) 4)) => #(0.25 0.25 0.25 0.25) OK; (softmax (vector 1.0 2.0 3.0)) => SIGSEGV. A crash on a type mismatch is never acceptable (it is also a robustness/DoS issue for any program that passes the wrong shape). Likely shared across the tensor_activation_codegen / tensor_*_codegen ops (softmax, gelu, sigmoid, etc.) which all unpack the tensor struct without a subtype guard.",
+  "file_globs": [
+    "lib/backend/tensor_activation_codegen.cpp",
+    "lib/backend/tensor_codegen.cpp",
+    "lib/backend/tensor_conv_codegen.cpp",
+    "lib/backend/tensor_reduce_codegen.cpp",
+    "tests/ml/tensor_type_guard_test.esk"
+  ],
+  "next_actions": [
+    "Add a tensor-subtype guard at the entry of tensor ops: if the operand is not HEAP_SUBTYPE_TENSOR, either coerce a homogeneous numeric vector to a tensor, or raise a clean type error (eshkol_type_error_with_operand) \u2014 never proceed to unpack a non-tensor struct.",
+    "Audit all tensor ops (activations softmax/gelu/sigmoid/silu/elu/selu, reduce, conv, pool, matmul, transpose, norms) for the missing guard; centralize the unpack+validate helper.",
+    "Add tests/ml/tensor_type_guard_test.esk: every tensor op given a vector/int/string raises a catchable type error (no segfault); valid tensor inputs unaffected."
+  ],
+  "acceptance": [
+    "(softmax (vector 1.0 2.0 3.0)) raises a catchable type error (or coerces), does NOT segfault",
+    "all tensor ops reject non-tensor inputs with a type error rather than crashing",
+    "valid tensor inputs still produce correct results; AOT + -r"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/ml/tensor_type_guard_test.esk",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Removes a whole class of segfaults (tensor op + wrong input type) \u2014 robustness + safety; a type error a program can catch instead of a hard crash.",
+  "status_note": "PR #79 \u2014 centralized tensor operand guard; 49/49 -r+AOT (+wasm stub)"
+}

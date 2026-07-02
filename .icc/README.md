@@ -25,6 +25,7 @@ the configs here let `completion-oracle`, `production-audit`, and
 | `agent-ffi-ready` | Before publishing any FFI change. Confirms HTTP/SQLite/subprocess contracts hold. |
 | `stdlib-ready` | After touching `lib/core/`. Catches missing tests / known-builtins entries. |
 | `v1.2-release` | Pre-tag. Strict gate; even mediums fail. |
+| `v1.3-evolve` | Pre-v1.3 gate. Run through `scripts/run_v1_3_readiness.sh` so smoke traces are refreshed and passed to ICC. |
 | `no-regression` | Per-PR sanity. Highs only fail. |
 
 ## Usage
@@ -42,6 +43,9 @@ python3 $ICC production-audit --repo eshkol_lang \
 
 # What should I work on next?
 python3 $ICC assistant-status --repo eshkol_lang --format markdown
+
+# Refresh v1.3 smoke evidence and check trace-aware readiness.
+scripts/run_v1_3_readiness.sh
 ```
 
 ## Editing tips

@@ -1,0 +1,38 @@
+{
+  "id": "ESH-0067",
+  "title": "Nested forward-mode AD perturbation confusion; hessian/jacobian use finite differences",
+  "status": "done",
+  "priority": "high",
+  "workstream": "edge-case-campaign/ad",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 6.0,
+  "goal": "Found by ESH-0055 AD edge probing. Two related AD-correctness issues in a gradient-first language: (1) NESTED forward-mode derivative where the INNER derivative's evaluation point depends on the OUTER variable suffers PERTURBATION CONFUSION. Examples: (derivative (lambda (x) (derivative (lambda (y) (* x y)) 2.0)) 5.0) returns 0, should be 1; (derivative (lambda (x) (derivative (lambda (y) (* y y y)) x)) 2.0) returns 0, should be 12; (derivative (lambda (x) (* x (derivative (lambda (y) (* y y)) x))) 1.0) returns garbage 5.04e-314, should be 4. The inner derivative strips/ignores the outer dual perturbation (no perturbation tagging/coloring). (2) hessian (and likely jacobian/laplacian) compute via FINITE DIFFERENCES, not exact nested AD \u2014 proof: (hessian (lambda (x y)(+ (* x x x)(* y y))) (list 2.0 1.0)) returns off-diagonal 4.44e-08 (central-difference epsilon) instead of exact 0; diagonal (12,2) is right. Single-level derivative/gradient and AD-through-control-flow are CORRECT. The ROADMAP's '32-level nested gradients (tape stack)' refers to reverse-mode tape depth; the forward-mode perturbation-dependent nested case is the gap.",
+  "file_globs": [
+    "lib/backend/autodiff_codegen.cpp",
+    "lib/core/runtime_autodiff*.c*",
+    "lib/core/ad/tape.esk",
+    "inc/eshkol/**/dual*.h",
+    "tests/ad/nested_ad_test.esk"
+  ],
+  "next_actions": [
+    "Implement perturbation tagging/coloring for nested forward-mode AD (distinct epsilon tags per derivative nesting level) so an inner derivative does not capture/strip the outer perturbation \u2014 the standard fix for perturbation confusion.",
+    "Make hessian / jacobian / laplacian use EXACT AD (forward-over-reverse or tagged forward-over-forward) instead of finite differences; the off-diagonal must be exactly 0.",
+    "Add tests/ad/nested_ad_test.esk: the three perturbation-confusion cases (expect 1, 12, 4), exact hessian off-diagonal == 0, and finite-diff cross-checks.",
+    "Keep single-level derivative/gradient + AD-through-if/let unchanged (regression guard)."
+  ],
+  "acceptance": [
+    "(derivative (lambda (x) (derivative (lambda (y) (* x y)) 2.0)) 5.0) => 1",
+    "(derivative (lambda (x) (derivative (lambda (y) (* y y y)) x)) 2.0) => 12",
+    "hessian off-diagonal of a separable function is exactly 0 (no finite-diff epsilon)",
+    "single-level AD + AD-through-control-flow still correct; AOT + -r"
+  ],
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/ad/nested_ad_test.esk",
+    "bash scripts/run_icc_smoke.sh"
+  ],
+  "campaign_payoff": "Correct nested/higher-order AD is core to a gradient-computing language (and to v1.5 training). Removes perturbation confusion + the silent finite-difference approximation in hessian/jacobian.",
+  "status_note": "superseded by #84 (gradient forward-jet)"
+}

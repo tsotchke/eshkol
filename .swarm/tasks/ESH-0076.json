@@ -1,0 +1,19 @@
+{
+  "id": "ESH-0076",
+  "title": "Capability-denied getenv/file ops return #f silently \u2014 make denial distinguishable",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "runtime/capabilities",
+  "goal": "A capability-denied read (getenv under an active policy without env-read, file ops without file-read, etc.) returns #f/null indistinguishable from a genuinely-unset var/missing file. This misdiagnosed a Noesis CLI issue as a getenv regression. Make a DENIED capability distinguishable from a legitimately-absent value: either raise a catchable capability error, or emit a one-time stderr diagnostic naming the missing capability (e.g. 'capability denied: env-read'). runtime_capability_allows / deny_capability in lib/core/runtime_exports_hosted.cpp.",
+  "file_globs": [
+    "lib/core/runtime_exports_hosted.cpp"
+  ],
+  "acceptance": [
+    "a capability-denied getenv is distinguishable from an unset var (error or diagnostic)",
+    "no behavior change when policy inactive (default allow) or capability allowed"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Prevents the silent-#f ambiguity that cost a downstream consumer a day of misdiagnosis.",
+  "noesis_datum": "Module define-initializers run BEFORE bare top-level statements, so a main-level (capability-install-policy! ...) runs AFTER another module's (define x (getenv ...)) initializer \u2014 a bare diagnostic display never prints before the abort. The denied-vs-absent signal must be at the runtime (getenv) layer, not a top-level guard. Document the initializer-ordering too.",
+  "status_note": "MERGED #96 / d965149b459d7670ea7905fda524270671b891f5. The fix preserves existing false/null/-1 return values but emits one-time runtime diagnostics like 'capability denied: env-read' from generated env operations, hosted runtime wrappers, C system builtins, and image I/O. Verification in /private/tmp/eshkol-esh0076: ICC ready/100, Release build, capability_denied_signal_test PASS, capability_policy_test 48/48 PASS, static_link_getenv_capability_test PASS, full v1.2 edge-case runner 93/93 PASS, git diff --check, and CI 14/14 SUCCESS."
+}
