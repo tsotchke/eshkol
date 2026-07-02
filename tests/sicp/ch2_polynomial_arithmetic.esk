@@ -1,0 +1,232 @@
+;; SICP 2.5.3 — Symbolic algebra: polynomial arithmetic on the generic
+;; operation/type table. Sparse term lists (descending order), add-poly,
+;; mul-poly, generic negation, sub-poly, generic =zero?, and polynomials
+;; with rational coefficients. Self-contained: the small table + number
+;; packages are duplicated here rather than shared with the tower test.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- tagged data ----
+(define (attach-tag tag contents) (cons tag contents))
+(define (type-tag datum) (car datum))
+(define (contents datum) (cdr datum))
+
+;; ---- operation/type table ----
+(define op-table (list '*table*))
+(define (put op type proc)
+  (set-cdr! op-table (cons (list op type proc) (cdr op-table))))
+(define (get op type)
+  (let loop ((es (cdr op-table)))
+    (cond ((null? es) #f)
+          ((and (eq? (car (car es)) op) (equal? (cadr (car es)) type))
+           (caddr (car es)))
+          (else (loop (cdr es))))))
+
+(define (apply-generic-2 op a b)
+  (let ((proc (get op (list (type-tag a) (type-tag b)))))
+    (if proc (proc a b) (error "no method for these types" op))))
+(define (apply-generic-1 op x)
+  (let ((proc (get op (list (type-tag x)))))
+    (if proc (proc x) (error "no method" op))))
+
+(define (add a b) (apply-generic-2 'add a b))
+(define (mul a b) (apply-generic-2 'mul a b))
+(define (neg x) (apply-generic-1 'neg x))
+(define (sub a b) (add a (neg b)))
+(define (=zero? x) (apply-generic-1 '=zero? x))
+
+;; ---- scheme-number package (integer coefficients) ----
+(define (make-num n) (attach-tag 'scheme-number n))
+(define (install-scheme-number)
+  (put 'add '(scheme-number scheme-number)
+       (lambda (a b) (make-num (+ (contents a) (contents b)))))
+  (put 'mul '(scheme-number scheme-number)
+       (lambda (a b) (make-num (* (contents a) (contents b)))))
+  (put 'neg '(scheme-number) (lambda (a) (make-num (- (contents a)))))
+  (put '=zero? '(scheme-number) (lambda (a) (= (contents a) 0)))
+  'done)
+
+;; ---- rational package (exact coefficients) ----
+(define (make-rat n d)
+  (let ((g (gcd n d)))
+    (let ((g (if (< d 0) (- g) g)))
+      (attach-tag 'rational (cons (quotient n g) (quotient d g))))))
+(define (numer r) (car (contents r)))
+(define (denom r) (cdr (contents r)))
+(define (install-rational)
+  (put 'add '(rational rational)
+       (lambda (a b) (make-rat (+ (* (numer a) (denom b)) (* (numer b) (denom a)))
+                               (* (denom a) (denom b)))))
+  (put 'mul '(rational rational)
+       (lambda (a b) (make-rat (* (numer a) (numer b)) (* (denom a) (denom b)))))
+  (put 'neg '(rational) (lambda (r) (make-rat (- (numer r)) (denom r))))
+  (put '=zero? '(rational) (lambda (r) (= (numer r) 0)))
+  'done)
+
+;; ---- polynomial package: sparse term lists, descending order ----
+(define (make-term order coeff) (list order coeff))
+(define (order term) (car term))
+(define (coeff term) (cadr term))
+(define (the-empty-termlist) '())
+(define (empty-termlist? tl) (null? tl))
+(define (first-term tl) (car tl))
+(define (rest-terms tl) (cdr tl))
+(define (adjoin-term term tl)
+  (if (=zero? (coeff term)) tl (cons term tl)))
+
+(define (add-terms l1 l2)
+  (cond ((empty-termlist? l1) l2)
+        ((empty-termlist? l2) l1)
+        (else
+         (let ((t1 (first-term l1)) (t2 (first-term l2)))
+           (cond ((> (order t1) (order t2))
+                  (adjoin-term t1 (add-terms (rest-terms l1) l2)))
+                 ((< (order t1) (order t2))
+                  (adjoin-term t2 (add-terms l1 (rest-terms l2))))
+                 (else
+                  (adjoin-term (make-term (order t1) (add (coeff t1) (coeff t2)))
+                               (add-terms (rest-terms l1) (rest-terms l2)))))))))
+
+(define (mul-term-by-all-terms t1 tl)
+  (if (empty-termlist? tl)
+      (the-empty-termlist)
+      (let ((t2 (first-term tl)))
+        (adjoin-term (make-term (+ (order t1) (order t2))
+                                (mul (coeff t1) (coeff t2)))
+                     (mul-term-by-all-terms t1 (rest-terms tl))))))
+
+(define (mul-terms l1 l2)
+  (if (empty-termlist? l1)
+      (the-empty-termlist)
+      (add-terms (mul-term-by-all-terms (first-term l1) l2)
+                 (mul-terms (rest-terms l1) l2))))
+
+(define (neg-terms tl)
+  (if (empty-termlist? tl)
+      (the-empty-termlist)
+      (cons (make-term (order (first-term tl)) (neg (coeff (first-term tl))))
+            (neg-terms (rest-terms tl)))))
+
+(define (make-polynomial var terms) (attach-tag 'polynomial (cons var terms)))
+(define (variable p) (car (contents p)))
+(define (term-list p) (cdr (contents p)))
+(define (same-variable? v1 v2) (and (symbol? v1) (symbol? v2) (eq? v1 v2)))
+
+(define (install-polynomial)
+  (define (tag-poly var terms) (attach-tag 'polynomial (cons var terms)))
+  (put 'add '(polynomial polynomial)
+       (lambda (p1 p2)
+         (if (same-variable? (variable p1) (variable p2))
+             (tag-poly (variable p1) (add-terms (term-list p1) (term-list p2)))
+             (error "polys not in same var"))))
+  (put 'mul '(polynomial polynomial)
+       (lambda (p1 p2)
+         (if (same-variable? (variable p1) (variable p2))
+             (tag-poly (variable p1) (mul-terms (term-list p1) (term-list p2)))
+             (error "polys not in same var"))))
+  (put 'neg '(polynomial)
+       (lambda (p) (tag-poly (variable p) (neg-terms (term-list p)))))
+  (put '=zero? '(polynomial)
+       (lambda (p) (empty-termlist? (term-list p))))
+  'done)
+
+(install-scheme-number)
+(install-rational)
+(install-polynomial)
+
+;; convenience: build a poly in x from (order . int-coeff) pairs
+(define (poly . spec)
+  (make-polynomial
+   'x
+   (let loop ((s spec))
+     (if (null? s)
+         '()
+         (cons (make-term (car (car s)) (make-num (cdr (car s))))
+               (loop (cdr s)))))))
+
+;; ---- =zero? / negation basics ----
+(check "num-zero" #t (=zero? (make-num 0)))
+(check "num-nonzero" #f (=zero? (make-num 3)))
+(check "num-neg" (make-num -7) (neg (make-num 7)))
+(check "rat-neg" (make-rat -1 2) (neg (make-rat 1 2)))
+(check "poly-zero" #t (=zero? (make-polynomial 'x '())))
+
+;; ---- add-poly: (x^2 + 2x + 1) + (x^2 - 1) = 2x^2 + 2x ----
+;; note the constant terms cancel: adjoin-term must drop the zero coeff
+(define p-sq (poly (cons 2 1) (cons 1 2) (cons 0 1)))     ; x^2 + 2x + 1
+(define p-d  (poly (cons 2 1) (cons 0 -1)))               ; x^2 - 1
+(check "add-poly" (poly (cons 2 2) (cons 1 2)) (add p-sq p-d))
+
+;; disjoint orders interleave: (x^3 + x) + (x^2 + 1)
+(check "add-poly-interleave"
+       (poly (cons 3 1) (cons 2 1) (cons 1 1) (cons 0 1))
+       (add (poly (cons 3 1) (cons 1 1)) (poly (cons 2 1) (cons 0 1))))
+
+;; ---- mul-poly: (x + 1)^2 = x^2 + 2x + 1 ----
+(define p-x1 (poly (cons 1 1) (cons 0 1)))                ; x + 1
+(check "mul-poly-square" p-sq (mul p-x1 p-x1))
+
+;; (3x^2 + 5)(x^3 + 2x + 1) = 3x^5 + 11x^3 + 3x^2 + 10x + 5
+(check "mul-poly-sicp"
+       (poly (cons 5 3) (cons 3 11) (cons 2 3) (cons 1 10) (cons 0 5))
+       (mul (poly (cons 2 3) (cons 0 5))
+            (poly (cons 3 1) (cons 1 2) (cons 0 1))))
+
+;; (x - 1)(x + 1) = x^2 - 1
+(check "mul-poly-diff-of-squares"
+       p-d
+       (mul (poly (cons 1 1) (cons 0 -1)) p-x1))
+
+;; ---- negation and sub-poly ----
+(check "neg-poly" (poly (cons 1 -1) (cons 0 -1)) (neg p-x1))
+;; p - p = zero polynomial (empty term list)
+(check "sub-poly-self-zero" #t (=zero? (sub p-sq p-sq)))
+;; (2x^2 + 2x) - (x^2 - 1) = x^2 + 2x + 1
+(check "sub-poly" p-sq (sub (poly (cons 2 2) (cons 1 2)) p-d))
+
+;; ---- rational coefficients (2.5.3: "the beauty of the system") ----
+;; (1/2 x + 1/3) + (1/2 x + 2/3) = x + 1
+(define p-r1 (make-polynomial 'x (list (make-term 1 (make-rat 1 2))
+                                       (make-term 0 (make-rat 1 3)))))
+(define p-r2 (make-polynomial 'x (list (make-term 1 (make-rat 1 2))
+                                       (make-term 0 (make-rat 2 3)))))
+(check "add-poly-rational"
+       (make-polynomial 'x (list (make-term 1 (make-rat 1 1))
+                                 (make-term 0 (make-rat 1 1))))
+       (add p-r1 p-r2))
+
+;; (1/2 x + 1/3)(x) with rational coeffs: mixed exact products
+;; (1/2 x + 1/3) * (2/1 x) = x^2 + 2/3 x
+(define p-rx (make-polynomial 'x (list (make-term 1 (make-rat 2 1)))))
+(check "mul-poly-rational"
+       (make-polynomial 'x (list (make-term 2 (make-rat 1 1))
+                                 (make-term 1 (make-rat 2 3))))
+       (mul p-r1 p-rx))
+
+;; rational cancellation drives a term to zero: (1/2 x) + (-1/2 x) = 0
+(check "rat-term-cancel" #t
+       (=zero? (add (make-polynomial 'x (list (make-term 1 (make-rat 1 2))))
+                    (make-polynomial 'x (list (make-term 1 (make-rat -1 2)))))))
+
+;; SICP 2.5.3 closing example: polynomials whose coefficients are rational —
+;; (x^2 + 1/2) * (x + 2) = x^3 + 2x^2 + 1/2 x + 1
+(check "mul-poly-mixed-rational"
+       (make-polynomial 'x (list (make-term 3 (make-rat 1 1))
+                                 (make-term 2 (make-rat 2 1))
+                                 (make-term 1 (make-rat 1 2))
+                                 (make-term 0 (make-rat 1 1))))
+       (mul (make-polynomial 'x (list (make-term 2 (make-rat 1 1))
+                                      (make-term 0 (make-rat 1 2))))
+            (make-polynomial 'x (list (make-term 1 (make-rat 1 1))
+                                      (make-term 0 (make-rat 2 1))))))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch2_polynomial_arithmetic") (newline))
+    (begin (display "HAS-FAIL ch2_polynomial_arithmetic ") (display fails) (newline)))
