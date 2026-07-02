@@ -1,0 +1,145 @@
+;; SICP 4.3.2 — nondeterministic natural-language parsing.  A parser is a
+;; nondeterministic procedure (input succeed fail) where
+;;   succeed : (tree remaining-input retry) -> answer
+;;   fail    : () -> answer
+;; maybe-extend-* first yields the unextended phrase and, on backtracking,
+;; tries to absorb another prepositional phrase — this is exactly the amb
+;; choice in the book's parser, with the unparsed input threaded through the
+;; continuations instead of a mutable *unparsed* global.
+;;
+;; Sentences are kept short: deep host-CPS chains SIGILL past roughly depth
+;; 13..15 (ESH-0080, see ch4_amb.esk); an 8-word sentence stays well under it.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- the tiny grammar ----
+(define nouns '(noun student professor cat class))
+(define verbs '(verb studies lectures eats sleeps))
+(define articles '(article the a))
+(define prepositions '(prep for to in by with))
+
+(define (parse-word word-list)
+  (lambda (input succeed fail)
+    (if (and (pair? input) (memq (car input) (cdr word-list)))
+        (succeed (list (car word-list) (car input)) (cdr input) fail)
+        (fail))))
+(define parse-article (parse-word articles))
+(define parse-noun (parse-word nouns))
+(define parse-verb (parse-word verbs))
+(define parse-prep (parse-word prepositions))
+
+(define (parse-simple-noun-phrase input succeed fail)
+  (parse-article input
+    (lambda (art rest f1)
+      (parse-noun rest
+        (lambda (n rest2 f2)
+          (succeed (list 'simple-noun-phrase art n) rest2 f2))
+        f1))
+    fail))
+
+(define (parse-prepositional-phrase input succeed fail)
+  (parse-prep input
+    (lambda (p rest f1)
+      (parse-noun-phrase rest
+        (lambda (np rest2 f2)
+          (succeed (list 'prep-phrase p np) rest2 f2))
+        f1))
+    fail))
+
+(define (parse-noun-phrase input succeed fail)
+  (parse-simple-noun-phrase input
+    (lambda (np rest f1) (maybe-extend-noun-phrase np rest succeed f1))
+    fail))
+;; amb choice: yield the phrase as-is; on retry, extend it with one more PP.
+(define (maybe-extend-noun-phrase np input succeed fail)
+  (succeed np input
+    (lambda ()
+      (parse-prepositional-phrase input
+        (lambda (pp rest f2)
+          (maybe-extend-noun-phrase (list 'noun-phrase np pp) rest succeed f2))
+        fail))))
+
+(define (parse-verb-phrase input succeed fail)
+  (parse-verb input
+    (lambda (v rest f1) (maybe-extend-verb-phrase v rest succeed f1))
+    fail))
+(define (maybe-extend-verb-phrase vp input succeed fail)
+  (succeed vp input
+    (lambda ()
+      (parse-prepositional-phrase input
+        (lambda (pp rest f2)
+          (maybe-extend-verb-phrase (list 'verb-phrase vp pp) rest succeed f2))
+        fail))))
+
+;; a sentence must consume the ENTIRE input (the book's (require (null? ...)))
+(define (parse-sentence input succeed fail)
+  (parse-noun-phrase input
+    (lambda (np rest f1)
+      (parse-verb-phrase rest
+        (lambda (vp rest2 f2)
+          (if (null? rest2)
+              (succeed (list 'sentence np vp) rest2 f2)
+              (f2)))
+        f1))
+    fail))
+
+;; drive the backtracking to enumerate ALL parses
+(define (all-parses words)
+  (let ((acc '()))
+    (parse-sentence words
+      (lambda (tree rest retry) (set! acc (cons tree acc)) (retry))
+      (lambda () 'done))
+    (reverse acc)))
+
+;; ---- unambiguous sentences ----
+(check "the cat eats"
+       '((sentence (simple-noun-phrase (article the) (noun cat)) (verb eats)))
+       (all-parses '(the cat eats)))
+(check "a professor studies"
+       '((sentence (simple-noun-phrase (article a) (noun professor)) (verb studies)))
+       (all-parses '(a professor studies)))
+(check "the cat sleeps in the class"
+       '((sentence (simple-noun-phrase (article the) (noun cat))
+                   (verb-phrase (verb sleeps)
+                                (prep-phrase (prep in)
+                                             (simple-noun-phrase (article the) (noun class))))))
+       (all-parses '(the cat sleeps in the class)))
+
+;; ---- non-sentences yield no parses ----
+(check "unknown word" '() (all-parses '(the dog eats)))
+(check "trailing junk rejected" '() (all-parses '(the cat eats the)))
+(check "empty input" '() (all-parses '()))
+
+;; ---- prepositional attachment ambiguity ----
+;; "the professor lectures to the student with the cat" has exactly two
+;; parses: [lectures to the student] [with the cat] (the professor uses the
+;; cat to lecture) vs. lectures to [the student with the cat].
+(define np-prof '(simple-noun-phrase (article the) (noun professor)))
+(define np-student '(simple-noun-phrase (article the) (noun student)))
+(define np-cat '(simple-noun-phrase (article the) (noun cat)))
+(define pp-with-cat (list 'prep-phrase '(prep with) np-cat))
+(define parse-a                       ; both PPs attach to the verb phrase
+  (list 'sentence np-prof
+        (list 'verb-phrase
+              (list 'verb-phrase '(verb lectures)
+                    (list 'prep-phrase '(prep to) np-student))
+              pp-with-cat)))
+(define parse-b                       ; "with the cat" attaches to the student
+  (list 'sentence np-prof
+        (list 'verb-phrase '(verb lectures)
+              (list 'prep-phrase '(prep to)
+                    (list 'noun-phrase np-student pp-with-cat)))))
+(define ambiguous-parses
+  (all-parses '(the professor lectures to the student with the cat)))
+(check "ambiguous sentence has 2 parses" 2 (length ambiguous-parses))
+(check "parse 1: VP attachment" parse-a (car ambiguous-parses))
+(check "parse 2: NP attachment" parse-b (cadr ambiguous-parses))
+(check "both parses enumerated exactly" (list parse-a parse-b) ambiguous-parses)
+
+(display "ch4 amb parser: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
