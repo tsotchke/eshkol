@@ -1,0 +1,20 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0103). XKNOWN (r mode).
+;
+; Compiling a 10,000-deep nested expression under the JIT (-r) takes 35.8s
+; and 6.7GB RSS and spews "ERROR: macro expansion depth limit exceeded
+; (>1000)" three times to stderr - while still producing the CORRECT result.
+; The AOT path compiles the same file in 0.73s / 93MB with no spam: a 72x
+; memory divergence between the two compile pipelines on identical input.
+; Depth <= 1000 is clean in both modes (generated/parser_nested_parens_900).
+;
+; Measured 2026-07-02 (master 2692ca63):
+;   -r  : rc 0, "OK 10000", wall 35.81s, maxRSS 6710MB, 3x macro-depth ERROR
+;   aot : rc 0, "OK 10000", wall 0.73s, maxRSS 93MB, clean
+; This file is a small driver; the actual 10k-deep source is
+; generated/parser_nested_parens_10k.esk (budgets.tsv runs it directly with
+; a split budget: aot row normal, r row XKNOWN ESH-0103).
+;
+; Repro:
+;   bash tests/stress/gen_stress_sources.sh
+;   /usr/bin/time -l build/eshkol-run -r tests/stress/generated/parser_nested_parens_10k.esk
+(display "OK see-generated/parser_nested_parens_10k.esk") (newline)

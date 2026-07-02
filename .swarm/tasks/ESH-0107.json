@@ -1,0 +1,19 @@
+{
+  "id": "ESH-0107",
+  "title": "Nested quasiquote (level >= 2) collapses to ()",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/quote",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). Any quasiquote nested inside another quasiquote evaluates to (): ``a -> () (R7RS: (quasiquote a)); `(a `(b ,(+ 1 1))) -> (a ()) (R7RS: (a (quasiquote (b (unquote (+ 1 1)))))). Single-level quasiquote, unquote and unquote-splicing are correct. JIT and AOT agree on the wrong value, so this is a shared frontend/codegen bug, not a path divergence.",
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/stress/found/nested_quasiquote.esk prints OK nested-quasiquote under -r and AOT",
+    "``a evaluates to a 2-element list (quasiquote a)"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Nested quasiquote is core R7RS surface (macro-writing patterns, SICP ch4 code generation).",
+  "repro": "tests/stress/found/nested_quasiquote.esk"
+}
