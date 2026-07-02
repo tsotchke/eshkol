@@ -1127,6 +1127,10 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_tape_reset);
     ADD_SYMBOL(arena_tape_get_node);
     ADD_SYMBOL(arena_tape_get_node_count);
+    // ESH-0093: mixed-mode AD (reverse tape over inner forward derivative)
+    ADD_SYMBOL(eshkol_ad_seed_swap);
+    ADD_SYMBOL(eshkol_ad_seed_flag);
+    ADD_SYMBOL(eshkol_ad_mixed_record);
     ADD_SYMBOL(debug_print_ad_mode);
     ADD_SYMBOL(debug_print_ptr);
 

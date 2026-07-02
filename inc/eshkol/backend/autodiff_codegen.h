@@ -113,7 +113,22 @@ public:
     llvm::Value* seedForwardAndPush(llvm::Value* point_tagged, llvm::Value** out_level);
     // POP (restore `level`) and extract the derivative w.r.t. this level's slot:
     // a scalar double at level 0, the e2-slice dual when nested.
+    // ESH-0093: at level 0, when a reverse tape is live and the gradient pass
+    // published an active seed variable, the result is recorded on the tape
+    // (with backward edge a12 = the mixed e1e2 coefficient) and returned as an
+    // AD node so an outer reverse-mode gradient sees the dependency on
+    // captured tape variables.
     llvm::Value* popAndExtractForward(llvm::Value* result_tagged, llvm::Value* level);
+
+    // ESH-0093: if `operand_tagged` is a reverse-tape AD node AND a forward-
+    // mode perturbation is live (__ad_pert_level > 0), freeze it to a dual
+    // {node->value, 0, seed_flag, 0} (seed_flag = 1.0 iff the node is the
+    // gradient pass's active seed variable, masked to pert level 1).
+    // Otherwise returns the operand unchanged. Called at every scalar
+    // arithmetic entry point so tape values entering a forward-mode jet
+    // computation become jets instead of being mis-recorded on the tape
+    // (which dropped the forward tangent — the mixed-mode composition bug).
+    llvm::Value* maybeJetLiftTapeOperand(llvm::Value* operand_tagged);
 
     /**
      * Add two dual numbers: (a + b, a' + b')

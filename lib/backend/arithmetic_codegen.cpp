@@ -643,6 +643,12 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 2 /*AD_NODE_ADD*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -813,6 +819,12 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 3 /*AD_NODE_SUB*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -983,6 +995,12 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 4 /*AD_NODE_MUL*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1153,6 +1171,12 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 5 /*AD_NODE_DIV*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda (handler already checked AD)
         llvm::Value* left_type = tagged_.getType(left);
@@ -1413,6 +1437,9 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
 }
 
 llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
+    // ESH-0093: see add() — freeze reverse-tape operands to jets inside
+    // forward-mode AD.
+    operand = autodiff_.maybeJetLiftTapeOperand(operand);
     return withADUnaryDispatch(operand, 11 /*AD_NODE_NEG*/, [&]() -> llvm::Value* {
         llvm::Value* type_tag = tagged_.getType(operand);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
@@ -1484,6 +1511,9 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
 }
 
 llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
+    // ESH-0093: see add() — freeze reverse-tape operands to jets inside
+    // forward-mode AD.
+    operand = autodiff_.maybeJetLiftTapeOperand(operand);
     return withADUnaryDispatch(operand, 42 /*AD_NODE_ABS*/, [&]() -> llvm::Value* {
         llvm::Value* type_tag = tagged_.getType(operand);
         llvm::Value* base_type = tagged_.getBaseType(type_tag);
@@ -2004,6 +2034,11 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
+
+    // ESH-0093: see add() — freeze reverse-tape operands to jets inside
+    // forward-mode AD.
+    base = autodiff_.maybeJetLiftTapeOperand(base);
+    exponent = autodiff_.maybeJetLiftTapeOperand(exponent);
     return withADBinaryDispatch(base, exponent, 10 /*AD_NODE_POW*/, [&]() -> llvm::Value* {
         // Re-extract types inside lambda
         llvm::Value* base_type = tagged_.getType(base);
@@ -2116,6 +2151,12 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 45 /*AD_NODE_MIN*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "min_dual_check", func);
@@ -2203,6 +2244,12 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
     }
 
+
+    // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
+    // entering scalar arithmetic are frozen to jets (with the active gradient
+    // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
+    left = autodiff_.maybeJetLiftTapeOperand(left);
+    right = autodiff_.maybeJetLiftTapeOperand(right);
     return withADBinaryDispatch(left, right, 44 /*AD_NODE_MAX*/, [&]() -> llvm::Value* {
         llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
         llvm::BasicBlock* dual_check = llvm::BasicBlock::Create(ctx_.context(), "max_dual_check", func);

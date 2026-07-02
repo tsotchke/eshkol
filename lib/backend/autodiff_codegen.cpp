@@ -224,8 +224,47 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     b.CreateCondBr(is_l0, x0bb, x1bb);
 
     // level 0: scalar derivative = tangent (e1 component), packed as a double.
+    //
+    // ESH-0093: when this derivative ran INSIDE a reverse-mode gradient pass
+    // (an outer tape is live and the pass published an active seed variable),
+    // captured tape nodes were jet-lifted with e2 = 1 on the seed
+    // (maybeJetLiftTapeOperand), so the e1e2 coefficient a12 is
+    // d(derivative-result)/d(seed). Record the result on the outer tape as an
+    // exact local linearization (eshkol_ad_mixed_record) and return that AD
+    // node so the outer backward pass sees the dependency. When there is no
+    // tape / no seed / no dependency the helper returns null and the plain
+    // scalar path below is used — identical to the previous behavior.
     b.SetInsertPoint(x0bb);
-    llvm::Value* scalar_res = tagged_.packDouble(dualField(ctx_, rd, 1));
+    llvm::Value* a1 = dualField(ctx_, rd, 1);
+    llvm::Value* a12 = dualField(ctx_, rd, 3);
+    llvm::Value* scalar_res = tagged_.packDouble(a1);
+    if (ctx_.currentAdTape()) {
+        llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_mixed_record",
+            llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()},
+                false));
+        llvm::Value* arena_ptr = getArenaPtr();
+        llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+        llvm::Value* rec_node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr, a1, a12});
+        llvm::Value* rec_valid = b.CreateICmpNE(rec_node,
+            llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+        llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_mixed_rec", fn);
+        llvm::BasicBlock* x0m = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar_merge", fn);
+        llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+        b.CreateCondBr(rec_valid, rec_bb, x0m);
+
+        b.SetInsertPoint(rec_bb);
+        llvm::Value* node_res = tagged_.packPtr(rec_node, ESHKOL_VALUE_CALLABLE);
+        llvm::BasicBlock* rec_exit = b.GetInsertBlock();
+        b.CreateBr(x0m);
+
+        b.SetInsertPoint(x0m);
+        llvm::PHINode* sel = b.CreatePHI(ctx_.taggedValueType(), 2, "fwd_ex_scalar_sel");
+        sel->addIncoming(scalar_res, plain_exit);
+        sel->addIncoming(node_res, rec_exit);
+        scalar_res = sel;
+    }
     b.CreateBr(mbb);
     llvm::BasicBlock* x0e = b.GetInsertBlock();
 
@@ -242,6 +281,75 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     res->addIncoming(scalar_res, x0e);
     res->addIncoming(slice, x1e);
     return res;
+}
+
+// ===== ESH-0093: jet-lift reverse-tape operands inside forward-mode AD =====
+// While a forward-mode derivative/gradient pass is live (__ad_pert_level > 0),
+// a reverse-tape AD node reaching scalar arithmetic must NOT be recorded on
+// the tape (that path drops the forward tangent — the mixed-mode bug).
+// Instead it is frozen to its value as a dual number, and — when it is the
+// gradient pass's published active seed variable (eshkol_ad_seed_flag) — its
+// e2 slot is seeded with 1.0 so the 4-jet carries the mixed e1e2 coefficient
+// d(result)/d(seed) to popAndExtractForward, which records the dependency
+// back onto the tape (eshkol_ad_mixed_record).
+// The e2 seed is only exact when the derivative body runs at pert level 1
+// (one forward level inside the reverse tape); deeper forward nesting has no
+// free slot in the 4-jet, so the seed is dropped there (level != 1 → 0.0),
+// degrading to the previous no-dependency behavior instead of corrupting the
+// x-perturbation.
+llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagged) {
+    if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
+        return operand_tagged;
+    auto& b = ctx_.builder();
+
+    // Cheap gate first: no live forward perturbation → no lifting (this is the
+    // path all non-AD code takes; a single global load + compare).
+    llvm::Value* level = adPertLevelLoad();
+    llvm::Value* pert_active = b.CreateICmpSGT(level,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* base = tagged_.getBaseType(tagged_.getType(operand_tagged));
+    llvm::Value* is_callable = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* candidate = b.CreateAnd(pert_active, is_callable);
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* check_bb = llvm::BasicBlock::Create(ctx_.context(), "jetlift_check", fn);
+    llvm::BasicBlock* lift_bb = llvm::BasicBlock::Create(ctx_.context(), "jetlift_lift", fn);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "jetlift_merge", fn);
+    llvm::BasicBlock* entry_exit = b.GetInsertBlock();
+    b.CreateCondBr(candidate, check_bb, merge_bb);
+
+    // CALLABLE: confirm it is actually an AD node (subtype check dereferences
+    // the header, so it must be behind the CALLABLE branch).
+    b.SetInsertPoint(check_bb);
+    llvm::Value* is_ad = tagged_.checkCallableSubtype(operand_tagged, CALLABLE_SUBTYPE_AD_NODE);
+    llvm::BasicBlock* check_exit = b.GetInsertBlock(); // subtype check adds blocks
+    b.CreateCondBr(is_ad, lift_bb, merge_bb);
+
+    // Lift: dual = {node->value, 0, seed_flag, 0}. seed_flag comes from the
+    // runtime (thread-local __ad_active_seed_node) so it works identically in
+    // JIT and AOT, and is masked to pert level 1 (see note above).
+    b.SetInsertPoint(lift_bb);
+    llvm::Value* node_ptr = tagged_.unpackPtr(operand_tagged);
+    llvm::Value* node_val = loadNodeValue(node_ptr);
+    llvm::FunctionCallee seed_flag_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_seed_flag",
+        llvm::FunctionType::get(ctx_.doubleType(), {ctx_.ptrType()}, false));
+    llvm::Value* raw_flag = b.CreateCall(seed_flag_fn, {node_ptr});
+    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    llvm::Value* level_is_1 = b.CreateICmpEQ(level,
+        llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    llvm::Value* flag = b.CreateSelect(level_is_1, raw_flag, zero);
+    llvm::Value* lifted = packDualToTagged(makeDual4(ctx_, node_val, zero, flag, zero));
+    llvm::BasicBlock* lift_exit = b.GetInsertBlock(); // packDualToTagged may add blocks
+    b.CreateBr(merge_bb);
+
+    b.SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = b.CreatePHI(ctx_.taggedValueType(), 3, "jetlift_result");
+    phi->addIncoming(operand_tagged, entry_exit);
+    phi->addIncoming(operand_tagged, check_exit);
+    phi->addIncoming(lifted, lift_exit);
+    return phi;
 }
 
 llvm::Value* AutodiffCodegen::getDualPrimal(llvm::Value* dual) {
@@ -3119,6 +3227,14 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 Value* dual_elems = ctx_.builder().CreateGEP(ctx_.int8Type(), dual_vec, ConstantInt::get(ctx_.int64Type(), 8));
                 Value* dual_elems_typed = ctx_.builder().CreatePointerCast(dual_elems, ctx_.ptrType());
 
+                // ESH-0093: participate in the runtime perturbation-level
+                // protocol (see the scheme-vector path below for the full
+                // rationale): seed this level's slot, push the level around
+                // the closure call, extract this level's coefficient.
+                Value* rt_pert_level = adPertLevelLoad();
+                Value* rt_lvl0 = ctx_.builder().CreateICmpEQ(rt_pert_level,
+                    ConstantInt::get(ctx_.int64Type(), 0));
+
                 // Outer loop: for each dimension i, compute partial derivative
                 Value* dim_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "grad_dim_i");
                 ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), dim_counter);
@@ -3161,8 +3277,11 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     ConstantFP::get(ctx_.doubleType(), 1.0),
                     ConstantFP::get(ctx_.doubleType(), 0.0));
 
-                // Create dual number and store in dual vector
-                Value* dual_num = createDualNumber(primal_val, tangent);
+                // ESH-0093: seed THIS level's slot (e1 at level 0, e2 nested)
+                Value* rt_zero_t = ConstantFP::get(ctx_.doubleType(), 0.0);
+                Value* rt_t_e1 = ctx_.builder().CreateSelect(rt_lvl0, tangent, rt_zero_t);
+                Value* rt_t_e2 = ctx_.builder().CreateSelect(rt_lvl0, rt_zero_t, tangent);
+                Value* dual_num = makeDual4(ctx_, primal_val, rt_t_e1, rt_t_e2, rt_zero_t);
                 Value* dual_tagged = packDualToTagged(dual_num);
                 Value* dual_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dual_elems_typed, inner_j);
                 ctx_.builder().CreateStore(dual_tagged, dual_elem_ptr);
@@ -3197,6 +3316,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 const int GRAD_MAX_ARITY = 8;
                 BasicBlock* gcall_default = BasicBlock::Create(ctx_.context(), "grad_call_vec", current_func);
                 BasicBlock* gcall_merge = BasicBlock::Create(ctx_.context(), "grad_call_merge", current_func);
+                // ESH-0093: the callee body runs one forward level deeper
+                adPertLevelStore(ctx_.builder().CreateAdd(rt_pert_level,
+                    ConstantInt::get(ctx_.int64Type(), 1)));
                 SwitchInst* gcall_sw = ctx_.builder().CreateSwitch(clo_arity, gcall_default, GRAD_MAX_ARITY);
 
                 std::vector<std::pair<BasicBlock*, Value*>> gcall_variants;
@@ -3232,6 +3354,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 PHINode* call_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), gcall_variants.size());
                 for (auto& cv : gcall_variants) call_result->addIncoming(cv.second, cv.first);
 
+                // ESH-0093: pop the perturbation level
+                adPertLevelStore(rt_pert_level);
+
                 // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
                 // If function returns a constant (not using its argument), it won't be dual
                 Value* rt_result_type = tagged_.getType(call_result);
@@ -3245,11 +3370,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
                 ctx_.builder().CreateCondBr(rt_is_dual, rt_dual_bb, rt_const_bb);
 
-                // Dual path: extract tangent normally
+                // Dual path: extract THIS level's coefficient (e1 at level 0,
+                // e2 nested). ESH-0093: composes with an inner derivative's
+                // e2-slice return — see the scheme-vector path for details.
                 ctx_.builder().SetInsertPoint(rt_dual_bb);
                 Value* rt_result_dual = unpackDualFromTagged(call_result);
-                Value* rt_result_primal = getDualPrimal(rt_result_dual);
-                    Value* rt_dual_deriv = getDualTangent(rt_result_dual);
+                Value* rt_dual_deriv = ctx_.builder().CreateSelect(rt_lvl0,
+                    dualField(ctx_, rt_result_dual, 1), dualField(ctx_, rt_result_dual, 2));
                 ctx_.builder().CreateBr(rt_merge_bb);
                 BasicBlock* rt_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -3724,6 +3851,18 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Get arena for dual vector allocation
     Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
+    // ESH-0093: this forward-mode vector gradient participates in the runtime
+    // perturbation-level protocol (ESH-0070). The active component is seeded
+    // in THIS level's slot (e1 at level 0, e2 when nested), the level is
+    // pushed around the call so an inner derivative/gradient seeds the NEXT
+    // slot, and the extraction below reads this level's coefficient. Without
+    // this, an inner `derivative` re-seeded e1 and its perturbation collided
+    // with the component's (the mixed-mode composition bug: d/dp of an inner
+    // dx-derivative returned e1-confused garbage).
+    Value* svec_pert_level = adPertLevelLoad();
+    Value* svec_lvl0 = ctx_.builder().CreateICmpEQ(svec_pert_level,
+        ConstantInt::get(ctx_.int64Type(), 0));
+
     // Outer loop: for each dimension i, compute ∂f/∂xᵢ using forward-mode AD
     Value* svec_dim_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_dim_i");
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), svec_dim_i);
@@ -3772,8 +3911,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* svec_is_active = ctx_.builder().CreateICmpEQ(svec_j, svec_i);
     Value* svec_tangent = ctx_.builder().CreateSelect(svec_is_active,
         ConstantFP::get(ctx_.doubleType(), 1.0), ConstantFP::get(ctx_.doubleType(), 0.0));
-    // Create dual number and store
-    Value* svec_dual = createDualNumber(svec_primal, svec_tangent);
+    // ESH-0093: seed THIS level's slot (e1 at level 0, e2 when nested) so an
+    // inner forward-mode derivative — which seeds the NEXT slot after the
+    // level push below — cannot collide with the component's perturbation.
+    Value* svec_zero_t = ConstantFP::get(ctx_.doubleType(), 0.0);
+    Value* svec_t_e1 = ctx_.builder().CreateSelect(svec_lvl0, svec_tangent, svec_zero_t);
+    Value* svec_t_e2 = ctx_.builder().CreateSelect(svec_lvl0, svec_zero_t, svec_tangent);
+    Value* svec_dual = makeDual4(ctx_, svec_primal, svec_t_e1, svec_t_e2, svec_zero_t);
     Value* svec_dual_tagged = packDualToTagged(svec_dual);
     Value* svec_dual_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_dual_elems_typed, svec_j);
     ctx_.builder().CreateStore(svec_dual_tagged, svec_dual_ptr);
@@ -3825,7 +3969,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Resolve captures via unified helper
     resolveGradientCaptures(func_ptr, svec_call_args, "svec");
 
+    // ESH-0093: push the perturbation level around the call (the callee body
+    // runs one forward level deeper) and pop it right after — the same
+    // discipline seedForwardAndPush/popAndExtractForward use.
+    adPertLevelStore(ctx_.builder().CreateAdd(svec_pert_level,
+        ConstantInt::get(ctx_.int64Type(), 1)));
+
     Value* svec_call_result = ctx_.builder().CreateCall(func_ptr, svec_call_args);
+
+    adPertLevelStore(svec_pert_level);
 
     // CONSTANT RESULT FIX: Check if result is a dual number before unpacking
     Value* svec_result_type = tagged_.getType(svec_call_result);
@@ -3839,11 +3991,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
     ctx_.builder().CreateCondBr(svec_is_dual, svec_dual_bb, svec_const_bb);
 
-    // Dual path: extract tangent normally
+    // Dual path: extract THIS level's coefficient (e1 at level 0, e2 nested).
+    // ESH-0093: when the body contained an inner derivative, its
+    // popAndExtractForward already returned the e2-slice {a2, a12} as a dual,
+    // whose e1 coefficient is the mixed d/d(component) term — so the plain
+    // field-1 read at level 0 composes correctly with inner forward passes.
     ctx_.builder().SetInsertPoint(svec_dual_bb);
     Value* svec_result_dual = unpackDualFromTagged(svec_call_result);
-    Value* svec_result_primal = getDualPrimal(svec_result_dual);
-                    Value* svec_dual_deriv = getDualTangent(svec_result_dual);
+    Value* svec_dual_deriv = ctx_.builder().CreateSelect(svec_lvl0,
+        dualField(ctx_, svec_result_dual, 1), dualField(ctx_, svec_result_dual, 2));
     ctx_.builder().CreateBr(svec_merge_bb);
     BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -4291,7 +4447,18 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
 
+    // ESH-0093: publish this pass's active variable node so an inner
+    // forward-mode derivative can seed it (jet-lift) and record the mixed
+    // partial back onto this tape. Save/restore for nested gradient passes.
+    FunctionCallee seed_swap_scalar = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_seed_swap",
+        FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    Value* saved_seed_scalar = ctx_.builder().CreateCall(seed_swap_scalar, {active_var_node});
+
     Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
+
+    // ESH-0093: restore the previously active seed node
+    ctx_.builder().CreateCall(seed_swap_scalar, {saved_seed_scalar});
 
     // M1 Migration FIX: Reset AD mode flag after function call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
@@ -4469,7 +4636,18 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // M1 Migration FIX: Set AD mode flag so vref recognizes AD node pointers in tensors
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
 
+    // ESH-0093: publish this pass's active variable node so an inner
+    // forward-mode derivative can seed it (jet-lift) and record the mixed
+    // partial back onto this tape. Save/restore for nested gradient passes.
+    FunctionCallee seed_swap_vector = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_seed_swap",
+        FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
+    Value* saved_seed_vector = ctx_.builder().CreateCall(seed_swap_vector, {active_var_node});
+
     Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
+
+    // ESH-0093: restore the previously active seed node
+    ctx_.builder().CreateCall(seed_swap_vector, {saved_seed_vector});
 
     // M1 Migration FIX: Reset AD mode flag after function call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());

@@ -13411,6 +13411,8 @@ private:
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
+            // ESH-0093: freeze reverse-tape operands to jets inside forward-mode AD
+            arg = autodiff_->maybeJetLiftTapeOperand(arg);
             return arith_->withADUnaryDispatch(arg, 43 /*AD_NODE_SQUARE*/, [&]() -> llvm::Value* {
                 Value* type = getTaggedValueType(arg);
                 Value* base_type = getBaseType(type);
@@ -18698,6 +18700,11 @@ private:
         // Convert to tagged_value for runtime type detection
         Value* arg_tagged = typedValueToTaggedValue(arg_tv);
 
+        // ESH-0093: while a forward-mode derivative is live, reverse-tape AD
+        // nodes are frozen to jets (active gradient seed in e2) instead of
+        // being mis-recorded on the tape. No-op otherwise.
+        arg_tagged = autodiff_->maybeJetLiftTapeOperand(arg_tagged);
+
         // Extract type tag
         Value* arg_type = getTaggedValueType(arg_tagged);
         Value* arg_base_type = getBaseType(arg_type);
@@ -19038,6 +19045,11 @@ private:
 
         // Convert to tagged_value for runtime type detection
         Value* arg_tagged = typedValueToTaggedValue(arg_tv);
+
+        // ESH-0093: while a forward-mode derivative is live, reverse-tape AD
+        // nodes are frozen to jets (active gradient seed in e2) instead of
+        // being mis-recorded on the tape. No-op otherwise.
+        arg_tagged = autodiff_->maybeJetLiftTapeOperand(arg_tagged);
 
         // Extract type tag
         Value* arg_type = getTaggedValueType(arg_tagged);
@@ -35431,6 +35443,8 @@ private:
         if (c_math_func) {
             // UNIVERSAL AD AWARENESS: 3-way dispatch — AD node → dual number → regular
             // This ensures (gradient exp 0.0) works correctly with bare builtins
+            // ESH-0093: freeze reverse-tape operands to jets inside forward-mode AD
+            arg = autodiff_->maybeJetLiftTapeOperand(arg);
             Value* arg_type = getTaggedValueType(arg);
             Value* arg_base_type = getBaseType(arg_type);
 
