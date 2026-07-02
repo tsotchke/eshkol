@@ -1101,3 +1101,20 @@ oracles:
         severity: high
         label: Seeded 200-program fuzz run finds no cross-axis divergence
         action: ./scripts/run_differential_fuzz.sh --seed 42 --count 200
+  # Adversarial pillar P2 — feature-pair composition matrix
+  # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). scripts/run_edge_matrix.sh
+  # runs the generated corpus in tests/edge_matrix/generated/ under both
+  # JIT -r and AOT, classifies each probe file, and emits edge_matrix
+  # trace events. The sweep-level event is PASS iff every file×mode not
+  # allowlisted in tests/edge_matrix/KNOWN_FAILURES.txt passed.
+  # ─────────────────────────────────────────────────────────────────
+  - name: edge-matrix
+    aliases: [edge-matrix-sweep, p2-composition-matrix]
+    requires:
+      - runtime_event:
+          event_kinds: [edge_matrix]
+          event_names: ["edge_matrix_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Feature-pair composition sweep clean (no unexpected non-PASS)
+        action: python3 tests/edge_matrix/gen_matrix.py && ./scripts/run_edge_matrix.sh

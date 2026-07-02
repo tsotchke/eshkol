@@ -1,0 +1,22 @@
+;; EM-6 (edge-matrix, 2026-07-02): at TOP LEVEL, arguments of heap
+;; constructors are evaluated MORE THAN ONCE: (list e) evaluates e twice,
+;; (vector e) up to three times. Inside a function body the same code
+;; evaluates e exactly once. Reproduces under -r AND AOT. Any top-level
+;; side effect (counters, I/O, channel ops) fires multiply.
+;;
+;; Found by: pair070_closures__toplevel (counter_once expected=1 actual=2,
+;; multi_instance expected=4 actual=8) and pair082_delay_force__toplevel
+;; (memoized expected=2 actual=4).
+;;
+;; Expected output:  (1) 1
+;; Actual:           (2) 3
+(define n 0)
+(define (c) (set! n (+ n 1)) n)
+(define r (list (c)))
+(display r)
+(display " ")
+(define n2 0)
+(define (c2) (set! n2 (+ n2 1)) n2)
+(define v (vector (c2)))
+(display (vector-ref v 0))
+(newline)

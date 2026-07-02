@@ -1,0 +1,55 @@
+# Triaged edge-matrix failures: "<generated basename> <mode>" per line.
+# Every entry MUST reference a minimal repro in tests/edge_matrix/found/.
+# Remove entries as the underlying bugs are fixed; the sweep then verifies
+# the fix (a stale entry keeps passing silently, so prune aggressively).
+
+# EM-1/EM-2/EM-3 family: quote reader-sugar corrupts let-body / guard-clause /
+# match-clause parsing (truncation, undefined-variable, arity-shift, SIGSEGV)
+pair007_quote__shadowing jit
+pair007_quote__shadowing aot
+pair008_quote__tail_position jit
+pair008_quote__tail_position aot
+pair096_guard_raise__first_class jit
+pair096_guard_raise__first_class aot
+pair098_guard_raise__shadowing jit
+pair098_guard_raise__shadowing aot
+pair099_guard_raise__tail_position jit
+pair099_guard_raise__tail_position aot
+pair100_guard_raise__toplevel jit
+pair100_guard_raise__toplevel aot
+pair101_guard_raise__variadic jit
+pair101_guard_raise__variadic aot
+pair144_match__first_class jit
+pair144_match__first_class aot
+pair145_match__set_bang jit
+pair145_match__set_bang aot
+pair146_match__shadowing jit
+pair146_match__shadowing aot
+pair147_match__tail_position jit
+pair147_match__tail_position aot
+pair148_match__toplevel jit
+pair148_match__toplevel aot
+pair149_match__variadic jit
+pair149_match__variadic aot
+
+# EM-4: long-form (quasiquote (unquote ...)) not expanded
+pair005_quote__first_class jit
+pair005_quote__first_class aot
+pair006_quote__set_bang jit
+pair006_quote__set_bang aot
+pair009_quote__toplevel jit
+pair009_quote__toplevel aot
+pair010_quote__variadic jit
+pair010_quote__variadic aot
+
+# EM-5: apply degrades char arguments to raw integers
+pair060_chars__first_class jit
+pair060_chars__first_class aot
+pair065_chars__variadic jit
+pair065_chars__variadic aot
+
+# EM-6: top-level constructor arguments re-evaluated
+pair070_closures__toplevel jit
+pair070_closures__toplevel aot
+pair082_delay_force__toplevel jit
+pair082_delay_force__toplevel aot
