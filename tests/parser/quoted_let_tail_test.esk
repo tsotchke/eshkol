@@ -1,0 +1,154 @@
+;; Parser Test: quoted datum in let-family body tails (ESH-0091)
+;;
+;; A quote/quasiquote/vector literal in tail position of a let-family body
+;; inside a define or lambda used to lose its quote: the let-body loop
+;; dispatched only on LPAREN/atom, so TOKEN_QUOTE fell into parse_atom,
+;; invalidated the whole let, and the datum tokens were re-parsed as
+;; spurious sibling expressions ("Undefined variable: ok" / call to a).
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================
+;; Quoted symbol tails inside define
+;; ============================================================
+
+(define (f-let) (let ((x 1)) 'ok))
+(test-case "define + let + 'symbol tail" 'ok (f-let))
+
+(define (f-let*) (let* ((x 1) (y x)) 'ok))
+(test-case "define + let* + 'symbol tail" 'ok (f-let*))
+
+(define (f-letrec) (letrec ((x 1)) 'ok))
+(test-case "define + letrec + 'symbol tail" 'ok (f-letrec))
+
+(define (f-letrec*) (letrec* ((x 1)) 'ok))
+(test-case "define + letrec* + 'symbol tail" 'ok (f-letrec*))
+
+(define (f-named) (let loop ((i 0)) (if (< i 2) (loop (+ i 1)) 'done)))
+(test-case "define + named-let + 'symbol via if" 'done (f-named))
+
+(define (f-named-tail) (let loop ((i 0)) 'ok))
+(test-case "define + named-let + 'symbol tail" 'ok (f-named-tail))
+
+;; ============================================================
+;; Quoted list tails inside define
+;; ============================================================
+
+(define (g-let) (let ((x 1)) '(a b)))
+(test-case "define + let + '(list) tail" (list 'a 'b) (g-let))
+
+(define (g-let*) (let* ((x 1)) '(a b c)))
+(test-case "define + let* + '(list) tail" (list 'a 'b 'c) (g-let*))
+
+(define (g-letrec) (letrec ((x 1)) '(1 2 3)))
+(test-case "define + letrec + '(list) tail" (list 1 2 3) (g-letrec))
+
+(define (g-empty) (let ((x 1)) '()))
+(test-case "define + let + '() tail" '() (g-empty))
+
+;; ============================================================
+;; Same shapes inside lambda
+;; ============================================================
+
+(define l-let (lambda () (let ((x 1)) 'ok)))
+(test-case "lambda + let + 'symbol tail" 'ok (l-let))
+
+(define l-let* (lambda () (let* ((x 1)) '(a b))))
+(test-case "lambda + let* + '(list) tail" (list 'a 'b) (l-let*))
+
+(define l-letrec (lambda () (letrec ((x 1)) 'ok)))
+(test-case "lambda + letrec + 'symbol tail" 'ok (l-letrec))
+
+(define l-named (lambda () (let loop ((i 0)) '(x y))))
+(test-case "lambda + named-let + '(list) tail" (list 'x 'y) (l-named))
+
+;; Direct quote tails in lambda/define bodies (no let)
+(define l-direct (lambda () 'direct))
+(test-case "lambda + 'symbol body" 'direct (l-direct))
+
+(define (d-direct) '(p q))
+(test-case "define + '(list) body" (list 'p 'q) (d-direct))
+
+;; ============================================================
+;; Quasiquote tail
+;; ============================================================
+
+(define (qq-tail) (let ((x 5)) `(a ,x)))
+(test-case "define + let + quasiquote tail" (list 'a 5) (qq-tail))
+
+(define qq-lambda (lambda () (let* ((y 7)) `(v ,y ,(+ y 1)))))
+(test-case "lambda + let* + quasiquote tail" (list 'v 7 8) (qq-lambda))
+
+;; ============================================================
+;; Vector literal tail
+;; ============================================================
+
+(define (vec-tail) (let ((x 1)) #(1 2)))
+(define vt (vec-tail))
+(test-case "define + let + #(1 2) tail: ref 0" 1 (vector-ref vt 0))
+(test-case "define + let + #(1 2) tail: ref 1" 2 (vector-ref vt 1))
+
+;; ============================================================
+;; Multi-expression body ending in a quote
+;; ============================================================
+
+(define (multi-tail)
+  (let ((x 1))
+    (display "")
+    (+ x 1)
+    'last))
+(test-case "define + let + multi-expr body ending in quote" 'last (multi-tail))
+
+(define (multi-tail-list)
+  (let* ((x 1) (y 2))
+    (+ x y)
+    '(r s)))
+(test-case "define + let* + multi-expr body ending in '(list)" (list 'r 's) (multi-tail-list))
+
+;; ============================================================
+;; Nested lets with quoted tails
+;; ============================================================
+
+(define (nested)
+  (let ((a 1))
+    (let ((b 2))
+      'inner)))
+(test-case "define + nested lets + 'symbol tail" 'inner (nested))
+
+(define (nested-mixed)
+  (let ((a 1))
+    (let* ((b 2))
+      (letrec ((c 3))
+        '(deep tail)))))
+(test-case "define + nested let/let*/letrec + '(list) tail" (list 'deep 'tail) (nested-mixed))
+
+;; let-values body tail (same fix family)
+(define (lv-tail)
+  (let-values (((a b) (values 1 2)))
+    'lv-ok))
+(test-case "define + let-values + 'symbol tail" 'lv-ok (lv-tail))
+
+;; ============================================================
+;; Summary
+;; ============================================================
+
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED\n")
+    (display "SOME TESTS FAILED\n"))
