@@ -398,6 +398,25 @@ class Runner:
                 res[axis] = (rc, normalize(out))
         return res
 
+def make_divergence_predicate(runner, orig_res):
+    """Predicate for the shrinker. A candidate must still DIVERGE, and must
+    not have drifted into a merely-invalid program: if the original program
+    ran cleanly (rc==0) on at least one axis, every accepted candidate must
+    too. Otherwise shrinking converges on e.g. an undefined-variable snippet
+    whose per-path error reporting trivially 'diverges' (JIT: runtime error
+    rc=1; AOT: compile fail rc=125) — a different, uninteresting program."""
+    orig_had_ok = any(rc == 0 for (rc, _) in orig_res.values())
+
+    def is_divergent(source):
+        r = runner.run_axes(source)
+        if classify(r)[0] != "DIVERGE":
+            return False
+        if orig_had_ok and not any(rc == 0 for (rc, _) in r.values()):
+            return False
+        return True
+
+    return is_divergent
+
 def classify(res):
     """Returns (status, detail): status in {AGREE, DIVERGE, ALL-FAIL}."""
     vals = list(res.values())
@@ -594,11 +613,7 @@ def main():
                 print("FAILED %s (%s)" % (nodeid, detail))
                 if len(findings) < args.max_findings:
                     base_evals = runner.evals
-
-                    def is_div(src):
-                        r = runner.run_axes(src)
-                        return classify(r)[0] == "DIVERGE"
-
+                    is_div = make_divergence_predicate(runner, res)
                     runner.evals = 0
                     shrunk = shrink(forms, runner, is_div,
                                     budget=args.shrink_budget)
