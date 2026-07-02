@@ -1,0 +1,18 @@
+;; EM-3 (edge-matrix, 2026-07-02): a match clause whose result is a quoted
+;; symbol, placed inside a define and CALLED, segfaults at runtime.
+;; Replacing (_ 'no) with (_ 0) makes it work, so the quote-in-clause
+;; parse corruption (see EM-1/EM-2) feeds broken AST into match codegen.
+;;
+;; Found by: pair147_match__tail_position (CRASH signal=11, jit+aot).
+;;
+;; Expected output:  3
+;; Actual:           SIGSEGV (exit 139)
+;;
+;; Related manifestations from the same sweep:
+;;   (display (match 5 (5 'five) (_ 'no)))            -> silent truncation
+;;   (set! v (match ... (_ 'no)))                     -> "set! takes exactly
+;;                                                       2 arguments"
+;;   (if #t (match 5 (5 'five) (_ 'no)) 'x)           -> "if requires
+;;                                                       then-expression"
+(define (tp) (match (list 1 2) ((list ma mb) (+ ma mb)) (_ 'no)))
+(display (tp)) (newline)

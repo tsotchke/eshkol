@@ -1,0 +1,14 @@
+;; EM-5 (edge-matrix, 2026-07-02): characters passed through apply lose
+;; their type and arrive as raw integers (codepoints). map/list/vector
+;; round-trips preserve char; ONLY the apply argument-unpacking path
+;; degrades the tag.
+;;
+;; Found by: pair060_chars__first_class (chars_*__in__first_class_apply_id)
+;; and pair065_chars__variadic (apply_rest), jit+aot.
+;;
+;; Expected output:  a #t
+;; Actual:           97 #f
+(display (apply (lambda (x) x) (list #\a)))
+(display " ")
+(display (char? (apply (lambda (x) x) (list #\a))))
+(newline)
