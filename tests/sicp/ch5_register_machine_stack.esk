@@ -1,0 +1,206 @@
+;; SICP Chapter 5.1.4/5.2 — register machine with a stack.
+;; Extends the ch5_register_machine.esk simulator with save/restore
+;; instructions, (assign r (label l)) so `continue` can hold return points,
+;; (goto (reg r)) through such values, and stack statistics: total push count
+;; and maximum depth, plus (perform (op initialize-stack)) which resets both
+;; the stack and its statistics.  Runs the book's RECURSIVE factorial machine
+;; and asserts the exact push count / max depth from exercise 5.14:
+;; for n, pushes = 2(n-1) and max-depth = 2(n-1).
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- register file: a-list of (name . value), mutated with set-cdr! ----
+(define (make-regs names)
+  (map (lambda (n) (cons n 0)) names))
+(define (reg-cell regs name)
+  (let loop ((rs regs))
+    (cond ((null? rs) (error "no register" name))
+          ((eq? (caar rs) name) (car rs))
+          (else (loop (cdr rs))))))
+(define (get-reg regs name) (cdr (reg-cell regs name)))
+(define (set-reg! regs name v) (set-cdr! (reg-cell regs name) v))
+
+;; ---- operation table ----
+(define (op-lookup ops name)
+  (let loop ((os ops))
+    (cond ((null? os) (error "no op" name))
+          ((eq? (caar os) name) (cdar os))
+          (else (loop (cdr os))))))
+
+;; ---- label table: maps a label symbol to its index in the instr vector ----
+(define (build-labels instrs)
+  (let loop ((is instrs) (i 0) (acc '()))
+    (cond ((null? is) (reverse acc))
+          ((symbol? (car is)) (loop (cdr is) (+ i 1) (cons (cons (car is) i) acc)))
+          (else (loop (cdr is) (+ i 1) acc)))))
+(define (label-index labels name)
+  (let loop ((ls labels))
+    (cond ((null? ls) (error "no label" name))
+          ((eq? (caar ls) name) (cdar ls))
+          (else (loop (cdr ls))))))
+
+;; instrs as a vector for O(1) pc indexing
+(define (list->vec lst)
+  (let* ((n (length lst)) (v (make-vector n)))
+    (let loop ((i 0) (xs lst))
+      (if (null? xs) v (begin (vector-set! v i (car xs)) (loop (+ i 1) (cdr xs)))))))
+
+;; evaluate an operand: (const v) | (reg r) | (label l)
+(define (eval-operand op regs labels)
+  (cond ((eq? (car op) 'const) (cadr op))
+        ((eq? (car op) 'reg) (get-reg regs (cadr op)))
+        ((eq? (car op) 'label) (label-index labels (cadr op)))
+        (else (error "bad operand" op))))
+
+;; evaluate (op name arg...) form -> applies the op proc to operand values
+(define (eval-opexp form regs ops labels)
+  (let ((proc (op-lookup ops (cadr form)))
+        (vals (map (lambda (a) (eval-operand a regs labels)) (cddr form))))
+    (apply proc vals)))
+
+;; ---- the machine loop, with stack + statistics ----
+;; Returns (list regs pushes max-depth final-depth).
+(define (run-machine reg-names ops instrs)
+  (let ((regs (make-regs reg-names))
+        (labels (build-labels instrs))
+        (code (list->vec instrs))
+        (n (length instrs)))
+    (let run ((pc 0) (flag #f) (stack '()) (depth 0) (pushes 0) (maxd 0))
+      (if (>= pc n)
+          (list regs pushes maxd depth)               ; halted
+          (let ((ins (vector-ref code pc)))
+            (cond
+              ((symbol? ins) (run (+ pc 1) flag stack depth pushes maxd)) ; label
+              ((eq? (car ins) 'assign)
+               (let ((target (cadr ins)) (expr (caddr ins)))
+                 (set-reg! regs target
+                           (if (eq? (car expr) 'op)
+                               (eval-opexp expr regs ops labels)
+                               (eval-operand expr regs labels)))
+                 (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'test)
+               (run (+ pc 1) (eval-opexp (cadr ins) regs ops labels)
+                    stack depth pushes maxd))
+              ((eq? (car ins) 'branch)
+               (if (not (eq? flag #f))
+                   (run (label-index labels (cadr (cadr ins))) flag stack depth pushes maxd)
+                   (run (+ pc 1) flag stack depth pushes maxd)))
+              ((eq? (car ins) 'goto)
+               (let ((dest (cadr ins)))
+                 (if (eq? (car dest) 'label)
+                     (run (label-index labels (cadr dest)) flag stack depth pushes maxd)
+                     (run (get-reg regs (cadr dest)) flag stack depth pushes maxd))))
+              ((eq? (car ins) 'save)
+               (let ((d (+ depth 1)))
+                 (run (+ pc 1) flag
+                      (cons (get-reg regs (cadr ins)) stack)
+                      d (+ pushes 1) (max maxd d))))
+              ((eq? (car ins) 'restore)
+               (if (null? stack) (error "restore on empty stack" ins) #f)
+               (set-reg! regs (cadr ins) (car stack))
+               (run (+ pc 1) flag (cdr stack) (- depth 1) pushes maxd))
+              ((eq? (car ins) 'perform)
+               (let ((form (cadr ins)))
+                 (if (eq? (cadr form) 'initialize-stack)
+                     (run (+ pc 1) flag '() 0 0 0)     ; reset stack AND statistics
+                     (begin (eval-opexp form regs ops labels)
+                            (run (+ pc 1) flag stack depth pushes maxd)))))
+              (else (error "bad instruction" ins))))))))
+
+(define (result-regs r) (car r))
+(define (result-pushes r) (cadr r))
+(define (result-maxd r) (caddr r))
+(define (result-depth r) (cadddr r))
+
+;; standard ops (boolean-normalizing wrappers)
+(define ops
+  (list (cons '* *) (cons '+ +) (cons '- -)
+        (cons '= (lambda (a b) (if (= a b) #t #f)))
+        (cons '> (lambda (a b) (if (> a b) #t #f)))))
+
+;; ---- the book's recursive factorial machine (SICP 5.1.4, fig 5.11) ----
+(define (run-fact n)
+  (run-machine
+   '(n val continue)
+   ops
+   (list
+    (list 'assign 'n (list 'const n))
+    '(assign continue (label fact-done))
+    'fact-loop
+    '(test (op = (reg n) (const 1)))
+    '(branch (label base-case))
+    '(save continue)
+    '(save n)
+    '(assign n (op - (reg n) (const 1)))
+    '(assign continue (label after-fact))
+    '(goto (label fact-loop))
+    'after-fact
+    '(restore n)
+    '(restore continue)
+    '(assign val (op * (reg n) (reg val)))
+    '(goto (reg continue))
+    'base-case
+    '(assign val (const 1))
+    '(goto (reg continue))
+    'fact-done)))
+
+(define f5 (run-fact 5))
+(check "recursive fact machine: fact 5" 120 (get-reg (result-regs f5) 'val))
+(check "fact 5 push count = 2(n-1) = 8" 8 (result-pushes f5))
+(check "fact 5 max depth = 2(n-1) = 8" 8 (result-maxd f5))
+(check "fact 5 stack balanced at halt" 0 (result-depth f5))
+
+(define f1 (run-fact 1))
+(check "recursive fact machine: fact 1" 1 (get-reg (result-regs f1) 'val))
+(check "fact 1 push count = 0" 0 (result-pushes f1))
+(check "fact 1 max depth = 0" 0 (result-maxd f1))
+
+(define f6 (run-fact 6))
+(check "recursive fact machine: fact 6" 720 (get-reg (result-regs f6) 'val))
+(check "fact 6 push count = 10" 10 (result-pushes f6))
+(check "fact 6 max depth = 10" 10 (result-maxd f6))
+
+;; ---- initialize-stack: resets contents and statistics ----
+(define init-test
+  (run-machine
+   '(a)
+   ops
+   (list
+    '(assign a (const 42))
+    '(save a)
+    '(save a)
+    '(save a)
+    '(perform (op initialize-stack))
+    '(save a)
+    'done)))
+(check "initialize-stack resets push count" 1 (result-pushes init-test))
+(check "initialize-stack resets max depth" 1 (result-maxd init-test))
+(check "initialize-stack resets contents" 1 (result-depth init-test))
+
+;; iterative factorial (from ch5_register_machine.esk) still runs — no stack use
+(define it5
+  (run-machine
+   '(n product counter)
+   ops
+   (list
+    '(assign n (const 5))
+    '(assign product (const 1))
+    '(assign counter (const 1))
+    'loop
+    '(test (op > (reg counter) (reg n)))
+    '(branch (label done))
+    '(assign product (op * (reg product) (reg counter)))
+    '(assign counter (op + (reg counter) (const 1)))
+    '(goto (label loop))
+    'done)))
+(check "iterative fact 5 unchanged" 120 (get-reg (result-regs it5) 'product))
+(check "iterative fact 5 uses no stack" 0 (result-pushes it5))
+
+(display "ch5 register machine stack: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
+(if (> fails 0) (error "failures" fails) #t)
