@@ -1,0 +1,15 @@
+; num_rational_huge.esk - exact rationals with 10^100-scale denominators.
+(require stdlib)
+(define tiny (/ 1 (expt 10 100)))
+(define sum (+ tiny tiny))                       ; 2/10^100 = 1/(5*10^99)
+(define one (* tiny (expt 10 100)))              ; exact 1
+(define third (/ 1 3))
+(define franken (+ third tiny))                  ; (10^100 + 3) / (3*10^100)
+(define ok
+  (and (= one 1)
+       (= sum (/ 2 (expt 10 100)))
+       (= (- franken third) tiny)
+       (= (* third 3) 1)
+       (= (/ (expt 10 100) (expt 10 99)) 10)))
+(if ok (begin (display "OK rational-huge") (newline))
+       (begin (display "FAIL") (newline)))

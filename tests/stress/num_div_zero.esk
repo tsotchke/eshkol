@@ -1,0 +1,15 @@
+; num_div_zero.esk - division-by-zero forms:
+;   exact   (/ 1 0)   -> raises a CATCHABLE error (guard sees it)
+;   inexact (/ 1.0 0.0) -> +inf.0, no error
+; NOTE: clause bodies avoid the 'sym quote-sugar - quoted symbols inside
+; guard compile to variable references today (found/quote_sugar_in_guard.esk).
+(require stdlib)
+(define caught (guard (e (#t 1)) (begin (/ 1 0) 0)))
+(define caught-mod (guard (e (#t 1)) (begin (modulo 1 0) 0)))
+(define inf-ok (infinite? (/ 1.0 0.0)))
+(define ninf-ok (infinite? (/ -1.0 0.0)))
+(define nan-ok (nan? (/ 0.0 0.0)))
+(if (and (= caught 1) (= caught-mod 1) inf-ok ninf-ok nan-ok)
+    (begin (display "OK div-zero") (newline))
+    (begin (display "FAIL ") (display caught) (display " ")
+           (display caught-mod) (newline)))

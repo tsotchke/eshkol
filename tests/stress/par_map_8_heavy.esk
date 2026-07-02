@@ -1,0 +1,13 @@
+; par_map_8_heavy.esk - parallel-map, 8 workers, each a genuinely heavy
+; closure (naive fib 25 = ~240k calls, bounded O(25) stack).
+; NOTE: workers deliberately avoid long named-let loops - a named-let loop
+; inside a parallel-map worker consumes stack per iteration and crashes at
+; ~5-8k iterations (see found/parallel_worker_loop_20k.esk).
+(require stdlib)
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(define rs (parallel-map (lambda (x) (+ (fib 25) x)) (list 1 2 3 4 5 6 7 8)))
+; fib(25) = 75025; sum = 8*75025 + 36 = 600236
+(define total (apply + rs))
+(if (= total 600236)
+    (begin (display "OK 600236") (newline))
+    (begin (display "FAIL ") (display total) (newline)))

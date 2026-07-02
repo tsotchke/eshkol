@@ -1,0 +1,7 @@
+; rec_tco_1e8.esk - self tail call iterated 10^8 times.
+; MUST run in O(1) stack: the harness RSS ceiling (barely above the plain
+; JIT/AOT baseline) is the O(1)-stack assertion. Measured 2026-07-02 on
+; M2 Ultra: JIT ~3.0s / 229MB (baseline 222MB), AOT well under.
+(define (run n acc)
+  (if (= n 0) acc (run (- n 1) (+ acc 1))))
+(display "OK ") (display (run 100000000 0)) (newline)

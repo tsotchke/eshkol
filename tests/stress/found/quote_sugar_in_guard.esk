@@ -1,0 +1,16 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0095). XKNOWN.
+;
+; The quote reader-sugar 'sym ANYWHERE inside a (guard ...) form is compiled
+; as a VARIABLE REFERENCE -> "Undefined variable: sym". The explicit
+; (quote sym) form works. Both clause bodies and the raise argument are hit.
+; Same family as #229 (quote-token dispatch in manual parser arg loops).
+;
+; Measured 2026-07-02 (master 2692ca63):
+;   (display (guard (e (#t 'sym)) (raise 1)))          -> error: Undefined variable: sym, prints ()
+;   (display (guard (e (#t (quote sym2))) (raise 1)))  -> prints sym2 (correct)
+;   (guard (e (#t 0)) (raise 'boom))                   -> error: Undefined variable: boom
+(define a (guard (e (#t 'sym)) (raise 1)))
+(define b (guard (e (#t (quote sym2))) (raise 1)))
+(if (and (equal? a (quote sym)) (equal? b (quote sym2)))
+    (begin (display "OK quote-in-guard") (newline))
+    (begin (display "FAIL a=") (display a) (display " b=") (display b) (newline)))

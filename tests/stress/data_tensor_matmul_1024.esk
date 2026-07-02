@@ -1,0 +1,13 @@
+; data_tensor_matmul_1024.esk - 1024x1024 dense matmul (2.1 GFLOP),
+; time-budgeted by the harness. Constant inputs give an exact expected
+; cell value: (0.5 * 2.0) * 1024 = 1024.
+(require stdlib)
+(define A (make-tensor (list 1024 1024) 0.5))
+(define B (make-tensor (list 1024 1024) 2.0))
+(define C (tensor-matmul A B))
+(define c00 (tensor-ref C (list 0 0)))
+(define clast (tensor-ref C (list 1023 1023)))
+(if (and (= c00 1024.0) (= clast 1024.0)
+         (equal? (tensor-shape C) (list 1024 1024)))
+    (begin (display "OK matmul-1024") (newline))
+    (begin (display "FAIL ") (display c00) (display " ") (display clast) (newline)))

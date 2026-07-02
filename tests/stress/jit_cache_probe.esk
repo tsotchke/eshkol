@@ -1,0 +1,7 @@
+; jit_cache_probe.esk - driven by the "jitcache" class in run_stress.sh:
+; 50 sequential `eshkol-run -r` invocations of THIS file against one shared
+; ESHKOL_JIT_CACHE_DIR. Run 1 is cold (compile + cache fill); runs 2..50 must
+; hit the persistent cache and stay under the warm wall-time ceiling.
+(require stdlib)
+(define (fib n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))
+(display "OK ") (display (fib 20)) (newline)
