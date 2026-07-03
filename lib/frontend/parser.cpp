@@ -7699,23 +7699,24 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 };
 
                 if (first_non_dimension > 0 && first_non_dimension < operands.size()) {
+                    // A run of leading integers followed by non-integer operands
+                    // is only a shape prefix when the product of those integers
+                    // exactly matches the number of remaining (element) operands
+                    // (e.g. `(tensor 2 2 1.0 2.0 3.0 4.0)`). When it does not
+                    // match — the classic case being a mixed int+float element
+                    // list like `(tensor 1 2.5 3)` — the leading integers are NOT
+                    // a shape: treat every operand as a 1-D element. Previously
+                    // this misread the leading ints as dimensions and raised a
+                    // confusing "insufficient elements" error.
                     dimension_count = first_non_dimension;
-                    if (!compute_product(dimension_count, &total_elements)) {
-                        PARSE_ERROR_AT(token, "tensor dimensions overflow");
-                        ast.type = ESHKOL_INVALID;
-                        return ast;
-                    }
+                    uint64_t candidate_total = 0;
                     const uint64_t provided_elements =
                         (uint64_t)(operands.size() - dimension_count);
-                    if (provided_elements != total_elements) {
-                        PARSE_ERROR_AT(token,
-                            "tensor has insufficient elements: expected %llu, got %llu",
-                            (unsigned long long)total_elements,
-                            (unsigned long long)provided_elements);
-                        ast.type = ESHKOL_INVALID;
-                        return ast;
+                    if (compute_product(dimension_count, &candidate_total) &&
+                        candidate_total == provided_elements) {
+                        total_elements = candidate_total;
+                        use_explicit_dimensions = true;
                     }
-                    use_explicit_dimensions = true;
                 } else if (first_non_dimension == operands.size() && !operands.empty()) {
                     for (size_t candidate_count = 1; candidate_count <= operands.size();
                          candidate_count++) {
