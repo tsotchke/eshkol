@@ -1,0 +1,123 @@
+;; Parser Test: quote-token dispatch in guard/case/match/quasiquote clause
+;; parsers (ESH-0094).
+;;
+;; PR #110 fixed the manual `LPAREN -> parse_list else parse_atom` dispatch in
+;; the let/lambda/define/let-values body loops but explicitly left the SAME
+;; latent pattern in the guard/case/match clause loops and the raise argument.
+;; It also left the long-form (quasiquote e)/(unquote e)/(quote e) spellings
+;; unwired inside quasiquoted data. This test covers all of those, in both the
+;; reader-sugar (',`,,@) and long-form spellings, plus the top-level let-body
+;; truncation (EM-1) that must stay fixed.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================
+;; EM-1: top-level let-body with quoted tail must NOT truncate
+;; ============================================================
+;; A bare top-level (let ((u 1)) 'es) used to silently drop every form after
+;; it. If that regressed, the tests below this line would simply not run.
+(let ((u 1)) 'es)
+(define em1-val (let ((u 1)) 'es))
+(test-case "EM-1 top-level let + 'symbol tail value" 'es em1-val)
+(test-case "EM-1 top-level let + '(list) tail" (list 'a 'b) (let ((u 1)) '(a b)))
+
+;; ============================================================
+;; EM-2 / ESH-0095: quoted data in guard clause bodies + raise arg
+;; ============================================================
+;; guard body raises, the #t clause catches, clause result is a quoted datum.
+(test-case "guard clause 'sym result (sugar)"
+           'sym (guard (e (#t 'sym)) (raise 1)))
+(test-case "guard clause (quote sym) result (long form)"
+           'sym (guard (e (#t (quote sym))) (raise 1)))
+(test-case "guard clause '(list) result"
+           (list 'a 'b) (guard (e (#t '(a b))) (raise 1)))
+(test-case "guard clause quasiquote result"
+           (list 1 2) (guard (e (#t `(1 ,(+ 1 1)))) (raise 1)))
+
+;; raise argument is quoted data, caught value bound to e (ESH-0101 root).
+(test-case "raise 'sym caught value (sugar)"
+           'boom (guard (e (#t e)) (raise 'boom)))
+(test-case "raise (quote sym) caught value (long form)"
+           'boom (guard (e (#t e)) (raise (quote boom))))
+(test-case "raise '(list) caught value"
+           (list 'x 'y) (guard (e (#t e)) (raise '(x y))))
+
+;; ============================================================
+;; EM-3 / match arm with quoted result
+;; ============================================================
+(define (tp) (match (list 1 2) ((list ma mb) (+ ma mb)) (_ 'no)))
+(test-case "match wildcard 'sym result inside define (matches other arm)" 3 (tp))
+
+(define (tp2) (match (list 9) ((list ma mb) (+ ma mb)) (_ 'no)))
+(test-case "match wildcard 'sym result inside define (falls to wildcard)" 'no (tp2))
+
+(test-case "match literal arm + 'sym result" 'five (match 5 (5 'five) (_ 'no)))
+(test-case "match wildcard 'sym result" 'no (match 7 (5 'five) (_ 'no)))
+(test-case "match quoted subject" 'ok (match 'foo (_ 'ok)))
+(test-case "match '(list) arm result" (list 'a 'b) (match 1 (1 '(a b)) (_ 'no)))
+
+;; match result used in a surrounding form must not corrupt the parse.
+(define mv 0)
+(set! mv (match 5 (5 'five) (_ 'no)))
+(test-case "match result via set!" 'five mv)
+(test-case "match result via if" 'five (if #t (match 5 (5 'five) (_ 'no)) 'x))
+
+;; ============================================================
+;; case clauses with quote datums / quoted results
+;; ============================================================
+(test-case "case symbol datum" 'got-b
+           (case 'b ((a) 'got-a) ((b) 'got-b) (else 'none)))
+(test-case "case quoted-list result" (list 'one)
+           (case 1 ((1) '(one)) (else '())))
+(test-case "case quasiquote result" (list 3)
+           (case 1 ((1) `(,(+ 1 2))) (else '())))
+(test-case "case else quoted result" (list 'z)
+           (case 99 ((1) '(one)) (else '(z))))
+
+;; ============================================================
+;; EM-4 / ESH-0104: long-form quasiquote/unquote must equal sugar
+;; ============================================================
+(test-case "quasiquote long form == sugar"
+           `(a ,(+ 1 1) c)
+           (quasiquote (a (unquote (+ 1 1)) c)))
+(test-case "unquote-splicing long form == sugar"
+           `(a ,@(list 1 2) c)
+           (quasiquote (a (unquote-splicing (list 1 2)) c)))
+(test-case "quasiquote long form (quasiquote (unquote e))"
+           (list 2)
+           (quasiquote ((unquote (+ 1 1)))))
+
+;; nested quasiquote: inner unquote stays literal at level 2 (ESH-0096).
+(define nested `(a `(b ,(+ 1 1))))
+(define nested-inner (car (cdr nested)))
+(test-case "nested quasiquote inner is 2-element (quasiquote ...) list"
+           #t (and (pair? nested-inner) (= (length nested-inner) 2)))
+(test-case "nested quasiquote inner head is 'quasiquote"
+           'quasiquote (car nested-inner))
+(test-case "nested quasiquote == R7RS data"
+           (list 'a (list 'quasiquote (list 'b (list 'unquote (list '+ 1 1)))))
+           nested)
+
+;; ============================================================
+;; Summary
+;; ============================================================
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED\n")
+    (display "SOME TESTS FAILED\n"))

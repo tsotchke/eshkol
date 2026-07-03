@@ -29081,6 +29081,39 @@ private:
                     ESHKOL_VALUE_HEAP_PTR);
             }
 
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP: {
+                // Homoiconic representation of a nested (quasiquote e) /
+                // (unquote e) / (unquote-splicing e) that appears as literal
+                // data inside an enclosing quote or quasiquote. Renders
+                // (<tag> <expr-as-data>). Without this arm the default case
+                // returned null, so nested quasiquote collapsed to ()
+                // (ESH-0094 / EM-4): `(a `(b ,(+ 1 1))) yielded (a ()) instead
+                // of (a (quasiquote (b (unquote (+ 1 1))))).
+                const char* tag = op->op == ESHKOL_QUASIQUOTE_OP ? "quasiquote" :
+                                  op->op == ESHKOL_UNQUOTE_OP ? "unquote" :
+                                  "unquote-splicing";
+                Value* tag_sym = packPtrToTaggedValue(
+                    ctx_->internStringWithHeader(tag, HEAP_SUBTYPE_SYMBOL),
+                    ESHKOL_VALUE_HEAP_PTR);
+
+                Value* inner = packNullToTaggedValue();
+                if (op->call_op.num_vars > 0) {
+                    inner = codegenQuotedAST(&op->call_op.variables[0]);
+                }
+
+                Value* result = packNullToTaggedValue();
+                result = codegenTaggedArenaConsCellFromTaggedValue(inner, result);
+                result = packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+                result = codegenTaggedArenaConsCellFromTaggedValue(tag_sym, result);
+                return packPtrToTaggedValue(
+                    builder->CreateIntToPtr(result, builder->getPtrTy()),
+                    ESHKOL_VALUE_HEAP_PTR);
+            }
+
             default:
                 eshkol_debug("codegenQuotedOperation: unhandled op type %d", op->op);
                 return packNullToTaggedValue();
