@@ -19,13 +19,13 @@ All five resolve as codegen builtins (`lib/backend/llvm_codegen.cpp`) in **both
 | `gpu-elementwise` | `(gpu-elementwise OP A B)` | ✅ `(gpu-elementwise + A A)` → elementwise sum. `OP` is a **bare** `+ - * /` token (also `add`/`tensor-add` spellings), not a quoted symbol |
 | `gpu-softmax` | `(gpu-softmax t)` | ✅ `(gpu-softmax (tensor 1.0 2.0 3.0))` → `#(0.0900306 0.244728 0.665241)` |
 | `gpu-transpose` | `(gpu-transpose A)` | ✅ 2×2 → `#((1 3) (2 4))` |
-| `gpu-reduce` | `(gpu-reduce OP t)` | ⚠ **returns empty `#()`** — the reduce-all path yields an empty tensor, not a scalar. `OP` is a bare `+ mean max min` token |
+| `gpu-reduce` | `(gpu-reduce OP t)` | ✅ full reduction to a **scalar** (`(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))` → `10`). `OP` is a bare `+ mean max min` token |
 
 ```scheme
 (define A (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
 (gpu-matmul A A)             ;; => #((7 10) (15 22))
 (gpu-elementwise + A A)      ;; => #((2 4) (6 8))
-(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))  ;; => #()   ⚠ should be 10
+(gpu-reduce + (tensor 1.0 2.0 3.0 4.0))  ;; => 10
 ```
 
 Note: `gpu-elementwise`/`gpu-reduce` take the operator as a **bare identifier**
@@ -65,12 +65,12 @@ box. This contradicts the literal wording of ESH-0022/ESH-0023.
 
 | Task | Ledger claim | Observed on this build (Metal) |
 |------|--------------|--------------------------------|
-| **ESH-0022** | `gpu-matmul`/`gpu-elementwise`/`gpu-softmax`/`gpu-reduce`/`gpu-transpose` are "Unknown function" in both paths | ✅ all five **resolve** in `-r` and AOT; 4/5 compute correctly (`gpu-reduce` returns `#()`) |
+| **ESH-0022** | `gpu-matmul`/`gpu-elementwise`/`gpu-softmax`/`gpu-reduce`/`gpu-transpose` are "Unknown function" in both paths | ✅ all five **resolve and compute correctly** in `-r` and AOT (`gpu-reduce` now returns a scalar) |
 | **ESH-0023** | AOT-compiled binary runs matmul on CPU BLAS even in a GPU build | On **Metal**, AOT matmul dispatches to the GPU when the threshold is met (verified). The task was filed against **CUDA/RTX 3050**, which is not exercised here |
 
-Treat ESH-0022/0023 as **partly resolved**: what remains genuinely pending is
-(a) the `gpu-reduce` scalar path, and (b) low-level GPU-specific low-precision
-dtype builtins on non-Metal backends.
+Treat ESH-0022/0023 as **largely resolved**: `gpu-reduce` now returns a scalar
+(full reduction). What remains genuinely pending is low-level GPU-specific
+low-precision dtype builtins on non-Metal backends.
 
 ---
 
