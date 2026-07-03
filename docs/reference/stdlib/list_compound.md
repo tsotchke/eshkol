@@ -15,10 +15,63 @@ Two-level accessors. `cadr` is "second element", `cddr` is "the list past the
 first two".
 
 ### `(caaar x)` … `(cdddr x)`
-All eight three-level combinations.
+All eight three-level combinations (read right-to-left):
+`caaar` `(car (car (car x)))`, `caadr` `(car (car (cdr x)))`,
+`cadar` `(car (cdr (car x)))`, `caddr` `(car (cdr (cdr x)))`,
+`cdaar` `(cdr (car (car x)))`, `cdadr` `(cdr (car (cdr x)))`,
+`cddar` `(cdr (cdr (car x)))`, `cdddr` `(cdr (cdr (cdr x)))`.
+
+```scheme
+;; three-level.esk
+(require core.list.compound)
+(define x '(((1 2) (3 4)) ((5 6) (7 8)) ((9 10) (11 12)) ((13 14) (15 16))))
+(display (cdaar x)) (newline)
+(display (caadr x)) (newline)
+(display (cadar x)) (newline)
+(display (cdadr x)) (newline)
+(display (cddar x)) (newline)
+```
+```
+(2)
+(5 6)
+(3 4)
+((7 8))
+()
+```
 
 ### `(caaaar x)` … `(cddddr x)`
-All sixteen four-level combinations.
+All sixteen four-level combinations:
+`caaaar` `caaadr` `caadar` `caaddr` `cadaar` `cadadr` `caddar` `cadddr`
+`cdaaar` `cdaadr` `cdadar` `cdaddr` `cddaar` `cddadr` `cdddar` `cddddr` —
+each expands to the corresponding four-deep `car`/`cdr` chain, rightmost
+letter applied first.
+
+```scheme
+;; four-level.esk
+(require core.list.compound)
+(define x '(((1 2) (3 4)) ((5 6) (7 8)) ((9 10) (11 12)) ((13 14) (15 16))))
+(define y '((a b c d) (e f g h) (i j k l) (m n o p)))
+(display (caaadr x)) (newline)
+(display (cadadr x)) (newline)
+(display (cdaadr x)) (newline)
+(display (cddadr x)) (newline)
+(display (cdadar x)) (newline)
+(display (cdaddr y)) (newline)
+(display (caaddr y)) (newline)
+(display (cdddar y)) (newline)
+(display (cddddr y)) (newline)
+```
+```
+5
+(7 8)
+(6)
+()
+(4)
+(j k l)
+i
+(d)
+()
+```
 
 ```scheme
 ;; compound.esk
@@ -65,3 +118,20 @@ Edge cases: these are unguarded compositions of `car`/`cdr`. Applying an
 accessor deeper than the structure allows (e.g. `(caddr '(1))` or
 `(fifth '(1 2 3))`) reduces to taking `car`/`cdr` of `'()`, which is a runtime
 error in the underlying `car`/`cdr` — there is no bounds checking here.
+
+### Known issues
+
+Taking `cdr` of a **non-pair atom** mid-chain crashes with SIGSEGV rather
+than a clean runtime error. Verified repro:
+
+```scheme
+(require core.list.compound)
+(define x '((1 2 3) (4 5 6)))
+(display (cdaar x))   ; caar = 1 (an integer); cdr of 1 → SIGSEGV
+```
+```
+[Eshkol] fatal signal: SIGSEGV (segmentation fault) — terminating; output above is what made it to stdout before the crash
+```
+
+This is the general car/cdr-of-non-pair behavior, not specific to this
+module; deep accessors just make it easy to hit.
