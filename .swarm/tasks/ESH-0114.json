@@ -1,0 +1,28 @@
+{
+  "id": "ESH-0114",
+  "title": "eqv?/equal? on rational and complex numbers return #f for numerically identical operands",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/numeric-tower",
+  "goal": "Found by Sweep E edge-matrix tranche 2 (2026-07-03, master 0733dc9b), numeric_tower pairs 156-161. eqv? and equal? on RATIONAL and COMPLEX numbers return #f even when the operands are numerically identical: (eqv? (/ 1 3) (/ 1 3)) -> #f, (equal? (/ 1 3) (/ 2 6)) -> #f, (eqv? (make-rectangular 1 2) (make-rectangular 1 2)) -> #f. The `=` numeric comparator is correct ((= (/ 1 3) (/ 2 6)) -> #t) because ArithmeticCodegen::compare has the rational/complex dispatch, but eqv?/equal? fall through to identity/pointer comparison for these heap-allocated numeric types. Bignums ARE handled (value comparison), so the gap is specifically rational + complex. Reproduces identically under -r and AOT. R7RS: eqv? on two exact numbers is #t iff numerically equal; equal? on numbers is eqv?.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/*.cpp"
+  ],
+  "acceptance": [
+    "tests/edge_matrix/found/EM8_eqv_equal_rational_complex.esk prints '#t #t #t #t' under -r and AOT",
+    "edge-matrix pairs 156-161 pass and are removed from KNOWN_FAILURES"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "eqv?/equal? are the foundation of hash tables, member/assoc, set operations and test frameworks; silently reporting equal exact numbers as unequal corrupts any data structure keyed on rationals or complex numbers.",
+  "repro": "tests/edge_matrix/found/EM8_eqv_equal_rational_complex.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "new-bug",
+      "evidence": "JIT & AOT both print '#f #f #f #f' (expected '#t #t #t #t'). = works, eqv?/equal? fall through to pointer compare for rational/complex; bignum ok."
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "id": "ESH-0106",
   "title": "Quote sugar 'sym inside (guard ...) compiles as a variable reference",
-  "status": "open",
+  "status": "done",
   "priority": "high",
   "workstream": "edge-case-campaign/control",
   "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). The reader sugar 'sym anywhere inside a guard form - clause bodies AND the raise argument - is compiled as a variable reference: (guard (e (#t 'sym)) (raise 1)) errors 'Undefined variable: sym' and yields (); (raise 'boom) inside guard errors 'Undefined variable: boom'. The explicit (quote sym) form works everywhere. Same family as #229 (quote-token dispatch in manual parser argument loops) - the guard/raise parse path drops the quote token.",
@@ -14,5 +14,14 @@
   ],
   "blocked_by": [],
   "campaign_payoff": "guard/raise with symbol conditions is the idiomatic R7RS error-handling pattern; currently unusable with quote sugar.",
-  "repro": "tests/stress/found/quote_sugar_in_guard.esk"
+  "repro": "tests/stress/found/quote_sugar_in_guard.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "fixed",
+      "evidence": "quote_sugar_in_guard.esk prints 'OK quote-in-guard' under -r and AOT; (guard (e (#t 'sym)) (raise 1)) returns sym. Fixed by #117. Stress XPASS r+aot; edge-matrix EM-1/2/3 pairs pass."
+    }
+  ]
 }

@@ -1,0 +1,28 @@
+{
+  "id": "ESH-0112",
+  "title": "Non-tail recursion safe depth regressed: rec_deep_nontco margin row SIGILLs at 250k (was 270k-first-fail)",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/recursion",
+  "goal": "Sweep E re-verification (2026-07-03, master 0733dc9b). tests/stress/rec_deep_nontco_250k.esk is a NORMAL (non-xknown) budget row calibrated 2026-07-02 as a safe margin: docs recorded first SIGILL at 270000 (JIT) / 280000 (AOT), so 250000 was chosen with headroom. On current master it SIGILLs (rc 132, no diagnostic) at 250000 under BOTH -r and AOT. Empirical bisection on current build: JIT 240000 PASS, 250000 SIGILL; AOT 200000 PASS, 250000 SIGILL. The safe non-tail depth has shrunk ~20k frames since the calibration - per-frame stack cost grew or the execution-thread stack shrank. Same underlying no-diagnostic stack-blowout as ESH-0101; this entry tracks the boundary REGRESSION and the budget re-calibration.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/core/*.cpp"
+  ],
+  "acceptance": [
+    "non-tail (down 260000) returns OK 260000 under -r and AOT (restore documented headroom), OR a graceful recursion-depth diagnostic replaces the SIGILL",
+    "tests/stress/rec_deep_nontco_250k.esk budget row passes without re-calibration"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Deep non-tail recursion that used to complete now crashes; silent headroom regression on plain user recursion.",
+  "repro": "tests/stress/rec_deep_nontco_250k.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "new-regression",
+      "evidence": "JIT: 240k OK / 250k rc132. AOT: 200k OK / 250k rc132. Budget margin row re-calibrated 250000 -> 200000 to keep the CI gate honest; see also ESH-0101."
+    }
+  ]
+}
