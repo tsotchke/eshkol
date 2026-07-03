@@ -170,4 +170,10 @@ Evaluate `H(e^{jω}) = B/A` at `n-points` frequencies from 0 to π. Returns `(ma
 #(1 3 6 9 12 9 5)                     ;; convolve — correct
 #(6.1741e+09 -8 -8 -8 -8 -8 -8)       ;; fast-convolve — garbage
 ```
-Root cause: `fast-convolve` computes `(ifft (fft …))` inside its (compiled) body, which triggers the `fft`→`ifft` chaining corruption documented in [`signal.fft`](signal_fft.md#known-issues). Workaround: use `convolve`.
+Root cause: `fast-convolve` computes `(ifft (fft …))` inside its body, and
+because `fast-convolve` lives in the **precompiled stdlib shared library**, it
+hits the precompiled `fft`→`ifft` chaining corruption documented in
+[`signal.fft`](signal_fft.md#known-issues) (an identical `fast-convolve` compiled
+in ordinary user code — even with `(require stdlib)` — works). This is a compiler
+bug, not a library bug, so it is reported rather than worked around in Scheme.
+Workaround: use the direct-time-domain `convolve`.
