@@ -1,0 +1,12 @@
+;; EM-2 (edge-matrix, 2026-07-02): quoted symbols inside a guard clause
+;; result (and in the raise argument) are parsed as VARIABLE references,
+;; not quoted data: "Undefined variable: c" / "Undefined variable: boom".
+;; Works when the guard expression is a bare top-level display operand
+;; WITHOUT the quote in the clause (e.g. numeric results are fine).
+;;
+;; Found by: pair099_guard_raise__tail_position et al. (guard_raise_
+;; catch_sym__in__*): compile errors, then edge-chk arity-shift cascade.
+;;
+;; Expected output:  c
+;; Actual:           error: Undefined variable: c   (JIT and AOT)
+(display (guard (e (#t 'c)) 42)) (newline)
