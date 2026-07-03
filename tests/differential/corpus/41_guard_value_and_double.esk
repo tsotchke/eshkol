@@ -1,0 +1,12 @@
+;; guard value binding + consecutive guard forms
+;; Regression corpus for differential findings 001 (guard-caught value was
+;; garbage and per-path divergent) and 002 (a displayed catching guard
+;; followed by a second guard SIGSEGV'd at -O1+). Fixed by #117; all axes
+;; must now agree. Divergence => regression.
+(display (guard (e (#t e)) (raise 'boom)))   ;; -> boom on every axis
+(newline)
+(display (guard (e (#t e)) (raise 'x)))      ;; catching guard, displayed
+(newline)
+(guard (e (#t e)) 2)                         ;; second guard form, no raise
+(display (guard (e ((symbol? e) (list 'sym e))) (raise 'again)))
+(newline)

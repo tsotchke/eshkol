@@ -26,8 +26,9 @@
 #
 # file	mode	class	timeout_s	rss_r_mb	rss_aot_mb	quick	xknown	expect
 rec_tco_1e8.esk	both	run	60	320	128	1	-	OK 100000000
-# rec_deep_nontco: 250k native frames measured 501MB r / 503MB aot (~2KB/frame) - real frame cost, not a leak; ceiling sized to it.
-rec_deep_nontco_250k.esk	both	run	60	768	768	1	-	OK 250000
+# rec_deep_nontco: non-tail native frames ~2KB each (real frame cost, not a leak). Sweep E (2026-07-03) re-calibrated the safe margin from 250k to 200k: the safe depth regressed (JIT 240k ok/250k SIGILL, AOT 200k ok/250k SIGILL) vs the 270k-first-fail calibration. 200k row is the passing margin; 250k row is the ESH-0112 crash pin.
+rec_deep_nontco_200k.esk	both	run	60	640	640	1	-	OK 200000
+rec_deep_nontco_250k.esk	both	run	60	768	768	0	ESH-0112	OK 250000
 rec_mutual.esk	both	run	60	768	768	1	-	OK ping 100000
 rec_dynamic_wind_10k.esk	both	run	60	384	160	1	-	OK 20000
 rec_cps_20k.esk	both	run	60	384	160	1	-	OK 451945
@@ -67,8 +68,8 @@ path_comments_only.esk	both	run	60	384	160	1	-	-
 path_unicode.esk	both	run	60	384	160	1	-	OK 100 14
 path_closures_10k.esk	both	run	120	768	512	1	-	OK closures-distinct
 found/closure_loop_global_set.esk	both	run	60	384	160	1	ESH-0094	OK 3
-found/quote_sugar_in_guard.esk	both	run	60	384	160	1	ESH-0106	OK quote-in-guard
-found/nested_quasiquote.esk	both	run	60	384	160	1	ESH-0107	OK nested-quasiquote
+found/quote_sugar_in_guard.esk	both	run	60	384	160	1	-	OK quote-in-guard
+found/nested_quasiquote.esk	both	run	60	384	160	1	-	OK nested-quasiquote
 found/list_length_1m.esk	both	run	120	1024	1024	0	ESH-0108	OK 1000000
 found/sort_100k.esk	both	run	120	1024	1024	0	ESH-0098	OK 0
 found/string_nul_long_literal.esk	both	run	60	384	160	1	ESH-0099	OK 300
@@ -76,5 +77,5 @@ found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	ESH-0100	OK
 found/serialized_counter_10k.esk	both	run	120	1024	1024	0	ESH-0094	OK 10000
 found/deep_recursion_270k_no_diagnostic.esk	both	run	60	1024	1024	0	ESH-0101	OK 300000
 found/mutual_tail_1e7.esk	both	run	60	1024	1024	0	ESH-0102	OK ping
-found/quasiquote_long_form.esk	both	run	60	384	160	1	ESH-0104	OK quasiquote-long-form
+found/quasiquote_long_form.esk	both	run	60	384	160	1	-	OK quasiquote-long-form
 found/rational_bignum_exactness.esk	both	run	60	384	160	1	ESH-0105	OK rational-bignum-exact

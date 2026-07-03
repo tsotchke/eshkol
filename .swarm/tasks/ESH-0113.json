@@ -1,0 +1,27 @@
+{
+  "id": "ESH-0113",
+  "title": "apply degrades character arguments to raw integers (codepoints)",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/chars",
+  "goal": "Sweep E re-verification (2026-07-03, master 0733dc9b) promotes the edge-matrix EM-5 finding to a tracked ledger entry (previously only in tests/edge_matrix/found + KNOWN_FAILURES). Characters passed through apply lose their tag and arrive as raw integer codepoints: (apply (lambda (x) x) (list #\\a)) yields 97 not #\\a, and (char? ...) of that is #f. map/list/vector round-trips preserve char; ONLY the apply argument-unpacking path degrades the tag. Reproduces under -r AND AOT. Fails edge-matrix pair060_chars__first_class and pair065_chars__variadic (both modes), the only remaining edge-matrix allowlist entries.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/edge_matrix/found/EM5_apply_char_arg_becomes_int.esk prints 'a #t' under -r and AOT",
+    "pair060_chars__first_class and pair065_chars__variadic removed from KNOWN_FAILURES and pass"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "apply is the universal call primitive; silently converting char args to ints corrupts any char-processing code routed through apply.",
+  "repro": "tests/edge_matrix/found/EM5_apply_char_arg_becomes_int.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "EM5 prints '97 #f' (expected 'a #t') under -r and AOT; edge-matrix pair060/pair065 ASSERT-FAIL both modes."
+    }
+  ]
+}
