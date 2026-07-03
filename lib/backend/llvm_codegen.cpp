@@ -16177,10 +16177,23 @@ private:
                 eshkol_error("gpu-reduce supports +, mean, max, and min");
                 return nullptr;
             }
-            Value* tensor_val = codegenAST(&op->call_op.variables[1]);
-            if (!tensor_val) return nullptr;
-            Value* axis = packInt64ToTaggedValue(ConstantInt::get(int64_type, -1), true);
-            return tensor_->emitAxisReduce(tensor_val, axis, op_code);
+            // gpu-reduce is a FULL reduction to a scalar. Routing it through
+            // emitAxisReduce(axis = -1) returned a reduced-RANK tensor (rank-0
+            // for a 1-D input) that displays as #() rather than the scalar
+            // result. Route to the whole-tensor reduction functions instead,
+            // which return a proper scalar.
+            eshkol_operations_t reduce_sub = *op;
+            reduce_sub.call_op.num_vars = 1;
+            reduce_sub.call_op.variables = &op->call_op.variables[1];
+            switch (op_code) {
+                case 0: return tensor_->tensorSum(&reduce_sub);
+                case 1: return tensor_->tensorMean(&reduce_sub);
+                case 2: return tensor_->tensorMax(&reduce_sub);
+                case 3: return tensor_->tensorMin(&reduce_sub);
+                default: break;
+            }
+            eshkol_error("gpu-reduce supports +, mean, max, and min");
+            return nullptr;
         }
 
         // MIGRATED: Tensor arithmetic - now delegated to TensorCodegen
@@ -18880,6 +18893,62 @@ private:
         BasicBlock* regular_path = BasicBlock::Create(*context, (func_name + "_regular_path").c_str(), current_func);
         BasicBlock* merge = BasicBlock::Create(*context, (func_name + "_merge").c_str(), current_func);
 
+        // TENSOR OPERAND PATH: a scalar math builtin applied to a *tensor* must
+        // map elementwise and return a tensor. The scalar machinery below would
+        // otherwise reinterpret the tensor pointer's bits as a double and return
+        // a silently-wrong scalar (e.g. `(tanh (tensor 0.0 1.0))` => 1). Dispatch
+        // on the operand's runtime type to the elementwise libm kernel.
+        int32_t tensor_op_code = -1;
+        if      (func_name == "sin")   tensor_op_code = 0;
+        else if (func_name == "cos")   tensor_op_code = 1;
+        else if (func_name == "tan")   tensor_op_code = 2;
+        else if (func_name == "asin")  tensor_op_code = 3;
+        else if (func_name == "acos")  tensor_op_code = 4;
+        else if (func_name == "atan")  tensor_op_code = 5;
+        else if (func_name == "sinh")  tensor_op_code = 6;
+        else if (func_name == "cosh")  tensor_op_code = 7;
+        else if (func_name == "tanh")  tensor_op_code = 8;
+        else if (func_name == "asinh") tensor_op_code = 9;
+        else if (func_name == "acosh") tensor_op_code = 10;
+        else if (func_name == "atanh") tensor_op_code = 11;
+        else if (func_name == "exp")   tensor_op_code = 12;
+        else if (func_name == "exp2")  tensor_op_code = 13;
+        else if (func_name == "log")   tensor_op_code = 14;
+        else if (func_name == "log2")  tensor_op_code = 15;
+        else if (func_name == "log10") tensor_op_code = 16;
+        else if (func_name == "sqrt")  tensor_op_code = 17;
+        else if (func_name == "cbrt")  tensor_op_code = 18;
+        else if (func_name == "fabs")  tensor_op_code = 19;
+        else if (func_name == "floor") tensor_op_code = 20;
+        else if (func_name == "ceil")  tensor_op_code = 21;
+        else if (func_name == "trunc") tensor_op_code = 22;
+        else if (func_name == "round") tensor_op_code = 23;
+
+        BasicBlock* math_done = nullptr;
+        Value* math_result_slot = nullptr;
+        if (tensor_op_code >= 0) {
+            BasicBlock* math_tensor_path = BasicBlock::Create(*context, (func_name + "_tensor_path").c_str(), current_func);
+            BasicBlock* math_scalar_entry = BasicBlock::Create(*context, (func_name + "_scalar_entry").c_str(), current_func);
+            math_done = BasicBlock::Create(*context, (func_name + "_tensor_done").c_str(), current_func);
+            math_result_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_tensor_result").c_str());
+
+            Value* arg_is_tensor = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TENSOR);
+            builder->CreateCondBr(arg_is_tensor, math_tensor_path, math_scalar_entry);
+
+            builder->SetInsertPoint(math_tensor_path);
+            Value* arg_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_tensor_arg").c_str());
+            builder->CreateStore(arg_tagged, arg_slot);
+            Value* arena_ptr_t = builder->CreateLoad(ptr_type, global_arena);
+            FunctionType* map_ft = FunctionType::get(ptr_type, {ptr_type, ptr_type, int32_type}, false);
+            FunctionCallee map_fn = module->getOrInsertFunction("eshkol_tensor_map_libm", map_ft);
+            Value* mapped = builder->CreateCall(map_fn, {arena_ptr_t, arg_slot,
+                ConstantInt::get(int32_type, tensor_op_code)});
+            builder->CreateStore(packPtrToTaggedValue(mapped, ESHKOL_VALUE_HEAP_PTR), math_result_slot);
+            builder->CreateBr(math_done);
+
+            builder->SetInsertPoint(math_scalar_entry);
+        }
+
         // First check for AD node (reverse-mode AD)
         builder->CreateCondBr(arg_is_ad_node, ad_node_path, check_dual);
 
@@ -19184,6 +19253,14 @@ private:
         result_phi->addIncoming(tagged_dual_result, dual_path);   // Dual number path (forward-mode AD)
         result_phi->addIncoming(tagged_regular_result, regular_exit);  // Regular computation
 
+        // If a tensor-operand fast path was emitted, merge the scalar result
+        // with the elementwise-tensor result through math_done.
+        if (math_done) {
+            builder->CreateStore(result_phi, math_result_slot);
+            builder->CreateBr(math_done);
+            builder->SetInsertPoint(math_done);
+            return builder->CreateLoad(tagged_value_type, math_result_slot);
+        }
         return result_phi;
     }
 
