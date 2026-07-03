@@ -1,0 +1,7 @@
+; let / let* / letrec nesting
+(display (let ((x 1) (y 2)) (+ x y))) (newline)
+(display (let* ((x 2) (y (* x x)) (z (+ x y))) z)) (newline)
+(display (letrec ((even2? (lambda (n) (if (= n 0) #t (odd2? (- n 1)))))
+                  (odd2? (lambda (n) (if (= n 0) #f (even2? (- n 1))))))
+           (even2? 10))) (newline)
+(display (let ((x 1)) (let ((y (+ x 1))) (let* ((z (* y 2)) (w (+ z x))) w)))) (newline)

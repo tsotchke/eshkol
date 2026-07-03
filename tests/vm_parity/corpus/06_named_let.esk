@@ -1,0 +1,3 @@
+; named let iteration
+(display (let loop ((i 0) (acc 0)) (if (= i 10) acc (loop (+ i 1) (+ acc i))))) (newline)
+(display (let count ((n 5) (out 1)) (if (= n 0) out (count (- n 1) (* out n))))) (newline)

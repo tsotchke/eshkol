@@ -1,0 +1,11 @@
+; alist-based environment + closures: mini evaluator flavor
+(define (env-lookup env k)
+  (let ((hit (assoc k env)))
+    (if hit (cdr hit) -1)))
+(define env (list (cons (quote a) 10) (cons (quote b) 20)))
+(display (env-lookup env (quote a))) (newline)
+(display (env-lookup env (quote b))) (newline)
+(display (env-lookup env (quote zz))) (newline)
+(define (make-adder-table)
+  (map (lambda (n) (cons n (lambda (x) (+ x n)))) (list 1 2 3)))
+(display ((cdr (assoc 2 (make-adder-table))) 40)) (newline)

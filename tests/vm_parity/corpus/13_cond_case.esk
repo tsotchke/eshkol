@@ -1,0 +1,6 @@
+; cond / case / when / unless
+(display (cond ((= 1 2) "a") ((= 1 1) "b") (else "c"))) (newline)
+(display (case 2 ((1) "one") ((2) "two") (else "other"))) (newline)
+(display (case 9 ((1) "one") ((2) "two") (else "other"))) (newline)
+(when #t (display "when-yes") (newline))
+(unless #f (display "unless-yes") (newline))

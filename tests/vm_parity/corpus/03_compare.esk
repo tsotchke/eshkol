@@ -1,0 +1,11 @@
+; comparison + numeric predicates
+(display (< 1 2)) (newline)
+(display (> 1 2)) (newline)
+(display (<= 2 2)) (newline)
+(display (>= 3 2)) (newline)
+(display (= 5 5)) (newline)
+(display (zero? 0)) (newline)
+(display (positive? 3)) (newline)
+(display (negative? -3)) (newline)
+(display (even? 4)) (newline)
+(display (odd? 4)) (newline)

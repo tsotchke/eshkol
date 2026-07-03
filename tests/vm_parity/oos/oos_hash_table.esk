@@ -1,0 +1,5 @@
+; OUT OF SUBSET: hash tables (gap in PARITY.tsv).
+; Expectation on the VM: clear undefined-variable diagnostic, no wrong value.
+(define h (make-hash-table))
+(hash-table-set! h "k" 5)
+(display (hash-table-ref h "k" #f))

@@ -1,0 +1,4 @@
+; OUT OF SUBSET: agent-FFI HTTP client (native-only-justified in PARITY.tsv).
+; Expectation on the VM: a clear "undefined variable 'http-get'" diagnostic
+; and NO fabricated value on stdout.
+(display (http-get "http://example.invalid/"))

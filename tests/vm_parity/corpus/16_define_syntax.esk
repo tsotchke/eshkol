@@ -1,0 +1,10 @@
+; simple non-recursive syntax-rules macro (recursive macros diverge — see found/)
+(define-syntax swap!
+  (syntax-rules () ((_ a b) (let ((t a)) (set! a b) (set! b t)))))
+(define x 1)
+(define y 2)
+(swap! x y)
+(display x) (newline)
+(display y) (newline)
+(define-syntax dbl (syntax-rules () ((_ e) (* 2 e))))
+(display (dbl 21)) (newline)

@@ -1,0 +1,5 @@
+; quasiquote / unquote / unquote-splicing
+(display `(1 ,(+ 1 1) ,@(list 3 4) 5)) (newline)
+(define x 10)
+(display `(a ,x c)) (newline)
+(display `(,@(list 1 2) ,@(list 3))) (newline)

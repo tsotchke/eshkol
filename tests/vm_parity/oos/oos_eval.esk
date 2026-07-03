@@ -1,0 +1,3 @@
+; OUT OF SUBSET: eval (gap in PARITY.tsv).
+; Expectation on the VM: clear undefined-variable diagnostic, no wrong value.
+(display (eval (quote (+ 1 2))))

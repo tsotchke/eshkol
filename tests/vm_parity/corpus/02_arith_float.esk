@@ -1,0 +1,9 @@
+; float arithmetic within shared display-format range
+(display (+ 0.25 0.5)) (newline)
+(display (* 1.5 2.0)) (newline)
+(display (/ 7 2.0)) (newline)
+(display (sqrt 16)) (newline)
+(display (expt 2 10)) (newline)
+(display (expt 2.0 0.5)) (newline)
+(display (floor 3.7)) (newline)
+(display (ceiling 3.2)) (newline)

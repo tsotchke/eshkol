@@ -1,0 +1,4 @@
+; guard / raise
+(display (guard (e (#t (* e 2))) (raise 21))) (newline)
+(display (guard (e (#t "caught")) (raise 7) "not-reached")) (newline)
+(display (guard (e (#t 0)) 99)) (newline)

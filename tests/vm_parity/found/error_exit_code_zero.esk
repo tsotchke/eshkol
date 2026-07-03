@@ -1,0 +1,6 @@
+; FILED: the VM exits 0 even after a fatal runtime error.
+; native -r : nonzero exit
+; vm        : prints "ERROR: calling non-function" on stderr, exit code 0.
+; Consequence: exit codes cannot distinguish VM success from failure;
+; run_vm_parity.sh greps stderr for ERROR/WARNING markers instead.
+(display (this-function-does-not-exist 1))
