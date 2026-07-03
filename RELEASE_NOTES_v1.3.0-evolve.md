@@ -12,7 +12,7 @@ backed by a new permanent adversarial-testing infrastructure.
 ## Highlights
 - **All of SICP** — ch1–5 corpora incl. metacircular/analyzing/lazy/amb evaluators,
   query system, register machines (stack/recursive), stop-and-copy GC model,
-  explicit-control evaluator, and the SICP compiler (#85, #87, #102, #103, #105–#109).
+  explicit-control evaluator, and the SICP compiler (#85, #87, #102, #105–#109).
 - **Automatic differentiation** — exact iterated/nested higher-order AD (#84, #95),
   mixed-mode vector-gradient-over-derivative (#113), AD-visible min/max (#82),
   centralized tensor type-guards (#79), conv2d unified across codegen/VM (#80).
@@ -20,6 +20,8 @@ backed by a new permanent adversarial-testing infrastructure.
   letrec instances (#89), first-class/apply'd predicate booleans (#86), quote-token
   dispatch across all clause parsers (#110, #117), single-evaluation of constructor
   operands (#116), R7RS numeric tower exactness/promotion (#82).
+- **Compiler & types** — precompiled-module external defines no longer have their
+  bodies scanned by the type checker or nested-function declaration pass (#101).
 - **Platforms** — windows-arm64 unbroken across 3 layers (sincos, thunk convergence,
   SEH-safe dead-strip; #77); with-region memory routing 6.6GB→41MB (#81).
 - **Native agent/ML substrate** — EAGLE linear-head FFI training (#104), 7168-dim
