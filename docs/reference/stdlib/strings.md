@@ -73,18 +73,23 @@ Reverse the characters of `str`.
 cba
 ```
 
-### `(string-copy str)` — **BROKEN for the 1-argument form** (see [Known issues](#known-issues))
-Intended: return a fresh copy of `str`. In practice the name resolves to a
-codegen builtin that mis-handles the single-argument call and returns `()`.
+### `(string-copy str [start [end]])`
+Return a fresh copy of `str`, optionally of the codepoint range `[start, end)`
+(R7RS). The 1- and 2-argument forms default the missing bounds to `start=0` and
+`end=(string-length str)`.
 
 ```scheme
-(display (string-copy "hello")) (newline)
+(display (string-copy "hello")) (newline)     ; whole string
+(display (string-copy "hello" 2)) (newline)   ; from index 2
+(display (string-copy "hello" 1 4)) (newline) ; [1,4)
 ```
 ```
-()
+hello
+llo
+ell
 ```
-The R7RS three-argument form `(string-copy str start end)` does work (it is a
-`substring` alias) but emits a spurious type warning.
+(The optional `start`/`end` forms may still emit a harmless gradual-typing
+arity note; the result is correct.)
 
 ### `(string-repeat str n)`
 Concatenate `n` copies of `str`. `n <= 0` gives `""`.
@@ -214,18 +219,13 @@ search functions so a char needle is accepted. Not intended for direct use.
 
 ## Known issues
 
-### `string-copy` (1-arg) returns `()` and warns
-`(string-copy s)` resolves to a codegen builtin
-(`lib/backend/llvm_codegen.cpp:13536`) that delegates a single-argument call to
-`substring`, which requires exactly three arguments. The result is `()` plus a
-spurious `WARNING: substring requires exactly 3 arguments`.
-
-```scheme
-(require core.strings)
-(display (string-copy "hello")) (newline)
-;; => ()   (with "substring requires exactly 3 arguments" on stderr)
-```
-Workaround: use `(substring s 0 (string-length s))` directly, which works.
+### `string-copy` (1-arg) — fixed
+Historically `(string-copy s)` delegated to `substring`, which required exactly
+three arguments, so the single-argument call returned `()` with a spurious
+`WARNING: substring requires exactly 3 arguments`. `string-copy` now has its own
+codegen path that defaults the missing bounds (`start=0`, `end=length`), so the
+1-, 2-, and 3-argument R7RS forms all work. (The 2-/3-arg forms may still emit a
+harmless gradual-typing arity note.)
 
 ### Embedded NUL: builtin search truncates, stdlib search does not
 The builtins `string-index` and `string-contains?` use C `strstr`-style search

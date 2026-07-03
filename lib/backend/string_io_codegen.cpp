@@ -451,6 +451,14 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
     llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
 
+    return substringImpl(str_ptr, start, end);
+}
+
+// Shared substring/string-copy core.  start==nullptr defaults to 0 and
+// end==nullptr defaults to the string's codepoint length.
+llvm::Value* StringIOCodegen::substringImpl(llvm::Value* str_ptr,
+                                            llvm::Value* start,
+                                            llvm::Value* end) {
     // Get string length for upper bound check.
     //
     // Use eshkol_utf8_strlen — codepoint count via the string's header
@@ -475,6 +483,10 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
             "eshkol_utf8_strlen", &ctx_.module());
     }
     llvm::Value* str_len = ctx_.builder().CreateCall(utf8_strlen_func, {str_ptr}, "str_len");
+
+    // Default missing bounds (string-copy 1- and 2-arg forms).
+    if (!start) start = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    if (!end)   end = str_len;
 
     // Bounds validation: start >= 0, end >= start, end <= string_length
     llvm::Value* start_negative = ctx_.builder().CreateICmpSLT(start,
@@ -531,6 +543,53 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* new_str = ctx_.builder().CreateCall(utf8_substr_func, {str_ptr, start, end, arena_ptr});
 
     return tagged_.packHeapPtr(new_str);
+}
+
+// R7RS (string-copy s [start [end]]).  Unlike substring, the start/end
+// bounds are optional: 1-arg copies the whole string, 2-arg copies from
+// start to the end.  Previously (string-copy s) was delegated to
+// substring, which required exactly 3 args and returned () with a
+// spurious warning.
+llvm::Value* StringIOCodegen::stringCopy(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
+        eshkol_warn("StringIOCodegen::stringCopy - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+        eshkol_warn("string-copy requires 1 to 3 arguments");
+        return nullptr;
+    }
+
+    // Source string
+    llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!str_arg) return nullptr;
+    llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
+    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
+
+    // Optional start (nullptr => default 0 inside substringImpl)
+    llvm::Value* start = nullptr;
+    if (op->call_op.num_vars >= 2) {
+        void* start_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!start_tv_ptr) return nullptr;
+        llvm::Value* start_raw = *reinterpret_cast<llvm::Value**>(start_tv_ptr);
+        if (!start_raw) return nullptr;
+        start = ensureRawInt64(start_raw, "string_copy_start");
+        if (!start) return nullptr;
+    }
+
+    // Optional end (nullptr => default string length inside substringImpl)
+    llvm::Value* end = nullptr;
+    if (op->call_op.num_vars >= 3) {
+        void* end_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+        if (!end_tv_ptr) return nullptr;
+        llvm::Value* end_raw = *reinterpret_cast<llvm::Value**>(end_tv_ptr);
+        if (!end_raw) return nullptr;
+        end = ensureRawInt64(end_raw, "string_copy_end");
+        if (!end) return nullptr;
+    }
+
+    return substringImpl(str_ptr, start, end);
 }
 
 llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
