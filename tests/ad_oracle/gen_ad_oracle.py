@@ -63,7 +63,7 @@ RTOL = "1e-4"
 # xknown tasks whose failure mode kills the whole translation unit
 # (SIGSEGV or compile-time IR verification error): these probes are
 # emitted one-per-file as ad_oracle_xc_<task>_<NN>.esk.
-CRASH_TASKS = ("ESH-0095", "ESH-0097")
+CRASH_TASKS = ()  # ESH-0095/0097 fixed in sweep C (were tensor-point / local-capture crashes)
 
 X0 = "1.3"                      # scalar evaluation point
 P2 = ["1.3", "-0.7"]            # 2-d evaluation point
@@ -465,7 +465,7 @@ class Gen:
                             binding=b)
         # capture axis (local/vrefout: ESH-0097 compile-time IR failure)
         for cap in ("glob", "local", "vrefout"):
-            xc = None if cap == "glob" else "ESH-0097"
+            xc = None  # ESH-0097 fixed (sweep C)
             for sh in ("poly", "expsin"):
                 self.grad_probe(sh, SF_BY_NAME[sh], "v", P2, cap=cap, xc=xc)
 
@@ -515,10 +515,10 @@ class Gen:
             self.hess_probe("poly", "v", P2, binding=b)
         for cap in ("glob", "local", "vrefout"):
             self.hess_probe("poly", "v", P2, cap=cap,
-                            xc=None if cap == "glob" else "ESH-0097")
+                            xc=None)
         # tensor-literal points: SIGSEGV — ESH-0095 (own xc files)
-        self.hess_probe("poly", "t", P2, xc="ESH-0095")
-        self.hess_probe("poly", "t", P3, xc="ESH-0095")
+        self.hess_probe("poly", "t", P2, xc=None)
+        self.hess_probe("poly", "t", P3, xc=None)
 
     def jac_probe(self, sh, kind, comps, binding="inline", cap="none",
                   xc=None):
@@ -561,7 +561,7 @@ class Gen:
             self.jac_probe("poly", "v", P2, binding=b)
         for cap in ("glob", "local", "vrefout"):
             self.jac_probe("poly", "v", P2, cap=cap,
-                           xc=None if cap == "glob" else "ESH-0097")
+                           xc=None)
 
     def div_probe(self, sh, kind, comps, binding="inline", cap="none",
                   xc=None):
@@ -597,7 +597,7 @@ class Gen:
             self.div_probe("poly", "v", P2, binding=b)
         for cap in ("glob", "local"):
             self.div_probe("poly", "v", P2, cap=cap,
-                           xc=None if cap == "glob" else "ESH-0097")
+                           xc=None)
 
     def curl_probe(self, sh, kind, binding="inline", cap="none", xc=None):
         u = self.uid()
@@ -633,7 +633,7 @@ class Gen:
             self.curl_probe(sh, "v")
         self.curl_probe("poly", "t")
         self.curl_probe("poly", "v", binding="named")
-        self.curl_probe("poly", "v", cap="local", xc="ESH-0097")
+        self.curl_probe("poly", "v", cap="local", xc=None)
 
     def lap_probe(self, sh, kind, comps, binding="inline", cap="none",
                   xc=None):
@@ -665,10 +665,10 @@ class Gen:
             self.lap_probe("poly", "v", P2, binding=b)
         for cap in ("glob", "local", "vrefout"):
             self.lap_probe("poly", "v", P2, cap=cap,
-                           xc=None if cap == "glob" else "ESH-0097")
+                           xc=None)
         # tensor-literal points: SIGSEGV — ESH-0095 (own xc files)
-        self.lap_probe("poly", "t", P2, xc="ESH-0095")
-        self.lap_probe("poly", "t", P3, xc="ESH-0095")
+        self.lap_probe("poly", "t", P2, xc=None)
+        self.lap_probe("poly", "t", P3, xc=None)
 
     # -- nesting ------------------------------------------------------------
     def nest_scalar(self, outer_op, sh, binding, pid_nest, x0="1.1",
@@ -743,9 +743,9 @@ class Gen:
             self.nest_scalar("gradient", sh, "inline", "gofg")
         for sh in ("poly", "expsin"):
             self.nest_scalar("gradient", sh, "named", "gofg",
-                             xc="ESH-0078")
+                             xc=None)
         self.nest_scalar("gradient", "poly", "lamvar", "gofg",
-                         xc="ESH-0078")
+                         xc=None)
         # gradient over inner derivative, VECTOR outer param — ESH-0093
         u = self.uid()
         comps = ["3.0", "4.0"]
@@ -788,10 +788,10 @@ class Gen:
             f"(define fd{u}_0 "
             f"{self.fd1_comp(f'g{u}', 'v', ['2.0'], 0)})",
             self.chk("nest.gofg.a.v1.inline.capnone[0]",
-                     f"(vref ad{u} 0)", f"fd{u}_0", xc="ESH-0096"),
+                     f"(vref ad{u} 0)", f"fd{u}_0", xc=None),
         ]
         self.add("nest", "nest.gofg.a.v1.inline.capnone", lines, 1,
-                 xc="ESH-0096")
+                 xc=None)
         u = self.uid()
         comps = ["3.0", "4.0"]
         lines = [
@@ -806,8 +806,8 @@ class Gen:
             lines.append(f"(define fd{u}_{i} "
                          f"{self.fd1_comp(f'g{u}', 'v', comps, i)})")
             lines.append(self.chk(f"{pid}[{i}]", f"(vref ad{u} {i})",
-                                  f"fd{u}_{i}", xc="ESH-0096"))
-        self.add("nest", pid, lines, 2, xc="ESH-0096")
+                                  f"fd{u}_{i}", xc=None))
+        self.add("nest", pid, lines, 2, xc=None)
 
     # -- loop-iterated reuse --------------------------------------------
     def gen_loop(self):

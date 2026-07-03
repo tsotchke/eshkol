@@ -213,11 +213,97 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
 
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // ── R → Rⁿ: vector-valued derivative ────────────────────────────────
+    // A function like (lambda (t) (vector (* t t) (* t t t))) returns a scheme
+    // VECTOR whose elements are duals (each (* t …) carries its own tangent).
+    // The scalar extraction below would read the vector POINTER as a double and
+    // silently return 0. Detect a scheme-vector result and differentiate each
+    // component, returning a vector of per-component derivatives. (A raw-double
+    // tensor cannot carry the tangent, so only (vector ...) results are
+    // supported here; a tensor result falls through to the scalar path.)
+    llvm::AllocaInst* nd_slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        nd_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fwd_ex_nd_slot");
+    }
+    llvm::Value* nd_base = tagged_.getBaseType(tagged_.getType(result_tagged));
+    llvm::Value* nd_is_heap = b.CreateICmpEQ(nd_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::BasicBlock* nd_check  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_check", fn);
+    llvm::BasicBlock* nd_vec    = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_vec", fn);
+    llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
+    llvm::BasicBlock* nd_done   = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_done", fn);
+    b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
+
+    // Is the heap object a scheme vector (subtype VECTOR)?
+    b.SetInsertPoint(nd_check);
+    llvm::Value* nd_ptr = tagged_.unpackPtr(result_tagged);
+    llvm::Value* nd_hdr = b.CreateGEP(ctx_.int8Type(), nd_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* nd_sub = b.CreateLoad(ctx_.int8Type(), nd_hdr);
+    llvm::Value* nd_is_vec = b.CreateICmpEQ(nd_sub,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    b.CreateCondBr(nd_is_vec, nd_vec, nd_scalar);
+
+    // Vector path: build a scheme vector of per-component derivatives.
+    b.SetInsertPoint(nd_vec);
+    {
+        llvm::Value* nd_is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* nd_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* nd_len = b.CreateLoad(ctx_.int64Type(), nd_ptr);
+        llvm::Value* nd_src8 = b.CreateGEP(ctx_.int8Type(), nd_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* nd_src = b.CreatePointerCast(nd_src8, ctx_.ptrType());
+        llvm::Value* nd_arena = getArenaPtr();
+        llvm::Value* nd_out = b.CreateCall(mem_.getArenaAllocateVectorWithHeader(), {nd_arena, nd_len});
+        b.CreateStore(nd_len, nd_out);
+        llvm::Value* nd_out8 = b.CreateGEP(ctx_.int8Type(), nd_out,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* nd_out_elems = b.CreatePointerCast(nd_out8, ctx_.ptrType());
+
+        llvm::BasicBlock* nd_cond = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_cond", fn);
+        llvm::BasicBlock* nd_body = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_body", fn);
+        llvm::BasicBlock* nd_end  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_end", fn);
+        llvm::AllocaInst* nd_i;
+        {
+            llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            nd_i = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fwd_ex_nd_i");
+        }
+        b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), nd_i);
+        b.CreateBr(nd_cond);
+
+        b.SetInsertPoint(nd_cond);
+        llvm::Value* nd_iv = b.CreateLoad(ctx_.int64Type(), nd_i);
+        b.CreateCondBr(b.CreateICmpULT(nd_iv, nd_len), nd_body, nd_end);
+
+        b.SetInsertPoint(nd_body);
+        llvm::Value* nd_elem = b.CreateLoad(ctx_.taggedValueType(),
+            b.CreateGEP(ctx_.taggedValueType(), nd_src, nd_iv));
+        llvm::Value* nd_ed = safeUnpackDualFromTagged(nd_elem); // {a0,a1,a2,a12}
+        // level 0 → scalar derivative a1; nested → dual slice {a2,a12,0,0}.
+        llvm::Value* nd_scalar_elem = tagged_.packDouble(dualField(ctx_, nd_ed, 1));
+        llvm::Value* nd_slice_elem = packDualToTagged(makeDual4(ctx_,
+            dualField(ctx_, nd_ed, 2), dualField(ctx_, nd_ed, 3), nd_zero, nd_zero));
+        llvm::Value* nd_elem_out = b.CreateSelect(nd_is_l0, nd_scalar_elem, nd_slice_elem);
+        b.CreateStore(nd_elem_out, b.CreateGEP(ctx_.taggedValueType(), nd_out_elems, nd_iv));
+        b.CreateStore(b.CreateAdd(nd_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), nd_i);
+        b.CreateBr(nd_cond);
+
+        b.SetInsertPoint(nd_end);
+        llvm::Value* nd_out_int = b.CreatePtrToInt(nd_out, ctx_.int64Type());
+        b.CreateStore(tagged_.packPtr(nd_out_int, ESHKOL_VALUE_HEAP_PTR), nd_slot);
+        b.CreateBr(nd_done);
+    }
+
+    // Scalar path: original extraction.
+    b.SetInsertPoint(nd_scalar);
+
     llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
     llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
 
-    llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::BasicBlock* x0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar", fn);
     llvm::BasicBlock* x1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice", fn);
     llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_merge", fn);
@@ -280,7 +366,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     llvm::PHINode* res = b.CreatePHI(ctx_.taggedValueType(), 2, "fwd_extracted");
     res->addIncoming(scalar_res, x0e);
     res->addIncoming(slice, x1e);
-    return res;
+    b.CreateStore(res, nd_slot);
+    b.CreateBr(nd_done);
+
+    // Final merge of the scalar and vector (R→Rⁿ) extraction paths.
+    b.SetInsertPoint(nd_done);
+    return b.CreateLoad(ctx_.taggedValueType(), nd_slot);
 }
 
 // ===== ESH-0093: jet-lift reverse-tape operands inside forward-mode AD =====
@@ -3490,8 +3581,30 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         // tensor allocations an inline nested gradient's own machinery emits. A
         // vector-valued point is still handled at runtime below (reverse branch),
         // so this only needs to catch the scalar-point-through-tensor case.
-        bool fn_uses_tensors = adAstUsesTensorOps(op->gradient_op.function) ||
-            (op->gradient_op.function->type == ESHKOL_VAR && adFunctionUsesTensors(func_ptr));
+        // ESH-0078: a NAMED function passed by var (e.g. (gradient L x)) has no
+        // reachable source AST at the gradient op, so the original code fell back
+        // to a coarse IR substring scan (adFunctionUsesTensors). That scan is
+        // FALSE-POSITIVE for every scalar function: tagged +/-/*// arithmetic
+        // unconditionally emits runtime tensor-dispatch helpers
+        // (eshkol_tensor_operand_checked / arena_allocate_tensor_with_header /
+        // eshkol_tensor_result_dtype_*), so a pure-scalar function like
+        // (define (L w) (* w w w)) was wrongly forced onto the reverse-mode path
+        // and a nested (gradient (lambda (y) (gradient L y)) x) returned 0.
+        // Resolve the function's registered body AST and run the SAME
+        // source-level analysis inline lambdas get; fall back to the IR scan only
+        // when no source AST is available (cross-module / stdlib functions).
+        bool fn_uses_tensors = adAstUsesTensorOps(op->gradient_op.function);
+        if (!fn_uses_tensors && op->gradient_op.function->type == ESHKOL_VAR) {
+            const eshkol_ast_t* body_ast = nullptr;
+            if (function_body_ast_) {
+                auto bit = function_body_ast_->find(fwd_key);
+                if (bit == function_body_ast_->end())
+                    bit = function_body_ast_->find(op->gradient_op.function->variable.id);
+                if (bit != function_body_ast_->end()) body_ast = bit->second;
+            }
+            fn_uses_tensors = body_ast ? adAstUsesTensorOps(body_ast)
+                                       : adFunctionUsesTensors(func_ptr);
+        }
         if (fwd_arity == 1 && !fn_uses_tensors) {
             Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
             grad_result_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_fwd_result");
@@ -3848,6 +3961,21 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* svec_typed_result_elems = ctx_.builder().CreatePointerCast(svec_result_elems, ctx_.builder().getPtrTy());
     ctx_.builder().CreateStore(svec_typed_result_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 2));
 
+    // ESH-0096: when this gradient runs NESTED inside another forward-mode
+    // gradient over a vector (gradient-of-gradient), each component must be
+    // returned as a DUAL carrying {value = ∂f/∂vⱼ (e2 slice), e1 = ∂²f/∂vᵢ∂vⱼ}
+    // so the OUTER gradient can extract the second-order (mixed e1e2) term.
+    // A plain-double tensor would drop that outer perturbation → the outer
+    // gradient would see a constant and return 0. We build this parallel
+    // Scheme vector of dual tagged values alongside the plain-double tensor and
+    // select which to return based on the perturbation level (below).
+    Value* svec_dual_result_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_for_svec, svec_n});
+    ctx_.builder().CreateStore(svec_n, svec_dual_result_vec);
+    Value* svec_dual_result_elems8 = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_dual_result_vec,
+        ConstantInt::get(ctx_.int64Type(), 8));
+    Value* svec_dual_result_elems = ctx_.builder().CreatePointerCast(svec_dual_result_elems8, ctx_.ptrType());
+
     // Get arena for dual vector allocation
     Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
@@ -3906,7 +4034,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Load primal value from input
     Value* svec_in_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems, svec_j);
     Value* svec_in_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_in_ptr);
-    Value* svec_primal = tagged_.unpackDouble(svec_in_val);
+    // ESH-0096: preserve the incoming point's FULL jet so a nested gradient over
+    // a vector keeps the OUTER perturbation. At level 0 the elements are plain
+    // doubles → {p,0,0,0}; when nested (gradient-of-gradient over a vector) they
+    // are duals carrying the outer tangent in e1 → {p,d1,0,0}. We seed only THIS
+    // level's slot with the component tangent, keeping the other components
+    // intact — the same discipline seedForwardAndPush uses for scalars.
+    Value* svec_in_jet = safeUnpackDualFromTagged(svec_in_val); // {p,d1,d2,d12}
+    Value* svec_primal  = dualField(ctx_, svec_in_jet, 0);
+    Value* svec_in_e1   = dualField(ctx_, svec_in_jet, 1);
+    Value* svec_in_e2   = dualField(ctx_, svec_in_jet, 2);
+    Value* svec_in_e12  = dualField(ctx_, svec_in_jet, 3);
     // Tangent: 1.0 if j == i, else 0.0
     Value* svec_is_active = ctx_.builder().CreateICmpEQ(svec_j, svec_i);
     Value* svec_tangent = ctx_.builder().CreateSelect(svec_is_active,
@@ -3914,10 +4052,11 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // ESH-0093: seed THIS level's slot (e1 at level 0, e2 when nested) so an
     // inner forward-mode derivative — which seeds the NEXT slot after the
     // level push below — cannot collide with the component's perturbation.
-    Value* svec_zero_t = ConstantFP::get(ctx_.doubleType(), 0.0);
-    Value* svec_t_e1 = ctx_.builder().CreateSelect(svec_lvl0, svec_tangent, svec_zero_t);
-    Value* svec_t_e2 = ctx_.builder().CreateSelect(svec_lvl0, svec_zero_t, svec_tangent);
-    Value* svec_dual = makeDual4(ctx_, svec_primal, svec_t_e1, svec_t_e2, svec_zero_t);
+    // ESH-0096: at level 0 the e1 slot is a fresh seed; when nested keep the
+    // incoming e1 (outer tangent) and put this component's tangent in e2.
+    Value* svec_t_e1 = ctx_.builder().CreateSelect(svec_lvl0, svec_tangent, svec_in_e1);
+    Value* svec_t_e2 = ctx_.builder().CreateSelect(svec_lvl0, svec_in_e2, svec_tangent);
+    Value* svec_dual = makeDual4(ctx_, svec_primal, svec_t_e1, svec_t_e2, svec_in_e12);
     Value* svec_dual_tagged = packDualToTagged(svec_dual);
     Value* svec_dual_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_dual_elems_typed, svec_j);
     ctx_.builder().CreateStore(svec_dual_tagged, svec_dual_ptr);
@@ -4000,6 +4139,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* svec_result_dual = unpackDualFromTagged(svec_call_result);
     Value* svec_dual_deriv = ctx_.builder().CreateSelect(svec_lvl0,
         dualField(ctx_, svec_result_dual, 1), dualField(ctx_, svec_result_dual, 2));
+    // ESH-0096: the mixed e1e2 coefficient (a12) is the 2nd-order term
+    // ∂²f/∂vᵢ∂vⱼ carried through when nested; used only by an outer gradient.
+    Value* svec_dual_mixed = dualField(ctx_, svec_result_dual, 3);
     ctx_.builder().CreateBr(svec_merge_bb);
     BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -4014,19 +4156,39 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     PHINode* svec_deriv = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_deriv");
     svec_deriv->addIncoming(svec_dual_deriv, svec_dual_exit);
     svec_deriv->addIncoming(svec_zero_deriv, svec_const_exit);
+    PHINode* svec_mixed = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_mixed");
+    svec_mixed->addIncoming(svec_dual_mixed, svec_dual_exit);
+    svec_mixed->addIncoming(svec_zero_deriv, svec_const_exit);
 
-    // Store derivative in result tensor
+    // Store derivative in result tensor (plain double — the level-0 result)
     Value* svec_result_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), svec_typed_result_elems, svec_i);
     Value* svec_deriv_bits = ctx_.builder().CreateBitCast(svec_deriv, ctx_.int64Type());
     ctx_.builder().CreateStore(svec_deriv_bits, svec_result_ptr);
+
+    // ESH-0096: also store the {deriv, mixed} dual into the parallel Scheme
+    // vector so a NESTED gradient-of-gradient can carry the 2nd-order term out.
+    Value* svec_zero_c = ConstantFP::get(ctx_.doubleType(), 0.0);
+    Value* svec_comp_dual = makeDual4(ctx_, svec_deriv, svec_mixed, svec_zero_c, svec_zero_c);
+    Value* svec_comp_dual_tagged = packDualToTagged(svec_comp_dual);
+    Value* svec_dual_res_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(),
+        svec_dual_result_elems, svec_i);
+    ctx_.builder().CreateStore(svec_comp_dual_tagged, svec_dual_res_ptr);
 
     ctx_.builder().CreateStore(ctx_.builder().CreateAdd(svec_i, ConstantInt::get(ctx_.int64Type(), 1)), svec_dim_i);
     ctx_.builder().CreateBr(svec_dim_cond);
 
     ctx_.builder().SetInsertPoint(svec_dim_end);
-    // Return result tensor
+    // Return result tensor (level 0) or the dual-carrying Scheme vector (nested).
+    // ESH-0096: at level 0 (outer gradient / top-level call) return the plain
+    // double tensor — the historical representation every consumer expects.
+    // When nested inside another forward-mode gradient, return the Scheme vector
+    // of {∂f/∂vⱼ, ∂²f/∂vᵢ∂vⱼ} duals so the outer gradient can differentiate it.
     Value* svec_result_int = ctx_.builder().CreatePtrToInt(svec_typed_result, ctx_.int64Type());
-    Value* scheme_vector_tagged = tagged_.packPtr(svec_result_int, ESHKOL_VALUE_HEAP_PTR);
+    Value* svec_dual_vec_int = ctx_.builder().CreatePtrToInt(svec_dual_result_vec, ctx_.int64Type());
+    // Select the pointer BEFORE packing (avoid a select over the tagged struct).
+    Value* svec_chosen_int = ctx_.builder().CreateSelect(svec_lvl0,
+        svec_result_int, svec_dual_vec_int);
+    Value* scheme_vector_tagged = tagged_.packPtr(svec_chosen_int, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
     BasicBlock* scheme_vector_exit = ctx_.builder().GetInsertBlock();
 
@@ -4610,6 +4772,28 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
             if (found && it->second) {
                 Value* storage = it->second;
+                // ESH-0072/0097: this reverse-mode vector path is emitted even
+                // when the run-time input is a scheme vector (the svec forward
+                // path actually executes), so its capture code must still verify.
+                // A lambda that captures a LOCAL function parameter resolves
+                // `storage` to the parameter's Argument, which is a tagged_value
+                // STRUCT, not a pointer — ptrtoint on it is invalid IR. Mirror
+                // resolveGradientCaptures: a named-let carry pointer ("<var>_cap")
+                // is forwarded as-is; a value-typed capture is funneled through a
+                // temp slot; only a genuine pointer storage is packed via ptrtoint.
+                if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                    if (arg->getType()->isPointerTy() &&
+                        arg->getName() == (var_name + "_cap")) {
+                        grad_call_args.push_back(storage);
+                        continue;
+                    }
+                }
+                if (!storage->getType()->isPointerTy()) {
+                    Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
+                    ctx_.builder().CreateStore(storage, val_temp);
+                    grad_call_args.push_back(val_temp);
+                    continue;
+                }
                 // MUTABLE CAPTURE FIX: Create storage containing packed pointer
                 // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
                 // Then lambda loads from slot, unpacks data field to get @storage
@@ -6139,6 +6323,12 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
                                  op->hessian_op.point->operation.op != ESHKOL_CALL_OP));
         // Also check: not a tensor literal, not a vector constructor
         if (op->hessian_op.point->type == ESHKOL_TENSOR) is_scalar_input = false;
+        // ESH-0095: a (tensor ...) op is a COLLECTION point, not a scalar. The
+        // catch-all "OP && op != CALL_OP" above wrongly marked it scalar, so the
+        // tensor pointer was read as a double and f was called with a scalar
+        // where it expected a vector → SIGSEGV.
+        if (op->hessian_op.point->type == ESHKOL_OP &&
+            op->hessian_op.point->operation.op == ESHKOL_TENSOR_OP) is_scalar_input = false;
         if (op->hessian_op.point->type == ESHKOL_OP &&
             op->hessian_op.point->operation.op == ESHKOL_CALL_OP &&
             op->hessian_op.point->operation.call_op.func &&
@@ -6212,12 +6402,25 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // Get current function for basic blocks
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Convert TypedValue to tagged_value
-    // Tensor literal fix: re-pack ptr-as-int64 as HEAP_PTR for correct subtype dispatch
-    Value* vector_val = typed_raw_;
-    if (op->hessian_op.point->type == ESHKOL_TENSOR) {
-        Value* data_val = tagged_.unpackInt64(vector_val);
-        vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
+    // Convert TypedValue to tagged_value.
+    // ESH-0095: codegen returns raw ptr-as-int64 for a tensor LITERAL (#(...))
+    // but a tagged value for a (tensor ...) op and for (vector ...)/(list ...).
+    // Mirror the gradient path's robust dispatch instead of unconditionally
+    // calling unpackInt64 on a possibly-raw i64 (which mis-read the pointer and
+    // led to the tensor-point SIGSEGV).
+    Value* vector_val;
+    if (typed_raw_->getType() == ctx_.taggedValueType()) {
+        vector_val = typed_raw_; // already tagged (tensor-op / vector / list)
+    } else if (typed_raw_->getType()->isIntegerTy(64) &&
+               op->hessian_op.point->type == ESHKOL_TENSOR) {
+        // Tensor literal: ptr-as-int64 → wrap as HEAP_PTR for subtype dispatch.
+        vector_val = tagged_.packPtr(typed_raw_, ESHKOL_VALUE_HEAP_PTR);
+    } else if (typed_raw_->getType()->isIntegerTy(64)) {
+        vector_val = tagged_.packInt64(typed_raw_, true);
+    } else if (typed_raw_->getType()->isDoubleTy()) {
+        vector_val = tagged_.packDouble(typed_raw_);
+    } else {
+        vector_val = tagged_.packInt64(typed_raw_, true);
     }
 
     // ── MULTI-PARAMETER HESSIAN via exact forward-over-forward AD ───────
@@ -7949,6 +8152,31 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
 
         if (found && it->second) {
             Value* storage = it->second;
+            // ESH-0072/0097: a lambda capturing a LOCAL function parameter
+            // resolves `storage` to that parameter's Argument (a tagged_value
+            // STRUCT, not a pointer) — ptrtoint on it is invalid IR and broke
+            // jacobian/hessian/divergence/curl/laplacian of such a lambda.
+            // A named-let carry pointer ("<var>_cap") forwards as-is; a
+            // value-typed capture funnels through a temp slot; only a genuine
+            // pointer storage is packed via ptrtoint. Mirrors
+            // resolveGradientCaptures.
+            if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                if (arg->getType()->isPointerTy() &&
+                    arg->getName() == (var_name + "_cap")) {
+                    capture_args.push_back(storage);
+                    continue;
+                }
+            }
+            if (!storage->getType()->isPointerTy()) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                          current_func->getEntryBlock().begin());
+                AllocaInst* val_temp = entry_builder.CreateAlloca(
+                    ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_val");
+                ctx_.builder().CreateStore(storage, val_temp);
+                capture_args.push_back(val_temp);
+                continue;
+            }
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             IRBuilder<> entry_builder(&current_func->getEntryBlock(),
                                       current_func->getEntryBlock().begin());
