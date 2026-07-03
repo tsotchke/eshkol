@@ -1609,7 +1609,47 @@ llvm::Value* TensorCodegen::tensorPow(const eshkol_operations_t* op) {
     llvm::Value* a = codegenAST(&op->call_op.variables[0]);
     llvm::Value* b = codegenAST(&op->call_op.variables[1]);
     if (!a || !b) return nullptr;
-    return tensorArithmeticInternal(a, b, "pow");
+
+    auto& builder = ctx_.builder();
+    a = tagged_.ensureTagged(a);
+    b = tagged_.ensureTagged(b);
+
+    // The exponent may be a tensor (elementwise/broadcast, via the SIMD path) OR
+    // a scalar. The old code always routed through tensorArithmeticInternal,
+    // whose operand check rejected a scalar exponent with a spurious
+    // "expected tensor" error. Dispatch on the exponent's runtime type so a
+    // scalar exponent is broadcast across the base tensor instead.
+    llvm::Value* b_is_tensor = tagged_.isTensor(b);
+    llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+    llvm::BasicBlock* tensor_exp = llvm::BasicBlock::Create(ctx_.context(), "tpow_tensor_exp", current_func);
+    llvm::BasicBlock* scalar_exp = llvm::BasicBlock::Create(ctx_.context(), "tpow_scalar_exp", current_func);
+    llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "tpow_merge", current_func);
+    llvm::Value* result_alloca = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "tpow_result");
+    builder.CreateCondBr(b_is_tensor, tensor_exp, scalar_exp);
+
+    // Tensor exponent: existing SIMD/broadcast elementwise pow.
+    builder.SetInsertPoint(tensor_exp);
+    llvm::Value* tensor_result = tensorArithmeticInternal(a, b, "pow");
+    builder.CreateStore(tensor_result, result_alloca);
+    builder.CreateBr(merge);
+
+    // Scalar exponent: broadcast via the runtime kernel.
+    builder.SetInsertPoint(scalar_exp);
+    llvm::Value* base_ptr = unpackTensorOperandChecked(a, "tensor-pow");
+    llvm::Value* base_slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "tpow_base_tv");
+    builder.CreateStore(tagged_.packHeapPtr(base_ptr), base_slot);
+    llvm::Value* exp_d = extractAsDouble(b);
+    llvm::Value* arena = builder.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(ctx_.ptrType(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType()}, false);
+    llvm::FunctionCallee callee =
+        ctx_.module().getOrInsertFunction("eshkol_tensor_pow_scalar", fn_type);
+    llvm::Value* scalar_result = builder.CreateCall(callee, {arena, base_slot, exp_d}, "tpow_scalar_result");
+    builder.CreateStore(tagged_.packHeapPtr(scalar_result), result_alloca);
+    builder.CreateBr(merge);
+
+    builder.SetInsertPoint(merge);
+    return builder.CreateLoad(ctx_.taggedValueType(), result_alloca);
 }
 
 llvm::Value* TensorCodegen::tensorMaximum(const eshkol_operations_t* op) {
