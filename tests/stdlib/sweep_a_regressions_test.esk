@@ -1,0 +1,114 @@
+;; tests/stdlib/sweep_a_regressions_test.esk
+;;
+;; Release-blocking sweep A regressions (stdlib + signal).
+;; Covers, with exact expected values, the bugs fixed in
+;; fix(stdlib,signal): release sweep A.  Run on BOTH -r and AOT.
+;;
+;;   1. csv-parse row order (was reversed)
+;;   2. fft -> ifft roundtrip inside a function (documented signal_fft repro)
+;;   3. partial / apply-of-captured-procedure (was SIGBUS)
+;;   4. make-pq honours its comparator (was min-heap only)
+;;   5. string-copy 1-arg (was returning ())
+;;   6. divide alias — scalar division (div collided with libc div(); renamed)
+;;   7. memory-store-audit callable + correct (event-content-hash now provided)
+
+(require stdlib)
+(require core.data.csv)
+(require core.collections)
+(require core.strings)
+(require signal.fft)
+(require core.memory)
+(require core.sexp)
+(require core.memory_store)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label want got)
+  (if (equal? want got)
+      (begin
+        (set! passed (+ passed 1))
+        (display label) (display ": PASS") (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display label) (display ": FAIL want=")
+        (display want) (display " got=") (display got) (newline))))
+
+;; -----------------------------------------------------------------
+;; 1. csv-parse — rows must come out in source (top-to-bottom) order
+;; -----------------------------------------------------------------
+(check "csv-parse row order"
+       '(("a" "b") ("1" "2") ("3" "4"))
+       (csv-parse "a,b\n1,2\n3,4"))
+
+;; -----------------------------------------------------------------
+;; 2. fft -> ifft roundtrip inside a function (documented repro).
+;;    Compare rounded real parts; imaginary parts are ~1e-18 noise.
+;; -----------------------------------------------------------------
+(define (roundtrip a) (ifft (fft a)))
+(define (round-reals v)
+  ;; list of exact rounded real parts (avoids vector/tensor equal? mismatch)
+  (let loop ((i (- (vector-length v) 1)) (acc '()))
+    (if (< i 0)
+        acc
+        (loop (- i 1)
+              (cons (inexact->exact (round (real-part (vref v i)))) acc)))))
+(check "fft->ifft roundtrip (real parts)"
+       '(1 2 3 4)
+       (round-reals (roundtrip #(1.0 2.0 3.0 4.0))))
+
+;; -----------------------------------------------------------------
+;; 3. partial — apply of a captured procedure inside a closure
+;; -----------------------------------------------------------------
+(check "partial (+ 1 2 3) then 4 5" 15 ((partial + 1 2 3) 4 5))
+(check "partial (* 2) then 3 4"     24 ((partial * 2) 3 4))
+
+;; -----------------------------------------------------------------
+;; 4. make-pq — comparator is honoured (max-heap via (lambda (a b) (- b a)))
+;; -----------------------------------------------------------------
+(define maxpq (make-pq (lambda (a b) (- b a))))
+(pq-push! maxpq 1 'one)
+(pq-push! maxpq 9 'nine)
+(pq-push! maxpq 5 'five)
+(check "make-pq max-heap pop" '(9 . nine) (pq-pop! maxpq))
+(define minpq (make-pq))          ;; default min-heap
+(pq-push! minpq 5 'five)
+(pq-push! minpq 2 'two)
+(check "make-pq default min-heap pop" '(2 . two) (pq-pop! minpq))
+
+;; -----------------------------------------------------------------
+;; 5. string-copy — 1-arg returns a fresh copy (was ())
+;; -----------------------------------------------------------------
+(check "string-copy 1-arg"      "hello" (string-copy "hello"))
+(check "string-copy 2-arg"      "llo"   (string-copy "hello" 2))
+(check "string-copy 3-arg"      "ell"   (string-copy "hello" 1 4))
+
+;; -----------------------------------------------------------------
+;; 6. divide — scalar division (renamed from div; div hit libc div())
+;; -----------------------------------------------------------------
+(check "divide exact int"   5   (divide 20 4))
+(check "divide -> rational" #t  (= (divide 7 2) (/ 7 2)))
+
+;; -----------------------------------------------------------------
+;; 7. memory-store-audit — now callable and correct on a valid log
+;; -----------------------------------------------------------------
+(define audit-path (path-join (temp-directory) "eshkol-sweep-a-audit.log"))
+(if (file-exists? audit-path) (delete-file audit-path) #t)
+(let* ((log (make-memory-log "nodeA"))
+       (e1 (memory-append! log 'note "first"))
+       (e2 (memory-append! log 'note "second"))
+       (port (open-output-file audit-path)))
+  (write-string (string-append (sexp->canonical-string e1) "\n") port)
+  (write-string (string-append (sexp->canonical-string e2) "\n") port)
+  (close-port port))
+(check "memory-store-audit ok chain"
+       '(ms-audit-v1 #t 2 0)
+       (memory-store-audit audit-path))
+
+;; -----------------------------------------------------------------
+(newline)
+(display "sweep-a regressions: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "ALL PASS") (newline))
+    (begin (display "SOME FAILED") (newline)))
