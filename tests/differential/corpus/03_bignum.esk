@@ -1,0 +1,10 @@
+;; bignum arithmetic beyond 2^63
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+(display (fact 25)) (newline)
+(display (expt 2 100)) (newline)
+(display (+ (expt 2 100) 1)) (newline)
+(display (* (expt 10 20) (expt 10 20))) (newline)
+(display (quotient (expt 10 30) (expt 10 10))) (newline)
+(display (< (expt 2 100) (expt 2 101))) (newline)
+(display (- (expt 2 64) (expt 2 64))) (newline)
+(display (number->string (fact 20))) (newline)

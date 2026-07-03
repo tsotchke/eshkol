@@ -1,0 +1,13 @@
+;; list operations
+(require stdlib)
+(display (append '(1 2) '(3 4) '(5))) (newline)
+(display (reverse '(1 2 3 4))) (newline)
+(display (length '(a b c d e))) (newline)
+(display (list-ref '(10 20 30) 1)) (newline)
+(display (member 3 '(1 2 3 4))) (newline)
+(display (assoc 'b '((a 1) (b 2) (c 3)))) (newline)
+(display (car (cdr '(1 2 3)))) (newline)
+(display (cons 1 2)) (newline)
+(display (list-tail '(1 2 3 4 5) 2)) (newline)
+(display (null? '())) (newline)
+(display (pair? '(1))) (newline)

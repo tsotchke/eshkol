@@ -1,0 +1,6 @@
+;; match patterns
+(display (match 5 ((? number?) "num") (_ "other"))) (newline)
+(display (match "hi" ((? string?) "str") (_ "other"))) (newline)
+(display (match (list 1 2) ((? pair?) "pair") (_ "other"))) (newline)
+(display (match 3 (1 'one) (2 'two) (3 'three) (_ 'many))) (newline)
+(display (match (quote foo) ((? symbol?) "sym") (_ "other"))) (newline)

@@ -1,0 +1,10 @@
+;; complex numbers
+(define z (make-rectangular 3.0 4.0))
+(display (real-part z)) (newline)
+(display (imag-part z)) (newline)
+(display (magnitude z)) (newline)
+(define w (make-rectangular 1.0 -1.0))
+(display (real-part (+ z w))) (newline)
+(display (imag-part (+ z w))) (newline)
+(display (real-part (* z w))) (newline)
+(display (imag-part (* z w))) (newline)

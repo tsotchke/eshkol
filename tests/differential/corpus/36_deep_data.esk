@@ -1,0 +1,12 @@
+;; nested quoted data + accessors
+(require stdlib)
+(define tree '((1 (2 3)) (4 (5 (6 7))) 8))
+(display (car tree)) (newline)
+(display (cadr tree)) (newline)
+(display (car (cdr (car (cdr tree))))) (newline)
+(display (length tree)) (newline)
+(define al '((x . 1) (y . 2) (z . 3)))
+(display (cdr (assq 'y al))) (newline)
+(display '(a (b (c (d (e)))))) (newline)
+(display '(1 . 2)) (newline)
+(display '(1 2 . 3)) (newline)
