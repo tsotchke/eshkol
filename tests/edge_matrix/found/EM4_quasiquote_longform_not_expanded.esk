@@ -1,0 +1,15 @@
+;; EM-4 (edge-matrix, 2026-07-02): the LONG FORM (quasiquote ... (unquote e))
+;; is not expanded -- unquote/unquote-splicing survive as literal list data,
+;; while the reader-sugar spelling `(... ,e) works. R7RS requires both
+;; spellings to be equivalent.
+;;
+;; Found by: pair005..010 quote_qq_longform__in__* (15 files, jit+aot).
+;;
+;; Expected output:  (1 2)(1 2)
+;; Actual:           (1 2)(1 (unquote (+ 1 1)))
+(display `(1 ,(+ 1 1)))
+(display (quasiquote (1 (unquote (+ 1 1)))))
+(newline)
+;; Nested quasiquote is also wrong (calibration finding):
+;; Expected: (a (quasiquote (b (unquote (c)))))   Actual: (a ())
+(display `(a `(b ,(c)))) (newline)

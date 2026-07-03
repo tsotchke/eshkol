@@ -1,0 +1,17 @@
+;; EM-1 (edge-matrix, 2026-07-02): a quoted form (reader sugar ', `, or a
+;; #(...) literal) as the BODY of any let-family form silently truncates
+;; the rest of the program at parse level. Same class as bug #229 (and/or
+;; arg dispatch dropped quote/vector tokens), now in the let-body parser.
+;;
+;; Found by: pair008_quote__tail_position (quote_sym__in__tail_position_
+;; let_tail_in_define), reproduces under BOTH -r and AOT, exit 0 (!).
+;;
+;; Expected output:  before / es / after
+;; Actual output:    before        (everything from the let form on is DROPPED)
+;;
+;; Inside a define the same shape instead errors with
+;; "expected closing parenthesis after variable value" /
+;; "Undefined variable: es".
+(display "before") (newline)
+(display (let ((u 1)) 'es)) (newline)
+(display "after") (newline)

@@ -1,0 +1,11 @@
+;; EM-7 (calibration for edge-matrix, 2026-07-02): write of a character
+;; that came out of a list prints just "#" instead of #\a. A standalone
+;; (write #\b) is correct -- UNLESS the same program also writes a char
+;; extracted from a list, in which case the standalone write degrades to
+;; "#" too (whole-program type-inference contamination).
+;;
+;; Expected output:  #\a / (1 #\b) / #\b
+;; Actual:           #  / (1 #)   / #
+(write (car '(#\a))) (newline)
+(write '(1 #\b)) (newline)
+(write #\b) (newline)
