@@ -1,0 +1,86 @@
+;;; tests/ad/sweep_c_regressions_test.esk
+;;; Release-blocking AD sweep (GROUP C) regressions. Exact analytic
+;;; expectations for the five fixes:
+;;;   ESH-0078  nested gradient through a NAMED inner function
+;;;   ESH-0096  vector-parameter gradient-of-gradient (2nd-order term)
+;;;   ESH-0095  hessian/laplacian on TENSOR (and tensor-literal) points
+;;;   ESH-0072/0097  AD ops over a lambda capturing a LOCAL parameter
+;;;   R->R^n    vector-valued derivative
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+;; Second-order ops (hessian/laplacian) on arity-1 vector functions use a
+;; central-difference stencil, so they carry O(1e-8) error — match the AD
+;; oracle's 1e-5 second-order tolerance for those checks.
+(define (approx2= a b) (< (abs (- a b)) 1e-5))
+(define (chk label v) (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; ── ESH-0078: 2nd-order gradient through a NAMED inner function ──────────
+;; L(w)=w^3, L'=3w^2, L''=6w. At 3.0 the 2nd derivative is 18.
+(define (L w) (* w (* w w)))
+(chk "ESH-0078 inline inner  = 18"
+     (approx= (gradient (lambda (y) (gradient (lambda (z) (L z)) y)) 3.0) 18.0))
+(chk "ESH-0078 named  inner  = 18"
+     (approx= (gradient (lambda (y) (gradient L y)) 3.0) 18.0))
+(define gL (lambda (x) (gradient (lambda (z) (L z)) x)))
+(chk "ESH-0078 var lambda    = 18" (approx= (gradient gL 3.0) 18.0))
+;; first-order named still correct: L'(3)=27
+(chk "ESH-0078 first-order named = 27" (approx= (gradient L 3.0) 27.0))
+
+;; ── ESH-0096: vector-parameter gradient-of-gradient ─────────────────────
+;; f(v)=v0^3, d/dv0 (3 v0^2) = 6 v0 = 18 at v0=3.
+(define (f1 v) (let ((x (vector-ref v 0))) (* x (* x x))))
+(define gog1 (gradient (lambda (v) (vector-ref (gradient f1 v) 0)) (vector 3.0)))
+(chk "ESH-0096 1-d grad-of-grad = 18" (approx= (vector-ref gog1 0) 18.0))
+;; 2-d Hessian columns of f(v)=v0^3 + 2 v0 v1 at (2,3):
+;;   grad = (3 v0^2 + 2 v1, 2 v0); d/dv (grad_0) = (6 v0, 2) = (12, 2)
+(define (f2 v) (let ((x (vector-ref v 0)) (y (vector-ref v 1)))
+                 (+ (* x (* x x)) (* 2.0 (* x y)))))
+(define gogc0 (gradient (lambda (v) (vector-ref (gradient f2 v) 0)) (vector 2.0 3.0)))
+(chk "ESH-0096 2-d col0[0] = 12" (approx= (vector-ref gogc0 0) 12.0))
+(chk "ESH-0096 2-d col0[1] = 2"  (approx= (vector-ref gogc0 1) 2.0))
+(define gogc1 (gradient (lambda (v) (vector-ref (gradient f2 v) 1)) (vector 2.0 3.0)))
+(chk "ESH-0096 2-d col1[0] = 2"  (approx= (vector-ref gogc1 0) 2.0))
+(chk "ESH-0096 2-d col1[1] = 0"  (approx= (vector-ref gogc1 1) 0.0))
+
+;; ── ESH-0095: hessian / laplacian on TENSOR points (no SIGSEGV) ─────────
+;; g(v)=v0^2 + v1^2. Hessian = diag(2,2), Laplacian = 4.
+(define (g2 v) (let ((x (vector-ref v 0)) (y (vector-ref v 1))) (+ (* x x) (* y y))))
+(chk "ESH-0095 hess (vector) [0][0] = 2" (approx2= (tensor-ref (hessian g2 (vector 1.3 -0.7)) 0 0) 2.0))
+(chk "ESH-0095 hess (tensor) [0][0] = 2" (approx2= (tensor-ref (hessian g2 (tensor 1.3 -0.7)) 0 0) 2.0))
+(chk "ESH-0095 hess (tensor) [1][1] = 2" (approx2= (tensor-ref (hessian g2 (tensor 1.3 -0.7)) 1 1) 2.0))
+(chk "ESH-0095 hess #(...)  [0][0] = 2" (approx2= (tensor-ref (hessian g2 #(1.3 -0.7)) 0 0) 2.0))
+(chk "ESH-0095 lap  (vector) = 4" (approx2= (laplacian g2 (vector 1.3 -0.7)) 4.0))
+(chk "ESH-0095 lap  (tensor) = 4" (approx2= (laplacian g2 (tensor 1.3 -0.7)) 4.0))
+(chk "ESH-0095 lap  #(...)   = 4" (approx2= (laplacian g2 #(1.3 -0.7)) 4.0))
+
+;; ── ESH-0072/0097: AD ops over a lambda capturing a LOCAL parameter ─────
+;; Each builder captures its scalar parameter `a` in the differentiated lambda.
+(define (mk-grad a) (gradient (lambda (v) (* a (vector-ref v 0))) (vector 3.0 4.0)))
+(define (mk-jac  a) (jacobian (lambda (v) (vector (* a (vector-ref v 0)) (vector-ref v 1))) (vector 3.0 4.0)))
+(define (mk-hess a) (hessian  (lambda (v) (* a (* (vector-ref v 0) (vector-ref v 0)))) (vector 3.0 4.0)))
+(define (mk-div  a) (divergence (lambda (v) (vector (* a (vector-ref v 0)) (* a (vector-ref v 1)))) (vector 3.0 4.0)))
+(define (mk-lap  a) (laplacian (lambda (v) (* a (* (vector-ref v 0) (vector-ref v 0)))) (vector 3.0 4.0)))
+(chk "ESH-0097 gradient local-cap [0] = 2 (a)"  (approx= (tensor-ref (mk-grad 2.0) 0) 2.0))
+(chk "ESH-0097 jacobian local-cap [0][0] = 2 (a)" (approx= (tensor-ref (mk-jac 2.0) 0 0) 2.0))
+(chk "ESH-0097 hessian  local-cap [0][0] = 4 (2a)" (approx2= (tensor-ref (mk-hess 2.0) 0 0) 4.0))
+(chk "ESH-0097 divergence local-cap = 4 (2a)" (approx= (mk-div 2.0) 4.0))
+(chk "ESH-0097 laplacian local-cap = 4 (2a)" (approx2= (mk-lap 2.0) 4.0))
+;; ESH-0072: scalar gradient capturing a local scalar. d/dx (a x^2) = 2ax = 12.
+(define (mk-scalar-grad a) (gradient (lambda (x) (* a (* x x))) 3.0))
+(chk "ESH-0072 scalar gradient local-cap = 12" (approx= (mk-scalar-grad 2.0) 12.0))
+
+;; ── R->R^n: vector-valued derivative ────────────────────────────────────
+;; curve(t)=(t^2, t^3) -> curve'(t)=(2t, 3t^2); at 2.0 -> (4, 12).
+(define (curve t) (vector (* t t) (* t (* t t))))
+(define dcurve (derivative curve 2.0))
+(chk "R->R^n derivative [0] = 4"  (approx= (vector-ref dcurve 0) 4.0))
+(chk "R->R^n derivative [1] = 12" (approx= (vector-ref dcurve 1) 12.0))
+;; 3-component: c3(t)=(t, t^2, t^3) -> (1, 2t, 3t^2); at 3.0 -> (1, 6, 27).
+(define (c3 t) (vector t (* t t) (* t (* t t))))
+(define dc3 (derivative c3 3.0))
+(chk "R->R^3 derivative [0] = 1"  (approx= (vector-ref dc3 0) 1.0))
+(chk "R->R^3 derivative [1] = 6"  (approx= (vector-ref dc3 1) 6.0))
+(chk "R->R^3 derivative [2] = 27" (approx= (vector-ref dc3 2) 27.0))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
