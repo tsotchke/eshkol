@@ -1197,3 +1197,35 @@ oracles:
         severity: high
         label: Feature-pair composition sweep clean (no unexpected non-PASS)
         action: python3 tests/edge_matrix/gen_matrix.py && ./scripts/run_edge_matrix.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # VM parity ratchet (adversarial testing campaign P5). The native
+  # codegen surface (llvm_codegen.cpp builtin dispatch + eshkol_op_t)
+  # is diffed against the VM surface (eshkol_vm.c BUILTINS[], the
+  # vm_compiler/vm_parser special-form dispatch, and the compiled-in
+  # Scheme prelude) by scripts/vm_parity_audit.py; every codegen symbol
+  # must be VM-supported or consciously waived in
+  # tests/vm_parity/PARITY.tsv. scripts/run_vm_parity.sh additionally
+  # runs a native-vs-VM differential over tests/vm_parity/corpus/
+  # (both the vm-src and --emit-eskb routes, normalizing the VM's
+  # display-newline quirk) and asserts out-of-subset probes in
+  # tests/vm_parity/oos/ fail cleanly. Writes kind:"vm_parity" events
+  # to scripts/icc_traces/vm_parity.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: vm-parity
+    aliases: [vm_parity, vm-parity-gate, adversarial-p5]
+    requires:
+      - runtime_event:
+          event_kinds: [vm_parity]
+          event_names: ["vm_parity_audit"]
+          event_values: ["PASS"]
+        severity: high
+        label: Codegen-vs-VM surface audit (every symbol supported or waived in PARITY.tsv)
+        action: ./scripts/run_vm_parity.sh
+      - runtime_event:
+          event_kinds: [vm_parity]
+          event_names: ["vm_parity_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: VM parity gate (audit + corpus differential + out-of-subset probes all green)
+        action: ./scripts/run_vm_parity.sh

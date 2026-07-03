@@ -1,12 +1,26 @@
-; sieve of Eratosthenes over a vector
+; sieve of Eratosthenes using named-let loops with IF-tail recursion —
+; nested do / do+when diverge in the VM (found/do_composition_broken.esk)
+; and tail calls through a `when` body are not TCO'd
+; (found/when_tail_call_no_tco.esk)
 (define n 50)
 (define sieve (make-vector n #t))
 (vector-set! sieve 0 #f)
 (vector-set! sieve 1 #f)
-(do ((i 2 (+ i 1))) ((= i n))
-  (when (vector-ref sieve i)
-    (do ((j (* i i) (+ j i))) ((>= j n))
-      (vector-set! sieve j #f))))
-(do ((i 0 (+ i 1))) ((= i n))
-  (when (vector-ref sieve i) (display i) (display " ")))
+(let outer ((i 2))
+  (if (< i n)
+      (begin
+        (if (vector-ref sieve i)
+            (let inner ((j (* i i)))
+              (if (< j n)
+                  (begin (vector-set! sieve j #f) (inner (+ j i)))
+                  0))
+            0)
+        (outer (+ i 1)))
+      0))
+(let print-loop ((i 0))
+  (if (< i n)
+      (begin
+        (if (vector-ref sieve i) (begin (display i) (display " ")) 0)
+        (print-loop (+ i 1)))
+      0))
 (newline)

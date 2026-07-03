@@ -1,0 +1,7 @@
+; FILED: a self tail call through a `when` body is not tail-call-optimized:
+; FRAME OVERFLOW at depth ~300 (stderr diagnostic, exit code 0, no output).
+; The identical loop written with `if` runs fine (TCO applied).
+; native -r : ok
+; vm        : <no stdout>, "FRAME OVERFLOW" on stderr, exit code 0
+(let lp ((i 0)) (when (< i 300) (lp (+ i 1))))
+(display "ok")

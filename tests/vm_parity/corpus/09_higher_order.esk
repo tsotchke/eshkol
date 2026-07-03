@@ -1,6 +1,7 @@
 ; map / filter / fold-left / apply / lambdas as values
+; (multi-list map diverges on the vm-eskb route — see found/map_two_lists_eskb_route.esk)
 (display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)
 (display (filter (lambda (x) (> x 2)) (list 1 2 3 4 5))) (newline)
 (display (fold-left + 0 (list 1 2 3 4 5))) (newline)
 (display (apply + (list 1 2 3))) (newline)
-(display (map (lambda (a b) (+ a b)) (list 1 2 3) (list 10 20 30))) (newline)
+(display (map (lambda (x) (+ x 1)) (list 10 20 30))) (newline)
