@@ -1,0 +1,208 @@
+;; SICP 4.4 — a query-language subset: an assertion database, pattern
+;; matching over (? var) patterns, simple queries, `and` queries, and RULES
+;; applied by full unification with renaming.
+;;
+;; Representations:
+;;   * variables    : (? x); rule application renames to (? <id> x)
+;;   * frames       : alists ((var-key . value) ...), var-key = (cdr var)
+;;   * frame streams: plain lists (the database is finite)
+;; instantiation walks a query replacing bound variables (following chains
+;; through renamed rule variables) so results are verified exactly as lists.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- variables and frames ----
+(define (var? x) (and (pair? x) (eq? (car x) '?)))
+(define (binding-in-frame var frame)
+  (let loop ((f frame))
+    (cond ((null? f) #f)
+          ((equal? (cdr var) (car (car f))) (car f))
+          (else (loop (cdr f))))))
+(define (extend var val frame) (cons (cons (cdr var) val) frame))
+
+;; ---- pattern matching (assertions contain no variables) ----
+(define (pattern-match pat dat frame)
+  (cond ((eq? frame 'failed) 'failed)
+        ((var? pat) (extend-if-consistent pat dat frame))
+        ((and (pair? pat) (pair? dat))
+         (pattern-match (cdr pat) (cdr dat)
+                        (pattern-match (car pat) (car dat) frame)))
+        ((equal? pat dat) frame)
+        (else 'failed)))
+(define (extend-if-consistent var dat frame)
+  (let ((b (binding-in-frame var frame)))
+    (if b
+        (pattern-match (cdr b) dat frame)
+        (extend var dat frame))))
+
+;; ---- unification (rule conclusions DO contain variables) ----
+(define (unify-match p1 p2 frame)
+  (cond ((eq? frame 'failed) 'failed)
+        ((equal? p1 p2) frame)
+        ((var? p1) (extend-if-possible p1 p2 frame))
+        ((var? p2) (extend-if-possible p2 p1 frame))
+        ((and (pair? p1) (pair? p2))
+         (unify-match (cdr p1) (cdr p2)
+                      (unify-match (car p1) (car p2) frame)))
+        (else 'failed)))
+(define (extend-if-possible var val frame)
+  (let ((b (binding-in-frame var frame)))
+    (cond (b (unify-match (cdr b) val frame))
+          ((var? val)
+           (let ((b2 (binding-in-frame val frame)))
+             (if b2
+                 (unify-match var (cdr b2) frame)
+                 (extend var val frame))))
+          ((depends-on? val var frame) 'failed)   ; occur check
+          (else (extend var val frame)))))
+(define (depends-on? exp var frame)
+  (cond ((var? exp)
+         (if (equal? (cdr exp) (cdr var))
+             #t
+             (let ((b (binding-in-frame exp frame)))
+               (if b (depends-on? (cdr b) var frame) #f))))
+        ((pair? exp)
+         (if (depends-on? (car exp) var frame)
+             #t
+             (depends-on? (cdr exp) var frame)))
+        (else #f)))
+
+;; ---- database ----
+(define THE-ASSERTIONS
+  '((job alyssa (computer programmer))
+    (job ben (computer wizard))
+    (job lem (accounting scrivener))
+    (salary alyssa 40000)
+    (salary ben 60000)
+    (salary lem 25000)
+    (son adam cain)
+    (son cain enoch)
+    (son enoch irad)
+    (son irad mehujael)))
+
+;; a rule: (rule <conclusion> <body>)
+(define THE-RULES
+  (list '(rule (grandson (? g) (? s))
+               (and (son (? g) (? f)) (son (? f) (? s))))))
+
+;; ---- the query evaluator: frames-in, frames-out ----
+(define (q-flatmap f lst)
+  (if (null? lst) '() (append (f (car lst)) (q-flatmap f (cdr lst)))))
+(define (keep-frames fs)
+  (cond ((null? fs) '())
+        ((eq? (car fs) 'failed) (keep-frames (cdr fs)))
+        (else (cons (car fs) (keep-frames (cdr fs))))))
+
+(define (qeval query frames)
+  (if (and (pair? query) (eq? (car query) 'and))
+      (conjoin (cdr query) frames)
+      (simple-query query frames)))
+(define (conjoin conjuncts frames)
+  (if (null? conjuncts)
+      frames
+      (conjoin (cdr conjuncts) (qeval (car conjuncts) frames))))
+(define (simple-query query frames)
+  (q-flatmap (lambda (frame)
+               (append (find-assertions query frame)
+                       (apply-rules query frame)))
+             frames))
+(define (find-assertions query frame)
+  (keep-frames (map (lambda (a) (pattern-match query a frame)) THE-ASSERTIONS)))
+(define (apply-rules query frame)
+  (q-flatmap (lambda (rule) (apply-a-rule rule query frame)) THE-RULES))
+
+;; rule application: rename the rule's variables uniquely, unify the query
+;; with the renamed conclusion, then evaluate the renamed body in that frame.
+(define rule-counter 0)
+(define (rename-variables exp id)
+  (cond ((var? exp) (cons '? (cons id (cdr exp))))
+        ((pair? exp) (cons (rename-variables (car exp) id)
+                           (rename-variables (cdr exp) id)))
+        (else exp)))
+(define (apply-a-rule rule query frame)
+  (set! rule-counter (+ rule-counter 1))
+  (let ((r (rename-variables rule rule-counter)))
+    (let ((unified (unify-match query (cadr r) frame)))
+      (if (eq? unified 'failed)
+          '()
+          (qeval (caddr r) (list unified))))))
+
+;; ---- instantiation ----
+(define (instantiate exp frame)
+  (cond ((var? exp)
+         (let ((b (binding-in-frame exp frame)))
+           (if b (instantiate (cdr b) frame) exp)))
+        ((pair? exp) (cons (instantiate (car exp) frame)
+                           (instantiate (cdr exp) frame)))
+        (else exp)))
+(define (run-query query)
+  (map (lambda (frame) (instantiate query frame))
+       (qeval query (list '()))))
+
+;; ---- pattern-matching unit checks ----
+;; frame keys are (cdr var), i.e. the list (x) for the variable (? x)
+(check "match binds var" '(((x) . ben))
+       (pattern-match '(job (? x) (computer wizard)) '(job ben (computer wizard)) '()))
+(check "match nested var" '(((type) . programmer) ((x) . alyssa))
+       (pattern-match '(job (? x) (computer (? type)))
+                      '(job alyssa (computer programmer)) '()))
+(check "match constant mismatch" 'failed
+       (pattern-match '(job ben (? t)) '(job lem (accounting scrivener)) '()))
+(check "match consistent rebinding" 'failed
+       (pattern-match '(pair (? x) (? x)) '(pair a b) '()))
+(check "match same var twice ok" '(((x) . a))
+       (pattern-match '(pair (? x) (? x)) '(pair a a) '()))
+
+;; ---- unification unit checks ----
+(check "unify var-to-var then ground" '(((y) . c) ((x) ? y))
+       (unify-match '(f (? x) c) '(f (? y) (? y)) '()))
+(check "unify occur-check fails" 'failed
+       (unify-match '(? x) '(f (? x)) '()))
+
+;; ---- simple queries ----
+(check "simple query, two matches"
+       '((job alyssa (computer programmer)) (job ben (computer wizard)))
+       (run-query '(job (? x) (computer (? type)))))
+(check "simple query, constant + var"
+       '((salary ben 60000))
+       (run-query '(salary ben (? amount))))
+(check "simple query, no matches" '() (run-query '(job nobody (? t))))
+(check "simple query, all salaries"
+       '((salary alyssa 40000) (salary ben 60000) (salary lem 25000))
+       (run-query '(salary (? p) (? a))))
+
+;; ---- and queries ----
+(check "and query joins on shared var"
+       '((and (job alyssa (computer programmer)) (salary alyssa 40000))
+         (and (job ben (computer wizard)) (salary ben 60000)))
+       (run-query '(and (job (? p) (computer (? t))) (salary (? p) (? a)))))
+(check "and query with constant filter"
+       '((and (job ben (computer wizard)) (salary ben 60000)))
+       (run-query '(and (job (? p) (computer wizard)) (salary (? p) (? a)))))
+(check "and query, empty join" '()
+       (run-query '(and (job (? p) (accounting scrivener)) (job (? p) (computer (? t))))))
+
+;; ---- rules: grandson via two son facts + unification ----
+(check "rule enumerates all grandsons"
+       '((grandson adam enoch) (grandson cain irad) (grandson enoch mehujael))
+       (run-query '(grandson (? g) (? s))))
+(check "rule with bound first arg"
+       '((grandson adam enoch))
+       (run-query '(grandson adam (? who))))
+(check "rule with bound second arg"
+       '((grandson cain irad))
+       (run-query '(grandson (? who) irad)))
+(check "rule fully ground, true" '((grandson adam enoch))
+       (run-query '(grandson adam enoch)))
+(check "rule fully ground, false" '() (run-query '(grandson adam irad)))
+(check "and query mixing rule and assertion"
+       '((and (grandson adam enoch) (son enoch irad)))
+       (run-query '(and (grandson adam (? s)) (son (? s) irad))))
+
+(display "ch4 query system: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
