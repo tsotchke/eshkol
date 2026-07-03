@@ -7,19 +7,108 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-evolve] - 2026-07-03
+
+The "evolve" release: full SICP coverage, exact nested/mixed-mode automatic
+differentiation, closure-semantics completion, every CI platform green, and a
+new permanent adversarial-testing infrastructure.
+
+Release gates (green on the release SHA): SICP full-book gate 88/88 probes under
+both `-r` and AOT (`scripts/run_sicp_smoke.sh`); CI 14/14 lanes including
+windows-arm64; ICC readiness oracle `v1.3-evolve` ready.
+
 ### Added
 
-- Started v1.3-evolve with parser-level string interpolation: string literals
-  can embed `~{expr}` forms, each expression is formatted with display
-  semantics, and `~~{` preserves a literal interpolation opener.
+- Parser-level string interpolation: string literals can embed `~{expr}` forms,
+  each formatted with display semantics; `~~{` preserves a literal opener.
+- Keyword formal support for function and lambda parameters (e.g. `#:scale scale`)
+  plus `let-match` destructuring bindings.
+- First R7RS library surface: `(import (scheme base))` and
+  `(define-library ... (export ...) (import ...) (begin ...))` lower onto the
+  module loader; import-set modifiers `only`/`except`/`rename`/prefix are wired.
+- SICP full-book corpus and smoke oracle: 88 probes across chapters 1-5 including
+  the metacircular, analyzing, lazy, and `amb` evaluators, the query system, and
+  the register-machine simulators, made a v1.3 gate (#85, #87, #102, #105-#109).
+- Native EAGLE linear-head training over the FFI bridge, with a durable
+  hash-chained memory store (#104); `core.memory` v0 content-addressed CRDT
+  event-log faculty (#61).
+- Adversarial testing infrastructure (permanent, ICC-wired): multi-path
+  differential harness + seeded fuzzer (#114), feature-pair edge matrix (#112),
+  AD finite-difference composition oracle (#111), and a stress harness with
+  RSS/time budgets (#115). A VM parity ratchet + manifest lands with the release
+  (#118). See `docs/TESTING.md` and `docs/VM_PARITY.md`.
+- Stdlib completeness: `take-right`/`drop-right`, `filter-map`, and `core.alist`
+  aggregated into `(require stdlib)` (#72, #76).
 
-- Added v1.3 keyword formal support for function and lambda parameters such as
-  `#:scale scale`, plus `let-match` destructuring bindings for day-to-day
-  pattern binding.
+### Fixed
 
-- Added the first v1.3 R7RS library surface: simple `(import (scheme base))`
-  and `(define-library ... (export ...) (import ...) (begin ...))` forms now
-  lower onto the existing module loader.
+Automatic differentiation
+- True nested/higher-order AD via perturbation tagging — nested scalar
+  derivatives are now exact instead of finite-difference approximations (#75).
+- Perturbation/tape state scoped across named-let TCO, giving exact iterated
+  higher-order AD (#84); runtime scalar nested gradients through a named inner
+  function (#95).
+- Mixed-mode vector-gradient-over-derivative: captured-parameter dependencies
+  propagate through the inner derivative onto the outer reverse tape (#113).
+- Centralized, type-checked tensor operand unpack — a type error instead of a
+  SIGSEGV on wrong-typed tensor-op inputs (#79); conv2d forward unified and
+  corrected (NCHW) across codegen and VM (#80); tensor structural integer
+  metadata guarded (#97).
+
+Language and closures
+- `set!`-mutated variables captured by multiple closures are now shared
+  (assignment conversion) (#83); local `letrec` closures get per-activation
+  instances instead of module-level globals (#89).
+- First-class / `apply`'d equality predicates return proper `#t`/`#f` booleans
+  (#86).
+- Quote-token dispatch fixed across `guard`/`case`/`match`/quasiquote clause
+  parsers (#117) and preserved in let-family body tails inside defines (#110).
+- Top-level constructor operands are evaluated exactly once (#116).
+- Macros expand inside internal-define (`letrec*`) bodies (#74); hash tables match
+  compound (cons/list/vector) keys by structural equality (#73).
+- R7RS numeric tower: exactness and promotion discipline, AD-visible `min`/`max`,
+  exact `expt` (#82).
+- R7RS string ops: first-class `string-map` procedure, `string->number` radix (#78).
+
+Memory and control
+- `with-region` body allocations routed into the region arena (#81).
+- Deep-CPS continuation chains run an O0 native cleanup to avoid SIGILL (#93).
+
+Platforms and toolchain
+- windows-arm64 build unbroken: portable `sincos` shim (#77), Windows x64
+  in-process JIT symbol gap (#70), AArch64 Branch26 range extension (#64).
+- Portable JIT/AOT link across the build mesh (objc + LLVM libdir + bounded
+  link timeout) (#71); runtime transitive link deps exported (#69).
+- GPU: bounded Metal command-buffer waits (#66), lazy GPU init + Jetson CUDA
+  GEMM (#68), tensor dtype hardening (#63); parallel-map logger lock race fixed
+  (#67).
+- AOT backend hardening: atomic object emission (#92), object-emit watchdog (#99),
+  interned error strings (#100), external-define body-scan pruning (#101).
+
+### Known Issues
+
+Deep-edge findings surfaced by the new adversarial harnesses; each has a minimal
+repro and a ledger entry under `.swarm/tasks/`. None block ordinary use.
+
+- Vector gradient-of-gradient silently returns zeros; use nested scalar
+  `derivative` for exact higher-order results (ESH-0096).
+- `hessian`/`laplacian` SIGSEGV when the evaluation point is a tensor literal
+  `#(...)` / `(tensor ...)` (ESH-0095).
+- Vector-param AD op combined with a captured local parameter fails LLVM
+  verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
+- A closure created inside a named-let loop that `set!`s a global loses the
+  mutation (ESH-0094).
+- Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
+  stdlib `sort`/`length`/`filter` are non-tail-recursive and fail on very large
+  inputs; mutual tail calls are not TCO'd (ESH-0098, ESH-0101, ESH-0102, ESH-0108).
+- Exact rational arithmetic degrades to double once a bignum is involved
+  (ESH-0105).
+- Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
+  are not fully wired (ESH-0104, ESH-0107).
+- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
+  unaffected (ESH-0103).
+- 27 bytecode-VM divergences and 351 VM parity gaps are documented and tracked
+  in the VM parity manifest (`tests/vm_parity/PARITY.tsv`, ships with #118).
 
 ## [1.2.3-scale] - 2026-05-25
 
