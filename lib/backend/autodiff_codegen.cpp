@@ -3490,8 +3490,30 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         // tensor allocations an inline nested gradient's own machinery emits. A
         // vector-valued point is still handled at runtime below (reverse branch),
         // so this only needs to catch the scalar-point-through-tensor case.
-        bool fn_uses_tensors = adAstUsesTensorOps(op->gradient_op.function) ||
-            (op->gradient_op.function->type == ESHKOL_VAR && adFunctionUsesTensors(func_ptr));
+        // ESH-0078: a NAMED function passed by var (e.g. (gradient L x)) has no
+        // reachable source AST at the gradient op, so the original code fell back
+        // to a coarse IR substring scan (adFunctionUsesTensors). That scan is
+        // FALSE-POSITIVE for every scalar function: tagged +/-/*// arithmetic
+        // unconditionally emits runtime tensor-dispatch helpers
+        // (eshkol_tensor_operand_checked / arena_allocate_tensor_with_header /
+        // eshkol_tensor_result_dtype_*), so a pure-scalar function like
+        // (define (L w) (* w w w)) was wrongly forced onto the reverse-mode path
+        // and a nested (gradient (lambda (y) (gradient L y)) x) returned 0.
+        // Resolve the function's registered body AST and run the SAME
+        // source-level analysis inline lambdas get; fall back to the IR scan only
+        // when no source AST is available (cross-module / stdlib functions).
+        bool fn_uses_tensors = adAstUsesTensorOps(op->gradient_op.function);
+        if (!fn_uses_tensors && op->gradient_op.function->type == ESHKOL_VAR) {
+            const eshkol_ast_t* body_ast = nullptr;
+            if (function_body_ast_) {
+                auto bit = function_body_ast_->find(fwd_key);
+                if (bit == function_body_ast_->end())
+                    bit = function_body_ast_->find(op->gradient_op.function->variable.id);
+                if (bit != function_body_ast_->end()) body_ast = bit->second;
+            }
+            fn_uses_tensors = body_ast ? adAstUsesTensorOps(body_ast)
+                                       : adFunctionUsesTensors(func_ptr);
+        }
         if (fwd_arity == 1 && !fn_uses_tensors) {
             Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
             grad_result_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_fwd_result");

@@ -1268,6 +1268,12 @@ private:
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
     std::unordered_map<std::string, uint64_t> function_arity_table;
 
+    // ESH-0078: Maps a defined function name to its source body AST, so an AD
+    // operator applied to a NAMED function (via var) can run the same
+    // source-level tensor-flow analysis (adAstUsesTensorOps) that inline
+    // lambdas get. Populated at define codegen; consumed by AutodiffCodegen.
+    std::unordered_map<std::string, const eshkol_ast_t*> function_body_ast;
+
     // MIGRATED: String interning moved to CodegenContext::interned_strings_
     // StringIOCodegen::createString() handles string interning now
 
@@ -3820,6 +3826,7 @@ private:
         // Calculus extraction: wire closure call, arity table, captures, closure alloc
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         autodiff_->setFunctionArityTable(&function_arity_table);
+        autodiff_->setFunctionBodyAstTable(&function_body_ast);
         autodiff_->setNestedFunctionCaptures(&nested_function_captures);
         autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
         tensor_->setAutodiffCodegen(autodiff_.get());
@@ -4412,6 +4419,13 @@ private:
 
         // FUNCTION-AS-VALUE FIX: Record arity for closure wrapping when function is used as value
         function_arity_table[func_name] = num_params;
+
+        // ESH-0078: Record the function's source body AST so an AD operator
+        // applied to this function by name (e.g. (gradient L x)) can run the
+        // same source-level tensor-flow analysis inline lambdas get.
+        if (ast->operation.define_op.value) {
+            function_body_ast[func_name] = ast->operation.define_op.value;
+        }
 
         // DWARF DEBUG INFO: Attach DISubprogram to function for source-level debugging
         if (emit_debug_info_ && di_builder_ && di_file_) {

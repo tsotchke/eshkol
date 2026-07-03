@@ -758,6 +758,15 @@ public:
         nested_function_captures_ = captures;
     }
 
+    /** Function body-AST table — maps a defined function name to its source body
+     *  AST. Used so that a NAMED function passed by var to an AD operator (e.g.
+     *  (gradient L x)) can run the same SOURCE-AST tensor-flow analysis that an
+     *  inline lambda gets, instead of the coarse IR substring scan that scalar
+     *  arithmetic's runtime tensor-dispatch helpers falsely trip (ESH-0078). */
+    void setFunctionBodyAstTable(std::unordered_map<std::string, const eshkol_ast_t*>* table) {
+        function_body_ast_ = table;
+    }
+
     /** Get arena-allocate-closure-with-header function declaration */
     using GetClosureAllocFunc = llvm::Function* (*)(void*);
     void setGetClosureAllocFunc(GetClosureAllocFunc func) {
@@ -781,6 +790,7 @@ private:
     void* binding_opaque_ = nullptr;
     ClosureCallCallback closure_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
+    std::unordered_map<std::string, const eshkol_ast_t*>* function_body_ast_ = nullptr;
     std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
     GetClosureAllocFunc get_closure_alloc_func_ = nullptr;
 };
