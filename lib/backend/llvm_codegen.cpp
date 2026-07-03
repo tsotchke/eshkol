@@ -25491,6 +25491,16 @@ private:
         // Track last generated lambda name for codegenList to use
         last_generated_lambda_name = lambda_name;
 
+        // ESH-0078: record the lambda's source body AST keyed by its LLVM
+        // function name, so an AD operator applied to this lambda by name — e.g.
+        // (define L (lambda ...)) (gradient L x), whose func_ptr name is the
+        // generated lambda name — runs the same source-level tensor-flow
+        // analysis inline lambdas get, instead of the coarse IR substring scan
+        // that scalar arithmetic's tensor-dispatch helpers falsely trip.
+        if (op->lambda_op.body) {
+            function_body_ast[lambda_name] = op->lambda_op.body;
+        }
+
         // CLOSURE FIX: Register lambda's captures so we can detect closures later
         if (!free_vars.empty()) {
             nested_function_captures[lambda_name] = free_vars;

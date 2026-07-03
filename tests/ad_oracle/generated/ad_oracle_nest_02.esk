@@ -75,21 +75,21 @@
 (define ad204 (gradient (lambda (x) (gradient inr204 x)) 1.1))
 (define (g204 x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
 (define fd204 (/ (- (g204 (+ 1.1 1e-5)) (g204 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.poly.s.named.capnone" "ESH-0078" ad204 fd204 1e-6 1e-4)
+(chk "nest.gofg.poly.s.named.capnone" ad204 fd204 1e-6 1e-4)
 
 ;; probe nest.gofg.expsin.s.named.capnone
 (define (inr205 y) (* (exp (* 0.3 y)) (sin y)))
 (define ad205 (gradient (lambda (x) (gradient inr205 x)) 1.1))
 (define (g205 x) (gradient (lambda (y) (* (exp (* 0.3 y)) (sin y))) x))
 (define fd205 (/ (- (g205 (+ 1.1 1e-5)) (g205 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.expsin.s.named.capnone" "ESH-0078" ad205 fd205 1e-6 1e-4)
+(chk "nest.gofg.expsin.s.named.capnone" ad205 fd205 1e-6 1e-4)
 
 ;; probe nest.gofg.poly.s.lamvar.capnone
 (define inr206 (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))))
 (define ad206 (gradient (lambda (x) (gradient inr206 x)) 1.1))
 (define (g206 x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
 (define fd206 (/ (- (g206 (+ 1.1 1e-5)) (g206 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.poly.s.lamvar.capnone" "ESH-0078" ad206 fd206 1e-6 1e-4)
+(chk "nest.gofg.poly.s.lamvar.capnone" ad206 fd206 1e-6 1e-4)
 
 ;; probe nest.gofd.a.v2.inline.capnone
 (define ad207 (gradient (lambda (v) (derivative (lambda (z) (* z (vref v 0))) (vref v 1))) (vector 3.0 4.0)))
@@ -111,15 +111,15 @@
 (define ad209 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0)) (vector 2.0)))
 (define (g209 v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
 (define fd209_0 (/ (- (g209 (vector (+ 2.0 1e-5))) (g209 (vector (- 2.0 1e-5)))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.a.v1.inline.capnone[0]" "ESH-0096" (vref ad209 0) fd209_0 1e-6 1e-4)
+(chk "nest.gofg.a.v1.inline.capnone[0]" (vref ad209 0) fd209_0 1e-6 1e-4)
 
 ;; probe nest.gofg.b.v2.inline.capnone
 (define ad210 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 1))) v) 0)) (vector 3.0 4.0)))
 (define (g210 v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 1))) v) 0))
 (define fd210_0 (/ (- (g210 (vector (+ 3.0 1e-5) 4.0)) (g210 (vector (- 3.0 1e-5) 4.0))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.b.v2.inline.capnone[0]" "ESH-0096" (vref ad210 0) fd210_0 1e-6 1e-4)
+(chk "nest.gofg.b.v2.inline.capnone[0]" (vref ad210 0) fd210_0 1e-6 1e-4)
 (define fd210_1 (/ (- (g210 (vector 3.0 (+ 4.0 1e-5))) (g210 (vector 3.0 (- 4.0 1e-5)))) (* 2.0 1e-5)))
-(chk-x "nest.gofg.b.v2.inline.capnone[1]" "ESH-0096" (vref ad210 1) fd210_1 1e-6 1e-4)
+(chk "nest.gofg.b.v2.inline.capnone[1]" (vref ad210 1) fd210_1 1e-6 1e-4)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)
