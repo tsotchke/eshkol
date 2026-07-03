@@ -1,0 +1,13 @@
+;; guard/raise condition handling
+(display
+ (guard (e (#t (list 'caught e)))
+   (raise 'boom)))
+(newline)
+(display
+ (guard (e ((symbol? e) 'sym-error) ((number? e) 'num-error))
+   (raise 42)))
+(newline)
+(display
+ (guard (e (#t 'unreached))
+   (+ 1 2)))
+(newline)

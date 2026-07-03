@@ -1066,3 +1066,38 @@ oracles:
         severity: high
         label: AD composition oracle gate (all cells match finite differences on -r and AOT)
         action: ./scripts/run_ad_oracle.sh
+  # Differential execution cleanliness — adversarial campaign pillar P1
+  # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). Every deterministic program
+  # must produce identical (exit code, normalized stdout) on every
+  # execution axis: jit, jit-nocache (ESHKOL_JIT_CACHE=0), aot -O0 and
+  # aot -O2. Any divergence is a compiler bug by definition.
+  #
+  # scripts/run_differential.sh runs tests/differential/corpus/ and writes
+  # kind:"differential_smoke" events to
+  # scripts/icc_traces/differential_smoke.jsonl; the aggregate event
+  # differential_corpus_clean is PASS only when zero axis pairs diverge.
+  # scripts/run_differential_fuzz.sh --seed 42 --count 200 does the same
+  # for generated programs (differential_fuzz_clean in
+  # scripts/icc_traces/differential_fuzz.jsonl), auto-shrinking any
+  # divergent program into tests/differential/found/NNN_shrunk.esk.
+  #
+  # This oracle SHOULD be red while known divergences exist in the corpus
+  # — the findings in tests/differential/found/ are the open bugs.
+  # ─────────────────────────────────────────────────────────────────
+  - name: differential-clean
+    aliases: [differential, p1-differential, differential-smoke]
+    requires:
+      - runtime_event:
+          event_kinds: [differential_smoke]
+          event_names: ["differential_corpus_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Every corpus program agrees on every native axis pair (jit / jit-nocache / aot-o0 / aot-o2)
+        action: ./scripts/run_differential.sh
+      - runtime_event:
+          event_kinds: [differential_smoke]
+          event_names: ["differential_fuzz_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Seeded 200-program fuzz run finds no cross-axis divergence
+        action: ./scripts/run_differential_fuzz.sh --seed 42 --count 200

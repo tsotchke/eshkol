@@ -1,0 +1,10 @@
+;; write vs display representations
+(write "hello") (newline)
+(display "hello") (newline)
+(write #\a) (newline)
+(display #\a) (newline)
+(write '(1 "two" #\3)) (newline)
+(display '(1 "two" #\3)) (newline)
+(write 'sym) (newline)
+(display #t) (newline)
+(display #f) (newline)

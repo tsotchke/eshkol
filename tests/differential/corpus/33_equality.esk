@@ -1,0 +1,10 @@
+;; eq? / eqv? / equal? semantics
+(display (eq? 'a 'a)) (newline)
+(display (eqv? 42 42)) (newline)
+(display (eqv? 1.5 1.5)) (newline)
+(display (equal? '(1 2 (3)) '(1 2 (3)))) (newline)
+(display (equal? "abc" "abc")) (newline)
+(display (equal? (vector 1 2) (vector 1 2))) (newline)
+(display (eq? '() '())) (newline)
+(display (equal? 1 1.0)) (newline)
+(display (eqv? #\a #\a)) (newline)

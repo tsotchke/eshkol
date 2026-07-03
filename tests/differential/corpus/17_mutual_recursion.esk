@@ -1,0 +1,9 @@
+;; mutual recursion
+(define (my-even? n) (if (= n 0) #t (my-odd? (- n 1))))
+(define (my-odd? n) (if (= n 0) #f (my-even? (- n 1))))
+(display (my-even? 100)) (newline)
+(display (my-odd? 77)) (newline)
+(define (a n) (if (= n 0) 'a-base (b (- n 1))))
+(define (b n) (if (= n 0) 'b-base (a (- n 1))))
+(display (a 7)) (newline)
+(display (b 8)) (newline)

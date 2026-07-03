@@ -1,0 +1,9 @@
+;; exact/inexact contagion
+(display (+ 1/2 0.5)) (newline)
+(display (* 2 1.5)) (newline)
+(display (+ 1 2.0)) (newline)
+(display (= 1 1.0)) (newline)
+(display (< 1/2 0.6)) (newline)
+(display (exact->inexact 1/3)) (newline)
+(display (+ (expt 2 62) 0.0)) (newline)
+(display (* 1/4 4)) (newline)

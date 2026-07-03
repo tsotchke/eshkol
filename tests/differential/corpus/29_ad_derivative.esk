@@ -1,0 +1,8 @@
+;; automatic differentiation: scalar derivative
+(define (cube x) (* x x x))
+(define (square x) (* x x))
+(display (derivative cube 2.0)) (newline)
+(display (derivative square 3.0)) (newline)
+(display (derivative sin 0.0)) (newline)
+(display (derivative exp 0.0)) (newline)
+(display (derivative (lambda (x) (+ (* 3.0 x x) (* 2.0 x) 1.0)) 1.0)) (newline)

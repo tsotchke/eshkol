@@ -1,0 +1,13 @@
+;; FINDING 003 (differential harness, corpus 34_boolean_shortcircuit, hand-shrunk)
+;; A top-level global mutated via set! inside a defined function: the
+;; mutation is visible ONLY under the uncached JIT; the cached JIT
+;; (object-emission pipeline) and both AOT paths lose it:
+;;   jit ESHKOL_JIT_CACHE=0 : (a)     <- correct
+;;   jit (run-cache on)     : ()
+;;   aot -O0 / -O2          : ()
+;; Axis pairs that diverge: jit-vs-jit-nocache, jit-nocache-vs-aot-o0/o2.
+(define log '())
+(define (note! x) (set! log (cons x log)))
+(note! 'a)
+(display log)
+(newline)

@@ -1,0 +1,8 @@
+;; small tensor matmul
+(define A (reshape (vector 1.0 2.0 3.0 4.0) 2 2))
+(define B (reshape (vector 5.0 6.0 7.0 8.0) 2 2))
+(define C (matmul A B))
+(display (tensor-ref C 0 0)) (newline)
+(display (tensor-ref C 0 1)) (newline)
+(display (tensor-ref C 1 0)) (newline)
+(display (tensor-ref C 1 1)) (newline)

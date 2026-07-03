@@ -1,0 +1,10 @@
+;; filter / fold / for-each with closures
+(require stdlib)
+(display (filter (lambda (x) (> x 2)) '(1 2 3 4 5))) (newline)
+(display (fold-left + 0 '(1 2 3 4 5))) (newline)
+(display (fold-right cons '() '(1 2 3))) (newline)
+(for-each (lambda (x) (display x) (display " ")) '(a b c))
+(newline)
+(define total 0)
+(for-each (lambda (x) (set! total (+ total x))) '(10 20 30))
+(display total) (newline)

@@ -1,0 +1,7 @@
+;; sorting with comparators
+(require stdlib)
+(display (sort '(3 1 4 1 5 9 2 6) <)) (newline)
+(display (sort '(3 1 4 1 5 9 2 6) >)) (newline)
+(display (sort '("banana" "apple" "cherry") string<?)) (newline)
+(display (sort '() <)) (newline)
+(display (sort '(42) <)) (newline)
