@@ -13,6 +13,11 @@
 ;;;
 ;;; Any failure prints an "error:" line so the ML harness (scripts/run_ml_tests.sh)
 ;;; flags it. Exercises the same source under both -r (JIT) and AOT.
+;;;
+;;; NOTE: bindings that must happen in a specific ORDER (e.g. tensor-save
+;;; before tensor-load) use let* so evaluation order is guaranteed — R7RS
+;;; internal defines interleaved with side-effecting expressions are not
+;;; ordered and would let the load run before the save.
 
 (define fails 0)
 
@@ -25,23 +30,29 @@
              (display "error: FAIL ") (display name) (newline))))
 
 ;; Compare a tensor's elements (via tensor-ref) against an expected list.
+;; Returns #f (never crashes) if t is not a tensor.
 (define (tensor-approx? t expected)
-  (let loop ((i 0) (e expected))
-    (cond ((null? e) #t)
-          ((approx? (tensor-ref t i) (car e)) (loop (+ i 1) (cdr e)))
-          (else #f))))
+  (and (tensor? t)
+       (let loop ((i 0) (e expected))
+         (cond ((null? e) #t)
+               ((approx? (tensor-ref t i) (car e)) (loop (+ i 1) (cdr e)))
+               (else #f)))))
+
+;; Shape equality that is null-safe (never crashes on a failed load).
+(define (shape-is? t expected)
+  (and (tensor? t) (equal? (tensor-shape t) expected)))
 
 ;; --- 1. tensor-load round-trips the shape ---
-(let ()
-  (define t (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
-  (tensor-save "/tmp/sweep_b_rt.bin" t)
-  (define loaded (tensor-load "/tmp/sweep_b_rt.bin"))
-  (check "tensor-load-shape" (equal? (tensor-shape loaded) (list 2 2)))
+(let* ((t (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
+       (_s1 (tensor-save "/tmp/sweep_b_rt.bin" t))
+       (loaded (tensor-load "/tmp/sweep_b_rt.bin"))
+       (v (reshape (tensor 5.0 6.0 7.0 8.0 9.0 10.0) (list 2 3)))
+       (_s2 (tensor-save "/tmp/sweep_b_rt2.bin" v))
+       (lv (tensor-load "/tmp/sweep_b_rt2.bin")))
+  (check "tensor-save-2x2" (eq? _s1 #t))
+  (check "tensor-load-shape" (shape-is? loaded (list 2 2)))
   (check "tensor-load-values" (tensor-approx? loaded (list 1.0 2.0 3.0 4.0)))
-  (define v (reshape (tensor 5.0 6.0 7.0 8.0 9.0 10.0) (list 2 3)))
-  (tensor-save "/tmp/sweep_b_rt2.bin" v)
-  (define lv (tensor-load "/tmp/sweep_b_rt2.bin"))
-  (check "tensor-load-shape-2x3" (equal? (tensor-shape lv) (list 2 3))))
+  (check "tensor-load-shape-2x3" (shape-is? lv (list 2 3))))
 
 ;; --- 2. scalar math on a tensor maps elementwise ---
 (let ()
@@ -54,8 +65,7 @@
 ;; --- 3. batch-norm / layer-norm ---
 ;; [1,2,3,4]: mean=2.5, var=1.25, std=sqrt(1.25+1e-5) ->
 ;;   normalized = [-1.341636, -0.447212, 0.447212, 1.341636]
-(let ()
-  (define norm (list -1.341636 -0.447212 0.447212 1.341636))
+(let ((norm (list -1.341636 -0.447212 0.447212 1.341636)))
   (check "layer-norm-4arg-scalar"
          (tensor-approx? (layer-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001) norm))
   (check "batch-norm-4arg-scalar"
@@ -78,12 +88,11 @@
          (tensor-approx? (batch-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001 0) norm)))
 
 ;; --- 4. tensor creation: mixed int+float => 1-D, shape syntax preserved ---
-(let ()
-  (define m (tensor 1 2.5 3))
-  (check "creation-mixed-shape" (equal? (tensor-shape m) (list 3)))
+(let ((m (tensor 1 2.5 3))
+      (s (tensor 2 2 1.0 2.0 3.0 4.0)))
+  (check "creation-mixed-shape" (shape-is? m (list 3)))
   (check "creation-mixed-values" (tensor-approx? m (list 1.0 2.5 3.0)))
-  (define s (tensor 2 2 1.0 2.0 3.0 4.0))
-  (check "creation-shaped" (equal? (tensor-shape s) (list 2 2))))
+  (check "creation-shaped" (shape-is? s (list 2 2))))
 
 ;; --- 5. gpu-reduce returns a scalar ---
 (let ()
