@@ -1,0 +1,22 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0105). XKNOWN.
+;
+; Exact rational arithmetic silently degrades to INEXACT doubles as soon as
+; a bignum is involved anywhere:
+;   (/ 1 (expt 10 18)) -> 1/1000000000000000000   exact, correct
+;   (/ 1 (expt 10 19)) -> 1e-19                    WRONG: inexact
+;   (/ 1 (expt 10 100)) -> 1e-100                  WRONG: inexact
+;   (+ (/ 1 3) (/ 1 (expt 2 62))) -> 0.333333      WRONG: exact+exact must
+;       stay exact; the sum's denominator (3*2^62) exceeds int64 and the
+;       result silently becomes a double
+; R7RS: exact operands must produce exact results (or signal); silent
+; exactness loss corrupts any algorithm relying on exact fractions.
+(require stdlib)
+(define tiny (/ 1 (expt 10 100)))
+(define third (/ 1 3))
+(define sum (+ third (/ 1 (expt 2 62))))
+(define ok
+  (and (= (* tiny (expt 10 100)) 1)
+       (= (- (+ third tiny) third) tiny)     ; exact arithmetic must not lose tiny
+       (= (- sum third) (/ 1 (expt 2 62)))))
+(if ok (begin (display "OK rational-bignum-exact") (newline))
+       (begin (display "FAIL") (newline)))

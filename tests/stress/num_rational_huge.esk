@@ -1,0 +1,20 @@
+; num_rational_huge.esk - exact rationals at the largest denominators that
+; stay exact today: int64-range (up to 10^18 / 2^62).
+; BIGNUM denominators silently degrade to inexact doubles - (/ 1 (expt 10 19))
+; = 1e-19, and 1/3 + 1/2^62 overflows the denominator to a double - see
+; found/rational_bignum_exactness.esk (ESH-0105). Those stay XKNOWN.
+(require stdlib)
+(define big-den 4611686018427387904)            ; 2^62
+(define tiny (/ 1 big-den))
+(define e18 (/ 1 1000000000000000000))          ; 10^18
+(define third (/ 1 3))
+(define ok
+  (and (= (* tiny big-den) 1)
+       (= (+ tiny tiny) (/ 2 big-den))
+       (= (* e18 1000000000000000000) 1)
+       (= (* third 3) 1)
+       (= (+ third third third) 1)
+       (= (- (/ 3 big-den) (/ 2 big-den)) tiny)
+       (< tiny e18)))
+(if ok (begin (display "OK rational-huge") (newline))
+       (begin (display "FAIL") (newline)))

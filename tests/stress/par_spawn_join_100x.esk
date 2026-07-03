@@ -1,0 +1,14 @@
+; par_spawn_join_100x.esk - 100 sequential spawn/join generations: each
+; parallel-map call spawns workers and joins them all. Deterministic output;
+; the harness "rep3" class runs the whole program 3x and requires identical
+; stdout every time (flake detector for the pool spawn/teardown path).
+(require stdlib)
+(define (gen g)
+  (apply + (parallel-map (lambda (x) (* x g)) (list 1 2 3 4 5 6 7 8))))
+(define (loop g acc)
+  (if (= g 100) acc (loop (+ g 1) (+ acc (gen g)))))
+; sum_{g=0..99} 36g = 36*4950 = 178200
+(define total (loop 0 0))
+(if (= total 178200)
+    (begin (display "OK 178200") (newline))
+    (begin (display "FAIL ") (display total) (newline)))

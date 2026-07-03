@@ -1,0 +1,16 @@
+; rec_deep_nontco_250k.esk - NON-tail recursion asserted AT the empirically
+; documented safe depth.
+;
+; Empirical limits (2026-07-02, macOS arm64 M2 Ultra, default stacks):
+;   JIT -r : depth 260000 PASS, 270000 SIGILL (rc 132, NO diagnostic)
+;   AOT    : depth 260000 PASS, 280000 SIGILL
+; First failing depth: 270000 (JIT) / <=280000 (AOT). The runtime guard
+; ESHKOL_MAX_RECURSION_DEPTH=100000 (lib/core/runtime_list_helpers.cpp) does
+; NOT cover this plain user-code recursion; the crash is a raw stack blowout.
+; See found/deep_recursion_270k_no_diagnostic.esk.
+;
+; 250000 gives margin under the first failure while staying 2.5x above the
+; 10^5 target depth.
+(define (down n)
+  (if (= n 0) 0 (+ 1 (down (- n 1)))))
+(display "OK ") (display (down 250000)) (newline)

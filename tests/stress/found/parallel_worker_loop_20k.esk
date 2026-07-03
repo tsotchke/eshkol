@@ -1,0 +1,23 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0100). XKNOWN.
+;
+; A named-let loop inside a parallel-map WORKER consumes native stack per
+; iteration (the loop is not TCO'd on the worker-thread execution path) and
+; crashes with SIGBUS/SIGILL once iterations exceed ~5-8k (default 512KB
+; pthread stacks). The same loop is fine called directly, via (map ...), or
+; via parallel-map with <= 3 items (which runs inline, not on pool threads).
+;
+; Measured 2026-07-02 (master 2692ca63, JIT -r, 8-element list):
+;   2000 iters/worker  -> OK
+;   5000 iters/worker  -> OK
+;   8000 iters/worker  -> SIGBUS (rc 138)
+;   20000 iters/worker -> SIGILL (rc 132)
+;   150000 iters, list of 3 -> OK (inline path, no pool)
+;   150000 iters, list of 4 -> SIGILL
+; Silently caps how much work a parallel-map worker may do.
+(require stdlib)
+(define (heavy x)
+  (let loop ((i 0) (acc x))
+    (if (= i 20000) acc
+        (loop (+ i 1) (modulo (+ (* acc 31) 7) 1000003)))))
+(define total (apply + (parallel-map heavy (list 1 2 3 4 5 6 7 8))))
+(display "OK ") (display total) (newline)

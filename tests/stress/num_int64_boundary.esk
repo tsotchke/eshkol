@@ -1,0 +1,17 @@
+; num_int64_boundary.esk - int64 boundary arithmetic: double 2^62 across the
+; fixnum boundary into bignum territory and come back down exactly.
+(require stdlib)
+(define two62 (expt 2 62))
+(define two63 (* two62 2))          ; 2^63 - exceeds int64 max, must promote
+(define two64 (* two63 2))
+(define back (- two64 two63 two62)) ; = 2^62 again, exact
+(define ok
+  (and (= two62 4611686018427387904)
+       (= two63 9223372036854775808)
+       (= two64 18446744073709551616)
+       (= back two62)
+       (= (+ 9223372036854775807 1) 9223372036854775808)  ; int64-max + 1
+       (= (- (+ 9223372036854775807 1) 1) 9223372036854775807)
+       (< -9223372036854775807 0)))
+(if ok (begin (display "OK int64-boundary") (newline))
+       (begin (display "FAIL") (newline)))

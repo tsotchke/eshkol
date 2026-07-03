@@ -1,0 +1,12 @@
+; rec_dynamic_wind_10k.esk - 10,000 recursively nested dynamic-wind frames.
+; Every before AND after thunk must fire exactly once: count = 20000.
+(define count 0)
+(define (nest n)
+  (if (= n 0)
+      'done
+      (dynamic-wind
+        (lambda () (set! count (+ count 1)))
+        (lambda () (nest (- n 1)))
+        (lambda () (set! count (+ count 1))))))
+(nest 10000)
+(display "OK ") (display count) (newline)

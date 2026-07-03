@@ -1,0 +1,19 @@
+; path_closures_10k.esk - vector of 10,000 closures, each capturing its own
+; index. Spot-checks prove per-closure environments are distinct (no shared
+; mutable loop-var capture).
+(require stdlib)
+(define n 10000)
+(define v (make-vector n 0))
+(define (fill i)
+  (if (= i n)
+      'done
+      (begin (vector-set! v i (lambda () (* i 3)))
+             (fill (+ i 1)))))
+(fill 0)
+(define c0 ((vector-ref v 0)))
+(define c4567 ((vector-ref v 4567)))
+(define c9999 ((vector-ref v 9999)))
+(if (and (= c0 0) (= c4567 13701) (= c9999 29997))
+    (begin (display "OK closures-distinct") (newline))
+    (begin (display "FAIL ") (display c0) (display " ")
+           (display c4567) (display " ") (display c9999) (newline)))
