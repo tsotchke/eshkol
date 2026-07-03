@@ -1,0 +1,8 @@
+; rec_cps_20k.esk - 20,000-deep CPS continuation chain (the ESH-0080 bucket:
+; deep CPS/amb frames SIGILLed before PR #93's O0 cleanup-pipeline fix).
+; Builds a 20k-long closure chain, then collapses it.
+(define (fact-cps n k)
+  (if (= n 0)
+      (k 1)
+      (fact-cps (- n 1) (lambda (r) (k (modulo (* r n) 1000003))))))
+(display "OK ") (display (fact-cps 20000 (lambda (x) x))) (newline)

@@ -1,0 +1,4 @@
+;; path_comments_only.esk - nothing but comments and whitespace.
+;; The compiler must accept it and exit 0 in both modes.
+
+;; final comment, no trailing newline handling exercised too

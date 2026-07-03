@@ -1,0 +1,20 @@
+{
+  "id": "ESH-0108",
+  "title": "stdlib length/filter are non-tail-recursive: SIGILL without diagnostic on ~500k+ lists",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/stdlib-scale",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). lib/core/list/query.esk length is (+ 1 (length (cdr lst))) - non-tail - so (length l) on a 500k-element list dies with SIGILL (rc 132) and NO diagnostic; 300k passes. filter has the same shape and dies at 1M. map, reverse, fold-left are tail-safe at 1M. Audit lib/core/list/*.esk for the same non-tail pattern (find/assoc/append/...) and convert to accumulator style.",
+  "file_globs": [
+    "lib/core/list/query.esk",
+    "lib/core/list/*.esk"
+  ],
+  "acceptance": [
+    "(length 1M-list) = 1000000 under -r and AOT (tests/stress/found/list_length_1m.esk)",
+    "(filter even? 1M-list) completes",
+    "tests/stress/data_list_1m.esk keeps passing"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "1M-element lists are inside the v1.2 scale target; core list ops must not be the depth ceiling.",
+  "repro": "tests/stress/found/list_length_1m.esk"
+}

@@ -1,0 +1,13 @@
+; num_bignum_expt_1e1000.esk - 10^1000 via expt, number->string round-trip.
+(require stdlib)
+(define big (expt 10 1000))
+(define s (number->string big))
+(define back (string->number s))
+(define ok
+  (and (= (string-length s) 1001)
+       (equal? (substring s 0 1) "1")
+       (= back big)
+       (= (+ big 1) (+ 1 big))
+       (= (- (* big 10) (expt 10 1001)) 0)))
+(if ok (begin (display "OK bignum-1e1000") (newline))
+       (begin (display "FAIL len=") (display (string-length s)) (newline)))

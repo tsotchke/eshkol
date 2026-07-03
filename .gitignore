@@ -139,3 +139,4 @@ scripts/icc_traces/
 node_modules/
 package.json
 package-lock.json
+tests/stress/generated/

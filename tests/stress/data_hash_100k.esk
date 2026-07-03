@@ -1,0 +1,21 @@
+; data_hash_100k.esk - hash table with 200,000 entries: 100k integer keys +
+; 100k compound string keys ("k:<n>"). Insert, count, spot lookups, overwrite.
+(require stdlib)
+(define ht (make-hash-table))
+(define (fill i)
+  (if (= i 100000) 'done
+      (begin
+        (hash-set! ht i (* i 2))
+        (hash-set! ht (string-append "k:" (number->string i)) i)
+        (fill (+ i 1)))))
+(fill 0)
+(hash-set! ht 0 -7)  ; overwrite must not change count
+(define ok
+  (and (= (hash-count ht) 200000)
+       (= (hash-ref ht 99999 -1) 199998)
+       (= (hash-ref ht "k:12345" -1) 12345)
+       (= (hash-ref ht 0 -1) -7)
+       (equal? (hash-ref ht "k:100000" 'absent) 'absent)))
+(if ok
+    (begin (display "OK hash-200k-entries") (newline))
+    (begin (display "FAIL") (newline)))

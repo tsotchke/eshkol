@@ -1,0 +1,25 @@
+; par_serialized_counter_1600.esk - 16 workers x 100 parallel-map rounds, one
+; mutex-serialized increment of a shared global per worker per round.
+; Exact final count required: 16 * 100 = 1600.
+;
+; The v1.3-spec shape (each worker loops 625 times mutating the global from
+; inside its named-let loop) silently drops ALL mutations today - a closure
+; created inside a named-let loop that set!s a global loses the write. That
+; scenario is pinned as XKNOWN in found/serialized_counter_10k.esk, minimal
+; repro in found/closure_loop_global_set.esk. Here each increment happens in
+; a closure NOT nested in a loop, which works.
+(require stdlib)
+(require core.threads)
+(define m (make-mutex))
+(define counter 0)
+(define workers (list 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+(define (round-once i)
+  (parallel-map
+    (lambda (w) (with-mutex m (lambda () (set! counter (+ counter 1)))) w)
+    workers))
+(define (rounds i)
+  (if (= i 100) 'done (begin (round-once i) (rounds (+ i 1)))))
+(rounds 0)
+(if (= counter 1600)
+    (begin (display "OK 1600") (newline))
+    (begin (display "FAIL ") (display counter) (newline)))

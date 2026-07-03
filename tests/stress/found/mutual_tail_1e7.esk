@@ -1,0 +1,15 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0102). XKNOWN.
+;
+; MUTUAL tail calls are not tail-call-optimized: each ping->pong hop burns a
+; stack frame. R7RS requires proper tail calls across function boundaries.
+; Self-recursion tail calls ARE optimized (rec_tco_1e8.esk runs 10^8 in O(1)
+; stack).
+;
+; Measured 2026-07-02 (master 2692ca63, macOS arm64, JIT -r and AOT):
+;   depth 300000  -> OK
+;   depth 500000  -> SIGILL (rc 132, no diagnostic)
+;   depth 10^7    -> SIGILL, RSS ~535MB at death
+; Safe depth pinned by rec_mutual.esk at 100000.
+(define (ping n) (if (= n 0) (quote ping) (pong (- n 1))))
+(define (pong n) (if (= n 0) (quote pong) (ping (- n 1))))
+(display "OK ") (display (ping 10000000)) (newline)

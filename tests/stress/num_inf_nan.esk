@@ -1,0 +1,28 @@
+; num_inf_nan.esk - inf/nan propagation through the arithmetic surface.
+; (max +nan.0 1.0) is implementation-defined in R7RS and NOT asserted.
+(require stdlib)
+(define inf (/ 1.0 0.0))
+(define ninf (/ -1.0 0.0))
+(define nan (- inf inf))
+(define ok
+  (and (infinite? inf)
+       (infinite? ninf)
+       (< ninf inf)
+       (nan? nan)
+       (nan? (+ nan 1.0))
+       (nan? (* nan 0.0))
+       (nan? (/ nan nan))
+       (nan? (- nan nan))
+       (nan? (* inf 0.0))          ; inf * 0 = nan
+       (nan? (/ inf inf))
+       (nan? (sqrt -1.0))
+       (infinite? (+ inf 1.0))
+       (infinite? (* inf 2.0))
+       (infinite? (expt 2.0 inf))
+       (= (/ 1.0 inf) 0.0)
+       (= (expt 2.0 ninf) 0.0)
+       (not (= nan nan))           ; nan is not = to itself
+       (not (< nan 1.0))
+       (not (> nan 1.0))))
+(if ok (begin (display "OK inf-nan") (newline))
+       (begin (display "FAIL") (newline)))

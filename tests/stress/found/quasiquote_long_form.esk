@@ -1,0 +1,15 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0104). XKNOWN.
+;
+; The LONG FORMS (quasiquote x) and (unquote x) are not wired to the
+; quasiquote engine - only the reader sugar ` and , work:
+;
+; Measured 2026-07-02 (master 2692ca63), JIT and AOT:
+;   `(a ,(+ 1 1) c)                        -> (a 2 c)                correct
+;   (quasiquote (a (unquote (+ 1 1)) c))   -> (a (unquote (+ 1 1)) c)  WRONG
+;   `(a (unquote (+ 1 1)) c)               -> (a (unquote (+ 1 1)) c)  WRONG
+; R7RS: all three are the same expression and must evaluate to (a 2 c).
+(define via-sugar `(a ,(+ 1 1) c))
+(define via-long (quasiquote (a (unquote (+ 1 1)) c)))
+(if (equal? via-sugar via-long)
+    (begin (display "OK quasiquote-long-form") (newline))
+    (begin (display "FAIL long=") (display via-long) (newline)))

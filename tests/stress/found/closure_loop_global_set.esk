@@ -1,0 +1,23 @@
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0094). XKNOWN.
+;
+; A closure created INSIDE a named-let loop body that set!s a GLOBAL loses
+; the mutation entirely. Same program without the loop works (prints 3).
+; Bug-RR / PR #50 family, but for globals: #50 fixed set!-mutated OUTER-LOCAL
+; captures in named-let; globals captured from a loop-body lambda still go
+; through a stale copy.
+;
+; Measured 2026-07-02 (master 2692ca63, macOS arm64):
+;   JIT -r : prints 0   (expected 3)
+;   AOT    : prints 0   (expected 3)
+; Consequence: any mutex-protected shared counter incremented from a worker
+; loop silently stays 0 (see serialized_counter_10k.esk).
+(define c 0)
+(define (call-it f) (f))
+(define (w)
+  (let loop ((k 0))
+    (if (>= k 3)
+        'done
+        (begin (call-it (lambda () (set! c (+ c 1))))
+               (loop (+ k 1))))))
+(w)
+(display "OK ") (display c) (newline)   ; expected "OK 3", prints "OK 0"

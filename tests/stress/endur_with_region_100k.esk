@@ -1,0 +1,13 @@
+; endur_with_region_100k.esk - 100,000 with-region iterations, each allocating
+; a 1000-element vector inside the region (the ESH-0039 / PR #81 regression
+; class: pre-fix this leaked every vector into the global arena, 6.6GB RSS).
+; RSS ceiling asserts the reclaim: measured 231MB JIT (baseline 222MB).
+(define (loop i acc)
+  (if (= i 100000)
+      acc
+      (let ((s (with-region 'r (vector-ref (make-vector 1000 i) 500))))
+        (loop (+ i 1) (+ acc s)))))
+(define total (loop 0 0))
+(if (= total 4999950000)
+    (begin (display "OK region-endurance") (newline))
+    (begin (display "FAIL ") (display total) (newline)))
