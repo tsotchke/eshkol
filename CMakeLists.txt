@@ -1498,7 +1498,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-scale"
+  ESHKOL_VER="${ESHKOL_VERSION}-evolve"
 )
 
 if(ESHKOL_USING_MSVC)
