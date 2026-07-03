@@ -34,7 +34,8 @@ rec_cps_20k.esk	both	run	60	384	160	1	-	OK 451945
 # nested_parens_10k: JIT compile measured 35.8s / 6710MB + macro-depth ERROR spam (ESH-0103); AOT 0.73s / 93MB. r row XKNOWN until fixed.
 generated/parser_nested_parens_10k.esk	r	run	120	1024	-	0	ESH-0103	OK 10000
 generated/parser_nested_parens_10k.esk	aot	run	120	-	512	1	-	OK 10000
-generated/parser_nested_parens_900.esk	both	run	60	384	160	1	-	OK 900
+# nested_parens_900: JIT compile of even 900-deep nesting measured 3.25s / 653MB (same ESH-0103 growth curve, below the spam limit); r ceiling pins it under 1GB.
+generated/parser_nested_parens_900.esk	both	run	60	1024	160	1	-	OK 900
 generated/parser_quoted_list_10k.esk	both	run	120	768	512	1	-	OK 9999
 generated/parser_defines_1mb.esk	both	run	300	1024	512	0	-	OK 32000
 generated/parser_quasiquote_deep.esk	both	run	120	768	512	1	-	OK 1000
