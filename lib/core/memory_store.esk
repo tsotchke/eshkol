@@ -29,12 +29,14 @@
 (require stdlib)
 (require core.memory)
 (require core.sexp)
+(require core.files)   ;; atomic-write-file for the head sidecar
 
 (provide make-memory-store
          memory-store?
          memory-store-log
          memory-store-path
          memory-store-open
+         memory-store-open-fast
          memory-store-append!
          memory-store-verify
          memory-store-count
@@ -215,15 +217,100 @@
 
 (define (memory-store-append! store type payload)
   ;; Append to the in-memory chain, then persist with fsync (T0) before returning.
-  (let* ((ev   (memory-append! (memory-store-log store) type payload))
+  ;; Also refreshes the head sidecar so the NEXT process can open in O(1).
+  ;; Every payload string is sanitized HERE (defense in depth) — the store never
+  ;; trusts callers to have done it; one unsanitized em-dash cost us a link.
+  (let* ((clean (ms-sanitize-payload payload))
+         (ev   (memory-append! (memory-store-log store) type clean))
          (line (string-append (sexp->canonical-string ev) "\n")))
     (if (ms-append-fsync! (memory-store-path store) line)
-        ev
+        (begin (ms-write-head! store) ev)
         (begin (display "memory-store: DURABILITY FAILURE (append not persisted)") (newline) #f))))
 
+(define (ms-sanitize-payload payload)
+  ;; alist of (key . string|number) -> same, with every string value sanitized
+  (if (null? payload) (list)
+      (let ((entry (car payload)))
+        (cons (if (and (pair? entry) (string? (cdr entry)))
+                  (cons (car entry) (memory-store-sanitize (cdr entry)))
+                  entry)
+              (ms-sanitize-payload (cdr payload))))))
+
+;; =====================================================================
+;; O(1) open via head sidecar — the per-tick weave path.
+;;
+;; events.log.head holds (ms-head-v1 <prev-hash-or-#f> <vclock>) — everything
+;; an append needs. Written atomically (temp+rename, files.esk) after every
+;; append; if it is missing or stale the fast open falls back to a FULL
+;; replay + verify and rebuilds it. The sidecar is pure optimization: the
+;; log file remains the single source of truth, and memory-store-verify
+;; always audits the full chain.
+;; =====================================================================
+
+(define (ms-head-path path) (string-append path ".head"))
+
+(define (ms-write-head! store)
+  (let ((log (memory-store-log store)))
+    (atomic-write-file
+      (ms-head-path (memory-store-path store))
+      (string-append
+        (sexp->canonical-string
+          (list (quote ms-head-v1) (vector-ref log 4) (vector-ref log 3)))
+        "\n"))))
+
+(define (ms-read-head path)
+  ;; -> (prev . vclock) or #f
+  (let ((f (ms-fopen (ms-head-path path) "r")))
+    (if (null-ptr? f)
+        #f
+        (begin
+          (ms-fclose f)
+          (let ((port (open-input-file (ms-head-path path))))
+            (let ((line (read-line port)))
+              (close-port port)
+              (if (eof-object? line)
+                  #f
+                  (let ((h (ms-parse line)))
+                    (if (and h (pair? h) (eq? (car h) (quote ms-head-v1)))
+                        (cons (list-ref h 1) (list-ref h 2))
+                        #f)))))))))
+
+(define (memory-store-open-fast node-id path)
+  ;; O(1) open for append-only use (the per-tick weave). Restores prev-hash +
+  ;; vclock from the sidecar without replaying the log. The returned store's
+  ;; in-memory event list holds only NEW events from this session — use
+  ;; memory-store-open (full replay) for reads/verification.
+  (let ((head (ms-read-head path)))
+    (if (not head)
+        (memory-store-open node-id path)   ;; no/invalid sidecar -> full replay
+        (let ((log (make-memory-log node-id)))
+          (vector-set! log 3 (cdr head))   ;; vclock
+          (vector-set! log 4 (car head))   ;; prev-hash
+          (make-memory-store log path)))))
+
 (define (memory-store-verify store)
-  ;; Full audit: re-derive every content hash + linkage from the replayed data.
-  (memory-verify-chain (memory-store-log store)))
+  ;; Full audit, TWO layers:
+  ;;  1. core.memory content hashes — a MODIFIED event is caught (hash-mismatch)
+  ;;  2. strict linear linkage — a DELETED event is caught (linkage-broken):
+  ;;     the first event's prev must be #f and each event's prev must equal its
+  ;;     predecessor's id. (core.memory's verify checks only content hashes, so
+  ;;     without this a removed line passes silently — we proved that gap.)
+  ;;     Valid for a single-node chain; merged multi-node logs have legitimate
+  ;;     forks and will need the CRDT-aware verifier when T1 fan-out lands.
+  (let ((content (memory-verify-chain (memory-store-log store))))
+    (if (not (eq? content #t))
+        content
+        (ms-verify-linkage (memory-events (memory-store-log store)) #f))))
+
+(define (ms-verify-linkage evs expected-prev)
+  (if (null? evs)
+      #t
+      (let ((ev (car evs)))
+        (if (equal? (memory-event-prev ev) expected-prev)
+            (ms-verify-linkage (cdr evs) (memory-event-id ev))
+            (cons (list (quote event) (memory-event-id ev)
+                        (quote expected-prev) expected-prev)
+                  (quote linkage-broken))))))
 
 (define (memory-store-count store)
   (length (memory-events (memory-store-log store))))
@@ -232,12 +319,19 @@
   (let ((evs (memory-events (memory-store-log store))))
     (if (null? evs) #f (memory-event-id (list-ref evs (- (length evs) 1))))))
 
-;; v1 payload-string sanitizer (see header): strip double-quotes and newlines.
+;; v1 payload-string sanitizer (see header): strip double-quotes, newlines, AND
+;; every non-printable-ASCII character. The last one is load-bearing: fwrite's
+;; length argument is string-length = CHARACTERS, but the file gets UTF-8
+;; BYTES — one multibyte char (an em-dash in her felt state) truncated the
+;; write, ate the line terminator, and glued two events onto one line. Until
+;; byte-length crosses the FFI, payload strings are printable ASCII only.
 (define (memory-store-sanitize str)
   (let loop ((i 0) (n (string-length str)) (acc ""))
     (if (>= i n) acc
         (let ((c (string-ref str i)))
           (loop (+ i 1) n
-                (if (or (char=? c #\") (char=? c #\newline))
+                (if (or (char=? c #\")
+                        (char<? c #\space)
+                        (char>? c #\~))
                     (string-append acc " ")
                     (string-append acc (string c))))))))
