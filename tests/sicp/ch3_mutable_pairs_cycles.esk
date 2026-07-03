@@ -1,0 +1,202 @@
+;; SICP 3.3.1-3.3.3 — mutable pair sharing, destructive append!, cycles with a
+;; safe Floyd tortoise-hare detector, the classic count-pairs 3/4/7 sharing
+;; examples (plus the corrected Exercise 3.17 version), and 1D/2D assoc tables
+;; with insert!/lookup.
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- 3.3.1 sharing: z1 shares ONE list, z2 has two copies ----
+(define x (list 'a 'b))
+(define z1 (cons x x))
+(define z2 (cons (list 'a 'b) (list 'a 'b)))
+
+(set-car! (car z1) 'wow)
+(check "z1-car-mutated" 'wow (car (car z1)))
+(check "z1-cdr-sees-mutation (shared)" 'wow (car (cdr z1)))
+(check "x-itself-mutated" '(wow b) x)
+
+(set-car! (car z2) 'wow)
+(check "z2-car-mutated" 'wow (car (car z2)))
+(check "z2-cdr-unaffected (copies)" 'a (car (cdr z2)))
+
+;; set-cdr! sharing
+(define y1 (list 1 2 3))
+(define y2 (cons 0 (cdr y1)))          ; y2 shares y1's tail
+(set-cdr! (cdr y1) (list 99))          ; mutate the shared tail
+(check "set-cdr!-through-owner" '(1 2 99) y1)
+(check "set-cdr!-visible-via-sharer" '(0 2 99) y2)
+
+;; ---- last-pair + destructive append! (Exercise 3.12) ----
+(define (last-pair p)
+  (if (null? (cdr p)) p (last-pair (cdr p))))
+(define (append! p q)
+  (set-cdr! (last-pair p) q)
+  p)
+
+(define lx (list 'a 'b))
+(define ly (list 'c 'd))
+(define lz (append! lx ly))
+(check "append!-result" '(a b c d) lz)
+(check "append!-mutates-first-arg" '(a b c d) lx)   ; unlike append
+(check "append!-shares-tail" #t (eq? (cdr (cdr lx)) ly))
+(set-car! ly 'C!)
+(check "append!-tail-mutation-visible" '(a b C! d) lx)
+
+;; non-destructive append for contrast
+(define (append-pure p q)
+  (if (null? p) q (cons (car p) (append-pure (cdr p) q))))
+(define ax (list 1 2))
+(define az (append-pure ax (list 3)))
+(check "pure-append-result" '(1 2 3) az)
+(check "pure-append-leaves-arg" '(1 2) ax)
+
+;; ---- 3.3.1 make-cycle + Floyd tortoise-hare detector (Exercise 3.13/3.18) ----
+(define (make-cycle p)
+  (set-cdr! (last-pair p) p)
+  p)
+
+;; Floyd's algorithm: terminates on ANY list, cyclic or not, without ever
+;; walking more steps than ~2x the structure size. No infinite loop.
+(define (has-cycle? lst)
+  (define (step p) (if (pair? p) (cdr p) '()))
+  (let loop ((slow lst) (fast (step lst)))
+    (cond ((not (pair? fast)) #f)
+          ((not (pair? (step fast))) #f)
+          ((eq? slow fast) #t)
+          (else (loop (step slow) (step (step fast)))))))
+
+(check "no-cycle-plain-list" #f (has-cycle? (list 'a 'b 'c 'd)))
+(check "no-cycle-empty" #f (has-cycle? '()))
+(check "no-cycle-shared-acyclic" #f (has-cycle? z1))
+
+(define cyc (make-cycle (list 'p 'q 'r)))
+(check "cycle-detected" #t (has-cycle? cyc))
+(check "cycle-wraps: 4th elem is head again" 'p (car (cdr (cdr (cdr cyc)))))
+(check "cycle-identity: cddr's cdr is the head pair" #t (eq? cyc (cdr (cdr (cdr cyc)))))
+
+;; single-pair self-cycle
+(define self (list 's))
+(set-cdr! self self)
+(check "self-cycle-detected" #t (has-cycle? self))
+
+;; ---- Exercise 3.16: broken count-pairs returns 3 / 4 / 7 on 3 real pairs ----
+(define (count-pairs p)
+  (if (not (pair? p))
+      0
+      (+ (count-pairs (car p))
+         (count-pairs (cdr p))
+         1)))
+
+;; three pairs, no sharing -> 3
+(define t3 (cons 'a (cons 'b (cons 'c '()))))
+(check "count-pairs-3" 3 (count-pairs t3))
+
+;; three pairs, one shared once -> 4
+(define p4 (cons 'a '()))
+(define t4 (cons p4 (cons p4 '())))
+(check "count-pairs-4" 4 (count-pairs t4))
+
+;; three pairs, doubled sharing -> 7
+(define p7 (cons 'a '()))
+(define q7 (cons p7 p7))
+(define t7 (cons q7 q7))
+(check "count-pairs-7" 7 (count-pairs t7))
+
+;; ---- Exercise 3.17: correct count-pairs using an eq? seen-list ----
+(define (memq-pair p seen)
+  (cond ((null? seen) #f)
+        ((eq? p (car seen)) #t)
+        (else (memq-pair p (cdr seen)))))
+
+(define (correct-count-pairs p)
+  (let ((seen '()))
+    (define (walk q)
+      (if (or (not (pair? q)) (memq-pair q seen))
+          0
+          (begin
+            (set! seen (cons q seen))
+            (+ (walk (car q)) (walk (cdr q)) 1))))
+    (walk p)))
+
+(check "correct-count-3" 3 (correct-count-pairs t3))
+(check "correct-count-4-struct" 3 (correct-count-pairs t4))
+(check "correct-count-7-struct" 3 (correct-count-pairs t7))
+(check "correct-count-cycle-terminates" 3 (correct-count-pairs cyc))
+
+;; ---- 3.3.3 tables: 1D and 2D assoc-based with insert!/lookup ----
+(define (t-assoc key records)
+  (cond ((null? records) #f)
+        ((equal? key (car (car records))) (car records))
+        (else (t-assoc key (cdr records)))))
+
+(define (make-table) (list '*table*))
+
+(define (lookup key table)
+  (let ((record (t-assoc key (cdr table))))
+    (if record (cdr record) #f)))
+
+(define (insert! key value table)
+  (let ((record (t-assoc key (cdr table))))
+    (if record
+        (set-cdr! record value)
+        (set-cdr! table
+                  (cons (cons key value) (cdr table)))))
+  'ok)
+
+(define tbl (make-table))
+(check "1d-lookup-missing" #f (lookup 'a tbl))
+(insert! 'a 1 tbl)
+(insert! 'b 2 tbl)
+(check "1d-lookup-a" 1 (lookup 'a tbl))
+(check "1d-lookup-b" 2 (lookup 'b tbl))
+(insert! 'a 10 tbl)                    ; overwrite in place
+(check "1d-overwrite" 10 (lookup 'a tbl))
+(check "1d-other-key-intact" 2 (lookup 'b tbl))
+
+;; 2D table: subtables keyed by key-1, records keyed by key-2
+(define (lookup-2d key-1 key-2 table)
+  (let ((subtable (t-assoc key-1 (cdr table))))
+    (if subtable
+        (let ((record (t-assoc key-2 (cdr subtable))))
+          (if record (cdr record) #f))
+        #f)))
+
+(define (insert-2d! key-1 key-2 value table)
+  (let ((subtable (t-assoc key-1 (cdr table))))
+    (if subtable
+        (let ((record (t-assoc key-2 (cdr subtable))))
+          (if record
+              (set-cdr! record value)
+              (set-cdr! subtable
+                        (cons (cons key-2 value) (cdr subtable)))))
+        (set-cdr! table
+                  (cons (list key-1 (cons key-2 value))
+                        (cdr table)))))
+  'ok)
+
+(define t2 (make-table))
+(insert-2d! 'math '+ 43 t2)
+(insert-2d! 'math '- 45 t2)
+(insert-2d! 'math '* 42 t2)
+(insert-2d! 'letters 'a 97 t2)
+(insert-2d! 'letters 'b 98 t2)
+(check "2d-math-+" 43 (lookup-2d 'math '+ t2))
+(check "2d-math-*" 42 (lookup-2d 'math '* t2))
+(check "2d-letters-a" 97 (lookup-2d 'letters 'a t2))
+(check "2d-missing-key2" #f (lookup-2d 'math 'a t2))
+(check "2d-missing-key1" #f (lookup-2d 'greek 'a t2))
+(insert-2d! 'letters 'a 65 t2)         ; overwrite nested record
+(check "2d-overwrite" 65 (lookup-2d 'letters 'a t2))
+(check "2d-sibling-intact" 98 (lookup-2d 'letters 'b t2))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_mutable_pairs_cycles") (newline))
+    (begin (display "HAS-FAIL ch3_mutable_pairs_cycles ") (display fails) (newline)))
