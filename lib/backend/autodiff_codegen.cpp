@@ -3870,6 +3870,21 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* svec_typed_result_elems = ctx_.builder().CreatePointerCast(svec_result_elems, ctx_.builder().getPtrTy());
     ctx_.builder().CreateStore(svec_typed_result_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), svec_typed_result, 2));
 
+    // ESH-0096: when this gradient runs NESTED inside another forward-mode
+    // gradient over a vector (gradient-of-gradient), each component must be
+    // returned as a DUAL carrying {value = ∂f/∂vⱼ (e2 slice), e1 = ∂²f/∂vᵢ∂vⱼ}
+    // so the OUTER gradient can extract the second-order (mixed e1e2) term.
+    // A plain-double tensor would drop that outer perturbation → the outer
+    // gradient would see a constant and return 0. We build this parallel
+    // Scheme vector of dual tagged values alongside the plain-double tensor and
+    // select which to return based on the perturbation level (below).
+    Value* svec_dual_result_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_for_svec, svec_n});
+    ctx_.builder().CreateStore(svec_n, svec_dual_result_vec);
+    Value* svec_dual_result_elems8 = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_dual_result_vec,
+        ConstantInt::get(ctx_.int64Type(), 8));
+    Value* svec_dual_result_elems = ctx_.builder().CreatePointerCast(svec_dual_result_elems8, ctx_.ptrType());
+
     // Get arena for dual vector allocation
     Value* arena_svec = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
@@ -3928,7 +3943,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Load primal value from input
     Value* svec_in_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems, svec_j);
     Value* svec_in_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_in_ptr);
-    Value* svec_primal = tagged_.unpackDouble(svec_in_val);
+    // ESH-0096: preserve the incoming point's FULL jet so a nested gradient over
+    // a vector keeps the OUTER perturbation. At level 0 the elements are plain
+    // doubles → {p,0,0,0}; when nested (gradient-of-gradient over a vector) they
+    // are duals carrying the outer tangent in e1 → {p,d1,0,0}. We seed only THIS
+    // level's slot with the component tangent, keeping the other components
+    // intact — the same discipline seedForwardAndPush uses for scalars.
+    Value* svec_in_jet = safeUnpackDualFromTagged(svec_in_val); // {p,d1,d2,d12}
+    Value* svec_primal  = dualField(ctx_, svec_in_jet, 0);
+    Value* svec_in_e1   = dualField(ctx_, svec_in_jet, 1);
+    Value* svec_in_e2   = dualField(ctx_, svec_in_jet, 2);
+    Value* svec_in_e12  = dualField(ctx_, svec_in_jet, 3);
     // Tangent: 1.0 if j == i, else 0.0
     Value* svec_is_active = ctx_.builder().CreateICmpEQ(svec_j, svec_i);
     Value* svec_tangent = ctx_.builder().CreateSelect(svec_is_active,
@@ -3936,10 +3961,11 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // ESH-0093: seed THIS level's slot (e1 at level 0, e2 when nested) so an
     // inner forward-mode derivative — which seeds the NEXT slot after the
     // level push below — cannot collide with the component's perturbation.
-    Value* svec_zero_t = ConstantFP::get(ctx_.doubleType(), 0.0);
-    Value* svec_t_e1 = ctx_.builder().CreateSelect(svec_lvl0, svec_tangent, svec_zero_t);
-    Value* svec_t_e2 = ctx_.builder().CreateSelect(svec_lvl0, svec_zero_t, svec_tangent);
-    Value* svec_dual = makeDual4(ctx_, svec_primal, svec_t_e1, svec_t_e2, svec_zero_t);
+    // ESH-0096: at level 0 the e1 slot is a fresh seed; when nested keep the
+    // incoming e1 (outer tangent) and put this component's tangent in e2.
+    Value* svec_t_e1 = ctx_.builder().CreateSelect(svec_lvl0, svec_tangent, svec_in_e1);
+    Value* svec_t_e2 = ctx_.builder().CreateSelect(svec_lvl0, svec_in_e2, svec_tangent);
+    Value* svec_dual = makeDual4(ctx_, svec_primal, svec_t_e1, svec_t_e2, svec_in_e12);
     Value* svec_dual_tagged = packDualToTagged(svec_dual);
     Value* svec_dual_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_dual_elems_typed, svec_j);
     ctx_.builder().CreateStore(svec_dual_tagged, svec_dual_ptr);
@@ -4022,6 +4048,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* svec_result_dual = unpackDualFromTagged(svec_call_result);
     Value* svec_dual_deriv = ctx_.builder().CreateSelect(svec_lvl0,
         dualField(ctx_, svec_result_dual, 1), dualField(ctx_, svec_result_dual, 2));
+    // ESH-0096: the mixed e1e2 coefficient (a12) is the 2nd-order term
+    // ∂²f/∂vᵢ∂vⱼ carried through when nested; used only by an outer gradient.
+    Value* svec_dual_mixed = dualField(ctx_, svec_result_dual, 3);
     ctx_.builder().CreateBr(svec_merge_bb);
     BasicBlock* svec_dual_exit = ctx_.builder().GetInsertBlock();
 
@@ -4036,19 +4065,39 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     PHINode* svec_deriv = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_deriv");
     svec_deriv->addIncoming(svec_dual_deriv, svec_dual_exit);
     svec_deriv->addIncoming(svec_zero_deriv, svec_const_exit);
+    PHINode* svec_mixed = ctx_.builder().CreatePHI(ctx_.doubleType(), 2, "grad_svec_mixed");
+    svec_mixed->addIncoming(svec_dual_mixed, svec_dual_exit);
+    svec_mixed->addIncoming(svec_zero_deriv, svec_const_exit);
 
-    // Store derivative in result tensor
+    // Store derivative in result tensor (plain double — the level-0 result)
     Value* svec_result_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), svec_typed_result_elems, svec_i);
     Value* svec_deriv_bits = ctx_.builder().CreateBitCast(svec_deriv, ctx_.int64Type());
     ctx_.builder().CreateStore(svec_deriv_bits, svec_result_ptr);
+
+    // ESH-0096: also store the {deriv, mixed} dual into the parallel Scheme
+    // vector so a NESTED gradient-of-gradient can carry the 2nd-order term out.
+    Value* svec_zero_c = ConstantFP::get(ctx_.doubleType(), 0.0);
+    Value* svec_comp_dual = makeDual4(ctx_, svec_deriv, svec_mixed, svec_zero_c, svec_zero_c);
+    Value* svec_comp_dual_tagged = packDualToTagged(svec_comp_dual);
+    Value* svec_dual_res_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(),
+        svec_dual_result_elems, svec_i);
+    ctx_.builder().CreateStore(svec_comp_dual_tagged, svec_dual_res_ptr);
 
     ctx_.builder().CreateStore(ctx_.builder().CreateAdd(svec_i, ConstantInt::get(ctx_.int64Type(), 1)), svec_dim_i);
     ctx_.builder().CreateBr(svec_dim_cond);
 
     ctx_.builder().SetInsertPoint(svec_dim_end);
-    // Return result tensor
+    // Return result tensor (level 0) or the dual-carrying Scheme vector (nested).
+    // ESH-0096: at level 0 (outer gradient / top-level call) return the plain
+    // double tensor — the historical representation every consumer expects.
+    // When nested inside another forward-mode gradient, return the Scheme vector
+    // of {∂f/∂vⱼ, ∂²f/∂vᵢ∂vⱼ} duals so the outer gradient can differentiate it.
     Value* svec_result_int = ctx_.builder().CreatePtrToInt(svec_typed_result, ctx_.int64Type());
-    Value* scheme_vector_tagged = tagged_.packPtr(svec_result_int, ESHKOL_VALUE_HEAP_PTR);
+    Value* svec_dual_vec_int = ctx_.builder().CreatePtrToInt(svec_dual_result_vec, ctx_.int64Type());
+    // Select the pointer BEFORE packing (avoid a select over the tagged struct).
+    Value* svec_chosen_int = ctx_.builder().CreateSelect(svec_lvl0,
+        svec_result_int, svec_dual_vec_int);
+    Value* scheme_vector_tagged = tagged_.packPtr(svec_chosen_int, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
     BasicBlock* scheme_vector_exit = ctx_.builder().GetInsertBlock();
 
