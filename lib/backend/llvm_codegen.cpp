@@ -7514,6 +7514,11 @@ private:
         // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
         Value* car_is_vector_ptr = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // CHAR FIX (ESH-0099): a character in a cons cell must be re-tagged as
+        // CHAR, not demoted to INT64 by the default path below. Without this,
+        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
+        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* null_car = BasicBlock::Create(*context, "car_extract_null", current_func);
@@ -7532,6 +7537,8 @@ private:
         BasicBlock* hash_ptr_car = BasicBlock::Create(*context, "car_extract_hash_ptr", current_func);
         BasicBlock* check_vector_ptr = BasicBlock::Create(*context, "car_check_vector_ptr", current_func);
         BasicBlock* vector_ptr_car = BasicBlock::Create(*context, "car_extract_vector_ptr", current_func);
+        BasicBlock* check_char = BasicBlock::Create(*context, "car_check_char", current_func);
+        BasicBlock* char_car = BasicBlock::Create(*context, "car_extract_char", current_func);
         BasicBlock* int_car = BasicBlock::Create(*context, "car_extract_int", current_func);
         BasicBlock* merge_car = BasicBlock::Create(*context, "car_merge", current_func);
 
@@ -7637,7 +7644,7 @@ private:
 
         // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
         builder->SetInsertPoint(check_vector_ptr);
-        builder->CreateCondBr(car_is_vector_ptr, vector_ptr_car, int_car);
+        builder->CreateCondBr(car_is_vector_ptr, vector_ptr_car, check_char);
 
         builder->SetInsertPoint(vector_ptr_car);
         Value* car_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
@@ -7647,6 +7654,16 @@ private:
         builder->CreateBr(merge_car);
         BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
 
+        // CHAR FIX (ESH-0099): extract codepoint and re-tag as CHAR.
+        builder->SetInsertPoint(check_char);
+        builder->CreateCondBr(car_is_char, char_car, int_car);
+
+        builder->SetInsertPoint(char_car);
+        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
+        Value* tagged_char = packCharToTaggedValue(car_char);
+        builder->CreateBr(merge_car);
+        BasicBlock* char_exit = builder->GetInsertBlock();
+
         builder->SetInsertPoint(int_car);
         Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
         Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
@@ -7654,7 +7671,7 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(merge_car);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 10);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 11);
         car_tagged_phi->addIncoming(tagged_null, null_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
         car_tagged_phi->addIncoming(tagged_cons_ptr, cons_ptr_exit);
@@ -7664,6 +7681,7 @@ private:
         car_tagged_phi->addIncoming(tagged_bool, bool_exit);
         car_tagged_phi->addIncoming(tagged_hash_ptr, hash_ptr_exit);
         car_tagged_phi->addIncoming(tagged_vector_ptr, vector_ptr_exit);
+        car_tagged_phi->addIncoming(tagged_char, char_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
 
         return car_tagged_phi;
@@ -7852,6 +7870,12 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // CHAR FIX (ESH-0099): a character stored in a cons cell must be
+        // re-extracted as a CHAR-tagged value, not silently demoted to INT64
+        // (which is what the default int path below does). Without this,
+        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
+        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
 
         // NULL FIX: Add null_block for NULL values
         BasicBlock* null_block = BasicBlock::Create(*context, "extract_null", current_func);
@@ -7869,6 +7893,8 @@ private:
         BasicBlock* hash_block = BasicBlock::Create(*context, "extract_hash", current_func);
         BasicBlock* check_vector = BasicBlock::Create(*context, "extract_check_vector", current_func);
         BasicBlock* vector_block = BasicBlock::Create(*context, "extract_vector", current_func);
+        BasicBlock* check_char = BasicBlock::Create(*context, "extract_check_char", current_func);
+        BasicBlock* char_block = BasicBlock::Create(*context, "extract_char", current_func);
         BasicBlock* int_block = BasicBlock::Create(*context, "extract_int", current_func);
         BasicBlock* merge_block = BasicBlock::Create(*context, "extract_merge", current_func);
 
@@ -7952,7 +7978,7 @@ private:
 
         // VECTOR_PTR FIX: Handle vector pointers (MIGRATION: output as HEAP_PTR)
         builder->SetInsertPoint(check_vector);
-        builder->CreateCondBr(car_is_vector, vector_block, int_block);
+        builder->CreateCondBr(car_is_vector, vector_block, check_char);
 
         builder->SetInsertPoint(vector_block);
         Value* car_vector = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
@@ -7960,6 +7986,17 @@ private:
         Value* tagged_vector = packPtrToTaggedValue(builder->CreateIntToPtr(car_vector, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* vector_exit = builder->GetInsertBlock();
+
+        // CHAR FIX (ESH-0099): extract the codepoint and re-tag as CHAR so the
+        // character survives (apply f (list #\a)) and other cons-list unpacking.
+        builder->SetInsertPoint(check_char);
+        builder->CreateCondBr(car_is_char, char_block, int_block);
+
+        builder->SetInsertPoint(char_block);
+        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car_flag});
+        Value* tagged_char = packCharToTaggedValue(car_char);
+        builder->CreateBr(merge_block);
+        BasicBlock* char_exit = builder->GetInsertBlock();
 
         // Extract int64 car and pack into tagged value
         builder->SetInsertPoint(int_block);
@@ -7970,7 +8007,7 @@ private:
 
         // Merge: return tagged value struct
         builder->SetInsertPoint(merge_block);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 9);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 10);
         // NULL FIX: Add null_exit as incoming
         car_tagged_phi->addIncoming(tagged_null, null_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
@@ -7980,6 +8017,7 @@ private:
         car_tagged_phi->addIncoming(tagged_closure, closure_exit);
         car_tagged_phi->addIncoming(tagged_hash, hash_exit);
         car_tagged_phi->addIncoming(tagged_vector, vector_exit);
+        car_tagged_phi->addIncoming(tagged_char, char_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
 
         return car_tagged_phi;
