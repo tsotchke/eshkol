@@ -4681,6 +4681,28 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
             if (found && it->second) {
                 Value* storage = it->second;
+                // ESH-0072/0097: this reverse-mode vector path is emitted even
+                // when the run-time input is a scheme vector (the svec forward
+                // path actually executes), so its capture code must still verify.
+                // A lambda that captures a LOCAL function parameter resolves
+                // `storage` to the parameter's Argument, which is a tagged_value
+                // STRUCT, not a pointer — ptrtoint on it is invalid IR. Mirror
+                // resolveGradientCaptures: a named-let carry pointer ("<var>_cap")
+                // is forwarded as-is; a value-typed capture is funneled through a
+                // temp slot; only a genuine pointer storage is packed via ptrtoint.
+                if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                    if (arg->getType()->isPointerTy() &&
+                        arg->getName() == (var_name + "_cap")) {
+                        grad_call_args.push_back(storage);
+                        continue;
+                    }
+                }
+                if (!storage->getType()->isPointerTy()) {
+                    Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
+                    ctx_.builder().CreateStore(storage, val_temp);
+                    grad_call_args.push_back(val_temp);
+                    continue;
+                }
                 // MUTABLE CAPTURE FIX: Create storage containing packed pointer
                 // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
                 // Then lambda loads from slot, unpacks data field to get @storage
@@ -8039,6 +8061,31 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
 
         if (found && it->second) {
             Value* storage = it->second;
+            // ESH-0072/0097: a lambda capturing a LOCAL function parameter
+            // resolves `storage` to that parameter's Argument (a tagged_value
+            // STRUCT, not a pointer) — ptrtoint on it is invalid IR and broke
+            // jacobian/hessian/divergence/curl/laplacian of such a lambda.
+            // A named-let carry pointer ("<var>_cap") forwards as-is; a
+            // value-typed capture funnels through a temp slot; only a genuine
+            // pointer storage is packed via ptrtoint. Mirrors
+            // resolveGradientCaptures.
+            if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                if (arg->getType()->isPointerTy() &&
+                    arg->getName() == (var_name + "_cap")) {
+                    capture_args.push_back(storage);
+                    continue;
+                }
+            }
+            if (!storage->getType()->isPointerTy()) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                          current_func->getEntryBlock().begin());
+                AllocaInst* val_temp = entry_builder.CreateAlloca(
+                    ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_val");
+                ctx_.builder().CreateStore(storage, val_temp);
+                capture_args.push_back(val_temp);
+                continue;
+            }
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             IRBuilder<> entry_builder(&current_func->getEntryBlock(),
                                       current_func->getEntryBlock().begin());
