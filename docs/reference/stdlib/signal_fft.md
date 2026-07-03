@@ -43,17 +43,41 @@ Edge cases: same power-of-2 requirement as `fft`.
 
 ## Known issues
 
-### Chaining `fft` → `ifft` inside one compiled function returns garbage
+### `fft` → `ifft` round-trip in a user/library function — works
 
-At the REPL top level, `fft` and `ifft` each work and round-trip correctly. But when the result of `fft` is fed into `ifft` **within the body of a user- or library-defined function**, the round-trip is corrupted — the first element becomes a huge number (~5e9) and the rest collapse to a constant. `fft` alone inside a function is fine; it is the `fft`→`ifft` chain that breaks.
+The `fft`→`ifft` round-trip inside a user- or library-defined function now
+returns the original signal (up to ~1e-18 imaginary noise):
 
 ```scheme
-;; repro.esk
 (require signal.fft)
 (define (roundtrip a) (ifft (fft a)))
 (display (roundtrip #(1.0 2.0 3.0 4.0))) (newline)
+;; => #(1 2+5.72e-18i 3 4-5.72e-18i)   ; ~ #(1 2 3 4)
 ```
+
+### Open: `fft`→`ifft` chain **inside a precompiled (`--shared-lib`) function** corrupts
+
+There is a remaining, distinct codegen bug: a function that is *compiled into a
+precompiled shared library* (e.g. the stdlib `fast-convolve` in
+[`signal.filters`](signal_filters.md#known-issues)) and chains `fft`→`ifft`
+returns garbage — the first element becomes a huge number (~5e9), the rest
+collapse to `-8`. The identical source called from an ordinary (JIT/AOT main)
+module works, as does `fft` alone, complex-multiply, division, and `ifft`'s
+conjugate/scale halves in isolation; only the full `fft`→`ifft` data-flow chain
+inside a `--shared-lib`/`OptNone` function fails. Minimal repro (compile as a
+shared library, then require it):
+
+```scheme
+;; onlyfft.esk, built with:  eshkol-run --shared-lib -o onlyfft onlyfft.esk
+(provide fft ifft chain)
+;; ... fft/ifft from lib/signal/fft.esk ...
+(define (chain a) (ifft (fft a)))
+;; (chain #(1.0 2.0 3.0 4.0)) => #(5.1e+09 -8-8i -8 -8+8i)  ; expected ~#(1 2 3 4)
 ```
-#(4.96616e+09 -8-8i -8 -8+8i)      ;; expected ~ #(1 2 3 4)
-```
-This is the direct cause of the `fast-convolve` corruption documented in [`signal.filters`](signal_filters.md#known-issues). Workaround: keep `fft` and `ifft` in separate top-level steps, or use direct-time-domain `convolve`.
+
+This is the direct cause of the `fast-convolve` corruption in
+[`signal.filters`](signal_filters.md#known-issues). It is a compiler bug (not a
+library bug), so it is reported here rather than worked around in Scheme.
+Workaround for now: keep `fft`/`ifft` in ordinary (non-`--shared-lib`) code, e.g.
+run the chain from your own module or the REPL rather than through the precompiled
+`fast-convolve`.
