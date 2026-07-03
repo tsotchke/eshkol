@@ -6210,6 +6210,12 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
                                  op->hessian_op.point->operation.op != ESHKOL_CALL_OP));
         // Also check: not a tensor literal, not a vector constructor
         if (op->hessian_op.point->type == ESHKOL_TENSOR) is_scalar_input = false;
+        // ESH-0095: a (tensor ...) op is a COLLECTION point, not a scalar. The
+        // catch-all "OP && op != CALL_OP" above wrongly marked it scalar, so the
+        // tensor pointer was read as a double and f was called with a scalar
+        // where it expected a vector → SIGSEGV.
+        if (op->hessian_op.point->type == ESHKOL_OP &&
+            op->hessian_op.point->operation.op == ESHKOL_TENSOR_OP) is_scalar_input = false;
         if (op->hessian_op.point->type == ESHKOL_OP &&
             op->hessian_op.point->operation.op == ESHKOL_CALL_OP &&
             op->hessian_op.point->operation.call_op.func &&
@@ -6283,12 +6289,25 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // Get current function for basic blocks
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Convert TypedValue to tagged_value
-    // Tensor literal fix: re-pack ptr-as-int64 as HEAP_PTR for correct subtype dispatch
-    Value* vector_val = typed_raw_;
-    if (op->hessian_op.point->type == ESHKOL_TENSOR) {
-        Value* data_val = tagged_.unpackInt64(vector_val);
-        vector_val = tagged_.packPtr(data_val, ESHKOL_VALUE_HEAP_PTR);
+    // Convert TypedValue to tagged_value.
+    // ESH-0095: codegen returns raw ptr-as-int64 for a tensor LITERAL (#(...))
+    // but a tagged value for a (tensor ...) op and for (vector ...)/(list ...).
+    // Mirror the gradient path's robust dispatch instead of unconditionally
+    // calling unpackInt64 on a possibly-raw i64 (which mis-read the pointer and
+    // led to the tensor-point SIGSEGV).
+    Value* vector_val;
+    if (typed_raw_->getType() == ctx_.taggedValueType()) {
+        vector_val = typed_raw_; // already tagged (tensor-op / vector / list)
+    } else if (typed_raw_->getType()->isIntegerTy(64) &&
+               op->hessian_op.point->type == ESHKOL_TENSOR) {
+        // Tensor literal: ptr-as-int64 → wrap as HEAP_PTR for subtype dispatch.
+        vector_val = tagged_.packPtr(typed_raw_, ESHKOL_VALUE_HEAP_PTR);
+    } else if (typed_raw_->getType()->isIntegerTy(64)) {
+        vector_val = tagged_.packInt64(typed_raw_, true);
+    } else if (typed_raw_->getType()->isDoubleTy()) {
+        vector_val = tagged_.packDouble(typed_raw_);
+    } else {
+        vector_val = tagged_.packInt64(typed_raw_, true);
     }
 
     // ── MULTI-PARAMETER HESSIAN via exact forward-over-forward AD ───────
