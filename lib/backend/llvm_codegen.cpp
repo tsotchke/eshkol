@@ -780,6 +780,42 @@ namespace {
         return out;
     }
 
+    // Compute the LLVM symbol name used to back a top-level user variable's
+    // storage. User-program globals MUST NOT be emitted under their raw Scheme
+    // name: a name like `free`/`malloc`/`exit` would collide with the C runtime
+    // symbol at JIT/AOT link (calling data as code -> SIGBUS at teardown), and a
+    // name like `log`/`sin` would clash with an in-module libm function
+    // declaration (LLVM auto-renames the GlobalVariable, and two creation sites
+    // then produce two distinct `@log.N` slots — a `set!` writes one while a
+    // read sees the other, so mutations are silently lost on cached-JIT/AOT).
+    // Mangling the symbol removes the whole collision class. See ESH-0092/0103.
+    //
+    //   is_repl   -> private REPL storage (`__repl_storage_*`, hot-reload aware)
+    //   is_public -> raw name (library `provide` bindings and `:external`
+    //                references, which must bind cross-object to stdlib.o)
+    //   otherwise -> `eshkol_g_`-prefixed, encoded so it can never equal a
+    //                C/libm symbol.
+    static std::string userGlobalStorageName(const std::string& name,
+                                             bool is_repl, bool is_public) {
+        if (is_repl) {
+            return replVarStorageSymbolName(name);
+        }
+        if (is_public) {
+            return name;
+        }
+        std::string out = "eshkol_g_";
+        char encoded[4];
+        for (unsigned char ch : name) {
+            if (std::isalnum(ch)) {
+                out.push_back(static_cast<char>(ch));
+            } else {
+                std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+                out += encoded;
+            }
+        }
+        return out;
+    }
+
     static void seedTypeCheckerWithReplFunctions(
         eshkol::hott::TypeChecker& type_checker,
         eshkol::hott::TypeEnvironment& type_env) {
@@ -2590,10 +2626,14 @@ public:
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     !asts_to_use[i].operation.define_op.is_function) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
-                    std::string storage_name = var_name ? std::string(var_name) : std::string();
-                    if (g_repl_mode_enabled && var_name) {
-                        storage_name = replVarStorageSymbolName(var_name);
-                    }
+                    // `:external` references and library `provide` bindings keep
+                    // their raw public name so they bind cross-object to
+                    // stdlib.o; genuine user globals are mangled (ESH-0092/0103).
+                    bool is_public_pre =
+                        asts_to_use[i].operation.define_op.is_external || library_mode;
+                    std::string storage_name = var_name
+                        ? userGlobalStorageName(var_name, g_repl_mode_enabled, is_public_pre)
+                        : std::string();
                     if (var_name && !module->getNamedGlobal(storage_name)) {
                         GlobalVariable* global_var = nullptr;
                         if (g_repl_mode_enabled) {
@@ -11645,7 +11685,10 @@ private:
                         global_var = dyn_cast<GlobalVariable>(sym_it->second);
                     }
                     if (!global_var) {
-                        global_var = module->getNamedGlobal(var_name);
+                        // Mangle user globals so `free`/`log`/... never collide
+                        // with a C/libm symbol (ESH-0092/0103).
+                        global_var = module->getNamedGlobal(
+                            userGlobalStorageName(var_name, is_repl_eval, library_mode));
                     }
                     if (global_var) {
                         // Use existing pre-declared global variable
@@ -11655,10 +11698,8 @@ private:
                         GlobalValue::LinkageTypes linkage = is_repl_eval
                             ? GlobalValue::WeakAnyLinkage
                             : GlobalValue::InternalLinkage;
-                        std::string global_name = var_name;
-                        if (is_repl_eval) {
-                            global_name = replVarStorageSymbolName(var_name);
-                        }
+                        std::string global_name =
+                            userGlobalStorageName(var_name, is_repl_eval, library_mode);
 
                         global_var = new GlobalVariable(
                             *module,
@@ -11774,7 +11815,9 @@ private:
                 // Normal function context
                 // CRITICAL FIX: Check if there's a pre-declared GlobalVariable for this name
                 // If so, store to that instead of creating an AllocaInst
-                GlobalVariable* pre_declared_global = module->getNamedGlobal(var_name);
+                // (user globals are mangled — ESH-0092/0103).
+                GlobalVariable* pre_declared_global = module->getNamedGlobal(
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode));
                     if (pre_declared_global) {
                         // Store to the pre-declared global variable
                         Value* store_value = value;
@@ -11953,7 +11996,7 @@ private:
                     false,
                     GlobalValue::WeakAnyLinkage,
                     func_ptr, // Initialize with actual function address
-                    var_name
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode)
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
@@ -11978,7 +12021,7 @@ private:
                     false,
                     GlobalValue::WeakAnyLinkage,
                     init_value,  // Always valid Constant now
-                    var_name
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode)
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
