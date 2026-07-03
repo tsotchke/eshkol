@@ -1,0 +1,200 @@
+;; SICP 4.3.3 — the amb EVALUATOR: a metacircular evaluator in which every
+;; evaluation takes TWO continuations, (succeed val fail) and (fail), so that
+;; `amb` expressions create choice points and `require` triggers backtracking
+;; through the interpreted program.  Host CPS is the implementation vehicle,
+;; but amb/require/backtracking live IN the evaluated language.
+;;
+;; Search sizes are kept small on purpose: deep host-CPS continuation chains
+;; SIGILL past roughly depth 13..15 (tracked as ESH-0080, see ch4_amb.esk);
+;; the dwelling puzzle is therefore 3 people / 3 floors and the Pythagorean
+;; search runs over 1..6.
+;;
+;; NOTE: base env binds comparison primitives to boolean-normalizing wrapper
+;; lambdas — ESH-0078 workaround, see ch4_metacircular_full.esk.
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name) (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+(define (tagged? exp tag) (and (pair? exp) (eq? (car exp) tag)))
+(define (lookup var env)
+  (if (null? env) (error "unbound" var)
+      (let loop ((vars (caar env)) (vals (cdar env)))
+        (cond ((null? vars) (lookup var (cdr env)))
+              ((eq? (car vars) var) (car vals))
+              (else (loop (cdr vars) (cdr vals)))))))
+(define (define-var! var val env)
+  (set-car! (car env) (cons var (caar env)))
+  (set-cdr! (car env) (cons val (cdar env))))
+
+;; ---- ambeval: exp env succeed fail ----
+;;   succeed : (value fail-continuation) -> answer
+;;   fail    : () -> answer   (backtrack to most recent choice point)
+(define (ambeval exp env succeed fail)
+  (cond ((number? exp) (succeed exp fail))
+        ((boolean? exp) (succeed exp fail))
+        ((symbol? exp) (succeed (lookup exp env) fail))
+        ((tagged? exp 'quote) (succeed (cadr exp) fail))
+        ((tagged? exp 'lambda) (succeed (list 'closure (cadr exp) (caddr exp) env) fail))
+        ((tagged? exp 'if)
+         (ambeval (cadr exp) env
+                  (lambda (pv fail2)
+                    (if (not (eq? pv #f))
+                        (ambeval (caddr exp) env succeed fail2)
+                        (if (null? (cdddr exp))
+                            (succeed 'ok fail2)
+                            (ambeval (cadddr exp) env succeed fail2))))
+                  fail))
+        ((tagged? exp 'define)
+         (ambeval (caddr exp) env
+                  (lambda (val fail2)
+                    (define-var! (cadr exp) val env)
+                    (succeed 'ok fail2))
+                  fail))
+        ((tagged? exp 'begin) (eval-sequence (cdr exp) env succeed fail))
+        ((tagged? exp 'amb) (try-choices (cdr exp) env succeed fail))
+        ((tagged? exp 'require)
+         (ambeval (cadr exp) env
+                  (lambda (pv fail2)
+                    (if (not (eq? pv #f)) (succeed 'ok fail2) (fail2)))
+                  fail))
+        (else
+         (ambeval (car exp) env
+                  (lambda (proc fail2)
+                    (eval-operands (cdr exp) env
+                                   (lambda (args fail3)
+                                     (amb-apply proc args succeed fail3))
+                                   fail2))
+                  fail))))
+
+;; amb choice points: try each choice in order; the fail continuation handed
+;; to each branch retries the REMAINING choices — this is the backtracking.
+(define (try-choices choices env succeed fail)
+  (if (null? choices)
+      (fail)
+      (ambeval (car choices) env succeed
+               (lambda () (try-choices (cdr choices) env succeed fail)))))
+
+(define (eval-sequence exps env succeed fail)
+  (cond ((null? exps) (succeed 'ok fail))
+        ((null? (cdr exps)) (ambeval (car exps) env succeed fail))
+        (else (ambeval (car exps) env
+                       (lambda (v fail2) (eval-sequence (cdr exps) env succeed fail2))
+                       fail))))
+
+(define (eval-operands exps env succeed fail)
+  (if (null? exps)
+      (succeed '() fail)
+      (ambeval (car exps) env
+               (lambda (v fail2)
+                 (eval-operands (cdr exps) env
+                                (lambda (vs fail3) (succeed (cons v vs) fail3))
+                                fail2))
+               fail)))
+
+(define (amb-apply proc args succeed fail)
+  (cond ((procedure? proc) (succeed (apply proc args) fail))
+        ((tagged? proc 'closure)
+         (ambeval (caddr proc)
+                  (cons (cons (cadr proc) args) (cadddr proc))
+                  succeed fail))
+        (else (error "not-applicable" proc))))
+
+;; ---- driver loop equivalents ----
+(define (all-values exp env)
+  (let ((acc '()))
+    (ambeval exp env
+             (lambda (v next) (set! acc (cons v acc)) (next))  ; force backtrack
+             (lambda () 'exhausted))
+    (reverse acc)))
+(define (first-value exp env)
+  (ambeval exp env (lambda (v next) v) (lambda () 'none)))
+
+(define (base-env)
+  (list (cons (list '+ '- '* '= '< '> 'not 'even 'distinct3 'list3)
+              (list + - *
+                    (lambda (a b) (if (= a b) #t #f))
+                    (lambda (a b) (if (< a b) #t #f))
+                    (lambda (a b) (if (> a b) #t #f))
+                    (lambda (x) (if (eq? x #f) #t #f))
+                    (lambda (n) (if (= (modulo n 2) 0) #t #f))
+                    (lambda (a b c)
+                      (if (= a b) #f (if (= a c) #f (if (= b c) #f #t))))
+                    (lambda (a b c) (list a b c))))))
+
+;; ---- amb basics ----
+(check "amb enumerates in order" '(1 2 3) (all-values '(amb 1 2 3) (base-env)))
+(check "amb first value" 1 (first-value '(amb 1 2 3) (base-env)))
+(check "amb of no choices fails" 'none (first-value '(amb) (base-env)))
+(check "nested amb cross product" '(11 21 12 22)
+       (all-values '(begin (define a (amb 1 2))
+                           (define b (amb 10 20))
+                           (+ a b))
+                   (base-env)))
+
+;; ---- require + backtracking ----
+(check "require filters" '(2 4)
+       (all-values '(begin (define x (amb 1 2 3 4 5))
+                           (require (even x))
+                           x)
+                   (base-env)))
+(check "unsatisfiable require -> none" 'none
+       (first-value '(begin (define x (amb 1 2 3))
+                            (require (> x 5))
+                            x)
+                    (base-env)))
+(check "backtrack across choice points" '(2 3 0)
+       (first-value '(begin (define a (amb 1 2 3))
+                            (define b (amb 1 2 3))
+                            (require (> b a))
+                            (require (= (+ a b) 5))
+                            (list3 a b 0))
+                    (base-env)))
+;; sanity check on the list3 result shape used above
+(check "backtrack result shape" '((2 3 0))
+       (all-values '(begin (define a (amb 2))
+                           (define b (amb 3))
+                           (list3 a b 0))
+                   (base-env)))
+
+;; ---- multiple dwelling, simplified to 3 people / 3 floors ----
+;; Baker does not live on the top floor; Cooper does not live on the bottom
+;; floor; Fletcher lives on neither the top nor the bottom floor; all live on
+;; distinct floors.  Unique solution: baker=1 cooper=3 fletcher=2.
+(define dwelling
+  '(begin
+     (define baker (amb 1 2 3))
+     (define cooper (amb 1 2 3))
+     (define fletcher (amb 1 2 3))
+     (require (distinct3 baker cooper fletcher))
+     (require (not (= baker 3)))
+     (require (not (= cooper 1)))
+     (require (not (= fletcher 3)))
+     (require (not (= fletcher 1)))
+     (list3 baker cooper fletcher)))
+(check "dwelling unique solution" '((1 3 2)) (all-values dwelling (base-env)))
+(check "dwelling first solution" '(1 3 2) (first-value dwelling (base-env)))
+
+;; ---- Pythagorean triple over a small range (ESH-0080: keep it shallow) ----
+(define pyth-env (base-env))
+;; an-integer-between defined IN the evaluated language: recursion happens
+;; lazily inside the second amb choice, exactly as in SICP 4.3.1.
+(first-value '(define an-integer-between
+                (lambda (lo hi)
+                  (begin (require (not (> lo hi)))
+                         (amb lo (an-integer-between (+ lo 1) hi)))))
+             pyth-env)
+(check "pythagorean triples in 1..6" '((3 4 5))
+       (all-values '(begin
+                      (define i (an-integer-between 1 6))
+                      (define j (an-integer-between i 6))
+                      (define k (an-integer-between j 6))
+                      (require (= (+ (* i i) (* j j)) (* k k)))
+                      (list3 i j k))
+                   pyth-env))
+
+(display "ch4 amb evaluator: ")
+(display (if (= fails 0) "ALL PASS" (cons fails 'FAILS))) (newline)
