@@ -2158,6 +2158,54 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
     bool has_dot_tail = false;
     eshkol_ast_t dot_tail;
 
+    // Long-form (unquote e) / (unquote-splicing e) / (quasiquote e) /
+    // (quote e) inside quasiquoted data. R7RS §4.2.8: `(a (unquote e) c) is
+    // identical to `(a ,e c) — the list spellings must behave exactly like the
+    // ,/,@/`/' reader sugar. The quasiquote data parser previously only
+    // recognised the sugar tokens, so the long forms survived as literal
+    // (unquote e) list data and were never interpolated (ESH-0094 / EM-4).
+    {
+        Token head = tokenizer.nextToken();
+        if (head.type == TOKEN_SYMBOL &&
+            (head.value == "unquote" || head.value == "unquote-splicing" ||
+             head.value == "quasiquote" || head.value == "quote")) {
+            eshkol_ast_t ast;
+            ast.type = ESHKOL_OP;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = 1;
+            ast.operation.call_op.variables = new eshkol_ast_t[1];
+            if (head.value == "unquote") {
+                // Active unquote — its body is evaluated (same as ,expr).
+                ast.operation.op = ESHKOL_UNQUOTE_OP;
+                ast.operation.call_op.variables[0] = parse_expression(tokenizer);
+            } else if (head.value == "unquote-splicing") {
+                ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
+                ast.operation.call_op.variables[0] = parse_expression(tokenizer);
+            } else if (head.value == "quasiquote") {
+                // Nested quasiquote — keep parsing as quasiquoted data (same
+                // as the `expr sugar); codegen renders it as literal data.
+                ast.operation.op = ESHKOL_QUASIQUOTE_OP;
+                ast.operation.call_op.variables[0] = parse_quasiquoted_data(tokenizer);
+            } else { // quote
+                ast.operation.op = ESHKOL_QUOTE_OP;
+                ast.operation.call_op.variables[0] = parse_quoted_data(tokenizer);
+            }
+            if (ast.operation.call_op.variables[0].type == ESHKOL_INVALID) {
+                return {.type = ESHKOL_INVALID};
+            }
+            Token close = tokenizer.nextToken();
+            if (close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(close,
+                    "long-form unquote/unquote-splicing/quasiquote/quote takes exactly one argument");
+                return {.type = ESHKOL_INVALID};
+            }
+            return ast;
+        }
+        // Not a long-form special: push the head token back and parse the
+        // list normally.
+        tokenizer.pushBack(head);
+    }
+
     while (true) {
         Token inner_token = tokenizer.nextToken();
         if (inner_token.type == TOKEN_RPAREN) break;
@@ -4646,20 +4694,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else if (token.type == TOKEN_QUOTE) {
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    expr.type = ESHKOL_OP;
-                    expr.operation.op = ESHKOL_QUOTE_OP;
-                    expr.operation.call_op.func = nullptr;
-                    expr.operation.call_op.num_vars = 1;
-                    expr.operation.call_op.variables = new eshkol_ast_t[1];
-                    expr.operation.call_op.variables[0] = quoted;
-                } else {
-                    expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens uniformly (the bolt-on
+                // TOKEN_QUOTE branch only covered ' and missed `/,/#(...)).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -4694,12 +4733,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t producer;
-            if (token.type == TOKEN_LPAREN) {
-                producer = parse_list(tokenizer);
-            } else {
-                producer = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t producer = parse_expression(tokenizer);
 
             if (producer.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -4714,12 +4752,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t consumer;
-            if (token.type == TOKEN_LPAREN) {
-                consumer = parse_list(tokenizer);
-            } else {
-                consumer = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t consumer = parse_expression(tokenizer);
 
             if (consumer.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -4805,20 +4842,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t producer;
-                if (token.type == TOKEN_LPAREN) {
-                    producer = parse_list(tokenizer);
-                } else if (token.type == TOKEN_QUOTE) {
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    producer.type = ESHKOL_OP;
-                    producer.operation.op = ESHKOL_QUOTE_OP;
-                    producer.operation.call_op.func = nullptr;
-                    producer.operation.call_op.num_vars = 1;
-                    producer.operation.call_op.variables = new eshkol_ast_t[1];
-                    producer.operation.call_op.variables[0] = quoted;
-                } else {
-                    producer = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens uniformly.
+                tokenizer.pushBack(token);
+                eshkol_ast_t producer = parse_expression(tokenizer);
 
                 if (producer.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -4957,12 +4984,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t test;
-                if (token.type == TOKEN_LPAREN) {
-                    test = parse_list(tokenizer);
-                } else {
-                    test = parse_atom(token);
-                }
+                // Push the token back and route through parse_expression.
+                // Manual LPAREN/atom dispatch here dropped quote, quasiquote
+                // and #(...) vector tokens in the guard-clause test position
+                // (ESH-0094 family): a test written as 'sym or #(1 2) fell
+                // into parse_atom, corrupting the token stream.
+                tokenizer.pushBack(token);
+                eshkol_ast_t test = parse_expression(tokenizer);
 
                 clause.operation.call_op.func = new eshkol_ast_t;
                 *clause.operation.call_op.func = test;
@@ -4978,12 +5006,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         return ast;
                     }
 
-                    eshkol_ast_t expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        expr = parse_list(tokenizer);
-                    } else {
-                        expr = parse_atom(token);
-                    }
+                    // Push back + parse_expression: the manual LPAREN/atom
+                    // dispatch dropped quoted symbols/lists in guard-clause
+                    // bodies, so (guard (e (#t 'c)) 42) parsed 'c as a bare
+                    // variable reference -> "Undefined variable: c"
+                    // (ESH-0094 / EM-2).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t expr = parse_expression(tokenizer);
                     body_exprs.push_back(expr);
                 }
 
@@ -5023,12 +5052,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                // Push back + parse_expression so quoted/quasiquoted/#(...)
+                // tokens in the guard body are handled (ESH-0094 family).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
                 body_expressions.push_back(expr);
             }
 
@@ -5061,12 +5088,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t exception;
-            if (token.type == TOKEN_LPAREN) {
-                exception = parse_list(tokenizer);
-            } else {
-                exception = parse_atom(token);
-            }
+            // Push back + parse_expression: the manual LPAREN/atom dispatch
+            // parsed (raise 'boom) with 'boom as a bare variable reference
+            // -> "Undefined variable: boom" (ESH-0094 / EM-2). parse_expression
+            // handles quote/quasiquote/#(...) and every other token.
+            tokenizer.pushBack(token);
+            eshkol_ast_t exception = parse_expression(tokenizer);
 
             if (exception.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -5099,12 +5126,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t key;
-            if (token.type == TOKEN_LPAREN) {
-                key = parse_list(tokenizer);
-            } else {
-                key = parse_atom(token);
-            }
+            // Push back + parse_expression so a quoted/quasiquoted/#(...) key
+            // like (case 'b ...) is handled — the manual LPAREN/atom dispatch
+            // fed 'b into parse_atom, corrupting the token stream and silently
+            // truncating the rest of the program (ESH-0094 family).
+            tokenizer.pushBack(token);
+            eshkol_ast_t key = parse_expression(tokenizer);
 
             if (key.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -5219,11 +5246,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
 
                 // Parse body expressions.
-                // Bug O fix (2026-04-21): handle TOKEN_QUOTE / TOKEN_BACKQUOTE
-                // here just as the lambda-body parser does — `'binder` must
-                // desugar to (quote binder), not be fed into parse_atom
-                // which would leave the quote dangling and the following
-                // symbol parsed as a variable reference.
+                // Bug O fix (2026-04-21) originally bolted on TOKEN_QUOTE /
+                // TOKEN_BACKQUOTE cases here; ESH-0094 replaces the whole
+                // manual dispatch with pushBack + parse_expression, the one
+                // form that also covers #(...) vector literals and unquote
+                // tokens uniformly with every other expression position.
                 std::vector<eshkol_ast_t> body_exprs;
 
                 while (true) {
@@ -5235,28 +5262,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         return ast;
                     }
 
-                    eshkol_ast_t expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        expr = parse_list(tokenizer);
-                    } else if (token.type == TOKEN_QUOTE) {
-                        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                        expr.type = ESHKOL_OP;
-                        expr.operation.op = ESHKOL_QUOTE_OP;
-                        expr.operation.call_op.func = nullptr;
-                        expr.operation.call_op.num_vars = 1;
-                        expr.operation.call_op.variables = new eshkol_ast_t[1];
-                        expr.operation.call_op.variables[0] = quoted;
-                    } else if (token.type == TOKEN_BACKQUOTE) {
-                        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
-                        expr.type = ESHKOL_OP;
-                        expr.operation.op = ESHKOL_QUASIQUOTE_OP;
-                        expr.operation.call_op.func = nullptr;
-                        expr.operation.call_op.num_vars = 1;
-                        expr.operation.call_op.variables = new eshkol_ast_t[1];
-                        expr.operation.call_op.variables[0] = inner;
-                    } else {
-                        expr = parse_atom(token);
-                    }
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t expr = parse_expression(tokenizer);
 
                     if (expr.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -5312,35 +5319,16 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            // Parse the match subject expression. Previously a bare TOKEN_QUOTE
-            // / TOKEN_BACKQUOTE / TOKEN_COMMA passed to parse_atom(token)
+            // Parse the match subject expression. A bare TOKEN_QUOTE /
+            // TOKEN_BACKQUOTE / TOKEN_COMMA passed to parse_atom(token)
             // emitted a degenerate symbol AST and the subsequent datum got
             // mis-parsed as a match clause, producing a silent parse hang
             // (e.g. `(match 'foo (_ "x"))` would appear to freeze with no
-            // output). Route those token types through their proper
-            // quoted/quasiquoted/unquoted data parsers.
-            eshkol_ast_t expr;
-            if (token.type == TOKEN_LPAREN) {
-                expr = parse_list(tokenizer);
-            } else if (token.type == TOKEN_QUOTE) {
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                expr.type = ESHKOL_OP;
-                expr.operation.op = ESHKOL_QUOTE_OP;
-                expr.operation.call_op.func = nullptr;
-                expr.operation.call_op.num_vars = 1;
-                expr.operation.call_op.variables = new eshkol_ast_t[1];
-                expr.operation.call_op.variables[0] = quoted;
-            } else if (token.type == TOKEN_BACKQUOTE) {
-                eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
-                expr.type = ESHKOL_OP;
-                expr.operation.op = ESHKOL_QUASIQUOTE_OP;
-                expr.operation.call_op.func = nullptr;
-                expr.operation.call_op.num_vars = 1;
-                expr.operation.call_op.variables = new eshkol_ast_t[1];
-                expr.operation.call_op.variables[0] = inner;
-            } else {
-                expr = parse_atom(token);
-            }
+            // output). ESH-0094 replaces the manual dispatch with pushBack +
+            // parse_expression, which handles quote/quasiquote/#(...) and
+            // every other token uniformly.
+            tokenizer.pushBack(token);
+            eshkol_ast_t expr = parse_expression(tokenizer);
 
             if (expr.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -5388,12 +5376,13 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         return ast;
                     }
 
-                    eshkol_ast_t body_expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        body_expr = parse_list(tokenizer);
-                    } else {
-                        body_expr = parse_atom(token);
-                    }
+                    // Push back + parse_expression: the manual LPAREN/atom
+                    // dispatch dropped quoted results in match-clause bodies,
+                    // so (_ 'no) parsed 'no as a bare variable and fed a
+                    // corrupt AST into match codegen, segfaulting at runtime
+                    // and corrupting surrounding parses (ESH-0094 / EM-3).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t body_expr = parse_expression(tokenizer);
 
                     if (body_expr.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -5891,12 +5880,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t body_expr;
-                if (token.type == TOKEN_LPAREN) {
-                    body_expr = parse_list(tokenizer);
-                } else {
-                    body_expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t body_expr = parse_expression(tokenizer);
                 body_exprs.push_back(body_expr);
             }
 
@@ -5938,12 +5926,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // (call/cc proc) or (call-with-current-continuation proc)
         if (ast.operation.op == ESHKOL_CALL_CC_OP) {
             token = tokenizer.nextToken();
-            eshkol_ast_t proc_ast;
-            if (token.type == TOKEN_LPAREN) {
-                proc_ast = parse_list(tokenizer);
-            } else {
-                proc_ast = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t proc_ast = parse_expression(tokenizer);
             ast.operation.call_cc_op.proc = new eshkol_ast_t;
             *ast.operation.call_cc_op.proc = proc_ast;
 
@@ -5962,34 +5949,31 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_DYNAMIC_WIND_OP) {
             // Parse before thunk
             token = tokenizer.nextToken();
-            eshkol_ast_t before_ast;
-            if (token.type == TOKEN_LPAREN) {
-                before_ast = parse_list(tokenizer);
-            } else {
-                before_ast = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t before_ast = parse_expression(tokenizer);
             ast.operation.dynamic_wind_op.before = new eshkol_ast_t;
             *ast.operation.dynamic_wind_op.before = before_ast;
 
             // Parse body thunk
             token = tokenizer.nextToken();
-            eshkol_ast_t thunk_ast;
-            if (token.type == TOKEN_LPAREN) {
-                thunk_ast = parse_list(tokenizer);
-            } else {
-                thunk_ast = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t thunk_ast = parse_expression(tokenizer);
             ast.operation.dynamic_wind_op.thunk = new eshkol_ast_t;
             *ast.operation.dynamic_wind_op.thunk = thunk_ast;
 
             // Parse after thunk
             token = tokenizer.nextToken();
-            eshkol_ast_t after_ast;
-            if (token.type == TOKEN_LPAREN) {
-                after_ast = parse_list(tokenizer);
-            } else {
-                after_ast = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t after_ast = parse_expression(tokenizer);
             ast.operation.dynamic_wind_op.after = new eshkol_ast_t;
             *ast.operation.dynamic_wind_op.after = after_ast;
 
@@ -6127,12 +6111,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
                     }
-                    eshkol_ast_t expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        expr = parse_list(tokenizer);
-                    } else {
-                        expr = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote,
+                    // quasiquote and #(...) vector tokens that the manual
+                    // LPAREN/atom dispatch dropped (same family as #110/#229).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t expr = parse_expression(tokenizer);
                     clause_body.push_back(expr);
                 }
 
@@ -6347,12 +6330,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     token = tokenizer.nextToken();
                     if (token.type == TOKEN_RPAREN) break;
                     if (token.type == TOKEN_EOF) break;
-                    eshkol_ast_t expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        expr = parse_list(tokenizer);
-                    } else {
-                        expr = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote,
+                    // quasiquote and #(...) vector tokens that the manual
+                    // LPAREN/atom dispatch dropped (same family as #110/#229).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t expr = parse_expression(tokenizer);
                     body_exprs.push_back(expr);
                 }
                 clause.body = transformInternalDefinesToLetrec(body_exprs);
@@ -6870,16 +6852,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         if (ast.operation.op == ESHKOL_MAKE_PARAMETER_OP) {
             // Parse the init expression
             token = tokenizer.nextToken();
-            eshkol_ast_t init_expr;
-            if (token.type == TOKEN_LPAREN) {
-                init_expr = parse_list(tokenizer);
-            } else if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
                 PARSE_ERROR_AT(token, "make-parameter requires an initial value");
                 ast.type = ESHKOL_INVALID;
                 return ast;
-            } else {
-                init_expr = parse_atom(token);
             }
+            // ESH-0094: pushBack + parse_expression handles quote/quasiquote/
+            // #(...) tokens that the manual LPAREN/atom dispatch dropped.
+            tokenizer.pushBack(token);
+            eshkol_ast_t init_expr = parse_expression(tokenizer);
             // Consume closing paren
             token = tokenizer.nextToken();
 
@@ -7032,20 +7013,18 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 // Parse param expression
                 token = tokenizer.nextToken();
-                eshkol_ast_t param_expr;
-                if (token.type == TOKEN_LPAREN) {
-                    param_expr = parse_list(tokenizer);
-                } else {
-                    param_expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t param_expr = parse_expression(tokenizer);
                 // Parse value expression
                 token = tokenizer.nextToken();
-                eshkol_ast_t val_expr;
-                if (token.type == TOKEN_LPAREN) {
-                    val_expr = parse_list(tokenizer);
-                } else {
-                    val_expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t val_expr = parse_expression(tokenizer);
                 // Consume closing paren
                 token = tokenizer.nextToken();
                 params.push_back(param_expr);
@@ -7058,12 +7037,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 token = tokenizer.nextToken();
                 if (token.type == TOKEN_RPAREN) break;
                 if (token.type == TOKEN_EOF) break;
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
                 body_exprs.push_back(expr);
             }
 
@@ -7238,12 +7216,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t init_ast;
-                if (token.type == TOKEN_LPAREN) {
-                    init_ast = parse_list(tokenizer);
-                } else {
-                    init_ast = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t init_ast = parse_expression(tokenizer);
 
                 if (init_ast.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -7257,11 +7234,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
                 if (token.type != TOKEN_RPAREN) {
                     has_step = true;
-                    if (token.type == TOKEN_LPAREN) {
-                        step_ast = parse_list(tokenizer);
-                    } else {
-                        step_ast = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote/
+                    // quasiquote/#(...) tokens in the do-loop step position.
+                    tokenizer.pushBack(token);
+                    step_ast = parse_expression(tokenizer);
 
                     if (step_ast.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
@@ -7314,12 +7290,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t test_ast;
-            if (token.type == TOKEN_LPAREN) {
-                test_ast = parse_list(tokenizer);
-            } else {
-                test_ast = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t test_ast = parse_expression(tokenizer);
 
             if (test_ast.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7337,12 +7312,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -7362,12 +7336,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -7553,12 +7526,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         return ast;
                     }
                     
-                    eshkol_ast_t element;
-                    if (token.type == TOKEN_LPAREN) {
-                        element = parse_list(tokenizer);
-                    } else {
-                        element = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote,
+                    // quasiquote and #(...) vector tokens that the manual
+                    // LPAREN/atom dispatch dropped (same family as #110/#229).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t element = parse_expression(tokenizer);
                     tensor_elements.push_back(element);
                 }
                 
@@ -7621,12 +7593,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         return ast;
                     }
                     
-                    eshkol_ast_t element;
-                    if (token.type == TOKEN_LPAREN) {
-                        element = parse_list(tokenizer);
-                    } else {
-                        element = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote,
+                    // quasiquote and #(...) vector tokens that the manual
+                    // LPAREN/atom dispatch dropped (same family as #110/#229).
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t element = parse_expression(tokenizer);
                     tensor_elements.push_back(element);
                 }
                 
@@ -7692,11 +7663,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     operand.dimension_value =
                         operand.dimension_candidate ? std::stoull(token.value) : 0;
 
-                    if (token.type == TOKEN_LPAREN) {
-                        operand.ast = parse_list(tokenizer);
-                    } else {
-                        operand.ast = parse_atom(token);
-                    }
+                    // ESH-0094: pushBack + parse_expression handles quote/
+                    // quasiquote/#(...) tokens in tensor operand position.
+                    tokenizer.pushBack(token);
+                    operand.ast = parse_expression(tokenizer);
                     if (operand.ast.type == ESHKOL_INVALID) {
                         ast.type = ESHKOL_INVALID;
                         return ast;
@@ -7816,12 +7786,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t expression;
-            if (token.type == TOKEN_LPAREN) {
-                expression = parse_list(tokenizer);
-            } else {
-                expression = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t expression = parse_expression(tokenizer);
             
             if (expression.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7872,12 +7841,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7903,12 +7871,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
 
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -7948,12 +7915,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8067,12 +8033,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8126,12 +8091,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8185,12 +8149,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8244,12 +8207,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8303,12 +8265,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8362,12 +8323,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t function;
-            if (token.type == TOKEN_LPAREN) {
-                function = parse_list(tokenizer);
-            } else {
-                function = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t function = parse_expression(tokenizer);
             
             if (function.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8382,12 +8342,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t point;
-            if (token.type == TOKEN_LPAREN) {
-                point = parse_list(tokenizer);
-            } else {
-                point = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t point = parse_expression(tokenizer);
             
             if (point.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8402,12 +8361,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
             
-            eshkol_ast_t direction;
-            if (token.type == TOKEN_LPAREN) {
-                direction = parse_list(tokenizer);
-            } else {
-                direction = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t direction = parse_expression(tokenizer);
             
             if (direction.type == ESHKOL_INVALID) {
                 ast.type = ESHKOL_INVALID;
@@ -8795,12 +8753,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                             ast.type = ESHKOL_INVALID;
                             return ast;
                         }
-                        eshkol_ast_t body_expr;
-                        if (token.type == TOKEN_LPAREN) {
-                            body_expr = parse_list(tokenizer);
-                        } else {
-                            body_expr = parse_atom(token);
-                        }
+                        // ESH-0094: pushBack + parse_expression handles quote,
+                        // quasiquote and #(...) vector tokens that the manual
+                        // LPAREN/atom dispatch dropped (same family as #110/#229).
+                        tokenizer.pushBack(token);
+                        eshkol_ast_t body_expr = parse_expression(tokenizer);
                         body_elements.push_back(body_expr);
                     }
 
@@ -8821,12 +8778,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                eshkol_ast_t body_expr;
-                if (token.type == TOKEN_LPAREN) {
-                    body_expr = parse_list(tokenizer);
-                } else {
-                    body_expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t body_expr = parse_expression(tokenizer);
                 body_exprs.push_back(body_expr);
                 token = tokenizer.nextToken();
             }
@@ -8853,12 +8809,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t value_expr;
-            if (token.type == TOKEN_LPAREN) {
-                value_expr = parse_list(tokenizer);
-            } else {
-                value_expr = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t value_expr = parse_expression(tokenizer);
 
             ast.operation.owned_op.value = new eshkol_ast_t;
             *ast.operation.owned_op.value = value_expr;
@@ -8880,12 +8835,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t value_expr;
-            if (token.type == TOKEN_LPAREN) {
-                value_expr = parse_list(tokenizer);
-            } else {
-                value_expr = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t value_expr = parse_expression(tokenizer);
 
             ast.operation.move_op.value = new eshkol_ast_t;
             *ast.operation.move_op.value = value_expr;
@@ -8908,12 +8862,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             // Parse the value to borrow
-            eshkol_ast_t value_expr;
-            if (token.type == TOKEN_LPAREN) {
-                value_expr = parse_list(tokenizer);
-            } else {
-                value_expr = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t value_expr = parse_expression(tokenizer);
 
             ast.operation.borrow_op.value = new eshkol_ast_t;
             *ast.operation.borrow_op.value = value_expr;
@@ -8928,12 +8881,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                eshkol_ast_t body_expr;
-                if (token.type == TOKEN_LPAREN) {
-                    body_expr = parse_list(tokenizer);
-                } else {
-                    body_expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens that the manual
+                // LPAREN/atom dispatch dropped (same family as #110/#229).
+                tokenizer.pushBack(token);
+                eshkol_ast_t body_expr = parse_expression(tokenizer);
                 body_exprs.push_back(body_expr);
             }
 
@@ -8959,12 +8911,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t value_expr;
-            if (token.type == TOKEN_LPAREN) {
-                value_expr = parse_list(tokenizer);
-            } else {
-                value_expr = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t value_expr = parse_expression(tokenizer);
 
             ast.operation.shared_op.value = new eshkol_ast_t;
             *ast.operation.shared_op.value = value_expr;
@@ -8986,12 +8937,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t value_expr;
-            if (token.type == TOKEN_LPAREN) {
-                value_expr = parse_list(tokenizer);
-            } else {
-                value_expr = parse_atom(token);
-            }
+            // ESH-0094: pushBack + parse_expression handles quote,
+            // quasiquote and #(...) vector tokens that the manual
+            // LPAREN/atom dispatch dropped (same family as #110/#229).
+            tokenizer.pushBack(token);
+            eshkol_ast_t value_expr = parse_expression(tokenizer);
 
             ast.operation.weak_ref_op.value = new eshkol_ast_t;
             *ast.operation.weak_ref_op.value = value_expr;
@@ -9020,20 +8970,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else if (token.type == TOKEN_QUOTE) {
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    expr.type = ESHKOL_OP;
-                    expr.operation.op = ESHKOL_QUOTE_OP;
-                    expr.operation.call_op.func = nullptr;
-                    expr.operation.call_op.num_vars = 1;
-                    expr.operation.call_op.variables = new eshkol_ast_t[1];
-                    expr.operation.call_op.variables[0] = quoted;
-                } else {
-                    expr = parse_atom(token);
-                }
+                // ESH-0094: pushBack + parse_expression handles quote,
+                // quasiquote and #(...) vector tokens uniformly (the bolt-on
+                // TOKEN_QUOTE branch only covered ' and missed `/,/#(...)).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
@@ -9252,12 +9193,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // This handles cases like (#t 'yes) or ((null? lst) #f) in cond clauses
         // Structure: CALL_OP with func=first_element, variables=rest
 
-        eshkol_ast_t first_elem;
-        if (token.type == TOKEN_LPAREN) {
-            first_elem = parse_list(tokenizer);
-        } else {
-            first_elem = parse_atom(token);
-        }
+        // ESH-0094: pushBack + parse_expression handles quote,
+        // quasiquote and #(...) vector tokens that the manual
+        // LPAREN/atom dispatch dropped (same family as #110/#229).
+        tokenizer.pushBack(token);
+        eshkol_ast_t first_elem = parse_expression(tokenizer);
 
         if (first_elem.type == ESHKOL_INVALID) {
             ast.type = ESHKOL_INVALID;
@@ -9274,24 +9214,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 return ast;
             }
 
-            eshkol_ast_t element;
-            if (token.type == TOKEN_LPAREN) {
-                element = parse_list(tokenizer);
-            } else if (token.type == TOKEN_QUOTE) {
-                // Handle quoted expressions
-                eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                if (quoted.type == ESHKOL_INVALID) {
-                    ast.type = ESHKOL_INVALID;
-                    return ast;
-                }
-                element.type = ESHKOL_OP;
-                element.operation.op = ESHKOL_QUOTE_OP;
-                element.operation.call_op.func = nullptr;
-                element.operation.call_op.num_vars = 1;
-                element.operation.call_op.variables = new eshkol_ast_t[1];
-                element.operation.call_op.variables[0] = quoted;
-            } else {
-                element = parse_atom(token);
+            // ESH-0094: pushBack + parse_expression handles quote, quasiquote
+            // and #(...) vector tokens uniformly in the non-symbol-head list
+            // element position (the bolt-on TOKEN_QUOTE branch missed `/,/#()).
+            tokenizer.pushBack(token);
+            eshkol_ast_t element = parse_expression(tokenizer);
+            if (element.type == ESHKOL_INVALID) {
+                ast.type = ESHKOL_INVALID;
+                return ast;
             }
             elements.push_back(element);
         }
