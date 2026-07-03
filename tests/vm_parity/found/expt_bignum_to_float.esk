@@ -1,0 +1,4 @@
+; FILED: integer expt overflows into a float instead of a bignum in the VM.
+; native -r : 1267650600228229401496703205376
+; vm        : 1.26765e+30
+(display (expt 2 100))

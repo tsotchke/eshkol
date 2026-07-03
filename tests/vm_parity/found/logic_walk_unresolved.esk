@@ -1,0 +1,5 @@
+; FILED: (walk ?x s) after a successful unify does not resolve the binding.
+; native -r : 5
+; vm        : ?x
+(define s (unify ?x 5 (make-substitution)))
+(display (walk ?x s))

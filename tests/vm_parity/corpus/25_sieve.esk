@@ -1,0 +1,12 @@
+; sieve of Eratosthenes over a vector
+(define n 50)
+(define sieve (make-vector n #t))
+(vector-set! sieve 0 #f)
+(vector-set! sieve 1 #f)
+(do ((i 2 (+ i 1))) ((= i n))
+  (when (vector-ref sieve i)
+    (do ((j (* i i) (+ j i))) ((>= j n))
+      (vector-set! sieve j #f))))
+(do ((i 0 (+ i 1))) ((= i n))
+  (when (vector-ref sieve i) (display i) (display " ")))
+(newline)

@@ -1,0 +1,3 @@
+; OUT OF SUBSET: read-file whole-file IO builtin (gap in PARITY.tsv).
+; Expectation on the VM: clear undefined-variable diagnostic, no wrong value.
+(display (read-file "/nonexistent-vm-parity-probe"))

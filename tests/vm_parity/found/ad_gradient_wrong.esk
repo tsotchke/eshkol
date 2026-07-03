@@ -1,0 +1,7 @@
+; FILED: AD operators return silently wrong values in the VM.
+; native -r : #(6) then #((2 0) (0 3))
+; vm        : 0    then <tensor:2>
+(display (gradient (lambda (v) (* (vector-ref v 0) (vector-ref v 0))) (vector 3.0)))
+(newline)
+(display (jacobian (lambda (v) (vector (* 2 (vector-ref v 0)) (* 3 (vector-ref v 1)))) (vector 1.0 1.0)))
+(newline)

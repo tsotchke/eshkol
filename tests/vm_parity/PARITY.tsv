@@ -1,0 +1,925 @@
+# tests/vm_parity/PARITY.tsv — the VM parity manifest (adversarial P5 ratchet).
+#
+# Every symbol on the native codegen surface (see scripts/vm_parity_audit.py)
+# must be either present on the VM surface or carry a row here.  Statuses:
+#   vm-supported           the VM resolves this name / implements this op
+#   native-only-justified  conscious, permanent waiver (justification required)
+#   gap                    acknowledged hole or verified divergence (justification required)
+# Rows referencing found/<file>.esk are VERIFIED behavioral divergences: the
+# name exists on both surfaces but the VM computes something different.
+#
+# Seeded 2026-07-03 from the live extraction; regenerate a skeleton with
+#   scripts/vm_parity_audit.py --seed
+# name	status	justification
+%	gap	internal codegen helper name leaked into dispatch
+%make-lazy-promise	gap	internal codegen helper name leaked into dispatch
+%make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
+*	vm-supported	
++	vm-supported	
+-	vm-supported	
+/	gap	exact rational division collapses to float (found/exact_division_lost.esk)
+/rational	gap	no VM name binding
+<	vm-supported	
+<=	vm-supported	
+=	vm-supported	
+>	vm-supported	
+>=	vm-supported	
+_format-list	vm-supported	
+abs	vm-supported	
+acons	gap	no VM name binding
+acos	vm-supported	
+acosh	gap	no VM name binding
+ad-abs	vm-supported	
+ad-add	vm-supported	
+ad-backward	vm-supported	
+ad-const	vm-supported	
+ad-cos	vm-supported	
+ad-div	vm-supported	
+ad-exp	vm-supported	
+ad-gradient	vm-supported	
+ad-log	vm-supported	
+ad-mul	vm-supported	
+ad-neg	vm-supported	
+ad-node-value	vm-supported	
+ad-relu	vm-supported	
+ad-sigmoid	vm-supported	
+ad-sin	vm-supported	
+ad-sqrt	vm-supported	
+ad-sub	vm-supported	
+ad-tanh	vm-supported	
+ad-tape-new	vm-supported	
+ad-tape-release	vm-supported	
+ad-value	vm-supported	
+ad-var	vm-supported	
+adagrad-step	gap	ml faculty has no VM fid coverage
+adam	gap	ml faculty has no VM fid coverage
+adam-step	gap	ml faculty has no VM fid coverage
+adamw-step	gap	ml faculty has no VM fid coverage
+addr-of	native-only-justified	low-level memory/FFI primitive tied to native codegen
+allow-sleep	vm-supported	
+and	vm-supported	
+angle	vm-supported	
+ansi-strip	vm-supported	
+append	vm-supported	
+append-file	gap	port/file IO surface missing in VM
+apply	vm-supported	
+apply-window	gap	signal faculty has no VM fid coverage
+arange	vm-supported	
+arithmetic-shift	vm-supported	
+asin	vm-supported	
+asinh	gap	no VM name binding
+atan	vm-supported	
+atan2	gap	no VM name binding
+atanh	gap	no VM name binding
+atomic-compare-exchange!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-exchange!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-fetch-add!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-fetch-and!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-fetch-or!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-fetch-sub!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-fetch-xor!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-load	native-only-justified	low-level memory/FFI primitive tied to native codegen
+atomic-store!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+avg-pool2d	gap	ml faculty has no VM fid coverage
+base64url-decode	vm-supported	
+base64url-encode	vm-supported	
+batch-matmul	vm-supported	
+batch-norm	gap	ml faculty has no VM fid coverage
+bce-loss	gap	ml faculty has no VM fid coverage
+begin	vm-supported	
+binary-cross-entropy-loss	gap	ml faculty has no VM fid coverage
+binary-port?	gap	port/file IO surface missing in VM
+bitwise-and	vm-supported	
+bitwise-not	vm-supported	
+bitwise-or	vm-supported	
+bitwise-xor	vm-supported	
+blackman-window	gap	signal faculty has no VM fid coverage
+boolean=?	vm-supported	
+boolean?	vm-supported	
+butterworth-bandpass	gap	signal faculty has no VM fid coverage
+butterworth-highpass	gap	signal faculty has no VM fid coverage
+butterworth-lowpass	gap	signal faculty has no VM fid coverage
+bytevector	gap	port/file IO surface missing in VM
+bytevector-append	vm-supported	
+bytevector-copy	vm-supported	
+bytevector-copy!	vm-supported	
+bytevector-length	vm-supported	
+bytevector-u8-ref	vm-supported	
+bytevector-u8-set!	vm-supported	
+bytevector?	vm-supported	
+caaar	vm-supported	
+caadr	vm-supported	
+caar	vm-supported	
+cadar	vm-supported	
+cadddr	vm-supported	
+caddr	vm-supported	
+cadr	vm-supported	
+call-with-input-file	gap	port/file IO surface missing in VM
+call-with-output-file	gap	port/file IO surface missing in VM
+call-with-port	gap	port/file IO surface missing in VM
+car	vm-supported	
+causal-mask	gap	ml faculty has no VM fid coverage
+cbrt	gap	no VM name binding
+cdaar	vm-supported	
+cdadr	vm-supported	
+cdar	vm-supported	
+cddar	vm-supported	
+cdddr	vm-supported	
+cddr	vm-supported	
+cdr	vm-supported	
+ceil	gap	no VM name binding
+ceiling	vm-supported	
+celu	gap	ml faculty has no VM fid coverage
+char->integer	vm-supported	
+char-alphabetic?	vm-supported	
+char-ci<=?	gap	extended char ops missing in VM (no char type)
+char-ci<?	gap	extended char ops missing in VM (no char type)
+char-ci=?	gap	extended char ops missing in VM (no char type)
+char-ci>=?	gap	extended char ops missing in VM (no char type)
+char-ci>?	gap	extended char ops missing in VM (no char type)
+char-downcase	vm-supported	
+char-foldcase	gap	extended char ops missing in VM (no char type)
+char-lower-case?	vm-supported	
+char-numeric?	vm-supported	
+char-ready?	gap	extended char ops missing in VM (no char type)
+char-upcase	vm-supported	
+char-upper-case?	vm-supported	
+char-whitespace?	vm-supported	
+char<=?	gap	extended char ops missing in VM (no char type)
+char<?	vm-supported	
+char=?	vm-supported	
+char>=?	gap	extended char ops missing in VM (no char type)
+char>?	vm-supported	
+char?	vm-supported	
+check-grad-health	gap	ml faculty has no VM fid coverage
+clip-grad-norm!	gap	ml faculty has no VM fid coverage
+close-input-port	gap	port/file IO surface missing in VM
+close-output-port	gap	port/file IO surface missing in VM
+close-port	vm-supported	
+command-line	vm-supported	
+compiler-fence	native-only-justified	low-level memory/FFI primitive tied to native codegen
+complex?	vm-supported	
+concatenate	gap	no VM name binding
+conjugate	vm-supported	
+conjugate-gradient	gap	ml faculty has no VM fid coverage
+cons	vm-supported	
+constant-time-equal?	vm-supported	
+contrastive-loss	gap	ml faculty has no VM fid coverage
+conv1d	gap	ml faculty has no VM fid coverage
+conv2d	gap	ml faculty has no VM fid coverage
+conv3d	gap	ml faculty has no VM fid coverage
+convolve	gap	signal faculty has no VM fid coverage
+cos	vm-supported	
+cosh	vm-supported	
+cosine-annealing-lr	gap	ml faculty has no VM fid coverage
+cosine-embedding-loss	gap	ml faculty has no VM fid coverage
+cpu-count	vm-supported	
+cross-entropy-loss	gap	ml faculty has no VM fid coverage
+current-directory	vm-supported	
+current-environment	gap	eval/environment reflection has no VM binding
+current-error-port	vm-supported	
+current-input-port	gap	port/file IO surface missing in VM
+current-jiffy	gap	time surface has no VM binding
+current-output-port	gap	port/file IO surface missing in VM
+current-second	gap	time surface has no VM binding
+current-seconds	gap	time surface has no VM binding
+current-time	gap	time surface has no VM binding
+current-time-ms	vm-supported	
+current-time-ns	vm-supported	
+current-timestamp	vm-supported	
+dataloader-has-next	gap	ml faculty has no VM fid coverage
+dataloader-length	gap	ml faculty has no VM fid coverage
+dataloader-next	gap	ml faculty has no VM fid coverage
+dataloader-reset	gap	ml faculty has no VM fid coverage
+dataloader-reset!	gap	ml faculty has no VM fid coverage
+delete-directory	gap	port/file IO surface missing in VM
+delete-file	vm-supported	
+denominator	vm-supported	
+dequant-q4_0	gap	ml faculty has no VM fid coverage
+dequant-q8_0	gap	ml faculty has no VM fid coverage
+det	gap	tensor linalg/manipulation fid missing in VM
+diff-lines	vm-supported	
+digit-value	gap	extended char ops missing in VM (no char type)
+directory-delete-recursive	vm-supported	
+directory-exists?	gap	port/file IO surface missing in VM
+directory-list	gap	port/file IO surface missing in VM
+directory-walk	vm-supported	
+display	vm-supported	appends a newline per call — known divergence, normalized by run_vm_parity.sh (found/display_newline_per_call.esk)
+display-error	vm-supported	
+dnc-alloc-weights	gap	core.dnc has no VM fids
+dnc-content-address	gap	core.dnc has no VM fids
+dnc-loc-address	gap	core.dnc has no VM fids
+dnc-memory?	gap	core.dnc has no VM fids
+dnc-read	gap	core.dnc has no VM fids
+dnc-read-grad	gap	core.dnc has no VM fids
+dnc-write!	gap	core.dnc has no VM fids
+drop	vm-supported	
+dropout	gap	ml faculty has no VM fid coverage
+dual?	vm-supported	
+einsum	gap	tensor linalg/manipulation fid missing in VM
+elu	gap	ml faculty has no VM fid coverage
+embedding	gap	ml faculty has no VM fid coverage
+emergency-exit	gap	no VM name binding
+eof-object	gap	port/file IO surface missing in VM
+eof-object?	vm-supported	
+eq?	gap	symbol identity returns #f (found/equal_eq_structural_false.esk)
+equal?	gap	structural equality returns #f on equal lists (found/equal_eq_structural_false.esk)
+eqv?	gap	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
+error	vm-supported	
+eval	gap	eval/environment reflection has no VM binding
+even?	vm-supported	
+exact	gap	no VM name binding
+exact->inexact	vm-supported	
+exact-integer?	gap	no VM name binding
+exact-rational?	gap	no VM name binding
+exact?	vm-supported	
+executable-exists?	vm-supported	
+executable-path	vm-supported	
+execv	vm-supported	
+exit	gap	no VM name binding
+exp	vm-supported	
+exp2	gap	no VM name binding
+expected-free-energy	vm-supported	
+exponential-decay-lr	gap	ml faculty has no VM fid coverage
+expt	gap	integer expt overflows to float not bignum (found/expt_bignum_to_float.esk)
+eye	vm-supported	
+fabs	gap	no VM name binding
+fact?	vm-supported	
+factor-graph?	vm-supported	
+fast-convolve	gap	signal faculty has no VM fid coverage
+fd-close	vm-supported	
+fd-write	vm-supported	
+features	gap	no VM name binding
+feed-forward	gap	ml faculty has no VM fid coverage
+fft	gap	signal faculty has no VM fid coverage
+fg-add-factor!	vm-supported	
+fg-entropy	vm-supported	
+fg-infer!	vm-supported	
+fg-marginal	vm-supported	
+fg-update-cpt!	vm-supported	
+file-atime	vm-supported	
+file-chmod	vm-supported	
+file-copy	vm-supported	
+file-delete	gap	port/file IO surface missing in VM
+file-exists?	vm-supported	
+file-lock	vm-supported	
+file-mmap	vm-supported	
+file-mtime	vm-supported	
+file-munmap	vm-supported	
+file-readable?	gap	port/file IO surface missing in VM
+file-rename	vm-supported	
+file-size	vm-supported	
+file-stat	vm-supported	
+file-unlock	vm-supported	
+file-writable?	gap	port/file IO surface missing in VM
+filter	vm-supported	
+finite?	vm-supported	
+fir-filter	gap	signal faculty has no VM fid coverage
+flatten	vm-supported	
+floor	vm-supported	
+floor-quotient	gap	no VM name binding
+floor-remainder	gap	no VM name binding
+floor/	gap	no VM name binding
+flush-output-port	gap	port/file IO surface missing in VM
+focal-loss	gap	ml faculty has no VM fid coverage
+force	gap	returns raw promise object (found/force_returns_promise.esk)
+fork	vm-supported	
+format	vm-supported	
+format-iso8601	vm-supported	
+format-relative	vm-supported	
+free-energy	vm-supported	
+frequency-response	gap	signal faculty has no VM fid coverage
+fs-unwatch	vm-supported	
+fs-watch-native	vm-supported	
+fs-watch-poll	vm-supported	
+fs-watch-recursive	vm-supported	
+future	vm-supported	
+future-ready?	vm-supported	
+fuzzy-match	vm-supported	
+gcd	vm-supported	
+gelu	gap	ml faculty has no VM fid coverage
+get-environment-variable	vm-supported	
+get-output-string	vm-supported	
+getenv	vm-supported	
+getpid	vm-supported	
+glob-expand	vm-supported	
+glob-match	vm-supported	
+gpu-elementwise	vm-supported	
+gpu-matmul	vm-supported	
+gpu-reduce	vm-supported	
+gpu-softmax	vm-supported	
+gpu-transpose	vm-supported	
+gradient	gap	silently wrong values (found/ad_gradient_wrong.esk)
+gradient-descent	gap	ml faculty has no VM fid coverage
+hamming-window	gap	signal faculty has no VM fid coverage
+hann-window	gap	signal faculty has no VM fid coverage
+hard-sigmoid	gap	ml faculty has no VM fid coverage
+hard-swish	gap	ml faculty has no VM fid coverage
+hash-clear!	vm-supported	
+hash-count	vm-supported	
+hash-has-key?	vm-supported	
+hash-keys	vm-supported	
+hash-ref	vm-supported	
+hash-remove!	vm-supported	
+hash-set!	vm-supported	
+hash-table-clear!	gap	hash tables have no VM binding
+hash-table-contains?	gap	hash tables have no VM binding
+hash-table-delete!	gap	hash tables have no VM binding
+hash-table-exists?	gap	hash tables have no VM binding
+hash-table-keys	gap	hash tables have no VM binding
+hash-table-ref	gap	hash tables have no VM binding
+hash-table-ref/default	gap	hash tables have no VM binding
+hash-table-set!	gap	hash tables have no VM binding
+hash-table-size	gap	hash tables have no VM binding
+hash-table-values	gap	hash tables have no VM binding
+hash-table/count	gap	hash tables have no VM binding
+hash-table?	vm-supported	
+hash-values	vm-supported	
+hinge-loss	gap	ml faculty has no VM fid coverage
+home-directory	vm-supported	
+hostname	vm-supported	
+http-request	vm-supported	
+http-server-accept	vm-supported	
+http-server-close	vm-supported	
+http-server-create	vm-supported	
+http-server-port	vm-supported	
+http-server-respond	vm-supported	
+http-set-proxy	vm-supported	
+http-set-tls-client-cert	vm-supported	
+huber-loss	gap	ml faculty has no VM fid coverage
+if	vm-supported	
+ifft	gap	signal faculty has no VM fid coverage
+iir-filter	gap	signal faculty has no VM fid coverage
+imag-part	vm-supported	
+image-read	vm-supported	
+image-to-grayscale	vm-supported	
+image-write	vm-supported	
+inexact	gap	no VM name binding
+inexact->exact	vm-supported	
+inexact?	vm-supported	
+infinite?	vm-supported	
+inject-left	gap	no VM name binding
+inject-right	gap	no VM name binding
+input-port-open?	gap	port/file IO surface missing in VM
+input-port?	vm-supported	
+integer->char	gap	no char type — prints integer (found/char_type_collapsed.esk)
+integer?	vm-supported	
+interaction-environment	gap	eval/environment reflection has no VM binding
+jacobian	gap	silently wrong values (found/ad_gradient_wrong.esk)
+jiffies-per-second	gap	time surface has no VM binding
+kaiming-normal!	gap	ml faculty has no VM fid coverage
+kaiming-uniform!	gap	ml faculty has no VM fid coverage
+kaiser-window	gap	signal faculty has no VM fid coverage
+kb-assert!	vm-supported	
+kb-count	vm-supported	
+kb-load	gap	KB persistence/prefix query has no VM binding
+kb-query	vm-supported	
+kb-query-prefix	gap	KB persistence/prefix query has no VM binding
+kb-retract!	vm-supported	
+kb-save	vm-supported	
+kb?	vm-supported	
+kl-div-loss	gap	ml faculty has no VM fid coverage
+l-bfgs	gap	ml faculty has no VM fid coverage
+label-smoothing-loss	gap	ml faculty has no VM fid coverage
+last	gap	no VM name binding
+last-pair	vm-supported	
+layer-norm	gap	ml faculty has no VM fid coverage
+lcm	vm-supported	
+leaky-relu	gap	ml faculty has no VM fid coverage
+lecun-normal!	gap	ml faculty has no VM fid coverage
+left?	gap	no VM name binding
+length	vm-supported	
+line-reader-close	vm-supported	
+line-reader-poll	vm-supported	
+line-search	gap	ml faculty has no VM fid coverage
+linear-warmup-lr	gap	ml faculty has no VM fid coverage
+linspace	vm-supported	
+list	vm-supported	
+list*	gap	no VM name binding
+list->string	vm-supported	
+list->vector	vm-supported	
+list-copy	gap	no VM name binding
+list-set!	gap	no VM name binding
+list?	vm-supported	
+local-timezone-offset	vm-supported	
+log	vm-supported	
+log10	gap	no VM name binding
+log2	gap	no VM name binding
+logic-var?	vm-supported	
+lru-clear!	vm-supported	
+lru-delete!	vm-supported	
+lru-get	vm-supported	
+lru-has?	vm-supported	
+lru-set!	vm-supported	
+lru-size	vm-supported	
+mae-loss	gap	ml faculty has no VM fid coverage
+magnitude	vm-supported	
+make-bytevector	vm-supported	
+make-dataloader	gap	ml faculty has no VM fid coverage
+make-directory	gap	port/file IO surface missing in VM
+make-dnc-memory	gap	core.dnc has no VM fids
+make-fact	vm-supported	
+make-factor-graph	vm-supported	
+make-hash-table	vm-supported	
+make-kb	vm-supported	
+make-line-reader	vm-supported	
+make-list	vm-supported	
+make-lru-cache	vm-supported	
+make-parameter	gap	no VM name binding
+make-pipe	vm-supported	
+make-polar	vm-supported	
+make-prng	gap	PRNG surface has no VM binding
+make-promise	gap	no VM name binding
+make-rational	gap	no VM name binding
+make-rectangular	vm-supported	
+make-string	vm-supported	
+make-substitution	vm-supported	
+make-temp-dir	vm-supported	
+make-temp-file	vm-supported	
+make-tensor	vm-supported	
+make-vector	vm-supported	
+make-workspace	vm-supported	
+map	vm-supported	
+matmul	vm-supported	
+matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
+max	vm-supported	
+max-pool2d	gap	ml faculty has no VM fid coverage
+memory-fence	native-only-justified	low-level memory/FFI primitive tied to native codegen
+min	vm-supported	
+mish	gap	ml faculty has no VM fid coverage
+mkdir-recursive	vm-supported	
+mkdtemp	vm-supported	
+mkstemp	vm-supported	
+mod	gap	no VM name binding
+model-load	vm-supported	
+model-save	vm-supported	
+modulo	vm-supported	
+monotonic-time-ms	vm-supported	
+mse-loss	gap	ml faculty has no VM fid coverage
+multi-head-attention	gap	ml faculty has no VM fid coverage
+nan?	vm-supported	
+negative?	vm-supported	
+newline	vm-supported	
+norm	gap	tensor linalg/manipulation fid missing in VM
+not	vm-supported	
+null-environment	gap	eval/environment reflection has no VM binding
+null-ptr	native-only-justified	low-level memory/FFI primitive tied to native codegen
+null?	vm-supported	
+number->string	vm-supported	
+number?	vm-supported	
+numerator	vm-supported	
+odd?	vm-supported	
+ones	vm-supported	
+onnx-export-tensor	gap	port/file IO surface missing in VM
+op:ADD	vm-supported	OP_ADD bytecode
+op:AND	vm-supported	vm_compiler special-form dispatch
+op:BORROW	native-only-justified	OALR ownership — native-arena construct
+op:CALL	vm-supported	core call opcode
+op:CALL_CC	vm-supported	escape continuations verified 2026-07
+op:CALL_WITH_VALUES	vm-supported	verified 2026-07
+op:CASE	vm-supported	vm_compiler special-form dispatch
+op:CASE_LAMBDA	gap	wrong clause selected (found/case_lambda_wrong_clause.esk)
+op:COMPOSE	gap	compose undefined in VM
+op:COND	vm-supported	vm_compiler special-form dispatch
+op:COND_EXPAND	native-only-justified	parse-time form handled by the native front-end
+op:CURL	gap	AD surface diverges in VM
+op:DEFINE	vm-supported	vm_compiler special-form dispatch
+op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
+op:DEFINE_SYNTAX	vm-supported	vm_macro.c; simple syntax-rules verified (recursive macros diverge: found/recursive_macro_zero.esk)
+op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
+op:DERIVATIVE	gap	AD surface diverges in VM (found/ad_gradient_wrong.esk)
+op:DIFF	gap	AD surface diverges in VM
+op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
+op:DIV	vm-supported	OP_DIV bytecode (exact-rational result diverges: see / gap row)
+op:DIVERGENCE	gap	AD surface diverges in VM
+op:DNC_ALLOC_WEIGHTS	gap	core.dnc has no VM fids
+op:DNC_CONTENT_ADDR	gap	core.dnc has no VM fids
+op:DNC_LOC_ADDR	gap	core.dnc has no VM fids
+op:DNC_MAKE	gap	core.dnc has no VM fids
+op:DNC_PRED	gap	core.dnc has no VM fids
+op:DNC_READ	gap	core.dnc has no VM fids
+op:DNC_READ_GRAD	gap	core.dnc has no VM fids
+op:DNC_WRITE	gap	core.dnc has no VM fids
+op:DO	vm-supported	vm_compiler special-form dispatch
+op:DYNAMIC_WIND	gap	after-thunk runs twice (found/dynamic_wind_after_twice.esk)
+op:EXPECTED_FREE_ENERGY	vm-supported	BUILTINS fid 526
+op:EXTERN	native-only-justified	C FFI declaration — native codegen only by design
+op:EXTERN_VAR	native-only-justified	C FFI declaration — native codegen only by design
+op:FACTOR_GRAPH_PRED	vm-supported	BUILTINS fid 521
+op:FACT_PRED	vm-supported	BUILTINS fid 508
+op:FG_ADD_FACTOR	vm-supported	BUILTINS fid 522
+op:FG_INFER	vm-supported	BUILTINS fid 523
+op:FG_OBSERVE	vm-supported	BUILTINS fid 527
+op:FG_UPDATE_CPT	vm-supported	BUILTINS fid 524
+op:FORALL	native-only-justified	static type syntax, erased before codegen
+op:FREE_ENERGY	vm-supported	BUILTINS fid 525
+op:GRADIENT	gap	returns 0 instead of gradient (found/ad_gradient_wrong.esk)
+op:GUARD	vm-supported	guard/raise verified 2026-07
+op:HESSIAN	gap	returns 0 (found/ad_gradient_wrong.esk)
+op:IF	vm-supported	vm_compiler special-form dispatch
+op:IMPORT	native-only-justified	front-end module machinery
+op:INCLUDE	native-only-justified	parse-time form handled by the native front-end
+op:JACOBIAN	gap	returns tensor handle, wrong values (found/ad_gradient_wrong.esk)
+op:KB_ASSERT	vm-supported	BUILTINS fid 511
+op:KB_PRED	vm-supported	BUILTINS fid 510
+op:KB_QUERY	vm-supported	BUILTINS fid 512
+op:KB_QUERY_PREFIX	gap	kb-query-prefix has no VM binding
+op:LAMBDA	vm-supported	vm_compiler special-form dispatch
+op:LAPLACIAN	gap	AD surface diverges in VM
+op:LET	vm-supported	vm_compiler special-form dispatch (incl named let)
+op:LETREC	vm-supported	vm_compiler special-form dispatch
+op:LETREC_STAR	vm-supported	vm_compiler special-form dispatch (verified 2026-07)
+op:LETREC_SYNTAX	gap	same as op:LET_SYNTAX
+op:LET_STAR	vm-supported	vm_compiler special-form dispatch
+op:LET_STAR_VALUES	gap	same family as op:LET_VALUES silent-wrong divergence
+op:LET_SYNTAX	gap	let-syntax not expanded by vm_macro (undefined-variable error)
+op:LET_VALUES	gap	accepted but binds wrong values (found/let_values_silent_zero.esk)
+op:LOGIC_VAR	gap	?x resolves to itself through walk (found/logic_walk_unresolved.esk)
+op:LOGIC_VAR_PRED	vm-supported	BUILTINS fid 501
+op:MAKE_FACT	vm-supported	prelude wrapper over _make-fact1 fid 507
+op:MAKE_FACTOR_GRAPH	vm-supported	prelude wrapper over _make-fg2 fid 520
+op:MAKE_KB	vm-supported	BUILTINS fid 509
+op:MAKE_PARAMETER	gap	make-parameter undefined in VM
+op:MAKE_SUBST	vm-supported	BUILTINS fid 505
+op:MAKE_WORKSPACE	vm-supported	BUILTINS fid 540
+op:MATCH	gap	match unsupported in VM (clean undefined-variable error)
+op:MOVE	native-only-justified	OALR ownership — native-arena construct
+op:MUL	vm-supported	OP_MUL bytecode
+op:OR	vm-supported	vm_compiler special-form dispatch
+op:OWNED	native-only-justified	OALR ownership — native-arena construct
+op:PARAMETERIZE	gap	depends on make-parameter; fids 702/703 exist but surface incomplete
+op:PROVIDE	native-only-justified	front-end module machinery
+op:QUASIQUOTE	vm-supported	vm_compiler quasiquote expansion
+op:QUOTE	vm-supported	vm_compiler special-form dispatch
+op:RAISE	vm-supported	guard/raise verified 2026-07
+op:REQUIRE	native-only-justified	module machinery resolved by the front-end; (require stdlib) is a VM no-op
+op:SDNC_IMPROVE	gap	core.sdnc has no VM fids
+op:SDNC_PARAMS	gap	core.sdnc has no VM fids
+op:SDNC_PRED	gap	core.sdnc has no VM fids
+op:SDNC_PROGRAM	gap	core.sdnc has no VM fids
+op:SDNC_RUN	gap	core.sdnc has no VM fids
+op:SDNC_SET_PARAMS	gap	core.sdnc has no VM fids
+op:SDNC_WEIGHT_GRAD	gap	core.sdnc has no VM fids
+op:SEQUENCE	vm-supported	vm_compiler begin dispatch
+op:SET	vm-supported	vm_compiler special-form dispatch
+op:SHARED	native-only-justified	OALR ownership — native-arena construct
+op:SUB	vm-supported	OP_SUB bytecode
+op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
+op:SYNTAX_ERROR	native-only-justified	parse-time form handled by the native front-end
+op:TENSOR	vm-supported	tensor/make-tensor fids 410+
+op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codegen
+op:UNIFY	vm-supported	BUILTINS fid 502
+op:UNLESS	vm-supported	vm_compiler special-form dispatch
+op:UNQUOTE	vm-supported	vm_compiler quasiquote expansion
+op:UNQUOTE_SPLICING	vm-supported	vm_compiler quasiquote expansion
+op:VALUES	vm-supported	values + call-with-values verified 2026-07
+op:WALK	gap	walk does not resolve bindings (found/logic_walk_unresolved.esk)
+op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
+op:WHEN	vm-supported	vm_compiler special-form dispatch
+op:WITH_REGION	native-only-justified	OALR region semantics are native-arena constructs
+op:WORKSPACE_PRED	vm-supported	BUILTINS fid 541
+op:WS_REGISTER	vm-supported	BUILTINS fid 542
+op:WS_STEP	vm-supported	BUILTINS fid 543
+open-binary-input-file	vm-supported	
+open-binary-output-file	vm-supported	
+open-input-file	vm-supported	
+open-input-string	vm-supported	
+open-output-file	vm-supported	
+open-output-file-append	gap	port/file IO surface missing in VM
+open-output-string	vm-supported	
+or	vm-supported	
+os-arch	vm-supported	
+os-type	vm-supported	
+outer	gap	tensor linalg/manipulation fid missing in VM
+output-port-open?	gap	port/file IO surface missing in VM
+output-port?	vm-supported	
+pad	gap	tensor linalg/manipulation fid missing in VM
+padding-mask	gap	ml faculty has no VM fid coverage
+pair?	vm-supported	
+parallel-execute	vm-supported	
+parallel-filter	vm-supported	
+parallel-fold	vm-supported	
+parallel-for-each	vm-supported	
+parallel-map	vm-supported	
+parse-iso8601	vm-supported	
+path-basename	vm-supported	
+path-dirname	vm-supported	
+path-extname	vm-supported	
+path-is-absolute?	vm-supported	
+path-join	vm-supported	
+path-normalize	vm-supported	
+path-relative	vm-supported	
+path-resolve	vm-supported	
+peek-char	gap	port/file IO surface missing in VM
+peek-u8	gap	port/file IO surface missing in VM
+poll-fd	native-only-justified	OS/process interface — native runtime only
+port?	vm-supported	
+positional-encoding	gap	ml faculty has no VM fid coverage
+positive?	vm-supported	
+pow	vm-supported	
+prevent-sleep	vm-supported	
+prng-random	gap	PRNG surface has no VM binding
+prng-random-integer	gap	PRNG surface has no VM binding
+prng?	gap	PRNG surface has no VM binding
+procedure-arity	gap	no VM name binding
+procedure?	vm-supported	
+process-kill	vm-supported	
+process-kill-tree	vm-supported	
+process-pid	vm-supported	
+process-read-nonblocking	vm-supported	
+process-setpgid	vm-supported	
+process-spawn	vm-supported	
+process-spawn-pty	vm-supported	
+process-wait	vm-supported	
+promise?	vm-supported	
+ptr->string	native-only-justified	low-level memory/FFI primitive tied to native codegen
+ptr->usize	native-only-justified	low-level memory/FFI primitive tied to native codegen
+ptr-add	native-only-justified	low-level memory/FFI primitive tied to native codegen
+quantum-random	vm-supported	
+quantum-random-int	vm-supported	
+quantum-random-range	vm-supported	
+quotient	vm-supported	
+rand	gap	PRNG surface has no VM binding
+randint	gap	PRNG surface has no VM binding
+randn	gap	PRNG surface has no VM binding
+random	gap	PRNG surface has no VM binding
+range	gap	no VM name binding
+rational?	vm-supported	
+rationalize	vm-supported	
+read	vm-supported	
+read-bytevector	vm-supported	
+read-bytevector!	gap	port/file IO surface missing in VM
+read-char	gap	returns integer not char (found/char_type_collapsed.esk)
+read-file	gap	port/file IO surface missing in VM
+read-line	vm-supported	
+read-string	gap	port/file IO surface missing in VM
+read-u8	vm-supported	
+real-part	vm-supported	
+real?	vm-supported	
+realpath	vm-supported	
+reduce	vm-supported	
+regex-compile	vm-supported	
+regex-free	vm-supported	
+regex-match	vm-supported	
+regex-match-groups	vm-supported	
+regex-match?	vm-supported	
+regex-split	vm-supported	
+relu	vm-supported	
+remainder	vm-supported	
+remove	gap	no VM name binding
+remq	gap	no VM name binding
+remv	gap	no VM name binding
+reshape	vm-supported	
+reverse	vm-supported	
+right?	gap	no VM name binding
+rmsprop-step	gap	ml faculty has no VM fid coverage
+rotary-embedding	gap	ml faculty has no VM fid coverage
+round	vm-supported	
+scaled-dot-attention	gap	ml faculty has no VM fid coverage
+scheme-report-environment	gap	port/file IO surface missing in VM
+sdnc-improve!	gap	core.sdnc has no VM fids
+sdnc-params	gap	core.sdnc has no VM fids
+sdnc-program	gap	core.sdnc has no VM fids
+sdnc-run	gap	core.sdnc has no VM fids
+sdnc-set-params!	gap	core.sdnc has no VM fids
+sdnc-weight-grad	gap	core.sdnc has no VM fids
+sdnc?	gap	core.sdnc has no VM fids
+selu	gap	ml faculty has no VM fid coverage
+semver-compare	vm-supported	
+semver-parse	vm-supported	
+semver-satisfies?	vm-supported	
+set-car!	vm-supported	
+set-cdr!	vm-supported	
+set-current-directory!	vm-supported	
+set-random-seed!	gap	PRNG surface has no VM binding
+setenv	vm-supported	
+sgd-step	gap	ml faculty has no VM fid coverage
+sha256-file	vm-supported	
+shell-quote	vm-supported	
+sigmoid	vm-supported	
+silu	gap	ml faculty has no VM fid coverage
+sin	vm-supported	
+sinh	vm-supported	
+sleep	native-only-justified	OS/process interface — native runtime only
+sleep-ms	vm-supported	
+slice	gap	tensor linalg/manipulation fid missing in VM
+smooth-l1-loss	gap	ml faculty has no VM fid coverage
+socket-close	vm-supported	
+socket-recv	vm-supported	
+socket-send	vm-supported	
+softmax	vm-supported	
+softplus	gap	ml faculty has no VM fid coverage
+split	gap	tensor linalg/manipulation fid missing in VM
+split-at	gap	no VM name binding
+sqrt	vm-supported	
+square	gap	no VM name binding
+squeeze	gap	tensor linalg/manipulation fid missing in VM
+stack	gap	tensor linalg/manipulation fid missing in VM
+step-decay-lr	gap	ml faculty has no VM fid coverage
+string	gap	extended string surface missing in VM
+string->list	vm-supported	
+string->number	vm-supported	
+string->symbol	gap	BUILTINS fid 185 unimplemented in vm_native.c (found/symbol_string_unhandled_fid.esk)
+string->utf8	vm-supported	
+string-append	vm-supported	
+string-ci<=?	gap	extended string surface missing in VM
+string-ci<?	gap	extended string surface missing in VM
+string-ci=?	vm-supported	
+string-ci>=?	gap	extended string surface missing in VM
+string-ci>?	gap	extended string surface missing in VM
+string-contains?	gap	extended string surface missing in VM
+string-copy	vm-supported	
+string-copy!	gap	extended string surface missing in VM
+string-display-width	vm-supported	
+string-downcase	vm-supported	
+string-ends-with?	vm-supported	
+string-fill!	vm-supported	
+string-foldcase	gap	extended string surface missing in VM
+string-for-each	gap	extended string surface missing in VM
+string-index	gap	extended string surface missing in VM
+string-index-of	vm-supported	
+string-length	vm-supported	
+string-map	gap	extended string surface missing in VM
+string-pad-left	vm-supported	
+string-pad-right	vm-supported	
+string-port?	gap	extended string surface missing in VM
+string-ref	vm-supported	
+string-set!	gap	extended string surface missing in VM
+string-split	vm-supported	
+string-truncate-display	vm-supported	
+string-upcase	vm-supported	
+string<=?	gap	extended string surface missing in VM
+string<?	vm-supported	
+string=?	vm-supported	
+string>=?	gap	extended string surface missing in VM
+string>?	gap	extended string surface missing in VM
+string?	vm-supported	
+substitution?	vm-supported	
+substring	vm-supported	
+sum-tag	gap	no VM name binding
+sum-value	gap	no VM name binding
+symbol->string	gap	BUILTINS fid 184 unimplemented in vm_native.c (found/symbol_string_unhandled_fid.esk)
+symbol=?	gap	no VM name binding
+symbol?	vm-supported	
+symlink-create	vm-supported	
+symlink-read	vm-supported	
+system	native-only-justified	OS/process interface — native runtime only
+take	vm-supported	
+tan	vm-supported	
+tanh	vm-supported	
+target-intrinsic	native-only-justified	low-level memory/FFI primitive tied to native codegen
+temp-directory	vm-supported	
+tensor	vm-supported	
+tensor->vector	gap	tensor linalg/manipulation fid missing in VM
+tensor-abs	vm-supported	
+tensor-add	vm-supported	
+tensor-apply	gap	tensor linalg/manipulation fid missing in VM
+tensor-argmax	gap	tensor linalg/manipulation fid missing in VM
+tensor-argmin	gap	tensor linalg/manipulation fid missing in VM
+tensor-cast	vm-supported	
+tensor-cholesky	gap	tensor linalg/manipulation fid missing in VM
+tensor-corrcoef	gap	tensor linalg/manipulation fid missing in VM
+tensor-cos	vm-supported	
+tensor-cov	gap	tensor linalg/manipulation fid missing in VM
+tensor-data	vm-supported	
+tensor-det	gap	tensor linalg/manipulation fid missing in VM
+tensor-disk-fill!	gap	tensor linalg/manipulation fid missing in VM
+tensor-div	vm-supported	
+tensor-dot	vm-supported	
+tensor-dtype	vm-supported	
+tensor-exp	vm-supported	
+tensor-get	vm-supported	
+tensor-inverse	gap	tensor linalg/manipulation fid missing in VM
+tensor-length	gap	tensor linalg/manipulation fid missing in VM
+tensor-load	vm-supported	
+tensor-log	vm-supported	
+tensor-lu	gap	tensor linalg/manipulation fid missing in VM
+tensor-matmul	gap	tensor linalg/manipulation fid missing in VM
+tensor-max	vm-supported	
+tensor-maximum	vm-supported	
+tensor-mean	vm-supported	
+tensor-min	vm-supported	
+tensor-minimum	vm-supported	
+tensor-mul	vm-supported	
+tensor-neg	vm-supported	
+tensor-norm	gap	tensor linalg/manipulation fid missing in VM
+tensor-pow	vm-supported	
+tensor-qr	gap	tensor linalg/manipulation fid missing in VM
+tensor-rect-fill!	gap	tensor linalg/manipulation fid missing in VM
+tensor-reduce	gap	tensor linalg/manipulation fid missing in VM
+tensor-reduce-all	gap	tensor linalg/manipulation fid missing in VM
+tensor-ref	vm-supported	
+tensor-reshape	vm-supported	
+tensor-save	vm-supported	
+tensor-scale	vm-supported	
+tensor-set	gap	tensor linalg/manipulation fid missing in VM
+tensor-set!	vm-supported	
+tensor-shape	vm-supported	
+tensor-sin	vm-supported	
+tensor-solve	gap	tensor linalg/manipulation fid missing in VM
+tensor-sqrt	vm-supported	
+tensor-std	gap	tensor linalg/manipulation fid missing in VM
+tensor-sub	vm-supported	
+tensor-sum	vm-supported	
+tensor-svd	gap	tensor linalg/manipulation fid missing in VM
+tensor-token-estimate	gap	tensor linalg/manipulation fid missing in VM
+tensor-transpose	vm-supported	
+tensor-var	gap	tensor linalg/manipulation fid missing in VM
+tensor?	vm-supported	
+term-bell	vm-supported	
+term-clipboard-read	vm-supported	
+term-clipboard-write	vm-supported	
+term-detect-capabilities	vm-supported	
+term-disable-alternate-screen	vm-supported	
+term-disable-mouse	vm-supported	
+term-enable-alternate-screen	vm-supported	
+term-enable-mouse	vm-supported	
+term-hyperlink	vm-supported	
+term-read-mouse-event	vm-supported	
+term-reset-scroll-region	vm-supported	
+term-set-scroll-region	vm-supported	
+textual-port?	gap	port/file IO surface missing in VM
+thread-pool-info	vm-supported	
+thread-pool-size	vm-supported	
+thread-pool-stats	native-only-justified	parallel runtime is native-only
+tile	gap	tensor linalg/manipulation fid missing in VM
+time	gap	time surface has no VM binding
+trace	gap	no VM name binding
+train-test-split	gap	ml faculty has no VM fid coverage
+transpose	vm-supported	
+triplet-loss	gap	ml faculty has no VM fid coverage
+trunc	gap	no VM name binding
+truncate	vm-supported	
+truncate-quotient	gap	no VM name binding
+truncate-remainder	gap	no VM name binding
+truncate/	gap	no VM name binding
+ts-available	vm-supported	
+ts-node-children	vm-supported	
+ts-node-text	vm-supported	
+ts-node-type	vm-supported	
+ts-parse	vm-supported	
+ts-parser-free	vm-supported	
+ts-parser-new	vm-supported	
+ts-query-free	vm-supported	
+ts-query-matches	vm-supported	
+ts-query-new	vm-supported	
+ts-tree-free	vm-supported	
+ts-tree-root	vm-supported	
+type-of	vm-supported	
+u8-ready?	gap	port/file IO surface missing in VM
+unify	vm-supported	
+unix-socket-connect	vm-supported	
+unless	vm-supported	
+unsetenv	vm-supported	
+unsqueeze	gap	tensor linalg/manipulation fid missing in VM
+url-decode	vm-supported	
+url-encode	vm-supported	
+url-parse	vm-supported	
+username	vm-supported	
+usize->ptr	native-only-justified	low-level memory/FFI primitive tied to native codegen
+utf8->string	vm-supported	
+uuid-v4	vm-supported	
+vector	vm-supported	
+vector->list	vm-supported	
+vector->tensor	gap	tensor linalg/manipulation fid missing in VM
+vector-append	gap	no VM name binding
+vector-copy!	gap	no VM name binding
+vector-fill!	gap	no VM name binding
+vector-for-each	gap	no VM name binding
+vector-length	vm-supported	
+vector-map	gap	no VM name binding
+vector-ref	vm-supported	
+vector-set!	vm-supported	
+vector-to-string	gap	tensor linalg/manipulation fid missing in VM
+vector?	vm-supported	
+volatile-load	native-only-justified	low-level memory/FFI primitive tied to native codegen
+volatile-store!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+vref	vm-supported	
+walk	gap	does not resolve bindings (found/logic_walk_unresolved.esk)
+websocket-close	vm-supported	
+websocket-connect	vm-supported	
+websocket-receive	vm-supported	
+websocket-send	vm-supported	
+websocket-send-binary	vm-supported	
+when	vm-supported	
+with-exception-handler	vm-supported	
+with-input-from-file	gap	port/file IO surface missing in VM
+with-output-to-file	gap	port/file IO surface missing in VM
+workspace?	vm-supported	
+write	gap	does not emit read syntax (found/write_does_not_quote.esk)
+write-bytevector	vm-supported	
+write-char	vm-supported	
+write-file	gap	port/file IO surface missing in VM
+write-line	gap	port/file IO surface missing in VM
+write-shared	gap	port/file IO surface missing in VM
+write-simple	gap	port/file IO surface missing in VM
+write-string	vm-supported	
+write-u8	vm-supported	
+ws-register!	vm-supported	
+ws-step!	vm-supported	
+xavier-normal!	gap	ml faculty has no VM fid coverage
+xavier-uniform!	gap	ml faculty has no VM fid coverage
+zero-grad!	gap	ml faculty has no VM fid coverage
+zero?	vm-supported	
+zeros	vm-supported	
+zip	gap	no VM name binding

@@ -1,0 +1,13 @@
+; core list surgery
+(display (cons 1 (list 2 3))) (newline)
+(display (car (list 9 8))) (newline)
+(display (cdr (list 9 8))) (newline)
+(display (append (list 1) (list 2) (list 3))) (newline)
+(display (reverse (list 1 2 3))) (newline)
+(display (length (list 1 2 3 4))) (newline)
+(display (list-ref (list 10 20 30) 2)) (newline)
+(display (list-tail (list 1 2 3) 1)) (newline)
+(display (member 2 (list 1 2 3))) (newline)
+(display (cdr (assoc (quote b) (list (cons (quote a) 1) (cons (quote b) 2))))) (newline)
+(display (caar (list (list 1 2)))) (newline)
+(display (cadr (list 1 2))) (newline)

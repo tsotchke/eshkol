@@ -1,0 +1,5 @@
+; FILED: equal? on equal lists and eq? on identical symbols return #f in VM.
+; native -r : #t#t
+; vm        : #f#f
+(display (equal? (list 1 2) (list 1 2)))
+(display (eq? (quote a) (quote a)))

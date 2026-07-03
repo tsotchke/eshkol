@@ -1,0 +1,6 @@
+; int/float mixing that stays inside the shared display format
+(display (exact->inexact 1)) (newline)
+(display (+ 1 2.5)) (newline)
+(display (* 2 0.75)) (newline)
+(display (sqrt 2)) (newline)
+(display (- 10 0.5)) (newline)

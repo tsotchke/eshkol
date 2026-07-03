@@ -1,0 +1,4 @@
+; FILED: float display format diverges for large magnitudes.
+; native -r : 1e+10
+; vm        : 10000000000
+(display 1e10)

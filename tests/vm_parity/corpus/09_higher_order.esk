@@ -1,0 +1,6 @@
+; map / filter / fold-left / apply / lambdas as values
+(display (map (lambda (x) (* x x)) (list 1 2 3 4))) (newline)
+(display (filter (lambda (x) (> x 2)) (list 1 2 3 4 5))) (newline)
+(display (fold-left + 0 (list 1 2 3 4 5))) (newline)
+(display (apply + (list 1 2 3))) (newline)
+(display (map (lambda (a b) (+ a b)) (list 1 2 3) (list 10 20 30))) (newline)

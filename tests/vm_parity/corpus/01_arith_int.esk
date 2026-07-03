@@ -1,0 +1,12 @@
+; integer arithmetic: + - * quotient remainder modulo abs min max gcd lcm
+(display (+ 1 2 3 4)) (newline)
+(display (- 100 42)) (newline)
+(display (* 6 7)) (newline)
+(display (quotient 17 5)) (newline)
+(display (remainder 17 5)) (newline)
+(display (modulo -7 3)) (newline)
+(display (abs -9)) (newline)
+(display (min 3 1 2)) (newline)
+(display (max 4 9 2)) (newline)
+(display (gcd 12 18)) (newline)
+(display (lcm 4 6)) (newline)

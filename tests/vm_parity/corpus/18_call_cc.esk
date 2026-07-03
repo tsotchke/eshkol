@@ -1,0 +1,4 @@
+; escape continuations
+(display (call/cc (lambda (k) (+ 1 (k 42))))) (newline)
+(display (+ 1 (call/cc (lambda (k) 10)))) (newline)
+(display (call/cc (lambda (k) (* 2 21)))) (newline)

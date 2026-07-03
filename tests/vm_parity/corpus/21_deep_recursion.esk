@@ -1,0 +1,5 @@
+; medium non-tail recursion depth + long tail loop
+(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1)))))
+(display (depth 500)) (newline)
+(define (loop n) (if (= n 0) (quote done) (loop (- n 1))))
+(display (loop 200000)) (newline)
