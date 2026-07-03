@@ -4,11 +4,23 @@ set -euo pipefail
 
 ESHKOL_RUN="${1:-${ESHKOL_RUN:-}}"
 if [ -z "$ESHKOL_RUN" ]; then
-    if [ -x "./build/eshkol-run" ]; then
-        ESHKOL_RUN="./build/eshkol-run"
-    elif [ -x "./build-verify/eshkol-run" ]; then
-        ESHKOL_RUN="./build-verify/eshkol-run"
-    else
+    # Honour $BUILD_DIR (CI passes it via the matrix: build-asan / build-xla /
+    # build-cuda) so non-default lanes locate their eshkol-run instead of
+    # falling through to a missing ./build/eshkol-run. Resolve relative to the
+    # repo root, matching the sibling shell tests in this directory.
+    ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+    for candidate in \
+        "$ROOT/${BUILD_DIR:-build}/eshkol-run" \
+        "$ROOT/build/eshkol-run" \
+        "$ROOT/build-verify/eshkol-run" \
+        "./build/eshkol-run" \
+        "./build-verify/eshkol-run"; do
+        if [ -x "$candidate" ]; then
+            ESHKOL_RUN="$candidate"
+            break
+        fi
+    done
+    if [ -z "$ESHKOL_RUN" ]; then
         echo "FAIL: precompiled_external_body_prune_test could not locate eshkol-run" >&2
         exit 1
     fi
