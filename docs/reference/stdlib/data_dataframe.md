@@ -12,30 +12,23 @@ pair `(header . rows)`:
 `csv-parse-typed` adds type inference: numeric-looking fields become numbers,
 everything else stays a string.
 
-> **Broken through `csv-parse-typed`.** Because [`csv-parse`](data_csv.md)
-> returns rows reversed, `csv-parse-typed` picks the **last** CSV line as the
-> header, which breaks the accessors below. The accessors themselves are correct
-> when given a well-formed `(header . rows)` pair. See
-> [Known issues](#known-issues). The examples below build the frame by hand to
-> document intended behaviour.
-
 ## Functions
 
-### `(csv-parse-typed str)` — **header comes out wrong** (see [Known issues](#known-issues))
-Parse a CSV string into a `(header . typed-rows)` DataFrame; first row is meant
-to be the header, remaining rows get type inference.
+### `(csv-parse-typed str)`
+Parse a CSV string into a `(header . typed-rows)` DataFrame; the first row is the
+header, remaining rows get type inference.
 
 ```scheme
 (require core.data.dataframe)
 (display (csv-parse-typed "col\n42")) (newline)
 ```
 ```
-((42) (col))
+((col) (42))
 ```
-Expected `((col) (42))`; the header/row are swapped by the underlying
-`csv-parse` reversal.
+(Previously the header/row came out swapped because the underlying `csv-parse`
+returned rows reversed; that has been fixed.)
 
-For the remaining accessors, a correctly-shaped frame is built directly:
+The remaining accessors are illustrated on a directly-built frame:
 
 ```scheme
 (require core.data.dataframe)
@@ -137,19 +130,14 @@ Columns: name, age
 
 ## Known issues
 
-### `csv-parse-typed` picks the last CSV line as the header
-`csv-parse-typed` calls `csv-parse`, which returns rows reversed (see
-[`core.data.csv`](data_csv.md)), then takes `(car rows)` as the header. The
-header therefore becomes the last data line and subsequent lookups fail:
+None. (Historically `csv-parse-typed` picked the **last** CSV line as the header
+because the underlying `csv-parse` returned rows reversed. That reversal has been
+fixed in [`core.data.csv`](data_csv.md), so the header is now the first line:
 
 ```scheme
 (require core.data.dataframe)
 (define df (csv-parse-typed "name,age\nAlice,30\nBob,25"))
-(display (csv-header df)) (newline)          ; (Bob 25)   -- should be (name age)
-(display (csv-rows df)) (newline)            ; ((Alice 30) (name age))
-(csv-column df "age")                          ; ERROR: csv-column: unknown column
+(display (csv-header df)) (newline)          ; (name age)
+(display (csv-rows df)) (newline)            ; ((Alice 30) (Bob 25))
 ```
-Root cause is entirely in `csv-parse`; the DataFrame accessors are correct on a
-well-formed frame. Workaround until `csv-parse` is fixed: reconstruct the frame
-from a reversed parse, e.g. build `(cons header data)` yourself from
-`(reverse (csv-parse str))`.
+)
