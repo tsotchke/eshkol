@@ -3866,33 +3866,12 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         break;
                     }
 
-                    eshkol_ast_t expr;
-                    if (token.type == TOKEN_LPAREN) {
-                        expr = parse_list(tokenizer);
-                    } else if (token.type == TOKEN_QUOTE) {
-                        // (define (f ...) 'x) — quoted datum in body.
-                        eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                        expr.type = ESHKOL_OP;
-                        expr.operation.op = ESHKOL_QUOTE_OP;
-                        expr.operation.call_op.func = nullptr;
-                        expr.operation.call_op.num_vars = 1;
-                        expr.operation.call_op.variables = new eshkol_ast_t[1];
-                        expr.operation.call_op.variables[0] = quoted;
-                    } else if (token.type == TOKEN_BACKQUOTE) {
-                        // (define (f ...) `(...)) — quasiquoted datum in
-                        // body. Without this branch the parser would fall to
-                        // parse_atom(TOKEN_BACKQUOTE), corrupting the token
-                        // stream and silently producing the wrong body AST.
-                        eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
-                        expr.type = ESHKOL_OP;
-                        expr.operation.op = ESHKOL_QUASIQUOTE_OP;
-                        expr.operation.call_op.func = nullptr;
-                        expr.operation.call_op.num_vars = 1;
-                        expr.operation.call_op.variables = new eshkol_ast_t[1];
-                        expr.operation.call_op.variables[0] = inner;
-                    } else {
-                        expr = parse_atom(token);
-                    }
+                    // Push the token back and let parse_expression handle it.
+                    // Manual LPAREN/atom dispatch here dropped quote,
+                    // quasiquote and #(...) vector tokens (ESH-0091 family);
+                    // parse_expression covers every expression-position token.
+                    tokenizer.pushBack(token);
+                    eshkol_ast_t expr = parse_expression(tokenizer);
                     body_expressions.push_back(expr);
                 }
                 
@@ -4403,31 +4382,11 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else if (token.type == TOKEN_QUOTE) {
-                    // Handle quoted expressions in lambda body: (lambda () 'ok)
-                    eshkol_ast_t quoted = parse_quoted_data(tokenizer);
-                    expr.type = ESHKOL_OP;
-                    expr.operation.op = ESHKOL_QUOTE_OP;
-                    expr.operation.call_op.func = nullptr;
-                    expr.operation.call_op.num_vars = 1;
-                    expr.operation.call_op.variables = new eshkol_ast_t[1];
-                    expr.operation.call_op.variables[0] = quoted;
-                } else if (token.type == TOKEN_BACKQUOTE) {
-                    // Handle quasiquoted expressions in lambda body: (lambda () `expr)
-                    // Already uses parse_quasiquoted_data — this path is correct.
-                    eshkol_ast_t inner = parse_quasiquoted_data(tokenizer);
-                    expr.type = ESHKOL_OP;
-                    expr.operation.op = ESHKOL_QUASIQUOTE_OP;
-                    expr.operation.call_op.func = nullptr;
-                    expr.operation.call_op.num_vars = 1;
-                    expr.operation.call_op.variables = new eshkol_ast_t[1];
-                    expr.operation.call_op.variables[0] = inner;
-                } else {
-                    expr = parse_atom(token);
-                }
+                // Push the token back and let parse_expression handle it —
+                // covers quote, quasiquote, #(...) vectors and every other
+                // expression-position token (ESH-0091 family).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
                 body_expressions.push_back(expr);
             }
 
@@ -4612,21 +4571,23 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
                 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
-                
+                // Push the token back and let parse_expression handle it.
+                // Manual LPAREN/atom dispatch here dropped quote, quasiquote
+                // and #(...) vector tokens in let-family body positions
+                // (ESH-0091): 'ok became parse_atom(TOKEN_QUOTE) → INVALID,
+                // invalidating the whole let and leaving the datum tokens to
+                // be re-parsed as spurious sibling expressions.
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
+
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
                     return ast;
                 }
-                
+
                 body_expressions.push_back(expr);
             }
-            
+
             if (body_expressions.empty()) {
                 PARSE_ERROR_AT(token, "let body cannot be empty");
                 ast.type = ESHKOL_INVALID;
@@ -4888,12 +4849,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                eshkol_ast_t expr;
-                if (token.type == TOKEN_LPAREN) {
-                    expr = parse_list(tokenizer);
-                } else {
-                    expr = parse_atom(token);
-                }
+                // Push back + parse_expression: manual LPAREN/atom dispatch
+                // dropped quote/quasiquote/#(...) tokens (ESH-0091 family).
+                tokenizer.pushBack(token);
+                eshkol_ast_t expr = parse_expression(tokenizer);
 
                 if (expr.type == ESHKOL_INVALID) {
                     ast.type = ESHKOL_INVALID;
