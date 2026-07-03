@@ -1,4 +1,4 @@
-# Compilation Guide for Eshkol v1.2.1-scale
+# Compilation Guide for Eshkol v1.3.0-evolve
 
 ## Table of Contents
 - [Overview](#overview)
