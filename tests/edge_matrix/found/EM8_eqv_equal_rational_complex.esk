@@ -1,0 +1,19 @@
+;; EM-8 (edge-matrix tranche 2, 2026-07-03, ledger ESH-0114): eqv? and equal?
+;; on RATIONAL and COMPLEX numbers return #f even for numerically identical
+;; operands, because these heap-allocated numeric types fall through to
+;; identity/pointer comparison. The `=` numeric operator is correct (it has
+;; the rational/complex dispatch); eqv?/equal? do not. Bignums ARE handled
+;; (value comparison), so this is specifically the rational + complex gap.
+;;
+;; Found by: pair156..161 numeric_tower__in__* (rational_third producer,
+;; edge-chk uses (equal? actual expected)); reproduces -r AND AOT.
+;;
+;; R7RS: eqv? on two exact numbers is #t iff they are numerically equal;
+;; equal? on numbers is eqv?. So all four lines below must print #t.
+;; Expected output:  #t #t #t #t
+;; Actual (master 0733dc9b): #f #f #f #f
+(display (eqv?   (/ 1 3) (/ 1 3)))   (display " ")
+(display (equal? (/ 1 3) (/ 2 6)))   (display " ")
+(display (eqv?   (make-rectangular 1 2) (make-rectangular 1 2))) (display " ")
+(display (equal? (make-rectangular 1 2) (make-rectangular 1 2)))
+(newline)

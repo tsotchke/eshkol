@@ -1,1 +1,28 @@
-{"id":"ESH-0102","title":"Mutual tail calls are not TCO'd: ping-pong recursion crashes at ~300-500k depth","status":"open","priority":"high","workstream":"edge-case-campaign/tco","goal":"Found by the P4 stress harness (2026-07-02, master 2692ca63). Self tail recursion is optimized (10^8 iterations O(1) stack) but MUTUAL tail calls burn a frame per hop: (define (ping n) (if (= n 0) 'ping (pong (- n 1)))) with reciprocal pong crashes SIGILL at depth 500000 (300000 passes, no diagnostic); 10^7 dies at ~535MB RSS. JIT and AOT identical. R7RS 3.5 requires proper tail calls across function boundaries. Likely needs musttail (or the trampoline the self-TCO path uses) for calls in tail position to other known functions.","file_globs":["lib/backend/llvm_codegen.cpp","lib/backend/binding_codegen.cpp"],"acceptance":["tests/stress/found/mutual_tail_1e7.esk prints OK ping in O(1) stack under -r and AOT","rec_mutual.esk mutual-tail depth can be raised to 10^7"],"blocked_by":[],"campaign_payoff":"State machines written as mutually tail-calling functions (the canonical Scheme idiom) currently have a hidden ~300k transition ceiling.","repro":"tests/stress/found/mutual_tail_1e7.esk"}
+{
+  "id": "ESH-0102",
+  "title": "Mutual tail calls are not TCO'd: ping-pong recursion crashes at ~300-500k depth",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/tco",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). Self tail recursion is optimized (10^8 iterations O(1) stack) but MUTUAL tail calls burn a frame per hop: (define (ping n) (if (= n 0) 'ping (pong (- n 1)))) with reciprocal pong crashes SIGILL at depth 500000 (300000 passes, no diagnostic); 10^7 dies at ~535MB RSS. JIT and AOT identical. R7RS 3.5 requires proper tail calls across function boundaries. Likely needs musttail (or the trampoline the self-TCO path uses) for calls in tail position to other known functions.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/binding_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/stress/found/mutual_tail_1e7.esk prints OK ping in O(1) stack under -r and AOT",
+    "rec_mutual.esk mutual-tail depth can be raised to 10^7"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "State machines written as mutually tail-calling functions (the canonical Scheme idiom) currently have a hidden ~300k transition ceiling.",
+  "repro": "tests/stress/found/mutual_tail_1e7.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "mutual_tail_1e7.esk still SIGILLs (rc 132): mutual tail calls not TCO'd. Stress XKNOWN."
+    }
+  ]
+}

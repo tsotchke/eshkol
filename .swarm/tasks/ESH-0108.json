@@ -16,5 +16,14 @@
   ],
   "blocked_by": [],
   "campaign_payoff": "1M-element lists are inside the v1.2 scale target; core list ops must not be the depth ceiling.",
-  "repro": "tests/stress/found/list_length_1m.esk"
+  "repro": "tests/stress/found/list_length_1m.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "list_length_1m.esk still SIGILLs (rc 132) after printing 'OK ' when (length l) recurses on a 1M-element list; non-tail stdlib length. Stress XKNOWN."
+    }
+  ]
 }
