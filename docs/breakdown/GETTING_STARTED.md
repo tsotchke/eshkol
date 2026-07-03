@@ -93,7 +93,7 @@ cmake --build build --config Release --parallel
 ```bash
 # Check compiler version
 build/eshkol-run --version
-# Expected: Eshkol Compiler v1.2.1-scale
+# Expected: Eshkol Compiler v1.3.0-evolve
 
 # Check REPL
 build/eshkol-repl
