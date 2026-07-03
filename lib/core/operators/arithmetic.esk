@@ -1,9 +1,15 @@
 ;;; core/operators/arithmetic.esk
 ;;; First-class wrappers for arithmetic operators
 
-(provide add sub mul div)
+(provide add sub mul divide)
 
 (define (add x y) (+ x y))
 (define (sub x y) (- x y))
 (define (mul x y) (* x y))
-(define (div x y) (/ x y))
+;; NOTE: the division alias is `divide`, NOT `div`.  A function named
+;; `div` is emitted as a weak external symbol whose bare name collides
+;; with the C standard library's `div()`; the dynamic linker coalesces
+;; the two and binds callers to libc `div(int,int)->div_t`, corrupting
+;; the result (returns ()).  `divide` avoids the collision entirely.
+;; For scalar division you can also use the built-in `/` directly.
+(define (divide x y) (/ x y))
