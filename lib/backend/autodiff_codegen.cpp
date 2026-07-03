@@ -213,11 +213,97 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
 
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // ── R → Rⁿ: vector-valued derivative ────────────────────────────────
+    // A function like (lambda (t) (vector (* t t) (* t t t))) returns a scheme
+    // VECTOR whose elements are duals (each (* t …) carries its own tangent).
+    // The scalar extraction below would read the vector POINTER as a double and
+    // silently return 0. Detect a scheme-vector result and differentiate each
+    // component, returning a vector of per-component derivatives. (A raw-double
+    // tensor cannot carry the tangent, so only (vector ...) results are
+    // supported here; a tensor result falls through to the scalar path.)
+    llvm::AllocaInst* nd_slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        nd_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "fwd_ex_nd_slot");
+    }
+    llvm::Value* nd_base = tagged_.getBaseType(tagged_.getType(result_tagged));
+    llvm::Value* nd_is_heap = b.CreateICmpEQ(nd_base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    llvm::BasicBlock* nd_check  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_check", fn);
+    llvm::BasicBlock* nd_vec    = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_vec", fn);
+    llvm::BasicBlock* nd_scalar = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_scalar", fn);
+    llvm::BasicBlock* nd_done   = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_done", fn);
+    b.CreateCondBr(nd_is_heap, nd_check, nd_scalar);
+
+    // Is the heap object a scheme vector (subtype VECTOR)?
+    b.SetInsertPoint(nd_check);
+    llvm::Value* nd_ptr = tagged_.unpackPtr(result_tagged);
+    llvm::Value* nd_hdr = b.CreateGEP(ctx_.int8Type(), nd_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* nd_sub = b.CreateLoad(ctx_.int8Type(), nd_hdr);
+    llvm::Value* nd_is_vec = b.CreateICmpEQ(nd_sub,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+    b.CreateCondBr(nd_is_vec, nd_vec, nd_scalar);
+
+    // Vector path: build a scheme vector of per-component derivatives.
+    b.SetInsertPoint(nd_vec);
+    {
+        llvm::Value* nd_is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* nd_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+        llvm::Value* nd_len = b.CreateLoad(ctx_.int64Type(), nd_ptr);
+        llvm::Value* nd_src8 = b.CreateGEP(ctx_.int8Type(), nd_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* nd_src = b.CreatePointerCast(nd_src8, ctx_.ptrType());
+        llvm::Value* nd_arena = getArenaPtr();
+        llvm::Value* nd_out = b.CreateCall(mem_.getArenaAllocateVectorWithHeader(), {nd_arena, nd_len});
+        b.CreateStore(nd_len, nd_out);
+        llvm::Value* nd_out8 = b.CreateGEP(ctx_.int8Type(), nd_out,
+            llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        llvm::Value* nd_out_elems = b.CreatePointerCast(nd_out8, ctx_.ptrType());
+
+        llvm::BasicBlock* nd_cond = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_cond", fn);
+        llvm::BasicBlock* nd_body = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_body", fn);
+        llvm::BasicBlock* nd_end  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nd_end", fn);
+        llvm::AllocaInst* nd_i;
+        {
+            llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+            nd_i = eb.CreateAlloca(ctx_.int64Type(), nullptr, "fwd_ex_nd_i");
+        }
+        b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), nd_i);
+        b.CreateBr(nd_cond);
+
+        b.SetInsertPoint(nd_cond);
+        llvm::Value* nd_iv = b.CreateLoad(ctx_.int64Type(), nd_i);
+        b.CreateCondBr(b.CreateICmpULT(nd_iv, nd_len), nd_body, nd_end);
+
+        b.SetInsertPoint(nd_body);
+        llvm::Value* nd_elem = b.CreateLoad(ctx_.taggedValueType(),
+            b.CreateGEP(ctx_.taggedValueType(), nd_src, nd_iv));
+        llvm::Value* nd_ed = safeUnpackDualFromTagged(nd_elem); // {a0,a1,a2,a12}
+        // level 0 → scalar derivative a1; nested → dual slice {a2,a12,0,0}.
+        llvm::Value* nd_scalar_elem = tagged_.packDouble(dualField(ctx_, nd_ed, 1));
+        llvm::Value* nd_slice_elem = packDualToTagged(makeDual4(ctx_,
+            dualField(ctx_, nd_ed, 2), dualField(ctx_, nd_ed, 3), nd_zero, nd_zero));
+        llvm::Value* nd_elem_out = b.CreateSelect(nd_is_l0, nd_scalar_elem, nd_slice_elem);
+        b.CreateStore(nd_elem_out, b.CreateGEP(ctx_.taggedValueType(), nd_out_elems, nd_iv));
+        b.CreateStore(b.CreateAdd(nd_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), nd_i);
+        b.CreateBr(nd_cond);
+
+        b.SetInsertPoint(nd_end);
+        llvm::Value* nd_out_int = b.CreatePtrToInt(nd_out, ctx_.int64Type());
+        b.CreateStore(tagged_.packPtr(nd_out_int, ESHKOL_VALUE_HEAP_PTR), nd_slot);
+        b.CreateBr(nd_done);
+    }
+
+    // Scalar path: original extraction.
+    b.SetInsertPoint(nd_scalar);
+
     llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
     llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
 
-    llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::BasicBlock* x0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar", fn);
     llvm::BasicBlock* x1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice", fn);
     llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_merge", fn);
@@ -280,7 +366,12 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     llvm::PHINode* res = b.CreatePHI(ctx_.taggedValueType(), 2, "fwd_extracted");
     res->addIncoming(scalar_res, x0e);
     res->addIncoming(slice, x1e);
-    return res;
+    b.CreateStore(res, nd_slot);
+    b.CreateBr(nd_done);
+
+    // Final merge of the scalar and vector (R→Rⁿ) extraction paths.
+    b.SetInsertPoint(nd_done);
+    return b.CreateLoad(ctx_.taggedValueType(), nd_slot);
 }
 
 // ===== ESH-0093: jet-lift reverse-tape operands inside forward-mode AD =====
