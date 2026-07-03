@@ -1,6 +1,6 @@
 # Eshkol Design Document
 
-## v1.2.1-scale
+## v1.3.0-evolve
 
 Eshkol is a compiled programming language for scientific computing, machine learning, and cognitive architectures. It compiles Scheme (R7RS) source through LLVM to native binaries, combining Lisp's homoiconicity with deterministic arena-based memory, compiler-integrated automatic differentiation, and a consciousness engine built on unification, active inference, and global workspace theory.
 
@@ -50,7 +50,7 @@ Compilation command: `eshkol-run file.esk -o binary`
 
 ### Modular Code Generation
 
-The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing. Line counts below reflect the v1.2.1-scale tree.
+The LLVM backend delegates to roughly thirty specialized modules via `std::function` callbacks. This inverts the typical dependency graph: modules call into main codegen rather than vice versa, enabling parallel development and incremental testing. Line counts below reflect the v1.3.0-evolve tree.
 
 | Module | Lines | Responsibility |
 |:---|---:|:---|
@@ -306,4 +306,4 @@ The LLVM and VM backends share the same language semantics but use independent v
 
 ---
 
-*Eshkol v1.2.1-scale is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with a 62-test edge-case regression suite, an ASan/UBSan CI lane, 555+ built-in functions, and 37 sub-suites passing end-to-end.*
+*Eshkol v1.3.0-evolve is a production compiler integrating automatic differentiation, deterministic memory management, homoiconic native code, GPU acceleration, cognitive computing primitives, and a dual backend architecture (LLVM + bytecode VM). The codebase ships with a 62-test edge-case regression suite, an ASan/UBSan CI lane, 555+ built-in functions, and 37 sub-suites passing end-to-end.*

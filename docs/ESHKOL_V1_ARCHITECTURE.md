@@ -1,7 +1,7 @@
 # Eshkol System Architecture Reference
 
-**Version**: v1.2.1-scale
-**Release**: v1.2.1-scale
+**Version**: v1.3.0-evolve
+**Release**: v1.3.0-evolve
 **Date**: May 2026
 **Status**: Production-ready compiler with GPU acceleration, consciousness engine, and exact arithmetic
 
@@ -1546,4 +1546,4 @@ v1.1 resolves several production issues in the interactive JIT:
 
 ---
 
-*This document reflects the v1.2.1-scale release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
+*This document reflects the v1.3.0-evolve release. All claims are verified against actual source code. For questions or corrections, see [`CONTRIBUTING.md`](../CONTRIBUTING.md).*
