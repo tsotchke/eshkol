@@ -5495,6 +5495,56 @@ private:
         return typed_val.llvm_value;
     }
     
+    // Read the HoTT type inferred for an AST node during the type-checking phase
+    // WITHOUT emitting any LLVM IR.
+    //
+    // SINGLE-EVAL FIX (ESH-0098): The typed-builtin branches below (list, vector,
+    // cons, car, cdr, vector-ref, addr-of) used to call codegenTypedAST() on their
+    // operand ASTs purely to recover an element/pointee type, then call
+    // codegenAST(ast) to actually build the value — which re-generated those same
+    // operands. That double-generated any side-effecting operand (e.g.
+    // (list (bump!)) called bump! twice; (vector ...) twice per element). The value
+    // builders (CollectionCodegen::list, codegenVector, ...) already evaluate each
+    // operand exactly once, so for type recovery we must NOT emit IR again. The
+    // type checker (run over every top-level form before codegen) annotates each
+    // sub-expression's inferred_hott_type, so we read that directly. Falls back to
+    // the generic Value type when a node was not type-checked (0), which is safe.
+    eshkol::hott::TypeId inferredHottType(const eshkol_ast_t* ast) const {
+        if (ast && ast->inferred_hott_type != 0) {
+            return eshkol::hott::TypeId::unpack(ast->inferred_hott_type);
+        }
+        return eshkol::hott::BuiltinTypes::Value;
+    }
+
+    // Recover the element type of a collection expression WITHOUT emitting IR.
+    // The type checker records only the base List/Vector type in inferred_hott_type
+    // (element precision is not packed), so for accessors like car/cdr/vector-ref we
+    // recover the element type directly from a nested constructor's operand types.
+    // Returns the generic Value type when it cannot be determined cheaply. Used by
+    // the SINGLE-EVAL FIX (ESH-0098) to avoid re-generating the collection operand.
+    eshkol::hott::TypeId inferredElementTypeOf(const eshkol_ast_t* coll_ast) const {
+        if (coll_ast && coll_ast->type == ESHKOL_OP &&
+            coll_ast->operation.op == ESHKOL_CALL_OP &&
+            coll_ast->operation.call_op.func &&
+            coll_ast->operation.call_op.func->type == ESHKOL_VAR &&
+            coll_ast->operation.call_op.func->variable.id) {
+            std::string fn = coll_ast->operation.call_op.func->variable.id;
+            if (fn == "list" || fn == "vector" || fn == "cons") {
+                uint64_t n = coll_ast->operation.call_op.num_vars;
+                uint64_t take = (fn == "cons" && n > 0) ? 1 : n;
+                std::vector<eshkol::hott::TypeId> element_types;
+                for (uint64_t i = 0; i < take; i++) {
+                    element_types.push_back(
+                        inferredHottType(&coll_ast->operation.call_op.variables[i]));
+                }
+                if (!element_types.empty()) {
+                    return ctx_->hottTypes().inferListElementType(element_types);
+                }
+            }
+        }
+        return eshkol::hott::BuiltinTypes::Value;
+    }
+
     // Create TypedValue from AST node
     TypedValue codegenTypedAST(const eshkol_ast_t* ast) {
         if (!ast) return TypedValue();
@@ -5617,11 +5667,13 @@ private:
                     // Operations that return cons pointers (or null for empty list)
                     // HoTT PARAMETERIZED TYPES: Track element types for List<T>
                     if (func_name == "list") {
-                        // Infer element type from list arguments
+                        // Infer element type from list arguments.
+                        // SINGLE-EVAL FIX (ESH-0098): read pre-computed types, do NOT
+                        // re-generate operands here (codegenAST below builds them once).
                         std::vector<eshkol::hott::TypeId> element_types;
                         for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                            TypedValue arg_typed = codegenTypedAST(&ast->operation.call_op.variables[i]);
-                            element_types.push_back(arg_typed.hott_type);
+                            element_types.push_back(
+                                inferredHottType(&ast->operation.call_op.variables[i]));
                         }
                         eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
@@ -5639,11 +5691,12 @@ private:
                     }
 
                     if (func_name == "cons") {
-                        // For cons, first arg determines element type
+                        // For cons, first arg determines element type.
+                        // SINGLE-EVAL FIX (ESH-0098): read pre-computed type, do NOT
+                        // re-generate the operand here (codegenAST below builds it once).
                         eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars > 0) {
-                            TypedValue first_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
-                            elem_type = first_arg.hott_type;
+                            elem_type = inferredHottType(&ast->operation.call_op.variables[0]);
                         }
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
 
@@ -5660,13 +5713,12 @@ private:
                     }
 
                     if (func_name == "cdr") {
-                        // Preserve element type from the input list
+                        // Preserve element type from the input list.
+                        // SINGLE-EVAL FIX (ESH-0098): recover element type without
+                        // re-generating the list operand (codegenAST builds it once).
                         eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars > 0) {
-                            TypedValue list_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
-                            if (list_arg.hasParameterizedType()) {
-                                elem_type = list_arg.elementType();
-                            }
+                            elem_type = inferredElementTypeOf(&ast->operation.call_op.variables[0]);
                         }
                         auto list_type = ctx_->hottTypes().makeListType(elem_type);
 
@@ -5683,13 +5735,12 @@ private:
                     }
 
                     if (func_name == "car") {
-                        // car returns the element type from the list
+                        // car returns the element type from the list.
+                        // SINGLE-EVAL FIX (ESH-0098): recover element type without
+                        // re-generating the list operand (codegenAST builds it once).
                         eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars > 0) {
-                            TypedValue list_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
-                            if (list_arg.hasParameterizedType()) {
-                                elem_type = list_arg.elementType();
-                            }
+                            elem_type = inferredElementTypeOf(&ast->operation.call_op.variables[0]);
                         }
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
@@ -5702,11 +5753,13 @@ private:
                     // Operations that return scheme vector pointers
                     // HoTT PARAMETERIZED TYPES: Track element types for Vector<T>
                     if (func_name == "vector") {
-                        // Infer element type from vector arguments
+                        // Infer element type from vector arguments.
+                        // SINGLE-EVAL FIX (ESH-0098): read pre-computed types, do NOT
+                        // re-generate operands here (codegenAST below builds them once).
                         std::vector<eshkol::hott::TypeId> element_types;
                         for (uint64_t i = 0; i < ast->operation.call_op.num_vars; i++) {
-                            TypedValue arg_typed = codegenTypedAST(&ast->operation.call_op.variables[i]);
-                            element_types.push_back(arg_typed.hott_type);
+                            element_types.push_back(
+                                inferredHottType(&ast->operation.call_op.variables[i]));
                         }
                         eshkol::hott::TypeId elem_type = ctx_->hottTypes().inferListElementType(element_types);
                         auto vec_type = ctx_->hottTypes().makeVectorType(elem_type);
@@ -5725,13 +5778,12 @@ private:
                     }
 
                     if (func_name == "vector-ref") {
-                        // vector-ref returns the element type from the vector
+                        // vector-ref returns the element type from the vector.
+                        // SINGLE-EVAL FIX (ESH-0098): recover element type without
+                        // re-generating the vector operand (codegenAST builds it once).
                         eshkol::hott::TypeId elem_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars > 0) {
-                            TypedValue vec_arg = codegenTypedAST(&ast->operation.call_op.variables[0]);
-                            if (vec_arg.hasParameterizedType()) {
-                                elem_type = vec_arg.elementType();
-                            }
+                            elem_type = inferredElementTypeOf(&ast->operation.call_op.variables[0]);
                         }
                         Value* val = codegenAST(ast);
                         if (!val) return TypedValue();
@@ -5848,10 +5900,11 @@ private:
                         return makeLowLevelTypedValue(val, intrinsic_info->return_type);
                     }
                     if (func_name == "addr-of") {
+                        // SINGLE-EVAL FIX (ESH-0098): recover pointee type without
+                        // re-generating the operand (codegenAST builds it once).
                         eshkol::hott::TypeId pointee_type = eshkol::hott::BuiltinTypes::Value;
                         if (ast->operation.call_op.num_vars == 1) {
-                            TypedValue target = codegenTypedAST(&ast->operation.call_op.variables[0]);
-                            pointee_type = target.hott_type;
+                            pointee_type = inferredHottType(&ast->operation.call_op.variables[0]);
                         }
                         auto ptr_type_info = ctx_->hottTypes().makePointerType(pointee_type);
 
