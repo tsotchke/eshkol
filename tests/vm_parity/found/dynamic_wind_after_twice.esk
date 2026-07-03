@@ -1,0 +1,7 @@
+; FILED: dynamic-wind runs the after-thunk TWICE on normal exit.
+; native -r : inbodyout
+; vm        : inbodyoutout
+(dynamic-wind
+  (lambda () (display "in"))
+  (lambda () (display "body"))
+  (lambda () (display "out")))

@@ -1,0 +1,11 @@
+; closure capturing a mutable local via set!
+(define (make-counter)
+  (let ((c 0))
+    (lambda () (set! c (+ c 1)) c)))
+(define a (make-counter))
+(define b (make-counter))
+(a) (a)
+(display (a)) (newline)
+(display (b)) (newline)
+(define (adder n) (lambda (x) (+ x n)))
+(display ((adder 3) 4)) (newline)

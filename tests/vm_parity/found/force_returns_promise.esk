@@ -1,0 +1,5 @@
+; FILED: (force (delay e)) returns the raw promise object, not e's value.
+; native -r : 3
+; vm        : #(#f <closure@NNN>)
+(define p (delay (+ 1 2)))
+(display (force p))

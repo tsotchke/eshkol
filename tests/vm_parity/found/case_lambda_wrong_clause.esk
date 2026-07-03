@@ -1,0 +1,5 @@
+; FILED: case-lambda ignores the 2-arg clause; silently wrong value.
+; native -r : 3
+; vm        : 1
+(define f (case-lambda ((x) x) ((x y) (+ x y))))
+(display (f 1 2))

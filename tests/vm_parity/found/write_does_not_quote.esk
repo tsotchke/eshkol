@@ -1,0 +1,5 @@
+; FILED: `write` does not produce read-syntax — strings print unquoted.
+; native -r : "hi"(1 "a")
+; vm        : hi(1 a)
+(write "hi")
+(write (list 1 "a"))

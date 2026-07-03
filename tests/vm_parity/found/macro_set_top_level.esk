@@ -1,0 +1,13 @@
+; FILED: a syntax-rules macro that set!s its operands diverges THREE ways.
+; R7RS expects x=2 y=1 -> "21".
+; native -r : "12"  (no swap — set! through the macro does not mutate
+;                    the top-level bindings: native-side suspect too)
+; vm        : "2"   (x mutated, y display produces nothing)
+(define-syntax swap!
+  (syntax-rules () ((_ a b) (let ((t a)) (set! a b) (set! b t)))))
+(define x 1)
+(define y 2)
+(swap! x y)
+(display x)
+(display y)
+(newline)

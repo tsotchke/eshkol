@@ -1,0 +1,4 @@
+; building strings in a loop
+(define (rep s n acc) (if (= n 0) acc (rep s (- n 1) (string-append acc s))))
+(display (rep "ab" 5 "")) (newline)
+(display (string-length (rep "xyz" 10 ""))) (newline)

@@ -1,0 +1,6 @@
+; quasiquote / unquote / trailing unquote-splicing — splicing in the MIDDLE
+; of a template reorders elements in the VM (see found/splice_middle_order.esk)
+(display `(1 ,(+ 1 1) ,@(list 3 4))) (newline)
+(define x 10)
+(display `(a ,x c)) (newline)
+(display `(0 ,(* 2 2) ,@(list 5))) (newline)

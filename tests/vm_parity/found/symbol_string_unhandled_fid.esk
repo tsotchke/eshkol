@@ -1,0 +1,7 @@
+; FILED: symbol->string / string->symbol are registered in the VM BUILTINS
+; table (fids 184/185) but vm_native.c has no case for those fids:
+; "WARNING: unhandled native call ID 184" and () is returned.
+; native -r : abcxyz
+; vm        : ()() plus unhandled-native-call warnings
+(display (symbol->string (quote abc)))
+(display (string->symbol "xyz"))
