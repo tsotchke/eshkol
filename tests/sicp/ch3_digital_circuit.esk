@@ -1,0 +1,322 @@
+;; SICP 3.3.4 — full event-driven digital circuit simulator: wires as
+;; message-passing closures, a time-segmented agenda (queue per time segment),
+;; after-delay, inverter/and-gate/or-gate, half-adder, full-adder, propagate.
+;; Probes collect (name time value) records instead of printing, so signal
+;; timing can be checked against the book's canonical delays
+;; (inverter 2, and-gate 3, or-gate 5 -> half-adder events at t=8, 11, 16).
+
+(define fails 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline))))
+
+;; ---- queue (front-ptr . rear-ptr), as in 3.3.2 ----
+(define (make-queue) (cons '() '()))
+(define (front-ptr q) (car q))
+(define (rear-ptr q) (cdr q))
+(define (empty-queue? q) (null? (front-ptr q)))
+(define (front-queue q)
+  (if (empty-queue? q)
+      (error "FRONT called with empty queue")
+      (car (front-ptr q))))
+(define (insert-queue! q item)
+  (let ((new (cons item '())))
+    (cond ((empty-queue? q)
+           (set-car! q new) (set-cdr! q new))
+          (else
+           (set-cdr! (rear-ptr q) new) (set-cdr! q new)))
+    q))
+(define (delete-queue! q)
+  (cond ((empty-queue? q) (error "DELETE called with empty queue"))
+        (else (set-car! q (cdr (front-ptr q)))
+              (if (null? (front-ptr q)) (set-cdr! q '()))
+              q)))
+
+;; ---- agenda: (current-time . time-segments), segment = (time . queue) ----
+(define (make-time-segment time queue) (cons time queue))
+(define (segment-time s) (car s))
+(define (segment-queue s) (cdr s))
+
+(define (make-agenda) (list 0))
+(define (current-time agenda) (car agenda))
+(define (set-current-time! agenda time) (set-car! agenda time))
+(define (segments agenda) (cdr agenda))
+(define (set-segments! agenda segs) (set-cdr! agenda segs))
+(define (first-segment agenda) (car (segments agenda)))
+(define (rest-segments agenda) (cdr (segments agenda)))
+(define (empty-agenda? agenda) (null? (segments agenda)))
+
+(define (add-to-agenda! time action agenda)
+  (define (belongs-before? segs)
+    (or (null? segs) (< time (segment-time (car segs)))))
+  (define (make-new-time-segment time action)
+    (let ((q (make-queue)))
+      (insert-queue! q action)
+      (make-time-segment time q)))
+  (define (add-to-segments! segs)
+    (if (= (segment-time (car segs)) time)
+        (insert-queue! (segment-queue (car segs)) action)
+        (let ((rest (cdr segs)))
+          (if (belongs-before? rest)
+              (set-cdr! segs
+                        (cons (make-new-time-segment time action) (cdr segs)))
+              (add-to-segments! rest)))))
+  (let ((segs (segments agenda)))
+    (if (belongs-before? segs)
+        (set-segments! agenda
+                       (cons (make-new-time-segment time action) segs))
+        (add-to-segments! segs))))
+
+(define (remove-first-agenda-item! agenda)
+  (let ((q (segment-queue (first-segment agenda))))
+    (delete-queue! q)
+    (if (empty-queue? q)
+        (set-segments! agenda (rest-segments agenda)))))
+
+(define (first-agenda-item agenda)
+  (if (empty-agenda? agenda)
+      (error "Agenda is empty -- FIRST-AGENDA-ITEM")
+      (let ((first-seg (first-segment agenda)))
+        (set-current-time! agenda (segment-time first-seg))
+        (front-queue (segment-queue first-seg)))))
+
+;; ---- agenda unit test: time ordering + FIFO within a segment ----
+(define exec-order '())
+(define (mark tag) (lambda () (set! exec-order (cons tag exec-order))))
+(define test-agenda (make-agenda))
+(add-to-agenda! 5 (mark 'e5) test-agenda)
+(add-to-agenda! 3 (mark 'e3a) test-agenda)
+(add-to-agenda! 9 (mark 'e9) test-agenda)
+(add-to-agenda! 3 (mark 'e3b) test-agenda)   ; same segment, after e3a
+(add-to-agenda! 1 (mark 'e1) test-agenda)
+(define (drain agenda)
+  (if (empty-agenda? agenda)
+      'done
+      (let ((item (first-agenda-item agenda)))
+        (item)
+        (remove-first-agenda-item! agenda)
+        (drain agenda))))
+(drain test-agenda)
+(check "agenda-time-order+segment-fifo" '(e1 e3a e3b e5 e9) (reverse exec-order))
+(check "agenda-final-time" 9 (current-time test-agenda))
+(check "agenda-empty-after-drain" #t (empty-agenda? test-agenda))
+
+;; ---- wires: closures with signal value + action list ----
+(define (call-each procedures)
+  (if (null? procedures)
+      'done
+      (begin ((car procedures))
+             (call-each (cdr procedures)))))
+
+(define (make-wire)
+  (let ((signal-value 0)
+        (action-procedures '()))
+    (define (set-my-signal! new-value)
+      (if (not (= signal-value new-value))
+          (begin (set! signal-value new-value)
+                 (call-each action-procedures))
+          'done))
+    (define (accept-action-procedure! proc)
+      (set! action-procedures (cons proc action-procedures))
+      (proc))                              ; run once at attach (book semantics)
+    (define (dispatch m)
+      (cond ((eq? m 'get-signal) signal-value)
+            ((eq? m 'set-signal!) set-my-signal!)
+            ((eq? m 'add-action!) accept-action-procedure!)
+            (else (error "Unknown operation -- WIRE" m))))
+    dispatch))
+
+(define (get-signal wire) (wire 'get-signal))
+(define (set-signal! wire new-value) ((wire 'set-signal!) new-value))
+(define (add-action! wire action-procedure) ((wire 'add-action!) action-procedure))
+
+;; ---- the-agenda, delays (book values), after-delay, propagate ----
+(define the-agenda (make-agenda))
+(define inverter-delay 2)
+(define and-gate-delay 3)
+(define or-gate-delay 5)
+
+(define (after-delay delay action)
+  (add-to-agenda! (+ delay (current-time the-agenda)) action the-agenda))
+
+(define (propagate)
+  (if (empty-agenda? the-agenda)
+      'done
+      (let ((first-item (first-agenda-item the-agenda)))
+        (first-item)
+        (remove-first-agenda-item! the-agenda)
+        (propagate))))
+
+;; ---- gates ----
+(define (logical-not s)
+  (cond ((= s 0) 1)
+        ((= s 1) 0)
+        (else (error "Invalid signal" s))))
+(define (logical-and a b) (if (and (= a 1) (= b 1)) 1 0))
+(define (logical-or a b) (if (or (= a 1) (= b 1)) 1 0))
+
+(define (inverter input output)
+  (define (invert-input)
+    (let ((new-value (logical-not (get-signal input))))
+      (after-delay inverter-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! input invert-input)
+  'ok)
+
+(define (and-gate a1 a2 output)
+  (define (and-action-procedure)
+    (let ((new-value (logical-and (get-signal a1) (get-signal a2))))
+      (after-delay and-gate-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! a1 and-action-procedure)
+  (add-action! a2 and-action-procedure)
+  'ok)
+
+(define (or-gate a1 a2 output)
+  (define (or-action-procedure)
+    (let ((new-value (logical-or (get-signal a1) (get-signal a2))))
+      (after-delay or-gate-delay
+                   (lambda () (set-signal! output new-value)))))
+  (add-action! a1 or-action-procedure)
+  (add-action! a2 or-action-procedure)
+  'ok)
+
+;; ---- adders ----
+;; KNOWN GAP (documented, not worked around silently): a quoted symbol as the
+;; tail expression of a `let` body inside a `define` miscompiles today —
+;; minimal repro: (define (f) (let ((x 1)) 'ok))  =>
+;; "error: Undefined variable: ok" + SIGSEGV. The book's `'ok` therefore sits
+;; as the define's tail, outside the let. Semantics are identical.
+(define (half-adder a b s c)
+  (let ((d (make-wire)) (e (make-wire)))
+    (or-gate a b d)
+    (and-gate a b c)
+    (inverter c e)
+    (and-gate d e s))
+  'ok)
+
+(define (full-adder a b c-in sum c-out)
+  (let ((s (make-wire)) (c1 (make-wire)) (c2 (make-wire)))
+    (half-adder b c-in s c1)
+    (half-adder a s sum c2)
+    (or-gate c1 c2 c-out))
+  'ok)
+
+;; ---- probe: collect (name time value) instead of printing ----
+(define probe-log '())
+(define (probe name wire)
+  (add-action! wire
+               (lambda ()
+                 (set! probe-log
+                       (cons (list name (current-time the-agenda) (get-signal wire))
+                             probe-log)))))
+
+;; ================= single-gate timing checks =================
+;; inverter: attach fires initial action; with in=0 output becomes 1 at t=2.
+(define inv-in (make-wire))
+(define inv-out (make-wire))
+(inverter inv-in inv-out)
+(propagate)
+(check "inverter-initial-out" 1 (get-signal inv-out))
+(check "inverter-initial-time" 2 (current-time the-agenda))
+(set-signal! inv-in 1)
+(propagate)
+(check "inverter-flip-out" 0 (get-signal inv-out))
+(check "inverter-flip-time (2+2)" 4 (current-time the-agenda))
+
+;; and-gate truth (agenda keeps running; only values checked here)
+(define ag-a (make-wire))
+(define ag-b (make-wire))
+(define ag-o (make-wire))
+(and-gate ag-a ag-b ag-o)
+(set-signal! ag-a 1) (propagate)
+(check "and-1-0" 0 (get-signal ag-o))
+(set-signal! ag-b 1) (propagate)
+(check "and-1-1" 1 (get-signal ag-o))
+(set-signal! ag-a 0) (propagate)
+(check "and-0-1" 0 (get-signal ag-o))
+
+;; or-gate truth
+(define og-a (make-wire))
+(define og-b (make-wire))
+(define og-o (make-wire))
+(or-gate og-a og-b og-o)
+(propagate)
+(check "or-0-0" 0 (get-signal og-o))
+(set-signal! og-a 1) (propagate)
+(check "or-1-0" 1 (get-signal og-o))
+(set-signal! og-a 0) (set-signal! og-b 1) (propagate)
+(check "or-0-1" 1 (get-signal og-o))
+
+;; ================= half-adder: the book's canonical run =================
+(set! the-agenda (make-agenda))        ; fresh agenda at t=0
+(set! probe-log '())
+
+(define input-1 (make-wire))
+(define input-2 (make-wire))
+(define sum (make-wire))
+(define carry (make-wire))
+(probe 'sum sum)
+(probe 'carry carry)
+(check "probe-initial-log" '((carry 0 0) (sum 0 0)) probe-log)
+
+(half-adder input-1 input-2 sum carry)
+
+(set-signal! input-1 1)
+(propagate)
+;; book: "sum 8  New-value = 1"
+(check "ha-sum-after-in1" 1 (get-signal sum))
+(check "ha-carry-after-in1" 0 (get-signal carry))
+(check "ha-time-after-in1 (book: 8)" 8 (current-time the-agenda))
+(check "ha-probe-sum@8" '(sum 8 1) (car probe-log))
+
+(set-signal! input-2 1)
+(propagate)
+;; book: "carry 11  New-value = 1" then "sum 16  New-value = 0"
+(check "ha-sum-after-in2" 0 (get-signal sum))
+(check "ha-carry-after-in2" 1 (get-signal carry))
+(check "ha-time-after-in2 (book: 16)" 16 (current-time the-agenda))
+(check "ha-probe-sum@16" '(sum 16 0) (car probe-log))
+(check "ha-probe-carry@11" '(carry 11 1) (car (cdr probe-log)))
+
+;; ================= full-adder truth table =================
+(set! the-agenda (make-agenda))
+
+(define fa-a (make-wire))
+(define fa-b (make-wire))
+(define fa-cin (make-wire))
+(define fa-sum (make-wire))
+(define fa-cout (make-wire))
+(full-adder fa-a fa-b fa-cin fa-sum fa-cout)
+(propagate)
+(check "fa-0+0+0-sum" 0 (get-signal fa-sum))
+(check "fa-0+0+0-cout" 0 (get-signal fa-cout))
+
+(set-signal! fa-a 1) (propagate)      ; 1+0+0 = 01
+(check "fa-1+0+0-sum" 1 (get-signal fa-sum))
+(check "fa-1+0+0-cout" 0 (get-signal fa-cout))
+
+(set-signal! fa-b 1) (propagate)      ; 1+1+0 = 10
+(check "fa-1+1+0-sum" 0 (get-signal fa-sum))
+(check "fa-1+1+0-cout" 1 (get-signal fa-cout))
+
+(set-signal! fa-cin 1) (propagate)    ; 1+1+1 = 11
+(check "fa-1+1+1-sum" 1 (get-signal fa-sum))
+(check "fa-1+1+1-cout" 1 (get-signal fa-cout))
+
+(set-signal! fa-a 0) (propagate)      ; 0+1+1 = 10
+(check "fa-0+1+1-sum" 0 (get-signal fa-sum))
+(check "fa-0+1+1-cout" 1 (get-signal fa-cout))
+
+(set-signal! fa-b 0) (set-signal! fa-cin 0) (propagate)  ; back to 0
+(check "fa-0+0+0-again-sum" 0 (get-signal fa-sum))
+(check "fa-0+0+0-again-cout" 0 (get-signal fa-cout))
+
+(newline)
+(if (= fails 0)
+    (begin (display "ALL-PASS ch3_digital_circuit") (newline))
+    (begin (display "HAS-FAIL ch3_digital_circuit ") (display fails) (newline)))
