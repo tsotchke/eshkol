@@ -1,4 +1,4 @@
-# Known Issues — Eshkol v1.2.1-scale
+# Known Issues — Eshkol v1.3.0-evolve
 
 **Status**: Production release
 
@@ -72,6 +72,42 @@ Top-level mutual recursion requires consecutive function defines. Interleaved no
 
 ---
 
+## Tracked Open Issues (v1.3.0-evolve)
+
+Edge-case findings surfaced by the adversarial-testing harnesses (see
+[TESTING.md](TESTING.md)). Each has a minimal repro and a ledger entry under
+`.swarm/tasks/ESH-*.json`. None block ordinary use; all are also listed in the
+[CHANGELOG](../CHANGELOG.md) Known Issues section.
+
+**Automatic differentiation**
+- Vector gradient-of-gradient silently returns zeros — use nested scalar
+  `derivative` for exact higher-order results (ESH-0096).
+- `hessian`/`laplacian` SIGSEGV when the evaluation point is a tensor literal
+  `#(...)` / `(tensor ...)`; a `(vector ...)` point works (ESH-0095).
+- Vector-param AD op combined with a captured local parameter fails LLVM
+  verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
+
+**Recursion depth**
+- Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
+  stdlib `sort`/`length`/`filter` are non-tail-recursive and fail on very large
+  inputs; mutual tail calls are not TCO'd (ESH-0098, ESH-0101, ESH-0102, ESH-0108).
+
+**Language edges**
+- A closure created inside a named-let loop that `set!`s a global loses the
+  mutation (ESH-0094).
+- Exact rational arithmetic degrades to double once a bignum is involved
+  (ESH-0105).
+- Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
+  are not fully wired (ESH-0104, ESH-0107).
+- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
+  unaffected (ESH-0103).
+
+**VM parity**
+- 27 bytecode-VM behavioral divergences and 351 parity gaps are documented and
+  tracked in `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)).
+
+---
+
 ## Roadmap (Future Releases)
 
 These are planned features, not deficiencies in the current release:
@@ -81,7 +117,7 @@ These are planned features, not deficiencies in the current release:
 | Full R7RS library export filtering semantics | v1.3 | `define-library` and R7RS `import` forms, including `only`/`except`/`rename`/`prefix`, lower through the existing `require`/`provide` module system |
 | Visual debugger UI | v1.3 | GDB/LLDB on the DWARF data already emitted by `-g`; `--dump-ir` for IR-level inspection |
 | Full C callbacks from foreign threads | v1.3 | `extern` C function calls (in-thread) work; native HTTP, SQLite, subprocess, fs-watch FFI surfaces shipped in v1.2 |
-| Python bindings | v1.3 | File I/O or subprocess interop |
+| Extended Python bindings | v1.4 | Stable C FFI with pybind11 + NumPy zero-copy interop shipped in v1.2 |
 | Distributed computing | v1.3 | Single-machine thread pool with `parallel-map`/`parallel-fold`/`future` |
 | Multi-GPU dispatch | v1.3 | Single GPU (Metal or CUDA) chosen automatically by the cost model |
 | Vulkan compute shaders | v1.3 | Metal (macOS) + CUDA (Linux/Windows-with-NVIDIA) |

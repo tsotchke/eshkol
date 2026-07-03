@@ -1,6 +1,6 @@
-# Eshkol v1.2.1-scale API Reference
+# Eshkol v1.3.0-evolve API Reference
 
-**Version**: 1.2.1-scale
+**Version**: 1.3.0-evolve
 **Last Updated**: 2026-05-20
 **Audience**: Scientific Computing & AI Systems Programming
 

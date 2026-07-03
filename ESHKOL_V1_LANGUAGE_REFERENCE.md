@@ -1,5 +1,5 @@
 # Eshkol Programming Language - Complete Reference
-## Version v1.2.1-scale
+## Version v1.3.0-evolve
 
 **A Comprehensive Guide to Every Feature in Pure Eshkol**
 
@@ -2290,7 +2290,7 @@ epsilon                       ; => 1e-15
 
 ## 22. Complete Function Index
 
-This section lists EVERY function, operator, and special form in Eshkol v1.2.1-scale.
+This section lists EVERY function, operator, and special form in Eshkol v1.3.0-evolve.
 
 ### 22.1 Special Forms (39)
 
@@ -2721,7 +2721,7 @@ call-with-values      ; Consume multiple values
 
 ## 23. Exact Arithmetic
 
-Eshkol v1.2.1-scale implements the full R7RS numeric tower with arbitrary-precision integers (bignums) and exact rational numbers, providing lossless arithmetic across the entire integer and rational domains.
+Eshkol v1.3.0-evolve implements the full R7RS numeric tower with arbitrary-precision integers (bignums) and exact rational numbers, providing lossless arithmetic across the entire integer and rational domains.
 
 ### 23.1 Arbitrary-Precision Integers (Bignums)
 
@@ -3062,7 +3062,7 @@ Bytevectors are fixed-length mutable sequences of bytes (unsigned 8-bit integers
 
 ## 27. Parallel Primitives
 
-Eshkol v1.2.1-scale provides data-parallel operations and futures for concurrent computation. Parallel primitives use arena-isolated worker threads with lock-free dispatch; no user-visible synchronisation is required.
+Eshkol v1.3.0-evolve provides data-parallel operations and futures for concurrent computation. Parallel primitives use arena-isolated worker threads with lock-free dispatch; no user-visible synchronisation is required.
 
 ### 27.1 Data-Parallel Operations
 
@@ -3748,7 +3748,7 @@ variable-name
 
 ## Complete Coverage Summary
 
-This reference documents the **ENTIRE** Eshkol language v1.2.1-scale:
+This reference documents the **ENTIRE** Eshkol language v1.3.0-evolve:
 
 - **39 Special Forms** -- All control structures, binding forms, continuations, and dynamic-wind
 - **350+ Built-in Functions** -- Arithmetic, comparisons, strings, I/O, bignums, rationals, complex
