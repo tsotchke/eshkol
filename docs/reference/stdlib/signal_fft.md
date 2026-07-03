@@ -55,7 +55,7 @@ returns the original signal (up to ~1e-18 imaginary noise):
 ;; => #(1 2+5.72e-18i 3 4-5.72e-18i)   ; ~ #(1 2 3 4)
 ```
 
-### Open: `fft`→`ifft` chain **inside a precompiled (`--shared-lib`) function** corrupts
+### Open (tracked as ESH-0115): `fft`→`ifft` chain **inside a precompiled (`--shared-lib`) function** corrupts
 
 There is a remaining, distinct codegen bug: a function that is *compiled into a
 precompiled shared library* (e.g. the stdlib `fast-convolve` in
