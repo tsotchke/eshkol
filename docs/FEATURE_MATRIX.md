@@ -107,8 +107,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Computational graphs | ✅ | Reverse | Tape-based |
 | Gradient computation | ✅ | Reverse | `gradient` |
 | Backpropagation | ✅ | Reverse | Full backward pass |
-| Nested gradients | ✅ | Reverse | Arbitrary depth |
-| Double backward | ✅ | Reverse | Second derivatives |
+| Nested gradients | ✅ / ⚠️ | Reverse | Exact via nested scalar `derivative`; vector gradient-of-gradient returns zeros (ESH-0096) |
+| Double backward | ✅ / ⚠️ | Reverse | Second derivatives via nested scalar `derivative`; `hessian` works on vector points (crashes on tensor points, ESH-0095) |
 | Jacobian matrices | ✅ | Reverse | `jacobian` |
 | Hessian matrices | ✅ | Reverse | `hessian` |
 | Tape stack (nesting) | ✅ | Reverse | 32-level depth |
