@@ -1,0 +1,83 @@
+;;; tests/ad/mixed_mode_ad_test.esk
+;;; ESH-0093: mixed-mode AD composition — an outer VECTOR-parameter `gradient`
+;;; (reverse tape) over an inner `derivative` (forward jets) must propagate the
+;;; dependency on captured tape parameters. Mechanism: while a forward pass is
+;;; live, tape nodes entering arithmetic are jet-lifted (value frozen, active
+;;; gradient seed in e2); the derivative return site records the result on the
+;;; outer tape with backward edge a12 = d(result)/d(seed).
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-9))
+(define (chk label v) (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; === The ESH-0093 repro: f(x;p0) = p0*x^2, df/dx@2 = 4*p0, d/dp0 = 4 ===
+(define g1 (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0))
+                     (vector 3.0)))
+(chk "repro: grad_p [d/dx p0*x^2 @2] @(3) = #(4)" (approx= (vector-ref g1 0) 4.0))
+
+;; === 2-element vector: f(x;p) = p0*x + p1*x^2 ===
+;; df/dx = p0 + 2*p1*x @x=2 => partials: d/dp0 = 1, d/dp1 = 2x = 4 => #(1 4)
+(define g2 (gradient (lambda (p) (derivative (lambda (x) (+ (* (vector-ref p 0) x)
+                                                            (* (vector-ref p 1) (* x x)))) 2.0))
+                     (vector 3.0 5.0)))
+(chk "2-elem: d/dp0 = 1" (approx= (vector-ref g2 0) 1.0))
+(chk "2-elem: d/dp1 = 2x = 4" (approx= (vector-ref g2 1) 4.0))
+
+;; === capture used nonlinearly: f(x;p0) = p0^2 * x ===
+;; df/dx = p0^2; d/dp0(df/dx) = 2*p0 = 6 @p0=3
+(define g3 (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (vector-ref p 0) x)) 2.0))
+                     (vector 3.0)))
+(chk "nonlinear capture: d/dp0 (p0^2) = 2p0 = 6" (approx= (vector-ref g3 0) 6.0))
+
+;; nonlinear in both x and the capture: f(x;p0) = p0^2 * x^2
+;; df/dx = 2*p0^2*x @x=2 = 4*p0^2; d/dp0 = 8*p0 = 24 @p0=3
+(define g3b (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (vector-ref p 0) (* x x))) 2.0))
+                      (vector 3.0)))
+(chk "nonlinear both: d/dp0 (2 p0^2 x) = 8p0 = 24" (approx= (vector-ref g3b 0) 24.0))
+
+;; === derivative result used inside a larger tape expression ===
+;; h(p) = p0 + d/dx(p0*x^2)@2 = p0 + 4*p0 => dh/dp0 = 5
+(define g4 (gradient (lambda (p) (+ (vector-ref p 0)
+                                    (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0)))
+                     (vector 3.0)))
+(chk "tape composition: d/dp0 (p0 + 4p0) = 5" (approx= (vector-ref g4 0) 5.0))
+
+;; === tensor-literal input: exercises the REVERSE-mode tape path ===
+;; (#(...) is a tensor; (vector ...) is a Scheme vector — different gradient
+;; paths: tape+jet-lift+mixed-record vs forward jets with the level protocol)
+(define (outer-t p) (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0))
+(define gt1 (gradient outer-t #(3.0)))
+(chk "tensor input (reverse tape): #(4)" (approx= (vector-ref gt1 0) 4.0))
+
+(define (outer-t2 p) (derivative (lambda (x) (+ (* (vector-ref p 0) x)
+                                                (* (vector-ref p 1) (* x x)))) 2.0))
+(define gt2 (gradient outer-t2 #(3.0 5.0)))
+(chk "tensor 2-elem (reverse tape): d/dp0 = 1" (approx= (vector-ref gt2 0) 1.0))
+(chk "tensor 2-elem (reverse tape): d/dp1 = 4" (approx= (vector-ref gt2 1) 4.0))
+
+(define (outer-t3 p) (derivative (lambda (x) (* (vector-ref p 0) (vector-ref p 0) x)) 2.0))
+(define gt3 (gradient outer-t3 #(3.0)))
+(chk "tensor nonlinear capture (reverse tape): 2p0 = 6" (approx= (vector-ref gt3 0) 6.0))
+
+;; === controls: existing behavior must be unchanged ===
+(chk "control: pure reverse grad p0^2 @(3) = #(6)"
+     (approx= (vector-ref (gradient (lambda (p) (* (vector-ref p 0) (vector-ref p 0))) (vector 3.0)) 0) 6.0))
+(chk "control: SCALAR gradient over derivative = 4 (forward fast path)"
+     (approx= (gradient (lambda (p) (derivative (lambda (x) (* p (* x x))) 2.0)) 3.0) 4.0))
+(chk "control: inner derivative alone = 12"
+     (approx= (derivative (lambda (x) (* 3.0 (* x x))) 2.0) 12.0))
+(chk "control: capture-free inner derivative under vector gradient: d/dp0 (p0 * 4) = 4"
+     (approx= (vector-ref (gradient (lambda (p) (* (vector-ref p 0)
+                                                   (derivative (lambda (x) (* x x)) 2.0)))
+                                    (vector 3.0)) 0) 4.0))
+
+;; === bounded iteration: stability + no crash/leak blow-up over 1000 calls ===
+(define (loop-test i acc)
+  (if (= i 1000)
+      acc
+      (loop-test (+ i 1)
+                 (vector-ref (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0))
+                                       (vector 3.0)) 0))))
+(chk "1000-iteration loop stable = 4" (approx= (loop-test 0 0.0) 4.0))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
