@@ -1,0 +1,19 @@
+;; ESH-0096 minimal repro (found by the AD composition oracle, P3).
+;; gradient-of-gradient with a VECTOR parameter silently returns zeros.
+;; The scalar-point form of the same second derivative is correct, and
+;; docs/breakdown/AUTODIFF.md documents the 1-d vector form as working
+;; (its example claims #(12.0)) — it returns #(0) today.
+;; Related-but-distinct: ESH-0093 (vector gradient over inner DERIVATIVE,
+;; mixed forward/reverse) and ESH-0078 (named-fn inner gradient, scalar).
+;;
+;; Run: build/eshkol-run -r tests/ad_oracle/found/esh0096_gradient_of_gradient_vector_param_zeros.esk
+;; f(w) = w0^3, so d2f/dw0^2 at 2.0 = 12.
+(display "scalar-point g-of-g (correct): ")
+(display (gradient (lambda (y) (gradient (lambda (z) (* z z z)) y)) 2.0))
+(newline)  ;; prints 12  — CORRECT
+(display "1-d vector g-of-g (wrong):    ")
+(display (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0)) (vector 2.0)))
+(newline)  ;; prints #(0) — expected #(12)
+(display "2-d vector g-of-g (wrong):    ")
+(display (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 1))) v) 0)) (vector 3.0 4.0)))
+(newline)  ;; prints #(0 0) — expected #(8 6)

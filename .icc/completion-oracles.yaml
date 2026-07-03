@@ -1044,3 +1044,25 @@ oracles:
         severity: high
         label: SICP first-class predicate regression repro passes under aot
         action: ./scripts/run_sicp_smoke.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # AD composition oracle (adversarial testing campaign P3). The full
+  # AD operator surface ({derivative gradient jacobian hessian divergence
+  # curl laplacian} x point types x function shapes x bindings x captures
+  # x nesting) is enumerated by tests/ad_oracle/gen_ad_oracle.py and every
+  # cell is checked against an in-language central finite difference under
+  # BOTH the JIT (-r) and AOT by scripts/run_ad_oracle.sh, which writes
+  # kind:"ad_oracle" events to scripts/icc_traces/ad_oracle.jsonl.
+  # The gate event is PASS when no probe file FAILs/CRASHes/HANGs on
+  # either path (XKNOWN cells reference open ESH tasks and are tolerated).
+  # ─────────────────────────────────────────────────────────────────
+  - name: ad-oracle
+    aliases: [ad_oracle, ad-composition-oracle, adversarial-p3]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_oracle]
+          event_names: ["ad_oracle_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: AD composition oracle gate (all cells match finite differences on -r and AOT)
+        action: ./scripts/run_ad_oracle.sh

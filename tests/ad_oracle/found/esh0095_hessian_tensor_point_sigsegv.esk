@@ -1,0 +1,13 @@
+;; ESH-0095 minimal repro (found by the AD composition oracle, P3).
+;; hessian with a TENSOR point (literal #(...) or (tensor ...)) SIGSEGVs.
+;; The same function with a (vector ...) point works and returns the
+;; correct hessian. laplacian has the same failure (see the sibling
+;; repro file); all FIRST-order ops (gradient/jacobian/divergence/curl)
+;; accept tensor points fine — only the second-order ops crash.
+;;
+;; Run: build/eshkol-run -r tests/ad_oracle/found/esh0095_hessian_tensor_point_sigsegv.esk
+;; Expected: #((4 2) (2 0)) twice. Actual: first display OK, then SIGSEGV.
+(display (hessian (lambda (v) (* (vref v 0) (vref v 0) (vref v 1))) (vector 1.0 2.0)))
+(newline)
+(display (hessian (lambda (v) (* (vref v 0) (vref v 0) (vref v 1))) (tensor 1.0 2.0)))
+(newline)
