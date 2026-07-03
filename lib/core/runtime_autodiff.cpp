@@ -51,6 +51,84 @@ thread_local uint64_t __gradient_x_degree = 0;
 thread_local void* __outer_ad_node_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH] = {nullptr};
 thread_local uint64_t __outer_ad_node_depth = 0;
 
+// ===== ESH-0093: mixed-mode AD (reverse tape over forward jets) =====
+//
+// A reverse-mode `gradient` computes each partial d/dtheta_i in its own pass:
+// it rebuilds the tape with fresh AD variable nodes and only reads the ACTIVE
+// node's gradient afterwards. Before calling the target function, the pass
+// publishes that active variable node here. While a forward-mode derivative
+// is live inside the pass (__ad_pert_level > 0), tape nodes that flow into
+// scalar arithmetic are "jet-lifted" to dual numbers: value = node->value,
+// and e2 = 1.0 iff the node IS the published seed (eshkol_ad_seed_flag).
+// The forward 4-jet then carries the mixed e1e2 coefficient
+// d(inner-derivative-result)/d(theta_i) to the derivative's return site,
+// which records the result back onto the tape (eshkol_ad_mixed_record) as
+//   result = const(a1 - a12*theta_i) + const(a12) * theta_i_node
+// — an exact local linearization whose backward edge to theta_i is a12.
+// Only existing node types (CONSTANT/MUL/ADD) are used, so backpropagation
+// needs no new rules. With k tape-carried captures, no extra jet passes are
+// needed: the outer gradient's per-component loop already runs one pass per
+// theta_i, and each pass only requires the partial w.r.t. its own seed.
+thread_local void* __ad_active_seed_node = nullptr;
+
+// Publish a new active seed node; returns the previous one so callers can
+// save/restore around nested gradient passes.
+void* eshkol_ad_seed_swap(void* node) {
+    void* old = __ad_active_seed_node;
+    __ad_active_seed_node = node;
+    return old;
+}
+
+// 1.0 iff `node` is the active seed for the current gradient pass.
+double eshkol_ad_seed_flag(void* node) {
+    return (node && node == __ad_active_seed_node) ? 1.0 : 0.0;
+}
+
+// Record an inner forward-mode derivative result on the active reverse tape.
+//   value : the derivative's value (a1, the e1 coefficient)
+//   dseed : d(value)/d(seed) (a12, the mixed e1e2 coefficient)
+// Returns the AD node to use as the result, or NULL when there is nothing to
+// record (no tape, no seed, or no dependency) — the caller then returns the
+// plain scalar as before.
+void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double dseed) {
+    if (!arena_v || !tape_v) return nullptr;
+    ad_node_t* seed = (ad_node_t*)__ad_active_seed_node;
+    if (!seed) return nullptr;
+    if (dseed == 0.0) return nullptr;  // no dependency on this pass's variable
+
+    arena_t* arena = (arena_t*)arena_v;
+    ad_tape_t* tape = (ad_tape_t*)tape_v;
+
+    ad_node_t* coeff  = arena_allocate_ad_node_with_header(arena);
+    ad_node_t* scaled = arena_allocate_ad_node_with_header(arena);
+    ad_node_t* offset = arena_allocate_ad_node_with_header(arena);
+    ad_node_t* result = arena_allocate_ad_node_with_header(arena);
+    if (!coeff || !scaled || !offset || !result) return nullptr;
+
+    coeff->type = AD_NODE_CONSTANT;
+    coeff->value = dseed;
+
+    scaled->type = AD_NODE_MUL;          // backward: seed.grad += grad * dseed
+    scaled->value = dseed * seed->value;
+    scaled->input1 = seed;
+    scaled->input2 = coeff;
+
+    offset->type = AD_NODE_CONSTANT;
+    offset->value = value - dseed * seed->value;
+
+    result->type = AD_NODE_ADD;          // value = a1 exactly
+    result->value = value;
+    result->input1 = scaled;
+    result->input2 = offset;
+
+    // Topological order for the reverse traversal: result last.
+    arena_tape_add_node(tape, coeff);
+    arena_tape_add_node(tape, offset);
+    arena_tape_add_node(tape, scaled);
+    arena_tape_add_node(tape, result);
+    return result;
+}
+
 eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate dual number: null arena");

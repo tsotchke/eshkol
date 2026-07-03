@@ -284,6 +284,14 @@ void arena_tape_reset(ad_tape_t* tape);
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
 size_t arena_tape_get_node_count(const ad_tape_t* tape);
 
+// ===== ESH-0093: mixed-mode AD (reverse tape over inner forward derivative) =====
+// A reverse-mode gradient pass publishes its active variable node here so an
+// inner forward-mode derivative can seed it in the jet (e2) and record the
+// mixed partial back onto the tape. See lib/core/runtime_autodiff.cpp.
+void* eshkol_ad_seed_swap(void* node);           // publish; returns previous
+double eshkol_ad_seed_flag(void* node);          // 1.0 iff node is the active seed
+void* eshkol_ad_mixed_record(void* arena, void* tape, double value, double dseed);
+
 // ===== OALR (Ownership-Aware Lexical Regions) MEMORY MANAGEMENT =====
 // Region-based memory management for predictable, GC-free allocation
 
