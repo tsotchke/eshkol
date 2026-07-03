@@ -38,3 +38,7 @@ char degradation via apply/write (ESH-0099), vector gradient-of-gradient (ESH-00
 hessian on tensor points, stdlib non-tail depth limits, rational→double contagion
 at bignum boundaries, and 27 bytecode-VM divergences + 351 VM parity gaps
 (tests/vm_parity/PARITY.tsv). Each has a minimal repro and a ledger entry.
+The stdlib verification batch (ESH-0110) additionally tracks csv-parse row order,
+a partial-application SIGBUS, and an fft chain issue, and ESH-0111 tracks findings
+from the AD/tensor reference verification — both documented with repros in the
+reference pages (docs/reference/stdlib, docs/reference/ad).
