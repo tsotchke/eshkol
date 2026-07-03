@@ -1,0 +1,7 @@
+; define-record-type
+(define-record-type pt (mk-pt x y) pt? (x pt-x) (y pt-y))
+(define p (mk-pt 3 4))
+(display (pt? p)) (newline)
+(display (pt-x p)) (newline)
+(display (pt-y p)) (newline)
+(display (pt? 5)) (newline)

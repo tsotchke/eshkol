@@ -1,0 +1,14 @@
+; vectors via make-vector only — (vector ...), #(...), vector->list and
+; list->vector all diverge in the VM (found/vector_constructor_empty.esk,
+; found/vector_literal_empty.esk); defines are grouped BEFORE the do loop
+; because a top-level do corrupts later top-level defines
+; (found/define_after_do_corrupted.esk)
+(define v (make-vector 5 0))
+(define w (make-vector 3 7))
+(do ((i 0 (+ i 1))) ((= i 5)) (vector-set! v i (* i i)))
+(vector-set! w 1 20)
+(display (vector-ref v 4)) (newline)
+(display (vector-ref v 3)) (newline)
+(display (vector-length v)) (newline)
+(display (vector-ref w 1)) (newline)
+(display (vector-ref w 2)) (newline)

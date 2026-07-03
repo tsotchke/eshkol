@@ -1,0 +1,11 @@
+; FILED: the VM has no char display type — chars print as integers.
+; native -r : "65B" then "a" then "h"
+; vm        : "6566" then "97" then "104"
+(display (char->integer #\A))
+(display (integer->char 66))
+(newline)
+(display #\a)
+(newline)
+(define p (open-input-string "hi"))
+(display (read-char p))
+(newline)

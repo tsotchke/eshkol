@@ -1,0 +1,6 @@
+; FILED: two consecutive top-level do loops corrupt each other's state.
+; Each loop is correct when it is the only do in the program.
+; native -r : 10 then 720
+; vm        : 10 then 300
+(do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) (display s) (newline)))
+(do ((i 1 (+ i 1)) (p 1 (* p i))) ((> i 6) (display p) (newline)))

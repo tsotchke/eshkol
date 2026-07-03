@@ -1,0 +1,10 @@
+; FILED: recursive syntax-rules macros (ellipsis self-expansion) silently
+; produce a wrong value in the VM.
+; native -r : 7
+; vm        : 0
+(define-syntax my-or2
+  (syntax-rules ()
+    ((_) #f)
+    ((_ e) e)
+    ((_ e r ...) (let ((t e)) (if t t (my-or2 r ...))))))
+(display (my-or2 #f #f 7))

@@ -1,0 +1,12 @@
+; FILED: do-loop composition is broken two ways:
+;   (a) nested do: inner/outer interaction loses iterations
+;       native: 000102   vm: 00
+;   (b) do with `when` in the body: the loop variable stops advancing and
+;       the VM spins FOREVER printing the first iteration's output.
+; Only (a) is active below; (b) is left commented so this repro terminates.
+(do ((i 0 (+ i 1))) ((= i 3))
+  (do ((j 0 (+ j 1))) ((= j 2))
+    (display (* i j))))
+(newline)
+; (b) infinite loop — uncomment to reproduce:
+; (do ((i 0 (+ i 1))) ((= i 3)) (when (> i 0) (display i)))

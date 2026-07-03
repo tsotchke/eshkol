@@ -1,0 +1,9 @@
+; FILED: VM `display` appends a newline after EVERY call; native does not.
+; native -r : "3 12"        (one line)
+; vm        : "3\n \n12\n\n" (four lines)
+; This is the known divergence the parity harness normalizes around
+; (newline characters are stripped from both sides before comparison).
+(display (+ 1 2))
+(display " ")
+(display (* 3 4))
+(newline)

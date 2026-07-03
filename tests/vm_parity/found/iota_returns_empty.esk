@@ -1,0 +1,6 @@
+; FILED: iota returns () for any count (BUILTINS fid 141 broken/colliding —
+; note eshkol_vm.c maps BOTH "memq" and "list->vector" to fid 139, and
+; iota=141 sits in the same block).
+; native -r : (0 1 2 3)
+; vm        : ()
+(display (iota 4))

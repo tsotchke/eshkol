@@ -1,0 +1,8 @@
+; simple rewrite-only syntax-rules macros — recursive macros and macros that
+; set! their operands diverge (see found/recursive_macro_zero.esk,
+; found/macro_set_top_level.esk)
+(define-syntax dbl (syntax-rules () ((_ e) (* 2 e))))
+(display (dbl 21)) (newline)
+(define-syntax my-if2 (syntax-rules () ((_ c a b) (cond (c a) (else b)))))
+(display (my-if2 #t "yes" "no")) (newline)
+(display (dbl (dbl 5))) (newline)

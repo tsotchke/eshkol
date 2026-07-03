@@ -1,0 +1,4 @@
+; one flat do loop — consecutive top-level do loops corrupt each other's
+; state in the VM (see found/consecutive_do_state_leak.esk); nested do and
+; do+when diverge too (found/do_composition_broken.esk)
+(do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) (display s) (newline)))
