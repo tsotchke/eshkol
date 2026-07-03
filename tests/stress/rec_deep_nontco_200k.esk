@@ -1,0 +1,12 @@
+; rec_deep_nontco_200k.esk - NON-tail recursion at a re-calibrated safe depth.
+;
+; Sweep E (2026-07-03, master 0733dc9b): the previous margin row asserted at
+; 250000, chosen when the first SIGILL was measured at 270000 (JIT)/280000
+; (AOT). On current master the safe non-tail depth shrank: JIT SIGILLs at
+; 250000 (240000 passes), AOT SIGILLs at 250000 (200000 passes). The boundary
+; regression is tracked as ESH-0112 (and the underlying no-diagnostic stack
+; blowout as ESH-0101). 200000 is 2x the 10^5 target and clears the current
+; AOT boundary; rec_deep_nontco_250k.esk remains as the ESH-0112 crash pin.
+(define (down n)
+  (if (= n 0) 0 (+ 1 (down (- n 1)))))
+(display "OK ") (display (down 200000)) (newline)

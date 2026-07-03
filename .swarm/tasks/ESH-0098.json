@@ -1,1 +1,27 @@
-{"id": "ESH-0098", "title": "stdlib sort recursion depth is O(n): cannot sort >= ~100k elements", "status": "open", "priority": "medium", "workstream": "edge-case-campaign/stdlib-scale", "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). lib/core/list/sort.esk recursion depth grows linearly with list length: n=50000 sorts fine; n=99999 SIGILLs (rc 132, no message - raw stack blowout under the depth guard); n>=100001 raises 'maximum recursion depth (100000) exceeded'. A merge sort with O(log n) control depth (or iterative bottom-up merge) fixes both failure modes. ALSO: sorting 50k elements peaks at ~983MB RSS (measured by data_sort_50k.esk budgets) - the rewrite should fix the allocation profile too.", "file_globs": ["lib/core/list/sort.esk"], "acceptance": ["(sort 100k-list <) returns a sorted list under -r and AOT (tests/stress/found/sort_100k.esk)", "tests/stress/data_sort_50k.esk keeps passing"], "blocked_by": [], "campaign_payoff": "100k-element vector/list sort is an explicit v1.3 P4 scale scenario.", "repro": "tests/stress/found/sort_100k.esk"}
+{
+  "id": "ESH-0098",
+  "title": "stdlib sort recursion depth is O(n): cannot sort >= ~100k elements",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/stdlib-scale",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). lib/core/list/sort.esk recursion depth grows linearly with list length: n=50000 sorts fine; n=99999 SIGILLs (rc 132, no message - raw stack blowout under the depth guard); n>=100001 raises 'maximum recursion depth (100000) exceeded'. A merge sort with O(log n) control depth (or iterative bottom-up merge) fixes both failure modes. ALSO: sorting 50k elements peaks at ~983MB RSS (measured by data_sort_50k.esk budgets) - the rewrite should fix the allocation profile too.",
+  "file_globs": [
+    "lib/core/list/sort.esk"
+  ],
+  "acceptance": [
+    "(sort 100k-list <) returns a sorted list under -r and AOT (tests/stress/found/sort_100k.esk)",
+    "tests/stress/data_sort_50k.esk keeps passing"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "100k-element vector/list sort is an explicit v1.3 P4 scale scenario.",
+  "repro": "tests/stress/found/sort_100k.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "sort_100k.esk still errors 'maximum recursion depth (100000) exceeded' under -r and AOT (graceful diagnostic, not a crash). Stress XKNOWN."
+    }
+  ]
+}

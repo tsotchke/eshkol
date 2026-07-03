@@ -1,1 +1,27 @@
-{"id":"ESH-0104","title":"(quasiquote x) / (unquote x) long forms are not wired - only reader sugar ` and , work","status":"open","priority":"medium","workstream":"edge-case-campaign/quote","goal":"Found by the P4 stress harness (2026-07-02, master 2692ca63). The written-out forms are treated as plain data: (quasiquote (a (unquote (+ 1 1)) c)) -> (a (unquote (+ 1 1)) c) instead of (a 2 c); an (unquote ...) long form inside a sugared ` template is likewise left unsubstituted. R7RS 4.2.8: `x is (quasiquote x) and ,x is (unquote x) - all spellings must behave identically. JIT and AOT agree on the wrong value.","file_globs":["lib/frontend/parser.cpp","lib/backend/llvm_codegen.cpp"],"acceptance":["tests/stress/found/quasiquote_long_form.esk prints OK quasiquote-long-form under -r and AOT"],"blocked_by":[],"campaign_payoff":"Code generators and macro-written code routinely emit the long forms; silently returning them as data corrupts output.","repro":"tests/stress/found/quasiquote_long_form.esk"}
+{
+  "id": "ESH-0104",
+  "title": "(quasiquote x) / (unquote x) long forms are not wired - only reader sugar ` and , work",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/quote",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). The written-out forms are treated as plain data: (quasiquote (a (unquote (+ 1 1)) c)) -> (a (unquote (+ 1 1)) c) instead of (a 2 c); an (unquote ...) long form inside a sugared ` template is likewise left unsubstituted. R7RS 4.2.8: `x is (quasiquote x) and ,x is (unquote x) - all spellings must behave identically. JIT and AOT agree on the wrong value.",
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/stress/found/quasiquote_long_form.esk prints OK quasiquote-long-form under -r and AOT"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Code generators and macro-written code routinely emit the long forms; silently returning them as data corrupts output.",
+  "repro": "tests/stress/found/quasiquote_long_form.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "fixed",
+      "evidence": "quasiquote_long_form.esk prints 'OK quasiquote-long-form' under -r and AOT; (quasiquote (a (unquote (+ 1 1)) c)) now equals `(a ,(+ 1 1) c). Fixed by #117. Stress harness reports XPASS r+aot."
+    }
+  ]
+}

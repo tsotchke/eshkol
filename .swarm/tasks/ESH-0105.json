@@ -1,1 +1,28 @@
-{"id":"ESH-0105","title":"Exact rational arithmetic silently degrades to double once a bignum is involved","status":"open","priority":"high","workstream":"edge-case-campaign/numeric-tower","goal":"Found by the P4 stress harness (2026-07-02, master 2692ca63). (/ 1 (expt 10 18)) is an exact rational but (/ 1 (expt 10 19)) -> 1e-19 (inexact double); (/ 1 (expt 10 100)) -> 1e-100. Worse, exact+exact loses exactness when the result denominator overflows int64: (+ (/ 1 3) (/ 1 (expt 2 62))) -> 0.333333 (double). R7RS: operations on exact operands must yield exact results or signal an error - silent exactness loss corrupts exact-fraction algorithms (SICP 2.1 rational package at scale, symbolic math). Rational runtime needs bignum numerator/denominator support (the bignum layer already exists).","file_globs":["lib/core/rational*.c*","lib/backend/arithmetic_codegen.cpp"],"acceptance":["tests/stress/found/rational_bignum_exactness.esk prints OK rational-bignum-exact under -r and AOT","(+ (/ 1 3) (/ 1 (expt 2 62))) is exact with denominator 3*2^62"],"blocked_by":[],"campaign_payoff":"Completes the numeric tower: bignum integers exist but exact rationals cap at int64 components.","repro":"tests/stress/found/rational_bignum_exactness.esk"}
+{
+  "id": "ESH-0105",
+  "title": "Exact rational arithmetic silently degrades to double once a bignum is involved",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/numeric-tower",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). (/ 1 (expt 10 18)) is an exact rational but (/ 1 (expt 10 19)) -> 1e-19 (inexact double); (/ 1 (expt 10 100)) -> 1e-100. Worse, exact+exact loses exactness when the result denominator overflows int64: (+ (/ 1 3) (/ 1 (expt 2 62))) -> 0.333333 (double). R7RS: operations on exact operands must yield exact results or signal an error - silent exactness loss corrupts exact-fraction algorithms (SICP 2.1 rational package at scale, symbolic math). Rational runtime needs bignum numerator/denominator support (the bignum layer already exists).",
+  "file_globs": [
+    "lib/core/rational*.c*",
+    "lib/backend/arithmetic_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/stress/found/rational_bignum_exactness.esk prints OK rational-bignum-exact under -r and AOT",
+    "(+ (/ 1 3) (/ 1 (expt 2 62))) is exact with denominator 3*2^62"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Completes the numeric tower: bignum integers exist but exact rationals cap at int64 components.",
+  "repro": "tests/stress/found/rational_bignum_exactness.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "rational_bignum_exactness.esk still prints FAIL under -r and AOT: exact rational arithmetic degrades to inexact double once denominator exceeds int64 (bignum). Stress XKNOWN r+aot."
+    }
+  ]
+}

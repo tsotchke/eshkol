@@ -1,1 +1,29 @@
-{"id":"ESH-0099","title":"String literal with NUL escapes and > 512 source bytes decodes to wrong length/content","status":"open","priority":"medium","workstream":"edge-case-campaign/strings","goal":"Found by the P4 stress harness (2026-07-02, master 2692ca63). A string literal that contains at least one \\x0; NUL escape AND is longer than 512 SOURCE bytes decodes to the wrong length (non-monotonic in the repeat count, so content is corrupted, not just truncated). Measured with unit ab\\n\\t\\\\\\\"\\x41;\\x0; (19 src -> 8 decoded chars): x26 (494 src) = 208 correct; x27 (513 src) = 217 WRONG; x28 = 215; x500 = 3915-3918 (expected 4000). Controls: NUL-free literals of 9.5k src decode exactly; \\x0; x100 (400 src) exact; \\x0; x300 (1200 src) = 287-297 WRONG. Likely the 512-byte-chunked literal intern/copy path using strlen-ish logic on NUL-bearing payloads (string-layer over-allocation audit family).","file_globs":["lib/frontend/parser.cpp","lib/backend/string_io_codegen.cpp","lib/backend/llvm_codegen.cpp"],"acceptance":["tests/stress/found/string_nul_long_literal.esk prints OK 300 under -r and AOT","parser_string_5k_escapes.esk extended with a >512-byte NUL literal keeps exact lengths"],"blocked_by":[],"campaign_payoff":"Binary payloads in literals (P6/PPM rendering, protocol fixtures) silently corrupt past 512 bytes.","repro":"tests/stress/found/string_nul_long_literal.esk"}
+{
+  "id": "ESH-0099",
+  "title": "String literal with NUL escapes and > 512 source bytes decodes to wrong length/content",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/strings",
+  "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). A string literal that contains at least one \\x0; NUL escape AND is longer than 512 SOURCE bytes decodes to the wrong length (non-monotonic in the repeat count, so content is corrupted, not just truncated). Measured with unit ab\\n\\t\\\\\\\"\\x41;\\x0; (19 src -> 8 decoded chars): x26 (494 src) = 208 correct; x27 (513 src) = 217 WRONG; x28 = 215; x500 = 3915-3918 (expected 4000). Controls: NUL-free literals of 9.5k src decode exactly; \\x0; x100 (400 src) exact; \\x0; x300 (1200 src) = 287-297 WRONG. Likely the 512-byte-chunked literal intern/copy path using strlen-ish logic on NUL-bearing payloads (string-layer over-allocation audit family).",
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/stress/found/string_nul_long_literal.esk prints OK 300 under -r and AOT",
+    "parser_string_5k_escapes.esk extended with a >512-byte NUL literal keeps exact lengths"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Binary payloads in literals (P6/PPM rendering, protocol fixtures) silently corrupt past 512 bytes.",
+  "repro": "tests/stress/found/string_nul_long_literal.esk",
+  "verifications": [
+    {
+      "sweep": "E",
+      "date": "2026-07-03",
+      "master": "0733dc9b",
+      "verdict": "still-open",
+      "evidence": "string_nul_long_literal.esk still wrong AND path-divergent: -r prints 'OK 284', AOT prints 'OK 276' (expected 'OK 300'). NUL-bearing literal >512 source bytes decodes to wrong length, and JIT!=AOT. Stress XKNOWN r+aot."
+    }
+  ]
+}
