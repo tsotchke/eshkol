@@ -7,10 +7,11 @@ Three pure-Scheme containers not otherwise in stdlib: a binary **min-heap** prio
 
 ## Priority queue (min-heap)
 
-### `(make-pq)`
-Create an empty min-heap ordered by numeric key ascending (smallest key pops first).
-
-> **Known issue.** The header comment advertises `(make-pq compare)` for a custom comparator, but `make-pq` takes **no arguments** and always uses the built-in `(- a b)` min-heap. Eshkol tolerates the extra argument silently, so `(make-pq my-cmp)` compiles and runs but the comparator is **ignored** (see Known issues below).
+### `(make-pq)` / `(make-pq compare)`
+Create an empty priority queue. With no argument it is a min-heap ordered by
+numeric key ascending (smallest key pops first). With a `compare` argument — a
+2-arg procedure returning `<0` / `0` / `>0` — the heap is ordered by that
+comparator; e.g. `(make-pq (lambda (a b) (- b a)))` gives a max-heap.
 
 ### `(pq-push! pq key item)`
 Insert `item` with priority `key`. Lower key = higher priority.
@@ -121,16 +122,17 @@ Edge cases: popping/peeking an empty deque → `Unhandled exception: deque-pop-f
 
 ## Known issues
 
-**`make-pq` ignores a comparator argument (min-heap only).** The header documents `(make-pq compare)`, but the definition is `(define (make-pq) …)` with the comparator hard-coded to `(- a b)`. Passing a comparator does not error but has no effect, so a max-heap cannot be built this way.
+None. (Historically `make-pq` ignored a comparator argument and always used the
+built-in `(- a b)` min-heap. `make-pq` now accepts an optional comparator:
 
 ```scheme
-;; repro.esk
 (require core.collections)
-(define pq (make-pq (lambda (a b) (- b a))))  ; intended max-heap
+(define pq (make-pq (lambda (a b) (- b a))))  ; max-heap
 (pq-push! pq 1 'one)
 (pq-push! pq 9 'nine)
-(display (pq-pop! pq)) (newline)   ; want (9 . nine); actually (1 . one)
+(display (pq-pop! pq)) (newline)   ; (9 . nine)
 ```
 ```
-(1 . one)
+(9 . nine)
 ```
+)

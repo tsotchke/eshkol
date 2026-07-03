@@ -55,8 +55,15 @@
 ;; to scalar `-` for numeric priorities.
 ;; ---------------------------------------------------------------------------
 
-(define (make-pq)
-  (vector (make-vector 16 #f) 0 (lambda (a b) (- a b))))
+;; (make-pq)          -> min-heap using scalar `-` as the comparator
+;; (make-pq compare)  -> heap ordered by `compare` (2-arg fn returning
+;;                       <0 / 0 / >0); e.g. (lambda (a b) (- b a)) for a max-heap.
+(define (make-pq . rest)
+  (vector (make-vector 16 #f)
+          0
+          (if (null? rest)
+              (lambda (a b) (- a b))
+              (car rest))))
 
 (define (pq-data pq)    (vector-ref pq 0))
 (define (pq-size pq)    (vector-ref pq 1))
