@@ -49,8 +49,42 @@ static std::string replVarStorageSymbolName(const std::string& name) {
     return out;
 }
 
-static std::string bindingStorageName(const std::string& name, bool is_repl) {
-    return is_repl ? replVarStorageSymbolName(name) : name;
+// User-program globals must never be emitted under their raw Scheme name, or a
+// name like `free`/`malloc`/`exit` collides with the C runtime symbol at
+// JIT/AOT link (SIGBUS at teardown) and a name like `log`/`sin` clashes with an
+// in-module libm function declaration (LLVM auto-renames, `set!` and reads end
+// up on different `@log.N` slots -> lost mutations on cached-JIT/AOT). Mangle
+// so the symbol can never equal a C/libm symbol. See ESH-0092/0103. Must stay
+// byte-identical to llvm_codegen.cpp::userGlobalStorageName so the pre-declared
+// storage and the define/store paths agree on the same GlobalVariable.
+//   is_repl   -> private REPL storage (hot-reload aware)
+//   is_public -> raw name (library `provide` bindings / `:external` refs that
+//                bind cross-object to stdlib.o)
+//   otherwise -> `eshkol_g_`-prefixed, encoded.
+static std::string userGlobalStorageName(const std::string& name,
+                                         bool is_repl, bool is_public) {
+    if (is_repl) {
+        return replVarStorageSymbolName(name);
+    }
+    if (is_public) {
+        return name;
+    }
+    std::string out = "eshkol_g_";
+    char encoded[4];
+    for (unsigned char ch : name) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(ch));
+        } else {
+            std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+            out += encoded;
+        }
+    }
+    return out;
+}
+
+static std::string bindingStorageName(const std::string& name, bool is_repl,
+                                      bool is_public) {
+    return userGlobalStorageName(name, is_repl, is_public);
 }
 
 static void emitReplVarMarker(CodegenContext& ctx, const std::string& name) {
@@ -150,7 +184,7 @@ Value* BindingCodegen::storeBinding(
 
     if (is_global) {
         bool is_repl = isReplMode(repl_mode_);
-        std::string storage_name = bindingStorageName(name, is_repl);
+        std::string storage_name = bindingStorageName(name, is_repl, /*is_public=*/false);
         // Create or get GlobalVariable
         GlobalVariable* gv = ctx_.module().getNamedGlobal(storage_name);
         if (!gv) {
@@ -268,7 +302,11 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
          current_name.starts_with("__eshkol_lib_init_chunk_"));
     bool is_repl = isReplMode(repl_mode_);
     bool is_main = current && current->getName() == "main";
-    const std::string var_storage_name = bindingStorageName(var_name, is_repl);
+    // Library `provide` bindings (compiled inside __eshkol_lib_init*) keep their
+    // raw public name for cross-object linking; genuine user globals are mangled
+    // so they can never collide with a C/libm symbol (ESH-0092/0103).
+    const std::string var_storage_name =
+        bindingStorageName(var_name, is_repl, is_lib_init);
     GlobalVariable* existing_global = ctx_.module().getNamedGlobal(var_storage_name);
     // Top-level defines in main should always be global, not local
     bool use_global = !current || is_global_init || is_lib_init || is_repl || is_main;
@@ -299,7 +337,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                         false,
                         is_lib_init ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                         zero_init,
-                        var_name
+                        var_storage_name
                     );
                     gv->setAlignment(Align(16));
                 }
@@ -415,7 +453,7 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
                     false,
                     is_lib_init ? GlobalValue::LinkOnceODRLinkage : GlobalValue::ExternalLinkage,
                     zero_init,
-                    var_name
+                    var_storage_name
                 );
                 gv->setAlignment(Align(16));
             }
@@ -1319,9 +1357,13 @@ Value* BindingCodegen::lookupVariable(const std::string& name) {
         }
     }
 
-    // Check module globals. In REPL mode the LLVM symbol is deliberately
-    // private so user variables can shadow host/runtime function names.
-    const std::string storage_name = bindingStorageName(name, isReplMode(repl_mode_));
+    // Check module globals. The user-variable LLVM symbol is deliberately
+    // mangled (REPL: __repl_storage_*, otherwise: eshkol_g_*) so a user
+    // variable can shadow a host/runtime function name without colliding
+    // (ESH-0092/0103). Try the mangled name first, then fall back to the raw
+    // name which backs library `provide` / `:external` public bindings.
+    const std::string storage_name =
+        bindingStorageName(name, isReplMode(repl_mode_), /*is_public=*/false);
     GlobalVariable* gv = ctx_.module().getNamedGlobal(storage_name);
     if (gv) {
         return gv;
