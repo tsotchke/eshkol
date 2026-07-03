@@ -138,36 +138,27 @@ a b
 5
 ```
 
-### `(memory-store-audit path)` — currently unusable, see Known issues
-Intended to be a **streaming** O(n)-flat integrity audit that never builds the RGA:
-stream each line, re-derive its content hash, check its parent exists among
-previously-seen ids, discard. Would return `(ms-audit-v1 ok links forks)` or
+### `(memory-store-audit path)`
+A **streaming** O(n)-flat integrity audit that never builds the RGA: stream each
+line, re-derive its content hash, check its parent exists among previously-seen
+ids, discard. Returns `(ms-audit-v1 ok links forks)` on success, or
 `(line-number . reason)` with `reason` in `unparseable | hash-mismatch |
-orphan-parent`. **It cannot currently be called** — see below.
+orphan-parent` on the first problem.
+
+```scheme
+(require core.memory_store)
+(memory-store-audit "/path/to/events.log")
+;; => (ms-audit-v1 #t <links> <forks>)
+```
 
 ## Known issues
 
-- **`memory-store-audit` is uncallable (unresolved cross-module symbol).**
-  `memory-store-audit`'s body references `event-content-hash`, which is a private
-  helper defined in `core.memory` but **not in that module's `(provide …)` list**.
-  Across the module boundary the symbol does not resolve, so `memory-store-audit`
-  itself fails to generate and is reported as an unknown function at every call site.
-  All the *other* provided store functions work. Requiring `core.memory` explicitly
-  first does **not** help (the failure is at `memory_store`'s own compile time).
-  Repro:
-  ```scheme
-  (require core.memory_store)
-  (memory-store-audit "/tmp/events.log")
-  ```
-  Observed:
-  ```
-  error: Unknown function: memory-store-audit
-  ERROR: Failed to generate LLVM IR due to earlier code generation errors
-  Unhandled exception: called undefined function 'memory-store-audit'
-    (forward-referenced but never defined …)
-  ```
-  Likely fix (code, out of scope for docs): add `event-content-hash` to
-  `core.memory`'s `provide` block, or re-derive it inside `core.memory_store`.
+None. (Historically `memory-store-audit` was uncallable: its body references
+`event-content-hash`, which was defined in `core.memory` but omitted from that
+module's `(provide …)` list, so the symbol did not resolve across the module
+boundary and `memory-store-audit` failed to generate — reported as an unknown
+function at every call site. `event-content-hash` is now exported from
+`core.memory`, so the audit both generates and runs.)
   No matching ledger id found in `.swarm/tasks/` (`ESH-0072` and `ESH-0085` mention
   adjacent areas — AD closure capture and `sha256` symbol hygiene — but not this).
 

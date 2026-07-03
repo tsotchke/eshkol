@@ -36,7 +36,11 @@
   memory-fold-lww
   memory-event?
   memory-event-id memory-event-prev memory-event-vclock
-  memory-event-node memory-event-type memory-event-payload)
+  memory-event-node memory-event-type memory-event-payload
+  ;; Re-derives an event's content hash from its body fields.  Exported
+  ;; so cross-module consumers (notably core.memory_store's streaming
+  ;; memory-store-audit) can verify integrity without rebuilding the RGA.
+  event-content-hash)
 
 ;; ===== Event: (mem-ev-v1 id prev-hash vclock node type payload) =====
 (define (memory-event? ev)
