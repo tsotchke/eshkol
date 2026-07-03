@@ -1,0 +1,18 @@
+;; ESH-0097 minimal repro (found by the AD composition oracle, P3).
+;; ANY vector-param AD operator (gradient, jacobian, hessian, divergence,
+;; curl, laplacian) whose lambda captures a LOCAL function parameter fails
+;; LLVM module verification on BOTH -r and AOT:
+;;   ERROR: LLVM module verification failed: PtrToInt source must be pointer
+;;     %N = ptrtoint %eshkol_tagged_value %a to i64
+;; Notes:
+;;  * scalar `derivative` with the same local capture works fine
+;;  * capturing a GLOBAL works fine
+;;  * the capture does not even have to be used in an AD-relevant way
+;;  * capturing a vector param and using (vector-ref w 0) fails the same way
+;;
+;; Run: build/eshkol-run -r tests/ad_oracle/found/esh0097_local_capture_vector_ad_ptrtoint.esk
+;; Expected: #(4.42 0). Actual: compile-time IR verification failure.
+(define (mk a)
+  (gradient (lambda (v) (* a (vref v 0) (vref v 0))) (vector 1.3 -0.7)))
+(display (mk 1.7))
+(newline)
