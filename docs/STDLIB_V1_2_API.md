@@ -1,10 +1,10 @@
 # Eshkol v1.2-scale Standard Library — API Reference
 
-**Version**: 1.2.1-scale (closeout 2026-05-20, base 2026-05-01)
+**Version**: 1.3.0-evolve (closeout 2026-05-20, base 2026-05-01)
 **Audience**: implementers and library authors writing against the v1.2-scale
 public stdlib surface.
 **Scope**: every module added or significantly expanded between v1.1.13-accelerate
-and v1.2.1-scale.
+and v1.3.0-evolve.
 
 This document is the canonical, source-verified reference for the new public
 surfaces shipped in v1.2-scale. Every signature, default, and edge case below
@@ -1688,7 +1688,7 @@ Prior to the v1.2 routing fix this raised a "consumer is not a procedure" or
 
 ### Which modules are auto-loaded by `(require stdlib)`?
 
-Inspect `lib/stdlib.esk` for the canonical list. As of v1.2.1-scale, the
+Inspect `lib/stdlib.esk` for the canonical list. As of v1.3.0-evolve, the
 auto-loaded set includes:
 
 - `core.io`

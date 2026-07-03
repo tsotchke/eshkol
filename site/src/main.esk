@@ -374,7 +374,7 @@
         (let ((title (create-text "h1" "Build systems that think." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive and a 22-builtin neuro-symbolic stack. v1.2.1-scale ships the constructive proof that a six-layer transformer can be an interpreter — the Self-Differentiating Neural Computer." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive and a 22-builtin neuro-symbolic stack. v1.3.0-evolve ships the constructive proof that a six-layer transformer can be an interpreter — the Self-Differentiating Neural Computer." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Install command
@@ -548,8 +548,8 @@
 
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
-    (section-heading section "What's new in v1.2.1-scale")
-    (body-html section "<strong style='color:#a78bfa'>The production-readiness release.</strong> v1.1-accelerate proved the math (autodiff, tensors, the consciousness engine); v1.2.1-scale makes it shippable. Master suite exits 0 across 37 sub-suites and 528 self-reported tests; <code>tests/v1_2_edge_cases</code> carries 87 passing edge and security tests.")
+    (section-heading section "What's new in v1.3.0-evolve")
+    (body-html section "<strong style='color:#a78bfa'>Evolve.</strong> v1.3.0-evolve brings full SICP coverage (an 88/88 full-book gate under both JIT and AOT), exact nested/mixed-mode automatic differentiation, closure-semantics completion, and a green CI across all 14 platform lanes including windows-arm64 &mdash; backed by a new permanent adversarial-testing infrastructure (differential, edge-matrix, AD finite-difference oracle, stress, and VM-parity harnesses).")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
@@ -1323,7 +1323,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.2.1-scale</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.0-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))

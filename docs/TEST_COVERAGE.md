@@ -1,6 +1,6 @@
-# Eshkol v1.2-scale Test Coverage
+# Eshkol v1.3.0-evolve Test Coverage
 
-**Version**: v1.2-scale hardening checkpoint
+**Version**: v1.3.0-evolve
 **Last Updated**: 2026-05-20
 **Status**: 37 orchestrated suites, including the active v1.2 edge/security
 suite, at 100% pass rate on the verified release gates

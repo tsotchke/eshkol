@@ -8,7 +8,7 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.2.3--scale-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.0--evolve-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
 <br>
 
@@ -113,7 +113,7 @@ The language embodies three fundamental principles that distinguish it from exis
 
 ### **1. Differentiation as a Language Primitive**
 
-Automatic differentiation is not a library feature—it is intrinsic to the language semantics. Eshkol provides three distinct AD modes (symbolic, forward-mode, reverse-mode) with native support for vector calculus operators (∇, ∇·, ∇×, ∇²) and arbitrary-depth gradient nesting through a sophisticated computational tape stack architecture.
+Automatic differentiation is not a library feature—it is intrinsic to the language semantics. Eshkol provides three distinct AD modes (symbolic, forward-mode, reverse-mode) with native support for vector calculus operators (∇, ∇·, ∇×, ∇²) and exact nested higher-order differentiation through a computational tape-stack architecture.
 
 ```scheme
 ;; Define any differentiable function
@@ -128,11 +128,11 @@ Automatic differentiation is not a library feature—it is intrinsic to the lang
   (gradient (lambda (p) (loss-function p training-data))
             initial-params))
 
-;; Nested gradients to arbitrary depth
-(define hessian-trace 
-  (trace (gradient (lambda (x) 
-                     (car (gradient f (vector x))))
-                   (vector x0))))
+;; Exact higher-order derivatives by nesting the scalar `derivative` operator.
+;; f(x) = x^3  ->  f''(2) = 6*2 = 12
+(derivative (lambda (x)
+              (derivative (lambda (y) (* y y y)) x))
+            2.0)   ;; => 12
 ```
 
 ### **2. Deterministic Memory Management**
@@ -596,6 +596,40 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
+### v1.3.0-evolve Features
+
+**Evolve.** Full SICP coverage, exact nested/mixed-mode automatic differentiation,
+closure-semantics completion, every CI platform green, and a permanent
+adversarial-testing infrastructure.
+
+- **Full SICP support**: an 88-probe full-book gate (`tests/sicp/`,
+  `scripts/run_sicp_smoke.sh`) covering chapters 1-5 — including the metacircular,
+  analyzing, lazy, and `amb` nondeterministic evaluators, the query system, and
+  the register-machine simulators — passing under both `-r` (JIT) and AOT.
+- **Exact higher-order AD**: iterated/nested higher-order differentiation is now
+  exact (no finite-difference fallback) for scalar derivatives, and mixed-mode
+  vector-gradient-over-derivative composes correctly (#75, #84, #95, #113).
+- **Closure-semantics completion**: `set!`-mutated variables shared across multiple
+  closures (assignment conversion, #83), per-activation `letrec` closure instances
+  (#89), first-class / `apply`'d equality predicates return proper booleans (#86).
+- **Parser correctness**: quote-token dispatch fixed across `guard`/`case`/`match`/
+  quasiquote clause parsers and let-family body tails (#110, #117); constructor
+  operands evaluated exactly once (#116).
+- **R7RS numeric tower**: exactness and promotion discipline, AD-visible `min`/`max`
+  (#82).
+- **Platforms**: windows-arm64 build unbroken (#77); `with-region` body allocations
+  routed into the region arena (#81). CI is green across all 14 lanes.
+- **Native agent/ML substrate**: EAGLE linear-head training over the FFI bridge (#104).
+- **Adversarial testing infrastructure** (new, permanent): a multi-path differential
+  harness + fuzzer, a feature-pair edge matrix, an AD finite-difference oracle, and a
+  stress harness with RSS/time budgets — all wired into the ICC readiness oracle.
+  See [`docs/TESTING.md`](docs/TESTING.md).
+
+Some deep-edge findings surfaced by the new harnesses remain open and are tracked
+in the changelog's Known Issues section (e.g. vector gradient-of-gradient,
+`hessian`/`laplacian` on tensor points, deep non-tail recursion limits). See
+[CHANGELOG.md](CHANGELOG.md).
+
 ### Modern Language Features
 
 - **String interpolation** via `~{expr}` inside strings, with `~~{` for a literal opener
@@ -623,12 +657,12 @@ The **REPL** provides full compilation and execution via LLVM JIT:
 ```
 $ eshkol-repl
 
-Welcome to Eshkol REPL v1.2.3-scale
+Welcome to Eshkol REPL v1.3.0-evolve
 Type :help for commands, :quit to exit
 
-eshkol> (define (f x) (* x x x))
+eshkol> (define (f v) (let ((x (vref v 0))) (* x x x)))
 eshkol> (gradient f (vector 2.0))
-#(12.0)
+#(12)
 
 eshkol> :type (gradient f (vector 2.0))
 Vector<Float64, 1>
@@ -775,6 +809,8 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 | **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |
 | **[Test Coverage](docs/TEST_COVERAGE.md)** | What the 37-suite gate verifies |
 | **[Known Issues](docs/KNOWN_ISSUES.md)** | Current limitations and v1.3+ items |
+| **[Testing & Adversarial Harnesses](docs/TESTING.md)** | SICP gate + the five adversarial harnesses and how to run them |
+| **[VM Parity](docs/VM_PARITY.md)** | Bytecode-VM vs native-codegen parity ratchet |
 | **[ROADMAP](ROADMAP.md)** | Canonical release plan |
 | **[Release Notes](RELEASE_NOTES.md)** | Per-release changelog |
 | **[SDNC Paper Artefact](docs/SDNC.md)** | Self-Differentiating Neural Computer |
@@ -796,7 +832,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 @software{eshkol2025,
   title = {Eshkol: A Programming Language for Mathematical Computing},
   author = {tsotchke},
-  version = {1.2.3-scale},
+  version = {1.3.0-evolve},
   year = {2026},
   url = {https://github.com/tsotchke/eshkol},
   note = {Scheme-based language with native automatic differentiation}
@@ -813,7 +849,7 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
 - **Testing**: 528 self-reported tests across 37 suites with automated verification
-- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
+- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (x86_64 and ARM64 via Visual Studio 2022 + LLVM 21). CI is green across all 14 lanes, including windows-arm64.
 
 ---
 

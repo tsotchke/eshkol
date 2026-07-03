@@ -301,16 +301,24 @@ Eshkol provides high-level vector calculus operators built on reverse-mode AD:
 
 ### Example: Higher-Order Derivatives
 
+Exact nested higher-order differentiation is done by nesting the **scalar**
+`derivative` operator (this is exact as of v1.3.0-evolve — see #75, #84, #95):
+
 ```scheme
-;; Second derivative: f''(x) = d²/dx² (x³)
-(gradient (lambda (v)
-            (gradient (lambda (w) 
-                        (let ((x (vref w 0)))
-                          (* x (* x x))))
-                      v))
-          (vector 2.0))
-;; Returns: #(12.0)  ; f''(2) = 6*2 = 12
+;; Second derivative: f''(x) = d²/dx² (x³) = 6x
+(derivative (lambda (x)
+              (derivative (lambda (y) (* y y y)) x))
+            2.0)
+;; Returns: 12   ; f''(2) = 6*2 = 12
 ```
+
+> **Known limitation (ESH-0096):** nesting the **vector** `gradient` operator —
+> a gradient-of-gradient over a `(vector …)` point — currently returns zeros
+> silently rather than the true second-order value. Use the scalar `derivative`
+> form above for higher-order results. Related open items: `hessian`/`laplacian`
+> SIGSEGV on tensor points (ESH-0095) and vector-param AD combined with a
+> captured local (ESH-0072/0097). These are tracked in `.swarm/tasks/` and the
+> [CHANGELOG](../../CHANGELOG.md) Known Issues section.
 
 ---
 
