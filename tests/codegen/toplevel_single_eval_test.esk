@@ -1,0 +1,121 @@
+;; Codegen Test: constructor operands evaluate EXACTLY once (ESH-0098)
+;;
+;; Regression guard for the bug where TOP-LEVEL (list e) evaluated e twice and
+;; (vector e) evaluated e twice-per-element, because the typed-builtin codegen
+;; path re-generated operand IR for type inference AND for the value build. The
+;; value builders already evaluate each operand once, so effectful operands like
+;; (bump!) must fire exactly once per occurrence -- at top level AND inside
+;; function bodies, on both -r (JIT) and AOT.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================================
+;; TOP-LEVEL constructors -- one shared effectful counter, reset between cases
+;; ============================================================================
+
+(display "=== Top-level constructor single-eval ===\n")
+
+(define counter 0)
+(define (tick!) (set! counter (+ counter 1)) counter)
+
+;; (list e): e must fire exactly once, and the stored value is that first eval.
+(set! counter 0)
+(define tl-list (list (tick!)))
+(test-case "toplevel list count" 1 counter)
+(test-case "toplevel list value" 1 (car tl-list))
+
+;; (vector a b): each operand once, left-to-right, stored values are 1 then 2.
+(set! counter 0)
+(define tl-vec (vector (tick!) (tick!)))
+(test-case "toplevel vector count" 2 counter)
+(test-case "toplevel vector v0" 1 (vector-ref tl-vec 0))
+(test-case "toplevel vector v1" 2 (vector-ref tl-vec 1))
+
+;; (cons e '()): the car operand fires once.
+(set! counter 0)
+(define tl-cons (cons (tick!) '()))
+(test-case "toplevel cons count" 1 counter)
+(test-case "toplevel cons value" 1 (car tl-cons))
+
+;; Multi-element list: exactly one fire per element.
+(set! counter 0)
+(define tl-list3 (list (tick!) (tick!) (tick!)))
+(test-case "toplevel list3 count" 3 counter)
+
+;; Nested constructors: each leaf operand fires exactly once.
+(set! counter 0)
+(define tl-nested (list (vector (tick!)) (tick!)))
+(test-case "toplevel nested count" 2 counter)
+
+;; Accessor over a fresh constructor must NOT re-run the constructor operand.
+(set! counter 0)
+(define tl-accessed (car (list (tick!))))
+(test-case "toplevel car-of-list count" 1 counter)
+(test-case "toplevel car-of-list value" 1 tl-accessed)
+
+;; ============================================================================
+;; INSIDE FUNCTION BODIES -- same guarantees
+;; ============================================================================
+
+(display "=== In-function constructor single-eval ===\n")
+
+(define (fn-list-count)
+  (define n 0)
+  (define (bump!) (set! n (+ n 1)) n)
+  (define xs (list (bump!)))
+  n)
+(test-case "in-fn list count" 1 (fn-list-count))
+
+(define (fn-vector-count)
+  (define n 0)
+  (define (bump!) (set! n (+ n 1)) n)
+  (define v (vector (bump!) (bump!)))
+  n)
+(test-case "in-fn vector count" 2 (fn-vector-count))
+
+(define (fn-cons-count)
+  (define n 0)
+  (define (bump!) (set! n (+ n 1)) n)
+  (define c (cons (bump!) '()))
+  n)
+(test-case "in-fn cons count" 1 (fn-cons-count))
+
+(define (fn-vector-value)
+  (define n 0)
+  (define (bump!) (set! n (+ n 1)) n)
+  (define v (vector (bump!) (bump!)))
+  (vector-ref v 0))
+(test-case "in-fn vector first value" 1 (fn-vector-value))
+
+(define (fn-nested-count)
+  (define n 0)
+  (define (bump!) (set! n (+ n 1)) n)
+  (define x (list (vector (bump!)) (bump!) (bump!)))
+  n)
+(test-case "in-fn nested count" 3 (fn-nested-count))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))
