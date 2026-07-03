@@ -13594,8 +13594,9 @@ private:
         if (func_name == "list->string") return strio_->listToString(op);
         // R7RS string-copy: copy a string (optionally with start/end)
         if (func_name == "string-copy") {
-            // Delegate to substring with full range if no start/end given
-            return strio_->substring(op);
+            // R7RS (string-copy s [start [end]]): the 1- and 2-arg forms
+            // default the missing bounds, unlike substring (exactly 3).
+            return strio_->stringCopy(op);
         }
         // R7RS string-copy!: copy characters between strings
         if (func_name == "string-copy!") {
