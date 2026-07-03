@@ -57,8 +57,10 @@
   (csv-split-fields line))
 
 ;;; csv-parse: Parse a CSV string into a list of rows (each row is a list of fields)
+;;; string-split returns lines left-to-right, so no reverse is needed;
+;;; a stale (reverse ...) here previously flipped the row order.
 (define (csv-parse str)
-  (csv-parse-lines (reverse (string-split str #\newline))))
+  (csv-parse-lines (string-split str #\newline)))
 
 (define (csv-parse-lines lines)
   (if (null? lines)
