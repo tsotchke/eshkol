@@ -1,0 +1,7 @@
+; FILED: non-tail recursion overflows the VM frame stack near depth 300
+; ("FRAME OVERFLOW" on stderr) yet the process still exits 0 with empty
+; stdout. Native handles depth 500 (and far beyond) fine.
+; native -r : 300
+; vm        : <no stdout>, "FRAME OVERFLOW" on stderr, exit code 0
+(define (d n) (if (= n 0) 0 (+ 1 (d (- n 1)))))
+(display (d 300))

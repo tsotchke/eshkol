@@ -397,7 +397,7 @@ linspace	vm-supported
 list	vm-supported	
 list*	gap	no VM name binding
 list->string	vm-supported	
-list->vector	vm-supported	
+list->vector	gap	BUILTINS maps it to fid 139 which collides with memq (found/vector_constructor_empty.esk)
 list-copy	gap	no VM name binding
 list-set!	gap	no VM name binding
 list?	vm-supported	
@@ -439,7 +439,7 @@ make-temp-file	vm-supported
 make-tensor	vm-supported	
 make-vector	vm-supported	
 make-workspace	vm-supported	
-map	vm-supported	
+map	vm-supported	1-list map verified on all routes; multi-list map correct on vm-src but drops lists on the --emit-eskb route (found/map_two_lists_eskb_route.esk)
 matmul	vm-supported	
 matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
@@ -485,7 +485,7 @@ op:COND_EXPAND	native-only-justified	parse-time form handled by the native front
 op:CURL	gap	AD surface diverges in VM
 op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
-op:DEFINE_SYNTAX	vm-supported	vm_macro.c; simple syntax-rules verified (recursive macros diverge: found/recursive_macro_zero.esk)
+op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
 op:DERIVATIVE	gap	AD surface diverges in VM (found/ad_gradient_wrong.esk)
 op:DIFF	gap	AD surface diverges in VM
@@ -500,7 +500,7 @@ op:DNC_PRED	gap	core.dnc has no VM fids
 op:DNC_READ	gap	core.dnc has no VM fids
 op:DNC_READ_GRAD	gap	core.dnc has no VM fids
 op:DNC_WRITE	gap	core.dnc has no VM fids
-op:DO	vm-supported	vm_compiler special-form dispatch
+op:DO	gap	flat single do verified; nested do loses iterations, do+when spins forever, consecutive top-level dos leak state, and a do corrupts later top-level defines (found/do_composition_broken.esk, found/consecutive_do_state_leak.esk, found/define_after_do_corrupted.esk)
 op:DYNAMIC_WIND	gap	after-thunk runs twice (found/dynamic_wind_after_twice.esk)
 op:EXPECTED_FREE_ENERGY	vm-supported	BUILTINS fid 526
 op:EXTERN	native-only-justified	C FFI declaration — native codegen only by design
@@ -549,7 +549,7 @@ op:OR	vm-supported	vm_compiler special-form dispatch
 op:OWNED	native-only-justified	OALR ownership — native-arena construct
 op:PARAMETERIZE	gap	depends on make-parameter; fids 702/703 exist but surface incomplete
 op:PROVIDE	native-only-justified	front-end module machinery
-op:QUASIQUOTE	vm-supported	vm_compiler quasiquote expansion
+op:QUASIQUOTE	vm-supported	vm_compiler quasiquote expansion (tail splicing verified; mid-template splicing diverges: see op:UNQUOTE_SPLICING)
 op:QUOTE	vm-supported	vm_compiler special-form dispatch
 op:RAISE	vm-supported	guard/raise verified 2026-07
 op:REQUIRE	native-only-justified	module machinery resolved by the front-end; (require stdlib) is a VM no-op
@@ -571,11 +571,11 @@ op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codeg
 op:UNIFY	vm-supported	BUILTINS fid 502
 op:UNLESS	vm-supported	vm_compiler special-form dispatch
 op:UNQUOTE	vm-supported	vm_compiler quasiquote expansion
-op:UNQUOTE_SPLICING	vm-supported	vm_compiler quasiquote expansion
+op:UNQUOTE_SPLICING	gap	mid-template splicing reorders elements (found/splice_middle_order.esk)
 op:VALUES	vm-supported	values + call-with-values verified 2026-07
 op:WALK	gap	walk does not resolve bindings (found/logic_walk_unresolved.esk)
 op:WEAK_REF	native-only-justified	OALR ownership — native-arena construct
-op:WHEN	vm-supported	vm_compiler special-form dispatch
+op:WHEN	gap	when works standalone but tail calls through a when body are not TCO d — FRAME OVERFLOW near depth 300 (found/when_tail_call_no_tco.esk)
 op:WITH_REGION	native-only-justified	OALR region semantics are native-arena constructs
 op:WORKSPACE_PRED	vm-supported	BUILTINS fid 541
 op:WS_REGISTER	vm-supported	BUILTINS fid 542
@@ -879,8 +879,8 @@ username	vm-supported
 usize->ptr	native-only-justified	low-level memory/FFI primitive tied to native codegen
 utf8->string	vm-supported	
 uuid-v4	vm-supported	
-vector	vm-supported	
-vector->list	vm-supported	
+vector	gap	(vector ...) constructor form returns () (found/vector_constructor_empty.esk)
+vector->list	gap	BUILTINS fid 140 unimplemented in vm_native.c (found/vector_constructor_empty.esk)
 vector->tensor	gap	tensor linalg/manipulation fid missing in VM
 vector-append	gap	no VM name binding
 vector-copy!	gap	no VM name binding

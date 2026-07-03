@@ -1,0 +1,9 @@
+; FILED: multi-list map is correct under vm-src (eshkol-vm-standalone f.esk)
+; but the --profile hosted-vm --emit-eskb route drops the second list —
+; the exact bug vm_prelude_source.h was created to kill; the ESKB route
+; appears to bake in a stale prelude (vm_prelude_cache.h not regenerated).
+; native -r : (11 22 33)
+; vm-src    : (11 22 33)
+; vm-eskb   : (2 4 6)
+(display (map (lambda (a b) (+ a b)) (list 1 2 3) (list 10 20 30)))
+(newline)

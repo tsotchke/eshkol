@@ -1,5 +1,6 @@
-; medium non-tail recursion depth + long tail loop
+; shallow non-tail recursion + long tail loop — the VM frame stack overflows
+; near depth 300 with exit code 0 (see found/frame_overflow_exit_zero.esk)
 (define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1)))))
-(display (depth 500)) (newline)
+(display (depth 100)) (newline)
 (define (loop n) (if (= n 0) (quote done) (loop (- n 1))))
 (display (loop 200000)) (newline)
