@@ -1,0 +1,113 @@
+;;; Release sweep B — tensor/ML regression tests
+;;;
+;;; Locks in the fixes for the Group-B release-blocking bugs:
+;;;   1. tensor-load must round-trip the SHAPE (not just the data)
+;;;   2. scalar math (tanh/sin/exp/...) on a TENSOR maps elementwise, not
+;;;      silently-wrong-scalar
+;;;   3. batch-norm / layer-norm: 4-arg (scalar AND tensor gamma/beta) and
+;;;      5-arg (axis) produce correct values (no garbage denormals / SIGSEGV)
+;;;   4. tensor creation with mixed int+float args builds the obvious 1-D
+;;;      tensor instead of misreading a leading int as a shape
+;;;   5. gpu-reduce returns a scalar (not #())
+;;;   6. tensor-pow accepts a scalar exponent (broadcast), not only a tensor
+;;;
+;;; Any failure prints an "error:" line so the ML harness (scripts/run_ml_tests.sh)
+;;; flags it. Exercises the same source under both -r (JIT) and AOT.
+;;;
+;;; NOTE: bindings that must happen in a specific ORDER (e.g. tensor-save
+;;; before tensor-load) use let* so evaluation order is guaranteed — R7RS
+;;; internal defines interleaved with side-effecting expressions are not
+;;; ordered and would let the load run before the save.
+
+(define fails 0)
+
+(define (approx? a b) (< (abs (- a b)) 0.001))
+
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! fails (+ fails 1))
+             (display "error: FAIL ") (display name) (newline))))
+
+;; Compare a tensor's elements (via tensor-ref) against an expected list.
+;; Returns #f (never crashes) if t is not a tensor.
+(define (tensor-approx? t expected)
+  (and (tensor? t)
+       (let loop ((i 0) (e expected))
+         (cond ((null? e) #t)
+               ((approx? (tensor-ref t i) (car e)) (loop (+ i 1) (cdr e)))
+               (else #f)))))
+
+;; Shape equality that is null-safe (never crashes on a failed load).
+(define (shape-is? t expected)
+  (and (tensor? t) (equal? (tensor-shape t) expected)))
+
+;; --- 1. tensor-load round-trips the shape ---
+(let* ((t (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2)))
+       (_s1 (tensor-save "/tmp/sweep_b_rt.bin" t))
+       (loaded (tensor-load "/tmp/sweep_b_rt.bin"))
+       (v (reshape (tensor 5.0 6.0 7.0 8.0 9.0 10.0) (list 2 3)))
+       (_s2 (tensor-save "/tmp/sweep_b_rt2.bin" v))
+       (lv (tensor-load "/tmp/sweep_b_rt2.bin")))
+  (check "tensor-save-2x2" (eq? _s1 #t))
+  (check "tensor-load-shape" (shape-is? loaded (list 2 2)))
+  (check "tensor-load-values" (tensor-approx? loaded (list 1.0 2.0 3.0 4.0)))
+  (check "tensor-load-shape-2x3" (shape-is? lv (list 2 3))))
+
+;; --- 2. scalar math on a tensor maps elementwise ---
+(let ()
+  (check "tanh-scalar" (approx? (tanh 0.0) 0.0))
+  (check "tanh-tensor" (tensor-approx? (tanh (tensor 0.0 1.0)) (list 0.0 0.7615941)))
+  (check "sin-tensor"  (tensor-approx? (sin (tensor 0.0)) (list 0.0)))
+  (check "exp-tensor"  (tensor-approx? (exp (tensor 0.0 1.0)) (list 1.0 2.7182818)))
+  (check "sqrt-tensor" (tensor-approx? (sqrt (tensor 4.0 9.0)) (list 2.0 3.0))))
+
+;; --- 3. batch-norm / layer-norm ---
+;; [1,2,3,4]: mean=2.5, var=1.25, std=sqrt(1.25+1e-5) ->
+;;   normalized = [-1.341636, -0.447212, 0.447212, 1.341636]
+(let ((norm (list -1.341636 -0.447212 0.447212 1.341636)))
+  (check "layer-norm-4arg-scalar"
+         (tensor-approx? (layer-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001) norm))
+  (check "batch-norm-4arg-scalar"
+         (tensor-approx? (batch-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001) norm))
+  (check "layer-norm-4arg-tensor-gb"
+         (tensor-approx?
+           (layer-norm (tensor 1.0 2.0 3.0 4.0)
+                       (tensor 1.0 1.0 1.0 1.0) (tensor 0.0 0.0 0.0 0.0) 0.00001)
+           norm))
+  ;; per-feature gamma/beta: gamma=[1,2,3,4] beta=[10,20,30,40]
+  (check "layer-norm-per-feature"
+         (tensor-approx?
+           (layer-norm (tensor 1.0 2.0 3.0 4.0)
+                       (tensor 1.0 2.0 3.0 4.0) (tensor 10.0 20.0 30.0 40.0) 0.00001)
+           (list 8.658364 19.105576 31.341636 45.366544)))
+  ;; 5-arg axis form must not SIGSEGV and gives the 1-D result on axis 0
+  (check "layer-norm-5arg-axis"
+         (tensor-approx? (layer-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001 0) norm))
+  (check "batch-norm-5arg-axis"
+         (tensor-approx? (batch-norm (tensor 1.0 2.0 3.0 4.0) 1.0 0.0 0.00001 0) norm)))
+
+;; --- 4. tensor creation: mixed int+float => 1-D, shape syntax preserved ---
+(let ((m (tensor 1 2.5 3))
+      (s (tensor 2 2 1.0 2.0 3.0 4.0)))
+  (check "creation-mixed-shape" (shape-is? m (list 3)))
+  (check "creation-mixed-values" (tensor-approx? m (list 1.0 2.5 3.0)))
+  (check "creation-shaped" (shape-is? s (list 2 2))))
+
+;; --- 5. gpu-reduce returns a scalar ---
+(let ()
+  (check "gpu-reduce-sum"  (approx? (gpu-reduce + (tensor 1.0 2.0 3.0 4.0)) 10.0))
+  (check "gpu-reduce-mean" (approx? (gpu-reduce mean (tensor 1.0 2.0 3.0 4.0)) 2.5))
+  (check "gpu-reduce-max"  (approx? (gpu-reduce max (tensor 1.0 5.0 3.0)) 5.0))
+  (check "gpu-reduce-min"  (approx? (gpu-reduce min (tensor 4.0 2.0 3.0)) 2.0)))
+
+;; --- 6. tensor-pow accepts scalar exponent (and still a tensor exponent) ---
+(let ()
+  (check "tensor-pow-scalar" (tensor-approx? (tensor-pow (tensor 2.0 3.0) 2.0) (list 4.0 9.0)))
+  (check "tensor-pow-tensor" (tensor-approx? (tensor-pow (tensor 2.0 3.0) (tensor 2.0 3.0)) (list 4.0 27.0))))
+
+(newline)
+(if (= fails 0)
+    (display "ALL SWEEP-B REGRESSIONS PASS")
+    (begin (display "error: ") (display fails) (display " sweep-B regression(s) FAILED")))
+(newline)

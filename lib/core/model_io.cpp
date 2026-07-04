@@ -4,6 +4,7 @@
 
 #include <array>
 #include <bit>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -454,6 +455,206 @@ extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
     eshkol_tensor_t* tensor = nullptr;
     if (!tensor_from_record(arena, records.front(), &tensor)) return;
     *result = make_heap_ptr(tensor);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Normalization (batch-norm / layer-norm) — numeric path
+ *
+ * Single robust implementation shared by both norms. It decodes gamma and
+ * beta from tagged values so it transparently handles BOTH a scalar
+ * (broadcast to every feature) and a per-feature tensor. The previous
+ * codegen extracted gamma/beta with unpackDouble() which reinterpreted a
+ * TENSOR pointer's bits as a scalar double (→ garbage denormals), and the
+ * 5-arg axis path passed those scalars to eshkol_xla_normalize which expected
+ * `const double*` pointers (→ SIGSEGV on wild dereference). Centralizing the
+ * decode here fixes both.
+ *
+ * Grouping mirrors emitTensorADNormalizeDispatch exactly so the numeric and
+ * autodiff paths agree:
+ *   group_count = total / group_len
+ *   for each group g: inner = g % inner_stride, outer = g / inner_stride,
+ *   base = outer*group_len*inner_stride + inner; element k of the group is at
+ *   base + k*inner_stride. gamma/beta are indexed by k (the feature position).
+ * ═══════════════════════════════════════════════════════════════════ */
+namespace {
+
+/* Decode a tagged value used as gamma/beta into either a scalar broadcast
+ * value or a pointer to a tensor's element array. */
+struct NormParam {
+    const int64_t* elems = nullptr;  /* non-null => per-feature tensor bits */
+    int64_t        len   = 0;        /* number of tensor elements */
+    double         scalar = 0.0;     /* used when elems == nullptr */
+};
+
+NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
+    NormParam p;
+    p.scalar = dflt;
+    if (!tv) return p;
+    if (tagged_is_tensor(tv)) {
+        const auto* t = reinterpret_cast<const eshkol_tensor_t*>(tv->data.ptr_val);
+        if (t && t->elements && t->total_elements > 0) {
+            p.elems = t->elements;
+            p.len = static_cast<int64_t>(t->total_elements);
+        }
+        return p;
+    }
+    const uint8_t base = tv->type & 0x3F;
+    if (base == ESHKOL_VALUE_DOUBLE) {
+        p.scalar = tv->data.double_val;
+    } else if (base == ESHKOL_VALUE_INT64) {
+        p.scalar = static_cast<double>(tv->data.int_val);
+    }
+    return p;
+}
+
+inline double norm_param_at(const NormParam& p, int64_t k) {
+    if (p.elems) {
+        int64_t idx = (p.len == 1) ? 0 : (k % p.len);
+        return std::bit_cast<double>(p.elems[idx]);
+    }
+    return p.scalar;
+}
+
+} // namespace
+
+extern "C" void* eshkol_tensor_normalize_apply(
+    arena_t* arena,
+    const eshkol_tagged_value_t* input_tv,
+    int64_t group_len,
+    int64_t inner_stride,
+    const eshkol_tagged_value_t* gamma_tv,
+    const eshkol_tagged_value_t* beta_tv,
+    double epsilon) {
+    if (!arena || !input_tv || !tagged_is_tensor(input_tv)) return nullptr;
+    const auto* in = reinterpret_cast<const eshkol_tensor_t*>(input_tv->data.ptr_val);
+    if (!in || !in->elements) return nullptr;
+
+    const int64_t total = static_cast<int64_t>(in->total_elements);
+    const int64_t rank = static_cast<int64_t>(in->num_dimensions);
+    if (total <= 0) return nullptr;
+    if (group_len <= 0) group_len = total;
+    if (inner_stride <= 0) inner_stride = 1;
+    if (group_len > total) group_len = total;
+    if (total % group_len != 0) return nullptr;  /* malformed grouping */
+
+    eshkol_tensor_t* out = arena_allocate_tensor_full(
+        arena, static_cast<uint64_t>(rank), static_cast<uint64_t>(total));
+    if (!out || !out->elements) return nullptr;
+    for (int64_t i = 0; i < rank; i++) out->dimensions[i] = in->dimensions[i];
+
+    NormParam gamma = decode_norm_param(gamma_tv, 1.0);
+    NormParam beta  = decode_norm_param(beta_tv, 0.0);
+
+    const int64_t* src = in->elements;
+    int64_t* dst = out->elements;
+    const int64_t group_count = total / group_len;
+    const double count = static_cast<double>(group_len);
+
+    for (int64_t g = 0; g < group_count; g++) {
+        const int64_t inner = group_len == 0 ? 0 : (g % inner_stride);
+        const int64_t outer = g / inner_stride;
+        const int64_t base = outer * group_len * inner_stride + inner;
+
+        double mean = 0.0;
+        for (int64_t k = 0; k < group_len; k++) {
+            mean += std::bit_cast<double>(src[base + k * inner_stride]);
+        }
+        mean /= count;
+        double var = 0.0;
+        for (int64_t k = 0; k < group_len; k++) {
+            double d = std::bit_cast<double>(src[base + k * inner_stride]) - mean;
+            var += d * d;
+        }
+        var /= count;
+        const double inv_std = 1.0 / std::sqrt(var + epsilon);
+        for (int64_t k = 0; k < group_len; k++) {
+            const int64_t idx = base + k * inner_stride;
+            double norm = (std::bit_cast<double>(src[idx]) - mean) * inv_std;
+            double val = norm_param_at(gamma, k) * norm + norm_param_at(beta, k);
+            dst[idx] = std::bit_cast<int64_t>(val);
+        }
+    }
+    return out;
+}
+
+/* Elementwise application of a scalar libm unary function across a tensor.
+ * Backs the tensor-operand path of the scalar math builtins (sin/cos/tanh/…):
+ * previously those reinterpreted a tensor pointer as a scalar double and
+ * returned a silently-wrong scalar. op codes mirror codegenMathFunction. */
+extern "C" void* eshkol_tensor_map_libm(arena_t* arena,
+                                        const eshkol_tagged_value_t* in_tv,
+                                        int32_t op) {
+    if (!arena || !in_tv || !tagged_is_tensor(in_tv)) return nullptr;
+    const auto* in = reinterpret_cast<const eshkol_tensor_t*>(in_tv->data.ptr_val);
+    if (!in || !in->elements) return nullptr;
+
+    const int64_t total = static_cast<int64_t>(in->total_elements);
+    const int64_t rank = static_cast<int64_t>(in->num_dimensions);
+    if (total <= 0) return nullptr;
+
+    eshkol_tensor_t* out = arena_allocate_tensor_full(
+        arena, static_cast<uint64_t>(rank), static_cast<uint64_t>(total));
+    if (!out || !out->elements) return nullptr;
+    for (int64_t i = 0; i < rank; i++) out->dimensions[i] = in->dimensions[i];
+
+    for (int64_t i = 0; i < total; i++) {
+        double x = std::bit_cast<double>(in->elements[i]);
+        double y;
+        switch (op) {
+            case 0:  y = std::sin(x);   break;
+            case 1:  y = std::cos(x);   break;
+            case 2:  y = std::tan(x);   break;
+            case 3:  y = std::asin(x);  break;
+            case 4:  y = std::acos(x);  break;
+            case 5:  y = std::atan(x);  break;
+            case 6:  y = std::sinh(x);  break;
+            case 7:  y = std::cosh(x);  break;
+            case 8:  y = std::tanh(x);  break;
+            case 9:  y = std::asinh(x); break;
+            case 10: y = std::acosh(x); break;
+            case 11: y = std::atanh(x); break;
+            case 12: y = std::exp(x);   break;
+            case 13: y = std::exp2(x);  break;
+            case 14: y = std::log(x);   break;
+            case 15: y = std::log2(x);  break;
+            case 16: y = std::log10(x); break;
+            case 17: y = std::sqrt(x);  break;
+            case 18: y = std::cbrt(x);  break;
+            case 19: y = std::fabs(x);  break;
+            case 20: y = std::floor(x); break;
+            case 21: y = std::ceil(x);  break;
+            case 22: y = std::trunc(x); break;
+            case 23: y = std::rint(x);  break;  /* round half to even */
+            default: y = x;             break;
+        }
+        out->elements[i] = std::bit_cast<int64_t>(y);
+    }
+    return out;
+}
+
+/* Elementwise tensor ^ scalar. tensor-pow's SIMD path requires a tensor
+ * exponent; this backs the scalar-exponent broadcast so `(tensor-pow t 2.0)`
+ * works instead of raising a spurious "expected tensor" type error. */
+extern "C" void* eshkol_tensor_pow_scalar(arena_t* arena,
+                                          const eshkol_tagged_value_t* base_tv,
+                                          double exponent) {
+    if (!arena || !base_tv || !tagged_is_tensor(base_tv)) return nullptr;
+    const auto* in = reinterpret_cast<const eshkol_tensor_t*>(base_tv->data.ptr_val);
+    if (!in || !in->elements) return nullptr;
+
+    const int64_t total = static_cast<int64_t>(in->total_elements);
+    const int64_t rank = static_cast<int64_t>(in->num_dimensions);
+    if (total <= 0) return nullptr;
+
+    eshkol_tensor_t* out = arena_allocate_tensor_full(
+        arena, static_cast<uint64_t>(rank), static_cast<uint64_t>(total));
+    if (!out || !out->elements) return nullptr;
+    for (int64_t i = 0; i < rank; i++) out->dimensions[i] = in->dimensions[i];
+    for (int64_t i = 0; i < total; i++) {
+        double x = std::bit_cast<double>(in->elements[i]);
+        out->elements[i] = std::bit_cast<int64_t>(std::pow(x, exponent));
+    }
+    return out;
 }
 
 extern "C" void eshkol_model_save_tagged(arena_t* arena,

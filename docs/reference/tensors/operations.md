@@ -142,21 +142,21 @@ The pooling ops are named `max-pool2d` / `avg-pool2d` (with the `2d` suffix).
 
 | Op | Signature | Status |
 |----|-----------|--------|
-| `batch-norm` | `(batch-norm input gamma beta epsilon [axis])` | ⚠ **BUG** — produces garbage denormals; 5-arg form SIGSEGVs |
-| `layer-norm` | `(layer-norm input gamma beta epsilon [axis])` | ⚠ **BUG** — same garbage-denormal / SIGSEGV failure |
+| `batch-norm` | `(batch-norm input gamma beta epsilon [axis])` | ✅ scalar **or** per-feature tensor gamma/beta; 4-arg and 5-arg (axis) forms |
+| `layer-norm` | `(layer-norm input gamma beta epsilon [axis])` | ✅ scalar **or** per-feature tensor gamma/beta; 4-arg and 5-arg (axis) forms |
 | `multi-head-attention` | `(multi-head-attention Q K V num-heads W_Q W_K W_V W_O [mask])` | ✅ forward pass runs (8–9 args) |
 | `embedding` | `(embedding indices weights)` | ✅ `idx #(0 2)`, 3×2 weights → the selected rows |
 | `positional-encoding` | `(positional-encoding max-len d-model)` | ✅ sinusoidal, exactly 2 args |
 | `dropout` | `(dropout tensor drop-prob)` | ✅ 2 args; `(dropout #(1 2 3) 0.0)` → `#(1 2 3)` |
 | `softmax` | `(softmax tensor [axis])` | ✅ `(softmax #(1 2 3))` → `#(0.0900306 0.244728 0.665241)` |
 
-> ⚠ **`batch-norm` and `layer-norm` are broken on this build.** The 4-argument
-> form writes int64 bit-patterns into the output buffer instead of computed
-> floats (`(layer-norm #(1.0 2.0 3.0 4.0) #(1.0 …) #(0.0 …) 1e-5)` →
-> `#(-8.8e-315 1.4e-314 …)`), and passing the optional 5th `axis` argument
-> **SIGSEGVs**. This is a codegen bug in both norms; do not rely on them for
-> training. **Attention backward** is also a passthrough stub in the tensor
-> backward pass — see
+> **`batch-norm` and `layer-norm` accept both a scalar and a per-feature
+> tensor for `gamma`/`beta`** and support the optional 5th `axis` argument.
+> `(layer-norm #(1.0 2.0 3.0 4.0) #(1.0 …) #(0.0 …) 1e-5)` normalizes to
+> `#(-1.3416 -0.4472 0.4472 1.3416)`. (Earlier builds mis-read a tensor
+> gamma/beta as a scalar — garbage denormals — and SIGSEGV'd on the axis form;
+> both are fixed.) **Attention backward** is still a passthrough stub in the
+> tensor backward pass — see
 > [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) "v1.1 AD
 > Extensions".
 
@@ -176,10 +176,11 @@ scalar argument:
 (relu -5.0)                      ;; ERROR: Type error in relu: expected tensor
 ```
 
-> **`tanh` is the exception — it is scalar-only.** `(tanh 0.0)` → `0`, but
-> `(tanh (tensor 0.0 1.0))` silently returns a wrong scalar (`1`) instead of a
-> tensor, because `tanh` dispatches to the scalar math path before the tensor
-> path. Use `tensor-apply`/elementwise for a tanh over a tensor.
+> **`tanh` and the other scalar math builtins now map elementwise over a
+> tensor.** `(tanh 0.0)` → `0` and `(tanh (tensor 0.0 1.0))` →
+> `#(0 0.761594)`. The same holds for `sin`/`cos`/`tan`/`exp`/`log`/`sqrt`/…
+> when handed a tensor. (Earlier builds reinterpreted the tensor pointer as a
+> scalar double and returned a silently-wrong scalar.)
 
 ---
 
@@ -205,10 +206,12 @@ guard tags any untagged scalar as INT64).
 
 > **Creation is not guarded.** `(tensor 1.0 "x" 3.0)` does *not* raise — it
 > reinterprets the string pointer as a double and yields garbage. Build tensors
-> from numeric literals only. Mixing integer and float arguments in
-> `tensor`/`make-tensor` can also trigger shape-mode misinterpretation
-> (leading integers are read as a shape); prefer all-float element lists or
-> `(make-tensor '(shape) fill)` with a quoted-list shape.
+> from numeric literals only. Mixing integer and float *numeric* arguments is
+> fine: `(tensor 1 2.5 3)` builds the obvious 1-D tensor `#(1 2.5 3)`. Leading
+> integers are treated as a shape prefix only when their product exactly
+> matches the number of remaining elements (e.g. `(tensor 2 2 1.0 2.0 3.0 4.0)`
+> → a 2×2 tensor); otherwise every argument is a 1-D element. (Earlier builds
+> raised a confusing "insufficient elements" error on `(tensor 1 2.5 3)`.)
 
 ---
 
@@ -234,26 +237,25 @@ at (1,1) use `1 1 3 3`.
 
 ```scheme
 (tensor-save "path.bin" t)   ;; arg order is (PATH TENSOR); returns #t
-(tensor-load "path.bin")     ;; ⚠ BUG — see below
+(tensor-load "path.bin")     ;; round-trips shape + data
 ```
 
 `tensor-save` writes a correct binary file (magic `TKSE`, IEEE-754 element
 bit-patterns) and returns `#t`. **The argument order is `(path, tensor)`.**
 
-> ⚠ **`tensor-load` loses the shape.** After a save/load round-trip the element
-> data and count survive (`tensor-length` → 4, `tensor-dtype` → `f64`) but the
-> shape metadata is dropped: the loaded tensor displays as `#()` and
-> `tensor-shape` returns `(0)`. The loader reads the shape header but never
-> copies the dimensions into the tensor's `dimensions[]` array. Round-trip is
-> effectively broken until this is fixed.
+> **`tensor-load` round-trips the shape.** After a save/load the shape, element
+> data, count and dtype all survive (`(tensor-shape (tensor-load …))` on a 2×2
+> save returns `(2 2)`). (Earlier builds allocated the `dimensions[]` array but
+> never copied the loaded dimensions into it, so `tensor-shape` reported `(0 …)`
+> and the tensor displayed as `#()`.)
 
 ---
 
 ## GPU-labeled builtins
 
 `gpu-matmul`, `gpu-elementwise`, `gpu-softmax`, `gpu-transpose`, `gpu-reduce`
-all **resolve** and run. See [gpu.md](gpu.md) for signatures, honest Metal/CUDA
-dispatch status, and the `gpu-reduce` empty-result caveat.
+all **resolve** and run (`gpu-reduce` returns a scalar). See [gpu.md](gpu.md)
+for signatures and honest Metal/CUDA dispatch status.
 
 ---
 
@@ -261,12 +263,7 @@ dispatch status, and the `gpu-reduce` empty-result caveat.
 
 | Operation | Issue |
 |-----------|-------|
-| `batch-norm`, `layer-norm` | garbage denormal output (4-arg); SIGSEGV (5-arg `axis`) |
-| `tensor-load` | drops shape metadata (`tensor-shape` → `(0)`, displays `#()`); data/length survive |
-| `gpu-reduce` | returns empty `#()` instead of a scalar ([gpu.md](gpu.md)) |
-| `tanh` | scalar-only; silently wrong on a tensor argument |
-| `tensor-pow` | requires a **tensor** exponent, not a scalar |
-| tensor creation | no element type-check (`(tensor 1.0 "x")` → garbage); int+float args misread as shape |
+| tensor creation | no element type-check for non-numeric args (`(tensor 1.0 "x")` → garbage) — build tensors from numeric literals only |
 | type-guard text | reports raw doubles as `integer` |
 | attention/embedding backward | passthrough stubs (see AUTODIFF.md) |
 
