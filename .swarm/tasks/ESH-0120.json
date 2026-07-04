@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0120",
+  "title": "Bignum quotient/remainder are silently wrong at scale (a = q*b + r fails)",
+  "status": "open",
+  "priority": "high",
+  "workstream": "depth-parametric-campaign/numeric-tower",
+  "goal": "Found by the P6d numeric-depth sweep (2026-07-03). Once both operands are bignums, quotient/remainder produce silently wrong results: the fundamental Euclidean identity a = q*b + r FAILS. At moderate scale the remainder is off by a small delta while the quotient is still right (e.g. a=10^25 b=7^25: remainder off by 128, so (= a (+ (* q b) r)) is #f); at larger scale the quotient is wrong too (a=10^90 b=3^90: quotient wrong in its low ~9 digits, remainder wildly off). The bignum long-division routine mishandles the low limbs. Corrupts modular arithmetic, base conversion, and any algorithm using truncating division at bignum scale.",
+  "file_globs": [
+    "lib/runtime/**/bignum*.c*",
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "acceptance": [
+    "tests/numeric_depth/found/divmod_bignum_wrong.esk prints OK divmod-bignum under -r and AOT",
+    "For a=10^n b=7^n over n=1..200: (= a (+ (* (quotient a b) b) (remainder a b))) is #t and both match Python a//b, a%b",
+    "tests/numeric_depth family bignum_divmod is correct for all swept n (no baseline expected_wrong entries)"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "quotient/remainder are tower primitives; correctness at bignum scale is required for modular arithmetic, gcd (ESH-0119), and number->string of large values.",
+  "repro": "tests/numeric_depth/found/divmod_bignum_wrong.esk",
+  "found_by": "scripts/run_numeric_depth.sh (family bignum_divmod, wrong from n=25 where both operands are bignum)"
+}

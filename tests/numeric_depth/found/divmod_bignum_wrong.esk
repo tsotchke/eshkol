@@ -1,0 +1,13 @@
+; FOUND by P6d numeric-depth sweep (ESH-0120). Bignum quotient/remainder are
+; silently WRONG once both operands are bignums: the fundamental division
+; identity a = q*b + r fails. remainder is off by a small delta at moderate
+; scale; at larger scale the quotient is wrong too.
+;   a=10^25 b=7^25 : (remainder a b) off by 128, (= a (+ (* q b) r)) is #f
+(require stdlib)
+(define a (expt 10 25))
+(define b (expt 7 25))
+(define q (quotient a b))
+(define r (remainder a b))
+(define ok (= a (+ (* q b) r)))
+(if ok (begin (display "OK divmod-bignum") (newline))
+       (begin (display "FAIL divmod-bignum a<>q*b+r") (newline)))
