@@ -1,0 +1,19 @@
+; ESH-0119 regression: a stack-overflow from deep non-tail recursion must be a
+; CLEAN, diagnosable failure — the runtime prints an "[Eshkol] fatal signal"
+; stack-overflow diagnostic and exits nonzero — NOT a silent SIGILL (rc132 with
+; no output).
+;
+; This program is EXPECTED to crash. The harness that runs it
+; (scripts/run_stack_overflow_diagnostic.sh) asserts:
+;   (1) exit code is nonzero, AND
+;   (2) stderr contains the fatal-signal / stack-overflow diagnostic.
+;
+; Depth 5,000,000 is far past every measured overflow ceiling
+; (see RECURSION_DEPTH_REPORT.md: non_tail safe ~200k) on default stacks, so it
+; reliably exhausts the native stack on both the JIT (-r) and AOT lanes.
+(define (down n)
+  (if (= n 0) 0 (+ 1 (down (- n 1)))))
+
+(display "entering deep non-tail recursion\n")
+(display (down 5000000))
+(newline)
