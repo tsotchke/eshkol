@@ -780,6 +780,42 @@ namespace {
         return out;
     }
 
+    // Compute the LLVM symbol name used to back a top-level user variable's
+    // storage. User-program globals MUST NOT be emitted under their raw Scheme
+    // name: a name like `free`/`malloc`/`exit` would collide with the C runtime
+    // symbol at JIT/AOT link (calling data as code -> SIGBUS at teardown), and a
+    // name like `log`/`sin` would clash with an in-module libm function
+    // declaration (LLVM auto-renames the GlobalVariable, and two creation sites
+    // then produce two distinct `@log.N` slots — a `set!` writes one while a
+    // read sees the other, so mutations are silently lost on cached-JIT/AOT).
+    // Mangling the symbol removes the whole collision class. See ESH-0092/0103.
+    //
+    //   is_repl   -> private REPL storage (`__repl_storage_*`, hot-reload aware)
+    //   is_public -> raw name (library `provide` bindings and `:external`
+    //                references, which must bind cross-object to stdlib.o)
+    //   otherwise -> `eshkol_g_`-prefixed, encoded so it can never equal a
+    //                C/libm symbol.
+    static std::string userGlobalStorageName(const std::string& name,
+                                             bool is_repl, bool is_public) {
+        if (is_repl) {
+            return replVarStorageSymbolName(name);
+        }
+        if (is_public) {
+            return name;
+        }
+        std::string out = "eshkol_g_";
+        char encoded[4];
+        for (unsigned char ch : name) {
+            if (std::isalnum(ch)) {
+                out.push_back(static_cast<char>(ch));
+            } else {
+                std::snprintf(encoded, sizeof(encoded), "_%02X", ch);
+                out += encoded;
+            }
+        }
+        return out;
+    }
+
     static void seedTypeCheckerWithReplFunctions(
         eshkol::hott::TypeChecker& type_checker,
         eshkol::hott::TypeEnvironment& type_env) {
@@ -2596,10 +2632,14 @@ public:
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     !asts_to_use[i].operation.define_op.is_function) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
-                    std::string storage_name = var_name ? std::string(var_name) : std::string();
-                    if (g_repl_mode_enabled && var_name) {
-                        storage_name = replVarStorageSymbolName(var_name);
-                    }
+                    // `:external` references and library `provide` bindings keep
+                    // their raw public name so they bind cross-object to
+                    // stdlib.o; genuine user globals are mangled (ESH-0092/0103).
+                    bool is_public_pre =
+                        asts_to_use[i].operation.define_op.is_external || library_mode;
+                    std::string storage_name = var_name
+                        ? userGlobalStorageName(var_name, g_repl_mode_enabled, is_public_pre)
+                        : std::string();
                     if (var_name && !module->getNamedGlobal(storage_name)) {
                         GlobalVariable* global_var = nullptr;
                         if (g_repl_mode_enabled) {
@@ -7488,6 +7528,11 @@ private:
         // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
         Value* car_is_vector_ptr = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // CHAR FIX (ESH-0099): a character in a cons cell must be re-tagged as
+        // CHAR, not demoted to INT64 by the default path below. Without this,
+        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
+        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
 
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* null_car = BasicBlock::Create(*context, "car_extract_null", current_func);
@@ -7506,6 +7551,8 @@ private:
         BasicBlock* hash_ptr_car = BasicBlock::Create(*context, "car_extract_hash_ptr", current_func);
         BasicBlock* check_vector_ptr = BasicBlock::Create(*context, "car_check_vector_ptr", current_func);
         BasicBlock* vector_ptr_car = BasicBlock::Create(*context, "car_extract_vector_ptr", current_func);
+        BasicBlock* check_char = BasicBlock::Create(*context, "car_check_char", current_func);
+        BasicBlock* char_car = BasicBlock::Create(*context, "car_extract_char", current_func);
         BasicBlock* int_car = BasicBlock::Create(*context, "car_extract_int", current_func);
         BasicBlock* merge_car = BasicBlock::Create(*context, "car_merge", current_func);
 
@@ -7611,7 +7658,7 @@ private:
 
         // VECTOR_PTR FIX: Handle vector pointers when extracting from cons cells
         builder->SetInsertPoint(check_vector_ptr);
-        builder->CreateCondBr(car_is_vector_ptr, vector_ptr_car, int_car);
+        builder->CreateCondBr(car_is_vector_ptr, vector_ptr_car, check_char);
 
         builder->SetInsertPoint(vector_ptr_car);
         Value* car_vector_ptr = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car});
@@ -7621,6 +7668,16 @@ private:
         builder->CreateBr(merge_car);
         BasicBlock* vector_ptr_exit = builder->GetInsertBlock();
 
+        // CHAR FIX (ESH-0099): extract codepoint and re-tag as CHAR.
+        builder->SetInsertPoint(check_char);
+        builder->CreateCondBr(car_is_char, char_car, int_car);
+
+        builder->SetInsertPoint(char_car);
+        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
+        Value* tagged_char = packCharToTaggedValue(car_char);
+        builder->CreateBr(merge_car);
+        BasicBlock* char_exit = builder->GetInsertBlock();
+
         builder->SetInsertPoint(int_car);
         Value* car_int64 = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car});
         Value* tagged_int64 = packInt64ToTaggedValue(car_int64, true);
@@ -7628,7 +7685,7 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
 
         builder->SetInsertPoint(merge_car);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 10);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 11);
         car_tagged_phi->addIncoming(tagged_null, null_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
         car_tagged_phi->addIncoming(tagged_cons_ptr, cons_ptr_exit);
@@ -7638,6 +7695,7 @@ private:
         car_tagged_phi->addIncoming(tagged_bool, bool_exit);
         car_tagged_phi->addIncoming(tagged_hash_ptr, hash_ptr_exit);
         car_tagged_phi->addIncoming(tagged_vector_ptr, vector_ptr_exit);
+        car_tagged_phi->addIncoming(tagged_char, char_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
 
         return car_tagged_phi;
@@ -7826,6 +7884,12 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
         Value* car_is_vector = builder->CreateICmpEQ(car_base_type,
             ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // CHAR FIX (ESH-0099): a character stored in a cons cell must be
+        // re-extracted as a CHAR-tagged value, not silently demoted to INT64
+        // (which is what the default int path below does). Without this,
+        // (apply f (list #\a)) delivers the raw codepoint 97 to f.
+        Value* car_is_char = builder->CreateICmpEQ(car_base_type,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_CHAR));
 
         // NULL FIX: Add null_block for NULL values
         BasicBlock* null_block = BasicBlock::Create(*context, "extract_null", current_func);
@@ -7843,6 +7907,8 @@ private:
         BasicBlock* hash_block = BasicBlock::Create(*context, "extract_hash", current_func);
         BasicBlock* check_vector = BasicBlock::Create(*context, "extract_check_vector", current_func);
         BasicBlock* vector_block = BasicBlock::Create(*context, "extract_vector", current_func);
+        BasicBlock* check_char = BasicBlock::Create(*context, "extract_check_char", current_func);
+        BasicBlock* char_block = BasicBlock::Create(*context, "extract_char", current_func);
         BasicBlock* int_block = BasicBlock::Create(*context, "extract_int", current_func);
         BasicBlock* merge_block = BasicBlock::Create(*context, "extract_merge", current_func);
 
@@ -7926,7 +7992,7 @@ private:
 
         // VECTOR_PTR FIX: Handle vector pointers (MIGRATION: output as HEAP_PTR)
         builder->SetInsertPoint(check_vector);
-        builder->CreateCondBr(car_is_vector, vector_block, int_block);
+        builder->CreateCondBr(car_is_vector, vector_block, check_char);
 
         builder->SetInsertPoint(vector_block);
         Value* car_vector = builder->CreateCall(getTaggedConsGetPtrFunc(), {cons_ptr, is_car_flag});
@@ -7934,6 +8000,17 @@ private:
         Value* tagged_vector = packPtrToTaggedValue(builder->CreateIntToPtr(car_vector, builder->getPtrTy()), ESHKOL_VALUE_HEAP_PTR);
         builder->CreateBr(merge_block);
         BasicBlock* vector_exit = builder->GetInsertBlock();
+
+        // CHAR FIX (ESH-0099): extract the codepoint and re-tag as CHAR so the
+        // character survives (apply f (list #\a)) and other cons-list unpacking.
+        builder->SetInsertPoint(check_char);
+        builder->CreateCondBr(car_is_char, char_block, int_block);
+
+        builder->SetInsertPoint(char_block);
+        Value* car_char = builder->CreateCall(getTaggedConsGetInt64Func(), {cons_ptr, is_car_flag});
+        Value* tagged_char = packCharToTaggedValue(car_char);
+        builder->CreateBr(merge_block);
+        BasicBlock* char_exit = builder->GetInsertBlock();
 
         // Extract int64 car and pack into tagged value
         builder->SetInsertPoint(int_block);
@@ -7944,7 +8021,7 @@ private:
 
         // Merge: return tagged value struct
         builder->SetInsertPoint(merge_block);
-        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 9);
+        PHINode* car_tagged_phi = builder->CreatePHI(tagged_value_type, 10);
         // NULL FIX: Add null_exit as incoming
         car_tagged_phi->addIncoming(tagged_null, null_exit);
         car_tagged_phi->addIncoming(tagged_double, double_exit);
@@ -7954,6 +8031,7 @@ private:
         car_tagged_phi->addIncoming(tagged_closure, closure_exit);
         car_tagged_phi->addIncoming(tagged_hash, hash_exit);
         car_tagged_phi->addIncoming(tagged_vector, vector_exit);
+        car_tagged_phi->addIncoming(tagged_char, char_exit);
         car_tagged_phi->addIncoming(tagged_int64, int_exit);
 
         return car_tagged_phi;
@@ -11659,7 +11737,10 @@ private:
                         global_var = dyn_cast<GlobalVariable>(sym_it->second);
                     }
                     if (!global_var) {
-                        global_var = module->getNamedGlobal(var_name);
+                        // Mangle user globals so `free`/`log`/... never collide
+                        // with a C/libm symbol (ESH-0092/0103).
+                        global_var = module->getNamedGlobal(
+                            userGlobalStorageName(var_name, is_repl_eval, library_mode));
                     }
                     if (global_var) {
                         // Use existing pre-declared global variable
@@ -11669,10 +11750,8 @@ private:
                         GlobalValue::LinkageTypes linkage = is_repl_eval
                             ? GlobalValue::WeakAnyLinkage
                             : GlobalValue::InternalLinkage;
-                        std::string global_name = var_name;
-                        if (is_repl_eval) {
-                            global_name = replVarStorageSymbolName(var_name);
-                        }
+                        std::string global_name =
+                            userGlobalStorageName(var_name, is_repl_eval, library_mode);
 
                         global_var = new GlobalVariable(
                             *module,
@@ -11788,7 +11867,9 @@ private:
                 // Normal function context
                 // CRITICAL FIX: Check if there's a pre-declared GlobalVariable for this name
                 // If so, store to that instead of creating an AllocaInst
-                GlobalVariable* pre_declared_global = module->getNamedGlobal(var_name);
+                // (user globals are mangled — ESH-0092/0103).
+                GlobalVariable* pre_declared_global = module->getNamedGlobal(
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode));
                     if (pre_declared_global) {
                         // Store to the pre-declared global variable
                         Value* store_value = value;
@@ -11967,7 +12048,7 @@ private:
                     false,
                     GlobalValue::WeakAnyLinkage,
                     func_ptr, // Initialize with actual function address
-                    var_name
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode)
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table
@@ -11992,7 +12073,7 @@ private:
                     false,
                     GlobalValue::WeakAnyLinkage,
                     init_value,  // Always valid Constant now
-                    var_name
+                    userGlobalStorageName(var_name, g_repl_mode_enabled, library_mode)
                 );
                 symbol_table[var_name] = variable;
                 global_symbol_table[var_name] = variable; // Also store in global table

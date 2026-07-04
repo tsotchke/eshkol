@@ -1,0 +1,104 @@
+;; Codegen Test: release sweep D regressions (ESH-0092 / ESH-0103 / ESH-0099)
+;;
+;; Item 1 (ESH-0092 / ESH-0103): user top-level globals must not be emitted
+;;   under their raw C/libm symbol name.
+;;   - A name matching a linked libc symbol (free, malloc, exit, ...) used to
+;;     override the C definition and SIGBUS at teardown.
+;;   - A name matching an in-module libm declaration (log, sin, ...) used to be
+;;     auto-renamed by LLVM into two distinct slots, so a set! inside a function
+;;     wrote one slot while a top-level read saw the other -> lost mutation on
+;;     cached-JIT / AOT (correct only with ESHKOL_JIT_CACHE=0).
+;;   These are exercised by defining variables with exactly those names, mutating
+;;   them from within functions, and checking both the values AND that the
+;;   process exits cleanly (the SIGBUS was a teardown crash, so reaching the
+;;   summary at all is part of the regression guard).
+;;
+;; Item 2 (ESH-0099): a character carried through apply (cons-list argument
+;;   unpacking) and read back from a quoted-literal list must keep its CHAR tag
+;;   instead of degrading to the raw integer codepoint.
+;;
+;; Runs identically on -r (JIT) and AOT.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (write expected)
+        (display ", got ") (write actual) (display ")\n"))))
+
+;; ============================================================================
+;; Item 1: user globals shadowing C / libm symbols
+;; ============================================================================
+
+(display "=== Global symbol-collision safety (ESH-0092/0103) ===\n")
+
+;; libc-colliding names: value + clean teardown (SIGBUS class)
+(define free 10)
+(define malloc 20)
+(define exit 30)
+(define time 40)
+(test-case "libc-named globals read back" (list 10 20 30 40)
+           (list free malloc exit time))
+
+;; libm-colliding names mutated from inside a function: the write must be
+;; visible to a later read (the ESH-0103 lost-mutation class).
+(define log '())
+(define sin 0)
+(define (note! x) (set! log (cons x log)))
+(define (spin!) (set! sin (+ sin 1)))
+(note! 'a)
+(note! 'b)
+(spin!)
+(spin!)
+(spin!)
+(test-case "set! on libm-named list global" (list 'b 'a) log)
+(test-case "set! on libm-named int global" 3 sin)
+
+;; libc-colliding name that also holds a lambda value
+(define malloc2 (lambda (n) (* n n)))
+(test-case "lambda-valued libc-ish global" 49 (malloc2 7))
+
+;; ============================================================================
+;; Item 2: CHAR tag preserved through apply and quoted lists (ESH-0099)
+;; ============================================================================
+
+(display "=== Char preservation (ESH-0099) ===\n")
+
+;; EM-5: apply must deliver #\a (not 97) to the callee.
+(test-case "apply lambda preserves char" #\a
+           (apply (lambda (x) x) (list #\a)))
+(test-case "apply multi-arg preserves chars" (list #\a #\b)
+           (apply (lambda (x y) (list x y)) (list #\a #\b)))
+(define (id x) x)
+(test-case "apply named fn preserves char" #\z
+           (apply id (list #\z)))
+
+;; car / map over a runtime char list keep the CHAR tag
+(test-case "car of char list" #\q (car (list #\q)))
+(test-case "map identity over chars" (list #\a #\b)
+           (map (lambda (c) c) (list #\a #\b)))
+
+;; EM-7: char read from a quoted-literal list writes as #\a, not '#'
+(test-case "char? of quoted-list car" #t (char? (car '(#\a))))
+(test-case "quoted-list char round-trips" #\a (car '(#\a)))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+
+(display "\n=== Test Summary ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+
+(if (= tests-failed 0)
+    (begin (display "All tests passed!\n") 0)
+    (begin (display "Some tests failed!\n") 1))
