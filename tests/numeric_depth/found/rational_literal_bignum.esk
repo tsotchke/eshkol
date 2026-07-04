@@ -1,0 +1,9 @@
+; FOUND by P6d numeric-depth sweep (ESH-0118). The parser REJECTS a rational
+; literal whose numerator or denominator exceeds int64 ("invalid rational
+; literal"), even though the same value is constructible at runtime via (/ p q)
+; and small literals like 22/7 parse fine. This is a lexer/parser gap distinct
+; from the runtime exactness contagion (ESH-0105/0110).
+;   100000000000000000000/3   -> compile error: invalid rational literal
+(require stdlib)
+(display 100000000000000000000/3) (newline)
+(display "OK rational-literal-bignum") (newline)

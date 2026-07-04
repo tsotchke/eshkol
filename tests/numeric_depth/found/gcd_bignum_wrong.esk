@@ -1,0 +1,13 @@
+; FOUND by P6d numeric-depth sweep (ESH-0119). gcd is silently WRONG whenever
+; ANY operand is a bignum (exceeds int64): returns 1 (one bignum operand) or
+; INT64_MAX=9223372036854775807 (both bignum), never the true gcd.
+;   (gcd (* 3 (expt 2 61)) (* 5 (expt 2 61)))  true=2^61  -> got 1
+;   (gcd (expt 2 64) (expt 2 63))              true=2^63  -> got INT64_MAX
+;   (gcd (expt 2 64) 6)                        true=2     -> got 1
+(require stdlib)
+(define ok
+  (and (= (gcd (* 3 (expt 2 61)) (* 5 (expt 2 61))) (expt 2 61))
+       (= (gcd (expt 2 64) (expt 2 63)) (expt 2 63))
+       (= (gcd (expt 2 64) 6) 2)))
+(if ok (begin (display "OK gcd-bignum") (newline))
+       (begin (display "FAIL gcd-bignum") (newline)))
