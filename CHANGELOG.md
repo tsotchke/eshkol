@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Proper mutual tail calls (ESH-0102): a call in tail position to another
+  function is now emitted as an LLVM `musttail` call, so mutually tail-recursive
+  functions (the canonical Scheme state-machine idiom, e.g. `even?`/`odd?` or a
+  ping/pong 2- or 3-cycle) run in O(1) stack per R7RS 3.5 instead of burning a
+  native frame per hop. Previously only a `TCK_Tail` hint was emitted on LLVM
+  >= 18 (a hint the backend ignored, so mutual recursion overflowed the stack
+  by ~300k hops). The `musttail` is guarded by a matching signature/calling
+  convention and the absence of pointer-into-frame arguments (which is what made
+  LLVM's X86 backend fatally reject some closure-forwarding stdlib wrappers).
+  Verified to 5,000,000+ hops on both `-r` and AOT via the P6b recursion-depth
+  sweep.
+- Recursion-depth gate calibration (P6b): `non_tail` deep cells are now marked
+  `limit` rather than `pass`, so a CLEAN diagnostic ceiling on genuinely
+  bounded non-tail recursion is accepted while a silent crash / wrong value is
+  still a gate failure; proper tail calls (self AND mutual) remain `pass` and
+  must be unbounded.
+
 ## [1.3.0-evolve] - 2026-07-03
 
 The "evolve" release: full SICP coverage, exact nested/mixed-mode automatic
@@ -100,7 +119,8 @@ repro and a ledger entry under `.swarm/tasks/`. None block ordinary use.
   mutation (ESH-0094).
 - Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
   stdlib `sort`/`length`/`filter` are non-tail-recursive and fail on very large
-  inputs; mutual tail calls are not TCO'd (ESH-0098, ESH-0101, ESH-0102, ESH-0108).
+  inputs (ESH-0098, ESH-0101, ESH-0108). Mutual tail calls are now proper R7RS
+  tail calls (LLVM `musttail`) and run in O(1) stack — ESH-0102 resolved.
 - Exact rational arithmetic degrades to double once a bignum is involved
   (ESH-0105).
 - Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)

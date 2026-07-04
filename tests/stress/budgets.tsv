@@ -76,6 +76,6 @@ found/string_nul_long_literal.esk	both	run	60	384	160	1	ESH-0099	OK 300
 found/parallel_worker_loop_20k.esk	both	run	120	1024	1024	1	ESH-0100	OK
 found/serialized_counter_10k.esk	both	run	120	1024	1024	0	ESH-0094	OK 10000
 found/deep_recursion_270k_no_diagnostic.esk	both	run	60	1024	1024	0	ESH-0101	OK 300000
-found/mutual_tail_1e7.esk	both	run	60	1024	1024	0	ESH-0102	OK ping
+found/mutual_tail_1e7.esk	both	run	60	1024	1024	0	-	OK ping
 found/quasiquote_long_form.esk	both	run	60	384	160	1	-	OK quasiquote-long-form
 found/rational_bignum_exactness.esk	both	run	60	384	160	1	ESH-0105	OK rational-bignum-exact

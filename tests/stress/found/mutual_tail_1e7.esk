@@ -1,15 +1,13 @@
-; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0102). XKNOWN.
+; FOUND by P4 stress harness 2026-07-02 (ledger ESH-0102). RESOLVED 2026-07-04.
 ;
-; MUTUAL tail calls are not tail-call-optimized: each ping->pong hop burns a
-; stack frame. R7RS requires proper tail calls across function boundaries.
-; Self-recursion tail calls ARE optimized (rec_tco_1e8.esk runs 10^8 in O(1)
-; stack).
+; MUTUAL tail calls are now proper R7RS tail calls: a call in tail position to
+; another function is emitted as LLVM `musttail`, so each ping->pong hop reuses
+; the frame and runs in O(1) stack (like self-recursion, rec_tco_1e8.esk 10^8).
 ;
-; Measured 2026-07-02 (master 2692ca63, macOS arm64, JIT -r and AOT):
-;   depth 300000  -> OK
-;   depth 500000  -> SIGILL (rc 132, no diagnostic)
-;   depth 10^7    -> SIGILL, RSS ~535MB at death
-; Safe depth pinned by rec_mutual.esk at 100000.
+; History (before the fix, master 2692ca63, macOS arm64, -r and AOT):
+;   depth 300000 -> OK; 500000 -> SIGILL; 10^7 -> SIGILL, RSS ~535MB at death.
+; After the fix (fix/mutual-tail-tco): 10^7 hops -> "OK ping", RSS ~225MB (-r) /
+; ~27MB (AOT), sub-second. This is now a regression guard, not an XKNOWN.
 (define (ping n) (if (= n 0) (quote ping) (pong (- n 1))))
 (define (pong n) (if (= n 0) (quote pong) (ping (- n 1))))
 (display "OK ") (display (ping 10000000)) (newline)

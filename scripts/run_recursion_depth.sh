@@ -27,6 +27,21 @@
 # pass|limit cell, or a pass cell that hit a clean limit). Clean limits and
 # tracked XKNOWN silent crashes are tolerated.
 #
+# CALIBRATION — which constructs MUST be unbounded vs. which have a clean ceiling:
+#   * PROPER TAIL CALLS must run in constant stack per R7RS (section 3.5) — this
+#     covers BOTH self recursion (self_tail) AND mutual recursion (mutual_tail2 /
+#     mutual_tail3, e.g. even?/odd? or a state machine expressed as mutually
+#     tail-calling functions). Their deep cells are therefore `pass`: a CLEAN-LIMIT
+#     there is a real BUG (the tail call was not optimized) and fails the gate.
+#     Mutual tail calls are emitted as LLVM `musttail` (see llvm_codegen.cpp), so
+#     the 5,000,000-hop cells prove O(1) stack.
+#   * NON-TAIL recursion (non_tail) keeps one native frame per level, so it has a
+#     finite, environment-dependent stack ceiling and is NOT required to be
+#     unbounded. Its deep cells are `limit`: a CLEAN-LIMIT (a caught SIGBUS/SIGSEGV/
+#     SIGILL with a diagnostic + nonzero exit) is CORRECT graceful degradation and
+#     is accepted; only a SILENT crash or WRONG value there fails the gate. This is
+#     the deliberate distinction from the proper-tail-call kinds above.
+#
 # Usage: scripts/run_recursion_depth.sh [--quick] [--no-aot] [--regen]
 #   --quick   skip the two deepest / slowest cells of self_tail & stdlib_length
 #   --no-aot  skip the AOT lane

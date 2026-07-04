@@ -1,14 +1,13 @@
-; rec_mutual.esk - mutual recursion, both flavors, at the documented safe
-; depths:
-;  (a) mutual TAIL calls to depth 100000. NOTE: mutual tail calls are NOT
-;      TCO'd today - frames grow, 300000 passes, 500000 SIGILLs, 10^7
-;      crashes (found/mutual_tail_1e7.esk, ESH-0102) - so this stays under
-;      the empirical ceiling rather than proving O(1) stack.
+; rec_mutual.esk - mutual recursion, both flavors:
+;  (a) mutual TAIL calls to depth 10^7. Mutual tail calls are now proper R7RS
+;      tail calls (emitted as LLVM `musttail`, ESH-0102 resolved 2026-07-04),
+;      so ping<->pong reuses the frame and runs in O(1) stack — this depth
+;      proves it (was ceilinged at ~300k before the fix).
 ;  (b) non-TCO mutual recursion to depth 100000 (under the ~270k single-
 ;      function blowout, see rec_deep_nontco_250k.esk).
 (define (ping n) (if (= n 0) (quote ping) (pong (- n 1))))
 (define (pong n) (if (= n 0) (quote pong) (ping (- n 1))))
-(define tco-res (ping 100000))
+(define tco-res (ping 10000000))
 
 (define (even-steps n) (if (= n 0) 0 (+ 1 (odd-steps (- n 1)))))
 (define (odd-steps n) (if (= n 0) 0 (+ 1 (even-steps (- n 1)))))
