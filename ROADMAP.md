@@ -235,6 +235,14 @@ v2.0 ─────────────────────────
                                                        └ Formal verification (requires dep types)
 ```
 
+**Arbitrary-order AD (Taylor-tower) track:** The Taylor-tower campaign is
+threaded through the existing version themes as enabling substrate, not
+as a separate release ladder. P1 lands in v1.3.1, P2/P3 in v1.3.2,
+P4/P6/P11 in the v1.4 infrastructure track alongside networking,
+P5/P7/P9 in v1.5 intelligence, P10 bridges v1.5 to v1.7, P12 supports
+v1.6 reasoning, and P8 feeds v2.0 formal verification of AD. See
+[`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).
+
 ---
 
 ## v1.2-scale (May 2026) - SHIPPED
@@ -327,6 +335,10 @@ v2.0 ─────────────────────────
       (input2). Conv2d / batchnorm / layernorm / attention forward
       sites still leave `input2` null in their tape nodes and are
       tracked separately.
+- [ ] Arbitrary-order AD Taylor-tower v1.3 track: P1 runtime
+      `derivative^n` in v1.3.1 closes ESH-0118; P2 compile-time-K
+      monomorphization and P3 JET8 subsumption land in v1.3.2, gated by
+      `ad-depth` and `mono-equiv`.
 
 ---
 
@@ -341,6 +353,9 @@ v2.0 ─────────────────────────
 - [ ] HTTP client (built on sockets + TLS)
 - [ ] Linear types for all handles: `open → borrowed → closed` with compile-time tracking
 - [ ] Borrow pattern for temporary resource access
+- [ ] AD infrastructure track alongside networking: P4 GUW
+      multivariate towers, P6 exact-coefficient towers, and P11
+      tower-based user numerics, gated by `ad-exact` and `ad-numerics`.
 
 ---
 
@@ -356,6 +371,13 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 - [ ] Differentiable logic programs (gradients flow through rule application)
 - [ ] Attention over knowledge base (neural query mechanism over symbolic facts)
 - [ ] Gradient estimators for discrete operations (Gumbel-Softmax, straight-through)
+- [ ] High-order AD for neuro-symbolic ML: P5 reverse-over-Taylor, P7
+      tensor-valued towers, and P9 differentiable control flow provide
+      the substrate for differentiable logic and recurrent/neural
+      workloads, gated by `ad-reverse-highorder`, `ad-tensor-highorder`,
+      and `ad-control-flow`.
+- [ ] Checkpointed high-order reverse begins here as P10, with the
+      memory-scaling work continuing into v1.7 synthesis.
 
 ---
 
@@ -368,6 +390,9 @@ Informed by the [Neuro-Symbolic Architecture](docs/future/NEURO_SYMBOLIC_COMPLET
 - [ ] Constraint solving (finite domain constraints, SAT solver integration)
 - [ ] Knowledge graphs (RDF-style triple store with SPO/POS/OSP indexing)
 - [ ] Knowledge graph embeddings (entity-relation-entity triples as learnable vectors)
+- [ ] Sparse high-order AD tensors (P12) for knowledge-graph and
+      relational workloads, gated by `ad-sparse` against dense recovery
+      on tractable cases.
 
 ---
 
@@ -439,6 +464,9 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 ### Formal Verification
 - [ ] Integration with proof assistants (Lean) for certified compilation
 - [ ] Quantitative type theory for unified linear/quantum resource tracking
+- [ ] Formal verification of automatic differentiation via Taylor
+      models (P8), gated by `ad-validated-bounds` for sound enclosures
+      and tightening with order.
 
 ---
 
