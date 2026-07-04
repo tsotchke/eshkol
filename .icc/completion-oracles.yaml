@@ -1254,3 +1254,32 @@ oracles:
         severity: high
         label: Every composable construct has a registered depth sweep or a tracked gap
         action: python3 scripts/check_depth_coverage.py
+  # Depth-parametric recursion/control sweep — adversarial campaign
+  # pillar P6b (.swarm/DEPTH_PARAMETRIC_TESTING.md). For EACH recursion/
+  # control KIND (self-tail, mutual-tail 2/3-cycle, non-tail, CPS,
+  # recursion-through-map, metacircular-eval, dynamic-wind, call/cc,
+  # guard, stdlib length) a ladder of self-checking probes is swept to
+  # find and gate the maximum safe depth under BOTH -r and AOT. Each
+  # probe computes a closed-form value (triangular sum / list length) so
+  # a WRONG value is detectable, not just a crash.
+  #
+  # scripts/gen_recursion_depth.py generates tests/recursion_depth/
+  # generated/; scripts/run_recursion_depth.sh runs the sweep and writes
+  # kind:"recursion_depth" events to
+  # scripts/icc_traces/recursion_depth.jsonl. The gate is PASS when NO
+  # probe is a SILENT crash (fatal signal with no diagnostic) or a WRONG
+  # value on a pass|limit cell. Clean depth limits (diagnostic + nonzero
+  # exit) and tracked XKNOWN silent crashes (ESH-0102 mutual-tail,
+  # ESH-0108 stdlib length, ESH-0112 non-tail, ESH-0119 SIGILL-not-caught
+  # guard/metacircular/dynamic-wind) are tolerated.
+  # ─────────────────────────────────────────────────────────────────
+  - name: recursion-depth
+    aliases: [recursion_depth, recursion-depth-sweep, adversarial-p6b]
+    requires:
+      - runtime_event:
+          event_kinds: [recursion_depth]
+          event_names: ["recursion_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Recursion/control depth sweep gate (no silent crash, no wrong value at any tested depth; -r and AOT)
+        action: ./scripts/run_recursion_depth.sh
