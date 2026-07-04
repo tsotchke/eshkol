@@ -354,6 +354,53 @@ void eshkol_append_tagged_sret(eshkol_tagged_value_t* out,
     *out = result;
 }
 
+/* Convert a proper tagged-cons list into a heterogeneous Scheme vector
+ * (HEAP_SUBTYPE_VECTOR). Layout matches the codegen `list->vector` / vector
+ * literal path: an 8-byte length header at offset 0 followed by N 16-byte
+ * tagged elements. Used by quasiquote-vector codegen (`#(1 ,x 3)`), where the
+ * template is first materialised as a list (so unquote/unquote-splicing reuse
+ * the existing list machinery) and then vectorised here. Result is written to
+ * *out; an empty/absent list yields a zero-length vector. */
+void eshkol_list_to_vector_sret(eshkol_tagged_value_t* out,
+                                const eshkol_tagged_value_t* list_tv) {
+    if (!out) return;
+    set_null_tagged(out);
+
+    int64_t n = 0;
+    if (list_tv) {
+        eshkol_tagged_value_t cur = *list_tv;
+        while (tagged_is_cons(&cur)) {
+            n++;
+            auto* src = (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            cur = src->cdr;
+        }
+    }
+
+    arena_t* arena = get_global_arena();
+    size_t alloc_size = (size_t)n * sizeof(eshkol_tagged_value_t) + 8;
+    void* vec = arena_allocate_with_header(arena, alloc_size, HEAP_SUBTYPE_VECTOR, 0);
+    if (!vec) return;
+
+    *(int64_t*)vec = n;
+    eshkol_tagged_value_t* elems =
+        (eshkol_tagged_value_t*)((char*)vec + 8);
+
+    if (list_tv) {
+        eshkol_tagged_value_t cur = *list_tv;
+        int64_t i = 0;
+        while (tagged_is_cons(&cur) && i < n) {
+            auto* src = (arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+            elems[i++] = src->car;
+            cur = src->cdr;
+        }
+    }
+
+    out->type = ESHKOL_VALUE_HEAP_PTR;
+    out->flags = 0;
+    out->reserved = 0;
+    out->data.ptr_val = (uint64_t)(uintptr_t)vec;
+}
+
 void eshkol_raise_index_oob(const char* op_name, int64_t idx, int64_t length) {
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                          "%s: index %lld out of bounds (length=%lld)",

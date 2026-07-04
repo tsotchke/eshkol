@@ -65,8 +65,43 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
         eshkol_error("apply: codegen_ast_callback not set");
         return nullptr;
     }
-    Value* arg_list = codegen_ast_callback_(&op->call_op.variables[1], callback_context_);
+
+    // R7RS apply: (apply proc arg1 ... argN final-list). The LAST variadic
+    // argument is the list; every intermediate arg (arg1..argN) is prepended
+    // to that list. Historically this code assumed variables[1] was THE list
+    // and ignored any leading args, which SIGSEGV'd on (apply + 1 2 '(3 4 5))
+    // because it walked the integer `1` as a cons chain.
+    //
+    // Build the effective argument list here, once, by consing the leading
+    // args (in reverse) onto the final list. Every downstream path (builtin
+    // reductions, user functions, closures, captured procedures) then operates
+    // on the fully-materialised list unchanged.
+    const int num_vars = op->call_op.num_vars;
+    const int final_list_idx = num_vars - 1;
+
+    Value* arg_list = codegen_ast_callback_(&op->call_op.variables[final_list_idx],
+                                            callback_context_);
     if (!arg_list) return nullptr;
+
+    // Prepend any leading args (variables[1 .. num_vars-2]) onto the list, in
+    // reverse order so the first leading arg ends up at the head.
+    if (num_vars > 2) {
+        if (!create_cons_callback_) {
+            eshkol_error("apply: create_cons_callback not set (needed for leading args)");
+            return nullptr;
+        }
+        // Ensure the tail is a proper tagged value for cons cdr storage.
+        Value* current_list = tagged_.ensureTagged(arg_list);
+        for (int i = final_list_idx - 1; i >= 1; i--) {
+            Value* elem = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
+            if (!elem) return nullptr;
+            Value* elem_tagged = tagged_.ensureTagged(elem);
+            Value* cons_int = create_cons_callback_(elem_tagged, current_list, callback_context_);
+            current_list = tagged_.packHeapPtr(
+                ctx_.builder().CreateIntToPtr(cons_int, ctx_.ptrType()));
+        }
+        arg_list = current_list;
+    }
 
     // Safely extract i64 from possibly-tagged value
     Value* list_int = tagged_.safeExtractInt64(arg_list);
