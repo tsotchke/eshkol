@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0109",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "r7rs/final-mile",
+  "title": "R7RS gaps found by docs verification: cond/case => clauses, define-values, curried define sugar; error-object? family + raise-continuable absent in NATIVE path (present in VM)",
+  "goal": "Language-core docs verification (PR #122) found: (1) cond/case => clause unsupported (=> read as undefined variable); (2) define-values unsupported; (3) curried define sugar (define ((f x) y) ...) parse error; (4) error-object?/error-object-message/error-object-irritants and raise-continuable exist in the bytecode VM but are UNKNOWN FUNCTIONS in the native LLVM path \u2014 a caught error prints as #<exception>; with-exception-handler works. Extends ESH-0003 (raise-continuable/error-object family) with concrete verified repros; the native-vs-VM asymmetry also belongs on the VM parity manifest (reverse direction: vm-supported but native-missing).",
+  "acceptance": [
+    "cond/case => works; define-values works; curried define parses or is rejected with a clear diagnostic; error-object? family + raise-continuable work in native, matching VM; -r AND AOT"
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ]
+}

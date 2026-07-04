@@ -330,6 +330,62 @@ oracles:
         label: 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary'
         action: ./scripts/run_icc_smoke.sh
 
+      # ── depth-campaign + P7 pillar gates (v1.3-evolve expanded contract) ──
+      # Each now-merged adversarial pillar must have recorded a PASS in its
+      # own oracle-run trace for the release to be ready. These mirror the
+      # standalone pillar oracles (recursion-depth, ad-depth, numeric-depth,
+      # metaprog-depth, metamorphic-laws, sanitizer-fuzz-clean, depth-coverage)
+      # and fold them into the release readiness contract.
+      - runtime_event:
+          event_kinds: [depth_coverage]
+          event_names: ["depth_coverage_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Depth-coverage auditor: every composable construct has a registered sweep or tracked gap'
+        action: python3 scripts/check_depth_coverage.py
+      - runtime_event:
+          event_kinds: [recursion_depth]
+          event_names: ["recursion_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Recursion/control depth sweep: no silent crash, no wrong value at any tested depth (-r and AOT)'
+        action: ./scripts/run_recursion_depth.sh
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Depth-parametric AD oracle: no construct regresses below its baseline max-correct-depth (-r and AOT)'
+        action: ./scripts/run_ad_depth.sh
+      - runtime_event:
+          event_kinds: [numeric_depth]
+          event_names: ["numeric_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Numeric-tower depth sweep clean vs baseline (no new silent-wrong, no regressed max-correct-n)'
+        action: python3 scripts/gen_numeric_depth.py && ./scripts/run_numeric_depth.sh
+      - runtime_event:
+          event_kinds: [metaprog_depth]
+          event_names: ["metaprog_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No metaprogramming/module family produces a WRONG value at any swept depth'
+        action: ./scripts/run_metaprog_depth.sh
+      - runtime_event:
+          event_kinds: [metamorphic]
+          event_names: ["metamorphic_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Deterministic metamorphic law corpus passes with only tracked XKNOWN violations'
+        action: ./scripts/run_metamorphic.sh
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Full ASan+UBSan fuzz/tests corpus has zero sanitizer signatures'
+        action: ./scripts/run_sanitizer_fuzz.sh
+
       - test_evidence: true
         severity: high
         label: 'v1.3 edge-case tests are indexed and runnable'
@@ -1145,6 +1201,29 @@ oracles:
         severity: high
         label: AD composition oracle gate (all cells match finite differences on -r and AOT)
         action: ./scripts/run_ad_oracle.sh
+  # ─────────────────────────────────────────────────────────────────
+  # Depth-parametric AD oracle — adversarial campaign pillar P6a
+  # (.swarm/DEPTH_PARAMETRIC_TESTING.md). Every composable AD construct
+  # (derivative^d, gradient^d, gradient/jacobian/hessian OVER derivative^d)
+  # is swept at nesting depth d=1..8 on BOTH -r and AOT, each depth checked
+  # against a closed-form ANALYTIC ground truth. The gate records each
+  # construct's MAX-CORRECT-DEPTH and is PASS only when no construct
+  # REGRESSES below its tracked baseline (scripts/ad_depth_report.py::
+  # BASELINE). Known-open depth boundaries (ESH-0117..0121) ARE the
+  # baseline, so they stay green while tracked and flip to "improvement"
+  # once fixed. scripts/run_ad_depth.sh writes kind:"ad_depth" events to
+  # scripts/icc_traces/ad_depth.jsonl and AD_DEPTH_REPORT.md.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ad-depth
+    aliases: [ad_depth, ad-depth-oracle, adversarial-p6a, depth-parametric-ad]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Depth-parametric AD oracle gate (no construct regresses below its baseline max-correct-depth on -r and AOT)
+        action: ./scripts/run_ad_depth.sh
   # Differential execution cleanliness — adversarial campaign pillar P1
   # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). Every deterministic program
   # must produce identical (exit code, normalized stdout) on every
@@ -1180,6 +1259,53 @@ oracles:
         severity: high
         label: Seeded 200-program fuzz run finds no cross-axis divergence
         action: ./scripts/run_differential_fuzz.sh --seed 42 --count 200
+
+  # Metamorphic/property oracle (P7c). Generated probes use a deterministic
+  # xorshift64* PRNG seeded by case index and assert algebraic laws as the
+  # oracle: list/vector identities, sorting idempotence/permutation/order,
+  # exact numeric laws, string/char and number roundtrips, tensor save/load,
+  # control laws, and repeated-run byte determinism. XKNOWN lines must cite
+  # an open ESH task carrying the counterexample.
+  # ─────────────────────────────────────────────────────────────────
+  - name: metamorphic-laws
+    aliases: [metamorphic, p7c-metamorphic, property-laws]
+    requires:
+      - runtime_event:
+          event_kinds: [metamorphic]
+          event_names: ["metamorphic_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Deterministic metamorphic law corpus passes with only tracked XKNOWN violations
+        action: ./scripts/run_metamorphic.sh
+  # Sanitizer-over-fuzzer cleanliness gate (adversarial campaign P7b).
+  # scripts/run_sanitizer_fuzz.sh builds/runs the deterministic
+  # differential fuzz seed plus tests/**/*.esk under ASan+UBSan on -r,
+  # AOT -O0, and AOT -O2, then emits kind:"sanitizer_fuzz" events to
+  # scripts/icc_traces/sanitizer_fuzz.jsonl.
+  - name: sanitizer-fuzz-clean
+    aliases: [sanitizer-fuzz, asan-ubsan-fuzz, adversarial-p7b]
+    requires:
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_selftest_esh0116"]
+          event_values: ["PASS"]
+        severity: high
+        label: Synthetic ESH-0116-class unterminated buffer repro trips the sanitizer harness
+        action: ./scripts/run_sanitizer_fuzz.sh --self-test-only
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_aot_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Sanitizer fuzz pass covers -r plus AOT -O0 and AOT -O2 axes
+        action: ./scripts/run_sanitizer_fuzz.sh
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Full ASan+UBSan fuzz/tests corpus has zero sanitizer signatures
+        action: ./scripts/run_sanitizer_fuzz.sh
   # Adversarial pillar P2 — feature-pair composition matrix
   # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). scripts/run_edge_matrix.sh
   # runs the generated corpus in tests/edge_matrix/generated/ under both
@@ -1254,3 +1380,78 @@ oracles:
         severity: high
         label: Every composable construct has a registered depth sweep or a tracked gap
         action: python3 scripts/check_depth_coverage.py
+  # Depth-parametric recursion/control sweep — adversarial campaign
+  # pillar P6b (.swarm/DEPTH_PARAMETRIC_TESTING.md). For EACH recursion/
+  # control KIND (self-tail, mutual-tail 2/3-cycle, non-tail, CPS,
+  # recursion-through-map, metacircular-eval, dynamic-wind, call/cc,
+  # guard, stdlib length) a ladder of self-checking probes is swept to
+  # find and gate the maximum safe depth under BOTH -r and AOT. Each
+  # probe computes a closed-form value (triangular sum / list length) so
+  # a WRONG value is detectable, not just a crash.
+  #
+  # scripts/gen_recursion_depth.py generates tests/recursion_depth/
+  # generated/; scripts/run_recursion_depth.sh runs the sweep and writes
+  # kind:"recursion_depth" events to
+  # scripts/icc_traces/recursion_depth.jsonl. The gate is PASS when NO
+  # probe is a SILENT crash (fatal signal with no diagnostic) or a WRONG
+  # value on a pass|limit cell. Clean depth limits (diagnostic + nonzero
+  # exit) and tracked XKNOWN silent crashes (ESH-0102 mutual-tail,
+  # ESH-0108 stdlib length, ESH-0112 non-tail, ESH-0119 SIGILL-not-caught
+  # guard/metacircular/dynamic-wind) are tolerated.
+  # ─────────────────────────────────────────────────────────────────
+  - name: recursion-depth
+    aliases: [recursion_depth, recursion-depth-sweep, adversarial-p6b]
+    requires:
+      - runtime_event:
+          event_kinds: [recursion_depth]
+          event_names: ["recursion_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Recursion/control depth sweep gate (no silent crash, no wrong value at any tested depth; -r and AOT)
+        action: ./scripts/run_recursion_depth.sh
+  # Numeric-tower depth/scale-parametric sweep (adversarial pillar P6d,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_numeric_depth.py
+  # bakes Python arbitrary-precision int / fractions.Fraction ground
+  # truth (or analytic identities) into per-family Eshkol self-checks
+  # swept over a scale/depth parameter n=1..N; scripts/run_numeric_depth.sh
+  # runs each family under both -r (jit) and AOT, records max-correct-n,
+  # and diffs the wrong-n set / DONE markers against
+  # tests/numeric_depth/BASELINE.json. A NEW silent-wrong n, a regressed
+  # max-correct-n, or a lost DONE marker fails the sweep. Documented bug
+  # boundaries (ESH-0105/0110 rational contagion, ESH-0124 gcd bignum,
+  # ESH-0125 bignum divmod) live in the baseline. Writes kind:"numeric_depth"
+  # events to scripts/icc_traces/numeric_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: numeric-depth
+    aliases: [numeric-depth-sweep, p6d-numeric-tower, numeric-tower-depth]
+    requires:
+      - runtime_event:
+          event_kinds: [numeric_depth]
+          event_names: ["numeric_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Numeric-tower depth sweep clean vs baseline (no new silent-wrong, no regressed max-correct-n)
+        action: python3 scripts/gen_numeric_depth.py && ./scripts/run_numeric_depth.sh
+  # Depth-parametric METAPROGRAMMING + MODULE sweep (pillar P6e,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_metaprog_depth.py
+  # generates recursive-macro / ellipsis / nested-ellipsis / match-nest /
+  # quasiquote-macro / module-chain / define-library-chain programs at
+  # depth d=1..N, each carrying a closed-form ground truth.
+  # scripts/run_metaprog_depth.sh runs every program on both native axes
+  # (JIT -r and AOT), diffs the printed "RESULT: <v>" against expected,
+  # and records the max-correct-depth per family. A WRONG value at any
+  # depth (silent wrong answer) flips the sweep event to FAIL; a clean
+  # LIMIT (crash/compile-fail/timeout) is a documented boundary. Writes
+  # kind:"metaprog_depth" events to
+  # scripts/icc_traces/metaprog_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: metaprog-depth
+    aliases: [metaprog_depth, metaprog-depth-sweep, p6e-metaprog]
+    requires:
+      - runtime_event:
+          event_kinds: [metaprog_depth]
+          event_names: ["metaprog_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: No metaprogramming/module family produces a WRONG value at any swept depth
+        action: ./scripts/run_metaprog_depth.sh

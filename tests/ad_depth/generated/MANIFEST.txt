@@ -1,0 +1,12 @@
+# depth-parametric AD oracle — 11 files, 312 depth-checks, max-depth 8
+ad_depth_compose_01.esk
+ad_depth_deriv_01.esk
+ad_depth_deriv_02.esk
+ad_depth_deriv_03.esk
+ad_depth_gofd_01.esk
+ad_depth_gofd_02.esk
+ad_depth_gradn_01.esk
+ad_depth_hessod_xc_01.esk
+ad_depth_hessod_xc_02.esk
+ad_depth_hessod_xc_03.esk
+ad_depth_hessod_xc_04.esk

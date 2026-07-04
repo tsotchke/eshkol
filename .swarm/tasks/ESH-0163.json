@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0163",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: AddressSanitizer heap-buffer-overflow",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/stdlib/v12_consciousness_test.esk via r/run. Top frame: #0 0xADDR in display_tensor_recursive(__sFILE*, eshkol_tensor const*, unsigned long long, unsigned long long) runtime_display_hosted.cpp:672. Log: artifacts/sanitizer-fuzz/logs/1057_r_1980305526.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/stdlib/v12_consciousness_test.esk"
+  ],
+  "sanitizer_signature": "AddressSanitizer\theap-buffer-overflow\t#0 0xADDR in display_tensor_recursive(__sFILE*, eshkol_tensor const*, unsigned long long, unsigned long long) runtime_display_hosted.cpp:672",
+  "sanitizer_kind": "AddressSanitizer",
+  "sanitizer_subtype": "heap-buffer-overflow",
+  "sanitizer_top_frame": "#0 0xADDR in display_tensor_recursive(__sFILE*, eshkol_tensor const*, unsigned long long, unsigned long long) runtime_display_hosted.cpp:672"
+}
