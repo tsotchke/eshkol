@@ -1,0 +1,15 @@
+;; ESH-0118 — pure nested AD silently returns 0 at nesting depth >= 3.
+;; Found by the depth-parametric AD oracle (scripts/gen_ad_depth.py).
+;;
+;; derivative^d and gradient^d of a polynomial are correct at d=1,2 and
+;; return an EXACT 0 (silent wrong) at every d >= 3, on BOTH -r and AOT.
+;; Root-cause hypothesis: the forward jet carries only two tangent levels,
+;; so the third-order coefficient is never formed. Analytic ground truth
+;; for x^8 at 2.0: d3 = 8*7*6 * 2^5 = 10752.
+(define (p x) (* x x x x x x x x))
+;; d2 CORRECT
+(display "d2 ")(display (derivative (lambda (a) (derivative p a)) 2.0))(newline)   ; 3584
+;; d3 WRONG -> 0   (expected 10752)
+(display "d3 ")(display (derivative (lambda (a) (derivative (lambda (b) (derivative p b)) a)) 2.0))(newline)
+;; gradient^3 also WRONG -> 0
+(display "g3 ")(display (gradient (lambda (a) (gradient (lambda (b) (gradient (lambda (c) (* c c c)) b)) a)) 2.0))(newline)  ; expected 6
