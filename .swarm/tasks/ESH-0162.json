@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0162",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: AddressSanitizer heap-use-after-free",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/edge_matrix/generated/pair243_quote__regions.esk via r/run. Top frame: #0 0xADDR in eshkol_deep_equal runtime_deep_equal.cpp:68. Log: artifacts/sanitizer-fuzz/logs/614_r_2370875467.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/edge_matrix/generated/pair243_quote__regions.esk"
+  ],
+  "sanitizer_signature": "AddressSanitizer\theap-use-after-free\t#0 0xADDR in eshkol_deep_equal runtime_deep_equal.cpp:68",
+  "sanitizer_kind": "AddressSanitizer",
+  "sanitizer_subtype": "heap-use-after-free",
+  "sanitizer_top_frame": "#0 0xADDR in eshkol_deep_equal runtime_deep_equal.cpp:68"
+}

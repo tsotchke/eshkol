@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0167",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: AddressSanitizer heap-buffer-overflow",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/vm/vm_system_test.esk via r/run. Top frame: #0 0xADDR in eshkol_display_value_opts runtime_display_hosted.cpp:219. Log: artifacts/sanitizer-fuzz/logs/1289_r_50244341.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/vm/vm_system_test.esk"
+  ],
+  "sanitizer_signature": "AddressSanitizer\theap-buffer-overflow\t#0 0xADDR in eshkol_display_value_opts runtime_display_hosted.cpp:219",
+  "sanitizer_kind": "AddressSanitizer",
+  "sanitizer_subtype": "heap-buffer-overflow",
+  "sanitizer_top_frame": "#0 0xADDR in eshkol_display_value_opts runtime_display_hosted.cpp:219"
+}
