@@ -50,4 +50,46 @@ if [ "$entry_count" -lt 2 ]; then
     exit 1
 fi
 
+# ── ESH-0183: editing a (load …)ed DEPENDENCY must invalidate the run-cache ──
+# The key previously hashed only the entry file, so editing a transitively
+# loaded file left the key unchanged and `-r` re-ran a STALE cached binary.
+# entry.esk loads mid.esk which loads deep.esk; we edit the *deepest* file.
+depdir="$(mktemp -d)"
+mkdir -p "$depdir/cache"
+printf '(define (deep-msg) "DEP_LOADED_ONE")\n' > "$depdir/deep.esk"
+printf '(load "deep.esk")\n(define (mid-msg) (deep-msg))\n' > "$depdir/mid.esk"
+printf '(load "mid.esk")\n(display (mid-msg)) (newline)\n' > "$depdir/entry.esk"
+
+ESHKOL_JIT_CACHE_DIR="$depdir/cache" ESHKOL_JIT_CACHE_TRACE=1 \
+    "$ESHKOL_RUN" -r "$depdir/entry.esk" > "$depdir/dout1" 2> "$depdir/derr1"
+grep -q '^DEP_LOADED_ONE$' "$depdir/dout1" || { echo "FAIL: dep run1 wrong output" >&2; exit 1; }
+grep -q '\[jit-cache\] store ' "$depdir/derr1" || { echo "FAIL: dep run1 did not store" >&2; exit 1; }
+
+# Unchanged re-run: the cache must still HIT (the fix must not disable caching).
+ESHKOL_JIT_CACHE_DIR="$depdir/cache" ESHKOL_JIT_CACHE_TRACE=1 \
+    "$ESHKOL_RUN" -r "$depdir/entry.esk" > "$depdir/dout2" 2> "$depdir/derr2"
+grep -q '\[jit-cache\] hit ' "$depdir/derr2" || { echo "FAIL: dep unchanged re-run should hit cache" >&2; exit 1; }
+grep -q '^DEP_LOADED_ONE$' "$depdir/dout2" || { echo "FAIL: dep run2 wrong output" >&2; exit 1; }
+
+# Edit the DEEPEST dependency only — entry.esk and mid.esk are untouched.
+printf '(define (deep-msg) "DEP_LOADED_TWO")\n' > "$depdir/deep.esk"
+ESHKOL_JIT_CACHE_DIR="$depdir/cache" ESHKOL_JIT_CACHE_TRACE=1 \
+    "$ESHKOL_RUN" -r "$depdir/entry.esk" > "$depdir/dout3" 2> "$depdir/derr3"
+grep -q '\[jit-cache\] miss ' "$depdir/derr3" || { echo "FAIL: editing a loaded dependency did not invalidate the cache (ESH-0183 regression)" >&2; exit 1; }
+grep -q '^DEP_LOADED_TWO$' "$depdir/dout3" || { echo "FAIL: STALE output after dependency edit — cache shipped old code (ESH-0183 regression)" >&2; exit 1; }
+rm -rf "$depdir"
+
+# ── ESH-0183: the AOT (`-o`/--emit-object) path must reflect a fresh edit ─────
+# A single fresh compile is uncached, but guard against any future object cache
+# that could resurrect the "stale object on source edit" report.
+aotdir="$(mktemp -d)"
+printf '(define (aot-fn) (display "AOT_MARK_ORIG") (newline))\n(aot-fn)\n' > "$aotdir/a.esk"
+"$ESHKOL_RUN" --emit-object -o "$aotdir/a.o" "$aotdir/a.esk" > "$aotdir/aot1.log" 2>&1 || { echo "FAIL: AOT compile 1 failed" >&2; cat "$aotdir/aot1.log" >&2; exit 1; }
+strings "$aotdir/a.o" | grep -q 'AOT_MARK_ORIG' || { echo "FAIL: AOT object 1 missing its own string" >&2; exit 1; }
+# Add a new top-level-reachable string near the end of the function, recompile.
+printf '(define (aot-fn) (display "AOT_MARK_ORIG") (newline) (display "AOT_MARK_NEW_XYZ") (newline))\n(aot-fn)\n' > "$aotdir/a.esk"
+"$ESHKOL_RUN" --emit-object -o "$aotdir/a.o" "$aotdir/a.esk" > "$aotdir/aot2.log" 2>&1 || { echo "FAIL: AOT compile 2 failed" >&2; cat "$aotdir/aot2.log" >&2; exit 1; }
+strings "$aotdir/a.o" | grep -q 'AOT_MARK_NEW_XYZ' || { echo "FAIL: AOT object did not reflect the fresh edit (stale object regression)" >&2; exit 1; }
+rm -rf "$aotdir"
+
 echo "PASS: jit_cache_test"
