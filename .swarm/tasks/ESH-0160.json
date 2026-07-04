@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0160",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: AddressSanitizer container-overflow",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/ad/sweep_c_regressions_test.esk via r/run. Top frame: #0 0xADDR in ControlFlowCallbacks::registerFuncBindingWrapper(char const*, void*, void*) llvm_codegen.cpp:36354. Log: artifacts/sanitizer-fuzz/logs/206_r_211912727.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/ad/sweep_c_regressions_test.esk"
+  ],
+  "sanitizer_signature": "AddressSanitizer\tcontainer-overflow\t#0 0xADDR in ControlFlowCallbacks::registerFuncBindingWrapper(char const*, void*, void*) llvm_codegen.cpp:36354",
+  "sanitizer_kind": "AddressSanitizer",
+  "sanitizer_subtype": "container-overflow",
+  "sanitizer_top_frame": "#0 0xADDR in ControlFlowCallbacks::registerFuncBindingWrapper(char const*, void*, void*) llvm_codegen.cpp:36354"
+}

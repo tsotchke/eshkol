@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0161",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: UndefinedBehaviorSanitizer negation of -9223372036854775808 cannot be represented in type 'int64_t' (aka 'long long'); cast to an unsigned type to negate this value to itself",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/bignum/bignum_edge_cases_test.esk via r/run. Top frame: #0 0xADDR in eshkol_bignum_fits_int64 bignum.cpp:641. Log: artifacts/sanitizer-fuzz/logs/298_r_2816962780.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/bignum/bignum_edge_cases_test.esk"
+  ],
+  "sanitizer_signature": "UndefinedBehaviorSanitizer\tnegation of -9223372036854775808 cannot be represented in type 'int64_t' (aka 'long long'); cast to an unsigned type to negate this value to itself\t#0 0xADDR in eshkol_bignum_fits_int64 bignum.cpp:641",
+  "sanitizer_kind": "UndefinedBehaviorSanitizer",
+  "sanitizer_subtype": "negation of -9223372036854775808 cannot be represented in type 'int64_t' (aka 'long long'); cast to an unsigned type to negate this value to itself",
+  "sanitizer_top_frame": "#0 0xADDR in eshkol_bignum_fits_int64 bignum.cpp:641"
+}
