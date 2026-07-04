@@ -238,6 +238,12 @@ public:
     llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
     llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 
+    // === Taylor-tower dispatch helpers (ESH-0186) ===
+    llvm::Value* emitIsTaylorCheck(llvm::Value* left, llvm::Value* right);
+    llvm::Value* emitIsTaylorSingle(llvm::Value* v);
+    llvm::Value* emitTaylorBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+    llvm::Value* emitTaylorUnaryCall(llvm::Value* in, int op_code);
+
     // === Rational dispatch helpers ===
 
     llvm::Value* emitIsRationalCheck(llvm::Value* left, llvm::Value* right);

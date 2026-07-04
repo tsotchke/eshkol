@@ -1,0 +1,48 @@
+{
+  "id": "ESH-0186",
+  "title": "AD Taylor-tower P1: HEAP_SUBTYPE_TAYLOR runtime heap tower + derivative^n (univariate) + epoch-tag scaffold",
+  "status": "done",
+  "priority": "high",
+  "workstream": "ad-taylor-tower/P1-runtime-tower",
+  "goal": "Implement the runtime heap tower per docs/design/AD_TAYLOR_TOWER.md sec 4-5. Add HEAP_SUBTYPE_TAYLOR tagged heap subtype with esh_taylor_t header (order_k, flags with COEFF_MASK+EPOCH_TAG bitfields, coeff storage). New lib/core/runtime_taylor.c with the recurrence kernels driven by the shared taylor_recurrences.def X-macro table (sec 5b). Wire derivative^n (univariate) through the tower for order>=3. Seed epoch tags in flags for perturbation-confusion safety (sec 5a). This closes ESH-0118 (derivative^n=0 for n>=3).",
+  "file_globs": [
+    "lib/core/runtime_taylor.c",
+    "lib/core/taylor_recurrences.def",
+    "lib/backend/autodiff_codegen.cpp",
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/frontend/parser.cpp",
+    "inc/eshkol/**"
+  ],
+  "acceptance": [
+    "scripts/run_ad_depth.sh: derivative^d PASS to d=8 -> closes ESH-0118",
+    "nested-AD perturbation-confusion suite PASS (analytic-answer nested derivative/gradient cases)",
+    "taylor_recurrences.def is the single source of truth for the primitives (sec 5b)",
+    "AD oracle 56/56 and SICP 88/88 unchanged; JET4/JET8 hot path unchanged",
+    "icc readiness ad_depth criterion PASS after regenerating scripts/icc_traces"
+  ],
+  "blocked_by": ["ESH-0185"],
+  "campaign_payoff": "Arbitrary-order univariate derivatives become exact; removes the fixed-2-level jet ceiling.",
+  "delivered": {
+    "representation": "HEAP_SUBTYPE_TAYLOR=23 + esh_taylor_t{order_k,flags,c[]} (inc/eshkol/eshkol.h); flags carry COEFF_MASK[0..7] + EPOCH_TAG[16..31].",
+    "runtime_kernel": "lib/core/runtime_taylor.c: add/sub/mul/div/pow + neg/exp/log/sin/cos/tan/sqrt/abs/sinh/cosh/tanh recurrences ported from the POC, explicit fma() FP-contraction (design sec 6a), epoch-tagged operand normalisation (sec 5a). Tagged dispatch: eshkol_is_taylor_tagged / eshkol_taylor_binary_tagged / eshkol_taylor_unary_tagged; seed/extract/coeffs/shift helpers.",
+    "codegen_dispatch": "Taylor operands intercepted before the heap/tensor path in +,-,*,/,pow (arithmetic_codegen.cpp) and in the unary math builtins exp/log/sin/cos/tan/sqrt/fabs/sinh/cosh/tanh (llvm_codegen.cpp codegenMathFunction); extractAsDouble coerces a tower to c[0]; findFreeVariablesImpl handles the new ops.",
+    "api": "(taylor f x k) -> list of K+1 coefficients; (derivative-n f x k) -> f^(k)(x)=k!*c[k]. k may be a runtime value. Nested `derivative` chains of depth>=3 are detected and routed through derivative-n (order<=2 stays byte-for-byte on the existing 4-comp jet).",
+    "tests": "tests/ad/taylor_tower_test.esk (52 checks: x^5, sin, exp, log(1+x), 1/(1-x) to n=8 + taylor coeffs + nested-safety + high-order), PASS under both -r and AOT."
+  },
+  "remainder": [
+    "((derivative-n k) f) curried / (derivative f #:order k) keyword sugar not added (direct (derivative-n f x k) form shipped instead).",
+    "Full cross-variable perturbation confusion at order>=3 (a foreign-epoch tower is lifted to its c[0] constant per design sec 5a; order<=2 cross terms remain exact on the jet). Unified confusion model across tiers is P3 (ESH-0188).",
+    "P2 compile-time-K monomorphization / unrolled-IR emitter (ESH-0187) — the taylor_recurrences.def IR_EMIT column is reserved for it.",
+    "COEFF_RATIONAL/COEFF_TENSOR coefficient types are laid out in flags but are P6/P7."
+  ],
+  "verifications": [
+    {
+      "sweep": "P1",
+      "date": "2026-07-04",
+      "branch": "feat/ad-taylor-p1-runtime-tower",
+      "verdict": "closed",
+      "evidence": "taylor_tower_test.esk 52/52 PASS (-r + AOT), derivative^n exact to n=8 for x^5/sin/exp/log(1+x)/1/(1-x). Nested derivative^d PASS to d=8 (x^8 d3=336, exp d5=1). AD oracle 56/56 PASS; depth oracle regenerated."
+    }
+  ]
+}

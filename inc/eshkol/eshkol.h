@@ -164,6 +164,32 @@ typedef struct eshkol_dual_number {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
                      "Dual number must be 16 bytes for cache efficiency");
 
+// ───────────────────────────────────────────────────────────────────────────
+// TAYLOR TOWER  (arbitrary-order forward-mode AD — ESH-0186, docs/design/AD_TAYLOR_TOWER.md)
+// ───────────────────────────────────────────────────────────────────────────
+// A univariate truncated-Taylor series carried as its coefficient array:
+//     f(x0 + t) = sum_{k=0..K} c[k] * t^k        =>   f^(n)(x0) = n! * c[n].
+// Stored behind a tagged HEAP_PTR with subtype HEAP_SUBTYPE_TAYLOR. Mirrors
+// HEAP_SUBTYPE_TENSOR's homogeneous-double storage: the header is followed by
+// (order_k + 1) doubles. `flags` reserves a coefficient-type field and a
+// perturbation-confusion EPOCH tag so nested `derivative` levels never mix
+// (§5a). Differentiating the variable seeds {x0, 1, 0, ...}.
+typedef struct esh_taylor {
+    uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
+    uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]
+    double   c[];       // coefficient storage c[0..order_k] (COEFF_F64)
+} esh_taylor_t;
+
+// esh_taylor_t.flags bitfield accessors (§4 of the design).
+#define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64 (P6 adds RATIONAL/TENSOR)
+#define ESH_TAYLOR_COEFF_F64     0u
+#define ESH_TAYLOR_EPOCH_SHIFT   16u
+#define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
+#define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
+#define ESH_TAYLOR_MK_FLAGS(coeff, epoch) \
+    (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
+     (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
+
 // Complex number for signal processing, FFT, and general complex analysis
 // Stores real and imaginary components as IEEE 754 double-precision floats
 typedef struct eshkol_complex_number {
@@ -359,7 +385,8 @@ typedef enum {
     HEAP_SUBTYPE_PRNG            = 20,  // Isolated pseudo-random number generator state
     HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head)
     HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ)
-    // Reserved: 23-255 for future heap types
+    HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186)
+    // Reserved: 24-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1420,6 +1447,8 @@ typedef enum {
     ESHKOL_CURL_OP,
     ESHKOL_LAPLACIAN_OP,
     ESHKOL_DIRECTIONAL_DERIV_OP,
+    ESHKOL_TAYLOR_OP,           // (taylor f x k) - K+1 Taylor coefficients (ESH-0186)
+    ESHKOL_DERIVATIVE_N_OP,     // (derivative-n f x k) - arbitrary-order n-th derivative (ESH-0186)
     // HoTT Type System operators
     ESHKOL_TYPE_ANNOTATION_OP,  // (: name type) - standalone type declaration
     ESHKOL_FORALL_OP,           // (forall (a b) type) - polymorphic type
@@ -1637,6 +1666,11 @@ typedef struct eshkol_operation {
             struct eshkol_ast *point;       // Point to evaluate derivative at
             uint8_t mode;                   // 0=forward, 1=reverse, 2=auto (for future use)
         } derivative_op;
+        struct {
+            struct eshkol_ast *function;    // Function to differentiate (univariate)
+            struct eshkol_ast *point;       // Point x0 to evaluate at
+            struct eshkol_ast *order;       // Requested order k (may be a runtime value)
+        } taylor_op;                        // shared by ESHKOL_TAYLOR_OP / ESHKOL_DERIVATIVE_N_OP
         struct {
             struct eshkol_ast *function;    // Scalar field function: ℝⁿ → ℝ
             struct eshkol_ast *point;       // Point to evaluate gradient at

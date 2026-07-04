@@ -1345,6 +1345,8 @@ static eshkol_op_t get_operator_type(const std::string& op) {
     // Automatic differentiation operators
     if (op == "derivative") return ESHKOL_DERIVATIVE_OP;
     if (op == "D") return ESHKOL_DERIVATIVE_OP;
+    if (op == "taylor") return ESHKOL_TAYLOR_OP;
+    if (op == "derivative-n") return ESHKOL_DERIVATIVE_N_OP;
     if (op == "gradient") return ESHKOL_GRADIENT_OP;
     if (op == "jacobian") return ESHKOL_JACOBIAN_OP;
     if (op == "hessian") return ESHKOL_HESSIAN_OP;
@@ -2455,6 +2457,19 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                     }
                     if (ast->operation.gradient_op.point) {
                         collectVariableReferences(ast->operation.gradient_op.point, refs);
+                    }
+                    break;
+
+                case ESHKOL_TAYLOR_OP:
+                case ESHKOL_DERIVATIVE_N_OP:
+                    if (ast->operation.taylor_op.function) {
+                        collectVariableReferences(ast->operation.taylor_op.function, refs);
+                    }
+                    if (ast->operation.taylor_op.point) {
+                        collectVariableReferences(ast->operation.taylor_op.point, refs);
+                    }
+                    if (ast->operation.taylor_op.order) {
+                        collectVariableReferences(ast->operation.taylor_op.order, refs);
                     }
                     break;
                     
@@ -7934,7 +7949,62 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             return ast;
         }
-        
+
+        // Arbitrary-order Taylor-tower AD (ESH-0186):
+        //   (taylor       f x k)  -> list of the K+1 Taylor coefficients c[0..k]
+        //   (derivative-n f x k)  -> the k-th derivative f^(k)(x) = k! * c[k]
+        // Both share taylor_op {function, point, order}.
+        if (ast.operation.op == ESHKOL_TAYLOR_OP ||
+            ast.operation.op == ESHKOL_DERIVATIVE_N_OP) {
+            const char* opname = (ast.operation.op == ESHKOL_TAYLOR_OP)
+                                 ? "taylor" : "derivative-n";
+
+            // function
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(token, "taylor/derivative-n requires a function argument");
+                ast.type = ESHKOL_INVALID; return ast;
+            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t t_function = parse_expression(tokenizer);
+            if (t_function.type == ESHKOL_INVALID) { ast.type = ESHKOL_INVALID; return ast; }
+
+            // point
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "taylor/derivative-n requires an evaluation point");
+                ast.type = ESHKOL_INVALID; return ast;
+            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t t_point = parse_expression(tokenizer);
+            if (t_point.type == ESHKOL_INVALID) { ast.type = ESHKOL_INVALID; return ast; }
+
+            // order k
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "taylor/derivative-n requires an order k");
+                ast.type = ESHKOL_INVALID; return ast;
+            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t t_order = parse_expression(tokenizer);
+            if (t_order.type == ESHKOL_INVALID) { ast.type = ESHKOL_INVALID; return ast; }
+
+            Token t_close = tokenizer.nextToken();
+            if (t_close.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(t_close, "expected closing parenthesis after");
+                (void)opname;
+                ast.type = ESHKOL_INVALID; return ast;
+            }
+
+            ast.operation.taylor_op.function = new eshkol_ast_t;
+            *ast.operation.taylor_op.function = t_function;
+            ast.operation.taylor_op.point = new eshkol_ast_t;
+            *ast.operation.taylor_op.point = t_point;
+            ast.operation.taylor_op.order = new eshkol_ast_t;
+            *ast.operation.taylor_op.order = t_order;
+            return ast;
+        }
+
         // Special handling for gradient - reverse-mode automatic differentiation
         if (ast.operation.op == ESHKOL_GRADIENT_OP) {
             // Syntax: (gradient function vector)

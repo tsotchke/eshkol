@@ -231,11 +231,53 @@ void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
     ctx_.builder().CreateStore(level, g);
 }
 
+// === ESH-0186: runtime Taylor-tower kernel declarations (lib/core/runtime_taylor.c) ===
+namespace {
+llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_seed_tagged")) return f;
+    // void eshkol_taylor_seed_tagged(arena*, const tagged* point, i32 order, tagged* out)
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p, p, ctx.int32Type(), p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_seed_tagged", &ctx.module());
+}
+llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract")) return f;
+    // double eshkol_taylor_extract(const tagged* tower, i32 n)
+    auto* ft = llvm::FunctionType::get(ctx.doubleType(),
+        {ctx.ptrType(), ctx.int32Type()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_extract", &ctx.module());
+}
+llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
+    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k, tagged* out)
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*out*/}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_coeffs_list", &ctx.module());
+}
+} // namespace
+
 llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
                                                  llvm::Value** out_level) {
     auto& b = ctx_.builder();
     llvm::Value* level = adPertLevelLoad();
     if (out_level) *out_level = level;
+
+    // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
+    // requested order under a fresh perturbation epoch instead of a jet. The
+    // jet path below is untouched when adTowerMode_ == NONE (order <= 2). ──
+    if (adTowerMode_ != TowerMode::NONE && adTowerOrder_) {
+        llvm::Value* point_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_point");
+        llvm::Value* out_slot   = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_seed_out");
+        ctx_.builder().CreateStore(point_tagged, point_slot);
+        ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
+            {getArenaPtr(), point_slot, adTowerOrder_, out_slot});
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), out_slot, "twr_seeded");
+    }
 
     // Push: the callee body runs one perturbation level deeper.
     adPertLevelStore(b.CreateAdd(level, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
@@ -291,6 +333,23 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
+
+    // ── Taylor-tower mode (ESH-0186): extract from the heap tower returned by
+    // the differentiated function. DERIV_N -> f^(k)=k!*c[k] (a double); COEFFS
+    // -> the K+1-element coefficient list. Short-circuits the jet R->Rⁿ logic. ──
+    if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
+        llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+        b.CreateStore(result_tagged, res_slot);
+        llvm::Value* d = b.CreateCall(getTaylorExtractFunc(ctx_), {res_slot, adTowerOrder_});
+        return tagged_.packDouble(d);
+    }
+    if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
+        llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+        llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
+        b.CreateStore(result_tagged, res_slot);
+        b.CreateCall(getTaylorCoeffsFunc(ctx_), {getArenaPtr(), res_slot, adTowerOrder_, out_slot});
+        return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
+    }
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
 
@@ -6103,6 +6162,22 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         return derivativeHigherOrder(op);
     }
 
+    // ESH-0186 / ESH-0118 closure: a nested `derivative` chain of depth >= 3 is
+    // pure repeated univariate differentiation, which the 2-level jet returns 0
+    // for. Detect the pure chain and route it through the arbitrary-order Taylor
+    // tower (derivative-n of the innermost base at the outermost point). Depth
+    // <= 2 falls through unchanged to the exact jet path below.
+    {
+        const eshkol_ast* inner_fn = nullptr;
+        const eshkol_ast* outer_pt = nullptr;
+        int depth = detectPureDerivChain(op, &inner_fn, &outer_pt);
+        if (depth >= 3 && inner_fn && outer_pt) {
+            eshkol_info("derivative: routing depth-%d nested chain through the Taylor tower (ESH-0118)", depth);
+            llvm::Value* order = llvm::ConstantInt::get(ctx_.int32Type(), depth);
+            return taylorApiCore(inner_fn, outer_pt, order, TowerMode::DERIV_N);
+        }
+    }
+
     if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
         eshkol_error("derivative: Required callbacks not set");
         return tagged_.packNull();
@@ -6130,6 +6205,115 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     // Delegate to it.  v1.3 should re-extract this logic into a shared
     // helper rather than keeping two parallel implementations.
     return codegenDerivativeMonolith(op);
+}
+
+// === Arbitrary-order Taylor-tower AD entry points (ESH-0186, P1) ===
+//
+// (taylor f x k) and (derivative-n f x k) share codegenDerivativeMonolith's
+// resolve/capture/call machinery; the only difference from the jet path is that
+// seedForwardAndPush seeds a heap Taylor tower of order k (fresh perturbation
+// epoch) and popAndExtractForward extracts from the returned tower. That
+// re-pointing is gated on adTowerMode_, so the order-<=2 jet path is byte-for-
+// byte unchanged whenever these entry points are not on the stack.
+//
+// taylor_op {function, point, order} overlaps derivative_op {function, point}
+// field-for-field (same offsets), so the monolith reads function/point via the
+// derivative_op alias unchanged.
+// Shared implementation: build a synthetic derivative op referencing
+// function_ast/point_ast (which alias derivative_op.function/.point that the
+// monolith reads), set the tower mode + order, and run the monolith. The
+// monolith's seedForwardAndPush/popAndExtractForward are re-pointed at the
+// Taylor kernel while adTowerMode_ != NONE.
+llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
+                                            const eshkol_ast* point_ast,
+                                            llvm::Value* order_i32, TowerMode mode) {
+    eshkol_operations_t tmp;
+    tmp.op = ESHKOL_DERIVATIVE_N_OP;
+    tmp.taylor_op.function = const_cast<eshkol_ast*>(function_ast);
+    tmp.taylor_op.point = const_cast<eshkol_ast*>(point_ast);
+    tmp.taylor_op.order = nullptr;  // order supplied as the LLVM value below
+
+    TowerMode saved_mode = adTowerMode_; llvm::Value* saved_order = adTowerOrder_;
+    adTowerMode_ = mode; adTowerOrder_ = order_i32;
+    llvm::Value* r = codegenDerivativeMonolith(&tmp);
+    adTowerMode_ = saved_mode; adTowerOrder_ = saved_order;
+    return r ? r : tagged_.packNull();
+}
+
+static llvm::Value* coerceOrderToI32(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                     llvm::Value* order) {
+    if (!order) return nullptr;
+    if (order->getType() == ctx.taggedValueType()) order = tagged.unpackInt64(order);
+    if (order->getType()->isDoubleTy()) order = ctx.builder().CreateFPToSI(order, ctx.int32Type());
+    else if (order->getType()->isIntegerTy()) order = ctx.builder().CreateIntCast(order, ctx.int32Type(), true);
+    return order;
+}
+
+llvm::Value* AutodiffCodegen::derivativeN(const eshkol_operations_t* op) {
+    if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
+        eshkol_error("derivative-n requires (derivative-n f x k)");
+        return tagged_.packNull();
+    }
+    llvm::Value* order = coerceOrderToI32(ctx_, tagged_,
+        codegen_ast_callback_(op->taylor_op.order, callback_context_));
+    if (!order) { eshkol_error("derivative-n: failed to evaluate order"); return tagged_.packNull(); }
+    return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::DERIV_N);
+}
+
+llvm::Value* AutodiffCodegen::taylorSeries(const eshkol_operations_t* op) {
+    if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
+        eshkol_error("taylor requires (taylor f x k)");
+        return tagged_.packNull();
+    }
+    llvm::Value* order = coerceOrderToI32(ctx_, tagged_,
+        codegen_ast_callback_(op->taylor_op.order, callback_context_));
+    if (!order) { eshkol_error("taylor: failed to evaluate order"); return tagged_.packNull(); }
+    return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::COEFFS);
+}
+
+// See header. Walks a nested `derivative` chain; returns total depth if it is
+// pure repeated univariate differentiation threading one variable, else 0.
+int AutodiffCodegen::detectPureDerivChain(const eshkol_operations_t* op,
+                                          const eshkol_ast** innermost_func,
+                                          const eshkol_ast** outer_point) {
+    if (!op || op->op != ESHKOL_DERIVATIVE_OP) return 0;
+    *outer_point = op->derivative_op.point;
+    const eshkol_operations_t* cur = op;
+    int depth = 0;
+    for (;;) {
+        const eshkol_ast* fn = cur->derivative_op.function;
+        if (!fn) return 0;
+        // Innermost differentiates a named function directly (`named` binding).
+        if (fn->type == ESHKOL_VAR) {
+            depth++;
+            *innermost_func = fn;
+            return depth;
+        }
+        // Otherwise it must be a single-parameter lambda.
+        if (fn->type != ESHKOL_OP || fn->operation.op != ESHKOL_LAMBDA_OP) return 0;
+        if (fn->operation.lambda_op.num_params != 1) return 0;
+        const eshkol_ast* params = fn->operation.lambda_op.parameters;
+        const eshkol_ast* body = fn->operation.lambda_op.body;
+        if (!params || !body) return 0;
+        const char* pname = params[0].variable.id;
+        if (!pname) return 0;
+        depth++;
+        // Is the lambda body itself a `derivative` threading THIS parameter?
+        if (body->type == ESHKOL_OP && body->operation.op == ESHKOL_DERIVATIVE_OP) {
+            const eshkol_ast* ipt = body->operation.derivative_op.point;
+            if (ipt && ipt->type == ESHKOL_VAR && ipt->variable.id &&
+                std::string(ipt->variable.id) == pname) {
+                cur = &body->operation;   // descend one level
+                continue;
+            }
+            // A nested derivative that does NOT thread this variable is not a
+            // pure chain — leave the whole thing on the jet path (safe).
+            return 0;
+        }
+        // Reached the base body: this lambda is the innermost function.
+        *innermost_func = fn;
+        return depth;
+    }
 }
 
 // === Static-only fast path retained for reference / future re-extraction ===

@@ -10301,6 +10301,10 @@ private:
                 
             case ESHKOL_DERIVATIVE_OP:
                 return autodiff_->derivative(op);
+            case ESHKOL_TAYLOR_OP:
+                return autodiff_->taylorSeries(op);
+            case ESHKOL_DERIVATIVE_N_OP:
+                return autodiff_->derivativeN(op);
             case ESHKOL_GRADIENT_OP:
                 return autodiff_->gradient(op);
             case ESHKOL_JACOBIAN_OP:
@@ -18939,6 +18943,36 @@ private:
         BasicBlock* regular_path = BasicBlock::Create(*context, (func_name + "_regular_path").c_str(), current_func);
         BasicBlock* merge = BasicBlock::Create(*context, (func_name + "_merge").c_str(), current_func);
 
+        // ESH-0186: Taylor-tower operand — route to the arbitrary-order kernel
+        // before any scalar/tensor handling. Wraps the rest of the function so a
+        // tower `sin`/`cos`/`exp`/`log`/... returns a tower, not a misread double.
+        int twr_uop = -1;
+        if      (func_name == "exp")  twr_uop = 1;
+        else if (func_name == "log")  twr_uop = 2;
+        else if (func_name == "sin")  twr_uop = 3;
+        else if (func_name == "cos")  twr_uop = 4;
+        else if (func_name == "tan")  twr_uop = 5;
+        else if (func_name == "sqrt") twr_uop = 6;
+        else if (func_name == "fabs") twr_uop = 7;
+        else if (func_name == "sinh") twr_uop = 8;
+        else if (func_name == "cosh") twr_uop = 9;
+        else if (func_name == "tanh") twr_uop = 10;
+        BasicBlock* mf_twr_done = nullptr;
+        Value* mf_twr_slot = nullptr;
+        if (twr_uop >= 0) {
+            mf_twr_done = BasicBlock::Create(*context, (func_name + "_twr_done").c_str(), current_func);
+            mf_twr_slot = builder->CreateAlloca(tagged_value_type, nullptr, (func_name + "_twr_slot").c_str());
+            BasicBlock* twr_path = BasicBlock::Create(*context, (func_name + "_twr_path").c_str(), current_func);
+            BasicBlock* twr_cont = BasicBlock::Create(*context, (func_name + "_twr_cont").c_str(), current_func);
+            Value* is_twr = isHeapSubtype(arg_tagged, HEAP_SUBTYPE_TAYLOR);
+            builder->CreateCondBr(is_twr, twr_path, twr_cont);
+            builder->SetInsertPoint(twr_path);
+            Value* twr_res = arith_->emitTaylorUnaryCall(arg_tagged, twr_uop);
+            builder->CreateStore(twr_res, mf_twr_slot);
+            builder->CreateBr(mf_twr_done);
+            builder->SetInsertPoint(twr_cont);
+        }
+
         // TENSOR OPERAND PATH: a scalar math builtin applied to a *tensor* must
         // map elementwise and return a tensor. The scalar machinery below would
         // otherwise reinterpret the tensor pointer's bits as a double and return
@@ -19301,13 +19335,23 @@ private:
 
         // If a tensor-operand fast path was emitted, merge the scalar result
         // with the elementwise-tensor result through math_done.
+        Value* mf_final;
         if (math_done) {
             builder->CreateStore(result_phi, math_result_slot);
             builder->CreateBr(math_done);
             builder->SetInsertPoint(math_done);
-            return builder->CreateLoad(tagged_value_type, math_result_slot);
+            mf_final = builder->CreateLoad(tagged_value_type, math_result_slot);
+        } else {
+            mf_final = result_phi;
         }
-        return result_phi;
+        // ESH-0186: merge the tower early-path (if emitted) with the scalar tail.
+        if (mf_twr_done) {
+            builder->CreateStore(mf_final, mf_twr_slot);
+            builder->CreateBr(mf_twr_done);
+            builder->SetInsertPoint(mf_twr_done);
+            return builder->CreateLoad(tagged_value_type, mf_twr_slot);
+        }
+        return mf_final;
     }
 
     // Polymorphic abs - handles AD/dual, then delegates to ArithmeticCodegen::abs
@@ -24750,6 +24794,19 @@ private:
                         }
                         if (op->derivative_op.point) {
                             findFreeVariablesImpl(op->derivative_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        break;
+                    case ESHKOL_TAYLOR_OP:
+                    case ESHKOL_DERIVATIVE_N_OP:
+                        // ESH-0186: search function, point, and order expressions
+                        if (op->taylor_op.function) {
+                            findFreeVariablesImpl(op->taylor_op.function, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->taylor_op.point) {
+                            findFreeVariablesImpl(op->taylor_op.point, current_scope, parameters, num_params, free_vars, bound_vars);
+                        }
+                        if (op->taylor_op.order) {
+                            findFreeVariablesImpl(op->taylor_op.order, current_scope, parameters, num_params, free_vars, bound_vars);
                         }
                         break;
                     case ESHKOL_DIRECTIONAL_DERIV_OP:
