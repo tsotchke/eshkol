@@ -52,6 +52,12 @@ cmake .. \
 
 make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" eshkol-run stdlib
 
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    ASAN_EXAMPLE_OPTIONS="detect_leaks=0:abort_on_error=0"
+else
+    ASAN_EXAMPLE_OPTIONS="detect_leaks=1:abort_on_error=0"
+fi
+
 cat <<EOF
 
 =========================================
@@ -59,7 +65,7 @@ cat <<EOF
 =========================================
 
 Run tests with:
-  (cd ${BUILD_DIR} && ASAN_OPTIONS='detect_leaks=1:abort_on_error=0' \\
+  (cd ${BUILD_DIR} && ASAN_OPTIONS='${ASAN_EXAMPLE_OPTIONS}' \\
                      UBSAN_OPTIONS='print_stacktrace=1' \\
                      ./eshkol-run ../tests/v1_2_edge_cases/hardening_path_test.esk)
 
