@@ -72,9 +72,9 @@ as an "improvement" and stays green.
 | composition | capture | max-correct-depth | tracked |
 |---|---|---|---|
 | deriv | capnone / global | **2** (d>=3 → exact 0) | ESH-0118 |
-| deriv | localparam / vecref | **1** (d2 → garbage ~2.2e13) | ESH-0119 |
+| deriv | localparam / vecref | **1** (d2 → garbage ~2.2e13) | ESH-0122 |
 | gradn | capnone | **2** (d>=3 → 0) | ESH-0118 |
-| gradn | vecref | **1** (d2 → garbage) | ESH-0119 |
+| gradn | vecref | **1** (d2 → garbage) | ESH-0122 |
 | gofd  | vecref | **1** (d>=2 → 0) | ESH-0117 |
 | jacod | vecref | **0** (d1 already → 0) | ESH-0120 |
 | hessod | vecref | **0** (d1 → SIGSEGV) | ESH-0121 |
