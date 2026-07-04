@@ -2362,7 +2362,7 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* rem_l_dual = convertToDual(dividend, dividend_is_dual, rem_l_dbl_for_dual);
     llvm::Value* rem_l_tangent = ctx_.builder().CreateExtractValue(rem_l_dual, {1}, "rem_l_tangent");
-    llvm::Value* rem_result_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    llvm::Value* rem_result_dual = llvm::ConstantAggregateZero::get(ctx_.dualNumberType()) /* ESH-0117: zero-fills fields 4-7 (ep-deriv jet) */;
     llvm::Value* rem_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
     rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_primal, {0});
     rem_result_dual = ctx_.builder().CreateInsertValue(rem_result_dual, rem_l_tangent, {1});
@@ -2517,7 +2517,7 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
     llvm::Value* q_primal = ctx_.builder().CreateCall(trunc_q, {q_div}, "quot_dual_primal");
     // Tangent = 0 (truncation kills the derivative).
     llvm::Value* q_zero_tangent = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    llvm::Value* q_dual = llvm::UndefValue::get(ctx_.dualNumberType());
+    llvm::Value* q_dual = llvm::ConstantAggregateZero::get(ctx_.dualNumberType()) /* ESH-0117: zero-fills fields 4-7 (ep-deriv jet) */;
     q_dual = ctx_.builder().CreateInsertValue(q_dual, q_primal, {0});
     q_dual = ctx_.builder().CreateInsertValue(q_dual, q_zero_tangent, {1});
     // 2nd-order dual: zero the e2 / e1e2 slots (avoid poison).

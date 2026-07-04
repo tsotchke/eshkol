@@ -1,0 +1,88 @@
+;;; tests/ad/reverse_nested_forward_test.esk
+;;; ESH-0117: gradient through a NESTED (2-level) forward derivative.
+;;;
+;;; An outer `gradient` over an inner `derivative` already worked (ESH-0093/#113):
+;;; the inner derivative's tangent (d1) stays connected to the captured param via
+;;; the mixed-mode mechanism. But when the inner is ITSELF a `derivative`
+;;; (2-level forward nest), the quantity the outer gradient differentiates is the
+;;; d12 (mixed e1*e2) coefficient — and that dependence on the captured param was
+;;; erased, so the outer gradient saw a constant and returned 0.
+;;;
+;;; Fix: the dual carries a THIRD nilpotent perturbation (ep, the reverse/gradient
+;;; seed) as a parallel 4-jet, so three simultaneous AD differentiations
+;;; (gradient + derivative + derivative) nest exactly. The captured param's
+;;; dependence rides ep and survives arbitrary forward nesting depth; the outer
+;;; derivative's extraction reads the surviving e1*ep coefficient (reverse tape:
+;;; recorded via eshkol_ad_mixed_record; forward: the ep slice) so the whole chain
+;;; stays AD-visible. Also fixes the transitive capture of a param through the
+;;; intermediate `derivative` lambda (was double-indirected → null).
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-6))
+(define (chk label v)
+  (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; === THE ESH-0117 repro (vector param, forward level protocol) ===
+;; single forward inside gradient (regression guard, #113): d/dx(p0*x^2)|2 = 4p0;
+;; d/dp0 = 2x = 4  ->  #(4)
+(define g-single
+  (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0))
+            (vector 3.0)))
+(chk "single-forward: grad_p d/dx(p0 x^2)@2 = #(4)" (approx= (vector-ref g-single 0) 4.0))
+
+;; nested 2-level forward inside gradient: f=p0*xx^2, d2/dxx2 = 2p0, d/dp0 = 2 -> #(2)
+(define g-nested
+  (gradient (lambda (p)
+              (derivative (lambda (x)
+                (derivative (lambda (xx) (* (vector-ref p 0) (* xx xx))) x)) 2.0))
+            (vector 3.0)))
+(chk "nested-forward (vector): grad_p d2/dxx2(p0 xx^2) = #(2)" (approx= (vector-ref g-nested 0) 2.0))
+
+;; === same on a TENSOR point (reverse-tape path: jet-lift + mixed_record) ===
+(define gt-single
+  (gradient (lambda (p) (derivative (lambda (x) (* (vector-ref p 0) (* x x))) 2.0)) #(3.0)))
+(chk "single-forward (tensor/reverse tape): #(4)" (approx= (vector-ref gt-single 0) 4.0))
+(define gt-nested
+  (gradient (lambda (p)
+              (derivative (lambda (x)
+                (derivative (lambda (xx) (* (vector-ref p 0) (* xx xx))) x)) 2.0)) #(3.0)))
+(chk "nested-forward (tensor/reverse tape): #(2)" (approx= (vector-ref gt-nested 0) 2.0))
+
+;; === scalar param ===
+;; d2/dxx2(p*xx^2)=2p ; d/dp = 2
+(define gs-nested
+  (gradient (lambda (p) (derivative (lambda (x)
+              (derivative (lambda (xx) (* p (* xx xx))) x)) 2.0)) 3.0))
+(chk "nested-forward (scalar): 2" (approx= gs-nested 2.0))
+
+;; === 2-vector nested case, cross-checked against finite differences ===
+;; f = v0*xx^2 + v1*xx^3 ; inner d/dxx = 2 v0 xx + 3 v1 xx^2 ;
+;; middle d/dx @2 = 2 v0 + 6 v1 x @2 = 2 v0 + 12 v1 ; grad_v = (2, 12).
+(define (dod2 v)   ; the inner derivative-of-derivative as a function of v
+  (derivative (lambda (x)
+    (derivative (lambda (xx) (+ (* (vector-ref v 0) (* xx xx))
+                                (* (vector-ref v 1) (* xx (* xx xx))))) x)) 2.0))
+(define g2 (gradient dod2 (vector 3.0 5.0)))
+(define h 1e-5)
+(define fd2-0 (/ (- (dod2 (vector (+ 3.0 h) 5.0)) (dod2 (vector (- 3.0 h) 5.0))) (* 2.0 h)))
+(define fd2-1 (/ (- (dod2 (vector 3.0 (+ 5.0 h))) (dod2 (vector 3.0 (- 5.0 h)))) (* 2.0 h)))
+(chk "2-vec nested: grad[0] = 2 (hand)"  (approx= (vector-ref g2 0) 2.0))
+(chk "2-vec nested: grad[1] = 12 (hand)" (approx= (vector-ref g2 1) 12.0))
+(chk "2-vec nested: grad[0] vs FD"  (approx= (vector-ref g2 0) fd2-0))
+(chk "2-vec nested: grad[1] vs FD"  (approx= (vector-ref g2 1) fd2-1))
+
+;; === pure triple-nested derivative (three forward levels, no gradient) ===
+;; d/da d/db d/dc (a*b*c) = 1
+(define t3 (derivative (lambda (a)
+             (derivative (lambda (b)
+               (derivative (lambda (c) (* a (* b c))) 1.0)) 1.0)) 1.0))
+(chk "triple-nested derivative a*b*c = 1" (approx= t3 1.0))
+
+;; === regression: pure 2nd derivative (dofd) unaffected ===
+;; d2/dy2 (y^3) @2 = 6*2 = 12
+(define d2 (derivative (lambda (x) (derivative (lambda (y) (* y (* y y))) x)) 2.0))
+(chk "dofd y^3 @2 = 12" (approx= d2 12.0))
+
+(newline)
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)

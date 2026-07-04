@@ -24,5 +24,6 @@ ad_oracle_curl_01.esk 6 18 -
 ad_oracle_curl_02.esk 4 12 -
 ad_oracle_lap_01.esk 17 17 -
 ad_oracle_nest_01.esk 20 20 -
-ad_oracle_nest_02.esk 14 17 -
+ad_oracle_nest_02.esk 17 20 -
+ad_oracle_nest_03.esk 6 11 -
 ad_oracle_loop_01.esk 4 4 -
