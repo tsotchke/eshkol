@@ -1,0 +1,59 @@
+;;; tests/r7rs/reference_diff_fixes_test.esk
+;;; R7RS conformance fixes found by the P7a reference-Scheme differential
+;;; (verified against chibi-scheme). Covers three bugs:
+;;;   ESH-0150 apply with leading args before the final list (was SIGSEGV)
+;;;   ESH-0151 multi-arg vector-map / vector-for-each (extra vectors ignored)
+;;;   ESH-0154 quasiquoted vector `#(...) with embedded unquote (no output)
+(require stdlib)
+
+(define pass 0)(define fail 0)
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(display "=== ESH-0150: apply with leading args ===") (newline)
+;; R7RS: (apply proc arg1 ... argN list) prepends arg1..argN onto list.
+(chk "apply + 0 leading"  (= (apply + '(3 4 5)) 12))
+(chk "apply + 1 leading"  (= (apply + 1 '(3 4 5)) 13))
+(chk "apply + 2 leading"  (= (apply + 1 2 '(3 4 5)) 15))
+(chk "apply + 3 leading"  (= (apply + 1 2 3 '(4 5)) 15))
+(chk "apply * leading"    (= (apply * 2 3 '(4)) 24))
+(chk "apply max leading"  (= (apply max 5 '(1 9 3)) 9))
+(chk "apply cons leading" (equal? (apply cons 1 '(2)) (cons 1 2)))
+(chk "apply list leading" (equal? (apply list 1 2 '(3 4)) '(1 2 3 4)))
+(chk "apply empty tail"   (= (apply + 1 2 3 '()) 6))
+(define (sub3 a b c) (- a b c))
+(chk "apply user fn"      (= (apply sub3 10 '(3 2)) 5))
+(chk "apply user fn 2lead" (= (apply sub3 10 3 '(2)) 5))
+(define (make-adder n) (lambda args (apply + n args)))
+(chk "apply captured proc" (= ((make-adder 100) 1 2 3) 106))
+
+(display "=== ESH-0151: multi-arg vector-map / vector-for-each ===") (newline)
+;; vector-map/quasiquote-vector produce R7RS (heterogeneous) Scheme vectors,
+;; which are equal? to (vector ...) but NOT to #(...) tensor literals (an
+;; Eshkol extension holding homogeneous doubles). Compare against (vector ...).
+(chk "vector-map 1 vec"   (equal? (vector-map (lambda (x) (* x x)) #(1 2 3)) (vector 1 4 9)))
+(chk "vector-map 2 vecs"  (equal? (vector-map + #(1 2 3) #(10 20 30)) (vector 11 22 33)))
+(chk "vector-map 3 vecs"  (equal? (vector-map + #(1 2 3) #(10 20 30) #(100 200 300)) (vector 111 222 333)))
+(chk "vector-map shortest" (equal? (vector-map * #(1 2 3 4) #(2 2 2)) (vector 2 4 6)))
+(chk "vector-map over (vector ...)" (equal? (vector-map + (vector 1 2) (vector 3 4)) (vector 4 6)))
+(define fe-sum 0)
+(vector-for-each (lambda (a b) (set! fe-sum (+ fe-sum (* a b)))) #(1 2 3) #(4 5 6))
+(chk "vector-for-each 2 vecs (dot product)" (= fe-sum 32))
+(define fe1 0)
+(vector-for-each (lambda (x) (set! fe1 (+ fe1 x))) #(1 2 3 4))
+(chk "vector-for-each 1 vec" (= fe1 10))
+
+(display "=== ESH-0154: quasiquoted vector ===") (newline)
+(define qv 4)
+(chk "qq vector unquote var"  (equal? `#(1 ,qv 3) (vector 1 4 3)))
+(chk "qq vector unquote expr" (equal? `#(1 ,(+ 2 2) ,(* 3 3)) (vector 1 4 9)))
+(chk "qq vector no unquote"   (equal? `#(1 2 3) (vector 1 2 3)))
+(chk "qq vector splice"       (equal? `#(1 ,@(list 2 3) 4) (vector 1 2 3 4)))
+(chk "qq vector nested"       (equal? `#(a #(1 ,(+ 1 1)) c) (vector 'a (vector 1 2) 'c)))
+(chk "qq vector symbols+unquote" (equal? `#(x ,qv z) (vector 'x 4 'z)))
+(chk "qq empty vector"        (equal? `#() (vector)))
+
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)
+(if (> fail 0) (begin (display "^FAIL: ")(display fail)(display " checks failed")(newline)))

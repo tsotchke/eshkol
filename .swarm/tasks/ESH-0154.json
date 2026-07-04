@@ -1,0 +1,29 @@
+{
+  "id": "ESH-0154",
+  "title": "quasiquoted vector produces no output",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS: unquote/unquote-splicing inside a vector template must evaluate. `#(1 ,(+ 2 2) 3) must produce #(1 4 3); previously produced no output because the quasiquote data parser had no case for #( and the codegen had no vector-template handling.",
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/core/runtime_list_helpers.cpp",
+    "tests/r7rs/reference_diff_fixes_test.esk"
+  ],
+  "root_cause": "parse_quasiquoted_data_with_token had no TOKEN_VECTOR_START branch, so a #(...) inside quasiquote fell to parse_atom on the '#(' token and silently failed. codegenQuasiquote likewise had no vector case.",
+  "fix": "Parser: added a TOKEN_VECTOR_START case in parse_quasiquoted_data_with_token that parses each element as quasiquoted data (so ,expr / ,@expr become UNQUOTE(_SPLICING)_OP) and emits a 1-D TENSOR_OP. codegenQuasiquote: added a TENSOR_OP case that materialises the template as a list first (reusing the exact unquote/splice machinery as the list path) then vectorises via a new runtime helper eshkol_list_to_vector_sret, yielding a heterogeneous Scheme vector. Handles unquote, unquote-splicing, nested vectors, and empty vectors.",
+  "acceptance": [
+    "`#(1 ,(+ 2 2) 3) => #(1 4 3) under -r and AOT",
+    "unquote-splicing into a vector works",
+    "nested quasiquoted vectors work"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/reference_diff_fixes_test.esk -r",
+    "./build/eshkol-run tests/r7rs/reference_diff_fixes_test.esk -o /tmp/r7rs && /tmp/r7rs",
+    "bash scripts/run_sicp_smoke.sh"
+  ],
+  "blocked_by": []
+}

@@ -2098,6 +2098,38 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
     if (token.type == TOKEN_LPAREN) {
         // Parse a list without requiring a symbol as first element
         return parse_quasiquoted_list_internal(tokenizer);
+    } else if (token.type == TOKEN_VECTOR_START) {
+        // Quasiquoted vector: `#(1 ,(+ 2 2) 3). R7RS §4.2.8 allows unquote /
+        // unquote-splicing inside a vector template. Parse each element as
+        // quasiquoted data (so ,expr / ,@expr become UNQUOTE(_SPLICING)_OP)
+        // and store them as a 1-D TENSOR_OP. codegenQuasiquote recognises the
+        // TENSOR_OP and materialises a Scheme vector, evaluating the unquotes.
+        std::vector<eshkol_ast_t> elements;
+        while (true) {
+            Token elem_token = tokenizer.nextToken();
+            if (elem_token.type == TOKEN_RPAREN) break;
+            if (elem_token.type == TOKEN_EOF) {
+                PARSE_ERROR_AT(elem_token,
+                    "unexpected end of input in quasiquoted vector #(...)");
+                return {.type = ESHKOL_INVALID};
+            }
+            eshkol_ast_t elem = parse_quasiquoted_data_with_token(tokenizer, elem_token);
+            if (elem.type == ESHKOL_INVALID) return elem;
+            elements.push_back(elem);
+        }
+        eshkol_ast_t ast = {};
+        ast.type = ESHKOL_OP;
+        ast.operation.op = ESHKOL_TENSOR_OP;
+        ast.operation.tensor_op.num_dimensions = 1;
+        ast.operation.tensor_op.dimensions = new uint64_t[1];
+        ast.operation.tensor_op.dimensions[0] = elements.size();
+        ast.operation.tensor_op.total_elements = elements.size();
+        ast.operation.tensor_op.elements =
+            elements.empty() ? nullptr : new eshkol_ast_t[elements.size()];
+        for (size_t i = 0; i < elements.size(); i++) {
+            ast.operation.tensor_op.elements[i] = elements[i];
+        }
+        return ast;
     } else if (token.type == TOKEN_COMMA) {
         // Unquote: ,expr escapes back to full expression mode. R7RS §4.2.8
         // says the body of an unquote is evaluated, so parse it the same way

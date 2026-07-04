@@ -15951,78 +15951,110 @@ private:
         // Handles both Scheme vectors (16-byte tagged elements) and tensors (8-byte doubles)
         // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
         if (func_name == "vector-for-each") {
+            // R7RS: (vector-for-each proc vec1 vec2 ...) — variadic over N
+            // vectors, applying proc to corresponding elements up to the
+            // SHORTEST length. Accepts both Scheme vectors (16-byte tagged
+            // elems) and tensors (8-byte doubles), per-arg. alloca loop
+            // counter (not PHI) because codegenClosureCall creates many blocks.
+            if (op->call_op.num_vars < 2) {
+                eshkol_error("vector-for-each requires a procedure and at least one vector");
+                return nullptr;
+            }
             Value* func_val = codegenAST(&op->call_op.variables[0]);
             if (!func_val) return nullptr;
             func_val = ensureTaggedValue(func_val);
-            Value* vec_arg = codegenAST(&op->call_op.variables[1]);
-            if (!vec_arg) return nullptr;
-            vec_arg = ensureTaggedValue(vec_arg);
-            Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
-            Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, PointerType::getUnqual(*context));
             Function* cur_func = builder->GetInsertBlock()->getParent();
-            // Check header subtype at ptr-8 to distinguish tensor vs vector
-            Value* header_ptr = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, -8));
-            Value* subtype = builder->CreateLoad(int8_type, header_ptr);
-            Value* is_tensor = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
-            BasicBlock* tensor_path = BasicBlock::Create(*context, "vfe_tensor", cur_func);
-            BasicBlock* vector_path = BasicBlock::Create(*context, "vfe_vector", cur_func);
+            int n_vecs = op->call_op.num_vars - 1;
+
+            // Per-vector element loader: yields the i-th element as a tagged
+            // value, branching on whether the source is a tensor or a vector.
+            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
+                Function* f = builder->GetInsertBlock()->getParent();
+                BasicBlock* tb = BasicBlock::Create(*context, "velt_t", f);
+                BasicBlock* vb = BasicBlock::Create(*context, "velt_v", f);
+                BasicBlock* mb = BasicBlock::Create(*context, "velt_m", f);
+                builder->CreateCondBr(is_t, tb, vb);
+                builder->SetInsertPoint(tb);
+                Value* ep = builder->CreateGEP(int64_type, elems, idx);
+                Value* ei = builder->CreateLoad(int64_type, ep);
+                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
+                builder->CreateBr(mb);
+                BasicBlock* tb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(vb);
+                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
+                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
+                builder->CreateBr(mb);
+                BasicBlock* vb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(mb);
+                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+                phi->addIncoming(et, tb_exit);
+                phi->addIncoming(ev, vb_exit);
+                return phi;
+            };
+
+            std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
+                                base_ptrs(n_vecs), lengths(n_vecs);
+            Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
+            for (int a = 0; a < n_vecs; a++) {
+                Value* va = codegenAST(&op->call_op.variables[a + 1]);
+                if (!va) return nullptr;
+                va = ensureTaggedValue(va);
+                Value* vpi = unpackInt64FromTaggedValue(va);
+                Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
+                Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
+                Value* st = builder->CreateLoad(int8_type, hdr);
+                Value* is_t = builder->CreateICmpEQ(st, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+                BasicBlock* tb = BasicBlock::Create(*context, "vfe_at", cur_func);
+                BasicBlock* vb = BasicBlock::Create(*context, "vfe_av", cur_func);
+                BasicBlock* mb = BasicBlock::Create(*context, "vfe_am", cur_func);
+                builder->CreateCondBr(is_t, tb, vb);
+                builder->SetInsertPoint(tb);
+                Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
+                Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                builder->CreateBr(mb);
+                BasicBlock* tb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(vb);
+                Value* vlen = builder->CreateLoad(int64_type, vp);
+                Value* vbase = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, 8));
+                builder->CreateBr(mb);
+                BasicBlock* vb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(mb);
+                PHINode* len_phi = builder->CreatePHI(int64_type, 2);
+                len_phi->addIncoming(tlen, tb_exit); len_phi->addIncoming(vlen, vb_exit);
+                PHINode* elems_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+                elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
+                PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+                base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                is_tensors[a] = is_t; lengths[a] = len_phi;
+                elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+            }
+
+            // Iterate to the shortest length.
+            Value* min_len = lengths[0];
+            for (int a = 1; a < n_vecs; a++) {
+                Value* lt = builder->CreateICmpULT(lengths[a], min_len);
+                min_len = builder->CreateSelect(lt, lengths[a], min_len);
+            }
+
+            Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vfe_idx");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
+            BasicBlock* cond_bb = BasicBlock::Create(*context, "vfe_cond", cur_func);
+            BasicBlock* body_bb = BasicBlock::Create(*context, "vfe_body", cur_func);
             BasicBlock* done_bb = BasicBlock::Create(*context, "vfe_done", cur_func);
-            builder->CreateCondBr(is_tensor, tensor_path, vector_path);
-            // === TENSOR PATH: elements are int64 bitpatterns of doubles ===
-            builder->SetInsertPoint(tensor_path);
-            {
-                // Tensor struct: {dims_ptr(0), num_dims(1), elements_ptr(2), total_elements(3)}
-                Value* elems_field = builder->CreateStructGEP(tensor_type, vec_ptr, 2);
-                Value* elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elems_field);
-                Value* total_field = builder->CreateStructGEP(tensor_type, vec_ptr, 3);
-                Value* total_elems = builder->CreateLoad(int64_type, total_field);
-                Value* t_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vfe_t_idx");
-                builder->CreateStore(ConstantInt::get(int64_type, 0), t_idx_ptr);
-                BasicBlock* t_cond = BasicBlock::Create(*context, "vfe_t_cond", cur_func);
-                BasicBlock* t_body = BasicBlock::Create(*context, "vfe_t_body", cur_func);
-                BasicBlock* t_exit = BasicBlock::Create(*context, "vfe_t_exit", cur_func);
-                builder->CreateBr(t_cond);
-                builder->SetInsertPoint(t_cond);
-                Value* t_i = builder->CreateLoad(int64_type, t_idx_ptr);
-                builder->CreateCondBr(builder->CreateICmpUGE(t_i, total_elems), t_exit, t_body);
-                builder->SetInsertPoint(t_body);
-                Value* t_ci = builder->CreateLoad(int64_type, t_idx_ptr);
-                Value* e_ptr = builder->CreateGEP(int64_type, elems_ptr, t_ci);
-                Value* e_int = builder->CreateLoad(int64_type, e_ptr);
-                Value* e_dbl = builder->CreateBitCast(e_int, double_type);
-                Value* e_tagged = packDoubleToTaggedValue(e_dbl);
-                codegenClosureCall(func_val, {e_tagged}, "vector-for-each-tensor");
-                Value* t_next = builder->CreateAdd(t_ci, ConstantInt::get(int64_type, 1));
-                builder->CreateStore(t_next, t_idx_ptr);
-                builder->CreateBr(t_cond);
-                builder->SetInsertPoint(t_exit);
-                builder->CreateBr(done_bb);
-            }
-            // === VECTOR PATH: elements are tagged_value_type (16 bytes) ===
-            builder->SetInsertPoint(vector_path);
-            {
-                Value* vec_len = builder->CreateLoad(int64_type, vec_ptr, "vfe_len");
-                Value* elem_base = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, 8));
-                Value* v_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vfe_v_idx");
-                builder->CreateStore(ConstantInt::get(int64_type, 0), v_idx_ptr);
-                BasicBlock* v_cond = BasicBlock::Create(*context, "vfe_v_cond", cur_func);
-                BasicBlock* v_body = BasicBlock::Create(*context, "vfe_v_body", cur_func);
-                BasicBlock* v_exit = BasicBlock::Create(*context, "vfe_v_exit", cur_func);
-                builder->CreateBr(v_cond);
-                builder->SetInsertPoint(v_cond);
-                Value* v_i = builder->CreateLoad(int64_type, v_idx_ptr);
-                builder->CreateCondBr(builder->CreateICmpUGE(v_i, vec_len), v_exit, v_body);
-                builder->SetInsertPoint(v_body);
-                Value* v_ci = builder->CreateLoad(int64_type, v_idx_ptr);
-                Value* elem_ptr = builder->CreateGEP(tagged_value_type, elem_base, v_ci);
-                Value* elem = builder->CreateLoad(tagged_value_type, elem_ptr, "vfe_elem");
-                codegenClosureCall(func_val, {elem}, "vector-for-each-vector");
-                Value* v_next = builder->CreateAdd(v_ci, ConstantInt::get(int64_type, 1));
-                builder->CreateStore(v_next, v_idx_ptr);
-                builder->CreateBr(v_cond);
-                builder->SetInsertPoint(v_exit);
-                builder->CreateBr(done_bb);
-            }
+            builder->CreateBr(cond_bb);
+            builder->SetInsertPoint(cond_bb);
+            Value* i = builder->CreateLoad(int64_type, idx_ptr);
+            builder->CreateCondBr(builder->CreateICmpUGE(i, min_len), done_bb, body_bb);
+            builder->SetInsertPoint(body_bb);
+            Value* ci = builder->CreateLoad(int64_type, idx_ptr);
+            std::vector<Value*> call_args;
+            for (int a = 0; a < n_vecs; a++)
+                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+            codegenClosureCall(func_val, call_args, "vector-for-each");
+            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
+            builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
+            builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
             return packNullToTaggedValue();
         }
@@ -16031,36 +16063,89 @@ private:
         // Always returns a Scheme vector (tagged elements)
         // Uses alloca pattern (not PHI) because codegenClosureCall creates 15+ basic blocks
         if (func_name == "vector-map") {
+            // R7RS: (vector-map proc vec1 vec2 ...) — variadic over N vectors,
+            // applying proc to corresponding elements up to the SHORTEST length;
+            // returns a fresh Scheme vector (tagged elements). Accepts both
+            // Scheme vectors and tensors per-arg. alloca loop counter (not PHI).
+            if (op->call_op.num_vars < 2) {
+                eshkol_error("vector-map requires a procedure and at least one vector");
+                return nullptr;
+            }
             Value* func_val = codegenAST(&op->call_op.variables[0]);
             if (!func_val) return nullptr;
             func_val = ensureTaggedValue(func_val);
-            Value* vec_arg = codegenAST(&op->call_op.variables[1]);
-            if (!vec_arg) return nullptr;
-            vec_arg = ensureTaggedValue(vec_arg);
-            Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
-            Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, PointerType::getUnqual(*context));
             Function* cur_func = builder->GetInsertBlock()->getParent();
-            // Check header subtype at ptr-8
-            Value* header_ptr = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, -8));
-            Value* subtype = builder->CreateLoad(int8_type, header_ptr);
-            Value* is_tensor = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
-            // Get length: tensor uses total_elements field, vector uses first int64
-            BasicBlock* tensor_len_bb = BasicBlock::Create(*context, "vm_tensor_len", cur_func);
-            BasicBlock* vector_len_bb = BasicBlock::Create(*context, "vm_vector_len", cur_func);
-            BasicBlock* len_merge_bb = BasicBlock::Create(*context, "vm_len_merge", cur_func);
-            builder->CreateCondBr(is_tensor, tensor_len_bb, vector_len_bb);
-            builder->SetInsertPoint(tensor_len_bb);
-            Value* t_total_field = builder->CreateStructGEP(tensor_type, vec_ptr, 3);
-            Value* t_len = builder->CreateLoad(int64_type, t_total_field);
-            builder->CreateBr(len_merge_bb);
-            builder->SetInsertPoint(vector_len_bb);
-            Value* v_len = builder->CreateLoad(int64_type, vec_ptr);
-            builder->CreateBr(len_merge_bb);
-            builder->SetInsertPoint(len_merge_bb);
-            PHINode* vec_len = builder->CreatePHI(int64_type, 2, "vm_len");
-            vec_len->addIncoming(t_len, tensor_len_bb);
-            vec_len->addIncoming(v_len, vector_len_bb);
-            // Allocate result vector (always Scheme vector)
+            int n_vecs = op->call_op.num_vars - 1;
+
+            auto loadElem = [&](Value* is_t, Value* elems, Value* base, Value* idx) -> Value* {
+                Function* f = builder->GetInsertBlock()->getParent();
+                BasicBlock* tb = BasicBlock::Create(*context, "vmelt_t", f);
+                BasicBlock* vb = BasicBlock::Create(*context, "vmelt_v", f);
+                BasicBlock* mb = BasicBlock::Create(*context, "vmelt_m", f);
+                builder->CreateCondBr(is_t, tb, vb);
+                builder->SetInsertPoint(tb);
+                Value* ep = builder->CreateGEP(int64_type, elems, idx);
+                Value* ei = builder->CreateLoad(int64_type, ep);
+                Value* et = packDoubleToTaggedValue(builder->CreateBitCast(ei, double_type));
+                builder->CreateBr(mb);
+                BasicBlock* tb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(vb);
+                Value* eptr = builder->CreateGEP(tagged_value_type, base, idx);
+                Value* ev = builder->CreateLoad(tagged_value_type, eptr);
+                builder->CreateBr(mb);
+                BasicBlock* vb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(mb);
+                PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+                phi->addIncoming(et, tb_exit);
+                phi->addIncoming(ev, vb_exit);
+                return phi;
+            };
+
+            std::vector<Value*> is_tensors(n_vecs), elems_ptrs(n_vecs),
+                                base_ptrs(n_vecs), lengths(n_vecs);
+            Value* nullp = ConstantPointerNull::get(PointerType::getUnqual(*context));
+            for (int a = 0; a < n_vecs; a++) {
+                Value* va = codegenAST(&op->call_op.variables[a + 1]);
+                if (!va) return nullptr;
+                va = ensureTaggedValue(va);
+                Value* vpi = unpackInt64FromTaggedValue(va);
+                Value* vp = builder->CreateIntToPtr(vpi, PointerType::getUnqual(*context));
+                Value* hdr = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, -8));
+                Value* st = builder->CreateLoad(int8_type, hdr);
+                Value* is_t = builder->CreateICmpEQ(st, ConstantInt::get(int8_type, HEAP_SUBTYPE_TENSOR));
+                BasicBlock* tb = BasicBlock::Create(*context, "vm_at", cur_func);
+                BasicBlock* vb = BasicBlock::Create(*context, "vm_av", cur_func);
+                BasicBlock* mb = BasicBlock::Create(*context, "vm_am", cur_func);
+                builder->CreateCondBr(is_t, tb, vb);
+                builder->SetInsertPoint(tb);
+                Value* tlen = builder->CreateLoad(int64_type, builder->CreateStructGEP(tensor_type, vp, 3));
+                Value* telems = builder->CreateLoad(PointerType::getUnqual(*context), builder->CreateStructGEP(tensor_type, vp, 2));
+                builder->CreateBr(mb);
+                BasicBlock* tb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(vb);
+                Value* vlen = builder->CreateLoad(int64_type, vp);
+                Value* vbase = builder->CreateGEP(int8_type, vp, ConstantInt::get(int64_type, 8));
+                builder->CreateBr(mb);
+                BasicBlock* vb_exit = builder->GetInsertBlock();
+                builder->SetInsertPoint(mb);
+                PHINode* len_phi = builder->CreatePHI(int64_type, 2);
+                len_phi->addIncoming(tlen, tb_exit); len_phi->addIncoming(vlen, vb_exit);
+                PHINode* elems_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+                elems_phi->addIncoming(telems, tb_exit); elems_phi->addIncoming(nullp, vb_exit);
+                PHINode* base_phi = builder->CreatePHI(PointerType::getUnqual(*context), 2);
+                base_phi->addIncoming(nullp, tb_exit); base_phi->addIncoming(vbase, vb_exit);
+                is_tensors[a] = is_t; lengths[a] = len_phi;
+                elems_ptrs[a] = elems_phi; base_ptrs[a] = base_phi;
+            }
+
+            // Result length is the shortest of the inputs.
+            Value* vec_len = lengths[0];
+            for (int a = 1; a < n_vecs; a++) {
+                Value* lt = builder->CreateICmpULT(lengths[a], vec_len);
+                vec_len = builder->CreateSelect(lt, lengths[a], vec_len);
+            }
+
+            // Allocate result vector (always Scheme vector).
             Value* elem_size = builder->CreateMul(vec_len, ConstantInt::get(int64_type, 16));
             Value* alloc_size = builder->CreateAdd(elem_size, ConstantInt::get(int64_type, 8));
             Value* arena_ptr = getArenaPtr();
@@ -16072,68 +16157,29 @@ private:
                 ConstantInt::get(int64_type, 0)});
             builder->CreateStore(vec_len, new_vec);
             Value* new_elem_base = builder->CreateGEP(int8_type, new_vec, ConstantInt::get(int64_type, 8));
-            // Branch to tensor or vector iteration
-            BasicBlock* tensor_loop_bb = BasicBlock::Create(*context, "vm_tensor_loop", cur_func);
-            BasicBlock* vector_loop_bb = BasicBlock::Create(*context, "vm_vector_loop", cur_func);
+
+            Value* idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vm_idx");
+            builder->CreateStore(ConstantInt::get(int64_type, 0), idx_ptr);
+            BasicBlock* cond_bb = BasicBlock::Create(*context, "vm_cond", cur_func);
+            BasicBlock* body_bb = BasicBlock::Create(*context, "vm_body", cur_func);
             BasicBlock* done_bb = BasicBlock::Create(*context, "vm_done", cur_func);
-            builder->CreateCondBr(is_tensor, tensor_loop_bb, vector_loop_bb);
-            // === TENSOR PATH ===
-            builder->SetInsertPoint(tensor_loop_bb);
-            {
-                Value* elems_field = builder->CreateStructGEP(tensor_type, vec_ptr, 2);
-                Value* elems_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elems_field);
-                Value* t_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vm_t_idx");
-                builder->CreateStore(ConstantInt::get(int64_type, 0), t_idx_ptr);
-                BasicBlock* t_cond = BasicBlock::Create(*context, "vm_t_cond", cur_func);
-                BasicBlock* t_body = BasicBlock::Create(*context, "vm_t_body", cur_func);
-                BasicBlock* t_exit = BasicBlock::Create(*context, "vm_t_exit", cur_func);
-                builder->CreateBr(t_cond);
-                builder->SetInsertPoint(t_cond);
-                Value* t_i = builder->CreateLoad(int64_type, t_idx_ptr);
-                builder->CreateCondBr(builder->CreateICmpUGE(t_i, vec_len), t_exit, t_body);
-                builder->SetInsertPoint(t_body);
-                Value* t_ci = builder->CreateLoad(int64_type, t_idx_ptr);
-                Value* e_ptr = builder->CreateGEP(int64_type, elems_ptr, t_ci);
-                Value* e_int = builder->CreateLoad(int64_type, e_ptr);
-                Value* e_dbl = builder->CreateBitCast(e_int, double_type);
-                Value* e_tagged = packDoubleToTaggedValue(e_dbl);
-                Value* t_result = codegenClosureCall(func_val, {e_tagged}, "vector-map-tensor");
-                Value* t_result_tagged = ensureTaggedValue(t_result);
-                Value* t_new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, t_ci);
-                builder->CreateStore(t_result_tagged, t_new_elem_ptr);
-                Value* t_next = builder->CreateAdd(t_ci, ConstantInt::get(int64_type, 1));
-                builder->CreateStore(t_next, t_idx_ptr);
-                builder->CreateBr(t_cond);
-                builder->SetInsertPoint(t_exit);
-                builder->CreateBr(done_bb);
-            }
-            // === VECTOR PATH ===
-            builder->SetInsertPoint(vector_loop_bb);
-            {
-                Value* v_elem_base = builder->CreateGEP(int8_type, vec_ptr, ConstantInt::get(int64_type, 8));
-                Value* v_idx_ptr = builder->CreateAlloca(int64_type, nullptr, "vm_v_idx");
-                builder->CreateStore(ConstantInt::get(int64_type, 0), v_idx_ptr);
-                BasicBlock* v_cond = BasicBlock::Create(*context, "vm_v_cond", cur_func);
-                BasicBlock* v_body = BasicBlock::Create(*context, "vm_v_body", cur_func);
-                BasicBlock* v_exit = BasicBlock::Create(*context, "vm_v_exit", cur_func);
-                builder->CreateBr(v_cond);
-                builder->SetInsertPoint(v_cond);
-                Value* v_i = builder->CreateLoad(int64_type, v_idx_ptr);
-                builder->CreateCondBr(builder->CreateICmpUGE(v_i, vec_len), v_exit, v_body);
-                builder->SetInsertPoint(v_body);
-                Value* v_ci = builder->CreateLoad(int64_type, v_idx_ptr);
-                Value* elem_ptr = builder->CreateGEP(tagged_value_type, v_elem_base, v_ci);
-                Value* elem = builder->CreateLoad(tagged_value_type, elem_ptr, "vm_elem");
-                Value* v_result = codegenClosureCall(func_val, {elem}, "vector-map-vector");
-                Value* v_result_tagged = ensureTaggedValue(v_result);
-                Value* v_new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, v_ci);
-                builder->CreateStore(v_result_tagged, v_new_elem_ptr);
-                Value* v_next = builder->CreateAdd(v_ci, ConstantInt::get(int64_type, 1));
-                builder->CreateStore(v_next, v_idx_ptr);
-                builder->CreateBr(v_cond);
-                builder->SetInsertPoint(v_exit);
-                builder->CreateBr(done_bb);
-            }
+            builder->CreateBr(cond_bb);
+            builder->SetInsertPoint(cond_bb);
+            Value* i = builder->CreateLoad(int64_type, idx_ptr);
+            builder->CreateCondBr(builder->CreateICmpUGE(i, vec_len), done_bb, body_bb);
+            builder->SetInsertPoint(body_bb);
+            Value* ci = builder->CreateLoad(int64_type, idx_ptr);
+            std::vector<Value*> call_args;
+            for (int a = 0; a < n_vecs; a++)
+                call_args.push_back(loadElem(is_tensors[a], elems_ptrs[a], base_ptrs[a], ci));
+            Value* result = codegenClosureCall(func_val, call_args, "vector-map");
+            Value* result_tagged = ensureTaggedValue(result);
+            // Reload the counter — loadElem/codegenClosureCall create blocks.
+            Value* ci2 = builder->CreateLoad(int64_type, idx_ptr);
+            Value* new_elem_ptr = builder->CreateGEP(tagged_value_type, new_elem_base, ci2);
+            builder->CreateStore(result_tagged, new_elem_ptr);
+            builder->CreateStore(builder->CreateAdd(ci2, ConstantInt::get(int64_type, 1)), idx_ptr);
+            builder->CreateBr(cond_bb);
             builder->SetInsertPoint(done_bb);
             return packPtrToTaggedValue(new_vec, ESHKOL_VALUE_HEAP_PTR);
         }
@@ -21180,6 +21226,62 @@ private:
         // not reach here because it's wrapped by the parser as a list, but a
         // bare `,expr` at the very top of a quasiquote does.
         if (ast->type == ESHKOL_OP) {
+            // Quasiquoted vector template: `#(1 ,(+ 2 2) 3). The parser emits a
+            // 1-D TENSOR_OP whose elements are quasiquoted data (possibly
+            // UNQUOTE / UNQUOTE_SPLICING). Materialise a list first — reusing
+            // the exact unquote/splice machinery as the list path — then
+            // vectorise it via eshkol_list_to_vector_sret. Result is a
+            // heterogeneous Scheme vector, per R7RS.
+            if (ast->operation.op == ESHKOL_TENSOR_OP) {
+                uint64_t n = ast->operation.tensor_op.total_elements;
+                const eshkol_ast_t* elems = ast->operation.tensor_op.elements;
+                Value* acc = packNullToTaggedValue();
+                for (int64_t i = (int64_t)n - 1; i >= 0; --i) {
+                    const eshkol_ast_t* elem = &elems[i];
+                    if (elem->type == ESHKOL_OP &&
+                        elem->operation.op == ESHKOL_UNQUOTE_SPLICING_OP) {
+                        Value* spliced = packNullToTaggedValue();
+                        if (elem->operation.call_op.num_vars > 0) {
+                            spliced = codegenAST(&elem->operation.call_op.variables[0]);
+                        }
+                        Value* spliced_tagged = ensureTaggedValue(spliced);
+                        Value* acc_tagged = ensureTaggedValue(acc);
+                        Value* out_slot = builder->CreateAlloca(tagged_value_type);
+                        Value* lhs_slot = builder->CreateAlloca(tagged_value_type);
+                        Value* rhs_slot = builder->CreateAlloca(tagged_value_type);
+                        builder->CreateStore(spliced_tagged, lhs_slot);
+                        builder->CreateStore(acc_tagged, rhs_slot);
+                        llvm::FunctionCallee append_fn =
+                            module->getOrInsertFunction("eshkol_append_tagged_sret",
+                                FunctionType::get(Type::getVoidTy(*context),
+                                    {PointerType::getUnqual(*context),
+                                     PointerType::getUnqual(*context),
+                                     PointerType::getUnqual(*context)}, false));
+                        builder->CreateCall(append_fn, {out_slot, lhs_slot, rhs_slot});
+                        acc = builder->CreateLoad(tagged_value_type, out_slot);
+                    } else {
+                        Value* elem_val = codegenQuasiquote(elem);
+                        Value* cons_int =
+                            codegenTaggedArenaConsCellFromTaggedValue(
+                                ensureTaggedValue(elem_val),
+                                ensureTaggedValue(acc));
+                        acc = packPtrToTaggedValue(
+                            builder->CreateIntToPtr(cons_int, builder->getPtrTy()),
+                            ESHKOL_VALUE_HEAP_PTR);
+                    }
+                }
+                // Convert the materialised list to a Scheme vector.
+                Value* list_slot = builder->CreateAlloca(tagged_value_type);
+                Value* vec_slot = builder->CreateAlloca(tagged_value_type);
+                builder->CreateStore(ensureTaggedValue(acc), list_slot);
+                llvm::FunctionCallee l2v_fn =
+                    module->getOrInsertFunction("eshkol_list_to_vector_sret",
+                        FunctionType::get(Type::getVoidTy(*context),
+                            {PointerType::getUnqual(*context),
+                             PointerType::getUnqual(*context)}, false));
+                builder->CreateCall(l2v_fn, {vec_slot, list_slot});
+                return builder->CreateLoad(tagged_value_type, vec_slot);
+            }
             if (ast->operation.op == ESHKOL_UNQUOTE_OP) {
                 if (ast->operation.call_op.num_vars > 0) {
                     return codegenAST(&ast->operation.call_op.variables[0]);
