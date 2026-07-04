@@ -476,14 +476,19 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 |---------|------|-------|-----------------|
 | **v1.1.13** | Apr 2026 | Accelerate | Windows ARM64, 16-lane release matrix, VM closure fixes, mobile site |
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
-| **v1.3** | Jun 2026 | Evolve | R7RS libraries, string interpolation, PGO |
-| **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types |
-| **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU |
-| **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs |
+| **v1.3** | Jun 2026 | Evolve | R7RS libraries, string interpolation, PGO; arbitrary-order AD P1–P3 (closes ESH-0118) |
+| **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types; AD substrate P4/P6/P11 (GUW multivariate, exact-coefficient, user numerics) |
+| **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU; high-order AD P5/P7/P9/P10 (reverse-over-Taylor, tensor towers, differentiable control flow) |
+| **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs; sparse high-order AD tensors (P12) |
 | **v1.7** | Oct 2026 | Synthesis | Neural-guided search, program synthesis, GNN |
 | **v1.8** | Nov 2026 | Platform | Windowing, audio, Vulkan, embedded targets |
 | **v1.9** | Dec 2026 | Types | Dependent types, effects, algebraic effects, session types |
-| **v2.0** | Q1 2027 | Starlight | Quantum types, VQE/QAOA, formal verification |
+| **v2.0** | Q1 2027 | Starlight | Quantum types, VQE/QAOA, formal verification; validated AD via Taylor models (P8) |
+
+> **Arbitrary-order AD (Taylor-tower) track** threads phases P0–P12 through the
+> version themes above as an enabling substrate — see
+> [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md) for the full phase → version →
+> ICC-gate map. Each phase is gated by an `ad-*` ICC oracle criterion.
 
 ---
 
@@ -631,6 +636,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed contribution guidelines.
 
 ---
 
-*Last Updated: April 2026*
+*Last Updated: July 2026*
+
+*The arbitrary-order automatic-differentiation (Taylor-tower) campaign — phases
+P0–P12, spanning core high-order AD, exact-coefficient and tensor-valued towers,
+GUW multivariate recovery, differentiable control flow, and validated Taylor
+models — is threaded through the version themes above rather than run as a
+separate release ladder. It is the differentiable-programming substrate for the
+neuro-symbolic (v1.5–v1.7) and quantum/formal-verification (v2.0) arc. See
+[`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).*
 
 *Eshkol v1.1-accelerate is complete with 47/47 roadmap items delivered plus the v1.1.12 and v1.1.13 additions (production VM, web platform, browser AD, Windows ARM64, mobile site). The roadmap progresses through data & deployment (v1.2-scale), language maturity (v1.3-evolve), networking & resources (v1.4-connection), neuro-symbolic intelligence (v1.5-intelligence), symbolic reasoning (v1.6-reasoning), program synthesis (v1.7-synthesis), platform & hardware (v1.8-platform), advanced type theory (v1.9-types), and quantum computing with formal verification (v2.0-starlight).*
