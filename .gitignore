@@ -140,3 +140,4 @@ node_modules/
 package.json
 package-lock.json
 tests/stress/generated/
+tests/metaprog_depth/generated/

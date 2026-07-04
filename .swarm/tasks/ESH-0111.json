@@ -1,0 +1,16 @@
+{
+  "id": "ESH-0111",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "adversarial/ad-ml-docs-verification",
+  "title": "Tensor/ML bug batch from docs verification (PR #124): batch-norm/layer-norm garbage+SIGSEGV, tensor-load drops shape, gpu-reduce empty, tanh scalar-only, creation type confusion, vector-valued derivative",
+  "goal": "Verified findings from PR #124 (repros in docs/reference/tensors|ad pages): (1) batch-norm/layer-norm 4-arg garbage denormals, 5-arg axis SIGSEGV; (2) tensor-load drops shape (tensor-shape -> (0), data survives) \u2014 round-trip broken despite gate; (3) gpu-reduce returns #(); (4) tanh scalar-only, SILENTLY WRONG on tensors; (5) tensor creation misreads int+float args as shape (no element type-check); (6) vector/tensor-valued derivative (R->R^n) returns 0, contradicting old AUTODIFF.md claim; (7) tensor-pow requires tensor exponent. Also RE-CONFIRMED: ESH-0078 NOT fixed (named inner fn gradient=0). Priority: (1),(2),(4) are silent-wrong-value class.",
+  "acceptance": [
+    "each repro fixed or clean-erroring, -r AND AOT; docs known-issue notes removed as fixed"
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "lib/backend/tensor_*.cpp",
+    "lib/backend/autodiff_codegen.cpp"
+  ]
+}
