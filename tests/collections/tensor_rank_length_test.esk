@@ -1,0 +1,89 @@
+;;; tests/collections/tensor_rank_length_test.esk
+;;; Regression coverage for the P6f depth-sweep collection bugs:
+;;;   ESH-0205 - make-tensor truncated shapes of rank > 3 (silent WRONG)
+;;;   ESH-0206 - (length lst) SIGBUS'd (stack overflow) near 10^6 elements
+;;;
+;;; Verifies make-tensor for ranks 1..8 (shape, element count and fill all
+;;; correct, and in agreement with reshape), plus length at 10^6 / 10^7.
+
+(require stdlib)
+
+(display "TEST: make-tensor arbitrary rank + iterative length") (newline)
+
+;; ---- make-tensor: shape is preserved for ranks 1..8 --------------------
+;; tensor-shape must equal the requested dimension list exactly (no truncation).
+
+(display (if (equal? (tensor-shape (make-tensor '(5) 1.0)) (list 5))
+             "PASS" "FAIL"))
+(display ": rank-1 shape (5)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 3) 1.0)) (list 2 3))
+             "PASS" "FAIL"))
+(display ": rank-2 shape (2 3)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 3 4) 1.0)) (list 2 3 4))
+             "PASS" "FAIL"))
+(display ": rank-3 shape (2 3 4)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 3 4 5) 1.0)) (list 2 3 4 5))
+             "PASS" "FAIL"))
+(display ": rank-4 shape (2 3 4 5) [ESH-0205]") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 2 2 2 2) 1.0)) (list 2 2 2 2 2))
+             "PASS" "FAIL"))
+(display ": rank-5 shape (2 2 2 2 2)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(1 2 1 2 1 2) 1.0)) (list 1 2 1 2 1 2))
+             "PASS" "FAIL"))
+(display ": rank-6 shape (1 2 1 2 1 2)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 1 2 1 2 1 2) 1.0)) (list 2 1 2 1 2 1 2))
+             "PASS" "FAIL"))
+(display ": rank-7 shape (2 1 2 1 2 1 2)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 1 1 2 1 1 2 1) 1.0)) (list 2 1 1 2 1 1 2 1))
+             "PASS" "FAIL"))
+(display ": rank-8 shape (2 1 1 2 1 1 2 1)") (newline)
+
+;; ---- make-tensor: element count and fill are correct ------------------
+;; With fill = 1.0, tensor-sum over all elements == total element count.
+
+(display (if (< (abs (- (tensor-sum (make-tensor '(2 3 4 5) 1.0)) 120.0)) 1e-9)
+             "PASS" "FAIL"))
+(display ": rank-4 element count/fill (sum = 120)") (newline)
+
+(display (if (< (abs (- (tensor-sum (make-tensor '(2 2 2 2 2) 3.0)) 96.0)) 1e-9)
+             "PASS" "FAIL"))
+(display ": rank-5 fill value honoured (32 * 3 = 96)") (newline)
+
+;; ---- make-tensor agrees with reshape for the same shape ---------------
+;; reshape uses a separate dim-extraction path; the two constructors must
+;; now produce identical shapes for rank > 3.
+
+(display (if (equal? (tensor-shape (make-tensor '(2 3 4 5) 1.0))
+                     (tensor-shape (reshape (make-tensor '(120) 1.0) '(2 3 4 5))))
+             "PASS" "FAIL"))
+(display ": make-tensor agrees with reshape (rank 4)") (newline)
+
+(display (if (equal? (tensor-shape (make-tensor '(2 2 2 2 2) 1.0))
+                     (tensor-shape (reshape (make-tensor '(32) 1.0) '(2 2 2 2 2))))
+             "PASS" "FAIL"))
+(display ": make-tensor agrees with reshape (rank 5)") (newline)
+
+;; ---- length: small / empty still correct ------------------------------
+
+(display (if (= (length '()) 0) "PASS" "FAIL"))
+(display ": length of empty list is 0") (newline)
+
+(display (if (= (length '(a b c d e)) 5) "PASS" "FAIL"))
+(display ": length of 5-element list is 5") (newline)
+
+;; ---- length: no stack overflow at 10^6 / 10^7 [ESH-0206] --------------
+
+(display (if (= (length (iota 1000000)) 1000000) "PASS" "FAIL"))
+(display ": length of 10^6-element list [ESH-0206]") (newline)
+
+(display (if (= (length (iota 10000000)) 10000000) "PASS" "FAIL"))
+(display ": length of 10^7-element list [ESH-0206]") (newline)
+
+(display "DONE") (newline)
