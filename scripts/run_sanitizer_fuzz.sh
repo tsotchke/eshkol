@@ -20,6 +20,8 @@ SKIP_BUILD=0
 SELF_TEST_ONLY=0
 NO_GENERATED=0
 LIMIT=0
+MAX_ARTIFACTS_GB="${ESHKOL_FUZZ_MAX_GB:-2}"
+MAX_RETAINED_CRASHES="${ESHKOL_FUZZ_MAX_RETAINED_CRASHES:-200}"
 
 usage() {
     cat <<'EOF'
@@ -40,6 +42,9 @@ Options:
   --no-generated           Do not generate additional differential fuzz programs.
   --timeout SEC            Per process timeout (default: 90).
   --limit N                Run only the first N corpus files (debugging only).
+  --max-artifacts-gb N     Hard cap for sanitizer-fuzz work dir (default: 2,
+                           env: ESHKOL_FUZZ_MAX_GB).
+  --max-retained-crashes N Cap retained sanitizer logs/repros (default: 200).
   --task-base N            First ESH id to allocate for sanitizer findings (default: 160).
   --self-test-only         Run only the synthetic ESH-0116-class sanitizer check.
   -h, --help               Show this help.
@@ -58,6 +63,8 @@ while [ $# -gt 0 ]; do
         --no-generated) NO_GENERATED=1; shift ;;
         --timeout) TIMEOUT_RUN="$2"; shift 2 ;;
         --limit) LIMIT="$2"; shift 2 ;;
+        --max-artifacts-gb) MAX_ARTIFACTS_GB="$2"; shift 2 ;;
+        --max-retained-crashes) MAX_RETAINED_CRASHES="$2"; shift 2 ;;
         --task-base) TASK_BASE="$2"; shift 2 ;;
         --self-test-only) SELF_TEST_ONLY=1; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -84,19 +91,64 @@ esac
 
 LOG_DIR="$WORK_ROOT_ABS/logs"
 BIN_DIR="$WORK_ROOT_ABS/bin"
+TMP_DIR="$WORK_ROOT_ABS/tmp"
+REPRO_DIR="$WORK_ROOT_ABS/repros"
 GENERATED_DIR="$WORK_ROOT_ABS/generated-differential"
 RUNS_TSV="$WORK_ROOT_ABS/runs.tsv"
 SELF_TSV="$WORK_ROOT_ABS/selftest.tsv"
 CORPUS_RAW="$WORK_ROOT_ABS/corpus.raw"
 CORPUS_LIST="$WORK_ROOT_ABS/corpus.txt"
+AOT_BIN="$BIN_DIR/aot-test.bin"
+RETAINED_SIGNATURES="$WORK_ROOT_ABS/retained-signatures.txt"
 ESHKOL_RUN="$BUILD_DIR_ABS/eshkol-run"
 TASK_DIR="$REPO_ROOT/.swarm/tasks"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
-mkdir -p "$LOG_DIR" "$BIN_DIR" "$GENERATED_DIR" "$(dirname "$TRACE_FILE_ABS")" "$TASK_DIR"
-: > "$RUNS_TSV"
-: > "$SELF_TSV"
-: > "$TRACE_FILE_ABS"
+case "$MAX_RETAINED_CRASHES" in
+    ''|*[!0-9]*)
+        echo "run_sanitizer_fuzz.sh: --max-retained-crashes must be a non-negative integer: $MAX_RETAINED_CRASHES" >&2
+        exit 2
+        ;;
+esac
+
+if ! MAX_ARTIFACTS_KB="$(python3 - "$MAX_ARTIFACTS_GB" <<'PY'
+import math
+import sys
+
+try:
+    gb = float(sys.argv[1])
+except ValueError:
+    print("invalid", file=sys.stderr)
+    raise SystemExit(1)
+
+if not math.isfinite(gb) or gb <= 0:
+    print("invalid", file=sys.stderr)
+    raise SystemExit(1)
+
+print(max(1, int(math.ceil(gb * 1024 * 1024))))
+PY
+)"; then
+    echo "run_sanitizer_fuzz.sh: --max-artifacts-gb must be a positive number: $MAX_ARTIFACTS_GB" >&2
+    exit 2
+fi
+
+cleanup_sanitizer_fuzz() {
+    rm -rf "$BIN_DIR" "$TMP_DIR" "$GENERATED_DIR"
+    rm -rf "$WORK_ROOT_ABS/self-test"
+    rm -f "$CORPUS_RAW" "$CORPUS_LIST" "$RUNS_TSV" "$SELF_TSV" "$RETAINED_SIGNATURES" "$AOT_BIN"
+}
+trap cleanup_sanitizer_fuzz EXIT
+
+rm -rf "$LOG_DIR" "$REPRO_DIR" "$BIN_DIR" "$TMP_DIR" "$GENERATED_DIR"
+rm -f "$CORPUS_RAW" "$AOT_BIN"
+if ! mkdir -p "$LOG_DIR" "$REPRO_DIR" "$BIN_DIR" "$TMP_DIR" "$GENERATED_DIR" "$(dirname "$TRACE_FILE_ABS")" "$TASK_DIR"; then
+    echo "run_sanitizer_fuzz.sh: failed to create sanitizer-fuzz work directories under $WORK_ROOT_ABS" >&2
+    exit 2
+fi
+: > "$RUNS_TSV" || exit 2
+: > "$SELF_TSV" || exit 2
+: > "$TRACE_FILE_ABS" || exit 2
+: > "$RETAINED_SIGNATURES" || exit 2
 
 if [ "$(uname -s)" = "Darwin" ]; then
     DEFAULT_ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1:strict_string_checks=1:detect_stack_use_after_return=0:symbolize=1"
@@ -106,6 +158,39 @@ fi
 DEFAULT_UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-$DEFAULT_ASAN_OPTIONS}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-$DEFAULT_UBSAN_OPTIONS}"
+
+PEAK_ARTIFACT_KB=0
+RETAINED_OUT=""
+RETAINED_ERR=""
+
+artifact_usage_kb() {
+    if [ ! -d "$WORK_ROOT_ABS" ]; then
+        echo 0
+        return
+    fi
+    du -sk "$WORK_ROOT_ABS" 2>/dev/null | awk '{print $1 + 0}'
+}
+
+format_kb() {
+    awk -v kb="$1" 'BEGIN {
+        if (kb >= 1048576) printf "%.2f GiB", kb / 1048576;
+        else if (kb >= 1024) printf "%.1f MiB", kb / 1024;
+        else printf "%d KiB", kb;
+    }'
+}
+
+check_disk_budget() {
+    local context="$1"
+    local used
+    used="$(artifact_usage_kb)"
+    if [ "$used" -gt "$PEAK_ARTIFACT_KB" ]; then
+        PEAK_ARTIFACT_KB="$used"
+    fi
+    if [ "$used" -gt "$MAX_ARTIFACTS_KB" ]; then
+        echo "run_sanitizer_fuzz.sh: artifact budget exceeded during $context: $WORK_ROOT_ABS uses $(format_kb "$used") > cap $(format_kb "$MAX_ARTIFACTS_KB") (--max-artifacts-gb $MAX_ARTIFACTS_GB, env ESHKOL_FUZZ_MAX_GB). Aborting." >&2
+        exit 3
+    fi
+}
 
 run_guarded() {
     LC_ALL=C LANG=C perl -MPOSIX=':sys_wait_h' -e '
@@ -144,6 +229,106 @@ append_run() {
 
 path_hash() {
     printf '%s' "$1" | cksum | awk '{print $1}'
+}
+
+has_sanitizer_report() {
+    grep -E 'ERROR: AddressSanitizer:|runtime error:|UndefinedBehaviorSanitizer:DEADLYSIGNAL|SUMMARY: AddressSanitizer:|SUMMARY: UndefinedBehaviorSanitizer:' "$@" >/dev/null 2>&1
+}
+
+sanitizer_top_frame() {
+    python3 - "$REPO_ROOT" "$@" <<'PY'
+import os
+import re
+import sys
+
+repo_root = os.path.abspath(sys.argv[1])
+paths = sys.argv[2:]
+lines = []
+for path in paths:
+    try:
+        with open(path, "r", errors="replace") as f:
+            lines.extend(f.read().splitlines())
+    except OSError:
+        pass
+
+start = None
+for i, line in enumerate(lines):
+    if (
+        "ERROR: AddressSanitizer:" in line
+        or "UndefinedBehaviorSanitizer:DEADLYSIGNAL" in line
+        or ("runtime error:" in line and "SUMMARY:" not in line)
+        or "SUMMARY: AddressSanitizer:" in line
+        or "SUMMARY: UndefinedBehaviorSanitizer:" in line
+    ):
+        start = i
+        break
+
+if start is None:
+    raise SystemExit(1)
+
+top = ""
+for line in lines[start : start + 90]:
+    if re.match(r"\s*#0\b", line):
+        top = line.strip()
+        break
+if not top:
+    for line in lines[start : start + 90]:
+        if "SUMMARY:" in line:
+            top = line.strip()
+            break
+if not top:
+    top = lines[start].strip()
+
+top = top.replace(repo_root, ".")
+top = re.sub(r"0x[0-9a-fA-F]+", "0xADDR", top)
+top = re.sub(r"\s+", " ", top)
+print(top[:240])
+PY
+}
+
+retain_sanitizer_logs() {
+    local src="$1" axis="$2" phase="$3" idx="$4" out="$5" err="$6"
+    local top sig_hash src_hash retained_count base repro
+
+    RETAINED_OUT=""
+    RETAINED_ERR=""
+
+    if ! has_sanitizer_report "$out" "$err"; then
+        rm -f "$out" "$err"
+        return
+    fi
+
+    top="$(sanitizer_top_frame "$out" "$err" || true)"
+    if [ -z "$top" ]; then
+        top="unknown sanitizer signature"
+    fi
+
+    if grep -Fx -- "$top" "$RETAINED_SIGNATURES" >/dev/null 2>&1; then
+        rm -f "$out" "$err"
+        return
+    fi
+
+    retained_count="$(wc -l < "$RETAINED_SIGNATURES" | tr -d ' ')"
+    if [ "$retained_count" -ge "$MAX_RETAINED_CRASHES" ]; then
+        rm -f "$out" "$err"
+        return
+    fi
+
+    sig_hash="$(path_hash "$top")"
+    src_hash="$(path_hash "$src")"
+    RETAINED_OUT="$LOG_DIR/${idx}_${axis}_${phase}_${sig_hash}_${src_hash}.out"
+    RETAINED_ERR="$LOG_DIR/${idx}_${axis}_${phase}_${sig_hash}_${src_hash}.err"
+    mv "$out" "$RETAINED_OUT"
+    mv "$err" "$RETAINED_ERR"
+    printf '%s\n' "$top" >> "$RETAINED_SIGNATURES"
+
+    base="$(basename "$src")"
+    repro="$REPRO_DIR/${sig_hash}_${src_hash}_${base}.crash"
+    if [ ! -f "$repro" ]; then
+        cp "$src" "$repro" 2>/dev/null || true
+    fi
+
+    check_disk_budget "retaining sanitizer repro for ${src#$REPO_ROOT/}"
 }
 
 run_self_test() {
@@ -193,6 +378,8 @@ C
         -fno-omit-frame-pointer "$src" -o "$bin" >"$cout" 2>"$cerr"
     local crc=$?
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
+        rm -f "$bin"
+        rm -rf "$bin.dSYM"
         {
             printf 'status\tFAIL\n'
             printf 'summary\tSynthetic sanitizer repro failed to compile rc=%s\n' "$crc"
@@ -205,6 +392,8 @@ C
 
     run_guarded 15 "$bin" >"$out" 2>"$err"
     local rrc=$?
+    rm -f "$bin"
+    rm -rf "$bin.dSYM"
     if grep -E 'ERROR: AddressSanitizer:|runtime error:|SUMMARY: UndefinedBehaviorSanitizer:' "$out" "$err" >/dev/null 2>&1; then
         {
             printf 'status\tPASS\n'
@@ -228,44 +417,50 @@ collect_corpus() {
     : > "$CORPUS_RAW"
     if [ "$NO_GENERATED" -eq 0 ] && [ "$COUNT" -gt 0 ]; then
         python3 scripts/gen_differential.py \
-            --seed "$SEED" --count "$COUNT" --emit-only "$GENERATED_DIR"
-        find "$GENERATED_DIR" -type f -name '*.esk' -print >> "$CORPUS_RAW"
+            --seed "$SEED" --count "$COUNT" --emit-only "$GENERATED_DIR" || exit 2
+        find "$GENERATED_DIR" -type f -name '*.esk' -print >> "$CORPUS_RAW" || exit 2
     fi
-    find "$REPO_ROOT/tests" -type f -name '*.esk' -print >> "$CORPUS_RAW"
-    sort -u "$CORPUS_RAW" > "$CORPUS_LIST"
+    find "$REPO_ROOT/tests" -type f -name '*.esk' -print >> "$CORPUS_RAW" || exit 2
+    sort -u "$CORPUS_RAW" > "$CORPUS_LIST" || exit 2
 }
 
 run_r_axis() {
     local src="$1" idx="$2"
     local h out err rc
     h="$(path_hash "$src")"
-    out="$LOG_DIR/${idx}_r_${h}.out"
-    err="$LOG_DIR/${idx}_r_${h}.err"
+    out="$TMP_DIR/${idx}_r_${h}.out"
+    err="$TMP_DIR/${idx}_r_${h}.err"
     run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" -r "$src" >"$out" 2>"$err"
     rc=$?
-    append_run "$src" "r" "run" "$rc" "$out" "$err"
+    retain_sanitizer_logs "$src" "r" "run" "$idx" "$out" "$err"
+    append_run "$src" "r" "run" "$rc" "$RETAINED_OUT" "$RETAINED_ERR"
 }
 
 run_aot_axis() {
     local src="$1" idx="$2" axis="$3" opt="$4"
     local h bin cout cerr out err crc rrc
     h="$(path_hash "$src")"
-    bin="$BIN_DIR/${idx}_${axis}_${h}.bin"
-    cout="$LOG_DIR/${idx}_${axis}_${h}.compile.out"
-    cerr="$LOG_DIR/${idx}_${axis}_${h}.compile.err"
-    out="$LOG_DIR/${idx}_${axis}_${h}.run.out"
-    err="$LOG_DIR/${idx}_${axis}_${h}.run.err"
+    bin="$AOT_BIN"
+    cout="$TMP_DIR/${idx}_${axis}_${h}.compile.out"
+    cerr="$TMP_DIR/${idx}_${axis}_${h}.compile.err"
+    out="$TMP_DIR/${idx}_${axis}_${h}.run.out"
+    err="$TMP_DIR/${idx}_${axis}_${h}.run.err"
 
+    rm -f "$bin"
     run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" "$opt" "$src" -o "$bin" >"$cout" 2>"$cerr"
     crc=$?
-    append_run "$src" "$axis" "compile" "$crc" "$cout" "$cerr"
+    retain_sanitizer_logs "$src" "$axis" "compile" "$idx" "$cout" "$cerr"
+    append_run "$src" "$axis" "compile" "$crc" "$RETAINED_OUT" "$RETAINED_ERR"
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
+        rm -f "$bin"
         return
     fi
 
     run_guarded "$TIMEOUT_RUN" "$bin" >"$out" 2>"$err"
     rrc=$?
-    append_run "$src" "$axis" "run" "$rrc" "$out" "$err"
+    retain_sanitizer_logs "$src" "$axis" "run" "$idx" "$out" "$err"
+    append_run "$src" "$axis" "run" "$rrc" "$RETAINED_OUT" "$RETAINED_ERR"
+    rm -f "$bin"
 }
 
 write_report() {
@@ -615,16 +810,12 @@ with open(report_path, "w") as f:
     f.write("- Generated differential fuzz: seed `%s`, count `%s`\n" % (seed, count))
     f.write("- ASAN_OPTIONS: `%s`\n" % asan_options)
     f.write("- UBSAN_OPTIONS: `%s`\n" % ubsan_options)
-    f.write("- Raw logs: `%s`\n" % rel(work_root))
+    f.write("- Retained sanitizer artifacts: `%s`\n" % rel(work_root))
     f.write("- ICC trace: `%s`\n\n" % rel(trace_file))
 
     f.write("## Teeth Check\n\n")
     f.write("- Status: `%s`\n" % self_status)
     f.write("- Summary: %s\n" % self_summary)
-    if self_data.get("source"):
-        f.write("- Synthetic repro: `%s`\n" % rel(self_data["source"]))
-    if self_data.get("stderr"):
-        f.write("- Synthetic stderr: `%s`\n" % rel(self_data["stderr"]))
     f.write("\n")
 
     f.write("## Coverage\n\n")
@@ -701,14 +892,24 @@ echo "  repo: $REPO_ROOT"
 echo "  build: $BUILD_DIR_ABS"
 echo "  report: $REPORT_ABS"
 echo "  logs: $WORK_ROOT_ABS"
+echo "  artifact cap: $(format_kb "$MAX_ARTIFACTS_KB")"
+echo "  retained crash cap: $MAX_RETAINED_CRASHES"
 echo
 
+check_disk_budget "startup"
 run_self_test
+check_disk_budget "self-test"
 
 if [ "$SELF_TEST_ONLY" -eq 1 ]; then
     FINISHED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
     write_report "$FINISHED_AT" 0
-    exit $?
+    report_rc=$?
+    check_disk_budget "report"
+    cleanup_sanitizer_fuzz
+    final_artifact_kb="$(artifact_usage_kb)"
+    [ "$final_artifact_kb" -gt "$PEAK_ARTIFACT_KB" ] && PEAK_ARTIFACT_KB="$final_artifact_kb"
+    echo "Artifact usage: final=$(format_kb "$final_artifact_kb") peak=$(format_kb "$PEAK_ARTIFACT_KB") cap=$(format_kb "$MAX_ARTIFACTS_KB")"
+    exit "$report_rc"
 fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
@@ -721,6 +922,7 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 collect_corpus
+check_disk_budget "corpus collection"
 TOTAL_SOURCES=$(wc -l < "$CORPUS_LIST" | tr -d ' ')
 echo "Corpus: $TOTAL_SOURCES unique .esk files"
 if [ "$LIMIT" -gt 0 ]; then
@@ -735,12 +937,16 @@ while IFS= read -r src; do
     if [ "$LIMIT" -gt 0 ] && [ "$idx" -gt "$LIMIT" ]; then
         break
     fi
+    check_disk_budget "before corpus file $idx (${src#$REPO_ROOT/})"
     if [ $((idx % 25)) -eq 1 ]; then
         printf '  [%d/%d] %s\n' "$idx" "$TOTAL_SOURCES" "${src#$REPO_ROOT/}"
     fi
     run_r_axis "$src" "$idx"
+    check_disk_budget "after corpus file $idx -r"
     run_aot_axis "$src" "$idx" "aot-o0" "-O0"
+    check_disk_budget "after corpus file $idx AOT -O0"
     run_aot_axis "$src" "$idx" "aot-o2" "-O2"
+    check_disk_budget "after corpus file $idx AOT -O2"
 done < "$CORPUS_LIST"
 
 if [ "$LIMIT" -gt 0 ] && [ "$LIMIT" -lt "$TOTAL_SOURCES" ]; then
@@ -751,4 +957,10 @@ fi
 
 FINISHED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 write_report "$FINISHED_AT" "$TOTAL_REPORTED"
-exit $?
+report_rc=$?
+check_disk_budget "report"
+cleanup_sanitizer_fuzz
+final_artifact_kb="$(artifact_usage_kb)"
+[ "$final_artifact_kb" -gt "$PEAK_ARTIFACT_KB" ] && PEAK_ARTIFACT_KB="$final_artifact_kb"
+echo "Artifact usage: final=$(format_kb "$final_artifact_kb") peak=$(format_kb "$PEAK_ARTIFACT_KB") cap=$(format_kb "$MAX_ARTIFACTS_KB")"
+exit "$report_rc"
