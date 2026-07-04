@@ -1180,6 +1180,24 @@ oracles:
         severity: high
         label: Seeded 200-program fuzz run finds no cross-axis divergence
         action: ./scripts/run_differential_fuzz.sh --seed 42 --count 200
+
+  # Metamorphic/property oracle (P7c). Generated probes use a deterministic
+  # xorshift64* PRNG seeded by case index and assert algebraic laws as the
+  # oracle: list/vector identities, sorting idempotence/permutation/order,
+  # exact numeric laws, string/char and number roundtrips, tensor save/load,
+  # control laws, and repeated-run byte determinism. XKNOWN lines must cite
+  # an open ESH task carrying the counterexample.
+  # ─────────────────────────────────────────────────────────────────
+  - name: metamorphic-laws
+    aliases: [metamorphic, p7c-metamorphic, property-laws]
+    requires:
+      - runtime_event:
+          event_kinds: [metamorphic]
+          event_names: ["metamorphic_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Deterministic metamorphic law corpus passes with only tracked XKNOWN violations
+        action: ./scripts/run_metamorphic.sh
   # Adversarial pillar P2 — feature-pair composition matrix
   # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). scripts/run_edge_matrix.sh
   # runs the generated corpus in tests/edge_matrix/generated/ under both
