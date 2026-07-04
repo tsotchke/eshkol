@@ -1,0 +1,27 @@
+{
+  "id": "ESH-0150",
+  "title": "apply with leading args before the final list SIGSEGVs",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS apply prepends the leading args to the final list arg: (apply + 1 2 '(3 4 5)) must return 15. Previously CallApplyCodegen::apply hardcoded variables[1] as THE list and ignored any leading args, so it walked the integer 1 as a cons chain and SIGSEGV'd.",
+  "file_globs": [
+    "lib/backend/call_apply_codegen.cpp",
+    "tests/r7rs/reference_diff_fixes_test.esk"
+  ],
+  "root_cause": "CallApplyCodegen::apply used op->call_op.variables[1] as the argument list unconditionally. For (apply proc arg1 ... argN list) it must treat the LAST variadic arg as the list and prepend arg1..argN. The old code fed a non-list leading arg into the cons-walking machinery, dereferencing a raw integer as a pointer.",
+  "fix": "In apply(): take variables[num_vars-1] as the final list, then cons the leading args variables[1..num_vars-2] onto it in reverse order via create_cons_callback_ + ensureTagged. The fully-materialised list feeds every downstream path (builtin reductions, user functions, closures, captured procedures) unchanged.",
+  "acceptance": [
+    "(apply + 1 2 '(3 4 5)) => 15 under -r and AOT",
+    "apply with 0/1/2/3 leading args correct for builtins, user procs, captured procs",
+    "no SIGSEGV"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/reference_diff_fixes_test.esk -r",
+    "./build/eshkol-run tests/r7rs/reference_diff_fixes_test.esk -o /tmp/r7rs && /tmp/r7rs",
+    "bash scripts/run_sicp_smoke.sh"
+  ],
+  "blocked_by": []
+}

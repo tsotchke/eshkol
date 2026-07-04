@@ -1,0 +1,28 @@
+{
+  "id": "ESH-0151",
+  "title": "multi-arg vector-map/vector-for-each ignore extra vectors",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS vector-map/vector-for-each are variadic over N vectors, applying the proc to corresponding elements up to the shortest length. (vector-map + #(1 2 3) #(10 20 30)) must return #(11 22 33); previously returned the first vector unchanged because only variables[1] was consumed.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "tests/r7rs/reference_diff_fixes_test.esk"
+  ],
+  "root_cause": "The vector-for-each and vector-map codegen in llvm_codegen.cpp only read op->call_op.variables[1] (a single vector) and had duplicated tensor/vector loop paths. Extra vector args were silently dropped, and the closure was called with one element.",
+  "fix": "Rewrote both to gather all N vector args (each may be a tensor or Scheme vector, resolved per-arg via a header-subtype diamond), compute the shortest length, and run a single alloca-counter loop that loads the i-th element from every source (via a per-element tensor/vector loadElem helper) and calls the closure with all N. vector-map stores each result into a fresh Scheme vector sized to the shortest length. Kept the alloca+store loop pattern (no PHI counters across codegenClosureCall).",
+  "acceptance": [
+    "(vector-map + #(1 2 3) #(10 20 30)) => #(11 22 33)",
+    "3-vector vector-map correct; iterates to shortest length",
+    "vector-for-each side effects over N vectors correct",
+    "single-vector cases unchanged"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/reference_diff_fixes_test.esk -r",
+    "./build/eshkol-run tests/features/r7rs_wave2_test.esk -r",
+    "bash scripts/run_sicp_smoke.sh"
+  ],
+  "blocked_by": []
+}
