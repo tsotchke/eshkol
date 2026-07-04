@@ -25,8 +25,25 @@
 #include <atomic>
 #include <cstddef>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+
+// Detect compilation under a sanitizer. Sanitizers (ASan/TSan/MSan) install
+// their own fatal-signal handlers and their own alternate signal stack; if we
+// register on top of them we either fight their diagnostics or double-register.
+// Under a sanitizer we leave the fault signals (SIGSEGV/SIGBUS/SIGILL/SIGFPE)
+// to the sanitizer and only manage the graceful SIGINT/SIGTERM path.
+#if defined(__has_feature)
+#  if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || \
+      __has_feature(memory_sanitizer)
+#    define ESHKOL_UNDER_SANITIZER 1
+#  endif
+#endif
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+#  define ESHKOL_UNDER_SANITIZER 1
+#endif
 
 namespace {
 
@@ -59,6 +76,16 @@ struct sigaction g_old_sigpipe_handler;
 struct sigaction g_old_sigsegv_handler;
 struct sigaction g_old_sigbus_handler;
 struct sigaction g_old_sigabrt_handler;
+struct sigaction g_old_sigill_handler;
+struct sigaction g_old_sigfpe_handler;
+
+// Alternate signal stack so the fatal-signal handler can run even when the
+// normal stack has been exhausted by deep recursion. Without SA_ONSTACK, a
+// stack-overflow SIGSEGV/SIGILL cannot invoke a handler that itself needs
+// stack, so the diagnostic never prints and the process dies silently.
+void* g_altstack_mem = nullptr;
+stack_t g_altstack_prev;          // previous altstack (for restoration)
+bool g_altstack_installed = false;  // true only if WE installed the altstack
 #endif
 bool g_signals_installed = false;
 
@@ -120,23 +147,51 @@ LONG WINAPI eshkol_unhandled_exception_filter(EXCEPTION_POINTERS* exception_info
 }
 #endif
 
-/* Bug AA: handler for fatal synchronous signals (SIGSEGV/SIGBUS/SIGABRT).
- * The default action for these is to terminate without flushing any stdio
- * buffers, which means a `(display "step 1") (newline)` issued before a crash
- * never reaches the terminal.
+#ifndef _WIN32
+// Async-signal-safe hex writer for a pointer/address (no printf, no malloc).
+inline void eshkol_signal_safe_write_ptr(const void* p) {
+    uintptr_t v = (uintptr_t)p;
+    constexpr int kNibbles = (int)(sizeof(uintptr_t) * 2);
+    char buf[2 + kNibbles];
+    buf[0] = '0';
+    buf[1] = 'x';
+    static const char hexd[] = "0123456789abcdef";
+    for (int i = 0; i < kNibbles; ++i) {
+        buf[2 + i] = hexd[(v >> ((kNibbles - 1 - i) * 4)) & 0xF];
+    }
+    eshkol_signal_safe_write(buf, sizeof(buf));
+}
+
+/* Bug AA / ESH-0119: handler for fatal synchronous signals
+ * (SIGSEGV/SIGBUS/SIGILL/SIGFPE). The default action for these is to terminate
+ * without flushing any stdio buffers, which means a `(display "step 1")
+ * (newline)` issued before a crash never reaches the terminal.
  *
- * Strategy: write a minimal one-line diagnostic to stderr, restore the default
- * disposition for this signal, and re-raise it so the kernel produces the
- * normal coredump / 128+signum exit code.
+ * ESH-0119: stack overflow from deep recursion frequently surfaces as SIGILL
+ * (rc 132) — not just SIGSEGV/SIGBUS — so SIGILL must be caught too, otherwise
+ * the depth limit is a SILENT crash instead of a diagnosable failure. This
+ * handler is installed with SA_SIGINFO (for the fault address) and SA_ONSTACK
+ * (so it can run on the alternate signal stack even when the normal stack is
+ * exhausted — a stack-overflow handler that needs stack is itself unreliable).
+ *
+ * Strategy: write a minimal diagnostic to stderr (async-signal-safe: write(),
+ * no malloc), flag likely stack-overflow for the fault signals, restore the
+ * default disposition for this signal, and re-raise it so the kernel produces
+ * the normal coredump / 128+signum exit code.
  */
-void eshkol_fatal_signal_handler(int signum) {
+void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/) {
     const char* name = "unknown";
+    bool likely_overflow = false;
     switch (signum) {
-        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; break;
+        case SIGSEGV: name = "SIGSEGV (segmentation fault)"; likely_overflow = true; break;
 #ifdef SIGBUS
-        case SIGBUS:  name = "SIGBUS (bus error)";           break;
+        case SIGBUS:  name = "SIGBUS (bus error)";           likely_overflow = true; break;
 #endif
-        case SIGABRT: name = "SIGABRT (abort)";              break;
+        case SIGILL:  name = "SIGILL (illegal instruction)"; likely_overflow = true; break;
+#ifdef SIGFPE
+        case SIGFPE:  name = "SIGFPE (arithmetic exception)";                        break;
+#endif
+        case SIGABRT: name = "SIGABRT (abort)";                                      break;
         default: break;
     }
     /* Best-effort flush of stdout/stderr. fflush() is technically not on
@@ -146,12 +201,36 @@ void eshkol_fatal_signal_handler(int signum) {
     std::fflush(stderr);
 
     static const char prefix[] = "\n[Eshkol] fatal signal: ";
-    static const char suffix[] = " — terminating; output above is what made it to stdout before the crash\n";
     eshkol_signal_safe_write(prefix, sizeof(prefix) - 1);
     eshkol_signal_safe_write(name, std::strlen(name));
+
+    // For memory-access faults, report the faulting address.
+    if (info != nullptr && (signum == SIGSEGV
+#ifdef SIGBUS
+        || signum == SIGBUS
+#endif
+        )) {
+        static const char at[] = " at address ";
+        eshkol_signal_safe_write(at, sizeof(at) - 1);
+        eshkol_signal_safe_write_ptr(info->si_addr);
+    }
+
+    if (likely_overflow) {
+        // SIGSEGV/SIGBUS/SIGILL from deep recursion are almost always the
+        // native stack being exhausted. Name that explicitly so the failure is
+        // diagnosable ("recursion too deep") rather than a bare crash.
+        static const char hint[] =
+            "\n[Eshkol] this is most likely a stack overflow (recursion too deep) — "
+            "use tail recursion or reduce the recursion depth\n";
+        eshkol_signal_safe_write(hint, sizeof(hint) - 1);
+    } else {
+        static const char nl[] = "\n";
+        eshkol_signal_safe_write(nl, 1);
+    }
+    static const char suffix[] =
+        "[Eshkol] terminating; output above is what made it to stdout before the crash\n";
     eshkol_signal_safe_write(suffix, sizeof(suffix) - 1);
 
-#ifndef _WIN32
     // Restore default disposition and re-raise so the process exits with
     // the canonical 128+signum code (and dumps core if so configured).
     struct sigaction sa_dfl;
@@ -159,11 +238,11 @@ void eshkol_fatal_signal_handler(int signum) {
     sa_dfl.sa_handler = SIG_DFL;
     sigemptyset(&sa_dfl.sa_mask);
     sigaction(signum, &sa_dfl, nullptr);
-#endif
     std::raise(signum);
     // Unreachable, but defensive.
     eshkol_signal_safe_exit(128 + signum);
 }
+#endif  // !_WIN32
 
 void eshkol_signal_handler(int signum) {
     // Set the volatile flag (signal-safe: volatile sig_atomic_t)
@@ -263,12 +342,58 @@ void eshkol_runtime_init_signals(void) {
         eshkol_warn("Failed to install SIGPIPE handler");
     }
 
-    // Bug AA: install fatal-signal handlers that announce themselves on stderr
-    // before terminating, so the user knows the program crashed.
+    // Bug AA / ESH-0119: install fatal-signal handlers that announce themselves
+    // on stderr before terminating, so the user knows the program crashed and
+    // that a deep-recursion overflow is a diagnosable failure, not a silent
+    // rc132. Under a sanitizer we skip these entirely and let the sanitizer's
+    // own handlers report the fault (avoids double-registration / fighting its
+    // alternate stack and diagnostics).
+#if defined(ESHKOL_UNDER_SANITIZER)
+    (void)g_old_sigsegv_handler;
+    (void)g_old_sigbus_handler;
+    (void)g_old_sigill_handler;
+    (void)g_old_sigfpe_handler;
+    (void)g_old_sigabrt_handler;
+    (void)g_altstack_installed;
+    (void)g_altstack_mem;
+#else
+    // Install an alternate signal stack so the handler can run even when the
+    // normal stack is exhausted (the whole point for stack-overflow SIGILL).
+    // Only install our own if none already exists; otherwise reuse the existing
+    // one via SA_ONSTACK without clobbering it.
+    bool have_altstack = false;
+    stack_t existing;
+    std::memset(&existing, 0, sizeof(existing));
+    if (sigaltstack(nullptr, &existing) == 0) {
+        if (existing.ss_flags & SS_DISABLE) {
+            size_t altsz = (size_t)SIGSTKSZ;
+            if (altsz < (size_t)MINSIGSTKSZ) altsz = (size_t)MINSIGSTKSZ;
+            if (altsz < (size_t)65536)       altsz = (size_t)65536;
+            g_altstack_mem = std::malloc(altsz);
+            if (g_altstack_mem != nullptr) {
+                stack_t ss;
+                std::memset(&ss, 0, sizeof(ss));
+                ss.ss_sp = g_altstack_mem;
+                ss.ss_size = altsz;
+                ss.ss_flags = 0;
+                if (sigaltstack(&ss, &g_altstack_prev) == 0) {
+                    g_altstack_installed = true;
+                    have_altstack = true;
+                } else {
+                    std::free(g_altstack_mem);
+                    g_altstack_mem = nullptr;
+                }
+            }
+        } else {
+            // An alternate stack already exists; reuse it.
+            have_altstack = true;
+        }
+    }
+
     struct sigaction sa_fatal;
     std::memset(&sa_fatal, 0, sizeof(sa_fatal));
-    sa_fatal.sa_handler = eshkol_fatal_signal_handler;
-    sa_fatal.sa_flags = SA_RESETHAND;
+    sa_fatal.sa_sigaction = eshkol_fatal_signal_handler;
+    sa_fatal.sa_flags = SA_SIGINFO | SA_RESETHAND | (have_altstack ? SA_ONSTACK : 0);
     sigemptyset(&sa_fatal.sa_mask);
     if (sigaction(SIGSEGV, &sa_fatal, &g_old_sigsegv_handler) != 0) {
         eshkol_warn("Failed to install SIGSEGV handler");
@@ -278,12 +403,26 @@ void eshkol_runtime_init_signals(void) {
         eshkol_warn("Failed to install SIGBUS handler");
     }
 #endif
+    // ESH-0119: stack overflow from deep recursion frequently surfaces as
+    // SIGILL, so catch it too — this is what turns silent rc132 deaths into a
+    // clean "stack overflow (recursion too deep)" diagnostic.
+    if (sigaction(SIGILL, &sa_fatal, &g_old_sigill_handler) != 0) {
+        eshkol_warn("Failed to install SIGILL handler");
+    }
+#ifdef SIGFPE
+    if (sigaction(SIGFPE, &sa_fatal, &g_old_sigfpe_handler) != 0) {
+        eshkol_warn("Failed to install SIGFPE handler");
+    }
+#endif
     /* Note: we deliberately do NOT install a handler for SIGABRT. The Bug AA
      * fix is about not losing user output when an Eshkol program crashes with
-     * SIGSEGV/SIGBUS. SIGABRT can be raised by libsystem during process
-     * teardown; handling it here can turn clean shutdown into a spurious abort.
+     * SIGSEGV/SIGBUS/SIGILL/SIGFPE. SIGABRT can be raised by libsystem during
+     * process teardown; handling it here can turn clean shutdown into a
+     * spurious abort. It remains on its default disposition, which already
+     * produces a nonzero (128+SIGABRT) exit.
      */
     (void)g_old_sigabrt_handler;
+#endif  // ESHKOL_UNDER_SANITIZER
 #endif
 
     g_signals_installed = true;
@@ -308,11 +447,26 @@ void eshkol_runtime_restore_signals(void) {
     sigaction(SIGINT, &g_old_sigint_handler, nullptr);
     sigaction(SIGTERM, &g_old_sigterm_handler, nullptr);
     sigaction(SIGPIPE, &g_old_sigpipe_handler, nullptr);
+#if !defined(ESHKOL_UNDER_SANITIZER)
     sigaction(SIGSEGV, &g_old_sigsegv_handler, nullptr);
 #ifdef SIGBUS
     sigaction(SIGBUS,  &g_old_sigbus_handler,  nullptr);
 #endif
-    sigaction(SIGABRT, &g_old_sigabrt_handler, nullptr);
+    sigaction(SIGILL,  &g_old_sigill_handler,  nullptr);
+#ifdef SIGFPE
+    sigaction(SIGFPE,  &g_old_sigfpe_handler,  nullptr);
+#endif
+    (void)g_old_sigabrt_handler;
+    // Tear down our alternate signal stack if we installed one.
+    if (g_altstack_installed) {
+        sigaltstack(&g_altstack_prev, nullptr);
+        g_altstack_installed = false;
+    }
+    if (g_altstack_mem != nullptr) {
+        std::free(g_altstack_mem);
+        g_altstack_mem = nullptr;
+    }
+#endif
 #endif
 
     g_signals_installed = false;
