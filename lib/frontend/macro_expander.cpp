@@ -151,6 +151,16 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
 
         switch (op->op) {
             case ESHKOL_CALL_OP:
+            // Descend into quasiquote and unquote/unquote-splicing so macro
+            // calls that a template introduced inside an unquote escape get
+            // re-expanded (e.g. `(car `(,(+ (add1q 0) 1)))`). Note: QUOTE_OP is
+            // deliberately NOT here — quoted forms are literal data and must not
+            // be macro-expanded. Quasiquoted sub-lists are built as (list …)
+            // calls with literal atoms, so real macro calls only ever appear in
+            // unquote regions, which is exactly what we recurse through.
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP:
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = expandNode(*op->call_op.func);
@@ -714,6 +724,13 @@ eshkol_ast_t MacroExpander::substituteBindingsAtIndex(const eshkol_ast_t& ast,
         case ESHKOL_WHEN_OP:
         case ESHKOL_UNLESS_OP:
         case ESHKOL_DO_OP:
+        // Same call_op layout for the quote family — recurse so pattern
+        // variables inside (quasi)quoted data are substituted per-ellipsis
+        // element too (parallels the fix in substituteBindings).
+        case ESHKOL_QUASIQUOTE_OP:
+        case ESHKOL_UNQUOTE_OP:
+        case ESHKOL_UNQUOTE_SPLICING_OP:
+        case ESHKOL_QUOTE_OP:
             if (op->call_op.func) {
                 eshkol_ast_t* new_func = new eshkol_ast_t;
                 *new_func = substituteBindingsAtIndex(*op->call_op.func, bindings, index);
@@ -966,6 +983,18 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
 
         switch (op->op) {
             case ESHKOL_CALL_OP:
+            // quasiquote/unquote/unquote-splicing/quote store their operand(s)
+            // in the same call_op layout (func=nullptr, variables[], num_vars).
+            // R7RS §4.3.2: pattern variables occurring anywhere in a template —
+            // including inside (quasi)quoted data and unquote escapes — must be
+            // replaced by the matched input subforms. Recursing here is what
+            // makes `(car `(,(+ x 1)))`-style macro templates substitute x
+            // (previously these ops hit default: and copied the operand verbatim,
+            // leaving x undefined and collapsing nested expansions).
+            case ESHKOL_QUASIQUOTE_OP:
+            case ESHKOL_UNQUOTE_OP:
+            case ESHKOL_UNQUOTE_SPLICING_OP:
+            case ESHKOL_QUOTE_OP:
                 if (op->call_op.func) {
                     eshkol_ast_t* new_func = new eshkol_ast_t;
                     *new_func = substituteBindings(*op->call_op.func, bindings);

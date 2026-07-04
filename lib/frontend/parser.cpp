@@ -5592,11 +5592,24 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 rule.pattern->list.rest = nullptr;
 
-                // Parse template - store as AST for now
+                // Parse template - store as AST for now.
+                // ESH-0126: a whole-template reader shorthand — 'x / `x / ,x /
+                // ,@x / #(...) — was routed to parse_atom(token), which returns
+                // a degenerate AST without consuming the following datum, so the
+                // datum was mistaken for the rule's closing paren ("expected
+                // closing paren after macro rule template"). This blocks the
+                // idiomatic recursive-macro base case ((_) '()). pushBack +
+                // parse_expression handles every shorthand uniformly (same fix
+                // ESH-0094 applied to the match subject).
                 token = tokenizer.nextToken();
                 eshkol_ast_t template_ast;
                 if (token.type == TOKEN_LPAREN) {
                     template_ast = parse_list(tokenizer);
+                } else if (token.type == TOKEN_QUOTE || token.type == TOKEN_BACKQUOTE ||
+                           token.type == TOKEN_COMMA || token.type == TOKEN_COMMA_AT ||
+                           token.type == TOKEN_VECTOR_START) {
+                    tokenizer.pushBack(token);
+                    template_ast = parse_expression(tokenizer);
                 } else {
                     template_ast = parse_atom(token);
                 }
@@ -5824,11 +5837,18 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                     rule.pattern->list.rest = nullptr;
 
-                    // Parse template
+                    // Parse template (ESH-0126: accept whole-template reader
+                    // shorthands 'x / `x / ,x / ,@x / #(...) via pushBack +
+                    // parse_expression, not parse_atom which drops the datum).
                     token = tokenizer.nextToken();
                     eshkol_ast_t template_ast;
                     if (token.type == TOKEN_LPAREN) {
                         template_ast = parse_list(tokenizer);
+                    } else if (token.type == TOKEN_QUOTE || token.type == TOKEN_BACKQUOTE ||
+                               token.type == TOKEN_COMMA || token.type == TOKEN_COMMA_AT ||
+                               token.type == TOKEN_VECTOR_START) {
+                        tokenizer.pushBack(token);
+                        template_ast = parse_expression(tokenizer);
                     } else {
                         template_ast = parse_atom(token);
                     }

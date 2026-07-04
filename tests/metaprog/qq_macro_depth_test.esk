@@ -1,0 +1,35 @@
+; qq_macro_depth_test.esk
+; Regression test for nested quasiquote in syntax-rules templates.
+;
+; ESH-0127: a pattern variable inside an unquote (,x) within a quasiquote
+;           template was NOT substituted during macro expansion — it was left
+;           free ("Undefined variable: x") and silently evaluated as 0, so
+;           nested applications collapsed (add1q depth 2 gave 1 instead of 2).
+; ESH-0126: a whole-template reader shorthand ('x / `x) was rejected by the
+;           parser ("expected closing paren after macro rule template"), which
+;           blocked the idiomatic recursive-macro base case ((_) '()).
+;
+; Found by the P6e metaprog-depth oracle (qq_macro family).
+
+(require stdlib)
+
+; --- ESH-0127: pattern var under quasiquote/unquote is substituted -----------
+(define-syntax add1q (syntax-rules () ((_ x) (car `(,(+ x 1))))))
+
+(display "d1: ")(display (add1q 0))(newline)                          ; => 1
+(display "d2: ")(display (add1q (add1q 0)))(newline)                  ; => 2
+(display "d3: ")(display (add1q (add1q (add1q 0))))(newline)          ; => 3
+(display "d4: ")(display (add1q (add1q (add1q (add1q 0)))))(newline)  ; => 4
+
+; unquote of a pattern var inside quasiquoted list data
+(define-syntax wrap-a (syntax-rules () ((_ x) (list `(a ,x)))))
+(display "wrap-a: ")(display (wrap-a 5))(newline)                     ; => ((a 5))
+
+; --- ESH-0126: shorthand quote/quasiquote as the WHOLE rule template ---------
+(define-syntax nil  (syntax-rules () ((_) '())))
+(display "nil: ")(display (nil))(newline)                             ; => ()
+
+(define-syntax qq-a (syntax-rules () ((_ x) `(a ,x))))
+(display "qq-a: ")(display (qq-a 7))(newline)                         ; => (a 7)
+
+(display "OK")(newline)
