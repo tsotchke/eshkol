@@ -397,6 +397,13 @@ oracles:
         label: 'No metaprogramming/module family produces a WRONG value at any swept depth'
         action: ./scripts/run_metaprog_depth.sh
       - runtime_event:
+          event_kinds: [nesting_depth]
+          event_names: ["nesting_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Syntax/data nesting-depth sweep: no silent wrong value, no -r/AOT-O0/AOT-O2 divergence at any nested depth'
+        action: ./scripts/run_nesting_depth.sh
+      - runtime_event:
           event_kinds: [metamorphic]
           event_names: ["metamorphic_gate"]
           event_values: ["PASS"]
@@ -1706,3 +1713,30 @@ oracles:
         severity: high
         label: No tensor/collection/string family is WRONG or axis-divergent at any swept depth/size
         action: ./scripts/run_tensor_collection_depth.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Syntax/data NESTING-depth-parametric sweep (adversarial pillar P6c,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_nesting_depth.py
+  # nests every composable syntactic/data construct — quote/quasiquote/
+  # unquote/unquote-splicing, let/let*/letrec/letrec*, lambda + closure-
+  # capture chains, nested vectors/lists, guard/dynamic-wind, cond/if/case,
+  # begin, and deep application chains — parametrically at nesting depth
+  # d=1..N, each carrying a closed-form ground truth.
+  # scripts/run_nesting_depth.sh runs every probe under THREE axes (JIT -r,
+  # AOT -O0, AOT -O2), classifies each cell PASS / WRONG(silent) /
+  # AXIS-DIVERGENCE(-r vs AOT-O0 vs AOT-O2) / LIMIT(clean), and records the
+  # max-correct nesting depth per construct. A WRONG value, an axis
+  # divergence, or a silent crash at any depth flips the gate to FAIL; a
+  # clean LIMIT is a documented capability boundary. Writes
+  # kind:"nesting_depth" events to scripts/icc_traces/nesting_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: nesting-depth
+    aliases: [nesting_depth, nesting-depth-sweep, adversarial-p6c]
+    requires:
+      - runtime_event:
+          event_kinds: [nesting_depth]
+          event_names: ["nesting_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Syntax/data nesting-depth sweep gate (no silent wrong value, no -r/AOT-O0/AOT-O2 divergence, no silent crash at any tested depth)
+        action: ./scripts/run_nesting_depth.sh
