@@ -1,0 +1,5 @@
+{"id":"ESH-0116","status":"done","priority":"high","workstream":"vm/parser",
+ "title":"VM parser: atoll(buf) on rational literal before buf null-terminated — uninitialized-read heisenbug corrupts numerator",
+ "goal":"Found+fixed during the #126 CI investigation. lib/backend/vm_parser.c rational-literal branch called atoll(buf) BEFORE writing the null terminator (terminator was only set on the plain-number path below), so atoll read past the digits into uninitialized stack memory. Stack-layout-dependent: harmless when the stale byte is a non-digit (green on master/arm64), but the #126 symbol-mangling code-size change shifted the stack so the byte became a digit -> (+ 1/3 1/6) printed 2. Fix: write buf[i]=0 before the rational branch. Scanned file: no other atoll/atof(buf) before termination.",
+ "status_note":"FIXED in PR #126 commit f0f2442a. Verified: vm standalone 53/53, sweep_d 11/11 -r+AOT, error_handling 7/7, SICP 88/88, differential 240/240.",
+ "acceptance":["(+ 1/3 1/6)=1/2 in VM; vm suite green on all lanes"],"blocked_by":[],"file_globs":["lib/backend/vm_parser.c"]}

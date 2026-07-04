@@ -1,0 +1,18 @@
+{
+  "id": "ESH-0110",
+  "status": "pending",
+  "priority": "high",
+  "workstream": "adversarial/stdlib-docs-verification",
+  "title": "Stdlib bug batch from docs verification (PR #123): csv-parse reversed rows, partial SIGBUS, div collision, string-copy/NUL, fft->ifft chain corruption, make-pq comparator ignored, memory-store-audit uncallable, mish/tensor-apply",
+  "goal": "10 verified findings from executing all 638 stdlib symbols (repros in PR #123 docs pages): (1) csv-parse returns rows REVERSED (stale reverse over now-LTR string-split; corrupts csv-parse-typed/dataframe headers) - DATA CORRUPTION, fix first; (2) memory-store-audit uncallable (needs event-content-hash not provided by core.memory); (3) div returns () for scalars (collides with codegen tensor div op); (4) partial SIGBUS (apply of captured proc in nested variadic lambda); (5) string-copy 1-arg returns (); builtin string-index/string-contains? truncate at NUL; (6) non-tail list ops silent SIGILL 200k-500k (=known ESH-0108 family); (7) fft->ifft chained in function body corrupts results (breaks fast-convolve); (8) mish broken (tensor-apply rejects user fns); (9) dot on lists SIGSEGV / manifold-distance silently wrong (=known ESH-0069 family); (10) make-pq ignores comparator (always min-heap). Split into per-fix tasks when scheduling; csv-parse + partial + fft-chain are the priority (silent wrong data / crash in common paths).",
+  "acceptance": [
+    "each finding fixed with its docs-page repro passing -r AND AOT; docs pages updated to remove the known-issue notes as they fix"
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "lib/core/data/csv.esk",
+    "lib/core/functional/",
+    "lib/signal/",
+    "lib/core/memory_store.esk"
+  ]
+}

@@ -1329,3 +1329,26 @@ oracles:
         severity: high
         label: Numeric-tower depth sweep clean vs baseline (no new silent-wrong, no regressed max-correct-n)
         action: python3 scripts/gen_numeric_depth.py && ./scripts/run_numeric_depth.sh
+  # Depth-parametric METAPROGRAMMING + MODULE sweep (pillar P6e,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_metaprog_depth.py
+  # generates recursive-macro / ellipsis / nested-ellipsis / match-nest /
+  # quasiquote-macro / module-chain / define-library-chain programs at
+  # depth d=1..N, each carrying a closed-form ground truth.
+  # scripts/run_metaprog_depth.sh runs every program on both native axes
+  # (JIT -r and AOT), diffs the printed "RESULT: <v>" against expected,
+  # and records the max-correct-depth per family. A WRONG value at any
+  # depth (silent wrong answer) flips the sweep event to FAIL; a clean
+  # LIMIT (crash/compile-fail/timeout) is a documented boundary. Writes
+  # kind:"metaprog_depth" events to
+  # scripts/icc_traces/metaprog_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: metaprog-depth
+    aliases: [metaprog_depth, metaprog-depth-sweep, p6e-metaprog]
+    requires:
+      - runtime_event:
+          event_kinds: [metaprog_depth]
+          event_names: ["metaprog_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: No metaprogramming/module family produces a WRONG value at any swept depth
+        action: ./scripts/run_metaprog_depth.sh
