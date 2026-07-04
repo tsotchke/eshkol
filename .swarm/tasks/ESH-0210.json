@@ -1,0 +1,33 @@
+{
+  "id": "ESH-0210",
+  "title": "Deeply curried lambda-application chains SIGSEGV from nesting depth 18 (closure capture-count dispatch aliasing)",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "nesting-depth-parametric/p6c",
+  "note_on_id": "The P6c sweep originally filed this as ESH-0185, but ESH-0185 is reserved for the AD-campaign P0 on the unmerged design branch (PR #147). Refiled here as ESH-0210. The original ledger entry's O(d^2)-codegen-stack-overflow hypothesis was incorrect; see root_cause below.",
+  "goal": "A curried lambda-application chain -- ((((lambda (x1) (lambda (x2) ... (lambda (xd) (+ x1 x2 ... xd)))) 1) 2) ... d) -- was correct only to depth d=17 and SIGSEGVd from d=18 on every axis (JIT -r, AOT -O0, AOT -O2). Make curried chains correct to depth 64+, or at minimum convert the crash into a graceful diagnosed bounded limit.",
+  "root_cause": "NOT a compile-time stack overflow (the compiler handles depth 18+ fine; the AOT object compiles cleanly and crashes only at runtime). The innermost body (+ x1 ... xd) makes the innermost lambda capture all d-1 enclosing parameters, so its closure carries d-1 captures. Every closure call site lowers to an inline (arg_count x capture_count) dispatch matrix in codegenClosureCall (lib/backend/llvm_codegen.cpp), with the capture dimension capped at MAX_CLOSURE_DISPATCH_CAPTURES=16. The matched dispatch index is arg_count*(MAX+1)+num_captures; when num_captures>16 the raw index silently ALIASED into a valid-but-wrong (arg,cap) case (e.g. 17 captures + 1 arg -> index 34 -> the (2 args, 0 captures) case). The target lambda was then invoked through a mismatched LLVM signature, capture pointers landed in the wrong registers/stack slots, and the callee dereferenced a garbage/null capture -> SIGSEGV (the fatal-signal handler mislabelled it 'stack overflow'; it was a null capture-pointer load at address 0x4). Depth 18 => 17 captures => first count past the 16 ceiling.",
+  "fix": [
+    "codegenClosureCall: replace the per-(arg,cap) dispatch matrix with capture OVER-PROVISIONING. The call site switches only on the argument count; each arm passes all MAX_CLOSURE_DISPATCH_CAPTURES capture pointers (contiguous env slots) and the callee -- compiled with exactly its own N<=MAX capture-pointer params -- reads only the first N. Captures follow the fixed args positionally, so the callee's slots line up with the first N pointers; the extra trailing pointers are ignored (ABI-safe on caller-cleanup ABIs, exactly like the pre-existing argument padding), and the over-count capture GEPs are pure address arithmetic that is never dereferenced. Applied to both the non-variadic and variadic paths.",
+    "codegenClosureCall: raise MAX_CLOSURE_DISPATCH_CAPTURES 16 -> 64 (curried chains correct to depth 65). Because captures are over-provisioned rather than switched on, this adds zero dispatch cases -- exactly one call per arg arm regardless of the ceiling.",
+    "codegenClosureCall: add a shared capture-overflow guard (before the variadic/non-variadic split) -- num_captures > 64 branches to eshkol_raise('closure capture limit exceeded ...') with non-zero exit, so counts beyond the ceiling are a clean diagnosed bounded limit instead of the callee reading an unpassed capture pointer.",
+    "Rejected intermediate design: keep the matrix and just raise the ceiling to 64. A (arg x cap) matrix emits O(MAX_CAP) distinct-signature calls per site that -O2 cannot merge -- it made -O2 of closure-heavy code (256 nested closures) ~18x slower (13s->237s, timing out as an axis divergence in the nesting sweep) and blew the -O0 frame (regressed SICP ch4_amb_evaluator). Over-provisioning removes the capture dimension entirely (-O2 of the same probe: 13s->8s)."
+  ],
+  "acceptance": [
+    "Curried lambda-application chain correct well beyond depth 18 -- achieved: correct to depth 65 on all three axes (-r, AOT-O0, AOT-O2).",
+    "A hard boundary that remains is a clean, documented, diagnosed limit (achieved: depth 66+ raises 'closure capture limit exceeded', non-zero exit, no SIGSEGV) AND the max-correct depth recorded by scripts/run_nesting_depth.sh rises materially above 17 (16 -> 64).",
+    "scripts/run_nesting_depth.sh continues to report gate PASS (no silent-wrong, no axis divergence, no silent crash) and lambda_chain's LIMIT cells at d=32/64 become PASS.",
+    "No regression: SICP 88/88, closure suites (closure_edge 40/40, shared_mutable_capture 24/24), autodiff 54/54."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Curried closures are a first-class Scheme idiom; a depth-18 crash boundary was far shallower than the 256+ the rest of the syntax/data nesting surface sustains. Fixing the capture-count dispatch aliasing also removes a whole class of >16-capture closure miscompiles (any closure over more than 16 free variables), not just the curried-chain shape.",
+  "repro": "tests/nesting_depth/generated/nest_lambda_chain_d18.esk ; regression test tests/closures/curried_chain_depth_test.esk",
+  "verifications": [
+    {
+      "date": "2026-07-04",
+      "branch": "fix/curried-lambda-chain-capture",
+      "verdict": "fixed",
+      "evidence": "After the fix: curried chain correct to depth 65 on -r (2145), AOT-O0 (2145) and AOT-O2 (2080 at d=64); depth 66 raises 'closure capture limit exceeded' with exit 1 on every axis (no SIGSEGV). tests/closures/curried_chain_depth_test.esk 10/10 on -r and AOT-O0. Regressions clean: SICP 88/88 (ch4_amb_evaluator restored after the GEP-hoist), closure suites 40/40 + 24/24, autodiff 54/54. scripts/run_nesting_depth.sh gate PASS with lambda_chain max-correct 64 (was 16)."
+    }
+  ]
+}

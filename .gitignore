@@ -145,3 +145,5 @@ package.json
 package-lock.json
 tests/stress/generated/
 tests/metaprog_depth/generated/
+tests/nesting_depth/generated/
+artifacts/nesting-depth/
