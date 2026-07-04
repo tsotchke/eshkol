@@ -1,0 +1,8 @@
+;; list / membership  (R7RS-small portable; reference-differential corpus)
+(display (member 2 '(1 2 3)))(newline)
+(display (memq 'b '(a b c)))(newline)
+(display (memv 2 '(1 2 3)))(newline)
+(display (assoc 2 '((1 . "a") (2 . "b"))))(newline)
+(display (assq 'b '((a 1) (b 2))))(newline)
+(display (assv 2 '((1 . x) (2 . y))))(newline)
+(display (list-copy '(1 2 3)))(newline)

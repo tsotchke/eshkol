@@ -1,0 +1,6 @@
+;; io / write_forms  (R7RS-small portable; reference-differential corpus)
+(write "hello\nworld")(newline)
+(write #\a)(newline)
+(write '(1 "two" #\3 sym))(newline)
+(write 'symbol)(newline)
+(display "hello\nworld")(newline)

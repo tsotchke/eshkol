@@ -1,0 +1,5 @@
+;; list / quasiquote  (R7RS-small portable; reference-differential corpus)
+(display `(1 ,(+ 1 1) ,@(list 3 4) 5))(newline)
+(display `(a (b ,(* 2 3)) c))(newline)
+(display `#(1 ,(+ 2 2) 3))(newline)
+(let ((x 10)) (display `(x is ,x)))(newline)

@@ -1,0 +1,7 @@
+;; list / higher_order  (R7RS-small portable; reference-differential corpus)
+(display (map (lambda (x) (* x x)) '(1 2 3 4)))(newline)
+(display (map + '(1 2 3) '(10 20 30)))(newline)
+(display (map + '(1 2 3) '(10 20 30) '(100 200 300)))(newline)
+(for-each display '(1 2 3))(newline)
+(display (apply + '(1 2 3 4)))(newline)
+(display (apply max '(3 1 4 1 5)))(newline)

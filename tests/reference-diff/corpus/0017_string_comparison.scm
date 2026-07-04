@@ -1,0 +1,6 @@
+;; string / comparison  (R7RS-small portable; reference-differential corpus)
+(display (string=? "abc" "abc"))(newline)
+(display (string<? "abc" "abd"))(newline)
+(display (string>? "b" "a"))(newline)
+(display (string->symbol "foo"))(newline)
+(display (symbol->string 'bar))(newline)
