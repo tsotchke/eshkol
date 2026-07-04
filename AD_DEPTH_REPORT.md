@@ -13,11 +13,11 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 |---|---|---|---|
 | deriv | capnone | 2 | ESH-0118 |
 | deriv | glob | 2 | ESH-0118 |
-| deriv | localparam | 1 | ESH-0119 |
-| deriv | vecref | 1 | ESH-0119 |
+| deriv | localparam | 1 | ESH-0122 |
+| deriv | vecref | 1 | ESH-0122 |
 | gofd | vecref | 1 | ESH-0117 |
 | gradn | capnone | 2 | ESH-0118 |
-| gradn | vecref | 1 | ESH-0119 |
+| gradn | vecref | 1 | ESH-0122 |
 | hessod | vecref | 0 | ESH-0121 |
 | jacod | vecref | 0 | ESH-0120 |
 

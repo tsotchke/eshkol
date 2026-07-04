@@ -1,4 +1,4 @@
-;; ESH-0119 — depth-2 nested derivative that CAPTURES a value returns garbage.
+;; ESH-0122 — depth-2 nested derivative that CAPTURES a value returns garbage.
 ;; Found by the depth-parametric AD oracle (scripts/gen_ad_depth.py).
 ;;
 ;; A single (depth-1) derivative that multiplies the body by a captured

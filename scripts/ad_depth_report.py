@@ -39,21 +39,21 @@ REPORT = os.path.join(ROOT, "AD_DEPTH_REPORT.md")
 BASELINE = {
     ("deriv", "capnone"): 2,
     ("deriv", "glob"): 2,
-    ("deriv", "localparam"): 1,   # d2 returns garbage (ESH-0119)
-    ("deriv", "vecref"): 1,       # d2 returns garbage (ESH-0119)
+    ("deriv", "localparam"): 1,   # d2 returns garbage (ESH-0122)
+    ("deriv", "vecref"): 1,       # d2 returns garbage (ESH-0122)
     ("gradn", "capnone"): 2,
-    ("gradn", "vecref"): 1,       # d2 returns garbage (ESH-0119 capture bug)
+    ("gradn", "vecref"): 1,       # d2 returns garbage (ESH-0122 capture bug)
     ("gofd", "vecref"): 1,        # d>=2 returns 0 (ESH-0117 family)
     ("jacod", "vecref"): 0,       # d1 already returns 0 (ESH-0120)
     ("hessod", "vecref"): 0,      # d1 SIGSEGV (ESH-0121)
 }
 TRACK = {
-    ("deriv", "localparam"): "ESH-0119",
-    ("deriv", "vecref"): "ESH-0119",
+    ("deriv", "localparam"): "ESH-0122",
+    ("deriv", "vecref"): "ESH-0122",
     ("deriv", "capnone"): "ESH-0118",   # d>=3 returns 0
     ("deriv", "glob"): "ESH-0118",
     ("gradn", "capnone"): "ESH-0118",
-    ("gradn", "vecref"): "ESH-0119",
+    ("gradn", "vecref"): "ESH-0122",
     ("gofd", "vecref"): "ESH-0117",
     ("jacod", "vecref"): "ESH-0120",
     ("hessod", "vecref"): "ESH-0121",
