@@ -76,12 +76,30 @@ void TypeSystem::createStructTypes() {
     //     double derivative;  // f1: d/de1   (single-level tangent)
     //     double d2;          // f2: d/de2   (second perturbation slot)
     //     double d12;         // f3: d2/de1 de2 (mixed second-order term)
+    //     // ESH-0117: parallel "reverse-seed derivative" 4-jet dp = d(above)/dep,
+    //     // where ep is the infinitesimal of the reverse-mode gradient's active
+    //     // seed variable (published via eshkol_ad_seed_swap). This lets a nested
+    //     // forward derivative running INSIDE a reverse gradient carry the
+    //     // dependence of ALL its jet coefficients on the captured reverse
+    //     // variable — even at 2-level forward nesting where e1/e2 are both used
+    //     // by the forward perturbations, leaving no free jet slot for ep.
+    //     double dp;          // f4: d(value)/dep
+    //     double dp1;         // f5: d(d/de1)/dep
+    //     double dp2;         // f6: d(d/de2)/dep
+    //     double dp12;        // f7: d(d2/de1 de2)/dep   (the e1 e2 ep triple term)
     // }
+    // Fields 0-3 are UNCHANGED (all first/second-order forward AD, the C runtime
+    // view at offsets 0/8, and every consumer reading value/derivative keep
+    // working bit-compatibly). Fields 4-7 default to 0 for non-mixed-mode use.
     std::vector<llvm::Type*> dual_fields;
     dual_fields.push_back(double_type);  // value  (primal)
     dual_fields.push_back(double_type);  // derivative (slot e1)
     dual_fields.push_back(double_type);  // slot e2
     dual_fields.push_back(double_type);  // mixed e1*e2
+    dual_fields.push_back(double_type);  // dp    : d(value)/dep
+    dual_fields.push_back(double_type);  // dp1   : d(e1)/dep
+    dual_fields.push_back(double_type);  // dp2   : d(e2)/dep
+    dual_fields.push_back(double_type);  // dp12  : d(e1e2)/dep
     dual_number_type = llvm::StructType::create(context, dual_fields, "dual_number");
 
     // Complex number struct type for signal processing and complex analysis

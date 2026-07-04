@@ -20,6 +20,7 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Intrinsics.h>
 #include <llvm/Config/llvm-config.h>
+#include <array>
 #include <unordered_set>
 
 // LLVM VERSION COMPATIBILITY
@@ -57,40 +58,101 @@ AutodiffCodegen::AutodiffCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
 
 namespace {
 
-// Read component `idx` (0=primal,1=e1,2=e2,3=e1e2) of a dual struct value.
+// Read component `idx` of a dual struct value.
+// 0=primal,1=e1,2=e2,3=e1e2 (value 4-jet); 4..7 = the ep-derivative 4-jet
+// (ESH-0117: d(value 4-jet)/dep, ep = reverse-seed infinitesimal).
 inline llvm::Value* dualField(CodegenContext& ctx, llvm::Value* dual, unsigned idx) {
     return ctx.builder().CreateExtractValue(dual, {idx});
 }
 
-// Build a 4-component dual struct value from its components.
-inline llvm::Value* makeDual4(CodegenContext& ctx,
-                              llvm::Value* f0, llvm::Value* f1,
-                              llvm::Value* f2, llvm::Value* f3) {
+// Build a dual from all EIGHT components (value 4-jet v0..v3, ep-deriv 4-jet
+// p0..p3). This is the canonical constructor for the ESH-0117 mixed-mode jet.
+inline llvm::Value* makeDual8(CodegenContext& ctx,
+                              llvm::Value* v0, llvm::Value* v1,
+                              llvm::Value* v2, llvm::Value* v3,
+                              llvm::Value* p0, llvm::Value* p1,
+                              llvm::Value* p2, llvm::Value* p3) {
     llvm::Value* d = llvm::UndefValue::get(ctx.dualNumberType());
     auto& b = ctx.builder();
-    d = b.CreateInsertValue(d, f0, {0});
-    d = b.CreateInsertValue(d, f1, {1});
-    d = b.CreateInsertValue(d, f2, {2});
-    d = b.CreateInsertValue(d, f3, {3});
+    d = b.CreateInsertValue(d, v0, {0});
+    d = b.CreateInsertValue(d, v1, {1});
+    d = b.CreateInsertValue(d, v2, {2});
+    d = b.CreateInsertValue(d, v3, {3});
+    d = b.CreateInsertValue(d, p0, {4});
+    d = b.CreateInsertValue(d, p1, {5});
+    d = b.CreateInsertValue(d, p2, {6});
+    d = b.CreateInsertValue(d, p3, {7});
     return d;
 }
 
-// Apply a scalar unary function g (with value g(a)=fa, g'(a)=fpa, g''(a)=fppa
-// evaluated at the dual's primal) to a dual, propagating BOTH perturbation
-// slots and the mixed second-order term exactly:
+// Build a dual from the value 4-jet only; the ep-derivative 4-jet defaults to
+// zero. Used by every non-mixed-mode construction site — bit-compatible with
+// the historical 4-field dual (fields 4-7 are simply 0).
+inline llvm::Value* makeDual4(CodegenContext& ctx,
+                              llvm::Value* f0, llvm::Value* f1,
+                              llvm::Value* f2, llvm::Value* f3) {
+    llvm::Value* zero = llvm::ConstantFP::get(ctx.doubleType(), 0.0);
+    return makeDual8(ctx, f0, f1, f2, f3, zero, zero, zero, zero);
+}
+
+// Bilinear product of two 4-jets {j0,j1,j2,j3} (monomials 1,e1,e2,e1e2),
+// keeping the mixed e1e2 cross term. Shared by dualMul and the ep-derivative
+// propagation of dualUnaryChain.
+inline std::array<llvm::Value*, 4> jet4Mul(CodegenContext& ctx,
+        llvm::Value* a0, llvm::Value* a1, llvm::Value* a2, llvm::Value* a3,
+        llvm::Value* b0, llvm::Value* b1, llvm::Value* b2, llvm::Value* b3) {
+    auto& b = ctx.builder();
+    llvm::Value* r0 = b.CreateFMul(a0, b0);
+    llvm::Value* r1 = b.CreateFAdd(b.CreateFMul(a1, b0), b.CreateFMul(a0, b1));
+    llvm::Value* r2 = b.CreateFAdd(b.CreateFMul(a2, b0), b.CreateFMul(a0, b2));
+    llvm::Value* r3 = b.CreateFAdd(
+        b.CreateFAdd(b.CreateFMul(a3, b0), b.CreateFMul(a1, b2)),
+        b.CreateFAdd(b.CreateFMul(a2, b1), b.CreateFMul(a0, b3)));
+    return {r0, r1, r2, r3};
+}
+
+// Apply a scalar unary function g to a dual, propagating BOTH forward
+// perturbation slots and the mixed second-order term exactly:
 //   g(u) = g(a) + g'(a)(d1 e1 + d2 e2 + d12 e1e2)
 //                + g''(a)(d1 d2) e1e2      (the only surviving 2nd-order term)
+// where fa=g(a), fpa=g'(a), fppa=g''(a) at the primal a = field 0.
+//
+// ESH-0117: the ep-derivative 4-jet (fields 4-7) propagates by the chain rule
+// as g'(F) ⊗ Fp, where g'(F) is the value 4-jet of the FUNCTION g' evaluated
+// at F (needing g'''=fpppa for its e1e2 component) and Fp is the incoming
+// ep-derivative 4-jet. fpppa may be null when the 3rd derivative is not
+// supplied; then the g''' contribution to the triple (e1 e2 ep) term is
+// dropped — exact whenever ep does not flow through this function's argument
+// (the common case, since a captured reverse variable enters as a
+// multiplicative/additive factor around the shape, not inside a transcendental
+// of the forward variable).
 inline llvm::Value* dualUnaryChain(CodegenContext& ctx, llvm::Value* dual,
-                                   llvm::Value* fa, llvm::Value* fpa, llvm::Value* fppa) {
+                                   llvm::Value* fa, llvm::Value* fpa, llvm::Value* fppa,
+                                   llvm::Value* fpppa = nullptr) {
     auto& b = ctx.builder();
     llvm::Value* d1 = b.CreateExtractValue(dual, {1});
     llvm::Value* d2 = b.CreateExtractValue(dual, {2});
     llvm::Value* d12 = b.CreateExtractValue(dual, {3});
+    llvm::Value* d1d2 = b.CreateFMul(d1, d2);
+    // value 4-jet: chain with (g, g', g'')
     llvm::Value* o1 = b.CreateFMul(fpa, d1);
     llvm::Value* o2 = b.CreateFMul(fpa, d2);
     llvm::Value* o3 = b.CreateFAdd(b.CreateFMul(fpa, d12),
-                                   b.CreateFMul(fppa, b.CreateFMul(d1, d2)));
-    return makeDual4(ctx, fa, o1, o2, o3);
+                                   b.CreateFMul(fppa, d1d2));
+    // g'(F) 4-jet: chain with (g', g'', g''')
+    if (!fpppa) fpppa = llvm::ConstantFP::get(ctx.doubleType(), 0.0);
+    llvm::Value* g0 = fpa;
+    llvm::Value* g1 = b.CreateFMul(fppa, d1);
+    llvm::Value* g2 = b.CreateFMul(fppa, d2);
+    llvm::Value* g3 = b.CreateFAdd(b.CreateFMul(fppa, d12),
+                                   b.CreateFMul(fpppa, d1d2));
+    // ep-derivative: g'(F) ⊗ Fp  (Fp = incoming fields 4-7)
+    llvm::Value* p0 = b.CreateExtractValue(dual, {4});
+    llvm::Value* p1 = b.CreateExtractValue(dual, {5});
+    llvm::Value* p2 = b.CreateExtractValue(dual, {6});
+    llvm::Value* p3 = b.CreateExtractValue(dual, {7});
+    std::array<llvm::Value*, 4> pr = jet4Mul(ctx, g0, g1, g2, g3, p0, p1, p2, p3);
+    return makeDual8(ctx, fa, o1, o2, o3, pr[0], pr[1], pr[2], pr[3]);
 }
 
 } // anonymous namespace
@@ -178,32 +240,49 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     // Push: the callee body runs one perturbation level deeper.
     adPertLevelStore(b.CreateAdd(level, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
 
-    // Seed slot = (level == 0) ? e1(field 1) : e2(field 2), preserving the
-    // components the point already carries (so the outer perturbation survives).
-    llvm::Value* base = safeUnpackDualFromTagged(point_tagged); // {p,d1,d2,d12}
+    // ESH-0117: seed slot by level — level 0 -> e1 (field 1), level 1 -> e2
+    // (field 2), level 2 -> ep (field 4). The ep slot is the THIRD independent
+    // nilpotent perturbation carried by the 8-jet, so THREE simultaneous
+    // forward differentiations nest exactly (gradient-over-derivative-of-
+    // derivative). We preserve the components the point already carries (so the
+    // outer perturbations survive). level >= 3 aliases onto ep (approximate —
+    // beyond the 3 perturbations the 8-jet can represent).
+    llvm::Value* base = safeUnpackDualFromTagged(point_tagged); // 8-jet
     llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* is_l1 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
-    llvm::BasicBlock* l0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e1", fn);
-    llvm::BasicBlock* l1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e2", fn);
-    llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_merge", fn);
-    b.CreateCondBr(is_l0, l0bb, l1bb);
+    llvm::BasicBlock* l0bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e1", fn);
+    llvm::BasicBlock* l1bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_e2", fn);
+    llvm::BasicBlock* lelse = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_ep_chk", fn);
+    llvm::BasicBlock* l2bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_ep", fn);
+    llvm::BasicBlock* mbb   = llvm::BasicBlock::Create(ctx_.context(), "fwd_seed_merge", fn);
+    b.CreateCondBr(is_l0, l0bb, lelse);
 
     b.SetInsertPoint(l0bb);
     llvm::Value* s0 = b.CreateInsertValue(base, one, {1});
     b.CreateBr(mbb);
     llvm::BasicBlock* l0e = b.GetInsertBlock();
 
+    b.SetInsertPoint(lelse);
+    b.CreateCondBr(is_l1, l1bb, l2bb);
+
     b.SetInsertPoint(l1bb);
     llvm::Value* s1 = b.CreateInsertValue(base, one, {2});
     b.CreateBr(mbb);
     llvm::BasicBlock* l1e = b.GetInsertBlock();
 
+    b.SetInsertPoint(l2bb);
+    llvm::Value* s2 = b.CreateInsertValue(base, one, {4});   // ep slot
+    b.CreateBr(mbb);
+    llvm::BasicBlock* l2e = b.GetInsertBlock();
+
     b.SetInsertPoint(mbb);
-    llvm::PHINode* seeded = b.CreatePHI(ctx_.dualNumberType(), 2, "fwd_seeded");
+    llvm::PHINode* seeded = b.CreatePHI(ctx_.dualNumberType(), 3, "fwd_seeded");
     seeded->addIncoming(s0, l0e);
     seeded->addIncoming(s1, l1e);
+    seeded->addIncoming(s2, l2e);
     return packDualToTagged(seeded);
 }
 
@@ -251,6 +330,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     b.SetInsertPoint(nd_vec);
     {
         llvm::Value* nd_is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* nd_is_l1 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* nd_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
         llvm::Value* nd_len = b.CreateLoad(ctx_.int64Type(), nd_ptr);
         llvm::Value* nd_src8 = b.CreateGEP(ctx_.int8Type(), nd_ptr,
@@ -281,12 +361,21 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
         b.SetInsertPoint(nd_body);
         llvm::Value* nd_elem = b.CreateLoad(ctx_.taggedValueType(),
             b.CreateGEP(ctx_.taggedValueType(), nd_src, nd_iv));
-        llvm::Value* nd_ed = safeUnpackDualFromTagged(nd_elem); // {a0,a1,a2,a12}
-        // level 0 → scalar derivative a1; nested → dual slice {a2,a12,0,0}.
+        llvm::Value* nd_ed = safeUnpackDualFromTagged(nd_elem); // 8-jet
+        // level 0 → scalar derivative a1; nested → dual slice carrying the
+        // ep-derivative (ESH-0117): value {a2,a12,0,0}, ep-deriv {ap2,ap12,0,0}
+        // where ap* are the incoming ep-derivative 4-jet (fields 6,7).
         llvm::Value* nd_scalar_elem = tagged_.packDouble(dualField(ctx_, nd_ed, 1));
-        llvm::Value* nd_slice_elem = packDualToTagged(makeDual4(ctx_,
-            dualField(ctx_, nd_ed, 2), dualField(ctx_, nd_ed, 3), nd_zero, nd_zero));
-        llvm::Value* nd_elem_out = b.CreateSelect(nd_is_l0, nd_scalar_elem, nd_slice_elem);
+        llvm::Value* nd_slice_elem = packDualToTagged(makeDual8(ctx_,
+            dualField(ctx_, nd_ed, 2), dualField(ctx_, nd_ed, 3), nd_zero, nd_zero,
+            dualField(ctx_, nd_ed, 6), dualField(ctx_, nd_ed, 7), nd_zero, nd_zero));
+        // level>=2: d/dep slice (value 4-jet = fields 4..7).
+        llvm::Value* nd_slice_ep_elem = packDualToTagged(makeDual8(ctx_,
+            dualField(ctx_, nd_ed, 4), dualField(ctx_, nd_ed, 5),
+            dualField(ctx_, nd_ed, 6), dualField(ctx_, nd_ed, 7),
+            nd_zero, nd_zero, nd_zero, nd_zero));
+        llvm::Value* nd_elem_out = b.CreateSelect(nd_is_l0, nd_scalar_elem,
+            b.CreateSelect(nd_is_l1, nd_slice_elem, nd_slice_ep_elem));
         b.CreateStore(nd_elem_out, b.CreateGEP(ctx_.taggedValueType(), nd_out_elems, nd_iv));
         b.CreateStore(b.CreateAdd(nd_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), nd_i);
         b.CreateBr(nd_cond);
@@ -300,14 +389,21 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     // Scalar path: original extraction.
     b.SetInsertPoint(nd_scalar);
 
-    llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
+    llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // 8-jet
     llvm::Value* is_l0 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* is_l1 = b.CreateICmpEQ(level, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
 
-    llvm::BasicBlock* x0bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar", fn);
-    llvm::BasicBlock* x1bb = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice", fn);
-    llvm::BasicBlock* mbb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_merge", fn);
-    b.CreateCondBr(is_l0, x0bb, x1bb);
+    // ESH-0117: extract w.r.t. THIS level's perturbation slot:
+    //   level 0 -> d/de1 (scalar, + reverse-tape mixed_record if live)
+    //   level 1 -> d/de2 (dual slice in remaining e1/ep perturbations)
+    //   level>=2 -> d/dep (dual slice in remaining e1/e2 perturbations)
+    llvm::BasicBlock* x0bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_scalar", fn);
+    llvm::BasicBlock* xelse = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_nz_chk", fn);
+    llvm::BasicBlock* x1bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice_e2", fn);
+    llvm::BasicBlock* x2bb  = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_slice_ep", fn);
+    llvm::BasicBlock* mbb   = llvm::BasicBlock::Create(ctx_.context(), "fwd_ex_merge", fn);
+    b.CreateCondBr(is_l0, x0bb, xelse);
 
     // level 0: scalar derivative = tangent (e1 component), packed as a double.
     //
@@ -322,7 +418,13 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     // scalar path below is used — identical to the previous behavior.
     b.SetInsertPoint(x0bb);
     llvm::Value* a1 = dualField(ctx_, rd, 1);
-    llvm::Value* a12 = dualField(ctx_, rd, 3);
+    // ESH-0117: the reverse-seed dependence of this derivative's value is the
+    // e1·ep coefficient = d(d/de1)/dep, i.e. the ep-derivative jet's e1 slot
+    // (field 5) — NOT the forward mixed term e1·e2 (field 3). The ep-derivative
+    // dimension carries the dependence through ANY forward nesting depth, so
+    // this is correct for both single-forward (gofd) and 2-level nested
+    // (gofdofd) inners; the old e2-seed hack could only reach depth 1.
+    llvm::Value* a12 = dualField(ctx_, rd, 5);
     llvm::Value* scalar_res = tagged_.packDouble(a1);
     if (ctx_.currentAdTape()) {
         llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
@@ -356,16 +458,39 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 
     // nested: d/de2 (...) = a2 + a12 e1, returned as a dual so an enclosing
     // derivative/gradient reads its e1 coefficient (= the mixed 2nd-order term).
+    // ESH-0117: also project the ep-derivative jet through d/de2 so the enclosing
+    // (outer) derivative still sees the reverse-seed dependence: value slice
+    // {a2,a12,0,0}, ep-deriv slice {d(a2)/dep, d(a12)/dep, 0, 0} = fields {6,7}.
+    // For gofdofd the outer then reads this slice's field-5 (= inner field 7,
+    // the e1·e2·ep triple coefficient) as its dseed — the second-order tape link.
+    b.SetInsertPoint(xelse);
+    b.CreateCondBr(is_l1, x1bb, x2bb);
+
     b.SetInsertPoint(x1bb);
     llvm::Value* slice = packDualToTagged(
-        makeDual4(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3), zero, zero));
+        makeDual8(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3), zero, zero,
+                  dualField(ctx_, rd, 6), dualField(ctx_, rd, 7), zero, zero));
     b.CreateBr(mbb);
     llvm::BasicBlock* x1e = b.GetInsertBlock();
 
+    // level >= 2: d/dep. In the 8-jet {1,e1,e2,ep,e1e2,e1ep,e2ep,e1e2ep}
+    // (fields 0..7), d/dep maps each ep-containing monomial to its ep-free part:
+    //   ep(f4)->1, e1ep(f5)->e1, e2ep(f6)->e2, e1e2ep(f7)->e1e2.
+    // So the remaining slice's value 4-jet {1,e1,e2,e1e2} = fields {4,5,6,7}.
+    // The outer forward level then reads its e1/e2 coefficients as usual.
+    b.SetInsertPoint(x2bb);
+    llvm::Value* slice_ep = packDualToTagged(
+        makeDual8(ctx_, dualField(ctx_, rd, 4), dualField(ctx_, rd, 5),
+                  dualField(ctx_, rd, 6), dualField(ctx_, rd, 7),
+                  zero, zero, zero, zero));
+    b.CreateBr(mbb);
+    llvm::BasicBlock* x2e = b.GetInsertBlock();
+
     b.SetInsertPoint(mbb);
-    llvm::PHINode* res = b.CreatePHI(ctx_.taggedValueType(), 2, "fwd_extracted");
+    llvm::PHINode* res = b.CreatePHI(ctx_.taggedValueType(), 3, "fwd_extracted");
     res->addIncoming(scalar_res, x0e);
     res->addIncoming(slice, x1e);
+    res->addIncoming(slice_ep, x2e);
     b.CreateStore(res, nd_slot);
     b.CreateBr(nd_done);
 
@@ -380,14 +505,16 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 // the tape (that path drops the forward tangent — the mixed-mode bug).
 // Instead it is frozen to its value as a dual number, and — when it is the
 // gradient pass's published active seed variable (eshkol_ad_seed_flag) — its
-// e2 slot is seeded with 1.0 so the 4-jet carries the mixed e1e2 coefficient
-// d(result)/d(seed) to popAndExtractForward, which records the dependency
-// back onto the tape (eshkol_ad_mixed_record).
-// The e2 seed is only exact when the derivative body runs at pert level 1
-// (one forward level inside the reverse tape); deeper forward nesting has no
-// free slot in the 4-jet, so the seed is dropped there (level != 1 → 0.0),
-// degrading to the previous no-dependency behavior instead of corrupting the
-// x-perturbation.
+// ep-DERIVATIVE slot (field 4, d(value)/dep) is seeded with 1.0.
+//
+// ESH-0117: the ep-derivative is a SEPARATE jet dimension from the two forward
+// perturbation slots e1/e2, so it survives arbitrary forward nesting depth.
+// (The previous mechanism seeded the e2 slot, which collided with the inner
+// forward perturbation at 2-level nesting — gradient over derivative-of-
+// derivative — and had to be masked off at level != 1, losing the dependency.)
+// The 8-jet now carries d(result 4-jet)/d(seed) through any depth; the outer
+// derivative's popAndExtractForward reads the surviving e1·ep coefficient and
+// records the dependency back onto the tape (eshkol_ad_mixed_record).
 llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagged) {
     if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
         return operand_tagged;
@@ -417,9 +544,12 @@ llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagge
     llvm::BasicBlock* check_exit = b.GetInsertBlock(); // subtype check adds blocks
     b.CreateCondBr(is_ad, lift_bb, merge_bb);
 
-    // Lift: dual = {node->value, 0, seed_flag, 0}. seed_flag comes from the
-    // runtime (thread-local __ad_active_seed_node) so it works identically in
-    // JIT and AOT, and is masked to pert level 1 (see note above).
+    // Lift: value 4-jet = {node->value, 0, 0, 0}; ep-derivative 4-jet =
+    // {seed_flag, 0, 0, 0} — i.e. field 4 (d(value)/dep) = 1.0 iff this node IS
+    // the active reverse seed. seed_flag comes from the runtime (thread-local
+    // __ad_active_seed_node) so it works identically in JIT and AOT, and it is
+    // NOT masked by pert level: the ep-derivative dimension is independent of
+    // the forward perturbation slots and survives any nesting depth (ESH-0117).
     b.SetInsertPoint(lift_bb);
     llvm::Value* node_ptr = tagged_.unpackPtr(operand_tagged);
     llvm::Value* node_val = loadNodeValue(node_ptr);
@@ -428,10 +558,8 @@ llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagge
         llvm::FunctionType::get(ctx_.doubleType(), {ctx_.ptrType()}, false));
     llvm::Value* raw_flag = b.CreateCall(seed_flag_fn, {node_ptr});
     llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    llvm::Value* level_is_1 = b.CreateICmpEQ(level,
-        llvm::ConstantInt::get(ctx_.int64Type(), 1));
-    llvm::Value* flag = b.CreateSelect(level_is_1, raw_flag, zero);
-    llvm::Value* lifted = packDualToTagged(makeDual4(ctx_, node_val, zero, flag, zero));
+    llvm::Value* lifted = packDualToTagged(
+        makeDual8(ctx_, node_val, zero, zero, zero, raw_flag, zero, zero, zero));
     llvm::BasicBlock* lift_exit = b.GetInsertBlock(); // packDualToTagged may add blocks
     b.CreateBr(merge_bb);
 
@@ -480,8 +608,9 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
 
     // Allocate space for dual number on the heap (arena)
-    // dual_number is 32 bytes (four doubles: primal, d1, d2, d12)
-    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 32);
+    // ESH-0117: dual_number is 64 bytes (eight doubles: value 4-jet
+    // {primal,d1,d2,d12} + ep-derivative 4-jet {dp,dp1,dp2,dp12}).
+    llvm::Value* size = llvm::ConstantInt::get(ctx_.sizeType(), 64);
     llvm::Function* alloc_func = mem_.getArenaAllocate();
     if (!alloc_func) {
         eshkol_warn("packDualToTagged: arena_allocate not found");
@@ -557,12 +686,10 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
     llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
     llvm::Value* primal_final = ctx_.builder().CreateSelect(is_double, primal_bc, primal_si, "sudft_primal");
-    llvm::Value* synth_dual = llvm::UndefValue::get(ctx_.dualNumberType());
-    llvm::Value* synth_zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    // ESH-0117: start from a fully-zeroed 8-field dual so the e2/e1e2 and the
+    // ep-derivative 4-jet (fields 4-7) are 0; only the primal is filled.
+    llvm::Value* synth_dual = llvm::ConstantAggregateZero::get(ctx_.dualNumberType());
     synth_dual = ctx_.builder().CreateInsertValue(synth_dual, primal_final, {0});
-    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {1});
-    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {2});
-    synth_dual = ctx_.builder().CreateInsertValue(synth_dual, synth_zero, {3});
     llvm::BasicBlock* scalar_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_bb);
 
@@ -576,26 +703,24 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
 // Dual arithmetic (4-component jets). Each is the exact truncated-Taylor
 // rule for v = f0 + f1 e1 + f2 e2 + f3 e1e2.
 
-// (a + b): componentwise.
+// (a + b): componentwise over all 8 jet components (value 4-jet + ep-deriv).
 llvm::Value* AutodiffCodegen::dualAdd(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
-    llvm::Value* r0 = b.CreateFAdd(dualField(ctx_, dual_a, 0), dualField(ctx_, dual_b, 0));
-    llvm::Value* r1 = b.CreateFAdd(dualField(ctx_, dual_a, 1), dualField(ctx_, dual_b, 1));
-    llvm::Value* r2 = b.CreateFAdd(dualField(ctx_, dual_a, 2), dualField(ctx_, dual_b, 2));
-    llvm::Value* r3 = b.CreateFAdd(dualField(ctx_, dual_a, 3), dualField(ctx_, dual_b, 3));
-    return makeDual4(ctx_, r0, r1, r2, r3);
+    llvm::Value* r[8];
+    for (unsigned i = 0; i < 8; ++i)
+        r[i] = b.CreateFAdd(dualField(ctx_, dual_a, i), dualField(ctx_, dual_b, i));
+    return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
-// (a - b): componentwise.
+// (a - b): componentwise over all 8 jet components.
 llvm::Value* AutodiffCodegen::dualSub(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
-    llvm::Value* r0 = b.CreateFSub(dualField(ctx_, dual_a, 0), dualField(ctx_, dual_b, 0));
-    llvm::Value* r1 = b.CreateFSub(dualField(ctx_, dual_a, 1), dualField(ctx_, dual_b, 1));
-    llvm::Value* r2 = b.CreateFSub(dualField(ctx_, dual_a, 2), dualField(ctx_, dual_b, 2));
-    llvm::Value* r3 = b.CreateFSub(dualField(ctx_, dual_a, 3), dualField(ctx_, dual_b, 3));
-    return makeDual4(ctx_, r0, r1, r2, r3);
+    llvm::Value* r[8];
+    for (unsigned i = 0; i < 8; ++i)
+        r[i] = b.CreateFSub(dualField(ctx_, dual_a, i), dualField(ctx_, dual_b, i));
+    return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
 // (a * b): bilinear product rule, keeping the mixed e1e2 cross term.
@@ -606,17 +731,24 @@ llvm::Value* AutodiffCodegen::dualSub(llvm::Value* dual_a, llvm::Value* dual_b) 
 llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
+    // value 4-jets
     llvm::Value* a0 = dualField(ctx_, dual_a, 0), *a1 = dualField(ctx_, dual_a, 1),
                 *a2 = dualField(ctx_, dual_a, 2), *a3 = dualField(ctx_, dual_a, 3);
     llvm::Value* b0 = dualField(ctx_, dual_b, 0), *b1 = dualField(ctx_, dual_b, 1),
                 *b2 = dualField(ctx_, dual_b, 2), *b3 = dualField(ctx_, dual_b, 3);
-    llvm::Value* r0 = b.CreateFMul(a0, b0);
-    llvm::Value* r1 = b.CreateFAdd(b.CreateFMul(a1, b0), b.CreateFMul(a0, b1));
-    llvm::Value* r2 = b.CreateFAdd(b.CreateFMul(a2, b0), b.CreateFMul(a0, b2));
-    llvm::Value* r3 = b.CreateFAdd(
-        b.CreateFAdd(b.CreateFMul(a3, b0), b.CreateFMul(a1, b2)),
-        b.CreateFAdd(b.CreateFMul(a2, b1), b.CreateFMul(a0, b3)));
-    return makeDual4(ctx_, r0, r1, r2, r3);
+    // ep-derivative 4-jets
+    llvm::Value* ap0 = dualField(ctx_, dual_a, 4), *ap1 = dualField(ctx_, dual_a, 5),
+                *ap2 = dualField(ctx_, dual_a, 6), *ap3 = dualField(ctx_, dual_a, 7);
+    llvm::Value* bp0 = dualField(ctx_, dual_b, 4), *bp1 = dualField(ctx_, dual_b, 5),
+                *bp2 = dualField(ctx_, dual_b, 6), *bp3 = dualField(ctx_, dual_b, 7);
+    // value = a ⊗ b
+    std::array<llvm::Value*, 4> v = jet4Mul(ctx_, a0, a1, a2, a3, b0, b1, b2, b3);
+    // ESH-0117: d/dep (a·b) = a' ⊗ b + a ⊗ b'  (both 4-jet products)
+    std::array<llvm::Value*, 4> t1 = jet4Mul(ctx_, ap0, ap1, ap2, ap3, b0, b1, b2, b3);
+    std::array<llvm::Value*, 4> t2 = jet4Mul(ctx_, a0, a1, a2, a3, bp0, bp1, bp2, bp3);
+    llvm::Value* p[4];
+    for (int i = 0; i < 4; ++i) p[i] = b.CreateFAdd(t1[i], t2[i]);
+    return makeDual8(ctx_, v[0], v[1], v[2], v[3], p[0], p[1], p[2], p[3]);
 }
 
 // (a / b) = a * (1/b). Reciprocal is the unary jet of g(x)=1/x with
@@ -631,7 +763,10 @@ llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) 
     llvm::Value* fpa = bld.CreateFNeg(inv2);                       // -1/b0^2
     llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
     llvm::Value* fppa = bld.CreateFMul(two, bld.CreateFMul(inv2, inv)); // 2/b0^3
-    llvm::Value* recip = dualUnaryChain(ctx_, dual_b, inv, fpa, fppa);
+    // g'''(x)=-6/x^4 for the ESH-0117 ep-derivative triple term.
+    llvm::Value* six = llvm::ConstantFP::get(ctx_.doubleType(), 6.0);
+    llvm::Value* fpppa = bld.CreateFNeg(bld.CreateFMul(six, bld.CreateFMul(inv2, inv2)));
+    llvm::Value* recip = dualUnaryChain(ctx_, dual_b, inv, fpa, fppa, fpppa);
     return dualMul(dual_a, recip);
 }
 
@@ -685,8 +820,9 @@ llvm::Value* AutodiffCodegen::dualSin(llvm::Value* dual) {
     if (!sin_func || !cos_func) return nullptr;
     llvm::Value* sa = ctx_.builder().CreateCall(sin_func, {a});
     llvm::Value* ca = ctx_.builder().CreateCall(cos_func, {a});
-    // g=sin, g'=cos, g''=-sin
-    return dualUnaryChain(ctx_, dual, sa, ca, ctx_.builder().CreateFNeg(sa));
+    // g=sin, g'=cos, g''=-sin, g'''=-cos
+    return dualUnaryChain(ctx_, dual, sa, ca, ctx_.builder().CreateFNeg(sa),
+                          ctx_.builder().CreateFNeg(ca));
 }
 
 llvm::Value* AutodiffCodegen::dualCos(llvm::Value* dual) {
@@ -697,9 +833,9 @@ llvm::Value* AutodiffCodegen::dualCos(llvm::Value* dual) {
     if (!sin_func || !cos_func) return nullptr;
     llvm::Value* sa = ctx_.builder().CreateCall(sin_func, {a});
     llvm::Value* ca = ctx_.builder().CreateCall(cos_func, {a});
-    // g=cos, g'=-sin, g''=-cos
+    // g=cos, g'=-sin, g''=-cos, g'''=sin
     return dualUnaryChain(ctx_, dual, ca, ctx_.builder().CreateFNeg(sa),
-                          ctx_.builder().CreateFNeg(ca));
+                          ctx_.builder().CreateFNeg(ca), sa);
 }
 
 llvm::Value* AutodiffCodegen::dualExp(llvm::Value* dual) {
@@ -708,8 +844,8 @@ llvm::Value* AutodiffCodegen::dualExp(llvm::Value* dual) {
     llvm::Function* exp_func = getMathFunc("exp");
     if (!exp_func) return nullptr;
     llvm::Value* ea = ctx_.builder().CreateCall(exp_func, {a});
-    // g=g'=g''=exp(a)
-    return dualUnaryChain(ctx_, dual, ea, ea, ea);
+    // g=g'=g''=g'''=exp(a)
+    return dualUnaryChain(ctx_, dual, ea, ea, ea, ea);
 }
 
 llvm::Value* AutodiffCodegen::dualLog(llvm::Value* dual) {
@@ -722,7 +858,10 @@ llvm::Value* AutodiffCodegen::dualLog(llvm::Value* dual) {
     llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
     llvm::Value* fpa = b.CreateFDiv(one, a);                 // 1/a
     llvm::Value* fppa = b.CreateFNeg(b.CreateFMul(fpa, fpa)); // -1/a^2
-    return dualUnaryChain(ctx_, dual, la, fpa, fppa);
+    // g'''=2/a^3 for the ESH-0117 ep-derivative triple term.
+    llvm::Value* two = llvm::ConstantFP::get(ctx_.doubleType(), 2.0);
+    llvm::Value* fpppa = b.CreateFMul(two, b.CreateFMul(fpa, b.CreateFMul(fpa, fpa)));
+    return dualUnaryChain(ctx_, dual, la, fpa, fppa, fpppa);
 }
 
 llvm::Value* AutodiffCodegen::dualTan(llvm::Value* dual) {
@@ -783,10 +922,15 @@ llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_
     llvm::Value* value = bld.CreateCall(pow_func, {a, bexp});      // a^b
     llvm::Value* bm1 = bld.CreateFSub(bexp, one);
     llvm::Value* bm2 = bld.CreateFSub(bexp, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
+    llvm::Value* bm3 = bld.CreateFSub(bexp, llvm::ConstantFP::get(ctx_.doubleType(), 3.0));
     llvm::Value* gpa = bld.CreateFMul(bexp, bld.CreateCall(pow_func, {a, bm1}));   // b a^{b-1}
     llvm::Value* gppa = bld.CreateFMul(bld.CreateFMul(bexp, bm1),
                                        bld.CreateCall(pow_func, {a, bm2}));        // b(b-1) a^{b-2}
-    llvm::Value* const_jet = dualUnaryChain(ctx_, dual_base, value, gpa, gppa);
+    // g'''=b(b-1)(b-2) a^{b-3} for the ESH-0117 ep-derivative triple term.
+    llvm::Value* gpppa = bld.CreateFMul(
+        bld.CreateFMul(bld.CreateFMul(bexp, bm1), bm2),
+        bld.CreateCall(pow_func, {a, bm3}));
+    llvm::Value* const_jet = dualUnaryChain(ctx_, dual_base, value, gpa, gppa, gpppa);
 
     // --- general dual-exponent jet: exp(b * log(a)) ---
     llvm::Value* log_base = dualLog(dual_base);          // 4-comp log
@@ -799,11 +943,11 @@ llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_
     llvm::Value* exp_is_const =
         bld.CreateAnd(bld.CreateAnd(bld.CreateFCmpOEQ(e1, zero), bld.CreateFCmpOEQ(e2, zero)),
                       bld.CreateFCmpOEQ(e12, zero));
-    llvm::Value* r0 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 0), dualField(ctx_, gen_jet, 0));
-    llvm::Value* r1 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 1), dualField(ctx_, gen_jet, 1));
-    llvm::Value* r2 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 2), dualField(ctx_, gen_jet, 2));
-    llvm::Value* r3 = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, 3), dualField(ctx_, gen_jet, 3));
-    return makeDual4(ctx_, r0, r1, r2, r3);
+    llvm::Value* r[8];
+    for (unsigned i = 0; i < 8; ++i)
+        r[i] = bld.CreateSelect(exp_is_const, dualField(ctx_, const_jet, i),
+                                dualField(ctx_, gen_jet, i));
+    return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
 llvm::Value* AutodiffCodegen::dualAsin(llvm::Value* dual) {
@@ -871,11 +1015,9 @@ llvm::Value* AutodiffCodegen::dualAbs(llvm::Value* dual) {
 llvm::Value* AutodiffCodegen::dualNeg(llvm::Value* dual) {
     if (!dual) return nullptr;
     auto& b = ctx_.builder();
-    llvm::Value* r0 = b.CreateFNeg(dualField(ctx_, dual, 0));
-    llvm::Value* r1 = b.CreateFNeg(dualField(ctx_, dual, 1));
-    llvm::Value* r2 = b.CreateFNeg(dualField(ctx_, dual, 2));
-    llvm::Value* r3 = b.CreateFNeg(dualField(ctx_, dual, 3));
-    return makeDual4(ctx_, r0, r1, r2, r3);
+    llvm::Value* r[8];
+    for (unsigned i = 0; i < 8; ++i) r[i] = b.CreateFNeg(dualField(ctx_, dual, i));
+    return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
 llvm::Value* AutodiffCodegen::dualSinh(llvm::Value* dual) {
@@ -2386,6 +2528,24 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 
             if (found && it->second) {
                 Value* storage = it->second;
+                // ESH-0117: transitive capture through a nested `derivative`.
+                // When `storage` is itself a forwarded capture pointer
+                // ("captured_<var>", the parameter this middle lambda received),
+                // it already points DIRECTLY to the slot holding the tagged
+                // value the callee will single-load. Forward it as-is so the
+                // innermost lambda reads the capture with the SAME convention it
+                // was stored with. Re-wrapping it (ptrtoint+packInt64 below)
+                // double-indirects — the callee's single load then reads a
+                // pointer-as-value → null/garbage (e.g. `(vector-ref p 0)` = 0
+                // in a gradient-over-derivative-of-derivative). This is exactly
+                // the depth-2 capture loss underlying the nested-forward bug.
+                if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
+                    if (arg->getType()->isPointerTy() &&
+                        arg->getName() == ("captured_" + var_name)) {
+                        deriv_call_args.push_back(storage);
+                        continue;
+                    }
+                }
                 // MUTABLE CAPTURE FIX: Pack pointer in closure format
                 // Lambda expects ptr to slot containing {type=INT64, data=ptrtoint(@storage)}
                 //
