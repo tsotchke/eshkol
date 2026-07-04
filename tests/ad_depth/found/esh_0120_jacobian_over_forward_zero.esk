@@ -1,0 +1,18 @@
+;; ESH-0120 — jacobian OVER a forward derivative that captures the outer
+;; vector via vector-ref returns 0 (even at nesting depth 1).
+;; Found by the depth-parametric AD oracle (scripts/gen_ad_depth.py).
+;;
+;; This is the jacobian analogue of the reverse-over-forward fix (#113 /
+;; ESH-0117). With a GRADIENT (scalar) outer the composition works; with a
+;; JACOBIAN (vector-field) outer the inner forward-derivative's dependence
+;; on the outer vector is erased -> J = 0. F_i(v) = (vref v i) * f'(t0),
+;; f=z^8, t0=2 => f'=1024, so J should be diag(1024).
+;; gradient-outer: WORKS -> 1024
+(display "grad-outer ")
+(display (vref (gradient (lambda (v) (derivative (lambda (z) (* (vref v 0) z z z z z z z z)) 2.0)) (vector 3.0 4.0)) 0))(newline)
+;; jacobian-outer: WRONG -> 0  (expected J[0][0] = 1024)
+(display "jac-outer ")
+(display (vref (vref (jacobian (lambda (v)
+   (vector (derivative (lambda (z) (* (vref v 0) z z z z z z z z)) 2.0)
+           (derivative (lambda (z) (* (vref v 1) z z z z z z z z)) 2.0)))
+   (vector 3.0 4.0)) 0) 0))(newline)

@@ -1,0 +1,14 @@
+;; ESH-0121 — hessian OVER a forward derivative that captures the outer
+;; vector via vector-ref SIGSEGVs (even at nesting depth 1).
+;; Found by the depth-parametric AD oracle (scripts/gen_ad_depth.py).
+;;
+;; G(v) = 0.5 * (vref v 0)^2 * f'(t0), f=z^8, t0=2 => f'=1024, so the true
+;; hessian is H[0][0] = 1024 (rest 0). Instead the process dies with
+;; SIGSEGV on BOTH -r and AOT. The reverse-over-reverse (hessian) machinery
+;; does not survive an inner forward-derivative that closes over the outer
+;; vector. Related family: ESH-0120 (jacobian outer -> 0), ESH-0117
+;; (gradient outer over NESTED forward -> 0).
+(display "hess-outer ")
+(display (vref (vref (hessian (lambda (v)
+   (derivative (lambda (z) (* 0.5 (vref v 0) (vref v 0) z z z z z z z z)) 2.0))
+   (vector 3.0 4.0)) 0) 0))(newline)   ; expected 1024, actual: SIGSEGV

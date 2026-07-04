@@ -1145,6 +1145,29 @@ oracles:
         severity: high
         label: AD composition oracle gate (all cells match finite differences on -r and AOT)
         action: ./scripts/run_ad_oracle.sh
+  # ─────────────────────────────────────────────────────────────────
+  # Depth-parametric AD oracle — adversarial campaign pillar P6a
+  # (.swarm/DEPTH_PARAMETRIC_TESTING.md). Every composable AD construct
+  # (derivative^d, gradient^d, gradient/jacobian/hessian OVER derivative^d)
+  # is swept at nesting depth d=1..8 on BOTH -r and AOT, each depth checked
+  # against a closed-form ANALYTIC ground truth. The gate records each
+  # construct's MAX-CORRECT-DEPTH and is PASS only when no construct
+  # REGRESSES below its tracked baseline (scripts/ad_depth_report.py::
+  # BASELINE). Known-open depth boundaries (ESH-0117..0121) ARE the
+  # baseline, so they stay green while tracked and flip to "improvement"
+  # once fixed. scripts/run_ad_depth.sh writes kind:"ad_depth" events to
+  # scripts/icc_traces/ad_depth.jsonl and AD_DEPTH_REPORT.md.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ad-depth
+    aliases: [ad_depth, ad-depth-oracle, adversarial-p6a, depth-parametric-ad]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Depth-parametric AD oracle gate (no construct regresses below its baseline max-correct-depth on -r and AOT)
+        action: ./scripts/run_ad_depth.sh
   # Differential execution cleanliness — adversarial campaign pillar P1
   # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). Every deterministic program
   # must produce identical (exit code, normalized stdout) on every
