@@ -330,6 +330,62 @@ oracles:
         label: 'cmake -DESHKOL_PGO=generate/use supports a profile-guided binary'
         action: ./scripts/run_icc_smoke.sh
 
+      # ── depth-campaign + P7 pillar gates (v1.3-evolve expanded contract) ──
+      # Each now-merged adversarial pillar must have recorded a PASS in its
+      # own oracle-run trace for the release to be ready. These mirror the
+      # standalone pillar oracles (recursion-depth, ad-depth, numeric-depth,
+      # metaprog-depth, metamorphic-laws, sanitizer-fuzz-clean, depth-coverage)
+      # and fold them into the release readiness contract.
+      - runtime_event:
+          event_kinds: [depth_coverage]
+          event_names: ["depth_coverage_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Depth-coverage auditor: every composable construct has a registered sweep or tracked gap'
+        action: python3 scripts/check_depth_coverage.py
+      - runtime_event:
+          event_kinds: [recursion_depth]
+          event_names: ["recursion_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Recursion/control depth sweep: no silent crash, no wrong value at any tested depth (-r and AOT)'
+        action: ./scripts/run_recursion_depth.sh
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Depth-parametric AD oracle: no construct regresses below its baseline max-correct-depth (-r and AOT)'
+        action: ./scripts/run_ad_depth.sh
+      - runtime_event:
+          event_kinds: [numeric_depth]
+          event_names: ["numeric_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Numeric-tower depth sweep clean vs baseline (no new silent-wrong, no regressed max-correct-n)'
+        action: python3 scripts/gen_numeric_depth.py && ./scripts/run_numeric_depth.sh
+      - runtime_event:
+          event_kinds: [metaprog_depth]
+          event_names: ["metaprog_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'No metaprogramming/module family produces a WRONG value at any swept depth'
+        action: ./scripts/run_metaprog_depth.sh
+      - runtime_event:
+          event_kinds: [metamorphic]
+          event_names: ["metamorphic_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Deterministic metamorphic law corpus passes with only tracked XKNOWN violations'
+        action: ./scripts/run_metamorphic.sh
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Full ASan+UBSan fuzz/tests corpus has zero sanitizer signatures'
+        action: ./scripts/run_sanitizer_fuzz.sh
+
       - test_evidence: true
         severity: high
         label: 'v1.3 edge-case tests are indexed and runnable'
