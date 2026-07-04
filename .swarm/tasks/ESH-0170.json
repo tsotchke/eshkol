@@ -1,0 +1,32 @@
+{
+  "id": "ESH-0170",
+  "title": "write/read roundtrip law is not available on native LLVM path",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "metamorphic-property-harness/p7c",
+  "goal": "The P7c metamorphic harness tracks the requested law `(read (write datum)) = datum`. Native Eshkol exposes line/string/char I/O but no general datum `read` through the LLVM backend, and existing evidence shows `write` does not consistently emit read syntax for strings. Counterexample: `(write \"hi\")` produces native output `\"hi\"` as raw text without read-syntax quotes, so a datum reader could not distinguish it from the symbol/token hi. This keeps write/read identity unsupported for strings and compound data containing strings.",
+  "file_globs": [
+    "inc/eshkol/backend/string_io_codegen.h",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/core/runtime_display_hosted.cpp",
+    "tests/vm_parity/found/write_does_not_quote.esk",
+    "tests/metamorphic/generated/metamorphic_roundtrip_control.esk"
+  ],
+  "acceptance": [
+    "Native `eshkol-run -r` exposes a general datum `read` that can consume text produced by `write`.",
+    "`(write \"hi\")` emits read syntax with quotes/escapes, and `(read (open-input-string <that text>))` reconstructs the original string.",
+    "The P7c metamorphic write/read XKNOWN is converted to a normal PASS check."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Write/read identity is a core Scheme persistence and reproducibility law; leaving it explicit prevents roundtrip gaps from being hidden under line-oriented I/O tests.",
+  "repro": "tests/metamorphic/generated/metamorphic_roundtrip_control.esk",
+  "verifications": [
+    {
+      "date": "2026-07-04",
+      "branch": "test/p7c-metamorphic",
+      "verdict": "open-xknown",
+      "evidence": "scripts/run_metamorphic.sh --quick --no-aot reports XKNOWN roundtrip.write_read.string.case0 task=ESH-0170 and otherwise passes the quick JIT gate."
+    }
+  ]
+}
