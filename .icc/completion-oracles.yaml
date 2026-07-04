@@ -1180,6 +1180,36 @@ oracles:
         severity: high
         label: Seeded 200-program fuzz run finds no cross-axis divergence
         action: ./scripts/run_differential_fuzz.sh --seed 42 --count 200
+
+  # Sanitizer-over-fuzzer cleanliness gate (adversarial campaign P7b).
+  # scripts/run_sanitizer_fuzz.sh builds/runs the deterministic
+  # differential fuzz seed plus tests/**/*.esk under ASan+UBSan on -r,
+  # AOT -O0, and AOT -O2, then emits kind:"sanitizer_fuzz" events to
+  # scripts/icc_traces/sanitizer_fuzz.jsonl.
+  - name: sanitizer-fuzz-clean
+    aliases: [sanitizer-fuzz, asan-ubsan-fuzz, adversarial-p7b]
+    requires:
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_selftest_esh0116"]
+          event_values: ["PASS"]
+        severity: high
+        label: Synthetic ESH-0116-class unterminated buffer repro trips the sanitizer harness
+        action: ./scripts/run_sanitizer_fuzz.sh --self-test-only
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_aot_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Sanitizer fuzz pass covers -r plus AOT -O0 and AOT -O2 axes
+        action: ./scripts/run_sanitizer_fuzz.sh
+      - runtime_event:
+          event_kinds: [sanitizer_fuzz]
+          event_names: ["sanitizer_fuzz_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Full ASan+UBSan fuzz/tests corpus has zero sanitizer signatures
+        action: ./scripts/run_sanitizer_fuzz.sh
   # Adversarial pillar P2 — feature-pair composition matrix
   # (.swarm/ADVERSARIAL_TESTING_CAMPAIGN.md). scripts/run_edge_matrix.sh
   # runs the generated corpus in tests/edge_matrix/generated/ under both
