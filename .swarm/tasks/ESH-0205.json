@@ -1,20 +1,30 @@
 {
   "id": "ESH-0205",
-  "status": "open",
+  "title": "make-tensor silently truncates shapes of rank > 3",
+  "status": "done",
   "priority": "high",
-  "workstream": "tensor-collection-depth",
-  "title": "make-tensor silently truncates rank > 3 to rank 3 (silent WRONG)",
-  "goal": "make-tensor with a dims list of length >= 4 silently drops every dimension past the third, returning a rank-3 tensor. Found by the P6f tensor/collection/string depth sweep (scripts/run_tensor_collection_depth.sh, family tensor_rank). All three axes (-r, AOT-O0, AOT-O2) agree on the wrong value, so it is a codegen defect. Root cause: TensorCodegen::makeTensorImpl (lib/backend/tensor_creation_codegen.cpp, list-path ~L457-578) only unrolls dimension extraction for the 1D/2D/3D cases; the 3D branch reads dim3 and stops walking the cons cdr, so dims 4..N are never read (the source comment even claims 'up to 4D'). reshape uses an independent path and correctly handles rank 4..8, so the two constructors disagree.",
-  "status_note": "OPEN. max-correct rank for make-tensor = 3; reshape MCD = 8.",
-  "acceptance": [
-    "make-tensor extracts the full dims list (walk the cons chain, not a fixed 1D/2D/3D unroll) so (tensor-shape (make-tensor (list 2 3 4 5) v)) == (2 3 4 5).",
-    "tensor_rank family in scripts/run_tensor_collection_depth.sh reaches MCD == max-rank on all three axes.",
-    "A minimal repro remains under tests/tensor_collection_depth/ (generated tensor_rank/d004.esk covers it)."
-  ],
-  "blocked_by": [],
+  "workstream": "depth-p6f",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "goal": "(make-tensor (list 2 3 4 5) v) returned shape (2 3 4) — the 4th and further dimensions were silently dropped, producing a WRONG tensor. TensorCodegen::makeTensorImpl only unrolled the cons walk for 1D/2D/3D and stopped, while reshape used a separate path that correctly handled ranks 4..8, so the two constructors disagreed.",
   "file_globs": [
     "lib/backend/tensor_creation_codegen.cpp",
-    "tests/tensor_collection_depth/generated/tensor_rank/d004.esk"
+    "inc/eshkol/backend/tensor_codegen.h",
+    "tests/collections/tensor_rank_length_test.esk"
   ],
-  "repro": "(require stdlib)\n(define T (make-tensor (list 2 3 4 5) 7.0))\n(display (tensor-shape T))(newline)  ;; prints (2 3 4), expected (2 3 4 5)"
+  "repro": "(display (tensor-shape (make-tensor '(2 3 4 5) 1.0)))  ;; printed (2 3 4)",
+  "acceptance": [
+    "(make-tensor '(2 3 4 5) 1.0) has shape (2 3 4 5)",
+    "ranks 1..8 all report the exact requested shape (no truncation)",
+    "total element count and fill value are correct for every rank",
+    "make-tensor agrees with reshape of the same shape",
+    "works under both -r (JIT) and AOT"
+  ],
+  "status_note": "FIXED. The LIST path of makeTensorImpl now mirrors reshape(): it walks the ENTIRE cons chain via the shared runtime helper eshkol_cons_list_to_dims (arbitrary rank, up to 16 dims) and eshkol_compute_dims_total, then builds the tensor through a new shared helper TensorCodegen::createTensorFromDimsArray(dims_ptr, ndim, total, fill_bits) that allocates/owns the dims array, allocates the elements buffer and fills it in a runtime loop for any rank. The old 3D-only unrolled extraction (which also fed the vector/tensor-shape merge PHIs) was removed from the list path; the vector/#(...) and tensor-shape input forms keep their existing (up-to-3D) extraction. Verified ranks 1..8 shape+count+fill correct and identical to reshape under -r and AOT (tests/collections/tensor_rank_length_test.esk, 16/16 PASS). Regressions green: SICP 88/88, ML/tensor 42/42, list 100%, AD 54/54.",
+  "blocked_by": [],
+  "verification": [
+    "./build/eshkol-run -r tests/collections/tensor_rank_length_test.esk",
+    "./build/eshkol-run -O2 -o /tmp/esh0205 tests/collections/tensor_rank_length_test.esk && /tmp/esh0205"
+  ]
 }

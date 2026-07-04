@@ -761,6 +761,25 @@ public:
                                        llvm::Value* fill_value = nullptr,
                                        bool use_memset_zero = false);
 
+    /**
+     * Create a tensor of arbitrary (runtime) rank from a runtime dims array.
+     *
+     * Unlike createTensorWithDims (which requires a compile-time-known number
+     * of dimensions), this builds the tensor from a pointer to an int64 dims
+     * array whose length (ndim) is only known at runtime. Used by make-tensor
+     * so it can honour shapes of any rank, matching reshape.
+     *
+     * @param dims_ptr  i64* pointing at ndim contiguous dimension sizes
+     * @param ndim      i64 number of dimensions
+     * @param total     i64 product of all dimensions (element count)
+     * @param fill_bits i64 bit pattern stored into every element (nullptr => uninitialised)
+     * @return Pointer to the tensor struct (untagged)
+     */
+    llvm::Value* createTensorFromDimsArray(llvm::Value* dims_ptr,
+                                            llvm::Value* ndim,
+                                            llvm::Value* total,
+                                            llvm::Value* fill_bits);
+
     // === Optimizers (Track 10.1) ===
 
     /**
