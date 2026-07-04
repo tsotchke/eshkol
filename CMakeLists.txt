@@ -1508,6 +1508,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_shared_memory.cpp
   lib/core/runtime_string.cpp
   lib/core/runtime_tagged_cons.cpp
+  lib/core/runtime_taylor.c
   lib/core/runtime_tensor_alloc.cpp
   lib/core/runtime_tensor_dtype.cpp
   lib/core/runtime_tensor_quant.cpp

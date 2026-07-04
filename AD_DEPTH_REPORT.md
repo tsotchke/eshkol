@@ -11,15 +11,30 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 
 | composition | capture | MCD | tracked |
 |---|---|---|---|
-| deriv | capnone | 2 | ESH-0118 |
-| deriv | glob | 2 | ESH-0118 |
-| deriv | localparam | 1 | ESH-0122 |
-| deriv | vecref | 1 | ESH-0122 |
-| gofd | vecref | 1 | ESH-0117 |
-| gradn | capnone | 2 | ESH-0118 |
+| deriv | capnone | 8 | ESH-0118 |
+| deriv | glob | 8 | ESH-0118 |
+| deriv | localparam | 8 | ESH-0122 |
+| deriv | vecref | 8 | ESH-0122 |
+| gofd | vecref | 2 | ESH-0117 |
+| gradn | capnone | 3 | ESH-0118 |
 | gradn | vecref | 1 | ESH-0122 |
 | hessod | vecref | 0 | ESH-0121 |
 | jacod | vecref | 0 | ESH-0120 |
+
+## ✅ Improvements over baseline (fix landed)
+
+- `gofd.mono.v2.inline.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.mono.v2.named.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.mono.v3.inline.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.mono.v3.named.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.poly.v2.inline.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.poly.v2.named.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.poly.v3.inline.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gofd.poly.v3.named.vecref`: max-depth **2** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
+- `gradn.expc.s.inline.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
+- `gradn.expc.s.named.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
+- `gradn.mono.s.inline.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
+- `gradn.mono.s.named.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
 
 ## Per-cell depth tables
 
@@ -28,78 +43,78 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 
 | cell | lane | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | MCD |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `deriv.expc.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.inline.glob` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.inline.glob` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.inline.localparam` | jit | P | F | F | F | F | F | F | F | **1** |
-| `deriv.expc.s.inline.localparam` | aot | P | F | F | F | F | F | F | F | **1** |
-| `deriv.expc.s.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `deriv.expc.s.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `deriv.expc.s.lamvar.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.lamvar.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.expc.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.inline.glob` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.inline.glob` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.inline.localparam` | jit | P | F | F | F | F | F | F | F | **1** |
-| `deriv.mono.s.inline.localparam` | aot | P | F | F | F | F | F | F | F | **1** |
-| `deriv.mono.s.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `deriv.mono.s.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `deriv.mono.s.lamvar.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.lamvar.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.mono.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.lamvar.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.lamvar.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.poly.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.lamvar.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.lamvar.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `deriv.sinc.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
+| `deriv.expc.s.inline.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.glob` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.glob` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.localparam` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.localparam` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.lamvar.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.lamvar.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.named.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.expc.s.named.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.glob` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.glob` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.localparam` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.localparam` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.lamvar.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.lamvar.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.named.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.mono.s.named.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.inline.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.inline.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.lamvar.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.lamvar.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.named.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.poly.s.named.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.inline.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.inline.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.lamvar.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.lamvar.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.named.capnone` | jit | P | P | P | P | P | P | P | P | **8** |
+| `deriv.sinc.s.named.capnone` | aot | P | P | P | P | P | P | P | P | **8** |
 
 ### gofd
 
 | cell | lane | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | MCD |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `gofd.mono.v2.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v2.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v2.named.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v2.named.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v3.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v3.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v3.named.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.mono.v3.named.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v2.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v2.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v2.named.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v2.named.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v3.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v3.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v3.named.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gofd.poly.v3.named.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
+| `gofd.mono.v2.inline.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v2.inline.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v2.named.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v2.named.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v3.inline.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v3.inline.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v3.named.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.mono.v3.named.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v2.inline.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v2.inline.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v2.named.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v2.named.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v3.inline.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v3.inline.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v3.named.vecref` | jit | P | P | F | F | F | F | F | F | **2** |
+| `gofd.poly.v3.named.vecref` | aot | P | P | F | F | F | F | F | F | **2** |
 
 ### gradn
 
 | cell | lane | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | MCD |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `gradn.expc.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `gradn.expc.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `gradn.expc.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `gradn.expc.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
-| `gradn.mono.s.inline.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `gradn.mono.s.inline.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gradn.expc.s.inline.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
+| `gradn.expc.s.inline.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
+| `gradn.expc.s.named.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
+| `gradn.expc.s.named.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
+| `gradn.mono.s.inline.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
+| `gradn.mono.s.inline.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
 | `gradn.mono.s.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
 | `gradn.mono.s.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
-| `gradn.mono.s.named.capnone` | jit | P | P | F | F | F | F | F | F | **2** |
-| `gradn.mono.s.named.capnone` | aot | P | P | F | F | F | F | F | F | **2** |
+| `gradn.mono.s.named.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
+| `gradn.mono.s.named.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
 
 ### hessod
 

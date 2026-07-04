@@ -530,6 +530,100 @@ llvm::Value* ArithmeticCodegen::emitBignumCompareCall(llvm::Value* left, llvm::V
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "bn_cmp_result");
 }
 
+// === Taylor-tower Runtime Dispatch (ESH-0186) ===
+// Mirrors the bignum dispatch: a runtime predicate + out-param binary/unary
+// kernels in lib/core/runtime_taylor.c. A Taylor tower is a HEAP_PTR with
+// subtype HEAP_SUBTYPE_TAYLOR; it MUST be intercepted before the generic
+// vector/tensor heap path (which would misread its storage).
+
+// int eshkol_is_taylor_tagged(const tagged_value_t*)
+static llvm::Function* getIsTaylorTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_is_taylor_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            ctx.int32Type(), {ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_is_taylor_tagged", &ctx.module());
+    }
+    return func;
+}
+
+// void eshkol_taylor_binary_tagged(arena, left*, right*, i32 op, result*)
+static llvm::Function* getTaylorBinaryTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_taylor_binary_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(),
+             ctx.int32Type(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_taylor_binary_tagged", &ctx.module());
+    }
+    return func;
+}
+
+// void eshkol_taylor_unary_tagged(arena, in*, i32 op, result*)
+static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_taylor_unary_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.int32Type(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_taylor_unary_tagged", &ctx.module());
+    }
+    return func;
+}
+
+llvm::Value* ArithmeticCodegen::emitIsTaylorCheck(llvm::Value* left, llvm::Value* right) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* la = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_chk_l");
+    llvm::Value* ra = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_chk_r");
+    ctx_.builder().CreateStore(left, la);
+    ctx_.builder().CreateStore(right, ra);
+    llvm::Function* is_t = getIsTaylorTaggedFunc(ctx_);
+    llvm::Value* l_is = ctx_.builder().CreateCall(is_t, {la}, "l_is_twr");
+    llvm::Value* r_is = ctx_.builder().CreateCall(is_t, {ra}, "r_is_twr");
+    llvm::Value* any = ctx_.builder().CreateOr(l_is, r_is);
+    return ctx_.builder().CreateICmpNE(any, llvm::ConstantInt::get(ctx_.int32Type(), 0), "any_twr");
+}
+
+llvm::Value* ArithmeticCodegen::emitIsTaylorSingle(llvm::Value* v) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* a = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_chk1");
+    ctx_.builder().CreateStore(v, a);
+    llvm::Value* is_t = ctx_.builder().CreateCall(getIsTaylorTaggedFunc(ctx_), {a}, "is_twr1");
+    return ctx_.builder().CreateICmpNE(is_t, llvm::ConstantInt::get(ctx_.int32Type(), 0), "is_twr1b");
+}
+
+llvm::Value* ArithmeticCodegen::emitTaylorBinaryCall(llvm::Value* left, llvm::Value* right, int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* la = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_l");
+    llvm::Value* ra = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_r");
+    llvm::Value* res = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+    ctx_.builder().CreateStore(left, la);
+    ctx_.builder().CreateStore(right, ra);
+    ctx_.builder().CreateCall(getTaylorBinaryTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), la, ra,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code), res});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_binres");
+}
+
+llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* ia = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_in");
+    llvm::Value* res = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_ures");
+    ctx_.builder().CreateStore(in, ia);
+    ctx_.builder().CreateCall(getTaylorUnaryTaggedFunc(ctx_), {
+        getArenaPtr(ctx_), ia,
+        llvm::ConstantInt::get(ctx_.int32Type(), op_code), res});
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_unres");
+}
+
 // === Rational Codegen Helpers ===
 
 // Declare eshkol_is_rational_tagged_ptr(val*) -> i32
@@ -677,6 +771,16 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "add_merge", func);
 
         // Check bignum first via safe runtime call
+        // ESH-0186: intercept Taylor towers before the heap/tensor path.
+        llvm::BasicBlock* add_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "add_taylor", func);
+        llvm::BasicBlock* add_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "add_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), add_taylor_path, add_after_taylor);
+        ctx_.builder().SetInsertPoint(add_taylor_path);
+        llvm::Value* add_twr = emitTaylorBinaryCall(left, right, 0);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* add_twr_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(add_after_taylor);
+
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "add_check_rational", func);
         ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_rational);
@@ -797,7 +901,8 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "add_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "add_result");
+        phi->addIncoming(add_twr, add_twr_exit);
         phi->addIncoming(bn_add_tagged, bignum_exit);
         phi->addIncoming(rat_add_tagged, rational_exit);
         phi->addIncoming(vec_result, vector_exit);
@@ -853,6 +958,16 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "sub_merge", func);
 
         // Check bignum first via safe runtime call
+        // ESH-0186: intercept Taylor towers before the heap/tensor path.
+        llvm::BasicBlock* sub_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "sub_taylor", func);
+        llvm::BasicBlock* sub_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "sub_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), sub_taylor_path, sub_after_taylor);
+        ctx_.builder().SetInsertPoint(sub_taylor_path);
+        llvm::Value* sub_twr = emitTaylorBinaryCall(left, right, 1);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* sub_twr_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(sub_after_taylor);
+
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "sub_check_rational", func);
         ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_rational);
@@ -973,7 +1088,8 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "sub_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "sub_result");
+        phi->addIncoming(sub_twr, sub_twr_exit);
         phi->addIncoming(bn_sub_tagged, bignum_exit);
         phi->addIncoming(rat_sub_tagged, rational_exit);
         phi->addIncoming(vec_result, vector_exit);
@@ -1029,6 +1145,16 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "mul_merge", func);
 
         // Check bignum first via safe runtime call
+        // ESH-0186: intercept Taylor towers before the heap/tensor path.
+        llvm::BasicBlock* mul_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "mul_taylor", func);
+        llvm::BasicBlock* mul_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "mul_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), mul_taylor_path, mul_after_taylor);
+        ctx_.builder().SetInsertPoint(mul_taylor_path);
+        llvm::Value* mul_twr = emitTaylorBinaryCall(left, right, 2);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* mul_twr_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(mul_after_taylor);
+
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "mul_check_rational", func);
         ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_rational);
@@ -1149,7 +1275,8 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "mul_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "mul_result");
+        phi->addIncoming(mul_twr, mul_twr_exit);
         phi->addIncoming(bn_mul_tagged, bignum_exit);
         phi->addIncoming(rat_mul_tagged, rational_exit);
         phi->addIncoming(vec_result, vector_exit);
@@ -1205,6 +1332,16 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "div_merge", func);
 
         // Check bignum first via safe runtime call
+        // ESH-0186: intercept Taylor towers before the heap/tensor path.
+        llvm::BasicBlock* div_taylor_path = llvm::BasicBlock::Create(ctx_.context(), "div_taylor", func);
+        llvm::BasicBlock* div_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "div_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(left, right), div_taylor_path, div_after_taylor);
+        ctx_.builder().SetInsertPoint(div_taylor_path);
+        llvm::Value* div_twr = emitTaylorBinaryCall(left, right, 3);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* div_twr_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(div_after_taylor);
+
         llvm::Value* any_bignum = emitIsBignumCheck(left, right);
         llvm::BasicBlock* check_rational = llvm::BasicBlock::Create(ctx_.context(), "div_check_rational", func);
         ctx_.builder().CreateCondBr(any_bignum, bignum_path, check_rational);
@@ -1370,7 +1507,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         // Merge all non-AD paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 8, "div_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 9, "div_result");
+        phi->addIncoming(div_twr, div_twr_exit);
         phi->addIncoming(bn_div_tagged, bignum_exit);
         phi->addIncoming(rat_div_tagged, rational_exit);
         phi->addIncoming(vec_result, vector_exit);
@@ -1751,9 +1889,27 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     ctx_.builder().CreateBr(merge_bb);
     rational_bb = ctx_.builder().GetInsertBlock();
 
+    // ESH-0186: a Taylor tower coerces to its primal coefficient c[0].
+    ctx_.builder().SetInsertPoint(bignum_bb);
+    llvm::Value* ead_is_taylor = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TAYLOR));
+    llvm::BasicBlock* ead_taylor_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_taylor", func);
+    llvm::BasicBlock* ead_bignum2_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_bignum2", func);
+    ctx_.builder().CreateCondBr(ead_is_taylor, ead_taylor_bb, ead_bignum2_bb);
+
+    ctx_.builder().SetInsertPoint(ead_taylor_bb);
+    llvm::Value* ead_twr_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "ead_twr");
+    ctx_.builder().CreateStore(tagged_val, ead_twr_slot);
+    llvm::FunctionType* twr_c0_type = llvm::FunctionType::get(
+        ctx_.doubleType(), {ctx_.ptrType()}, false);
+    llvm::FunctionCallee twr_c0 = ctx_.module().getOrInsertFunction("eshkol_taylor_c0", twr_c0_type);
+    llvm::Value* twr_c0_val = ctx_.builder().CreateCall(twr_c0, {ead_twr_slot}, "ead_twr_c0");
+    ctx_.builder().CreateBr(merge_bb);
+    ead_taylor_bb = ctx_.builder().GetInsertBlock();
+
     // Bignum/other heap path: verify subtype is bignum before calling eshkol_bignum_to_double.
     // Non-numeric heap types (strings, vectors, etc.) return 0.0 instead of crashing.
-    ctx_.builder().SetInsertPoint(bignum_bb);
+    ctx_.builder().SetInsertPoint(ead_bignum2_bb);
     llvm::Value* is_bignum = ctx_.builder().CreateICmpEQ(subtype,
         llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
     llvm::BasicBlock* actual_bignum_bb = llvm::BasicBlock::Create(ctx_.context(), "ead_actual_bn", func);
@@ -1784,12 +1940,13 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 
     // Merge
     ctx_.builder().SetInsertPoint(merge_bb);
-    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 7, "as_double");
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.doubleType(), 8, "as_double");
     phi->addIncoming(ad_val, ad_bb);
     phi->addIncoming(dual_val, dual_bb);
     phi->addIncoming(dbl_val, dbl_bb);
     phi->addIncoming(rat_dbl, rational_bb);
     phi->addIncoming(bn_dbl, actual_bignum_bb);
+    phi->addIncoming(twr_c0_val, ead_taylor_bb);
     phi->addIncoming(zero_fallback, non_numeric_bb);
     phi->addIncoming(int_as_dbl, int_bb);
     return phi;
@@ -2053,6 +2210,16 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
         llvm::BasicBlock* regular_path = llvm::BasicBlock::Create(ctx_.context(), "pow_regular", func);
         llvm::BasicBlock* merge = llvm::BasicBlock::Create(ctx_.context(), "pow_merge", func);
 
+        // ESH-0186: intercept Taylor towers before the exact/bignum-pow path.
+        llvm::BasicBlock* pow_taylor = llvm::BasicBlock::Create(ctx_.context(), "pow_taylor", func);
+        llvm::BasicBlock* pow_after_taylor = llvm::BasicBlock::Create(ctx_.context(), "pow_after_taylor", func);
+        ctx_.builder().CreateCondBr(emitIsTaylorCheck(base, exponent), pow_taylor, pow_after_taylor);
+        ctx_.builder().SetInsertPoint(pow_taylor);
+        llvm::Value* pow_twr = emitTaylorBinaryCall(base, exponent, 4);
+        ctx_.builder().CreateBr(merge);
+        llvm::BasicBlock* pow_twr_exit = ctx_.builder().GetInsertBlock();
+        ctx_.builder().SetInsertPoint(pow_after_taylor);
+
         // Check for dual numbers
         llvm::Value* base_is_dual = ctx_.builder().CreateICmpEQ(base_base,
             llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
@@ -2134,7 +2301,8 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
         // Merge paths
         ctx_.builder().SetInsertPoint(merge);
-        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "pow_result");
+        llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "pow_result");
+        phi->addIncoming(pow_twr, pow_twr_exit);
         phi->addIncoming(dual_tagged, dual_exit);
         phi->addIncoming(exact_result, exact_exit);
         phi->addIncoming(regular_tagged, regular_exit);
