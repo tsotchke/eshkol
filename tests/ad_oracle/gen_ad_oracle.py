@@ -809,6 +809,64 @@ class Gen:
                                   f"fd{u}_{i}", xc=None))
         self.add("nest", pid, lines, 2, xc=None)
 
+        # ESH-0117: gradient OVER derivative-of-derivative (gofdofd) — the outer
+        # gradient must differentiate the d12 (mixed second-order) coefficient of
+        # a 2-level-nested inner forward derivative w.r.t. a CAPTURED parameter.
+        # Scalar, vector (forward level protocol) and tensor (reverse tape) param
+        # points all exercise the fix. Ground truth: central-difference the outer
+        # gradient over the (separately dofd-validated) inner derivative-of-
+        # derivative — the same in-language pattern every other nest cell uses.
+        # A fully-nested pure FD (2nd-diff stencil + outer diff) is catastrophically
+        # cancellation-noisy (~5e-4 rel), so the outer link is what we FD here; the
+        # inner second derivative is independently gated by the dofd/pertconf cells.
+        for sh in ("poly", "prodlin", "sub", "expsin"):
+            self.gofdofd_probe(sh, "s", [X0])
+        for sh in ("poly", "prodlin", "sub"):
+            self.gofdofd_probe(sh, "v", P2)
+        # reverse-tape path (tensor param) — the #113 mixed-mode mechanism at
+        # 2-level nesting (d12 tape linkage).
+        for sh in ("poly", "prodlin"):
+            self.gofdofd_probe(sh, "t", P2)
+
+    def gofdofd_probe(self, sh, kind, comps, x0="1.1"):
+        """gradient over (derivative of derivative) with a captured param.
+
+        body(param, z) = param * shape(z). The inner
+          d/dx ( d/dz body |_{z=x} ) |_{x=x0}  =  param * shape''(x0)
+        is a 2nd derivative; the outer gradient d/dparam = shape''(x0). The FD
+        baseline central-differences the outer gradient variable over that inner
+        derivative-of-derivative (`g` below), validating the ESH-0117 outer link
+        (the inner 2nd derivative is gated independently by the dofd cells).
+        """
+        u = self.uid()
+        shp = SS_BY_NAME[sh]
+        if kind == "s":
+            params, pt = "p", comps[0]
+            cap = "p"
+        else:
+            params, pt = "v", point(kind, comps)
+            cap = "(vector-ref v 0)"
+        body = f"(* {cap} {shp('z')})"
+        inner = (f"(derivative (lambda (x) (derivative (lambda (z) {body}) x)) "
+                 f"{x0})")
+        lines = [f"(define (g{u} {params}) {inner})"]
+        lines.append(f"(define ad{u} (gradient (lambda ({params}) {inner}) {pt}))")
+        knd = "s" if kind == "s" else kind + str(len(comps))
+        pid = f"nest.gofdofd.{sh}.{knd}.inline.capnone"
+        if kind == "s":
+            lines.append(f"(define fd{u} {self.fd1_scalar(f'g{u}', comps[0])})")
+            lines.append(self.chk(pid, f"ad{u}", f"fd{u}"))
+            self.add("nest", pid, lines, 1)
+        else:
+            nchk = 0
+            for i in range(len(comps)):
+                lines.append(f"(define fd{u}_{i} "
+                             f"{self.fd1_comp(f'g{u}', kind, comps, i)})")
+                lines.append(self.chk(f"{pid}[{i}]", f"(vref ad{u} {i})",
+                                      f"fd{u}_{i}"))
+                nchk += 1
+            self.add("nest", pid, lines, nchk)
+
     # -- loop-iterated reuse --------------------------------------------
     def gen_loop(self):
         # 50x fixed-point accumulation
