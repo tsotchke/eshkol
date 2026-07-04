@@ -229,7 +229,26 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
                 // Has captures - fall through to closure path
             }
 
-            // Load from storage if needed
+            // CAPTURED-PROCEDURE FIX: when the procedure is a plain variable
+            // that is NOT an LLVM Function*, re-evaluate it through the normal
+            // codegen path.  A closure captured into the enclosing lambda has
+            // its symbol-table entry pointing at the *capture slot* (a ptr
+            // parameter), not at a tagged value.  The old code only loaded
+            // GlobalVariable / AllocaInst storage, so a captured procedure
+            // arrived at applyClosure as a raw pointer, which was then read as
+            // a tagged value → invalid function pointer → SIGBUS
+            // (e.g. `(define (f g) (lambda (x y) (apply g (list x y))))`).
+            // codegenVariable already resolves captures, allocas, and globals
+            // uniformly into a proper tagged closure value.
+            if (!isa<Function>(func_value)) {
+                Value* resolved = codegen_ast_callback_(func_arg, callback_context_);
+                if (resolved) {
+                    return applyClosure(resolved, list_int);
+                }
+            }
+
+            // Load from storage if needed (fallback: Function* with captures,
+            // or callback resolution failed)
             if (isa<GlobalVariable>(func_value)) {
                 func_value = ctx_.builder().CreateLoad(
                     cast<GlobalVariable>(func_value)->getValueType(), func_value);
