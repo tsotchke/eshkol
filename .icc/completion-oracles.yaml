@@ -1240,8 +1240,8 @@ oracles:
   # and diffs the wrong-n set / DONE markers against
   # tests/numeric_depth/BASELINE.json. A NEW silent-wrong n, a regressed
   # max-correct-n, or a lost DONE marker fails the sweep. Documented bug
-  # boundaries (ESH-0105/0110 rational contagion, ESH-0119 gcd bignum,
-  # ESH-0120 bignum divmod) live in the baseline. Writes kind:"numeric_depth"
+  # boundaries (ESH-0105/0110 rational contagion, ESH-0124 gcd bignum,
+  # ESH-0125 bignum divmod) live in the baseline. Writes kind:"numeric_depth"
   # events to scripts/icc_traces/numeric_depth.jsonl.
   # ─────────────────────────────────────────────────────────────────
   - name: numeric-depth

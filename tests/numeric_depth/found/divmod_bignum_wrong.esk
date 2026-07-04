@@ -1,4 +1,4 @@
-; FOUND by P6d numeric-depth sweep (ESH-0120). Bignum quotient/remainder are
+; FOUND by P6d numeric-depth sweep (ESH-0125). Bignum quotient/remainder are
 ; silently WRONG once both operands are bignums: the fundamental division
 ; identity a = q*b + r fails. remainder is off by a small delta at moderate
 ; scale; at larger scale the quotient is wrong too.
