@@ -1,0 +1,21 @@
+{
+  "id": "ESH-0123",
+  "title": "Parser rejects rational literals with bignum numerator/denominator",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "depth-parametric-campaign/numeric-tower",
+  "goal": "Found by the P6d numeric-depth sweep (2026-07-03). A rational literal whose numerator OR denominator exceeds int64 is rejected at compile time with 'invalid rational literal: <p>/<q>', even though (a) small literals like 22/7 parse fine and (b) the identical value is constructible at runtime via (/ p q). The lexer/parser for rational literals evidently parses the two components as int64 and errors on overflow instead of falling back to the bignum path the runtime already has. This is distinct from the runtime exactness contagion (ESH-0105/0110): here the program never compiles. It blocks writing exact large-fraction constants directly in source (SICP rational package constants, symbolic math tables).",
+  "file_globs": [
+    "lib/frontend/lexer*.c*",
+    "lib/frontend/parser*.c*"
+  ],
+  "acceptance": [
+    "tests/numeric_depth/found/rational_literal_bignum.esk prints OK rational-literal-bignum under -r and AOT",
+    "(display 100000000000000000000/3) prints the exact rational (or its bignum-degraded value) without a compile error",
+    "A bignum rational literal parses to the same value as the runtime (/ p q) form"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Removes a source-level cliff in the numeric tower: exact large fractions become writable as literals.",
+  "repro": "tests/numeric_depth/found/rational_literal_bignum.esk",
+  "found_by": "scripts/run_numeric_depth.sh (family rational_harmonic, first surfaced pre-fix at n=47)"
+}

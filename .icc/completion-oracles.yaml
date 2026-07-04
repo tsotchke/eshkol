@@ -1306,3 +1306,26 @@ oracles:
         severity: high
         label: Recursion/control depth sweep gate (no silent crash, no wrong value at any tested depth; -r and AOT)
         action: ./scripts/run_recursion_depth.sh
+  # Numeric-tower depth/scale-parametric sweep (adversarial pillar P6d,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_numeric_depth.py
+  # bakes Python arbitrary-precision int / fractions.Fraction ground
+  # truth (or analytic identities) into per-family Eshkol self-checks
+  # swept over a scale/depth parameter n=1..N; scripts/run_numeric_depth.sh
+  # runs each family under both -r (jit) and AOT, records max-correct-n,
+  # and diffs the wrong-n set / DONE markers against
+  # tests/numeric_depth/BASELINE.json. A NEW silent-wrong n, a regressed
+  # max-correct-n, or a lost DONE marker fails the sweep. Documented bug
+  # boundaries (ESH-0105/0110 rational contagion, ESH-0124 gcd bignum,
+  # ESH-0125 bignum divmod) live in the baseline. Writes kind:"numeric_depth"
+  # events to scripts/icc_traces/numeric_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: numeric-depth
+    aliases: [numeric-depth-sweep, p6d-numeric-tower, numeric-tower-depth]
+    requires:
+      - runtime_event:
+          event_kinds: [numeric_depth]
+          event_names: ["numeric_depth_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: Numeric-tower depth sweep clean vs baseline (no new silent-wrong, no regressed max-correct-n)
+        action: python3 scripts/gen_numeric_depth.py && ./scripts/run_numeric_depth.sh
