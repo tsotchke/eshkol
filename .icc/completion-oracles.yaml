@@ -1229,3 +1229,28 @@ oracles:
         severity: high
         label: VM parity gate (audit + corpus differential + out-of-subset probes all green)
         action: ./scripts/run_vm_parity.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Depth-coverage completeness (Pillar P6 auditor). The meta-check that
+  # PROVES the depth-parametric sweeps cover the depth of the ENTIRE
+  # language, not just AD. scripts/check_depth_coverage.py re-derives the
+  # construct surface from the AST op enum (inc/eshkol/eshkol.h) and
+  # asserts, against scripts/depth_coverage_registry.json, that every op
+  # is classified composable/leaf and every composable construct has a
+  # registered depth sweep (an owning P6a..P6f pillar) or a tracked gap
+  # (ESH-#### task). A new nestable construct added without a sweep or a
+  # filed gap FAILS the gate — so the ESH-0117 blind spot (a construct
+  # silently tested only at shallow depth) cannot recur. Human-readable
+  # matrix: docs/DEPTH_COVERAGE_MATRIX.md. Writes kind:"depth_coverage"
+  # events to scripts/icc_traces/depth_coverage.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: depth-coverage
+    aliases: [depth_coverage, depth-parametric-coverage, p6-auditor]
+    requires:
+      - runtime_event:
+          event_kinds: [depth_coverage]
+          event_names: ["depth_coverage_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Every composable construct has a registered depth sweep or a tracked gap
+        action: python3 scripts/check_depth_coverage.py
