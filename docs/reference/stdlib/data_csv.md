@@ -8,9 +8,7 @@ Pure-Eshkol CSV reader/writer. A parsed CSV is a **list of rows**, each row a
 Quoting follows the common convention: fields may be `"…"`-wrapped, and an
 embedded quote is escaped by doubling (`""`).
 
-> **Row-order bug:** `csv-parse` currently returns rows in **reverse** order.
-> This also corrupts [`core.data.dataframe`](data_dataframe.md). See
-> [Known issues](#known-issues).
+Rows come out in source (top-to-bottom) order.
 
 ## Functions
 
@@ -34,17 +32,16 @@ is an alias. An empty line gives `()`; an empty field becomes `()`.
 ()
 ```
 
-### `(csv-parse str)` — **returns rows reversed** (see [Known issues](#known-issues))
-Parse a whole CSV string into a list of rows. Blank lines are skipped.
+### `(csv-parse str)`
+Parse a whole CSV string into a list of rows, in source (top-to-bottom) order.
+Blank lines are skipped.
 
 ```scheme
 (display (csv-parse "a,b\n1,2\n3,4")) (newline)
 ```
 ```
-((3 4) (1 2) (a b))
+((a b) (1 2) (3 4))
 ```
-The expected result is `((a b) (1 2) (3 4))`; the rows come out in reverse
-because of a stale internal `reverse`.
 
 ### `(csv-parse-lines lines)`
 Parse an already-split list of line strings into rows (blank lines skipped).
@@ -107,18 +104,7 @@ Write rows to a file via `csv-stringify` + `write-file`.
 
 ## Known issues
 
-### `csv-parse` returns rows in reverse order
-`csv-parse` is implemented as
-`(csv-parse-lines (reverse (string-split str #\newline)))`. The `reverse` was
-needed when `string-split` returned fields right-to-left, but `string-split` now
-returns them **left-to-right** (confirmed: `(string-split "a\nb\nc" #\newline)`
-⇒ `(a b c)`). The leftover `reverse` therefore flips the row order.
-
-```scheme
-(require core.data.csv)
-(display (csv-parse "a,b\n1,2\n3,4")) (newline)
-;; => ((3 4) (1 2) (a b))   expected ((a b) (1 2) (3 4))
-```
-Impact: any consumer that treats the first row as a header (notably
-`csv-parse-typed` in [`core.data.dataframe`](data_dataframe.md)) gets the wrong
-header. Workaround: `(reverse (csv-parse s))`.
+None. (Historically `csv-parse` returned rows in reverse order because of a
+stale internal `reverse` left over from when `string-split` emitted fields
+right-to-left; `string-split` now returns them left-to-right and the `reverse`
+has been removed. Fixed in the stdlib/signal release sweep.)

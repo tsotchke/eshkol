@@ -77,35 +77,29 @@ Fixes the first argument of a ternary `f`; returns `(lambda (y z) (f x y z))`.
 ### `(partial f . args)`
 Generic partial application: fixes any number of leading arguments and returns a variadic procedure that appends the rest — `(lambda xs (apply f (append args xs)))`.
 
-**Do not use this procedure — it crashes (SIGBUS). See Known issues below.** Prefer `partial1`/`partial2`/`partial3` for fixed arities.
+```scheme
+(require stdlib)
+(display ((partial + 1 2 3) 4 5)) (newline)   ; (+ 1 2 3 4 5)
+(display ((partial * 2) 3 4)) (newline)        ; (* 2 3 4)
+```
+```
+15
+24
+```
 
-Edge cases: the fixed-arity variants (`partial1`/`partial2`/`partial3`) are safe and work as shown.
+Edge cases: the fixed-arity variants (`partial1`/`partial2`/`partial3`) are also available for fixed arities.
 
 ## Known issues
 
-### `partial` crashes with SIGBUS
-`partial` closes over the procedure argument and `apply`s it inside a nested variadic lambda; that pattern crashes the runtime.
+None. (Historically `partial` crashed with SIGBUS: it closes over the procedure
+argument and `apply`s it inside the returned lambda, and `apply` of a
+closure-**captured** procedure mis-read the capture slot as a tagged value —
+an invalid function pointer. The apply codegen now resolves a captured procedure
+through the normal variable path, so `(apply captured-proc …)` works. Minimal
+repro that used to crash:
 
 ```scheme
-(require stdlib)
-(display ((partial + 1 2 3) 4 5)) (newline)
+(define (f g) (lambda (x y) (apply g (list x y))))
+(display ((f +) 3 4)) (newline)   ; => 7
 ```
-```
-[Eshkol] fatal signal: SIGBUS (bus error) — terminating; output above is what made it to stdout before the crash
-```
-
-Minimal repro isolating the trigger — `apply` of a **captured** procedure inside a nested variadic lambda:
-
-```scheme
-(define (f g . args) (lambda xs (apply g (append args xs))))
-(display ((f + 1 2) 3 4)) (newline)   ; SIGBUS
-```
-
-The same shape with a *literal* operator instead of a captured one works fine, which pinpoints the fault to closing over the procedure:
-
-```scheme
-(define (f . args) (lambda xs (apply + (append args xs))))
-(display ((f 1 2) 3 4)) (newline)   ; => 10, no crash
-```
-
-Not yet ledgered in `.swarm/tasks/` at time of writing.
+)

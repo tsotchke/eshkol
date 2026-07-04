@@ -92,6 +92,16 @@ public:
     llvm::Value* substring(const eshkol_operations_t* op);
 
     /**
+     * Copy a string: R7RS (string-copy s [start [end]]).
+     * The 1- and 2-argument forms default the missing bounds to
+     * start=0 and end=(string-length s), unlike `substring` which
+     * requires all three.  Fixes the 1-arg form returning `()`.
+     * @param op The operation AST node
+     * @return Fresh string as tagged value
+     */
+    llvm::Value* stringCopy(const eshkol_operations_t* op);
+
+    /**
      * Compare strings: (string=? s1 s2), (string<? s1 s2), etc.
      * @param op The operation AST node
      * @param cmp_type One of "eq", "lt", "gt", "le", "ge"
@@ -422,6 +432,15 @@ private:
      * @return Raw i64 value suitable for GEP indices
      */
     llvm::Value* ensureRawInt64(llvm::Value* val, const std::string& name = "raw_idx");
+
+    /**
+     * Shared implementation for substring / string-copy.
+     * @param str_ptr Raw char* to the source string (already unpacked).
+     * @param start   Start codepoint index, or nullptr to default to 0.
+     * @param end     End codepoint index, or nullptr to default to (length).
+     * @return Fresh string as tagged value.
+     */
+    llvm::Value* substringImpl(llvm::Value* str_ptr, llvm::Value* start, llvm::Value* end);
 
     // Callbacks for AST code generation (set by main codegen)
     using CodegenASTFunc = llvm::Value* (*)(const void* ast, void* context);
