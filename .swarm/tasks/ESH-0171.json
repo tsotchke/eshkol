@@ -1,0 +1,32 @@
+{
+  "id": "ESH-0171",
+  "title": "Proper mutual tail calls on x86/arm32/riscv need an i128 tagged-value return ABI",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "edge-case-campaign/tco",
+  "goal": "ESH-0102 made mutual tail calls proper R7RS tail calls by emitting LLVM `musttail` for a tail-position call to another function. `musttail` is now used on the AArch64 family (aarch64 / aarch64_be / arm64_32), where the backend lowers a struct-by-value return under musttail. It is NOT usable on x86_64 / i386 / arm(32) / riscv64: those backends fatally reject `musttail` for an AGGREGATE return ('failed to perform tail call elimination on a call site marked musttail'), and EVERY Eshkol function returns the by-value tagged value struct {i8,i8,i16,i32,i64}. Verified with `llc -mtriple=… -filetype=obj` on LLVM 21: scalar i64/i128 returns musttail fine on x86, but the struct return does not (even under tailcc). On those targets mutual tail calls therefore fall back to the old TCK_Tail hint (bounded stack), so a mutually tail-recursive state machine keeps a ~200-300k transition ceiling on x86. The root fix is to return the 16-byte tagged value as an i128 scalar (RAX:RDX / same registers, bit-compatible) so musttail lowers on x86 too — an ABI change touching every function signature, call site, and pack/unpack path.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/type_system.cpp",
+    "lib/backend/tagged_value_codegen.cpp",
+    "lib/backend/function_codegen.cpp",
+    "lib/backend/call_apply_codegen.cpp"
+  ],
+  "acceptance": [
+    "On x86_64 (and ideally arm32/riscv64), tests/stress/found/mutual_tail_1e7.esk prints 'OK ping' in O(1) stack under -r and AOT.",
+    "The P6b recursion_depth sweep mutual_tail2/mutual_tail3 5,000,000-hop cells PASS on x86_64.",
+    "No regression to the AArch64 path, SICP 88/88, AD oracle, or the tagged-value C-runtime interop (the i128 must remain bit-compatible with the 16-byte C struct)."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "R7RS proper tail calls should hold on every native target, not just AArch64; the canonical 'state machine as mutually tail-calling functions' idiom otherwise silently ceilings on x86.",
+  "repro": "tests/stress/found/mutual_tail_1e7.esk",
+  "design": "docs/design/MUTUAL_TAIL_CALLS.md",
+  "verifications": [
+    {
+      "date": "2026-07-04",
+      "branch": "fix/mutual-tail-tco",
+      "verdict": "scoped",
+      "evidence": "ESH-0102 fix landed for AArch64 (musttail); x86/arm32/riscv64 aggregate-return musttail rejection isolated with llc on LLVM 21 and scoped to this ABI-change follow-up. See docs/design/MUTUAL_TAIL_CALLS.md."
+    }
+  ]
+}
