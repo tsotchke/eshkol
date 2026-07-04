@@ -1,0 +1,24 @@
+{
+  "id": "ESH-0124",
+  "title": "gcd returns a silently wrong value when any operand is a bignum",
+  "status": "open",
+  "priority": "high",
+  "workstream": "depth-parametric-campaign/numeric-tower",
+  "goal": "Found by the P6d numeric-depth sweep (2026-07-03). gcd has no bignum path: whenever AT LEAST ONE operand exceeds int64 it returns a silently wrong value. With one bignum operand it returns 1 (the bignum is effectively ignored / truncated to a coprime residue); with two bignum operands it returns INT64_MAX = 9223372036854775807. It only appears correct when the TRUE gcd happens to be 1, because the buggy path also returns 1. Examples: (gcd (* 3 (expt 2 61)) (* 5 (expt 2 61))) -> 1 (true 2^61); (gcd (expt 2 64) (expt 2 63)) -> 9223372036854775807 (true 2^63); (gcd (expt 2 64) 6) -> 1 (true 2). Corrupts any exact-arithmetic algorithm that reduces fractions or factors at bignum scale.",
+  "file_globs": [
+    "lib/backend/arithmetic_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/core/**/gcd*.c*",
+    "lib/runtime/**/bignum*.c*"
+  ],
+  "acceptance": [
+    "tests/numeric_depth/found/gcd_bignum_wrong.esk prints OK gcd-bignum under -r and AOT",
+    "(gcd (* 3 (expt 2 61)) (* 5 (expt 2 61))) = (expt 2 61)",
+    "(gcd (expt 2 64) 6) = 2",
+    "tests/numeric_depth family bignum_gcd is correct for all swept n (no baseline expected_wrong entries)"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "gcd is a tower primitive (lcm, rational reduction, factoring); a correct bignum gcd is required for exact rationals at scale (see ESH-0105).",
+  "repro": "tests/numeric_depth/found/gcd_bignum_wrong.esk",
+  "found_by": "scripts/run_numeric_depth.sh (family bignum_gcd, wrong from n=61 where an operand crosses int64)"
+}

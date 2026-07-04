@@ -1,0 +1,21 @@
+;; ESH-0122 — depth-2 nested derivative that CAPTURES a value returns garbage.
+;; Found by the depth-parametric AD oracle (scripts/gen_ad_depth.py).
+;;
+;; A single (depth-1) derivative that multiplies the body by a captured
+;; local/vector-ref value is correct. Nesting it to depth 2 with the SAME
+;; capture returns a huge garbage number (~2.2e13) instead of the true
+;; second derivative. capnone/global captures at depth 2 are fine, so the
+;; bug is in how a captured (non-constant-folded) factor flows through the
+;; second forward-tangent level. Expected d2 = 1.7 * 3584 = 6092.8.
+;; d1 with capture is CORRECT: 1.7 * 1024 = 1740.8
+(display "d1 ")
+(display ((lambda (c) (derivative (lambda (b) (* c b b b b b b b b)) 2.0)) 1.7))(newline)
+;; d2 with local-param capture is GARBAGE (~2.2e13), expected 6092.8
+(display "d2-local ")
+(display ((lambda (c) (derivative (lambda (a) (derivative (lambda (b) (* c b b b b b b b b)) a)) 2.0)) 1.7))(newline)
+;; d2 with vector-ref capture is GARBAGE too
+(display "d2-vecref ")
+(display ((lambda (pv) (derivative (lambda (a) (derivative (lambda (b) (* (vref pv 0) b b b b b b b b)) a)) 2.0)) (vector 1.7 1.0)))(newline)
+;; contrast: d2 capnone is CORRECT (3584)
+(display "d2-capnone ")
+(display (derivative (lambda (a) (derivative (lambda (b) (* b b b b b b b b)) a)) 2.0))(newline)

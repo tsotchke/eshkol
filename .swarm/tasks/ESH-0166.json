@@ -1,0 +1,22 @@
+{
+  "id": "ESH-0166",
+  "status": "open",
+  "priority": "high",
+  "workstream": "sanitizer-fuzz",
+  "title": "Sanitizer fuzz: AddressSanitizer stack-buffer-overflow",
+  "goal": "Fix sanitizer finding from scripts/run_sanitizer_fuzz.sh. First repro: tests/v1_2_edge_cases/type_safety_test.esk via r/run. Top frame: #0 0xADDR in eshkol_type_error_with_operand runtime_errors_hosted.cpp:201. Log: artifacts/sanitizer-fuzz/logs/1227_r_2911697867.err.",
+  "status_note": "OPEN. Dedup signature is sanitizer kind/subtype plus normalized top frame.",
+  "acceptance": [
+    "Root cause is fixed or explicitly classified with a narrower XKNOWN.",
+    "A minimal repro remains in tests/ or is added next to the affected corpus.",
+    "scripts/run_sanitizer_fuzz.sh no longer reports this signature."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "tests/v1_2_edge_cases/type_safety_test.esk"
+  ],
+  "sanitizer_signature": "AddressSanitizer\tstack-buffer-overflow\t#0 0xADDR in eshkol_type_error_with_operand runtime_errors_hosted.cpp:201",
+  "sanitizer_kind": "AddressSanitizer",
+  "sanitizer_subtype": "stack-buffer-overflow",
+  "sanitizer_top_frame": "#0 0xADDR in eshkol_type_error_with_operand runtime_errors_hosted.cpp:201"
+}

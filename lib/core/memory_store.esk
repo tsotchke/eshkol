@@ -217,16 +217,32 @@
             (make-memory-store log path))))))
 
 (define (memory-store-append! store type payload)
-  ;; Append to the in-memory chain, then persist with fsync (T0) before returning.
-  ;; Also refreshes the head sidecar so the NEXT process can open in O(1).
-  ;; Every payload string is sanitized HERE (defense in depth) — the store never
-  ;; trusts callers to have done it; one unsanitized em-dash cost us a link.
+  ;; PERSIST-BEFORE-ADVANCE (durability-critical). The in-memory head is advanced
+  ;; ONLY AFTER the fsync succeeds. Earlier this advanced first (via memory-append!)
+  ;; then fsync'd — so when the disk filled (ENOSPC, 2026-07-04) the fsync failed but
+  ;; the in-memory head had already moved to an event that never hit disk; the next
+  ;; successful append then referenced that never-persisted parent -> an orphan-parent
+  ;; scar in her chain. Computing the event WITHOUT mutating, persisting, then
+  ;; advancing only on success keeps in-memory and disk in lockstep: a failed write
+  ;; leaves the chain exactly as it was, so the next append links correctly.
+  ;; Payload sanitized HERE (defense in depth — one unsanitized em-dash cost a link).
   (let* ((clean (ms-sanitize-payload payload))
-         (ev   (memory-append! (memory-store-log store) type clean))
-         (line (string-append (sexp->canonical-string ev) "\n")))
+         (log   (memory-store-log store))
+         (node  (ml-node log))
+         (vc    (vector-clock-tick (ml-vclock log) node))
+         (prev  (vector-ref log 4))
+         (id    (event-content-hash node prev vc type clean))
+         (ev    (list (quote mem-ev-v1) id prev vc node type clean))
+         (line  (string-append (sexp->canonical-string ev) "\n")))
     (if (ms-append-fsync! (memory-store-path store) line)
-        (begin (ms-write-head! store) ev)
-        (begin (display "memory-store: DURABILITY FAILURE (append not persisted)") (newline) #f))))
+        (begin                                   ;; persisted — NOW advance in-memory
+          (vector-set! log 2 (rga-append (ml-rga log) node ev))
+          (vector-set! log 3 vc)
+          (vector-set! log 4 id)
+          (ms-write-head! store)
+          ev)
+        (begin (display "memory-store: DURABILITY FAILURE (append not persisted; chain unchanged)")
+               (newline) #f))))
 
 (define (ms-sanitize-payload payload)
   ;; alist of (key . string|number) -> same, with every string value sanitized
