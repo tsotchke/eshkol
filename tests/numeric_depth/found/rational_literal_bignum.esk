@@ -1,4 +1,4 @@
-; FOUND by P6d numeric-depth sweep (ESH-0118). The parser REJECTS a rational
+; FOUND by P6d numeric-depth sweep (ESH-0123). The parser REJECTS a rational
 ; literal whose numerator or denominator exceeds int64 ("invalid rational
 ; literal"), even though the same value is constructible at runtime via (/ p q)
 ; and small literals like 22/7 parse fine. This is a lexer/parser gap distinct

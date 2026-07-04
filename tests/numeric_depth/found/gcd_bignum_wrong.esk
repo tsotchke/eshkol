@@ -1,4 +1,4 @@
-; FOUND by P6d numeric-depth sweep (ESH-0119). gcd is silently WRONG whenever
+; FOUND by P6d numeric-depth sweep (ESH-0124). gcd is silently WRONG whenever
 ; ANY operand is a bignum (exceeds int64): returns 1 (one bignum operand) or
 ; INT64_MAX=9223372036854775807 (both bignum), never the true gcd.
 ;   (gcd (* 3 (expt 2 61)) (* 5 (expt 2 61)))  true=2^61  -> got 1

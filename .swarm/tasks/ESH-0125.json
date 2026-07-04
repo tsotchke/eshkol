@@ -1,5 +1,5 @@
 {
-  "id": "ESH-0120",
+  "id": "ESH-0125",
   "title": "Bignum quotient/remainder are silently wrong at scale (a = q*b + r fails)",
   "status": "open",
   "priority": "high",
@@ -16,7 +16,7 @@
     "tests/numeric_depth family bignum_divmod is correct for all swept n (no baseline expected_wrong entries)"
   ],
   "blocked_by": [],
-  "campaign_payoff": "quotient/remainder are tower primitives; correctness at bignum scale is required for modular arithmetic, gcd (ESH-0119), and number->string of large values.",
+  "campaign_payoff": "quotient/remainder are tower primitives; correctness at bignum scale is required for modular arithmetic, gcd (ESH-0124), and number->string of large values.",
   "repro": "tests/numeric_depth/found/divmod_bignum_wrong.esk",
   "found_by": "scripts/run_numeric_depth.sh (family bignum_divmod, wrong from n=25 where both operands are bignum)"
 }
