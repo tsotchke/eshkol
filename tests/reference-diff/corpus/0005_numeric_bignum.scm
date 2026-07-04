@@ -1,0 +1,6 @@
+;; numeric / bignum  (R7RS-small portable; reference-differential corpus)
+(display (expt 2 64))(newline)
+(display (expt 10 30))(newline)
+(display (* 99999999999 99999999999))(newline)
+(display (- (expt 2 100) 1))(newline)
+(display (+ 100000000000000000000 1))(newline)

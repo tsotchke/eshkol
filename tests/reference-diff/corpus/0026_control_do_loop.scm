@@ -1,0 +1,6 @@
+;; control / do_loop  (R7RS-small portable; reference-differential corpus)
+(display (do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) s)))(newline)
+(display (do ((v (make-vector 5))
+              (i 0 (+ i 1)))
+             ((= i 5) v)
+          (vector-set! v i (* i i))))(newline)

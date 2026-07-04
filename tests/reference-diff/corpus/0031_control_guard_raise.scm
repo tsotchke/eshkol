@@ -1,0 +1,6 @@
+;; control / guard_raise  (R7RS-small portable; reference-differential corpus)
+(display (guard (e (#t (list 'caught e))) (raise 'boom)))(newline)
+(display (guard (e ((symbol? e) 'was-symbol) (else 'other)) (raise 'sym)))(newline)
+(display (guard (e ((error-object? e) (error-object-message e)))
+          (error "something failed")))(newline)
+(display (guard (e (#t 'recovered)) (car '())))(newline)

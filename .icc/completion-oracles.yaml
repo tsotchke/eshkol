@@ -1740,3 +1740,38 @@ oracles:
         severity: high
         label: Syntax/data nesting-depth sweep gate (no silent wrong value, no -r/AOT-O0/AOT-O2 divergence, no silent crash at any tested depth)
         action: ./scripts/run_nesting_depth.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Reference-implementation differential (adversarial testing pillar
+  # P7a) — EXTERNAL R7RS ground truth. Every other differential oracle
+  # in this repo diffs Eshkol against itself; this one diffs it against
+  # a real reference R7RS Scheme (chibi-scheme). tests/reference-diff/
+  # corpus/ holds R7RS-small portable programs; scripts/gen_reference_
+  # corpus.py regenerates them. scripts/run_reference_differential.sh
+  # runs each on chibi, Eshkol -r and Eshkol AOT, applies the documented
+  # cosmetic normalisation in scripts/lib/normalize_scheme_output.py,
+  # and writes kind:"reference_diff" events to
+  # scripts/icc_traces/reference_diff.jsonl. The gate event
+  # reference_diff_gate is PASS iff EVERY program AGREES across all three
+  # engines.
+  #
+  # This oracle SHOULD be red while conformance gaps remain — each
+  # ESHKOL-DIVERGES program corresponds to an open ESH task
+  # (ESH-0150..ESH-0156 at time of writing: apply-leading-args crash,
+  # multi-arg vector-map, cond/case =>, vector-copy, vector quasiquote,
+  # error-object accessors, write string escaping).
+  # ─────────────────────────────────────────────────────────────────
+  - name: reference-diff
+    aliases: [reference-differential, p7a-reference-diff, reference-scheme-diff]
+    requires:
+      - test_evidence: true
+        severity: high
+        label: R7RS-small portable corpus present and regenerable
+        action: python3 scripts/gen_reference_corpus.py
+      - runtime_event:
+          event_kinds: [reference_diff]
+          event_names: ["reference_diff_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Every portable program agrees with the reference R7RS Scheme on -r and AOT
+        action: ./scripts/run_reference_differential.sh

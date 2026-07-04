@@ -148,3 +148,6 @@ tests/stress/generated/
 tests/metaprog_depth/generated/
 tests/nesting_depth/generated/
 artifacts/nesting-depth/
+
+# P7a reference-differential runtime artifacts (binaries/logs, capped 1GB)
+artifacts/reference-diff/
