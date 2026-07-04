@@ -1,0 +1,31 @@
+{
+  "id": "ESH-0119",
+  "title": "Stack-overflow SIGILL is not caught by the fatal-signal handler -> silent crash (rc132, no diagnostic) where SIGBUS is caught",
+  "status": "open",
+  "priority": "high",
+  "workstream": "edge-case-campaign/recursion",
+  "goal": "Found by the P6b depth-parametric recursion/control sweep (2026-07-03, master 1ee11b06, macOS arm64). Deep NON-tail recursion overflows the native stack and dies with SIGILL (rc 132) printing NOTHING, whereas the SAME class of overflow via SIGBUS IS caught by Eshkol's fatal-signal handler and prints '[Eshkol] fatal signal: SIGBUS (bus error) -- terminating' with a nonzero exit (an acceptable diagnostic boundary). The handler covers SIGBUS/SIGSEGV but SIGILL slips through, so which manifestation you get -- and thus whether the crash is SILENT or DIAGNOSED -- is nondeterministic at the boundary. NEW silent instances gated by the P6b sweep: (1) deep GUARD nesting -- safe to 150000, silent SIGILL by 200000, both -r and AOT; (2) recursion through the METACIRCULAR evaluator (tests/sicp ch4 style eval/apply) -- interpreted recursion safe to 10000, silent SIGILL by 30000; (3) deep DYNAMIC-WIND nesting at ~100000 -- flaps between a caught SIGBUS diagnostic and a silent SIGILL across runs. This is the same architectural root behind the SILENT SIGILLs in ESH-0102 (mutual tail), ESH-0108 (stdlib length), ESH-0112 (non-tail): none of them emit a diagnostic. Fix: install an alternate signal stack (sigaltstack) so the handler can run after the stack is exhausted, and register SIGILL alongside SIGBUS/SIGSEGV, so EVERY stack-exhaustion crash prints a diagnostic + nonzero exit instead of a silent rc132. A graceful recursion-depth guard for plain user recursion (as already exists for the CPS/map/call-cc guarded path at 100000) would additionally convert these hard crashes into catchable errors.",
+  "file_globs": [
+    "lib/core/runtime_list_helpers.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "src/eshkol-run.cpp"
+  ],
+  "acceptance": [
+    "deep guard nesting at 200000 either completes or prints a diagnostic + nonzero exit (no silent rc132) under -r and AOT",
+    "metacircular-evaluator recursion at 30000 either completes or prints a diagnostic (no silent rc132)",
+    "dynamic-wind nesting at 100000 deterministically prints a diagnostic on overflow (never a silent rc132)",
+    "tests/recursion_depth sweep can move these xknown cells back to a clean 'limit' expectation"
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Every stack-exhaustion crash becomes a diagnosable boundary instead of a silent SIGILL; unblocks honest depth gating for guard/dynamic-wind/metacircular and is the shared fix that also de-silences ESH-0102/0108/0112.",
+  "repro": "tests/recursion_depth/generated/rec_guard_d200000.esk",
+  "verifications": [
+    {
+      "sweep": "P6b",
+      "date": "2026-07-03",
+      "master": "1ee11b06",
+      "verdict": "new-finding",
+      "evidence": "guard: 150k PASS / 200k SILENT-SIGILL (rc132, output only up to the crash, no diagnostic), -r AND AOT. metacircular: 10k PASS / 30k SILENT-SIGILL. dynamic_wind 100k: SIGBUS-diagnostic on one run, silent SIGILL on another. Contrast: SIGBUS-path overflows print '[Eshkol] fatal signal: SIGBUS'."
+    }
+  ]
+}
