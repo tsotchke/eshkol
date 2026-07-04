@@ -427,6 +427,14 @@ static Node* parse_sexp(void) {
             if (i < 62 && (*src_ptr == '+' || *src_ptr == '-')) buf[i++] = *src_ptr++;
             while (isdigit(*src_ptr) && i < 63) buf[i++] = *src_ptr++;
         }
+        /* Null-terminate the integer part BEFORE any atoll below. Without this
+         * the rational-literal branch called atoll(buf) on a buffer whose tail
+         * was still uninitialized stack memory, so atoll kept consuming any
+         * garbage digit bytes after the real ones -> a corrupted numerator
+         * (e.g. 1/3 parsed with num != 1). It only surfaced when the stack
+         * garbage happened to be a digit, making it a memory-layout-dependent
+         * heisenbug. The non-rational path re-terminates below (harmless). */
+        buf[i] = 0;
         /* Check for rational literal: digits/digits */
         if (*src_ptr == '/' && isdigit(src_ptr[1])) {
             int64_t num = atoll(buf);
