@@ -4895,7 +4895,14 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_tensor_load_v(eshkol_sysbuiltin_
     void* arena = get_global_arena();
     if (!arena) { fclose(f); return sys_make_null(); }
     eshkol_tensor_t_ffi* t = (eshkol_tensor_t_ffi*)arena_allocate_tensor_full(arena, ndims, (uint64_t)total);
-    if (!t || !t->elements) { fclose(f); return sys_make_null(); }
+    if (!t || !t->elements || !t->dimensions) { fclose(f); return sys_make_null(); }
+    /* Restore the shape: arena_allocate_tensor_full sizes the dimensions[]
+     * array but leaves it uninitialized. Without this copy the loaded tensor
+     * has num_dimensions=ndims but zeroed dims → tensor-shape reports (0 0…)
+     * and display shows #(). Round-trip must preserve the exact shape. */
+    for (uint32_t i = 0; i < ndims; i++) {
+        t->dimensions[i] = (uint64_t)shape[i];
+    }
     if ((int64_t)fread(t->elements, 8, (size_t)total, f) != total) {
         fclose(f);
         return sys_make_null();

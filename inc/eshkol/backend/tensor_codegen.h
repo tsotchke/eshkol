@@ -1192,6 +1192,27 @@ private:
                                        const std::string& name);
 
     /**
+     * Emit the numeric (non-autodiff) batch-norm / layer-norm path as a call to
+     * the eshkol_tensor_normalize_apply runtime kernel. The kernel decodes
+     * gamma/beta from tagged values, so it handles BOTH a scalar (broadcast)
+     * and a per-feature tensor correctly — the old inline codegen only handled
+     * scalars and produced garbage (or SIGSEGV) on tensor gamma/beta.
+     *   input_val    : the tagged input tensor
+     *   gamma_val    : tagged (or raw) gamma — scalar or tensor
+     *   beta_val     : tagged (or raw) beta  — scalar or tensor
+     *   epsilon_d    : epsilon as a double LLVM value
+     *   group_len    : elements per normalization group (i64)
+     *   inner_stride : stride between group members (i64)
+     * Returns the packed tagged result tensor.
+     */
+    llvm::Value* emitNumericNormalize(llvm::Value* input_val,
+                                      llvm::Value* gamma_val,
+                                      llvm::Value* beta_val,
+                                      llvm::Value* epsilon_d,
+                                      llvm::Value* group_len,
+                                      llvm::Value* inner_stride);
+
+    /**
      * Coerce a numeric value to a runtime double.
      *
      * - tagged values: dispatches at runtime on type-tag (INT64 → SIToFP,

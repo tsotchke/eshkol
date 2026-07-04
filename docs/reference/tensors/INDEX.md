@@ -31,16 +31,18 @@ LU/QR/SVD/Cholesky/solve/inverse/det, reductions, `conv1d`/`conv2d`/`conv3d`,
 `positional-encoding`, `dropout`, `softmax`, tensor-only activations, dtype
 casts, rect/disk pixel fills, and all three library modules.
 
-**Known-broken on this build (documented, not fixed here):**
+**Known limitations on this build:**
 
 | Operation | Issue |
 |-----------|-------|
-| `batch-norm`, `layer-norm` | garbage output (4-arg); SIGSEGV (5-arg `axis`) |
-| `tensor-load` | drops shape (`tensor-shape` → `(0)`); data/length survive |
-| `gpu-reduce` | returns empty `#()` instead of a scalar |
-| `tanh` | scalar-only; silently wrong on a tensor |
-| `tensor-pow` | needs a tensor exponent, not a scalar |
-| tensor creation | no element type-check; int+float args misread as shape |
+| tensor creation | no element type-check for non-numeric args (`(tensor 1.0 "x")` → garbage) |
+| type-guard text | reports raw doubles as `integer` |
+
+(The release sweep-B fixes landed: `batch-norm`/`layer-norm` handle scalar
+**and** per-feature tensor gamma/beta plus the 5-arg axis form; `tensor-load`
+round-trips the shape; `gpu-reduce` returns a scalar; scalar math like `tanh`
+maps elementwise over a tensor; `tensor-pow` accepts a scalar exponent; and
+`(tensor 1 2.5 3)` builds the obvious 1-D tensor.)
 
 ## GPU status in one line
 
