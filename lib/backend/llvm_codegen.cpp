@@ -19328,7 +19328,7 @@ private:
             Value* num_x = builder->CreateFMul(y, dx);
             Value* num = builder->CreateFSub(num_y, num_x, "atan2_num");
             Value* tangent_d = builder->CreateFDiv(num, denom, "atan2_tangent");
-            Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+            Value* result_dual = ConstantAggregateZero::get(ctx_->dualNumberType()) /* ESH-0117: zero-fills fields 4-7 */;
             Value* atan2_dzero = ConstantFP::get(double_type, 0.0);
             result_dual = builder->CreateInsertValue(result_dual, primal_d, {0});
             result_dual = builder->CreateInsertValue(result_dual, tangent_d, {1});
@@ -19408,7 +19408,7 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* l_dual = arith_->convertToDual(arg1, arg1_is_dual, l_dbl_for_dual);
         Value* l_tangent = builder->CreateExtractValue(l_dual, {1}, "mod_l_tangent");
-        Value* result_dual = UndefValue::get(ctx_->dualNumberType());
+        Value* result_dual = ConstantAggregateZero::get(ctx_->dualNumberType()) /* ESH-0117: zero-fills fields 4-7 */;
         Value* mod_dzero = ConstantFP::get(double_type, 0.0);
         result_dual = builder->CreateInsertValue(result_dual, mod_primal, {0});
         result_dual = builder->CreateInsertValue(result_dual, l_tangent, {1});
@@ -19657,7 +19657,7 @@ private:
                 dual_result = emitGCDPair(dual_result, arg_int);
             }
             Value* dual_result_dbl = builder->CreateSIToFP(dual_result, double_type);
-            Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
+            Value* dual_struct = ConstantAggregateZero::get(ctx_->dualNumberType()) /* ESH-0117: zero-fills fields 4-7 */;
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
             // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
@@ -19796,7 +19796,7 @@ private:
                 dual_result = emitLCMPair(dual_result, arg_int);
             }
             Value* dual_result_dbl = builder->CreateSIToFP(dual_result, double_type);
-            Value* dual_struct = UndefValue::get(ctx_->dualNumberType());
+            Value* dual_struct = ConstantAggregateZero::get(ctx_->dualNumberType()) /* ESH-0117: zero-fills fields 4-7 */;
             dual_struct = builder->CreateInsertValue(dual_struct, dual_result_dbl, {0});
             dual_struct = builder->CreateInsertValue(dual_struct, ConstantFP::get(double_type, 0.0), {1});
             // 2nd-order dual: zero e2 / e1e2 slots (avoid poison).
