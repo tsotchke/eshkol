@@ -1,0 +1,20 @@
+{
+  "id": "ESH-0205",
+  "status": "open",
+  "priority": "high",
+  "workstream": "tensor-collection-depth",
+  "title": "make-tensor silently truncates rank > 3 to rank 3 (silent WRONG)",
+  "goal": "make-tensor with a dims list of length >= 4 silently drops every dimension past the third, returning a rank-3 tensor. Found by the P6f tensor/collection/string depth sweep (scripts/run_tensor_collection_depth.sh, family tensor_rank). All three axes (-r, AOT-O0, AOT-O2) agree on the wrong value, so it is a codegen defect. Root cause: TensorCodegen::makeTensorImpl (lib/backend/tensor_creation_codegen.cpp, list-path ~L457-578) only unrolls dimension extraction for the 1D/2D/3D cases; the 3D branch reads dim3 and stops walking the cons cdr, so dims 4..N are never read (the source comment even claims 'up to 4D'). reshape uses an independent path and correctly handles rank 4..8, so the two constructors disagree.",
+  "status_note": "OPEN. max-correct rank for make-tensor = 3; reshape MCD = 8.",
+  "acceptance": [
+    "make-tensor extracts the full dims list (walk the cons chain, not a fixed 1D/2D/3D unroll) so (tensor-shape (make-tensor (list 2 3 4 5) v)) == (2 3 4 5).",
+    "tensor_rank family in scripts/run_tensor_collection_depth.sh reaches MCD == max-rank on all three axes.",
+    "A minimal repro remains under tests/tensor_collection_depth/ (generated tensor_rank/d004.esk covers it)."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "lib/backend/tensor_creation_codegen.cpp",
+    "tests/tensor_collection_depth/generated/tensor_rank/d004.esk"
+  ],
+  "repro": "(require stdlib)\n(define T (make-tensor (list 2 3 4 5) 7.0))\n(display (tensor-shape T))(newline)  ;; prints (2 3 4), expected (2 3 4 5)"
+}

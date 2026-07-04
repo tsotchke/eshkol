@@ -1455,3 +1455,30 @@ oracles:
         severity: high
         label: No metaprogramming/module family produces a WRONG value at any swept depth
         action: ./scripts/run_metaprog_depth.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Depth-parametric TENSOR / COLLECTION / STRING sweep (pillar P6f,
+  # .swarm/DEPTH_PARAMETRIC_TESTING.md). scripts/gen_tensor_collection_depth.py
+  # generates tensor-rank / reshape-rank / tensor-op-composition-chain /
+  # NxN-matmul / conv2d / nested-list / nested-vector / hash-table-size /
+  # list-length / string-length / unicode / embedded-NUL programs at
+  # depth/size d=1..N (and 10^k), each carrying a closed-form or numpy
+  # ground truth. scripts/run_tensor_collection_depth.sh runs every
+  # program on THREE execution axes (JIT -r, AOT-O0, AOT-O2), diffs the
+  # printed "RESULT: <v>" against expected, and records the max-correct
+  # depth/size per (family, axis). A WRONG value agreed across axes
+  # (silent wrong) or an AXIS-DIVERGENCE (the axes disagree) flips the
+  # gate to FAIL; a clean LIMIT (crash/compile-fail/timeout) is a
+  # documented boundary. Writes kind:"tensor_collection_depth" events to
+  # scripts/icc_traces/tensor_collection_depth.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: tensor-collection-depth
+    aliases: [tensor_collection_depth, tensor-collection-depth-sweep, p6f-tensor-collection]
+    requires:
+      - runtime_event:
+          event_kinds: [tensor_collection_depth]
+          event_names: ["tensor_collection_depth_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: No tensor/collection/string family is WRONG or axis-divergent at any swept depth/size
+        action: ./scripts/run_tensor_collection_depth.sh
