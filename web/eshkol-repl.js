@@ -550,6 +550,20 @@ class EshkolRepl {
                 eshkol_is_rational_tagged_ptr:  () => 0,
                 eshkol_list_reverse_tagged:      (value) => value,
 
+                // Taylor-tower runtime (ESH-0186 / AD P1) — mirrors the
+                // bignum dispatch pattern: eshkol_is_taylor_tagged always
+                // reports "not a tower" so the generic double/AD path
+                // handles every value in the browser build; the
+                // binary/unary/seed/extract kernels below are therefore
+                // unreachable stubs.
+                eshkol_is_taylor_tagged:        () => 0,
+                eshkol_taylor_c0:               () => 0.0,
+                eshkol_taylor_binary_tagged:    () => 0,
+                eshkol_taylor_unary_tagged:     () => 0,
+                eshkol_taylor_seed_tagged:      () => 0,
+                eshkol_taylor_extract:          () => 0.0,
+                eshkol_taylor_coeffs_list:      () => 0,
+
                 // Lazy futures — no async worker runtime in browser WASM yet.
                 eshkol_lazy_future_is_ready: () => 1,
                 eshkol_lazy_future_is_async: () => 0,
