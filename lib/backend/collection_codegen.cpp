@@ -2059,7 +2059,7 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
 
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
-    // Reusable raise helper for the out-of-range / wrong-type conditions.
+    // Reusable raise helper for the out-of-range condition.
     auto raise_error = [&](const char* message) {
         llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
         if (!raise_func) {
@@ -2083,23 +2083,41 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
         ctx_.builder().CreateUnreachable();
     };
 
-    // Reject tensors (`#(...)` literals) — their layout differs from a
-    // Scheme vector, so silently copying would corrupt memory.
-    {
-        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
-            llvm::ConstantInt::get(ctx_.int64Type(), -8));
-        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "vcopy_subtype");
-        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
-            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-        llvm::BasicBlock* tensor_fail = llvm::BasicBlock::Create(ctx_.context(), "vcopy_tensor_fail", current_func);
-        llvm::BasicBlock* not_tensor = llvm::BasicBlock::Create(ctx_.context(), "vcopy_not_tensor", current_func);
-        ctx_.builder().CreateCondBr(is_tensor, tensor_fail, not_tensor);
-        ctx_.builder().SetInsertPoint(tensor_fail);
-        raise_error("vector-copy: argument is a tensor, not a vector");
-        ctx_.builder().SetInsertPoint(not_tensor);
-    }
+    // R7RS: `#(...)` vector literals ARE vectors, so vector-copy must accept
+    // them. They lower to HEAP_SUBTYPE_TENSOR (homogeneous doubles, separate
+    // dims/elements arrays) instead of HEAP_SUBTYPE_VECTOR (inline tagged
+    // slots), so the two representations need different length reads and
+    // different copy/allocation code below. Dispatch on the header subtype at
+    // ptr-8, exactly like vector-ref/vector-length/vector-map do.
+    llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), -8));
+    llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "vcopy_subtype");
+    llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
+        llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
 
-    llvm::Value* len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vcopy_len");
+    llvm::BasicBlock* tensor_len_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_tensor_len", current_func);
+    llvm::BasicBlock* vector_len_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_vector_len", current_func);
+    llvm::BasicBlock* len_merge_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_len_merge", current_func);
+    ctx_.builder().CreateCondBr(is_tensor, tensor_len_block, vector_len_block);
+
+    // Tensor length: field 3 of the tensor struct (total_elements). Treated
+    // as a flat rank-1 sequence for copy purposes regardless of the source
+    // tensor's actual rank (mirrors the R7RS-visible "vector of N elements").
+    ctx_.builder().SetInsertPoint(tensor_len_block);
+    llvm::Value* tensor_total_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 3);
+    llvm::Value* tensor_len = ctx_.builder().CreateLoad(ctx_.int64Type(), tensor_total_ptr, "vcopy_tensor_len");
+    ctx_.builder().CreateBr(len_merge_block);
+
+    // Vector length: first 8 bytes of the vector object.
+    ctx_.builder().SetInsertPoint(vector_len_block);
+    llvm::Value* vector_len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vcopy_vec_len");
+    ctx_.builder().CreateBr(len_merge_block);
+
+    ctx_.builder().SetInsertPoint(len_merge_block);
+    llvm::PHINode* len_phi = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "vcopy_len");
+    len_phi->addIncoming(tensor_len, tensor_len_block);
+    len_phi->addIncoming(vector_len, vector_len_block);
+    llvm::Value* len = len_phi;
 
     // start (default 0)
     llvm::Value* start;
@@ -2143,14 +2161,63 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
 
     llvm::Value* count = ctx_.builder().CreateSub(end, start, "vcopy_count");
 
-    // Allocate the fresh vector and store its length.
+    // Dispatch the actual allocation + copy on the same subtype check used
+    // for the length read above. Each path allocates a *fresh* object of the
+    // *same* representation as the source (tensor in -> fresh rank-1 tensor,
+    // constructed vector in -> fresh vector), so downstream consumers keep
+    // seeing whichever representation they already handle.
+    llvm::BasicBlock* tensor_copy_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_tensor_copy", current_func);
+    llvm::BasicBlock* vector_copy_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_vector_copy", current_func);
+    llvm::BasicBlock* copy_merge_block = llvm::BasicBlock::Create(ctx_.context(), "vcopy_copy_merge", current_func);
+    ctx_.builder().CreateCondBr(is_tensor, tensor_copy_block, vector_copy_block);
+
+    // TENSOR PATH: allocate a fresh rank-1 tensor of `count` elements and
+    // memcpy the [start,end) slice of raw 8-byte elements (double bit
+    // patterns / AD-node pointers, per the tensor element encoding used
+    // elsewhere in this file, e.g. vectorRef's tensor_1d_path).
+    ctx_.builder().SetInsertPoint(tensor_copy_block);
+    llvm::Value* tensor_arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* new_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {tensor_arena_ptr});
+
+    // dims = [count] (rank 1)
+    llvm::Value* new_dims = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+        {tensor_arena_ptr, llvm::ConstantInt::get(ctx_.sizeType(), sizeof(uint64_t))});
+    ctx_.builder().CreateStore(count, new_dims);
+    ctx_.builder().CreateStore(new_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 0));
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 1));
+    ctx_.builder().CreateStore(count, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 3));
+
+    // elements: fresh arena buffer of `count` doubles, sliced from [start,end).
+    llvm::Value* src_elems_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), vec_ptr, 2);
+    llvm::Value* src_elems_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), src_elems_field_ptr);
+    llvm::Value* new_elems_size = ctx_.builder().CreateMul(count,
+        llvm::ConstantInt::get(ctx_.sizeType(), sizeof(double)));
+    llvm::Value* new_elems = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
+        {tensor_arena_ptr, new_elems_size});
+    ctx_.builder().CreateStore(new_elems, ctx_.builder().CreateStructGEP(ctx_.tensorType(), new_tensor, 2));
+
+    llvm::Value* tensor_src_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), src_elems_ptr, start);
+    llvm::Value* tensor_byte_count = ctx_.builder().CreateMul(count,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)), "vcopy_tensor_bytes");
+    ctx_.builder().CreateMemCpy(
+        new_elems, llvm::MaybeAlign(8),
+        tensor_src_ptr, llvm::MaybeAlign(8),
+        tensor_byte_count);
+
+    llvm::Value* tensor_result = tagged_.packHeapPtr(new_tensor);
+    ctx_.builder().CreateBr(copy_merge_block);
+    llvm::BasicBlock* tensor_copy_exit = ctx_.builder().GetInsertBlock();
+
+    // VECTOR PATH (#156, unchanged): allocate the fresh vector and store its
+    // length, then copy the [start,end) slice (16 bytes per tagged element).
+    ctx_.builder().SetInsertPoint(vector_copy_block);
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
         {arena_ptr, count});
     llvm::Value* new_len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
     ctx_.builder().CreateStore(count, new_len_ptr);
 
-    // Copy the [start,end) slice (16 bytes per tagged element).
     llvm::Value* src_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* src_elem_typed = ctx_.builder().CreatePointerCast(src_elem_base, ctx_.ptrType());
@@ -2167,7 +2234,15 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
         src_ptr, llvm::MaybeAlign(8),
         byte_count);
 
-    return tagged_.packHeapPtr(new_vec);
+    llvm::Value* vector_result = tagged_.packHeapPtr(new_vec);
+    ctx_.builder().CreateBr(copy_merge_block);
+    llvm::BasicBlock* vector_copy_exit = ctx_.builder().GetInsertBlock();
+
+    ctx_.builder().SetInsertPoint(copy_merge_block);
+    llvm::PHINode* final_result = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "vcopy_result");
+    final_result->addIncoming(tensor_result, tensor_copy_exit);
+    final_result->addIncoming(vector_result, vector_copy_exit);
+    return final_result;
 }
 
 llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {

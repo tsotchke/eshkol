@@ -1,8 +1,9 @@
-; R7RS-small conformance batch (ESH-0152/0153/0155/0156)
+; R7RS-small conformance batch (ESH-0152/0153/0155/0156/0225)
 ;   ESH-0152  cond/case `=>` receiver form
 ;   ESH-0153  vector-copy (fresh slice)
 ;   ESH-0155  error-object? / error-object-message / error-object-irritants
 ;   ESH-0156  write escaping (strings and chars)
+;   ESH-0225  vector-copy on tensor-backed `#(...)` vector literals
 ; Runs identically under `-r` (JIT) and AOT.
 
 (define (check name ok)
@@ -41,6 +42,28 @@
     (let ((dst (vector-copy src)))
       (vector-set! dst 0 99)
       (= 1 (vector-ref src 0)))))
+
+; ── ESH-0225: vector-copy on tensor-backed `#(...)` literals ────────────
+; #(...) vector literals lower to a homogeneous-double tensor representation
+; internally, but R7RS says #(...) IS a vector, so vector-copy must accept it
+; and return a fresh copy of that same representation.
+(check "vector-copy on vector literal start..end slice"
+  (equal? '(2 3 4) (vector->list (vector-copy #(1 2 3 4 5) 1 4))))
+
+(check "vector-copy on vector literal whole vector"
+  (equal? '(1 2 3) (vector->list (vector-copy #(1 2 3)))))
+
+(check "vector-copy on vector literal from start"
+  (equal? '(30 40) (vector->list (vector-copy #(10 20 30 40) 2))))
+
+(check "vector-copy on vector literal empty slice"
+  (equal? '() (vector->list (vector-copy #(1 2 3) 1 1))))
+
+(define esh-0225-lit-vec #(1 2 3))
+(check "vector-copy on vector literal makes a fresh copy (source unmutated)"
+  (let ((dst (vector-copy esh-0225-lit-vec)))
+    (vector-set! dst 0 99)
+    (= 1 (vector-ref esh-0225-lit-vec 0))))
 
 ; ── ESH-0155: error-object family ──────────────────────────────────────
 (check "error-object? true for (error ...)"
