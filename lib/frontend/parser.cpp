@@ -3744,12 +3744,49 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     ast.line = token.line;
     ast.column = token.column;
     
-    // Empty list
+    // Empty list (ESH-0217).
+    //
+    // A bare () reaching this point is a standalone datum/argument-position
+    // value — e.g. a macro-call argument like (flatten2 () (1 2)), or any
+    // other spot the ordinary expression parser is asked to parse a value.
+    // Binding/formal lists such as (let () ...) and (lambda () ...) never
+    // reach this branch: each of those checks for TOKEN_RPAREN itself,
+    // immediately after consuming its own '(', before ever delegating to
+    // parse_list/parse_expression, so they are unaffected by this change.
+    //
+    // Previously this returned a bespoke ESHKOL_INVALID_OP sentinel node,
+    // which is a *different AST shape* from every other route to the empty
+    // list. (quote ()), '(), and an explicit (list) call all lower to a
+    // CALL_OP invoking "list" with zero arguments (see
+    // parse_quoted_list_internal and make_parser_call_ast) — the quoted
+    // spellings additionally wrap that CALL_OP in ESHKOL_QUOTE_OP, but the
+    // payload underneath is the same zero-arg "list" call every route
+    // shares. Structural consumers that recognize "an empty/unquoted list
+    // argument" by that CALL_OP shape — most importantly macro-call
+    // argument pattern matching, which is how a caller-supplied argument
+    // like the () in (flatten2 () (1 2)) is inspected against a list
+    // pattern such as (a ...) — never recognized ESHKOL_INVALID_OP, so a
+    // bare () silently failed to pattern-match a spot that an explicit
+    // (list) (an empty list built the "long way") already matched fine.
+    // Building the identical zero-arg (list) CALL_OP here — rather than
+    // wrapping it in ESHKOL_QUOTE_OP — keeps bare () indistinguishable
+    // from (list) for exactly this structural inspection, instead of
+    // opting it out of the same treatment via a quote wrapper that no
+    // other unquoted list argument gets. codegen already special-cases
+    // the "list" callee by name (EshkolLLVMCodeGen::codegenCall /
+    // CollectionCodegen::list) independent of whether a "list" symbol is
+    // actually bound, so this holds even under --no-stdlib. (() used as a
+    // call head, e.g. (() 1 2), still flows into the "first element is an
+    // expression" branch below unchanged — it now calls the nil value
+    // produced by (list) instead of an ESHKOL_INVALID_OP node, which still
+    // fails at runtime with a normal "not callable" error rather than a
+    // parser-level distinction, consistent with R7RS treating () as an
+    // error outside quote.)
     if (token.type == TOKEN_RPAREN) {
-        ast.operation.op = ESHKOL_INVALID_OP;
+        ast = make_parser_call_ast("list", {}, token.line, token.column);
         return ast;
     }
-    
+
     // Handle case where first element is a lambda or other expression (e.g., ((lambda ...) ...))
     if (token.type == TOKEN_LPAREN) {
         // Parse the first element as an expression (could be lambda, function call, etc.)
