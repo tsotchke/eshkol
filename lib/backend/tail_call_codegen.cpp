@@ -225,10 +225,60 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
 
     switch (op->op) {
         case ESHKOL_CALL_OP: {
+            // PARSER QUIRK (see llvm_codegen.cpp countAllRecursiveCalls /
+            // findTailCalls / collectMutualTailCallSites for the same
+            // convention): `if` is not represented as ESHKOL_IF_OP — the
+            // parser lowers every parsed `(if test then else)` straight to
+            // ESHKOL_CALL_OP with a synthetic func name "if" and 3 operands
+            // (test, then, else). Falling through to the generic self-call
+            // handling below treated `then`/`else` as ordinary call
+            // *arguments* — which are never in tail position — so any
+            // self-call sitting in an `if` branch (the single most common
+            // named-let loop shape) was misclassified as non-tail and
+            // disabled TCO for the entire named let (ESH-0211). Special-case
+            // "if" the same way every other tail-position analysis in this
+            // codebase already does: the test is NOT in tail position, but
+            // both branches inherit the surrounding tail-position status.
+            std::string call_name = (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                                      op->call_op.func->variable.id)
+                                         ? op->call_op.func->variable.id
+                                         : "";
+
+            if (call_name == "if") {
+                if (op->call_op.num_vars >= 1 &&
+                    !allSelfCallsInTailPosition(&op->call_op.variables[0], func_name, false)) {
+                    return false;
+                }
+                if (op->call_op.num_vars >= 2 &&
+                    !allSelfCallsInTailPosition(&op->call_op.variables[1], func_name, in_tail_pos)) {
+                    return false;
+                }
+                if (op->call_op.num_vars >= 3 &&
+                    !allSelfCallsInTailPosition(&op->call_op.variables[2], func_name, in_tail_pos)) {
+                    return false;
+                }
+                return true;
+            }
+
+            // Defensive: some AST construction paths represent `begin` as a
+            // CALL_OP("begin", ...) rather than ESHKOL_SEQUENCE_OP (mirrors
+            // the same guard in collectMutualTailCallSites). Only the last
+            // expression is in tail position.
+            if (call_name == "begin") {
+                if (op->call_op.num_vars > 0) {
+                    uint64_t last = op->call_op.num_vars - 1;
+                    for (uint64_t i = 0; i < last; i++) {
+                        if (!allSelfCallsInTailPosition(&op->call_op.variables[i], func_name, false)) {
+                            return false;
+                        }
+                    }
+                    return allSelfCallsInTailPosition(&op->call_op.variables[last], func_name, in_tail_pos);
+                }
+                return true;
+            }
+
             // Check if this is a self-call
-            if (op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
-                op->call_op.func->variable.id &&
-                std::string(op->call_op.func->variable.id) == func_name) {
+            if (!call_name.empty() && call_name == func_name) {
                 // Self-call found — must be in tail position
                 if (!in_tail_pos) return false;
             }
@@ -330,6 +380,60 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
                 if (!allSelfCallsInTailPosition(
                         &op->sequence_op.expressions[i], func_name,
                         is_last ? in_tail_pos : false)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        case ESHKOL_WHEN_OP:
+        case ESHKOL_UNLESS_OP: {
+            // when/unless use call_op structure: variables[0] = test,
+            // variables[1..] = body expressions (implicit begin — only the
+            // LAST body expression is in tail position; the test and any
+            // earlier body expressions are not).
+            if (op->call_op.num_vars == 0) return true;
+            if (!allSelfCallsInTailPosition(&op->call_op.variables[0], func_name, false)) {
+                return false;
+            }
+            uint64_t last = op->call_op.num_vars - 1;
+            for (uint64_t i = 1; i < last; i++) {
+                if (!allSelfCallsInTailPosition(&op->call_op.variables[i], func_name, false)) {
+                    return false;
+                }
+            }
+            if (last >= 1 &&
+                !allSelfCallsInTailPosition(&op->call_op.variables[last], func_name, in_tail_pos)) {
+                return false;
+            }
+            return true;
+        }
+
+        case ESHKOL_CASE_OP: {
+            // CASE_OP uses call_op structure: call_op.func = key expression
+            // (NOT in tail position), call_op.variables[i] = clauses. Each
+            // clause is an ESHKOL_CONS: car = datums (literal data — quoted,
+            // never executed, safe to skip), cdr = body, itself a
+            // CALL_OP(func=nullptr, variables=body exprs) — an implicit
+            // begin per clause, so only the LAST body expression of each
+            // clause is in tail position.
+            if (!allSelfCallsInTailPosition(op->call_op.func, func_name, false)) {
+                return false;
+            }
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                const eshkol_ast_t* clause = &op->call_op.variables[i];
+                if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
+                const eshkol_ast_t* body = clause->cons_cell.cdr;
+                if (body->type != ESHKOL_OP || body->operation.op != ESHKOL_CALL_OP) continue;
+                const eshkol_operations_t* body_op = &body->operation;
+                if (body_op->call_op.num_vars == 0) continue;
+                uint64_t last = body_op->call_op.num_vars - 1;
+                for (uint64_t j = 0; j < last; j++) {
+                    if (!allSelfCallsInTailPosition(&body_op->call_op.variables[j], func_name, false)) {
+                        return false;
+                    }
+                }
+                if (!allSelfCallsInTailPosition(&body_op->call_op.variables[last], func_name, in_tail_pos)) {
                     return false;
                 }
             }

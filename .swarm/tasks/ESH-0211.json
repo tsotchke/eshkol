@@ -1,0 +1,33 @@
+{
+  "id": "ESH-0211",
+  "title": "named-let (`let loop`) not tail-call-optimized in most tail positions",
+  "status": "done",
+  "priority": "high",
+  "workstream": "tco/named-let",
+  "goal": "Named-let self-calls sitting inside an `if` branch — the single most common `let loop` shape — were not tail-call-optimized: the parser lowers every `(if test then else)` to ESHKOL_CALL_OP with synthetic func name \"if\", but TailCallCodegen::allSelfCallsInTailPosition (the whole-loop gate codegenNamedLet uses to decide whether to enable TCO) treated `if`'s then/else operands as ordinary call arguments (never tail), so it misclassified any self-call in an if-branch as non-tail and disabled TCO for the entire loop (all-or-nothing gate). Found while fixing `length` (PR #153): the named-let form overflowed at 10^6 iterations where the equivalent nested-`define` self-tail-call form looped fine at the same depth, because isSelfTailRecursive's findTailCalls/countAllRecursiveCalls (the define path) already special-cased `if` as CALL_OP — only the named-let path lacked it.",
+  "file_globs": [
+    "lib/backend/tail_call_codegen.cpp",
+    "lib/backend/control_flow_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/tco/named_let_tail_positions_test.esk"
+  ],
+  "acceptance": [
+    "allSelfCallsInTailPosition special-cases CALL_OP(\"if\", test, then, else) the same way collectMutualTailCallSites/findTailCalls/countAllRecursiveCalls already do: test is non-tail, both branches inherit the surrounding tail-position status.",
+    "allSelfCallsInTailPosition adds correct tail-position propagation for WHEN_OP/UNLESS_OP (body tail, test non-tail) and CASE_OP (key non-tail, each clause's implicit-begin body tail on the last expression), replacing the previous unsound catch-all `default: return true` for those op types.",
+    "codegenCase (control_flow_codegen.cpp) checks for an existing block terminator before emitting CreateBr(done_block)/adding a phi input after a clause body, mirroring the guard codegenBegin/codegenNamedLet already have — fixes an LLVM verifier crash (\"Terminator found in the middle of a basic block!\") once case clauses are correctly recognized as tail positions.",
+    "named-let self-calls loop in O(1) stack (verified to 10^7 iterations, and under a 512 KB ulimit -s) at: top level, function body, inside begin, last expr of a let, inside if branches, inside cond branches, called from another function, inside when/unless, inside case, and as an and/or operand — under both -r (JIT) and AOT.",
+    "A genuinely non-tail self-call (used as a call argument, e.g. `(+ i (loop (- i 1)))`) correctly remains un-TCO'd (documented, not a bug) and still produces the correct result at bounded depth.",
+    "No regression: SICP smoke 88/88 (JIT+AOT), tests/tco/ suite 7/7 (nested_tco_test.esk), closures suites (closure_edge_test.esk 40/40, shared_mutable_capture_test.esk 24/24), AD oracle quick gate 9/9 passed."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Named-let (`let loop`) is the idiomatic Scheme iteration construct and R7RS requires proper tail calls; silently falling back to stack-growing recursion for the common if-branch shape made large/unbounded named-let loops crash unpredictably at depths well within what users reasonably expect O(1)-stack iteration to handle (surfaced via `length` in PR #153, but affects any named-let user code with the same shape).",
+  "repro": "tests/tco/named_let_tail_positions_test.esk",
+  "verifications": [
+    {
+      "date": "2026-07-06",
+      "branch": "fix/named-let-tco",
+      "verdict": "fixed",
+      "evidence": "tests/tco/named_let_tail_positions_test.esk 11/11 PASS under -r and AOT (10^7 iterations per case, and under ulimit -s 512 confirming O(1) stack); tests/tco/nested_tco_test.esk 7/7 PASS (no regression); scripts/run_sicp_smoke.sh 88/88 PASS (JIT+AOT); tests/closures/closure_edge_test.esk 40/40, shared_mutable_capture_test.esk 24/24; scripts/run_ad_oracle.sh --quick --no-aot 9/9 passed, 0 xknown/failed/crashed."
+    }
+  ]
+}

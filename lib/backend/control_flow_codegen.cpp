@@ -735,14 +735,28 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
             if (body_ast && body_ast->type == ESHKOL_OP &&
                 body_ast->operation.op == ESHKOL_CALL_OP) {
                 for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
+                    // TCO / noreturn SAFETY (ESH-0211): a body expression in
+                    // tail position (e.g. a named-let self-call) may compile
+                    // to an unconditional branch back to a loop header,
+                    // terminating this block mid-clause. Stop emitting
+                    // further sibling expressions once that happens — they
+                    // would land after the terminator and trip "Terminator
+                    // found in the middle of a basic block!" (mirrors the
+                    // same guard in codegenBegin).
+                    if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
                     void* tv_ptr = codegen_typed_ast_callback_(&body_ast->operation.call_op.variables[j], callback_context_);
                     if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
                 }
             }
-            if (result) {
-                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+            // If the clause body already terminated the block (TCO tail
+            // jump / noreturn), there is no fallthrough edge into
+            // done_block — do not add a phi input or branch for it.
+            if (!ctx_.builder().GetInsertBlock()->getTerminator()) {
+                if (result) {
+                    phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+                }
+                ctx_.builder().CreateBr(done_block);
             }
-            ctx_.builder().CreateBr(done_block);
             break;
         } else {
             // Regular clause - datums_ast is a CALL_OP with variables containing datums
@@ -771,14 +785,22 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
             if (body_ast && body_ast->type == ESHKOL_OP &&
                 body_ast->operation.op == ESHKOL_CALL_OP) {
                 for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
+                    // TCO / noreturn SAFETY (ESH-0211): see matching comment
+                    // in the else-clause branch above.
+                    if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
                     void* tv_ptr = codegen_typed_ast_callback_(&body_ast->operation.call_op.variables[j], callback_context_);
                     if (tv_ptr) result = typed_to_tagged_callback_(tv_ptr, callback_context_);
                 }
             }
-            if (result) {
-                phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+            // See matching comment in the else-clause branch above: skip the
+            // phi input and branch entirely if the clause body already
+            // terminated the block.
+            if (!ctx_.builder().GetInsertBlock()->getTerminator()) {
+                if (result) {
+                    phi_inputs.push_back({result, ctx_.builder().GetInsertBlock()});
+                }
+                ctx_.builder().CreateBr(done_block);
             }
-            ctx_.builder().CreateBr(done_block);
 
             ctx_.builder().SetInsertPoint(next_block);
         }
