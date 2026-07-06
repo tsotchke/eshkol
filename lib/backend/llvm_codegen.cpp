@@ -2985,6 +2985,8 @@ public:
                             eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions (top-level)");
                         }
 
+                        emitRuntimeShutdownBeforeMainReturn();
+
                         builder->CreateRet(ConstantInt::get(int32_type, 0));
                     }
                 }
@@ -3230,6 +3232,10 @@ public:
                 if (!g_repl_mode_enabled) {
                     eshkol_debug("Skipped runtime-owned global arena cleanup before main return (user main)");
                 }
+
+                // Step 6.5 (ESH-0216): pair eshkol_runtime_init() with a
+                // matching eshkol_runtime_shutdown() before main returns.
+                emitRuntimeShutdownBeforeMainReturn();
 
                 // Step 7: Return
                 Value* int32_result = builder->CreateTrunc(result_int64, int32_type);
@@ -4996,6 +5002,44 @@ private:
         }
     }
 
+    // ESH-0216: pair the eshkol_runtime_init() call emitted at C main()
+    // entry with a matching eshkol_runtime_shutdown() right before main
+    // returns. Without this, a standalone AOT-compiled Eshkol binary never
+    // goes through the runtime's own ordered teardown at all: worker-thread
+    // pools (parallel-map/parallel-execute) never get stopped/joined ahead
+    // of shutdown hooks, and the fatal-signal handler / altstack installed
+    // by eshkol_runtime_init_signals() is never uninstalled — process exit
+    // relies solely on the unordered libc atexit/static-destructor chain.
+    // That is the SIGSEGV-after-"graceful shutdown" race fixed in ESH-0216:
+    // a still-running worker thread dereferences shared state a shutdown
+    // hook (or other teardown) frees out from under it, well after the
+    // program logged its own graceful-shutdown message. Call this at every
+    // site that emits eshkol_runtime_init(), immediately before the
+    // corresponding CreateRet. Uses the same REPL/WASM guard as the init
+    // call: the REPL keeps the process alive across evaluations (it calls
+    // eshkol_runtime_shutdown() itself once, from exe/eshkol-repl.cpp, at
+    // real process exit), and WASM has no runtime_init call to pair with.
+    void emitRuntimeShutdownBeforeMainReturn() {
+        if (g_repl_mode_enabled || module->getTargetTriple().isWasm()) {
+            return;
+        }
+        FunctionType* runtime_shutdown_type = FunctionType::get(
+            void_type, {builder->getInt32Ty()}, false);
+        Function* runtime_shutdown_func = module->getFunction("eshkol_runtime_shutdown");
+        if (!runtime_shutdown_func) {
+            runtime_shutdown_func = Function::Create(
+                runtime_shutdown_type, Function::ExternalLinkage,
+                "eshkol_runtime_shutdown", module.get());
+        }
+        // ESHKOL_SHUTDOWN_NONE == 0 (inc/eshkol/core/runtime.h): this is the
+        // program's own normal-completion exit, not an error/timeout/signal
+        // path (eshkol_runtime_shutdown() is idempotent, so a SIGTERM/SIGINT
+        // shutdown that already ran via FFI before main() returns is a
+        // harmless no-op here).
+        builder->CreateCall(runtime_shutdown_func,
+            {ConstantInt::get(builder->getInt32Ty(), 0)});
+    }
+
     void createMainWrapper() {
         // Check if main function exists
         Function* main_func = function_table["main"];
@@ -5257,11 +5301,15 @@ private:
             } else {
                 eshkol_debug("Skipped arena cleanup in REPL mode to preserve s-expressions");
             }
-            
+
+            // ESH-0216: pair eshkol_runtime_init() with a matching
+            // eshkol_runtime_shutdown() before main returns.
+            emitRuntimeShutdownBeforeMainReturn();
+
             // Convert result to int32 and return
             Value* int32_result = builder->CreateTrunc(result_int64, int32_type);
             builder->CreateRet(int32_result);
-            
+
             function_table["main"] = c_main;
         } else {
             eshkol_debug("No main function found, creating main for top-level expressions");

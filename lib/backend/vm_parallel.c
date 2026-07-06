@@ -71,7 +71,14 @@ typedef struct {
 static VmThreadPool* g_pool = NULL;
 static pthread_mutex_t g_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_pool_atexit_registered = 0;
-static void vm_parallel_shutdown_global(void);
+
+/* ESH-0216: exported (not static) so lib/core/runtime_lifecycle_hosted.cpp can
+ * stop/join this pool deterministically as part of eshkol_runtime_shutdown(),
+ * before shutdown hooks or any other teardown step runs. Still also
+ * registered via atexit() below as a fallback for processes that never call
+ * eshkol_runtime_shutdown() explicitly; both call sites are idempotent (see
+ * definition) so invoking it from either or both paths is safe. */
+void eshkol_vm_parallel_shutdown_global(void);
 
 /*******************************************************************************
  * Worker Thread
@@ -256,7 +263,7 @@ static VmThreadPool* vm_parallel_ensure_pool(void) {
     if (!g_pool) {
         g_pool = vm_pool_init(0);
         if (g_pool && !g_pool_atexit_registered) {
-            atexit(vm_parallel_shutdown_global);
+            atexit(eshkol_vm_parallel_shutdown_global);
             g_pool_atexit_registered = 1;
         }
     }
@@ -265,7 +272,10 @@ static VmThreadPool* vm_parallel_ensure_pool(void) {
     return pool;
 }
 
-static void vm_parallel_shutdown_global(void) {
+/* 621b: eshkol_vm_parallel_shutdown_global — idempotent; safe to call even if
+ * no pool was ever created (g_pool is NULL) and safe to call more than once
+ * (the second call finds g_pool already NULL and is a no-op). */
+void eshkol_vm_parallel_shutdown_global(void) {
     pthread_mutex_lock(&g_pool_init_mutex);
     VmThreadPool* pool = g_pool;
     g_pool = NULL;
