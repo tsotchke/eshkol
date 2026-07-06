@@ -1,0 +1,45 @@
+{
+  "id": "ESH-0213",
+  "title": "FFI marshalling ergonomics: string-byte-length builtin + FFI gotchas documentation",
+  "status": "done",
+  "priority": "low",
+  "workstream": "noesis-ffi-ergonomics",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "Noesis field report: (1) no way to get a string's BYTE length distinct from string-length's codepoint count, so (fwrite s 1 (string-length s) f) silently truncates any string containing multibyte UTF-8 (an em-dash is 3 bytes / 1 char) -- bit lib/core/memory_store.esk's durable append-only log for real. (2) several FFI marshalling conventions were discovered by trial and error and needed writing down: C NULL arrives as the empty list (not 0/#f); a returned ptr/char* is always an opaque handle requiring explicit (ptr->string p)  (a field report claimed this differs between interpreter and compiled runtime for getenv specifically -- did not reproduce in isolation on current HEAD, documented as such); variadic extern declarations corrupt arguments past the fixed prefix on arm64.",
+  "file_globs": [
+    "inc/eshkol/backend/string_io_codegen.h",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/types/type_checker.cpp",
+    "lib/repl/repl_utils.h",
+    "tools/lsp/eshkol_lsp.cpp",
+    "lib/core/memory_store.esk",
+    "docs/reference/agent/ffi.md",
+    "docs/API_REFERENCE.md",
+    "tests/ffi/string_byte_length_test.esk",
+    "scripts/run_ffi_tests.sh",
+    "scripts/run_all_tests.sh"
+  ],
+  "root_cause": "string-length always counted codepoints (via eshkol_utf8_strlen); there was no codegen builtin exposing the string header's raw byte-size field, even though the runtime already had eshkol_string_byte_length (lib/core/runtime_string.cpp) fully implemented and JIT-registered but never wired to any Scheme-callable name. Separately, several FFI marshalling behaviors (NULL->(), opaque ptr returns, unsafe variadic externs) were tribal knowledge rather than documented, and variadic externs had no warning at the point a user declares one.",
+  "fix": "Added `string-byte-length` as a new codegen builtin mirroring string-length's dispatch: StringIOCodegen::stringByteLength (string_io_codegen.h/.cpp) calls the pre-existing eshkol_string_byte_length runtime function directly (no UTF-8 decoding, just header.size - 1); wired into llvm_codegen.cpp's call-op dispatch, type_checker.cpp's string-length type-narrowing condition (return type Int64), and the REPL/LSP builtin-name lists (repl_utils.h, eshkol_lsp.cpp) for tab-completion parity. Fixed the actual production bug this exists for: lib/core/memory_store.esk's ms-append-fsync! now uses string-byte-length for fwrite's count instead of string-length. Added tests/ffi/string_byte_length_test.esk (ASCII, empty-string, the em-dash case explicitly called out in the bug report -- char-length 1 vs byte-length 3 -- and an fwrite regression check comparing on-disk byte count) plus a new scripts/run_ffi_tests.sh suite (registered in run_all_tests.sh) running it under both -r and AOT. Documented all of item 4's marshalling gotchas in docs/reference/agent/ffi.md (new 'FFI marshalling gotchas' section: byte-vs-codepoint length, NULL->(), opaque ptr returns + getenv field-report note, variadic-extern arm64 corruption) and added a string-byte-length entry to docs/API_REFERENCE.md. Added a compile-time WARNING in llvm_codegen.cpp's codegenExtern when a variadic ('...') extern is declared, pointing at the arm64 corruption risk and the FFI doc section, so the risk surfaces at the declaration site rather than via corrupted runtime data.",
+  "acceptance": [
+    "(string-byte-length \"\\u2014\") => 3 while (string-length \"\\u2014\") => 1 (em-dash: 1 codepoint, 3 UTF-8 bytes)",
+    "(string-byte-length \"\") => 0; ASCII strings: byte-length == char-length",
+    "fwrite with (string-byte-length s) writes the full multibyte string to disk; the on-disk byte count matches",
+    "Both -r (JIT) and AOT-compiled binaries agree on all of the above",
+    "lib/core/memory_store.esk's append path no longer truncates multibyte UTF-8 log lines",
+    "Declaring (extern void f char* ...) emits a WARNING referencing the arm64 variadic-corruption risk and the FFI doc",
+    "docs/reference/agent/ffi.md documents: string-byte-length vs string-length, NULL->(), opaque ptr returns, variadic-extern risk",
+    "tests/stdlib/sweep_a_regressions_test.esk (memory-store-audit) still passes",
+    "SICP smoke: 88/88"
+  ],
+  "verification": [
+    "./build/eshkol-run -r tests/ffi/string_byte_length_test.esk",
+    "./build/eshkol-run tests/ffi/string_byte_length_test.esk -o /tmp/bin && /tmp/bin",
+    "bash scripts/run_ffi_tests.sh",
+    "./build/eshkol-run -r tests/stdlib/sweep_a_regressions_test.esk",
+    "bash scripts/run_sicp_smoke.sh"
+  ],
+  "blocked_by": []
+}

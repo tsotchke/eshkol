@@ -1,0 +1,64 @@
+;; string_byte_length_test.esk — Noesis bug report item #4 (2026-07-04)
+;;
+;; `string-length` counts codepoints, not bytes. Byte-oriented FFI calls
+;; (fwrite's count argument, etc.) need the BYTE length instead — using
+;; string-length there truncates any string containing multibyte UTF-8
+;; (e.g. an em-dash '—', which is 3 bytes / 1 codepoint). This test checks
+;; the new `string-byte-length` builtin, which reads the string header's
+;; byte-size field directly (no UTF-8 decoding), and cross-checks it
+;; against `fwrite`'s actual on-disk byte count so the FFI truncation bug
+;; this builtin exists to prevent stays caught.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ---- ASCII: byte length == char length ----
+(define ascii "hello")
+(check "ascii string-length is 5"      (= (string-length ascii) 5))
+(check "ascii string-byte-length is 5" (= (string-byte-length ascii) 5))
+
+;; ---- The em-dash case from the bug report: 1 codepoint, 3 bytes ----
+(define dash "—")
+(check "em-dash string-length is 1"      (= (string-length dash) 1))
+(check "em-dash string-byte-length is 3" (= (string-byte-length dash) 3))
+
+;; ---- Mixed ASCII + multibyte ----
+;; "café—hi": c a f é(2 bytes) —(3 bytes) h i = 7 codepoints, 10 bytes.
+(define mixed "café—hi")
+(check "mixed string-length is 7"      (= (string-length mixed) 7))
+(check "mixed string-byte-length is 10" (= (string-byte-length mixed) 10))
+
+;; ---- Empty string ----
+(check "empty string-length is 0"      (= (string-length "") 0))
+(check "empty string-byte-length is 0" (= (string-byte-length "") 0))
+
+;; ---- fwrite regression: writing (string-byte-length s) bytes must not
+;; truncate, unlike the old (string-length s) call site this replaces
+;; (see lib/core/memory_store.esk's ms-append-fsync!). ----
+(extern ptr ms-test-fopen ptr ptr :real fopen)
+(extern i64 ms-test-fwrite ptr i64 i64 ptr :real fwrite)
+(extern i32 ms-test-fclose ptr :real fclose)
+
+(define out-path "/tmp/eshkol_string_byte_length_test.txt")
+(define f (ms-test-fopen out-path "w"))
+(check "fopen succeeded" (not (null? f)))
+(ms-test-fwrite mixed 1 (string-byte-length mixed) f)
+(ms-test-fclose f)
+(check "fwrite with string-byte-length writes all 10 bytes, not 7"
+       (= (file-size out-path) 10))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

@@ -456,7 +456,7 @@ private:
             "assoc", "assv", "assq", "member", "memv", "memq",
             "caar", "cadr", "cdar", "cddr",
             // Strings
-            "string-length", "string-ref", "string-append", "substring",
+            "string-length", "string-byte-length", "string-ref", "string-append", "substring",
             "string-copy", "string->list", "list->string",
             "string=?", "string<?",
             "symbol->string", "string->symbol",

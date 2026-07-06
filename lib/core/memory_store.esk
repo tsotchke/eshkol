@@ -58,7 +58,11 @@
     (if (null-ptr? f)
         #f
         (begin
-          (ms-fwrite line 1 (string-length line) f)
+          ;; fwrite's count is BYTES; string-length is CODEPOINTS. A line
+          ;; containing multibyte UTF-8 (e.g. an em-dash, 3 bytes/1 char)
+          ;; would otherwise be silently truncated on write. See
+          ;; docs/reference/agent/ffi.md "FFI marshalling gotchas".
+          (ms-fwrite line 1 (string-byte-length line) f)
           (ms-fflush f)
           (ms-fsync (ms-fileno f))
           (ms-fclose f)

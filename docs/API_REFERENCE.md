@@ -1720,6 +1720,29 @@ Strings are heap-allocated with header (HEAP_SUBTYPE_STRING).
 
 ---
 
+#### `string-byte-length`
+**Syntax**: `(string-byte-length str)`
+
+Returns the string's **byte** length (the heap object header's `size` field,
+minus the trailing NUL) — distinct from `string-length`, which counts
+**codepoints**. For ASCII-only strings the two agree; for strings containing
+multibyte UTF-8 they diverge. This matters at the FFI boundary: C functions
+like `fwrite` take a byte count, so `(fwrite s 1 (string-length s) f)`
+silently truncates a string containing e.g. an em-dash (`—`, 3 bytes / 1
+char). Use `string-byte-length` there instead:
+
+```scheme
+(string-length "café")       ; => 4  (4 codepoints)
+(string-byte-length "café")  ; => 5  (the é is 2 bytes in UTF-8)
+
+(fwrite s 1 (string-byte-length s) f)  ; correct — writes every byte
+(fwrite s 1 (string-length s) f)       ; WRONG on multibyte input — truncates
+```
+
+**Implementation**: [`StringIOCodegen::stringByteLength`](../lib/backend/string_io_codegen.cpp), backed by the existing runtime helper `eshkol_string_byte_length` (`lib/core/runtime_string.cpp`).
+
+---
+
 #### `string-append`, `substring`
 **Syntax**: `(string-append str...)`, `(substring str start end)`
 

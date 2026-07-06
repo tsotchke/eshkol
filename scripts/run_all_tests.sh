@@ -134,6 +134,7 @@ TEST_SCRIPTS=(
     "run_web_tests.sh"
     "run_tco_tests.sh"
     "run_io_tests.sh"
+    "run_ffi_tests.sh"
     "run_benchmark_tests.sh"
     "run_migration_tests.sh"
     "run_codegen_tests.sh"

@@ -1,0 +1,42 @@
+{
+  "id": "ESH-0212",
+  "title": "agent.crypto FFI symbols fail to link during a concurrent lib rebuild",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "noesis-ffi-ergonomics",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "eshkol-run -r script.esk on a script that transitively requires agent.crypto (or (require core.memory), which requires it internally) failed at AOT link with undefined symbols for _eshkol_hmac_sha256/_eshkol_random_bytes/_eshkol_random_hex/_eshkol_sha256 while libeshkol-agent-ffi.a was being rebuilt by a concurrent `cmake --build`, and resolved once the rebuild finished. The symbols existed in the finished archive the whole time; the AOT link was not atomic against a concurrent rebuild of that (large, frequently rebuilt) optional archive, and the resulting error looked exactly like a missing-symbol bug.",
+  "file_globs": [
+    "lib/core/crypto_primitives.c",
+    "lib/agent/c/agent_crypto.c",
+    "lib/agent/crypto.esk",
+    "lib/core/memory_store.esk",
+    "CMakeLists.txt",
+    "exe/eshkol-run.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "docs/breakdown/AGENT_FFI.md",
+    "docs/reference/agent/ffi.md"
+  ],
+  "root_cause": "eshkol_sha256/eshkol_hmac_sha256/eshkol_random_bytes/eshkol_random_hex lived in lib/agent/c/agent_crypto.c, compiled into the optional eshkol-agent-ffi static archive. The AOT link only spliced ESHKOL_HOST_AGENT_FFI_LINK_ARGS (which force-loads that archive) when requires_agent_ffi() detected `(require agent.…)` (directly or transitively). A link racing a concurrent rebuild of libeshkol-agent-ffi.a — a much larger, more-frequently-rebuilt archive than the core runtime, due to its many optional sub-modules (libcurl/sqlite3/pcre2/ncurses) — could read a partially-written .a and fail with spurious undefined-symbol errors, even though the four crypto primitives have zero optional/external dependency beyond system crypto (CommonCrypto/Security on Apple, OpenSSL on Linux) and had no architectural reason to live behind that gate.",
+  "fix": "(a) Moved the four crypto primitives from lib/agent/c/agent_crypto.c to a new lib/core/crypto_primitives.c, added to ESHKOL_RUNTIME_SUPPORT_SRC so they compile into the always-built, always-linked core eshkol-runtime archive instead of the optional eshkol-agent-ffi archive. Added a Windows/BCrypt backend (previously crypto had no Windows implementation at all, since ESHKOL_BUILD_AGENT_FFI defaults OFF there) alongside the existing CommonCrypto/OpenSSL backends. Wired the required system crypto libs (Security framework on Apple, bcrypt on Windows, OpenSSL::Crypto on Linux/other) unconditionally into eshkol-runtime/eshkol-static (CMakeLists.txt) and into both AOT link paths (exe/eshkol-run.cpp's hardcoded Apple framework list + ESHKOL_HOST_RUNTIME_LINK_ARGS; lib/backend/llvm_codegen.cpp's parallel-link path). (b) Fixed the deeper gap this exposed: requires_agent_ffi()/file_requires_agent_ffi() in exe/eshkol-run.cpp still treated any `(require agent.crypto)` as needing the full eshkol-agent-ffi archive splice (including its -force_load/whole-archive clause), which would have kept racing the same concurrent-rebuild bug on the (now unnecessary) archive. Added agent_module_needs_ffi_archive() to exempt agent.crypto specifically, since its symbols no longer come from that archive at all -- verified by AOT-linking scripts that (require agent.crypto) directly and transitively (via core.memory) with libeshkol-agent-ffi.a renamed away entirely; both link and run correctly, while a real agent-ffi consumer (agent.terminal) still correctly fails without the archive. (c) Cheap secondary mitigation for any *other* remaining link race: eshkol-run now checks, on any AOT link failure, whether a static archive on the link line was modified in the last 30 seconds and appends an explanatory note (concurrent rebuild in progress, retry) alongside the linker's own error. (d) Fixed the one real production call site this bug's rationale exists for: lib/core/memory_store.esk's ms-append-fsync! used string-length (codepoints) as fwrite's byte count, truncating any multibyte-UTF-8 log line -- switched to the new string-byte-length builtin (see ESH-0213).",
+  "acceptance": [
+    "A script with (require agent.crypto) compiles and runs correctly under both -r and AOT with libeshkol-agent-ffi.a entirely absent from build/",
+    "A script with (require core.memory) (transitively requires agent.crypto) compiles and runs correctly under AOT with libeshkol-agent-ffi.a entirely absent",
+    "A script with (require agent.terminal) (a real agent-ffi consumer) still correctly fails to link without libeshkol-agent-ffi.a -- confirms the crypto exemption didn't weaken real agent-ffi detection",
+    "sha256/hmac-sha256/random-bytes/random-hex produce correct values under both -r and AOT (sha256(\"hello\") matches the known digest)",
+    "An AOT link failure against a just-modified static archive prints an additional 'may be mid-rebuild, retry' diagnostic",
+    "tests/vm/crypto_surface_regression.esk passes under both -r and AOT",
+    "SICP smoke: 88/88",
+    "tests/stdlib/sweep_a_regressions_test.esk (exercises memory-store-audit) passes under both -r and AOT"
+  ],
+  "verification": [
+    "./build/eshkol-run -r /tmp/crypto_only_test.esk (require agent.crypto directly)",
+    "./build/eshkol-run /tmp/crypto_only_test.esk -o /tmp/bin && /tmp/bin",
+    "mv build/libeshkol-agent-ffi.a /tmp/bak && ./build/eshkol-run /tmp/crypto_only_test.esk -o /tmp/bin2 && /tmp/bin2 && mv /tmp/bak build/libeshkol-agent-ffi.a",
+    "./build/eshkol-run -r tests/vm/crypto_surface_regression.esk",
+    "./build/eshkol-run -r tests/stdlib/sweep_a_regressions_test.esk",
+    "bash scripts/run_sicp_smoke.sh"
+  ],
+  "blocked_by": []
+}
