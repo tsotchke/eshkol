@@ -306,6 +306,31 @@ oracles:
         label: 'gradient flows through scaled-dot-attention to K/V operands'
         action: ./scripts/run_icc_smoke.sh
 
+      # -- arbitrary-order AD Taylor-tower v1.3 track --
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_taylor_p1_runtime_tower"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P1 runtime Taylor tower: derivative^d passes to d=8 and closes ESH-0118'
+        action: ./scripts/run_ad_depth.sh
+
+      - runtime_event:
+          event_kinds: [mono_equiv]
+          event_names: ["ad_taylor_p2_monomorphization"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P2 compile-time-K monomorphized towers match runtime towers bit-exactly'
+        action: run_mono_equiv_ad_taylor_gate
+
+      - runtime_event:
+          event_kinds: [mono_equiv]
+          event_names: ["ad_taylor_p3_jet8_subsumed"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P3 JET8 route is subsumed by tagged Taylor towers without regression'
+        action: run_mono_equiv_ad_taylor_gate
+
       - runtime_event:
           event_kinds: [eshkol_smoke]
           event_names: ["jit_cache_hit_invalidates"]
@@ -405,6 +430,205 @@ oracles:
         severity: high
         label: 'No silent fallbacks in v1.3 production paths'
         action: classify_or_replace_each_stub
+
+  # -----------------------------------------------------------------
+  # Arbitrary-order AD Taylor-tower campaign -- cross-release gate.
+  # The release gates below select the phase rows assigned to their
+  # ROADMAP.md themes; this target keeps the whole P0..P12 campaign in
+  # one place for ICC planning.
+  # -----------------------------------------------------------------
+  - name: ad-taylor-campaign
+    aliases: [ad-taylor, arbitrary-order-ad, taylor-tower]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_taylor_p0_poc"]
+          event_values: ["PASS"]
+        severity: medium
+        label: P0 recurrence POC matches analytic derivatives to d=8
+        action: tests/ad_taylor_poc/run.sh
+
+      - runtime_event:
+          event_kinds: [ad_depth]
+          event_names: ["ad_taylor_p1_runtime_tower"]
+          event_values: ["PASS"]
+        severity: high
+        label: P1 runtime Taylor tower supports derivative^n and closes ESH-0118
+        action: ./scripts/run_ad_depth.sh
+
+      - runtime_event:
+          event_kinds: [mono_equiv]
+          event_names: ["ad_taylor_p2_monomorphization"]
+          event_values: ["PASS"]
+        severity: high
+        label: P2 compile-time-K monomorphization equals runtime tower execution
+        action: run_mono_equiv_ad_taylor_gate
+
+      - runtime_event:
+          event_kinds: [mono_equiv]
+          event_names: ["ad_taylor_p3_jet8_subsumed"]
+          event_values: ["PASS"]
+        severity: high
+        label: P3 JET8 behavior is preserved through the tagged tower route
+        action: run_mono_equiv_ad_taylor_gate
+
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_taylor_p4_guw_multivariate"]
+          event_values: ["PASS"]
+        severity: high
+        label: P4 GUW multivariate mixed partials match analytic references to d=8
+        action: run_ad_exact_taylor_gate
+
+      - runtime_event:
+          event_kinds: [ad_reverse_highorder]
+          event_names: ["ad_taylor_p5_reverse_over_taylor"]
+          event_values: ["PASS"]
+        severity: high
+        label: P5 reverse-over-Taylor high-order gradient oracle passes under AOT
+        action: run_ad_reverse_highorder_gate
+
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_taylor_p6_exact_coefficients"]
+          event_values: ["PASS"]
+        severity: high
+        label: P6 rational/bignum Taylor coefficients are bit-exact vs symbolic oracle
+        action: run_ad_exact_taylor_gate
+
+      - runtime_event:
+          event_kinds: [ad_tensor_highorder]
+          event_names: ["ad_taylor_p7_tensor_towers"]
+          event_values: ["PASS"]
+        severity: high
+        label: P7 tensor-valued towers pass high-order ML AD smoke tests
+        action: run_ad_tensor_highorder_gate
+
+      - runtime_event:
+          event_kinds: [ad_validated_bounds]
+          event_names: ["ad_taylor_p8_taylor_models"]
+          event_values: ["PASS"]
+        severity: high
+        label: P8 Taylor-model bounds contain the true range and tighten with order
+        action: run_ad_validated_bounds_gate
+
+      - runtime_event:
+          event_kinds: [ad_control_flow]
+          event_names: ["ad_taylor_p9_control_flow"]
+          event_values: ["PASS"]
+        severity: high
+        label: P9 towers pass through loops, branches, recursion, closures, named-let, map, and fold
+        action: run_ad_control_flow_gate
+
+      - runtime_event:
+          event_kinds: [ad_reverse_highorder]
+          event_names: ["ad_taylor_p10_checkpointed_reverse"]
+          event_values: ["PASS"]
+        severity: high
+        label: P10 checkpointed high-order reverse matches dense tape within memory budget
+        action: run_ad_reverse_highorder_gate
+
+      - runtime_event:
+          event_kinds: [ad_numerics]
+          event_names: ["ad_taylor_p11_user_numerics"]
+          event_values: ["PASS"]
+        severity: medium
+        label: P11 Taylor-series ODE, root, inversion, and continuation APIs converge
+        action: run_ad_numerics_gate
+
+      - runtime_event:
+          event_kinds: [ad_sparse]
+          event_names: ["ad_taylor_p12_sparse_highorder_tensors"]
+          event_values: ["PASS"]
+        severity: medium
+        label: P12 sparse high-order tensors match dense recovery on tractable cases
+        action: run_ad_sparse_gate
+
+  # -----------------------------------------------------------------
+  # v1.4-connection readiness -- adds the AD infrastructure track
+  # assigned to v1.4 without replacing the networking/resource theme.
+  # -----------------------------------------------------------------
+  - name: v1.4-release
+    aliases: [v1.4, release-1.4, connection]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_taylor_p4_guw_multivariate"]
+          event_values: ["PASS"]
+        severity: high
+        label: P4 GUW multivariate mixed partials pass analytic oracle to d=8
+        action: run_ad_exact_taylor_gate
+
+      - runtime_event:
+          event_kinds: [ad_exact]
+          event_names: ["ad_taylor_p6_exact_coefficients"]
+          event_values: ["PASS"]
+        severity: high
+        label: P6 exact-coefficient towers pass rational/bignum symbolic oracle
+        action: run_ad_exact_taylor_gate
+
+      - runtime_event:
+          event_kinds: [ad_numerics]
+          event_names: ["ad_taylor_p11_user_numerics"]
+          event_values: ["PASS"]
+        severity: medium
+        label: P11 tower-based user numerics converge on ODE/root/inversion examples
+        action: run_ad_numerics_gate
+
+      - runtime_event:
+          event_kinds: [v1_4_connection]
+          event_names: ["connection_theme_deliverables"]
+          event_values: ["PASS"]
+        severity: high
+        label: Placeholder for v1.4 networking, TLS, event loop, and linear resource deliverables
+        action: replace_with_v1_4_connection_oracle
+
+  # -----------------------------------------------------------------
+  # v1.5-intelligence readiness -- high-order AD gates for the
+  # differentiable-logic and neuro-symbolic ML theme.
+  # -----------------------------------------------------------------
+  - name: v1.5-release
+    aliases: [v1.5, release-1.5, intelligence]
+    requires:
+      - runtime_event:
+          event_kinds: [ad_reverse_highorder]
+          event_names: ["ad_taylor_p5_reverse_over_taylor"]
+          event_values: ["PASS"]
+        severity: high
+        label: P5 reverse-over-Taylor high-order gradient oracle passes under AOT
+        action: run_ad_reverse_highorder_gate
+
+      - runtime_event:
+          event_kinds: [ad_tensor_highorder]
+          event_names: ["ad_taylor_p7_tensor_towers"]
+          event_values: ["PASS"]
+        severity: high
+        label: P7 tensor-valued towers cover high-order conv2d, attention, batchnorm, and layernorm AD
+        action: run_ad_tensor_highorder_gate
+
+      - runtime_event:
+          event_kinds: [ad_control_flow]
+          event_names: ["ad_taylor_p9_control_flow"]
+          event_values: ["PASS"]
+        severity: high
+        label: P9 differentiable control-flow oracle passes through loops, branches, recursion, and closures
+        action: run_ad_control_flow_gate
+
+      - runtime_event:
+          event_kinds: [ad_reverse_highorder]
+          event_names: ["ad_taylor_p10_checkpointed_reverse"]
+          event_values: ["PASS"]
+        severity: medium
+        label: P10 checkpointed high-order reverse begins the v1.5 to v1.7 memory-scaling bridge
+        action: run_ad_reverse_highorder_gate
+
+      - runtime_event:
+          event_kinds: [v1_5_intelligence]
+          event_names: ["intelligence_theme_deliverables"]
+          event_values: ["PASS"]
+        severity: high
+        label: Placeholder for v1.5 symbol embeddings, soft unification, LSTM/GRU, differentiable logic, KB attention, and gradient estimators
+        action: replace_with_v1_5_intelligence_oracle
 
   # ─────────────────────────────────────────────────────────────────
   # SDNC paper reproducibility — the headline claim from
