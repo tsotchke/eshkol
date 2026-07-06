@@ -950,6 +950,7 @@ static struct option long_options[] = {
     {"output", required_argument, nullptr, 'o'},
     {"compile-only", no_argument, nullptr, 'c'},
     {"emit-object", no_argument, nullptr, 259},
+    {"emit-depfile", required_argument, nullptr, 265},
     {"shared-lib", no_argument, nullptr, 's'},
     {"wasm", no_argument, nullptr, 'w'},
     {"lib", required_argument, nullptr, 'l'},
@@ -2085,6 +2086,10 @@ static void print_help(int x = 0)
         "\t--output:[-o] = Outputs into a binary file.\n"
         "\t--compile-only:[-c] = Compiles into an intermediate object file.\n"
         "\t--emit-object = Alias for --compile-only.\n"
+        "\t--emit-depfile PATH = With -o/--emit-object, write a Makefile-format\n"
+        "\t    depfile listing the entry source plus every file transitively\n"
+        "\t    reached via (load …)/(import …)/(require …), so a build system\n"
+        "\t    (e.g. ninja DEPFILE) recompiles the object when any of them change.\n"
         "\t--shared-lib:[-s] = Compiles it into a shared library.\n"
         "\t-fPIC = Accepted for build-system compatibility.\n"
         "\t-I DIR = Add a source/module search path.\n"
@@ -2697,6 +2702,141 @@ static std::string transitiveSourceDigest(
         hashUpdate(hash, "dep-bytes", entry.second);
     }
     return sha256Hex(hash);
+}
+
+// ESH-0215: collect the canonical path of the entry file plus every source
+// file reachable from it via (load "…") / (import "…") / (require module),
+// for --emit-depfile. This walks the SAME graph — through the same
+// resolve_module_path search order (referring dir, -I include paths, cwd,
+// lib dir, $ESHKOL_PATH) — as transitiveSourceDigest() (fix/aot-stale-output,
+// ESH-0183) uses to invalidate the `-r` run-cache; the two exist for
+// different consumers (a build-system depfile vs. a persistent-cache key) so
+// only the path is retained here, not the file bytes. The scan is
+// deliberately generous: over-collection only adds a harmless extra
+// prerequisite, whereas under-collection would resurrect the stale-object
+// bug (Noesis BUGS-2026-07-04 #3/#5).
+static void collectTransitiveSourcePaths(
+    const std::filesystem::path& path,
+    const std::vector<char*>& include_paths,
+    std::vector<std::string>& order,
+    std::set<std::string>& seen)
+{
+    std::error_code ec;
+    std::string canon = std::filesystem::weakly_canonical(path, ec).string();
+    if (canon.empty()) canon = path.string();
+    if (!seen.insert(canon).second) {
+        return;  // already visited
+    }
+    order.push_back(canon);
+
+    std::string text = readFileBytes(path);
+    if (text.empty()) return;
+
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+    std::string base_dir = path.parent_path().string();
+    if (base_dir.empty()) base_dir = ".";
+
+    auto resolve_ref = [&](const std::string& ref) -> std::string {
+        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
+        if (!mp.empty()) return mp;
+        for (char* inc : include_paths) {
+            if (!inc || !*inc) continue;
+            mp = resolve_module_path(ref, inc, g_lib_dir);
+            if (!mp.empty()) return mp;
+        }
+        return "";
+    };
+
+    static const char* kForms[] = {"(load", "(import", "(require"};
+    for (const char* form : kForms) {
+        const size_t flen = std::strlen(form);
+        size_t pos = 0;
+        while ((pos = text.find(form, pos)) != std::string::npos) {
+            pos += flen;
+            const size_t close = text.find(')', pos);
+            if (close == std::string::npos) break;
+            std::string clause = text.substr(pos, close - pos);
+            pos = close;
+            // Tokenise; strip stray quote/paren/quasiquote chars (mirrors the
+            // require scan used by file_requires_agent_ffi / transitiveSourceDigest).
+            std::stringstream ts(clause);
+            std::string tok;
+            while (ts >> tok) {
+                while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
+                                        tok.front() == '"'))
+                    tok.erase(tok.begin());
+                while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
+                    tok.pop_back();
+                if (tok.empty()) continue;
+                std::string mp = resolve_ref(tok);
+                if (!mp.empty())
+                    collectTransitiveSourcePaths(mp, include_paths, order, seen);
+            }
+        }
+    }
+}
+
+// Escape a path for a Makefile-format depfile: Make treats a bare space as a
+// prerequisite separator and '#' as a comment start, so both must be
+// backslash-escaped; '$' begins a variable reference, so it is doubled.
+static std::string escapeDepfilePath(const std::string& path) {
+    std::string out;
+    out.reserve(path.size());
+    for (char c : path) {
+        switch (c) {
+        case ' ':
+        case '#':
+            out.push_back('\\');
+            out.push_back(c);
+            break;
+        case '$':
+            out.push_back('$');
+            out.push_back('$');
+            break;
+        default:
+            out.push_back(c);
+        }
+    }
+    return out;
+}
+
+// ESH-0215: write a Makefile-format depfile (`target: prereq1 prereq2 …`,
+// consumable via ninja's `DEPFILE` build-edge attribute or `make`'s
+// `-include foo.d`) so a build system recompiles the emitted object when the
+// entry source OR any file it transitively (load …)s / (import …)s /
+// (require …)s changes. Without this, editing a (load …)ed dependency left
+// the object's only tracked prerequisite (the entry file) unchanged, so
+// ninja treated the object as up to date — the exact staleness Noesis
+// BUGS-2026-07-04 items #3/#5 reported ("must rm the object and run ninja
+// 2-3x, or silently ship a stale binary").
+static bool writeDepfile(const std::string& depfile_path,
+                         const std::string& target_path,
+                         const std::string& entry_source,
+                         const std::vector<char*>& include_paths) {
+    std::vector<std::string> order;
+    std::set<std::string> seen;
+    collectTransitiveSourcePaths(entry_source, include_paths, order, seen);
+
+    std::ofstream out(depfile_path, std::ios::binary | std::ios::trunc);
+    if (!out.is_open()) {
+        eshkol_error("Failed to write depfile: %s", depfile_path.c_str());
+        return false;
+    }
+
+    // The left-hand target spelling is conventional (ninja documents that it
+    // ignores the depfile's own target field and attaches the listed
+    // prerequisites to the OUTPUT of the owning build edge instead), so the
+    // caller-provided path is used verbatim rather than canonicalized.
+    out << escapeDepfilePath(target_path) << ":";
+    for (const auto& dep : order) {
+        out << " \\\n  " << escapeDepfilePath(dep);
+    }
+    out << "\n";
+    if (!out.good()) {
+        eshkol_error("Failed to write depfile: %s", depfile_path.c_str());
+        return false;
+    }
+    return true;
 }
 
 // Recursively discover all modules that a library requires.
@@ -3584,6 +3724,7 @@ int main(int argc, char **argv)
     bool embedded_vm_profile = false;
     std::vector<std::string> required_vm_entries;
     std::vector<std::string> required_zero_arg_vm_entries;
+    const char* depfile_path = nullptr;  // --emit-depfile PATH (ESH-0215)
 
     if (argc == 1) print_help(1);
 
@@ -3732,6 +3873,13 @@ int main(int argc, char **argv)
                 return 1;
             }
             required_zero_arg_vm_entries.emplace_back(optarg);
+            break;
+        case 265:
+            if (!optarg || !*optarg) {
+                fprintf(stderr, "--emit-depfile requires a non-empty path\n");
+                return 1;
+            }
+            depfile_path = optarg;
             break;
         default:
             print_help(1);
@@ -4503,6 +4651,23 @@ int main(int argc, char **argv)
                 bc_filename = module_name + ".bc";
             }
             eshkol_compile_llvm_ir_to_bitcode(llvm_module, bc_filename.c_str());
+
+            // ESH-0215: --emit-depfile PATH — write a Makefile-format depfile
+            // so a build system (ninja DEPFILE, make -include) recompiles this
+            // object when the entry file or any transitively load/import/
+            // require-reached dependency changes (Noesis BUGS-2026-07-04 #3/#5).
+            if (depfile_path) {
+                if (source_files.empty()) {
+                    eshkol_error("--emit-depfile requires a source file");
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                if (!writeDepfile(depfile_path, obj_filename, source_files[0], include_paths)) {
+                    eshkol_dispose_llvm_module(llvm_module);
+                    return 1;
+                }
+                eshkol_info("Wrote depfile: %s", depfile_path);
+            }
         } else if (wasm_output) {
             // Compile to WebAssembly
             std::string wasm_filename;

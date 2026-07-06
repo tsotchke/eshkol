@@ -3423,6 +3423,14 @@ if(ESHKOL_ENABLE_FUZZ AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fuzz/CMakeLi
     add_subdirectory(tests/fuzz)
 endif()
 
+# ESH-0215: build-integration fixture exercising cmake/EshkolCompile.cmake's
+# --emit-depfile-backed dependency tracking (a (load …)ed dependency must
+# retrigger a recompile+relink on a single `ninja` invocation).
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND TARGET eshkol-runtime AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/build_integration/CMakeLists.txt")
+    add_subdirectory(tests/build_integration)
+endif()
+
 # where to find our CMake modules
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(Packing)
