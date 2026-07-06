@@ -336,10 +336,27 @@ llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
 llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_extract")) return f;
     // double eshkol_taylor_extract(const tagged* tower, i32 n)
+    // ESH-0190 (P5): the plain double extraction, still used by the
+    // reverse-over-Taylor tangent path (which needs f^(k) as a bare double to
+    // record the local linearization / build the outer jet). The exactness-
+    // preserving eshkol_taylor_extract_tagged (P6) is used for the plain,
+    // no-tangent return.
     auto* ft = llvm::FunctionType::get(ctx.doubleType(),
         {ctx.ptrType(), ctx.int32Type()}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract", &ctx.module());
+}
+llvm::Function* getTaylorExtractTaggedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tagged")) return f;
+    // void eshkol_taylor_extract_tagged(arena*, const tagged* tower, i32 n, tagged* out)
+    // ESH-0191 (P6): tagged out-param (not a raw double) so an exact tower's
+    // f^(n) = n!*c[n] comes back as an exact int64/bignum/rational tagged
+    // value instead of being force-cast to double.
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*out*/}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_extract_tagged", &ctx.module());
 }
 // ESH-0190 (P5): reverse-over-Taylor extraction / lift helpers.
 llvm::Function* getTaylorHasTangentFunc(CodegenContext& ctx) {
@@ -460,6 +477,7 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
         towerCtxPop();     // leave the tower differentiation context
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+        llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_extract_out");
         b.CreateStore(result_tagged, res_slot);
         llvm::Value* d = b.CreateCall(getTaylorExtractFunc(ctx_), {res_slot, adTowerOrder_});
         // ── ESH-0190 (P5) reverse-over-Taylor: if the returned tower carries a
@@ -477,9 +495,15 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
         llvm::BasicBlock* done_bb  = llvm::BasicBlock::Create(ctx_.context(), "twr_done", fn);
         b.CreateCondBr(has_tan_b, tan_bb, plain_bb);
 
-        // plain: no seed dependence → the bare k-th derivative as a double.
+        // plain: no seed dependence → the bare k-th derivative.
+        // ESH-0191 (P6): extract through the tagged out-param so an EXACT
+        // tower's f^(n)=n!*c[n] stays an exact int64/bignum/rational tagged
+        // value (`(exact? (derivative-n f x n))` => #t) instead of being
+        // forced to double; COEFF_F64 towers are unaffected (still a tagged
+        // double, same numeric result as before).
         b.SetInsertPoint(plain_bb);
-        llvm::Value* plain_res = tagged_.packDouble(d);
+        b.CreateCall(getTaylorExtractTaggedFunc(ctx_), {getArenaPtr(), res_slot, adTowerOrder_, out_slot});
+        llvm::Value* plain_res = b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_extracted");
         b.CreateBr(done_bb);
         llvm::BasicBlock* plain_exit = b.GetInsertBlock();
 
@@ -2609,7 +2633,21 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
     }
     Value* point_tagged;
     if (point_raw->getType()->isIntegerTy()) {
-        point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+        if (adTowerMode_ != TowerMode::NONE) {
+            // ESH-0191 (P6): Taylor-tower mode (derivative-n / taylor) --
+            // preserve exactness. An integer point is EXACT by R7RS
+            // convention; SIToFP-ing it to double here (the order<=2 jet
+            // path's behavior, UNCHANGED below) would silently defeat exact-
+            // coefficient contagion (design section 9) before it ever
+            // reaches eshkol_taylor_seed_tagged. The order<=2 jet path never
+            // sets adTowerMode_, so this branch cannot affect it.
+            llvm::Value* i64v = point_raw->getType()->isIntegerTy(64)
+                ? point_raw
+                : ctx_.builder().CreateSExtOrTrunc(point_raw, ctx_.int64Type());
+            point_tagged = tagged_.packInt64(i64v, /*is_exact=*/true);
+        } else {
+            point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+        }
     } else if (point_raw->getType()->isDoubleTy()) {
         point_tagged = tagged_.packDouble(point_raw);
     } else if (point_raw->getType() == ctx_.taggedValueType()) {
@@ -6838,15 +6876,21 @@ llvm::Value* AutodiffCodegen::tryMonomorphizedTaylor(const eshkol_ast* function_
     // Evaluate the point and reduce it to x0 exactly as the runtime seed does
     // (eshkol_taylor_seed_tagged -> tagged_scalar_value == eshkol_taylor_c0),
     // so x0 is bit-identical to the runtime path for any point representation.
+    //
+    // ESH-0191 (P6): the monomorphized tier stores the tower as stack DOUBLES
+    // only -- it cannot represent an exact int64/bignum/rational coefficient.
+    // A raw integer point is EXACT by R7RS convention, and a boxed tagged
+    // value MAY be exact at runtime (int64/rational/bignum); silently
+    // SIToFP-ing (former behavior) or unconditionally accepting either would
+    // defeat exactness contagion (design section 9). Bail to the unchanged
+    // P1 runtime/heap path (taylorApiCore), which decides F64 vs RATIONAL
+    // correctly from the point's actual exactness -- only a point PROVABLY
+    // inexact at compile time (a raw double) is eligible for monomorphization.
     Value* point_raw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
     if (!point_raw) return nullptr;
     Value* point_tagged;
-    if (point_raw->getType()->isIntegerTy())
-        point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
-    else if (point_raw->getType()->isDoubleTy())
+    if (point_raw->getType()->isDoubleTy())
         point_tagged = tagged_.packDouble(point_raw);
-    else if (point_raw->getType() == ctx_.taggedValueType())
-        point_tagged = point_raw;
     else
         return nullptr;
 
