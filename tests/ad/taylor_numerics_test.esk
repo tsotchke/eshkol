@@ -1,0 +1,217 @@
+;; tests/ad/taylor_numerics_test.esk
+;; ESH-0196 (P11): tower-based user numerics -- Taylor-series ODE
+;; integration, Householder-family root refinement, and local functional
+;; inversion via series reversion, all built on the univariate Taylor
+;; tower (`taylor`/`derivative-n`, Phases P1/P2/P6). Runs identically
+;; under -r (JIT) and AOT.
+
+(require core.ad.taylor_numerics)
+
+(define npass 0)
+(define nfail 0)
+
+;; local nth (avoid depending on stdlib list-ref name resolution after
+;; requiring a core.ad.* module -- same discipline as guw_multivariate_test.esk)
+(define (nth lst i) (if (<= i 0) (car lst) (nth (cdr lst) (- i 1))))
+
+(define (close? got expect tol)
+  (<= (abs (- got expect)) tol))
+
+(define (check name got expect tol)
+  (if (close? got expect tol)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got)
+             (display " expect=") (display expect)
+             (display " |err|=") (display (abs (- got expect)))
+             (newline))))
+
+(define (check-exact-eq name got expect)
+  (if (and (exact? got) (= got expect))
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got) (display " exact?=") (display (exact? got))
+             (display " expect=") (display expect) (newline))))
+
+;; =========================================================================
+;; 1. taylor-eval: Horner evaluation sanity (shared primitive)
+;; =========================================================================
+
+(check "taylor-eval constant" (taylor-eval (list 3.0) 100.0) 3.0 1e-12)
+(check "taylor-eval linear" (taylor-eval (list 1.0 2.0) 5.0) 11.0 1e-12)
+;; 1 + 2*0.5 + 3*0.25 + 4*0.125 = 1 + 1 + 0.75 + 0.5 = 3.25
+(check "taylor-eval cubic" (taylor-eval (list 1.0 2.0 3.0 4.0) 0.5) 3.25 1e-12)
+;; taylor-eval must agree with the taylor coefficients it is built to
+;; consume: exp(0.5 + dt) reconstructed from its own order-6 series.
+(let* ((e05 (exp 0.5))
+       (cs  (taylor (lambda (x) (exp x)) 0.5 6)))
+  (check "taylor-eval reconstructs exp" (taylor-eval cs 0.1) (exp 0.6) 1e-9))
+
+;; =========================================================================
+;; 2. ODE: y' = y, y(0) = 1  ->  y(1) = e
+;; =========================================================================
+
+(define euler-e (exp 1.0))
+
+(check "ode y'=y order8 steps5"
+       (taylor-ode-solve (lambda (t y) y) 1.0 0.0 1.0 8 5)
+       euler-e 1e-10)
+
+(check "ode y'=y order10 steps5 tighter"
+       (taylor-ode-solve (lambda (t y) y) 1.0 0.0 1.0 10 5)
+       euler-e 1e-13)
+
+;; error-vs-order table (fixed steps=4): report-only, demonstrates
+;; geometric/spectral convergence in the order for a fixed step budget.
+(display "== error-vs-order table: y'=y, y(0)=1, y(1)=e, steps=4 ==") (newline)
+(let loop ((k 2))
+  (if (<= k 14)
+      (begin
+        (let* ((got (taylor-ode-solve (lambda (t y) y) 1.0 0.0 1.0 k 4))
+               (err (abs (- got euler-e))))
+          (display "  order=") (display k) (display "  error=") (display err) (newline))
+        (loop (+ k 2)))))
+
+;; =========================================================================
+;; 3. ODE: y' = -y^2, y(0) = 1  ->  y(t) = 1/(1+t)
+;; =========================================================================
+
+;; y'=-y^2 has a larger error constant than the linear y'=y case (its
+;; derivatives grow faster along the trajectory), so hitting the same
+;; <1e-10 bar takes a somewhat higher order/step budget -- still cheap
+;; (empirically swept; see the order/step tables above for the linear
+;; case's convergence shape, which is qualitatively the same here).
+(check "ode y'=-y^2 order12 steps8 @t=1 (=1/2)"
+       (taylor-ode-solve (lambda (t y) (- (* y y))) 1.0 0.0 1.0 12 8)
+       0.5 1e-10)
+
+(check "ode y'=-y^2 order10 steps6 @t=0.25 (=4/5)"
+       (taylor-ode-solve (lambda (t y) (- (* y y))) 1.0 0.0 0.25 10 6)
+       (/ 1.0 1.25) 1e-10)
+
+(check "ode y'=-y^2 order14 steps10 @t=2 (=1/3)"
+       (taylor-ode-solve (lambda (t y) (- (* y y))) 1.0 0.0 2.0 14 10)
+       (/ 1.0 3.0) 1e-10)
+
+;; =========================================================================
+;; 4. Root finding: Householder family via series reversion
+;; =========================================================================
+
+(define sqrt2 (sqrt 2.0))
+
+(check "root x^2-2 newton(order1)"
+       (taylor-root (lambda (x) (- (* x x) 2.0)) 1.0 1)
+       sqrt2 1e-10)
+(check "root x^2-2 halley(order2)"
+       (taylor-root (lambda (x) (- (* x x) 2.0)) 1.0 2)
+       sqrt2 1e-14)
+(check "root x^2-2 order4"
+       (taylor-root (lambda (x) (- (* x x) 2.0)) 1.0 4)
+       sqrt2 1e-14)
+
+;; Independent cross-check: hand-written classical Halley update
+;; x_{n+1} = x - (c0*c1)/(c1^2 - c0*c2), c_i = f^(i)(x)/i! from `taylor`
+;; directly (a different code path from tn-series-reversion), applied
+;; manually 4 times, to directly witness cubic convergence.
+(define (halley-step f x)
+  (let* ((c  (taylor f x 2))
+         (c0 (nth c 0))
+         (c1 (nth c 1))
+         (c2 (nth c 2)))
+    (- x (/ (* c0 c1) (- (* c1 c1) (* c0 c2))))))
+
+(define (x2-2 x) (- (* x x) 2.0))
+(define h1 (halley-step x2-2 1.0))
+(define h2 (halley-step x2-2 h1))
+(define h3 (halley-step x2-2 h2))
+(define h4 (halley-step x2-2 h3))
+
+(display "== Halley manual iterates (x^2-2, x0=1, cross-check) ==") (newline)
+(display "  iter1 err=") (display (abs (- h1 sqrt2))) (newline)
+(display "  iter2 err=") (display (abs (- h2 sqrt2))) (newline)
+(display "  iter3 err=") (display (abs (- h3 sqrt2))) (newline)
+(display "  iter4 err=") (display (abs (- h4 sqrt2))) (newline)
+(check "halley manual 4-iter converges" h4 sqrt2 1e-14)
+
+;; Transcendental root: cos(x) = x (the Dottie number).
+(define dottie 0.7390851332151607)
+(check "root cos(x)=x order4"
+       (taylor-root (lambda (x) (- (cos x) x)) 0.5 4)
+       dottie 1e-10)
+(check "root cos(x)=x order2 (halley)"
+       (taylor-root (lambda (x) (- (cos x) x)) 1.0 2)
+       dottie 1e-12)
+
+;; =========================================================================
+;; 5. Local functional inversion via series reversion
+;; =========================================================================
+
+;; exp around 0 -> log(1+y): coefficients 0, 1, -1/2, 1/3, -1/4, ...
+(define inv-exp (taylor-inverse-series (lambda (x) (exp x)) 0.0 8))
+
+(check "inv-exp c0 (=x0)" (nth inv-exp 0) 0.0 1e-12)
+(check "inv-exp c1" (nth inv-exp 1) 1.0 1e-9)
+(check "inv-exp c2" (nth inv-exp 2) (- (/ 1.0 2.0)) 1e-9)
+(check "inv-exp c3" (nth inv-exp 3) (/ 1.0 3.0) 1e-9)
+(check "inv-exp c4" (nth inv-exp 4) (- (/ 1.0 4.0)) 1e-8)
+(check "inv-exp c5" (nth inv-exp 5) (/ 1.0 5.0) 1e-7)
+(check "inv-exp c6" (nth inv-exp 6) (- (/ 1.0 6.0)) 1e-6)
+(check "inv-exp c7" (nth inv-exp 7) (/ 1.0 7.0) 1e-5)
+(check "inv-exp c8" (nth inv-exp 8) (- (/ 1.0 8.0)) 1e-4)
+
+;; Round-trip cross-check: f(x0 + h(w)) should equal f(x0)+w to O(w^9) for
+;; small w, verified numerically (independent of the coefficient-by-
+;; coefficient comparison above).
+(let* ((w 0.01)
+       (h (taylor-eval inv-exp w))
+       (lhs (exp h))
+       (rhs (+ 1.0 w)))
+  (check "inv-exp round-trip @w=0.01" lhs rhs 1e-16))
+
+;; EXACT case (Phase P6): f(x) = x + x^2, x0 = 0 (exact integer). The
+;; reversion of y=x+x^2 is the alternating-sign Catalan-number series
+;; (hand-derived independently via undetermined coefficients -- see the
+;; module header): a_n = (-1)^(n-1) * C_(n-1), C = 1,1,2,5,14,42,132,429.
+(define catalan (list 1 1 2 5 14 42 132 429))
+
+(define (catalan-a n)
+  (let ((c (nth catalan (- n 1))))
+    (if (= (modulo (- n 1) 2) 0) c (- c))))
+
+(define (poly-x-plus-x2 x) (+ x (* x x)))
+(define inv-poly (taylor-inverse-series poly-x-plus-x2 0 8))
+
+(check-exact-eq "inv-poly c0 exact" (nth inv-poly 0) 0)
+(check-exact-eq "inv-poly c1 exact" (nth inv-poly 1) (catalan-a 1))
+(check-exact-eq "inv-poly c2 exact" (nth inv-poly 2) (catalan-a 2))
+(check-exact-eq "inv-poly c3 exact" (nth inv-poly 3) (catalan-a 3))
+(check-exact-eq "inv-poly c4 exact" (nth inv-poly 4) (catalan-a 4))
+(check-exact-eq "inv-poly c5 exact" (nth inv-poly 5) (catalan-a 5))
+(check-exact-eq "inv-poly c6 exact" (nth inv-poly 6) (catalan-a 6))
+(check-exact-eq "inv-poly c7 exact" (nth inv-poly 7) (catalan-a 7))
+(check-exact-eq "inv-poly c8 exact" (nth inv-poly 8) (catalan-a 8))
+
+;; A second exact case with a non-integer RATIONAL seed point:
+;; f(x) = x + x^2 at x0 = 1/2 (exact rational). Expanding around x0 gives
+;; g(h) = f(x0+h)-f(x0) = (1+2*x0) h + h^2 = 2h + h^2, whose reversion is
+;; u(w) = sqrt(1+w) - 1 (solving u^2+2u-w=0, branch u(0)=0), i.e. the
+;; binomial series for sqrt(1+w) shifted by -1: coefficients
+;; 1/2, -1/8, 1/16, -5/128, 7/256, -21/1024 (hand-derived independently
+;; from the binomial series C(1/2,n), not from tn-series-reversion).
+(define inv-poly-half (taylor-inverse-series poly-x-plus-x2 (/ 1 2) 6))
+
+(check-exact-eq "inv-poly-half c0 exact" (nth inv-poly-half 0) (/ 1 2))
+(check-exact-eq "inv-poly-half c1 exact" (nth inv-poly-half 1) (/ 1 2))
+(check-exact-eq "inv-poly-half c2 exact" (nth inv-poly-half 2) (/ -1 8))
+(check-exact-eq "inv-poly-half c3 exact" (nth inv-poly-half 3) (/ 1 16))
+(check-exact-eq "inv-poly-half c4 exact" (nth inv-poly-half 4) (/ -5 128))
+(check-exact-eq "inv-poly-half c5 exact" (nth inv-poly-half 5) (/ 7 256))
+(check-exact-eq "inv-poly-half c6 exact" (nth inv-poly-half 6) (/ -21 1024))
+
+(display "----") (newline)
+(display "taylor-numerics tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+
+(if (> nfail 0) (error "taylor-numerics tests failed"))
