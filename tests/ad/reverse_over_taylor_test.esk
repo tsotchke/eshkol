@@ -1,0 +1,129 @@
+;;; tests/ad/reverse_over_taylor_test.esk
+;;; ESH-0190 (P5): reverse-over-Taylor — high-order GRADIENTS taken through the
+;;; reverse tape when the differentiated quantity is itself a high-order forward
+;;; derivative computed via the arbitrary-order Taylor tower (`derivative-n`).
+;;;
+;;;   g(v) = d^k/dt^k [ f(t, v) ] |_{t=t0}          (inner: Taylor tower, order k)
+;;;   (gradient (lambda (v) (g v)) v0)              (outer: reverse mode)
+;;;
+;;; Before P5 this returned 0: the tower extraction handed back a bare double
+;;; disconnected from the reverse tape, so the outer gradient saw a constant.
+;;; P5 threads a first-order "seed tangent" alongside the tower value series
+;;; (the tower analogue of the 8-jet's ep-derivative half) and records it on the
+;;; reverse tape through the SAME eshkol_ad_mixed_record hook the order-<=2 jet
+;;; path uses. Correct for k = 2..4, scalar / vector params, and nested tower
+;;; contexts (epoch safety). Runs identically under -r (JIT) and AOT.
+
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-5))
+(define (chk label v)
+  (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+(define v0 0.5)
+(define s   (sin v0))
+(define c   (cos v0))
+
+;; ── Scalar param, k = 2,3,4 : g(v) = d^k/dt^k[sin(v t)]|_{t=1} ───────────
+;; d^k/dt^k sin(v t) = v^k sin(v + k*pi/2); at t=1:
+;;   k=2 -> -v^2 sin v          d/dv = -(2v sin v + v^2 cos v)
+;;   k=3 -> -v^3 cos v          d/dv = -3v^2 cos v + v^3 sin v
+;;   k=4 ->  v^4 sin v          d/dv =  4v^3 sin v + v^4 cos v
+(define (g2 v) (derivative-n (lambda (t) (sin (* v t))) 1.0 2))
+(define (g3 v) (derivative-n (lambda (t) (sin (* v t))) 1.0 3))
+(define (g4 v) (derivative-n (lambda (t) (sin (* v t))) 1.0 4))
+(chk "k=2 scalar grad d2/dt2[sin(v t)]"
+     (approx= (gradient g2 v0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+(chk "k=3 scalar grad d3/dt3[sin(v t)]"
+     (approx= (gradient g3 v0) (+ (* -3 v0 v0 c) (* v0 v0 v0 s))))
+(chk "k=4 scalar grad d4/dt4[sin(v t)]"
+     (approx= (gradient g4 v0) (+ (* 4 v0 v0 v0 s) (* v0 v0 v0 v0 c))))
+
+;; exp variant, k=2 : g(v) = d2/dt2[exp(v t)]|1 = v^2 exp v ; d/dv = exp(v)(2v+v^2)
+(define (ge v) (derivative-n (lambda (t) (exp (* v t))) 1.0 2))
+(chk "k=2 scalar grad d2/dt2[exp(v t)]"
+     (approx= (gradient ge v0) (* (exp v0) (+ (* 2 v0) (* v0 v0)))))
+
+;; finite-difference cross-check on the k=2 scalar case
+(define h 1e-5)
+(define fd (/ (- (g2 (+ v0 h)) (g2 (- v0 h))) (* 2.0 h)))
+(chk "k=2 scalar grad vs finite-difference" (approx= (gradient g2 v0) fd))
+
+;; ── Tensor param #(...) (reverse-tape path) mirrors the scalar answer ────
+(define (g2t v) (derivative-n (lambda (t) (sin (* (vector-ref v 0) t))) 1.0 2))
+(define rt (gradient g2t #(0.5)))
+(chk "k=2 tensor #(0.5) grad" (approx= (vector-ref rt 0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+(define rv (gradient g2t (vector 0.5)))
+(chk "k=2 vector (vector 0.5) grad" (approx= (vector-ref rv 0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+
+;; ── 2-vector : f(t,v) = sin(v0 t) + v1 t^3 ; k=2 ────────────────────────
+;; d2/dt2|1 = -v0^2 sin v0 + 6 v1 ; grad = ( -(2 v0 sin v0 + v0^2 cos v0), 6 )
+(define (gv2 v) (derivative-n (lambda (t)
+   (+ (sin (* (vector-ref v 0) t)) (* (vector-ref v 1) (* t t t)))) 1.0 2))
+(define r2 (gradient gv2 #(0.5 2.0)))
+(chk "2-vec grad[0]" (approx= (vector-ref r2 0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+(chk "2-vec grad[1] = 6" (approx= (vector-ref r2 1) 6.0))
+;; finite-difference cross-check on each component
+(define (gv2-0 x) (gv2 (vector x 2.0)))
+(define (gv2-1 y) (gv2 (vector 0.5 y)))
+(chk "2-vec grad[0] vs FD" (approx= (vector-ref r2 0)
+     (/ (- (gv2-0 (+ 0.5 h)) (gv2-0 (- 0.5 h))) (* 2.0 h))))
+(chk "2-vec grad[1] vs FD" (approx= (vector-ref r2 1)
+     (/ (- (gv2-1 (+ 2.0 h)) (gv2-1 (- 2.0 h))) (* 2.0 h))))
+
+;; ── 3-vector : f(t,v) = v0 t^2 + v1 sin t + v2 exp t ; k=3 ───────────────
+;; d3/dt3|1 = 0 + v1(-cos 1) + v2 exp 1 ; grad = (0, -cos 1, exp 1)
+(define (gv3 v) (derivative-n (lambda (t)
+   (+ (* (vector-ref v 0) (* t t))
+      (* (vector-ref v 1) (sin t))
+      (* (vector-ref v 2) (exp t)))) 1.0 3))
+(define r3 (gradient gv3 #(1.0 1.0 1.0)))
+(chk "3-vec grad[0] = 0"      (approx= (vector-ref r3 0) 0.0))
+(chk "3-vec grad[1] = -cos 1" (approx= (vector-ref r3 1) (- (cos 1.0))))
+(chk "3-vec grad[2] = exp 1"  (approx= (vector-ref r3 2) (exp 1.0)))
+
+;; ── Epoch safety 1: two sibling derivative-n in one gradient closure ─────
+;; each level has its own tower epoch; the reverse seed must reach BOTH.
+;; g = d2/dt2[sin(v t)]|1 + d3/ds3[exp(v s)]|1 = -v^2 sin v + v^3 exp v
+(define (gsib v) (+ (derivative-n (lambda (t) (sin (* v t))) 1.0 2)
+                    (derivative-n (lambda (s) (exp (* v s))) 1.0 3)))
+(chk "epoch: sibling derivative-n sum"
+     (approx= (gradient gsib v0)
+              (+ (- (+ (* 2 v0 s) (* v0 v0 c)))
+                 (* (exp v0) (+ (* 3 v0 v0) (* v0 v0 v0))))))
+
+;; ── Epoch safety 2: derivative-n nested inside derivative-n ──────────────
+;; inner d2/ds2[sin(v s)]|1 = -v^2 sin v (constant in t); outer d1/dt1[t*inner]|1
+;; = inner. The inner tower's epoch must NOT leak into the outer t-perturbation.
+(define (gnest v) (derivative-n (lambda (t)
+    (* t (derivative-n (lambda (s) (sin (* v s))) 1.0 2))) 1.0 1))
+(chk "epoch: nested derivative-n (no leak)"
+     (approx= (gradient gnest v0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+
+;; ── Epoch safety 3: an inner tower over an INDEPENDENT variable vanishes ─
+;; g = d2/dt2[ sin(v t) + d1/ds1[cos(w s)]|1 ]|1 ; the inner term is constant in
+;; t and independent of v, so it drops out: g = -v^2 sin v.
+(define w 2.0)
+(define (gindep v) (derivative-n (lambda (t)
+    (+ (sin (* v t)) (derivative-n (lambda (s) (cos (* w s))) 1.0 1))) 1.0 2))
+(chk "epoch: independent inner tower drops out"
+     (approx= (gradient gindep v0) (- (+ (* 2 v0 s) (* v0 v0 c)))))
+
+;; ── Parity witness (scope item 3): reverse-over-nested-forward via the tower
+;; equals the JET8 path for the reverse_nested_forward_test's polynomial style.
+;; f = p0*xx^2 ; d2 = 2 p0 ; grad = 2 — byte-identical to nested `derivative`.
+(define jet8 (gradient (lambda (p) (derivative (lambda (x)
+   (derivative (lambda (xx) (* (vector-ref p 0) (* xx xx))) x)) 2.0)) (vector 3.0)))
+(define twr  (gradient (lambda (p)
+   (derivative-n (lambda (xx) (* (vector-ref p 0) (* xx xx))) 2.0 2)) (vector 3.0)))
+(chk "parity: tower == JET8 (poly, byte-identical)"
+     (= (vector-ref jet8 0) (vector-ref twr 0)))
+
+(newline)
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)
+(if (= fail 0)
+    (begin (display "PASS: reverse-over-Taylor ")(display pass)
+           (display "/")(display pass)
+           (display " checks (k=2..4, scalar/2-vec/3-vec, epoch safety, JET8 parity)")(newline))
+    (begin (display "FAIL: reverse-over-Taylor ")(display fail)(display " checks failed")(newline)))

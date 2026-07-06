@@ -1,0 +1,54 @@
+{
+  "id": "ESH-0190",
+  "title": "AD Taylor-tower P5: reverse-over-Taylor -- high-order gradients through the reverse tape via a seed-tangent dual tower",
+  "status": "done",
+  "priority": "high",
+  "workstream": "ad-taylor-tower/P5-reverse-over-taylor",
+  "goal": "Make `gradient` correct when the differentiated function computes a high-order forward derivative internally via the Taylor tower, i.e. grad_v of g(v)=derivative-n(lambda(t) f(t,v), t0, k) for k>=2 (docs/design/AD_TAYLOR_TOWER.md sec 8). Before P5 this returned 0: the reverse-tape dispatch swallowed the tower (converting the tower operand of `t` to a scalar AD node) and the tower extraction handed back a bare double disconnected from the tape. Fix at the root by carrying a first-order seed tangent alongside the tower value series (the tower analogue of the 8-jet ep-derivative half) and recording it back on the reverse tape through the SAME eshkol_ad_mixed_record hook the order-<=2 jet path uses. Order-<=2 hot path and the P1/P2 forward tower stay byte-for-byte unchanged.",
+  "file_globs": [
+    "inc/eshkol/eshkol.h",
+    "lib/core/runtime_taylor.c",
+    "lib/core/runtime_autodiff.cpp",
+    "lib/backend/autodiff_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "inc/eshkol/backend/autodiff_codegen.h",
+    "inc/eshkol/backend/codegen_context.h",
+    "tests/ad/reverse_over_taylor_test.esk",
+    "docs/design/AD_TAYLOR_TOWER.md",
+    "CMakeLists.txt"
+  ],
+  "acceptance": [
+    "gradient over derivative-n matches ANALYTIC references for k=2..4 scalar (d^k/dt^k[sin(v t)]|1, exp variant) to abs err < 1e-5, cross-checked against central finite differences",
+    "vector params work in multiple shapes: 2-vector (sin(v0 t)+v1 t^3, k=2) and 3-vector (v0 t^2 + v1 sin t + v2 exp t, k=3) match analytic ground truth and FD; both #(...) tensor points (reverse-tape path) and (vector ...) points",
+    "epoch safety: sibling derivative-n in one gradient, derivative-n nested inside derivative-n, and an inner tower over an independent variable that must drop out -- each level's gradient depends only on its own perturbation",
+    "order <= 2 jet hot path and the P1/P2 forward tower untouched; regressions hold: reverse_nested_forward_test 11/11, taylor_tower_test 52/52, taylor_tower_mono_test 441/441, guw_multivariate_test 35/35, run_ad_depth.sh gate PASS (0 regressions), run_ad_oracle.sh 56/56, run_sicp_smoke.sh 88/88",
+    "new test tests/ad/reverse_over_taylor_test.esk PASS under BOTH -r and AOT (byte-identical) and wired into CTest (reverse_over_taylor_runtime_smoke)"
+  ],
+  "blocked_by": ["ESH-0189"],
+  "campaign_payoff": "High-order gradients of tower-computed quantities (grad of a Laplacian, grad of an arbitrary-order derivative) become available: the reverse tape can now differentiate through the arbitrary-order Taylor tower, not just the order-<=2 jet. Delivers the 'tower-valued reverse-tape primals/adjoints' that P3 (ESH-0188) named as the prerequisite for retiring JET8, and is the foundation for P10 checkpointed high-order reverse.",
+  "delivered": {
+    "mechanism": "A tower may carry, alongside its value series c[0..K], a parallel first-order SEED-TANGENT series c'[k]=d(c[k])/d(reverse-seed) -- one sensitivity of every coefficient to the outer gradient's active seed. Marked by a reserved flag bit ESH_TAYLOR_TANGENT_FLAG (flags byte 8, the RESERVED0 region of sec 4); a dual tower's coefficient storage doubles to 2*(K+1) doubles (values then tangents). The seed dimension is orthogonal to the value EPOCH_TAG (there is exactly one active reverse seed per gradient pass), so it always combines while the value series keeps its sec 5a epoch discipline unchanged.",
+    "root_cause_fixed": "In tower mode the tower seed does not bump __ad_pert_level, so maybeJetLiftTapeOperand did not freeze a reverse-tape AD node before withADBinaryDispatch, which then converted the tower operand of `t` to a scalar constant AD node -- the reverse tape swallowed the tower, collapsing the whole derivative-n onto the tape with `t` frozen, and popAndExtractForward returned a bare double disconnected from the tape (gradient=0, the ESH-0117 failure class).",
+    "runtime": "lib/core/runtime_taylor.c: dual (value+tangent) recurrences (tr_conv, trd_mul, trd_div, ddual_mul/div/exp/log/sincos/pow_const) mirroring the tr_* value recurrences with the same fma/ascending-j reduction order (sec 6a); normalise_operand_dual materialising value (epoch-gated) + tangent (epoch-independent) from a tower-with-tangent, a forward jet (primal + e1), a reverse-tape AD node (node->value + eshkol_ad_seed_flag), or a scalar; dual branches in eshkol_taylor_binary_tagged / eshkol_taylor_unary_tagged that fire only when an operand carries a tangent (so the plain forward tower is byte-for-byte unchanged); eshkol_taylor_lift_ad_node (freeze an AD node to a dual-tower constant), eshkol_taylor_has_tangent, eshkol_taylor_extract_tangent (n! * tangent[n]). lib/core/runtime_autodiff.cpp: __ad_tower_active / __ad_tower_order context globals.",
+    "codegen": "lib/backend/autodiff_codegen.cpp: towerCtxPush/Pop (maintain the tower-active depth + order globals, pushed in seedForwardAndPush's tower branch, popped in popAndExtractForward); towerLiftOperand (runtime-gated on __ad_tower_active>0, freezes a reverse-tape AD node to a dual-tower via eshkol_taylor_lift_ad_node so the reverse tape can no longer swallow the tower), invoked as a preprocessing step from maybeJetLiftTapeOperand so it applies at every arithmetic site including lambda bodies compiled standalone; tangent-aware DERIV_N extraction that reads value=k!*c[K] and dseed=k!*c'[K] and threads dseed back to the outer pass -- via the SAME eshkol_ad_mixed_record hook when a reverse tape is live, or as a forward jet {value, dseed*e1} otherwise. lib/backend/llvm_codegen.cpp + inc/eshkol/backend/codegen_context.h: the two context globals (REPL-external / compiler-internal, mirroring __ad_pert_level). inc/eshkol/eshkol.h: ESH_TAYLOR_TANGENT_FLAG + ESH_TAYLOR_HAS_TANGENT.",
+    "hook_reuse": "dseed is a single scalar per derivative-n call (extraction is scalar-per-call), so eshkol_ad_mixed_record is reused UNCHANGED -- the design-doc's 'generalize dseed per-order' was unnecessary. The recorded node is an exact local linearization result = value + dseed*(seed-seed0) built from CONSTANT/MUL/ADD nodes, so backprop needs no new rule.",
+    "tests": "tests/ad/reverse_over_taylor_test.esk: 18 analytic + FD + epoch-safety + JET8-parity checks. Prints 'PASS: reverse-over-Taylor 18/18 ...' on success, FAIL: on failure. Registered in CMakeLists.txt as reverse_over_taylor_runtime_smoke (JIT -r, PASS/FAIL regex).",
+    "jet8_verdict": "NO -- JET8 retirement re-evaluated and deferred (design sec 12a). The capability blocker P3 (ESH-0188) cited ('tower-valued reverse-tape primals/adjoints') is now delivered and byte-identical to JET8 (measured bit-equal for polynomial, transcendental and compound-transcendental nested cases; depth oracle gofd.poly.v{2,3}.*.vecref jump baseline 1 -> 8). Retirement stays blocked ONLY by the order-<=2 hot-path invariant (JET8 is the order-<=2 reverse-over-forward adapter over the stack JET4 fast path; the test's single-forward depth-1 cases cannot route via detectPureDerivChain without sending every first-order derivative-in-gradient through the heap tower) and P5 scope isolation. Retirement is now unblocked for a focused order-thresholded dispatch-refactor phase. The P5 test carries a parity-witness check asserting tower==JET8 bit-equal."
+  },
+  "remainder": [
+    "JET8 retained (design sec 12a): retiring it needs an order-thresholded dispatch refactor (JET4 for order<=2, tower for order>=3) that preserves the order-<=2 hot path -- a dedicated follow-up phase, not P5's isolated scope.",
+    "The seed tangent is FIRST order (gradient is first-order reverse). Second-order-reverse / hessian-through-tower (grad^2 of a tower quantity) would need a second tangent dimension or the P10 checkpointed high-order reverse tape -- out of P5 scope.",
+    "Like the existing jet mixed-mode, the reverse seed is the pass's single published active variable; a captured value that is an INTERMEDIATE tape node depending on the seed (not the seed variable itself) is frozen to its value (seed_flag=0), matching the existing order-<=2 mixed-mode semantics -- gradient's per-component convention (vector-ref v i is the variable node) makes this correct for the standard gradient use.",
+    "Coefficients are on the F64 path; the exact-rational tower (P6/ESH-0191) tangent variant is not part of this phase.",
+    "Reverse-over-`taylor` (the coefficient-list API inside a gradient) sets the tower context and lifts correctly, but returns a list (mixed_record does not apply); only derivative-n's scalar return is wired to the tape/jet. Not a P5 gate."
+  ],
+  "verifications": [
+    {
+      "sweep": "P5",
+      "date": "2026-07-06",
+      "branch": "feat/ad-taylor-p5-reverse-over-taylor",
+      "verdict": "closed",
+      "evidence": "tests/ad/reverse_over_taylor_test.esk 18/18 PASS under BOTH -r (JIT) and AOT (byte-identical output, exit 0). Reverse-over-Taylor scalar: grad d2/dt2[sin(v t)]|1 @0.5 = -0.698821 (analytic -(2v sin v + v^2 cos v)); k=3 = -0.598259; k=4 = 0.294562; exp k=2 = 2.060901; all vs analytic AND central FD. Vector: 2-vec #(0.5 2.0) grad=(-0.698821, 6) vs analytic+FD; 3-vec #(1 1 1) grad=(0, -cos1=-0.540302, exp1=2.718282); tensor #(0.5) and (vector 0.5) both match scalar. Epoch safety: sibling derivative-n sum=0.743810, nested derivative-n=-0.698821, independent inner tower drops out=-0.698821. JET8 parity witness: tower==JET8 bit-equal for poly case (=#t). Regressions all green: reverse_nested_forward_test 11/11 (-r+AOT), taylor_tower_test 52/52, taylor_tower_mono_test 441/441 (mono==runtime bit-exact), guw_multivariate_test 35/35, full tests/ad/ 14/14; scripts/run_ad_depth.sh gate PASS regressions=0 improvements=7 (gofd.poly.v{2,3}.*.vecref 1->8, gradn.{expc,mono}.s.*.capnone 2->3); scripts/run_ad_oracle.sh total=56 passed=56 failed=0 crashed=0 hung=0; scripts/run_sicp_smoke.sh 88/88. Order-<=2 jet hot path and P1/P2 forward tower unchanged by construction (dual path fires only under ESH_TAYLOR_TANGENT_FLAG). New CTest reverse_over_taylor_runtime_smoke registered."
+    }
+  ]
+}

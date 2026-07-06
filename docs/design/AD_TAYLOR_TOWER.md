@@ -5,7 +5,7 @@
 **Builds on / subsumes:** PR #138 (8-component jet for reverse-over-nested-forward, ESH-0117)
 **Author:** tsotchke
 **Target:** post-v1.3.0-evolve (not a tag blocker — #138 already handles the reported order-≤2 nested case)
-**Ledger:** ESH-0185 (P0, done) · ESH-0186..0197 (P1..P12, open)
+**Ledger:** ESH-0185 (P0, done) · ESH-0186 (P1) · ESH-0187 (P2) · ESH-0188 (P3) · ESH-0189 (P4, done) · ESH-0190 (P5, done) · ESH-0191..0197 (P6..P12, open)
 
 ---
 
@@ -219,11 +219,109 @@ as the public primitive. Given it, the GUW interpolation layer (P4) drops in wit
 
 ---
 
-## 8. Reverse-over-Taylor (high-order gradients, Phase P5)
+## 8. Reverse-over-Taylor (high-order gradients, Phase P5 — ESH-0190, done)
 
-`gradient` of a high-order scalar quantity (e.g. `∇` of a Laplacian) = the existing reverse tape with **tower-valued primals and adjoints**. The tape's forward pass records tower primals; the backward pass propagates tower adjoints. Perturbation tags (§5a) keep the reverse level distinct from the forward tower levels.
+**Goal.** Make `gradient` correct when the differentiated function computes a
+high-order forward derivative internally via the Taylor tower:
 
-This is the **highest-risk** piece (reverse mode has crash history — [[project_ad_multivar_operators]] — and the pure-Scheme tape `lib/core/ad/tape.esk` has AOT constraints: no `for-each`/`map` in core modules — [[project_stateful_ad_tape]]). It lands behind its own oracle, AOT-verified.
+```scheme
+(gradient (lambda (v) (derivative-n (lambda (t) (f t v)) t0 k)) v0)
+```
+
+i.e. `∇_v g(v)` where `g(v) = f^(k)_t(t0; v)` is an arbitrary-order (k ≥ 2)
+derivative in `t` that also depends on the outer variable `v`.
+
+### 8a. What was already working, and the precise break
+
+The tower's tagged arithmetic is fully polymorphic, so the *forward* quantity
+`(derivative-n (lambda (t) (f t v)) t0 k)` already computed the correct value
+for a fixed `v`. But wrapping it in `gradient` returned an exact **0** (the same
+failure class as ESH-0117). Root cause, found by probing the P4 build:
+
+- The reverse `gradient` pass runs the closure with `v` bound to a reverse-tape
+  **AD node** (`ESHKOL_VALUE_CALLABLE`, subtype `AD_NODE`). Inside, `derivative-n`
+  seeds `t` as a heap Taylor tower.
+- When `v` (an AD node) meets `t` (a tower) in `(* v t)`, the reverse-tape
+  dispatch (`withADBinaryDispatch`) fires *first* and **converts the tower
+  operand to a scalar constant AD node** — the reverse tape "swallows" the
+  tower, freezing `t` to `t0`. The whole `derivative-n` collapses onto the tape.
+- `popAndExtractForward` for the tower path then reads a bare double
+  (`k!·c[k]`) with **no** link back to the tape, so the outer backward pass sees
+  a constant → gradient 0.
+
+The order-≤2 jet path avoids this via `maybeJetLiftTapeOperand`, which freezes an
+AD node to a jet *before* the reverse dispatch — but it is gated on
+`__ad_pert_level > 0`, and the tower seed deliberately does **not** bump that
+level. So nothing lifted the node on the tower path.
+
+### 8b. Mechanism: a first-order seed tangent riding the tower
+
+P5 generalises the 8-jet's `ep`-derivative half (§5a "Interaction with
+JET4/JET8") from a single hyper-dual slot to the whole tower. A tower may now
+carry, alongside its value series `c[0..K]`, a parallel **seed-tangent** series
+`c′[k] = d(c[k])/d(reverse-seed)` — one first-order sensitivity of every
+coefficient to the outer gradient's active seed. This is the tower embodiment of
+the design's "tower-valued primals and adjoints".
+
+- **Representation.** A reserved flag bit `ESH_TAYLOR_TANGENT_FLAG`
+  (`flags` byte 8, the RESERVED0 region of §4) marks a *dual tower*; its
+  coefficient storage doubles to `2·(K+1)` doubles (values then tangents). The
+  seed dimension is orthogonal to the value **EPOCH_TAG**: there is exactly one
+  active reverse seed per gradient pass, so the tangent is a single global
+  first-order direction that always combines (it is not epoch-gated), while the
+  value series keeps its §5a epoch discipline unchanged.
+- **Seeding the tangent.** When a carrier of the outer seed enters tower
+  arithmetic it is lifted to a dual-tower *constant*:
+  - a reverse-tape **AD node** → value `{node->value, 0, …}`, tangent
+    `{seed_flag(node), 0, …}` (`seed_flag` = 1 iff it is the pass's active seed).
+    Done in codegen by `towerLiftOperand`, invoked from `maybeJetLiftTapeOperand`
+    and gated on a new runtime counter `__ad_tower_active > 0` (set while a
+    `derivative-n`/`taylor` pass runs), so the reverse tape can no longer swallow
+    the tower.
+  - a forward-mode **jet** (the scalar/vector gradient's own seed) → value
+    `{primal, 0, …}`, tangent `{e1, 0, …}`. Handled purely at runtime in
+    `normalise_operand_dual`.
+- **Propagation.** Each recurrence gains a linearised tangent rule computed in
+  lock-step with the value series, using the same `fma` / ascending-`j`
+  reduction order as §6a: `(u·w)′ = u′·w + u·w′`; `(u/w)′` from the divided
+  recurrence; and `g(u)′ = g′(u)·u′` realised as a series convolution for
+  `exp/log/sin/cos/tan/pow/sqrt/sinh/cosh/tanh`. A tower without the flag never
+  enters this path, so the P1/P2 forward tower is **byte-for-byte unchanged**.
+- **Extraction.** `popAndExtractForward` for `DERIV_N` reads
+  `value = k!·c[K]` and `dseed = k!·c′[K]`. If a reverse tape is live it records
+  the pair through the **same** `eshkol_ad_mixed_record` hook the order-≤2 jet
+  path uses (an exact local linearization `result = value + dseed·(seed−seed0)`,
+  built from CONSTANT/MUL/ADD nodes, so backprop needs no new rule). With no live
+  tape (scalar/vector forward-protocol gradient) it returns a jet
+  `{value, dseed·e1}` the outer forward extraction reads. `dseed` is a single
+  scalar per call, so the hook is reused **unchanged** — the design's
+  "generalize `dseed` per-order" turned out to be unnecessary because
+  `derivative-n` extraction is already scalar-per-call.
+
+### 8c. Perturbation / epoch safety
+
+Nested tower contexts get distinct value **epochs** (§5a) exactly as before; the
+single seed-tangent dimension is shared but only ever seeded from the *one*
+published active reverse seed, so an inner tower's perturbation cannot enter the
+outer adjoint and vice-versa. Verified by three nested cases (sibling
+`derivative-n`, `derivative-n`-inside-`derivative-n`, and an inner tower over an
+independent variable that must drop out) in
+`tests/ad/reverse_over_taylor_test.esk`.
+
+### 8d. Files & risk
+
+Runtime `lib/core/runtime_taylor.c` (dual recurrences, dual operand
+normalisation, `eshkol_taylor_lift_ad_node` / `_has_tangent` /
+`_extract_tangent`); `lib/core/runtime_autodiff.cpp` (the `__ad_tower_active` /
+`__ad_tower_order` context globals); codegen `lib/backend/autodiff_codegen.cpp`
+(`towerCtxPush/Pop`, `towerLiftOperand`, the tangent-aware `DERIV_N`
+extraction), `lib/backend/llvm_codegen.cpp` + `codegen_context.h` (context
+globals), `inc/eshkol/eshkol.h` (`ESH_TAYLOR_TANGENT_FLAG`). No new AD primitive
+and no change to the order-≤2 hot path. This is the design's **highest-risk**
+piece (reverse mode has crash history — [[project_ad_multivar_operators]]); it
+lands behind its own oracle `tests/ad/reverse_over_taylor_test.esk`,
+**AOT-verified** (byte-identical to `-r`), with the P3/P4/depth/oracle/SICP
+suites held green.
 
 ---
 
@@ -267,6 +365,56 @@ A **Taylor model** is a Taylor polynomial plus a rigorous **interval remainder**
 - **New-numeric-type checklist** (per [[reference-bugs-fixed]]): add the `HEAP_SUBTYPE_TAYLOR` case to `arith_->{add,sub,mul,div,pow, exp,log,sin,cos,…}`, `compare`/`abs`, `convertTo*`, `findFreeVariablesImpl`, `number->string`, and the type checker. Missing any one silently corrupts.
 - **JET4 unchanged; JET8 subsumed in P3:** keep #138's 8-jet behind its tests until reverse-over-nested-forward parity holds on the tower, then remove the special case. No churn on freshly-merged code.
 - **Arena/tape interop:** the stateful tape must accept tower values; verified **AOT**, not just `-r`.
+
+### 12a. P5 JET8 re-evaluation verdict (2026-07-06, ESH-0190)
+
+**Context.** P3 (ESH-0188) *evaluated* JET8 subsumption and explicitly deferred
+it, finding: *"full subsumption of JET8 into that tower is not achievable here …
+Expressing it exactly needs either GUW multivariate directional propagation
+(P4) or tower-valued reverse-tape primals/adjoints (P5)."* P5 delivers the
+latter, so the re-evaluation was re-run here.
+
+**Verdict: NO — do not retire JET8 in P5 (retirement now *unblocked* but
+deferred to a focused dispatch-refactor phase).**
+
+*The capability blocker P3 cited is resolved.* Reverse-over-nested-forward is
+`d/dv[d²/dt² f(t,v)]` — a 2nd-order tower in `t` plus a 1st-order sensitivity in
+`v`. P5's dual tower represents exactly that, and the results are **byte-for-byte
+identical** to the JET8 path, not merely close: measured `= ` (bit-equal) for the
+polynomial cases in `reverse_nested_forward_test.esk`, and also for
+transcendental (`p·sin(xx)`) and compound-transcendental (`p·sin(xx²)·exp(xx)`)
+nested cases (`abs diff = 0` in all probes). The AD depth oracle confirms it: the
+`gofd.poly.v{2,3}.*.vecref` reverse-over-forward cells jump from baseline
+max-depth 1 to 8 under P5.
+
+*Why JET8 nevertheless stays, for now:*
+
+1. **Order-≤2 hot-path invariant (the real blocker).** JET8 is the thin adapter
+   that serves reverse-over-forward at **order ≤ 2** over the stack-allocated
+   JET4 fast path. Retiring it routes that case onto the **heap** Taylor tower,
+   directly violating §1 ("Order ≤ 2 semantics and performance strictly
+   unchanged") and §12's dispatch order ("a tower only appears when order ≥ 3 is
+   requested, so the hot path is never burdened"). A correct retirement must keep
+   JET4 for order ≤ 2 and route *only* order ≥ 3 reverse-over-forward through the
+   tower — a dispatch decision, not a representation change.
+2. **The test's single-forward cases cannot be rerouted structurally.** The
+   `g-single`/`gt-single` cells are a *single* `derivative` inside `gradient`
+   (depth 1). The tower's entry for nested `derivative` is `detectPureDerivChain`,
+   which only recognises a *chain* (depth ≥ 2 today; ≥ 3 for the pure path).
+   Routing a plain depth-1 `derivative` through the tower would mean sending
+   **every** first-order `derivative`-in-`gradient` through the heap tower —
+   precisely the hot-path regression of point 1.
+3. **Scope isolation (§16).** Retirement touches the shared JET4/JET8 dispatch,
+   outside P5's "isolated to P5, extra review" risk boundary; P5 adds no churn to
+   the freshly-merged reverse-tape path.
+
+**Consequence.** JET8 is retained unchanged; `reverse_nested_forward_test.esk`
+stays 11/11 on its existing path. The tower-valued reverse-tape capability that
+was P3's stated prerequisite now exists and is byte-identical, so a later phase
+can retire JET8 behind an order-thresholded dispatch (JET4 for order ≤ 2, tower
+for order ≥ 3) without a hot-path regression. The P5 test carries a "parity
+witness" check asserting `tower == JET8` bit-equal for the polynomial case so the
+equivalence is guarded going forward.
 
 ---
 
@@ -388,7 +536,7 @@ Each phase gated by `scripts/run_ad_depth.sh` (derivative^d / gradient^d to d=8)
 | **P2** | Compile-time-K monomorphization (unrolled stack towers) + one FP-contraction policy (§6a) | correctness PASS + no heap in AD loop + metamorphic `mono(K) ≡ runtime(K)` **bit-exact** | **ESH-0187** |
 | **P3** | Subsume `AD_JET8`: route reverse-over-nested-forward through the tower; re-express levels as explicit tags; remove 8-comp special case | #138's tests still PASS; JET4 retained; confusion model unified | **ESH-0188** |
 | **P4** | GUW multivariate layer: `gradient^n` / mixed partials to arbitrary order via `taylor_propagate` + interpolation | `gradient^d` PASS to d=8 | **ESH-0189** |
-| **P5** | Reverse-over-Taylor + tower-aware tape (high-order gradients) | reverse high-order oracle PASS, AOT-verified | **ESH-0190** |
+| **P5** *(done)* | Reverse-over-Taylor: seed-tangent dual tower → high-order gradients through the reverse tape (§8) | `reverse_over_taylor_test.esk` 18/18 (-r + AOT); depth oracle 0 regressions | **ESH-0190** |
 | **P6** | Exact-coefficient towers (`COEFF_RATIONAL`, §9) | rational/bignum derivatives **bit-exact** vs symbolic oracle; exactness-contagion suite PASS | **ESH-0191** |
 | **P7** | Tensor-valued towers (`COEFF_TENSOR`, §10): conv2d/attention/batchnorm/layernorm high-order AD | ML AD smoke PASS; order-1 agrees with existing tensor-AD; FD-checked | **ESH-0192** |
 | **P8** | Taylor models (§11): validated AD with rigorous interval remainder | enclosure soundness (contains true range) + tightness (width ↓ in k) | **ESH-0193** |

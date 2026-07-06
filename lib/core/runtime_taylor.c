@@ -72,13 +72,17 @@ enum {
 
 /* Allocate a zeroed tower of order K (K+1 coefficients) with the given flags.
  * Returns the DATA pointer (after the 8-byte object header), so it can be
- * stored in a tagged HEAP_PTR exactly like a tensor. */
+ * stored in a tagged HEAP_PTR exactly like a tensor. When `flags` has
+ * ESH_TAYLOR_TANGENT_FLAG set the storage is doubled to 2*(K+1) doubles so a
+ * parallel first-order seed-tangent series (P5) rides alongside the value
+ * series; both halves are zero-initialised. */
 esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t flags) {
     if (!arena) arena = get_global_arena();
     if (!arena) return NULL;
 
     size_t ncoeff = (size_t)order_k + 1;
-    size_t data_size = sizeof(esh_taylor_t) + ncoeff * sizeof(double);
+    size_t nstore = ESH_TAYLOR_HAS_TANGENT(flags) ? (2u * ncoeff) : ncoeff;
+    size_t data_size = sizeof(esh_taylor_t) + nstore * sizeof(double);
     size_t total = sizeof(eshkol_object_header_t) + data_size;
     total = (total + 15) & ~((size_t)15);
 
@@ -97,8 +101,15 @@ esh_taylor_t* eshkol_taylor_alloc(arena_t* arena, uint32_t order_k, uint32_t fla
     esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
     t->order_k = order_k;
     t->flags = flags;
-    memset(t->c, 0, ncoeff * sizeof(double));
+    memset(t->c, 0, nstore * sizeof(double));
     return t;
+}
+
+/* Pointer to a tower's tangent (seed-derivative) coefficient array, or NULL if
+ * the tower does not carry one. The tangent half follows the value half. */
+static inline double* taylor_tan(esh_taylor_t* t) {
+    if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags)) return NULL;
+    return t->c + ((size_t)t->order_k + 1);
 }
 
 static inline eshkol_tagged_value_t taylor_to_tagged(const esh_taylor_t* t) {
@@ -227,6 +238,99 @@ static void tr_pow_const(double* s, const double* u, double r, int n) {
 }
 
 /* ----------------------------------------------------------------------- */
+/* dual recurrences: value + first-order seed tangent (P5, ESH-0190)        */
+/* ----------------------------------------------------------------------- */
+/* A "dual tower" carries, alongside its value series u, a tangent series
+ * u' = d(u)/d(reverse-seed). Reverse-over-Taylor (docs/design §8) needs one
+ * first-order sensitivity of every high-order coefficient to the outer
+ * gradient's seed; this is exactly the tower analogue of the 8-jet's
+ * ep-derivative half. Each rule below computes the value with the existing
+ * tr_* recurrence and the tangent with the linearised (product/chain) rule,
+ * using the same fma / ascending-j reduction order (design §6a). */
+
+/* Small stack buffer avoids a heap alloc for the common orders; falls back
+ * to the arena for very high K. */
+#define ESH_TAYLOR_STACKN 64
+
+/* s = convolution(a, b): s_k = sum_{j=0..k} a_j * b_{k-j}. */
+static void tr_conv(double* s, const double* a, const double* b, int n) {
+    for (int k = 0; k < n; k++) {
+        double acc = 0.0;
+        for (int j = 0; j <= k; j++) acc = fma(a[j], b[k - j], acc);
+        s[k] = acc;
+    }
+}
+
+/* Tangent of u*w: (u*w)' = u'*w + u*w'. */
+static void trd_mul(double* st, const double* uv, const double* ut,
+                    const double* wv, const double* wt, int n) {
+    for (int k = 0; k < n; k++) {
+        double acc = 0.0;
+        for (int j = 0; j <= k; j++) {
+            acc = fma(ut[j], wv[k - j], acc);
+            acc = fma(uv[j], wt[k - j], acc);
+        }
+        st[k] = acc;
+    }
+}
+
+/* Tangent of s = u/w, given the already-computed value quotient sv:
+ *   s'_k = ( u'_k - sum_{j=1..k}(w'_j s_{k-j} + w_j s'_{k-j}) - s_k w'_0 ) / w_0. */
+static void trd_div(double* st, const double* sv,
+                    const double* ut, const double* wv, const double* wt, int n) {
+    for (int k = 0; k < n; k++) {
+        double acc = ut[k];
+        for (int j = 1; j <= k; j++) {
+            acc = fma(-wt[j], sv[k - j], acc);
+            acc = fma(-wv[j], st[k - j], acc);
+        }
+        acc = fma(-sv[k], wt[0], acc);
+        st[k] = acc / wv[0];
+    }
+}
+
+/* Composable dual ops: each fills value sv and tangent st from operand
+ * value/tangent series. Value uses the proven tr_* recurrence; tangent uses
+ * the chain rule s' = g'(u)·u' realised as a series convolution/division. */
+static void ddual_mul(double* sv, double* st, const double* uv, const double* ut,
+                      const double* wv, const double* wt, int n) {
+    tr_mul(sv, uv, wv, n);
+    trd_mul(st, uv, ut, wv, wt, n);
+}
+static void ddual_div(double* sv, double* st, const double* uv, const double* ut,
+                      const double* wv, const double* wt, int n) {
+    tr_div(sv, uv, wv, n);
+    trd_div(st, sv, ut, wv, wt, n);
+}
+static void ddual_exp(double* sv, double* st, const double* uv, const double* ut, int n) {
+    tr_exp(sv, uv, n);
+    tr_conv(st, sv, ut, n);                 /* (exp u)' = exp(u)·u' */
+}
+static void ddual_log(double* sv, double* st, const double* uv, const double* ut, int n) {
+    tr_log(sv, uv, n);
+    tr_div(st, ut, uv, n);                  /* (log u)' = u'/u */
+}
+/* sin/cos share the coupled recurrence; fills both values + both tangents. */
+static void ddual_sincos(double* so, double* sot, double* co, double* cot,
+                         const double* uv, const double* ut, int n) {
+    tr_sincos(so, co, uv, n);
+    tr_conv(sot, co, ut, n);                /* (sin u)' =  cos(u)·u' */
+    tr_conv(cot, so, ut, n);
+    for (int k = 0; k < n; k++) cot[k] = -cot[k];   /* (cos u)' = -sin(u)·u' */
+}
+/* u^r, constant real exponent r. (u^r)' = r·u^{r-1}·u' = r·(u^r/u)·u'. */
+static void ddual_pow_const(double* sv, double* st, const double* uv, const double* ut,
+                            double r, int n, arena_t* arena) {
+    tr_pow_const(sv, uv, r, n);
+    double qb[ESH_TAYLOR_STACKN];
+    double* q = qb; double* hq = NULL;
+    if (n > ESH_TAYLOR_STACKN) { hq = (double*)arena_allocate(arena, (size_t)n*sizeof(double)); q = hq; }
+    tr_div(q, sv, uv, n);                   /* q = u^r / u = u^{r-1} */
+    tr_conv(st, q, ut, n);
+    for (int k = 0; k < n; k++) st[k] = r * st[k];
+}
+
+/* ----------------------------------------------------------------------- */
 /* operand normalisation + epoch (perturbation-confusion) handling          */
 /* ----------------------------------------------------------------------- */
 
@@ -265,12 +369,80 @@ static void result_shape(const eshkol_tagged_value_t* l, const eshkol_tagged_val
 }
 
 /* ----------------------------------------------------------------------- */
+/* P5 seed-tangent operand extraction (ESH-0190)                            */
+/* ----------------------------------------------------------------------- */
+/* Reverse-mode hook (defined in runtime_autodiff.cpp): 1.0 iff `node` is the
+ * gradient pass's active seed variable. Read here so an AD-node operand flowing
+ * into tower arithmetic contributes d(value)/d(seed) = seed_flag into c[0] of
+ * its tangent series. */
+extern double eshkol_ad_seed_flag(void* node);
+
+/* Does this operand carry (or induce) a first-order seed tangent?
+ *   - a tower with ESH_TAYLOR_TANGENT_FLAG            -> yes
+ *   - a forward-mode DUAL number (outer gradient seed) -> yes (its e1 tangent)
+ *   - a reverse-tape CALLABLE AD node                  -> yes (its seed_flag)
+ * Plain scalars / towers-without-tangent do not. */
+static int operand_has_tangent(const eshkol_tagged_value_t* tv) {
+    if (!tv) return 0;
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t) return ESH_TAYLOR_HAS_TANGENT(t->flags);
+    uint8_t bt = (uint8_t)(tv->type & 0x0F);
+    if (bt == ESHKOL_VALUE_DUAL_NUMBER) return 1;
+    if (bt == ESHKOL_VALUE_CALLABLE) return 1;  /* AD node (subtype not re-checked) */
+    return 0;
+}
+
+/* Materialise BOTH the value series (epoch-gated, exactly like normalise_operand)
+ * and the tangent series (a single global first-order seed dimension, epoch-
+ * independent) of an operand into vbuf/tbuf (length n). */
+static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t active_epoch,
+                                   double* vbuf, double* tbuf, int n) {
+    memset(vbuf, 0, (size_t)n * sizeof(double));
+    memset(tbuf, 0, (size_t)n * sizeof(double));
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t) {
+        /* value: same-epoch tower contributes its full series; foreign-epoch
+         * (outer/inner level) is lifted to its constant c[0] (§5a). */
+        if (ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) {
+            int m = (int)t->order_k + 1;
+            if (m > n) m = n;
+            memcpy(vbuf, t->c, (size_t)m * sizeof(double));
+        } else {
+            vbuf[0] = t->c[0];
+        }
+        /* tangent: the seed dimension is orthogonal to the value epoch, so it
+         * always combines. */
+        double* tt = taylor_tan(t);
+        if (tt) {
+            int m = (int)t->order_k + 1;
+            if (m > n) m = n;
+            memcpy(tbuf, tt, (size_t)m * sizeof(double));
+        }
+        return;
+    }
+    uint8_t bt = (uint8_t)(tv->type & 0x0F);
+    if (bt == ESHKOL_VALUE_DUAL_NUMBER && tv->data.ptr_val) {
+        /* forward-mode jet {primal, e1, ...}: primal is the value, e1 is the
+         * outer gradient's first-order perturbation = the seed tangent. */
+        const double* d = (const double*)(uintptr_t)tv->data.ptr_val;
+        vbuf[0] = d[0];
+        tbuf[0] = d[1];
+        return;
+    }
+    if (bt == ESHKOL_VALUE_CALLABLE && tv->data.ptr_val) {
+        /* reverse-tape AD node: value is node->value, tangent c[0] is 1.0 iff
+         * this IS the active seed (frozen local linearisation, §8). */
+        void* node = (void*)(uintptr_t)tv->data.ptr_val;
+        vbuf[0] = ((const ad_node_t*)node)->value;
+        tbuf[0] = eshkol_ad_seed_flag(node);
+        return;
+    }
+    vbuf[0] = tagged_scalar_value(tv);
+}
+
+/* ----------------------------------------------------------------------- */
 /* tagged binary / unary dispatch (called from codegen)                     */
 /* ----------------------------------------------------------------------- */
-
-/* Small stack buffer avoids a heap alloc for the common orders; falls back
- * to the arena for very high K. */
-#define ESH_TAYLOR_STACKN 64
 
 void eshkol_taylor_binary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
@@ -280,6 +452,62 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     uint32_t order_k, epoch;
     result_shape(left, right, &order_k, &epoch);
     int n = (int)order_k + 1;
+
+    /* P5 (ESH-0190): reverse-over-Taylor. If either operand carries a first-
+     * order seed tangent (a tangent-tower, a forward jet, or a reverse-tape AD
+     * node), propagate the seed derivative alongside the value series so the
+     * outer gradient can read d(f^(k))/d(seed) at extraction. */
+    if (operand_has_tangent(left) || operand_has_tangent(right)) {
+        double uvb[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
+        double wvb[ESH_TAYLOR_STACKN], wtb[ESH_TAYLOR_STACKN];
+        double *uv=uvb,*ut=utb,*wv=wvb,*wt=wtb, *h1=NULL,*h2=NULL,*h3=NULL,*h4=NULL;
+        if (n > ESH_TAYLOR_STACKN) {
+            h1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            h2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            h3=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            h4=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            uv=h1;ut=h2;wv=h3;wt=h4;
+        }
+        normalise_operand_dual(left,  epoch, uv, ut, n);
+        normalise_operand_dual(right, epoch, wv, wt, n);
+        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k,
+            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
+        if (!out) { *result = eshkol_make_double(0.0); return; }
+        double* ov = out->c;
+        double* ot = taylor_tan(out);
+        switch (op) {
+            case ESH_TAYLOR_OP_add: tr_add(ov, uv, wv, n); tr_add(ot, ut, wt, n); break;
+            case ESH_TAYLOR_OP_sub: tr_sub(ov, uv, wv, n); tr_sub(ot, ut, wt, n); break;
+            case ESH_TAYLOR_OP_mul: ddual_mul(ov, ot, uv, ut, wv, wt, n); break;
+            case ESH_TAYLOR_OP_div: ddual_div(ov, ot, uv, ut, wv, wt, n); break;
+            case ESH_TAYLOR_OP_pow: {
+                int w_is_const = 1;
+                for (int k = 1; k < n; k++) if (wv[k] != 0.0 || wt[k] != 0.0) { w_is_const = 0; break; }
+                if (w_is_const && wt[0] == 0.0) {
+                    ddual_pow_const(ov, ot, uv, ut, wv[0], n, arena);
+                } else {
+                    /* u^w = exp(w·log u); compose the dual log/mul/exp. */
+                    double lb[ESH_TAYLOR_STACKN], lbt[ESH_TAYLOR_STACKN];
+                    double pb[ESH_TAYLOR_STACKN], pbt[ESH_TAYLOR_STACKN];
+                    double *lg=lb,*lgt=lbt,*pr=pb,*prt=pbt,*g1=NULL,*g2=NULL,*g3=NULL,*g4=NULL;
+                    if (n > ESH_TAYLOR_STACKN) {
+                        g1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+                        g2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+                        g3=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+                        g4=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+                        lg=g1;lgt=g2;pr=g3;prt=g4;
+                    }
+                    ddual_log(lg, lgt, uv, ut, n);
+                    ddual_mul(pr, prt, wv, wt, lg, lgt, n);
+                    ddual_exp(ov, ot, pr, prt, n);
+                }
+                break;
+            }
+            default: tr_add(ov, uv, wv, n); tr_add(ot, ut, wt, n); break;
+        }
+        *result = taylor_to_tagged(out);
+        return;
+    }
 
     double sbuf_u[ESH_TAYLOR_STACKN], sbuf_w[ESH_TAYLOR_STACKN];
     double *u = sbuf_u, *w = sbuf_w;
@@ -335,6 +563,88 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
     uint32_t order_k = t ? t->order_k : 0;
     uint32_t epoch = t ? ESH_TAYLOR_GET_EPOCH(t->flags) : 0;
     int n = (int)order_k + 1;
+
+    /* P5 (ESH-0190): dual (value + seed-tangent) unary path — see the binary
+     * dispatch for the rationale. Fires only when the operand carries a seed
+     * tangent, so the plain forward-tower path below is byte-for-byte unchanged. */
+    if (operand_has_tangent(in)) {
+        double uvb[ESH_TAYLOR_STACKN], utb[ESH_TAYLOR_STACKN];
+        double *uv=uvb, *ut=utb, *h1=NULL,*h2=NULL;
+        if (n > ESH_TAYLOR_STACKN) {
+            h1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            h2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));
+            uv=h1;ut=h2;
+        }
+        normalise_operand_dual(in, epoch, uv, ut, n);
+        esh_taylor_t* out = eshkol_taylor_alloc(arena, order_k,
+            ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch) | ESH_TAYLOR_TANGENT_FLAG);
+        if (!out) { *result = eshkol_make_double(0.0); return; }
+        double* ov = out->c;
+        double* ot = taylor_tan(out);
+        switch (op) {
+            case ESH_TAYLOR_UOP_neg: tr_neg(ov, uv, n); tr_neg(ot, ut, n); break;
+            case ESH_TAYLOR_UOP_exp: ddual_exp(ov, ot, uv, ut, n); break;
+            case ESH_TAYLOR_UOP_log: ddual_log(ov, ot, uv, ut, n); break;
+            case ESH_TAYLOR_UOP_sin: {
+                double cb[ESH_TAYLOR_STACKN], cbt[ESH_TAYLOR_STACKN];
+                double *co=cb,*cot=cbt,*g1=NULL,*g2=NULL;
+                if (n>ESH_TAYLOR_STACKN){g1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));co=g1;cot=g2;}
+                ddual_sincos(ov, ot, co, cot, uv, ut, n);
+                break;
+            }
+            case ESH_TAYLOR_UOP_cos: {
+                double sb[ESH_TAYLOR_STACKN], sbt[ESH_TAYLOR_STACKN];
+                double *so=sb,*sot=sbt,*g1=NULL,*g2=NULL;
+                if (n>ESH_TAYLOR_STACKN){g1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));so=g1;sot=g2;}
+                ddual_sincos(so, sot, ov, ot, uv, ut, n);
+                break;
+            }
+            case ESH_TAYLOR_UOP_tan: {
+                double sb[ESH_TAYLOR_STACKN],sbt[ESH_TAYLOR_STACKN],cb[ESH_TAYLOR_STACKN],cbt[ESH_TAYLOR_STACKN];
+                double *so=sb,*sot=sbt,*co=cb,*cot=cbt,*g1=NULL,*g2=NULL,*g3=NULL,*g4=NULL;
+                if (n>ESH_TAYLOR_STACKN){g1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g3=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g4=(double*)arena_allocate(arena,(size_t)n*sizeof(double));so=g1;sot=g2;co=g3;cot=g4;}
+                ddual_sincos(so, sot, co, cot, uv, ut, n);
+                ddual_div(ov, ot, so, sot, co, cot, n);
+                break;
+            }
+            case ESH_TAYLOR_UOP_sqrt: ddual_pow_const(ov, ot, uv, ut, 0.5, n, arena); break;
+            case ESH_TAYLOR_UOP_abs: {
+                double sgn = (uv[0] < 0.0) ? -1.0 : 1.0;
+                ov[0] = fabs(uv[0]); ot[0] = sgn * ut[0];
+                for (int k = 1; k < n; k++) { ov[k] = sgn * uv[k]; ot[k] = sgn * ut[k]; }
+                break;
+            }
+            case ESH_TAYLOR_UOP_sinh:
+            case ESH_TAYLOR_UOP_cosh:
+            case ESH_TAYLOR_UOP_tanh: {
+                /* sinh/cosh/tanh via dual exp(±u). */
+                double epb[ESH_TAYLOR_STACKN],eptb[ESH_TAYLOR_STACKN];
+                double emb[ESH_TAYLOR_STACKN],emtb[ESH_TAYLOR_STACKN];
+                double nub[ESH_TAYLOR_STACKN],nutb[ESH_TAYLOR_STACKN];
+                double *ep=epb,*ept=eptb,*em=emb,*emt=emtb,*nu=nub,*nut=nutb;
+                double *g1=NULL,*g2=NULL,*g3=NULL,*g4=NULL,*g5=NULL,*g6=NULL;
+                if (n>ESH_TAYLOR_STACKN){g1=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g2=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g3=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g4=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g5=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g6=(double*)arena_allocate(arena,(size_t)n*sizeof(double));ep=g1;ept=g2;em=g3;emt=g4;nu=g5;nut=g6;}
+                ddual_exp(ep, ept, uv, ut, n);
+                tr_neg(nu, uv, n); tr_neg(nut, ut, n);
+                ddual_exp(em, emt, nu, nut, n);
+                if (op == ESH_TAYLOR_UOP_sinh) {
+                    for (int k=0;k<n;k++){ ov[k]=0.5*(ep[k]-em[k]); ot[k]=0.5*(ept[k]-emt[k]); }
+                } else if (op == ESH_TAYLOR_UOP_cosh) {
+                    for (int k=0;k<n;k++){ ov[k]=0.5*(ep[k]+em[k]); ot[k]=0.5*(ept[k]+emt[k]); }
+                } else { /* tanh = sinh/cosh */
+                    double shb[ESH_TAYLOR_STACKN],shtb[ESH_TAYLOR_STACKN],chb[ESH_TAYLOR_STACKN],chtb[ESH_TAYLOR_STACKN];
+                    double *sh=shb,*sht=shtb,*ch=chb,*cht=chtb,*g7=NULL,*g8=NULL,*g9=NULL,*g10=NULL;
+                    if (n>ESH_TAYLOR_STACKN){g7=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g8=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g9=(double*)arena_allocate(arena,(size_t)n*sizeof(double));g10=(double*)arena_allocate(arena,(size_t)n*sizeof(double));sh=g7;sht=g8;ch=g9;cht=g10;}
+                    for (int k=0;k<n;k++){ sh[k]=0.5*(ep[k]-em[k]); sht[k]=0.5*(ept[k]-emt[k]); ch[k]=0.5*(ep[k]+em[k]); cht[k]=0.5*(ept[k]+emt[k]); }
+                    ddual_div(ov, ot, sh, sht, ch, cht, n);
+                }
+                break;
+            }
+            default: memcpy(ov, uv, (size_t)n*sizeof(double)); memcpy(ot, ut, (size_t)n*sizeof(double)); break;
+        }
+        *result = taylor_to_tagged(out);
+        return;
+    }
 
     double sbuf_u[ESH_TAYLOR_STACKN];
     double* u = sbuf_u;
@@ -486,6 +796,51 @@ double eshkol_taylor_extract(const eshkol_tagged_value_t* tv, uint32_t n) {
     if (!t) return (n == 0) ? tagged_scalar_value(tv) : 0.0;
     if (n > t->order_k) return 0.0;
     return factorial_d(n) * t->c[n];
+}
+
+/* ----------------------------------------------------------------------- */
+/* P5 seed-tangent extraction & AD-node lift (ESH-0190)                     */
+/* ----------------------------------------------------------------------- */
+
+/* 1 iff the tower value carries a first-order seed tangent series. */
+int eshkol_taylor_has_tangent(const eshkol_tagged_value_t* tv) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    return (t && ESH_TAYLOR_HAS_TANGENT(t->flags)) ? 1 : 0;
+}
+
+/* d(f^(n)(x0))/d(reverse-seed) = n! * tangent[n]. 0 when the tower has no
+ * tangent series or n exceeds the order. This is the dseed the outer gradient's
+ * mixed-mode record (or forward jet) reads at the derivative-n return site. */
+double eshkol_taylor_extract_tangent(const eshkol_tagged_value_t* tv, uint32_t n) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t || !ESH_TAYLOR_HAS_TANGENT(t->flags)) return 0.0;
+    if (n > t->order_k) return 0.0;
+    double* tan = taylor_tan(t);
+    return factorial_d(n) * tan[n];
+}
+
+/* Freeze a reverse-tape AD node into a dual-tower CONSTANT of order K:
+ *   value   = {node->value, 0, ..., 0}
+ *   tangent = {seed_flag(node), 0, ..., 0}
+ * so that when it flows into tower arithmetic the reverse tape does not swallow
+ * the tower (withADBinaryDispatch would otherwise convert the tower operand to a
+ * scalar AD node) and its first-order dependence on the active gradient seed is
+ * propagated as the tower's seed tangent (docs/design/AD_TAYLOR_TOWER.md §8).
+ * A constant tower zero-extends, so `order_k` need only be a best-effort upper
+ * bound (the current innermost tower order). Called from codegen's
+ * maybeJetLiftTapeOperand while a tower differentiation is active. */
+void eshkol_taylor_lift_ad_node(arena_t* arena, void* node, int32_t order_k,
+                                eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    if (order_k < 0) order_k = 0;
+    double val = node ? ((const ad_node_t*)node)->value : 0.0;
+    double flag = node ? eshkol_ad_seed_flag(node) : 0.0;
+    esh_taylor_t* t = eshkol_taylor_alloc(arena, (uint32_t)order_k,
+        ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, 0u) | ESH_TAYLOR_TANGENT_FLAG);
+    if (!t) { *out = eshkol_make_double(val); return; }
+    t->c[0] = val;
+    taylor_tan(t)[0] = flag;
+    *out = taylor_to_tagged(t);
 }
 
 /* Differentiate a tower: (f')_k = (k+1) * c_{k+1}. Preserves order/epoch;

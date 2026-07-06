@@ -234,6 +234,39 @@ void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
     ctx_.builder().CreateStore(level, g);
 }
 
+// ESH-0190 (P5): enter a Taylor-tower differentiation context. Increments the
+// active-depth counter and records the current tower order, so that reverse-tape
+// AD nodes reaching arithmetic inside the tower body (the lambda, compiled
+// separately) are frozen to dual-towers rather than swallowed by the tape.
+void AutodiffCodegen::towerCtxPush(llvm::Value* order_i32) {
+    auto& b = ctx_.builder();
+    llvm::GlobalVariable* ga = ctx_.adTowerActive();
+    llvm::GlobalVariable* go = ctx_.adTowerOrder();
+    if (ga) {
+        llvm::Value* d = b.CreateLoad(ctx_.int64Type(), ga, "twr_depth");
+        b.CreateStore(b.CreateAdd(d, llvm::ConstantInt::get(ctx_.int64Type(), 1)), ga);
+    }
+    if (go && order_i32) {
+        llvm::Value* o64 = b.CreateIntCast(order_i32, ctx_.int64Type(), true);
+        b.CreateStore(o64, go);
+    }
+}
+
+// ESH-0190 (P5): leave a Taylor-tower differentiation context (decrement depth).
+// The order global is left as-is: a foreign-tag constant tower zero-extends, so
+// a stale innermost order is harmless while depth > 0, and unread at depth 0.
+void AutodiffCodegen::towerCtxPop() {
+    auto& b = ctx_.builder();
+    llvm::GlobalVariable* ga = ctx_.adTowerActive();
+    if (!ga) return;
+    llvm::Value* d = b.CreateLoad(ctx_.int64Type(), ga, "twr_depth");
+    llvm::Value* dm = b.CreateSub(d, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+    // clamp at 0 (defensive; balanced push/pop keeps it >= 0)
+    llvm::Value* neg = b.CreateICmpSLT(dm, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    dm = b.CreateSelect(neg, llvm::ConstantInt::get(ctx_.int64Type(), 0), dm);
+    b.CreateStore(dm, ga);
+}
+
 // === ESH-0186: runtime Taylor-tower kernel declarations (lib/core/runtime_taylor.c) ===
 namespace {
 llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
@@ -252,6 +285,31 @@ llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
         {ctx.ptrType(), ctx.int32Type()}, false);
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract", &ctx.module());
+}
+// ESH-0190 (P5): reverse-over-Taylor extraction / lift helpers.
+llvm::Function* getTaylorHasTangentFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_has_tangent")) return f;
+    // i32 eshkol_taylor_has_tangent(const tagged* tower)
+    auto* ft = llvm::FunctionType::get(ctx.int32Type(), {ctx.ptrType()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_has_tangent", &ctx.module());
+}
+llvm::Function* getTaylorExtractTangentFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tangent")) return f;
+    // double eshkol_taylor_extract_tangent(const tagged* tower, i32 n)
+    auto* ft = llvm::FunctionType::get(ctx.doubleType(),
+        {ctx.ptrType(), ctx.int32Type()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_extract_tangent", &ctx.module());
+}
+llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_lift_ad_node")) return f;
+    // void eshkol_taylor_lift_ad_node(arena*, void* node, i32 order, tagged* out)
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p, p, ctx.int32Type(), p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_lift_ad_node", &ctx.module());
 }
 llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
@@ -279,6 +337,10 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
         ctx_.builder().CreateStore(point_tagged, point_slot);
         ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
             {getArenaPtr(), point_slot, adTowerOrder_, out_slot});
+        // ESH-0190 (P5): mark the tower context active so a reverse-tape AD node
+        // captured by the differentiated lambda is frozen to a dual-tower rather
+        // than swallowed by the reverse tape. Popped in popAndExtractForward.
+        towerCtxPush(adTowerOrder_);
         return ctx_.builder().CreateLoad(ctx_.taggedValueType(), out_slot, "twr_seeded");
     }
 
@@ -341,12 +403,78 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     // the differentiated function. DERIV_N -> f^(k)=k!*c[k] (a double); COEFFS
     // -> the K+1-element coefficient list. Short-circuits the jet R->Rⁿ logic. ──
     if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
+        towerCtxPop();     // leave the tower differentiation context
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         b.CreateStore(result_tagged, res_slot);
         llvm::Value* d = b.CreateCall(getTaylorExtractFunc(ctx_), {res_slot, adTowerOrder_});
-        return tagged_.packDouble(d);
+        // ── ESH-0190 (P5) reverse-over-Taylor: if the returned tower carries a
+        // seed tangent (an outer gradient's seed flowed into f^(k)), extract
+        // dseed = d(f^(k))/d(seed) and thread it back to the outer pass:
+        //   • reverse tape live  → record an exact local linearization via the
+        //     SAME eshkol_ad_mixed_record hook used by the order-≤2 jet path;
+        //   • forward (no tape)  → return a jet {value, dseed·e1} the outer
+        //     forward extraction reads. ──
+        llvm::Value* has_tan = b.CreateCall(getTaylorHasTangentFunc(ctx_), {res_slot});
+        llvm::Value* has_tan_b = b.CreateICmpNE(has_tan, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        llvm::BasicBlock* tan_bb   = llvm::BasicBlock::Create(ctx_.context(), "twr_tan", fn);
+        llvm::BasicBlock* plain_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_plain", fn);
+        llvm::BasicBlock* done_bb  = llvm::BasicBlock::Create(ctx_.context(), "twr_done", fn);
+        b.CreateCondBr(has_tan_b, tan_bb, plain_bb);
+
+        // plain: no seed dependence → the bare k-th derivative as a double.
+        b.SetInsertPoint(plain_bb);
+        llvm::Value* plain_res = tagged_.packDouble(d);
+        b.CreateBr(done_bb);
+        llvm::BasicBlock* plain_exit = b.GetInsertBlock();
+
+        // tangent: dseed = k! * tangent[k].
+        b.SetInsertPoint(tan_bb);
+        llvm::Value* dseed = b.CreateCall(getTaylorExtractTangentFunc(ctx_), {res_slot, adTowerOrder_});
+        llvm::Value* tan_res = nullptr;
+        if (ctx_.currentAdTape()) {
+            llvm::FunctionCallee mixed_rec = ctx_.module().getOrInsertFunction(
+                "eshkol_ad_mixed_record",
+                llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.doubleType(), ctx_.doubleType()}, false));
+            llvm::Value* arena_ptr = getArenaPtr();
+            llvm::Value* tape_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.currentAdTape());
+            llvm::Value* node = b.CreateCall(mixed_rec, {arena_ptr, tape_ptr, d, dseed});
+            llvm::Value* node_ok = b.CreateICmpNE(node,
+                llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(ctx_.context())));
+            llvm::BasicBlock* rec_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_rec", fn);
+            llvm::BasicBlock* jet_bb = llvm::BasicBlock::Create(ctx_.context(), "twr_jet", fn);
+            llvm::BasicBlock* tmrg   = llvm::BasicBlock::Create(ctx_.context(), "twr_tmrg", fn);
+            b.CreateCondBr(node_ok, rec_bb, jet_bb);
+            b.SetInsertPoint(rec_bb);
+            llvm::Value* rec_v = tagged_.packPtr(node, ESHKOL_VALUE_CALLABLE);
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* rec_exit = b.GetInsertBlock();
+            b.SetInsertPoint(jet_bb);
+            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            llvm::Value* jet_v = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+            b.CreateBr(tmrg);
+            llvm::BasicBlock* jet_exit = b.GetInsertBlock();
+            b.SetInsertPoint(tmrg);
+            llvm::PHINode* tsel = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_tan_sel");
+            tsel->addIncoming(rec_v, rec_exit);
+            tsel->addIncoming(jet_v, jet_exit);
+            tan_res = tsel;
+        } else {
+            llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+            tan_res = packDualToTagged(makeDual8(ctx_, d, dseed, zero, zero, zero, zero, zero, zero));
+        }
+        b.CreateBr(done_bb);
+        llvm::BasicBlock* tan_exit = b.GetInsertBlock();
+
+        b.SetInsertPoint(done_bb);
+        llvm::PHINode* dres = b.CreatePHI(ctx_.taggedValueType(), 2, "twr_deriv_res");
+        dres->addIncoming(plain_res, plain_exit);
+        dres->addIncoming(tan_res, tan_exit);
+        return dres;
     }
     if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
+        towerCtxPop();     // leave the tower differentiation context
         llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
         llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
         b.CreateStore(result_tagged, res_slot);
@@ -577,9 +705,71 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 // The 8-jet now carries d(result 4-jet)/d(seed) through any depth; the outer
 // derivative's popAndExtractForward reads the surviving e1·ep coefficient and
 // records the dependency back onto the tape (eshkol_ad_mixed_record).
+// ESH-0190 (P5): freeze a reverse-tape AD node into a dual-tower constant while
+// a Taylor-tower differentiation is active, so the tower kernel (not the reverse
+// tape) consumes it. The lifted constant carries value {node->value,0,…} and
+// seed tangent {seed_flag,0,…}; its first-order dependence on the active
+// gradient seed then propagates through the tower recurrences and is read back
+// at popAndExtractForward via eshkol_ad_mixed_record. No-op unless a tower pass
+// is live AND the operand is a reverse-tape AD node.
+llvm::Value* AutodiffCodegen::towerLiftOperand(llvm::Value* operand_tagged) {
+    if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
+        return operand_tagged;
+    llvm::GlobalVariable* active_g = ctx_.adTowerActive();
+    llvm::GlobalVariable* order_g  = ctx_.adTowerOrder();
+    if (!active_g || !order_g) return operand_tagged;
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // result slot (defaults to the unchanged operand).
+    llvm::AllocaInst* slot;
+    llvm::AllocaInst* out_slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twrlift_slot");
+        out_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "twrlift_out");
+    }
+    b.CreateStore(operand_tagged, slot);
+
+    llvm::Value* depth = b.CreateLoad(ctx_.int64Type(), active_g, "twr_active");
+    llvm::Value* twr_on = b.CreateICmpSGT(depth, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* base = tagged_.getBaseType(tagged_.getType(operand_tagged));
+    llvm::Value* is_callable = b.CreateICmpEQ(base,
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    llvm::Value* cand = b.CreateAnd(twr_on, is_callable);
+
+    llvm::BasicBlock* sub_bb  = llvm::BasicBlock::Create(ctx_.context(), "twrlift_sub", fn);
+    llvm::BasicBlock* lift_bb = llvm::BasicBlock::Create(ctx_.context(), "twrlift_lift", fn);
+    llvm::BasicBlock* done_bb = llvm::BasicBlock::Create(ctx_.context(), "twrlift_done", fn);
+    b.CreateCondBr(cand, sub_bb, done_bb);
+
+    // CALLABLE: confirm it is an AD node (subtype check dereferences the header).
+    b.SetInsertPoint(sub_bb);
+    llvm::Value* is_ad = tagged_.checkCallableSubtype(operand_tagged, CALLABLE_SUBTYPE_AD_NODE);
+    b.CreateCondBr(is_ad, lift_bb, done_bb);
+
+    // Lift via the runtime helper (reads node->value + seed_flag).
+    b.SetInsertPoint(lift_bb);
+    llvm::Value* node_ptr = tagged_.unpackPtr(operand_tagged);
+    llvm::Value* order32 = b.CreateIntCast(
+        b.CreateLoad(ctx_.int64Type(), order_g, "twr_order"), ctx_.int32Type(), true);
+    b.CreateCall(getTaylorLiftAdNodeFunc(ctx_), {getArenaPtr(), node_ptr, order32, out_slot});
+    b.CreateStore(b.CreateLoad(ctx_.taggedValueType(), out_slot), slot);
+    b.CreateBr(done_bb);
+
+    b.SetInsertPoint(done_bb);
+    return b.CreateLoad(ctx_.taggedValueType(), slot, "twrlift_result");
+}
+
 llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagged) {
     if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
         return operand_tagged;
+    // ESH-0190 (P5): reverse-over-Taylor. When a tower differentiation is live,
+    // freeze a reverse-tape AD node into a dual-tower FIRST, so the tower
+    // arithmetic consumes it instead of the reverse tape swallowing the tower.
+    // If it lifts, the operand is now a HEAP_PTR tower and the jet gate below is
+    // a no-op; if not, the operand is unchanged and the jet path runs as before.
+    operand_tagged = towerLiftOperand(operand_tagged);
     auto& b = ctx_.builder();
 
     // Cheap gate first: no live forward perturbation → no lifting (this is the
