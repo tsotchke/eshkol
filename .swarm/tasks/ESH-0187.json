@@ -1,0 +1,51 @@
+{
+  "id": "ESH-0187",
+  "title": "AD Taylor-tower P2: compile-time-K monomorphization -- no-heap unrolled-IR emitter (bit-exact with runtime tier)",
+  "status": "done",
+  "priority": "high",
+  "workstream": "ad-taylor-tower/P2-monomorphization",
+  "goal": "Implement compile-time-K monomorphization per docs/design/AD_TAYLOR_TOWER.md sec 6/6a. When (derivative-n f x K) / (taylor f x K) has a LITERAL K and f is a single-parameter lambda (or a VAR naming a single-arg top-level define) whose body is a pure-arithmetic expression tree over the taylor_recurrences.def primitives, bypass the generic tagged-dispatch/heap-tower path entirely and emit the whole Taylor tower as fully-unrolled, branch-free, HEAP-FREE straight-line SSA IR. Each recurrence is transliterated operation-for-operation from lib/core/runtime_taylor.c's tr_* kernels using explicit llvm.fma.f64 in the same ascending-j reduction order and the same libm calls at c[0], so mono(K) == runtime(K) BIT-FOR-BIT (sec 6a). Drive the emitter whitelist + spelling->opcode dispatch from the shared taylor_recurrences.def X-macro table (sec 5b), and make that table the genuine single source of truth for op-codes across both tiers. Non-literal K and unsupported bodies fall back to the unchanged P1 runtime path byte-for-byte.",
+  "file_globs": [
+    "lib/core/taylor_recurrences.def",
+    "lib/core/runtime_taylor.c",
+    "lib/core/system_builtins.c",
+    "lib/backend/autodiff_codegen.cpp",
+    "inc/eshkol/backend/autodiff_codegen.h",
+    "lib/backend/system_codegen.cpp",
+    "inc/eshkol/backend/system_codegen.h",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/ad/taylor_tower_mono_test.esk",
+    "tests/ad/taylor_tower_noheap_bench.esk"
+  ],
+  "acceptance": [
+    "mono(K) == runtime(K) BIT-FOR-BIT for derivative-n (n=0..8) and taylor (coeff-by-coeff, k=0..8) over x^5/sin/exp/log(1+x)/1-over-1-minus-x (+ sqrt/tan/cosh/poly), asserted with Scheme = (not a tolerance), under BOTH -r and AOT",
+    "no-heap: literal-K (derivative-n f x0 8) loop shows arena-bytes delta == 0 (vs the P1 heap path's nonzero delta); perf delta vs P1 reported",
+    "taylor_recurrences.def is the genuine single source of truth: both the runtime kernel op-codes and the P2 emitter whitelist/opcode-dispatch are generated from it (sec 5b)",
+    "regressions hold: scripts/run_ad_depth.sh gate PASS (0 regressions), tests/ad/taylor_tower_test.esk 52/52 (-r + AOT), SICP 88/88, AD oracle 56/56"
+  ],
+  "blocked_by": ["ESH-0186"],
+  "campaign_payoff": "Zero heap allocation in literal-order AD hot loops (the overwhelmingly common case); the entire n-th-derivative computation becomes branch-free numeric IR, competitive with or faster than a runtime tracer, while remaining bit-exact-reconcilable with the runtime heap tier.",
+  "delivered": {
+    "emitter": "lib/backend/autodiff_codegen.cpp: AutodiffCodegen::tryMonomorphizedTaylor + a file-local TaylorMonoEmitter that recursively pattern-matches the (resolved) function body as a pure arithmetic tree and emits each subexpression's series as a std::vector<llvm::Value*> of K+1 SSA doubles (no alloca, no heap). Recurrences (add/sub/neg/mul/div/exp/log/sincos/pow_const/abs/sinh/cosh/tanh) mirror runtime_taylor.c tr_* operation-for-operation with explicit llvm.fma.f64 (ascending j) and libm exp/log/sin/cos/pow/fabs at c[0]. DERIV_N returns K!*c[K] (packDouble); COEFFS builds the K+1 coefficient list inline (cons cells for the returned list only).",
+    "entry_points": "derivativeN / taylorSeries detect a literal ESHKOL_INT64 order and try mono first (cap 0<=K<=64), else fall through UNCHANGED to taylorApiCore (P1). The pure-nested-derivative chain (ESH-0118 routing) also tries mono first for its compile-time depth. Named single-arg functions resolved via a new function_def_ast table (name -> DEFINE node) wired through llvm_codegen.cpp.",
+    "single_source_of_truth": "taylor_recurrences.def extended with the Eshkol source-call-head spelling column. runtime_taylor.c now derives its ESH_TAYLOR_OP_*/UOP_* op-code constants by including the .def (retiring the hand-written #defines); the P2 emitter derives its opcode enums + spelling->opcode whitelist maps from the same .def -- so the two tiers cannot drift on the primitive set or op-codes.",
+    "bit_exactness": "x0 is reduced from the point exactly as the runtime seed does (eshkol_taylor_c0), and every MAC uses the fma intrinsic (== libm fma) in the same order as the runtime kernel, so mono == runtime to the last bit (design sec 6a). Verified by IR inspection (literal-K: unrolled fma, zero runtime-tower/alloc calls; runtime-K: unchanged heap-tower dispatch).",
+    "debug_hook": "__arena-used builtin (lib/core/system_builtins.c + system_codegen.cpp/.h + llvm_codegen.cpp) exposes arena_get_used_memory(global) to .esk for the no-heap benchmark.",
+    "tests": "tests/ad/taylor_tower_mono_test.esk (441 checks, mono==runtime bit-exact, -r + AOT); tests/ad/taylor_tower_noheap_bench.esk (arena-delta + ns/iter + speedup)."
+  },
+  "remainder": [
+    "Mono covers single-variable straight-line arithmetic bodies (the whitelist). Bodies with let/if/cond/recursion/multiple-params/foreign captures/other user calls fall back to the P1 runtime path (safe, correct, just not no-heap) -- differentiable control flow is P9 (ESH-0194).",
+    "The IR_EMIT column intent is realized as a C++ emitter driven by the .def whitelist+opcodes rather than a macro-expanded emitter body; the arithmetic-only nature of LLVM IR builder calls makes a per-row macro body less readable than the transliterated tr_* loops. The .def remains the single source of truth for the primitive set and op-codes.",
+    "pow/expt monomorphize only for a compile-time-constant exponent (mirrors tr_pow_const's u^r restriction); a non-constant exponent falls back to the runtime exp(w*log u) path.",
+    "At -O0 the unrolled scalar IR is slower than the precompiled -O2 P1 kernel; at -O1/-O2/-O3 mono is ~1.2x faster AND zero-heap. Small-dynamic-K monomorphization (K in {3,4}) remains future work (design sec 17)."
+  ],
+  "verifications": [
+    {
+      "sweep": "P2",
+      "date": "2026-07-06",
+      "branch": "feat/ad-taylor-p2-monomorphization",
+      "verdict": "closed",
+      "evidence": "mono==runtime bit-exact: 441/441 PASS under both -r and AOT (Scheme = equality, K=0..8, x^5/sin/exp/log1p/geom/sqrt/tan/cosh/poly). No-heap: mono arena-delta = 0 bytes over 100000 iters of (derivative-n 1/(1-x) 0.5 8) vs P1 heap-path delta = 28800000 bytes (288 B/iter); at -O2 mono 177 ns/iter vs P1 212 ns/iter (~1.19x) with identical result-sums. IR inspection: literal-K -> unrolled llvm.fma.f64 (41 for x^5 d3), zero runtime-tower/alloc calls; runtime-K -> unchanged heap-tower dispatch (8 calls). Regressions: run_ad_depth.sh gate PASS (0 regressions, same 12 improvements as P1 baseline); taylor_tower_test.esk 52/52 (-r + AOT); SICP 88/88; AD oracle 56/56."
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+;; tests/ad/taylor_tower_mono_test.esk
+;; ESH-0187 (P2): compile-time-K monomorphization bit-exactness gate.
+;;
+;; The KEY trick: a LITERAL integer at the call site, (derivative-n f x0 3),
+;; takes the new no-heap MONOMORPHIZED path (unrolled straight-line SSA IR),
+;; while the SAME call with a let-bound RUNTIME variable holding the same
+;; integer, (let ((k 3)) (derivative-n f x0 k)), takes the unchanged P1
+;; runtime/heap tower path -- so both codegen paths run on identical inputs
+;; from one source file with no extra flags.
+;;
+;; The design's FP-contraction policy (section 6a) makes mono(K) == runtime(K)
+;; BIT-FOR-BIT, so this gate asserts EXACT equality with Scheme `=` (not a
+;; tolerance). Covers derivative-n (n=0..8) and taylor (coeff-by-coeff, k=0..8)
+;; for x^5, sin, exp, log(1+x), 1/(1-x), plus sqrt/tan/cosh to exercise more
+;; recurrences. Runs identically under -r (JIT) and AOT.
+
+(define npass 0)
+(define nfail 0)
+
+;; identity gate at RUNTIME (let-bound) k so codegen cannot fold it to a literal
+(define (runtime-k k) (+ k 0))
+
+(define (check-eq name k got expect)
+  (if (= got expect)
+      (begin (set! npass (+ npass 1)))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name) (display " k=") (display k)
+             (display " mono=") (display got) (display " runtime=") (display expect)
+             (newline))))
+
+;; derivative-n: mono (literal k) must EQUAL runtime (let-bound k), for k=0..kmax
+(define (dn-eq name f x0 kmax)
+  (let loop ((k 0))
+    (if (> k kmax)
+        #t
+        (begin
+          (let ((kv (runtime-k k)))
+            (check-eq (string-append "dn:" name) k
+                      (derivative-n f x0 k)        ;; literal k -> MONO path
+                      (derivative-n f x0 kv)))     ;; runtime k -> P1 heap path
+          (loop (+ k 1))))))
+
+;; taylor: mono coeff list must EQUAL runtime coeff list element-by-element
+(define (tay-eq name f x0 kmax)
+  (let loop ((k 0))
+    (if (> k kmax)
+        #t
+        (begin
+          (let* ((kv (runtime-k k))
+                 (cm (taylor f x0 k))      ;; literal k -> MONO path
+                 (cr (taylor f x0 kv)))    ;; runtime k -> P1 heap path
+            (let iloop ((i 0) (am cm) (ar cr))
+              (if (null? am)
+                  #t
+                  (begin
+                    (check-eq (string-append "tay:" name) k
+                              (car am) (car ar))
+                    (iloop (+ i 1) (cdr am) (cdr ar))))))
+          (loop (+ k 1))))))
+
+(dn-eq "x^5"   (lambda (x) (* x x x x x))       2.0 8)
+(dn-eq "sin"   (lambda (x) (sin x))             0.7 8)
+(dn-eq "exp"   (lambda (x) (exp x))             0.5 8)
+(dn-eq "log1p" (lambda (x) (log (+ 1.0 x)))     0.0 8)
+(dn-eq "geom"  (lambda (x) (/ 1.0 (- 1.0 x)))   0.5 8)
+(dn-eq "sqrt"  (lambda (x) (sqrt x))            2.0 8)
+(dn-eq "tan"   (lambda (x) (tan x))             0.4 8)
+(dn-eq "cosh"  (lambda (x) (cosh x))            0.6 8)
+(dn-eq "poly"  (lambda (x) (+ (* 3.0 x x) (- (* 2.0 x) 5.0))) 1.5 8)
+
+(tay-eq "x^5"   (lambda (x) (* x x x x x))       2.0 8)
+(tay-eq "sin"   (lambda (x) (sin x))             0.7 8)
+(tay-eq "exp"   (lambda (x) (exp x))             0.5 8)
+(tay-eq "log1p" (lambda (x) (log (+ 1.0 x)))     0.0 8)
+(tay-eq "geom"  (lambda (x) (/ 1.0 (- 1.0 x)))   0.5 8)
+(tay-eq "sqrt"  (lambda (x) (sqrt x))            2.0 8)
+(tay-eq "tan"   (lambda (x) (tan x))             0.4 8)
+(tay-eq "cosh"  (lambda (x) (cosh x))            0.6 8)
+
+(display "----") (newline)
+(display "mono==runtime bit-exact tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)

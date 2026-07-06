@@ -1310,6 +1310,11 @@ private:
     // lambdas get. Populated at define codegen; consumed by AutodiffCodegen.
     std::unordered_map<std::string, const eshkol_ast_t*> function_body_ast;
 
+    // ESH-0187: full DEFINE node per function name (parameters + body), so a
+    // NAMED single-arg function passed to (derivative-n f x K)/(taylor f x K)
+    // can be resolved to (param, body) for P2 compile-time-K monomorphization.
+    std::unordered_map<std::string, const eshkol_ast_t*> function_def_ast;
+
     // MIGRATED: String interning moved to CodegenContext::interned_strings_
     // StringIOCodegen::createString() handles string interning now
 
@@ -1794,6 +1799,7 @@ public:
         function_return_types["executable-exists?"] = BuiltinTypes::Boolean;
         function_return_types["executable-path"] = BuiltinTypes::String;
         function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
+        function_return_types["__arena-used"] = BuiltinTypes::Integer;
         function_return_types["temp-directory"] = BuiltinTypes::String;
         function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
         function_return_types["allow-sleep"] = BuiltinTypes::Boolean;
@@ -3867,6 +3873,7 @@ private:
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
         autodiff_->setFunctionArityTable(&function_arity_table);
         autodiff_->setFunctionBodyAstTable(&function_body_ast);
+        autodiff_->setFunctionDefAstTable(&function_def_ast);
         autodiff_->setNestedFunctionCaptures(&nested_function_captures);
         autodiff_->setGetClosureAllocFunc(ControlFlowCallbacks::getClosureAllocWrapper);
         tensor_->setAutodiffCodegen(autodiff_.get());
@@ -4466,6 +4473,8 @@ private:
         if (ast->operation.define_op.value) {
             function_body_ast[func_name] = ast->operation.define_op.value;
         }
+        // ESH-0187: record the full define node (params + body) for P2 mono.
+        function_def_ast[func_name] = ast;
 
         // DWARF DEBUG INFO: Attach DISubprogram to function for source-level debugging
         if (emit_debug_info_ && di_builder_ && di_file_) {
@@ -14549,6 +14558,7 @@ private:
         if (func_name == "executable-exists?") return system_->executableExists(op);
         if (func_name == "executable-path") return system_->executablePath(op);
         if (func_name == "monotonic-time-ms") return system_->monotonicTimeMs(op);
+        if (func_name == "__arena-used") return system_->arenaUsed(op);
         if (func_name == "temp-directory") return system_->tempDirectory(op);
         if (func_name == "prevent-sleep") return system_->preventSleep(op);
         if (func_name == "allow-sleep") return system_->allowSleep(op);
@@ -23705,6 +23715,7 @@ private:
             "cpu-count", "getpid", "home-directory",
             "sleep-ms", "executable-exists?", "executable-path",
             "monotonic-time-ms", "temp-directory", "prevent-sleep", "allow-sleep",
+            "__arena-used",
             "current-timestamp", "current-time-ns", "format-iso8601", "parse-iso8601",
             "format-relative", "local-timezone-offset",
             "path-join", "path-dirname", "path-basename", "path-extname",
