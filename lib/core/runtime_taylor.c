@@ -52,25 +52,19 @@
 extern "C" {
 #endif
 
-/* Binary op codes (mirrored by the codegen dispatch in arithmetic_codegen). */
-#define ESH_TAYLOR_OP_ADD 0
-#define ESH_TAYLOR_OP_SUB 1
-#define ESH_TAYLOR_OP_MUL 2
-#define ESH_TAYLOR_OP_DIV 3
-#define ESH_TAYLOR_OP_POW 4
-
-/* Unary op codes. */
-#define ESH_TAYLOR_UOP_NEG  0
-#define ESH_TAYLOR_UOP_EXP  1
-#define ESH_TAYLOR_UOP_LOG  2
-#define ESH_TAYLOR_UOP_SIN  3
-#define ESH_TAYLOR_UOP_COS  4
-#define ESH_TAYLOR_UOP_TAN  5
-#define ESH_TAYLOR_UOP_SQRT 6
-#define ESH_TAYLOR_UOP_ABS  7
-#define ESH_TAYLOR_UOP_SINH 8
-#define ESH_TAYLOR_UOP_COSH 9
-#define ESH_TAYLOR_UOP_TANH 10
+/* Op-code constants derived from the shared X-macro table
+ * (lib/core/taylor_recurrences.def) so the runtime kernel and the P2 IR
+ * emitter (lib/backend/autodiff_codegen.cpp) can never drift on which
+ * primitive maps to which op-code -- design section 5b. The integer values
+ * remain the ABI mirrored by the codegen dispatch in arithmetic_codegen. */
+enum {
+#define TAYLOR_BIN(name, opcode, sexpr) ESH_TAYLOR_OP_##name = (opcode),
+#include "taylor_recurrences.def"
+};
+enum {
+#define TAYLOR_UN(name, opcode, sexpr, testfn, x0) ESH_TAYLOR_UOP_##name = (opcode),
+#include "taylor_recurrences.def"
+};
 
 /* ----------------------------------------------------------------------- */
 /* allocation                                                              */
@@ -303,11 +297,11 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     if (!out) { *result = eshkol_make_double(0.0); return; }
 
     switch (op) {
-        case ESH_TAYLOR_OP_ADD: tr_add(out->c, u, w, n); break;
-        case ESH_TAYLOR_OP_SUB: tr_sub(out->c, u, w, n); break;
-        case ESH_TAYLOR_OP_MUL: tr_mul(out->c, u, w, n); break;
-        case ESH_TAYLOR_OP_DIV: tr_div(out->c, u, w, n); break;
-        case ESH_TAYLOR_OP_POW: {
+        case ESH_TAYLOR_OP_add: tr_add(out->c, u, w, n); break;
+        case ESH_TAYLOR_OP_sub: tr_sub(out->c, u, w, n); break;
+        case ESH_TAYLOR_OP_mul: tr_mul(out->c, u, w, n); break;
+        case ESH_TAYLOR_OP_div: tr_div(out->c, u, w, n); break;
+        case ESH_TAYLOR_OP_pow: {
             /* If the exponent is a plain constant (only c[0] set), use the exact
              * power recurrence; otherwise u^w = exp(w * log(u)). */
             int w_is_const = 1;
@@ -356,24 +350,24 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
     if (!out) { *result = eshkol_make_double(0.0); return; }
 
     switch (op) {
-        case ESH_TAYLOR_UOP_NEG: tr_neg(out->c, u, n); break;
-        case ESH_TAYLOR_UOP_EXP: tr_exp(out->c, u, n); break;
-        case ESH_TAYLOR_UOP_LOG: tr_log(out->c, u, n); break;
-        case ESH_TAYLOR_UOP_SIN: {
+        case ESH_TAYLOR_UOP_neg: tr_neg(out->c, u, n); break;
+        case ESH_TAYLOR_UOP_exp: tr_exp(out->c, u, n); break;
+        case ESH_TAYLOR_UOP_log: tr_log(out->c, u, n); break;
+        case ESH_TAYLOR_UOP_sin: {
             double cbuf[ESH_TAYLOR_STACKN]; double* co = cbuf;
             double* hco = NULL;
             if (n > ESH_TAYLOR_STACKN) { hco = (double*)arena_allocate(arena, (size_t)n*sizeof(double)); co = hco; }
             tr_sincos(out->c, co, u, n);
             break;
         }
-        case ESH_TAYLOR_UOP_COS: {
+        case ESH_TAYLOR_UOP_cos: {
             double sbuf[ESH_TAYLOR_STACKN]; double* so = sbuf;
             double* hso = NULL;
             if (n > ESH_TAYLOR_STACKN) { hso = (double*)arena_allocate(arena, (size_t)n*sizeof(double)); so = hso; }
             tr_sincos(so, out->c, u, n);
             break;
         }
-        case ESH_TAYLOR_UOP_TAN: {
+        case ESH_TAYLOR_UOP_tan: {
             double sb[ESH_TAYLOR_STACKN], cb[ESH_TAYLOR_STACKN];
             double *so = sb, *co = cb, *hso = NULL, *hco = NULL;
             if (n > ESH_TAYLOR_STACKN) {
@@ -385,14 +379,14 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             tr_div(out->c, so, co, n);
             break;
         }
-        case ESH_TAYLOR_UOP_SQRT: tr_pow_const(out->c, u, 0.5, n); break;
-        case ESH_TAYLOR_UOP_ABS: {
+        case ESH_TAYLOR_UOP_sqrt: tr_pow_const(out->c, u, 0.5, n); break;
+        case ESH_TAYLOR_UOP_abs: {
             double sgn = (u[0] < 0.0) ? -1.0 : 1.0;
             out->c[0] = fabs(u[0]);
             for (int k = 1; k < n; k++) out->c[k] = sgn * u[k];
             break;
         }
-        case ESH_TAYLOR_UOP_SINH: {
+        case ESH_TAYLOR_UOP_sinh: {
             /* sinh(u) = (exp(u) - exp(-u))/2 */
             double eb[ESH_TAYLOR_STACKN], nb[ESH_TAYLOR_STACKN], mb[ESH_TAYLOR_STACKN];
             double *ep = eb, *nu = nb, *em = mb;
@@ -404,7 +398,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             for (int k = 0; k < n; k++) out->c[k] = 0.5 * (ep[k] - em[k]);
             break;
         }
-        case ESH_TAYLOR_UOP_COSH: {
+        case ESH_TAYLOR_UOP_cosh: {
             double eb[ESH_TAYLOR_STACKN], nb[ESH_TAYLOR_STACKN], mb[ESH_TAYLOR_STACKN];
             double *ep = eb, *nu = nb, *em = mb;
             double *hep=NULL,*hnu=NULL,*hem=NULL;
@@ -415,7 +409,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
             for (int k = 0; k < n; k++) out->c[k] = 0.5 * (ep[k] + em[k]);
             break;
         }
-        case ESH_TAYLOR_UOP_TANH: {
+        case ESH_TAYLOR_UOP_tanh: {
             /* tanh via sinh/cosh */
             double sb[ESH_TAYLOR_STACKN], cbb[ESH_TAYLOR_STACKN], eb[ESH_TAYLOR_STACKN], nb[ESH_TAYLOR_STACKN], mb[ESH_TAYLOR_STACKN];
             double *sh=sb,*ch=cbb,*ep=eb,*nu=nb,*em=mb;
