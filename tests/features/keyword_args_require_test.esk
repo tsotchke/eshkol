@@ -1,0 +1,97 @@
+;; ESH-0220: keyword-arg formals must keep working in a file that ALSO
+;; contains a dotted `(require core.something)` statement, in any order.
+;;
+;; Root cause (see .swarm/tasks/ESH-0220.json for the full writeup):
+;; keyword-formal desugaring (lib/frontend/parser.cpp
+;; wrap_keyword_formal_body) lowers `#:key` parameters to calls to
+;; `__keyword-arg` / `__keyword-args-validate`, which are plain Scheme
+;; helpers defined directly in lib/stdlib.esk (not re-exported by any
+;; individual core.* submodule's `provide`). exe/eshkol-run.cpp only
+;; synthesizes the top-of-module `(require stdlib)` that pulls those
+;; helpers in as external declarations when the file does NOT already
+;; look like it "requires stdlib" — but the gating check,
+;; requires_stdlib(), also matched any dotted `(require core.*)`. So a
+;; file that explicitly required a core.* submodule (without ALSO
+;; explicitly requiring "stdlib") silently lost the synthetic
+;; `(require stdlib)`, and with it stdlib.esk's own top-level
+;; `__keyword-arg` definitions -- "Unknown function: __keyword-arg"
+;; under AOT (JIT mode was unaffected: it discovers all of stdlib.bc's
+;; symbols at startup regardless of what the file itself requires).
+;;
+;; This file exercises: a dotted require BEFORE a keyword-arg define,
+;; keyword-arg reordering at the call site, and a keyword arg with a
+;; manual (Scheme-level) default fallback via the explicit-rest escape
+;; hatch -- there is no dedicated keyword-default syntax in the
+;; language, so "defaults" here means the documented
+;; keyword-formals-coexist-with-`.rest` pattern used to detect an
+;; omitted keyword and substitute a fallback value.
+
+(require core.list.search)
+
+(define (weighted x #:scale scale #:offset offset)
+  (+ (* x scale) offset))
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(check "keyword-arg define compiles alongside a dotted require"
+       (= (weighted 10 #:scale 4 #:offset 2) 42))
+
+(check "keyword args reorder by name with a dotted require in scope"
+       (= (weighted 10 #:offset 2 #:scale 4) 42))
+
+;; Also exercise a dotted require that the top-level `(require stdlib)`
+;; already transitively pulls in (core.list.search is required by
+;; stdlib.esk itself) -- this is the ORIGINAL repro shape from the
+;; ticket: requiring something stdlib already carries should not be
+;; special-cased away from the fix.
+(check "member (from core.list.search) still resolves"
+       (pair? (member 3 (list 1 2 3 4))))
+
+;; Keyword-arg formal defined AFTER the dotted require (order must not
+;; matter per ESH-0220's repro notes). There is no dedicated
+;; keyword-default syntax in the language, so a "default" for an
+;; OMITTED keyword is implemented Scheme-side by scanning the raw
+;; `.rest` tail (which keyword formals coexist with, per
+;; keyword_args_test.esk's `explicit-rest` case -- `rest` retains the
+;; full untouched `#:key value ...` tail, keyword extraction does not
+;; consume it) for the keyword symbol.
+(define (kw-arg-or-default args key default)
+  (if (null? args)
+      default
+      (if (eq? (car args) key)
+          (cadr args)
+          (kw-arg-or-default (cddr args) key default))))
+
+(define (scaled-with-default x #:scale scale . rest)
+  (+ (* x scale) (kw-arg-or-default rest #:offset 0)))
+
+(check "keyword formal after require, omitted optional keyword uses default"
+       (= (scaled-with-default 5 #:scale 3) 15))
+
+(check "keyword formal after require, explicit optional keyword overrides default"
+       (= (scaled-with-default 5 #:scale 3 #:offset 7) 22))
+
+;; Lambda keyword formals (not just `define`) alongside the require.
+(define kw-lambda
+  (lambda (#:left left #:right right)
+    (+ left right)))
+
+(check "lambda keyword arguments bind by name with a dotted require in scope"
+       (= (kw-lambda #:right 23 #:left 19) 42))
+
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+
+(if (= tests-failed 0)
+    0
+    (error "keyword-args-with-dotted-require tests failed"))
