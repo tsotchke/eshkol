@@ -107,6 +107,17 @@ void arena_push_scope(arena_t* arena);
 void arena_pop_scope(arena_t* arena);
 void arena_reset(arena_t* arena);
 
+// ESH-0214b: automatic per-iteration loop scope reclamation.
+// arena_commit_scope discards the innermost scope record WITHOUT rewinding
+// (all allocations since the matching push are kept); arena_top_scope_contains
+// tests whether ptr points into memory allocated after the innermost scope
+// mark; eshkol_arena_iter_scope_end pops the scope when none of vals[0..n)
+// can point into it (bounded-RSS reclamation) and commits it otherwise
+// (correctness fallback). See runtime_arena_core.cpp for full semantics.
+void arena_commit_scope(arena_t* arena);
+int arena_top_scope_contains(const arena_t* arena, const void* ptr);
+void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
+
 // Per-thread arena management (v1.2)
 // Each thread gets its own arena for lock-free allocation during parallel execution.
 // Worker arenas are merged into the parent arena when parallel tasks complete.

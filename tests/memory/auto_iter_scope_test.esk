@@ -1,0 +1,106 @@
+;;; tests/memory/auto_iter_scope_test.esk — ESH-0214b correctness gate
+;;;
+;;; The automatic per-iteration arena scope reclamation (see codegenNamedLet /
+;;; namedLetIterScopeSafe) must NEVER change program semantics: loops whose
+;;; carried values or results are heap-allocated must keep them alive (the
+;;; dynamic escape check takes the COMMIT path), while loops whose transient
+;;; garbage is provably dead get it reclaimed (the POP path). This file
+;;; exercises both paths and their interleavings; the bounded-RSS property
+;;; itself is asserted by scripts/run_rss_bounded_test.sh on
+;;; long_loop_rss_auto_test.esk.
+
+(define pc (vector 0 0))
+(define (chk label v)
+  (display "  [") (display (if v "PASS" "FAIL")) (display "] ") (display label) (newline)
+  (if v (vector-set! pc 0 (+ 1 (vector-ref pc 0)))
+        (vector-set! pc 1 (+ 1 (vector-ref pc 1)))))
+
+;; ── 1. COMMIT path: accumulator list built across iterations must survive ──
+(define acc-list
+  (let loop ((i 0) (acc '()))
+    (if (< i 1000)
+        (loop (+ i 1) (cons i acc))
+        acc)))
+(chk "accumulator list length preserved" (= (length acc-list) 1000))
+(chk "accumulator head is last element" (= (car acc-list) 999))
+(chk "accumulator tail reachable + intact" (= (list-ref acc-list 999) 0))
+
+;; ── 2. POP path with a pre-loop heap value carried through unchanged ──
+;; The witness string is allocated BEFORE the loop; every iteration passes it
+;; through as a loop arg. It is heap-typed but OUTSIDE each iteration's scope
+;; span, so the pop path still runs — and must not free it.
+(define carried
+  (let ((s (string-append "pre" "-loop")))
+    (let loop ((i 0) (keep s))
+      (if (< i 50000)
+          (loop (+ i 1) keep)
+          keep))))
+(chk "pre-loop string survives 50k pop iterations" (string=? carried "pre-loop"))
+
+;; ── 3. Mixed commit/pop: a heap value created in ONE iteration, then
+;; carried through many pop iterations afterwards. The creating iteration
+;; commits (value kept); later iterations pop without touching it. ──
+(define mixed
+  (let loop ((i 0) (memo '()))
+    (if (< i 20000)
+        (loop (+ i 1) (if (= i 137) (list i (* i 2)) memo))
+        memo)))
+(chk "iteration-created list survives later pops (car)" (= (car mixed) 137))
+(chk "iteration-created list survives later pops (cadr)" (= (cadr mixed) 274))
+
+;; ── 4. Result-escape at loop exit: final iteration allocates the result ──
+(define exit-alloc
+  (let loop ((i 0))
+    (if (< i 10000)
+        (loop (+ i 1))
+        (list i 'done))))                 ; allocated in the LAST iteration
+(chk "exit-allocated result survives (car)" (= (car exit-alloc) 10000))
+
+;; ── 5. Transient garbage per iteration + numeric carry: the pop path must
+;; actually run (bounded RSS proven by the harness) and computation stay
+;; correct. Each iteration builds and drops a 20-element list. ──
+(define (make-garbage n)
+  (let gl ((k 0) (g '()))
+    (if (< k 20) (gl (+ k 1) (cons (* n k) g)) g)))
+(define garbage-sum
+  (let loop ((i 0) (sum 0))
+    (if (< i 30000)
+        (loop (+ i 1) (+ sum (length (make-garbage i))))
+        sum)))
+(chk "per-iteration garbage loop computes correctly" (= garbage-sum 600000))
+
+;; ── 6. Nested auto-scoped loops: inner loop's committed result becomes the
+;; outer loop's transient garbage; outer carries only a checksum. ──
+(define nested-sum
+  (let outer ((p 0) (sum 0))
+    (if (< p 5000)
+        (outer (+ p 1)
+               (+ sum (car (let inner ((j 0) (l '()))
+                             (if (< j 10) (inner (+ j 1) (cons j l)) l)))))
+        sum)))
+(chk "nested loops: inner commit + outer pop correct" (= nested-sum (* 5000 9)))
+
+;; ── 7. set! in body must DISABLE auto-scoping (analysis) and stay correct ──
+(define counter 0)
+(let loop ((i 0))
+  (if (< i 100)
+      (begin
+        (set! counter (+ counter 1))
+        (loop (+ i 1)))))
+(chk "set!-containing loop still correct (analysis disables scoping)" (= counter 100))
+
+;; ── 8. Unknown-callee loop must be disabled but correct: vector mutation ──
+(define stash (make-vector 3 0))
+(define (stash! i) (vector-set! stash 0 (list i i)))   ; leaks a fresh list into a global
+(let loop ((i 0))
+  (if (< i 100)
+      (begin
+        (stash! i)
+        (loop (+ i 1)))))
+(chk "mutating-callee loop: stashed heap value intact" (= (car (vector-ref stash 0)) 99))
+
+(newline)
+(display "Passed: ") (display (vector-ref pc 0)) (newline)
+(display "Failed: ") (display (vector-ref pc 1)) (newline)
+(if (= (vector-ref pc 1) 0)
+    (begin (display "All auto-iter-scope tests passed!") (newline)))
