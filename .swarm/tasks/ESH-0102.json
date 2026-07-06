@@ -1,7 +1,7 @@
 {
   "id": "ESH-0102",
   "title": "Mutual tail calls are not TCO'd: ping-pong recursion crashes at ~300-500k depth",
-  "status": "open",
+  "status": "resolved",
   "priority": "high",
   "workstream": "edge-case-campaign/tco",
   "goal": "Found by the P4 stress harness (2026-07-02, master 2692ca63). Self tail recursion is optimized (10^8 iterations O(1) stack) but MUTUAL tail calls burn a frame per hop: (define (ping n) (if (= n 0) 'ping (pong (- n 1)))) with reciprocal pong crashes SIGILL at depth 500000 (300000 passes, no diagnostic); 10^7 dies at ~535MB RSS. JIT and AOT identical. R7RS 3.5 requires proper tail calls across function boundaries. Likely needs musttail (or the trampoline the self-TCO path uses) for calls in tail position to other known functions.",
@@ -23,6 +23,13 @@
       "master": "0733dc9b",
       "verdict": "still-open",
       "evidence": "mutual_tail_1e7.esk still SIGILLs (rc 132): mutual tail calls not TCO'd. Stress XKNOWN."
+    },
+    {
+      "sweep": "P6b",
+      "date": "2026-07-04",
+      "branch": "fix/mutual-tail-tco",
+      "verdict": "resolved",
+      "evidence": "Non-self calls in tail position now emit LLVM `musttail` (llvm_codegen.cpp codegenCall mutual-TCO block) instead of the old TCK_Tail hint (which the backend ignored). Guarded by matching signature/calling-convention and no pointer-into-frame args (the latter is what made X86 reject closure-forwarding stdlib wrappers). mutual_tail_1e7.esk now prints 'OK ping' in O(1) stack on BOTH -r (0.87s, 225MB) and AOT (0.47s, 27MB). P6b recursion_depth sweep: mutual_tail2/mutual_tail3 PASS to 5,000,000 hops on both lanes; even?/odd? 10M ok. stdlib builds clean on arm64. Limitation: higher-order tail calls that forward a stack-allocated closure argument still fall back to a bounded call (musttail is illegal with frame-pointer args)."
     }
   ]
 }
