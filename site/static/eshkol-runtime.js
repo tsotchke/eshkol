@@ -289,6 +289,11 @@ class EshkolRuntime {
                 arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },
                 arena_push_scope: () => {},
                 arena_pop_scope: () => {},
+                // Named-let TCO loop per-iteration arena scope reclamation
+                // (ESH-0214b / fix/loop-arena-reclamation) -- rt is a bump
+                // allocator with no reclamation, so this is a no-op, same
+                // as arena_push_scope/arena_pop_scope above.
+                eshkol_arena_iter_scope_end: () => {},
                 arena_allocate_cons_cell: () => rt._bump(32),
                 arena_allocate_cons_with_header: () => rt._bump(40) + 8,
                 arena_allocate_tagged_cons_cell: () => rt._bump(48),
