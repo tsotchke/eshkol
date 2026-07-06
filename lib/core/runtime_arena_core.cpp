@@ -344,6 +344,93 @@ void arena_pop_scope(arena_t* arena) {
     eshkol_debug("Popped arena scope");
 }
 
+// ═════════════════════════════════════════════════════════════════════════
+// ESH-0214b: automatic per-iteration loop scope reclamation primitives
+// ═════════════════════════════════════════════════════════════════════════
+
+/* Discard the innermost scope record WITHOUT rewinding the arena: every
+ * allocation made since the matching arena_push_scope is kept ("committed"
+ * to the enclosing scope). This is the safe fallback the per-iteration loop
+ * scoping uses when a loop-carried value was allocated inside the iteration
+ * and therefore must survive it: the memory is retained (same behavior as
+ * before this feature existed), but the scope stack stays balanced so
+ * enclosing push/pop pairs keep their LIFO discipline. */
+void arena_commit_scope(arena_t* arena) {
+    if (!arena || !arena->current_scope) {
+        eshkol_error("Attempted to commit arena scope with no matching push");
+        return;
+    }
+    arena_scope_t* scope = arena->current_scope;
+    arena->current_scope = scope->parent;
+    free(scope);
+    eshkol_debug("Committed arena scope (allocations kept)");
+}
+
+/* Does ptr point into memory allocated AFTER the innermost scope mark?
+ * Blocks are head-inserted (arena->current_block is the newest), so the
+ * post-mark span is: every block from current_block down to (but excluding)
+ * scope->block, plus [scope->used, used) within scope->block itself. */
+int arena_top_scope_contains(const arena_t* arena, const void* ptr) {
+    if (!arena || !arena->current_scope || !ptr) return 0;
+    const arena_scope_t* scope = arena->current_scope;
+    const uint8_t* p = (const uint8_t*)ptr;
+    for (const arena_block_t* b = arena->current_block; b; b = b->next) {
+        if (b == scope->block) {
+            return (p >= b->memory + scope->used) && (p < b->memory + b->used);
+        }
+        if (p >= b->memory && p < b->memory + b->used) return 1;
+    }
+    return 0;
+}
+
+/* End a per-iteration loop scope (ESH-0214b automatic reclamation).
+ *
+ * vals/n are the values that flow OUT of the ending iteration: the freshly
+ * evaluated loop arguments at a tail-call back edge, or the loop's result
+ * value at loop exit. If none of them can point into this iteration's scope
+ * span, everything allocated during the iteration is garbage and the scope
+ * is popped (rewound -- bounded RSS). If any of them might, the scope is
+ * committed instead: memory is retained exactly as it was before this
+ * feature (correctness over reclamation), and the scope stack stays
+ * balanced either way.
+ *
+ * The escape test is deliberately conservative in the safe direction:
+ * only provably pointer-free immediates (null / int64 / double / bool /
+ * char, plus the pointer-free eof-object) skip the pointer check; every
+ * other type tag is treated as potentially pointer-carrying. Pre-existing
+ * structures cannot point INTO the iteration span (mutation is excluded
+ * statically by the codegen-side analysis that gates this whole mechanism),
+ * so a shallow per-value span test is sufficient -- no transitive walk. */
+void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n) {
+    if (!arena) return;
+    if (!arena->current_scope) {
+        eshkol_error("iter_scope_end with no active arena scope - unbalanced loop scoping");
+        return;
+    }
+
+    int escapes = 0;
+    for (uint64_t i = 0; i < n && !escapes; ++i) {
+        const uint8_t t = vals[i].type;
+        /* Immediate (pointer-free) tags: NULL(0)/INT64(1)/DOUBLE(2)/BOOL(3)/
+         * CHAR(4). Exactness lives in the separate flags byte, so these tag
+         * values are exact matches. 0xFF is the eof-object (data always 0).
+         * Anything else (heap, callable, symbol, dual, complex, ports with
+         * flag bits OR'd into the tag, logic vars, multimedia, legacy tags)
+         * is treated as potentially pointer-carrying -- misclassifying a
+         * non-pointer as a pointer can only cause a spurious commit (a
+         * missed reclamation), never a use-after-free. */
+        if (t <= ESHKOL_VALUE_CHAR || t == 0xFF) continue;
+        const void* p = (const void*)(uintptr_t)vals[i].data.ptr_val;
+        if (p && arena_top_scope_contains(arena, p)) escapes = 1;
+    }
+
+    if (escapes) {
+        arena_commit_scope(arena);
+    } else {
+        arena_pop_scope(arena);
+    }
+}
+
 void arena_reset(arena_t* arena) {
     if (!arena) return;
 
