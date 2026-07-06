@@ -1,0 +1,31 @@
+{
+  "id": "ESH-0156",
+  "title": "write does not escape strings",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS: (write \"a\\nb\\tc\") must print the literal characters \"a\\nb\\tc\" (quoted, with \\n and \\t escaped); display of the same string stays raw. Characters under write must print as #\\a, #\\newline, #\\tab, #\\space, etc.",
+  "file_globs": [
+    "lib/core/runtime_display_hosted.cpp",
+    "tests/r7rs/conformance_batch_test.esk"
+  ],
+  "root_cause": "write already routed to eshkol_write_value (quote_strings=1) and chars already printed with #\\ names under write, but the string path only wrapped the bytes in double quotes without escaping. So (write \"a\\nb\") emitted a literal newline instead of \\n, producing output the reader cannot round-trip.",
+  "fix": "Added write_escaped_string() in the shared display runtime: wraps in double quotes and escapes \\\" and \\\\ (mandatory), the mnemonic escapes \\a \\b \\t \\n \\r, and any other control byte as inline hex \\xNN; while passing UTF-8 bytes (>=0x80) through untouched. Both string display paths (HEAP_SUBTYPE_STRING and ESHKOL_VALUE_STRING_PTR) call it only when quote_strings is set, so display is unchanged and the write path (including recursion into lists/vectors and cycle handling) keeps its existing machinery.",
+  "acceptance": [
+    "(write \"a\\nb\\tc\") => \"a\\nb\\tc\" (12 literal chars)",
+    "(write \"x\\\\y\\\"z\") escapes backslash and doublequote",
+    "(display \"a\\nb\\tc\") stays raw/unquoted",
+    "(write #\\newline) => #\\newline, #\\space, #\\tab, #\\a",
+    "write recurses into lists escaping nested strings",
+    "works under -r and AOT"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -r",
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -o /tmp/conf && /tmp/conf",
+    "bash scripts/run_sicp_smoke.sh (88/88)",
+    "scripts/run_differential.sh 246/246 axis pairs agree (no display regression)"
+  ],
+  "blocked_by": []
+}

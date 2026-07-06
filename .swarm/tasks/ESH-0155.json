@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0155",
+  "title": "error-object? / error-object-message / error-object-irritants missing",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS §6.11: (guard (e (#t (display (error-object? e)) (display (error-object-message e)) (write (error-object-irritants e)))) (error \"boom\" 1 2)) must show #t, boom, (1 2). error-object? must be #f for a non-error raised value (e.g. a bare string).",
+  "file_globs": [
+    "lib/core/runtime_exceptions_hosted.cpp",
+    "inc/eshkol/eshkol.h",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/r7rs/conformance_batch_test.esk"
+  ],
+  "root_cause": "The exception object (eshkol_exception_t, HEAP_SUBTYPE_EXCEPTION) already carried a message + irritants array and guard binds the raised HEAP_PTR to `e`, but codegenError dropped every argument after the message (never called add_irritant), and the three error-object accessors were not implemented, so they errored as unknown functions.",
+  "fix": "codegenError now attaches arguments 2..N as irritants via a new ABI-safe eshkol_exception_add_irritant_ptr (pointer arg, no by-value 16-byte struct across the C ABI). Added runtime accessors eshkol_error_object_p (checks HEAP_PTR + HEAP_SUBTYPE_EXCEPTION, so returns #f for a raised string), eshkol_error_object_message (arena-copies the message into an Eshkol string), and eshkol_error_object_irritants (rebuilds the irritant array into a cons list). Codegen calls them through out-param helpers (codegenErrorObjectPredicate / codegenErrorObjectAccessor); registered the three names in the dispatch, known-builtins list, and function_return_types.",
+  "acceptance": [
+    "(error-object? e) => #t inside guard over (error ...)",
+    "(error-object-message e) => \"boom\"",
+    "(error-object-irritants e) => (1 2); () when no irritants",
+    "(error-object? e) => #f for (raise \"string\")",
+    "raised string still binds guard var e",
+    "existing guard/with-exception-handler behaviour unchanged",
+    "works under -r and AOT"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -r",
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -o /tmp/conf && /tmp/conf",
+    "tests/error_handling/{exception_test,exception_nesting_test,guard_advanced_test,guard_edge_test}.esk all PASS",
+    "bash scripts/run_sicp_smoke.sh (88/88)"
+  ],
+  "blocked_by": []
+}
