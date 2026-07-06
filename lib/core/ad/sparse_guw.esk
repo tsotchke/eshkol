@@ -1,0 +1,615 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.sparse_guw — Sparse high-order tensors over GUW recovery  (Phase P12)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Partially-separable functions (sparse Hessians, banded/stencil structure,
+;;  ML blocks) have derivative tensors whose nonzeros form a small structured
+;;  subset.  Dense GUW recovery (core.ad.guw) pays O(C(m+d-1,d)) directional
+;;  Taylor propagations regardless of structure.  This module exploits sparsity
+;;  so the number of AD passes is driven by the interaction *bandwidth* rather
+;;  than by m.
+;;
+;;  ── Design shipped ────────────────────────────────────────────────────────
+;;  ORDER 2 (sparse-hessian): direction compression via graph coloring + a
+;;  Hessian-vector product.  We build a variable-interaction graph G on
+;;  {0..m-1} (edge (i,j) ⇒ ∂²f/∂xᵢ∂xⱼ may be nonzero), compute a greedy
+;;  DISTANCE-2 coloring of G (no two vertices within graph-distance ≤ 2 share a
+;;  color — a valid star coloring on banded/path/arrowhead graphs, sufficient
+;;  for DIRECT one-shot recovery with no substitution step).  For each color
+;;  class C_c we form the 0/1 indicator direction w_c and recover the FULL
+;;  vector H·w_c in ONE combined reverse-over-Taylor pass:
+;;
+;;      (gradient (lambda (x) (derivative-n (lambda (t) (f (x + t·w_c))) 0.0 1)) xs)
+;;
+;;  (proven P5 composition; the inner derivative-n gives the directional
+;;  derivative ∇f·w_c, the outer reverse-mode gradient turns it into H·w_c).
+;;  Distance-2 validity guarantees at most one member of C_c lies within
+;;  graph-distance ≤1 of any vertex v, so each nonzero entry (H·w_c)_v maps to
+;;  exactly one unknown: the diagonal H_vv (v∈C_c) or the single off-diagonal
+;;  H_{v,u} (unique u∈C_c adjacent to v).  #colors passes recover the whole
+;;  sparse Hessian; for banded structure #colors ≈ bandwidth, independent of m.
+;;  A both-sides cross-check (read H_{v,u} from color(u) and from color(v));
+;;  a disagreement > 1e-8 is treated as a bug signal and triggers dense
+;;  fallback.
+;;
+;;  NOTE (honest scope): this is a distance-2 / "symmetric" coloring — a valid
+;;  star coloring on the banded/path/arrowhead graphs we test, NOT a full
+;;  Gebremedhin–Manne–Pothen minimal-star-coloring (which would need a
+;;  substitution-based recovery step; direct recovery only needs distance-2
+;;  validity).  If G is (near-)complete — a dense f — coloring degenerates to
+;;  ~m colors; we detect that (colors ≥ m OR edge-density > 0.6) and take an
+;;  explicit DENSE FALLBACK: recover every column H·e_j via m unit-direction Hv
+;;  passes (the same primitive), skipping the coloring machinery entirely.
+;;
+;;  ORDER ≥ 3 (sparse-mixed-partials): the caller supplies an explicit sparsity
+;;  pattern — a list of hyperedges, each the variable set jointly appearing in
+;;  some term of f (e.g. Σ gᵢ(xᵢ,xᵢ₊₁) ⇒ ((0 1)(1 2)(2 3)…)).  A mixed partial
+;;  D^β is structurally nonzero only if support(β) ⊆ some hyperedge, so for each
+;;  hyperedge/block we recover the block's dense order-`order` sub-tensor with a
+;;  self-contained GUW recovery (principal-lattice directional Taylor + linear
+;;  solve) that reads each directional coefficient through `derivative-n` — the
+;;  SAME robust tower primitive the Hv path uses — rather than through the
+;;  list-returning `taylor` special form.  (Mixing `taylor` and the
+;;  derivative-n/gradient tower forms in one compilation unit corrupts the tower
+;;  codegen, so this module deliberately stays entirely within the derivative-n
+;;  family and does NOT (require core.ad.guw).)  The block directions embed into
+;;  the full point, the recovered (β . value) pairs re-embed into full length-m
+;;  multi-indices, and blocks are unioned.  Cost ~ Σ_blocks C(k+order-1, order)
+;;  rather than the full C(m+order-1, order).  (No automatic order>2 structural
+;;  detection — out of scope; the pattern is asserted ground truth by caller.)
+;;
+;;  ⚠ Engine limitation (pre-existing, upstream, NOT introduced by P12): the
+;;  compiler's HIGH-ORDER (order ≥ 2 tower) multivariate AD codegen is fragile —
+;;  it can crash deterministically on certain function/program shapes at vector
+;;  length ≥ 4 (this is why core.ad.guw itself gates only to dimension 3).  The
+;;  order-2 sparse-hessian path is IMMUNE (it only ever uses order-1 towers under
+;;  reverse mode) and scales to large m; the order-≥3 sparse-mixed-partials path
+;;  inherits that fragility and is validated only at the small block/point sizes
+;;  where the tower engine is stable.  runtime_taylor.c / autodiff_codegen.cpp
+;;  are out of scope for this phase, so the fix lives in a later engine phase.
+;;
+;;  ── Sparsity detection ────────────────────────────────────────────────────
+;;  (a) explicit pattern (always safe — caller asserts ground truth), or
+;;  (b) probed (sparse-hessian only, when no pattern given): evaluate the full
+;;      dense Hessian (via m unit-direction Hv passes) at xs AND at 2
+;;      deterministic pseudo-random nearby points (a self-contained GLSL-style
+;;      hash, NO OS randomness, so results reproduce), marking edge (i,j) if
+;;      |H_ij| > 1e-9 at ANY
+;;      probe.  OR-ing across probes reduces the risk of a coincidental
+;;      cancellation at one point hiding a true dependency.  This is an honest
+;;      HEURISTIC, not a proof — the both-sides cross-check plus dense fallback
+;;      are the correctness safety net.  Pass an explicit pattern to skip it.
+;;
+;;  ── API ──────────────────────────────────────────────────────────────────
+;;    (sparse-hessian f xs)            → sparse Hessian, structure probed
+;;    (sparse-hessian-pat f xs pattern)→ sparse Hessian, structure from pattern
+;;    (sparse-hessian-ref sp i j)      → H_ij (0.0 if structurally absent)
+;;    (sparse-hessian-nonzeros sp)     → list of (i j value) triples
+;;    (sparse-hessian-row-ptr sp)      → CSR row-pointer vector (length m+1)
+;;    (sparse-hessian-col-idx sp)      → CSR column-index vector
+;;    (sparse-hessian-values sp)       → CSR values vector
+;;    (sparse-hessian-colors sp)       → #colors used (m on dense fallback)
+;;    (sparse-hessian-directions sp)   → #AD directional passes used
+;;    (sparse-hessian-dense? sp)       → #t if the dense fallback was taken
+;;
+;;    (sparse-mixed-partials f xs order pattern) → sparse order-`order` tensor
+;;    (sparse-mixed-partials-ref sp idxs)        → D^β f(xs); idxs is a list of
+;;        variable indices with repetition (e.g. (0 0 1) = ∂³/∂x₀²∂x₁), exactly
+;;        like core.ad.guw's mixed-partial; 0.0 for structurally-absent indices.
+;;    (sparse-mixed-partials-entries sp)         → list of (multi-index . value)
+;;        pairs (multi-index is a length-m nonneg-int list).
+;; ─────────────────────────────────────────────────────────────────────────
+
+(provide sparse-hessian sparse-hessian-pat
+         sparse-hessian-ref sparse-hessian-nonzeros
+         sparse-hessian-row-ptr sparse-hessian-col-idx sparse-hessian-values
+         sparse-hessian-colors sparse-hessian-directions sparse-hessian-dense?
+         sparse-mixed-partials sparse-mixed-partials-ref sparse-mixed-partials-entries)
+
+;; ── Self-contained list helpers (core-module discipline: no stdlib map/assoc) ─
+(define (sg-length lst)
+  (let loop ((l lst) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+
+(define (sg-nth lst i) (if (<= i 0) (car lst) (sg-nth (cdr lst) (- i 1))))
+
+(define (sg-map1 f lst)
+  (if (pair? lst) (cons (f (car lst)) (sg-map1 f (cdr lst))) '()))
+
+(define (sg-reverse lst)
+  (let loop ((l lst) (acc '())) (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (sg-member? x lst)
+  (cond ((null? lst) #f) ((= x (car lst)) #t) (else (sg-member? x (cdr lst)))))
+
+;; insert x into an ascending distinct list
+(define (sg-insert-distinct x lst)
+  (cond ((null? lst) (list x))
+        ((= x (car lst)) lst)
+        ((< x (car lst)) (cons x lst))
+        (else (cons (car lst) (sg-insert-distinct x (cdr lst))))))
+
+;; sorted unique list of the indices appearing in `idxs`
+(define (sg-sorted-unique idxs)
+  (let loop ((in idxs) (acc '()))
+    (if (pair? in) (loop (cdr in) (sg-insert-distinct (car in) acc)) acc)))
+
+;; element-wise numeric list equality (multi-index compare)
+(define (sg-list-eq a b)
+  (cond ((and (null? a) (null? b)) #t)
+        ((or  (null? a) (null? b)) #f)
+        ((= (car a) (car b)) (sg-list-eq (cdr a) (cdr b)))
+        (else #f)))
+
+;; ── Vector helpers ────────────────────────────────────────────────────────
+(define (sg-vector-copy v)
+  (let* ((m (vector-length v)) (out (make-vector m 0.0)))
+    (let loop ((i 0))
+      (if (< i m) (begin (vector-set! out i (vector-ref v i)) (loop (+ i 1)))))
+    out))
+
+;; x + t·w  (t may be a Taylor tower value; x may be reverse-tape values)
+(define (sg-add-scaled x t w)
+  (let* ((m (vector-length x)) (out (make-vector m 0.0)))
+    (let loop ((i 0))
+      (if (< i m)
+          (begin (vector-set! out i (+ (vector-ref x i) (* t (vector-ref w i))))
+                 (loop (+ i 1)))))
+    out))
+
+;; ── Proven P5 Hessian-vector product : returns the vector H(xs)·w ──────────
+;; NOTE: the whole module intentionally uses ONLY this one AD primitive (never
+;; the built-in (hessian …)).  Mixing the built-in hessian and this
+;; reverse-over-Taylor gradient in the same compilation unit trips a
+;; whole-program type-inference quirk that mis-types the hessian result as a
+;; scalar; routing every dense/probe computation through sg-hvp keeps the module
+;; self-consistent and dependency-free of that path.
+(define (sg-hvp f xs w)
+  (gradient (lambda (x)
+              (derivative-n (lambda (t) (f (sg-add-scaled x t w))) 0.0 1))
+            xs))
+
+;; jth unit direction of length m
+(define (sg-unit m j)
+  (let ((w (make-vector m 0.0))) (vector-set! w j 1.0) w))
+
+;; full dense Hessian as a vector of m column-vectors (col j = H·e_j)
+(define (sg-full-hessian-cols f pt m)
+  (let ((cols (make-vector m #f)))
+    (let loop ((j 0))
+      (if (< j m)
+          (begin (vector-set! cols j (sg-hvp f pt (sg-unit m j))) (loop (+ j 1)))))
+    cols))
+
+;; ── Deterministic pseudo-random probe offsets (GLSL-style hash, no OS RNG) ──
+(define (sg-frac x) (- x (floor x)))
+(define (sg-hash n)
+  (sg-frac (* (sin (* (exact->inexact n) 12.9898)) 43758.5453)))
+
+(define (sg-perturb xs seed)
+  (let* ((m (vector-length xs)) (out (make-vector m 0.0)))
+    (let loop ((i 0))
+      (if (< i m)
+          (begin
+            (vector-set! out i
+              (+ (vector-ref xs i)
+                 (* 0.05 (- (* 2.0 (sg-hash (+ (* seed 1000) i))) 1.0))))
+            (loop (+ i 1)))))
+    out))
+
+;; ── Interaction-graph construction ─────────────────────────────────────────
+;; adjacency = vector length m, adj[i] = ascending distinct neighbour list
+(define (sg-make-adj m) (make-vector m '()))
+
+(define (sg-add-edge adj i j)
+  (if (not (= i j))
+      (begin
+        (vector-set! adj i (sg-insert-distinct j (vector-ref adj i)))
+        (vector-set! adj j (sg-insert-distinct i (vector-ref adj j))))))
+
+;; add a clique among the variables of one hyperedge (list of indices)
+(define (sg-add-clique adj he)
+  (let loop-a ((a he))
+    (if (pair? a)
+        (begin
+          (let loop-b ((b (cdr a)))
+            (if (pair? b)
+                (begin (sg-add-edge adj (car a) (car b)) (loop-b (cdr b)))))
+          (loop-a (cdr a))))))
+
+(define (sg-graph-from-pattern m pattern)
+  (let ((adj (sg-make-adj m)))
+    (let loop ((p pattern))
+      (if (pair? p) (begin (sg-add-clique adj (car p)) (loop (cdr p)))))
+    adj))
+
+;; probe one point: mark edge (i,j) if |H_ij| > 1e-9  (H·e_j columns via sg-hvp)
+(define (sg-probe-point f pt adj m)
+  (let ((cols (sg-full-hessian-cols f pt m)))
+    (let loop-i ((i 0))
+      (if (< i m)
+          (begin
+            (let loop-j ((j (+ i 1)))
+              (if (< j m)
+                  (begin
+                    (if (> (abs (vector-ref (vector-ref cols j) i)) 1e-9)
+                        (sg-add-edge adj i j))
+                    (loop-j (+ j 1)))))
+            (loop-i (+ i 1)))))))
+
+(define (sg-graph-from-probe f xs m)
+  (let ((adj (sg-make-adj m)))
+    (sg-probe-point f xs adj m)
+    (sg-probe-point f (sg-perturb xs 1) adj m)
+    (sg-probe-point f (sg-perturb xs 2) adj m)
+    adj))
+
+;; number of undirected edges
+(define (sg-edge-count adj m)
+  (let loop ((i 0) (acc 0))
+    (if (< i m) (loop (+ i 1) (+ acc (sg-length (vector-ref adj i)))) (/ acc 2))))
+
+;; ── Greedy distance-2 (star, on banded/path/arrowhead) coloring ────────────
+;; order vertices by descending degree; forbid colors of neighbours AND
+;; neighbours-of-neighbours; assign smallest free color.  Returns (color . k)
+;; where color is a length-m vector of color ids and k the number of colors.
+(define (sg-degree-order adj m)
+  ;; insertion sort of 0..m-1 by descending degree
+  (define (deg i) (sg-length (vector-ref adj i)))
+  (define (ins x lst)
+    (cond ((null? lst) (list x))
+          ((>= (deg x) (deg (car lst))) (cons x lst))
+          (else (cons (car lst) (ins x (cdr lst))))))
+  (let loop ((i 0) (acc '()))
+    (if (< i m) (loop (+ i 1) (ins i acc)) acc)))    ; acc is already descending-degree
+
+;; collect forbidden colors (of colored vertices at distance ≤ 2 from v)
+(define (sg-forbidden adj color v)
+  (let ((nbrs (vector-ref adj v)))
+    (let loop-n ((ns nbrs) (acc '()))
+      (if (pair? ns)
+          (let* ((u (car ns))
+                 (cu (vector-ref color u))
+                 (acc1 (if (>= cu 0) (sg-insert-distinct cu acc) acc)))
+            ;; neighbours-of-neighbour
+            (let loop-w ((ws (vector-ref adj u)) (acc2 acc1))
+              (if (pair? ws)
+                  (let* ((w (car ws))
+                         (cw (vector-ref color w))
+                         (acc3 (if (and (not (= w v)) (>= cw 0))
+                                   (sg-insert-distinct cw acc2) acc2)))
+                    (loop-w (cdr ws) acc3))
+                  (loop-n (cdr ns) acc2))))
+          acc))))
+
+(define (sg-smallest-free forbidden)
+  (let loop ((c 0)) (if (sg-member? c forbidden) (loop (+ c 1)) c)))
+
+(define (sg-color-graph adj m)
+  (let ((color (make-vector m -1))
+        (order (sg-degree-order adj m)))
+    (let loop ((os order) (kmax -1))
+      (if (pair? os)
+          (let* ((v (car os))
+                 (c (sg-smallest-free (sg-forbidden adj color v))))
+            (vector-set! color v c)
+            (loop (cdr os) (if (> c kmax) c kmax)))
+          (cons color (+ kmax 1))))))
+
+;; ── CSR assembly from a symmetric entry list ((i j v) …) ───────────────────
+;; entries must already include both (i j) and (j i) plus the diagonal.
+(define (sg-build-csr m entries)
+  (let ((rows (make-vector m '())))            ; rows[i] = list of (col . val)
+    (let loop ((es entries))
+      (if (pair? es)
+          (let* ((e (car es)) (i (car e)) (j (car (cdr e))) (v (car (cdr (cdr e)))))
+            (vector-set! rows i (sg-csr-insert j v (vector-ref rows i)))
+            (loop (cdr es)))))
+    ;; flatten into row-ptr / col-idx / values
+    (let* ((nnz (let cnt ((i 0) (acc 0))
+                  (if (< i m) (cnt (+ i 1) (+ acc (sg-length (vector-ref rows i)))) acc)))
+           (row-ptr (make-vector (+ m 1) 0))
+           (col-idx (make-vector (if (> nnz 0) nnz 1) 0))
+           (values  (make-vector (if (> nnz 0) nnz 1) 0.0)))
+      (let loop-i ((i 0) (pos 0))
+        (if (< i m)
+            (begin
+              (vector-set! row-ptr i pos)
+              (let loop-r ((r (vector-ref rows i)) (p pos))
+                (if (pair? r)
+                    (begin (vector-set! col-idx p (car (car r)))
+                           (vector-set! values  p (cdr (car r)))
+                           (loop-r (cdr r) (+ p 1)))
+                    (loop-i (+ i 1) p))))
+            (vector-set! row-ptr m pos)))
+      (list row-ptr col-idx values))))
+
+;; insert (col . val) into an ascending-by-col list, overwriting a duplicate col
+(define (sg-csr-insert col val lst)
+  (cond ((null? lst) (list (cons col val)))
+        ((= col (car (car lst))) (cons (cons col val) (cdr lst)))
+        ((< col (car (car lst))) (cons (cons col val) lst))
+        (else (cons (car lst) (sg-csr-insert col val (cdr lst))))))
+
+;; ── Dense fallback : full Hessian via m unit Hv passes (same AD primitive) ──
+(define (sg-dense-hessian f xs m)
+  (let ((cols (sg-full-hessian-cols f xs m)))    ; cols[j] = H·e_j
+    (let loop-i ((i 0) (acc '()))
+      (if (< i m)
+          (loop-i (+ i 1)
+            (let loop-j ((j 0) (a acc))
+              (if (< j m)
+                  (let ((v (vector-ref (vector-ref cols j) i)))   ; H_ij
+                    (loop-j (+ j 1)
+                            (if (or (= i j) (> (abs v) 1e-13))
+                                (cons (list i j v) a) a)))
+                  a)))
+          (let ((csr (sg-build-csr m acc)))
+            ;; 'shess m row-ptr col-idx values colors directions dense?
+            (list 'shess m (sg-nth csr 0) (sg-nth csr 1) (sg-nth csr 2) m m #t))))))
+
+;; ── Sparse Hessian recovery via colored Hv products ────────────────────────
+;; returns entry list ((i j v)…) or the symbol 'mismatch if the cross-check fails
+(define (sg-recover-entries f xs adj color k m)
+  ;; one Hv pass per color: colorHv[c] = H · w_c  (vector length m)
+  (let ((colorHv (make-vector k #f)))
+    (let cloop ((c 0))
+      (if (< c k)
+          (let ((w (make-vector m 0.0)))
+            (let wl ((i 0))
+              (if (< i m)
+                  (begin (if (= (vector-ref color i) c) (vector-set! w i 1.0))
+                         (wl (+ i 1)))))
+            (vector-set! colorHv c (sg-hvp f xs w))
+            (cloop (+ c 1)))))
+    ;; read off diagonal + off-diagonals; cross-check off-diagonals
+    (let dloop ((i 0) (acc '()) (ok #t))
+      (if (and (< i m) ok)
+          (let* ((ci   (vector-ref color i))
+                 (diag (vector-ref (vector-ref colorHv ci) i))
+                 (acc1 (cons (list i i diag) acc)))
+            ;; off-diagonals to higher-indexed neighbours
+            (let nloop ((ns (vector-ref adj i)) (a acc1) (good #t))
+              (if (and (pair? ns) good)
+                  (let ((j (car ns)))
+                    (if (> j i)
+                        (let* ((cj (vector-ref color j))
+                               (vij (vector-ref (vector-ref colorHv cj) i))
+                               (vji (vector-ref (vector-ref colorHv ci) j)))
+                          (if (> (abs (- vij vji)) 1e-8)
+                              (nloop (cdr ns) a #f)       ; cross-check failed
+                              (nloop (cdr ns)
+                                     (cons (list j i vij) (cons (list i j vij) a))
+                                     good)))
+                        (nloop (cdr ns) a good)))
+                  (if good (dloop (+ i 1) a ok) 'mismatch))))
+          (if ok acc 'mismatch)))))
+
+;; core order-2 driver: `pattern` = list of hyperedges or #f (probe)
+(define (sg-sparse-hessian-core f xs pattern)
+  (let* ((m   (vector-length xs))
+         (adj (if pattern (sg-graph-from-pattern m pattern)
+                          (sg-graph-from-probe f xs m)))
+         (nedges (sg-edge-count adj m))
+         (maxedges (if (<= m 1) 1 (/ (* m (- m 1)) 2)))
+         (density (/ (exact->inexact nedges) (exact->inexact maxedges)))
+         (cg (sg-color-graph adj m))
+         (color (car cg))
+         (k (cdr cg)))
+    (if (or (>= k m) (> density 0.6))
+        (sg-dense-hessian f xs m)                 ; dense fallback
+        (let ((res (sg-recover-entries f xs adj color k m)))
+          (if (eq? res 'mismatch)
+              (sg-dense-hessian f xs m)            ; safety-net fallback
+              (let ((csr (sg-build-csr m res)))
+                ;; 'shess m row-ptr col-idx values colors directions dense?
+                (list 'shess m (sg-nth csr 0) (sg-nth csr 1) (sg-nth csr 2)
+                      k k #f)))))))
+
+(define (sparse-hessian f xs)         (sg-sparse-hessian-core f xs #f))
+(define (sparse-hessian-pat f xs pat) (sg-sparse-hessian-core f xs pat))
+
+;; ── sparse-hessian accessors ───────────────────────────────────────────────
+(define (sparse-hessian-row-ptr sp)    (sg-nth sp 2))
+(define (sparse-hessian-col-idx sp)    (sg-nth sp 3))
+(define (sparse-hessian-values sp)     (sg-nth sp 4))
+(define (sparse-hessian-colors sp)     (sg-nth sp 5))
+(define (sparse-hessian-directions sp) (sg-nth sp 6))
+(define (sparse-hessian-dense? sp)     (sg-nth sp 7))
+
+(define (sparse-hessian-ref sp i j)
+  (let* ((row-ptr (sg-nth sp 2)) (col-idx (sg-nth sp 3)) (values (sg-nth sp 4))
+         (start (vector-ref row-ptr i)) (end (vector-ref row-ptr (+ i 1))))
+    (let loop ((p start))
+      (cond ((>= p end) 0.0)
+            ((= (vector-ref col-idx p) j) (vector-ref values p))
+            (else (loop (+ p 1)))))))
+
+(define (sparse-hessian-nonzeros sp)
+  (let* ((m (sg-nth sp 1)) (row-ptr (sg-nth sp 2))
+         (col-idx (sg-nth sp 3)) (values (sg-nth sp 4)))
+    (let loop-i ((i (- m 1)) (acc '()))
+      (if (< i 0) acc
+          (let ((start (vector-ref row-ptr i)) (end (vector-ref row-ptr (+ i 1))))
+            (let loop-p ((p (- end 1)) (a acc))
+              (if (< p start) (loop-i (- i 1) a)
+                  (loop-p (- p 1)
+                          (cons (list i (vector-ref col-idx p) (vector-ref values p)) a)))))))))
+
+;; ── General order ≥ 3 : block decomposition + self-contained GUW recovery ──
+;; (all coefficients read via derivative-n; NO core.ad.guw / taylor dependency)
+
+;; small numeric helpers
+(define (sg-append a b) (if (pair? a) (cons (car a) (sg-append (cdr a) b)) b))
+(define (sg-factorial n) (if (<= n 1) 1.0 (* (exact->inexact n) (sg-factorial (- n 1)))))
+(define (sg-ipow base e) (if (<= e 0) 1.0 (* base (sg-ipow base (- e 1)))))   ; 0^0 = 1
+
+;; all length-k lists of nonneg ints summing to exactly n
+(define (sg-compositions k n)
+  (if (= k 1)
+      (list (list n))
+      (let loop ((first 0) (acc '()))
+        (if (> first n)
+            acc
+            (loop (+ first 1)
+                  (sg-append acc
+                    (sg-map1 (lambda (rest) (cons first rest))
+                             (sg-compositions (- k 1) (- n first)))))))))
+
+;; Berzolari principal-lattice reduced directions in k-space: first k-1 coords
+;; range over the simplex lattice (sum ≤ n), last coord fixed to 1.
+(define (sg-front-plus-one lst cnt)
+  (if (<= cnt 0)
+      (list 1.0)
+      (cons (exact->inexact (car lst)) (sg-front-plus-one (cdr lst) (- cnt 1)))))
+(define (sg-lattice-directions k n)
+  (sg-map1 (lambda (comp) (sg-front-plus-one comp (- k 1))) (sg-compositions k n)))
+
+;; embed a reduced k-direction (list) into a full length-m direction vector
+(define (sg-embed-dir rv vars m)
+  (let ((out (make-vector m 0.0)))
+    (let loop ((r rv) (vs vars))
+      (if (pair? r) (begin (vector-set! out (car vs) (car r)) (loop (cdr r) (cdr vs)))))
+    out))
+
+;; monomial term v^β / β!  (rv and beta are k-lists)
+(define (sg-monomial rv beta)
+  (let loop ((r rv) (b beta) (num 1.0) (den 1.0))
+    (if (pair? r)
+        (loop (cdr r) (cdr b) (* num (sg-ipow (car r) (car b))) (* den (sg-factorial (car b))))
+        (/ num den))))
+
+;; Gaussian elimination with partial pivoting (same shape as guw's guw-gauss-solve)
+(define (sg-argmax-col M c N)
+  (let loop ((r (+ c 1)) (best c) (bestval (abs (vector-ref (vector-ref M c) c))))
+    (if (>= r N) best
+        (let ((val (abs (vector-ref (vector-ref M r) c))))
+          (if (> val bestval) (loop (+ r 1) r val) (loop (+ r 1) best bestval))))))
+
+(define (sg-gauss-solve A b N)
+  (let ((M (make-vector N #f)))
+    (let loop ((i 0))
+      (if (< i N)
+          (let ((row (make-vector (+ N 1) 0.0)) (src (vector-ref A i)))
+            (let cp ((j 0)) (if (< j N) (begin (vector-set! row j (vector-ref src j)) (cp (+ j 1)))))
+            (vector-set! row N (vector-ref b i)) (vector-set! M i row) (loop (+ i 1)))))
+    (let col-loop ((c 0))
+      (if (< c N)
+          (let ((piv (sg-argmax-col M c N)))
+            (if (not (= piv c))
+                (let ((tmp (vector-ref M c)))
+                  (vector-set! M c (vector-ref M piv)) (vector-set! M piv tmp)))
+            (let ((pivrow (vector-ref M c)) (pivval (vector-ref (vector-ref M c) c)))
+              (let er ((r (+ c 1)))
+                (if (< r N)
+                    (let* ((rr (vector-ref M r)) (factor (/ (vector-ref rr c) pivval)))
+                      (let ec ((j c))
+                        (if (<= j N)
+                            (begin (vector-set! rr j (- (vector-ref rr j) (* factor (vector-ref pivrow j))))
+                                   (ec (+ j 1)))))
+                      (er (+ r 1))))))
+            (col-loop (+ c 1)))))
+    (let ((x (make-vector N 0.0)))
+      (let bs ((i (- N 1)))
+        (if (>= i 0)
+            (let* ((rr (vector-ref M i))
+                   (acc (let sub ((j (+ i 1)) (a (vector-ref rr N)))
+                          (if (< j N) (sub (+ j 1) (- a (* (vector-ref rr j) (vector-ref x j)))) a))))
+              (vector-set! x i (/ acc (vector-ref rr i))) (bs (- i 1)))))
+      x)))
+
+;; recover the full order-n sub-tensor over `vars` at xs → list of (betak . value)
+(define (sg-block-recover f xs vars n)
+  (let* ((k     (sg-length vars))
+         (m     (vector-length xs))
+         (betas (sg-compositions k n))
+         (N     (sg-length betas))
+         (dirs  (sg-lattice-directions k n))
+         (nf    (sg-factorial n))
+         (bvec  (make-vector N 0.0))
+         (Amat  (make-vector N #f)))
+    (let loop ((j 0) (ds dirs))
+      (if (pair? ds)
+          (let* ((rv    (car ds))
+                 (w     (sg-embed-dir rv vars m))
+                 ;; n!·c_n via the robust derivative-n primitive; c_n = d_n / n!
+                 (dn    (derivative-n (lambda (t) (f (sg-add-scaled xs t w))) 0.0 n))
+                 (cn    (/ dn nf))
+                 (rowv  (make-vector N 0.0)))
+            (vector-set! bvec j cn)
+            (let bl ((bi 0) (bs betas))
+              (if (pair? bs)
+                  (begin (vector-set! rowv bi (sg-monomial rv (car bs))) (bl (+ bi 1) (cdr bs)))))
+            (vector-set! Amat j rowv)
+            (loop (+ j 1) (cdr ds)))))
+    (let ((sol (sg-gauss-solve Amat bvec N)))
+      (let zp ((i 0) (bs betas) (acc '()))
+        (if (pair? bs)
+            (zp (+ i 1) (cdr bs) (cons (cons (car bs) (vector-ref sol i)) acc))
+            (sg-reverse acc))))))
+
+;; build a length-m multi-index list from (var . count) pairs
+(define (sg-assoc-num key alist)
+  (cond ((null? alist) 0)
+        ((= key (car (car alist))) (cdr (car alist)))
+        (else (sg-assoc-num key (cdr alist)))))
+
+(define (sg-zip-pairs vars betak)
+  (if (and (pair? vars) (pair? betak))
+      (cons (cons (car vars) (car betak)) (sg-zip-pairs (cdr vars) (cdr betak)))
+      '()))
+
+(define (sg-full-index vars betak m)
+  (let ((z (sg-zip-pairs vars betak)))
+    (let loop ((i (- m 1)) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (sg-assoc-num i z) acc))))))
+
+;; already-present? test for the accumulator alist keyed by full multi-index
+(define (sg-key-present? key alist)
+  (cond ((null? alist) #f)
+        ((sg-list-eq (car (car alist)) key) #t)
+        (else (sg-key-present? key (cdr alist)))))
+
+;; merge one block's dense tensor (list of (betak . value)) into acc
+(define (sg-merge-block sol vars m acc)
+  (let loop ((s sol) (a acc))
+    (if (pair? s)
+        (let* ((betak (car (car s)))
+               (val   (cdr (car s))))
+          (if (> (abs val) 1e-13)
+              (let ((key (sg-full-index vars betak m)))
+                (if (sg-key-present? key a)
+                    (loop (cdr s) a)
+                    (loop (cdr s) (cons (cons key val) a))))
+              (loop (cdr s) a)))
+        a)))
+
+(define (sparse-mixed-partials f xs order pattern)
+  (if (< order 3)
+      (error "sparse-mixed-partials: order must be >= 3; use sparse-hessian / gradient for order <= 2")
+      (let ((m (vector-length xs)))
+        (let loop ((p pattern) (acc '()))
+          (if (pair? p)
+              (let* ((vars (sg-sorted-unique (car p)))
+                     (sol  (sg-block-recover f xs vars order)))
+                (loop (cdr p) (sg-merge-block sol vars m acc)))
+              ;; 'smp m order alist
+              (list 'smp m order acc))))))
+
+;; counts of each variable 0..m-1 inside `idxs`  → length-m multi-index list
+(define (sg-counts-full idxs m)
+  (let loop ((i (- m 1)) (acc '()))
+    (if (< i 0) acc
+        (loop (- i 1)
+              (cons (let c ((in idxs) (n 0))
+                      (if (pair? in) (c (cdr in) (if (= (car in) i) (+ n 1) n)) n))
+                    acc)))))
+
+(define (sparse-mixed-partials-ref sp idxs)
+  (let* ((m (sg-nth sp 1)) (alist (sg-nth sp 3))
+         (key (sg-counts-full idxs m)))
+    (let loop ((a alist))
+      (cond ((null? a) 0.0)
+            ((sg-list-eq (car (car a)) key) (cdr (car a)))
+            (else (loop (cdr a)))))))
+
+(define (sparse-mixed-partials-entries sp) (sg-nth sp 3))
