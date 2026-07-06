@@ -1,0 +1,118 @@
+; syntax-rules NESTED ellipsis regression tests (ESH-0128)
+;
+; R7RS 4.3.2: a pattern variable matched at ellipsis-depth N may appear in a
+; template followed by N ellipses, flattening one level per extra ellipsis.
+; Covers depth-2 and depth-3 nesting, both the "flatten" (x ... ...) and the
+; "preserve nesting" (single ellipsis per level) template forms, plus a
+; sanity check that ordinary single-ellipsis macros still work (no
+; regression). Run with both `-r` (JIT) and AOT (`eshkol-run file -o bin`).
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name actual expected)
+  (if (equal? expected actual)
+      (begin
+        (display "PASS: ") (display name) (newline)
+        (set! passed (+ passed 1)))
+      (begin
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display ", got ") (display actual) (newline)
+        (set! failed (+ failed 1)))))
+
+;; --- depth-2 nested ellipsis: flatten via "x ... ..." -----------------
+
+(define-syntax flatten2
+  (syntax-rules ()
+    ((_ (x ...) ...) (list x ... ...))))
+
+(check "flatten2 square"
+       (flatten2 (1 2) (3 4))
+       '(1 2 3 4))
+
+(check "flatten2 ragged"
+       (flatten2 (1 2 3) (4) (5 6))
+       '(1 2 3 4 5 6))
+
+(check "flatten2 empty outer"
+       (flatten2)
+       '())
+
+;; Exact ESH-0128 repro from the bug ticket / P6e nested_ellip family.
+(define-syntax flt
+  (syntax-rules ()
+    ((_ (r ...) ...) (+ r ... ...))))
+
+(check "flt repro (2 2)" (flt (1 2) (3 4)) 10)
+
+(define-syntax mat
+  (syntax-rules ()
+    ((_ (row ...) ...) (+ 0 row ... ...))))
+
+(check "mat 2x2 (nested_ellip depth-2 family)" (mat (1 1) (1 1)) 4)
+(check "mat 3x3" (mat (1 1 1) (1 1 1) (1 1 1)) 9)
+
+;; --- depth-2 nested ellipsis: preserve nesting (single ellipsis/level) -
+
+(define-syntax nest2
+  (syntax-rules ()
+    ((_ (row ...) ...) (list (list row ...) ...))))
+
+(check "nest2 preserves shape"
+       (nest2 (1 2) (3 4 5))
+       '((1 2) (3 4 5)))
+
+;; --- depth-2 with a shared (non-repeated) variable alongside the -------
+;; ellipsis-bound one, to make sure depth-0 bindings aren't mistaken for
+;; the repetition driver.
+
+(define-syntax scaled-flatten2
+  (syntax-rules ()
+    ((_ k (x ...) ...) (list k x ... ...))))
+
+(check "scaled-flatten2 shared var"
+       (scaled-flatten2 'tag (1 2) (3 4))
+       '(tag 1 2 3 4))
+
+;; --- depth-3 nested ellipsis: flatten via "x ... ... ..." --------------
+
+(define-syntax flatten3
+  (syntax-rules ()
+    ((_ ((x ...) ...) ...) (list x ... ... ...))))
+
+(check "flatten3"
+       (flatten3 ((1 2) (3)) ((4 5) (6 7 8)))
+       '(1 2 3 4 5 6 7 8))
+
+;; depth-3 preserving one level of nesting (flatten the innermost two only)
+(define-syntax flatten3-partial
+  (syntax-rules ()
+    ((_ ((x ...) ...) ...) (list (list x ... ...) ...))))
+
+(check "flatten3-partial"
+       (flatten3-partial ((1 2) (3)) ((4 5) (6 7 8)))
+       '((1 2 3) (4 5 6 7 8)))
+
+;; --- regression: single ellipsis (non-nested) must still work ----------
+
+(define-syntax collect
+  (syntax-rules ()
+    ((collect x ...) (list x ...))))
+
+(check "single ellipsis regression" (collect 1 2 3 4) '(1 2 3 4))
+
+(define-syntax my-and
+  (syntax-rules ()
+    ((_) #t)
+    ((_ e) e)
+    ((_ e r ...) (if e (my-and r ...) #f))))
+
+(check "recursive single-ellipsis macro regression" (my-and 1 2 3) 3)
+
+(newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -372,81 +372,15 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
 
         auto* pat_list = &rule->pattern->list;
 
-        // Pattern elements after macro name
-        uint64_t pat_start = 1;  // Skip macro name
+        // Match the macro-call arguments against the pattern elements
+        // (skipping the macro-name element at index 0). This shares the
+        // exact same sequence-matching engine used for nested list
+        // sub-patterns, so ellipsis — including nested ellipsis like
+        // ((r ...) ...) — is handled uniformly everywhere it can occur.
+        bool matched = matchPatternSeq(pat_list->elements, /*pat_start=*/1, pat_list->num_elements,
+                                        call_op->variables, call_op->num_vars, literals, bindings);
 
-        // Try to match arguments against pattern elements
-        bool matched = true;
-        uint64_t arg_idx = 0;
-
-        for (uint64_t pat_idx = pat_start; pat_idx < pat_list->num_elements && matched; pat_idx++) {
-            eshkol_macro_pattern_t* elem = pat_list->elements[pat_idx];
-            if (!elem) {
-                matched = false;
-                break;
-            }
-
-            if (elem->followed_by_ellipsis) {
-                // Collect remaining arguments for this pattern variable
-                std::string var_name = elem->identifier ? elem->identifier : "";
-                Binding binding;
-                binding.name = var_name;
-
-                // Collect all remaining arguments
-                while (arg_idx < call_op->num_vars) {
-                    binding.values.push_back(call_op->variables[arg_idx]);
-                    arg_idx++;
-                }
-                bindings[var_name] = binding;
-            } else if (elem->type == MACRO_PAT_VARIABLE) {
-                // Single variable - must have an argument
-                if (arg_idx >= call_op->num_vars) {
-                    matched = false;
-                    break;
-                }
-                std::string var_name = elem->identifier ? elem->identifier : "";
-                Binding binding;
-                binding.name = var_name;
-                binding.values.push_back(call_op->variables[arg_idx]);
-                bindings[var_name] = binding;
-                arg_idx++;
-            } else if (elem->type == MACRO_PAT_LITERAL) {
-                // Literal must match exactly
-                if (arg_idx >= call_op->num_vars) {
-                    matched = false;
-                    break;
-                }
-                std::string expected = elem->identifier ? elem->identifier : "";
-                std::string actual = getSymbolName(call_op->variables[arg_idx]);
-                if (expected != actual) {
-                    matched = false;
-                    break;
-                }
-                arg_idx++;
-            } else if (elem->type == MACRO_PAT_LIST) {
-                // Nested list pattern - delegate to recursive matchPattern
-                if (arg_idx >= call_op->num_vars) {
-                    matched = false;
-                    break;
-                }
-                if (!matchPattern(elem, call_op->variables[arg_idx], literals, bindings)) {
-                    matched = false;
-                    break;
-                }
-                arg_idx++;
-            }
-        }
-
-        // Check if all arguments were consumed
-        bool has_ellipsis = false;
-        if (pat_list->num_elements > pat_start) {
-            eshkol_macro_pattern_t* last = pat_list->elements[pat_list->num_elements - 1];
-            if (last && last->followed_by_ellipsis) {
-                has_ellipsis = true;
-            }
-        }
-
-        if (matched && (arg_idx == call_op->num_vars || has_ellipsis)) {
+        if (matched) {
             // Rule matched! Instantiate the template
             return instantiateTemplate(rule->template_, bindings);
         }
@@ -481,8 +415,8 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
                 return null_ast;
             }
             auto it = bindings.find(tmpl->variable_name);
-            if (it != bindings.end() && !it->second.values.empty()) {
-                return copyAst(it->second.values[0]);
+            if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
+                return copyAst(matchTreeFirstScalar(it->second.tree));
             }
             // Variable not found - return as symbol reference
             eshkol_ast_t var_ast;
@@ -543,12 +477,44 @@ bool MacroExpander::isEllipsisSymbol(const eshkol_ast_t& ast) const {
            std::string(ast.variable.id) == "...";
 }
 
-bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
-                                          const Bindings& bindings,
-                                          std::string& binding_name) const {
+bool MacroExpander::matchTreeHasValue(const MatchTree& tree) {
+    if (tree.depth == 0) return true;
+    return !tree.elements.empty();
+}
+
+const eshkol_ast_t& MacroExpander::matchTreeFirstScalar(const MatchTree& tree) {
+    if (tree.depth == 0) return tree.scalar;
+    return matchTreeFirstScalar(tree.elements.front());
+}
+
+MacroExpander::Bindings MacroExpander::peelBindingsAtIndex(const Bindings& bindings, size_t index) const {
+    Bindings result;
+    for (const auto& kv : bindings) {
+        Binding nb;
+        nb.name = kv.first;
+        const MatchTree& tree = kv.second.tree;
+        if (tree.depth == 0) {
+            // Not repeated at this level — shared unchanged across every repetition.
+            nb.tree = tree;
+        } else if (!tree.elements.empty()) {
+            size_t idx = std::min(index, tree.elements.size() - 1);
+            nb.tree = tree.elements[idx];
+        } else {
+            // Matched zero repetitions — peel to an empty tree one level shallower.
+            nb.tree.depth = tree.depth - 1;
+        }
+        result[kv.first] = nb;
+    }
+    return result;
+}
+
+bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
+                                        const Bindings& bindings,
+                                        std::string& binding_name) const {
     if (ast.type == ESHKOL_VAR && ast.variable.id) {
         std::string name = ast.variable.id;
-        if (bindings.find(name) != bindings.end()) {
+        auto it = bindings.find(name);
+        if (it != bindings.end() && it->second.tree.depth >= 1) {
             binding_name = name;
             return true;
         }
@@ -557,9 +523,9 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
 
     if (ast.type == ESHKOL_CONS) {
         return (ast.cons_cell.car &&
-                findRepeatedBinding(*ast.cons_cell.car, bindings, binding_name)) ||
+                findEllipsisDriver(*ast.cons_cell.car, bindings, binding_name)) ||
                (ast.cons_cell.cdr &&
-                findRepeatedBinding(*ast.cons_cell.cdr, bindings, binding_name));
+                findEllipsisDriver(*ast.cons_cell.cdr, bindings, binding_name));
     }
 
     if (ast.type != ESHKOL_OP) {
@@ -574,12 +540,20 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
         case ESHKOL_WHEN_OP:
         case ESHKOL_UNLESS_OP:
         case ESHKOL_DO_OP:
+        // Same call_op layout for the quote family — an ellipsis-repeated
+        // template element may reference its driving pattern variable from
+        // inside (quasi)quoted data (parallels the quote-family recursion in
+        // substituteBindings).
+        case ESHKOL_QUASIQUOTE_OP:
+        case ESHKOL_UNQUOTE_OP:
+        case ESHKOL_UNQUOTE_SPLICING_OP:
+        case ESHKOL_QUOTE_OP:
             if (op->call_op.func &&
-                findRepeatedBinding(*op->call_op.func, bindings, binding_name)) {
+                findEllipsisDriver(*op->call_op.func, bindings, binding_name)) {
                 return true;
             }
             for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                if (findRepeatedBinding(op->call_op.variables[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->call_op.variables[i], bindings, binding_name)) {
                     return true;
                 }
             }
@@ -589,7 +563,7 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
         case ESHKOL_AND_OP:
         case ESHKOL_OR_OP:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                if (findRepeatedBinding(op->sequence_op.expressions[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->sequence_op.expressions[i], bindings, binding_name)) {
                     return true;
                 }
             }
@@ -597,32 +571,32 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
 
         case ESHKOL_DEFINE_OP:
             return op->define_op.value &&
-                   findRepeatedBinding(*op->define_op.value, bindings, binding_name);
+                   findEllipsisDriver(*op->define_op.value, bindings, binding_name);
 
         case ESHKOL_LAMBDA_OP:
             return op->lambda_op.body &&
-                   findRepeatedBinding(*op->lambda_op.body, bindings, binding_name);
+                   findEllipsisDriver(*op->lambda_op.body, bindings, binding_name);
 
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
         case ESHKOL_LETREC_STAR_OP:
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                if (findRepeatedBinding(op->let_op.bindings[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->let_op.bindings[i], bindings, binding_name)) {
                     return true;
                 }
             }
             return op->let_op.body &&
-                   findRepeatedBinding(*op->let_op.body, bindings, binding_name);
+                   findEllipsisDriver(*op->let_op.body, bindings, binding_name);
 
         case ESHKOL_MATCH_OP:
             if (op->match_op.expr &&
-                findRepeatedBinding(*op->match_op.expr, bindings, binding_name)) {
+                findEllipsisDriver(*op->match_op.expr, bindings, binding_name)) {
                 return true;
             }
             for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
                 if (op->match_op.clauses[i].body &&
-                    findRepeatedBinding(*op->match_op.clauses[i].body, bindings, binding_name)) {
+                    findEllipsisDriver(*op->match_op.clauses[i].body, bindings, binding_name)) {
                     return true;
                 }
             }
@@ -630,16 +604,16 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
 
         case ESHKOL_SET_OP:
             return op->set_op.value &&
-                   findRepeatedBinding(*op->set_op.value, bindings, binding_name);
+                   findEllipsisDriver(*op->set_op.value, bindings, binding_name);
 
         case ESHKOL_GUARD_OP:
             for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
-                if (findRepeatedBinding(op->guard_op.clauses[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->guard_op.clauses[i], bindings, binding_name)) {
                     return true;
                 }
             }
             for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
-                if (findRepeatedBinding(op->guard_op.body[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->guard_op.body[i], bindings, binding_name)) {
                     return true;
                 }
             }
@@ -647,11 +621,11 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
 
         case ESHKOL_RAISE_OP:
             return op->raise_op.exception &&
-                   findRepeatedBinding(*op->raise_op.exception, bindings, binding_name);
+                   findEllipsisDriver(*op->raise_op.exception, bindings, binding_name);
 
         case ESHKOL_VALUES_OP:
             for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                if (findRepeatedBinding(op->values_op.expressions[i], bindings, binding_name)) {
+                if (findEllipsisDriver(op->values_op.expressions[i], bindings, binding_name)) {
                     return true;
                 }
             }
@@ -659,268 +633,50 @@ bool MacroExpander::findRepeatedBinding(const eshkol_ast_t& ast,
 
         case ESHKOL_CALL_CC_OP:
             return op->call_cc_op.proc &&
-                   findRepeatedBinding(*op->call_cc_op.proc, bindings, binding_name);
+                   findEllipsisDriver(*op->call_cc_op.proc, bindings, binding_name);
 
         case ESHKOL_DYNAMIC_WIND_OP:
             return (op->dynamic_wind_op.before &&
-                    findRepeatedBinding(*op->dynamic_wind_op.before, bindings, binding_name)) ||
+                    findEllipsisDriver(*op->dynamic_wind_op.before, bindings, binding_name)) ||
                    (op->dynamic_wind_op.thunk &&
-                    findRepeatedBinding(*op->dynamic_wind_op.thunk, bindings, binding_name)) ||
+                    findEllipsisDriver(*op->dynamic_wind_op.thunk, bindings, binding_name)) ||
                    (op->dynamic_wind_op.after &&
-                    findRepeatedBinding(*op->dynamic_wind_op.after, bindings, binding_name));
+                    findEllipsisDriver(*op->dynamic_wind_op.after, bindings, binding_name));
 
         default:
             return false;
     }
 }
 
-eshkol_ast_t MacroExpander::substituteBindingsAtIndex(const eshkol_ast_t& ast,
-                                                       const Bindings& bindings,
-                                                       size_t index) {
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        std::string name = ast.variable.id;
-        auto it = bindings.find(name);
-        if (it != bindings.end() && !it->second.values.empty()) {
-            size_t value_index = std::min(index, it->second.values.size() - 1);
-            return copyAst(it->second.values[value_index]);
-        }
-        return copyAst(ast);
-    }
-
-    if (ast.type == ESHKOL_CONS) {
-        eshkol_ast_t result;
-        result.type = ESHKOL_CONS;
-        result.cons_cell.car = new eshkol_ast_t;
-        *result.cons_cell.car = ast.cons_cell.car ?
-            substituteBindingsAtIndex(*ast.cons_cell.car, bindings, index) : eshkol_ast_t{};
-        result.cons_cell.cdr = new eshkol_ast_t;
-        *result.cons_cell.cdr = ast.cons_cell.cdr ?
-            substituteBindingsAtIndex(*ast.cons_cell.cdr, bindings, index) : eshkol_ast_t{};
-        return result;
-    }
-
-    if (ast.type != ESHKOL_OP) {
-        return copyAst(ast);
-    }
-
-    eshkol_ast_t result;
-    result.type = ESHKOL_OP;
-    result.operation = ast.operation;
-    auto* op = &result.operation;
-
-    auto substitute_array_at_index = [&](const eshkol_ast_t* items, uint64_t count) {
-        std::vector<eshkol_ast_t> out;
-        out.reserve(count);
-        for (uint64_t i = 0; i < count; i++) {
-            out.push_back(substituteBindingsAtIndex(items[i], bindings, index));
-        }
-        return out;
-    };
-
-    switch (op->op) {
-        case ESHKOL_CALL_OP:
-        case ESHKOL_COND_OP:
-        case ESHKOL_CASE_OP:
-        case ESHKOL_WHEN_OP:
-        case ESHKOL_UNLESS_OP:
-        case ESHKOL_DO_OP:
-        // Same call_op layout for the quote family — recurse so pattern
-        // variables inside (quasi)quoted data are substituted per-ellipsis
-        // element too (parallels the fix in substituteBindings).
-        case ESHKOL_QUASIQUOTE_OP:
-        case ESHKOL_UNQUOTE_OP:
-        case ESHKOL_UNQUOTE_SPLICING_OP:
-        case ESHKOL_QUOTE_OP:
-            if (op->call_op.func) {
-                eshkol_ast_t* new_func = new eshkol_ast_t;
-                *new_func = substituteBindingsAtIndex(*op->call_op.func, bindings, index);
-                op->call_op.func = new_func;
-            }
-            if (op->call_op.num_vars > 0 && op->call_op.variables) {
-                std::vector<eshkol_ast_t> new_vars_vec =
-                    substitute_array_at_index(op->call_op.variables, op->call_op.num_vars);
-                op->call_op.num_vars = new_vars_vec.size();
-                op->call_op.variables = new eshkol_ast_t[op->call_op.num_vars];
-                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
-                    op->call_op.variables[i] = new_vars_vec[i];
-                }
-            }
-            break;
-
-        case ESHKOL_SEQUENCE_OP:
-        case ESHKOL_AND_OP:
-        case ESHKOL_OR_OP:
-            if (op->sequence_op.num_expressions > 0 && op->sequence_op.expressions) {
-                std::vector<eshkol_ast_t> new_exprs_vec =
-                    substitute_array_at_index(op->sequence_op.expressions,
-                                              op->sequence_op.num_expressions);
-                op->sequence_op.num_expressions = new_exprs_vec.size();
-                op->sequence_op.expressions = new eshkol_ast_t[op->sequence_op.num_expressions];
-                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
-                    op->sequence_op.expressions[i] = new_exprs_vec[i];
-                }
-            }
-            break;
-
-        case ESHKOL_DEFINE_OP:
-            if (op->define_op.value) {
-                eshkol_ast_t* new_val = new eshkol_ast_t;
-                *new_val = substituteBindingsAtIndex(*op->define_op.value, bindings, index);
-                op->define_op.value = new_val;
-            }
-            break;
-
-        case ESHKOL_LAMBDA_OP:
-            if (op->lambda_op.body) {
-                eshkol_ast_t* new_body = new eshkol_ast_t;
-                *new_body = substituteBindingsAtIndex(*op->lambda_op.body, bindings, index);
-                op->lambda_op.body = new_body;
-            }
-            break;
-
-        case ESHKOL_LET_OP:
-        case ESHKOL_LET_STAR_OP:
-        case ESHKOL_LETREC_OP:
-        case ESHKOL_LETREC_STAR_OP:
-            if (op->let_op.num_bindings > 0 && op->let_op.bindings) {
-                op->let_op.bindings = new eshkol_ast_t[op->let_op.num_bindings];
-                for (uint64_t i = 0; i < ast.operation.let_op.num_bindings; i++) {
-                    op->let_op.bindings[i] =
-                        substituteBindingsAtIndex(ast.operation.let_op.bindings[i], bindings, index);
-                }
-            }
-            if (op->let_op.body) {
-                eshkol_ast_t* new_body = new eshkol_ast_t;
-                *new_body = substituteBindingsAtIndex(*op->let_op.body, bindings, index);
-                op->let_op.body = new_body;
-            }
-            break;
-
-        case ESHKOL_MATCH_OP:
-            if (op->match_op.expr) {
-                eshkol_ast_t* new_expr = new eshkol_ast_t;
-                *new_expr = substituteBindingsAtIndex(*op->match_op.expr, bindings, index);
-                op->match_op.expr = new_expr;
-            }
-            if (op->match_op.num_clauses > 0 && op->match_op.clauses) {
-                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
-                    if (op->match_op.clauses[i].body) {
-                        eshkol_ast_t* new_body = new eshkol_ast_t;
-                        *new_body = substituteBindingsAtIndex(*op->match_op.clauses[i].body,
-                                                              bindings,
-                                                              index);
-                        op->match_op.clauses[i].body = new_body;
-                    }
-                }
-            }
-            break;
-
-        case ESHKOL_SET_OP:
-            if (op->set_op.value) {
-                eshkol_ast_t* new_val = new eshkol_ast_t;
-                *new_val = substituteBindingsAtIndex(*op->set_op.value, bindings, index);
-                op->set_op.value = new_val;
-            }
-            break;
-
-        case ESHKOL_GUARD_OP:
-            if (op->guard_op.num_clauses > 0 && op->guard_op.clauses) {
-                op->guard_op.clauses = new eshkol_ast_t[op->guard_op.num_clauses];
-                for (uint64_t i = 0; i < ast.operation.guard_op.num_clauses; i++) {
-                    op->guard_op.clauses[i] =
-                        substituteBindingsAtIndex(ast.operation.guard_op.clauses[i], bindings, index);
-                }
-            }
-            if (op->guard_op.num_body_exprs > 0 && op->guard_op.body) {
-                op->guard_op.body = new eshkol_ast_t[op->guard_op.num_body_exprs];
-                for (uint64_t i = 0; i < ast.operation.guard_op.num_body_exprs; i++) {
-                    op->guard_op.body[i] =
-                        substituteBindingsAtIndex(ast.operation.guard_op.body[i], bindings, index);
-                }
-            }
-            break;
-
-        case ESHKOL_RAISE_OP:
-            if (op->raise_op.exception) {
-                eshkol_ast_t* new_exc = new eshkol_ast_t;
-                *new_exc = substituteBindingsAtIndex(*op->raise_op.exception, bindings, index);
-                op->raise_op.exception = new_exc;
-            }
-            break;
-
-        case ESHKOL_VALUES_OP:
-            if (op->values_op.num_values > 0 && op->values_op.expressions) {
-                std::vector<eshkol_ast_t> new_values_vec =
-                    substitute_array_at_index(op->values_op.expressions, op->values_op.num_values);
-                op->values_op.num_values = new_values_vec.size();
-                op->values_op.expressions = new eshkol_ast_t[op->values_op.num_values];
-                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
-                    op->values_op.expressions[i] = new_values_vec[i];
-                }
-            }
-            break;
-
-        case ESHKOL_CALL_CC_OP:
-            if (op->call_cc_op.proc) {
-                eshkol_ast_t* new_proc = new eshkol_ast_t;
-                *new_proc = substituteBindingsAtIndex(*op->call_cc_op.proc, bindings, index);
-                op->call_cc_op.proc = new_proc;
-            }
-            break;
-
-        case ESHKOL_DYNAMIC_WIND_OP:
-            if (op->dynamic_wind_op.before) {
-                eshkol_ast_t* new_before = new eshkol_ast_t;
-                *new_before = substituteBindingsAtIndex(*op->dynamic_wind_op.before, bindings, index);
-                op->dynamic_wind_op.before = new_before;
-            }
-            if (op->dynamic_wind_op.thunk) {
-                eshkol_ast_t* new_thunk = new eshkol_ast_t;
-                *new_thunk = substituteBindingsAtIndex(*op->dynamic_wind_op.thunk, bindings, index);
-                op->dynamic_wind_op.thunk = new_thunk;
-            }
-            if (op->dynamic_wind_op.after) {
-                eshkol_ast_t* new_after = new eshkol_ast_t;
-                *new_after = substituteBindingsAtIndex(*op->dynamic_wind_op.after, bindings, index);
-                op->dynamic_wind_op.after = new_after;
-            }
-            break;
-
-        default:
-            break;
-    }
-
-    return result;
-}
-
-std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElement(const eshkol_ast_t& ast,
-                                                                const Bindings& bindings) {
+std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElementN(const eshkol_ast_t& ast,
+                                                                  const Bindings& bindings,
+                                                                  int ellipsis_count) {
     std::vector<eshkol_ast_t> expanded;
 
-    if (ast.type == ESHKOL_VAR && ast.variable.id) {
-        std::string name = ast.variable.id;
-        auto it = bindings.find(name);
-        if (it != bindings.end()) {
-            expanded.reserve(it->second.values.size());
-            for (const auto& value : it->second.values) {
-                expanded.push_back(copyAst(value));
-            }
-            return expanded;
-        }
-    }
-
-    std::string binding_name;
-    if (findRepeatedBinding(ast, bindings, binding_name)) {
-        const auto& values = bindings.at(binding_name).values;
-        expanded.reserve(values.size());
-        for (size_t i = 0; i < values.size(); i++) {
-            expanded.push_back(substituteBindingsAtIndex(ast, bindings, i));
-        }
+    std::string drive;
+    if (!findEllipsisDriver(ast, bindings, drive)) {
+        eshkol_error("misplaced ellipsis in macro template");
+        expanded.push_back(substituteBindings(ast, bindings));
         return expanded;
     }
 
-    eshkol_error("misplaced ellipsis in macro template");
-    expanded.push_back(substituteBindings(ast, bindings));
+    size_t n = bindings.at(drive).tree.elements.size();
+    expanded.reserve(n);
+    for (size_t i = 0; i < n; i++) {
+        Bindings peeled = peelBindingsAtIndex(bindings, i);
+        if (ellipsis_count <= 1) {
+            // One ellipsis consumed and none left: substitute this repetition
+            // as a single template result (may itself contain further,
+            // independent ellipses — substituteBindings handles those).
+            expanded.push_back(substituteBindings(ast, peeled));
+        } else {
+            // Another consecutive ellipsis follows in the template: this
+            // repetition's result is itself flattened (spliced) rather than
+            // nested, so recurse one ellipsis shallower and concatenate.
+            std::vector<eshkol_ast_t> sub = expandEllipsisElementN(ast, peeled, ellipsis_count - 1);
+            expanded.insert(expanded.end(), sub.begin(), sub.end());
+        }
+    }
     return expanded;
 }
 
@@ -930,20 +686,32 @@ std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_a
     std::vector<eshkol_ast_t> result;
     result.reserve(count);
 
-    for (uint64_t i = 0; i < count; i++) {
-        if (i + 1 < count && isEllipsisSymbol(items[i + 1])) {
-            std::vector<eshkol_ast_t> expanded = expandEllipsisElement(items[i], bindings);
+    for (uint64_t i = 0; i < count; ) {
+        // Count consecutive ellipsis markers following items[i] — R7RS
+        // nested ellipsis ("row ... ...") flattens one extra level per
+        // additional consecutive ellipsis.
+        uint64_t j = i + 1;
+        int ellipsis_count = 0;
+        while (j < count && isEllipsisSymbol(items[j])) {
+            ellipsis_count++;
+            j++;
+        }
+
+        if (ellipsis_count > 0) {
+            std::vector<eshkol_ast_t> expanded = expandEllipsisElementN(items[i], bindings, ellipsis_count);
             result.insert(result.end(), expanded.begin(), expanded.end());
-            i++;
+            i = j;
             continue;
         }
 
         if (isEllipsisSymbol(items[i])) {
             eshkol_error("misplaced ellipsis in macro template");
+            i++;
             continue;
         }
 
         result.push_back(substituteBindings(items[i], bindings));
+        i++;
     }
 
     return result;
@@ -955,8 +723,8 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
     if (ast.type == ESHKOL_VAR && ast.variable.id) {
         std::string name = ast.variable.id;
         auto it = bindings.find(name);
-        if (it != bindings.end() && !it->second.values.empty()) {
-            return copyAst(it->second.values[0]);
+        if (it != bindings.end() && matchTreeHasValue(it->second.tree)) {
+            return copyAst(matchTreeFirstScalar(it->second.tree));
         }
         return copyAst(ast);
     }
@@ -1277,7 +1045,8 @@ bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
             if (var_name == "_") return true;
             Binding binding;
             binding.name = var_name;
-            binding.values.push_back(ast);
+            binding.tree.depth = 0;
+            binding.tree.scalar = ast;
             bindings[var_name] = binding;
             return true;
         }
@@ -1289,48 +1058,126 @@ bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
         }
 
         case MACRO_PAT_LIST: {
-            // List patterns match list-like ASTs (calls, sequences)
+            // List patterns match list-like ASTs (calls, sequences), which are
+            // represented generically as [func, variables...]. Delegate to the
+            // shared sequence matcher so ellipsis (including nested ellipsis,
+            // e.g. a sub-pattern like (row ...) itself followed by ...) is
+            // handled identically to a top-level macro-call pattern.
             if (ast.type != ESHKOL_OP) return false;
 
             const auto* op = &ast.operation;
-            if (op->op != ESHKOL_CALL_OP) return false;
+            if (op->op != ESHKOL_CALL_OP || !op->call_op.func) return false;
 
-            // Match elements
-            uint64_t ast_count = op->call_op.num_vars + 1;  // +1 for func
-            uint64_t pat_count = pattern->list.num_elements;
-
-            // Check for ellipsis
-            bool has_ellipsis = false;
-            for (uint64_t i = 0; i < pat_count; i++) {
-                if (pattern->list.elements[i] && pattern->list.elements[i]->followed_by_ellipsis) {
-                    has_ellipsis = true;
-                    break;
-                }
+            std::vector<eshkol_ast_t> args;
+            args.reserve(op->call_op.num_vars + 1);
+            args.push_back(*op->call_op.func);
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                args.push_back(op->call_op.variables[i]);
             }
 
-            if (!has_ellipsis && ast_count != pat_count) return false;
-
-            // Match each element
-            for (uint64_t i = 0; i < pat_count && i < ast_count; i++) {
-                eshkol_ast_t elem_ast;
-                if (i == 0 && op->call_op.func) {
-                    elem_ast = *op->call_op.func;
-                } else if (i > 0 && op->call_op.variables) {
-                    elem_ast = op->call_op.variables[i - 1];
-                } else {
-                    return false;
-                }
-
-                if (!matchPattern(pattern->list.elements[i], elem_ast, literals, bindings)) {
-                    return false;
-                }
-            }
-
-            return true;
+            return matchPatternSeq(pattern->list.elements, 0, pattern->list.num_elements,
+                                    args.data(), args.size(), literals, bindings);
         }
 
         default:
             return false;
+    }
+}
+
+bool MacroExpander::matchPatternSeq(eshkol_macro_pattern_t* const* elements,
+                                     uint64_t pat_start, uint64_t pat_count,
+                                     const eshkol_ast_t* args, uint64_t arg_count,
+                                     const std::vector<std::string>& literals,
+                                     Bindings& bindings) {
+    uint64_t arg_idx = 0;
+
+    for (uint64_t pat_idx = pat_start; pat_idx < pat_count; pat_idx++) {
+        eshkol_macro_pattern_t* elem = elements[pat_idx];
+        if (!elem) return false;
+
+        if (elem->followed_by_ellipsis) {
+            // Greedily consume every remaining argument as one repetition of
+            // `elem`'s (possibly itself nested-ellipsis) sub-pattern.
+            uint64_t reps = arg_count - arg_idx;
+            std::vector<Bindings> sub_results(reps);
+            for (uint64_t r = 0; r < reps; r++) {
+                Bindings sub;
+                if (!matchPattern(elem, args[arg_idx + r], literals, sub)) {
+                    return false;
+                }
+                sub_results[r] = std::move(sub);
+            }
+            arg_idx += reps;
+
+            // Merge the per-repetition bindings into one depth+1 MatchTree
+            // per variable that `elem` can bind — computed structurally so
+            // that a zero-repetition match still binds every such variable
+            // to an empty sequence (R7RS 4.3.2) instead of leaving it
+            // unbound (which previously surfaced as "Undefined variable").
+            std::map<std::string, int> local_depths;
+            collectPatternVarDepths(elem, literals, 0, local_depths);
+            for (const auto& ld : local_depths) {
+                const std::string& name = ld.first;
+                int child_depth = ld.second;
+
+                Binding b;
+                b.name = name;
+                b.tree.depth = child_depth + 1;
+                b.tree.elements.reserve(reps);
+                for (uint64_t r = 0; r < reps; r++) {
+                    auto found = sub_results[r].find(name);
+                    if (found != sub_results[r].end()) {
+                        b.tree.elements.push_back(found->second.tree);
+                    } else {
+                        MatchTree empty;
+                        empty.depth = child_depth;
+                        b.tree.elements.push_back(empty);
+                    }
+                }
+                bindings[name] = b;
+            }
+            continue;
+        }
+
+        // No ellipsis on this pattern element: consume exactly one argument.
+        if (arg_idx >= arg_count) return false;
+        if (!matchPattern(elem, args[arg_idx], literals, bindings)) return false;
+        arg_idx++;
+    }
+
+    return arg_idx == arg_count;
+}
+
+void MacroExpander::collectPatternVarDepths(const eshkol_macro_pattern_t* pattern,
+                                             const std::vector<std::string>& literals,
+                                             int depth,
+                                             std::map<std::string, int>& out) const {
+    if (!pattern) return;
+    (void)literals;
+
+    switch (pattern->type) {
+        case MACRO_PAT_VARIABLE: {
+            std::string name = pattern->identifier ? pattern->identifier : "";
+            if (!name.empty() && name != "_") {
+                out[name] = depth;
+            }
+            break;
+        }
+
+        case MACRO_PAT_LITERAL:
+            break;
+
+        case MACRO_PAT_LIST:
+            for (uint64_t i = 0; i < pattern->list.num_elements; i++) {
+                eshkol_macro_pattern_t* child = pattern->list.elements[i];
+                if (!child) continue;
+                int child_depth = depth + (child->followed_by_ellipsis ? 1 : 0);
+                collectPatternVarDepths(child, literals, child_depth, out);
+            }
+            break;
+
+        default:
+            break;
     }
 }
 
