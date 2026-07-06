@@ -139,6 +139,89 @@ llvm::Value* TensorCodegen::createTensorWithDims(const std::vector<llvm::Value*>
     return typed_tensor_ptr;
 }
 
+llvm::Value* TensorCodegen::createTensorFromDimsArray(llvm::Value* dims_ptr,
+                                                      llvm::Value* ndim,
+                                                      llvm::Value* total,
+                                                      llvm::Value* fill_bits) {
+    auto& builder = ctx_.builder();
+    auto& context = ctx_.context();
+
+    llvm::Value* arena_ptr = builder.CreateLoad(
+        llvm::PointerType::get(context, 0), ctx_.globalArena());
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+
+    // Allocate tensor structure with header using arena
+    llvm::Function* alloc_tensor_func = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* typed_tensor_ptr = builder.CreateCall(alloc_tensor_func, {arena_ptr}, "new_tensor");
+
+    // Copy the runtime dims array into an arena-owned buffer so the tensor owns
+    // its shape (the source array may be a scratch buffer).
+    llvm::Value* dims_bytes = builder.CreateMul(ndim,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Value* owned_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "owned_dims");
+    llvm::Value* typed_owned_dims = builder.CreatePointerCast(owned_dims, ctx_.ptrType());
+    {
+        llvm::Function* memcpy_func = ctx_.module().getFunction("memcpy");
+        if (!memcpy_func) {
+            llvm::FunctionType* memcpy_type = llvm::FunctionType::get(
+                ctx_.ptrType(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()},
+                false);
+            memcpy_func = llvm::Function::Create(
+                memcpy_type, llvm::Function::ExternalLinkage, "memcpy", &ctx_.module());
+        }
+        builder.CreateCall(memcpy_func, {typed_owned_dims, dims_ptr, dims_bytes});
+    }
+
+    // Allocate elements array using arena
+    llvm::Value* elements_size = builder.CreateMul(total,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)));
+    llvm::Value* elements_ptr = builder.CreateCall(arena_alloc, {arena_ptr, elements_size}, "new_elems");
+    llvm::Value* typed_elements_ptr = builder.CreatePointerCast(elements_ptr, ctx_.ptrType());
+
+    // Fill every element with fill_bits via a runtime loop (handles any total).
+    if (fill_bits) {
+        llvm::Function* current_func = builder.GetInsertBlock()->getParent();
+        llvm::BasicBlock* loop_cond = llvm::BasicBlock::Create(context, "mtn_fill_cond", current_func);
+        llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(context, "mtn_fill_body", current_func);
+        llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(context, "mtn_fill_exit", current_func);
+
+        llvm::Value* counter = builder.CreateAlloca(ctx_.int64Type(), nullptr, "mtn_fill_i");
+        builder.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), counter);
+        builder.CreateBr(loop_cond);
+
+        builder.SetInsertPoint(loop_cond);
+        llvm::Value* i = builder.CreateLoad(ctx_.int64Type(), counter);
+        llvm::Value* cmp = builder.CreateICmpULT(i, total);
+        builder.CreateCondBr(cmp, loop_body, loop_exit);
+
+        builder.SetInsertPoint(loop_body);
+        llvm::Value* elem_ptr = builder.CreateGEP(ctx_.int64Type(), typed_elements_ptr, i);
+        builder.CreateStore(fill_bits, elem_ptr);
+        llvm::Value* next_i = builder.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        builder.CreateStore(next_i, counter);
+        builder.CreateBr(loop_cond);
+
+        builder.SetInsertPoint(loop_exit);
+    }
+
+    // Store tensor fields
+    llvm::Value* dims_field_ptr = builder.CreateStructGEP(tensor_type, typed_tensor_ptr, 0);
+    builder.CreateStore(typed_owned_dims, dims_field_ptr);
+
+    llvm::Value* num_dims_field_ptr = builder.CreateStructGEP(tensor_type, typed_tensor_ptr, 1);
+    builder.CreateStore(ndim, num_dims_field_ptr);
+
+    llvm::Value* elements_field_ptr = builder.CreateStructGEP(tensor_type, typed_tensor_ptr, 2);
+    builder.CreateStore(typed_elements_ptr, elements_field_ptr);
+
+    llvm::Value* total_elements_field_ptr = builder.CreateStructGEP(tensor_type, typed_tensor_ptr, 3);
+    builder.CreateStore(total, total_elements_field_ptr);
+
+    return typed_tensor_ptr;
+}
+
 // ===== TENSOR CREATION FUNCTIONS =====
 
 llvm::Value* TensorCodegen::tensor(const eshkol_operations_t* op) {
@@ -454,87 +537,56 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     builder.CreateBr(final_merge);
     llvm::BasicBlock* scalar_exit = builder.GetInsertBlock();
 
-    // LIST PATH: Extract dimensions from cons list (up to 4D)
+    // LIST PATH: Extract dimensions from cons list for ARBITRARY rank.
+    // Mirrors reshape(): walk the ENTIRE cons chain via the shared runtime
+    // helper eshkol_cons_list_to_dims so shapes of any rank (1..N) are honoured
+    // instead of silently truncating past 3 dimensions.
     builder.SetInsertPoint(list_path);
     llvm::Value* list_ptr_int = tagged_.unpackInt64(shape_arg);
     llvm::Value* cons_ptr = builder.CreateIntToPtr(list_ptr_int, ctx_.ptrType());
-    llvm::Value* is_car = llvm::ConstantInt::get(ctx_.int1Type(), 0);
-    llvm::Value* is_cdr_flag = llvm::ConstantInt::get(ctx_.int1Type(), 1);
 
-    // Extract first dimension
-    llvm::Value* dim1 = builder.CreateCall(
-        mem_.getTaggedConsGetInt64(), {cons_ptr, is_car});
+    llvm::Function* mt_arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* mt_list_arena = builder.CreateLoad(
+        llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
+    llvm::Value* mt_max_dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t));
+    llvm::Value* mt_dims_array = builder.CreateCall(
+        mt_arena_alloc, {mt_list_arena, mt_max_dims_bytes}, "mt_list_dims");
 
-    // Get cdr
-    llvm::Value* cdr_int = builder.CreateCall(
-        mem_.getTaggedConsGetPtr(), {cons_ptr, is_cdr_flag});
-    llvm::Value* cdr_null = builder.CreateICmpEQ(cdr_int,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    auto* mt_l2d_ft = llvm::FunctionType::get(ctx_.int64Type(),
+        {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* mt_l2d_fn = ctx_.module().getFunction("eshkol_cons_list_to_dims");
+    if (!mt_l2d_fn) {
+        mt_l2d_fn = llvm::Function::Create(mt_l2d_ft,
+            llvm::Function::ExternalLinkage, "eshkol_cons_list_to_dims", &ctx_.module());
+    }
+    llvm::Value* mt_list_ndim = builder.CreateCall(
+        mt_l2d_fn, {cons_ptr, mt_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
+        "mt_list_ndim");
 
-    llvm::BasicBlock* mt_has_dim2 = llvm::BasicBlock::Create(ctx_.context(), "mt_has_dim2", current_func);
-    llvm::BasicBlock* mt_list_1d = llvm::BasicBlock::Create(ctx_.context(), "mt_list_1d", current_func);
-    builder.CreateCondBr(cdr_null, mt_list_1d, mt_has_dim2);
+    auto* mt_total_ft = llvm::FunctionType::get(ctx_.int64Type(),
+        {ctx_.ptrType(), ctx_.int64Type()}, false);
+    llvm::Function* mt_total_fn = ctx_.module().getFunction("eshkol_compute_dims_total");
+    if (!mt_total_fn) {
+        mt_total_fn = llvm::Function::Create(mt_total_ft,
+            llvm::Function::ExternalLinkage, "eshkol_compute_dims_total", &ctx_.module());
+    }
+    llvm::Value* mt_list_total = builder.CreateCall(
+        mt_total_fn, {mt_dims_array, mt_list_ndim}, "mt_list_total");
 
-    // 1D case
-    builder.SetInsertPoint(mt_list_1d);
-    builder.CreateBr(final_merge);  // placeholder, will fix
+    llvm::Value* mt_list_tensor = createTensorFromDimsArray(
+        mt_dims_array, mt_list_ndim, mt_list_total, fill_bits);
+    builder.CreateBr(final_merge);
+    llvm::BasicBlock* mt_list_direct_exit = builder.GetInsertBlock();
+
+    // MERGE dimensions — shared by the vector and tensor-shape paths below,
+    // which still extract up to 3 explicit dimensions.
     llvm::BasicBlock* mt_merge = llvm::BasicBlock::Create(ctx_.context(), "mt_dims_merge", current_func);
-    // Re-route: go to merge
-    mt_list_1d->getTerminator()->eraseFromParent();
-    builder.SetInsertPoint(mt_list_1d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* list_1d_exit = builder.GetInsertBlock();
-
-    // 2D+ case
-    builder.SetInsertPoint(mt_has_dim2);
-    llvm::Value* cdr_cons = builder.CreateIntToPtr(cdr_int, ctx_.ptrType());
-    llvm::Value* dim2 = builder.CreateCall(
-        mem_.getTaggedConsGetInt64(), {cdr_cons, is_car});
-
-    llvm::Value* cddr_int = builder.CreateCall(
-        mem_.getTaggedConsGetPtr(), {cdr_cons, is_cdr_flag});
-    llvm::Value* cddr_null = builder.CreateICmpEQ(cddr_int,
-        llvm::ConstantInt::get(ctx_.int64Type(), 0));
-
-    llvm::BasicBlock* mt_has_dim3 = llvm::BasicBlock::Create(ctx_.context(), "mt_has_dim3", current_func);
-    llvm::BasicBlock* mt_list_2d = llvm::BasicBlock::Create(ctx_.context(), "mt_list_2d", current_func);
-    builder.CreateCondBr(cddr_null, mt_list_2d, mt_has_dim3);
-
-    // 2D case
-    builder.SetInsertPoint(mt_list_2d);
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* list_2d_exit = builder.GetInsertBlock();
-
-    // 3D case
-    builder.SetInsertPoint(mt_has_dim3);
-    llvm::Value* cddr_cons = builder.CreateIntToPtr(cddr_int, ctx_.ptrType());
-    llvm::Value* dim3 = builder.CreateCall(
-        mem_.getTaggedConsGetInt64(), {cddr_cons, is_car});
-    builder.CreateBr(mt_merge);
-    llvm::BasicBlock* list_3d_exit = builder.GetInsertBlock();
-
-    // MERGE dimensions
     builder.SetInsertPoint(mt_merge);
 
-    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_ndims");
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 2), list_2d_exit);
-    ndims_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 3), list_3d_exit);
-
-    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d1");
-    d1_phi->addIncoming(dim1, list_1d_exit);
-    d1_phi->addIncoming(dim1, list_2d_exit);
-    d1_phi->addIncoming(dim1, list_3d_exit);
-
-    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d2");
-    d2_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
-    d2_phi->addIncoming(dim2, list_2d_exit);
-    d2_phi->addIncoming(dim2, list_3d_exit);
-
-    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 9, "mt_d3");
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_1d_exit);
-    d3_phi->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 1), list_2d_exit);
-    d3_phi->addIncoming(dim3, list_3d_exit);
+    llvm::PHINode* ndims_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_ndims");
+    llvm::PHINode* d1_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d1");
+    llvm::PHINode* d2_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d2");
+    llvm::PHINode* d3_phi = builder.CreatePHI(ctx_.int64Type(), 6, "mt_d3");
 
     // Create tensor based on ndims
     llvm::Value* is_1d = builder.CreateICmpEQ(ndims_phi,
@@ -721,8 +773,9 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
 
     // FINAL MERGE: scalar path or heap-shape path
     builder.SetInsertPoint(final_merge);
-    llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 2, "mt_result");
+    llvm::PHINode* result = builder.CreatePHI(ctx_.ptrType(), 3, "mt_result");
     result->addIncoming(scalar_tensor, scalar_exit);
+    result->addIncoming(mt_list_tensor, mt_list_direct_exit);
     result->addIncoming(list_tensor, list_done_exit);
 
     return tagged_.packHeapPtr(result);
