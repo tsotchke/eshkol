@@ -8,6 +8,7 @@
 
 #include <eshkol/core/runtime.h>
 #include <eshkol/core/resource_limits.h>
+#include <eshkol/backend/thread_pool.h>
 #include <eshkol/logger.h>
 
 #include "runtime_hosted_internal.h"
@@ -23,6 +24,35 @@ std::atomic<eshkol_runtime_state_t> g_runtime_state{ESHKOL_RUNTIME_INITIALIZING}
 std::atomic<eshkol_shutdown_reason_t> g_shutdown_reason{ESHKOL_SHUTDOWN_NONE};
 
 }  // namespace
+
+namespace eshkol::runtime_hosted {
+
+void shutdown_all_thread_pools() {
+    // thread_pool_global_shutdown() is idempotent — safe to call even if the
+    // global pool was never created (no-op), and safe to call more than once
+    // (guarded by mutex + null check) — so this can run unconditionally and
+    // be reached from more than one shutdown path with no double-join risk.
+    //
+    // Deliberately NOT wired here: the bytecode VM's own parallel-map pool
+    // (eshkol_vm_parallel_shutdown_global, lib/backend/vm_parallel.c). That
+    // pool backs `-r`/interpreted and eval-mode parallel-map, not the
+    // LLVM-codegen'd thread_pool.cpp path AOT-compiled binaries use. Calling
+    // it from here would force-link the whole bytecode-VM unity object (and
+    // its GPU/Metal/ObjC dependencies) into every AOT-compiled Eshkol
+    // program via eshkol-runtime, even ones that never touch the VM —
+    // confirmed experimentally: a minimal program linking only
+    // libeshkol-runtime.a failed to link with undefined Metal/ObjC runtime
+    // symbols once something referenced eshkol_vm_parallel_shutdown_global.
+    // The interpreter/eval drivers (exe/eshkol-run.cpp, exe/eshkol-repl.cpp)
+    // already link the full VM regardless and already call
+    // eshkol_runtime_shutdown() before returning; closing the analogous race
+    // for vm_parallel.c's pool belongs in those drivers directly (or behind
+    // a self-registered shutdown hook from vm_parallel_ensure_pool()), not
+    // in this always-linked TU. Tracked as a follow-up, out of scope here.
+    thread_pool_global_shutdown();
+}
+
+}  // namespace eshkol::runtime_hosted
 
 extern "C" {
 
@@ -108,6 +138,21 @@ void eshkol_runtime_shutdown(eshkol_shutdown_reason_t reason) {
             eshkol_warn("Timeout waiting for operations, proceeding with shutdown");
         }
     }
+
+    // ESH-0216: stop/join every runtime-owned worker-thread pool BEFORE
+    // running shutdown hooks or restoring signal handlers. Shutdown hooks
+    // (and future teardown steps) are free to reset or free shared
+    // arena-backed state; if a parallel-map/parallel-execute worker is still
+    // mid-task at that point it dereferences that state out from under
+    // itself and SIGSEGVs deep in teardown — well after "graceful shutdown"
+    // has already been logged, and the fatal-signal handler is still
+    // installed (eshkol_runtime_restore_signals() hasn't run yet), so the
+    // crash surfaces as "[Eshkol] fatal signal: SIGSEGV" at whatever address
+    // each racing worker happened to be touching. Stopping every pool here,
+    // ahead of everything else in this function, guarantees no Eshkol
+    // worker thread is running for the remainder of shutdown or after it
+    // returns.
+    eshkol::runtime_hosted::shutdown_all_thread_pools();
 
     eshkol::runtime_hosted::run_shutdown_hooks(reason);
     eshkol_stop_timer();
