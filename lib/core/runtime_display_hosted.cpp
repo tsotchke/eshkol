@@ -53,6 +53,36 @@ static void display_tensor(uint64_t tensor_ptr, eshkol_display_opts_t* opts);
 static void display_vector(uint64_t vector_ptr, eshkol_display_opts_t* opts);
 static void display_char(uint32_t codepoint, eshkol_display_opts_t* opts);
 
+// R7RS `write` string external representation: wrap in double quotes and
+// escape the characters the reader would otherwise mis-parse. `\\` and `\"`
+// are mandatory; `\a \b \t \n \r` are the named mnemonic escapes; every
+// other control byte is emitted as an inline hex escape `\xNN;`. Bytes >=
+// 0x80 (UTF-8 continuation/lead bytes) pass through untouched so multi-byte
+// characters round-trip. `display` never calls this — only `write`.
+static void write_escaped_string(FILE* out, const char* data, size_t len) {
+    fputc('"', out);
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)data[i];
+        switch (c) {
+            case '"':  fputs("\\\"", out); break;
+            case '\\': fputs("\\\\", out); break;
+            case '\a': fputs("\\a", out); break;
+            case '\b': fputs("\\b", out); break;
+            case '\t': fputs("\\t", out); break;
+            case '\n': fputs("\\n", out); break;
+            case '\r': fputs("\\r", out); break;
+            default:
+                if (c < 0x20 || c == 0x7f) {
+                    fprintf(out, "\\x%x;", (unsigned)c);
+                } else {
+                    fputc((int)c, out);
+                }
+                break;
+        }
+    }
+    fputc('"', out);
+}
+
 // ─── R7RS current-output-port / current-input-port / current-error-port ───
 // The cells back the Scheme-level `current-output-port` / etc. parameter
 // objects. `parameterize` mutates them via the setter; runtime helpers
@@ -233,9 +263,7 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     size_t payload = (header->size > 0) ? (size_t)header->size - 1 : 0;
                     FILE* out = get_output(opts);
                     if (opts->quote_strings) {
-                        fputc('"', out);
-                        if (payload > 0) fwrite(data_ptr, 1, payload, out);
-                        fputc('"', out);
+                        write_escaped_string(out, (const char*)data_ptr, payload);
                     } else {
                         if (payload > 0) fwrite(data_ptr, 1, payload, out);
                     }
@@ -347,7 +375,8 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
 
         case ESHKOL_VALUE_STRING_PTR:
             if (opts->quote_strings) {
-                fprintf(get_output(opts), "\"%s\"", (const char*)value->data.ptr_val);
+                const char* s = (const char*)value->data.ptr_val;
+                write_escaped_string(get_output(opts), s, s ? strlen(s) : 0);
             } else {
                 fprintf(get_output(opts), "%s", (const char*)value->data.ptr_val);
             }
