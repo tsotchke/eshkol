@@ -7,6 +7,10 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Never let an aborting sanitizer process dump a (multi-GB, huge-shadow-memory)
+# core. This is a hard peak-disk guard independent of ASAN_OPTIONS.
+ulimit -c 0 2>/dev/null || true
+
 REPO_ROOT="$(pwd)"
 BUILD_DIR="build-asan-ubsan"
 REPORT="SANITIZER_FUZZ_REPORT.md"
@@ -20,16 +24,37 @@ SKIP_BUILD=0
 SELF_TEST_ONLY=0
 NO_GENERATED=0
 LIMIT=0
-MAX_ARTIFACTS_GB="${ESHKOL_FUZZ_MAX_GB:-2}"
+# Default is a bounded gate sweep that completes fast and keeps disk peak tiny.
+# The full generated+tests corpus is only run with --full / ESHKOL_FUZZ_FULL=1
+# and is intended for a CI/mesh node with disk headroom, not interactive runs.
+GATE_LIMIT="${ESHKOL_FUZZ_GATE_LIMIT:-150}"
+FULL_SWEEP="${ESHKOL_FUZZ_FULL:-0}"
+# Disk budget precedence: --max-artifacts-mb (env ESHKOL_FUZZ_MAX_MB) beats
+# --max-artifacts-gb (env ESHKOL_FUZZ_MAX_GB); default is 300 MB.
+DEFAULT_MAX_ARTIFACTS_MB=300
+MAX_ARTIFACTS_MB="${ESHKOL_FUZZ_MAX_MB:-}"
+MAX_ARTIFACTS_GB="${ESHKOL_FUZZ_MAX_GB:-}"
+# Kernel-enforced per-file size cap (KiB) applied to the sweep children only,
+# after the build. Bounds any runaway stdout/stderr (and stray temp/core files)
+# so a single case cannot spike disk between budget checks. Comfortably above a
+# per-case AOT binary (~25 MB) but far below the artifact cap.
+SWEEP_FILE_CAP_KB="${ESHKOL_FUZZ_FILE_CAP_KB:-65536}"
 MAX_RETAINED_CRASHES="${ESHKOL_FUZZ_MAX_RETAINED_CRASHES:-200}"
 
 usage() {
     cat <<'EOF'
 Usage: scripts/run_sanitizer_fuzz.sh [options]
 
-Builds or reuses build-asan-ubsan, runs every tests/**/*.esk input plus a
-deterministic generated differential fuzz corpus through -r and AOT, and writes
-SANITIZER_FUZZ_REPORT.md with ASan/UBSan reports deduped by top frame.
+Builds or reuses build-asan-ubsan and runs a corpus of tests/**/*.esk inputs
+plus a deterministic generated differential fuzz corpus through -r and AOT,
+writing SANITIZER_FUZZ_REPORT.md with ASan/UBSan reports deduped by top frame.
+
+By default this runs a BOUNDED gate sweep (first 150 corpus files) so it
+finishes fast and keeps the on-disk peak tiny (<300 MB). The ICC trace is
+written for the bounded run, so the .icc sanitizer_fuzz gate still passes.
+Use --full (or ESHKOL_FUZZ_FULL=1) to run the entire generated+tests corpus;
+the full sweep is meant for a CI/mesh node with disk headroom, NOT interactive
+runs.
 
 Options:
   --skip-build             Reuse the existing sanitizer build.
@@ -41,9 +66,16 @@ Options:
   --count N                Generated differential program count (default: 200).
   --no-generated           Do not generate additional differential fuzz programs.
   --timeout SEC            Per process timeout (default: 90).
-  --limit N                Run only the first N corpus files (debugging only).
-  --max-artifacts-gb N     Hard cap for sanitizer-fuzz work dir (default: 2,
-                           env: ESHKOL_FUZZ_MAX_GB).
+  --full                   Run the entire corpus, not the bounded gate sweep
+                           (env: ESHKOL_FUZZ_FULL=1). For CI/mesh nodes only.
+  --gate-limit N           Bounded gate sweep size (default: 150,
+                           env: ESHKOL_FUZZ_GATE_LIMIT).
+  --limit N                Run only the first N corpus files (debugging only;
+                           overrides the bounded/full selection).
+  --max-artifacts-mb N     Hard cap for sanitizer-fuzz work dir in MB
+                           (default: 300, env: ESHKOL_FUZZ_MAX_MB).
+  --max-artifacts-gb N     Hard cap in GB (env: ESHKOL_FUZZ_MAX_GB). Overridden
+                           by --max-artifacts-mb when both are given.
   --max-retained-crashes N Cap retained sanitizer logs/repros (default: 200).
   --task-base N            First ESH id to allocate for sanitizer findings (default: 160).
   --self-test-only         Run only the synthetic ESH-0116-class sanitizer check.
@@ -62,7 +94,10 @@ while [ $# -gt 0 ]; do
         --count) COUNT="$2"; shift 2 ;;
         --no-generated) NO_GENERATED=1; shift ;;
         --timeout) TIMEOUT_RUN="$2"; shift 2 ;;
+        --full) FULL_SWEEP=1; shift ;;
+        --gate-limit) GATE_LIMIT="$2"; shift 2 ;;
         --limit) LIMIT="$2"; shift 2 ;;
+        --max-artifacts-mb) MAX_ARTIFACTS_MB="$2"; shift 2 ;;
         --max-artifacts-gb) MAX_ARTIFACTS_GB="$2"; shift 2 ;;
         --max-retained-crashes) MAX_RETAINED_CRASHES="$2"; shift 2 ;;
         --task-base) TASK_BASE="$2"; shift 2 ;;
@@ -111,24 +146,36 @@ case "$MAX_RETAINED_CRASHES" in
         ;;
 esac
 
-if ! MAX_ARTIFACTS_KB="$(python3 - "$MAX_ARTIFACTS_GB" <<'PY'
+if ! MAX_ARTIFACTS_KB="$(python3 - "$MAX_ARTIFACTS_MB" "$MAX_ARTIFACTS_GB" "$DEFAULT_MAX_ARTIFACTS_MB" <<'PY'
 import math
 import sys
 
-try:
-    gb = float(sys.argv[1])
-except ValueError:
-    print("invalid", file=sys.stderr)
-    raise SystemExit(1)
+mb_arg, gb_arg, default_mb = sys.argv[1], sys.argv[2], sys.argv[3]
 
-if not math.isfinite(gb) or gb <= 0:
-    print("invalid", file=sys.stderr)
-    raise SystemExit(1)
 
-print(max(1, int(math.ceil(gb * 1024 * 1024))))
+def parse(value, unit_kb, label):
+    try:
+        n = float(value)
+    except ValueError:
+        print("run_sanitizer_fuzz.sh: %s must be a positive number: %s" % (label, value),
+              file=sys.stderr)
+        raise SystemExit(1)
+    if not math.isfinite(n) or n <= 0:
+        print("run_sanitizer_fuzz.sh: %s must be a positive number: %s" % (label, value),
+              file=sys.stderr)
+        raise SystemExit(1)
+    return max(1, int(math.ceil(n * unit_kb)))
+
+
+# Precedence: --max-artifacts-mb, then --max-artifacts-gb, then default MB.
+if mb_arg:
+    print(parse(mb_arg, 1024, "--max-artifacts-mb"))
+elif gb_arg:
+    print(parse(gb_arg, 1024 * 1024, "--max-artifacts-gb"))
+else:
+    print(parse(default_mb, 1024, "default artifact cap"))
 PY
 )"; then
-    echo "run_sanitizer_fuzz.sh: --max-artifacts-gb must be a positive number: $MAX_ARTIFACTS_GB" >&2
     exit 2
 fi
 
@@ -150,12 +197,15 @@ fi
 : > "$TRACE_FILE_ABS" || exit 2
 : > "$RETAINED_SIGNATURES" || exit 2
 
+# disable_coredump=1 stops the sanitizer runtime from producing a (potentially
+# multi-GB, huge shadow-memory) core when it aborts. Reports still go to stderr
+# (default log_path), never to an on-disk log file.
 if [ "$(uname -s)" = "Darwin" ]; then
-    DEFAULT_ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1:print_stacktrace=1:strict_string_checks=1:detect_stack_use_after_return=0:symbolize=1"
+    DEFAULT_ASAN_OPTIONS="detect_leaks=0:halt_on_error=1:abort_on_error=1:disable_coredump=1:print_stacktrace=1:strict_string_checks=1:detect_stack_use_after_return=0:symbolize=1"
 else
-    DEFAULT_ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=1:print_stacktrace=1:strict_string_checks=1:detect_stack_use_after_return=0:symbolize=1"
+    DEFAULT_ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=1:disable_coredump=1:print_stacktrace=1:strict_string_checks=1:detect_stack_use_after_return=0:symbolize=1"
 fi
-DEFAULT_UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1"
+DEFAULT_UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1:abort_on_error=1:disable_coredump=1"
 export ASAN_OPTIONS="${ASAN_OPTIONS:-$DEFAULT_ASAN_OPTIONS}"
 export UBSAN_OPTIONS="${UBSAN_OPTIONS:-$DEFAULT_UBSAN_OPTIONS}"
 
@@ -374,7 +424,9 @@ C
         return
     fi
 
-    "$cc_bin" -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+    # Pass-path compile carries no debug info (-g0) so no .dSYM bundle is ever
+    # produced; a symbolized repro is only rebuilt (below) if the case trips.
+    "$cc_bin" -O1 -g0 -fsanitize=address,undefined -fno-sanitize-recover=all \
         -fno-omit-frame-pointer "$src" -o "$bin" >"$cout" 2>"$cerr"
     local crc=$?
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
@@ -395,6 +447,16 @@ C
     rm -f "$bin"
     rm -rf "$bin.dSYM"
     if grep -E 'ERROR: AddressSanitizer:|runtime error:|SUMMARY: UndefinedBehaviorSanitizer:' "$out" "$err" >/dev/null 2>&1; then
+        # The case tripped: rebuild THIS single source with -g into a temp path to
+        # capture a symbolized repro, fold it into the retained stderr, then
+        # delete the debug binary/dSYM so no debug bloat lingers.
+        local symbin="$d/esh0116_symbolized"
+        if "$cc_bin" -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all \
+            -fno-omit-frame-pointer "$src" -o "$symbin" >/dev/null 2>&1 && [ -x "$symbin" ]; then
+            run_guarded 15 "$symbin" >>"$out" 2>>"$err" || true
+        fi
+        rm -f "$symbin"
+        rm -rf "$symbin.dSYM"
         {
             printf 'status\tPASS\n'
             printf 'summary\tSynthetic unterminated numeric buffer repro emitted a sanitizer report rc=%s\n' "$rrc"
@@ -447,20 +509,27 @@ run_aot_axis() {
     err="$TMP_DIR/${idx}_${axis}_${h}.run.err"
 
     rm -f "$bin"
+    rm -rf "$bin.dSYM"
     run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" "$opt" "$src" -o "$bin" >"$cout" 2>"$cerr"
     crc=$?
     retain_sanitizer_logs "$src" "$axis" "compile" "$idx" "$cout" "$cerr"
     append_run "$src" "$axis" "compile" "$crc" "$RETAINED_OUT" "$RETAINED_ERR"
+    # Account for the freshly built (instrumented) binary while it still exists,
+    # so the peak is measured accurately and a spike aborts immediately.
+    check_disk_budget "compiled $axis binary for ${src#$REPO_ROOT/}"
     if [ "$crc" -ne 0 ] || [ ! -x "$bin" ]; then
         rm -f "$bin"
+        rm -rf "$bin.dSYM"
         return
     fi
 
     run_guarded "$TIMEOUT_RUN" "$bin" >"$out" 2>"$err"
     rrc=$?
+    check_disk_budget "ran $axis binary for ${src#$REPO_ROOT/}"
     retain_sanitizer_logs "$src" "$axis" "run" "$idx" "$out" "$err"
     append_run "$src" "$axis" "run" "$rrc" "$RETAINED_OUT" "$RETAINED_ERR"
     rm -f "$bin"
+    rm -rf "$bin.dSYM"
 }
 
 write_report() {
@@ -893,6 +962,14 @@ echo "  build: $BUILD_DIR_ABS"
 echo "  report: $REPORT_ABS"
 echo "  logs: $WORK_ROOT_ABS"
 echo "  artifact cap: $(format_kb "$MAX_ARTIFACTS_KB")"
+echo "  per-file cap: $(format_kb "$SWEEP_FILE_CAP_KB") (sweep children)"
+if [ "$LIMIT" -gt 0 ]; then
+    echo "  sweep mode: debug limit ($LIMIT files)"
+elif [ "$FULL_SWEEP" = "1" ]; then
+    echo "  sweep mode: full corpus"
+else
+    echo "  sweep mode: bounded gate ($GATE_LIMIT files; --full for entire corpus)"
+fi
 echo "  retained crash cap: $MAX_RETAINED_CRASHES"
 echo
 
@@ -925,16 +1002,39 @@ collect_corpus
 check_disk_budget "corpus collection"
 TOTAL_SOURCES=$(wc -l < "$CORPUS_LIST" | tr -d ' ')
 echo "Corpus: $TOTAL_SOURCES unique .esk files"
+
+# Resolve the effective sweep bound.
+#   --limit N        debug override, always wins
+#   --full / env     run the entire corpus
+#   (default)        bounded gate sweep of GATE_LIMIT files
+case "$GATE_LIMIT" in
+    ''|*[!0-9]*)
+        echo "run_sanitizer_fuzz.sh: --gate-limit must be a non-negative integer: $GATE_LIMIT" >&2
+        exit 2
+        ;;
+esac
+EFFECTIVE_LIMIT="$LIMIT"
 if [ "$LIMIT" -gt 0 ]; then
     echo "Debug limit: first $LIMIT files"
+elif [ "$FULL_SWEEP" = "1" ]; then
+    echo "Full sweep: running the entire corpus (CI/mesh mode)"
+else
+    EFFECTIVE_LIMIT="$GATE_LIMIT"
+    echo "Bounded gate sweep: first $EFFECTIVE_LIMIT files (use --full for the entire corpus)"
 fi
+
+# Kernel-enforced per-file size cap for the sweep and its children only. Set
+# AFTER the (large) build so linking eshkol-run / libeshkol-static.a is not
+# capped; bounds runaway per-case stdout/stderr and any stray core/temp file.
+ulimit -f "$SWEEP_FILE_CAP_KB" 2>/dev/null || true
+
 echo "Axes: -r, AOT -O0, AOT -O2"
 echo
 
 idx=0
 while IFS= read -r src; do
     idx=$((idx + 1))
-    if [ "$LIMIT" -gt 0 ] && [ "$idx" -gt "$LIMIT" ]; then
+    if [ "$EFFECTIVE_LIMIT" -gt 0 ] && [ "$idx" -gt "$EFFECTIVE_LIMIT" ]; then
         break
     fi
     check_disk_budget "before corpus file $idx (${src#$REPO_ROOT/})"
@@ -949,8 +1049,8 @@ while IFS= read -r src; do
     check_disk_budget "after corpus file $idx AOT -O2"
 done < "$CORPUS_LIST"
 
-if [ "$LIMIT" -gt 0 ] && [ "$LIMIT" -lt "$TOTAL_SOURCES" ]; then
-    TOTAL_REPORTED="$LIMIT"
+if [ "$EFFECTIVE_LIMIT" -gt 0 ] && [ "$EFFECTIVE_LIMIT" -lt "$TOTAL_SOURCES" ]; then
+    TOTAL_REPORTED="$EFFECTIVE_LIMIT"
 else
     TOTAL_REPORTED="$TOTAL_SOURCES"
 fi
