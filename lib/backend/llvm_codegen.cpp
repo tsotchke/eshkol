@@ -13626,6 +13626,7 @@ private:
 
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") return strio_->stringLength(op);
+        if (func_name == "string-byte-length") return strio_->stringByteLength(op);
         if (func_name == "string-ref") return strio_->stringRef(op);
         if (func_name == "string-append") return strio_->stringAppend(op);
         if (func_name == "substring") return strio_->substring(op);
@@ -23464,8 +23465,30 @@ private:
                 Type* param_type = mapStringToType(op->extern_op.parameters[i].str_val.ptr);
                 if (param_type != nullptr)
                     param_types.push_back(param_type);
-                else
+                else {
                     is_vaarg = true;
+                    // Variadic externs are NOT safe on arm64: the AArch64
+                    // AAPCS64 variadic calling convention spills named+
+                    // variadic args to the stack from the register save
+                    // area, but Eshkol's codegen passes fixed-position
+                    // args in registers as if the callee were non-variadic
+                    // — args after the fixed prefix arrive corrupted (seen
+                    // in practice: `open(path, O_CREAT, mode)`'s `mode`
+                    // arrived as garbage, see lib/core/memory_store.esk
+                    // header comment). Only fixed-arity `extern`s are
+                    // safe; wrap variadic libc functions (printf, open,
+                    // ioctl, …) behind a small fixed-arity C shim instead
+                    // of declaring them `extern` directly with `...`.
+                    eshkol_warn(
+                        "extern '%s' (real: %s) is declared variadic ('...'): "
+                        "variadic externs are unsafe on arm64 (argument "
+                        "corruption past the fixed prefix — see "
+                        "lib/core/memory_store.esk header comment and "
+                        "docs/reference/agent/ffi.md). Only fixed-arity "
+                        "externs are portable; wrap this function behind a "
+                        "fixed-arity C shim instead.",
+                        func_name, real_func_name);
+                }
             } else {
                 eshkol_warn("Parameter type must be a string, defaulting to int64");
                 param_types.push_back(int64_type);
@@ -37764,6 +37787,17 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         }
         link_args.emplace_back("-lobjc");
+
+        // Security framework: lib/core/crypto_primitives.c's
+        // SecRandomCopyBytes() (eshkol_random_bytes/eshkol_random_hex) needs
+        // it. That file is part of the eshkol-runtime archive force-loaded
+        // unconditionally above (runtime_lib_path), so this must be added
+        // unconditionally too — not only inside the `agent_ffi_path exists`
+        // branch above, which historically was the sole source of this
+        // framework flag back when the crypto symbols lived in the optional
+        // eshkol-agent-ffi archive. See Noesis bug report #2 (2026-07-04).
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Security");
 #endif
 
 #ifdef __APPLE__

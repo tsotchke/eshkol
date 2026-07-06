@@ -1248,7 +1248,7 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
             }
             return TypeCheckResult::ok(BuiltinTypes::String);
         }
-        if (func_name == "string-length" || func_name == "string->number") {
+        if (func_name == "string-length" || func_name == "string-byte-length" || func_name == "string->number") {
             // Narrow first arg to String
             if (call.num_vars >= 1 && call.variables[0].type == ESHKOL_VAR && call.variables[0].variable.id) {
                 auto cur_type = ctx_.lookup(call.variables[0].variable.id);

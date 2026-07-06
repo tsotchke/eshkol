@@ -80,9 +80,23 @@ of `agent_http_client.c` is compiled in (otherwise the entire
 file is `#ifdef`'d out and the qllm_http_* symbols remain
 satisfied by the existing weak unavailable stubs).
 
-The Crypto module is unconditional: macOS picks up CommonCrypto
-and SecRandom; Linux uses OpenSSL via `find_package(OpenSSL)`
-(`agent_crypto.c §HAVE_COMMONCRYPTO`/`HAVE_OPENSSL`).
+**Update (2026-07):** HMAC-SHA256/SHA256/secure-random moved out of
+this module entirely — they now live in `lib/core/crypto_primitives.c`,
+compiled into the core `eshkol-runtime` archive and linked into
+*every* `eshkol-run` AOT/`-r` binary unconditionally, independent of
+`ESHKOL_BUILD_AGENT_FFI` and of whether the program's source happens
+to `(require agent.…)`. Previously they were part of this optional,
+separately-rebuilt archive and only spliced into an AOT link when
+`requires_agent_ffi()` detected `(require agent.crypto)` (directly or
+transitively) — which meant a link racing a concurrent rebuild of the
+(much larger, more frequently rebuilt) agent-FFI archive could see a
+partial `.a` and fail with spurious undefined-symbol errors for
+`eshkol_sha256`/`eshkol_hmac_sha256`/etc even though the runtime was
+otherwise fine (Noesis bug report #2, 2026-07-04). macOS picks up
+CommonCrypto + Security/SecRandom; Windows uses BCrypt; Linux/other
+uses OpenSSL via `find_package(OpenSSL)` — all three probed/linked
+unconditionally now (`lib/core/crypto_primitives.c
+§HAVE_COMMONCRYPTO`/`HAVE_BCRYPT`/`HAVE_OPENSSL`). See §9.1 below.
 
 ### 2.2 Force-load into eshkol-run for JIT discovery
 
@@ -1132,9 +1146,19 @@ intended payload.
 
 ## 9. Crypto (`agent.crypto`)
 
-### 9.1 C runtime — `lib/agent/c/agent_crypto.c`
+### 9.1 C runtime — `lib/core/crypto_primitives.c`
 
-Three primitives: HMAC-SHA256, SHA256, secure random bytes.
+Three primitives: HMAC-SHA256, SHA256, secure random bytes. This file
+lives in `lib/core/` (not `lib/agent/c/`) and is compiled into the
+core `eshkol-runtime` archive unconditionally — it is **not** part of
+the optional `eshkol-agent-ffi` bundle, even though `agent.crypto`
+(`lib/agent/crypto.esk`) is the only `.esk`-level module that declares
+`extern`s against it today. It moved out of `lib/agent/c/agent_crypto.c`
+in 2026-07 specifically so these symbols are always present in every
+`eshkol-run` AOT/`-r` binary, regardless of `ESHKOL_BUILD_AGENT_FFI`
+and regardless of whether the AOT link's `(require agent.…)` scan
+fires — see the "Update (2026-07)" note in §2.1 above.
+
 The vendor backend is selected at compile time:
 
 ```c
@@ -1142,6 +1166,9 @@ The vendor backend is selected at compile time:
 #include <CommonCrypto/CommonHMAC.h>
 #include <Security/SecRandom.h>
 #define HAVE_COMMONCRYPTO 1
+#elif defined(_WIN32)
+#include <bcrypt.h>
+#define HAVE_BCRYPT 1
 #else
 #include <openssl/hmac.h>
 #include <openssl/rand.h>
@@ -1149,11 +1176,11 @@ The vendor backend is selected at compile time:
 #endif
 ```
 
-(`agent_crypto.c`). Random bytes use `SecRandomCopyBytes`
-on macOS or `RAND_bytes` on Linux — both cryptographically
-secure CSPRNG interfaces. HMAC and SHA256 produce 32-byte
-digests, hex-encoded into a 65-byte output buffer (64 hex
-chars + NUL).
+(`crypto_primitives.c`). Random bytes use `SecRandomCopyBytes` on
+macOS, `BCryptGenRandom` on Windows, or `RAND_bytes` on Linux/other —
+all cryptographically secure CSPRNG interfaces. HMAC and SHA256
+produce 32-byte digests, hex-encoded into a 65-byte output buffer (64
+hex chars + NUL).
 
 Public ABI:
 
@@ -1398,9 +1425,13 @@ Items called out explicitly in the source as deferred:
 - `lib/agent/c/agent_subprocess.c` — process spawn, pipe-drain, env scrub, rlimits
 - `lib/agent/c/agent_regex.c` — PCRE2 with ReDoS limits and capture groups
 - `lib/agent/c/agent_watch.c` — native kqueue / inotify watcher
-- `lib/agent/c/agent_crypto.c` — HMAC-SHA256 / SHA256 / CSPRNG
+- `lib/core/crypto_primitives.c` — HMAC-SHA256 / SHA256 / CSPRNG (always
+  linked into eshkol-runtime, not part of the optional agent-FFI bundle;
+  moved here from `lib/agent/c/agent_crypto.c` in 2026-07)
 - `lib/agent/*.esk` — Scheme wrappers for each subsystem
 - `exe/eshkol-run.cpp §requires_agent_ffi` — AOT link-arg gating
+  (for the *remaining* optional agent-FFI symbols — terminal, regex,
+  sqlite, http; crypto no longer depends on this)
 - `cmake/build_config.h.in:15` — `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
 - `CMakeLists.txt:1711-2007` — agent FFI build wiring and force-load
 - `lib/repl/repl_jit.cpp` — JIT symbol registration for agent FFI
