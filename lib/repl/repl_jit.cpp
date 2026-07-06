@@ -742,6 +742,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_allocate_zeroed);
     ADD_SYMBOL(arena_push_scope);
     ADD_SYMBOL(arena_pop_scope);
+    ADD_SYMBOL(arena_commit_scope);
+    ADD_SYMBOL(eshkol_arena_iter_scope_end);
     ADD_SYMBOL(arena_reset);
     ADD_SYMBOL(arena_get_used_memory);
     ADD_SYMBOL(arena_get_total_memory);
