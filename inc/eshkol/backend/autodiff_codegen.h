@@ -130,6 +130,20 @@ public:
     // (which dropped the forward tangent — the mixed-mode composition bug).
     llvm::Value* maybeJetLiftTapeOperand(llvm::Value* operand_tagged);
 
+    // ESH-0190 (P5): Taylor-tower differentiation context (reverse-over-Taylor).
+    // Codegen-maintained counter/order globals (mirroring __ad_pert_level) that
+    // tell maybeJetLiftTapeOperand a `derivative-n`/`taylor` tower pass is live
+    // so a reverse-tape AD node is frozen into a dual-tower carrying its seed
+    // tangent (instead of the reverse tape swallowing the tower). Pushed in
+    // seedForwardAndPush and popped in popAndExtractForward when in tower mode.
+    void towerCtxPush(llvm::Value* order_i32);
+    void towerCtxPop();
+    // If a tower differentiation is active and `operand_tagged` is a reverse-tape
+    // AD node, freeze it to a dual-tower constant (value + seed tangent) so the
+    // tower arithmetic — not the reverse tape — consumes it. Otherwise a no-op.
+    // Applied as a preprocessing step inside maybeJetLiftTapeOperand.
+    llvm::Value* towerLiftOperand(llvm::Value* operand_tagged);
+
     /**
      * Add two dual numbers: (a + b, a' + b')
      * @param left Left dual number
