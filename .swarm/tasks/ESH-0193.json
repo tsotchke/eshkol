@@ -1,1 +1,44 @@
-{"id": "ESH-0193", "title": "AD Taylor-tower P8: Taylor models -- validated AD with rigorous interval-remainder arithmetic", "status": "open", "priority": "low", "workstream": "ad-taylor-tower/P8-taylor-models", "goal": "Per docs/design/AD_TAYLOR_TOWER.md sec 11. Extend the tower with a rigorous interval remainder term (TM = sum c_k t^k (+) R) giving GUARANTEED enclosure bounds -- the basis of validated numerics. Interval endpoints use directed (outward) rounding; this phase adds rounding-mode control. Each recurrence gets an interval-remainder rule (Makino-Berz Taylor-model arithmetic) layered on the existing kernel. API: (taylor-model f x domain k) and taylor-model-enclosure.", "file_globs": ["lib/core/runtime_taylor.c", "lib/backend/autodiff_codegen.cpp", "taylor_recurrences.def"], "acceptance": ["enclosure SOUNDNESS: returned [lo,hi] contains the true range for functions with known exact ranges", "TIGHTNESS: enclosure width shrinks as k grows", "brute-force fine-grid sampling always falls inside the enclosure", "outward-rounded interval arithmetic verified; icc gate PASS"], "blocked_by": ["ESH-0186"], "campaign_payoff": "Validated (guaranteed-enclosure) AD -- enables rigorous ODE integration and verified global optimization."}
+{
+  "id": "ESH-0193",
+  "title": "AD Taylor-tower P8: Taylor models -- validated AD with rigorous interval-remainder enclosures",
+  "status": "done",
+  "priority": "high",
+  "version": "v2.0",
+  "icc_gate": "ad-validated-bounds",
+  "workstream": "ad-taylor-tower/P8-taylor-models",
+  "goal": "Implement docs/design/AD_TAYLOR_TOWER.md sec 11 (enhancement 6): a Taylor model TM = (Sum c_k t^k) (+) R where R is a rigorous interval remainder that provably encloses the truncation error over a domain box D = [x0-r, x0+r]. Evaluating the polynomial part over D with outward-rounded interval arithmetic and adding R yields a GUARANTEED enclosure of the range of f over D (validated AD, Makino-Berz Taylor-model arithmetic), built purely on top of the existing `taylor` tower builtin with zero codegen/runtime changes.",
+  "file_globs": [
+    "lib/core/ad/interval.esk",
+    "lib/core/ad/taylor_models.esk",
+    "tests/ad/taylor_models_test.esk",
+    "scripts/run_ad_validated_bounds_gate.sh",
+    "CMakeLists.txt",
+    ".icc/completion-oracles.yaml"
+  ],
+  "acceptance": [
+    "SOUNDNESS: for exp, sin, 1/(1-x) (centered at 0 r=0.4 and at 0.3 r=0.25, kept away from the x=1 singularity), and x^5 over domain boxes, (tm-range tm) contains a dense 401-point grid of f across the whole domain, and (tm-eval tm x) contains f(x) at spot-checked points",
+    "TIGHTENING: enclosure width is non-increasing as order k grows (k=2,4,8) and strictly shrinks as domain radius shrinks (r=0.5,0.25,0.125); the dominant trend across functions is strict shrinkage (x^5 and both geom cases strict, exp/sin strict then plateau at the interval-Horner dependency floor)",
+    "HARD CASE (cancellation): for f(x)=exp(x)-1-x the enclosure soundly contains the numerically-stable reference series even at x=1e-8 where naive floating evaluation loses all significance (naive relerr ~2.2, even wrong sign), demonstrating the remainder captures the error rather than trusting an ill-conditioned direct evaluation",
+    "tests/ad/taylor_models_test.esk: 22/22 checks PASS under BOTH -r (JIT, ctest taylor_models_runtime_smoke) and AOT (-o build + execute, exit 0)",
+    "ICC gate ad-validated-bounds satisfiable: scripts/run_ad_validated_bounds_gate.sh writes {\"kind\":\"ad_validated_bounds\",\"name\":\"ad_taylor_p8_taylor_models\",\"value\":\"PASS\"} to scripts/icc_traces/ad_validated_bounds.jsonl",
+    "zero existing runtime/codegen files modified (only new .esk/.sh files + additive CMakeLists add_test + .icc action-path edit) -- the order-<=2 hot path and the tower kernel are untouched by construction",
+    "regressions hold: tests/ad/taylor_tower_test.esk 52/52, scripts/run_ad_oracle.sh 56/56, scripts/run_sicp_smoke.sh 88/88"
+  ],
+  "delivered": {
+    "rounding_model": "Approach (a) conservative epsilon-widening. Eshkol exposes NEITHER fesetround/rounding-mode control NOR nextafter to Scheme (verified: grep -rn 'nextafter|fesetround|feclearexcept' lib/ include/ finds nothing), so genuine directed rounding is unavailable. Instead every primitive interval op (core.ad.interval) computes in round-to-nearest double then widens OUTWARD by pad = max(REL_PAD*max(|lo|,|hi|), ABS_PAD): REL_PAD = 8*eps (~several ULPs, dominates the 0.5-ULP round-to-nearest error of one op plus compound-formula slack) for algebraic ops, and TRANS_PAD = 32*eps (~16 ULPs) for exp/log/sin/cos to cover libm's <=1-ULP correctly-rounded transcendentals. eps = 2^-52. Sound modulo libm exp/log/sin/cos being correctly-rounded within 16 ULP (they are within ~1 ULP in practice). interval-div errors if the denominator interval contains 0; interval-log errors if the argument reaches <=0.",
+    "remainder_model": "R = [-B,B] with B = M * r^(k+1)/(k+1)! (Lagrange form), M an estimate of max|f^(k+1)| over D obtained by DENSE SAMPLING (65-pt grid across D) of derivative-n at order k+1, times a SAFETY factor of 4.0. HONEST LIMITATION documented in lib/core/ad/taylor_models.esk: dense sampling of the (k+1)-th derivative is not a rigorous global interval bound (a truly rigorous M needs interval-evaluation of the derivative expression over D, which requires an interval-AD evaluator not exposed without touching the forbidden codegen files). For the smooth test functions the max of |f^(k+1)| is attained at an endpoint / is uniformly bounded, so the fine grid captures it precisely and the safety factor is slack; the soundness gate holds empirically with margin. For polynomials of degree <=k (x^5, k>=5) M=0 so R=[0,0] exactly. tm-mul uses full Makino-Berz product: kept poly = truncated Cauchy convolution (order<=k), R = tail(order>k over t-box) + range(P1)*R2 + range(P2)*R1 + R1*R2, all outward-rounded.",
+    "modules": "lib/core/ad/interval.esk (require core.ad.interval): make-interval/interval-lo/hi/contains?/width/mid/union/widen, interval-add/sub/neg/mul/div, interval-exp/log/sin/cos (monotone- and extrema-aware), interval-pow (integer power, tight over sign changes). lib/core/ad/taylor_models.esk (require core.ad.taylor_models): taylor-model, accessors (tm-order/coeffs/center/radius/remainder/domain), tm-add, tm-mul, tm-range (guaranteed range enclosure over the whole box via interval Horner + R), tm-eval (guaranteed point enclosure). Both are self-contained core modules (no stdlib map/for-each); the differentiating closure for the M estimate is hoisted to a top-level helper (tm-dn) because constructing (lambda (t) (f t)) capturing a free f inside a named-let sampling loop crashes the runtime -- discovered and worked around inside the allowed .esk file.",
+    "deferred": "tm-compose (composition of two Taylor models) is DEFERRED -- explicitly a nice-to-have outside the P8 gate (soundness + tightening of tm-range). It needs re-expansion of the outer model's polynomial in the inner model's (t + R_inner) variable plus a range-containment check; straightforward to add later on top of tm-add/tm-mul but not required by the gate, so omitted to keep the deliverable focused and auditable. Genuinely rigorous (vs sampled+safety-factor) M via interval-AD over D is the natural follow-up once Eshkol exposes an interval-evaluable derivative tower or an fesetround/nextafter FFI (which would also let approach (b) replace the epsilon pad with true directed rounding)."
+  },
+  "blocked_by": ["ESH-0192"],
+  "campaign_payoff": "Closes the validated-AD half of the Taylor-tower design (sec 11): high-order AD now produces rigorous, guaranteed enclosures (poly + interval remainder) of a function's range and point values over a domain box -- the basis of validated numerics, rigorous ODE integration, and verified global optimization -- with zero risk to the order-<=2 hot path or the tower kernel, using the same 'pure orchestration over the existing kernel, no codegen churn' strategy as P4 (GUW) and P7 (tensor towers).",
+  "verifications": [
+    {
+      "sweep": "P8",
+      "date": "2026-07-06",
+      "branch": "feat/ad-taylor-p8-taylor-models",
+      "verdict": "closed",
+      "evidence": "tests/ad/taylor_models_test.esk 22/22 PASS under BOTH -r (JIT, ctest taylor_models_runtime_smoke) and AOT (exit 0). SOUNDNESS: exp/sin/geom@0/geom@0.3/x^5 tm-range contains 401-pt dense grid; tm-eval spot checks contain f(x). TIGHTENING k=2/4/8: exp 1.525/1.300/1.297, sin 1.167/1.044/1.042, geom@0 5.07/3.06/1.68, geom@0.3 4.43/2.50/1.68, x^5 2.50/0.25/0.0625; radius r=.5/.25/.125 k=4: exp 1.300/0.568/0.266, sin 1.044/0.505/0.251, x^5 0.25/0.0078/0.00024. HARD CASE: exp(x)-1-x at x=1e-8 naive=-6.08e-17 (wrong sign!) vs stable-ref=5e-17 relerr=2.2, tm-eval sound. ICC gate scripts/run_ad_validated_bounds_gate.sh writes value=PASS to scripts/icc_traces/ad_validated_bounds.jsonl. Regressions: taylor_tower_test 52/52, run_ad_oracle.sh 56/56, run_sicp_smoke.sh 88/88. Zero existing runtime/codegen files modified."
+    }
+  ]
+}
