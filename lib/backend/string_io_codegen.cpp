@@ -239,6 +239,41 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     return tagged_.packInt64(len, true);
 }
 
+llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_) {
+        eshkol_warn("StringIOCodegen::stringByteLength - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    if (op->call_op.num_vars != 1) {
+        eshkol_warn("string-byte-length requires exactly 1 argument");
+        return nullptr;
+    }
+
+    // Generate code for argument
+    llvm::Value* arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!arg) return nullptr;
+
+    // Extract string pointer from tagged value
+    llvm::Value* ptr_int = tagged_.unpackInt64(arg);
+    llvm::Value* str_ptr = ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
+
+    // Get or declare eshkol_string_byte_length (reads header.size directly,
+    // no UTF-8 decoding — this is the BYTE count, not the codepoint count).
+    llvm::Function* byte_length_func = ctx_.module().getFunction("eshkol_string_byte_length");
+    if (!byte_length_func) {
+        llvm::FunctionType* byte_length_type = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        byte_length_func = llvm::Function::Create(
+            byte_length_type, llvm::Function::ExternalLinkage,
+            "eshkol_string_byte_length", &ctx_.module());
+    }
+
+    // Call eshkol_string_byte_length and pack result
+    llvm::Value* len = ctx_.builder().CreateCall(byte_length_func, {str_ptr});
+    return tagged_.packInt64(len, true);
+}
+
 llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringRef - callbacks not set");

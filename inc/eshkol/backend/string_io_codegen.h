@@ -71,6 +71,18 @@ public:
     llvm::Value* stringLength(const eshkol_operations_t* op);
 
     /**
+     * Get string BYTE length (header.size, no UTF-8 decoding):
+     * (string-byte-length s). Distinct from stringLength(), which counts
+     * codepoints — a multibyte-UTF-8 string (e.g. containing an em-dash,
+     * 3 bytes / 1 char) has a byte length > its char length. Exists so FFI
+     * calls like `(fwrite s 1 (string-byte-length s) f)` write the whole
+     * string instead of truncating to the codepoint count.
+     * @param op The operation AST node
+     * @return Byte length as tagged integer
+     */
+    llvm::Value* stringByteLength(const eshkol_operations_t* op);
+
+    /**
      * Get character at index: (string-ref s idx)
      * @param op The operation AST node
      * @return Character as tagged value
