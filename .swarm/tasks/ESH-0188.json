@@ -1,0 +1,45 @@
+{
+  "id": "ESH-0188",
+  "title": "AD Taylor-tower P3: subsume the transitional 8-component jet (JET8) into the tower -- unified perturbation model",
+  "status": "done",
+  "priority": "high",
+  "workstream": "ad-taylor-tower/P3-subsume-jet8",
+  "goal": "Per docs/design/AD_TAYLOR_TOWER.md sec 4/9/12: PR #138 (ESH-0117) added a third nilpotent perturbation ('ep', the reverse-seed direction) to the forward dual-number jet, growing it from 4 to 8 fields, solely to let `gradient` see through a 2-level-deep nested `derivative` chain. P1/P2 (ESH-0186/0187) built an arbitrary-order univariate Taylor tower with an explicit epoch-tag confusion model. P3's mandate: route the reverse-over-nested-forward case through that tower/epoch machinery and remove the JET8 special case, keeping JET4 (order<=2, no live reverse tape) byte-for-byte unchanged.",
+  "file_globs": [
+    "lib/backend/autodiff_codegen.cpp",
+    "inc/eshkol/backend/autodiff_codegen.h",
+    "lib/core/runtime_autodiff.cpp",
+    "docs/design/AD_TAYLOR_TOWER.md",
+    "tests/ad/reverse_nested_forward_test.esk"
+  ],
+  "acceptance": [
+    "PR #138's original tests (tests/ad/reverse_nested_forward_test.esk, ESH-0117) still PASS, byte-identical results",
+    "scripts/run_ad_depth.sh gate PASS to d=8 (0 regressions)",
+    "tests/ad/taylor_tower_test.esk 52/52 AND tests/ad/taylor_tower_mono_test.esk 441/441, both -r and AOT",
+    "AD oracle (scripts/run_ad_oracle.sh) 56/56",
+    "SICP smoke (scripts/run_sicp_smoke.sh) 88/88",
+    "JET8 code path is either removed or reduced to a documented thin adapter, with the architectural reasoning recorded"
+  ],
+  "blocked_by": ["ESH-0186", "ESH-0187"],
+  "campaign_payoff": "Would eliminate the last hand-hardcoded fixed-width perturbation struct so all AD orders route through one epoch-tagged model -- but see finding below: full removal needs P4/P5 first, so the payoff realized now is a smaller, more honestly-documented adapter plus dead-code removal, not a capability change.",
+  "finding": {
+    "summary": "Full subsumption of JET8 into the univariate P1/P2 tower is NOT mathematically possible without pulling in later-phase work. `gradient` over a 2-level-nested `derivative` chain (ESH-0117) requires a genuine SIMULTANEOUS 3-directional mixed partial (inner forward var, outer forward var, reverse-seed direction) -- the {1,e1,e2,ep,e1e2,e1ep,e2ep,e1e2ep} hyper-dual basis. A univariate power series (the P1/P2 tower) has exactly one direction and cannot represent three orthogonal simultaneous directions with their full cross term. Expressing that exactly requires either (a) Griewank-Utke-Walther multivariate directional propagation (design sec 7, Phase P4/ESH-0189) or (b) tower-valued reverse-tape primals/adjoints (design sec 8, Phase P5/ESH-0190) -- both later, independently-gated, and explicitly out of this task's file boundary (a separate parallel agent owns each). Building either early inside P3 would be undocumented scope creep across the phase split.",
+    "why_bounded_not_growing": "JET8 is a FIXED, bounded 3-direction structure (2 forward nesting levels + 1 reverse-seed companion) -- it does not grow with nesting depth the way the design doc's rejected 'nested dual/hyper-dual' alternative (2^K components) does. It is exactly the size PR #138 needed for ESH-0117 and no test or code path asks it to grow further, so keeping it as a small, clearly-delimited adapter (rather than an open-ended special case) is architecturally sound pending P4/P5.",
+    "what_was_done": [
+      "Deleted dead code: seedDerivativeInput/extractDerivativeResult (lib/backend/autodiff_codegen.cpp + inc/eshkol/backend/autodiff_codegen.h) -- the pre-ESH-0070 compile-time-depth perturbation-tagging mechanism, fully superseded by the runtime-level adPertLevel()/seedForwardAndPush/popAndExtractForward mechanism, with zero remaining call sites.",
+      "Replaced magic dual-jet field indices (1, 2, 4) at the perturbation-seeding sites (seedForwardAndPush) with named DualJetSlot constants (kJetE1/kJetE2/kJetEp), so the three-perturbation discipline reads consistently with the tower's EPOCH_TAG naming in inc/eshkol/eshkol.h.",
+      "Added a detailed architectural banner in lib/backend/autodiff_codegen.cpp documenting JET8 as a bounded, thin adapter: it only activates when detectPureDerivChain falls through (forward chain depth < 3) AND a reverse tape is live; JET4 (order<=2, no live tape) is untouched -- the ep fields stay compile-time-constant zero and fold away.",
+      "Updated docs/design/AD_TAYLOR_TOWER.md sec 12 and the P3 phase-table row with the honest completion status and the mathematical reasoning above."
+    ],
+    "code_size_delta": "Net code REMOVED (two dead functions across .cpp/.h); the retained ep-dimension arithmetic (dualUnaryChain's g'''/pr[] terms, jet4Mul reuse, seedForwardAndPush/popAndExtractForward/maybeJetLiftTapeOperand) is unchanged in structure -- it was already minimal and fully shared (every unary math op already delegates to the single dualUnaryChain helper; dualAdd/dualSub are plain 8-field loops; dualMul reuses jet4Mul) so there was no duplicated logic left to consolidate beyond what P3 removed."
+  },
+  "verifications": [
+    {
+      "sweep": "P3",
+      "date": "2026-07-06",
+      "branch": "feat/ad-taylor-p3-subsume-jet8",
+      "verdict": "closed -- thin adapter retained (see finding), dead code removed, byte-identical route",
+      "evidence": "tests/ad/reverse_nested_forward_test.esk: 11/11 PASS (-r and AOT), same route (no rerouting occurred -- confirms 'byte-identical results' since the code path is literally unchanged). scripts/run_ad_depth.sh gate PASS, 0 regressions, 12 improvements (pre-existing, unrelated to this change). tests/ad/taylor_tower_test.esk 52/52 (-r and AOT). tests/ad/taylor_tower_mono_test.esk 441/441 (-r and AOT). AD oracle: 56/56 PASS. SICP smoke: 88/88 PASS."
+    }
+  ]
+}
