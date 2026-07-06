@@ -2345,7 +2345,10 @@ static std::string find_runtime_library(const std::vector<char*>& lib_paths)
     return eshkol::platform::find_first_existing(candidates);
 }
 
-// Check if any AST contains a require for stdlib or core.* modules
+// Check if any AST contains a require for stdlib or core.* modules.
+// Used to decide whether stdlib.o needs to be auto-linked: any core.*
+// require pulls in symbols whose bodies live in stdlib.o, same as an
+// explicit `(require stdlib)` would.
 static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
 {
     for (const auto& ast : asts) {
@@ -2353,6 +2356,40 @@ static bool requires_stdlib(const std::vector<eshkol_ast_t>& asts)
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
                 if (module_name == "stdlib" || module_name.find("core.") == 0) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+// ESH-0220: Check if any AST contains an EXPLICIT `(require stdlib)` —
+// as opposed to requires_stdlib() above, which also matches any dotted
+// `core.*` require. This narrower check gates whether we still need to
+// synthesize a top-of-module `(require stdlib)`.
+//
+// stdlib.esk itself defines top-level helpers (__keyword-arg,
+// __keyword-args-validate, __keyword-member? — the desugaring targets
+// for keyword-formal parameters, see parser.cpp wrap_keyword_formal_body)
+// that are NOT re-exported by any individual core.* submodule. Loading
+// a core.* module directly (e.g. `(require core.list.search)`) only
+// pulls in THAT module's own provided declarations — it does not pull
+// in stdlib.esk's own top-level definitions. Previously the synthetic
+// `(require stdlib)` insertion was gated on requires_stdlib(asts), so
+// any file that explicitly required a dotted core.* module (without
+// ALSO explicitly requiring "stdlib") skipped the synthetic require
+// entirely, silently losing __keyword-arg/__keyword-args-validate (and
+// any other stdlib.esk-local helper) for the rest of the compilation
+// unit — surfacing as "Unknown function: __keyword-arg" only when a
+// keyword-arg-formal function happened to be defined in the same file.
+static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& asts)
+{
+    for (const auto& ast : asts) {
+        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
+            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
+                std::string module_name = ast.operation.require_op.module_names[i];
+                if (module_name == "stdlib") {
                     return true;
                 }
             }
@@ -4180,8 +4217,18 @@ int main(int argc, char **argv)
     // Restore the documented behaviour: `--no-stdlib` opts OUT of
     // auto-load; the default IS auto-load.  `(require stdlib)`
     // remains valid (and idempotent — has_stdlib check below).
+    //
+    // ESH-0220: this gate MUST use requires_stdlib_module_explicitly(),
+    // not requires_stdlib(). The latter also matches any dotted
+    // `(require core.*)`, which meant a file that required a core.*
+    // submodule directly (without ALSO explicitly requiring "stdlib")
+    // never got the synthetic `(require stdlib)` below — silently
+    // losing stdlib.esk's own top-level definitions (__keyword-arg,
+    // __keyword-args-validate, __keyword-member?, …) for the rest of
+    // the compilation unit. See requires_stdlib_module_explicitly()'s
+    // doc comment for the full story.
     bool need_stdlib = !no_stdlib && (!shared_lib);
-    if (need_stdlib && !requires_stdlib(asts)) {
+    if (need_stdlib && !requires_stdlib_module_explicitly(asts)) {
         // The source didn't `(require stdlib)` explicitly, but the
         // user expects stdlib to be available.  Synthesize a top-of-
         // module require so process_requires() handles it
