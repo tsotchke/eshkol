@@ -30420,8 +30420,31 @@ private:
         // Escape the result value before popping the region
         // This copies heap-allocated return values to the parent region/global arena
         if (result) {
+            // ESH-0214: hoist these allocas to the function's ENTRY block instead
+            // of creating them at the current (possibly in-loop) insertion point.
+            // `alloca` is a dynamic stack-pointer adjustment: an alloca placed in
+            // a loop body block re-executes -- and re-adjusts the stack pointer --
+            // on every dynamic pass through that block, and that space is only
+            // reclaimed when the *function* returns, not when the loop iterates.
+            // Named-let/do loops with a self-tail call compile to an in-function
+            // branch back to a loop header (no per-iteration call frame), so a
+            // `with-region` anywhere in such a loop's body was leaking one
+            // tagged_value_type's worth of native stack per iteration, without
+            // bound, crashing as a spurious "stack overflow" long before the
+            // loop's actual iteration count. Hoisting to the entry block (the
+            // established fix used elsewhere in this file and by
+            // TaggedValueCodegen::createEntryAlloca) makes each alloca execute
+            // exactly once per function activation, matching normal C stack
+            // behavior for locals declared once per call.
+            Function* with_region_func = builder->GetInsertBlock()->getParent();
+            IRBuilderBase::InsertPoint with_region_saved_ip = builder->saveIP();
+            if (with_region_func && !with_region_func->empty()) {
+                BasicBlock& with_region_entry = with_region_func->getEntryBlock();
+                builder->SetInsertPoint(&with_region_entry, with_region_entry.begin());
+            }
             AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
             AllocaInst* escaped_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "escaped_result_slot");
+            builder->restoreIP(with_region_saved_ip);
             builder->CreateStore(result, result_alloca);
             FunctionType* escape_type = FunctionType::get(
                 void_type,

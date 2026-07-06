@@ -14,6 +14,7 @@
 #include "../../inc/eshkol/logger.h"
 
 #include <cstring>
+#include <cstdlib>
 
 void eshkol_arena_global_once(void (*init)(void));
 
@@ -140,10 +141,20 @@ int arena_is_worker_thread(void) {
 }
 
 eshkol_region_t* region_create(const char* name, size_t size_hint) {
-    arena_t* global = get_global_arena();
-
-    auto* region = (eshkol_region_t*)arena_allocate_aligned(
-        global, sizeof(eshkol_region_t), 8);
+    // ESH-0214: the eshkol_region_t control block has a fully deterministic,
+    // single-owner lifetime -- created here, freed in region_destroy(), always
+    // exactly once (region_pop -> region_destroy is the only caller graph).
+    // It must NOT be arena-allocated: with-region is meant to be usable inside
+    // a hot loop (the per-iteration-scratch-region idiom is the documented
+    // workaround for unbounded interpreter-loop growth, see ESH-0214), and an
+    // arena allocation here would land in whatever arena is *currently*
+    // active -- typically the persistent global/REPL arena when with-region
+    // is used at the top of a loop body -- permanently leaking one struct's
+    // worth of bytes on every iteration for the life of the process. A plain
+    // malloc/free pairs exactly with this struct's real lifetime and keeps
+    // with-region's steady-state footprint at O(1) regardless of how many
+    // times it is entered.
+    auto* region = (eshkol_region_t*)std::malloc(sizeof(eshkol_region_t));
     if (!region) {
         eshkol_error("Failed to allocate region structure");
         return nullptr;
@@ -155,12 +166,13 @@ eshkol_region_t* region_create(const char* name, size_t size_hint) {
     region->arena = arena_create(arena_size);
     if (!region->arena) {
         eshkol_error("Failed to create region arena");
+        std::free(region);
         return nullptr;
     }
 
     if (name) {
         const size_t name_len = std::strlen(name) + 1;
-        auto* name_copy = (char*)arena_allocate(region->arena, name_len);
+        auto* name_copy = (char*)std::malloc(name_len);
         if (name_copy) {
             std::memcpy(name_copy, name, name_len);
             region->name = name_copy;
@@ -200,6 +212,13 @@ void region_destroy(eshkol_region_t* region) {
         arena_destroy(region->arena);
         region->arena = nullptr;
     }
+
+    // ESH-0214: region->name and the region struct itself are malloc'd (see
+    // region_create) precisely so this call is a complete, bounded release --
+    // no bytes belonging to this with-region activation survive it.
+    std::free((void*)region->name);
+    region->name = nullptr;
+    std::free(region);
 }
 
 void region_push(eshkol_region_t* region) {

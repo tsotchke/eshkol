@@ -21,6 +21,7 @@
 
 #include <eshkol/logger.h>
 #include <llvm/IR/Constants.h>
+#include <cstdio>
 
 namespace eshkol {
 

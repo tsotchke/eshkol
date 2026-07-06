@@ -1,0 +1,47 @@
+{
+  "id": "ESH-0214",
+  "title": "Bounded-RSS long-running interpreter loops via arena scope reclamation (Noesis BUG #6 / PRIORITY 1)",
+  "status": "done",
+  "priority": "critical",
+  "workstream": "noesis-memory-weaver",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "Noesis field report (BUGS-2026-07-04 #6, Selene night-build note PRIORITY 1): a long-lived `eshkol-run -r` process that repeatedly read-line's a growing file and appends into an accumulating structure balloons to 9-24GB RSS and gets OOM-killed, forcing a bounded-lifetime restart-every-~80s hack on a production memory-weaver daemon. Fix at the architectural root (Eshkol is deliberately zero-GC / OALR arena-based) -- no bolted-on tracing GC -- using the existing arena-scope and with-region machinery, and make that machinery actually deliver bounded RSS in a hot loop instead of just documenting a workaround.",
+  "file_globs": [
+    "lib/backend/tail_call_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp",
+    "lib/backend/string_io_codegen.cpp",
+    "lib/core/runtime_regions.cpp",
+    "tests/memory/long_loop_rss_test.esk",
+    "scripts/run_rss_bounded_test.sh"
+  ],
+  "root_cause": "Three independent, additive bugs, discovered in this order while chasing the reported 24GB OOM down to a repeatable repro: (1) MEMORY: every `read-line` call reserved a fixed 1024-byte arena string unconditionally (never freed across iterations of a persistent interpreter process), and `memory-store-append!`-shaped loops that drop their per-pass accumulator leaked the same way -- both landed in the single ever-growing REPL-persistent global arena, which has no scope boundary inside a tight loop. (2) TCO: the intended fix -- wrap each loop iteration's transient work in `(with-region ...)` so it is reclaimed via region_pop -- could not actually be used in a hot loop, because `TailCallCodegen::areAllSelfCallsInTailPosition` (lib/backend/tail_call_codegen.cpp), the analysis gating whether a named-let loop gets the branch-based TCO transform, had a dedicated `ESHKOL_IF_OP` case that is DEAD CODE: the parser always lowers `if` to `ESHKOL_CALL_OP` with a synthetic `call_op.func` named \"if\" (lib/frontend/parser.cpp, explicitly commented 'Store the if operation as a call to builtin if'). The sibling analysis used for `define`-level tail recursion (`findTailCalls` in llvm_codegen.cpp) already special-cases this parser quirk; named-let's analysis had drifted out of sync with it and never did. Net effect: virtually EVERY `(let loop (...) (if cond (loop ...) ...))` -- the single most idiomatic Scheme loop shape -- was silently classified as non-tail-recursive and fell back to genuine unbounded C-stack recursion, independent of any memory concern, capping any such loop at roughly 100k-500k iterations (crash: SIGBUS, misreported as 'stack overflow (recursion too deep)') regardless of how much RAM is free. Verified in isolation: `(define (f x) (if (< x N) (f (+ x 1)) x))` runs 3,000,000 iterations instantly (proper TCO); the textually-identical named-let form crashes around 100k-500k. (3) Once (2) is fixed and `with-region` actually executes as a real per-iteration branch-based loop, two more leaks surfaced in with-region's own codegen: (3a) `codegenWithRegion` created its `region_result_slot`/`escaped_result_slot` allocas at the CURRENT (in-loop) insertion point instead of the function's entry block; LLVM `alloca` re-adjusts the stack pointer every time control re-enters that block, so a with-region used anywhere inside a branch-based loop leaked native stack every iteration, again capping iteration count via a spurious 'stack overflow' well under 1M. (3b) `region_create` (lib/core/runtime_regions.cpp) allocated the `eshkol_region_t` control struct itself from whatever arena was currently active (the persistent global arena, for a with-region at loop top level) rather than from a lifetime matching its own create/destroy pairing, leaking ~48-64 bytes into the persistent arena on every with-region activation -- small, but enough to turn 1M+ iterations into visibly-linear (not flat) growth.",
+  "fix": "(1) lib/backend/tail_call_codegen.cpp: added the same 'if is CALL_OP with func-name if' special case to `allSelfCallsInTailPosition` that `findTailCalls` already has, so named-let TCO eligibility analysis matches reality -- an `if`-guarded self-tail-call now correctly gets the branch-based TCO loop transform instead of silently falling back to real recursion. This is the highest-leverage fix: it applies to every named-let loop in the language, not just this bug's specific shape. (2) lib/backend/llvm_codegen.cpp `codegenWithRegion`: hoisted the two per-region allocas to the enclosing function's entry block (the same saveIP/SetInsertPoint(entry, entry.begin())/restoreIP pattern already used elsewhere in this file, e.g. for variadic-closure argument packing), so they execute once per function activation instead of once per loop iteration. (3) lib/core/runtime_regions.cpp `region_create`/`region_destroy`: switched the `eshkol_region_t` control struct (and its optional name copy) from arena allocation to plain malloc/free -- its lifetime is fully deterministic (created in region_create, destroyed exactly once in region_destroy, the only caller graph), so it does not belong in a scope-outliving arena at all; this gives with-region a strictly O(1) steady-state footprint regardless of iteration count. (4) lib/backend/string_io_codegen.cpp `readLine`: read into a fixed 1024-byte scratch buffer that is ALSO entry-block-hoisted (reused across every read-line call in the enclosing function/loop, zero allocation for the scratch itself), then allocate the final Eshkol string sized to the ACTUAL line length (not the 1024-byte capacity) and copy it out -- cuts per-call arena churn from a fixed 1024 bytes to the real line length, so even the transient per-iteration footprint inside a with-region is right-sized. None of this bolts on a tracing GC: it is entirely existing OALR arena/region machinery, working as originally intended, with the bugs that were silently defeating it fixed at the root.",
+  "acceptance": [
+    "Root cause reproduced BEFORE the fix: unbounded-RSS repro scaled from 249MB (N=1000 passes) to 14.2GB (N=64000 passes) -- confirmed linear/unbounded growth on unmodified master",
+    "Same repro shape, AFTER the fix, wrapped in (with-region ...): flat ~239MB peak RSS at N=1,000,000 passes and ~92MB at N=2,000,000 passes (15M+ read-line calls) -- NOT growing with iteration count",
+    "Independent TCO-only regression confirmed and fixed: `(let loop ((x 0)) (if (< x 3000000) (loop (+ x 1)) x))` completes instantly post-fix; pre-fix it crashed (SIGBUS / spurious stack-overflow) between 100k-500k iterations with 0% memory pressure",
+    "tests/memory/long_loop_rss_test.esk: 300k passes x 50 lines/pass, PASS under both -r and AOT",
+    "scripts/run_rss_bounded_test.sh: N=100k vs N=1,000,000 (10x scale) gives peak-RSS ratio ~1.00x (flat) -- gate PASSES",
+    "SICP smoke: 88/88 (tests/sicp, both -r and AOT) -- no regression from the named-let TCO fix, the single highest-blast-radius change in this PR",
+    "AD oracle: 56/56 (scripts/run_ad_oracle.sh) -- no regression",
+    "tests/memory/*.esk: 8/8 (scripts/run_memory_tests.sh), including the new long_loop_rss_test.esk",
+    "Full local suite (scripts/run_all_tests.sh): clean, no new failures vs pre-change baseline",
+    "ASAN build (build-asan, ESHKOL_ENABLE_ASAN=ON): tests/memory/long_loop_rss_test.esk + tests/memory/region_test.esk + SICP smoke clean under -fsanitize=address (validates the region_create malloc/free lifetime change has no UAF/double-free)"
+  ],
+  "verification": [
+    "./build/eshkol-run -r tests/memory/long_loop_rss_test.esk",
+    "bash scripts/run_rss_bounded_test.sh",
+    "bash scripts/run_memory_tests.sh",
+    "bash scripts/run_sicp_smoke.sh",
+    "bash scripts/run_ad_oracle.sh",
+    "bash scripts/run_all_tests.sh",
+    "cmake --build build-asan --target eshkol-run stdlib && ./build-asan/eshkol-run -r tests/memory/long_loop_rss_test.esk"
+  ],
+  "remaining_work": [
+    "Escape-analysis-driven AUTOMATIC per-iteration region scoping for named-let/do loops (tier (a) in the original brief) is NOT implemented: users must still explicitly wrap per-iteration transient work in (with-region ...) to get bounded RSS. That idiom now genuinely works (this ticket's fix), but it is opt-in, not automatic. Filing as follow-up design work.",
+    "read-line's fixed 1024-byte line-length cap (pre-existing, unrelated to this bug) is unchanged -- lines longer than 1023 bytes still silently split across multiple read-line calls.",
+    "The same 'if is CALL_OP' dead-code pattern should be audited for any OTHER AST analysis pass that special-cases ESHKOL_IF_OP directly (grep found `isOperationInTailPosition` in the same file has an identical dead ESHKOL_IF_OP case, but it has no callers outside its own file today, so it was left as-is rather than risk an unused-code change; flagged for cleanup)."
+  ],
+  "blocked_by": []
+}

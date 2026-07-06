@@ -2306,11 +2306,36 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
         file_ptr = getStdin(ctx_);
     }
 
-    // Allocate a buffer with header for reading (1024 bytes)
-    llvm::Value* buffer_size = llvm::ConstantInt::get(ctx_.sizeType(), 1024);
+    // ESH-0214: read into a fixed-size SCRATCH stack buffer instead of an
+    // arena allocation, and only arena-allocate the final, right-sized
+    // string once the real line length is known. Two independent problems
+    // motivated this:
+    //  1. The old code always reserved 1024 arena bytes per call regardless
+    //     of actual line length, so a hot read-line loop churned ~1KB/call
+    //     of arena garbage even for short lines -- wasteful, and (before the
+    //     with-region fixes elsewhere in this change) unreclaimable.
+    //  2. The scratch buffer is hoisted to the function's ENTRY block (the
+    //     same fix applied to codegenWithRegion): an `alloca` placed at a
+    //     loop-body insertion point re-executes -- and re-adjusts the stack
+    //     pointer -- on every dynamic iteration, since named-let/do loops
+    //     compile to an in-function branch back to a loop header rather than
+    //     a real per-iteration call frame. Hoisting to the entry block makes
+    //     the scratch buffer a single, reused slot for the whole function
+    //     activation instead of an unbounded per-iteration stack leak.
+    llvm::Value* scratch_buffer;
+    {
+        llvm::Function* entry_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::IRBuilderBase::InsertPoint saved_entry_ip = ctx_.builder().saveIP();
+        if (entry_func && !entry_func->empty()) {
+            llvm::BasicBlock& entry_bb = entry_func->getEntryBlock();
+            ctx_.builder().SetInsertPoint(&entry_bb, entry_bb.begin());
+        }
+        llvm::ArrayType* scratch_type = llvm::ArrayType::get(ctx_.int8Type(), 1024);
+        scratch_buffer = ctx_.builder().CreateAlloca(scratch_type, nullptr, "readline_scratch");
+        ctx_.builder().restoreIP(saved_entry_ip);
+    }
+    llvm::Value* buffer = scratch_buffer;
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-    llvm::Value* buffer = ctx_.builder().CreateCall(
-        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, buffer_size});
 
     // Call fgets
     llvm::Value* result_ptr = ctx_.builder().CreateCall(fgets_func, {
@@ -2373,26 +2398,23 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     final_len->addIncoming(len, success_block);
     final_len->addIncoming(len_after_strip, strip_exit);
 
-    // Truncate the string's header.size to the actual line length.  We
-    // allocated 1024 bytes, but the result may be just a few bytes — without
-    // this update, eshkol_string_byte_length would report 1024 and downstream
-    // consumers (string-append memcpy, string-ref bounds, equal? hashing)
-    // would read uninitialised garbage past the line.  Header layout:
-    // {subtype:1, flags:1, ref_count:2, size:4} → size at buffer-4.
-    // header.size = byte count + 1 (data_size includes NUL terminator).
-    {
-        llvm::Value* new_size = ctx_.builder().CreateAdd(final_len,
-            llvm::ConstantInt::get(ctx_.int64Type(), 1));
-        llvm::Value* new_size_i32 = ctx_.builder().CreateTrunc(new_size,
-            llvm::Type::getInt32Ty(ctx_.context()));
-        llvm::Value* size_field_ptr = ctx_.builder().CreateGEP(
-            ctx_.int8Type(), buffer,
-            llvm::ConstantInt::get(ctx_.int64Type(), -4));
-        ctx_.builder().CreateStore(new_size_i32, size_field_ptr);
-    }
+    // ESH-0214: allocate the FINAL string sized to the real line length
+    // (not the 1024-byte scratch capacity) and copy the content out of the
+    // reused scratch buffer. arena_allocate_string_with_header(len) reserves
+    // len+1 bytes and initializes header.size = len+1 itself, so there is no
+    // separate header-patch step needed here (the old code had to patch
+    // header.size after the fact because it materialized the *scratch*
+    // buffer itself as the string; now the string is a fresh, right-sized
+    // allocation).
+    llvm::Value* out_buffer = ctx_.builder().CreateCall(
+        ctx_.memory().getArenaAllocateStringWithHeader(), {arena_ptr, final_len});
+    llvm::Function* memcpy_func = ctx_.funcs().getMemcpy();
+    ctx_.builder().CreateCall(memcpy_func, {out_buffer, buffer, final_len});
+    llvm::Value* nul_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), out_buffer, final_len);
+    ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int8Type(), 0), nul_ptr);
 
     // Pack string as tagged value (consolidated HEAP_PTR)
-    llvm::Value* buffer_int = ctx_.builder().CreatePtrToInt(buffer, ctx_.int64Type());
+    llvm::Value* buffer_int = ctx_.builder().CreatePtrToInt(out_buffer, ctx_.int64Type());
     llvm::Value* str_result = llvm::UndefValue::get(ctx_.taggedValueType());
     str_result = ctx_.builder().CreateInsertValue(str_result,
         llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR), {0});
