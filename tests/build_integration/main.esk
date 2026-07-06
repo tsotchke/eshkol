@@ -1,0 +1,7 @@
+; ESH-0215 build-integration fixture: entry point, (load)s dep.esk.
+(load "dep.esk")
+
+(define (main)
+  (display (helper 41))
+  (newline)
+  0)
