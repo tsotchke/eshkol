@@ -20,6 +20,7 @@
 #include <eshkol/backend/tagged_value_codegen.h>
 #include <eshkol/eshkol.h>
 #include <llvm/IR/Value.h>
+#include <vector>
 
 namespace eshkol {
 
@@ -149,6 +150,14 @@ private:
     DetectAndPackFunc detect_and_pack_callback_ = nullptr;
     void* callback_context_ = nullptr;
 
+    // Apply a computed procedure value to argument values. Used by the R7RS
+    // `=>` receiver form in cond/case: (test => receiver) applies receiver to
+    // the value of test. Reuses the main codegen's closure-call dispatcher.
+    using ClosureCallFunc = llvm::Value* (*)(llvm::Value* closure,
+                                             const std::vector<llvm::Value*>& args,
+                                             void* context);
+    ClosureCallFunc closure_call_callback_ = nullptr;
+
 public:
     /**
      * Set callbacks for AST code generation.
@@ -172,6 +181,15 @@ public:
         eqv_compare_callback_ = eqv_compare;
         detect_and_pack_callback_ = detect_and_pack;
         callback_context_ = context;
+    }
+
+    /**
+     * Set the closure-call callback used for the `=>` receiver form in
+     * cond/case. Injected separately to avoid disturbing the existing
+     * setCodegenCallbacks signature and its other callers.
+     */
+    void setClosureCallCallback(ClosureCallFunc closure_call) {
+        closure_call_callback_ = closure_call;
     }
 };
 

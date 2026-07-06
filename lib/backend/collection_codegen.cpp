@@ -2041,6 +2041,135 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
+    if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
+        eshkol_warn("CollectionCodegen::vectorCopyNew - callbacks not set");
+        return tagged_.packNull();
+    }
+
+    // (vector-copy v) | (vector-copy v start) | (vector-copy v start end)
+    if (op->call_op.num_vars < 1 || op->call_op.num_vars > 3) {
+        eshkol_warn("vector-copy requires 1-3 arguments");
+        return nullptr;
+    }
+
+    llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
+    if (!vec_arg) return nullptr;
+    llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
+
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+    // Reusable raise helper for the out-of-range / wrong-type conditions.
+    auto raise_error = [&](const char* message) {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* msg = ctx_.builder().CreateGlobalString(message);
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
+        ctx_.builder().CreateCall(raise_func, {exc});
+        ctx_.builder().CreateUnreachable();
+    };
+
+    // Reject tensors (`#(...)` literals) — their layout differs from a
+    // Scheme vector, so silently copying would corrupt memory.
+    {
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), header_ptr, "vcopy_subtype");
+        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(subtype,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+        llvm::BasicBlock* tensor_fail = llvm::BasicBlock::Create(ctx_.context(), "vcopy_tensor_fail", current_func);
+        llvm::BasicBlock* not_tensor = llvm::BasicBlock::Create(ctx_.context(), "vcopy_not_tensor", current_func);
+        ctx_.builder().CreateCondBr(is_tensor, tensor_fail, not_tensor);
+        ctx_.builder().SetInsertPoint(tensor_fail);
+        raise_error("vector-copy: argument is a tensor, not a vector");
+        ctx_.builder().SetInsertPoint(not_tensor);
+    }
+
+    llvm::Value* len = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vcopy_len");
+
+    // start (default 0)
+    llvm::Value* start;
+    if (op->call_op.num_vars >= 2) {
+        void* start_typed = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
+        if (!start_typed) return nullptr;
+        llvm::Value* start_tagged = typed_to_tagged_callback_(start_typed, callback_context_);
+        if (!start_tagged) return nullptr;
+        start = tagged_.unpackInt64(start_tagged);
+    } else {
+        start = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    }
+
+    // end (default len)
+    llvm::Value* end;
+    if (op->call_op.num_vars >= 3) {
+        void* end_typed = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+        if (!end_typed) return nullptr;
+        llvm::Value* end_tagged = typed_to_tagged_callback_(end_typed, callback_context_);
+        if (!end_tagged) return nullptr;
+        end = tagged_.unpackInt64(end_tagged);
+    } else {
+        end = len;
+    }
+
+    // Bounds check: 0 <= start <= end <= len
+    {
+        llvm::Value* start_neg = ctx_.builder().CreateICmpSLT(start,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* end_over = ctx_.builder().CreateICmpSGT(end, len);
+        llvm::Value* start_gt_end = ctx_.builder().CreateICmpSGT(start, end);
+        llvm::Value* bad = ctx_.builder().CreateOr(start_neg,
+            ctx_.builder().CreateOr(end_over, start_gt_end));
+        llvm::BasicBlock* bounds_fail = llvm::BasicBlock::Create(ctx_.context(), "vcopy_bounds_fail", current_func);
+        llvm::BasicBlock* bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "vcopy_bounds_ok", current_func);
+        ctx_.builder().CreateCondBr(bad, bounds_fail, bounds_ok);
+        ctx_.builder().SetInsertPoint(bounds_fail);
+        raise_error("vector-copy: index out of range");
+        ctx_.builder().SetInsertPoint(bounds_ok);
+    }
+
+    llvm::Value* count = ctx_.builder().CreateSub(end, start, "vcopy_count");
+
+    // Allocate the fresh vector and store its length.
+    llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+    llvm::Value* new_vec = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
+        {arena_ptr, count});
+    llvm::Value* new_len_ptr = ctx_.builder().CreatePointerCast(new_vec, ctx_.ptrType());
+    ctx_.builder().CreateStore(count, new_len_ptr);
+
+    // Copy the [start,end) slice (16 bytes per tagged element).
+    llvm::Value* src_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* src_elem_typed = ctx_.builder().CreatePointerCast(src_elem_base, ctx_.ptrType());
+    llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), src_elem_typed, start);
+
+    llvm::Value* dst_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), new_vec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 8));
+    llvm::Value* dst_elem_typed = ctx_.builder().CreatePointerCast(dst_elem_base, ctx_.ptrType());
+
+    llvm::Value* byte_count = ctx_.builder().CreateMul(count,
+        llvm::ConstantInt::get(ctx_.int64Type(), 16), "vcopy_bytes");
+    ctx_.builder().CreateMemCpy(
+        dst_elem_typed, llvm::MaybeAlign(8),
+        src_ptr, llvm::MaybeAlign(8),
+        byte_count);
+
+    return tagged_.packHeapPtr(new_vec);
+}
+
 llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::vectorAppend - callbacks not set");

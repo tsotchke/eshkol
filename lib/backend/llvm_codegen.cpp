@@ -1706,7 +1706,13 @@ public:
         function_return_types["make-vector"] = BuiltinTypes::Vector;
         function_return_types["vector-length"] = BuiltinTypes::Int64;
         function_return_types["vector-ref"] = BuiltinTypes::Value;
+        function_return_types["vector-copy"] = BuiltinTypes::Vector;
         function_return_types["vector-append"] = BuiltinTypes::Vector;
+
+        // R7RS error-object accessors
+        function_return_types["error-object?"] = BuiltinTypes::Boolean;
+        function_return_types["error-object-message"] = BuiltinTypes::Value;
+        function_return_types["error-object-irritants"] = BuiltinTypes::List;
         function_return_types["vector->list"] = BuiltinTypes::List;
         function_return_types["list->vector"] = BuiltinTypes::Vector;
 
@@ -3930,6 +3936,7 @@ private:
             ControlFlowCallbacks::detectAndPackWrapper,
             this
         );
+        flow_->setClosureCallCallback(ControlFlowCallbacks::closureCallWrapper);
         eshkol_debug("Created ControlFlowCodegen with callbacks");
 
         // Initialize StringIOCodegen - string and I/O operations
@@ -14084,6 +14091,11 @@ private:
         }
 
         if (func_name == "error") return codegenError(op);
+        if (func_name == "error-object?") return codegenErrorObjectPredicate(op);
+        if (func_name == "error-object-message")
+            return codegenErrorObjectAccessor(op, "eshkol_error_object_message", "error-object-message");
+        if (func_name == "error-object-irritants")
+            return codegenErrorObjectAccessor(op, "eshkol_error_object_irritants", "error-object-irritants");
         if (func_name == "with-exception-handler") return codegenWithExceptionHandler(op);
 
         // Handle file I/O operations
@@ -15943,6 +15955,7 @@ private:
         if (func_name == "vector-set!") return coll_->vectorSet(op);
         if (func_name == "vector-length") return coll_->vectorLength(op);
         if (func_name == "vector-copy!") return coll_->vectorCopy(op);
+        if (func_name == "vector-copy") return coll_->vectorCopyNew(op);
         if (func_name == "vector-append") return coll_->vectorAppend(op);
         if (func_name == "vector-fill!") return coll_->vectorFill(op);
         if (func_name == "vector->list") return coll_->vectorToList(op);
@@ -23250,6 +23263,59 @@ private:
 
     // NOTE: codegenNewline has been migrated to StringIOCodegen (strio_->newline)
 
+    // (error-object? obj) — #t iff obj is an error object created by `error`.
+    Value* codegenErrorObjectPredicate(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("error-object? requires exactly 1 argument");
+            return nullptr;
+        }
+        TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
+        Value* tagged = typedValueToTaggedValue(arg);
+        if (!tagged) return nullptr;
+
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "errobj_arg");
+        builder->CreateStore(tagged, slot);
+
+        Function* f = module->getFunction("eshkol_error_object_p");
+        if (!f) {
+            FunctionType* ft = FunctionType::get(builder->getInt32Ty(), {builder->getPtrTy()}, false);
+            f = Function::Create(ft, Function::ExternalLinkage, "eshkol_error_object_p", module.get());
+        }
+        Value* r = builder->CreateCall(f, {slot});
+        Value* b = builder->CreateICmpNE(r, ConstantInt::get(builder->getInt32Ty(), 0));
+        return packBoolToTaggedValue(b);
+    }
+
+    // (error-object-message obj) / (error-object-irritants obj) — extract the
+    // stored message string or irritant list via an out-param runtime call.
+    Value* codegenErrorObjectAccessor(const eshkol_operations_t* op,
+                                      const char* runtime_fn, const char* scheme_name) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("%s requires exactly 1 argument", scheme_name);
+            return nullptr;
+        }
+        TypedValue arg = codegenTypedAST(&op->call_op.variables[0]);
+        Value* tagged = typedValueToTaggedValue(arg);
+        if (!tagged) return nullptr;
+
+        Function* cur = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+        AllocaInst* slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "errobj_arg");
+        AllocaInst* out = entry_builder.CreateAlloca(tagged_value_type, nullptr, "errobj_out");
+        builder->CreateStore(tagged, slot);
+
+        Function* f = module->getFunction(runtime_fn);
+        if (!f) {
+            FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()}, false);
+            f = Function::Create(ft, Function::ExternalLinkage, runtime_fn, module.get());
+        }
+        builder->CreateCall(f, {slot, out});
+        return builder->CreateLoad(tagged_value_type, out, "errobj_result");
+    }
+
     Value* codegenError(const eshkol_operations_t* op) {
         // Use exception system: create exception and raise it
         // This allows (error "msg" ...) to be caught by guard
@@ -23315,6 +23381,30 @@ private:
             ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
             error_msg
         }, "error_exception");
+
+        // R7RS §6.11: attach the remaining arguments as irritants so
+        // error-object-irritants can recover them. Uses the pointer-based
+        // adder to stay ABI-safe.
+        if (op->call_op.num_vars > 1) {
+            Function* add_irritant_func = module->getFunction("eshkol_exception_add_irritant_ptr");
+            if (!add_irritant_func) {
+                FunctionType* add_type = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy()}, false);
+                add_irritant_func = Function::Create(add_type, Function::ExternalLinkage,
+                    "eshkol_exception_add_irritant_ptr", module.get());
+            }
+            Function* cur = builder->GetInsertBlock()->getParent();
+            IRBuilder<> entry_builder(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+            AllocaInst* irritant_slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "error_irritant");
+            for (uint64_t i = 1; i < op->call_op.num_vars; i++) {
+                TypedValue irr = codegenTypedAST(&op->call_op.variables[i]);
+                if (!irr.llvm_value) continue;
+                Value* irr_tagged = typedValueToTaggedValue(irr);
+                if (!irr_tagged) continue;
+                builder->CreateStore(irr_tagged, irritant_slot);
+                builder->CreateCall(add_irritant_func, {exception, irritant_slot});
+            }
+        }
 
         // Raise exception
         builder->CreateCall(raise_func, {exception});
@@ -23614,7 +23704,7 @@ private:
             "string-foldcase", "string-for-each", "string-map",
             // Vectors
             "vector?", "make-vector", "vector", "vector-length",
-            "vector-ref", "vector-set!", "vector-copy!", "vector-append",
+            "vector-ref", "vector-set!", "vector-copy!", "vector-copy", "vector-append",
             "vector-fill!", "vector->list", "list->vector",
             "vector-for-each", "vector-map",
             // Control
@@ -23635,6 +23725,7 @@ private:
             "read-bytevector!", "u8-ready?",
             // Exceptions
             "error", "with-exception-handler", "raise", "guard",
+            "error-object?", "error-object-message", "error-object-irritants",
             // Continuations
             "call/cc", "call-with-current-continuation", "dynamic-wind",
             "call-with-port", "call-with-input-file", "call-with-output-file",
