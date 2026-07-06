@@ -151,7 +151,7 @@ inline const std::vector<std::string>& get_builtin_symbols() {
         "vector->list", "list->vector", "vector-fill!",
 
         // String operations
-        "string", "make-string", "string-length", "string-ref", "string-set!",
+        "string", "make-string", "string-length", "string-byte-length", "string-ref", "string-set!",
         "string-append", "substring", "string->list", "list->string",
         "string=?", "string<?", "string>?", "string<=?", "string>=?",
         "string-ci=?", "string-ci<?", "string-ci>?", "string-ci<=?", "string-ci>=?",

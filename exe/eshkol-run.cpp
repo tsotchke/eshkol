@@ -116,6 +116,55 @@ static void append_space_separated_link_args(const char* raw_args,
     }
 }
 
+// Noesis bug report #2 (2026-07-04), part (b): a standalone `eshkol-run -r`
+// AOT link that races a *concurrent* rebuild of one of the static runtime
+// archives (libeshkol-runtime.a / libeshkol-agent-ffi.a — e.g. a `cmake
+// --build` running in another terminal against the same build tree) can see
+// a partially-written `.a` and fail with plain "undefined symbols" errors
+// that look exactly like a missing-symbol bug. We can't intercept or rewrite
+// the linker's own stderr — run_subprocess() lets the child inherit the
+// parent's stdio directly so live diagnostics/progress are never buffered or
+// dropped — but we CAN cheaply check, after a link failure, whether any
+// static archive on the link line was modified within the last few seconds.
+// That's a strong signal of exactly this race, so we append an explanatory
+// note (in addition to, not instead of, the linker's own error text already
+// printed by the child) pointing the user at the concurrent-rebuild
+// explanation before they go spelunking for a "missing" symbol that in fact
+// exists in the finished archive.
+static void warn_if_link_archive_recently_modified(const std::vector<std::string>& link_args) {
+    constexpr long long kRecentSeconds = 30;
+    const auto now_system = std::chrono::system_clock::now();
+    for (const auto& arg : link_args) {
+        if (arg.size() < 2 || arg.compare(arg.size() - 2, 2, ".a") != 0) {
+            continue;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(arg, ec) || ec) {
+            continue;
+        }
+        auto ftime = std::filesystem::last_write_time(arg, ec);
+        if (ec) {
+            continue;
+        }
+        // Portable file_time_type -> system_clock::time_point conversion
+        // (no std::chrono::clock_cast pre-C++20).
+        auto as_system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+            ftime - std::filesystem::file_time_type::clock::now() + now_system);
+        auto age_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+            now_system - as_system_time).count();
+        if (age_seconds >= 0 && age_seconds < kRecentSeconds) {
+            eshkol_error(
+                "note: '%s' was modified %lld second(s) ago. If another build "
+                "(e.g. `cmake --build build --target eshkol-run stdlib`) is "
+                "rebuilding the Eshkol runtime/agent-FFI libraries "
+                "concurrently in this tree, the archive above may have been "
+                "linked while only partially written. Wait for that build to "
+                "finish, then retry this command.",
+                arg.c_str(), static_cast<long long>(age_seconds));
+        }
+    }
+}
+
 #if !defined(_WIN32)
 // Run a fixed, trusted command and capture its trimmed stdout. Returns empty on
 // any failure. Used only for runtime toolchain probes (xcrun, llvm-config) with
@@ -2484,6 +2533,25 @@ static std::string resolve_module_path(const std::string& module_name, const std
 // Global library directory (cached)
 static std::string g_lib_dir;
 
+// Is `module_name` an agent.* module whose native symbols actually live in
+// the optional eshkol-agent-ffi archive (and its libcurl/sqlite3/pcre2/
+// ncurses deps)? `agent.crypto` is a deliberate exception (2026-07,
+// Noesis bug report #2): its four native symbols (eshkol_sha256/
+// eshkol_hmac_sha256/eshkol_random_bytes/eshkol_random_hex) were moved to
+// lib/core/crypto_primitives.c, part of the always-linked core eshkol-runtime
+// archive, precisely so they no longer need this splice at all. If
+// `(require agent.crypto)` still forced ESHKOL_HOST_AGENT_FFI_LINK_ARGS in
+// (in particular the `-Wl,-force_load,libeshkol-agent-ffi.a` / whole-archive
+// clause), a program that ONLY uses agent.crypto — directly or transitively
+// via e.g. core.memory — would still race a concurrent rebuild of that much
+// larger, more-frequently-rebuilt archive despite crypto no longer needing
+// anything from it. Excluding it here closes that gap for real, rather than
+// just moving where the race can happen.
+static bool agent_module_needs_ffi_archive(const std::string& module_name)
+{
+    return module_name.rfind("agent.", 0) == 0 && module_name != "agent.crypto";
+}
+
 // Does a module source file (or anything it transitively `require`s) pull in an
 // agent.* module? Text-scans `(require …)` clauses and recurses into resolved
 // module files. This is how a faculty like core.memory — which uses sha256 via
@@ -2520,7 +2588,7 @@ static bool file_requires_agent_ffi(const std::string& path,
             while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
                 tok.pop_back();
             if (tok.empty()) continue;
-            if (tok.rfind("agent.", 0) == 0) return true;
+            if (agent_module_needs_ffi_archive(tok)) return true;
             std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
             if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
         }
@@ -2537,7 +2605,7 @@ static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
             for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
                 std::string module_name = ast.operation.require_op.module_names[i];
-                if (module_name.rfind("agent.", 0) == 0) return true;
+                if (agent_module_needs_ffi_archive(module_name)) return true;
                 std::string mp = resolve_module_path(module_name, base_dir, g_lib_dir);
                 if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
             }
@@ -4611,6 +4679,22 @@ int main(int argc, char **argv)
             }
         }
         link_args.emplace_back("-lobjc");  // Objective-C runtime
+
+        // Security framework: required by lib/core/crypto_primitives.c's
+        // SecRandomCopyBytes() (eshkol_random_bytes/eshkol_random_hex).
+        // CommonCrypto's HMAC/SHA256 calls (eshkol_hmac_sha256/eshkol_sha256)
+        // resolve via libSystem with no extra framework needed. This is
+        // always linked (not gated behind `(require agent.…)` detection)
+        // because crypto_primitives.c is part of the always-linked
+        // eshkol-runtime archive now — see Noesis bug report #2 (2026-07-04):
+        // previously these symbols lived in the separate, optional
+        // eshkol-agent-ffi archive and were only pulled in for programs that
+        // required agent.*, which meant a link racing a concurrent rebuild of
+        // that (much larger, more frequently rebuilt) archive could see a
+        // partial/inconsistent .a and fail with spurious undefined-symbol
+        // errors.
+        link_args.emplace_back("-framework");
+        link_args.emplace_back("Security");
 #endif
 
         append_host_runtime_link_args(link_args);
@@ -4719,6 +4803,10 @@ int main(int argc, char **argv)
         }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
+            // #212(b): distinguish "the library is genuinely missing a
+            // symbol" from "the library is mid-rebuild" when the evidence
+            // supports it — see warn_if_link_archive_recently_modified().
+            warn_if_link_archive_recently_modified(link_args);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
             return 1;
         }

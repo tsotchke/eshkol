@@ -1225,6 +1225,19 @@ macro(eshkol_append_host_runtime_link_arg item)
     endif()
 endmacro()
 
+if(NOT APPLE AND NOT WIN32)
+    # lib/core/crypto_primitives.c (SHA256/HMAC/secure random) is always
+    # compiled into eshkol-runtime (see ESHKOL_RUNTIME_SUPPORT_SRC) — probe
+    # for OpenSSL here, outside the optional ESHKOL_BUILD_AGENT_FFI block
+    # below, so libcrypto is linked into every AOT/-r build unconditionally.
+    # Apple uses CommonCrypto+Security (system-provided, no probe needed);
+    # Windows uses BCrypt (system-provided, no probe needed). See Noesis bug
+    # report #2 (2026-07-04): these symbols must not depend on the separate,
+    # more-frequently-rebuilt eshkol-agent-ffi archive being complete/whole
+    # at AOT-link time.
+    find_package(OpenSSL)
+endif()
+
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
@@ -1244,6 +1257,20 @@ if(NOT APPLE)
 
     if(WIN32 AND ESHKOL_CUDA_DEVICE_RUNTIME)
         eshkol_append_host_runtime_link_arg("${ESHKOL_CUDA_DEVICE_RUNTIME}")
+    endif()
+
+    # Crypto system lib for lib/core/crypto_primitives.c — see comment above.
+    if(WIN32)
+        eshkol_append_host_runtime_link_arg("bcrypt")
+    elseif(OpenSSL_FOUND)
+        eshkol_append_host_runtime_link_arg("OpenSSL::Crypto")
+    else()
+        message(WARNING
+            "OpenSSL (libcrypto) not found: eshkol_sha256/eshkol_hmac_sha256/"
+            "eshkol_random_bytes/eshkol_random_hex (lib/core/crypto_primitives.c, "
+            "always linked into eshkol-run AOT/-r binaries) will fail to LINK on "
+            "this host. Install libssl-dev (Debian/Ubuntu), openssl-devel "
+            "(Fedora/RHEL), or the platform equivalent.")
     endif()
 endif()
 
@@ -1559,6 +1586,7 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/tensor_backward.cpp
+  lib/core/crypto_primitives.c
   lib/core/dnc_api.c
   lib/core/image_io.c
   lib/core/inference.cpp
@@ -1769,6 +1797,27 @@ endif()
 if(TARGET metal_sf64_shader AND TARGET eshkol-gpu-runtime-obj)
     add_dependencies(eshkol-gpu-runtime-obj metal_sf64_shader)
     target_include_directories(eshkol-gpu-runtime-obj PRIVATE ${CMAKE_BINARY_DIR})
+endif()
+
+# Crypto system libs for lib/core/crypto_primitives.c (SHA256/HMAC/secure
+# random — see ESHKOL_RUNTIME_SUPPORT_SRC above). Always compiled into
+# eshkol-runtime/eshkol-static, so these link unconditionally here,
+# independent of ESHKOL_BUILD_AGENT_FFI (which historically gated the same
+# symbols via a separate, optional archive — Noesis bug report #2,
+# 2026-07-04). This covers the `eshkol-run`/`eshkol-repl` tool binaries and
+# any other CMake target linking eshkol-runtime/eshkol-static directly; the
+# AOT-compiled-user-program link path (raw clang++ invocation in
+# exe/eshkol-run.cpp) is covered separately — see append_host_runtime_link_args()
+# there for non-Apple, and the hardcoded Apple framework list for Apple.
+if(APPLE)
+    target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
+    target_link_libraries(eshkol-static PUBLIC "-framework Security")
+elseif(WIN32)
+    target_link_libraries(eshkol-runtime PUBLIC bcrypt)
+    target_link_libraries(eshkol-static PUBLIC bcrypt)
+elseif(OpenSSL_FOUND)
+    target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
+    target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)
 endif()
 
 # For each executable inside the executable files create the executable with LLVM backend.
@@ -2994,9 +3043,16 @@ if(ESHKOL_BUILD_AGENT_FFI)
     set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
 
     if(EXISTS "${AGENT_FFI_DIR}")
+        # NOTE: agent_crypto.c (HMAC-SHA256/SHA256/secure-random) moved to
+        # lib/core/crypto_primitives.c — it is now always compiled into the
+        # core eshkol-runtime archive rather than the optional agent-FFI
+        # bundle. See the ESHKOL_RUNTIME_SUPPORT_SRC crypto-libs block below
+        # for why (Noesis bug report #2, 2026-07-04: an AOT link that only
+        # pulled these symbols in via the separately-rebuilt
+        # libeshkol-agent-ffi.a could race a concurrent rebuild of that
+        # archive and fail with spurious "undefined symbols" errors).
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
-            ${AGENT_FFI_DIR}/agent_crypto.c
             ${AGENT_FFI_DIR}/agent_subprocess.c
         )
 
@@ -3137,7 +3193,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
 
         message(STATUS "Agent FFI modules: ENABLED")
         message(STATUS "  Terminal:  YES")
-        message(STATUS "  Crypto:    YES")
+        # (Crypto — SHA256/HMAC/secure random — is unconditional now, see
+        # lib/core/crypto_primitives.c / eshkol-runtime, not gated by this flag.)
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
         message(STATUS "  HTTP/curl: ${LIBCURL_AGENT_FOUND}")
