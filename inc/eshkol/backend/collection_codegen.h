@@ -131,6 +131,16 @@ public:
     llvm::Value* vectorCopy(const eshkol_operations_t* op);
 
     /**
+     * Copy a vector slice into a fresh vector:
+     *   (vector-copy v)             — whole vector
+     *   (vector-copy v start)       — from start to end
+     *   (vector-copy v start end)   — the [start,end) slice
+     * @param op The operation AST node
+     * @return New vector as tagged value
+     */
+    llvm::Value* vectorCopyNew(const eshkol_operations_t* op);
+
+    /**
      * Concatenate vectors: (vector-append vec1 vec2 ...)
      * @param op The operation AST node
      * @return New vector as tagged value

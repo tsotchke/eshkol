@@ -158,6 +158,80 @@ extern "C" void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_ta
     exc->num_irritants = new_count;
 }
 
+// Pointer-based irritant adder — ABI-safe to call from generated code
+// (avoids passing a 16-byte tagged value by register/coercion).
+extern "C" void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc,
+                                                  const eshkol_tagged_value_t* irritant) {
+    if (!exc || !irritant) return;
+    eshkol_exception_add_irritant(exc, *irritant);
+}
+
+// ===== R7RS error-object accessors =====
+// `guard`/`with-exception-handler` bind the raised value. For
+// `(error msg irritant...)` that value is a HEAP_PTR to an
+// eshkol_exception_t (subtype HEAP_SUBTYPE_EXCEPTION). These helpers let
+// error-object?, error-object-message and error-object-irritants inspect it.
+// error-object? must return #f for any other raised value (e.g. a bare
+// string via `(raise "x")`), so it checks the heap subtype, not just the
+// pointer tag.
+
+extern "C" int eshkol_error_object_p(const eshkol_tagged_value_t* obj) {
+    if (!obj) return 0;
+    if (obj->type != ESHKOL_VALUE_HEAP_PTR) return 0;
+    void* ptr = (void*)obj->data.ptr_val;
+    if (!ptr) return 0;
+    return ESHKOL_GET_SUBTYPE(ptr) == HEAP_SUBTYPE_EXCEPTION ? 1 : 0;
+}
+
+extern "C" void eshkol_error_object_message(const eshkol_tagged_value_t* obj,
+                                            eshkol_tagged_value_t* out) {
+    out->type = ESHKOL_VALUE_NULL;
+    out->flags = 0;
+    out->reserved = 0;
+    out->data.ptr_val = 0;
+    if (!eshkol_error_object_p(obj)) return;
+    eshkol_exception_t* exc = (eshkol_exception_t*)obj->data.ptr_val;
+    const char* msg = exc->message ? exc->message : "";
+    arena_t* arena = __repl_shared_arena.load();
+    if (!arena) return;
+    size_t len = strlen(msg);
+    char* buf = arena_allocate_string_with_header(arena, len);
+    if (!buf) return;
+    if (len > 0) memcpy(buf, msg, len);
+    buf[len] = '\0';
+    out->type = ESHKOL_VALUE_HEAP_PTR;
+    out->data.ptr_val = (uint64_t)buf;
+}
+
+extern "C" void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj,
+                                              eshkol_tagged_value_t* out) {
+    out->type = ESHKOL_VALUE_NULL;
+    out->flags = 0;
+    out->reserved = 0;
+    out->data.ptr_val = 0;
+    if (!eshkol_error_object_p(obj)) return;
+    eshkol_exception_t* exc = (eshkol_exception_t*)obj->data.ptr_val;
+    arena_t* arena = __repl_shared_arena.load();
+    if (!arena) return;
+    // Build the irritants list right-to-left so it preserves argument order.
+    eshkol_tagged_value_t list;
+    list.type = ESHKOL_VALUE_NULL;
+    list.flags = 0;
+    list.reserved = 0;
+    list.data.ptr_val = 0;
+    for (int i = (int)exc->num_irritants - 1; i >= 0; --i) {
+        arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+        if (!cell) return;
+        arena_tagged_cons_set_tagged_value(cell, false, &exc->irritants[i]);
+        arena_tagged_cons_set_tagged_value(cell, true, &list);
+        list.type = ESHKOL_VALUE_HEAP_PTR;
+        list.flags = 0;
+        list.reserved = 0;
+        list.data.ptr_val = (uint64_t)cell;
+    }
+    *out = list;
+}
+
 // Set source location on exception
 extern "C" void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename) {
     if (!exc) return;

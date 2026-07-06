@@ -331,6 +331,16 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             }
             break;
         } else {
+            // R7RS §5.5 `=>` receiver form: (test => receiver). The test is
+            // evaluated once; if truthy, `receiver` (which must yield a
+            // procedure) is applied to the test's value and the cond returns
+            // that result. The parser lowers this to a clause whose body is
+            // [`=>`, receiver], so detect a leading `=>` identifier.
+            bool is_arrow = (clause->operation.call_op.num_vars == 2 &&
+                clause->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                clause->operation.call_op.variables[0].variable.id &&
+                strcmp(clause->operation.call_op.variables[0].variable.id, "=>") == 0);
+
             // Regular clause — evaluate test using direct AST callback
             llvm::Value* test = codegen_ast_callback_(clause->operation.call_op.func, callback_context_);
             if (!test) continue;
@@ -344,6 +354,26 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
             // Then block — evaluate body expressions using direct AST callback
             ctx_.builder().SetInsertPoint(then_block);
             llvm::Value* result = nullptr;
+            if (is_arrow) {
+                // Evaluate the receiver to a procedure value, then apply it to
+                // the (tagged) test value via the closure-call dispatcher.
+                llvm::Value* receiver = codegen_ast_callback_(
+                    &clause->operation.call_op.variables[1], callback_context_);
+                llvm::Value* test_val = test;
+                if (test_val->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+                    test_val = detect_and_pack_callback_(test_val, callback_context_);
+                }
+                if (receiver && receiver->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+                    receiver = detect_and_pack_callback_(receiver, callback_context_);
+                }
+                if (receiver && closure_call_callback_) {
+                    std::vector<llvm::Value*> args{test_val};
+                    result = closure_call_callback_(receiver, args, callback_context_);
+                } else {
+                    eshkol_warn("cond `=>` requires a procedure receiver");
+                    result = test_val;
+                }
+            } else
             for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
                 if (ctx_.builder().GetInsertBlock()->getTerminator()) break;
                 result = codegen_ast_callback_(&clause->operation.call_op.variables[j], callback_context_);
@@ -768,7 +798,24 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
             // Then block - evaluate body expressions
             ctx_.builder().SetInsertPoint(then_block);
             llvm::Value* result = nullptr;
-            if (body_ast && body_ast->type == ESHKOL_OP &&
+            // R7RS §5.5 `=>` receiver form in case: (datums => receiver).
+            bool is_arrow = (body_ast && body_ast->type == ESHKOL_OP &&
+                body_ast->operation.op == ESHKOL_CALL_OP &&
+                body_ast->operation.call_op.num_vars == 2 &&
+                body_ast->operation.call_op.variables[0].type == ESHKOL_VAR &&
+                body_ast->operation.call_op.variables[0].variable.id &&
+                strcmp(body_ast->operation.call_op.variables[0].variable.id, "=>") == 0);
+            if (is_arrow && codegen_ast_callback_ && closure_call_callback_) {
+                llvm::Value* receiver = codegen_ast_callback_(
+                    &body_ast->operation.call_op.variables[1], callback_context_);
+                if (receiver && receiver->getType() != ctx_.taggedValueType() && detect_and_pack_callback_) {
+                    receiver = detect_and_pack_callback_(receiver, callback_context_);
+                }
+                if (receiver) {
+                    std::vector<llvm::Value*> args{key};
+                    result = closure_call_callback_(receiver, args, callback_context_);
+                }
+            } else if (body_ast && body_ast->type == ESHKOL_OP &&
                 body_ast->operation.op == ESHKOL_CALL_OP) {
                 for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
                     void* tv_ptr = codegen_typed_ast_callback_(&body_ast->operation.call_op.variables[j], callback_context_);
