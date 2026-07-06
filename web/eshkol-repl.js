@@ -275,6 +275,14 @@ class EshkolRepl {
                 arena_hash_table_create_with_header: (arena) => 0,
                 get_global_arena: () => 0,
 
+                // Named-let TCO loop per-iteration arena scope reclamation
+                // (ESH-0214b / fix/loop-arena-reclamation) -- the browser
+                // build never rewinds the arena (arena_allocate above is a
+                // bump allocator with no reclamation), so this is a no-op:
+                // no allocations are ever actually freed here, but that is
+                // also true for every other arena_allocate_* stub above.
+                eshkol_arena_iter_scope_end: (arena, vals, n) => {},
+
                 // Tagged cons operations
                 arena_tagged_cons_get_int64: (cell, iscar) => 0n,
                 arena_tagged_cons_get_double: (cell, iscar) => 0.0,
