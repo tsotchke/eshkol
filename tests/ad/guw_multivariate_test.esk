@@ -1,0 +1,163 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  GUW multivariate high-order AD — Phase P4 (ESH-0189)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Verifies core.ad.guw:
+;;    taylor-propagate  — univariate tower of f restricted to a line x + t·v
+;;    mixed-partial     — a single arbitrary-order mixed partial  D^β f(x)
+;;    gradient-n        — the full symmetric order-n derivative tensor
+;;
+;;  against closed-form analytic derivatives to order 4 in up to 3 variables,
+;;  plus metamorphic laws (index-permutation symmetry, gradient-n ≡ mixed-partial).
+;;
+;;  Runs identically under -r (JIT) and AOT.  Prints a PASS/FAIL summary and
+;;  exits non-zero if any check fails (so it gates the CMake `ad` suite too).
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.guw)
+
+(define npass 0)
+(define nfail 0)
+
+;; local list-ref (avoid depending on stdlib name resolution in the AOT pass)
+(define (nth lst i) (if (<= i 0) (car lst) (nth (cdr lst) (- i 1))))
+
+(define (rel-ok got want)
+  ;; combined absolute / relative tolerance < 1e-10
+  (let ((d (abs (- got want))))
+    (or (< d 1e-10)
+        (< (/ d (+ 1e-30 (abs want))) 1e-10))))
+
+(define (check name got want)
+  (if (rel-ok got want)
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name)
+             (display " got=") (display got)
+             (display " want=") (display want) (newline))))
+
+;; ── taylor-propagate: f(x,y)=x^2*y along (1,1) at (2,3) ──────────────────
+;;   g(t) = (2+t)^2 (3+t) = 12 + 16 t + 7 t^2 + t^3
+(define (fp v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)))
+(define tp (taylor-propagate fp (vector 2.0 3.0) (vector 1.0 1.0) 3))
+(check "propagate c0" (nth tp 0) 12.0)
+(check "propagate c1" (nth tp 1) 16.0)
+(check "propagate c2" (nth tp 2) 7.0)
+(check "propagate c3" (nth tp 3) 1.0)
+
+;; taylor-propagate on a transcendental: sin(x*y) along (1,1) at (0.5,0.7)
+;;   g(t)=sin((0.5+t)(0.7+t)); c0=sin(.35), c1=cos(.35)*1.2
+(define (fs v) (sin (* (vector-ref v 0) (vector-ref v 1))))
+(define tps (taylor-propagate fs (vector 0.5 0.7) (vector 1.0 1.0) 4))
+(check "propagate sin c0" (nth tps 0) (sin 0.35))
+(check "propagate sin c1" (nth tps 1) (* (cos 0.35) 1.2))
+
+;; ── mixed-partial vs analytic: f(x,y)=x^3 y^2 + sin(x y) at (1.0, 0.5) ────
+(define (f2 v)
+  (let ((x (vector-ref v 0)) (y (vector-ref v 1)))
+    (+ (* x x x y y) (sin (* x y)))))
+(define x0 1.0) (define y0 0.5)
+(define S (sin (* x0 y0))) (define C (cos (* x0 y0)))
+(define xs2 (vector x0 y0))
+;;  D_xxx = 6y^2 - C y^3
+;;  D_xxy = 12 x y - C x y^2 - 2 S y
+;;  D_xyy = 6 x^2 - C x^2 y - 2 S x
+;;  D_yyy = -C x^3
+(check "f2 d/xxx" (mixed-partial f2 xs2 (list 0 0 0))
+       (- (* 6.0 y0 y0) (* C y0 y0 y0)))
+(check "f2 d/xxy" (mixed-partial f2 xs2 (list 0 0 1))
+       (- (- (* 12.0 x0 y0) (* C x0 y0 y0)) (* 2.0 S y0)))
+(check "f2 d/xyy" (mixed-partial f2 xs2 (list 0 1 1))
+       (- (- (* 6.0 x0 x0) (* C x0 x0 y0)) (* 2.0 S x0)))
+(check "f2 d/yyy" (mixed-partial f2 xs2 (list 1 1 1))
+       (* -1.0 (* C x0 x0 x0)))
+
+;; index-permutation symmetry (Schwarz): D_xxy == D_xyx == D_yxx
+(check "f2 symmetry xxy=xyx"
+       (mixed-partial f2 xs2 (list 0 0 1)) (mixed-partial f2 xs2 (list 0 1 0)))
+(check "f2 symmetry xxy=yxx"
+       (mixed-partial f2 xs2 (list 0 0 1)) (mixed-partial f2 xs2 (list 1 0 0)))
+
+;; ── 3 variables, order 3: f(x,y,z)=x y z + x^3 at (1,2,3) ────────────────
+(define (f3 v)
+  (let ((x (vector-ref v 0)) (y (vector-ref v 1)) (z (vector-ref v 2)))
+    (+ (* x y z) (* x x x))))
+(define xs3 (vector 1.0 2.0 3.0))
+(check "f3 d/xyz" (mixed-partial f3 xs3 (list 0 1 2)) 1.0)
+(check "f3 d/xxx" (mixed-partial f3 xs3 (list 0 0 0)) 6.0)
+(check "f3 d/xxy" (mixed-partial f3 xs3 (list 0 0 1)) 0.0)
+(check "f3 d/yyz" (mixed-partial f3 xs3 (list 1 1 2)) 0.0)
+
+;; ── order 4, dim 2, transcendental: f(x,y)=exp(x)*cos(y) ─────────────────
+;;   D^(a,b) = exp(x) * d^b/dy^b cos(y)
+(define (f4t v)
+  (let ((x (vector-ref v 0)) (y (vector-ref v 1)))
+    (* (exp x) (cos y))))
+(define xt 0.3) (define yt 0.9)
+(define E (exp xt)) (define cy (cos yt)) (define sy (sin yt))
+(define xs4t (vector xt yt))
+(check "f4t d/xxxx" (mixed-partial f4t xs4t (list 0 0 0 0)) (* E cy))
+(check "f4t d/xxxy" (mixed-partial f4t xs4t (list 0 0 0 1)) (* E (- 0.0 sy)))
+(check "f4t d/xxyy" (mixed-partial f4t xs4t (list 0 0 1 1)) (* E (- 0.0 cy)))
+(check "f4t d/xyyy" (mixed-partial f4t xs4t (list 0 1 1 1)) (* E sy))
+(check "f4t d/yyyy" (mixed-partial f4t xs4t (list 1 1 1 1)) (* E cy))
+
+;; ── order 4, dim 2, polynomial: f(x,y)=x^4 + x^2 y^2 ─────────────────────
+(define (f4p v)
+  (let ((x (vector-ref v 0)) (y (vector-ref v 1)))
+    (+ (* x x x x) (* x x y y))))
+(define xs4p (vector 1.5 (- 0.0 0.7)))
+(check "f4p d/xxxx" (mixed-partial f4p xs4p (list 0 0 0 0)) 24.0)
+(check "f4p d/xxyy" (mixed-partial f4p xs4p (list 0 0 1 1)) 4.0)
+(check "f4p d/xxxy" (mixed-partial f4p xs4p (list 0 0 0 1)) 0.0)
+(check "f4p d/yyyy" (mixed-partial f4p xs4p (list 1 1 1 1)) 0.0)
+
+;; ── order 4, dim 3 (max gate): f(x,y,z)=x^2 y z + x z^3 ──────────────────
+;;   nonzero order-4 partials: D^(2,1,1)=2, D^(1,0,3)=6, everything else 0
+(define (f4d3 v)
+  (let ((x (vector-ref v 0)) (y (vector-ref v 1)) (z (vector-ref v 2)))
+    (+ (* x x y z) (* x z z z))))
+(define xs4d3 (vector 0.4 (- 0.0 1.1) 2.2))
+(check "f4d3 d/(2,1,1)" (mixed-partial f4d3 xs4d3 (list 0 0 1 2)) 2.0)   ; vars {0,1,2}
+(check "f4d3 d/(1,0,3)" (mixed-partial f4d3 xs4d3 (list 0 2 2 2)) 6.0)   ; vars {0,2}, gap at 1
+(check "f4d3 d/(1,2,1)" (mixed-partial f4d3 xs4d3 (list 0 1 1 2)) 0.0)
+
+;; ── gradient-n: full order-3 tensor of f2 must agree with mixed-partial ──
+(define g3 (gradient-n f2 xs2 3))
+(define (beta-eq a b)
+  (cond ((and (null? a) (null? b)) #t)
+        ((or  (null? a) (null? b)) #f)
+        ((= (car a) (car b)) (beta-eq (cdr a) (cdr b)))
+        (else #f)))
+(define (tensor-ref tens beta)
+  (cond ((null? tens) 0.0)
+        ((beta-eq (car (car tens)) beta) (cdr (car tens)))
+        (else (tensor-ref (cdr tens) beta))))
+;; β=(3,0) is d/xxx ; β=(2,1) is d/xxy ; β=(1,2) is d/xyy ; β=(0,3) is d/yyy
+(check "gradient-n (3,0)=xxx" (tensor-ref g3 (list 3 0))
+       (mixed-partial f2 xs2 (list 0 0 0)))
+(check "gradient-n (2,1)=xxy" (tensor-ref g3 (list 2 1))
+       (mixed-partial f2 xs2 (list 0 0 1)))
+(check "gradient-n (1,2)=xyy" (tensor-ref g3 (list 1 2))
+       (mixed-partial f2 xs2 (list 0 1 1)))
+(check "gradient-n (0,3)=yyy" (tensor-ref g3 (list 0 3))
+       (mixed-partial f2 xs2 (list 1 1 1)))
+
+;; gradient-n order 4, dim 3 spot checks
+(define g4 (gradient-n f4d3 xs4d3 4))
+(check "gradient-n4 (2,1,1)" (tensor-ref g4 (list 2 1 1)) 2.0)
+(check "gradient-n4 (1,0,3)" (tensor-ref g4 (list 1 0 3)) 6.0)
+(check "gradient-n4 (0,2,2)" (tensor-ref g4 (list 0 2 2)) 0.0)
+
+;; ─────────────────────────────────────────────────────────────────────────
+(display "----") (newline)
+(if (> nfail 0)
+    (begin
+      (display "GUW multivariate: ") (display npass) (display " passed, ")
+      (display nfail) (display " failed") (newline)
+      (exit 1))
+    (begin
+      (display "PASS: GUW multivariate ")
+      (display npass) (display "/") (display npass)
+      (display " checks (taylor-propagate, mixed-partial, gradient-n to order 4, dim 3)")
+      (newline)))
