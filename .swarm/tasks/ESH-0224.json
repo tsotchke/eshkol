@@ -1,0 +1,29 @@
+{
+  "id": "ESH-0224",
+  "title": "site JS-glue env stubs — unblock eshkol.ai WASM load",
+  "status": "done",
+  "priority": "critical",
+  "workstream": "web-wasm",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "eshkol.ai was reported stuck on 'Loading Eshkol...'. The failure class is a WASM env import that the hand-written JS glue (web/eshkol-repl.js + site/static/eshkol-runtime.js) does not stub, which makes WebAssembly.instantiate() throw a LinkError. Ensure both glue files provide a stub for every eshkol_* runtime symbol the LLVM wasm backend can emit as an env import.",
+  "file_globs": [
+    "web/eshkol-repl.js",
+    "site/static/eshkol-runtime.js"
+  ],
+  "root_cause": "The Taylor-tower P5 reverse-over-Taylor helpers (eshkol_taylor_has_tangent, eshkol_taylor_extract_tangent, eshkol_taylor_lift_ad_node — autodiff_codegen.cpp) and the R7RS error-object accessors (eshkol_error_object_p / _message / _irritants — llvm_codegen.cpp codegenErrorObjectPredicate/Accessor) are external calls the wasm backend emits, but neither JS glue file declared an env stub for them. A compiled program that exercises those paths LinkErrors at instantiate.",
+  "fix": "Added degradation stubs matching the existing sibling conventions to BOTH glue files: taylor block gains eshkol_taylor_has_tangent (()=>0), eshkol_taylor_extract_tangent (()=>0.0), eshkol_taylor_lift_ad_node (()=>{}); error section gains eshkol_error_object_p (()=>0), eshkol_error_object_message ((_obj,_out)=>{}), eshkol_error_object_irritants ((_obj,_out)=>{}). Return arity matches the LLVM FunctionType (i32/predicate -> 0, f64 -> 0.0, void/out-param -> {}).",
+  "acceptance": [
+    "python3 scripts/check_wasm_imports.py --build-dir build reports 0 missing env imports for both glue files",
+    "committed site/static/eshkol-site.wasm instantiates in node with the real EshkolRuntime.createImports() env (no LinkError)",
+    "node --check passes on both glue files",
+    "scripts/run_web_tests.sh pass-or-reported"
+  ],
+  "verification": [
+    "python3 scripts/check_wasm_imports.py --build-dir build",
+    "node scripts/_wasm_instantiate_check.cjs site/static/eshkol-runtime.js site/static/eshkol-site.wasm",
+    "node --check web/eshkol-repl.js && node --check site/static/eshkol-runtime.js",
+    "BUILD_DIR=build bash scripts/run_web_tests.sh"
+  ],
+  "blocked_by": []
+}
