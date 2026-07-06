@@ -1,0 +1,147 @@
+; ================================================================
+; ESH-0221: TCO-loop-carried-parameter closure capture regression
+; ================================================================
+;
+; A tail-recursive (TCO'd) function F(p1, p2, ...) whose parameters get
+; rewritten by the TCO loop transform into "<name>_tco" allocas, that
+; builds a NEW closure INSIDE its own body capturing one of its OWN
+; loop-carried parameters, must have that closure see the CURRENT
+; iteration's VALUE — not a stale/garbage read of the alloca's address.
+;
+; Root cause (see .swarm/tasks/ESH-0221.json for the full writeup):
+; codegenLambda already captures a "_tco" alloca BY VALUE at closure
+; creation time (map_codegen.cpp's isTcoLoopAlloca / bug-RR family).
+; But `derivative`/`gradient` (and the shared jacobian/hessian/
+; divergence/curl/laplacian capture resolver) in autodiff_codegen.cpp
+; independently RE-DERIVE a captured free variable's storage via a
+; direct symbol-table lookup, then decide value-vs-pointer forwarding
+; convention purely from `storage->getType()->isPointerTy()`. Since a
+; TCO alloca IS pointer-typed (every AllocaInst is), that check alone
+; can't distinguish "let-bound mutable variable — forward the pointer"
+; from "TCO loop parameter — forward the (single-load) VALUE", so it
+; packed the alloca's ADDRESS as if it were a mutable-variable pointer.
+; The callee then read that raw address bit-pattern as if it were the
+; captured double (garbage ~1e9-1e10) or the captured list (SIGSEGV /
+; "car: argument is not a pair" from a corrupted heap read).
+;
+; The P11 branch (feat/ad-taylor-p11-user-numerics, ESH-0196) discovered
+; this via `taylor`, which is not yet merged to master; `derivative` and
+; `gradient` share the same vulnerable capture-reconstruction machinery
+; and reproduce it identically, so they're used here. Per ESH-0221's
+; acceptance criteria, this test exercises the UN-workaround'd shape
+; directly (no manual "rebind to a fresh local first" dance).
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (approx= a b)
+  (< (abs (- a b)) 1e-9))
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+; ----------------------------------------------------------------
+; Section 1: plain closure call over a TCO loop-carried parameter.
+; (codegenLambda's own capture path — regression guard: this must
+; keep working while the AD-side fix below is added.)
+; ----------------------------------------------------------------
+
+(define (rec-plain t i k acc)
+  (if (= i k)
+      acc
+      (let* ((g (lambda (h) (+ t h))))
+        (rec-plain t (+ i 1) k (cons (g 0.0) acc)))))
+
+(test "plain closure over TCO loop param stays correct across recursion"
+      (list 5.0 5.0 5.0)
+      (reverse (rec-plain 5.0 0 3 '())))
+
+; ----------------------------------------------------------------
+; Section 2: `derivative` on a closure that captures its enclosing
+; TCO-recursive function's OWN loop-carried scalar parameter.
+; Un-workaround'd: no fresh-local rebind before building the closure.
+; ----------------------------------------------------------------
+
+(define (rec-deriv-inline t i k acc)
+  (if (= i k)
+      acc
+      (rec-deriv-inline t (+ i 1) k
+        (cons (derivative (lambda (h) (* t h)) 1.0) acc))))
+
+(test "derivative on inline lambda over TCO loop scalar param"
+      (list 5.0 5.0 5.0)
+      (reverse (rec-deriv-inline 5.0 0 3 '())))
+
+(define (rec-deriv-let t i k acc)
+  (if (= i k)
+      acc
+      (let* ((g (lambda (h) (* t h)))
+             (gd (derivative g 1.0)))
+        (rec-deriv-let t (+ i 1) k (cons gd acc)))))
+
+(test "derivative on let-bound closure over TCO loop scalar param"
+      (list 5.0 5.0 5.0)
+      (reverse (rec-deriv-let 5.0 0 3 '())))
+
+; ----------------------------------------------------------------
+; Section 3: `derivative` on a closure that captures a TCO
+; loop-carried LIST parameter. Pre-fix this crashed with
+; "car: argument is not a pair" (corrupted-memory misread) instead
+; of returning a value at all.
+; ----------------------------------------------------------------
+
+(define (rec-deriv-list bs i k acc)
+  (if (= i k)
+      acc
+      (rec-deriv-list bs (+ i 1) k
+        (cons (derivative (lambda (h) (* (car bs) h)) 1.0) acc))))
+
+(test "derivative on TCO loop LIST-valued capture"
+      (list 7.0 7.0 7.0)
+      (reverse (rec-deriv-list (list 7.0 8.0) 0 3 '())))
+
+; ----------------------------------------------------------------
+; Section 4: `gradient` on a closure that captures its enclosing
+; TCO-recursive function's OWN loop-carried scalar parameter.
+; ----------------------------------------------------------------
+
+(define (rec-grad t i k acc)
+  (if (= i k)
+      acc
+      (let* ((g (lambda (p) (* t (+ (* (vector-ref p 0) (vector-ref p 0))
+                                     (* (vector-ref p 1) (vector-ref p 1))))))
+             (partial-x (vector-ref (gradient g (vector 1.0 1.0)) 0)))
+        (rec-grad t (+ i 1) k (cons partial-x acc)))))
+
+(test "gradient on let-bound closure over TCO loop scalar param"
+      (list 6.0 6.0 6.0)
+      (reverse (rec-grad 3.0 0 3 '())))
+
+; ----------------------------------------------------------------
+; Section 5: non-recursive baseline must remain correct (guards
+; against an overly-broad fix that breaks the non-TCO case).
+; ----------------------------------------------------------------
+
+(define (once-deriv t)
+  (let* ((g (lambda (h) (* t h)))
+         (gd (derivative g 1.0)))
+    gd))
+
+(test "non-recursive derivative capture baseline unaffected" 5.0 (once-deriv 5.0))
+
+; Summary
+(display "\n=== Results ===\n")
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+
+(if (= fail-count 0)
+    0
+    (error "TCO loop closure capture tests failed"))
