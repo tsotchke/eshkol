@@ -1,0 +1,89 @@
+;; tests/ad/taylor_tower_test.esk
+;; ESH-0186 (P1): arbitrary-order forward-mode AD via the runtime Taylor tower.
+;;
+;; Verifies (derivative-n f x k) = f^(k)(x) and (taylor f x k) = the K+1
+;; coefficients c[n] = f^(n)/n!, to arbitrary order k (here 0..8), against
+;; closed-form analytic derivatives, for x^5, sin, exp, log(1+x) and 1/(1-x).
+;; Runs identically under -r (JIT) and AOT. Also checks nested composition and
+;; perturbation-epoch safety (a nested inner differentiation does not leak into
+;; the outer level).
+;;
+;; This closes the ESH-0118 ceiling (derivative^n = 0 for n >= 3).
+
+(define npass 0)
+(define nfail 0)
+
+;; relative + absolute tolerance (coefficients span 0 .. ~2e7 here)
+(define (close? got expect)
+  (<= (abs (- got expect)) (+ 1e-7 (* 1e-9 (abs expect)))))
+
+(define (check name n got expect)
+  (if (close? got expect)
+      (begin (set! npass (+ npass 1))
+             (display "PASS ") (display name) (display " n=") (display n)
+             (display " = ") (display got) (newline))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name) (display " n=") (display n)
+             (display " got=") (display got) (display " expect=") (display expect)
+             (newline))))
+
+;; check (derivative-n f x0 n) for n = 0..(length expected)-1 against expected
+(define (check-series name f x0 expected)
+  (let loop ((n 0) (es expected))
+    (if (null? es)
+        #t
+        (begin
+          (check name n (derivative-n f x0 n) (car es))
+          (loop (+ n 1) (cdr es))))))
+
+;; ---- f(x) = x^5  at x0 = 2.0 ----
+;; f^(n) = 5!/(5-n)! * 2^(5-n)  (0 for n > 5)
+(check-series "x^5" (lambda (x) (* x x x x x)) 2.0
+              (list 32.0 80.0 160.0 240.0 240.0 120.0 0.0 0.0 0.0))
+
+;; ---- f(x) = sin(x)  at x0 = 0.0 ----
+;; derivatives cycle 0, 1, 0, -1, ...
+(check-series "sin" (lambda (x) (sin x)) 0.0
+              (list 0.0 1.0 0.0 -1.0 0.0 1.0 0.0 -1.0 0.0))
+
+;; ---- f(x) = exp(x)  at x0 = 0.5 ----  (all derivatives = exp(0.5))
+(define e05 (exp 0.5))
+(check-series "exp" (lambda (x) (exp x)) 0.5
+              (list e05 e05 e05 e05 e05 e05 e05 e05 e05))
+
+;; ---- f(x) = log(1+x)  at x0 = 0.0 ----
+;; f^(n) = (-1)^(n-1) (n-1)!  for n >= 1
+(check-series "log1p" (lambda (x) (log (+ 1.0 x))) 0.0
+              (list 0.0 1.0 -1.0 2.0 -6.0 24.0 -120.0 720.0 -5040.0))
+
+;; ---- f(x) = 1/(1-x)  at x0 = 0.5 ----
+;; f^(n) = n! / (1-x0)^(n+1) = n! * 2^(n+1)
+(check-series "geom" (lambda (x) (/ 1.0 (- 1.0 x))) 0.5
+              (list 2.0 4.0 16.0 96.0 768.0 7680.0 92160.0 1290240.0 20643840.0))
+
+;; ---- (taylor f x k): coefficients c[n] = f^(n)/n!  ----
+;; taylor(exp, 0.5, 4) = (e05  e05  e05/2  e05/6  e05/24)
+(define tcoeffs (taylor (lambda (x) (exp x)) 0.5 4))
+(check "taylor-exp c0" 0 (list-ref tcoeffs 0) e05)
+(check "taylor-exp c1" 1 (list-ref tcoeffs 1) e05)
+(check "taylor-exp c2" 2 (list-ref tcoeffs 2) (/ e05 2.0))
+(check "taylor-exp c3" 3 (list-ref tcoeffs 3) (/ e05 6.0))
+(check "taylor-exp c4" 4 (list-ref tcoeffs 4) (/ e05 24.0))
+
+;; ---- nested composition + perturbation-epoch safety ----
+;; The inner (derivative-n ... 3.0 1) computes d/dy y^3 |_{y=3} = 27, a value
+;; wholly independent of the outer variable x. Its perturbation epoch must NOT
+;; contaminate the outer differentiation: d/dx (x^2 + 27) |_{x=4} = 2*4 = 8.
+(check "nested-safe" 1
+       (derivative-n
+         (lambda (x) (+ (* x x)
+                        (derivative-n (lambda (y) (* y y y)) 3.0 1)))
+         4.0 1)
+       8.0)
+
+;; Pure same-variable high-order composition: d^3/dx^3 x^4 |_{x=2} = 24*2 = 48.
+(check "highorder" 3 (derivative-n (lambda (x) (* x x x x)) 2.0 3) 48.0)
+
+(display "----") (newline)
+(display "taylor-tower tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)

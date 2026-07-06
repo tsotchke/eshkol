@@ -37,10 +37,14 @@ REPORT = os.path.join(ROOT, "AD_DEPTH_REPORT.md")
 # expected (green); below baseline is a regression (red). Fixes that raise a
 # boundary stay green and are flagged as improvements in the report.
 BASELINE = {
-    ("deriv", "capnone"): 2,
-    ("deriv", "glob"): 2,
-    ("deriv", "localparam"): 1,   # d2 returns garbage (ESH-0122)
-    ("deriv", "vecref"): 1,       # d2 returns garbage (ESH-0122)
+    # ESH-0186 (P1 Taylor tower): nested `derivative` chains of depth>=3 route
+    # through the arbitrary-order tower, so derivative^d is now exact to d=8 for
+    # every capture form (this also closes the ESH-0122 localparam/vecref cases,
+    # whose captures flow through the tower call unchanged). Was 2/2/1/1.
+    ("deriv", "capnone"): 8,
+    ("deriv", "glob"): 8,
+    ("deriv", "localparam"): 8,
+    ("deriv", "vecref"): 8,
     ("gradn", "capnone"): 2,
     ("gradn", "vecref"): 1,       # d2 returns garbage (ESH-0122 capture bug)
     ("gofd", "vecref"): 1,        # d>=2 returns 0 (ESH-0117 family)

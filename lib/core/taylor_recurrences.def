@@ -1,0 +1,61 @@
+/*
+ * taylor_recurrences.def -- single source of truth for the Taylor-tower
+ * primitives (ESH-0186/ESH-0187, docs/design/AD_TAYLOR_TOWER.md section 5b).
+ *
+ * X-macro table. Each row names a primitive, its arity, the runtime op-code
+ * (as consumed by eshkol_taylor_binary_tagged / eshkol_taylor_unary_tagged),
+ * the Eshkol source-level call head that selects it, and (for unary rows) a
+ * d=8 analytic self-test spec (a C-library reference function + a test point)
+ * so that a per-primitive correctness gate can be generated from the same
+ * table that defines the kernel.
+ *
+ * This table is now consumed by BOTH tiers, making it the genuine single
+ * source of truth for the primitive set and its op-codes:
+ *   1. Runtime kernel   (lib/core/runtime_taylor.c) -- derives the
+ *      ESH_TAYLOR_OP_* / ESH_TAYLOR_UOP_* op-code constants from it.
+ *   2. P2 IR emitter    (lib/backend/autodiff_codegen.cpp) -- derives the
+ *      compile-time-K monomorphization whitelist + spelling->op-code dispatch
+ *      from it, so the unrolled straight-line SSA tier and the runtime heap
+ *      tier can never diverge on which primitives exist or how they are keyed.
+ *
+ * Columns:
+ *   TAYLOR_BIN(name, opcode, sexpr)
+ *       name   -- internal identifier (also the ESH_TAYLOR_OP_<name> constant)
+ *       opcode -- integer op-code (ABI: mirrored by the codegen dispatch)
+ *       sexpr  -- Eshkol source call head that selects this binary recurrence
+ *   TAYLOR_UN(name, opcode, sexpr, testfn, x0)
+ *       name/opcode -- as above (ESH_TAYLOR_UOP_<name>)
+ *       sexpr  -- Eshkol source call head that selects this unary recurrence
+ *       testfn -- C-library reference function for the d=8 analytic self-test
+ *       x0     -- test evaluation point
+ */
+
+#ifndef TAYLOR_BIN
+#define TAYLOR_BIN(name, opcode, sexpr)
+#endif
+#ifndef TAYLOR_UN
+#define TAYLOR_UN(name, opcode, sexpr, testfn, x0)
+#endif
+
+/* --- binary recurrences (section 5) --- */
+TAYLOR_BIN(add, 0, "+")   /* s_k = u_k + w_k                                  */
+TAYLOR_BIN(sub, 1, "-")   /* s_k = u_k - w_k   (2+ args; 1 arg -> neg below)  */
+TAYLOR_BIN(mul, 2, "*")   /* s_k = sum_{j=0..k} u_j w_{k-j}   (Cauchy, fma)   */
+TAYLOR_BIN(div, 3, "/")   /* s_k = (u_k - sum_{j>=1} w_j s_{k-j}) / w_0       */
+TAYLOR_BIN(pow, 4, "pow") /* u^r exact for constant r; else exp(w*log u)      */
+
+/* --- unary recurrences (section 5) + analytic d=8 self-test points --- */
+TAYLOR_UN(neg,  0, "-",    /*none*/, 0.0)  /* unary minus: s_k = -u_k         */
+TAYLOR_UN(exp,  1, "exp",  exp,      0.5)  /* s_k = (1/k) sum j u_j s_{k-j}   */
+TAYLOR_UN(log,  2, "log",  log,      1.3)  /* s_k=(u_k-(1/k)sum j s_j u_{k-j})/u_0 */
+TAYLOR_UN(sin,  3, "sin",  sin,      0.7)  /* coupled sin/cos                 */
+TAYLOR_UN(cos,  4, "cos",  cos,      0.7)  /* coupled companion               */
+TAYLOR_UN(tan,  5, "tan",  tan,      0.4)  /* sin/cos                         */
+TAYLOR_UN(sqrt, 6, "sqrt", sqrt,     2.0)  /* u^(1/2) via the power recurrence */
+TAYLOR_UN(abs,  7, "abs",  fabs,     1.5)  /* |u_0|, sign(u_0)*u_k            */
+TAYLOR_UN(sinh, 8, "sinh", sinh,     0.6)  /* (exp(u) - exp(-u))/2            */
+TAYLOR_UN(cosh, 9, "cosh", cosh,     0.6)  /* (exp(u) + exp(-u))/2            */
+TAYLOR_UN(tanh, 10, "tanh", tanh,    0.6)  /* sinh/cosh                       */
+
+#undef TAYLOR_BIN
+#undef TAYLOR_UN
