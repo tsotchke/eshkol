@@ -1,0 +1,307 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.tensor_tower — tensor-valued Taylor towers  (Phase P7, ESH-0192)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  High-order derivatives of ML-style computations (elementwise chains,
+;;  matmul, conv2d) with respect to a SCALAR parameter t (a scale/temperature/
+;;  time parameter feeding a tensor computation), built on top of:
+;;    - the existing univariate scalar Taylor tower (`taylor` / `derivative-n`,
+;;      docs/design/AD_TAYLOR_TOWER.md sec 5/6) for the pure-scalar sub-series
+;;      of t, unmodified;
+;;    - the existing dense tensor runtime (tensor-add/scale/mul/matmul/exp/...,
+;;      lib/backend/tensor_*_codegen.cpp) for the per-coefficient tensor op,
+;;      unmodified.
+;;
+;;  ── Representation decision: "tower of tensors", not "tensor of towers" ──
+;;  A tensor-valued tower of order K is a Scheme VECTOR of K+1 tensors, all of
+;;  one shape: `#(c0 c1 ... cK)` where the tensor-valued function of t being
+;;  differentiated satisfies  F(t0 + s) = sum_{k=0..K} c_k * s^k.
+;;
+;;  This is the ONLY representation that composes with the existing tensor
+;;  runtime without changing it:
+;;    - Eshkol's dense tensors (HEAP_SUBTYPE_TENSOR) store HOMOGENEOUS raw
+;;      doubles (bitpatterns) in a flat backing array (design doc sec 4/10).
+;;      A single tensor SLOT cannot hold a tagged AD value (a heap pointer to
+;;      an esh_taylor_t) without boxing every element -- which would turn
+;;      every tensor op into a generic per-element dispatch loop and defeat
+;;      the entire point of a dense/BLAS/GPU-backed tensor. "Tensor of towers"
+;;      (each element a scalar tower) is therefore not implementable without
+;;      first reworking every tensor kernel (shape ops, broadcast, BLAS, Metal/
+;;      CUDA) to a new element dtype -- out of scope and unnecessary here.
+;;    - "Tower of tensors" sidesteps this completely: each COEFFICIENT c_k is
+;;      an ordinary, unmodified HEAP_SUBTYPE_TENSOR value. Every existing
+;;      tensor primitive (tensor-add, tensor-scale, tensor-mul, matmul, conv2d,
+;;      tensor-exp, tensor-sum, ...) is reused UNCHANGED as the "inner op" that
+;;      combines a pair of coefficients; the K+1-length outer loop (the Cauchy
+;;      convolution over the series index) is orthogonal orchestration, exactly
+;;      as docs/design/AD_TAYLOR_TOWER.md sec 10 specifies ("The convolution
+;;      over series index k is orthogonal to the tensor contraction over
+;;      spatial/feature axes -- they compose cleanly").
+;;    - This is also exactly the header layout the design doc already reserved
+;;      (sec 4: `COEFF_TENSOR` makes each c_k a HEAP_SUBTYPE_TENSOR pointer) --
+;;      this phase implements it as a library-level Scheme vector-of-tensors
+;;      rather than adding a new C heap-subtype/LLVM-codegen tier, mirroring
+;;      how P4 (GUW, lib/core/ad/guw.esk) implemented multivariate high-order
+;;      AD as pure orchestration over the existing kernel with NO new AD
+;;      primitive and NO codegen changes. A pragmatic first cut, as scoped.
+;;
+;;  ── Why plain tensor ops do NOT already propagate a scalar tower ─────────
+;;  Unlike scalar `+`/`*`/`exp`/... (which are polymorphic runtime dispatchers
+;;  that already understand a Taylor-tower operand -- this is exactly how GUW
+;;  works with zero codegen changes), the tensor builtins convert a scalar
+;;  argument straight to a raw double at the runtime-call boundary. Passing a
+;;  live Taylor-tower value as e.g. `tensor-scale`'s scalar argument silently
+;;  collapses it to its primal (c[0]) value -- confirmed empirically:
+;;  `(derivative-n (lambda (t) (tensor-sum (tensor-scale A (* t t t)))) t0 3)`
+;;  returns 0, not 6*(sum A), because the tower never survives the trip through
+;;  `tensor-scale`. Hence the explicit `tt-*` combinators below: they never
+;;  hand a tower to a tensor builtin's scalar argument -- they extract the
+;;  k-th SCALAR coefficient (a plain double, via the existing `taylor` kernel)
+;;  and hand tensor builtins only ordinary tensors and ordinary doubles.
+;;
+;;  ── Scope: which primal ops are covered ──────────────────────────────────
+;;  Covered (this phase):
+;;    - elementwise linear ops: add, sub, negate, scale-by-scalar-series
+;;      (`tt-from-scalar-series`) -- exact, any order K.
+;;    - elementwise BILINEAR ops via Cauchy convolution with a swappable inner
+;;      op: Hadamard elementwise multiply (`tt-hadamard-cauchy`), matmul
+;;      (`tt-matmul-cauchy`), conv2d (`tt-conv2d-cauchy`) -- "mul -> the
+;;      appropriate bilinear tensor contraction" per design doc sec 10.
+;;    - elementwise NONLINEAR ops built compositionally from the Cauchy/exp/div
+;;      lift, exactly mirroring the scalar recurrences of
+;;      docs/design/AD_TAYLOR_TOWER.md sec 5 (tr_exp / tr_div in
+;;      lib/core/runtime_taylor.c) with the scalar multiply replaced by
+;;      elementwise Hadamard tensor-mul: `tt-exp`, `tt-div`, and the composed
+;;      `tt-sigmoid` / `tt-tanh` (both via the exp decomposition, exactly as
+;;      runtime_taylor.c's tanh/sinh/cosh are built from dual exp).
+;;    - final reduction to a scalar Taylor series via `tt-sum` (per-coefficient
+;;      tensor-sum, reusing the existing reduction), so `tt-nth-derivative`
+;;      recovers `d^n f / dt^n` at the evaluation point exactly as
+;;      `eshkol_taylor_extract` does for the scalar tower (n! * c_n).
+;;  Deferred (documented, not attempted this phase):
+;;    - batch-norm / layer-norm / scaled-dot-attention as ONE lifted op: each
+;;      decomposes into axis-aware reductions (per-channel mean/variance) that
+;;      have no existing tensor-tower analogue yet (mean-over-axis of a tower
+;;      needs an axis-aware `tt-*` reduction this phase does not build). They
+;;      remain available at order <= 1 via the existing reverse-mode tensor AD
+;;      path (tests/v1_3_edge_cases/ad_input2_test.esk), untouched by this
+;;      phase. A follow-up can express them compositionally once an axis-aware
+;;      `tt-mean`/`tt-rsqrt` pair exists.
+;;    - GPU dispatch of the per-coefficient tensor op: the series loop is host
+;;      Scheme; each inner tensor op already dispatches to BLAS/Metal/CUDA
+;;      exactly as it does outside a tower (design doc sec 10, "the series loop
+;;      stays on host, the per-index tensor op dispatches to device").
+;;
+;;  ── API ────────────────────────────────────────────────────────────────
+;;    (tt-const T K)                    -> tower {T, 0, 0, ..., 0}
+;;    (tt-from-scalar-series T coeffs)  -> tower {T*c0, T*c1, ..., T*cK}
+;;                                         coeffs = a scalar Taylor coefficient
+;;                                         list, e.g. (taylor (lambda (t) (* t t t)) t0 K)
+;;    (tt-add A B) (tt-sub A B) (tt-neg A)          -- elementwise, index-wise
+;;    (tt-scale-const A c)                          -- every coeff * const c
+;;    (tt-hadamard-cauchy A B)                      -- Cauchy conv, inner = tensor-mul
+;;    (tt-matmul-cauchy A B)                        -- Cauchy conv, inner = matmul
+;;    (tt-conv2d-cauchy A B stride)                 -- Cauchy conv, inner = conv2d
+;;    (tt-exp A) (tt-div A B)                       -- elementwise nonlinear lift
+;;    (tt-sigmoid A) (tt-tanh A)                    -- composed from tt-exp/tt-div
+;;    (tt-sum A)                        -> scalar coefficient list (c[0] first)
+;;    (tt-nth-derivative coeffs n)      -> n! * coeffs[n]  (0 if n > order)
+;;    (tt-value A)                      -> the primal tensor c[0] (order-0 slot)
+;; ─────────────────────────────────────────────────────────────────────────
+
+(provide tt-const tt-from-scalar-series
+         tt-add tt-sub tt-neg tt-scale-const
+         tt-hadamard-cauchy tt-matmul-cauchy tt-conv2d-cauchy
+         tt-exp tt-div tt-sigmoid tt-tanh
+         tt-sum tt-nth-derivative tt-value tt-order)
+
+;; ── Self-contained helpers (core module discipline: no stdlib map/for-each,
+;;    following the lib/core/ad/{tape,guw}.esk precedent) ───────────────────
+
+(define (tt-order tw) (- (vector-length tw) 1))   ; K, given a K+1-length tower
+
+(define (tt-zero-like T) (make-tensor (tensor-shape T) 0.0))
+
+(define (tt-list-ref lst i)
+  (if (<= i 0) (car lst) (tt-list-ref (cdr lst) (- i 1))))
+
+(define (tt-list-length lst)
+  (let loop ((l lst) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+
+(define (tt-factorial n)
+  (let loop ((i n) (acc 1.0)) (if (<= i 1) acc (loop (- i 1) (* acc (exact->inexact i))))))
+
+;; ── Construction ────────────────────────────────────────────────────────
+
+(define (tt-const T k)
+  (let ((out (make-vector (+ k 1) T)))
+    (let loop ((i 1))
+      (if (<= i k)
+          (begin (vector-set! out i (tt-zero-like T)) (loop (+ i 1)))
+          out))))
+
+;; T * g(t), where `coeffs` is the (K+1)-length scalar Taylor coefficient list
+;; of g about t0 (c[0] first, as returned by `taylor`). Exact for any K because
+;; T*g(t) is LINEAR in g: (T*g)_k = T * g_k.
+(define (tt-from-scalar-series T coeffs)
+  (let* ((k   (- (tt-list-length coeffs) 1))
+         (out (make-vector (+ k 1) T)))
+    (let loop ((i 0) (cs coeffs))
+      (if (pair? cs)
+          (begin (vector-set! out i (tensor-scale T (car cs)))
+                 (loop (+ i 1) (cdr cs)))
+          out))))
+
+;; ── Elementwise linear ops (index-wise, order-preserving) ──────────────────
+;;
+;; NOTE: tensor-add/tensor-sub/tensor-neg/tensor-mul/matmul/conv2d/tensor-scale
+;; are compiler intrinsics recognised only in DIRECT CALL POSITION -- passing
+;; one as a first-class value (e.g. into a `tt-map2 op A B` higher-order
+;; helper) fails with "Undefined variable" (confirmed empirically). Every
+;; helper below therefore calls its tensor op by name directly, at the cost of
+;; a little duplication across add/sub/neg and the three Cauchy variants.
+
+(define (tt-add A B)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let loop ((i 0))
+      (if (<= i k)
+          (begin (vector-set! out i (tensor-add (vector-ref A i) (vector-ref B i))) (loop (+ i 1)))
+          out))))
+
+(define (tt-sub A B)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let loop ((i 0))
+      (if (<= i k)
+          (begin (vector-set! out i (tensor-sub (vector-ref A i) (vector-ref B i))) (loop (+ i 1)))
+          out))))
+
+(define (tt-neg A)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let loop ((i 0))
+      (if (<= i k)
+          (begin (vector-set! out i (tensor-neg (vector-ref A i))) (loop (+ i 1)))
+          out))))
+
+(define (tt-scale-const A c)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let loop ((i 0))
+      (if (<= i k)
+          (begin (vector-set! out i (tensor-scale (vector-ref A i) c)) (loop (+ i 1)))
+          out))))
+
+;; ── Cauchy convolution, one concrete variant per bilinear inner op ────────
+;; s_k = sum_{j=0..k} inner-op(A_j, B_{k-j})    (design doc sec 5/10)
+;; Pure accumulator-passing recursion throughout (no `set!` on scalars) --
+;; only vector-set! on a freshly allocated, write-once-per-index vector,
+;; matching the proven lib/core/ad/guw.esk idiom.
+
+(define (tt-hadamard-term A B kk)
+  (let jloop ((j 0) (acc (tt-zero-like (tensor-mul (vector-ref A 0) (vector-ref B 0)))))
+    (if (> j kk)
+        acc
+        (jloop (+ j 1) (tensor-add acc (tensor-mul (vector-ref A j) (vector-ref B (- kk j))))))))
+
+(define (tt-hadamard-cauchy A B)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let kloop ((kk 0))
+      (if (> kk k)
+          out
+          (begin (vector-set! out kk (tt-hadamard-term A B kk)) (kloop (+ kk 1)))))))
+
+(define (tt-matmul-term A B kk)
+  (let jloop ((j 0) (acc (tt-zero-like (matmul (vector-ref A 0) (vector-ref B 0)))))
+    (if (> j kk)
+        acc
+        (jloop (+ j 1) (tensor-add acc (matmul (vector-ref A j) (vector-ref B (- kk j))))))))
+
+(define (tt-matmul-cauchy A B)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let kloop ((kk 0))
+      (if (> kk k)
+          out
+          (begin (vector-set! out kk (tt-matmul-term A B kk)) (kloop (+ kk 1)))))))
+
+(define (tt-conv2d-term A B stride kk)
+  (let jloop ((j 0) (acc (tt-zero-like (conv2d (vector-ref A 0) (vector-ref B 0) stride))))
+    (if (> j kk)
+        acc
+        (jloop (+ j 1) (tensor-add acc (conv2d (vector-ref A j) (vector-ref B (- kk j)) stride))))))
+
+(define (tt-conv2d-cauchy A B stride)
+  (let* ((k (tt-order A)) (out (make-vector (+ k 1) #f)))
+    (let kloop ((kk 0))
+      (if (> kk k)
+          out
+          (begin (vector-set! out kk (tt-conv2d-term A B stride kk)) (kloop (+ kk 1)))))))
+
+;; ── Elementwise nonlinear lift (mirrors runtime_taylor.c tr_exp / tr_div,
+;;    scalar multiply -> tensor-mul (Hadamard), scalar add -> tensor-add) ───
+
+;; s = exp(u), elementwise: s_0 = tensor-exp(u_0);
+;;   s_k = (1/k) * sum_{j=1..k} j * (u_j .* s_{k-j})     [.* = Hadamard]
+;; `s` is built left-to-right so tt-exp-term's reads of s[kk-j] (kk-j < kk)
+;; always see an already-populated slot; no scalar `set!`.
+(define (tt-exp-term u s kk)
+  (let jloop ((j 1) (acc (tt-zero-like (vector-ref u 0))))
+    (if (> j kk)
+        acc
+        (jloop (+ j 1)
+               (tensor-add acc (tensor-scale (tensor-mul (vector-ref u j) (vector-ref s (- kk j)))
+                                              (exact->inexact j)))))))
+
+(define (tt-exp u)
+  (let* ((k (tt-order u))
+         (s (make-vector (+ k 1) #f)))
+    (vector-set! s 0 (tensor-exp (vector-ref u 0)))
+    (let kloop ((kk 1))
+      (if (> kk k)
+          s
+          (begin
+            (vector-set! s kk (tensor-scale (tt-exp-term u s kk) (/ 1.0 (exact->inexact kk))))
+            (kloop (+ kk 1)))))))
+
+;; s = u / w, elementwise: s_0 = u_0 ./ w_0;
+;;   s_k = ( u_k - sum_{j=1..k} w_j .* s_{k-j} ) ./ w_0
+(define (tt-div-term u w s kk)
+  (let jloop ((j 1) (acc (vector-ref u kk)))
+    (if (> j kk)
+        acc
+        (jloop (+ j 1) (tensor-sub acc (tensor-mul (vector-ref w j) (vector-ref s (- kk j))))))))
+
+(define (tt-div u w)
+  (let* ((k (tt-order u))
+         (s (make-vector (+ k 1) #f)))
+    (vector-set! s 0 (tensor-div (vector-ref u 0) (vector-ref w 0)))
+    (let kloop ((kk 1))
+      (if (> kk k)
+          s
+          (begin
+            (vector-set! s kk (tensor-div (tt-div-term u w s kk) (vector-ref w 0)))
+            (kloop (+ kk 1)))))))
+
+;; sigmoid(u) = 1 / (1 + exp(-u))   -- composed exactly as the scalar kernel
+;; composes tanh from exp (runtime_taylor.c UOP_tanh), elementwise per slot.
+(define (tt-sigmoid u)
+  (let* ((one (tt-const (make-tensor (tensor-shape (vector-ref u 0)) 1.0) (tt-order u)))
+         (eneg (tt-exp (tt-neg u))))
+    (tt-div one (tt-add one eneg))))
+
+;; tanh(u) = (exp(u) - exp(-u)) / (exp(u) + exp(-u))
+(define (tt-tanh u)
+  (let* ((ep (tt-exp u))
+         (em (tt-exp (tt-neg u))))
+    (tt-div (tt-sub ep em) (tt-add ep em))))
+
+;; ── Final reduction + extraction ──────────────────────────────────────────
+
+(define (tt-sum A)
+  (let ((k (tt-order A)))
+    (let loop ((i k) (acc '()))
+      (if (< i 0) acc (loop (- i 1) (cons (tensor-sum (vector-ref A i)) acc))))))
+
+(define (tt-nth-derivative coeffs n)
+  (if (>= n (tt-list-length coeffs))
+      0.0
+      (* (tt-factorial n) (tt-list-ref coeffs n))))
+
+(define (tt-value A) (vector-ref A 0))
