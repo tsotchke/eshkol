@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0215",
+  "title": "Build-system dependency tracking: editing a .esk source does not reliably trigger recompile of the AOT object",
+  "status": "done",
+  "priority": "high",
+  "workstream": "build-integration",
+  "goal": "Noesis BUGS-2026-07-04 #3/#5 and Selene PRIORITY 2: a downstream CMake+ninja build that compiles main.esk to main.o via eshkol-run --emit-object only tracked main.esk itself as a build-graph prerequisite. Editing a (load \"...\")ed / (import ...)ed / (require ...)d dependency left the object's only tracked input unchanged, so ninja treated it as up to date and the project silently linked a stale binary — the workaround was to rm the object and re-run ninja 2-3 times. Fix by teaching eshkol-run to emit a Makefile-format depfile of the full transitive source graph, and by shipping a canonical cmake/EshkolCompile.cmake that wires that depfile into ninja's DEPFILE build-edge attribute.",
+  "file_globs": [
+    "exe/eshkol-run.cpp",
+    "cmake/EshkolCompile.cmake",
+    "CMakeLists.txt",
+    "tests/build_integration/CMakeLists.txt",
+    "tests/build_integration/main.esk",
+    "tests/build_integration/dep.esk",
+    "docs/BUILD_INTEGRATION.md"
+  ],
+  "acceptance": [
+    "eshkol-run --emit-object -o out.o --emit-depfile out.o.d main.esk writes out.o.d as a Makefile depfile listing main.esk plus every transitively (load ...)/(import ...)/(require ...)-reached source file, with Make-safe escaping for spaces/#/$.",
+    "cmake/EshkolCompile.cmake's eshkol_compile_executable/eshkol_compile_library attach DEPFILE to the compiling add_custom_command on generators that support it (Ninja; Makefiles on CMake >= 3.20), falling back to entry-file-only DEPENDS elsewhere.",
+    "tests/build_integration/ (main.esk + loaded dep.esk) built via the helper under ninja: editing dep.esk and re-running a single `ninja` invocation recompiles the object and relinks the executable, reflecting the edit; re-running ninja with no changes is a no-op.",
+    "`ninja -t deps` reports the depfile-derived prerequisites as VALID for the compiled object."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "Removes a silent-stale-binary trap for every downstream Eshkol build integration (Noesis's ~230-file faculty tree via (load ...) chains being the motivating case); the depfile walker is the build-system-facing counterpart to ESH-0183's transitiveSourceDigest fix for the -r persistent run-cache.",
+  "repro": "tests/build_integration/ — cmake -S . -B build -G Ninja && ninja -C build build_integration_demo, edit tests/build_integration/dep.esk, ninja -C build build_integration_demo (single invocation recompiles+relinks)",
+  "verifications": [
+    {
+      "date": "2026-07-06",
+      "branch": "fix/esk-build-deps",
+      "verdict": "pass",
+      "evidence": "Manual end-to-end run: built build_integration_demo (prints 42 = 41+1 from helper in dep.esk), `ninja` re-run with no changes reported 'no work to do', edited dep.esk to +1000, single `ninja` invocation recompiled main.esk.o and relinked the executable, new run printed 1041, `ninja -t deps` reported the depfile prerequisites (main.esk, dep.esk) as VALID. Also verified space/# escaping in depfile paths and clean configure under both Ninja and Unix Makefiles generators."
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+; ESH-0215 build-integration fixture: a (load)ed dependency of main.esk.
+; The whole point of this fixture is that editing THIS file — not
+; main.esk — must still trigger a rebuild of the linked object/executable
+; on the next `ninja` invocation.
+(define (helper x) (+ x 1))
