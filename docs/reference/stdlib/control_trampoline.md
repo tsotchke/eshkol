@@ -3,7 +3,7 @@
 **Source**: [`lib/core/control/trampoline.esk`](../../../lib/core/control/trampoline.esk)
 **Require**: auto-loaded via `(require stdlib)`; or individually `(require core.control.trampoline)`
 
-A trampoline drives CPS-style recursion in constant stack space. Instead of calling itself directly, a function returns a **thunk** (a zero-argument procedure) in tail position; `trampoline` loops, invoking each returned thunk until a non-procedure value appears. This sidesteps deep native call stacks — useful for mutual recursion, which is not currently TCO'd (see `.swarm/tasks/ESH-0102`: "Mutual tail calls are not TCO'd: ping-pong recursion crashes at ~300-500k depth").
+A trampoline drives CPS-style recursion in constant stack space. Instead of calling itself directly, a function returns a **thunk** (a zero-argument procedure) in tail position; `trampoline` loops, invoking each returned thunk until a non-procedure value appears. This sidesteps deep native call stacks. Note that direct mutual tail calls are now proper R7RS tail calls (emitted as LLVM `musttail`, ESH-0102 resolved) and already run in O(1) stack, so a trampoline is only needed for continuation-passing patterns that pass thunks through data structures or across a higher-order boundary — e.g. a tail call that forwards a freshly built closure argument, which still falls back to a bounded call.
 
 ## Functions
 

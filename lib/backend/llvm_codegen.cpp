@@ -18336,29 +18336,64 @@ private:
             FunctionType* caller_type = current_func->getFunctionType();
             FunctionType* callee_type = callee->getFunctionType();
 
-            // musttail requires identical signatures (same return type, same param count/types)
-            bool signatures_match = (caller_type->getReturnType() == callee_type->getReturnType()) &&
-                                    (caller_type->getNumParams() == callee_type->getNumParams());
-            if (signatures_match) {
-                for (unsigned i = 0; i < caller_type->getNumParams() && signatures_match; ++i) {
+            // musttail requires identical signatures (same return type, same param
+            // count/types) AND a matching calling convention.
+            bool musttail_ok = (caller_type->getReturnType() == callee_type->getReturnType()) &&
+                               (caller_type->getNumParams() == callee_type->getNumParams()) &&
+                               (current_func->getCallingConv() == callee->getCallingConv()) &&
+                               !callee_type->isVarArg() && !caller_type->isVarArg() &&
+                               args.size() == callee_type->getNumParams();
+            if (musttail_ok) {
+                for (unsigned i = 0; i < caller_type->getNumParams() && musttail_ok; ++i) {
                     if (caller_type->getParamType(i) != callee_type->getParamType(i))
-                        signatures_match = false;
+                        musttail_ok = false;
                 }
             }
 
-            if (signatures_match) {
-                eshkol_debug("Mutual TCO: emitting tail call to %s", func_name.c_str());
+            // `musttail` is ILLEGAL when any argument points into the caller's stack
+            // frame (an alloca): that frame is torn down before the callee runs. This is
+            // what makes LLVM reject stdlib wrappers whose tail call forwards a freshly
+            // built closure/capture slot (e.g. none?->all? passing (negate pred), or the
+            // named-let capture-forwarding allocas assembled above). Plain data mutual
+            // recursion (ping/pong, even?/odd?, state machines) passes tagged values by
+            // value, so it is safe. When a pointer arg is present, fall through to an
+            // ordinary (bounded) call rather than emit an illegal musttail.
+            if (musttail_ok) {
+                for (Value* a : args) {
+                    if (a && a->getType()->isPointerTy()) { musttail_ok = false; break; }
+                }
+            }
+
+            // R7RS proper tail calls REQUIRE constant stack for mutual recursion, so
+            // this must be a REAL `musttail`: TCK_Tail is only a hint the backend may
+            // ignore (that is why mutual recursion still overflowed the stack before this
+            // fix). But `musttail` with an AGGREGATE (struct) return — which every Eshkol
+            // function has (the by-value tagged value) — is only lowerable by some
+            // backends. Verified with `llc -mtriple=… -filetype=obj` on LLVM 21:
+            //   AArch64 (aarch64 / aarch64_be / arm64_32)  -> OK
+            //   x86_64 / i386 / arm (32) / riscv64          -> "failed to perform tail
+            //                                                   call elimination on a call
+            //                                                   site marked musttail"
+            // (scalar i64/i128 returns lower fine everywhere; it is the struct return the
+            // x86/arm/riscv backends refuse). So on the AArch64 family we emit the real
+            // musttail and get O(1)-stack mutual recursion; elsewhere we keep the old
+            // TCK_Tail hint (bounded, but never crashes the build). Giving x86 proper
+            // mutual TCO needs an ABI change (return the tagged value as i128), tracked as
+            // ESH-0171.
+            const llvm::Triple mod_triple = getModuleTargetTriple(*module);
+            const llvm::Triple::ArchType arch = mod_triple.getArch();
+            const bool aggregate_musttail_ok =
+                (arch == llvm::Triple::aarch64 ||
+                 arch == llvm::Triple::aarch64_be ||
+                 arch == llvm::Triple::aarch64_32);
+
+            if (musttail_ok) {
+                eshkol_debug("Mutual TCO: emitting %s call to %s",
+                             aggregate_musttail_ok ? "musttail" : "tail (hint)",
+                             func_name.c_str());
                 CallInst* call = builder->CreateCall(callee, args);
-#if LLVM_VERSION_MAJOR >= 18
-                // LLVM 18's X86 backend rejects some musttail aggregate returns during
-                // stdlib compilation, and LLVM 21 still triggers the same failure in
-                // the shared stdlib build path. Keep the tail-position hint without
-                // hard-failing x86 builds on wrappers like second->cadr and none?->all?.
-                call->setTailCallKind(CallInst::TCK_Tail);
-#endif
-#if LLVM_VERSION_MAJOR < 18
-                call->setTailCallKind(CallInst::TCK_MustTail);
-#endif
+                call->setTailCallKind(aggregate_musttail_ok ? CallInst::TCK_MustTail
+                                                            : CallInst::TCK_Tail);
                 builder->CreateRet(call);
                 return UndefValue::get(tagged_value_type);
             }
