@@ -447,6 +447,51 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
             return true;
         }
 
+        case ESHKOL_GUARD_OP: {
+            // (guard (var clause ...) body ...) — ESH-0222.
+            //
+            // This used to fall through to `default: return true`, silently
+            // claiming ANY self-call buried inside a guard's protected body or
+            // handler clauses was tail-safe without ever looking inside. That
+            // let the named-let TCO transform rewrite a genuinely non-tail
+            // self-call (e.g. `(guard (e #t) (+ 1 (loop ...)))`) into an
+            // unconditional branch back to the loop header — a silent
+            // miscompile, not just a missed optimization.
+            //
+            // The parser always normalizes guard's body to a single AST node
+            // (body[0], already a begin/letrec if the source had multiple
+            // forms — see parser.cpp), and codegenGuard evaluates exactly
+            // that node as guard's own continuation. So body[0] honestly
+            // inherits the guard form's own tail position.
+            if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
+                if (!allSelfCallsInTailPosition(&op->guard_op.body[0], func_name, in_tail_pos)) {
+                    return false;
+                }
+            }
+            // Each handler clause is (test expr ...), mirroring ESHKOL_COND_OP
+            // above: the test is NOT in tail position; only the clause's last
+            // body expression is — it's what the whole `guard` evaluates to
+            // when that clause fires.
+            for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                if (clause->type != ESHKOL_OP || clause->operation.op != ESHKOL_CALL_OP) {
+                    continue;
+                }
+                if (!allSelfCallsInTailPosition(clause->operation.call_op.func, func_name, false)) {
+                    return false;
+                }
+                for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                    bool is_last_body = (j == clause->operation.call_op.num_vars - 1);
+                    if (!allSelfCallsInTailPosition(
+                            &clause->operation.call_op.variables[j], func_name,
+                            is_last_body ? in_tail_pos : false)) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+
         default:
             // For other ops (arithmetic, etc.), sub-expressions are not in tail position
             return true;

@@ -1,0 +1,141 @@
+;;; ESH-0222: tail calls through `guard` inside a long-running loop.
+;;;
+;;; Regression coverage for the resident/daemon tick-loop pattern:
+;;;   (define (loop tick ...)
+;;;     (if (>= tick max-ticks)
+;;;         <terminate>
+;;;         (guard (e (#t ... (loop (+ tick 1) ...)))   ; handler-tail self-call
+;;;           <fallible tick body>
+;;;           (loop <updated args>))))                   ; body-tail self-call
+;;;
+;;; Before this fix:
+;;;  - top-level `(define (loop ...) ...)` self-calls hidden inside a guard
+;;;    were INVISIBLE to isSelfTailRecursive()'s recursive-call counter, so
+;;;    TCO was silently disabled and the loop recursed via real (growing)
+;;;    call frames forever.
+;;;  - a named-let loop whose analysis DID (accidentally) enable TCO leaked
+;;;    real native stack every iteration: guard's jmp_buf is a
+;;;    dynamically-sized `alloca` with no llvm.stacksave/stackrestore
+;;;    bracketing the loop's back-edge, and the TCO shortcut branch skipped
+;;;    codegenGuard's own eshkol_pop_exception_handler() call, leaving the
+;;;    runtime handler chain (and the alloca'd jmp_buf storage it points
+;;;    into) growing forever too.
+;;;
+;;; Each shape below is checked against a plain (guard-free) reference loop
+;;; computing the identical value, so this is a CORRECTNESS test, not just a
+;;; "didn't crash" smoke test. Run with a reduced `ulimit -s` (see
+;;; docs/LONG_RUNNING_LOOPS.md) to prove the stack stays flat rather than
+;;; merely fitting under the 512MB ESHKOL_STACK_SIZE default.
+
+(define N 1000000)
+
+;; Ground truth: no guard at all. +1 on a normal tick, -1 every 97th tick.
+(define (ref-loop n acc)
+  (if (>= n N)
+      acc
+      (if (= (modulo n 97) 0)
+          (ref-loop (+ n 1) (- acc 1))
+          (ref-loop (+ n 1) (+ acc 1)))))
+
+(define expected (ref-loop 0 0))
+
+;; --- Shape (a): top-level define, self-call in BOTH guard-body tail
+;;     position and handler-clause tail position (Selene's exact pattern).
+(define (tick-loop-define n acc)
+  (if (>= n N)
+      acc
+      (guard (e (#t (tick-loop-define (+ n 1) (- acc 1))))
+        (if (= (modulo n 97) 0) (raise 'stumble) #t)
+        (tick-loop-define (+ n 1) (+ acc 1)))))
+
+(display "Shape (a) top-level define, guard body+handler tail: ")
+(let ((r (tick-loop-define 0 0)))
+  (if (= r expected) (display "PASS") (begin (display "FAIL got=") (display r) (display " want=") (display expected))))
+(newline)
+
+;; --- Shape (a'): the same pattern, but as a named-let loop instead of a
+;;     top-level define. The tail-position analysis fix (ESH-0222) applies
+;;     here too (allSelfCallsInTailPosition's GUARD_OP case), but named-let
+;;     TCO has a SEPARATE, PRE-EXISTING stack-overflow bug independent of
+;;     guard — a plain guard-free named-let loop
+;;     `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))` already
+;;     overflows the native stack around n≈3-500k on unmodified master.
+;;     Filed as ESH-0223 (tracked separately; not caused by and not fixed
+;;     by this change). Capped well below that threshold here so this
+;;     still regression-checks the guard-tail-position analysis itself
+;;     without tripping the unrelated bug.
+(define NL_N 50000)
+
+(define (ref-loop-nl n acc)
+  (if (>= n NL_N)
+      acc
+      (if (= (modulo n 97) 0)
+          (ref-loop-nl (+ n 1) (- acc 1))
+          (ref-loop-nl (+ n 1) (+ acc 1)))))
+
+(define expected-nl (ref-loop-nl 0 0))
+
+(define (tick-loop-named-let)
+  (let loop ((n 0) (acc 0))
+    (if (>= n NL_N)
+        acc
+        (guard (e (#t (loop (+ n 1) (- acc 1))))
+          (if (= (modulo n 97) 0) (raise 'stumble) #t)
+          (loop (+ n 1) (+ acc 1))))))
+
+(display "Shape (a') named-let, guard body+handler tail (capped, see ESH-0223): ")
+(let ((r (tick-loop-named-let)))
+  (if (= r expected-nl) (display "PASS") (begin (display "FAIL got=") (display r) (display " want=") (display expected-nl))))
+(newline)
+
+;; --- Shape (b): guard wraps ONLY the fallible section and returns a
+;;     value; the recursive loop call is genuinely OUTSIDE guard's dynamic
+;;     extent, in the tail position of the enclosing `let`. This shape
+;;     never needed the fix below (guard never wraps the self-call) — it
+;;     is the canonical, always-safe pattern documented in
+;;     docs/LONG_RUNNING_LOOPS.md.
+(define (tick-loop-outside n acc)
+  (if (>= n N)
+      acc
+      (let ((delta (guard (e (#t -1))
+                     (if (= (modulo n 97) 0) (raise 'stumble) 1))))
+        (tick-loop-outside (+ n 1) (+ acc delta)))))
+
+(display "Shape (b) loop call outside guard, on guard's return value: ")
+(let ((r (tick-loop-outside 0 0)))
+  (if (= r expected) (display "PASS") (begin (display "FAIL got=") (display r) (display " want=") (display expected))))
+(newline)
+
+;; --- Shape (c): `(apply loop lst)` variant. `apply` does NOT participate
+;;     in TCO in Eshkol today (call_apply_codegen.cpp never consults
+;;     binding_->isTCOActive()/TailCallContext — every apply call is a
+;;     genuine, non-tail LLVM `call`), so this is capped at a small depth:
+;;     it is a CORRECTNESS check only, not a flatness claim. See
+;;     docs/LONG_RUNNING_LOOPS.md for why the canonical pattern avoids
+;;     `apply` for the loop back-edge.
+(define APPLY_N 20000)
+
+(define (ref-loop-small n acc)
+  (if (>= n APPLY_N)
+      acc
+      (if (= (modulo n 97) 0)
+          (ref-loop-small (+ n 1) (- acc 1))
+          (ref-loop-small (+ n 1) (+ acc 1)))))
+
+(define expected-small (ref-loop-small 0 0))
+
+(define (tick-loop-apply state)
+  (let ((n (car state)) (acc (cadr state)))
+    (if (>= n APPLY_N)
+        acc
+        (apply tick-loop-apply
+               (list (list (+ n 1)
+                           (+ acc (guard (e (#t -1))
+                                    (if (= (modulo n 97) 0) (raise 'stumble) 1)))))))))
+
+(display "Shape (c) (apply loop lst), bounded depth, correctness only: ")
+(let ((r (tick-loop-apply (list 0 0))))
+  (if (= r expected-small) (display "PASS") (begin (display "FAIL got=") (display r) (display " want=") (display expected-small))))
+(newline)
+
+(display "guard_loop_tail_test complete") (newline)
