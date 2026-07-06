@@ -1,0 +1,211 @@
+;; tensor_tower_test.esk -- Phase P7 (ESH-0192): tensor-valued Taylor towers.
+;;
+;; Verifies core.ad.tensor_tower: high-order (order >= 3) derivatives of
+;; scalar-valued functions of a scalar parameter `t` whose BODY is a tensor
+;; computation (elementwise chains, matmul, conv2d, sigmoid/tanh activation
+;; composition), built entirely on the "tower of tensors" representation
+;; (docs/design/AD_TAYLOR_TOWER.md sec 10) over the existing scalar Taylor
+;; tower (`taylor`, unmodified) and the existing dense tensor runtime
+;; (tensor-add/scale/mul/matmul/conv2d/exp/div/sigmoid/tanh, unmodified).
+;;
+;; All references here are ANALYTIC closed forms -- no finite differences --
+;; per the design-doc P7 gate ("vs. a finite-difference-checked reference").
+
+(require stdlib)
+(require core.ad.tensor_tower)
+
+(define passed 0)
+(define failed 0)
+
+(define (approx= a b tol) (< (abs (- a b)) tol))
+
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─────────────────────────────────────────────────────────────────────────
+;; 1. Elementwise: f(t) = sum(A .* t^3)   =>   h(t) = sum(A)*t^3
+;;    h'(t)=3*sum(A)*t^2, h''(t)=6*sum(A)*t, h'''(t)=6*sum(A), h''''=0.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define (elementwise-cube-coeffs A t0 k)
+  (tt-sum (tt-from-scalar-series A (taylor (lambda (t) (* t t t)) t0 k))))
+
+(define (check-elementwise-cube A t0)
+  (let* ((k 4)
+         (sc (elementwise-cube-coeffs A t0 k))
+         (S  (tensor-sum A))
+         (d0 (tt-nth-derivative sc 0)) (d1 (tt-nth-derivative sc 1))
+         (d2 (tt-nth-derivative sc 2)) (d3 (tt-nth-derivative sc 3))
+         (d4 (tt-nth-derivative sc 4)))
+    (check (string-append "elementwise_cube_value_t=" (number->string t0))
+           (approx= d0 (* S t0 t0 t0) 1e-8))
+    (check (string-append "elementwise_cube_d1_t=" (number->string t0))
+           (approx= d1 (* 3.0 S t0 t0) 1e-8))
+    (check (string-append "elementwise_cube_d2_t=" (number->string t0))
+           (approx= d2 (* 6.0 S t0) 1e-8))
+    (check (string-append "elementwise_cube_d3_t=" (number->string t0))
+           (approx= d3 (* 6.0 S) 1e-8))
+    (check (string-append "elementwise_cube_d4_is_zero_t=" (number->string t0))
+           (approx= d4 0.0 1e-8))))
+
+(check-elementwise-cube (tensor 2 2 2.0 3.0 -1.5 4.0) 1.7)
+(check-elementwise-cube (tensor 2 2 2.0 3.0 -1.5 4.0) -0.3)
+(check-elementwise-cube (tensor 3 1.0 1.0 1.0) 0.0)
+
+;; order-truncation self-consistency: c0/c1 must not depend on how far the
+;; tower is truncated (K=1 vs K=4 must agree on the coefficients they share).
+(let* ((A (tensor 2 2.0 3.0))
+       (sc-lo (elementwise-cube-coeffs A 1.1 1))
+       (sc-hi (elementwise-cube-coeffs A 1.1 4)))
+  (check "elementwise_cube_truncation_invariance_c0"
+         (approx= (tt-nth-derivative sc-lo 0) (tt-nth-derivative sc-hi 0) 1e-9))
+  (check "elementwise_cube_truncation_invariance_d1"
+         (approx= (tt-nth-derivative sc-lo 1) (tt-nth-derivative sc-hi 1) 1e-9)))
+
+;; ─────────────────────────────────────────────────────────────────────────
+;; 2. Matmul chain: f(t) = sum((t*A)·(t*B))  =>  h(t) = sum(matmul(A,B))*t^2
+;;    h'=2*S*t, h''=2*S, h'''=h''''=0  (the Cauchy convolution over tensor
+;;    coefficients must correctly vanish beyond order 2 for a bilinear op).
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define (check-matmul-chain A B t0)
+  (let* ((k 4)
+         (tseries (taylor (lambda (t) t) t0 k))
+         (Atw (tt-from-scalar-series A tseries))
+         (Btw (tt-from-scalar-series B tseries))
+         (sc  (tt-sum (tt-matmul-cauchy Atw Btw)))
+         (S   (tensor-sum (matmul A B))))
+    (check (string-append "matmul_chain_value_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 0) (* S t0 t0) 1e-7))
+    (check (string-append "matmul_chain_d1_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 1) (* 2.0 S t0) 1e-7))
+    (check (string-append "matmul_chain_d2_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 2) (* 2.0 S) 1e-7))
+    (check (string-append "matmul_chain_d3_is_zero_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 3) 0.0 1e-7))
+    (check (string-append "matmul_chain_d4_is_zero_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 4) 0.0 1e-7))))
+
+(check-matmul-chain (tensor 2 2 1.0 2.0 3.0 4.0) (tensor 2 2 5.0 6.0 7.0 8.0) 1.3)
+(check-matmul-chain (tensor 2 2 1.0 2.0 3.0 4.0) (tensor 2 2 5.0 6.0 7.0 8.0) -0.6)
+(check-matmul-chain (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0)
+                     (tensor 3 2 1.0 0.0 0.0 1.0 2.0 2.0) 0.8)
+
+;; conv2d chain (bonus coverage of the third bilinear inner op, "mul -> conv
+;; where appropriate" per design doc sec 10): f(t) = sum(conv2d(image, t*K, 1))
+;; is LINEAR in t (conv2d is linear in its kernel argument for fixed image and
+;; stride), so h(t) = t*sum(conv2d(image,K,1)); all derivatives order>=2 must
+;; vanish and d1 must equal sum(conv2d(image,K,1)) exactly.
+(define (check-conv2d-chain image kernel t0)
+  (let* ((k 3)
+         (tseries (taylor (lambda (t) t) t0 k))
+         (Itw (tt-const image k))
+         (Ktw (tt-from-scalar-series kernel tseries))
+         (sc  (tt-sum (tt-conv2d-cauchy Itw Ktw 1)))
+         (S   (tensor-sum (conv2d image kernel 1))))
+    (check (string-append "conv2d_chain_value_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 0) (* S t0) 1e-7))
+    (check (string-append "conv2d_chain_d1_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 1) S 1e-7))
+    (check (string-append "conv2d_chain_d2_is_zero_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 2) 0.0 1e-7))
+    (check (string-append "conv2d_chain_d3_is_zero_t=" (number->string t0))
+           (approx= (tt-nth-derivative sc 3) 0.0 1e-7))))
+
+(check-conv2d-chain (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
+                     (tensor 2 2 1.0 1.0 1.0 1.0) 0.6)
+(check-conv2d-chain (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0)
+                     (tensor 2 2 1.0 2.0 3.0 4.0) -0.4)
+
+;; ─────────────────────────────────────────────────────────────────────────
+;; 3. Activation composition: f(t) = sum(sigmoid(C .* t)) and
+;;    f(t) = sum(tanh(C .* t)), to order 3, vs the CLOSED-FORM (Bell-
+;;    polynomial) derivatives of sigmoid/tanh -- no finite differences.
+;;
+;;    For g(t) = sigmoid(c*t), s = g(t):
+;;      g'   = c * s(1-s)
+;;      g''  = c^2 * s(1-s)(1-2s)
+;;      g''' = c^3 * s(1-s)(1-6s+6s^2)
+;;    For h(t) = tanh(c*t), y = h(t):
+;;      h'   = c * (1-y^2)
+;;      h''  = -2*c^2 * y*(1-y^2)
+;;      h''' = c^3 * (1-y^2) * (6*y^2 - 2)
+;;    Each is a standard derivative of an autonomous first-order ODE
+;;    (y' = phi(y)) via Faa di Bruno / the chain rule, summed elementwise
+;;    across the tensor's components (each component's series is independent
+;;    because sigmoid/tanh are elementwise).
+;; ─────────────────────────────────────────────────────────────────────────
+
+(define (sigmoid-d1 c s) (* c s (- 1.0 s)))
+(define (sigmoid-d2 c s) (* c c s (- 1.0 s) (- 1.0 (* 2.0 s))))
+(define (sigmoid-d3 c s) (* c c c s (- 1.0 s) (+ 1.0 (- (* 6.0 s)) (* 6.0 s s))))
+
+(define (tanh-d1 c y) (* c (- 1.0 (* y y))))
+(define (tanh-d2 c y) (* -2.0 c c y (- 1.0 (* y y))))
+(define (tanh-d3 c y) (* c c c (- 1.0 (* y y)) (- (* 6.0 y y) 2.0)))
+
+;; reference sums over the (small, fixed) tensor components c0, c1. Uses a
+;; plain scalar formula (NOT the stdlib `sigmoid` builtin, to keep the
+;; reference fully independent of the code path under test).
+(define (sigmoid-ref-dn n c0 c1 t0)
+  (let ((s0 (/ 1.0 (+ 1.0 (exp (- (* c0 t0))))))
+        (s1 (/ 1.0 (+ 1.0 (exp (- (* c1 t0)))))))
+    (cond ((= n 0) (+ s0 s1))
+          ((= n 1) (+ (sigmoid-d1 c0 s0) (sigmoid-d1 c1 s1)))
+          ((= n 2) (+ (sigmoid-d2 c0 s0) (sigmoid-d2 c1 s1)))
+          (else    (+ (sigmoid-d3 c0 s0) (sigmoid-d3 c1 s1))))))
+
+(define (tanh-ref-dn n c0 c1 t0)
+  (let* ((e0p (exp (* c0 t0))) (e0m (exp (- (* c0 t0))))
+         (e1p (exp (* c1 t0))) (e1m (exp (- (* c1 t0))))
+         (y0 (/ (- e0p e0m) (+ e0p e0m)))
+         (y1 (/ (- e1p e1m) (+ e1p e1m))))
+    (cond ((= n 0) (+ y0 y1))
+          ((= n 1) (+ (tanh-d1 c0 y0) (tanh-d1 c1 y1)))
+          ((= n 2) (+ (tanh-d2 c0 y0) (tanh-d2 c1 y1)))
+          (else    (+ (tanh-d3 c0 y0) (tanh-d3 c1 y1))))))
+
+(define (check-sigmoid-chain c0 c1 t0)
+  (let* ((k 3)
+         (C (tensor 2 c0 c1))
+         (tseries (taylor (lambda (t) t) t0 k))
+         (Ctw (tt-from-scalar-series C tseries))
+         (sc  (tt-sum (tt-sigmoid Ctw))))
+    (let loop ((n 0))
+      (if (<= n 3)
+          (begin
+            (check (string-append "sigmoid_chain_d" (number->string n) "_t=" (number->string t0))
+                   (approx= (tt-nth-derivative sc n) (sigmoid-ref-dn n c0 c1 t0) 1e-7))
+            (loop (+ n 1)))
+          #t))))
+
+(define (check-tanh-chain c0 c1 t0)
+  (let* ((k 3)
+         (C (tensor 2 c0 c1))
+         (tseries (taylor (lambda (t) t) t0 k))
+         (Ctw (tt-from-scalar-series C tseries))
+         (sc  (tt-sum (tt-tanh Ctw))))
+    (let loop ((n 0))
+      (if (<= n 3)
+          (begin
+            (check (string-append "tanh_chain_d" (number->string n) "_t=" (number->string t0))
+                   (approx= (tt-nth-derivative sc n) (tanh-ref-dn n c0 c1 t0) 1e-7))
+            (loop (+ n 1)))
+          #t))))
+
+(check-sigmoid-chain 0.4 -0.7 0.5)
+(check-sigmoid-chain 1.2 0.9 -0.8)
+(check-tanh-chain 0.4 -0.7 0.5)
+(check-tanh-chain 1.2 0.9 -0.8)
+
+;; ─────────────────────────────────────────────────────────────────────────
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: tensor_tower_test") (newline) (exit 0))
+    (begin (display "FAIL: tensor_tower_test") (newline) (exit 1)))
