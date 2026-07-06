@@ -1,0 +1,255 @@
+;;; tests/ad/diff_control_flow_test.esk
+;;; ESH-0194 (P9): DIFFERENTIABLE CONTROL FLOW.
+;;;
+;;; The Taylor tower (ESH-0186..0193, P1-P8) differentiates straight-line
+;;; numeric kernels to arbitrary order. P9 verifies that arbitrary-order AD
+;;; also flows correctly through ordinary Scheme CONTROL FLOW: data-dependent
+;;; if/cond/case branches, named-let loops, recursion (incl. mutual tail
+;;; recursion), and higher-order calls (map/fold over closures) -- so real
+;;; programs are differentiable, not just kernels.
+;;;
+;;; Representation: a Taylor tower is a HEAP_PTR value tagged
+;;; HEAP_SUBTYPE_TAYLOR (lib/core/runtime_taylor.c). Ordinary control flow
+;;; (branch selection, loop phis, recursive call args, closure captures, list
+;;; combinators) already passes any tagged heap value through unchanged --
+;;; that substrate needed NO change for P9. The one genuine gap this phase
+;;; found and fixed: R7RS numeric comparison (`< > = <= >=`) did not
+;;; recognise HEAP_SUBTYPE_TAYLOR as numeric, so `(if (> x 0) ...)` on a
+;;; tower-valued `x` raised "Type error in >: expected number, got
+;;; heap-object" instead of branching on the tower's primal coefficient c[0].
+;;; Fixed additively in lib/backend/arithmetic_codegen.cpp::compare() (the
+;;; `numericHeap` predicate and the double-comparison dispatch), mirroring
+;;; the existing bignum/rational/dual-number cases; extractAsDouble already
+;;; had the c[0]-extraction case (ESH-0186), it was just never reached from
+;;; `compare`. No changes were needed in control_flow_codegen.cpp,
+;;; tail_call_codegen.cpp, call_apply_codegen.cpp, function_codegen.cpp,
+;;; map_codegen.cpp, runtime_taylor.c, or autodiff_codegen.cpp.
+;;;
+;;; --- Kink policy (documented convention for this phase) ---------------
+;;; At a branch point, AD differentiates the arm the PRIMAL predicate
+;;; actually selects -- the derivative of the corresponding piece of a
+;;; piecewise function. This is the standard forward-mode AD subderivative
+;;; convention used by every mainstream AD system (JAX, PyTorch autograd,
+;;; Stan, Julia ForwardDiff): differentiate the executed branch; at an exact
+;;; kink (predicate boundary) this yields one of the one-sided derivatives,
+;;; chosen deterministically by whichever arm the primal comparison selects
+;;; for that exact input -- never an average, never silently the "wrong"
+;;; arm's derivative smuggled into the "right" arm's value. This gate tests
+;;; branch derivatives strictly AWAY from any kink (per the ESH-0194 spec),
+;;; where the selected arm's derivative equals the analytic derivative of
+;;; the true (locally smooth) piecewise function; the kink point itself is
+;;; not gated here (a stricter opt-in "error unless arms agree through K"
+;;; policy, per docs/design/AD_TAYLOR_TOWER.md P9, is left as documented
+;;; future work and is NOT implemented in this phase).
+;;;
+;;; --- Known related bug (ESH-0194, worked around, not fixed here) -------
+;;; A closure allocated FRESH, inline, as an argument expression inside a
+;;; named-let loop's tail-call position, when fed directly to `derivative`
+;;; (the plain first-order JET4 operator) inside that same loop body,
+;;; produces a SILENTLY WRONG accumulated value (observed: ~1e10 garbage
+;;; instead of the correct sum; the compiler also emits "Type warning:
+;;; argument N of 'loop': expected Float64, got Number" for the loop-carried
+;;; accumulator at that call site) -- e.g.:
+;;;   (let loop ((i 0) (acc 0.0))
+;;;     (if (= i n) acc
+;;;         (loop (+ i 1) (+ acc (derivative (lambda (y) (* y y x)) i)))))
+;;; This reproduces with NO outer differentiation at all (a plain,
+;;; undifferentiated call to the enclosing function is already wrong), and
+;;; does NOT reproduce with an equivalent `do` loop or plain recursion
+;;; (see t8b/t8c/t8d in the P9 investigation) -- so it is specific to the
+;;; named-let TCO loop-variable lowering, not to AD or to control flow in
+;;; general. WORKAROUND (matches the P8/#173 precedent of avoiding the
+;;; historical named-let/closure mutable-capture bug class "by
+;;; construction"): hoist the differentiated closure to a `let`-bound
+;;; variable (or a top-level helper) BEFORE the named-let loop, so the loop
+;;; body only ever calls `derivative` on an already-existing closure
+;;; reference, never on a freshly-allocated lambda literal in the loop's
+;;; tail-call argument position. See "closure-hoist-workaround" below for a
+;;; regression probe that demonstrates the hoisted form is correct. Filing a
+;;; follow-up task for the named-let TCO loop-variable lowering itself is
+;;; left to a dedicated fix phase (out of scope here per the "minimal
+;;; additive changes" mandate -- this is a pre-existing named-let TCO bug,
+;;; not a P9 control-flow-AD gap).
+
+(define npass 0)
+(define nfail 0)
+
+(define (close? got expect)
+  (<= (abs (- got expect)) (+ 1e-8 (* 1e-9 (abs expect)))))
+
+(define (check name got expect)
+  (if (close? got expect)
+      (begin (set! npass (+ npass 1))
+             (display "PASS ") (display name)
+             (display " got=") (display got) (newline))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got) (display " expect=") (display expect)
+             (newline))))
+
+;; ======================================================================
+;; (a) data-dependent IF branch, away from the kink at x=0
+;; ======================================================================
+;; f(x) = x^3 for x > 0, -x otherwise. Kink is at x=0; both probe points
+;; below are strictly away from it.
+(define (branch-f x) (if (> x 0) (* x x x) (- x)))
+
+;; x0 = 2.0 selects the (* x x x) arm: f=8, f'=3x^2=12, f''=6x=12, f'''=6, f''''=0
+(check "if-branch x^3 arm d0" (derivative-n branch-f 2.0 0) 8.0)
+(check "if-branch x^3 arm d1" (derivative-n branch-f 2.0 1) 12.0)
+(check "if-branch x^3 arm d2" (derivative-n branch-f 2.0 2) 12.0)
+(check "if-branch x^3 arm d3" (derivative-n branch-f 2.0 3) 6.0)
+(check "if-branch x^3 arm d4" (derivative-n branch-f 2.0 4) 0.0)
+
+;; x0 = -3.0 selects the (- x) arm: f=3, f'=-1, f''=0, f'''=0
+(check "if-branch -x arm d0" (derivative-n branch-f -3.0 0) 3.0)
+(check "if-branch -x arm d1" (derivative-n branch-f -3.0 1) -1.0)
+(check "if-branch -x arm d2" (derivative-n branch-f -3.0 2) 0.0)
+(check "if-branch -x arm d3" (derivative-n branch-f -3.0 3) 0.0)
+
+;; Bonus (not separately gated, extra coverage): cond and case dispatch too.
+(define (cond-f x)
+  (cond ((> x 1.0) (* x x x))
+        ((> x 0.0) (* x x))
+        (else (- x))))
+(check "cond-branch cubic d0" (derivative-n cond-f 2.0 0) 8.0)
+(check "cond-branch cubic d1" (derivative-n cond-f 2.0 1) 12.0)
+(check "cond-branch square d0" (derivative-n cond-f 0.5 0) 0.25)
+(check "cond-branch square d1" (derivative-n cond-f 0.5 1) 1.0)
+(check "cond-branch linear d0" (derivative-n cond-f -0.5 0) 0.5)
+(check "cond-branch linear d1" (derivative-n cond-f -0.5 1) -1.0)
+
+(define (case-f n x)
+  (case n
+    ((0) (* x x x))
+    ((1) (* x x))
+    (else (- x))))
+(check "case-branch cubic d2" (derivative-n (lambda (x) (case-f 0 x)) 2.0 2) 12.0)
+(check "case-branch square d1" (derivative-n (lambda (x) (case-f 1 x)) 2.0 1) 4.0)
+
+;; ======================================================================
+;; (b) named-let loop: truncated geometric series of x, known derivative
+;; ======================================================================
+;; g(x) = sum_{k=0}^{5} x^k = 1 + x + x^2 + x^3 + x^4 + x^5
+(define (series-trunc x)
+  (let loop ((k 0) (acc 0.0) (term 1.0))
+    (if (= k 6)
+        acc
+        (loop (+ k 1) (+ acc term) (* term x)))))
+
+(define x0b 1.5)
+(check "named-let series d0" (derivative-n series-trunc x0b 0)
+       (+ 1.0 x0b (* x0b x0b) (* x0b x0b x0b) (* x0b x0b x0b x0b) (* x0b x0b x0b x0b x0b)))
+;; g'  = 1 + 2x + 3x^2 + 4x^3 + 5x^4
+(check "named-let series d1" (derivative-n series-trunc x0b 1)
+       (+ 1.0 (* 2.0 x0b) (* 3.0 x0b x0b) (* 4.0 x0b x0b x0b) (* 5.0 x0b x0b x0b x0b)))
+;; g'' = 2 + 6x + 12x^2 + 20x^3
+(check "named-let series d2" (derivative-n series-trunc x0b 2)
+       (+ 2.0 (* 6.0 x0b) (* 12.0 x0b x0b) (* 20.0 x0b x0b x0b)))
+;; g''' = 6 + 24x + 60x^2
+(check "named-let series d3" (derivative-n series-trunc x0b 3)
+       (+ 6.0 (* 24.0 x0b) (* 60.0 x0b x0b)))
+;; g'''' = 24 + 120x
+(check "named-let series d4" (derivative-n series-trunc x0b 4)
+       (+ 24.0 (* 120.0 x0b)))
+
+;; ======================================================================
+;; (c) recursion: Horner evaluation of a degree-4 polynomial
+;; ======================================================================
+;; p(x) = 2 - x + 3x^2 + 0.5x^3 + 4x^4   (coeffs low-to-high: 2 -1 3 0.5 4)
+(define (horner coeffs x)
+  (if (null? coeffs)
+      0.0
+      (+ (car coeffs) (* x (horner (cdr coeffs) x)))))
+(define (poly x) (horner (list 2.0 -1.0 3.0 0.5 4.0) x))
+
+(define x0c 1.5)
+(check "recursion horner d0" (derivative-n poly x0c 0)
+       (+ 2.0 (* -1.0 x0c) (* 3.0 x0c x0c) (* 0.5 x0c x0c x0c) (* 4.0 x0c x0c x0c x0c)))
+;; p'  = -1 + 6x + 1.5x^2 + 16x^3
+(check "recursion horner d1" (derivative-n poly x0c 1)
+       (+ -1.0 (* 6.0 x0c) (* 1.5 x0c x0c) (* 16.0 x0c x0c x0c)))
+;; p'' = 6 + 3x + 48x^2
+(check "recursion horner d2" (derivative-n poly x0c 2)
+       (+ 6.0 (* 3.0 x0c) (* 48.0 x0c x0c)))
+;; p''' = 3 + 96x
+(check "recursion horner d3" (derivative-n poly x0c 3)
+       (+ 3.0 (* 96.0 x0c)))
+;; p'''' = 96 (constant); p''''' = 0 (degree exhausted -- exercises the
+;; recursive base case `(null? coeffs) -> 0.0` differentiating cleanly too)
+(check "recursion horner d4" (derivative-n poly x0c 4) 96.0)
+(check "recursion horner d5" (derivative-n poly x0c 5) 0.0)
+
+;; Mutual tail recursion (self/mutual-TCO discipline, per the P9 design
+;; note): x^6 computed by alternating even/odd accumulator-passing helpers.
+(define (mrec-even x n acc)
+  (if (= n 0) acc (mrec-odd x (- n 1) (* acc x))))
+(define (mrec-odd x n acc)
+  (if (= n 0) acc (mrec-even x (- n 1) (* acc x))))
+(define (mutual-pow6 x) (mrec-even x 6 1.0))
+(define x0m 2.0)
+(check "mutual-tco pow6 d0" (derivative-n mutual-pow6 x0m 0) 64.0)   ; x^6
+(check "mutual-tco pow6 d1" (derivative-n mutual-pow6 x0m 1) 192.0)  ; 6x^5
+(check "mutual-tco pow6 d2" (derivative-n mutual-pow6 x0m 2) 480.0)  ; 30x^4
+(check "mutual-tco pow6 d3" (derivative-n mutual-pow6 x0m 3) 960.0)  ; 120x^3
+
+;; ======================================================================
+;; (d) map/fold over a list, tower flowing through the mapped closure
+;; ======================================================================
+;; h(x) = sum_{i=0}^{2} (x+i)^3, via (map cube (list x (x+1) (x+2))) then
+;; fold-left +. The tower carried by `x` must survive: (1) capture into the
+;; mapped closure, (2) the per-element closure application inside `map`,
+;; and (3) the accumulator inside `fold-left`.
+(define (cube v) (* v v v))
+(define (fold-map-h x)
+  (fold-left + 0.0 (map cube (list x (+ x 1.0) (+ x 2.0)))))
+
+(define x0d 3.0)
+;; h  = x^3 + (x+1)^3 + (x+2)^3
+(check "map-fold cubes d0" (derivative-n fold-map-h x0d 0)
+       (+ (* x0d x0d x0d)
+          (* (+ x0d 1.0) (+ x0d 1.0) (+ x0d 1.0))
+          (* (+ x0d 2.0) (+ x0d 2.0) (+ x0d 2.0))))
+;; h' = 3x^2 + 3(x+1)^2 + 3(x+2)^2
+(check "map-fold cubes d1" (derivative-n fold-map-h x0d 1)
+       (+ (* 3.0 x0d x0d)
+          (* 3.0 (+ x0d 1.0) (+ x0d 1.0))
+          (* 3.0 (+ x0d 2.0) (+ x0d 2.0))))
+;; h'' = 6x + 6(x+1) + 6(x+2)
+(check "map-fold cubes d2" (derivative-n fold-map-h x0d 2)
+       (+ (* 6.0 x0d) (* 6.0 (+ x0d 1.0)) (* 6.0 (+ x0d 2.0))))
+;; h''' = 6 + 6 + 6 = 18 (constant, third derivative of a sum of 3 cubics)
+(check "map-fold cubes d3" (derivative-n fold-map-h x0d 3) 18.0)
+;; h'''' = 0
+(check "map-fold cubes d4" (derivative-n fold-map-h x0d 4) 0.0)
+
+;; ======================================================================
+;; closure-hoist-workaround: regression probe for the known named-let bug
+;; documented above. Demonstrates the correct pattern: the differentiated
+;; closure is bound OUTSIDE the named-let loop, so the loop only ever
+;; references an existing closure -- never allocates+differentiates a
+;; fresh lambda literal in its tail-call argument position. Uses
+;; `derivative-n ... 1` (the tower operator) rather than plain `derivative`
+;; (JET4) -- both give the correct answer once hoisted, but `derivative-n`
+;; also avoids a benign residual "expected Float64, got Number" gradual-
+;; typing warning on the loop accumulator that `derivative` still triggers.
+;; ======================================================================
+(define (mk-quad x) (lambda (y) (* y y x)))
+(define (loop-sum-derivs x)
+  (let ((f (mk-quad x)))          ; hoisted OUTSIDE the loop
+    (let loop ((i 0) (acc 0.0))
+      (if (= i 3)
+          acc
+          (loop (+ i 1) (+ acc (derivative-n f (+ (exact->inexact i) 1.0) 1)))))))
+;; loop-sum-derivs(x) = sum_{i=0}^{2} d/dy[y^2 x]|_{y=i+1} = sum_i 2(i+1)x = 12x
+(check "closure-hoist-workaround value" (loop-sum-derivs 2.0) 24.0)
+
+(display "----") (newline)
+(display "diff-control-flow tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: diff-control-flow ") (display npass)
+           (display "/") (display npass)
+           (display " checks (if/cond/case branches, named-let loop, recursion incl. mutual-tco, map/fold)")
+           (newline))
+    (begin (display "FAIL: diff-control-flow ") (display nfail) (display " checks failed") (newline)))
