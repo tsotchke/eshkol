@@ -532,6 +532,34 @@ static int add_constant(VM* vm, Value v) {
 /* Forward declarations for print_value */
 typedef struct { Value* items; int len; int cap; } VmVector;
 
+static void print_value(VM* vm, Value v);
+
+/* ESH-0226: print an N-dimensional tensor as nested vector literal syntax
+ * (#(...) for 1D, #((...)  (...)) for 2D, etc.), matching the native/LLVM
+ * runtime's display_tensor()/display_tensor_recursive()
+ * (lib/core/runtime_display_hosted.cpp) so `(display (tensor-matmul ...))`
+ * renders identically on both the bytecode VM and the native compiler. */
+static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t offset) {
+    int64_t dim_size = t->shape[dim];
+    if (dim == t->n_dims - 1) {
+        printf("(");
+        for (int64_t i = 0; i < dim_size; i++) {
+            if (i) printf(" ");
+            print_value(vm, FLOAT_VAL(t->data[offset + i]));
+        }
+        printf(")");
+        return;
+    }
+    int64_t stride = 1;
+    for (int k = dim + 1; k < t->n_dims; k++) stride *= t->shape[k];
+    printf("(");
+    for (int64_t i = 0; i < dim_size; i++) {
+        if (i) printf(" ");
+        print_tensor_recursive(vm, t, dim + 1, offset + i * stride);
+    }
+    printf(")");
+}
+
 static void print_value(VM* vm, Value v) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
@@ -597,16 +625,10 @@ static void print_value(VM* vm, Value v) {
         case VAL_DUAL: printf("<dual>"); break;
         case VAL_TENSOR: {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
-            if (obj && obj->opaque.ptr) {
-                VmTensor* t = (VmTensor*)obj->opaque.ptr;
-                printf("<tensor:");
-                for (int i = 0; i < t->n_dims; i++) {
-                    if (i) printf("x");
-                    printf("%lld", (long long)t->shape[i]);
-                }
-                if (t->n_dims == 0) printf("%lld", (long long)t->total);
-                printf(">");
-            } else printf("<tensor>");
+            VmTensor* t = (obj && obj->opaque.ptr) ? (VmTensor*)obj->opaque.ptr : NULL;
+            if (!t || t->n_dims == 0 || t->total == 0) { printf("#()"); break; }
+            printf("#");
+            print_tensor_recursive(vm, t, 0, 0);
             break;
         }
         case VAL_FACTOR_GRAPH: {

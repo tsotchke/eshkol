@@ -1588,6 +1588,25 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_NATIVE_CALL, 416);
         return;
     }
+    /* ESH-0226: (reshape tensor d1 d2 ...) — variadic trailing dims (rank >= 2).
+     * Mirrors the LLVM special form (tensor_codegen.h: "Reshape tensor:
+     * (reshape tensor new-dims...)"); reshape's BUILTINS-table entry is a
+     * fixed 2-arg (tensor, shape) closure, so a 3+-arg call like
+     * (reshape M 2 2) must have its trailing dims packed into a shape list
+     * at compile time instead of going through the generic fixed-arity call
+     * path (which would silently drop the extra argument). The 2-arg form
+     * — (reshape tensor shape-list-or-scalar) — is untouched and still goes
+     * through normal variable lookup. */
+    if ((is_sym(head, "reshape") || is_sym(head, "tensor-reshape")) && node->n_children >= 4) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 2; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 415);
+        return;
+    }
 
     /* ── Constant Folding ── */
     /* If all operands are compile-time constants, evaluate at compile time */
