@@ -1,0 +1,21 @@
+{
+  "id": "ESH-0206",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "tensor-collection-depth",
+  "title": "list traversal (length) crashes with SIGBUS at ~10^6 elements",
+  "goal": "(length lst) on a ~10^6-element list terminates with SIGBUS (exit 138) on all three axes (-r, AOT-O0, AOT-O2) instead of returning a value or a graceful error. Found by the P6f tensor/collection/string depth sweep (scripts/run_tensor_collection_depth.sh, family list_length). Clean and correct through 10^5 (list_length MCD = 100000). The crash is a non-tail-recursive list traversal overflowing the stack; the P6 doctrine (.swarm/DEPTH_PARAMETRIC_TESTING.md P6b) requires a clean limit rather than a silent SIGILL/SIGBUS.",
+  "status_note": "OPEN. Capability boundary is a hard crash, not a graceful error. max-correct list length via length() = 100000.",
+  "acceptance": [
+    "length (and analogous linear list traversals) either handle 10^6-element lists or fail with a graceful, catchable error instead of SIGBUS.",
+    "list_length family in scripts/run_tensor_collection_depth.sh classifies 10^6 as PASS or as a clean error, not a crash.",
+    "A minimal repro remains under tests/tensor_collection_depth/ (generated list_length/d1000000.esk covers it)."
+  ],
+  "blocked_by": [],
+  "file_globs": [
+    "lib/stdlib.esk",
+    "lib/core",
+    "tests/tensor_collection_depth/generated/list_length/d1000000.esk"
+  ],
+  "repro": "(require stdlib)\n(define lst (let loop ((i 0) (acc '())) (if (< i 1000000) (loop (+ i 1) (cons i acc)) acc)))\n(display (length lst))(newline)  ;; SIGBUS (exit 138) instead of 1000000"
+}
