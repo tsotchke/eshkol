@@ -422,8 +422,13 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 3) {
-        eshkol_warn("substring requires exactly 3 arguments");
+    // R7RS: (substring string start [end]).  The 2-arg form defaults end
+    // to the string length.  Previously only 3 args were accepted; the
+    // 2-arg form warned and returned null, which surfaced as () and
+    // silently corrupted callers (Noesis ESH-0180).
+    const uint32_t nargs = op->call_op.num_vars;
+    if (nargs != 2 && nargs != 3) {
+        eshkol_error("substring requires 2 or 3 arguments: (substring string start [end])");
         return nullptr;
     }
 
@@ -431,21 +436,27 @@ llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     llvm::Value* str_arg = codegen_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!str_arg) return nullptr;
 
-    // Get start and end indices via typed AST
+    // Start index (required) via typed AST
     void* start_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[1], callback_context_);
-    void* end_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
-    if (!start_tv_ptr || !end_tv_ptr) return nullptr;
-
-    // Extract LLVM values from TypedValue
+    if (!start_tv_ptr) return nullptr;
     llvm::Value* start_raw = *reinterpret_cast<llvm::Value**>(start_tv_ptr);
-    llvm::Value* end_raw = *reinterpret_cast<llvm::Value**>(end_tv_ptr);
-    if (!start_raw || !end_raw) return nullptr;
-
+    if (!start_raw) return nullptr;
     // CRITICAL: Ensure indices are raw i64, not tagged_value struct
-    // All operations below require raw integers (GEP, sub, memcpy size)
+    // (GEP, sub, memcpy size all require raw integers)
     llvm::Value* start = ensureRawInt64(start_raw, "substring_start");
-    llvm::Value* end = ensureRawInt64(end_raw, "substring_end");
-    if (!start || !end) return nullptr;
+    if (!start) return nullptr;
+
+    // End index (optional).  end==nullptr tells substringImpl to default
+    // to the string's codepoint length (the 2-arg R7RS form).
+    llvm::Value* end = nullptr;
+    if (nargs == 3) {
+        void* end_tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[2], callback_context_);
+        if (!end_tv_ptr) return nullptr;
+        llvm::Value* end_raw = *reinterpret_cast<llvm::Value**>(end_tv_ptr);
+        if (!end_raw) return nullptr;
+        end = ensureRawInt64(end_raw, "substring_end");
+        if (!end) return nullptr;
+    }
 
     // Extract string pointer from tagged value
     llvm::Value* ptr_int = tagged_.unpackInt64(str_arg);
