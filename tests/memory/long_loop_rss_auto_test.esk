@@ -1,0 +1,54 @@
+;;; tests/memory/long_loop_rss_auto_test.esk — ESH-0214b
+;;;
+;;; AUTOMATIC per-iteration arena scope reclamation: the same daemon-loop
+;;; shape as long_loop_rss_test.esk, but with NO explicit (with-region ...)
+;;; anywhere. The named-let TCO loop itself must detect (via the escape
+;;; analysis in codegenNamedLet / namedLetIterScopeSafe) that each
+;;; iteration's transient allocations — read-line buffers, the dropped
+;;; scratch accumulator — cannot outlive the iteration, wrap the body in a
+;;; per-iteration arena scope, and reclaim it on every back edge.
+;;;
+;;; The outer loop's carried state is a plain counter (non-heap every
+;;; iteration), so the dynamic escape check takes the POP (reclaim) path
+;;; each pass; the inner read-line loop's accumulator escapes as its result
+;;; value, so the INNER loop commits (keeps memory) — which is then exactly
+;;; the garbage the OUTER loop's pop reclaims. Bounded-RSS verification is
+;;; done by scripts/run_rss_bounded_test.sh --test (flat peak RSS across a
+;;; 10x pass-count scale).
+
+(define witness-file "test_long_loop_rss_auto_witness.txt")
+
+(define (write-witness! n)
+  (let ((port (open-output-file witness-file)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (write-line (string-append "witness line " (number->string i)) port)
+            (loop (+ i 1)))))
+    (close-port port)))
+
+(write-witness! 50)
+
+;; One pass: read every line into a scratch list, return only a count.
+;; All of this becomes garbage the moment the pass returns.
+(define (run-pass)
+  (let ((port (open-input-file witness-file)))
+    (let loop ((line (read-line port)) (acc '()) (count 0))
+      (if (eof-object? line)
+          (begin (close-port port) count)
+          (loop (read-line port) (cons line acc) (+ count 1))))))
+
+(define total-passes 300000)
+
+;; NO with-region: reclamation must happen automatically.
+(let loop ((pass 0) (last-count 0))
+  (if (< pass total-passes)
+      (loop (+ pass 1) (run-pass))
+      (begin
+        (display "[long_loop_rss_auto_test] passes=")
+        (display total-passes)
+        (display " lines-per-pass=")
+        (display last-count)
+        (newline)
+        (display "PASS")
+        (newline))))

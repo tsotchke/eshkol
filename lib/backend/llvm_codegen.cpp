@@ -10787,6 +10787,11 @@ private:
             auto& tco_ctx = binding_->getTCOContext();
             tco_ctx.func_name = func_name;
             tco_ctx.enabled = true;
+            // ESH-0214b: automatic per-iteration scoping is named-let-only for
+            // now (its exit path is a single, known return point). Explicitly
+            // clear the flag so a define's back edges never inherit a stale
+            // iter_scope from an enclosing context.
+            tco_ctx.iter_scope = false;
             tco_ctx.param_allocas.clear();
             tco_ctx.param_names.clear();
 
@@ -24549,6 +24554,395 @@ private:
         return all_in_tail;
     }
 
+    // ═════════════════════════════════════════════════════════════════════
+    // ESH-0214b: AUTOMATIC PER-ITERATION ARENA SCOPE RECLAMATION
+    //
+    // When a named-let loop compiles to the branch-based TCO transform, its
+    // body's arena allocations normally accumulate in the enclosing
+    // (typically process-lifetime) arena forever -- the unbounded-RSS
+    // daemon-loop failure mode of ESH-0214. Here we make the loop reclaim
+    // its own per-iteration garbage automatically:
+    //
+    //   * codegenNamedLet pushes an arena scope at the top of the TCO loop
+    //     header block (once per iteration),
+    //   * every TCO back edge and the loop's exit path end the scope via
+    //     eshkol_arena_iter_scope_end(arena, outflowing_values, n), which
+    //     POPS the scope (rewinds -- reclaims the whole iteration) when no
+    //     out-flowing value points into the iteration's allocation span, and
+    //     COMMITS it (keeps the memory, drops the mark -- the pre-existing
+    //     behavior) otherwise.
+    //
+    // Correctness rests on two pillars:
+    //   1. A conservative STATIC analysis (below) that only enables the
+    //      mechanism when the loop body cannot leak an iteration-allocated
+    //      value through any channel other than the loop-carried arguments
+    //      or the loop result: no set!, no mutating builtins (any name
+    //      ending in '!', plus an explicit blacklist), no unknown callees
+    //      (only whitelisted allocation-escape-free builtins, local named
+    //      lets, inline lambdas, and recursively-analyzed user defines), no
+    //      exception/continuation control flow that could skip the scope
+    //      end, no parallel constructs (worker arenas interleave with the
+    //      scope span).
+    //   2. A DYNAMIC per-value check at each scope end (the runtime helper)
+    //      for the two channels that remain: loop args and loop result. A
+    //      heap value allocated in the ending iteration flips that edge to
+    //      commit -- so e.g. an accumulator loop keeps today's keep-
+    //      everything behavior, while a loop whose carried state is numeric
+    //      (or pre-loop-allocated, like a port) reclaims every iteration.
+    //
+    // Anything the analysis cannot prove safe silently disables the
+    // mechanism (the loop just behaves exactly as before this feature).
+    // ESHKOL_NO_ITER_SCOPE=1 disables it globally for debugging.
+    // ═════════════════════════════════════════════════════════════════════
+
+    // Memo for per-user-function analysis results (name -> safe?)
+    std::unordered_map<std::string, bool> iter_scope_fn_memo;
+
+    // First-order builtins that cannot leak an argument or an allocation
+    // into a structure that outlives the call: pure computation, fresh-
+    // allocation constructors, read-side I/O, and output of DATA (display
+    // writes bytes, it does not retain pointers). Anything absent → unsafe.
+    static const std::set<std::string>& iterScopeSafeBuiltins() {
+        static const std::set<std::string> s = {
+            // arithmetic / numeric
+            "+", "-", "*", "/", "=", "<", ">", "<=", ">=",
+            "abs", "min", "max", "modulo", "remainder", "quotient",
+            "expt", "sqrt", "exp", "log", "sin", "cos", "tan",
+            "asin", "acos", "atan", "sinh", "cosh", "tanh",
+            "floor", "ceiling", "round", "truncate", "square",
+            "gcd", "lcm", "exact->inexact", "inexact->exact", "exact", "inexact",
+            "number->string", "string->number",
+            // predicates
+            "null?", "pair?", "list?", "number?", "integer?", "real?",
+            "rational?", "complex?", "exact?", "inexact?", "zero?",
+            "positive?", "negative?", "odd?", "even?", "boolean?",
+            "string?", "symbol?", "char?", "vector?", "procedure?",
+            "eof-object?", "eq?", "eqv?", "equal?", "not",
+            "string=?", "string<?", "string>?", "string<=?", "string>=?",
+            "string-null?", "char=?", "char<?", "char>?",
+            "char-alphabetic?", "char-numeric?", "char-whitespace?",
+            "boolean=?", "symbol=?",
+            // lists (non-mutating)
+            "cons", "car", "cdr", "caar", "cadr", "cdar", "cddr",
+            "caddr", "cadddr", "list", "length", "append", "reverse",
+            "list-ref", "list-tail", "list-copy",
+            "assoc", "assq", "assv", "member", "memq", "memv",
+            // strings (non-mutating)
+            "string-append", "substring", "string-length", "string-byte-length",
+            "string-ref", "string-copy", "string->list", "list->string",
+            "string-upcase", "string-downcase", "symbol->string", "string",
+            // chars
+            "char->integer", "integer->char", "char-upcase", "char-downcase",
+            // vectors (non-mutating)
+            "vector", "make-vector", "vector-ref", "vector-length",
+            "vector->list", "list->vector", "vector-copy",
+            // I/O: read side + data output (no pointer retention)
+            "display", "newline", "write", "write-string", "write-char",
+            "write-line", "read-line", "read-string", "read-char",
+            "peek-char", "char-ready?",
+            "open-input-file", "open-output-file", "open-output-file-append",
+            "close-port", "close-input-port", "close-output-port",
+            "eof-object", "flush-output-port", "file-exists?",
+            "current-input-port", "current-output-port", "current-error-port",
+        };
+        return s;
+    }
+
+    // Higher-order builtins that CALL one of their arguments but do not
+    // retain pointers beyond their own return value. Maps builtin name to
+    // the index of the function-valued argument, which must itself be
+    // analyzable (inline lambda, local loop, or known user define).
+    static const std::map<std::string, int>& iterScopeHigherOrderBuiltins() {
+        static const std::map<std::string, int> m = {
+            {"map", 0}, {"for-each", 0}, {"filter", 0},
+            {"fold-left", 0}, {"fold-right", 0}, {"reduce", 0},
+            {"vector-map", 0}, {"vector-for-each", 0},
+        };
+        return m;
+    }
+
+    // Explicit blacklist: names without a trailing '!' that still leak
+    // pointers into global/runtime state, run arbitrary code, or introduce
+    // control flow that could skip the balanced scope end.
+    static const std::set<std::string>& iterScopeBlacklist() {
+        static const std::set<std::string> s = {
+            "read",                 // reader interns symbols into global state
+            "string->symbol", "gensym",  // symbol interning
+            "eval", "apply", "load", "require", "compile",
+            "error", "raise", "raise-continuable", "exit", "abort",
+            "call/cc", "call-with-current-continuation", "dynamic-wind",
+            "delay", "force", "make-promise",   // promise memoization mutates
+            "make-parameter", "parameterize",
+            "spawn", "thread-start", "make-thread", "future",
+            "parallel-map", "parallel-filter", "parallel-reduce",
+            "parallel-execute", "parallel-for-each",
+        };
+        return s;
+    }
+
+    // Is `expr` free of iteration-escape channels? local_fns holds names
+    // callable as plain loops from this position (the enclosing loop name +
+    // any locally nested named-let names); analyzing holds user-define names
+    // currently on the recursion stack (cycles are resolved inductively).
+    bool iterScopeSafeExpr(const eshkol_ast_t* expr,
+                           std::set<std::string>& local_fns,
+                           std::set<std::string>& analyzing,
+                           int depth) {
+        if (!expr) return true;
+        if (depth > 200) return false;  // pathological nesting: give up safely
+
+        switch (expr->type) {
+            case ESHKOL_VAR:
+            case ESHKOL_NULL:
+            case ESHKOL_INT8: case ESHKOL_INT16: case ESHKOL_INT32: case ESHKOL_INT64:
+            case ESHKOL_UINT8: case ESHKOL_UINT16: case ESHKOL_UINT32: case ESHKOL_UINT64:
+            case ESHKOL_DOUBLE: case ESHKOL_STRING: case ESHKOL_CHAR:
+            case ESHKOL_BOOL: case ESHKOL_BIGNUM_LITERAL: case ESHKOL_SYMBOL:
+            case ESHKOL_CONS:  // quoted data: allocation without escape channels
+                return true;
+            case ESHKOL_OP:
+                break;
+            default:
+                return false;  // unknown node kind: conservative
+        }
+
+        const eshkol_operations_t* op = &expr->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                // ((lambda ...) args): body + args
+                if (op->call_op.func && op->call_op.func->type == ESHKOL_OP &&
+                    op->call_op.func->operation.op == ESHKOL_LAMBDA_OP) {
+                    if (!iterScopeSafeExpr(op->call_op.func->operation.lambda_op.body,
+                                           local_fns, analyzing, depth + 1)) return false;
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                    return true;
+                }
+                if (!op->call_op.func || op->call_op.func->type != ESHKOL_VAR ||
+                    !op->call_op.func->variable.id) {
+                    return false;  // computed callee: cannot analyze
+                }
+                const std::string name = op->call_op.func->variable.id;
+
+                // Mutators by convention: any name ending in '!' writes into
+                // pre-existing structure -- the one channel the dynamic check
+                // cannot see. Hard-disable.
+                if (!name.empty() && name.back() == '!') return false;
+                if (iterScopeBlacklist().count(name)) return false;
+
+                // The parser stores `if` as CALL_OP "if" (see the ESH-0214
+                // note in tail_call_codegen.cpp): pure control flow, walk all.
+                // Self-calls to the loop (or a locally nested named let) are
+                // back edges / plain calls into analyzed code: walk args.
+                const bool is_control = (name == "if");
+                if (is_control || local_fns.count(name)) {
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                    return true;
+                }
+
+                // Higher-order safe builtins: the function-position argument
+                // must be analyzable; the rest are ordinary expressions.
+                auto ho_it = iterScopeHigherOrderBuiltins().find(name);
+                if (ho_it != iterScopeHigherOrderBuiltins().end()) {
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* arg = &op->call_op.variables[i];
+                        if ((int)i == ho_it->second) {
+                            if (arg->type == ESHKOL_OP &&
+                                arg->operation.op == ESHKOL_LAMBDA_OP) {
+                                if (!iterScopeSafeExpr(arg->operation.lambda_op.body,
+                                                       local_fns, analyzing, depth + 1)) return false;
+                            } else if (arg->type == ESHKOL_VAR && arg->variable.id &&
+                                       (local_fns.count(arg->variable.id) ||
+                                        iterScopeSafeUserFn(arg->variable.id, analyzing, depth + 1))) {
+                                // analyzable local loop or user define
+                            } else {
+                                return false;  // unknown function value
+                            }
+                        } else if (!iterScopeSafeExpr(arg, local_fns, analyzing, depth + 1)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+
+                if (iterScopeSafeBuiltins().count(name)) {
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                    return true;
+                }
+
+                // Known user-defined function: analyze its body (memoized,
+                // cycle-safe). Its arguments are ordinary expressions here.
+                if (iterScopeSafeUserFn(name, analyzing, depth + 1)) {
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                    return true;
+                }
+
+                return false;  // unknown callee
+            }
+
+            case ESHKOL_IF_OP:
+                // Legacy layout (call_op fields) -- kept for parity with
+                // findTailCalls even though the parser emits CALL_OP "if".
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                           local_fns, analyzing, depth + 1)) return false;
+                }
+                return true;
+
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (!iterScopeSafeExpr(&op->sequence_op.expressions[i],
+                                           local_fns, analyzing, depth + 1)) return false;
+                }
+                return true;
+
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_COND_OP:
+                // These use the call_op layout (test/clauses in variables[]).
+                if (op->call_op.func &&
+                    !iterScopeSafeExpr(op->call_op.func, local_fns, analyzing, depth + 1)) {
+                    return false;
+                }
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                           local_fns, analyzing, depth + 1)) return false;
+                }
+                return true;
+
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP: {
+                // A NAMED let introduces a locally callable loop: register its
+                // name so self-calls inside its body are analyzable.
+                bool added = false;
+                std::string inner_name;
+                if (op->op == ESHKOL_LET_OP && op->let_op.name) {
+                    inner_name = op->let_op.name;
+                    added = local_fns.insert(inner_name).second;
+                }
+                bool ok = true;
+                for (uint64_t i = 0; ok && i < op->let_op.num_bindings; i++) {
+                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
+                    if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr) {
+                        ok = iterScopeSafeExpr(binding->cons_cell.cdr,
+                                               local_fns, analyzing, depth + 1);
+                    }
+                }
+                if (ok) ok = iterScopeSafeExpr(op->let_op.body, local_fns, analyzing, depth + 1);
+                if (added) local_fns.erase(inner_name);
+                return ok;
+            }
+
+            case ESHKOL_LAMBDA_OP:
+                // The closure allocation itself can only travel through the
+                // dynamically checked channels (args/result) or a mutation
+                // (excluded); its body executes under this same analysis.
+                return iterScopeSafeExpr(op->lambda_op.body, local_fns, analyzing, depth + 1);
+
+            case ESHKOL_QUOTE_OP:
+                return true;
+
+            case ESHKOL_WITH_REGION_OP:
+                // Orthogonal: with-region redirects body allocations into its
+                // own arena and frees them itself; walk the body for escape
+                // channels all the same.
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                    if (!iterScopeSafeExpr(&op->with_region_op.body[i],
+                                           local_fns, analyzing, depth + 1)) return false;
+                }
+                return true;
+
+            default:
+                // set!/define/guard/raise/call-cc/dynamic-wind/case/match/
+                // do/parallel/AD/consciousness/... : conservative no. The
+                // loop keeps its exact pre-feature behavior.
+                return false;
+        }
+    }
+
+    // Analyze a user-defined function's body by name (define-level map).
+    // Memoized; a name already on the analysis stack is resolved inductively
+    // (recursive helpers are safe iff every other path through them is).
+    bool iterScopeSafeUserFn(const std::string& name,
+                             std::set<std::string>& analyzing,
+                             int depth) {
+        auto memo_it = iter_scope_fn_memo.find(name);
+        if (memo_it != iter_scope_fn_memo.end()) return memo_it->second;
+        if (analyzing.count(name)) return true;  // inductive: cycle back-edge
+
+        auto ast_it = function_body_ast.find(name);
+        if (ast_it == function_body_ast.end() || !ast_it->second) return false;
+
+        analyzing.insert(name);
+        std::set<std::string> callee_local_fns;
+        bool ok = iterScopeSafeExpr(ast_it->second, callee_local_fns, analyzing, depth + 1);
+        analyzing.erase(name);
+        iter_scope_fn_memo[name] = ok;
+        return ok;
+    }
+
+    // Gate for codegenNamedLet: is this loop body eligible for automatic
+    // per-iteration scope reclamation?
+    bool namedLetIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name) {
+        static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
+        if (disabled || !body) return false;
+        std::set<std::string> local_fns = {loop_name};
+        std::set<std::string> analyzing;
+        bool ok = iterScopeSafeExpr(body, local_fns, analyzing, 0);
+        eshkol_debug("ESH-0214b: named let '%s' iter-scope %s",
+                     loop_name.c_str(), ok ? "ENABLED" : "disabled (analysis)");
+        return ok;
+    }
+
+    // Emit the end-of-iteration scope release: store the out-flowing tagged
+    // values into an entry-hoisted scratch array and call the runtime helper,
+    // which pops the scope when none of them escape it and commits otherwise.
+    void emitIterScopeEnd(const std::vector<Value*>& out_values) {
+        FunctionCallee iter_end_fn = module->getOrInsertFunction(
+            "eshkol_arena_iter_scope_end",
+            FunctionType::get(void_type,
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context), int64_type},
+                false));
+
+        const size_t n = out_values.size();
+        ArrayType* arr_type = ArrayType::get(tagged_value_type, n ? n : 1);
+
+        // Entry-hoisted scratch (one alloca per call site, executed once per
+        // function activation -- see the ESH-0214 alloca-in-loop lessons).
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        if (current_func && !current_func->empty()) {
+            BasicBlock& entry_bb = current_func->getEntryBlock();
+            builder->SetInsertPoint(&entry_bb, entry_bb.begin());
+        }
+        Value* arr = builder->CreateAlloca(arr_type, nullptr, "iter_scope_vals");
+        builder->restoreIP(saved_ip);
+
+        for (size_t i = 0; i < n; i++) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arr_type, arr, 0, i);
+            builder->CreateStore(out_values[i], slot);
+        }
+        Value* arena_ptr = getArenaPtr();
+        builder->CreateCall(iter_end_fn,
+            {arena_ptr, arr, ConstantInt::get(int64_type, (uint64_t)n)});
+    }
+    // ═══════════════════ END ESH-0214b ═══════════════════
+
     // Generate a tail call as a jump back to loop header (TCO transformation)
     // Uses the binding module's TCO context
     Value* codegenTailCallFromContext(const eshkol_operations_t* call_op,
@@ -24624,6 +25018,18 @@ private:
         // call emitted below IS in tail position so it gets the TCO branch.
         tco_ctx.enabled = saved_enabled;
         tco_ctx.loop_header = saved_header;
+
+        // ESH-0214b: this back edge ends the current iteration -- release its
+        // arena scope BEFORE storing the new parameter values. The freshly
+        // evaluated argument values are the only data flowing into the next
+        // iteration; the runtime helper pops the scope (reclaiming everything
+        // this iteration allocated) unless one of them points into it, in
+        // which case it commits (keeps the memory, balanced stack). The
+        // values themselves live in SSA registers / C-stack slots, never in
+        // the span being rewound, so releasing first is safe.
+        if (tco_ctx.iter_scope) {
+            emitIterScopeEnd(new_values);
+        }
 
         // Store all new values to parameter allocas
         for (size_t i = 0; i < new_values.size(); i++) {
@@ -27253,6 +27659,14 @@ private:
         eshkol_debug("TCO: named let '%s' — all-tail=%d",
                      loop_name.c_str(), all_tail ? 1 : 0);
 
+        // ESH-0214b: automatic per-iteration arena scope reclamation. Only
+        // meaningful when the loop actually compiles to the branch-based TCO
+        // form (a non-TCO loop is real recursion; each activation is its own
+        // dynamic extent). See the analysis block above codegenTailCall-
+        // FromContext for the safety argument.
+        bool iter_scope_safe = all_tail &&
+            namedLetIterScopeSafe(op->let_op.body, loop_name);
+
         // NESTED NAMED LET FIX: Save TCO context to prevent corruption by nested named lets
         // Each named let saves the outer TCO state, does its work, then restores it
         auto& tco_ctx = binding_->getTCOContext();
@@ -27261,10 +27675,12 @@ private:
         BasicBlock* saved_tco_loop_header = tco_ctx.loop_header;
         std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
+        bool saved_tco_iter_scope = tco_ctx.iter_scope;
 
         // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
         tco_ctx.enabled = all_tail;
+        tco_ctx.iter_scope = iter_scope_safe;
         tco_ctx.param_allocas.clear();
         tco_ctx.param_names.clear();
 
@@ -27290,6 +27706,18 @@ private:
         builder->CreateBr(tco_loop_bb);
         builder->SetInsertPoint(tco_loop_bb);
 
+        // ESH-0214b: open the per-iteration arena scope. Every path out of
+        // the iteration -- each TCO back edge (codegenTailCallFromContext)
+        // and the loop's exit return below -- ends it with
+        // eshkol_arena_iter_scope_end, so pushes and releases stay strictly
+        // balanced (LIFO) across nested loops.
+        if (iter_scope_safe) {
+            Value* iter_arena_ptr = getArenaPtr();
+            if (iter_arena_ptr) {
+                builder->CreateCall(getArenaPushScopeFunc(), {iter_arena_ptr});
+            }
+        }
+
         // Generate body
         Value* body_result = codegenAST(op->let_op.body);
 
@@ -27310,6 +27738,13 @@ private:
                 } else if (body_result->getType()->isIntegerTy(64)) {
                     body_result = packInt64ToTaggedValue(body_result, true);
                 }
+            }
+            // ESH-0214b: the loop exits here -- release the final iteration's
+            // arena scope. The result value is the only datum flowing out; the
+            // runtime helper pops (reclaims) when it cannot point into the
+            // iteration span, and commits (keeps the memory) when it might.
+            if (iter_scope_safe && body_result->getType() == tagged_value_type) {
+                emitIterScopeEnd({body_result});
             }
             builder->CreateRet(body_result);
         }
@@ -27342,6 +27777,7 @@ private:
         tco_ctx.loop_header = saved_tco_loop_header;
         tco_ctx.param_allocas = saved_tco_param_allocas;
         tco_ctx.param_names = saved_tco_param_names;
+        tco_ctx.iter_scope = saved_tco_iter_scope;
 
         // Call the loop function with initial values + capture pointers (#224)
         std::vector<Value*> call_args;

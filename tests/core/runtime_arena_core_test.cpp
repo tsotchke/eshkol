@@ -93,6 +93,97 @@ int main() {
         return fail("overflowing list-node allocation succeeded");
     }
 
+    // ── ESH-0214b: per-iteration loop scope primitives ──
+
+    // arena_commit_scope keeps allocations but drops the scope record.
+    const size_t used_before_commit = arena_get_used_memory(arena);
+    arena_push_scope(arena);
+    void* committed_alloc = arena_allocate(arena, 64);
+    if (!committed_alloc) return fail("commit-scope test allocation returned null");
+    arena_commit_scope(arena);
+    if (arena_get_used_memory(arena) <= used_before_commit) {
+        return fail("commit released memory it should have kept");
+    }
+    std::memset(committed_alloc, 0x5A, 64);  // must still be writable (ASAN lane)
+
+    // arena_top_scope_contains: in-span vs pre-span vs foreign pointers.
+    void* before_scope = arena_allocate(arena, 16);
+    arena_push_scope(arena);
+    void* in_scope = arena_allocate(arena, 16);
+    int on_stack = 0;
+    if (!arena_top_scope_contains(arena, in_scope)) {
+        return fail("in-scope pointer not detected");
+    }
+    if (arena_top_scope_contains(arena, before_scope)) {
+        return fail("pre-scope pointer misdetected as in-scope");
+    }
+    if (arena_top_scope_contains(arena, &on_stack)) {
+        return fail("foreign (stack) pointer misdetected as in-scope");
+    }
+    // ...including across a block boundary added inside the scope.
+    void* in_scope_big = arena_allocate(arena, 4096);
+    if (!arena_top_scope_contains(arena, in_scope_big)) {
+        return fail("in-scope pointer in overflow block not detected");
+    }
+    arena_pop_scope(arena);
+
+    // eshkol_arena_iter_scope_end: POP path (no out-flowing heap values).
+    const size_t used_before_iter = arena_get_used_memory(arena);
+    arena_push_scope(arena);
+    if (!arena_allocate(arena, 512)) return fail("iter-pop test allocation returned null");
+    eshkol_tagged_value_t ints[2];
+    std::memset(ints, 0, sizeof(ints));
+    ints[0].type = ESHKOL_VALUE_INT64;  ints[0].data.int_val = 41;
+    ints[1].type = ESHKOL_VALUE_DOUBLE; ints[1].data.double_val = 2.5;
+    eshkol_arena_iter_scope_end(arena, ints, 2);
+    if (arena_get_used_memory(arena) != used_before_iter) {
+        return fail("iter-scope-end with immediates did not pop (reclaim)");
+    }
+
+    // POP path with a heap value that lies OUTSIDE the scope span (the
+    // carried-port shape): reclamation must still happen.
+    void* pre_alloc = arena_allocate(arena, 32);
+    const size_t used_before_iter2 = arena_get_used_memory(arena);
+    arena_push_scope(arena);
+    if (!arena_allocate(arena, 256)) return fail("iter-pop2 test allocation returned null");
+    eshkol_tagged_value_t carried;
+    std::memset(&carried, 0, sizeof(carried));
+    carried.type = ESHKOL_VALUE_HEAP_PTR;
+    carried.data.ptr_val = (uint64_t)(uintptr_t)pre_alloc;
+    eshkol_arena_iter_scope_end(arena, &carried, 1);
+    if (arena_get_used_memory(arena) != used_before_iter2) {
+        return fail("iter-scope-end with pre-scope heap value did not pop");
+    }
+
+    // COMMIT path: an out-flowing heap value allocated INSIDE the scope.
+    arena_push_scope(arena);
+    void* escaping = arena_allocate(arena, 128);
+    if (!escaping) return fail("iter-commit test allocation returned null");
+    const size_t used_at_commit = arena_get_used_memory(arena);
+    eshkol_tagged_value_t esc;
+    std::memset(&esc, 0, sizeof(esc));
+    esc.type = ESHKOL_VALUE_HEAP_PTR;
+    esc.data.ptr_val = (uint64_t)(uintptr_t)escaping;
+    eshkol_arena_iter_scope_end(arena, &esc, 1);
+    if (arena_get_used_memory(arena) != used_at_commit) {
+        return fail("iter-scope-end with escaping heap value did not commit (keep memory)");
+    }
+    std::memset(escaping, 0x7E, 128);  // must still be writable (ASAN lane)
+
+    // Conservative typing: an unknown/exotic type tag with a null pointer
+    // must not block reclamation (eof-object shape), and the scope stack
+    // must stay balanced through mixed pop/commit sequences.
+    const size_t used_mixed = arena_get_used_memory(arena);
+    arena_push_scope(arena);
+    if (!arena_allocate(arena, 64)) return fail("mixed test allocation returned null");
+    eshkol_tagged_value_t eof;
+    std::memset(&eof, 0, sizeof(eof));
+    eof.type = 0xFF;  // eof-object: data always 0
+    eshkol_arena_iter_scope_end(arena, &eof, 1);
+    if (arena_get_used_memory(arena) != used_mixed) {
+        return fail("iter-scope-end with eof-object did not pop");
+    }
+
     arena_destroy(arena);
 
     std::cout << "PASS\n";

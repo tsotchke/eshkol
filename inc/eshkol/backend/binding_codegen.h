@@ -286,6 +286,10 @@ public:
         std::vector<llvm::AllocaInst*> param_allocas;  // Allocas for mutable parameters
         std::vector<std::string> param_names;    // Parameter names for lookup
         bool enabled = false;                 // Whether TCO is enabled for current lambda
+        bool iter_scope = false;              // ESH-0214b: loop body runs inside a
+                                              // per-iteration arena scope; the TCO
+                                              // back edge must end it (pop/commit)
+                                              // before jumping to the loop header
     };
 
     /**
