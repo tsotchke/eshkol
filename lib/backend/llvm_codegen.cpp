@@ -1338,6 +1338,8 @@ private:
     GlobalVariable* ad_tape_stack;  // Array of tape pointers [MAX_TAPE_DEPTH]
     GlobalVariable* ad_tape_depth;  // Current stack depth (0 = no active gradient)
     GlobalVariable* ad_pert_level;  // ESH-0070 forward-mode perturbation level (runtime)
+    GlobalVariable* ad_tower_active; // ESH-0190 P5: Taylor-tower diff depth (>0 while active)
+    GlobalVariable* ad_tower_order;  // ESH-0190 P5: current innermost tower order
 
     // DOUBLE BACKWARD: Storage for outer AD node when in nested gradient
     // Used to connect inner gradient's result to outer's computation graph
@@ -2353,6 +2355,13 @@ public:
                     nullptr, // External - defined in runtime_autodiff.cpp
                     "__ad_pert_level"
                 );
+                // ESH-0190 P5: Taylor-tower differentiation context (external for REPL)
+                ad_tower_active = new GlobalVariable(
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_active");
+                ad_tower_order = new GlobalVariable(
+                    *module, int64_type, false, GlobalValue::ExternalLinkage,
+                    nullptr, "__ad_tower_order");
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (external for REPL)
                 outer_ad_node_storage = new GlobalVariable(
@@ -2443,6 +2452,13 @@ public:
                     ConstantInt::get(int64_type, 0),
                     "__ad_pert_level"
                 );
+                // ESH-0190 P5: Taylor-tower differentiation context (internal, zero init)
+                ad_tower_active = new GlobalVariable(
+                    *module, int64_type, false, GlobalValue::InternalLinkage,
+                    ConstantInt::get(int64_type, 0), "__ad_tower_active");
+                ad_tower_order = new GlobalVariable(
+                    *module, int64_type, false, GlobalValue::InternalLinkage,
+                    ConstantInt::get(int64_type, 0), "__ad_tower_order");
 
                 // DOUBLE BACKWARD: Create outer AD node storage globals (internal with null init)
                 outer_ad_node_storage = new GlobalVariable(
@@ -3807,6 +3823,8 @@ private:
         ctx_->setAdTapeStack(ad_tape_stack);
         ctx_->setAdTapeDepth(ad_tape_depth);
         ctx_->setAdPertLevel(ad_pert_level);
+        ctx_->setAdTowerActive(ad_tower_active);
+        ctx_->setAdTowerOrder(ad_tower_order);
         ctx_->setOuterAdNodeStorage(outer_ad_node_storage);
         ctx_->setOuterAdNodeToInner(outer_ad_node_to_inner);
         ctx_->setOuterGradAccumulator(outer_grad_accumulator);

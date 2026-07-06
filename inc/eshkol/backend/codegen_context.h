@@ -240,6 +240,11 @@ public:
     // runtime around each forward-mode call, so it is invariant under TCO.
     llvm::GlobalVariable* adPertLevel() { return ad_pert_level_; }
     void setAdPertLevel(llvm::GlobalVariable* var) { ad_pert_level_ = var; }
+    // ESH-0190 P5: Taylor-tower differentiation context globals.
+    llvm::GlobalVariable* adTowerActive() { return ad_tower_active_; }
+    void setAdTowerActive(llvm::GlobalVariable* var) { ad_tower_active_ = var; }
+    llvm::GlobalVariable* adTowerOrder() { return ad_tower_order_; }
+    void setAdTowerOrder(llvm::GlobalVariable* var) { ad_tower_order_ = var; }
 
     // Double backward support
     llvm::GlobalVariable* outerAdNodeStorage() { return outer_ad_node_storage_; }
@@ -368,6 +373,8 @@ private:
     llvm::GlobalVariable* ad_tape_stack_ = nullptr;
     llvm::GlobalVariable* ad_tape_depth_ = nullptr;
     llvm::GlobalVariable* ad_pert_level_ = nullptr;  // ESH-0070 forward-mode perturbation level
+    llvm::GlobalVariable* ad_tower_active_ = nullptr; // ESH-0190 P5: Taylor-tower diff depth
+    llvm::GlobalVariable* ad_tower_order_ = nullptr;  // ESH-0190 P5: current tower order
     llvm::GlobalVariable* outer_ad_node_storage_ = nullptr;
     llvm::GlobalVariable* outer_ad_node_to_inner_ = nullptr;
     llvm::GlobalVariable* outer_grad_accumulator_ = nullptr;
