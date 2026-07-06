@@ -1,0 +1,35 @@
+{
+  "id": "ESH-0217",
+  "title": "Bare () as a call/datum-position argument lowers differently from other empty-list datums",
+  "status": "done",
+  "priority": "medium",
+  "workstream": "parser",
+  "goal": "Bare () reaching the general expression parser (macro-call argument, ordinary call argument, or any other datum/argument position) must lower to the same AST shape as every other route to the empty list (an explicit (list) call), so structural AST consumers — macro-call argument pattern matching in particular — do not silently reject a bare () that an equivalent (list) or (quote ()) argument would not have.",
+  "root_cause": "lib/frontend/parser.cpp parse_list(): the 'Empty list' branch (bare () with no elements) built a bespoke ESHKOL_INVALID_OP sentinel AST node instead of the CALL_OP invoking \"list\" with zero arguments that (list), '(), and the payload of (quote ()) all already produce (see parse_quoted_list_internal / make_parser_call_ast). ESHKOL_INVALID_OP was only ever recognized by codegen's own special case (packNullToTaggedValue()); nothing else in the codebase (macro_expander.cpp's matchPattern in particular, which structurally requires ESHKOL_OP + ESHKOL_CALL_OP to recognize 'a list-shaped argument') ever treated it as an empty list. A macro whose pattern destructures a list-shaped argument therefore matched an explicit (list) but failed with 'no matching pattern' on a bare () in the exact same position.",
+  "fix": "parser.cpp's TOKEN_RPAREN-immediately branch of parse_list() now returns make_parser_call_ast(\"list\", {}, ...) — the identical zero-arg CALL_OP shape (list) already produces — instead of ESHKOL_INVALID_OP. Scoped strictly to datum/argument position: binding/formal lists such as (let () ...) and (lambda () ...) parse their own () directly (checking TOKEN_RPAREN right after their own '(', before ever calling parse_list/parse_expression) and are unaffected. () used as a call head still flows into the existing 'first element is an expression' branch unchanged, and still fails gracefully at runtime (not parse time), consistent with R7RS treating () as an error outside quote — verified it does not crash, hang, or abort control flow either before or after this change.",
+  "file_globs": [
+    "lib/frontend/parser.cpp",
+    "tests/parser/bare_null_arg_test.esk"
+  ],
+  "acceptance": [
+    "AST dump (--dump-ast) shows bare () producing the same CALL_OP(list, 0 args) shape as an explicit (list) call, where it previously produced ESHKOL_INVALID_OP.",
+    "A syntax-rules macro with a list-destructuring pattern argument matches a bare () call argument identically to an explicit (list) argument, under both -r (JIT) and AOT compile+run.",
+    "(null? ()), (cons 1 ()), (length ()), (append () ...), (equal? () (quote ())) all continue to work under -r and AOT (regression, was already working via the old ESHKOL_INVALID_OP codegen special case).",
+    "tests/parser/bare_null_arg_test.esk: 11/11 checks pass under -r and AOT; fails at 'flatten2 with bare ()' on the pre-fix binary, confirming it is a real regression test.",
+    "tests/macros: 7/7 pass.",
+    "scripts/run_sicp_smoke.sh: 88/88 gate probes pass.",
+    "scripts/run_parser_tests.sh: 31/31 pass (30 pre-existing + bare_null_arg_test.esk).",
+    "scripts/run_differential.sh: 246/246 axis pairs agree across 41 programs, no divergences."
+  ],
+  "verification": [
+    "cmake --build build --target eshkol-run stdlib -j8",
+    "bash scripts/run_macros_tests.sh",
+    "bash scripts/run_sicp_smoke.sh",
+    "bash scripts/run_parser_tests.sh",
+    "bash scripts/run_differential.sh",
+    "./build/eshkol-run -L./build tests/parser/bare_null_arg_test.esk && ./a.out",
+    "./build/eshkol-run -r tests/parser/bare_null_arg_test.esk"
+  ],
+  "blocked_by": [],
+  "status_note": "DONE. No partial Kimi-backend branch/PR found on origin (git ls-remote origin fix/bare-null-call-arg was empty; gh pr list --search bare had no match) — implemented fresh on branch fix/bare-null-call-arg off master (d5f4fcf5). Deep-dived whether the flatten2-style nested list-destructuring pattern match (e.g. (a ...) (b ...)) can be made to fully succeed for a *quoted* empty list argument as well; confirmed that is a separate, pre-existing, and much broader limitation (matchPattern's MACRO_PAT_LIST requires the argument to literally be ESHKOL_CALL_OP, so *any* quoted list literal — empty or not — never structurally matches a list-destructuring pattern, on master and on the unmerged fix/nested-ellipsis branch alike). That is out of scope for this ticket, which is specifically about the parser's inconsistent lowering of unquoted bare ()."
+}
