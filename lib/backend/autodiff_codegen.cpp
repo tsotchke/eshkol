@@ -118,6 +118,37 @@ enum DualJetSlot : unsigned {
     kJetEp = 4,  // reverse-seed companion (ESH-0117/ESH-0188), field 4 = dvalue/dep primal
 };
 
+// ESH-0221: true if `v` is a named-let / TCO loop-variable alloca (named
+// "<name>_tco"). codegenLambda captures such allocas BY VALUE (its
+// is_let_alloca gate excludes the "_tco" suffix — see llvm_codegen.cpp
+// codegenLambda's free-variable capture loop) — the lambda's own body then
+// reads its capture parameter with a SINGLE load, expecting a value-typed
+// slot, not a pointer-marker to re-dereference.
+//
+// The manual free-variable-capture RECONSTRUCTION below (derivative,
+// gradient, and the shared jacobian/hessian/divergence/curl/laplacian
+// capture resolvers) independently looks up a captured variable's `storage`
+// Value* via symbol_table_/global_symbol_table_ and decides how to forward
+// it to the differentiated function using a single test:
+// `storage->getType()->isPointerTy()`. A TCO loop-carried parameter's
+// alloca IS pointer-typed (every AllocaInst is), so — absent this check —
+// it fell into the "mutable/let-bound variable" branch that packs the
+// alloca's ADDRESS as an int64-tagged pointer-marker for the callee to
+// re-dereference (double indirection). But the callee lambda, for a _tco
+// free variable, does a SINGLE load expecting the actual value — so it
+// read the raw alloca address bit-pattern as if it were the captured
+// double, producing garbage (a stack address reinterpreted as ~1e9-1e10)
+// for scalars, and corrupted-list/segfault symptoms for captured pairs.
+//
+// This mirrors map_codegen.cpp's isTcoLoopAlloca (bug-RR) — same
+// value-vs-pointer capture-convention mismatch, different codegen path.
+bool isTcoLoopAlloca(llvm::Value* v) {
+    auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v);
+    if (!a) return false;
+    llvm::StringRef name = a->getName();
+    return name.size() >= 4 && name.substr(name.size() - 4) == "_tco";
+}
+
 // Read component `idx` of a dual struct value.
 // 0=primal,1=e1,2=e2,3=e1e2 (value 4-jet); 4..7 = the ep-derivative 4-jet
 // (ESH-0117: d(value 4-jet)/dep, ep = reverse-seed infinitesimal).
@@ -2835,7 +2866,22 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
                 // pointer when storage is one, otherwise pass the value-typed
                 // tagged_value through a fresh alloca temp slot so the lambda's
                 // single-load body sees the value directly.
-                if (storage->getType()->isPointerTy()) {
+                if (isTcoLoopAlloca(storage)) {
+                    // ESH-0221: `storage` is a TCO loop-carried parameter's
+                    // alloca — pointer-typed like any AllocaInst, but the
+                    // callee treats it as a VALUE capture (single load), not
+                    // a mutable-variable pointer to re-dereference. Load the
+                    // CURRENT iteration's value and funnel it through a
+                    // value-typed temp slot, exactly like the non-pointer
+                    // branch below — packing its ADDRESS instead (the
+                    // fallthrough this guard prevents) made the callee read
+                    // the alloca's raw address bit-pattern as the captured
+                    // double.
+                    Value* deriv_tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
+                    Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_tco_val");
+                    ctx_.builder().CreateStore(deriv_tco_val, deriv_temp_storage);
+                    deriv_call_args.push_back(deriv_temp_storage);
+                } else if (storage->getType()->isPointerTy()) {
                     Value* deriv_storage_ptr_int = ctx_.builder().CreatePtrToInt(storage, ctx_.int64Type());
                     Value* deriv_packed_storage = tagged_.packInt64(deriv_storage_ptr_int, true);
                     Value* deriv_temp_storage = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "deriv_capture_storage");
@@ -5227,6 +5273,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 if (!storage->getType()->isPointerTy()) {
                     Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
                     ctx_.builder().CreateStore(storage, val_temp);
+                    grad_call_args.push_back(val_temp);
+                    continue;
+                }
+                if (isTcoLoopAlloca(storage)) {
+                    // ESH-0221: see isTcoLoopAlloca's doc comment. `storage`
+                    // is a TCO loop-carried parameter's alloca — the callee
+                    // expects a single-load VALUE capture, not the mutable-
+                    // variable pointer-marker built below.
+                    Value* grad_tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
+                    Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_tco_val");
+                    ctx_.builder().CreateStore(grad_tco_val, val_temp);
                     grad_call_args.push_back(val_temp);
                     continue;
                 }
@@ -9156,6 +9213,22 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
                 capture_args.push_back(val_temp);
                 continue;
             }
+            if (isTcoLoopAlloca(storage)) {
+                // ESH-0221: see isTcoLoopAlloca's doc comment. `storage` is a
+                // TCO loop-carried parameter's alloca — the callee expects a
+                // single-load VALUE capture, not the mutable-variable
+                // pointer-marker built below (jacobian/hessian/divergence/
+                // curl/laplacian all share this capture resolver).
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+                IRBuilder<> entry_builder(&current_func->getEntryBlock(),
+                                          current_func->getEntryBlock().begin());
+                AllocaInst* val_temp = entry_builder.CreateAlloca(
+                    ctx_.taggedValueType(), nullptr, var_name + "_autodiff_capture_tco_val");
+                Value* tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
+                ctx_.builder().CreateStore(tco_val, val_temp);
+                capture_args.push_back(val_temp);
+                continue;
+            }
             Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
             IRBuilder<> entry_builder(&current_func->getEntryBlock(),
                                       current_func->getEntryBlock().begin());
@@ -9290,6 +9363,17 @@ void AutodiffCodegen::resolveGradientCaptures(
                 // derivative() capture handling (ESH-0070).
                 Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_val");
                 ctx_.builder().CreateStore(storage, val_temp);
+                call_args.push_back(val_temp);
+                continue;
+            }
+            if (isTcoLoopAlloca(storage)) {
+                // ESH-0221: see isTcoLoopAlloca's doc comment. `storage` is a
+                // TCO loop-carried parameter's alloca — the callee expects a
+                // single-load VALUE capture, not the mutable-variable
+                // pointer-marker built below.
+                Value* tco_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), storage);
+                Value* val_temp = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_cap_tco_val");
+                ctx_.builder().CreateStore(tco_val, val_temp);
                 call_args.push_back(val_temp);
                 continue;
             }
