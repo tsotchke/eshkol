@@ -225,6 +225,17 @@ static unsigned int link_subprocess_timeout_seconds() {
     return 300; // 5 minutes
 }
 
+// Digest of the FULL compilation unit: the entry file plus every source file
+// reachable from it via (load "…") / (import "…") / (require module).  Defined
+// far below (it needs resolve_module_path); forward-declared at file scope here
+// so the anonymous-namespace makeJitRunCacheKey can key on it.  Previously the
+// run-cache key hashed only the entry file's bytes, so editing a (load …)ed
+// dependency left the key unchanged and `-r` silently re-executed a STALE
+// cached binary (ESH-0183).
+static std::string transitiveSourceDigest(
+    const std::filesystem::path& entry_source,
+    const std::vector<char*>& include_paths);
+
 namespace {
 
 bool envFlagEnabled(const char* name) {
@@ -450,6 +461,11 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "schema", "eshkol-run-cache-v1");
     hashUpdate(hash, "source-path", canonical_source.string());
     hashUpdate(hash, "source-bytes", readFileBytes(source_path));
+    // Fold in every transitively (load …)ed / (require …)d / (import …)ed
+    // source so editing a dependency — not just the entry file — invalidates
+    // the persistent run-cache (ESH-0183).
+    hashUpdate(hash, "transitive-deps",
+               transitiveSourceDigest(source_path, include_paths));
     hashUpdate(hash, "eshkol-version", ESHKOL_VER);
     hashUpdate(hash, "llvm-version", LLVM_VERSION_STRING);
     hashUpdate(hash, "self", fileMetadataFingerprint(self_path));
@@ -2528,6 +2544,91 @@ static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
         }
     }
     return false;
+}
+
+// ESH-0183: recursively collect the content of every source file the compile
+// will read, so the persistent run-cache key invalidates on ANY source edit —
+// not merely an edit to the entry file.  Reachability follows the same three
+// forms the compiler splices at build time: (load "path"), (import "path"),
+// and (require module).  The scan is intentionally GENEROUS: over-collection
+// only forfeits a cache hit (a re-compile), whereas under-collection would
+// resurrect the stale-output bug.  Results are keyed by canonical path in a
+// std::map so the eventual digest is order-independent.
+static void collectTransitiveSources(
+    const std::filesystem::path& path,
+    const std::vector<char*>& include_paths,
+    std::map<std::string, std::string>& out)
+{
+    std::error_code ec;
+    std::string canon = std::filesystem::weakly_canonical(path, ec).string();
+    if (canon.empty()) canon = path.string();
+    if (!out.emplace(canon, std::string()).second) {
+        return;  // already visited
+    }
+
+    std::string text = readFileBytes(path);
+    out[canon] = text;  // record bytes (empty string keeps "seen" marker)
+    if (text.empty()) return;
+
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+    std::string base_dir = path.parent_path().string();
+    if (base_dir.empty()) base_dir = ".";
+
+    // Resolve a referenced module/path against the referring file's directory,
+    // then the -I include paths, then resolve_module_path's own search order
+    // (cwd, lib dir, $ESHKOL_PATH).
+    auto resolve_ref = [&](const std::string& ref) -> std::string {
+        std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
+        if (!mp.empty()) return mp;
+        for (char* inc : include_paths) {
+            if (!inc || !*inc) continue;
+            mp = resolve_module_path(ref, inc, g_lib_dir);
+            if (!mp.empty()) return mp;
+        }
+        return "";
+    };
+
+    static const char* kForms[] = {"(load", "(import", "(require"};
+    for (const char* form : kForms) {
+        const size_t flen = std::strlen(form);
+        size_t pos = 0;
+        while ((pos = text.find(form, pos)) != std::string::npos) {
+            pos += flen;
+            const size_t close = text.find(')', pos);
+            if (close == std::string::npos) break;
+            std::string clause = text.substr(pos, close - pos);
+            pos = close;
+            // Tokenise; strip stray quote/paren/quasiquote chars (mirrors the
+            // require scan used by file_requires_agent_ffi).
+            std::stringstream ts(clause);
+            std::string tok;
+            while (ts >> tok) {
+                while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
+                                        tok.front() == '"'))
+                    tok.erase(tok.begin());
+                while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
+                    tok.pop_back();
+                if (tok.empty()) continue;
+                std::string mp = resolve_ref(tok);
+                if (!mp.empty())
+                    collectTransitiveSources(mp, include_paths, out);
+            }
+        }
+    }
+}
+
+static std::string transitiveSourceDigest(
+    const std::filesystem::path& entry_source,
+    const std::vector<char*>& include_paths)
+{
+    std::map<std::string, std::string> sources;  // canonical path -> bytes
+    collectTransitiveSources(entry_source, include_paths, sources);
+    llvm::SHA256 hash;
+    for (const auto& entry : sources) {
+        hashUpdate(hash, "dep-path", entry.first);
+        hashUpdate(hash, "dep-bytes", entry.second);
+    }
+    return sha256Hex(hash);
 }
 
 // Recursively discover all modules that a library requires.
