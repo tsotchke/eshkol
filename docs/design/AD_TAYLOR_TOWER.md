@@ -5,7 +5,7 @@
 **Builds on / subsumes:** PR #138 (8-component jet for reverse-over-nested-forward, ESH-0117)
 **Author:** tsotchke
 **Target:** post-v1.3.0-evolve (not a tag blocker — #138 already handles the reported order-≤2 nested case)
-**Ledger:** ESH-0185 (P0, done) · ESH-0186 (P1) · ESH-0187 (P2) · ESH-0188 (P3) · ESH-0189 (P4, done) · ESH-0190 (P5, done) · ESH-0191..0197 (P6..P12, open)
+**Ledger:** ESH-0185 (P0, done) · ESH-0186 (P1) · ESH-0187 (P2) · ESH-0188 (P3) · ESH-0189 (P4, done) · ESH-0190 (P5, done) · ESH-0195 (P10, done) · ESH-0191..0194, 0196, 0197 (P6..P9, P11, P12, open)
 
 ---
 
@@ -472,6 +472,22 @@ For the pure-Scheme tape (`lib/core/ad/tape.esk`), the checkpoint schedule must 
 
 **Risk note:** Rematerialization is only valid for pure, deterministic segments. Effects, nondeterministic primitives, mutation not represented in the tape, or divergent FP contraction can make replay differ from the forward pass. The phase must conservatively disable checkpointing for impure segments and fall back to the dense tape with an explicit budget failure when no safe schedule exists.
 
+#### P10 implementation note (ESH-0195, done)
+
+Delivered as a NEW pure-Scheme module, `lib/core/ad/checkpoint.esk`, built directly on `lib/core/ad/tape.esk` rather than by extending the compiler's opaque `derivative-n`/`gradient` intrinsics (which have no hook a Scheme-level checkpoint scheduler could pause/resume). The tower-valued-primal/adjoint idea of §8b is reimplemented here at the Scheme level: a length-K+1 Taylor tower is represented as a list of tape NODES, and every tower op (`mul`/`add`/`scale`/the coupled `sin`/`cos` recurrence) is built purely from tape.esk's already-correct scalar ops (`tape-mul`/`tape-add`/`tape-sub`/`tape-div`/`tape-neg`/`tape-sin`/`tape-cos`), so tower-op correctness is inherited rather than re-derived.
+
+**Checkpointing scheme actually implemented:** single-level Griewank/binomial-family checkpointing (the well-known `O(sqrt N)` special case, not the full recursive `O(log N)` "revolve" schedule — the phase's own gate accepts either "log or sqrt of N"). For a chain of N layers `x_i = layer(x_{i-1}, v) = sin(v * x_{i-1})`:
+1. **Forward** (`cr-forward-checkpoints`): a cheap plain-double pass (no tape) keeps only `B = ceil(sqrt N) + 1` block-boundary tower checkpoints — O(K) live memory at any instant, O(sqrt(N)·K) total checkpoint storage.
+2. **Backward** (`checkpointed-tower-reverse`): processes blocks last-to-first. Each block is rematerialized on a FRESH, small tape from its checkpoint, combined with the incoming adjoint via a single vector-Jacobian-product scalar node (`cr-vjp-seed` — no `(K+1)×(K+1)` Jacobian is ever materialized), and one `tape-gradient` call yields both this block's contribution to `dv` and the adjoint to hand to the previous block. Each block's tape is then garbage — at most one block's ops/nodes are ever live.
+
+**Minimal tape hook:** two additive, O(1)-space introspection exports were added to `lib/core/ad/tape.esk` — `tape-op-count` / `tape-node-count` — so the memory claim is *measured* (real op/node counts on the actual tape) rather than only asserted.
+
+**Correctness gate** (`tests/ad/checkpointed_reverse_test.esk`, -r and AOT, byte-identical): (a) small-N (3-layer) cross-check against the REAL compiler `derivative-n`+`gradient` (P5/ESH-0190) confirms this from-scratch reimplementation matches actual reverse-over-Taylor semantics; (b) checkpointed vs. dense (single-tape, non-checkpointed) agreement to `<=1e-10` on N=50/100/200-layer chains (both are exact reverse-mode over the same ops, so they agree far tighter than the gate — near machine epsilon in practice); (c) an independent finite-difference cross-check on the raw (non-AD) chain value. A large-N compiler cross-check was deliberately NOT used as the correctness oracle: it would require differentiating through N-deep Scheme *recursion*, which is P9 (ESH-0194, differentiable control flow) territory and still open, so it is not yet a safe ground truth at that depth — the dense single-tape reimplementation (itself validated against the compiler at small N) plays that role instead.
+
+**Memory gate:** measured (not simulated) peak `tape-node-count`/`tape-op-count`. Dense peak-node ratio N=200/N=50 ≈ 4.0 (linear in N, as expected); checkpointed peak-node ratio ≈ 1.8, i.e. sub-linear and tracking `sqrt(200/50)=2`, not `4`. Checkpoint count grows from 7 (N=50) to 14 (N=200) — `~sqrt(N)`, not `~N`. See the table in the ESH-0195 PR description for exact figures.
+
+**Scope note:** consistent with the risk note above, this phase does not implement a general impurity detector — `layer` here is pure arithmetic, which is what checkpointing a high-order AD chain is about. A conservative dense-tape fallback for impure segments remains a documented future extension, not required by this phase's gate.
+
 ### P11. Tower-based user numerics
 
 **Motivation:** Once the tower is first-class, users should be able to program with Taylor series directly: Taylor-series ODE integration, series-based root finding and function inversion, and analytic continuation. This exposes the same kernel that powers AD as a general numerical method, not an internal-only derivative representation.
@@ -542,7 +558,7 @@ Each phase gated by `scripts/run_ad_depth.sh` (derivative^d / gradient^d to d=8)
 | **P7** | Tensor-valued towers (`COEFF_TENSOR`, §10): conv2d/attention/batchnorm/layernorm high-order AD | ML AD smoke PASS; order-1 agrees with existing tensor-AD; FD-checked | **ESH-0192** |
 | **P8** | Taylor models (§11): validated AD with rigorous interval remainder | enclosure soundness (contains true range) + tightness (width ↓ in k) | **ESH-0193** |
 | **P9** | Differentiable control flow: towers through loops, conditionals, recursion, closures, named-let, `map`/`fold`; perturbation-safe nested derivative contexts | data-dependent loop/branch oracle PASS to d=8 vs analytic; kink policy enforced; TCO/control-flow suites PASS | **ESH-0194** |
-| **P10** | Checkpointed high-order reverse: Griewank binomial checkpointing/rematerialization for tower-valued tapes | high-order reverse on deep graph PASS to d=8 within memory budget; agrees with dense tape/analytic oracle | **ESH-0195** |
+| **P10** *(done)* | Checkpointed high-order reverse: Griewank binomial checkpointing/rematerialization for tower-valued tapes | `checkpointed_reverse_test.esk` 17/17 (-r + AOT); checkpointed == dense to 1e-10 on N=50..200 chains; sub-linear (sqrt N) peak tape memory measured; reverse_over_taylor 18/18, AD oracle 56/56, SICP 88/88 unaffected | **ESH-0195** |
 | **P11** | Tower-based user numerics: Taylor-series ODE integration, series root finding/inversion, analytic continuation APIs | ODE/root/inversion examples converge to analytic solution; ICC `ad_user_numerics` PASS | **ESH-0196** |
 | **P12** | Sparse high-order tensors: sparse GUW mixed-partial recovery via star-coloring/Walther seed selection and CSR/CSF-like storage | sparse Hessian/partial tensor matches dense recovery through d; propagation-count savings recorded | **ESH-0197** |
 
