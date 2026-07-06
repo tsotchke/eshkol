@@ -38,7 +38,12 @@
          tape-add tape-sub tape-mul tape-div
          tape-sin tape-cos tape-exp tape-log tape-neg
          tape-square tape-sqrt tape-tanh tape-sigmoid tape-relu tape-pow
-         tape-gradient tape-snapshot tape-restore)
+         tape-gradient tape-snapshot tape-restore
+         ;; introspection hooks (ESH-0195, P10 checkpointing): O(1)-space
+         ;; accessors so callers can measure/bound how large a tape has grown,
+         ;; e.g. to compare a checkpointed reverse pass's peak tape size
+         ;; against a dense (non-checkpointed) one.
+         tape-op-count tape-node-count)
 
 ;; ── Internal list helpers ──
 ;; Self-contained (this is a core module loaded before the list stdlib, so we
@@ -92,6 +97,19 @@
 (define (tape-record! t out ins backward)
   (vector-set! t 0 (cons (list out ins backward) (vector-ref t 0)))
   out)
+
+;; ── Size introspection (ESH-0195, P10 checkpointing) ──
+;; A tape's live memory is, to first order, proportional to the length of its
+;; ops list (one 3-element record per recorded op) plus its nodes list (one
+;; 2-slot vector per leaf/output). These counted-loop walks (no length/count
+;; builtin dependency — this file loads before the list stdlib, per the
+;; header note) let a checkpointing scheme report/bound peak tape size instead
+;; of only asserting correctness.
+(define (tape-count-list lst)
+  (let loop ((l lst) (n 0))
+    (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+(define (tape-op-count t) (tape-count-list (tape-ops t)))
+(define (tape-node-count t) (tape-count-list (tape-nodes t)))
 
 ;; Leaf nodes (gradient targets / constants).
 (define (tape-input t value) (tape-register-node! t (vector value (val-zero-like value))))

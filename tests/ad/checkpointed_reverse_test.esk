@@ -1,0 +1,154 @@
+;;; tests/ad/checkpointed_reverse_test.esk
+;;; ESH-0195 (P10): checkpointed high-order reverse.
+;;;
+;;; core.ad.checkpoint (lib/core/ad/checkpoint.esk) reimplements P5's
+;;; reverse-over-Taylor idea (a tower-valued primal/adjoint riding a reverse
+;;; tape) directly on lib/core/ad/tape.esk, so a length-N composition
+;;;   x_0 = seed-tower(t0), x_i = sin(v * x_{i-1})  (i = 1..N)
+;;; can be differentiated wrt v — for the k-th t-derivative of x_N — with
+;;; either:
+;;;   dense-tower-reverse         : ONE tape spans all N layers (baseline,
+;;;                                 O(N*K) tape memory)
+;;;   checkpointed-tower-reverse  : Griewank single-level sqrt(N) schedule
+;;;                                 (O(sqrt(N)*K) peak tape memory)
+;;;
+;;; Gates (per ESH-0195 / docs/design/AD_TAYLOR_TOWER.md "P10"):
+;;;   CORRECTNESS — checkpointed matches the non-checkpointed baseline to
+;;;   1e-10 on a deep chain (N = 50..200); PLUS an independent small-N
+;;;   cross-check against the REAL COMPILER's `derivative-n`+`gradient`
+;;;   (P5, ESH-0190) proves this from-scratch Scheme reimplementation is
+;;;   faithful to actual reverse-over-Taylor semantics, not just internally
+;;;   self-consistent. (A large-N compiler cross-check is not used as the
+;;;   oracle here: it would require differentiating through N-deep Scheme
+;;;   RECURSION, which is P9/ESH-0194 differentiable-control-flow territory
+;;;   — still open — so it is not a safe ground truth at N=50..200. The
+;;;   dense, single-tape reimplementation plays that role instead, and is
+;;;   itself validated against the compiler at small N below.)
+;;;   MEMORY — peak tape node/op counts grow sub-linearly (~sqrt(N)) for the
+;;;   checkpointed path vs the dense path's O(N); checkpoint count and peak
+;;;   memory are reported.
+
+(require core.ad.checkpoint)
+
+(define pass 0)(define fail 0)
+(define (approx= a b tol) (< (abs (- a b)) tol))
+(define (chk label v)
+  (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; ── Part 1: small-N cross-check against the REAL compiler P5 mechanism ───
+;; chain-3(t,v) = sin(v*sin(v*sin(v*t))) — 3 layers, written out (not
+;; recursive), so this exercises exactly the straight-line pattern
+;; tests/ad/reverse_over_taylor_test.esk already relies on, one level deeper.
+(define v0s 0.6)
+(define t0s 0.4)
+(define Ks 3)  ; extract the 3rd t-derivative (order-3 tower, order >= 3 forces
+               ; the real tower path, not the order<=2 jet fast path)
+
+(define (g-compiler v)
+  (derivative-n (lambda (t) (sin (* v (sin (* v (sin (* v t))))))) t0s Ks))
+(define dv-compiler (gradient g-compiler v0s))
+
+(define r-small-dense (dense-tower-reverse t0s v0s 3 Ks Ks))
+(chk "small-N (n=3): checkpoint.esk DENSE tower-tape matches compiler P5 derivative-n+gradient"
+     (approx= (vector-ref r-small-dense 0) dv-compiler 1e-8))
+
+(define r-small-ckpt (checkpointed-tower-reverse t0s v0s 3 Ks Ks (checkpoint-block-size 3)))
+(chk "small-N (n=3): checkpoint.esk CHECKPOINTED tower-tape matches compiler P5"
+     (approx= (vector-ref r-small-ckpt 0) dv-compiler 1e-8))
+
+;; finite-difference sanity check on the compiler reference itself
+(define hh 1e-5)
+(define fd-compiler (/ (- (g-compiler (+ v0s hh)) (g-compiler (- v0s hh))) (* 2.0 hh)))
+(chk "small-N: compiler P5 result vs finite-difference"
+     (approx= dv-compiler fd-compiler 1e-4))
+
+;; ── Part 2: deep chain (N = 50, 100, 200) — checkpointed vs dense agreement,
+;; and finite-difference cross-check on the dense value directly ──────────
+(define order 3)
+(define korder 3)
+(define t0 0.3)
+(define v0 0.8)
+
+(define (dense-only v n) (dense-gradient t0 v n order korder))
+
+;; raw (non-differentiated) chain value k!*c_k(v) for N layers — the plain
+;; forward evaluation an FD oracle differentiates, as distinct from
+;; dense-only/checkpointed-gradient which already ARE the derivative.
+(define (chain-value v n)
+  (let loop ((i 0) (x (cr-tower-seed t0 order)))
+    (if (>= i n)
+        (* (cr-factorial korder) (vector-ref x korder))
+        (loop (+ i 1) (cr-layer-forward x v order)))))
+
+(define (check-n n)
+  (let* ((blk    (checkpoint-block-size n))
+         (dense  (dense-tower-reverse t0 v0 n order korder))
+         (ckpt   (checkpointed-tower-reverse t0 v0 n order korder blk))
+         (dv-d   (vector-ref dense 0))
+         (dv-c   (vector-ref ckpt 0))
+         (nodes-d (vector-ref dense 1))
+         (ops-d   (vector-ref dense 2))
+         (nodes-c (vector-ref ckpt 1))
+         (ops-c   (vector-ref ckpt 2))
+         (nblocks (vector-ref ckpt 3)))
+    (display "  N=")(display n)
+    (display "  block=")(display blk)
+    (display "  checkpoints=")(display nblocks)
+    (newline)
+    (display "    dense:       dv=")(display dv-d)
+    (display "  peak-nodes=")(display nodes-d)
+    (display "  peak-ops=")(display ops-d)
+    (newline)
+    (display "    checkpointed: dv=")(display dv-c)
+    (display "  peak-nodes=")(display nodes-c)
+    (display "  peak-ops=")(display ops-c)
+    (newline)
+    (chk (string-append "N=" (number->string n) ": checkpointed dv == dense dv (<=1e-10)")
+         (approx= dv-c dv-d 1e-10))
+    (chk (string-append "N=" (number->string n) ": checkpointed peak-nodes < dense peak-nodes")
+         (< nodes-c nodes-d))
+    (chk (string-append "N=" (number->string n) ": checkpointed peak-ops < dense peak-ops")
+         (< ops-c ops-d))
+    (vector dv-d nodes-d ops-d nodes-c ops-c nblocks blk)))
+
+(define res50  (check-n 50))
+(define res100 (check-n 100))
+(define res200 (check-n 200))
+
+;; finite-difference cross-check on the dense (ground-truth) value at N=50 —
+;; an independent, non-AD confirmation the whole chain's gradient is right.
+(define fd50 (/ (- (chain-value (+ v0 hh) 50) (chain-value (- v0 hh) 50)) (* 2.0 hh)))
+(chk "N=50: dense dv vs finite-difference" (approx= (vector-ref res50 0) fd50 1e-4))
+
+;; ── Sub-linear memory growth ──────────────────────────────────────────────
+;; naive/dense grows ~linearly in N; checkpointed grows ~sqrt(N). Check the
+;; RATIO of checkpointed peak nodes between N=200 and N=50 is much closer to
+;; sqrt(200/50)=2 than to the dense ratio (which should be close to 200/50=4).
+(define dense-ratio (/ (exact->inexact (vector-ref res200 1)) (exact->inexact (vector-ref res50 1))))
+(define ckpt-ratio   (/ (exact->inexact (vector-ref res200 3)) (exact->inexact (vector-ref res50 3))))
+(display "  dense peak-node ratio N200/N50 = ")(display dense-ratio)(newline)
+(display "  checkpointed peak-node ratio N200/N50 = ")(display ckpt-ratio)(newline)
+(chk "memory: dense peak-node ratio tracks ~N (>= 3.0, ~4x)"
+     (>= dense-ratio 3.0))
+(chk "memory: checkpointed peak-node ratio is sub-linear (< dense ratio, and < 3.0)"
+     (and (< ckpt-ratio dense-ratio) (< ckpt-ratio 3.0)))
+(chk "memory: checkpointed peak-node count at N=200 is well below dense (< 60%)"
+     (< (vector-ref res200 3) (* 0.6 (vector-ref res200 1))))
+
+;; checkpoint count should itself grow like sqrt(N), not like N.
+(display "  checkpoint counts: N=50 -> ")(display (vector-ref res50 5))
+(display "   N=100 -> ")(display (vector-ref res100 5))
+(display "   N=200 -> ")(display (vector-ref res200 5))
+(newline)
+(chk "memory: checkpoint count at N=200 is well below N (< N/4)"
+     (< (vector-ref res200 5) (/ 200 4)))
+
+(newline)
+(display "Passed: ")(display pass)(newline)
+(display "Failed: ")(display fail)(newline)
+(if (= fail 0)
+    (begin (display "PASS: checkpointed_reverse_test ")(display pass)
+           (display "/")(display pass)
+           (display " checks (P10 checkpointed high-order reverse)")(newline))
+    (begin (display "FAIL: checkpointed_reverse_test ")(display fail)(display " checks failed")(newline)))

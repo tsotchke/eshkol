@@ -1,0 +1,339 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.checkpoint — Checkpointed high-order reverse  (Phase P10, ESH-0195)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Motivation (docs/design/AD_TAYLOR_TOWER.md §"P10. Checkpointed high-order
+;;  reverse"): P5 (ESH-0190, reverse-over-Taylor) makes `(gradient (lambda (v)
+;;  (derivative-n (lambda (t) (f t v)) t0 k)) v0)` correct, but a monolithic
+;;  reverse tape over a DEEP composition of N layers stores O(N*K) tower-
+;;  coefficient node/op records simultaneously — one full (order-K) Taylor
+;;  tower's worth of ops per layer, times N layers, all alive at once. That is
+;;  the O(tape*K) blowup this phase removes.
+;;
+;;  ── What this file builds, concretely ───────────────────────────────────
+;;  A length-N composition x_i = layer(x_{i-1}, v), i = 1..N, x_0 = a seed
+;;  Taylor tower (order K, expansion point t0), where `layer` is built purely
+;;  from lib/core/ad/tape.esk's ALREADY-CORRECT scalar reverse-mode ops
+;;  (tape-mul/tape-add/tape-sub/tape-div/tape-neg/tape-sin/tape-cos) applied
+;;  coefficient-by-coefficient per the Taylor recurrences of design-doc §5
+;;  (Cauchy convolution for `mul`; the coupled sin/cos recurrence for `sin`).
+;;  Composing towers block-by-block this way is exactly Taylor-series
+;;  substitution/composition, so `layer` applied N times in sequence computes
+;;  the SAME order-K tower as one N-deep `derivative-n` call would — this file
+;;  reimplements reverse-over-Taylor's tower-valued-primal/adjoint idea
+;;  (§8b of the design doc) directly on top of the pure-Scheme tape, which is
+;;  what makes it possible to checkpoint: unlike the compiler's opaque
+;;  `derivative-n`/`gradient` intrinsics, our own Scheme-level tower-tape
+;;  construction can be paused, snapshotted, and resumed under our own control.
+;;
+;;  ── The checkpointing scheme (Griewank binomial family, single level) ────
+;;  Griewank & Walther's binomial checkpointing recursively subdivides a chain
+;;  into checkpointed segments so that a chain of length N can be
+;;  differentiated with O(log N) checkpoints and O(N log N) recomputation, or,
+;;  as the well-known single-level special case used here, O(sqrt N)
+;;  checkpoints/memory with O(1) extra recomputation passes (each layer is
+;;  forward-evaluated at most twice total: once, cheaply, in the checkpoint
+;;  forward sweep with PLAIN DOUBLES/no tape; once more, on a tiny per-block
+;;  tape, during the reverse sweep). That trades recompute for memory exactly
+;;  as the phase asks, and satisfies the phase's own sub-linear bar ("log or
+;;  sqrt of N" — see the ICC/oracle gate in design-doc §"P10").
+;;
+;;  Algorithm:
+;;    1. FORWARD (cheap, no tape): split the N layers into B = ceil(sqrt N)
+;;       blocks; run `layer` on plain-double towers, keeping only the B+1
+;;       block-BOUNDARY tower checkpoints (peak live memory O(sqrt N * K),
+;;       not O(N * K) — the per-layer intermediate towers between checkpoints
+;;       are never retained).
+;;    2. BACKWARD (rematerializing per block, last block to first):
+;;       for each block, lift its input checkpoint to CONST tape nodes on a
+;;       FRESH tape, replay `layer` forward through just that block's layers
+;;       (rematerialization), combine the block's output tower with the
+;;       incoming adjoint vector into one scalar loss node (a vector-Jacobian
+;;       product seed — no full Jacobian matrix is ever materialized), and
+;;       read off (a) this block's contribution to d(result)/dv and (b) the
+;;       new adjoint vector (d(result)/d(this block's INPUT tower)) to hand to
+;;       the previous (earlier) block via ONE `tape-gradient` call. The
+;;       block's tape is then garbage — at most one block's ops/nodes are
+;;       live at any instant.
+;;
+;;  ── AOT / core-module discipline ─────────────────────────────────────────
+;;  Like lib/core/ad/tape.esk (which this file is built on), everything here
+;;  is explicit records + counted loops (named `let loop`s) — no for-each/map,
+;;  matching the constraint that a core AD module must not depend on
+;;  higher-order list iteration from the stdlib.
+;;
+;;  ── Scope / risk note (documented, not hidden) ───────────────────────────
+;;  Rematerialization is only sound for PURE, deterministic segments — exactly
+;;  the case here (`layer` is pure arithmetic over tape nodes: no I/O, no
+;;  mutation outside fresh per-block tapes). This file does not implement a
+;;  general impurity detector; it is scoped to arithmetic tower layers, which
+;;  is what checkpointing high-order AD chains is about. A future extension
+;;  point (not required by this phase's gate) would detect an impure layer and
+;;  fall back to the dense (`dense-tower-reverse`) path with an explicit
+;;  budget-exceeded diagnostic, per design-doc §"Risk note" for P10.
+;;
+;;  Files: this file (new) + lib/core/ad/tape.esk (two additive introspection
+;;  exports: tape-op-count / tape-node-count, used to MEASURE the sub-linear
+;;  memory claim rather than merely assert it).
+
+(require core.ad.tape)
+
+(provide ;; tower value helpers (plain doubles — no tape; used to build cheap
+         ;; forward checkpoints, and to independently evaluate the raw
+         ;; (non-differentiated) chain value for finite-difference oracles)
+         cr-tower-seed cr-tower-copy cr-tower-scale cr-tower-sin
+         cr-layer-forward cr-factorial
+         ;; scheduling
+         checkpoint-block-size cr-block-boundaries cr-forward-checkpoints
+         ;; the two reverse-mode drivers this phase compares
+         dense-tower-reverse checkpointed-tower-reverse
+         ;; convenience scalar-result wrappers
+         checkpointed-gradient dense-gradient)
+
+;; ── Small self-contained numeric helpers (no map/for-each; see header) ────
+(define (cr-factorial n)
+  (if (<= n 1) 1.0 (* (exact->inexact n) (cr-factorial (- n 1)))))
+
+(define (cr-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+;; ceil(sqrt(n)), at least 1 — the single-level Griewank block size.
+(define (checkpoint-block-size n)
+  (let ((b (inexact->exact (ceiling (sqrt (exact->inexact n))))))
+    (if (< b 1) 1 b)))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  Plain-double tower arithmetic (values only — the cheap "checkpoint
+;;  forward sweep", O(K) live memory regardless of N).
+;; ═══════════════════════════════════════════════════════════════════════
+
+(define (cr-tower-new order) (make-vector (+ order 1) 0.0))
+
+;; Seed tower for t = t0 + s: c0 = t0, c1 = 1, rest 0.
+(define (cr-tower-seed t0 order)
+  (let ((tw (cr-tower-new order)))
+    (vector-set! tw 0 t0)
+    (if (>= order 1) (vector-set! tw 1 1.0))
+    tw))
+
+(define (cr-tower-copy tw order)
+  (let ((out (cr-tower-new order)))
+    (let loop ((k 0))
+      (if (<= k order)
+          (begin (vector-set! out k (vector-ref tw k)) (loop (+ k 1)))))
+    out))
+
+;; y(t) = v * x(t)  — v is a plain scalar (does not itself depend on t), so
+;; this is a coefficient-wise scale, no convolution needed.
+(define (cr-tower-scale tw v order)
+  (let ((out (cr-tower-new order)))
+    (let loop ((k 0))
+      (if (<= k order)
+          (begin (vector-set! out k (* v (vector-ref tw k))) (loop (+ k 1)))))
+    out))
+
+;; Coupled sin/cos Taylor recurrence (design doc §5):
+;;   s_0 = sin(u_0), c_0 = cos(u_0)
+;;   s_k = (1/k) * sum_{j=1..k} j*u_j*c_{k-j}
+;;   c_k = -(1/k) * sum_{j=1..k} j*u_j*s_{k-j}
+;; Returns the sin-tower; the cos-tower is computed alongside (needed by the
+;; recurrence itself) but discarded here since `layer` only chains through sin.
+(define (cr-tower-sin tw order)
+  (let ((s (cr-tower-new order)) (c (cr-tower-new order)))
+    (vector-set! s 0 (sin (vector-ref tw 0)))
+    (vector-set! c 0 (cos (vector-ref tw 0)))
+    (let loop ((k 1))
+      (if (<= k order)
+          (begin
+            (let inner ((j 1) (sum-s 0.0) (sum-c 0.0))
+              (if (<= j k)
+                  (let ((juj (* (exact->inexact j) (vector-ref tw j))))
+                    (inner (+ j 1)
+                           (+ sum-s (* juj (vector-ref c (- k j))))
+                           (+ sum-c (* juj (vector-ref s (- k j))))))
+                  (begin
+                    (vector-set! s k (/ sum-s (exact->inexact k)))
+                    (vector-set! c k (- (/ sum-c (exact->inexact k)))))))
+            (loop (+ k 1)))))
+    s))
+
+;; The layer this phase's oracle chains N times: y(t) = sin(v * x(t)).
+;; Nonlinear (nonzero k-th derivatives for k >= 2) and numerically CONTRACTING
+;; for |v| < 1 (|sin| <= 1, |sin'| <= 1), so an N=50..200-deep chain stays
+;; perfectly well-scaled — no overflow/underflow to confound the memory gate.
+(define (cr-layer-forward tw v order)
+  (cr-tower-sin (cr-tower-scale tw v order) order))
+
+;; ── Checkpoint scheduling ─────────────────────────────────────────────────
+;; Block-boundary layer indices: (0 b1 b2 ... n), spacing `block`, with the
+;; final block truncated to end exactly at n (n need not be a multiple of
+;; `block`).
+(define (cr-block-boundaries n block)
+  (let loop ((i 0) (acc (list 0)))
+    (if (>= i n)
+        (cr-reverse acc)
+        (let ((i2 (if (< (+ i block) n) (+ i block) n)))
+          (loop i2 (cons i2 acc))))))
+
+;; Cheap forward sweep (no tape): returns the list of towers AT each boundary
+;; in `boundaries` (length = #blocks + 1). Peak live memory while running this
+;; is O(K) (one working tower); the returned checkpoint list is O(#blocks*K)
+;; = O(sqrt(N)*K), not O(N*K).
+(define (cr-forward-checkpoints t0 v order boundaries)
+  (let ((seed (cr-tower-seed t0 order)))
+    (let loop ((bs boundaries) (i 0) (x seed)
+               (acc (list (cr-tower-copy seed order))))
+      (if (null? (cdr bs))
+          (cr-reverse acc)
+          (let ((target (cadr bs)))
+            (let advance ((j i) (xx x))
+              (if (>= j target)
+                  (loop (cdr bs) j xx (cons (cr-tower-copy xx order) acc))
+                  (advance (+ j 1) (cr-layer-forward xx v order)))))))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  Tower arithmetic ON THE TAPE (tower-valued primals/adjoints riding
+;;  lib/core/ad/tape.esk). Every op here is one of tape.esk's EXISTING,
+;;  already-correct scalar ops (tape-mul/tape-add/tape-sub/tape-div/tape-neg/
+;;  tape-sin/tape-cos) — correctness of the derived tower ops is inherited
+;;  from them plus the (already-validated, design-doc §5/§15) Taylor
+;;  recurrences; no new backward rule is hand-derived here.
+;; ═══════════════════════════════════════════════════════════════════════
+
+(define (cr-tower-const-tape tp order vals)
+  (let ((tw (make-vector (+ order 1) 0)))
+    (let loop ((k 0))
+      (if (<= k order)
+          (begin (vector-set! tw k (tape-const tp (vector-ref vals k))) (loop (+ k 1)))))
+    tw))
+
+(define (cr-tower-scale-tape tp tw vnode order)
+  (let ((out (make-vector (+ order 1) 0)))
+    (let loop ((k 0))
+      (if (<= k order)
+          (begin (vector-set! out k (tape-mul tp (vector-ref tw k) vnode)) (loop (+ k 1)))))
+    out))
+
+;; Same coupled recurrence as cr-tower-sin, but every arithmetic step is a
+;; tape op, so the K+1 output nodes carry full reverse-mode adjoints back to
+;; every input node (the tower coefficients) AND to `vnode`.
+(define (cr-tower-sin-tape tp tw order)
+  (let ((s (make-vector (+ order 1) 0)) (c (make-vector (+ order 1) 0)))
+    (vector-set! s 0 (tape-sin tp (vector-ref tw 0)))
+    (vector-set! c 0 (tape-cos tp (vector-ref tw 0)))
+    (let loop ((k 1))
+      (if (<= k order)
+          (begin
+            (let inner ((j 1) (acc-s #f) (acc-c #f))
+              (if (<= j k)
+                  (let* ((jc     (tape-const tp (exact->inexact j)))
+                         (juj    (tape-mul tp jc (vector-ref tw j)))
+                         (term-s (tape-mul tp juj (vector-ref c (- k j))))
+                         (term-c (tape-mul tp juj (vector-ref s (- k j))))
+                         (acc-s2 (if acc-s (tape-add tp acc-s term-s) term-s))
+                         (acc-c2 (if acc-c (tape-add tp acc-c term-c) term-c)))
+                    (inner (+ j 1) acc-s2 acc-c2))
+                  (let ((kc (tape-const tp (exact->inexact k))))
+                    (vector-set! s k (tape-div tp acc-s kc))
+                    (vector-set! c k (tape-neg tp (tape-div tp acc-c kc))))))
+            (loop (+ k 1)))))
+    s))
+
+(define (cr-layer-tape tp tw vnode order)
+  (cr-tower-sin-tape tp (cr-tower-scale-tape tp tw vnode order) order))
+
+;; sum_{m=0..order} adjoint[m] * x[m]  — the vector-Jacobian-product seed: a
+;; SINGLE scalar node combining an entire block's output tower with the
+;; incoming adjoint, so one tape-gradient call yields both this block's dv
+;; contribution and the new adjoint for the previous block. No (order+1)x
+;; (order+1) Jacobian matrix is ever built.
+(define (cr-vjp-seed tp x adjoint order)
+  (let loop ((m 0) (acc #f))
+    (if (> m order)
+        acc
+        (let* ((w    (tape-const tp (vector-ref adjoint m)))
+               (term (tape-mul tp w (vector-ref x m)))
+               (acc2 (if acc (tape-add tp acc term) term)))
+          (loop (+ m 1) acc2)))))
+
+(define (cr-vec->list order v)
+  (let loop ((k order) (acc '()))
+    (if (< k 0) acc (loop (- k 1) (cons (vector-ref v k) acc)))))
+
+(define (cr-list->vec order lst)
+  (let ((out (cr-tower-new order)))
+    (let loop ((l lst) (k 0))
+      (if (pair? l) (begin (vector-set! out k (car l)) (loop (cdr l) (+ k 1)))))
+    out))
+
+;; One BLOCK's local reverse pass: replay layers [start,end) from checkpoint
+;; `cp-in` on a fresh tape, combine with the incoming `adjoint`, and return
+;; #(dv-local new-adjoint peak-node-count peak-op-count) for this block alone.
+(define (cr-backward-block start end cp-in v0 adjoint order)
+  (let* ((tp    (make-tape))
+         (vnode (tape-input tp v0))
+         (in-tw (cr-tower-const-tape tp order cp-in)))
+    (let loop ((i start) (x in-tw))
+      (if (>= i end)
+          (let* ((loss    (cr-vjp-seed tp x adjoint order))
+                 (targets (cons vnode (cr-vec->list order in-tw)))
+                 (grads   (tape-gradient tp loss targets)))
+            (vector (car grads)
+                    (cr-list->vec order (cdr grads))
+                    (tape-node-count tp)
+                    (tape-op-count tp)))
+          (loop (+ i 1) (cr-layer-tape tp x vnode order))))))
+
+;; ═══════════════════════════════════════════════════════════════════════
+;;  The two public reverse-mode drivers.
+;; ═══════════════════════════════════════════════════════════════════════
+
+;; DENSE / non-checkpointed baseline: ONE tape spans all N layers. This is the
+;; "naive O(tape*K)" comparison point the phase's gate asks for — same tower-
+;; valued-reverse-tape mechanism, no block/rematerialization schedule.
+;; Returns #(dv peak-node-count peak-op-count).
+(define (dense-tower-reverse t0 v0 n order k)
+  (let* ((tp    (make-tape))
+         (vnode (tape-input tp v0))
+         (kfact (cr-factorial k)))
+    (let loop ((i 0) (x (cr-tower-const-tape tp order (cr-tower-seed t0 order))))
+      (if (>= i n)
+          (let* ((loss  (tape-mul tp (tape-const tp kfact) (vector-ref x k)))
+                 (grads (tape-gradient tp loss (list vnode))))
+            (vector (car grads) (tape-node-count tp) (tape-op-count tp)))
+          (loop (+ i 1) (cr-layer-tape tp x vnode order))))))
+
+;; CHECKPOINTED reverse: single-level Griewank sqrt(N) schedule (see header).
+;; Returns #(dv peak-node-count peak-op-count block-count block-size).
+(define (checkpointed-tower-reverse t0 v0 n order k block)
+  (let* ((boundaries  (cr-block-boundaries n block))
+         (checkpoints (cr-forward-checkpoints t0 v0 order boundaries))
+         (kfact       (cr-factorial k))
+         (adjoint0    (let ((z (cr-tower-new order))) (vector-set! z k kfact) z))
+         (ends-rev    (cr-reverse boundaries))
+         (cps-rev     (cr-reverse checkpoints)))
+    (let loop ((ends ends-rev) (cps cps-rev) (adjoint adjoint0)
+               (total-dv 0.0) (peak-nodes 0) (peak-ops 0) (nblocks 0))
+      (if (null? (cdr ends))
+          (vector total-dv peak-nodes peak-ops nblocks block)
+          (let* ((end   (car ends))
+                 (start (cadr ends))
+                 (cp-in (cadr cps))
+                 (res   (cr-backward-block start end cp-in v0 adjoint order))
+                 (dv-l  (vector-ref res 0))
+                 (adj2  (vector-ref res 1))
+                 (nodes (vector-ref res 2))
+                 (ops   (vector-ref res 3)))
+            (loop (cdr ends) (cdr cps) adj2
+                  (+ total-dv dv-l)
+                  (if (> nodes peak-nodes) nodes peak-nodes)
+                  (if (> ops peak-ops) ops peak-ops)
+                  (+ nblocks 1)))))))
+
+;; ── Convenience scalar-result wrappers (schedule chosen automatically) ────
+(define (checkpointed-gradient t0 v0 n order k)
+  (vector-ref (checkpointed-tower-reverse t0 v0 n order k (checkpoint-block-size n)) 0))
+
+(define (dense-gradient t0 v0 n order k)
+  (vector-ref (dense-tower-reverse t0 v0 n order k) 0))
