@@ -59,7 +59,64 @@ AutodiffCodegen::AutodiffCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
 // Arithmetic on these jets is exact and finite (no recursion, no finite
 // differences); the closed forms are implemented below.
 
+// ============================================================================
+// ESH-0188 (P3): subsuming the transitional 8-component jet into the tower.
+// ----------------------------------------------------------------------
+// PR #138 (ESH-0117) added a THIRD independent nilpotent perturbation `ep`
+// (reverse-seed) alongside the existing e1/e2 forward levels so that
+// `gradient` could see through a 2-level-deep nested `derivative` chain: that
+// is a genuine 3-way SIMULTANEOUS mixed partial (inner forward variable,
+// outer forward variable, reverse-seed direction), i.e. exactly
+// {1,e1,e2,ep,e1e2,e1ep,e2ep,e1e2ep} — the "hyper-dual" basis the design doc
+// (docs/design/AD_TAYLOR_TOWER.md §3) calls the 2^3 wall.
+//
+// P1/P2 (ESH-0186/0187) built an arbitrary-order UNIVARIATE Taylor tower with
+// an explicit epoch-tag confusion model (lib/core/runtime_taylor.c) and
+// already subsume the part of the jet's job that IS univariate: a pure chain
+// of nested `derivative` calls threading one variable (no independent second
+// or third direction) is detected by detectPureDerivChain() below and routed
+// through that tower for depth >= 3, unchanged by this phase.
+//
+// What that univariate tower cannot express is the *simultaneous* multi-
+// directional case: `gradient` over `p` wrapping `derivative` over `x`
+// wrapping `derivative` over `xx`, where `p`, `x` and `xx` are three
+// independent perturbation directions and the quantity of interest is their
+// full mixed partial. A single-direction power series has no way to hold
+// three orthogonal directions; representing them exactly requires either (a)
+// genuine multivariate directional propagation (Griewank-Utke-Walther,
+// design doc §7 — Phase P4, ESH-0189) or (b) tower-valued reverse-tape
+// primals/adjoints (design doc §8 — Phase P5, ESH-0190). Both are later,
+// independently-gated phases owned by their own work — building either one
+// early, inside P3, would be exactly the kind of undocumented scope-creep
+// the phase boundaries exist to prevent.
+//
+// P3's scope is therefore: (1) retire the dead compile-time-depth
+// predecessor of this mechanism (seedDerivativeInput/extractDerivativeResult,
+// superseded by the ESH-0070 runtime-level mechanism and unreferenced —
+// removed above), (2) express the jet's THREE perturbation slots through
+// named epoch-style constants instead of magic field indices so the
+// confusion-avoidance discipline reads the same way here as it does in the
+// tower's EPOCH_TAG model (inc/eshkol/eshkol.h), and (3) keep the remaining
+// 8-field arithmetic as a clearly-delimited, BOUNDED thin adapter: it never
+// grows past 3 simultaneous directions (unlike a hypothetical N-level nested
+// jet, which is the actual "2^N wall" the tower design eliminates), it is
+// gated behind detectPureDerivChain's depth<3 fallthrough plus a live reverse
+// tape, and JET4 (order <= 2, no reverse tape live) is untouched — the ep
+// fields stay compile-time-constant zero and fold away. Full removal is
+// blocked on P4/P5 landing; see docs/design/AD_TAYLOR_TOWER.md §12.
+// ============================================================================
+
 namespace {
+
+// Named perturbation slots for the top-level jet fields (used when SEEDING a
+// fresh perturbation — see seedForwardAndPush / maybeJetLiftTapeOperand).
+// These are the epoch-style tags of the note above: kJetE1/kJetE2 are the two
+// forward nesting levels, kJetEp is the reverse-seed companion direction.
+enum DualJetSlot : unsigned {
+    kJetE1 = 1,  // innermost live forward `derivative` level
+    kJetE2 = 2,  // next forward nesting level out
+    kJetEp = 4,  // reverse-seed companion (ESH-0117/ESH-0188), field 4 = dvalue/dep primal
+};
 
 // Read component `idx` of a dual struct value.
 // 0=primal,1=e1,2=e2,3=e1e2 (value 4-jet); 4..7 = the ep-derivative 4-jet
@@ -176,42 +233,9 @@ llvm::Value* AutodiffCodegen::createDualNumber(llvm::Value* primal, llvm::Value*
     return makeDual4(ctx_, primal, tangent, zero, zero);
 }
 
-// Seed a fresh forward-mode perturbation for a `derivative` at nesting `depth`.
-// The point may already be a dual (when this derivative is nested and its point
-// depends on the outer variable); we PRESERVE its components and set this
-// level's slot to 1.0.  depth 0 -> slot e1 (field 1); depth 1 -> slot e2
-// (field 2).  Two simultaneous perturbations (=> 2 levels of forward-over-
-// forward nesting) are exact; deeper nesting is flagged explicitly — the
-// 4-component jet cannot carry a 3rd independent perturbation, so it aliases
-// onto e2 rather than silently returning a wrong-but-plausible number.
-llvm::Value* AutodiffCodegen::seedDerivativeInput(llvm::Value* point_tagged, int depth) {
-    llvm::Value* base = safeUnpackDualFromTagged(point_tagged); // {p,d1,d2,d12}
-    unsigned slot = (depth <= 0) ? 1u : 2u;
-    if (depth >= 2) {
-        eshkol_warn("nested `derivative` depth %d exceeds exact 2-level forward AD; "
-                    "this level's perturbation is aliased onto e2 (approximate)", depth);
-    }
-    llvm::Value* one = llvm::ConstantFP::get(ctx_.doubleType(), 1.0);
-    llvm::Value* seeded = ctx_.builder().CreateInsertValue(base, one, {slot});
-    return packDualToTagged(seeded);
-}
-
-// Extract the derivative of a lambda result w.r.t. THIS level's perturbation.
-//   depth 0 : scalar tangent (field 1), packed as a double.
-//   depth>=1: the e2-slice as a dual {a2, a12, 0, 0} (tagged DUAL_NUMBER) so an
-//             enclosing derivative reads its e1 coefficient (= the mixed term).
-// safeUnpack handles a non-dual scalar result (constant fn, literal branch).
-llvm::Value* AutodiffCodegen::extractDerivativeResult(llvm::Value* result_tagged, int depth) {
-    llvm::Value* rd = safeUnpackDualFromTagged(result_tagged); // {a0,a1,a2,a12}
-    if (depth <= 0) {
-        return tagged_.packDouble(dualField(ctx_, rd, 1));
-    }
-    // d/de2 (a0 + a1 e1 + a2 e2 + a12 e1e2) = a2 + a12 e1
-    llvm::Value* zero = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    llvm::Value* sliced = makeDual4(ctx_, dualField(ctx_, rd, 2), dualField(ctx_, rd, 3),
-                                    zero, zero);
-    return packDualToTagged(sliced);
-}
+// ESH-0188 (P3): the compile-time-`int depth` seed/extract pair that used to
+// live here (seedDerivativeInput/extractDerivativeResult) was the pre-ESH-0070
+// perturbation-tagging mechanism — see the header for why it was removed.
 
 // ===== ESH-0070: runtime-level forward-mode perturbation tagging =====
 // The perturbation level is a runtime counter (ctx_.adPertLevel()), pushed and
@@ -306,7 +330,7 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     b.CreateCondBr(is_l0, l0bb, lelse);
 
     b.SetInsertPoint(l0bb);
-    llvm::Value* s0 = b.CreateInsertValue(base, one, {1});
+    llvm::Value* s0 = b.CreateInsertValue(base, one, {kJetE1});
     b.CreateBr(mbb);
     llvm::BasicBlock* l0e = b.GetInsertBlock();
 
@@ -314,12 +338,12 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     b.CreateCondBr(is_l1, l1bb, l2bb);
 
     b.SetInsertPoint(l1bb);
-    llvm::Value* s1 = b.CreateInsertValue(base, one, {2});
+    llvm::Value* s1 = b.CreateInsertValue(base, one, {kJetE2});
     b.CreateBr(mbb);
     llvm::BasicBlock* l1e = b.GetInsertBlock();
 
     b.SetInsertPoint(l2bb);
-    llvm::Value* s2 = b.CreateInsertValue(base, one, {4});   // ep slot
+    llvm::Value* s2 = b.CreateInsertValue(base, one, {kJetEp});  // reverse-seed companion slot
     b.CreateBr(mbb);
     llvm::BasicBlock* l2e = b.GetInsertBlock();
 

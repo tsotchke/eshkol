@@ -90,17 +90,15 @@ public:
     // stays in the current block.
     llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
 
-    // Nested forward-mode AD (perturbation tagging by nesting depth).
-    // seedDerivativeInput: build the dual argument for a `derivative` at the
-    //   given nesting depth, preserving any perturbation the point already
-    //   carries (so an inner derivative does not strip the outer one).
-    // extractDerivativeResult: pull the derivative w.r.t. this level's slot —
-    //   a scalar at depth 0, a dual slice when nested.
-    llvm::Value* seedDerivativeInput(llvm::Value* point_tagged, int depth);
-    llvm::Value* extractDerivativeResult(llvm::Value* result_tagged, int depth);
-
+    // ESH-0188 (P3): the compile-time-`int depth` seed/extract pair that used
+    // to live here (seedDerivativeInput/extractDerivativeResult) was the
+    // pre-ESH-0070 perturbation-tagging mechanism. It was fully superseded by
+    // the RUNTIME-level mechanism below (seedForwardAndPush/popAndExtractForward)
+    // and had no remaining call sites — removed rather than kept as unreachable
+    // "special case" code (see docs/design/AD_TAYLOR_TOWER.md §12).
+    //
     // ESH-0070: RUNTIME-level forward-mode perturbation tagging. Unlike the
-    // compile-time `int depth` variants above, the perturbation level is read
+    // compile-time `int depth` variant this replaced, the perturbation level is read
     // from a runtime global (ctx_.adPertLevel()) so nesting works whether the
     // inner derivative/gradient is lexically nested OR reached through a
     // function call / named-let TCO loop (the loop carry is differentiated
