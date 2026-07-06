@@ -1,0 +1,109 @@
+;; Parser Test: bare () as a call/datum-position argument (ESH-0217).
+;;
+;; A bare () reaching the general expression parser (e.g. as a macro-call
+;; argument, or as an ordinary function-call argument) used to lower to a
+;; bespoke ESHKOL_INVALID_OP AST node instead of the CALL_OP invoking
+;; "list" with zero arguments that every other route to the empty list
+;; (quote (), '(), and an explicit (list) call) already produced. That made
+;; a bare () invisible to structural AST inspection — most importantly
+;; macro-call argument pattern matching — so a macro whose pattern
+;; destructures a list-shaped argument (e.g. (a ...)) matched an explicit
+;; (list) but silently failed to match a bare () in the same position.
+;;
+;; This covers: the basic value semantics of bare () (which already worked,
+;; since codegen special-cased ESHKOL_INVALID_OP), the actual regression
+;; (macro-argument pattern matching), and that () keeps behaving reasonably
+;; as a call head (a runtime "not callable" error, not a parser crash).
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (test-case name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (display "\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")\n"))))
+
+;; ============================================================
+;; Basic value semantics of bare () in datum/argument position
+;; ============================================================
+(test-case "bare () is null?" #t (null? ()))
+(test-case "bare () equal? to (quote ())" #t (equal? () (quote ())))
+(test-case "bare () equal? to '()" #t (equal? () '()))
+(test-case "bare () equal? to (list)" #t (equal? () (list)))
+(test-case "(cons 1 ()) is (1)" (list 1) (cons 1 ()))
+(test-case "(length ()) is 0" 0 (length ()))
+(test-case "(append () (list 1 2)) is (1 2)" (list 1 2) (append () (list 1 2)))
+(test-case "bare () as a plain call argument" '() (car (list ())))
+
+;; ============================================================
+;; ESH-0217 regression: bare () as a macro-call argument must
+;; pattern-match a list pattern exactly like an explicit (list) does.
+;; ============================================================
+;; flatten2 destructures a single-element list-shaped argument. Both an
+;; explicit (list) and a bare () lower to the same CALL_OP invoking "list"
+;; with zero arguments, so both are (structurally) a 1-"element" call whose
+;; sole element is the "list" callee symbol itself — this is a pre-existing
+;; quirk of how this parser represents unquoted list literals as syntax
+;; data (unrelated to ESH-0217), but it means the two spellings must match
+;; identically.
+(define-syntax flatten2
+  (syntax-rules ()
+    ((_ (x)) (list 'got x))))
+
+;; An explicit (list) already produced a CALL_OP the pattern matcher could
+;; see — this was never broken, and pins down the reference behavior: the
+;; match succeeds and binds x to a real (procedure) value.
+(define flatten2-list-result (flatten2 (list)))
+(test-case "flatten2 with explicit (list) matches and binds a procedure"
+           #t
+           (and (pair? flatten2-list-result)
+                (eq? (car flatten2-list-result) 'got)
+                (procedure? (cadr flatten2-list-result))))
+
+;; This is the actual ESH-0217 regression: before the fix, this bare ()
+;; lowered to ESHKOL_INVALID_OP (a foreign shape the structural pattern
+;; matcher never recognized) and flatten2 failed with "no matching pattern
+;; for macro 'flatten2'" instead of matching, even though (list) in the
+;; same position matched fine. After the fix, bare () lowers to the exact
+;; same CALL_OP shape as (list), so the two calls must succeed identically
+;; (each closure reference gets its own identity, so compare structure/
+;; success rather than eq?/equal? on the bound procedure value itself).
+(define flatten2-bare-result (flatten2 ()))
+(test-case "flatten2 with bare () matches (does not error like ESHKOL_INVALID_OP did)"
+           #t
+           (and (pair? flatten2-bare-result)
+                (eq? (car flatten2-bare-result) 'got)
+                (procedure? (cadr flatten2-bare-result))))
+
+;; ============================================================
+;; () used as a call head does not crash the parser or codegen. This
+;; project does not statically reject a non-callable operator position, so
+;; calling the empty-list value degrades to a gracefully-typed runtime nil
+;; rather than a hard error either before or after this fix — the point of
+;; this check is only that control flow continues normally, i.e. that
+;; normalizing bare ()'s datum-position lowering did not turn a call-head
+;; () into something that hangs, aborts, or corrupts later execution.
+;; ============================================================
+(define call-head-marker 'not-reached)
+(() 1 2)
+(set! call-head-marker 'reached)
+(test-case "() as a call head does not abort execution"
+           'reached call-head-marker)
+
+;; ============================================================
+;; Summary
+;; ============================================================
+(display "\n=== Results ===\n")
+(display "Passed: ") (display tests-passed) (display "\n")
+(display "Failed: ") (display tests-failed) (display "\n")
+(if (= tests-failed 0)
+    (display "ALL TESTS PASSED\n")
+    (display "SOME TESTS FAILED\n"))
