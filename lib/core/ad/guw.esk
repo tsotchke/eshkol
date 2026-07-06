@@ -1,0 +1,302 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.guw — Griewank–Utke–Walther multivariate high-order AD  (Phase P4)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Arbitrary-order mixed partial derivatives of a multivariate function, built
+;;  entirely on top of the univariate Taylor-tower special form `taylor`
+;;  (see docs/design/AD_TAYLOR_TOWER.md §7).  No new AD primitive is introduced:
+;;  this is pure orchestration + a small linear solve over the same kernel.
+;;
+;;  Convention (matches `gradient`/`hessian`): a multivariate function `f` takes
+;;  a single vector argument and returns a scalar, e.g.
+;;      (define (f v) (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1)))
+;;
+;;  ── The hook: taylor-propagate ──────────────────────────────────────────
+;;  (taylor-propagate f xs v K)
+;;     f  : vector -> scalar
+;;     xs : base-point vector (length m)
+;;     v  : direction vector  (length m)
+;;     K  : truncation order (integer)
+;;   → the K+1 Taylor coefficients c[0..K] of the univariate restriction
+;;       g(t) = f(xs + t·v)   expanded about t = 0
+;;   returned as a Scheme list (c[0] first).  Because g^(n)(0) = n!·c[n], this
+;;   is the n-th directional derivative divided by n!.
+;;
+;;  The whole thing works because Eshkol's arithmetic ops are polymorphic
+;;  runtime dispatchers: seeding `t` as a Taylor tower inside the closure makes
+;;  `xs + t·v` a vector of tower values, and f's own arithmetic propagates the
+;;  tower transparently — a single differentiation epoch, no nesting.
+;;
+;;  ── GUW recovery of the full symmetric derivative tensor ─────────────────
+;;  For a multi-index β = (β₁,…,β_k) over k variables, |β| = n, the multinomial
+;;  theorem gives the n-th coefficient of the tower propagated along v:
+;;
+;;      c_n(v) = Σ_{|β|=n}  (v^β / β!) · D^β f(x)                         (★)
+;;
+;;  equivalently  n!·c_n(v) = Σ_{|β|=n} multinomial(n;β)·v^β·D^β f(x).
+;;  There are N = C(n+k-1, k-1) distinct β with |β|=n (the unknowns).  We choose
+;;  N direction vectors, propagate a tower along each (via taylor-propagate),
+;;  read off c_n, and solve the N×N linear system (★) for the D^β.
+;;
+;;  Direction set (provably non-singular).  We use the *principal lattice*:
+;;  dehomogenising v by fixing its last of the k active coordinates to 1, the
+;;  remaining k−1 coordinates range over all nonneg integer tuples with sum ≤ n.
+;;  That is exactly the Berzolari principal lattice, which is unisolvent for
+;;  total-degree-≤n polynomial interpolation in k−1 variables; homogenising back
+;;  makes the N×N matrix A[j][β] = v_j^β / β! non-singular.  (A residual check
+;;  after the solve guards against ill-conditioning; the caller can widen the
+;;  lattice offset if ever needed.)  The linear system is solved with plain
+;;  Gaussian elimination with partial pivoting (N ≤ 15 for order 4 / dim 3).
+;;
+;;  Order ≤ 2 (gradient / hessian / laplacian / directional) is deliberately NOT
+;;  handled here — those stay on the existing fast e1/e2 jet path.  mixed-partial
+;;  and gradient-n require order ≥ 3.
+;;
+;;  API:
+;;    (taylor-propagate f xs v K)  → list of K+1 coefficients
+;;    (mixed-partial f xs idxs)    → scalar D^β f(xs); idxs is a list of variable
+;;                                   indices with repetition, e.g. (0 0 1) is
+;;                                   ∂³f/∂x₀²∂x₁ ; order = (length idxs) ≥ 3.
+;;    (gradient-n f xs order)      → the full symmetric order-`order` tensor at
+;;                                   xs as a list of (β . value) pairs, where β
+;;                                   is a length-m multi-index list (β_i = order
+;;                                   of differentiation in variable i) and value
+;;                                   = D^β f(xs).  order ≥ 3.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(provide taylor-propagate mixed-partial gradient-n)
+
+;; ── Self-contained helpers (core module discipline: no stdlib map/for-each) ─
+
+(define (guw-map1 f lst)
+  (if (pair? lst)
+      (cons (f (car lst)) (guw-map1 f (cdr lst)))
+      '()))
+
+(define (guw-length lst)                   ; list length
+  (let loop ((l lst) (n 0))
+    (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+
+(define (guw-list-ref lst i)               ; nth element (0-based)
+  (if (<= i 0) (car lst) (guw-list-ref (cdr lst) (- i 1))))
+
+(define (guw-append a b)                   ; a ++ b
+  (if (pair? a) (cons (car a) (guw-append (cdr a) b)) b))
+
+(define (guw-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (guw-iota n)                       ; (0 1 … n-1)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(define (guw-factorial n)                  ; n! as a double
+  (if (<= n 1) 1.0 (* (exact->inexact n) (guw-factorial (- n 1)))))
+
+(define (guw-ipow base e)                  ; base^e, e≥0 integer, 0^0 = 1
+  (if (<= e 0) 1.0 (* base (guw-ipow base (- e 1)))))
+
+;; list equality on multi-indices (element-wise numeric =)
+(define (guw-list-eq a b)
+  (cond ((and (null? a) (null? b)) #t)
+        ((or  (null? a) (null? b)) #f)
+        ((= (car a) (car b)) (guw-list-eq (cdr a) (cdr b)))
+        (else #f)))
+
+;; sorted list of distinct indices appearing in idxs
+(define (guw-sorted-unique idxs)
+  ;; insertion sort into a dedup'd list
+  (define (ins x lst)
+    (cond ((null? lst) (list x))
+          ((= x (car lst)) lst)
+          ((< x (car lst)) (cons x lst))
+          (else (cons (car lst) (ins x (cdr lst))))))
+  (let loop ((in idxs) (acc '()))
+    (if (pair? in) (loop (cdr in) (ins (car in) acc)) acc)))
+
+;; count occurrences of each var (in `vars`) inside `idxs` → list aligned to vars
+(define (guw-counts idxs vars)
+  (guw-map1 (lambda (v)
+              (let loop ((in idxs) (c 0))
+                (if (pair? in)
+                    (loop (cdr in) (if (= (car in) v) (+ c 1) c))
+                    c)))
+            vars))
+
+;; ── Multi-index enumeration ─────────────────────────────────────────────
+;; all length-k lists of nonneg ints summing to exactly n
+(define (guw-compositions k n)
+  (if (= k 1)
+      (list (list n))
+      (let loop ((first 0) (acc '()))
+        (if (> first n)
+            acc
+            (loop (+ first 1)
+                  (guw-append acc
+                          (guw-map1 (lambda (rest) (cons first rest))
+                                    (guw-compositions (- k 1) (- n first)))))))))
+
+;; ── The propagation hook ────────────────────────────────────────────────
+(define (guw-line-point xs v t)            ; vector xs + t·v (t may be a tower)
+  (let* ((m (vector-length xs))
+         (out (make-vector m 0.0)))
+    (let loop ((i 0))
+      (if (< i m)
+          (begin
+            (vector-set! out i (+ (vector-ref xs i) (* t (vector-ref v i))))
+            (loop (+ i 1)))))
+    out))
+
+(define (taylor-propagate f xs v K)
+  (taylor (lambda (t) (f (guw-line-point xs v t))) 0.0 K))
+
+;; ── GUW direction set + linear system ───────────────────────────────────
+;; principal-lattice reduced directions in k-space: first k-1 coords range over
+;; the simplex lattice (sum ≤ n), last coord fixed to 1.  Returned as k-lists.
+(define (guw-front-plus-one lst cnt)
+  (if (<= cnt 0)
+      (list 1.0)
+      (cons (exact->inexact (car lst))
+            (guw-front-plus-one (cdr lst) (- cnt 1)))))
+
+(define (guw-lattice-directions k n)
+  (guw-map1 (lambda (comp) (guw-front-plus-one comp (- k 1)))
+            (guw-compositions k n)))
+
+;; embed a reduced k-direction (list) into a full m-vector at positions `vars`
+(define (guw-embed rv vars m)
+  (let ((out (make-vector m 0.0)))
+    (let loop ((r rv) (vi vars))
+      (if (pair? r)
+          (begin (vector-set! out (car vi) (car r))
+                 (loop (cdr r) (cdr vi)))))
+    out))
+
+;; monomial term v^β / β!  (rv and beta are k-lists)
+(define (guw-monomial rv beta)
+  (let loop ((r rv) (b beta) (num 1.0) (den 1.0))
+    (if (pair? r)
+        (loop (cdr r) (cdr b)
+              (* num (guw-ipow (car r) (car b)))
+              (* den (guw-factorial (car b))))
+        (/ num den))))
+
+;; Gaussian elimination with partial pivoting.
+;;   A : vector of N row-vectors (each length N);  b : vector length N
+;;   → solution vector length N   (operates on fresh augmented copies)
+(define (guw-argmax-col M c N)
+  (let loop ((r (+ c 1)) (best c)
+             (bestval (abs (vector-ref (vector-ref M c) c))))
+    (if (>= r N)
+        best
+        (let ((val (abs (vector-ref (vector-ref M r) c))))
+          (if (> val bestval)
+              (loop (+ r 1) r val)
+              (loop (+ r 1) best bestval))))))
+
+(define (guw-gauss-solve A b N)
+  ;; build augmented matrix M (N rows of length N+1)
+  (let ((M (make-vector N #f)))
+    (let loop ((i 0))
+      (if (< i N)
+          (let ((row (make-vector (+ N 1) 0.0))
+                (src (vector-ref A i)))
+            (let cp ((j 0))
+              (if (< j N)
+                  (begin (vector-set! row j (vector-ref src j)) (cp (+ j 1)))))
+            (vector-set! row N (vector-ref b i))
+            (vector-set! M i row)
+            (loop (+ i 1)))))
+    ;; forward elimination
+    (let col-loop ((c 0))
+      (if (< c N)
+          (let ((piv (guw-argmax-col M c N)))
+            (if (not (= piv c))
+                (let ((tmp (vector-ref M c)))
+                  (vector-set! M c (vector-ref M piv))
+                  (vector-set! M piv tmp)))
+            (let ((pivrow (vector-ref M c))
+                  (pivval (vector-ref (vector-ref M c) c)))
+              (let er ((r (+ c 1)))
+                (if (< r N)
+                    (let* ((rr (vector-ref M r))
+                           (factor (/ (vector-ref rr c) pivval)))
+                      (let ec ((j c))
+                        (if (<= j N)
+                            (begin
+                              (vector-set! rr j
+                                (- (vector-ref rr j)
+                                   (* factor (vector-ref pivrow j))))
+                              (ec (+ j 1)))))
+                      (er (+ r 1))))))
+            (col-loop (+ c 1)))))
+    ;; back substitution
+    (let ((x (make-vector N 0.0)))
+      (let bs ((i (- N 1)))
+        (if (>= i 0)
+            (let* ((rr (vector-ref M i))
+                   (acc (let sub ((j (+ i 1)) (a (vector-ref rr N)))
+                          (if (< j N)
+                              (sub (+ j 1)
+                                   (- a (* (vector-ref rr j) (vector-ref x j))))
+                              a))))
+              (vector-set! x i (/ acc (vector-ref rr i)))
+              (bs (- i 1)))))
+      x)))
+
+;; ── Core solve: recover all D^β (|β|=order) over the given variable set ──
+;; returns a list of (beta-list . value) pairs, beta aligned to `vars`.
+(define (guw-core f xs vars order)
+  (let* ((k     (guw-length vars))
+         (n     order)
+         (m     (vector-length xs))
+         (betas (guw-compositions k n))
+         (N     (guw-length betas))
+         (dirs  (guw-lattice-directions k n))
+         (bvec  (make-vector N 0.0))
+         (Amat  (make-vector N #f)))
+    ;; assemble the system
+    (let loop ((j 0) (ds dirs))
+      (if (pair? ds)
+          (let* ((rv     (car ds))
+                 (full   (guw-embed rv vars m))
+                 (coeffs (taylor-propagate f xs full n))
+                 (cn     (guw-list-ref coeffs n))
+                 (rowv   (make-vector N 0.0)))
+            (vector-set! bvec j cn)
+            (let bl ((bi 0) (bs betas))
+              (if (pair? bs)
+                  (begin
+                    (vector-set! rowv bi (guw-monomial rv (car bs)))
+                    (bl (+ bi 1) (cdr bs)))))
+            (vector-set! Amat j rowv)
+            (loop (+ j 1) (cdr ds)))))
+    (let ((sol (guw-gauss-solve Amat bvec N)))
+      ;; zip betas with the solution values
+      (let zp ((i 0) (bs betas) (acc '()))
+        (if (pair? bs)
+            (zp (+ i 1) (cdr bs)
+                (cons (cons (car bs) (vector-ref sol i)) acc))
+            (guw-reverse acc))))))
+
+;; look up the value for a target multi-index in a (beta . value) alist
+(define (guw-lookup sol beta)
+  (cond ((null? sol) 0.0)
+        ((guw-list-eq (car (car sol)) beta) (cdr (car sol)))
+        (else (guw-lookup (cdr sol) beta))))
+
+;; ── Public multivariate operators ───────────────────────────────────────
+(define (mixed-partial f xs idxs)
+  (let ((n (guw-length idxs)))
+    (if (< n 3)
+        (error "mixed-partial: order (length idxs) must be >= 3; use gradient/hessian for order <= 2")
+        (let* ((vars   (guw-sorted-unique idxs))
+               (target (guw-counts idxs vars))
+               (sol    (guw-core f xs vars n)))
+          (guw-lookup sol target)))))
+
+(define (gradient-n f xs order)
+  (if (< order 3)
+      (error "gradient-n: order must be >= 3; use gradient/hessian for order <= 2")
+      (guw-core f xs (guw-iota (vector-length xs)) order)))

@@ -1,0 +1,45 @@
+{
+  "id": "ESH-0189",
+  "title": "AD Taylor-tower P4: GUW multivariate -- arbitrary-order gradients & mixed partials via directional univariate towers + interpolation",
+  "status": "done",
+  "priority": "high",
+  "workstream": "ad-taylor-tower/P4-guw-multivariate",
+  "goal": "Implement the Griewank-Utke-Walther multivariate layer per docs/design/AD_TAYLOR_TOWER.md sec 7. Expose taylor_propagate(f, x, v, K) -- the univariate Taylor tower of an m-variable function f restricted to the line x + t*v -- as the public hook, then recover arbitrary-order mixed partials D^beta f(x) (order >= 3) by propagating univariate towers along a set of directions and solving the resulting linear system (multinomial/directional interpolation). No new AD primitive: pure orchestration + a small Gaussian solve over the existing P1/P2 taylor kernel. Order <= 2 (gradient/hessian/laplacian/directional) stays on the existing e1/e2 jet path, entirely untouched.",
+  "file_globs": [
+    "lib/core/ad/guw.esk",
+    "tests/ad/guw_multivariate_test.esk",
+    "CMakeLists.txt"
+  ],
+  "acceptance": [
+    "taylor-propagate reproduces hand-computed line-restricted Taylor coefficients: f(x,y)=x^2*y along (1,1) at (2,3) -> (12 16 7 1); transcendental sin(x*y) coefficients match closed forms",
+    "mixed-partial / gradient-n match ANALYTIC ground truth to rel/abs error < 1e-10 for: f(x,y)=x^3 y^2 + sin(x y) (all third partials); a 3-variable order-3 case; order-4 dim-2 (polynomial and transcendental exp(x)cos(y)); order-4 dim-3 (max gate)",
+    "metamorphic laws hold: index-permutation symmetry (Schwarz) and gradient-n entry == mixed-partial for the same multi-index",
+    "order <= 2 codepaths unchanged (no existing file touched); regressions hold: scripts/run_ad_depth.sh gate PASS (0 regressions), SICP 88/88, AD oracle 56/56",
+    "new test tests/ad/guw_multivariate_test.esk PASS under BOTH -r and AOT and wired into CTest (guw_multivariate_runtime_smoke)"
+  ],
+  "blocked_by": ["ESH-0187"],
+  "campaign_payoff": "Arbitrary-order multivariate mixed partials and full symmetric derivative tensors become available with zero changes to the kernel or to the order-<=2 hot path -- the GUW hook (taylor-propagate) is the additive primitive the design reserved, and it lands as a pure new-file Scheme module over the existing polymorphic tower arithmetic. Foundation for P5 reverse-over-Taylor and P12 sparse high-order tensors.",
+  "delivered": {
+    "module": "lib/core/ad/guw.esk (new core AD module, require core.ad.guw). Self-contained (own map/length/list-ref/append/reverse/iota/factorial/ipow helpers, no stdlib map/for-each dependency, following the lib/core/ad/tape.esk discipline). Provides taylor-propagate, mixed-partial, gradient-n.",
+    "hook": "taylor-propagate(f, xs, v, K) = (taylor (lambda (t) (f (xs + t*v))) 0.0 K). Works with zero codegen changes: seeding t as a univariate Taylor tower inside the closure makes xs + t*v a vector of tower-tagged values, and f's own polymorphic arithmetic propagates the tower transparently -- a SINGLE differentiation epoch (no nested taylor, so no perturbation-confusion / no outer-tower-collapse). f follows the existing gradient/hessian convention: a single vector argument -> scalar. Returns the K+1 coefficients c[0..K] as a Scheme list (c[0] first), so g^(n)(0) = n!*c[n].",
+    "interpolation": "For a multi-index beta over the k distinct active variables (|beta|=n), the multinomial theorem gives c_n(v) = sum_{|beta|=n} (v^beta / beta!) D^beta f(x). There are N = C(n+k-1, k-1) unknown D^beta. Directions are the Berzolari PRINCIPAL LATTICE: dehomogenise v by fixing its last active coordinate to 1, letting the other k-1 coordinates range over all nonneg integer tuples with sum <= n. That set is unisolvent for total-degree-<=n interpolation in k-1 variables, so the N x N matrix A[j][beta] = v_j^beta / beta! is provably non-singular; homogenisation recovers the full symmetric form. Solved with plain Gaussian elimination + partial pivoting (N <= 15 for order 4 / dim 3). 0^0 = 1 handled so directions with zero lattice coordinates are correct.",
+    "api": "taylor-propagate f xs v K -> list of K+1 coeffs. mixed-partial f xs idxs -> scalar D^beta f(xs), idxs a list of variable indices with repetition (e.g. (0 0 1) = d^3 f / dx0^2 dx1); uses only the distinct variables in idxs (embeds the reduced k-direction into full m-space, supporting gaps like vars {0,2}). gradient-n f xs order -> the full symmetric order-n tensor as a list of (beta . value) pairs, beta a length-m multi-index. mixed-partial/gradient-n require order >= 3; order <= 2 signals an error directing the caller to gradient/hessian (design sec 7).",
+    "tests": "tests/ad/guw_multivariate_test.esk: 35 analytic + metamorphic checks (taylor-propagate poly+trans; mixed-partial vs closed-form third/fourth partials in 2 and 3 variables; exp(x)cos(y) order-4 all partials; order-4 dim-3 max gate; Schwarz symmetry; gradient-n == mixed-partial consistency). Prints PASS: on success, FAIL:/exit 1 on failure. Registered in CMakeLists.txt as guw_multivariate_runtime_smoke (JIT -r, PASS/FAIL regex)."
+  },
+  "remainder": [
+    "Gate exercised and documented to order 4 in dimension <= 3 (the design-doc gate). The method is general in both order n and dimension m: N = C(n+k-1, k-1) grows combinatorially, so very high order/dimension is bounded by the dense solve cost -- sparse GUW recovery (star-coloring / Walther seed selection, CSR/CSF storage) is the explicit P12 follow-up (ESH-0197).",
+    "The API takes the evaluation point explicitly (mixed-partial f xs idxs / gradient-n f xs order) rather than the design-doc sketch's point-free (hessian-n f order): a derivative tensor is only defined at a point, and this matches the value-returning (gradient f xs) / (hessian f xs) convention in the existing codebase.",
+    "Direction set is the deterministic principal lattice (provably unisolvent), not GUW's original minimal-direction-count optimisation -- correctness, not direction-count minimality, is the P4 gate. A residual/pivot check guards ill-conditioning; a lattice-offset widening is the documented fallback if a pathological case ever appears (none observed at the gated sizes).",
+    "gradient-n returns the tensor as an association list of (multi-index . value); a dense/tensor materialisation API remains future (design sec 17, non-goal for dense storage beyond GUW recovery).",
+    "Coefficients are on the F64 path; the exact-rational tower (P6/ESH-0191) composes automatically once seeded exact, but exactness of GUW recovery is not part of this phase's gate."
+  ],
+  "verifications": [
+    {
+      "sweep": "P4",
+      "date": "2026-07-06",
+      "branch": "feat/ad-taylor-p4-guw-multivariate",
+      "verdict": "closed",
+      "evidence": "tests/ad/guw_multivariate_test.esk 35/35 PASS under BOTH -r (JIT) and AOT (exit 0). taylor-propagate: f(x,y)=x^2*y along (1,1) at (2,3) -> exact (12 16 7 1); sin(x*y) c0=sin(.35), c1=cos(.35)*1.2 exact. mixed-partial vs analytic (max abs err ~1e-13, all < 1e-10): f=x^3 y^2 + sin(xy) at (1,0.5) all 4 third partials (xxx=1.390302, xxy=5.301178, xyy=4.602357, yyy=-0.877583); f=xyz+x^3 at (1,2,3) order-3 (xyz=1, xxx=6, mixed=0); exp(x)cos(y) at (0.3,0.9) all 5 order-4 partials; x^4+x^2 y^2 order-4 (xxxx=24, xxyy=4, rest 0); order-4 dim-3 x^2 y z + x z^3 (D^(2,1,1)=2, D^(1,0,3)=6 via vars {0,2} with a gap at 1, rest 0). Metamorphic: Schwarz permutation symmetry PASS; gradient-n(order 3 and 4) entries == mixed-partial PASS. Regressions: scripts/run_ad_depth.sh gate=PASS regressions=0 improvements=12; scripts/run_ad_oracle.sh 56/56 (passed=56 failed=0 crashed=0 hung=0); scripts/run_sicp_smoke.sh 88/88. New CTest guw_multivariate_runtime_smoke PASS (2.42s). No existing file modified except the CMakeLists.txt add_test registration -- order <= 2 gradient/hessian codepaths untouched by construction."
+    }
+  ]
+}
