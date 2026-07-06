@@ -2157,6 +2157,15 @@ public:
             // of the same source produce identical IR (reproducible builds).
             name_uniquifier_ = 0;
 
+            // ESH-0214c: this codegen instance can run generateIR() more
+            // than once (REPL, chained library compiles); the AST pointers
+            // from a prior call are no longer valid and could alias fresh
+            // nodes at the same address, so start each compilation with an
+            // empty parallel-worker-reachability set (computeParallelWorker-
+            // Reachability() below repopulates it from the current program).
+            parallel_worker_ast_nodes.clear();
+            iter_scope_fn_memo.clear();
+
             // REPL FIX: Clear stale static state from previous evaluations
             // This prevents duplicate symbol errors when creating lambda_X_sexpr globals
             if (g_repl_mode_enabled) {
@@ -2211,6 +2220,14 @@ public:
             // Use expanded ASTs for the rest of code generation
             const eshkol_ast_t* asts_to_use = expanded_asts.data();
             size_t num_asts_to_use = expanded_asts.size();
+
+            // ESH-0214c: whole-program pre-pass, before any function body is
+            // codegen'd, so codegenNamedLet's automatic per-iteration arena
+            // scope reclamation (ESH-0214b) can see whether a loop's
+            // enclosing function is reachable from a parallel-map/-fold/
+            // -filter/-for-each/-execute or future callback -- see the
+            // docblock above computeParallelWorkerReachability().
+            computeParallelWorkerReachability(asts_to_use, num_asts_to_use);
 
             if (macro_expander.macroCount() > 0) {
                 eshkol_debug("Macro expansion complete: %zu macros defined, %zu ASTs after expansion",
@@ -24598,6 +24615,182 @@ private:
     // Memo for per-user-function analysis results (name -> safe?)
     std::unordered_map<std::string, bool> iter_scope_fn_memo;
 
+    // ═════════════════════════════════════════════════════════════════════
+    // ESH-0214c: PARALLEL-WORKER REACHABILITY (whole-program pre-pass)
+    //
+    // iterScopeSafeExpr above proves a loop body cannot LEAK a value through
+    // any channel other than loop args / loop result. That is necessary but
+    // not sufficient: __global_arena's scope stack (arena_commit_scope /
+    // eshkol_arena_iter_scope_end, see arena_memory.h + runtime_arena_core.cpp)
+    // is a single, un-synchronized linked list shared by every OS thread --
+    // "thread-safe" there only covers the bump-pointer allocation path
+    // (arena_create_threadsafe), not scope push/commit/pop. If a named-let's
+    // *enclosing function* is ever invoked on a parallel-map/-fold/-filter/
+    // -for-each/-execute or future worker thread, that thread's per-iteration
+    // scope push/pop races against every other worker doing the same thing
+    // concurrently and corrupts the shared scope list -> SIGSEGV. This is
+    // exactly what tests/parallel/parallel_flags_byte_regression.esk hits:
+    // `work` (run on worker threads by parallel-map) calls `busy-int64`,
+    // whose named-let loop body is otherwise perfectly escape-safe.
+    //
+    // The hazard lives in the *caller* context, which iterScopeSafeExpr
+    // cannot see (it only walks downward from the loop body). So: once per
+    // compilation, before any function is codegen'd, walk the whole program
+    // for calls into a parallel/future constructor, and mark every AST node
+    // transitively reachable from each callback argument (through ordinary
+    // calls) as parallel-worker code. namedLetIterScopeSafe then hard-rejects
+    // any loop whose body lands in that set, before running the local
+    // analysis. Conservative by construction: a function that merely *can*
+    // run on a worker thread is excluded everywhere it is defined, even at
+    // call sites that never go through parallel-map. Known precision loss:
+    // limited to the single generateIR() invocation's AST (a REPL line
+    // referencing a not-yet-compiled future parallel-map user is not
+    // caught -- consistent with the pre-existing per-function analysis,
+    // which has the same single-compilation-unit horizon).
+    // ═════════════════════════════════════════════════════════════════════
+
+    std::unordered_set<const void*> parallel_worker_ast_nodes;
+
+    // Builtins whose callback argument(s) run on a worker thread (or, for
+    // `future`, a continuation not provably the calling thread). Everything
+    // but parallel-execute takes the callback as argument 0; parallel-execute
+    // treats every argument as an independently-scheduled thunk.
+    static bool iterScopeIsParallelCallSite(const std::string& name, bool& all_args_are_callbacks) {
+        static const std::set<std::string> single_callback = {
+            "parallel-map", "parallel-fold", "parallel-filter",
+            "parallel-for-each", "future",
+        };
+        all_args_are_callbacks = (name == "parallel-execute");
+        return all_args_are_callbacks || single_callback.count(name) != 0;
+    }
+
+    // Mark `name`'s body (if known) as parallel-worker-reachable. Guarded by
+    // `visiting_fns` so mutually recursive helpers terminate.
+    void iterScopeMarkFnUnsafe(const std::string& name,
+                                const std::unordered_map<std::string, const eshkol_ast_t*>& all_fn_bodies,
+                                std::set<std::string>& visiting_fns) {
+        if (!visiting_fns.insert(name).second) return;
+        auto it = all_fn_bodies.find(name);
+        if (it == all_fn_bodies.end() || !it->second) return;
+        iterScopeWalkParallelReach(it->second, /*mark=*/true, all_fn_bodies, visiting_fns);
+    }
+
+    // Single recursive walk used both to scan the whole program for calls
+    // into a parallel/future constructor (mark=false: nothing is inserted,
+    // we are only looking for such call sites) and to flood-fill a reachable
+    // subtree once one is found (mark=true: every node visited is recorded
+    // in parallel_worker_ast_nodes). Either way, any call into a parallel
+    // constructor found along the walk switches its callback argument(s) to
+    // mark=true regardless of the walk's own mode.
+    void iterScopeWalkParallelReach(const eshkol_ast_t* node, bool mark,
+                                     const std::unordered_map<std::string, const eshkol_ast_t*>& all_fn_bodies,
+                                     std::set<std::string>& visiting_fns) {
+        if (!node) return;
+        if (mark) {
+            // Dedup + cycle guard: once a node is recorded its whole subtree
+            // has already been walked in mark mode.
+            if (!parallel_worker_ast_nodes.insert((const void*)node).second) return;
+        }
+        if (node->type != ESHKOL_OP) return;
+        const eshkol_operations_t* op = &node->operation;
+
+        if (op->op == ESHKOL_CALL_OP && op->call_op.func &&
+            op->call_op.func->type == ESHKOL_VAR && op->call_op.func->variable.id) {
+            const std::string callee = op->call_op.func->variable.id;
+            bool all_thunks = false;
+            if (iterScopeIsParallelCallSite(callee, all_thunks)) {
+                uint64_t limit = all_thunks ? op->call_op.num_vars
+                                             : std::min<uint64_t>(1, op->call_op.num_vars);
+                for (uint64_t i = 0; i < limit; i++) {
+                    const eshkol_ast_t* arg = &op->call_op.variables[i];
+                    if (arg->type == ESHKOL_VAR && arg->variable.id) {
+                        iterScopeMarkFnUnsafe(arg->variable.id, all_fn_bodies, visiting_fns);
+                    } else {
+                        iterScopeWalkParallelReach(arg, /*mark=*/true, all_fn_bodies, visiting_fns);
+                    }
+                }
+            }
+        }
+
+        switch (op->op) {
+            case ESHKOL_DEFINE_OP:
+                if (op->define_op.value)
+                    iterScopeWalkParallelReach(op->define_op.value, mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_CALL_OP:
+                if (op->call_op.func)
+                    iterScopeWalkParallelReach(op->call_op.func, mark, all_fn_bodies, visiting_fns);
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    iterScopeWalkParallelReach(&op->call_op.variables[i], mark, all_fn_bodies, visiting_fns);
+                // A user-defined callee is reached by every one of its
+                // callers' dynamic extents; if THIS call happens under
+                // mark=true (i.e. we are already inside worker-reachable
+                // code), the callee is worker-reachable too.
+                if (mark && op->call_op.func && op->call_op.func->type == ESHKOL_VAR &&
+                    op->call_op.func->variable.id) {
+                    iterScopeMarkFnUnsafe(op->call_op.func->variable.id, all_fn_bodies, visiting_fns);
+                }
+                break;
+            case ESHKOL_IF_OP:
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    iterScopeWalkParallelReach(&op->call_op.variables[i], mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                    iterScopeWalkParallelReach(&op->sequence_op.expressions[i], mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_COND_OP:
+                if (op->call_op.func)
+                    iterScopeWalkParallelReach(op->call_op.func, mark, all_fn_bodies, visiting_fns);
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                    iterScopeWalkParallelReach(&op->call_op.variables[i], mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    const eshkol_ast_t* b = &op->let_op.bindings[i];
+                    if (b->type == ESHKOL_CONS && b->cons_cell.cdr)
+                        iterScopeWalkParallelReach(b->cons_cell.cdr, mark, all_fn_bodies, visiting_fns);
+                }
+                iterScopeWalkParallelReach(op->let_op.body, mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_LAMBDA_OP:
+                iterScopeWalkParallelReach(op->lambda_op.body, mark, all_fn_bodies, visiting_fns);
+                break;
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++)
+                    iterScopeWalkParallelReach(&op->with_region_op.body[i], mark, all_fn_bodies, visiting_fns);
+                break;
+            default:
+                break;  // leaves / forms with no further calls to trace
+        }
+    }
+
+    // Entry point: call once, early in generateIR(), on the whole flattened
+    // program before any function body is codegen'd.
+    void computeParallelWorkerReachability(const eshkol_ast_t* asts, size_t num_asts) {
+        std::unordered_map<std::string, const eshkol_ast_t*> all_fn_bodies;
+        for (size_t i = 0; i < num_asts; i++) {
+            const eshkol_ast_t* node = &asts[i];
+            if (node->type == ESHKOL_OP && node->operation.op == ESHKOL_DEFINE_OP &&
+                node->operation.define_op.name && node->operation.define_op.value) {
+                all_fn_bodies[node->operation.define_op.name] = node->operation.define_op.value;
+            }
+        }
+        std::set<std::string> visiting_fns;
+        for (size_t i = 0; i < num_asts; i++) {
+            iterScopeWalkParallelReach(&asts[i], /*mark=*/false, all_fn_bodies, visiting_fns);
+        }
+        eshkol_debug("ESH-0214c: parallel-worker reachability pre-pass marked %zu AST nodes unsafe for iter-scope",
+                     parallel_worker_ast_nodes.size());
+    }
+
     // First-order builtins that cannot leak an argument or an allocation
     // into a structure that outlives the call: pure computation, fresh-
     // allocation constructors, read-side I/O, and output of DATA (display
@@ -24901,6 +25094,18 @@ private:
     bool namedLetIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name) {
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
+        // ESH-0214c: reject outright if this loop's body is reachable (via
+        // ordinary calls) from a parallel-map/-fold/-filter/-for-each/
+        // -execute or future callback argument -- see the pre-pass docblock
+        // above computeParallelWorkerReachability(). The scope stack this
+        // feature pushes/pops lives in __global_arena, which every worker
+        // thread shares without synchronization; concurrent scope ops from
+        // multiple threads race and corrupt it (parallel_flags_byte_regression.esk).
+        if (parallel_worker_ast_nodes.count((const void*)body)) {
+            eshkol_debug("ESH-0214c: named let '%s' iter-scope disabled "
+                         "(reachable from a parallel/future callback)", loop_name.c_str());
+            return false;
+        }
         std::set<std::string> local_fns = {loop_name};
         std::set<std::string> analyzing;
         bool ok = iterScopeSafeExpr(body, local_fns, analyzing, 0);
