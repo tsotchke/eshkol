@@ -7112,6 +7112,71 @@ private:
         Value* captures_typed = builder->CreateBitCast(captures_base,
             PointerType::getUnqual(*context));
 
+        // Capture-count ceiling. A closure with N captures lowers to a function
+        // taking N individual capture-pointer parameters. The dispatch below
+        // OVER-PROVISIONS: it always passes this many capture pointers and lets
+        // the callee read only its own N (<= this). Raised from the original 16
+        // to 64 so deeply-curried lambda chains — whose innermost body references
+        // every enclosing parameter and therefore captures O(depth) variables —
+        // work to a chain depth of 65 (innermost captures 64). Because captures
+        // are over-provisioned rather than switched on, raising this ceiling adds
+        // no per-call-site dispatch cases (see the non-variadic switch comment).
+        const int MAX_CLOSURE_DISPATCH_CAPTURES = 64;
+
+        // CAPTURE OVERFLOW GUARD (covers both the variadic and non-variadic
+        // dispatch below). Both paths OVER-PROVISION captures: they pass exactly
+        // MAX_CLOSURE_DISPATCH_CAPTURES capture pointers and rely on the callee
+        // reading only its own N. That is correct only while N <= MAX. A closure
+        // that legitimately captures more than MAX free variables (e.g. a curried
+        // lambda chain deeper than MAX+1) would otherwise have the callee read an
+        // (N>MAX)-th capture pointer we never passed — garbage/null -> SIGSEGV.
+        // Such a count is a bounded capability limit, so route it to a diagnosed
+        // runtime error instead. (Before this guard existed the over-limit count
+        // silently aliased into a wrong dispatch case and crashed.)
+        {
+            Value* cap_overflow = builder->CreateICmpUGT(num_captures,
+                ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES));
+            BasicBlock* cap_overflow_bb =
+                BasicBlock::Create(*context, "closure_capture_overflow", current_func);
+            BasicBlock* cap_ok_bb =
+                BasicBlock::Create(*context, "closure_capture_ok", current_func);
+            builder->CreateCondBr(cap_overflow, cap_overflow_bb, cap_ok_bb);
+
+            builder->SetInsertPoint(cap_overflow_bb);
+            {
+                Function* raise_func = module->getFunction("eshkol_raise");
+                if (!raise_func) {
+                    FunctionType* raise_type = FunctionType::get(
+                        builder->getVoidTy(), {builder->getPtrTy()}, false);
+                    raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                        "eshkol_raise", module.get());
+                    raise_func->setDoesNotReturn();
+                }
+                Function* make_exc_func =
+                    module->getFunction("eshkol_make_exception_with_header");
+                if (!make_exc_func) {
+                    FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                        {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                    make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                        "eshkol_make_exception_with_header", module.get());
+                }
+                std::string msg =
+                    "closure capture limit exceeded: a closure captures more than "
+                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES)
+                    + " free variables (e.g. a curried lambda chain deeper than "
+                    + std::to_string(MAX_CLOSURE_DISPATCH_CAPTURES + 1)
+                    + "); refactor to pass fewer captured variables";
+                Value* error_msg = codegenString(msg.c_str());
+                Value* exc_type =
+                    ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+                Value* exception = builder->CreateCall(make_exc_func, {exc_type, error_msg});
+                builder->CreateCall(raise_func, {exception});
+            }
+            builder->CreateUnreachable();
+
+            builder->SetInsertPoint(cap_ok_bb);
+        }
+
         // VARIADIC CLOSURE FIX: Check if this is a variadic closure
         Value* is_variadic_cond = builder->CreateICmpNE(is_variadic,
             ConstantInt::get(int64_type, 0));
@@ -7144,9 +7209,18 @@ private:
         // list is built once per fixed-arity arm, then specialize only the
         // final call by capture count.
         const int MAX_VARIADIC_FIXED_LIMIT = 16;
-        const int MAX_CLOSURE_DISPATCH_CAPTURES = 16;
         const int max_variadic_fixed =
             std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
+        // Hoist the capture-slot GEPs once (loop-invariant across every
+        // fixed-arity arm; each over-provisions the same MAX capture pointers).
+        // Recomputing them per arm would be O(fixed · MAX_CAP) GEPs and inflate
+        // the -O0 frame of every closure-calling function.
+        std::vector<Value*> var_hoisted_cap_ptrs;
+        var_hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
+        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
+            var_hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
+                ConstantInt::get(int64_type, i)));
+        }
         BasicBlock* variadic_switch_default = BasicBlock::Create(*context, "var_cap_default", current_func);
         SwitchInst* var_fixed_sw = builder->CreateSwitch(
             fixed_params,
@@ -7178,48 +7252,36 @@ private:
                 rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
             }
 
-            SwitchInst* var_cap_sw = builder->CreateSwitch(
-                num_captures,
-                variadic_switch_default,
-                MAX_CLOSURE_DISPATCH_CAPTURES + 1);
-
-            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
-                BasicBlock* case_bb = BasicBlock::Create(*context,
-                    "var_fixed_" + std::to_string(fixed_count) + "_cap_" + std::to_string(cap_count),
-                    current_func);
-                var_cap_sw->addCase(ConstantInt::get(int64_type, cap_count), case_bb);
-                builder->SetInsertPoint(case_bb);
-
-                std::vector<Value*> full_args;
-                for (int i = 0; i < fixed_count; i++) {
-                    if ((size_t)i < call_args.size()) {
-                        full_args.push_back(call_args[(size_t)i]);
-                    } else {
-                        full_args.push_back(packPtrToTaggedValue(
-                            ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
-                    }
+            // OVER-PROVISION captures (see the non-variadic switch comment):
+            // pass all MAX capture pointers and let the callee read only its own
+            // N. No per-capture switch, so one call per fixed-arity arm.
+            std::vector<Value*> full_args;
+            for (int i = 0; i < fixed_count; i++) {
+                if ((size_t)i < call_args.size()) {
+                    full_args.push_back(call_args[(size_t)i]);
+                } else {
+                    full_args.push_back(packPtrToTaggedValue(
+                        ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL));
                 }
-                full_args.push_back(rest_list);
-                for (int i = 0; i < cap_count; i++) {
-                    Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
-                        ConstantInt::get(int64_type, i));
-                    full_args.push_back(cap_ptr);
-                }
-
-                std::vector<Type*> param_types;
-                for (int i = 0; i < fixed_count; i++) {
-                    param_types.push_back(tagged_value_type);
-                }
-                param_types.push_back(tagged_value_type);
-                for (int i = 0; i < cap_count; i++) {
-                    param_types.push_back(PointerType::getUnqual(*context));
-                }
-                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-                Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-                builder->CreateBr(merge_bb);
-                variadic_results.push_back({builder->GetInsertBlock(), result});
             }
+            full_args.push_back(rest_list);
+            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
+                full_args.push_back(var_hoisted_cap_ptrs[(size_t)i]);
+            }
+
+            std::vector<Type*> param_types;
+            for (int i = 0; i < fixed_count; i++) {
+                param_types.push_back(tagged_value_type);
+            }
+            param_types.push_back(tagged_value_type);
+            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
+                param_types.push_back(PointerType::getUnqual(*context));
+            }
+            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+            builder->CreateBr(merge_bb);
+            variadic_results.push_back({builder->GetInsertBlock(), result});
         }
 
         builder->SetInsertPoint(variadic_switch_default);
@@ -7228,6 +7290,8 @@ private:
         variadic_results.push_back({variadic_switch_default, var_default_result});
 
         // ===== NON-VARIADIC PATH: Call as before =====
+        // (Capture-count overflow is already rejected by the shared guard before
+        // the variadic/non-variadic split above.)
         builder->SetInsertPoint(non_variadic_bb);
 
         // ARITY MISMATCH FIX (x86_64 crash prevention):
@@ -7253,7 +7317,6 @@ private:
         Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
 
         builder->restoreIP(saved_ip_nonvar);
-        builder->SetInsertPoint(non_variadic_bb);
 
         // Store actual call_args into array
         for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
@@ -7282,59 +7345,87 @@ private:
         Value* clamped_arg_count = builder->CreateSelect(is_overflow,
             ConstantInt::get(int64_type, max_call_args), actual_arg_count);
 
-        // Generate nested switch on (clamped_arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES+1) + num_captures)
-        // This handles all combinations of argument count and capture count
+        // HOIST shared operands out of the per-arg-arm blocks. Each arm passes
+        // the same MAX capture pointers (over-provisioned) and loads the same
+        // padded argument slots; recomputing them per arm would be
+        // O(MAX_ARGS · MAX_CAP) GEPs, and at -O0 every one of those SSA values
+        // gets its own stack slot, inflating the frame of every closure-calling
+        // function. Compute each once here in the common predecessor (which
+        // dominates all arm blocks) and let the arms share them — O(MAX_ARGS +
+        // MAX_CAP).
+        std::vector<Value*> hoisted_arg_vals;
+        hoisted_arg_vals.reserve((size_t)max_call_args);
+        for (int i = 0; i < max_call_args; i++) {
+            Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+            hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+        }
+        std::vector<Value*> hoisted_cap_ptrs;
+        hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
+        for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
+            hoisted_cap_ptrs.push_back(builder->CreateGEP(tagged_value_type, captures_typed,
+                ConstantInt::get(int64_type, i)));
+        }
+
+        // Dispatch on the ARGUMENT count only. The capture count is handled by
+        // OVER-PROVISIONING: every case passes all MAX_CLOSURE_DISPATCH_CAPTURES
+        // capture pointers, and the callee — which is compiled with exactly its
+        // own N (<= MAX) capture-pointer parameters — simply reads the first N.
+        // Captures follow the fixed args positionally, so as long as arg_count
+        // matches the callee's fixed arity, the callee's slots [arg_count ..
+        // arg_count+N-1] line up with the first N pointers we pass. The extra
+        // (MAX-N) trailing pointer arguments are ignored by the callee; this is
+        // ABI-safe on caller-cleanup ABIs (AArch64 AAPCS, x86-64 SysV) exactly
+        // like the argument-padding already relied on above, and the over-count
+        // capture GEPs are pure address arithmetic that is never dereferenced.
+        //
+        // Why not switch on the capture count too (as before)? A per-(arg,cap)
+        // matrix emits O(MAX_CAP) distinct-signature calls per call site, which
+        // the -O2 optimizer cannot merge: raising MAX_CAP to 64 made -O2
+        // compilation of closure-heavy code (e.g. 256 nested closures) ~18x
+        // slower (13s -> 237s) and blew the -O0 frame. Over-provisioning keeps
+        // exactly one call per arg arm regardless of MAX_CAP, so the capture
+        // ceiling can be raised with negligible compile-time cost. Counts beyond
+        // MAX are rejected by the capture-overflow guard above.
         BasicBlock* nonvar_switch_default = BasicBlock::Create(*context, "cap_default", current_func);
-        Value* dispatch_idx = builder->CreateAdd(
-            builder->CreateMul(clamped_arg_count, ConstantInt::get(int64_type, MAX_CLOSURE_DISPATCH_CAPTURES + 1)),
-            num_captures);
-        SwitchInst* sw = builder->CreateSwitch(dispatch_idx, nonvar_switch_default,
-            (max_call_args + 1) * (MAX_CLOSURE_DISPATCH_CAPTURES + 1));
+        SwitchInst* sw = builder->CreateSwitch(clamped_arg_count, nonvar_switch_default,
+            max_call_args + 1);
 
         // Note: results vector is declared earlier (before arithmetic check)
 
-        // Generate a case for each (arg_count, capture_count) combination
+        // Fixed capture-pointer parameter tail shared by every arg arm.
+        std::vector<Type*> cap_param_types(
+            (size_t)MAX_CLOSURE_DISPATCH_CAPTURES, PointerType::getUnqual(*context));
+
         for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
-            for (int cap_count = 0; cap_count <= MAX_CLOSURE_DISPATCH_CAPTURES; cap_count++) {
-                int case_idx = arg_count * (MAX_CLOSURE_DISPATCH_CAPTURES + 1) + cap_count;
-                BasicBlock* case_bb = BasicBlock::Create(*context,
-                    "args_" + std::to_string(arg_count) + "_cap_" + std::to_string(cap_count), current_func);
-                sw->addCase(ConstantInt::get(int64_type, case_idx), case_bb);
+            BasicBlock* case_bb = BasicBlock::Create(*context,
+                "args_" + std::to_string(arg_count), current_func);
+            sw->addCase(ConstantInt::get(int64_type, arg_count), case_bb);
 
-                builder->SetInsertPoint(case_bb);
+            builder->SetInsertPoint(case_bb);
 
-                // Load args from padded array up to arg_count
-                std::vector<Value*> full_args;
-                for (int i = 0; i < arg_count; i++) {
-                    Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                        {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-                    full_args.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
-                }
-
-                // MUTABLE CAPTURE FIX: Pass capture pointers instead of values
-                for (int i = 0; i < cap_count; i++) {
-                    Value* cap_ptr = builder->CreateGEP(tagged_value_type, captures_typed,
-                        ConstantInt::get(int64_type, i));
-                    // Pass pointer to capture slot, not the loaded value
-                    full_args.push_back(cap_ptr);
-                }
-
-                // Build function type for this (arg_count, cap_count) combination
-                // Regular args are tagged_value, captures are pointer
-                std::vector<Type*> param_types;
-                for (int i = 0; i < arg_count; i++) {
-                    param_types.push_back(tagged_value_type);
-                }
-                for (int i = 0; i < cap_count; i++) {
-                    param_types.push_back(PointerType::getUnqual(*context));
-                }
-                FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
-
-                Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
-
-                builder->CreateBr(merge_bb);
-                results.push_back({builder->GetInsertBlock(), result});
+            // Assemble args from the hoisted, shared operands (see comment above
+            // the switch). Regular args are the loaded padded values; captures
+            // are pointers to the closure env slots (all MAX passed).
+            std::vector<Value*> full_args;
+            for (int i = 0; i < arg_count; i++) {
+                full_args.push_back(hoisted_arg_vals[(size_t)i]);
             }
+            for (int i = 0; i < MAX_CLOSURE_DISPATCH_CAPTURES; i++) {
+                full_args.push_back(hoisted_cap_ptrs[(size_t)i]);
+            }
+
+            std::vector<Type*> param_types;
+            for (int i = 0; i < arg_count; i++) {
+                param_types.push_back(tagged_value_type);
+            }
+            param_types.insert(param_types.end(), cap_param_types.begin(), cap_param_types.end());
+            FunctionType* func_type = FunctionType::get(tagged_value_type, param_types, false);
+
+            Value* result = builder->CreateCall(func_type, actual_func_ptr, full_args);
+
+            builder->CreateBr(merge_bb);
+            results.push_back({builder->GetInsertBlock(), result});
         }
 
         // Default case (more than MAX_CAPTURES - shouldn't happen but handle gracefully)
