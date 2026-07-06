@@ -1,0 +1,73 @@
+;; tests/ad/taylor_tower_noheap_bench.esk
+;; ESH-0187 (P2): no-heap benchmark + perf delta vs the P1 heap path.
+;;
+;; Snapshots the global arena's used-bytes (via the __arena-used debug hook)
+;; around a tight loop of literal-K (derivative-n f x0 8) calls -- the MONO
+;; path -- and asserts the delta is EXACTLY 0 (no tower/heap allocation).
+;; Then runs the equivalent loop with a runtime-variable k=8 -- the P1 heap
+;; tower path -- and reports its arena delta + both loops' ns/iteration and
+;; the speedup ratio.  Compile AOT and run the binary for a real measurement.
+
+(define ITERS 100000)
+
+;; f(x) = 1/(1-x): every derivative is nonzero, so K=8 exercises the full
+;; div/sub recurrence chain each iteration.
+(define (f-mono x)   (/ 1.0 (- 1.0 x)))
+(define (f-heap x)   (/ 1.0 (- 1.0 x)))
+
+;; runtime-k hides the literal from codegen so k=8 takes the P1 heap path.
+(define (runtime-k k) (+ k 0))
+
+;; accumulate results so the loops are not optimized away.
+(define (bench-mono n)
+  (let loop ((i 0) (acc 0.0))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) (+ acc (derivative-n f-mono 0.5 8))))))     ;; literal 8 -> MONO
+
+(define (bench-heap n kv)
+  (let loop ((i 0) (acc 0.0))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) (+ acc (derivative-n f-heap 0.5 kv))))))    ;; runtime kv -> P1 heap
+
+;; warm up (allocate any one-time codegen/JIT bookkeeping outside the region)
+(bench-mono 100)
+(bench-heap 100 (runtime-k 8))
+
+;; ---- MONO: arena delta must be 0 ----
+(define m-used0 (__arena-used))
+(define m-t0 (current-time-ns))
+(define m-res (bench-mono ITERS))
+(define m-t1 (current-time-ns))
+(define m-used1 (__arena-used))
+(define m-delta (- m-used1 m-used0))
+(define m-ns (quotient (- m-t1 m-t0) ITERS))
+
+;; ---- P1 HEAP path for comparison ----
+(define h-used0 (__arena-used))
+(define h-t0 (current-time-ns))
+(define h-res (bench-heap ITERS (runtime-k 8)))
+(define h-t1 (current-time-ns))
+(define h-used1 (__arena-used))
+(define h-delta (- h-used1 h-used0))
+(define h-ns (quotient (- h-t1 h-t0) ITERS))
+
+(display "iters             = ") (display ITERS) (newline)
+(display "mono   result-sum = ") (display m-res) (newline)
+(display "heap   result-sum = ") (display h-res) (newline)
+(display "mono   arena-delta bytes = ") (display m-delta) (newline)
+(display "heap   arena-delta bytes = ") (display h-delta) (newline)
+(display "mono   ns/iter    = ") (display m-ns) (newline)
+(display "heap   ns/iter    = ") (display h-ns) (newline)
+(if (and (> m-ns 0) (> h-ns 0))
+    (begin (display "speedup (heap/mono) x100 = ")
+           (display (quotient (* h-ns 100) m-ns)) (newline)))
+(newline)
+(if (= m-delta 0)
+    (begin (display "PASS no-heap: mono arena-delta == 0") (newline))
+    (begin (display "FAIL no-heap: mono arena-delta = ") (display m-delta) (newline)))
+;; same-result sanity (both paths must agree)
+(if (= m-res h-res)
+    (begin (display "PASS mono/heap result-sums agree") (newline))
+    (begin (display "FAIL mono/heap result-sums differ") (newline)))

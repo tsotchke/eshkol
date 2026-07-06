@@ -13,6 +13,11 @@
 #include <stdint.h>
 #include <ctype.h>
 #include <time.h>   /* struct tm, gmtime_s/gmtime_r — used on every platform */
+/* ESH-0187: arena introspection for the no-heap AD benchmark. Forward-declared
+ * (not via arena_memory.h, which uses the C++/C23 `thread_local` spelling not
+ * available in this C11 TU). get_global_arena is declared below near its other
+ * uses; arena_get_used_memory is linked from lib/core/arena_memory.c. */
+extern size_t arena_get_used_memory(const void* a);
 #include <errno.h>
 
 #ifndef _WIN32
@@ -553,6 +558,12 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_executable_path_v(eshkol_sysbuil
     if (n > 0 && n < MAX_PATH) return sys_make_string(result);
     return sys_make_bool(0);
 #endif
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_arena_used_v(void) {
+    /* ESH-0187: bytes currently allocated in the global arena. Debug hook for
+     * the no-heap Taylor-tower monomorphization benchmark (tests/ad). */
+    return sys_make_int64((int64_t)arena_get_used_memory(get_global_arena()));
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_monotonic_time_ms_v(void) {
@@ -4946,6 +4957,7 @@ void eshkol_builtin_format_relative(sv_t* out, const sv_t* a) { *out = eshkol_bu
 void eshkol_builtin_local_timezone_offset(sv_t* out) { *out = eshkol_builtin_local_timezone_offset_v(); }
 void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
 void eshkol_builtin_executable_path(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_path_v(*a); }
+void eshkol_builtin_arena_used(sv_t* out) { *out = eshkol_builtin_arena_used_v(); }
 void eshkol_builtin_monotonic_time_ms(sv_t* out) { *out = eshkol_builtin_monotonic_time_ms_v(); }
 void eshkol_builtin_temp_directory(sv_t* out) { *out = eshkol_builtin_temp_directory_v(); }
 void eshkol_builtin_prevent_sleep(sv_t* out, const sv_t* a) { *out = eshkol_builtin_prevent_sleep_v(*a); }

@@ -214,6 +214,7 @@ public:
     llvm::Value* executableExists(const eshkol_operations_t* op);
     llvm::Value* executablePath(const eshkol_operations_t* op);
     llvm::Value* monotonicTimeMs(const eshkol_operations_t* op);
+    llvm::Value* arenaUsed(const eshkol_operations_t* op);  // ESH-0187 debug hook
     llvm::Value* tempDirectory(const eshkol_operations_t* op);
     llvm::Value* preventSleep(const eshkol_operations_t* op);
     llvm::Value* allowSleep(const eshkol_operations_t* op);

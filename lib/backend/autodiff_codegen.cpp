@@ -22,6 +22,9 @@
 #include <llvm/Config/llvm-config.h>
 #include <array>
 #include <unordered_set>
+#include <unordered_map>
+#include <vector>
+#include <string>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -231,11 +234,53 @@ void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
     ctx_.builder().CreateStore(level, g);
 }
 
+// === ESH-0186: runtime Taylor-tower kernel declarations (lib/core/runtime_taylor.c) ===
+namespace {
+llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_seed_tagged")) return f;
+    // void eshkol_taylor_seed_tagged(arena*, const tagged* point, i32 order, tagged* out)
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p, p, ctx.int32Type(), p}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_seed_tagged", &ctx.module());
+}
+llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_extract")) return f;
+    // double eshkol_taylor_extract(const tagged* tower, i32 n)
+    auto* ft = llvm::FunctionType::get(ctx.doubleType(),
+        {ctx.ptrType(), ctx.int32Type()}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_extract", &ctx.module());
+}
+llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
+    if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
+    // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k, tagged* out)
+    llvm::Type* p = ctx.ptrType();
+    auto* ft = llvm::FunctionType::get(ctx.voidType(),
+        {p /*arena*/, p /*tower*/, ctx.int32Type(), p /*out*/}, false);
+    return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                  "eshkol_taylor_coeffs_list", &ctx.module());
+}
+} // namespace
+
 llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
                                                  llvm::Value** out_level) {
     auto& b = ctx_.builder();
     llvm::Value* level = adPertLevelLoad();
     if (out_level) *out_level = level;
+
+    // ── Taylor-tower mode (ESH-0186): seed a heap tower {x0,1,0,...} of the
+    // requested order under a fresh perturbation epoch instead of a jet. The
+    // jet path below is untouched when adTowerMode_ == NONE (order <= 2). ──
+    if (adTowerMode_ != TowerMode::NONE && adTowerOrder_) {
+        llvm::Value* point_slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_point");
+        llvm::Value* out_slot   = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_seed_out");
+        ctx_.builder().CreateStore(point_tagged, point_slot);
+        ctx_.builder().CreateCall(getTaylorSeedFunc(ctx_),
+            {getArenaPtr(), point_slot, adTowerOrder_, out_slot});
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), out_slot, "twr_seeded");
+    }
 
     // Push: the callee body runs one perturbation level deeper.
     adPertLevelStore(b.CreateAdd(level, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
@@ -291,6 +336,23 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
     auto& b = ctx_.builder();
     // Pop: restore the level the outer context expects.
     adPertLevelStore(level);
+
+    // ── Taylor-tower mode (ESH-0186): extract from the heap tower returned by
+    // the differentiated function. DERIV_N -> f^(k)=k!*c[k] (a double); COEFFS
+    // -> the K+1-element coefficient list. Short-circuits the jet R->Rⁿ logic. ──
+    if (adTowerMode_ == TowerMode::DERIV_N && adTowerOrder_) {
+        llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+        b.CreateStore(result_tagged, res_slot);
+        llvm::Value* d = b.CreateCall(getTaylorExtractFunc(ctx_), {res_slot, adTowerOrder_});
+        return tagged_.packDouble(d);
+    }
+    if (adTowerMode_ == TowerMode::COEFFS && adTowerOrder_) {
+        llvm::Value* res_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_res");
+        llvm::Value* out_slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "twr_list_out");
+        b.CreateStore(result_tagged, res_slot);
+        b.CreateCall(getTaylorCoeffsFunc(ctx_), {getArenaPtr(), res_slot, adTowerOrder_, out_slot});
+        return b.CreateLoad(ctx_.taggedValueType(), out_slot, "twr_coeffs");
+    }
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
 
@@ -6103,6 +6165,27 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         return derivativeHigherOrder(op);
     }
 
+    // ESH-0186 / ESH-0118 closure: a nested `derivative` chain of depth >= 3 is
+    // pure repeated univariate differentiation, which the 2-level jet returns 0
+    // for. Detect the pure chain and route it through the arbitrary-order Taylor
+    // tower (derivative-n of the innermost base at the outermost point). Depth
+    // <= 2 falls through unchanged to the exact jet path below.
+    {
+        const eshkol_ast* inner_fn = nullptr;
+        const eshkol_ast* outer_pt = nullptr;
+        int depth = detectPureDerivChain(op, &inner_fn, &outer_pt);
+        if (depth >= 3 && inner_fn && outer_pt) {
+            eshkol_info("derivative: routing depth-%d nested chain through the Taylor tower (ESH-0118)", depth);
+            // ESH-0187: the chain order (depth) is a compile-time constant, so
+            // attempt no-heap monomorphization first; fall back to the runtime
+            // tower when the innermost base is not a pure-arithmetic whitelist.
+            if (llvm::Value* mono = tryMonomorphizedTaylor(inner_fn, outer_pt, depth, TowerMode::DERIV_N))
+                return mono;
+            llvm::Value* order = llvm::ConstantInt::get(ctx_.int32Type(), depth);
+            return taylorApiCore(inner_fn, outer_pt, order, TowerMode::DERIV_N);
+        }
+    }
+
     if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
         eshkol_error("derivative: Required callbacks not set");
         return tagged_.packNull();
@@ -6130,6 +6213,528 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     // Delegate to it.  v1.3 should re-extract this logic into a shared
     // helper rather than keeping two parallel implementations.
     return codegenDerivativeMonolith(op);
+}
+
+// === Arbitrary-order Taylor-tower AD entry points (ESH-0186, P1) ===
+//
+// (taylor f x k) and (derivative-n f x k) share codegenDerivativeMonolith's
+// resolve/capture/call machinery; the only difference from the jet path is that
+// seedForwardAndPush seeds a heap Taylor tower of order k (fresh perturbation
+// epoch) and popAndExtractForward extracts from the returned tower. That
+// re-pointing is gated on adTowerMode_, so the order-<=2 jet path is byte-for-
+// byte unchanged whenever these entry points are not on the stack.
+//
+// taylor_op {function, point, order} overlaps derivative_op {function, point}
+// field-for-field (same offsets), so the monolith reads function/point via the
+// derivative_op alias unchanged.
+// Shared implementation: build a synthetic derivative op referencing
+// function_ast/point_ast (which alias derivative_op.function/.point that the
+// monolith reads), set the tower mode + order, and run the monolith. The
+// monolith's seedForwardAndPush/popAndExtractForward are re-pointed at the
+// Taylor kernel while adTowerMode_ != NONE.
+// ============================================================================
+// ESH-0187 (P2): compile-time-K Taylor-tower monomorphization.
+//
+// When (derivative-n f x K) / (taylor f x K) has a LITERAL K and f is a
+// single-parameter lambda (or a VAR naming a single-arg top-level define)
+// whose body is a pure arithmetic expression tree over the primitives in
+// taylor_recurrences.def, we bypass the generic tagged-dispatch/heap-tower
+// path entirely and emit the whole tower as fully-unrolled, branch-free,
+// HEAP-FREE straight-line SSA IR. Each recurrence is transliterated
+// operation-for-operation from lib/core/runtime_taylor.c's tr_* kernels,
+// using explicit llvm.fma.f64 in the SAME ascending-j reduction order and
+// the SAME libm calls at c[0], so mono(K) == runtime(K) BIT-FOR-BIT
+// (design sections 6/6a). The whitelist and the spelling->opcode dispatch
+// are generated from taylor_recurrences.def -- the single source of truth
+// shared with the runtime kernel (design section 5b).
+// ============================================================================
+namespace {
+
+// Op-code enums generated from the shared X-macro table.
+enum {
+#define TAYLOR_BIN(name, opcode, sexpr) TMONO_OP_##name = (opcode),
+#include "../core/taylor_recurrences.def"
+};
+enum {
+#define TAYLOR_UN(name, opcode, sexpr, testfn, x0) TMONO_UOP_##name = (opcode),
+#include "../core/taylor_recurrences.def"
+};
+
+// spelling -> opcode whitelists (single source of truth: the .def).
+static const std::unordered_map<std::string,int>& monoBinOps() {
+    static const std::unordered_map<std::string,int> m = {
+#define TAYLOR_BIN(name, opcode, sexpr) { sexpr, (opcode) },
+#include "../core/taylor_recurrences.def"
+    };
+    return m;
+}
+static const std::unordered_map<std::string,int>& monoUnOps() {
+    static const std::unordered_map<std::string,int> m = {
+#define TAYLOR_UN(name, opcode, sexpr, testfn, x0) { sexpr, (opcode) },
+#include "../core/taylor_recurrences.def"
+    };
+    return m;
+}
+
+class TaylorMonoEmitter {
+public:
+    using V = std::vector<llvm::Value*>;
+    TaylorMonoEmitter(eshkol::CodegenContext& ctx, int K, std::string param, llvm::Value* x0)
+        : ctx_(ctx), K_(K), n_(K + 1), param_(std::move(param)), x0_(x0) {}
+
+    // Returns the matched series (n_ SSA doubles) or an empty vector to signal
+    // "does not match the whitelist -> caller must fall back to the runtime path".
+    V emit(const eshkol_ast* body) { return matchExpr(body); }
+
+private:
+    eshkol::CodegenContext& ctx_;
+    int K_, n_;
+    std::string param_;
+    llvm::Value* x0_;
+
+    llvm::IRBuilder<>& b() { return ctx_.builder(); }
+    llvm::Type* dty() { return ctx_.doubleType(); }
+    llvm::Value* cst(double v) { return llvm::ConstantFP::get(dty(), v); }
+    V zeros() { return V(n_, cst(0.0)); }
+
+    llvm::Value* fma3(llvm::Value* a, llvm::Value* bb, llvm::Value* c) {
+        llvm::Function* f = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::fma, {dty()});
+        return b().CreateCall(f, {a, bb, c});
+    }
+    llvm::Value* libm1(const char* name, llvm::Value* x) {
+        llvm::Function* f = ctx_.module().getFunction(name);
+        if (!f) {
+            auto* ft = llvm::FunctionType::get(dty(), {dty()}, false);
+            f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, &ctx_.module());
+        }
+        return b().CreateCall(f, {x});
+    }
+    llvm::Value* libm2(const char* name, llvm::Value* x, llvm::Value* y) {
+        llvm::Function* f = ctx_.module().getFunction(name);
+        if (!f) {
+            auto* ft = llvm::FunctionType::get(dty(), {dty(), dty()}, false);
+            f = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, &ctx_.module());
+        }
+        return b().CreateCall(f, {x, y});
+    }
+
+    // ---- recurrence emitters: mirror runtime_taylor.c tr_* operation-for-operation ----
+    V e_add(const V& u, const V& w) { V s(n_); for (int k = 0; k < n_; k++) s[k] = b().CreateFAdd(u[k], w[k]); return s; }
+    V e_sub(const V& u, const V& w) { V s(n_); for (int k = 0; k < n_; k++) s[k] = b().CreateFSub(u[k], w[k]); return s; }
+    V e_neg(const V& u)             { V s(n_); for (int k = 0; k < n_; k++) s[k] = b().CreateFNeg(u[k]); return s; }
+
+    V e_mul(const V& u, const V& w) {
+        V s(n_);
+        for (int k = 0; k < n_; k++) {
+            llvm::Value* acc = cst(0.0);
+            for (int j = 0; j <= k; j++) acc = fma3(u[j], w[k - j], acc);
+            s[k] = acc;
+        }
+        return s;
+    }
+    V e_div(const V& u, const V& w) {
+        V s(n_);
+        for (int k = 0; k < n_; k++) {
+            llvm::Value* acc = u[k];
+            for (int j = 1; j <= k; j++) acc = fma3(b().CreateFNeg(w[j]), s[k - j], acc);
+            s[k] = b().CreateFDiv(acc, w[0]);
+        }
+        return s;
+    }
+    V e_exp(const V& u) {
+        V s(n_);
+        s[0] = libm1("exp", u[0]);
+        for (int k = 1; k < n_; k++) {
+            llvm::Value* acc = cst(0.0);
+            for (int j = 1; j <= k; j++) {
+                llvm::Value* ju = b().CreateFMul(cst((double)j), u[j]);
+                acc = fma3(ju, s[k - j], acc);
+            }
+            s[k] = b().CreateFDiv(acc, cst((double)k));
+        }
+        return s;
+    }
+    V e_log(const V& u) {
+        V s(n_);
+        s[0] = libm1("log", u[0]);
+        for (int k = 1; k < n_; k++) {
+            llvm::Value* acc = cst(0.0);
+            for (int j = 1; j <= k - 1; j++) {
+                llvm::Value* ju = b().CreateFMul(cst((double)j), s[j]);
+                acc = fma3(ju, u[k - j], acc);
+            }
+            llvm::Value* t = b().CreateFDiv(acc, cst((double)k));
+            llvm::Value* num = b().CreateFSub(u[k], t);
+            s[k] = b().CreateFDiv(num, u[0]);
+        }
+        return s;
+    }
+    void e_sincos(const V& u, V& so, V& co) {
+        so.assign(n_, nullptr); co.assign(n_, nullptr);
+        so[0] = libm1("sin", u[0]);
+        co[0] = libm1("cos", u[0]);
+        for (int k = 1; k < n_; k++) {
+            llvm::Value* as = cst(0.0);
+            llvm::Value* ac = cst(0.0);
+            for (int j = 1; j <= k; j++) {
+                llvm::Value* ju = b().CreateFMul(cst((double)j), u[j]);
+                as = fma3(ju, co[k - j], as);
+                ac = fma3(ju, so[k - j], ac);
+            }
+            so[k] = b().CreateFDiv(as, cst((double)k));
+            co[k] = b().CreateFDiv(b().CreateFNeg(ac), cst((double)k));
+        }
+    }
+    V e_pow_const(const V& u, double r) {
+        V s(n_);
+        s[0] = libm2("pow", u[0], cst(r));
+        for (int k = 1; k < n_; k++) {
+            llvm::Value* acc = cst(0.0);
+            for (int j = 1; j <= k; j++) {
+                double coeff = ((double)j * r - (double)(k - j));
+                llvm::Value* term = b().CreateFMul(cst(coeff), u[j]);
+                acc = fma3(term, s[k - j], acc);
+            }
+            llvm::Value* denom = b().CreateFMul(cst((double)k), u[0]);
+            s[k] = b().CreateFDiv(acc, denom);
+        }
+        return s;
+    }
+    V e_abs(const V& u) {
+        V s(n_);
+        s[0] = libm1("fabs", u[0]);
+        llvm::Value* isneg = b().CreateFCmpOLT(u[0], cst(0.0));
+        llvm::Value* sgn = b().CreateSelect(isneg, cst(-1.0), cst(1.0));
+        for (int k = 1; k < n_; k++) s[k] = b().CreateFMul(sgn, u[k]);
+        return s;
+    }
+    V e_sinh(const V& u) {
+        V ep = e_exp(u), em = e_exp(e_neg(u)), s(n_);
+        for (int k = 0; k < n_; k++) s[k] = b().CreateFMul(cst(0.5), b().CreateFSub(ep[k], em[k]));
+        return s;
+    }
+    V e_cosh(const V& u) {
+        V ep = e_exp(u), em = e_exp(e_neg(u)), s(n_);
+        for (int k = 0; k < n_; k++) s[k] = b().CreateFMul(cst(0.5), b().CreateFAdd(ep[k], em[k]));
+        return s;
+    }
+    V e_tanh(const V& u) {
+        V ep = e_exp(u), em = e_exp(e_neg(u)), sh(n_), ch(n_);
+        for (int k = 0; k < n_; k++) {
+            sh[k] = b().CreateFMul(cst(0.5), b().CreateFSub(ep[k], em[k]));
+            ch[k] = b().CreateFMul(cst(0.5), b().CreateFAdd(ep[k], em[k]));
+        }
+        return e_div(sh, ch);
+    }
+
+    // A constant scalar exponent (literal only), for pow/expt.
+    bool constScalar(const eshkol_ast* e, double* out) {
+        if (!e) return false;
+        if (e->type == ESHKOL_INT64)  { *out = (double)e->int64_val; return true; }
+        if (e->type == ESHKOL_DOUBLE) { *out = e->double_val; return true; }
+        return false;
+    }
+
+    V matchExpr(const eshkol_ast* e) {
+        if (!e) return {};
+        if (e->type == ESHKOL_INT64)  { V s = zeros(); s[0] = cst((double)e->int64_val); return s; }
+        if (e->type == ESHKOL_DOUBLE) { V s = zeros(); s[0] = cst(e->double_val); return s; }
+        if (e->type == ESHKOL_VAR) {
+            if (e->variable.id && param_ == e->variable.id) {
+                V s = zeros(); s[0] = x0_; if (K_ >= 1) s[1] = cst(1.0); return s;
+            }
+            return {};  // foreign variable (capture / global) -> bail
+        }
+        if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return {};
+        const auto& call = e->operation.call_op;
+        const eshkol_ast* f = call.func;
+        if (!f || f->type != ESHKOL_VAR || !f->variable.id) return {};
+        std::string head = f->variable.id;
+        uint64_t nargs = call.num_vars;
+        const eshkol_ast* args = call.variables;
+        if (nargs > 0 && !args) return {};
+        auto arg = [&](uint64_t i) -> V { return matchExpr(&args[i]); };
+
+        // --- binary / n-ary arithmetic, dispatched by the .def op-code ---
+        auto bit = monoBinOps().find(head);
+        if (bit != monoBinOps().end()) {
+            switch (bit->second) {
+                case TMONO_OP_add: {
+                    if (nargs == 0) return zeros();
+                    V acc = arg(0); if (acc.empty()) return {};
+                    for (uint64_t i = 1; i < nargs; i++) { V w = arg(i); if (w.empty()) return {}; acc = e_add(acc, w); }
+                    return acc;
+                }
+                case TMONO_OP_mul: {
+                    if (nargs == 0) { V s = zeros(); s[0] = cst(1.0); return s; }
+                    V acc = arg(0); if (acc.empty()) return {};
+                    for (uint64_t i = 1; i < nargs; i++) { V w = arg(i); if (w.empty()) return {}; acc = e_mul(acc, w); }
+                    return acc;
+                }
+                case TMONO_OP_sub: {
+                    if (nargs == 0) return {};
+                    V a0 = arg(0); if (a0.empty()) return {};
+                    if (nargs == 1) return e_neg(a0);            // unary minus
+                    V acc = a0;
+                    for (uint64_t i = 1; i < nargs; i++) { V w = arg(i); if (w.empty()) return {}; acc = e_sub(acc, w); }
+                    return acc;
+                }
+                case TMONO_OP_div: {
+                    if (nargs == 0) return {};
+                    V a0 = arg(0); if (a0.empty()) return {};
+                    if (nargs == 1) { V one = zeros(); one[0] = cst(1.0); return e_div(one, a0); }  // reciprocal
+                    V acc = a0;
+                    for (uint64_t i = 1; i < nargs; i++) { V w = arg(i); if (w.empty()) return {}; acc = e_div(acc, w); }
+                    return acc;
+                }
+                case TMONO_OP_pow: {
+                    if (nargs != 2) return {};
+                    V base = arg(0); if (base.empty()) return {};
+                    double r; if (!constScalar(&args[1], &r)) return {};   // non-const exponent -> bail
+                    return e_pow_const(base, r);
+                }
+                default: return {};
+            }
+        }
+        if (head == "expt" && nargs == 2) {
+            V base = arg(0); if (base.empty()) return {};
+            double r; if (!constScalar(&args[1], &r)) return {};
+            return e_pow_const(base, r);
+        }
+
+        // --- unary math, dispatched by the .def op-code ---
+        auto uit = monoUnOps().find(head);
+        if ((uit != monoUnOps().end() && nargs == 1)) {
+            V u = arg(0); if (u.empty()) return {};
+            switch (uit->second) {
+                case TMONO_UOP_neg:  return e_neg(u);
+                case TMONO_UOP_exp:  return e_exp(u);
+                case TMONO_UOP_log:  return e_log(u);
+                case TMONO_UOP_sin:  { V so, co; e_sincos(u, so, co); return so; }
+                case TMONO_UOP_cos:  { V so, co; e_sincos(u, so, co); return co; }
+                case TMONO_UOP_tan:  { V so, co; e_sincos(u, so, co); return e_div(so, co); }
+                case TMONO_UOP_sqrt: return e_pow_const(u, 0.5);
+                case TMONO_UOP_abs:  return e_abs(u);
+                case TMONO_UOP_sinh: return e_sinh(u);
+                case TMONO_UOP_cosh: return e_cosh(u);
+                case TMONO_UOP_tanh: return e_tanh(u);
+                default: return {};
+            }
+        }
+        if (head == "fabs" && nargs == 1) { V u = arg(0); if (u.empty()) return {}; return e_abs(u); }
+
+        return {};  // anything else -> bail (safe fallback to runtime path)
+    }
+};
+
+}  // anonymous namespace
+
+// See header. Returns the packed result on a successful match, else nullptr.
+llvm::Value* AutodiffCodegen::tryMonomorphizedTaylor(const eshkol_ast* function_ast,
+                                                     const eshkol_ast* point_ast,
+                                                     int K, TowerMode mode) {
+    using namespace llvm;
+    if (!function_ast || !point_ast) return nullptr;
+    if (K < 0 || K > 64) return nullptr;          // sane cap; above -> runtime path
+    if (!codegen_ast_callback_) return nullptr;
+    if (mode != TowerMode::DERIV_N && mode != TowerMode::COEFFS) return nullptr;
+
+    // Resolve the target to (param name, body): either an inline single-param
+    // lambda, or a VAR naming a single-arg top-level define.
+    std::string param;
+    const eshkol_ast* body = nullptr;
+    if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
+        const auto& L = function_ast->operation.lambda_op;
+        if (L.num_params != 1 || !L.parameters || !L.body) return nullptr;
+        if (!L.parameters[0].variable.id) return nullptr;
+        param = L.parameters[0].variable.id;
+        body = L.body;
+    } else if (function_ast->type == ESHKOL_VAR) {
+        if (!function_def_ast_ || !function_ast->variable.id) return nullptr;
+        auto it = function_def_ast_->find(function_ast->variable.id);
+        if (it == function_def_ast_->end() || !it->second) return nullptr;
+        const eshkol_ast* def = it->second;
+        if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return nullptr;
+        const auto& D = def->operation.define_op;
+        if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return nullptr;
+        if (!D.parameters[0].variable.id) return nullptr;
+        param = D.parameters[0].variable.id;
+        body = D.value;
+    } else {
+        return nullptr;
+    }
+
+    // Evaluate the point and reduce it to x0 exactly as the runtime seed does
+    // (eshkol_taylor_seed_tagged -> tagged_scalar_value == eshkol_taylor_c0),
+    // so x0 is bit-identical to the runtime path for any point representation.
+    Value* point_raw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
+    if (!point_raw) return nullptr;
+    Value* point_tagged;
+    if (point_raw->getType()->isIntegerTy())
+        point_tagged = tagged_.packDouble(ctx_.builder().CreateSIToFP(point_raw, ctx_.doubleType()));
+    else if (point_raw->getType()->isDoubleTy())
+        point_tagged = tagged_.packDouble(point_raw);
+    else if (point_raw->getType() == ctx_.taggedValueType())
+        point_tagged = point_raw;
+    else
+        return nullptr;
+
+    Value* x0;
+    {
+        Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        Value* pslot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "mono_point");
+        ctx_.builder().CreateStore(point_tagged, pslot);
+        Function* c0 = ctx_.module().getFunction("eshkol_taylor_c0");
+        if (!c0) {
+            auto* ft = FunctionType::get(ctx_.doubleType(), {ctx_.ptrType()}, false);
+            c0 = Function::Create(ft, Function::ExternalLinkage, "eshkol_taylor_c0", &ctx_.module());
+        }
+        x0 = ctx_.builder().CreateCall(c0, {pslot});
+    }
+
+    // Emit the tower as unrolled straight-line SSA over the whitelist.
+    TaylorMonoEmitter em(ctx_, K, param, x0);
+    std::vector<Value*> series = em.emit(body);
+    if (series.empty()) return nullptr;   // pattern did not match -> fall back
+
+    if (mode == TowerMode::DERIV_N) {
+        // f^(K)(x0) = K! * c[K]  (mirrors factorial_d * c[n] in eshkol_taylor_extract).
+        double fact = 1.0;
+        for (int i = 2; i <= K; i++) fact *= (double)i;
+        Value* res = ctx_.builder().CreateFMul(ConstantFP::get(ctx_.doubleType(), fact), series[(size_t)K]);
+        return tagged_.packDouble(res);
+    }
+
+    // COEFFS: build the K+1-element list c[0]..c[K] (c[0] first). The heap use
+    // here is only the RETURNED Scheme list (required by the API contract); the
+    // tower's working storage stayed entirely in SSA (no-heap invariant holds).
+    Value* arena = getArenaPtr();
+    Function* consf = mem_.getArenaAllocateConsWithHeader();
+    if (!consf || !arena) return nullptr;
+    Value* acc = tagged_.packNull();
+    for (int k = K; k >= 0; k--) {
+        Value* cell = ctx_.builder().CreateCall(consf, {arena});
+        Value* car = tagged_.packDouble(series[(size_t)k]);
+        ctx_.builder().CreateStore(car, cell);   // car at offset 0
+        Value* cdrp = ctx_.builder().CreateGEP(ctx_.taggedValueType(), cell,
+            ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(acc, cdrp);   // cdr at offset 16
+        Value* cell_int = ctx_.builder().CreatePtrToInt(cell, ctx_.int64Type());
+        acc = tagged_.packHeapPtr(cell_int);
+    }
+    return acc;
+}
+
+
+llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
+                                            const eshkol_ast* point_ast,
+                                            llvm::Value* order_i32, TowerMode mode) {
+    eshkol_operations_t tmp;
+    tmp.op = ESHKOL_DERIVATIVE_N_OP;
+    tmp.taylor_op.function = const_cast<eshkol_ast*>(function_ast);
+    tmp.taylor_op.point = const_cast<eshkol_ast*>(point_ast);
+    tmp.taylor_op.order = nullptr;  // order supplied as the LLVM value below
+
+    TowerMode saved_mode = adTowerMode_; llvm::Value* saved_order = adTowerOrder_;
+    adTowerMode_ = mode; adTowerOrder_ = order_i32;
+    llvm::Value* r = codegenDerivativeMonolith(&tmp);
+    adTowerMode_ = saved_mode; adTowerOrder_ = saved_order;
+    return r ? r : tagged_.packNull();
+}
+
+static llvm::Value* coerceOrderToI32(CodegenContext& ctx, TaggedValueCodegen& tagged,
+                                     llvm::Value* order) {
+    if (!order) return nullptr;
+    if (order->getType() == ctx.taggedValueType()) order = tagged.unpackInt64(order);
+    if (order->getType()->isDoubleTy()) order = ctx.builder().CreateFPToSI(order, ctx.int32Type());
+    else if (order->getType()->isIntegerTy()) order = ctx.builder().CreateIntCast(order, ctx.int32Type(), true);
+    return order;
+}
+
+llvm::Value* AutodiffCodegen::derivativeN(const eshkol_operations_t* op) {
+    if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
+        eshkol_error("derivative-n requires (derivative-n f x k)");
+        return tagged_.packNull();
+    }
+    // ESH-0187: literal order K -> attempt no-heap compile-time monomorphization
+    // (unrolled straight-line SSA). Falls through to the unchanged P1 runtime
+    // heap-tower path when it does not apply (non-literal K, unsupported body).
+    const eshkol_ast* ord_ast = op->taylor_op.order;
+    if (ord_ast && ord_ast->type == ESHKOL_INT64) {
+        int Klit = (int)ord_ast->int64_val;
+        if (llvm::Value* mono = tryMonomorphizedTaylor(op->taylor_op.function,
+                op->taylor_op.point, Klit, TowerMode::DERIV_N))
+            return mono;
+    }
+    llvm::Value* order = coerceOrderToI32(ctx_, tagged_,
+        codegen_ast_callback_(op->taylor_op.order, callback_context_));
+    if (!order) { eshkol_error("derivative-n: failed to evaluate order"); return tagged_.packNull(); }
+    return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::DERIV_N);
+}
+
+llvm::Value* AutodiffCodegen::taylorSeries(const eshkol_operations_t* op) {
+    if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
+        eshkol_error("taylor requires (taylor f x k)");
+        return tagged_.packNull();
+    }
+    // ESH-0187: literal order K -> attempt no-heap compile-time monomorphization.
+    const eshkol_ast* ord_ast = op->taylor_op.order;
+    if (ord_ast && ord_ast->type == ESHKOL_INT64) {
+        int Klit = (int)ord_ast->int64_val;
+        if (llvm::Value* mono = tryMonomorphizedTaylor(op->taylor_op.function,
+                op->taylor_op.point, Klit, TowerMode::COEFFS))
+            return mono;
+    }
+    llvm::Value* order = coerceOrderToI32(ctx_, tagged_,
+        codegen_ast_callback_(op->taylor_op.order, callback_context_));
+    if (!order) { eshkol_error("taylor: failed to evaluate order"); return tagged_.packNull(); }
+    return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::COEFFS);
+}
+
+// See header. Walks a nested `derivative` chain; returns total depth if it is
+// pure repeated univariate differentiation threading one variable, else 0.
+int AutodiffCodegen::detectPureDerivChain(const eshkol_operations_t* op,
+                                          const eshkol_ast** innermost_func,
+                                          const eshkol_ast** outer_point) {
+    if (!op || op->op != ESHKOL_DERIVATIVE_OP) return 0;
+    *outer_point = op->derivative_op.point;
+    const eshkol_operations_t* cur = op;
+    int depth = 0;
+    for (;;) {
+        const eshkol_ast* fn = cur->derivative_op.function;
+        if (!fn) return 0;
+        // Innermost differentiates a named function directly (`named` binding).
+        if (fn->type == ESHKOL_VAR) {
+            depth++;
+            *innermost_func = fn;
+            return depth;
+        }
+        // Otherwise it must be a single-parameter lambda.
+        if (fn->type != ESHKOL_OP || fn->operation.op != ESHKOL_LAMBDA_OP) return 0;
+        if (fn->operation.lambda_op.num_params != 1) return 0;
+        const eshkol_ast* params = fn->operation.lambda_op.parameters;
+        const eshkol_ast* body = fn->operation.lambda_op.body;
+        if (!params || !body) return 0;
+        const char* pname = params[0].variable.id;
+        if (!pname) return 0;
+        depth++;
+        // Is the lambda body itself a `derivative` threading THIS parameter?
+        if (body->type == ESHKOL_OP && body->operation.op == ESHKOL_DERIVATIVE_OP) {
+            const eshkol_ast* ipt = body->operation.derivative_op.point;
+            if (ipt && ipt->type == ESHKOL_VAR && ipt->variable.id &&
+                std::string(ipt->variable.id) == pname) {
+                cur = &body->operation;   // descend one level
+                continue;
+            }
+            // A nested derivative that does NOT thread this variable is not a
+            // pure chain — leave the whole thing on the jet path (safe).
+            return 0;
+        }
+        // Reached the base body: this lambda is the innermost function.
+        *innermost_func = fn;
+        return depth;
+    }
 }
 
 // === Static-only fast path retained for reference / future re-extraction ===

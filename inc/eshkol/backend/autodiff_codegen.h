@@ -327,6 +327,46 @@ public:
     /** Monolith derivative fallback (runtime function parameter dispatch) */
     llvm::Value* codegenDerivativeMonolith(const eshkol_operations_t* op);
 
+    // === Arbitrary-order Taylor-tower AD (ESH-0186, P1) ===
+    // (taylor f x k) -> list of K+1 coefficients; (derivative-n f x k) -> k!*c[k].
+    // Both reuse codegenDerivativeMonolith's call/capture machinery; the tower
+    // mode below re-points seedForwardAndPush / popAndExtractForward at the
+    // heap-tower runtime kernel (lib/core/runtime_taylor.c) instead of the jet.
+    llvm::Value* taylorSeries(const eshkol_operations_t* op);  // ESHKOL_TAYLOR_OP
+    llvm::Value* derivativeN(const eshkol_operations_t* op);   // ESHKOL_DERIVATIVE_N_OP
+    enum class TowerMode { NONE, DERIV_N, COEFFS };
+    TowerMode adTowerMode_ = TowerMode::NONE;   // set only during a tower-API call
+    llvm::Value* adTowerOrder_ = nullptr;       // i32 requested order k (runtime value)
+    // Shared seed+call+extract core for the tower API and the nested-derivative
+    // rewrite. `order_i32` is the requested order; `mode` selects extraction.
+    llvm::Value* taylorApiCore(const struct eshkol_ast* function_ast,
+                               const struct eshkol_ast* point_ast,
+                               llvm::Value* order_i32, TowerMode mode);
+    // Detect a pure repeated-univariate `derivative` chain
+    // (derivative (lambda (z1) (derivative (lambda (z2) ... base ...) z1)) x)
+    // of total depth D. Returns D and the innermost base function + outermost
+    // point when the whole chain threads a single variable; 0 otherwise. Used to
+    // route depth>=3 nests (which the 2-level jet returns 0 for, ESH-0118)
+    // through the arbitrary-order tower while leaving depth<=2 on the jet.
+    int detectPureDerivChain(const eshkol_operations_t* op,
+                             const struct eshkol_ast** innermost_func,
+                             const struct eshkol_ast** outer_point);
+
+    // === P2 compile-time-K monomorphization (ESH-0187) ===
+    // When the requested order K is a compile-time literal and `function_ast`
+    // is a single-parameter lambda (or a VAR naming a single-arg top-level
+    // define) whose body is a pure arithmetic expression tree over the
+    // primitives in taylor_recurrences.def, emit the whole Taylor tower as
+    // fully-unrolled, branch-free, heap-free straight-line SSA IR (explicit
+    // llvm.fma.f64 in the same reduction order as the runtime kernel, so the
+    // result is bit-for-bit reconcilable with the runtime tier -- design
+    // sections 6/6a). Returns the packed result (a double for DERIV_N, a
+    // coefficient list for COEFFS) on success, or nullptr to fall back to the
+    // unchanged P1 runtime heap-tower path (taylorApiCore).
+    llvm::Value* tryMonomorphizedTaylor(const struct eshkol_ast* function_ast,
+                                        const struct eshkol_ast* point_ast,
+                                        int K, TowerMode mode);
+
     // === Tape Management ===
 
     /**
@@ -767,6 +807,15 @@ public:
         function_body_ast_ = table;
     }
 
+    /** Function definition-AST table -- maps a defined function name to its
+     *  full DEFINE node (parameters + body), so a NAMED single-argument
+     *  function passed by var to (derivative-n f x K)/(taylor f x K) can be
+     *  resolved to its (param, body) for P2 compile-time-K monomorphization
+     *  (ESH-0187). */
+    void setFunctionDefAstTable(std::unordered_map<std::string, const eshkol_ast_t*>* table) {
+        function_def_ast_ = table;
+    }
+
     /** Get arena-allocate-closure-with-header function declaration */
     using GetClosureAllocFunc = llvm::Function* (*)(void*);
     void setGetClosureAllocFunc(GetClosureAllocFunc func) {
@@ -791,6 +840,7 @@ private:
     ClosureCallCallback closure_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_body_ast_ = nullptr;
+    std::unordered_map<std::string, const eshkol_ast_t*>* function_def_ast_ = nullptr;
     std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
     GetClosureAllocFunc get_closure_alloc_func_ = nullptr;
 };
