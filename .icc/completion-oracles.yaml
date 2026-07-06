@@ -517,7 +517,7 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: P8 Taylor-model bounds contain the true range and tighten with order
-        action: run_ad_validated_bounds_gate
+        action: ./scripts/run_ad_validated_bounds_gate.sh
 
       - runtime_event:
           event_kinds: [ad_control_flow]

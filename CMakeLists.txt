@@ -2292,6 +2292,17 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "taylor-numerics tests: [0-9]+ passed, 0 failed"
             FAIL_REGULAR_EXPRESSION "FAIL |LLVM module verification failed|fatal signal")
     add_test(
+        NAME taylor_models_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/taylor_models_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(taylor_models_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
                 -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/collections/empty_collection_test.esk"
