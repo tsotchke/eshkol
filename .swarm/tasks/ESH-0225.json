@@ -1,0 +1,37 @@
+{
+  "id": "ESH-0225",
+  "title": "vector-copy rejects tensor-backed #(...) vector literals",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS: #(...) IS a vector literal, so (vector-copy #(1 2 3 4 5) 1 4) must succeed exactly like (vector-copy (vector 1 2 3 4 5) 1 4). Eshkol lowers #(...) literals to HEAP_SUBTYPE_TENSOR (homogeneous doubles, separate dims/elements arrays) while (vector ...) / (make-vector ...) build HEAP_SUBTYPE_VECTOR (inline tagged slots); vector-copy (added by ESH-0153) only handled the latter and raised \"vector-copy: argument is a tensor, not a vector\" on the former. This was the last remaining divergence in the reference-Scheme differential oracle (P7a): 33/34 AGREE with 0013_vector_basic as the sole ESHKOL-DIVERGES case.",
+  "file_globs": [
+    "lib/backend/collection_codegen.cpp",
+    "tests/r7rs/conformance_batch_test.esk"
+  ],
+  "root_cause": "CollectionCodegen::vectorCopyNew (ESH-0153) unconditionally raised on HEAP_SUBTYPE_TENSOR instead of dispatching on it the way vector-ref/vector-length/vector-map already do. Vector literals #(...) always lower to HEAP_SUBTYPE_TENSOR at parse/codegen time (lib/frontend/parser.cpp parse_vector_body -> ESHKOL_TENSOR_OP), so every literal hit the reject path while vectors built via (vector ...) (HEAP_SUBTYPE_VECTOR) did not.",
+  "fix": "Restructured CollectionCodegen::vectorCopyNew (lib/backend/collection_codegen.cpp) to dispatch on the header subtype at ptr-8, same as vector-ref/vector-length/vector-map: (1) length read branches to the tensor struct's total_elements field (offset 3) for HEAP_SUBTYPE_TENSOR vs the inline length field for HEAP_SUBTYPE_VECTOR, merged via a PHI; (2) start/end/bounds-check logic is now shared and unchanged; (3) the allocation+copy branches on the same subtype check: the tensor path allocates a fresh rank-1 tensor (arena_allocate_tensor_with_header + a 1-entry dims array + a fresh count*sizeof(double) elements buffer, memcpy'd from the [start,end) slice of the source elements array), mirroring the existing tensor `cdr` pattern; the vector path is the original ESH-0153 code, unchanged, just moved into its own basic block. Both paths merge into one PHI'd tagged result via packHeapPtr. No change to vector-copy! (CollectionCodegen::vectorCopy) since it has no tensor-rejecting guard (out of scope for this bug: it doesn't error on tensors, it just assumes vector layout unconditionally, a separate latent issue).",
+  "acceptance": [
+    "(vector-copy #(1 2 3 4 5) 1 4) => #(2 3 4)",
+    "(vector-copy #(1 2 3)) => #(1 2 3)",
+    "(vector-copy #(10 20 30 40) 2) => #(30 40)",
+    "(vector-copy #(1 2 3) 1 1) => #()",
+    "copy of a #(...) literal is fresh (vector-set! on the copy does not mutate the literal)",
+    "out-of-range start/end on a #(...) literal still raises 'vector-copy: index out of range'",
+    "constructed-vector vector-copy path (ESH-0153) unchanged / byte-identical behavior",
+    "works under -r and AOT"
+  ],
+  "verification": [
+    "cmake --build build --target eshkol-run stdlib -j8",
+    "./build/eshkol-run -r <literal-and-constructed vector-copy repro> matches expected output",
+    "./build/eshkol-run -O2 <same repro> -o /tmp/bin && /tmp/bin matches -r output",
+    "./build/eshkol-run -r tests/r7rs/conformance_batch_test.esk : 24/24 PASS, 0 FAIL",
+    "./build/eshkol-run -O2 tests/r7rs/conformance_batch_test.esk -o /tmp/conf && /tmp/conf : 24/24 PASS, 0 FAIL",
+    "scripts/run_sicp_smoke.sh : 88/88 gate probes PASS",
+    "scripts/run_tensor_collection_depth.sh : no regressions",
+    "scripts/run_reference_differential.sh (PR #140 corpus, borrowed locally to verify): 34/34 AGREE, 0013_vector_basic AGREES (was the sole ESHKOL-DIVERGES case)"
+  ],
+  "blocked_by": []
+}
