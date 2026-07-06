@@ -1015,8 +1015,13 @@ extern eshkol_exception_handler_t* g_exception_handler_stack;
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
 eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);
 void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
+void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc, const eshkol_tagged_value_t* irritant);
 void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename);
 void eshkol_raise(eshkol_exception_t* exception);
+// R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
+int  eshkol_error_object_p(const eshkol_tagged_value_t* obj);
+void eshkol_error_object_message(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
+void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
 void eshkol_push_exception_handler(void* jmp_buf_ptr);
 void eshkol_pop_exception_handler(void);
 int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type);

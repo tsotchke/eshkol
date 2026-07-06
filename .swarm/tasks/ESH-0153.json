@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0153",
+  "title": "vector-copy (fresh slice) unimplemented",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS vector-copy: (vector-copy v), (vector-copy v start), (vector-copy v start end) return a FRESH vector holding the [start,end) slice, with bounds checking. vector-copy! (in-place) already existed; vector-copy did not and errored with `Unknown function: vector-copy`.",
+  "file_globs": [
+    "lib/backend/collection_codegen.cpp",
+    "inc/eshkol/backend/collection_codegen.h",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/r7rs/conformance_batch_test.esk"
+  ],
+  "root_cause": "Only vector-copy! (CollectionCodegen::vectorCopy) was implemented/registered. There was no allocating vector-copy, so it was rejected as an unknown function at codegen time.",
+  "fix": "Added CollectionCodegen::vectorCopyNew implementing the allocating form on HEAP_SUBTYPE_VECTOR (length at offset 0, 16-byte tagged elements at offset 8): it rejects tensors with a clear raised error, bounds-checks 0<=start<=end<=len (raising via eshkol_make_exception_with_header/eshkol_raise like vector-ref), allocates a fresh vector via getArenaAllocateVectorWithHeader, and memcpys the slice. Registered vector-copy in the dispatch table, the known-builtins list, and function_return_types (Vector).",
+  "acceptance": [
+    "(vector-copy (vector 1 2 3)) => #(1 2 3)",
+    "(vector-copy (vector 10 20 30 40) 2) => #(30 40)",
+    "(vector-copy (vector 1 2 3 4) 1 3) => #(2 3)",
+    "empty slice (start=end) => #()",
+    "returned vector is fresh (mutating it does not touch the source)",
+    "out-of-range start/end or start>end raises an error",
+    "works under -r and AOT"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -r",
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -o /tmp/conf && /tmp/conf",
+    "tests/collections/empty_collection_test.esk all PASS",
+    "scripts/run_differential.sh 246/246 axis pairs agree"
+  ],
+  "blocked_by": []
+}

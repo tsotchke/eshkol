@@ -1,0 +1,31 @@
+{
+  "id": "ESH-0152",
+  "title": "cond/case `=>` receiver form unsupported",
+  "status": "done",
+  "priority": "high",
+  "workstream": "r7rs-conformance",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "R7RS §5.5 `=>` clause: (cond ((assv 1 (list (cons 1 10))) => cdr) (else 0)) must return 10. The test is evaluated once; if truthy the receiver is applied to the test value and the cond/case returns that result.",
+  "file_globs": [
+    "lib/backend/control_flow_codegen.cpp",
+    "inc/eshkol/backend/control_flow_codegen.h",
+    "lib/backend/llvm_codegen.cpp",
+    "tests/r7rs/conformance_batch_test.esk"
+  ],
+  "root_cause": "The parser lowers `(test => receiver)` to a clause whose body is [`=>`, receiver]. codegenCond/codegenCase simply evaluated every body expression in order, so it hit the bare identifier `=>` and failed with `Undefined variable: =>`. There was no special handling for the arrow form and no way to apply a computed procedure value to the test result inside ControlFlowCodegen.",
+  "fix": "Added a ClosureCallFunc callback to ControlFlowCodegen (wired to the main codegen's codegenClosureCall via ControlFlowCallbacks::closureCallWrapper). codegenCond now detects a two-element body whose first element is the identifier `=>`, evaluates the test once, and in the then-block applies the receiver (evaluated to a tagged procedure value) to the tagged test value. codegenCase applies the receiver to the matched key value the same way.",
+  "acceptance": [
+    "(cond ((assv 1 (list (cons 1 10))) => cdr) (else 0)) => 10",
+    "cond => clause not taken falls through to else",
+    "(case 5 ((4 5 6) => (lambda (x) (* x 10))) (else 0)) => 50",
+    "works under -r and AOT"
+  ],
+  "verification": [
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -r",
+    "./build/eshkol-run tests/r7rs/conformance_batch_test.esk -o /tmp/conf && /tmp/conf",
+    "bash scripts/run_sicp_smoke.sh (88/88)",
+    "tests/control_flow/cond_test.esk 31/31, if_then_else_test.esk 47/47"
+  ],
+  "blocked_by": []
+}
