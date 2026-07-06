@@ -352,6 +352,21 @@ public:
                              const struct eshkol_ast** innermost_func,
                              const struct eshkol_ast** outer_point);
 
+    // === P2 compile-time-K monomorphization (ESH-0187) ===
+    // When the requested order K is a compile-time literal and `function_ast`
+    // is a single-parameter lambda (or a VAR naming a single-arg top-level
+    // define) whose body is a pure arithmetic expression tree over the
+    // primitives in taylor_recurrences.def, emit the whole Taylor tower as
+    // fully-unrolled, branch-free, heap-free straight-line SSA IR (explicit
+    // llvm.fma.f64 in the same reduction order as the runtime kernel, so the
+    // result is bit-for-bit reconcilable with the runtime tier -- design
+    // sections 6/6a). Returns the packed result (a double for DERIV_N, a
+    // coefficient list for COEFFS) on success, or nullptr to fall back to the
+    // unchanged P1 runtime heap-tower path (taylorApiCore).
+    llvm::Value* tryMonomorphizedTaylor(const struct eshkol_ast* function_ast,
+                                        const struct eshkol_ast* point_ast,
+                                        int K, TowerMode mode);
+
     // === Tape Management ===
 
     /**
@@ -792,6 +807,15 @@ public:
         function_body_ast_ = table;
     }
 
+    /** Function definition-AST table -- maps a defined function name to its
+     *  full DEFINE node (parameters + body), so a NAMED single-argument
+     *  function passed by var to (derivative-n f x K)/(taylor f x K) can be
+     *  resolved to its (param, body) for P2 compile-time-K monomorphization
+     *  (ESH-0187). */
+    void setFunctionDefAstTable(std::unordered_map<std::string, const eshkol_ast_t*>* table) {
+        function_def_ast_ = table;
+    }
+
     /** Get arena-allocate-closure-with-header function declaration */
     using GetClosureAllocFunc = llvm::Function* (*)(void*);
     void setGetClosureAllocFunc(GetClosureAllocFunc func) {
@@ -816,6 +840,7 @@ private:
     ClosureCallCallback closure_call_callback_ = nullptr;
     std::unordered_map<std::string, uint64_t>* function_arity_table_ = nullptr;
     std::unordered_map<std::string, const eshkol_ast_t*>* function_body_ast_ = nullptr;
+    std::unordered_map<std::string, const eshkol_ast_t*>* function_def_ast_ = nullptr;
     std::unordered_map<std::string, std::vector<std::string>>* nested_function_captures_ = nullptr;
     GetClosureAllocFunc get_closure_alloc_func_ = nullptr;
 };
