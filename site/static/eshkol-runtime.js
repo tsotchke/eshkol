@@ -538,6 +538,15 @@ class EshkolRuntime {
                 eshkol_clear_current_exception: () => {},
                 eshkol_get_raised_value: () => 0,
                 eshkol_set_raised_value: () => {},
+                // R7RS error-object accessors (llvm_codegen.cpp:
+                // codegenErrorObjectPredicate / codegenErrorObjectAccessor).
+                // eshkol_error_object_p(tagged*) -> i32; the message/irritants
+                // accessors take (tagged* obj, tagged* out) and write the
+                // result through the out-param. Degrade to "not an error /
+                // empty result" for the browser build.
+                eshkol_error_object_p:         () => 0,
+                eshkol_error_object_message:   (_obj, _out) => {},
+                eshkol_error_object_irritants: (_obj, _out) => {},
                 eshkol_unwind_dynamic_wind: () => {},
                 eshkol_jmp_buf_size: () => 64,
                 setjmp: () => 0,                  // first-pass through
@@ -586,6 +595,37 @@ class EshkolRuntime {
                 eshkol_taylor_seed_tagged:      () => 0,
                 eshkol_taylor_extract:          () => 0.0,
                 eshkol_taylor_coeffs_list:      () => 0,
+                // P5 reverse-over-Taylor helpers (autodiff_codegen.cpp):
+                //   i32  eshkol_taylor_has_tangent(tagged*)
+                //   f64  eshkol_taylor_extract_tangent(tagged*, i32)
+                //   void eshkol_taylor_lift_ad_node(arena*, node*, i32, tagged*)
+                eshkol_taylor_has_tangent:      () => 0,
+                eshkol_taylor_extract_tangent:  () => 0.0,
+                eshkol_taylor_lift_ad_node:     () => {},
+
+                // Newly-surfaced runtime env imports the wasm backend can emit
+                // (ESH-0224). Degrade like the sibling stubs above: allocators
+                // bump the linear heap, void helpers no-op, and the capability
+                // sandbox / file ops are browser no-ops.
+                //   void* arena_allocate_multi_value(arena*, size_t count)
+                //     -> header(size_t) + count * tagged_value(16B)
+                //   void* eshkol_list_to_svec(arena*, tagged* head)
+                //   void* eshkol_tensor_map_libm(arena*, tagged* in, i32 op)
+                //   int   eshkol_fputs(const char* str, FILE*)
+                //   void  eshkol_exception_add_irritant_ptr(exc*, tagged*)
+                //   void  eshkol_parallel_map_sret(...)  (struct return)
+                //   void  eshkol_builtin_file_rename(sv* out, sv* a, sv* b)
+                //   void  eshkol_capability_runtime_{begin_install,allow,clear}
+                arena_allocate_multi_value:        (arena, count) => rt._bump(8 + Number(count) * 16),
+                eshkol_list_to_svec:               () => rt._bump(64),
+                eshkol_tensor_map_libm:            () => rt._bump(64),
+                eshkol_fputs:                      (s) => { console.log(rt.readString(s)); return 0; },
+                eshkol_exception_add_irritant_ptr: () => {},
+                eshkol_parallel_map_sret:          () => {},
+                eshkol_builtin_file_rename:        () => {},
+                eshkol_capability_runtime_begin_install: () => {},
+                eshkol_capability_runtime_allow:   () => {},
+                eshkol_capability_runtime_clear:   () => {},
 
                 // Lazy futures — no browser worker backing for this WASM glue.
                 eshkol_lazy_future_is_ready: () => 1,
