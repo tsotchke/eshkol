@@ -1,0 +1,86 @@
+;;; tests/memory/long_loop_rss_test.esk — ESH-0214
+;;;
+;;; Regression test for BUG #6 / Noesis PRIORITY 1: a long-lived `eshkol-run
+;;; -r` process that repeatedly read-line's a file and appends into a
+;;; structure must run at BOUNDED RSS, not grow monotonically.
+;;;
+;;; Shape mirrors the reported production loop (a memory-weaver daemon):
+;;; each "pass" re-opens a witness file, read-line's every line into a
+;;; scratch accumulator list, and drops the whole accumulator (only a
+;;; count escapes). Two independent leaks fed the original 24GB OOM:
+;;;   (a) every read-line call permanently reserved arena bytes for its
+;;;       buffer, never reclaimed across iterations of a persistent
+;;;       interpreter process;
+;;;   (b) the per-pass scratch list (cons cells) was dropped but never
+;;;       reclaimed either — both landed in the single ever-growing
+;;;       REPL-persistent arena.
+;;;
+;;; The fix is architectural, not a bolted-on GC: wrap each pass's
+;;; transient work in (with-region ...) so it is reclaimed via scoped
+;;; arena release when the region is popped, instead of accumulating in
+;;; the persistent arena for the life of the process. Getting that idiom
+;;; to actually work in a hot loop needed three underlying fixes (see
+;;; ESH-0214 commit / PR for detail): (1) a named-let TCO analysis bug
+;;; that silently disabled tail-call-optimization for essentially every
+;;; `if`-guarded named-let loop, forcing real (stack-growing) recursion;
+;;; (2) an unhoisted `alloca` in with-region's own codegen that leaked
+;;; native stack per loop iteration; (3) the with-region control struct
+;;; itself being arena- rather than heap-allocated, leaking a small fixed
+;;; amount per activation.
+;;;
+;;; This test runs 300,000 passes (well past the "100k+" bar) over a
+;;; witness file it writes itself, and simply prints PASS if it completes
+;;; without the process being killed (by the OS OOM killer, in the
+;;; original bug) or crashing (stack overflow, from the underlying TCO
+;;; bug this fix also resolves). Bounded-RSS verification (the actual
+;;; plateau, and a diff against master) is done by
+;;; scripts/run_rss_bounded_test.sh, which drives this same shape under
+;;; `eshkol-run -r` while sampling RSS via `/usr/bin/time -l` / `ps` at
+;;; several pass counts and asserts the peak does not grow with N.
+
+(define witness-file "test_long_loop_rss_witness.txt")
+
+;; Write a witness file with a modest number of lines. The bug reproduces
+;; with any fixed-size file re-read every pass — what mattered in
+;; production was the PASS COUNT (wall-clock/iterations), not the file
+;; size.
+(define (write-witness! n)
+  (let ((port (open-output-file witness-file)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (write-line (string-append "witness line " (number->string i)) port)
+            (loop (+ i 1)))))
+    (close-port port)))
+
+(write-witness! 50)
+
+;; One "pass": open the witness file, read-line every line into a scratch
+;; accumulator, close the port, and return only a count. The accumulator
+;; itself (every cons cell and every read-line string) is garbage the
+;; instant the pass returns — exactly the "dropped intermediate nodes"
+;; shape from the bug report.
+(define (run-pass)
+  (let ((port (open-input-file witness-file)))
+    (let loop ((line (read-line port)) (acc '()) (count 0))
+      (if (eof-object? line)
+          (begin (close-port port) count)
+          (loop (read-line port) (cons line acc) (+ count 1))))))
+
+(define total-passes 300000)
+
+;; The per-pass with-region idiom: everything run-pass allocates (read-line
+;; buffers, the scratch cons list) lives in a per-iteration region that is
+;; reclaimed via region_pop when the with-region form exits, instead of
+;; the persistent REPL/global arena.
+(let loop ((pass 0) (last-count 0))
+  (if (< pass total-passes)
+      (loop (+ pass 1) (with-region (run-pass)))
+      (begin
+        (display "[long_loop_rss_test] passes=")
+        (display total-passes)
+        (display " lines-per-pass=")
+        (display last-count)
+        (newline)
+        (display "PASS")
+        (newline))))
