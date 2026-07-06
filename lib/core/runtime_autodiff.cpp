@@ -42,6 +42,20 @@ thread_local uint64_t __ad_tape_depth = 0;
 // ESH-0070: runtime forward-mode perturbation level (see codegen_context.h).
 thread_local uint64_t __ad_pert_level = 0;
 
+// ESH-0190 (P5): Taylor-tower differentiation context. __ad_tower_active is a
+// depth counter (> 0 while a `derivative-n`/`taylor` tower pass is running); it
+// is the fast gate that tells maybeJetLiftTapeOperand to freeze a reverse-tape
+// AD node into a dual-tower (carrying its seed tangent) instead of letting the
+// reverse tape swallow the tower. __ad_tower_order is the current innermost
+// tower order, passed to eshkol_taylor_lift_ad_node as the lifted constant's
+// order (a constant tower zero-extends, so best-effort order is sufficient).
+// Codegen-only state (mirrors __ad_pert_level): written at the derivative-n
+// call site, read in the lambda body — same module, so internal-linkage AOT
+// globals stay consistent. Not thread-local: AD runs on the main thread and
+// LLVM external globals link more portably as plain symbols (see note above).
+uint64_t __ad_tower_active = 0;
+uint64_t __ad_tower_order = 0;
+
 thread_local void* __outer_ad_node_storage = nullptr;
 thread_local void* __outer_ad_node_to_inner = nullptr;
 thread_local void* __outer_grad_accumulator = nullptr;

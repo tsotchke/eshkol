@@ -183,6 +183,14 @@ typedef struct esh_taylor {
 // esh_taylor_t.flags bitfield accessors (§4 of the design).
 #define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64 (P6 adds RATIONAL/TENSOR)
 #define ESH_TAYLOR_COEFF_F64     0u
+// P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
+// "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
+// is set the coefficient storage holds 2*(K+1) doubles: c[0..K] values followed
+// by c[K+1..2K+1] = d(value_k)/d(reverse-seed). This is the tower analogue of
+// the 8-jet's ep-derivative half (docs/design/AD_TAYLOR_TOWER.md §8). Lives in
+// the RESERVED0 byte (bit 8); orthogonal to COEFF_MASK and EPOCH_TAG.
+#define ESH_TAYLOR_TANGENT_FLAG  0x00000100u
+#define ESH_TAYLOR_HAS_TANGENT(fl) (((fl) & ESH_TAYLOR_TANGENT_FLAG) != 0u)
 #define ESH_TAYLOR_EPOCH_SHIFT   16u
 #define ESH_TAYLOR_EPOCH_MASK    0xFFFF0000u  // perturbation-confusion tag (bits 16..31)
 #define ESH_TAYLOR_GET_EPOCH(fl) (((fl) & ESH_TAYLOR_EPOCH_MASK) >> ESH_TAYLOR_EPOCH_SHIFT)
