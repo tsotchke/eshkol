@@ -1,0 +1,204 @@
+;;; Named-let (`let loop`) TCO tail-position matrix (ESH-0211)
+;;;
+;;; Root cause: the parser lowers every `(if test then else)` to
+;;; ESHKOL_CALL_OP with a synthetic function name "if" and 3 operands
+;;; (test, then, else) — there is no ESHKOL_IF_OP node in real parsed
+;;; programs. `TailCallCodegen::allSelfCallsInTailPosition` (the gate
+;;; `codegenNamedLet` in llvm_codegen.cpp uses to decide whether a named
+;;; let's self-calls may compile to a loop) did not know this convention:
+;;; its generic ESHKOL_CALL_OP case treated `if`'s then/else operands as
+;;; ordinary call *arguments*, which are never in tail position. So any
+;;; named-let whose self-call sat in an `if` branch — the single most
+;;; common loop shape — was misclassified as non-tail, TCO was disabled
+;;; for the WHOLE loop (the gate is all-or-nothing), and the loop
+;;; recursed with a real stack frame per iteration until it overflowed
+;;; (observed at 10^6 iterations while fixing `length`, PR #153).
+;;;
+;;; Every other tail-position analysis in llvm_codegen.cpp
+;;; (isSelfTailRecursive's findTailCalls/countAllRecursiveCalls,
+;;; collectMutualTailCallSites for PR #143's musttail mutual TCO) already
+;;; special-cases call_name == "if" — only the named-let path lacked it,
+;;; which is why the nested-`define` self-tail-call form looped fine at
+;;; the same depth while named-let did not.
+;;;
+;;; Fix: lib/backend/tail_call_codegen.cpp's allSelfCallsInTailPosition
+;;; now special-cases "if" (and, defensively, "begin") the same way, and
+;;; adds real tail-position propagation for `when`/`unless`/`case`
+;;; (previously silently assumed safe via the catch-all `default: return
+;;; true`, which is unsound in general and, for `case`, papered over a
+;;; separate pre-existing codegen bug — see Test 9). `cond` already had
+;;; its own dedicated, correct case and was never affected.
+;;;
+;;; Each test below counts a named-let loop to 10,000,000 — large enough
+;;; that a real per-iteration stack frame reliably SIGSEGVs/SIGBUSes
+;;; well before completion. A test that prints its expected sum instead
+;;; of crashing demonstrates O(1)-stack tail-call elimination for that
+;;; position.
+
+(define N 10000000)
+
+;; ================================================================
+;; Test 1: named-let directly at top level (self-call in `if`-else)
+;; ================================================================
+(display "Test 1 (top-level, if-branch): ")
+(let ((r (let loop ((i 0))
+           (if (>= i N) i (loop (+ i 1))))))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 2: named-let as the entire body of a defined function
+;; ================================================================
+(define (count-to-n n)
+  (let loop ((i 0))
+    (if (>= i n) i (loop (+ i 1)))))
+
+(display "Test 2 (function body): ")
+(let ((r (count-to-n N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 3: named-let is the last form inside a `begin`
+;; ================================================================
+(define (count-via-begin n)
+  (begin
+    (if #f #f)  ; side-effecting no-op, forces a real begin sequence
+    (let loop ((i 0))
+      (if (>= i n) i (loop (+ i 1))))))
+
+(display "Test 3 (inside begin): ")
+(let ((r (count-via-begin N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 4: named-let is the last expression of an enclosing (plain) let
+;; ================================================================
+(define (count-via-let n)
+  (let ((dummy 1))
+    (let loop ((i 0))
+      (if (>= i n) i (loop (+ i 1))))))
+
+(display "Test 4 (last expr of let): ")
+(let ((r (count-via-let N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 5: self-call nested one level deeper inside `if` branches
+;; ================================================================
+(define (count-via-nested-if n)
+  (let loop ((i 0) (flag #t))
+    (if flag
+        (if (>= i n) i (loop (+ i 1) #t))
+        (loop i #f))))
+
+(display "Test 5 (nested if branches): ")
+(let ((r (count-via-nested-if N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 6: self-call inside `cond` branches (already worked pre-fix —
+;; COND_OP has always had its own dedicated, correct analysis case;
+;; kept here as a same-shape control alongside Test 5's `if`).
+;; ================================================================
+(define (count-via-cond n)
+  (let loop ((i 0))
+    (cond
+      ((>= i n) i)
+      (else (loop (+ i 1))))))
+
+(display "Test 6 (cond branches): ")
+(let ((r (count-via-cond N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 7: the named-let-containing function is invoked via a tail call
+;; from ANOTHER function — confirms cross-function calls into a TCO'd
+;; named let don't disturb the loop's own tail-call elimination.
+;; ================================================================
+(define (run-loop n)
+  (let loop ((i 0))
+    (if (>= i n) i (loop (+ i 1)))))
+
+(define (entry-point n)
+  (run-loop n))
+
+(display "Test 7 (called from another function): ")
+(let ((r (entry-point N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 8 (bonus): self-call inside `when`/`unless` bodies
+;; ================================================================
+(define (count-via-when n)
+  (let loop ((i 0))
+    (if (>= i n) i (when #t (loop (+ i 1))))))
+
+(define (count-via-unless n)
+  (let loop ((i 0))
+    (if (>= i n) i (unless #f (loop (+ i 1))))))
+
+(display "Test 8 (when/unless bodies): ")
+(let ((r1 (count-via-when N)) (r2 (count-via-unless N)))
+  (if (and (= r1 N) (= r2 N)) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 9 (bonus): self-call inside `case` branches. Pre-fix, this did
+;; not merely fail to loop in O(1) stack — the LLVM verifier rejected
+;; the module ("Terminator found in the middle of a basic block!")
+;; because codegenCase (control_flow_codegen.cpp) unconditionally
+;; emitted `CreateBr(done_block)` after a clause body, without checking
+;; whether the body already terminated the block via a TCO tail jump
+;; (the same class of bug `codegenBegin`/`codegenNamedLet` already guard
+;; against). Both the analysis gate and codegenCase's clause-emission
+;; are fixed.
+;; ================================================================
+(define (count-via-case n)
+  (let loop ((i 0))
+    (case (if (>= i n) 'done 'more)
+      ((done) i)
+      (else (loop (+ i 1))))))
+
+(display "Test 9 (case branches): ")
+(let ((r (count-via-case N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 10: self-call as an `and`/`or` operand (already correct
+;; pre-fix — AND_OP/OR_OP already had dedicated, correct analysis
+;; cases). Kept as a control alongside the fixed positions above.
+;; ================================================================
+(define (count-via-or n)
+  (let loop ((i 0))
+    (or (and (>= i n) i)
+        (loop (+ i 1)))))
+
+(display "Test 10 (and/or operand): ")
+(let ((r (count-via-or N)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 11: documented non-TCO'able position — a self-call used as a
+;; call ARGUMENT is genuinely NOT in tail position per R7RS §3.5 (the
+;; `+` still has work to do with the result), so it correctly does NOT
+;; get the loop transform and consumes a real stack frame per call.
+;; This is by definition, not a bug — verified at a bounded depth only
+;; (10^7 here would legitimately stack-overflow, which is the point).
+;; ================================================================
+(define (sum-non-tail n)
+  (let loop ((i n))
+    (if (= i 0) 0 (+ i (loop (- i 1))))))
+
+(display "Test 11 (non-tail argument position, bounded depth, must still be correct): ")
+(let ((r (sum-non-tail 1000)))
+  ;; sum 1..1000 = 500500
+  (if (= r 500500) (display "PASS") (display "FAIL")))
+(newline)
