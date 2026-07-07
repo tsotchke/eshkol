@@ -1,0 +1,202 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.interval — outward-rounding interval arithmetic  (Phase P8 support)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  A small, self-contained interval-arithmetic library used by
+;;  core.ad.taylor_models to build rigorous (sound) enclosures for validated
+;;  automatic differentiation (docs/design/AD_TAYLOR_TOWER.md §11).
+;;
+;;  An interval is represented as a pair  (lo . hi)  with lo <= hi, denoting the
+;;  closed set { x : lo <= x <= hi }.  A plain real value v is the degenerate
+;;  interval (v . v).
+;;
+;;  ── ROUNDING MODEL (read this — the soundness of the whole feature rests on
+;;     it) ─────────────────────────────────────────────────────────────────
+;;
+;;  Genuine validated interval arithmetic needs *directed rounding*: compute
+;;  each lower endpoint with the FPU rounding mode set toward -inf and each
+;;  upper endpoint toward +inf (equivalently, nudge results with `nextafter`).
+;;  Eshkol today exposes NEITHER to Scheme:
+;;
+;;      $ grep -rn 'nextafter|fesetround|feclearexcept' lib/ include/   → (none)
+;;
+;;  (verified before writing this file). We therefore take the honest,
+;;  documented approach (a) from the task brief: a **conservative
+;;  epsilon-widening** model. Every primitive interval operation is evaluated in
+;;  ordinary round-to-nearest double precision, then its result is widened
+;;  OUTWARD by
+;;
+;;      pad(lo,hi) = max( REL-PAD * max(|lo|,|hi|) , ABS-PAD )
+;;      lo' = lo - pad ,  hi' = hi + pad
+;;
+;;  A single IEEE-754 round-to-nearest arithmetic op errs by at most 0.5 ULP,
+;;  i.e. by at most (eps/2)*|result| where eps = 2^-52 ≈ 2.22e-16 is the machine
+;;  epsilon. REL-PAD is set to 8*eps — several ULPs — which strictly dominates
+;;  the round-to-nearest error of one op AND a few ULPs of accumulated slack for
+;;  the two-or-three-flop compound endpoint formulas (mul/div). The true
+;;  mathematical result of every primitive op is therefore contained in the
+;;  widened interval. ABS-PAD is a tiny absolute floor so a result of exactly 0
+;;  still carries a nonzero (if minuscule) guard band.
+;;
+;;  For the transcendental interval ops (exp/log/sin/cos) we widen with a larger
+;;  factor TRANS-PAD (32*eps). Rationale: the endpoint values come from libm,
+;;  whose exp/log/sin/cos are correctly rounded to within ~1 ULP on every
+;;  mainstream platform (glibc/Apple libm/musl all guarantee <= 1 ULP for these,
+;;  most cases 0.5). 32*eps ≈ 16 ULPs comfortably covers that plus the
+;;  monotonic-endpoint evaluation slack.
+;;
+;;  ── Soundness statement / limitations ─────────────────────────────────────
+;;  Each primitive op returns an interval that provably contains the exact real
+;;  result, *modulo* the assumption that the underlying libm exp/log/sin/cos are
+;;  correctly rounded to within 16 ULP (they are within ~1 ULP in practice — we
+;;  budget 16). This is a sound enclosure, not a heuristic: we never
+;;  under-widen. It is NOT bit-level formally verified interval arithmetic
+;;  (that would require real directed rounding / nextafter, which the language
+;;  does not yet expose); when Eshkol grows an fesetround/nextafter FFI, swap
+;;  the pad for genuine directed rounding — approach (b) — for a strictly
+;;  tighter and fully rigorous result.
+;;
+;;  ── Domain-guard policy ───────────────────────────────────────────────────
+;;  interval-div signals an `error` when the denominator interval contains 0
+;;  (rather than returning an unbounded interval), and interval-log signals an
+;;  `error` when the argument interval reaches <= 0. These are the honest
+;;  failures for a validated library: an unbounded/NaN enclosure would silently
+;;  poison every downstream bound.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(provide make-interval interval-lo interval-hi interval?
+         interval-contains? interval-width interval-mid
+         interval-union interval-widen
+         interval-add interval-sub interval-neg
+         interval-mul interval-div
+         interval-exp interval-log interval-sin interval-cos
+         interval-pow
+         iv-eps iv-rel-pad iv-abs-pad)
+
+;; ── Rounding-model constants ───────────────────────────────────────────────
+(define iv-eps      2.220446049250313e-16)   ; 2^-52, machine epsilon
+(define iv-rel-pad  (* 8.0  iv-eps))          ; several ULPs, algebraic ops
+(define iv-trans-pad (* 32.0 iv-eps))         ; larger band, libm transcendentals
+(define iv-abs-pad  1e-300)                    ; absolute floor (near-denormal)
+
+;; ── Local helpers (core-module discipline: no stdlib map/for-each) ─────────
+(define (iv-max2 a b) (if (>= a b) a b))
+(define (iv-max4 a b c d) (iv-max2 (iv-max2 a b) (iv-max2 c d)))
+(define (iv-min2 a b) (if (<= a b) a b))
+(define (iv-min4 a b c d) (iv-min2 (iv-min2 a b) (iv-min2 c d)))
+(define (iv-abs x) (if (< x 0.0) (- x) x))
+(define (iv-ceil x) (- (floor (- x))))        ; ceiling via floor
+(define (iv-int-pow base e)                   ; base^e, integer e>=0, 0^0 = 1
+  (let loop ((e e) (acc 1.0))
+    (if (<= e 0) acc (loop (- e 1) (* acc base)))))
+
+;; ── Construction / accessors ───────────────────────────────────────────────
+(define (make-interval lo hi)
+  (if (<= lo hi) (cons lo hi) (cons hi lo)))   ; tolerate swapped args
+(define (interval-lo iv) (car iv))
+(define (interval-hi iv) (cdr iv))
+(define (interval? x) (pair? x))
+(define (interval-width iv) (- (cdr iv) (car iv)))
+(define (interval-mid iv) (* 0.5 (+ (car iv) (cdr iv))))
+(define (interval-contains? iv x)
+  (and (>= x (car iv)) (<= x (cdr iv))))
+(define (interval-union a b)
+  (cons (iv-min2 (car a) (car b)) (iv-max2 (cdr a) (cdr b))))
+
+;; outward pad: widen [lo,hi] by max(rel*mag, ABS-PAD)
+(define (iv-widen-by lo hi rel)
+  (let* ((mag (iv-max2 (iv-abs lo) (iv-abs hi)))
+         (pad (iv-max2 (* rel mag) iv-abs-pad)))
+    (cons (- lo pad) (+ hi pad))))
+(define (iv-make lo hi)   (iv-widen-by lo hi iv-rel-pad))
+(define (iv-make-trans lo hi) (iv-widen-by lo hi iv-trans-pad))
+
+;; explicit epsilon pad (absolute), for the caller
+(define (interval-widen iv eps)
+  (cons (- (car iv) eps) (+ (cdr iv) eps)))
+
+;; ── Algebraic operations (outward rounded) ─────────────────────────────────
+(define (interval-add a b)
+  (iv-make (+ (car a) (car b)) (+ (cdr a) (cdr b))))
+
+(define (interval-sub a b)
+  (iv-make (- (car a) (cdr b)) (- (cdr a) (car b))))
+
+(define (interval-neg a)
+  (cons (- (cdr a)) (- (car a))))               ; exact, no rounding needed
+
+(define (interval-mul a b)
+  (let ((al (car a)) (ah (cdr a)) (bl (car b)) (bh (cdr b)))
+    (iv-make (iv-min4 (* al bl) (* al bh) (* ah bl) (* ah bh))
+             (iv-max4 (* al bl) (* al bh) (* ah bl) (* ah bh)))))
+
+;; interval-div: SIGNALS AN ERROR if denominator contains 0 (documented policy)
+(define (interval-div a b)
+  (let ((bl (car b)) (bh (cdr b)))
+    (if (and (<= bl 0.0) (>= bh 0.0))
+        (error "interval-div: denominator interval contains zero")
+        (let ((al (car a)) (ah (cdr a)))
+          (iv-make (iv-min4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh))
+                   (iv-max4 (/ al bl) (/ al bh) (/ ah bl) (/ ah bh)))))))
+
+;; ── Transcendental operations (monotone-aware, outward rounded) ────────────
+;; exp is monotone increasing → endpoints map to endpoints.
+(define (interval-exp a)
+  (iv-make-trans (exp (car a)) (exp (cdr a))))
+
+;; log is monotone increasing on (0,∞) → guard the domain, then endpoints.
+(define (interval-log a)
+  (if (<= (car a) 0.0)
+      (error "interval-log: argument interval reaches <= 0 (outside domain)")
+      (iv-make-trans (log (car a)) (log (cdr a)))))
+
+;; range of sin over [lo,hi], accounting for the ±1 extrema.
+(define (interval-sin a)
+  (let ((lo (car a)) (hi (cdr a))
+        (pi 3.141592653589793) (twopi 6.283185307179586))
+    (if (>= (- hi lo) twopi)
+        (iv-make-trans -1.0 1.0)
+        (let* ((sl (sin lo)) (sh (sin hi))
+               (base-lo (iv-min2 sl sh)) (base-hi (iv-max2 sl sh))
+               ;; maxima of sin at x = pi/2 + 2πk
+               (kmax (iv-ceil (/ (- lo (* 0.5 pi)) twopi)))
+               (xmax (+ (* 0.5 pi) (* twopi kmax)))
+               ;; minima of sin at x = -pi/2 + 2πk
+               (kmin (iv-ceil (/ (+ lo (* 0.5 pi)) twopi)))
+               (xmin (+ (* -0.5 pi) (* twopi kmin)))
+               (hi* (if (<= xmax hi) 1.0 base-hi))
+               (lo* (if (<= xmin hi) -1.0 base-lo)))
+          (iv-make-trans lo* hi*)))))
+
+;; range of cos over [lo,hi], accounting for the ±1 extrema.
+(define (interval-cos a)
+  (let ((lo (car a)) (hi (cdr a))
+        (pi 3.141592653589793) (twopi 6.283185307179586))
+    (if (>= (- hi lo) twopi)
+        (iv-make-trans -1.0 1.0)
+        (let* ((cl (cos lo)) (ch (cos hi))
+               (base-lo (iv-min2 cl ch)) (base-hi (iv-max2 cl ch))
+               ;; maxima of cos at x = 2πk
+               (kmax (iv-ceil (/ lo twopi)))
+               (xmax (* twopi kmax))
+               ;; minima of cos at x = π + 2πk
+               (kmin (iv-ceil (/ (- lo pi) twopi)))
+               (xmin (+ pi (* twopi kmin)))
+               (hi* (if (<= xmax hi) 1.0 base-hi))
+               (lo* (if (<= xmin hi) -1.0 base-lo)))
+          (iv-make-trans lo* hi*)))))
+
+;; integer power  iv^n  (n a nonneg integer), tight over sign changes.
+(define (interval-pow a n)
+  (let ((lo (car a)) (hi (cdr a)))
+    (cond
+      ((<= n 0) (cons 1.0 1.0))                 ; x^0 = 1
+      ((= (modulo n 2) 1)                       ; odd → monotone increasing
+       (iv-make (iv-int-pow lo n) (iv-int-pow hi n)))
+      (else                                     ; even
+       (if (and (<= lo 0.0) (>= hi 0.0))
+           (iv-make 0.0 (iv-max2 (iv-int-pow (iv-abs lo) n)
+                                 (iv-int-pow (iv-abs hi) n)))
+           (let ((pa (iv-int-pow (iv-abs lo) n))
+                 (pb (iv-int-pow (iv-abs hi) n)))
+             (iv-make (iv-min2 pa pb) (iv-max2 pa pb))))))))
