@@ -205,14 +205,31 @@ static VmTensor* vm_tensor_scale(VmRegionStack* rs, const VmTensor* t, double s)
  *  Matrix Multiplication
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 457: matmul — 2D matrix multiplication (MxK) @ (KxN) → (MxN).
+/* 457: matmul — 2D matrix multiplication (MxK) @ (KxN) → (MxN), with the
+ * same PEP-465-style 1D promotion/contraction the LLVM path implements
+ * (llvm_codegen.cpp::codegenMatmul, ESH-0226): a bare 1D tensor/vector
+ * operand is promoted to a matrix (1xK on the left, Kx1 on the right),
+ * multiplied, and the artificial dimension is then contracted back out of
+ * the result:
+ *   2D x 2D -> 2D              (standard)
+ *   2D x 1D -> 1D  ([M,K]@[K]     -> [M])
+ *   1D x 2D -> 1D  ([K]@[K,N]     -> [N])
+ *   1D x 1D -> 1D, length 1 (dot-product-shaped result)
  * Uses scalar triple loop. Optional BLAS dispatch point (not linked here). */
 static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b) return NULL;
-    if (a->n_dims != 2 || b->n_dims != 2) return NULL;
-    if (a->shape[1] != b->shape[0]) return NULL;
+    if (a->n_dims != 1 && a->n_dims != 2) return NULL;
+    if (b->n_dims != 1 && b->n_dims != 2) return NULL;
 
-    int64_t M = a->shape[0], K = a->shape[1], N = b->shape[1];
+    int a_was_1d = (a->n_dims == 1);
+    int b_was_1d = (b->n_dims == 1);
+
+    int64_t M = a_was_1d ? 1 : a->shape[0];
+    int64_t K = a_was_1d ? a->total : a->shape[1];
+    int64_t K2 = b_was_1d ? b->total : b->shape[0];
+    int64_t N = b_was_1d ? 1 : b->shape[1];
+    if (K != K2) return NULL;
+
     int64_t out_shape[2] = { M, N };
     VmTensor* out = vm_tensor_zeros(rs, out_shape, 2);
     if (!out) return NULL;
@@ -226,7 +243,18 @@ static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const Vm
             }
         }
     }
-    return out;
+
+    if (!a_was_1d && !b_was_1d) return out; /* 2D x 2D -> 2D, unchanged */
+
+    /* Contract the promoted dummy dimension(s) back out to a 1D result. */
+    int64_t squeezed_len = a_was_1d ? N : M;
+    if (a_was_1d && b_was_1d) squeezed_len = 1; /* 1D x 1D -> length-1 result */
+    int64_t squeezed_shape[1] = { squeezed_len };
+    VmTensor* result = vm_tensor_new(rs, squeezed_shape, 1);
+    if (!result) return NULL;
+    memcpy(result->data, out->data, (size_t)squeezed_len * sizeof(double));
+    result->dtype = out->dtype;
+    return result;
 }
 
 /* 458: Batched matmul — (..., M, K) @ (..., K, N) → (..., M, N).

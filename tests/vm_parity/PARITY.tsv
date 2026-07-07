@@ -794,7 +794,7 @@ tensor-length	gap	tensor linalg/manipulation fid missing in VM
 tensor-load	vm-supported	
 tensor-log	vm-supported	
 tensor-lu	gap	tensor linalg/manipulation fid missing in VM
-tensor-matmul	gap	tensor linalg/manipulation fid missing in VM
+tensor-matmul	vm-supported	
 tensor-max	vm-supported	
 tensor-maximum	vm-supported	
 tensor-mean	vm-supported	

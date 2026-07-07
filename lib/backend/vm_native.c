@@ -3761,6 +3761,54 @@ static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
     return (AdTape*)vm->heap.objects[tape_val.as.ptr]->opaque.ptr;
 }
 
+/* ESH-0226: centralized, type-checked tensor-operand unpack.
+ *
+ * Every tensor op below must route its tensor operand through this helper
+ * instead of blindly reinterpreting the heap pointer as a VmTensor* (the
+ * naive `(VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr` pattern segfaults
+ * whenever the operand is actually some other heap-allocated type). Mirrors
+ * the LLVM-path invariant already enforced natively via
+ * eshkol_tensor_operand_checked() (lib/core/runtime_tensor_alloc.cpp,
+ * ESH-0069): a bare vector literal such as #(1.0 2.0 3.0 4.0) is a
+ * first-class argument to tensor ops (matmul, reshape, ...) in documented
+ * Eshkol programs, so it must be coerced to a fresh 1-D tensor rather than
+ * rejected or, worse, misread as one.
+ *
+ *   (a) v is already a tensor -> return its VmTensor* unchanged (zero-copy).
+ *   (b) v is a homogeneous numeric vector (every element int or float) ->
+ *       coerce to a fresh 1-D tensor.
+ *   (c) anything else -> clean VM error (vm->error = 1), no fabricated
+ *       value, no crash.
+ */
+static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
+    if (v.type == VAL_TENSOR) {
+        if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
+        return (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    }
+    if (v.type == VAL_VECTOR) {
+        if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!vec) return NULL;
+        for (int i = 0; i < vec->len; i++) {
+            if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
+                fprintf(stderr, "ERROR: %s: vector operand must be numeric (element %d is not a number)\n",
+                        op_name ? op_name : "tensor-op", i);
+                vm->error = 1;
+                return NULL;
+            }
+        }
+        int64_t shape1[1] = { vec->len };
+        VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
+        if (!t) return NULL;
+        for (int i = 0; i < vec->len; i++) t->data[i] = as_number(vec->items[i]);
+        return t;
+    }
+    fprintf(stderr, "ERROR: %s: expected a tensor or numeric vector operand\n",
+            op_name ? op_name : "tensor-op");
+    vm->error = 1;
+    return NULL;
+}
+
 static uint64_t vm_qrng_state = 0;
 
 static uint64_t vm_qrng_next_u64(void) {
@@ -4819,7 +4867,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 411: { /* tensor-ref(tensor, indices) — flat or multi-dim access */
         Value idx_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-ref");
         if (!t) { vm_push(vm, FLOAT_VAL(0)); break; }
         /* Single int/float index: flat access; list: multi-dim */
         if (idx_val.type == VAL_INT || idx_val.type == VAL_FLOAT) {
@@ -4842,9 +4890,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break;
     }
-    case 412: { /* tensor-set!(tensor, indices, value) */
+    case 412: { /* tensor-set!(tensor, indices, value) — mutates in place, so the
+                 * operand must already be a real tensor: coercing a vector here
+                 * would silently mutate a throwaway copy and drop the write. */
         Value val = vm_pop(vm), idx_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        if (t_val.type != VAL_TENSOR) {
+            fprintf(stderr, "ERROR: tensor-set!: expected a tensor operand\n");
+            vm->error = 1; vm_push(vm, NIL_VAL); break;
+        }
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-set!");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         int64_t indices[8]; int n = vm_extract_shape(vm, idx_val, indices, 8);
         if (n == 0) { indices[0] = (int64_t)as_number(idx_val); n = 1; }
@@ -4854,7 +4908,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 413: { /* tensor-shape → list */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-shape");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         Value result = NIL_VAL;
         for (int i = t->n_dims - 1; i >= 0; i--) {
@@ -4870,7 +4924,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 414: { /* tensor-data → flat list (for small tensors) */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-data");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         Value result = NIL_VAL;
         int64_t limit = t->total > 1024 ? 1024 : t->total;
@@ -4887,7 +4941,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 415: { /* reshape(tensor, new_shape) */
         Value shape_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         int64_t shape[8]; int n = vm_extract_shape(vm, shape_val, shape, 8);
         VmTensor* out = vm_tensor_reshape(&vm->heap.regions, t, shape, n);
@@ -4897,7 +4951,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 416: { /* transpose */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "transpose");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_gpu_try_transpose(&vm->heap.regions, t);
         if (!out) out = vm_tensor_transpose(&vm->heap.regions, t);
@@ -4932,7 +4986,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 420: { /* flatten */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "flatten");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_flatten(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -4979,8 +5033,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 440: { /* matmul — GPU dispatch if tensor is large enough */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-        VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+        VmTensor* a = vm_tensor_operand(vm, a_val, "matmul");
+        VmTensor* b = vm_tensor_operand(vm, b_val, "matmul");
         if (!a || !b) { vm_push(vm, NIL_VAL); break; }
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
@@ -4992,8 +5046,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-        VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-binary-op");
+        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-binary-op");
         if (!a || !b) { vm_push(vm, NIL_VAL); break; }
         /* GPU dispatch for add/sub/mul/div (ops 0-3) */
         VmTensor* out = NULL;
@@ -5016,8 +5070,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 448: { /* batch-matmul */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-        VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+        VmTensor* a = vm_tensor_operand(vm, a_val, "batch-matmul");
+        VmTensor* b = vm_tensor_operand(vm, b_val, "batch-matmul");
         if (!a || !b) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_batch_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -5026,15 +5080,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 449: { /* dot */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
-        VmTensor* a = (VmTensor*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
-        VmTensor* b = (VmTensor*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+        VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-dot");
+        VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-dot");
         if (!a || !b) { vm_push(vm, FLOAT_VAL(0.0)); break; }
         vm_push(vm, FLOAT_VAL(vm_tensor_dot(a, b)));
         break;
     }
     case 450: case 451: case 452: case 453: case 454: case 455: { /* tensor unary: neg,abs,sqrt,exp,log,sin,cos */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-unary-op");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = NULL;
         switch (fid) {
@@ -5051,7 +5105,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 456: { /* scale(tensor, scalar) */
         Value scalar = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-scale");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, as_number(scalar));
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -5060,7 +5114,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         int axis = (int)as_number(axis_val);
         /* GPU dispatch for full-tensor reductions (axis=-1 or axis covers all) */
@@ -5089,7 +5143,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 461: { /* cos tensor */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-cos");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_cos_op(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -5100,11 +5154,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value t_val = vm_pop(vm);
         /* Scalar fallback: tensors now have dedicated VAL_TENSOR type.
          * Plain VAL_INT and VAL_FLOAT are genuine scalars. */
-        int is_tensor = (t_val.type == VAL_TENSOR &&
-                         t_val.as.ptr >= 0 &&
-                         t_val.as.ptr < vm->heap.capacity &&
-                         vm->heap.objects[t_val.as.ptr]);
-        if (!is_tensor && (t_val.type == VAL_INT || t_val.type == VAL_FLOAT)) {
+        int is_tensor_or_vector = (t_val.type == VAL_TENSOR || t_val.type == VAL_VECTOR);
+        if (!is_tensor_or_vector && (t_val.type == VAL_INT || t_val.type == VAL_FLOAT)) {
             double x = as_number(t_val);
             double r;
             switch (fid) {
@@ -5117,8 +5168,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_FLOAT, .as.f = r});
             break;
         }
-        if (!is_tensor) { vm_push(vm, NIL_VAL); break; }
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        if (!is_tensor_or_vector) { vm_push(vm, NIL_VAL); break; }
+        VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-activation");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = NULL;
         /* GPU dispatch for softmax */
@@ -5139,7 +5190,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 469: { /* swish */
         Value t_val = vm_pop(vm);
-        VmTensor* t = (VmTensor*)vm->heap.objects[t_val.as.ptr]->opaque.ptr;
+        VmTensor* t = vm_tensor_operand(vm, t_val, "swish");
         if (!t) { vm_push(vm, NIL_VAL); break; }
         VmTensor* out = vm_tensor_swish(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
