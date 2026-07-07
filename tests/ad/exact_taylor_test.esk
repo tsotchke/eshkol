@@ -1,0 +1,135 @@
+;; tests/ad/exact_taylor_test.esk
+;; ESH-0191 (P6): EXACT-coefficient Taylor towers.
+;;
+;; When the seed point x0 is exact (a plain integer/rational, not a double)
+;; and every operator the differentiated function applies is exact-preserving
+;; (+/-/*// and non-negative-integer expt), (derivative-n f x0 n) and
+;; (taylor f x0 k) come back EXACT -- zero floating error, verified with `=`
+;; and `exact?` rather than a numeric tolerance. The moment a transcendental
+;; primitive (exp/log/sin/cos/...) is applied, the tower gracefully (and
+;; correctly) demotes to the ordinary COEFF_F64 double tower -- R7RS
+;; exactness contagion, applied to arbitrary-order AD. See
+;; docs/design/AD_TAYLOR_TOWER.md section 9.
+;;
+;; Runs identically under -r (JIT) and AOT.
+
+(define npass 0)
+(define nfail 0)
+
+(define (check-exact-eq name got expect)
+  (if (and (exact? got) (= got expect))
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got) (display " exact?=") (display (exact? got))
+             (display " expect=") (display expect) (newline))))
+
+(define (check-inexact-close name got expect)
+  (if (and (inexact? got) (<= (abs (- got expect)) (+ 1e-9 (* 1e-9 (abs expect)))))
+      (set! npass (+ npass 1))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL ") (display name)
+             (display " got=") (display got) (display " inexact?=") (display (inexact? got))
+             (display " expect=") (display expect) (newline))))
+
+;; exact factorial (used to build reference derivative values)
+(define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+
+;; ---------------------------------------------------------------------
+;; Gate 1: x^5 at x0=2 (EXACT integer point). f^(n) = 32,80,160,240,240,120,
+;; 0,0,0 for n=0..8 (design doc section 15 table). Checked via both a plain
+;; product chain and (expt x 5), which exercises the exact-integer-power
+;; recurrence (taylor_pow_exact) instead of Cauchy-convolution multiply.
+;; ---------------------------------------------------------------------
+(define (x5-mul x) (* x x x x x))
+(define (x5-pow x) (expt x 5))
+
+(define x5-expected (list 32 80 160 240 240 120 0 0 0))
+
+(let loop ((n 0) (es x5-expected))
+  (if (not (null? es))
+      (begin
+        (check-exact-eq (string-append "x^5(mul) n=" (number->string n)) (derivative-n x5-mul 2 n) (car es))
+        (check-exact-eq (string-append "x^5(pow) n=" (number->string n)) (derivative-n x5-pow 2 n) (car es))
+        (loop (+ n 1) (cdr es)))))
+
+;; (taylor f x k) coefficients must also be exact and equal f^(n)/n!.
+(let ((cs (taylor x5-mul 2 8)))
+  (let loop ((n 0) (cs cs) (es x5-expected))
+    (if (not (null? es))
+        (begin
+          (check-exact-eq (string-append "x^5 taylor-coeff n=" (number->string n))
+                           (* (car cs) (fact n)) (car es))
+          (loop (+ n 1) (cdr cs) (cdr es))))))
+
+;; ---------------------------------------------------------------------
+;; Gate 2: rational function 1/(1-x) at x0=1/2 (EXACT rational point).
+;; f^(n)(1/2) = n! * 2^(n+1) -- an exact integer, reached via genuine exact
+;; RATIONAL division inside the tower (w0 = 1 - 1/2 = 1/2).
+;; ---------------------------------------------------------------------
+(define (geom x) (/ 1 (- 1 x)))
+(define half (/ 1 2))
+
+(let loop ((n 0))
+  (if (<= n 10)
+      (begin
+        (check-exact-eq (string-append "geom n=" (number->string n))
+                         (derivative-n geom half n)
+                         (* (fact n) (expt 2 (+ n 1))))
+        (loop (+ n 1)))))
+
+;; ---------------------------------------------------------------------
+;; Gate 3: bignum-scale exactness. x^20 at x0=3 stays exact through every
+;; order (n=17..20 already exceed INT64_MAX ~9.22e18, so this genuinely
+;; exercises the arbitrary-precision bignum substrate, not just int64).
+;; f^(n)(3) = (20!/(20-n)!) * 3^(20-n).
+;; ---------------------------------------------------------------------
+(define (x20 x) (expt x 20))
+
+(let loop ((n 0))
+  (if (<= n 20)
+      (begin
+        (check-exact-eq (string-append "x^20 n=" (number->string n))
+                         (derivative-n x20 3 n)
+                         (* (quotient (fact 20) (fact (- 20 n))) (expt 3 (- 20 n))))
+        (loop (+ n 1)))))
+
+;; A second, even-larger-magnitude case that forces genuine bignum (not just
+;; int64-adjacent) results: f(x)=x^30 at x0=7, f(7) = 7^30 (~2.25e25).
+(define (x30 x) (expt x 30))
+(check-exact-eq "x^30 n=0 (true bignum)" (derivative-n x30 7 0) (expt 7 30))
+(check-exact-eq "x^30 n=1 (true bignum)" (derivative-n x30 7 1)
+                (* 30 (expt 7 29)))
+
+;; ---------------------------------------------------------------------
+;; Gate 4: transcendental promotion. exp(x) at an EXACT integer point (2,
+;; not 2.0) must still produce the CORRECT double result via graceful
+;; demotion to the COEFF_F64 tower -- R7RS exactness contagion in reverse
+;; (an exact input meeting an inexact-only primitive yields inexact output).
+;; ---------------------------------------------------------------------
+(define (expf x) (exp x))
+(check-inexact-close "exp(2) n=0" (derivative-n expf 2 0) (exp 2.0))
+(check-inexact-close "exp(2) n=1" (derivative-n expf 2 1) (exp 2.0))
+(check-inexact-close "exp(2) n=4" (derivative-n expf 2 4) (exp 2.0))
+
+;; mixed: a polynomial combined with a transcendental primitive over an
+;; exact point must ALSO demote gracefully (not crash / not silently return
+;; a garbage exact-tagged value).
+(define (mixed x) (+ (* x x) (sin x)))
+(check-inexact-close "mixed n=0" (derivative-n mixed 2 0) (+ (* 2.0 2.0) (sin 2.0)))
+(check-inexact-close "mixed n=2" (derivative-n mixed 2 2) (- 2.0 (sin 2.0)))
+
+;; ---------------------------------------------------------------------
+;; Gate 5: inexact point still behaves exactly as the pre-P6 double tower
+;; (no accidental "always exact" regression: a double x0 must give inexact
+;; results even for a pure polynomial).
+;; ---------------------------------------------------------------------
+(if (inexact? (derivative-n x5-mul 2.0 3))
+    (set! npass (+ npass 1))
+    (begin (set! nfail (+ nfail 1))
+           (display "FAIL x^5 with double x0 must stay inexact") (newline)))
+(check-inexact-close "x^5 double x0 n=3" (derivative-n x5-mul 2.0 3) 240.0)
+
+(display "----") (newline)
+(display "exact-taylor tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)

@@ -181,8 +181,17 @@ typedef struct esh_taylor {
 } esh_taylor_t;
 
 // esh_taylor_t.flags bitfield accessors (§4 of the design).
-#define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64 (P6 adds RATIONAL/TENSOR)
+#define ESH_TAYLOR_COEFF_MASK    0x000000FFu  // coefficient type: 0=F64, 1=RATIONAL (P7 adds TENSOR)
 #define ESH_TAYLOR_COEFF_F64     0u
+// P6 (ESH-0191): exact-coefficient towers. When COEFF_RATIONAL is set, the
+// `c[]` storage declared as `double c[]` above is REINTERPRETED as
+// `eshkol_tagged_value_t c[order_k+1]` (each entry an exact int64/bignum/
+// rational tagged value, produced by Eshkol's existing exact numeric tower)
+// instead of raw doubles. This is safe because `c`'s offset (right after
+// order_k/flags, 8 bytes in) is already 8-byte aligned, matching
+// alignof(eshkol_tagged_value_t); accessors in lib/core/runtime_taylor.c
+// never raw-index across coefficient types (design section 4/12).
+#define ESH_TAYLOR_COEFF_RATIONAL 1u
 // P5 (ESH-0190) reverse-over-Taylor: a tower may carry a parallel first-order
 // "seed tangent" series alongside its value series. When ESH_TAYLOR_TANGENT_FLAG
 // is set the coefficient storage holds 2*(K+1) doubles: c[0..K] values followed

@@ -27,6 +27,19 @@
  * match; a foreign-epoch tower (an outer/inner level) is lifted to a constant
  * (its c[0]) with respect to the current (innermost = highest-epoch) level,
  * exactly as JAX lifts a value from an outer trace.
+ *
+ * EXACT-COEFFICIENT towers (ESH-0191, P6, design section 9): when the
+ * COEFF_MASK field of flags is ESH_TAYLOR_COEFF_RATIONAL, the coefficient
+ * storage is reinterpreted as an array of `eshkol_tagged_value_t` (int64 /
+ * bignum / rational, produced through Eshkol's existing exact numeric
+ * tower -- lib/core/rational.c, lib/core/bignum.cpp) instead of raw
+ * doubles. R7RS exactness contagion governs everything: seeding from an
+ * exact point yields an exact tower; add/sub/mul/div and non-negative-
+ * integer pow stay exact; the moment an operand is inexact, an exact op
+ * overflows the int64-limited rational substrate, or a transcendental
+ * primitive (exp/log/sin/cos/tan/sqrt/sinh/cosh/tanh) is applied, the
+ * WHOLE result tower is rebuilt as COEFF_F64 -- coefficients are never
+ * mixed-tagged within one tower (design section 4/12).
  */
 
 /* arena_memory.h declares thread-local storage with the C++/C23 spelling
@@ -41,6 +54,8 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/bignum.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -112,6 +127,180 @@ static inline double* taylor_tan(esh_taylor_t* t) {
     return t->c + ((size_t)t->order_k + 1);
 }
 
+/* ----------------------------------------------------------------------- */
+/* EXACT-COEFFICIENT tower allocation & scalar helpers (P6, ESH-0191)       */
+/* ----------------------------------------------------------------------- */
+
+/* Allocate a zeroed (all exact-0) EXACT tower: coefficient storage is
+ * `eshkol_tagged_value_t c[order_k+1]` reinterpreted over the `double c[]`
+ * flexible array member -- see the COEFF_RATIONAL comment in eshkol.h. */
+esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32_t epoch) {
+    if (!arena) arena = get_global_arena();
+    if (!arena) return NULL;
+
+    size_t ncoeff = (size_t)order_k + 1;
+    size_t data_size = sizeof(esh_taylor_t) + ncoeff * sizeof(eshkol_tagged_value_t);
+    size_t total = sizeof(eshkol_object_header_t) + data_size;
+    total = (total + 15) & ~((size_t)15);
+
+    uint8_t* mem = (uint8_t*)arena_allocate_aligned(arena, total, 16);
+    if (!mem) {
+        eshkol_error("Failed to allocate exact Taylor tower (order %u)", order_k);
+        return NULL;
+    }
+
+    eshkol_object_header_t* hdr = (eshkol_object_header_t*)mem;
+    hdr->subtype = HEAP_SUBTYPE_TAYLOR;
+    hdr->flags = 0;
+    hdr->ref_count = 0;
+    hdr->size = (uint32_t)data_size;
+
+    esh_taylor_t* t = (esh_taylor_t*)(mem + sizeof(eshkol_object_header_t));
+    t->order_k = order_k;
+    t->flags = ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_RATIONAL, epoch);
+
+    eshkol_tagged_value_t* c = (eshkol_tagged_value_t*)(void*)t->c;
+    eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+    for (size_t i = 0; i < ncoeff; i++) c[i] = zero;
+    return t;
+}
+
+static inline int taylor_is_exact(const esh_taylor_t* t) {
+    return t != NULL && (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL;
+}
+
+/* Reinterpret an EXACT tower's coefficient storage as tagged values. Only
+ * valid when taylor_is_exact(t) -- callers must check first. */
+static inline eshkol_tagged_value_t* taylor_exact_c(esh_taylor_t* t) {
+    return (eshkol_tagged_value_t*)(void*)t->c;
+}
+static inline const eshkol_tagged_value_t* taylor_exact_c_const(const esh_taylor_t* t) {
+    return (const eshkol_tagged_value_t*)(const void*)t->c;
+}
+
+/* R7RS exact?: int64, bignum, or rational -- never double. Mirrors the
+ * "exact?" builtin's own base-type/subtype check (llvm_codegen.cpp). */
+static int tagged_is_exact_number(const eshkol_tagged_value_t* v) {
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt == ESHKOL_VALUE_INT64) return 1;
+    if (bt == ESHKOL_VALUE_HEAP_PTR && v->data.ptr_val != 0) {
+        const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+        return hdr != NULL && (hdr->subtype == HEAP_SUBTYPE_BIGNUM || hdr->subtype == HEAP_SUBTYPE_RATIONAL);
+    }
+    return 0;
+}
+static inline int tagged_is_bignum(const eshkol_tagged_value_t* v) {
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0) return 0;
+    const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+    return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_BIGNUM;
+}
+static inline int tagged_is_rational(const eshkol_tagged_value_t* v) {
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0) return 0;
+    const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+    return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_RATIONAL;
+}
+static inline int tagged_is_negative_exact(const eshkol_tagged_value_t* v) {
+    if (tagged_is_bignum(v)) return eshkol_bignum_is_negative((eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
+    if (tagged_is_rational(v)) return eshkol_rational_numerator((void*)(uintptr_t)v->data.ptr_val) < 0;
+    return v->data.int_val < 0; /* int64 */
+}
+
+/* Convert ANY numeric tagged value (double, int64, bignum, rational) to a
+ * plain double -- used when demoting an exact tower to COEFF_F64. */
+static double tagged_any_to_double(const eshkol_tagged_value_t* v) {
+    uint8_t bt = (uint8_t)(v->type & 0x0F);
+    if (bt == ESHKOL_VALUE_DOUBLE) return v->data.double_val;
+    if (bt == ESHKOL_VALUE_INT64)  return (double)v->data.int_val;
+    if (tagged_is_rational(v)) return eshkol_rational_to_double((void*)(uintptr_t)v->data.ptr_val);
+    if (tagged_is_bignum(v))   return eshkol_bignum_to_double((eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
+    return 0.0;
+}
+
+/* Exact scalar binary dispatch (op: 0=add,1=sub,2=mul,3=div). Routes pure
+ * integer add/sub/mul through the bignum substrate (arbitrary precision --
+ * the "bignum-scale" gate), and division / any rational operand through the
+ * int64-limited rational substrate; gracefully degrades to double the
+ * moment an operand is already inexact, or a genuine (int64-overflowing)
+ * bignum meets the rational substrate (which cannot represent it) -- this
+ * IS the exactness-contagion rule (design section 9), applied per-scalar so
+ * a single coefficient's overflow doesn't require special-casing by the
+ * caller: the tower-level contagion check (taylor_materialize_exact_or_demote)
+ * notices the resulting inexact entry and demotes the whole tower. */
+static eshkol_tagged_value_t exact_binary(arena_t* arena, eshkol_tagged_value_t a,
+                                          eshkol_tagged_value_t b, int op) {
+    uint8_t abt = (uint8_t)(a.type & 0x0F), bbt = (uint8_t)(b.type & 0x0F);
+    if (abt == ESHKOL_VALUE_DOUBLE || bbt == ESHKOL_VALUE_DOUBLE) {
+        double da = tagged_any_to_double(&a), db = tagged_any_to_double(&b);
+        double r;
+        switch (op) { case 0: r = da + db; break; case 1: r = da - db; break;
+                      case 2: r = da * db; break; default: r = (db != 0.0) ? da / db : 0.0; break; }
+        return eshkol_make_double(r);
+    }
+
+    int a_rat = tagged_is_rational(&a), b_rat = tagged_is_rational(&b);
+    int a_big = tagged_is_bignum(&a),   b_big = tagged_is_bignum(&b);
+
+    if (op != 3 && !a_rat && !b_rat) {
+        /* pure-integer add/sub/mul: arbitrary precision via the bignum
+         * substrate (handles int64<->bignum promotion/demotion itself). */
+        eshkol_tagged_value_t r;
+        eshkol_bignum_binary_tagged(arena, &a, &b, op, &r);
+        return r;
+    }
+    if (a_big || b_big) {
+        /* A genuine (int64-overflowing) bignum meeting a rational, or a
+         * bignum division -- outside the int64-limited rational substrate.
+         * Documented graceful degradation to double, exactly like the
+         * transcendental-op promotion (design section 9). */
+        double da = tagged_any_to_double(&a), db = tagged_any_to_double(&b);
+        double r;
+        switch (op) { case 0: r = da + db; break; case 1: r = da - db; break;
+                      case 2: r = da * db; break; default: r = (db != 0.0) ? da / db : 0.0; break; }
+        return eshkol_make_double(r);
+    }
+    eshkol_tagged_value_t r;
+    eshkol_rational_binary_tagged_ptr((void*)arena, &a, &b, op, &r);
+    return r;
+}
+static inline eshkol_tagged_value_t exact_add(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 0); }
+static inline eshkol_tagged_value_t exact_sub(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 1); }
+static inline eshkol_tagged_value_t exact_mul(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 2); }
+static inline eshkol_tagged_value_t exact_div(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 3); }
+
+static eshkol_tagged_value_t* alloc_exact_series(arena_t* arena, int n) {
+    return (eshkol_tagged_value_t*)arena_allocate(arena, (size_t)n * sizeof(eshkol_tagged_value_t));
+}
+
+/* If every entry of `s` (length n) is still an exact number, materialize an
+ * EXACT tower; otherwise (an intermediate op overflowed the int64-limited
+ * rational substrate) rebuild the SAME n entries as a COEFF_F64 tower --
+ * a tower's coefficients are never mixed-tagged (design section 4). */
+static void taylor_materialize_exact_or_demote(arena_t* arena, const eshkol_tagged_value_t* s, int n,
+                                               uint32_t order_k, uint32_t epoch, eshkol_tagged_value_t* result) {
+    for (int k = 0; k < n; k++) {
+        if (!tagged_is_exact_number(&s[k])) {
+            esh_taylor_t* f = eshkol_taylor_alloc(arena, order_k, ESH_TAYLOR_MK_FLAGS(ESH_TAYLOR_COEFF_F64, epoch));
+            if (!f) { eshkol_tagged_value_t z; memset(&z, 0, sizeof(z)); *result = z; return; }
+            for (int j = 0; j < n; j++) f->c[j] = tagged_any_to_double(&s[j]);
+            eshkol_tagged_value_t v; memset(&v, 0, sizeof(v));
+            v.type = ESHKOL_VALUE_HEAP_PTR; v.flags = ESHKOL_VALUE_INEXACT_FLAG;
+            v.data.ptr_val = (uint64_t)(uintptr_t)f;
+            *result = v;
+            return;
+        }
+    }
+    esh_taylor_t* out = eshkol_taylor_alloc_exact(arena, order_k, epoch);
+    if (!out) { *result = eshkol_make_double(0.0); return; }
+    eshkol_tagged_value_t* c = taylor_exact_c(out);
+    for (int k = 0; k < n; k++) c[k] = s[k];
+    eshkol_tagged_value_t v; memset(&v, 0, sizeof(v));
+    v.type = ESHKOL_VALUE_HEAP_PTR; v.flags = ESHKOL_VALUE_INEXACT_FLAG;
+    v.data.ptr_val = (uint64_t)(uintptr_t)out;
+    *result = v;
+}
+
 static inline eshkol_tagged_value_t taylor_to_tagged(const esh_taylor_t* t) {
     eshkol_tagged_value_t v;
     memset(&v, 0, sizeof(v));
@@ -137,15 +326,16 @@ int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv) {
 }
 
 /* Extract a plain scalar (the primal value c[0]) from any operand: a tower's
- * c[0], a double, or an int. Used to lift constants and foreign-epoch towers. */
+ * c[0] (exact-aware -- P6), a double, an int, a bignum, or a rational. Used
+ * to lift constants and foreign-epoch towers. */
 static inline double tagged_scalar_value(const eshkol_tagged_value_t* tv) {
     if (!tv) return 0.0;
     esh_taylor_t* t = tagged_as_taylor(tv);
-    if (t) return t->c[0];
-    uint8_t bt = (uint8_t)(tv->type & 0x0F);
-    if (bt == ESHKOL_VALUE_DOUBLE) return tv->data.double_val;
-    if (bt == ESHKOL_VALUE_INT64)  return (double)tv->data.int_val;
-    return 0.0;
+    if (t) {
+        if (taylor_is_exact(t)) return tagged_any_to_double(&taylor_exact_c_const(t)[0]);
+        return t->c[0];
+    }
+    return tagged_any_to_double(tv);
 }
 
 /* c[0] of a tower value (or the scalar value of a non-tower) — the coercion
@@ -261,6 +451,35 @@ static void tr_conv(double* s, const double* a, const double* b, int n) {
     }
 }
 
+/* ----------------------------------------------------------------------- */
+/* EXACT-COEFFICIENT recurrences (P6, ESH-0191): same algebra as the tr_*   */
+/* kernels above, but every multiply-accumulate dispatches through         */
+/* exact_{add,sub,mul,div} (the exact numeric tower) instead of fma().     */
+/* No FP-contraction-policy concern here (unlike section 6a): exact        */
+/* arithmetic has no rounding, so reduction order does not affect the      */
+/* result -- only the double fallback triggered by overflow matters, and   */
+/* that is identical to ordinary add/sub/mul/div contagion.                */
+/* ----------------------------------------------------------------------- */
+
+static void tre_add(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) s[k] = exact_add(ar, u[k], w[k]);
+}
+static void tre_sub(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) s[k] = exact_sub(ar, u[k], w[k]);
+}
+
+/* s = u * w : s_k = sum_{j=0..k} u_j * w_{k-j}   (Cauchy convolution). */
+static void tre_mul(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) {
+        eshkol_tagged_value_t acc = eshkol_make_int64(0, true);
+        for (int j = 0; j <= k; j++) acc = exact_add(ar, acc, exact_mul(ar, u[j], w[k - j]));
+        s[k] = acc;
+    }
+}
+
 /* Tangent of u*w: (u*w)' = u'*w + u*w'. */
 static void trd_mul(double* st, const double* uv, const double* ut,
                     const double* wv, const double* wt, int n) {
@@ -330,6 +549,16 @@ static void ddual_pow_const(double* sv, double* st, const double* uv, const doub
     for (int k = 0; k < n; k++) st[k] = r * st[k];
 }
 
+/* s = u / w : s_k = ( u_k - sum_{j=1..k} w_j * s_{k-j} ) / w_0. */
+static void tre_div(arena_t* ar, eshkol_tagged_value_t* s,
+                    const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
+    for (int k = 0; k < n; k++) {
+        eshkol_tagged_value_t acc = u[k];
+        for (int j = 1; j <= k; j++) acc = exact_sub(ar, acc, exact_mul(ar, w[j], s[k - j]));
+        s[k] = exact_div(ar, acc, w[0]);
+    }
+}
+
 /* ----------------------------------------------------------------------- */
 /* operand normalisation + epoch (perturbation-confusion) handling          */
 /* ----------------------------------------------------------------------- */
@@ -339,7 +568,13 @@ static void ddual_pow_const(double* sv, double* st, const double* uv, const doub
  *   - a same-epoch tower  -> its coefficients (zero-extended to n)
  *   - a foreign tower / scalar / int -> a constant series {value, 0, ...}
  * This is the section-5a lift: order->=1 coefficients of a foreign-epoch tower
- * do not participate in the current level's differentiation. */
+ * do not participate in the current level's differentiation.
+ *
+ * P6: a same-epoch EXACT tower's coefficients are converted to double here
+ * (never raw-memcpy'd -- they are tagged_value_t, not double, in storage) so
+ * this F64 path stays correct whenever exactness has already been decided
+ * NOT to propagate for this particular result (see operand_is_exact_for_taylor
+ * and eshkol_taylor_binary_tagged/eshkol_taylor_unary_tagged below). */
 static void normalise_operand(const eshkol_tagged_value_t* tv, uint32_t active_epoch,
                               double* buf, int n) {
     memset(buf, 0, (size_t)n * sizeof(double));
@@ -347,10 +582,143 @@ static void normalise_operand(const eshkol_tagged_value_t* tv, uint32_t active_e
     if (t && ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) {
         int m = (int)t->order_k + 1;
         if (m > n) m = n;
-        memcpy(buf, t->c, (size_t)m * sizeof(double));
+        if (taylor_is_exact(t)) {
+            const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+            for (int i = 0; i < m; i++) buf[i] = tagged_any_to_double(&c[i]);
+        } else {
+            memcpy(buf, t->c, (size_t)m * sizeof(double));
+        }
     } else {
         buf[0] = tagged_scalar_value(tv);
     }
+}
+
+/* Exact counterpart of normalise_operand: same shape, but coefficients stay
+ * tagged (exact) values. Callers must already know every operand that will
+ * flow here is exact at this epoch (operand_is_exact_for_taylor). */
+static void normalise_operand_exact(const eshkol_tagged_value_t* tv, uint32_t active_epoch,
+                                    eshkol_tagged_value_t* buf, int n) {
+    eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+    for (int i = 0; i < n; i++) buf[i] = zero;
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (t && ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) {
+        int m = (int)t->order_k + 1;
+        if (m > n) m = n;
+        const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+        for (int i = 0; i < m; i++) buf[i] = c[i];
+    } else if (t) {
+        /* foreign-epoch tower: lift its (already-verified-exact) c[0] */
+        buf[0] = taylor_is_exact(t) ? taylor_exact_c_const(t)[0] : zero;
+    } else {
+        buf[0] = *tv;
+    }
+}
+
+/* True iff `tv` participates as an EXACT operand at `active_epoch`: a
+ * same-epoch exact tower, a plain exact scalar (int64/bignum/rational), or a
+ * foreign-epoch tower whose lifted c[0] constant is itself exact. */
+static int operand_is_exact_for_taylor(const eshkol_tagged_value_t* tv, uint32_t active_epoch) {
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t) return tagged_is_exact_number(tv);
+    if (ESH_TAYLOR_GET_EPOCH(t->flags) != active_epoch) {
+        if (!taylor_is_exact(t)) return 0; /* F64 tower's c[0] is a raw double */
+        return tagged_is_exact_number(&taylor_exact_c_const(t)[0]);
+    }
+    return taylor_is_exact(t);
+}
+
+/* True iff `right`, at `active_epoch`, reduces to a plain constant
+ * non-negative integer (a scalar, or a foreign-epoch tower's c[0]) -- the
+ * only exponent shape the exact integer-power recurrence supports. A
+ * same-epoch tower (the exponent itself depends on the differentiation
+ * variable) is intentionally left unhandled here: pow falls through to the
+ * existing (inexact) general recurrence for that rare shape. */
+static int exact_pow_exponent_as_nonneg_int(const eshkol_tagged_value_t* right,
+                                            uint32_t active_epoch, int64_t* out) {
+    esh_taylor_t* t = tagged_as_taylor(right);
+    eshkol_tagged_value_t c0;
+    if (t) {
+        if (ESH_TAYLOR_GET_EPOCH(t->flags) == active_epoch) return 0;
+        if (!taylor_is_exact(t)) return 0;
+        c0 = taylor_exact_c_const(t)[0];
+    } else {
+        c0 = *right;
+    }
+    uint8_t bt = (uint8_t)(c0.type & 0x0F);
+    if (bt == ESHKOL_VALUE_INT64) {
+        if (c0.data.int_val < 0) return 0;
+        *out = c0.data.int_val;
+        return 1;
+    }
+    if (tagged_is_bignum(&c0)) {
+        eshkol_bignum_t* bn = (eshkol_bignum_t*)(uintptr_t)c0.data.ptr_val;
+        int64_t v;
+        if (eshkol_bignum_is_negative(bn) || !eshkol_bignum_fits_int64(bn, &v)) return 0;
+        *out = v;
+        return 1;
+    }
+    return 0; /* rational (non-integer) exponent, or inexact -- not integer-power */
+}
+
+/* s = u^p for a compile-time-unknown but RUNTIME-constant non-negative
+ * integer p, via exact binary exponentiation (repeated series
+ * multiplication) -- keeps monomial/polynomial derivatives exact without
+ * the general real-exponent recurrence's division (which would force the
+ * F64 tier for every pow, even integer ones). */
+static void taylor_pow_exact(arena_t* arena, const eshkol_tagged_value_t* left,
+                             uint32_t order_k, uint32_t epoch, uint64_t p,
+                             eshkol_tagged_value_t* result) {
+    int n = (int)order_k + 1;
+    eshkol_tagged_value_t* u    = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t* acc  = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t* base = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t* tmp  = alloc_exact_series(arena, n);
+    if (!u || !acc || !base || !tmp) { *result = eshkol_make_double(0.0); return; }
+    normalise_operand_exact(left, epoch, u, n);
+
+    eshkol_tagged_value_t one = eshkol_make_int64(1, true);
+    eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+    acc[0] = one;
+    for (int k = 1; k < n; k++) acc[k] = zero;
+    for (int k = 0; k < n; k++) base[k] = u[k];
+
+    uint64_t e = p;
+    while (e > 0) {
+        if (e & 1u) {
+            tre_mul(arena, tmp, acc, base, n);
+            for (int k = 0; k < n; k++) acc[k] = tmp[k];
+        }
+        e >>= 1;
+        if (e > 0) {
+            tre_mul(arena, tmp, base, base, n);
+            for (int k = 0; k < n; k++) base[k] = tmp[k];
+        }
+    }
+    taylor_materialize_exact_or_demote(arena, acc, n, order_k, epoch, result);
+}
+
+/* add/sub/mul/div dispatch on two EXACT operands (pow is handled by
+ * taylor_pow_exact above, gated separately since it needs the exponent's
+ * constant-integer shape, not just its exactness). */
+static void taylor_binary_exact(arena_t* arena, const eshkol_tagged_value_t* left,
+                                const eshkol_tagged_value_t* right, int op,
+                                uint32_t order_k, uint32_t epoch, eshkol_tagged_value_t* result) {
+    int n = (int)order_k + 1;
+    eshkol_tagged_value_t* u = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t* w = alloc_exact_series(arena, n);
+    eshkol_tagged_value_t* s = alloc_exact_series(arena, n);
+    if (!u || !w || !s) { *result = eshkol_make_double(0.0); return; }
+    normalise_operand_exact(left, epoch, u, n);
+    normalise_operand_exact(right, epoch, w, n);
+
+    switch (op) {
+        case ESH_TAYLOR_OP_add: tre_add(arena, s, u, w, n); break;
+        case ESH_TAYLOR_OP_sub: tre_sub(arena, s, u, w, n); break;
+        case ESH_TAYLOR_OP_mul: tre_mul(arena, s, u, w, n); break;
+        case ESH_TAYLOR_OP_div: tre_div(arena, s, u, w, n); break;
+        default: tre_add(arena, s, u, w, n); break;
+    }
+    taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result);
 }
 
 /* The order and active epoch a result should carry: the max order and max
@@ -509,6 +877,30 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
         return;
     }
 
+    /* P6 (ESH-0191): exact-coefficient dispatch. add/sub/mul/div and
+     * non-negative-integer pow stay exact when BOTH operands are exact at
+     * this epoch (a same-epoch exact tower, an exact scalar, or a
+     * foreign-epoch exact tower lifted as a constant, section 5a); any
+     * other operand/op shape falls through to the unchanged F64 kernel
+     * below (a real/negative pow, or any inexact operand -- the R7RS
+     * contagion rule, design section 9). */
+    if (operand_is_exact_for_taylor(left, epoch) && operand_is_exact_for_taylor(right, epoch)) {
+        if (op == ESH_TAYLOR_OP_add || op == ESH_TAYLOR_OP_sub ||
+            op == ESH_TAYLOR_OP_mul || op == ESH_TAYLOR_OP_div) {
+            taylor_binary_exact(arena, left, right, op, order_k, epoch, result);
+            return;
+        }
+        if (op == ESH_TAYLOR_OP_pow) {
+            int64_t p;
+            if (exact_pow_exponent_as_nonneg_int(right, epoch, &p)) {
+                taylor_pow_exact(arena, left, order_k, epoch, (uint64_t)p, result);
+                return;
+            }
+            /* non-integer / negative / non-constant exponent: fall through
+             * to the general (inexact) pow recurrence below. */
+        }
+    }
+
     double sbuf_u[ESH_TAYLOR_STACKN], sbuf_w[ESH_TAYLOR_STACKN];
     double *u = sbuf_u, *w = sbuf_w;
     double *hu = NULL, *hw = NULL;
@@ -646,6 +1038,32 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
         return;
     }
 
+    /* P6 (ESH-0191): neg/abs are exact-preserving (no genuine division, no
+     * transcendental base point); every OTHER unary primitive reachable
+     * here is transcendental (exp/log/sin/cos/tan/sqrt/sinh/cosh/tanh) and
+     * has no exact rational series even at an exact base point (e.g.
+     * exp(1) is irrational) -- those fall through to the unchanged F64
+     * kernel below, which is the documented graceful promotion (design
+     * section 9); normalise_operand demotes the exact input correctly. */
+    if (t && taylor_is_exact(t) && (op == ESH_TAYLOR_UOP_neg || op == ESH_TAYLOR_UOP_abs)) {
+        const eshkol_tagged_value_t* u = taylor_exact_c_const(t);
+        eshkol_tagged_value_t* s = alloc_exact_series(arena, n);
+        if (!s) { *result = eshkol_make_double(0.0); return; }
+        if (op == ESH_TAYLOR_UOP_neg) {
+            eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            for (int k = 0; k < n; k++) s[k] = exact_sub(arena, zero, u[k]);
+        } else { /* abs: sign is fixed by c[0]'s sign (a truncated series
+                  * around x0 -- the classic |x| kink at x0=0 is a pre-existing,
+                  * documented limitation of this recurrence, unchanged from
+                  * the F64 tr_* version above). */
+            int neg0 = tagged_is_negative_exact(&u[0]);
+            eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            for (int k = 0; k < n; k++) s[k] = neg0 ? exact_sub(arena, zero, u[k]) : u[k];
+        }
+        taylor_materialize_exact_or_demote(arena, s, n, order_k, epoch, result);
+        return;
+    }
+
     double sbuf_u[ESH_TAYLOR_STACKN];
     double* u = sbuf_u;
     double* hu = NULL;
@@ -774,13 +1192,45 @@ void eshkol_taylor_seed(arena_t* arena, double x0, int is_var,
 /* Seed the differentiation variable from a tagged point at a FRESH epoch.
  * Reads x0 as the point's scalar value (a plain double/int, or c[0] of an
  * outer tower) and produces {x0, 1, 0, ...} of order K. Called by codegen for
- * (taylor f x k) / (derivative-n f x k). */
+ * (taylor f x k) / (derivative-n f x k).
+ *
+ * P6 (ESH-0191), R7RS exactness contagion (design section 9): when the point
+ * is itself exact (a plain int64/bignum/rational, or the c[0] of an outer
+ * EXACT tower), seed an EXACT tower instead, so every derivative through a
+ * polynomial/rational subgraph of an exact point comes back exact. Any other
+ * point (a double, or an outer COEFF_F64 tower) seeds the unchanged
+ * COEFF_F64 tower. */
 void eshkol_taylor_seed_tagged(arena_t* arena, const eshkol_tagged_value_t* point,
                                int32_t order_k, eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     if (order_k < 0) order_k = 0;
-    double x0 = tagged_scalar_value(point);
     uint32_t epoch = eshkol_taylor_next_epoch();
+
+    esh_taylor_t* outer = tagged_as_taylor(point);
+    eshkol_tagged_value_t x0_exact;
+    int is_exact_point;
+    if (outer) {
+        is_exact_point = taylor_is_exact(outer) && tagged_is_exact_number(&taylor_exact_c_const(outer)[0]);
+        x0_exact = is_exact_point ? taylor_exact_c_const(outer)[0] : eshkol_make_int64(0, true);
+    } else {
+        is_exact_point = tagged_is_exact_number(point);
+        x0_exact = is_exact_point ? *point : eshkol_make_int64(0, true);
+    }
+
+    if (is_exact_point) {
+        esh_taylor_t* t = eshkol_taylor_alloc_exact(arena, (uint32_t)order_k, epoch);
+        if (!t) { *out = eshkol_make_double(tagged_any_to_double(&x0_exact)); return; }
+        eshkol_tagged_value_t* c = taylor_exact_c(t);
+        c[0] = x0_exact;
+        if (order_k >= 1) c[1] = eshkol_make_int64(1, true);
+        eshkol_tagged_value_t v; memset(&v, 0, sizeof(v));
+        v.type = ESHKOL_VALUE_HEAP_PTR; v.flags = ESHKOL_VALUE_INEXACT_FLAG;
+        v.data.ptr_val = (uint64_t)(uintptr_t)t;
+        *out = v;
+        return;
+    }
+
+    double x0 = tagged_scalar_value(point);
     eshkol_taylor_seed(arena, x0, 1, (uint32_t)order_k, epoch, out);
 }
 
@@ -790,11 +1240,15 @@ static double factorial_d(uint32_t n) {
     return f;
 }
 
-/* f^(n)(x0) = n! * c[n]. Non-towers: value at n==0, else 0. */
+/* f^(n)(x0) = n! * c[n]. Non-towers: value at n==0, else 0.
+ * Discards exactness (always returns a raw double) -- kept for any caller
+ * that only wants the numeric magnitude. Codegen uses the exactness-
+ * preserving eshkol_taylor_extract_tagged below (P6, ESH-0191). */
 double eshkol_taylor_extract(const eshkol_tagged_value_t* tv, uint32_t n) {
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (!t) return (n == 0) ? tagged_scalar_value(tv) : 0.0;
     if (n > t->order_k) return 0.0;
+    if (taylor_is_exact(t)) return factorial_d(n) * tagged_any_to_double(&taylor_exact_c_const(t)[n]);
     return factorial_d(n) * t->c[n];
 }
 
@@ -843,13 +1297,53 @@ void eshkol_taylor_lift_ad_node(arena_t* arena, void* node, int32_t order_k,
     *out = taylor_to_tagged(t);
 }
 
+/* f^(n)(x0) = n! * c[n], PRESERVING exactness (P6, ESH-0191): when the
+ * source tower is COEFF_RATIONAL, n! and the product with c[n] are computed
+ * through the exact numeric tower (arbitrary-precision, via exact_mul's
+ * bignum dispatch), so `(exact? (derivative-n f x n))` is #t whenever x and
+ * every operator f applies are exact. Falls back to a tagged double exactly
+ * like eshkol_taylor_extract for COEFF_F64 towers / non-tower operands. */
+void eshkol_taylor_extract_tagged(arena_t* arena, const eshkol_tagged_value_t* tv,
+                                  uint32_t n, eshkol_tagged_value_t* out) {
+    if (!arena) arena = get_global_arena();
+    esh_taylor_t* t = tagged_as_taylor(tv);
+    if (!t) { *out = (n == 0) ? *tv : eshkol_make_double(0.0); return; }
+    if (n > t->order_k) {
+        *out = taylor_is_exact(t) ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
+        return;
+    }
+    if (taylor_is_exact(t)) {
+        eshkol_tagged_value_t fact = eshkol_make_int64(1, true);
+        for (uint32_t i = 2; i <= n; i++) fact = exact_mul(arena, fact, eshkol_make_int64((int64_t)i, true));
+        *out = exact_mul(arena, fact, taylor_exact_c_const(t)[n]);
+        return;
+    }
+    *out = eshkol_make_double(factorial_d(n) * t->c[n]);
+}
+
 /* Differentiate a tower: (f')_k = (k+1) * c_{k+1}. Preserves order/epoch;
- * the top coefficient becomes 0. Non-towers differentiate to 0. */
+ * the top coefficient becomes 0. Non-towers differentiate to 0. P6: an EXACT
+ * tower differentiates to an EXACT tower ((k+1) is a plain exact int64). */
 void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
                          eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
     esh_taylor_t* t = tagged_as_taylor(tv);
     if (!t) { *out = eshkol_make_double(0.0); return; }
+    if (taylor_is_exact(t)) {
+        uint32_t epoch = ESH_TAYLOR_GET_EPOCH(t->flags);
+        esh_taylor_t* r = eshkol_taylor_alloc_exact(arena, t->order_k, epoch);
+        if (!r) { *out = eshkol_make_double(0.0); return; }
+        const eshkol_tagged_value_t* c = taylor_exact_c_const(t);
+        eshkol_tagged_value_t* rc = taylor_exact_c(r);
+        for (uint32_t k = 0; k < t->order_k; k++)
+            rc[k] = exact_mul(arena, eshkol_make_int64((int64_t)(k + 1), true), c[k + 1]);
+        rc[t->order_k] = eshkol_make_int64(0, true);
+        eshkol_tagged_value_t v; memset(&v, 0, sizeof(v));
+        v.type = ESHKOL_VALUE_HEAP_PTR; v.flags = ESHKOL_VALUE_INEXACT_FLAG;
+        v.data.ptr_val = (uint64_t)(uintptr_t)r;
+        *out = v;
+        return;
+    }
     esh_taylor_t* r = eshkol_taylor_alloc(arena, t->order_k, t->flags);
     if (!r) { *out = eshkol_make_double(0.0); return; }
     for (uint32_t k = 0; k < t->order_k; k++)
@@ -859,7 +1353,11 @@ void eshkol_taylor_shift(arena_t* arena, const eshkol_tagged_value_t* tv,
 }
 
 /* Build a Scheme list of the K+1 coefficients (c[0] first) for `(taylor f x k)`.
- * Written through `out` (out-param convention, matching the codegen call). */
+ * Written through `out` (out-param convention, matching the codegen call).
+ * P6: each element is the coefficient's OWN tagged value -- an exact
+ * int64/bignum/rational for a COEFF_RATIONAL tower, a tagged double
+ * otherwise -- so `(exact? (car (taylor f x k)))` reflects the tower's
+ * actual coefficient type. */
 void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
                                int32_t order_k_in, eshkol_tagged_value_t* out) {
     if (!arena) arena = get_global_arena();
@@ -870,18 +1368,23 @@ void eshkol_taylor_coeffs_list(arena_t* arena, const eshkol_tagged_value_t* tv,
     nil.type = ESHKOL_VALUE_NULL;
 
     esh_taylor_t* t = tagged_as_taylor(tv);
+    int exact = t && taylor_is_exact(t);
     eshkol_tagged_value_t acc = nil;
     /* cons from the tail so element order is c[0], c[1], ..., c[K]. */
     for (int k = (int)order_k; k >= 0; k--) {
-        double cv = 0.0;
+        eshkol_tagged_value_t cv;
         if (t) {
-            cv = ((uint32_t)k <= t->order_k) ? t->c[k] : 0.0;
+            if ((uint32_t)k <= t->order_k) {
+                cv = exact ? taylor_exact_c_const(t)[k] : eshkol_make_double(t->c[k]);
+            } else {
+                cv = exact ? eshkol_make_int64(0, true) : eshkol_make_double(0.0);
+            }
         } else {
-            cv = (k == 0) ? tagged_scalar_value(tv) : 0.0;
+            cv = (k == 0) ? *tv : eshkol_make_double(0.0);
         }
         arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
         if (!cell) { *out = nil; return; }
-        cell->car = eshkol_make_double(cv);
+        cell->car = cv;
         cell->cdr = acc;
         eshkol_tagged_value_t v;
         memset(&v, 0, sizeof(v));
