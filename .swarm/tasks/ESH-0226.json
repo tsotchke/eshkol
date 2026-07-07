@@ -1,0 +1,49 @@
+{
+  "id": "ESH-0226",
+  "title": "Register missing web-example builtins (tensor-matmul et al) so all site REPL examples run",
+  "status": "done",
+  "priority": "high",
+  "workstream": "vm-web-repl-parity",
+  "owner": "tsotchke",
+  "preferred_backend": "claude",
+  "goal": "Every runnable code example on the Eshkol website (site/src/main.esk, rendered through eshkol-runtime.js's data-run-code buttons) must execute correctly in the browser bytecode VM (eshkol-vm.wasm / lib/backend/eshkol_vm.c + vm_native.c), not just under the native LLVM compiler. tensor-matmul, used by the site's TENSOR COMPUTING card, was undefined in the VM's native-call name table even though matmul (id 440) exists.",
+  "file_globs": [
+    "lib/backend/eshkol_vm.c",
+    "lib/backend/vm_native.c",
+    "lib/backend/vm_core.c",
+    "lib/backend/vm_compiler.c",
+    "lib/backend/vm_tensor_ops.c",
+    "lib/backend/vm_prelude_cache.h",
+    "tests/vm_parity/PARITY.tsv"
+  ],
+  "root_cause": "Four independent bugs compounded on the single documented example `(reshape #(1.0 2.0 3.0 4.0) 2 2)` / `(tensor-matmul M x)`: (1) eshkol_vm.c's BUILTINS[] table had no `tensor-matmul` entry (only `matmul`/`gpu-matmul` aliased to native id 440), so the name resolved to 'undefined variable'. (2) Every tensor-op native-call case in vm_native.c (410-471) blindly reinterpreted a heap Value as a VmTensor* with no type check, so passing a bare vector literal `#(...)` (the documented calling convention) to reshape/matmul/etc. segfaulted the VM instead of coercing it, unlike the LLVM path's eshkol_tensor_operand_checked() (ESH-0069). (3) The VM compiler had no special form for `(reshape tensor d1 d2 ...)` with variadic trailing dimension args (LLVM's tensor_codegen.h documents this as a variadic special form); the VM's reshape BUILTINS entry is a fixed 2-arg closure, so the 3rd arg was silently dropped, leaving `M` un-reshaped. (4) vm_tensor_matmul required both operands to be rank-2 with no PEP-465-style 1D promotion/contraction that the LLVM codegenMatmul implements, so `(matmul 2x2-tensor 1D-tensor)` returned NULL. Additionally, print_value's VAL_TENSOR case only printed a `<tensor:NxM>` shape summary instead of the vector-literal syntax `#(...)` the native runtime's display_tensor() produces, and the committed lib/backend/vm_prelude_cache.h (the browser REPL's precompiled-prelude fast path, which bypasses BUILTINS-table closure generation entirely) was already stale relative to the current BUILTINS table, independently missing gpu-elementwise/gpu-matmul/gpu-reduce/gpu-softmax/gpu-transpose/tensor-cast/tensor-data/tensor-dtype before this fix.",
+  "fix": [
+    "eshkol_vm.c: add {\"tensor-matmul\", 440, 2} alias to the BUILTINS table.",
+    "vm_native.c: add vm_tensor_operand(vm, value, op_name) — a centralized, type-checked tensor-operand unpack (mirrors eshkol_tensor_operand_checked, ESH-0069): returns the tensor unchanged, coerces a homogeneous numeric vector into a fresh 1-D tensor, or raises a clean VM error (no crash, no fabricated value) for anything else. Wired into every tensor-op native-call case (411-471) that previously did the naive unchecked cast; tensor-set! (412) is explicitly excluded from vector coercion since mutating a throwaway coerced copy would silently drop the write.",
+    "vm_compiler.c: special-case `(reshape|tensor-reshape tensor d1 d2 ...)` (3+ args) to pack the trailing dims into a shape list at compile time before the fixed-arity native call, mirroring the LLVM variadic special form. The 2-arg call form is untouched.",
+    "vm_tensor_ops.c: vm_tensor_matmul now promotes a 1D operand to a 1xK/Kx1 matrix, computes the 2D product, and contracts the result back to 1D when either input was 1D (2Dx1D->1D, 1Dx2D->1D, 1Dx1D->length-1), matching llvm_codegen.cpp::codegenMatmul's PEP-465 semantics.",
+    "vm_core.c: print_value's VAL_TENSOR case now recursively prints nested #(...) vector-literal syntax (print_tensor_recursive) instead of a <tensor:NxM> debug summary, matching lib/core/runtime_display_hosted.cpp's display_tensor() so native and VM display output is identical.",
+    "vm_prelude_cache.h: regenerated via lib/backend/vm_prelude_cache.c (gcc -DGENERATE_PRELUDE_CACHE) against the current BUILTINS table — picks up tensor-matmul plus 8 pre-existing stale gaps (gpu-elementwise, gpu-matmul, gpu-reduce, gpu-softmax, gpu-transpose, tensor-cast, tensor-data, tensor-dtype) that predate this change; no entries removed.",
+    "tests/vm_parity/PARITY.tsv: tensor-matmul row updated from gap to vm-supported.",
+    "site/static/eshkol-vm.js / eshkol-vm.wasm: rebuilt via emcc from lib/backend/vm_wasm_repl.c against the regenerated prelude cache (the actual browser REPL artifact)."
+  ],
+  "acceptance": [
+    "All 41 runnable code examples in site/src/main.esk (create-runnable-code-block + render-example-card call sites) execute in the VM path and match their documented `;; =>` expected output",
+    "(reshape #(1.0 2.0 3.0 4.0) 2 2) then (tensor-matmul M x) with x=#(5.0 6.0) => #(17 39) in the VM, matching native -r output",
+    "scripts/run_vm_tests.sh: 53/53 VM standalone source tests pass",
+    "scripts/run_web_tests.sh: 15/15 pass",
+    "scripts/run_sicp_smoke.sh: 88/88 gate probes pass",
+    "scripts/run_vm_parity.sh corpus + OOS stages: 30/30 pass (unchanged pre-existing 5 surface-audit ratchet failures on unrelated symbols — __arena-used, op:DERIVATIVE_N, op:TAYLOR, string-byte-length, vector-copy — confirmed present on master before this change, out of scope)",
+    "Verified against the actual rebuilt site/static/eshkol-vm.wasm via a Node harness driving repl_init/repl_reset/repl_eval exactly as eshkol-runtime.js's data-run-code button does"
+  ],
+  "verification": [
+    "cmake --build build --target eshkol-run stdlib eshkol-vm-standalone-test eshkol-server -j8",
+    "BUILD_DIR=build ./scripts/run_vm_tests.sh",
+    "BUILD_DIR=build ./scripts/run_web_tests.sh",
+    "BUILD_DIR=build ./scripts/run_sicp_smoke.sh",
+    "BUILD_DIR=build ./scripts/run_vm_parity.sh --no-eskb",
+    "emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' -s EXPORTED_RUNTIME_METHODS='[\"ccall\",\"cwrap\"]' -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM -I lib/backend -I inc lib/backend/vm_wasm_repl.c -o site/static/eshkol-vm.js -lm",
+    "node harness driving mod.ccall('repl_init'...) / repl_reset / cwrap('repl_eval', 'string', ['string']) over all 41 extracted site examples — all pass, no undefined-variable/crash/wrong-result"
+  ],
+  "blocked_by": []
+}
