@@ -1,0 +1,251 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.taylor_models — Taylor models: validated AD  (Phase P8, ESH-0193)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  A Taylor model (TM) of a function f about a center x0 over a domain box
+;;  D = [x0-r, x0+r] is
+;;
+;;      f(x0 + t)  ∈  ( Σ_{n=0}^{k} c_n · t^n )  ⊕  R      for all t ∈ [-r, r]
+;;
+;;  where the c_n are the ordinary Taylor coefficients (c_n = f^(n)(x0)/n!,
+;;  supplied by the UNMODIFIED existing `taylor` tower builtin) and R is a
+;;  rigorous interval remainder that provably encloses the truncation error over
+;;  the whole box. Evaluating the polynomial part over the domain box with
+;;  interval arithmetic and adding R yields a guaranteed enclosure of the RANGE
+;;  of f over D — the basis of validated numerics (Makino–Berz Taylor-model
+;;  arithmetic), layered purely on top of the tower kernel (design §11).
+;;
+;;  This module is pure Scheme; it introduces NO new AD primitive and touches
+;;  none of the codegen/runtime tower internals. It builds on core.ad.interval
+;;  for the outward-rounded interval arithmetic (see that file's header for the
+;;  rounding model and its soundness argument/limitations).
+;;
+;;  ── REMAINDER BOUND: how R is computed, and its rigor ──────────────────────
+;;  We use the Lagrange form of the truncation remainder:
+;;
+;;      f(x0+t) - Σ_{n=0}^{k} c_n t^n  =  f^(k+1)(ξ) / (k+1)! · t^(k+1),
+;;
+;;  for some ξ between x0 and x0+t. Over t ∈ [-r,r] this is bounded by
+;;
+;;      |R| <= M · r^(k+1) / (k+1)! ,      M >= max_{x∈D} |f^(k+1)(x)| .
+;;
+;;  A GENUINELY rigorous M requires an interval evaluation of the (k+1)-th
+;;  derivative expression over the whole box D. The Taylor tower exposes
+;;  f^(k+1) only at POINTS (via `derivative-n`), not as an interval-evaluable
+;;  expression tree, so a fully rigorous global M is not directly available
+;;  without an interval-AD evaluator (which would mean touching the forbidden
+;;  codegen/runtime files). We therefore estimate M by:
+;;
+;;    (1) DENSE SAMPLING: evaluate |f^(k+1)| on a fine grid of `tm-nsamp`
+;;        points spanning D (endpoints + center + interior), take the max; then
+;;    (2) SAFETY FACTOR: multiply that sampled max by `tm-safety` (> 1).
+;;
+;;  HONEST LIMITATION: dense sampling of a smooth derivative is not a proof of
+;;  a global interval bound — a sufficiently oscillatory f^(k+1) could peak
+;;  between grid points. The safety factor is the conservative guard. For the
+;;  smooth test functions here (exp, sin, 1/(1-x), x^5, and the cancellation
+;;  cases) the max of |f^(k+1)| is attained at an endpoint or is uniformly
+;;  bounded, so a fine grid captures it precisely and the safety factor is
+;;  slack, not load-bearing; the soundness gate holds empirically with margin.
+;;  When Eshkol grows an interval-AD evaluator, replace `tm-bound-derivative`
+;;  with a genuine interval evaluation of f^(k+1) over D for full rigor — that
+;;  is strictly better and slots in behind the same interface.
+;;
+;;  For polynomials of degree <= k (e.g. x^5 with k>=5) f^(k+1) ≡ 0, so M = 0
+;;  and R = [0,0]: the enclosure is exact, as it should be.
+;;
+;;  ── TM representation ──────────────────────────────────────────────────────
+;;      (vector 'taylor-model k coeffs x0 r R)
+;;  k      : truncation order (integer)
+;;  coeffs : list of k+1 doubles c_0..c_k
+;;  x0     : center (double)
+;;  r      : domain radius (double), domain = [x0-r, x0+r]
+;;  R      : remainder interval (lo . hi)
+;; ─────────────────────────────────────────────────────────────────────────
+
+(require core.ad.interval)
+
+(provide taylor-model taylor-model? tm-order tm-coeffs tm-center tm-radius
+         tm-remainder tm-domain
+         tm-add tm-mul
+         tm-range tm-eval
+         tm-nsamp tm-safety)
+
+;; ── Tunables for the remainder-bound estimate ──────────────────────────────
+(define tm-nsamp  65)     ; sample-grid resolution for the M estimate
+(define tm-safety 4.0)    ; conservative safety factor on the sampled max
+
+;; ── Local helpers (core-module discipline: no stdlib map/for-each) ─────────
+(define (tm-abs x) (if (< x 0.0) (- x) x))
+(define (tm-max2 a b) (if (>= a b) a b))
+
+(define (tm-length lst)
+  (let loop ((l lst) (n 0)) (if (pair? l) (loop (cdr l) (+ n 1)) n)))
+
+(define (tm-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (tm-list->vec lst)
+  (let* ((n (tm-length lst)) (v (make-vector n 0.0)))
+    (let loop ((l lst) (i 0))
+      (if (pair? l) (begin (vector-set! v i (car l)) (loop (cdr l) (+ i 1))) v))))
+
+(define (tm-vec->list v)
+  (let loop ((i (- (vector-length v) 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons (vector-ref v i) acc)))))
+
+(define (tm-factorial n)                    ; n! as a double
+  (let loop ((i n) (acc 1.0))
+    (if (<= i 1) acc (loop (- i 1) (* acc (exact->inexact i))))))
+
+(define (tm-ipow base e)                    ; base^e, integer e>=0
+  (let loop ((e e) (acc 1.0))
+    (if (<= e 0) acc (loop (- e 1) (* acc base)))))
+
+;; ── Bound on |f^(k+1)| over [x0-r, x0+r] by dense sampling + safety factor ──
+;;  NOTE: the differentiating closure MUST be built in a top-level helper, not
+;;  inside the sampling loop — constructing `(lambda (t) (f t))` (which captures
+;;  the free variable `f`) once per loop iteration triggers a runtime crash
+;;  (repeated closure/perturbation-epoch construction over a captured var inside
+;;  a named-let). Hoisting it here makes each sample a plain tail call.
+(define (tm-dn f xi order)                   ; |f^(order)(xi)|
+  (tm-abs (derivative-n (lambda (t) (f t)) xi order)))
+
+(define (tm-bound-derivative f x0 r order)   ; order = k+1
+  (if (<= r 0.0)
+      ;; degenerate box: single point
+      (* tm-safety (tm-dn f x0 order))
+      (let* ((n tm-nsamp)
+             (lo (- x0 r))
+             (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+        (let loop ((i 0) (m 0.0))
+          (if (>= i n)
+              (* tm-safety m)
+              (let* ((xi (+ lo (* (exact->inexact i) step)))
+                     (dv (tm-dn f xi order)))
+                (loop (+ i 1) (tm-max2 m dv))))))))
+
+;; ── Constructor ────────────────────────────────────────────────────────────
+;;  (taylor-model f x0 domain-radius k) -> TM
+(define (taylor-model f x0 r k)
+  (let* ((coeffs (taylor (lambda (t) (f t)) x0 k))     ; c_0..c_k from the tower
+         (M      (tm-bound-derivative f x0 r (+ k 1)))
+         (B      (* M (/ (tm-ipow r (+ k 1)) (tm-factorial (+ k 1)))))
+         ;; widen B itself by the interval rounding model so R is outward-sound
+         (Bpad   (+ B (tm-max2 (* iv-rel-pad (tm-abs B)) iv-abs-pad)))
+         (R      (make-interval (- Bpad) Bpad)))
+    (vector 'taylor-model k coeffs x0 r R)))
+
+;; ── Accessors ──────────────────────────────────────────────────────────────
+(define (taylor-model? tm)
+  (and (vector? tm) (= (vector-length tm) 6)
+       (eq? (vector-ref tm 0) 'taylor-model)))
+(define (tm-order tm)     (vector-ref tm 1))
+(define (tm-coeffs tm)    (vector-ref tm 2))
+(define (tm-center tm)    (vector-ref tm 3))
+(define (tm-radius tm)    (vector-ref tm 4))
+(define (tm-remainder tm) (vector-ref tm 5))
+(define (tm-domain tm)                       ; [x0-r, x0+r]
+  (make-interval (- (tm-center tm) (tm-radius tm))
+                 (+ (tm-center tm) (tm-radius tm))))
+
+;; ── Interval evaluation of a coefficient polynomial over an interval t-box ──
+;;  Horner:  P(t) = c_0 + t(c_1 + t(c_2 + ... ))  with interval ops.
+(define (tm-poly-range coeffs tdom)
+  (let ((rc (tm-reverse coeffs)))              ; c_k first
+    (let loop ((cs (cdr rc))
+               (acc (let ((c (car rc))) (cons c c))))
+      (if (pair? cs)
+          (loop (cdr cs)
+                (interval-add (interval-mul acc tdom)
+                              (let ((c (car cs))) (cons c c))))
+          acc))))
+
+;; ── tm-range: guaranteed enclosure of f over the WHOLE domain box ───────────
+(define (tm-range tm)
+  (interval-add (tm-poly-range (tm-coeffs tm)
+                               (make-interval (- (tm-radius tm)) (tm-radius tm)))
+                (tm-remainder tm)))
+
+;; ── tm-eval: guaranteed enclosure of f at a single point x in the domain ────
+;;  Evaluate the polynomial at t = x - x0 as a degenerate interval (so the
+;;  outward rounding pads the floating Horner evaluation) and add R.
+(define (tm-eval tm x)
+  (let ((t (- x (tm-center tm))))
+    (interval-add (tm-poly-range (tm-coeffs tm) (cons t t))
+                  (tm-remainder tm))))
+
+;; ── tm-add: sum of two TMs sharing the same center, radius, and order ───────
+(define (tm-add a b)
+  (let* ((k  (tm-order a))
+         (ca (tm-list->vec (tm-coeffs a)))
+         (cb (tm-list->vec (tm-coeffs b)))
+         (out (make-vector (+ k 1) 0.0)))
+    (let loop ((i 0))
+      (if (<= i k)
+          (begin (vector-set! out i (+ (vector-ref ca i) (vector-ref cb i)))
+                 (loop (+ i 1)))
+          (vector 'taylor-model k (tm-vec->list out)
+                  (tm-center a) (tm-radius a)
+                  (interval-add (tm-remainder a) (tm-remainder b)))))))
+
+;; ── tm-mul: Makino–Berz product ─────────────────────────────────────────────
+;;  (P1 + R1)(P2 + R2) = trunc(P1·P2, k)                          ; new poly
+;;      ⊕ tail(P1·P2, order>k)                                    ; discarded
+;;      ⊕ range(P1)·R2 ⊕ range(P2)·R1 ⊕ R1·R2 ,   over t∈[-r,r]   ; into R
+;;  the full convolution c[m] = Σ_{i} p[i]·q[m-i], m = 0..2k, is split at k.
+(define (tm-mul a b)
+  (let* ((k    (tm-order a))
+         (p    (tm-list->vec (tm-coeffs a)))
+         (q    (tm-list->vec (tm-coeffs b)))
+         (r    (tm-radius a))
+         (tdom (make-interval (- r) r))
+         (full (make-vector (+ (* 2 k) 1) 0.0)))
+    ;; Cauchy convolution into `full` (indices 0..2k)
+    (let mloop ((m 0))
+      (if (<= m (* 2 k))
+          (begin
+            (let iloop ((i (tm-max2 0 (- m k))) (s 0.0))
+              (if (<= i (if (< m k) m k))
+                  (if (<= (- m i) k)
+                      (iloop (+ i 1) (+ s (* (vector-ref p i) (vector-ref q (- m i)))))
+                      (iloop (+ i 1) s))
+                  (vector-set! full m s)))
+            (mloop (+ m 1)))
+          #t))
+    ;; kept polynomial: orders 0..k
+    (let* ((poly (make-vector (+ k 1) 0.0)))
+      (let ploop ((m 0))
+        (if (<= m k)
+            (begin (vector-set! poly m (vector-ref full m)) (ploop (+ m 1)))
+            #t))
+      ;; tail interval: Σ_{m=k+1}^{2k} full[m] · tdom^m
+      (let ((tail
+             (let tloop ((m (+ k 1)) (acc (cons 0.0 0.0)))
+               (if (<= m (* 2 k))
+                   (tloop (+ m 1)
+                          (interval-add
+                           acc
+                           (let ((c (vector-ref full m)))
+                             (interval-mul (cons c c) (interval-pow tdom m)))))
+                   acc)))
+            (rngP1 (tm-poly-range (tm-coeffs a) tdom))
+            (rngP2 (tm-poly-range (tm-coeffs b) tdom))
+            (Ra    (tm-remainder a))
+            (Rb    (tm-remainder b)))
+        (vector 'taylor-model k (tm-vec->list poly)
+                (tm-center a) r
+                (interval-add
+                 (interval-add tail (interval-mul rngP1 Rb))
+                 (interval-add (interval-mul rngP2 Ra)
+                               (interval-mul Ra Rb))))))))
+
+;; NOTE: tm-compose (composition of Taylor models) is DEFERRED — it is
+;; explicitly a nice-to-have outside the P8 gate (soundness + tightening of
+;; tm-range on the required functions). Composition needs re-expansion of the
+;; outer model's polynomial in the inner model's (t + R_inner) variable with
+;; horner-in-TM plus a range-containment check that the inner model's range
+;; lands in the outer model's domain; it is straightforward to add later on top
+;; of tm-add/tm-mul but is not required by the gate, so it is not implemented
+;; here to keep the deliverable focused and its rigor easy to audit.

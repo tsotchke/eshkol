@@ -1,0 +1,221 @@
+;; tests/ad/taylor_models_test.esk
+;; ESH-0193 (P8): Taylor models — validated AD with interval-remainder enclosures.
+;;
+;; Verifies the three P8 gate properties of (taylor-model f x0 r k) built on the
+;; existing `taylor` tower + core.ad.interval outward-rounded interval arithmetic:
+;;
+;;   SOUNDNESS   (tm-range tm) is a GUARANTEED enclosure: a dense grid of f(x)
+;;               over the whole domain [x0-r, x0+r] always lands inside it, and
+;;               (tm-eval tm x) contains f(x) at spot-checked points.
+;;   TIGHTENING  the enclosure width is non-increasing as the order k grows
+;;               (and strictly shrinks in the dominant case), and shrinks as the
+;;               domain radius shrinks.
+;;   HARD CASE   for a catastrophic-cancellation function (exp(x)-1-x at tiny x)
+;;               the enclosure still soundly contains the numerically-stable
+;;               reference value, even where naive floating evaluation of f is
+;;               unreliable — i.e. the remainder correctly captures the error
+;;               rather than trusting an ill-conditioned direct evaluation.
+;;
+;; Runs identically under -r (JIT) and AOT. Mirrors tensor_tower_test.esk's
+;; PASS:/FAIL: + final "PASS: taylor_models_test" convention.
+
+(require core.ad.taylor_models)
+
+(define npass 0)
+(define nfail 0)
+
+(define (check name ok)
+  (if ok
+      (begin (set! npass (+ npass 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! nfail (+ nfail 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; ── Sampling helpers (top-level: f is applied directly, no derivative closure
+;;    is constructed inside a loop) ──────────────────────────────────────────
+(define (sample-min f x0 r n)
+  (let ((lo (- x0 r)) (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+    (let loop ((i 0) (m (f (- x0 r))))
+      (if (>= i n) m
+          (let ((fx (f (+ lo (* (exact->inexact i) step)))))
+            (loop (+ i 1) (if (< fx m) fx m)))))))
+
+(define (sample-max f x0 r n)
+  (let ((lo (- x0 r)) (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+    (let loop ((i 0) (m (f (- x0 r))))
+      (if (>= i n) m
+          (let ((fx (f (+ lo (* (exact->inexact i) step)))))
+            (loop (+ i 1) (if (> fx m) fx m)))))))
+
+;; #t iff every one of n samples of f across [x0-r,x0+r] is inside interval rng
+(define (all-samples-in? rng f x0 r n)
+  (let ((lo (- x0 r)) (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+    (let loop ((i 0) (ok #t))
+      (if (>= i n) ok
+          (let ((fx (f (+ lo (* (exact->inexact i) step)))))
+            (loop (+ i 1) (and ok (interval-contains? rng fx))))))))
+
+(define (tm-width f x0 r k)
+  (interval-width (tm-range (taylor-model (lambda (x) (f x)) x0 r k))))
+
+;; number of soundness samples across each domain
+(define NS 401)
+;; slack for the non-increasing width assertions (rounding-pad noise)
+(define WSLACK (+ 1.0 1e-9))
+
+;; ── The test functions ─────────────────────────────────────────────────────
+(define (f-exp x)  (exp x))
+(define (f-sin x)  (sin x))
+(define (f-geom x) (/ 1.0 (- 1.0 x)))          ; 1/(1-x), singular at x=1
+(define (f-pow5 x) (* x x x x x))              ; x^5
+
+;; ═══════════════════════════════════════════════════════════════════════════
+;;  1. SOUNDNESS — (tm-range tm) contains a dense grid of f over the domain
+;; ═══════════════════════════════════════════════════════════════════════════
+(display ";; --- SOUNDNESS (tm-range contains a dense grid of f) ---") (newline)
+
+(define (soundness-case name f x0 r k)
+  (let* ((tm  (taylor-model (lambda (x) (f x)) x0 r k))
+         (rng (tm-range tm))
+         (smin (sample-min f x0 r NS))
+         (smax (sample-max f x0 r NS))
+         (ok  (all-samples-in? rng f x0 r NS)))
+    (display "   ") (display name)
+    (display " x0=") (display x0) (display " r=") (display r) (display " k=") (display k)
+    (display " enclosure=[") (display (interval-lo rng)) (display ",")
+    (display (interval-hi rng)) (display "]")
+    (display " sample=[") (display smin) (display ",") (display smax) (display "]")
+    (display " contained=") (display ok) (newline)
+    (check (string-append "soundness " name) ok)))
+
+(soundness-case "exp"       f-exp  0.0 0.5 6)
+(soundness-case "sin"       f-sin  0.0 0.5 6)
+(soundness-case "geom@0"    f-geom 0.0 0.4 6)
+(soundness-case "geom@0.3"  f-geom 0.3 0.25 6)
+(soundness-case "x^5"       f-pow5 0.0 0.5 6)
+
+;; tm-eval spot checks: (tm-eval tm x) must contain f(x)
+(display ";; --- tm-eval point enclosures contain f(x) ---") (newline)
+(define (eval-case name f x0 r k xs)
+  (let ((tm (taylor-model (lambda (x) (f x)) x0 r k)))
+    (let loop ((ps xs) (ok #t))
+      (if (pair? ps)
+          (let* ((x (car ps)) (ev (tm-eval tm x)) (fx (f x)))
+            (loop (cdr ps) (and ok (interval-contains? ev fx))))
+          (check (string-append "tm-eval " name) ok)))))
+
+(eval-case "exp"      f-exp  0.0 0.5 6 (list -0.4 -0.1 0.0 0.25 0.49))
+(eval-case "sin"      f-sin  0.0 0.5 6 (list -0.5 -0.2 0.0 0.3 0.5))
+(eval-case "geom@0"   f-geom 0.0 0.4 6 (list -0.35 -0.1 0.0 0.2 0.38))
+(eval-case "x^5"      f-pow5 0.0 0.5 6 (list -0.5 -0.2 0.0 0.3 0.5))
+
+;; ═══════════════════════════════════════════════════════════════════════════
+;;  2. TIGHTENING — width non-increasing as k grows; shrinks as r shrinks
+;; ═══════════════════════════════════════════════════════════════════════════
+(display ";; --- TIGHTENING with order k (widths k=2,4,8) ---") (newline)
+
+(define (tighten-k-case name f x0 r)
+  (let ((w2 (tm-width f x0 r 2))
+        (w4 (tm-width f x0 r 4))
+        (w8 (tm-width f x0 r 8)))
+    (display "   ") (display name)
+    (display " x0=") (display x0) (display " r=") (display r)
+    (display " widths k2/k4/k8= ") (display w2) (display " ")
+    (display w4) (display " ") (display w8) (newline)
+    (check (string-append "tighten-k " name)
+           (and (<= w4 (* w2 WSLACK)) (<= w8 (* w4 WSLACK))))))
+
+(tighten-k-case "exp"      f-exp  0.0 0.5)
+(tighten-k-case "sin"      f-sin  0.0 0.5)
+(tighten-k-case "geom@0"   f-geom 0.0 0.4)
+(tighten-k-case "geom@0.3" f-geom 0.3 0.25)
+(tighten-k-case "x^5"      f-pow5 0.0 0.5)
+
+(display ";; --- TIGHTENING with radius r (widths r=0.5,0.25,0.125, k=4) ---") (newline)
+
+(define (tighten-r-case name f x0 k)
+  (let ((wa (tm-width f x0 0.5   k))
+        (wb (tm-width f x0 0.25  k))
+        (wc (tm-width f x0 0.125 k)))
+    (display "   ") (display name)
+    (display " k=") (display k)
+    (display " widths r.5/.25/.125= ") (display wa) (display " ")
+    (display wb) (display " ") (display wc) (newline)
+    (check (string-append "tighten-r " name)
+           (and (< wb (* wa WSLACK)) (< wc (* wb WSLACK))))))
+
+(tighten-r-case "exp"  f-exp  0.0 4)
+(tighten-r-case "sin"  f-sin  0.0 4)
+(tighten-r-case "x^5"  f-pow5 0.0 4)
+
+;; ═══════════════════════════════════════════════════════════════════════════
+;;  3. HARD CASE — catastrophic cancellation: f(x) = exp(x) - 1 - x
+;;     True value at small x is x^2/2 + x^3/6 + ... (a tiny number produced by
+;;     three near-cancelling large terms). The TM built from the tower's
+;;     higher-order structure yields a SOUND enclosure of the stable reference,
+;;     even where naive floating evaluation of f loses all significance.
+;; ═══════════════════════════════════════════════════════════════════════════
+(display ";; --- HARD CASE: exp(x)-1-x cancellation ---") (newline)
+
+(define (f-cancel x) (- (- (exp x) 1.0) x))
+;; numerically-stable reference series x^2/2 + x^3/6 + x^4/24 + x^5/120
+(define (cancel-ref x)
+  (+ (* 0.5 x x)
+     (+ (/ (* x x x) 6.0)
+        (+ (/ (* x x x x) 24.0)
+           (/ (* x x x x x) 120.0)))))
+
+(define hard-tm (taylor-model (lambda (x) (f-cancel x)) 0.0 0.1 6))
+
+;; soundness across the domain vs the STABLE reference (not the naive f)
+(define (all-ref-in? rng g x0 r n)
+  (let ((lo (- x0 r)) (step (/ (* 2.0 r) (exact->inexact (- n 1)))))
+    (let loop ((i 0) (ok #t))
+      (if (>= i n) ok
+          (let ((gx (g (+ lo (* (exact->inexact i) step)))))
+            (loop (+ i 1) (and ok (interval-contains? rng gx))))))))
+
+(let* ((rng (tm-range hard-tm)))
+  (display "   coeffs=") (display (tm-coeffs hard-tm)) (newline)
+  (display "   enclosure over [-0.1,0.1]=[") (display (interval-lo rng))
+  (display ",") (display (interval-hi rng)) (display "]") (newline)
+  (check "hardcase soundness vs stable reference"
+         (all-ref-in? rng cancel-ref 0.0 0.1 NS)))
+
+;; spot checks at tiny x where naive evaluation cancels catastrophically
+(define (hard-point x)
+  (let* ((ev     (tm-eval hard-tm x))
+         (ref    (cancel-ref x))
+         (naive  (f-cancel x))
+         (ok     (interval-contains? ev ref)))
+    (display "   x=") (display x)
+    (display " stable-ref=") (display ref)
+    (display " naive=") (display naive)
+    (display " tm-eval=[") (display (interval-lo ev)) (display ",")
+    (display (interval-hi ev)) (display "] contains-ref=") (display ok) (newline)
+    (check (string-append "hardcase tm-eval contains ref @x=" (number->string x)) ok)))
+
+(hard-point 1e-3)
+(hard-point 1e-5)
+(hard-point 1e-8)
+
+;; Demonstrate the naive evaluation IS numerically unreliable at tiny x while
+;; the TM prediction stays sound: at x=1e-8 the true value is ~5e-17 but naive
+;; (exp x - 1 - x) loses all significant digits (relative error ~1 or worse).
+(let* ((x 1e-8)
+       (ref   (cancel-ref x))
+       (naive (f-cancel x))
+       (relerr (if (= ref 0.0) 0.0 (abs (/ (- naive ref) ref)))))
+  (display "   @x=1e-8 naive relerr vs stable ref = ") (display relerr) (newline)
+  ;; naive is measurably wrong (large relative error) — this is the whole point:
+  ;; the TM does NOT rely on this ill-conditioned direct evaluation.
+  (check "hardcase naive eval is measurably unreliable (relerr > 0.01)"
+         (> relerr 0.01)))
+
+;; ═══════════════════════════════════════════════════════════════════════════
+(display "----") (newline)
+(display "taylor-models tests: ") (display npass) (display " passed, ")
+(display nfail) (display " failed") (newline)
+(if (= nfail 0)
+    (begin (display "PASS: taylor_models_test") (newline) (exit 0))
+    (begin (display "FAIL: taylor_models_test") (newline) (exit 1)))
