@@ -10841,6 +10841,17 @@ private:
             // Branch to loop header
             builder->CreateBr(tco_loop_bb);
             builder->SetInsertPoint(tco_loop_bb);
+
+            // ESH-0222: see TailCallContext::loop_stack_save /
+            // open_guard_handlers (binding_codegen.h) for the full
+            // rationale — this reclaims per-iteration dynamic stack
+            // allocations (e.g. guard's jmp_buf) and resets the
+            // per-iteration handler-push counter for this fresh loop.
+            {
+                Function* stacksave_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::stacksave, {builder->getPtrTy()});
+                tco_ctx.loop_stack_save = builder->CreateCall(stacksave_fn, {}, "tco_loop_sp");
+            }
+            tco_ctx.open_guard_handlers = 0;
         }
 
         // ASSIGNMENT CONVERSION (ESH-0074): box set!-mutated parameters.
@@ -20527,6 +20538,17 @@ private:
         }
         Function* current_func = builder->GetInsertBlock()->getParent();
 
+        // ESH-0222: snapshot how many exception handlers are currently
+        // "open" (pushed, not yet matched by a compile-time-emitted pop)
+        // within the innermost active TCO loop, BEFORE this guard pushes its
+        // own. codegenTailCallFromContext drains exactly this many pops
+        // before branching back to a loop header from inside our body/handler
+        // (see below); restoring to this exact baseline once our own push is
+        // resolved — however it resolves — keeps sibling/enclosing guards'
+        // bookkeeping correct regardless of nesting. A no-op when we're not
+        // inside a TCO loop (binding_ still tracks it, just never consulted).
+        unsigned guard_open_before = binding_ ? binding_->getTCOContext().open_guard_handlers : 0;
+
         // Create basic blocks - IMPORTANT: setup_block is separate to avoid
         // corrupting the caller's block when we're nested inside another expression
         BasicBlock* setup_block = BasicBlock::Create(*context, "guard_setup", current_func);
@@ -20545,6 +20567,11 @@ private:
 
         // Push exception handler
         builder->CreateCall(push_handler_func, {jmp_buf_alloc});
+        if (binding_) {
+            // ESH-0222: record that this push is now open, relative to
+            // whatever was already open when we entered.
+            binding_->getTCOContext().open_guard_handlers = guard_open_before + 1;
+        }
 
         // Call setjmp - returns 0 on first call, non-zero when longjmp is called
         Value* setjmp_result = builder->CreateCall(setjmp_func, makeSetjmpArgs(jmp_buf_alloc), "setjmp_result");
@@ -20587,6 +20614,19 @@ private:
 
         // Pop handler first
         builder->CreateCall(pop_handler_func, {});
+        if (binding_) {
+            // ESH-0222: this basic block is always constructed (whether or
+            // not it's reached at runtime), so this is the single point,
+            // covering every exit from this guard (normal completion, a
+            // caught exception, an uncaught re-raise, AND a TCO tail-call
+            // branch out of the protected body — which drained down to 0 and
+            // skipped its own pop), where this guard's own push is
+            // definitively resolved. Restore to the pre-push baseline so
+            // handler-clause bodies (evaluated below, possibly containing
+            // their own tail self-call back to an enclosing loop) see the
+            // correct count of genuinely-still-open ancestor handlers.
+            binding_->getTCOContext().open_guard_handlers = guard_open_before;
+        }
 
         // R7RS: Get the original raised value (not the exception struct)
         Function* get_raised_func = module->getFunction("eshkol_get_raised_value");
@@ -24274,6 +24314,38 @@ private:
                     }
                     return false;
 
+                case ESHKOL_GUARD_OP:
+                    // ESH-0222: guard used to fall through to `default: return
+                    // false`, so isSelfTailRecursive() could never see a
+                    // self-call buried in a guard as tail — even when it
+                    // genuinely was (Selene's resident tick loop: the guard's
+                    // protected body's last expression, and each handler
+                    // clause's last expression, both recurse). That silently
+                    // disabled TCO and fell back to unbounded real recursion.
+                    //
+                    // guard's body is parser-normalized to a single node
+                    // (body[0]); whatever tail position guard itself has, that
+                    // node inherits.
+                    if (op->guard_op.body && op->guard_op.num_body_exprs > 0 &&
+                        isInTailPosition(expr, &op->guard_op.body[0])) {
+                        return true;
+                    }
+                    // A handler clause's LAST body expression is also in tail
+                    // position — it's what the whole `guard` evaluates to when
+                    // that clause fires.
+                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                        const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                        if (clause->type == ESHKOL_OP &&
+                            clause->operation.op == ESHKOL_CALL_OP &&
+                            clause->operation.call_op.num_vars > 0) {
+                            uint64_t last = clause->operation.call_op.num_vars - 1;
+                            if (isInTailPosition(expr, &clause->operation.call_op.variables[last])) {
+                                return true;
+                            }
+                        }
+                    }
+                    return false;
+
                 default:
                     return false;
             }
@@ -24338,6 +24410,29 @@ private:
                 case ESHKOL_SEQUENCE_OP:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         count += countAllRecursiveCalls(&op->sequence_op.expressions[i], func_name);
+                    }
+                    break;
+
+                case ESHKOL_GUARD_OP:
+                    // ESH-0222: previously fell to `default: break`, so a
+                    // self-call hidden inside a guard body/handler was
+                    // completely invisible to this counter — total_recursive_calls
+                    // silently came out as 0 for functions whose only
+                    // recursion lives inside a `guard`, which made
+                    // isSelfTailRecursive() report "no recursion at all" and
+                    // disable TCO outright (the exact shape of Selene's
+                    // resident tick loop: `(define (loop ...) (if ... (guard
+                    // ...)))`).
+                    if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
+                        count += countAllRecursiveCalls(&op->guard_op.body[0], func_name);
+                    }
+                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                        const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                        if (clause->type == ESHKOL_OP && clause->operation.op == ESHKOL_CALL_OP) {
+                            for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                                count += countAllRecursiveCalls(&clause->operation.call_op.variables[j], func_name);
+                            }
+                        }
                     }
                     break;
 
@@ -24433,6 +24528,23 @@ private:
                 case ESHKOL_SEQUENCE_OP:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
+                    }
+                    break;
+
+                case ESHKOL_GUARD_OP:
+                    // ESH-0222: search guard's protected body and every
+                    // handler clause for self-calls; isInTailPosition() (now
+                    // guard-aware) decides which ones actually qualify.
+                    if (op->guard_op.body && op->guard_op.num_body_exprs > 0) {
+                        findTailCalls(&op->guard_op.body[0], body, func_name, tail_calls);
+                    }
+                    for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                        const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                        if (clause->type == ESHKOL_OP && clause->operation.op == ESHKOL_CALL_OP) {
+                            for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                                findTailCalls(&clause->operation.call_op.variables[j], body, func_name, tail_calls);
+                            }
+                        }
                     }
                     break;
 
@@ -25239,6 +25351,43 @@ private:
         // Store all new values to parameter allocas
         for (size_t i = 0; i < new_values.size(); i++) {
             builder->CreateStore(new_values[i], tco_ctx.param_allocas[i]);
+        }
+
+        // ESH-0222: this branch is about to skip past any `guard` cleanup
+        // code that a normal (non-tail-call) return through this control
+        // path would have run — specifically codegenGuard's post-body
+        // eshkol_pop_exception_handler() call, which only fires when the
+        // body's block is NOT already terminated. Drain every handler push
+        // still open within this loop iteration so the runtime handler
+        // chain (g_exception_handler_stack) stays balanced across
+        // iterations instead of growing forever and retaining stale
+        // jmp_buf pointers into stack memory we're about to reclaim below.
+        if (tco_ctx.open_guard_handlers > 0) {
+            Function* pop_handler_fn = module->getFunction("eshkol_pop_exception_handler");
+            if (!pop_handler_fn) {
+                FunctionType* pop_type = FunctionType::get(builder->getVoidTy(), {}, false);
+                pop_handler_fn = Function::Create(pop_type, Function::ExternalLinkage,
+                                                   "eshkol_pop_exception_handler", module.get());
+            }
+            for (unsigned i = 0; i < tco_ctx.open_guard_handlers; i++) {
+                builder->CreateCall(pop_handler_fn, {});
+            }
+            tco_ctx.open_guard_handlers = 0;
+        }
+
+        // ESH-0222: reclaim any dynamically-sized stack allocations made
+        // during this iteration (e.g. guard's setjmp jmp_buf — allocaJmpBuf()
+        // sizes it from a runtime call, so LLVM cannot statically hoist or
+        // reuse it across iterations of this branch-based loop). Without
+        // this, every iteration that passes through `guard` (or any other
+        // dynamic alloca) permanently lowers the stack pointer a little more
+        // until the native stack overflows — this is the direct mechanism
+        // behind "stack overflow" crashes in long-running tick loops with a
+        // per-iteration error boundary.
+        if (tco_ctx.loop_stack_save) {
+            Function* stackrestore_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::stackrestore,
+                                                               {builder->getPtrTy()});
+            builder->CreateCall(stackrestore_fn, {tco_ctx.loop_stack_save});
         }
 
         // Create unreachable sentinel BEFORE the branch (can't add instructions
@@ -26625,6 +26774,17 @@ private:
             // Branch from entry to loop body
             builder->CreateBr(tco_loop_bb);
             builder->SetInsertPoint(tco_loop_bb);
+
+            // ESH-0222: see TailCallContext::loop_stack_save /
+            // open_guard_handlers (binding_codegen.h). This lambda's own
+            // whole-struct save/restore of TailCallContext (above/below)
+            // already keeps these fields correctly scoped across nested
+            // TCO'd closures.
+            {
+                Function* stacksave_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::stacksave, {builder->getPtrTy()});
+                tco_ctx.loop_stack_save = builder->CreateCall(stacksave_fn, {}, "tco_loop_sp");
+            }
+            tco_ctx.open_guard_handlers = 0;
         }
 
         // ASSIGNMENT CONVERSION (ESH-0074): box set!-mutated lambda parameters.
@@ -27881,6 +28041,8 @@ private:
         std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
         bool saved_tco_iter_scope = tco_ctx.iter_scope;
+        unsigned saved_tco_open_guard_handlers = tco_ctx.open_guard_handlers;  // ESH-0222
+        llvm::Value* saved_tco_loop_stack_save = tco_ctx.loop_stack_save;      // ESH-0222
 
         // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
@@ -27922,6 +28084,18 @@ private:
                 builder->CreateCall(getArenaPushScopeFunc(), {iter_arena_ptr});
             }
         }
+
+        // ESH-0222: see TailCallContext::loop_stack_save / open_guard_handlers
+        // (binding_codegen.h) for the full rationale. Reset relative to THIS
+        // named let's own loop — an enclosing guard opened OUTSIDE the loop
+        // (once, for the loop's whole lifetime) is deliberately hidden from
+        // this per-iteration bookkeeping; it is saved/restored below
+        // alongside the other nested-named-let TCO context fields.
+        {
+            Function* stacksave_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::stacksave, {builder->getPtrTy()});
+            tco_ctx.loop_stack_save = builder->CreateCall(stacksave_fn, {}, "tco_loop_sp");
+        }
+        tco_ctx.open_guard_handlers = 0;
 
         // Generate body
         Value* body_result = codegenAST(op->let_op.body);
@@ -27983,6 +28157,8 @@ private:
         tco_ctx.param_allocas = saved_tco_param_allocas;
         tco_ctx.param_names = saved_tco_param_names;
         tco_ctx.iter_scope = saved_tco_iter_scope;
+        tco_ctx.open_guard_handlers = saved_tco_open_guard_handlers;  // ESH-0222
+        tco_ctx.loop_stack_save = saved_tco_loop_stack_save;          // ESH-0222
 
         // Call the loop function with initial values + capture pointers (#224)
         std::vector<Value*> call_args;

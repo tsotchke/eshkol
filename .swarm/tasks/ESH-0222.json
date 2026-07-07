@@ -1,0 +1,41 @@
+{
+  "id": "ESH-0222",
+  "title": "Tail calls through `guard` grow the stack — resident/daemon tick loops with a per-iteration error boundary stack-overflow",
+  "status": "done",
+  "priority": "high",
+  "workstream": "language/tco-guard",
+  "goal": "Selene's compiled long-running resident (a tail-recursive tick loop whose body is wrapped in a per-tick `guard` error boundary) SIGSEGV'd with 'stack overflow' every ~45-75min of live idle cadence (seconds under fast foreground cadence). Determine whether Eshkol's `guard` preserves tail position for self-calls in its protected body / handler clauses, fix the root cause, and document a canonical flat long-running-loop-with-guard pattern.",
+  "root_cause": [
+    "TWO independent, compounding bugs, both stemming from `guard` being invisible to the tail-call analyses used by BOTH TCO entry points:",
+    "(1) Top-level `(define (loop ...) ...)` self-tail-recursion (isSelfTailRecursive -> countAllRecursiveCalls/findTailCalls/isInTailPosition, lib/backend/llvm_codegen.cpp): these three helpers had NO case for ESHKOL_GUARD_OP and fell to `default: break`/`default: return false`. A self-call textually inside a guard's body or handler clause was therefore COMPLETELY INVISIBLE to the recursion counter. For a loop whose ONLY recursive calls live inside a guard (Selene's exact shape), total_recursive_calls came out as 0, isSelfTailRecursive() returned false, and TCO was silently DISABLED — the loop compiled to real, unbounded recursive calls, one native stack frame per tick, forever.",
+    "(2) Named-let TCO (areAllSelfCallsInTailPosition -> allSelfCallsInTailPosition, lib/backend/tail_call_codegen.cpp): the OPPOSITE lie — GUARD_OP fell to `default: return true`, claiming any self-call buried in a guard was tail-safe WITHOUT looking. When (accidentally) correct, TCO got enabled, but the codegen mechanism itself was unsound for that case: (a) codegenGuard's jmp_buf is allocated via a dynamically-sized `alloca` (allocaJmpBuf, size from a runtime call, not a compile-time constant) inside the loop's basic-block body; LLVM cannot hoist/reuse a dynamic alloca across iterations of a hand-rolled branch-based loop, so every iteration through `guard` permanently lowers the stack pointer a little more (never reclaimed) until the native stack overflows. (b) codegenTailCallFromContext's tail-call shortcut (an unconditional `br` back to the loop header) bypassed codegenGuard's own post-body eshkol_pop_exception_handler() call (only emitted when the body's block is NOT already terminated), leaving the runtime handler chain (g_exception_handler_stack) growing by one unbalanced node per iteration and retaining a stale jmp_buf pointer into stack memory that would otherwise be reclaimed."
+  ],
+  "fix": [
+    "lib/backend/tail_call_codegen.cpp: add an honest ESHKOL_GUARD_OP case to allSelfCallsInTailPosition — guard's protected body (parser-normalized to a single node, body[0]) inherits the guard form's own tail position; each handler clause's LAST body expression is tail, its test and earlier expressions are not (mirrors the existing ESHKOL_COND_OP case). No more silent 'assume safe'.",
+    "lib/backend/llvm_codegen.cpp: same honesty fix for the top-level-define path across three mutually-consistent helpers — countAllRecursiveCalls, findTailCalls, and isInTailPosition each gained an ESHKOL_GUARD_OP case that recurses into guard's body[0] and handler-clause bodies instead of silently treating guard as opaque/absent.",
+    "inc/eshkol/backend/binding_codegen.h: TailCallContext gained two fields — `unsigned open_guard_handlers` and `llvm::Value* loop_stack_save` — with a long comment explaining both leaks.",
+    "lib/backend/llvm_codegen.cpp codegenGuard: snapshot `open_guard_handlers` on entry (`guard_open_before`), increment right after eshkol_push_exception_handler(), and unconditionally restore to the baseline right after the (always-emitted) handler_block's own eshkol_pop_exception_handler() call — the single normalization point that covers every exit from a guard (normal completion, caught exception, uncaught re-raise, and a TCO tail-call branch out of the body).",
+    "lib/backend/llvm_codegen.cpp codegenTailCallFromContext: before emitting the back-edge branch, drain `open_guard_handlers` (emit that many eshkol_pop_exception_handler() calls, reset to 0) so the runtime handler chain never grows across iterations; then, if `loop_stack_save` is set, call `llvm.stackrestore` on it to reclaim any dynamic-alloca stack space (guard's jmp_buf, or any future dynamic-alloca construct) consumed during that iteration.",
+    "All three TCO loop-header setup sites (top-level define ~line 10761, lambda-binding ~line 25987, named-let ~line 27285) now capture `llvm.stacksave()` into `loop_stack_save` and reset `open_guard_handlers = 0` right after entering the loop header block — the reset is deliberately scoped to THIS loop so an enclosing guard opened OUTSIDE the loop (once, for its whole lifetime) is untouched by per-iteration draining. Named-let's existing nested-TCO save/restore block was extended to save/restore the two new fields alongside the pre-existing ones.",
+    "Left `apply` as a known, documented, SEPARATE gap: call_apply_codegen.cpp never consults TailCallContext/isTCOActive, so `(apply loop lst)` is always a genuine non-tail call. Not fixed here (real feature work, not this bug); the canonical pattern doc steers users away from `apply` for the loop back-edge instead."
+  ],
+  "acceptance": [
+    "tests/tco/guard_loop_tail_test.esk: shape (a) top-level define with self-calls in BOTH guard-body-tail and handler-clause-tail position at N=1,000,000 — PASS, correctness verified against a guard-free reference loop, RSS ~45MB / peak footprint ~22MB, 0.5s (was: unbounded real recursion, would have overflowed the 64MB native stack cap well before 1e6 ticks pre-fix).",
+    "Shape (b) guard wraps only the fallible section and returns a value, loop call genuinely outside guard's dynamic extent, N=1,000,000 — PASS (this shape was already safe pre-fix; included as the canonical always-safe baseline).",
+    "Shape (a') named-let variant of shape (a), capped at N=50,000 (see ESH-0223 — a SEPARATE, pre-existing, guard-unrelated named-let TCO stack bug blocks proving flatness at 1e6 for named-let specifically) — PASS.",
+    "Shape (c) `(apply loop lst)`, capped at N=20,000, correctness-only (apply is not TCO'd — documented, not fixed) — PASS.",
+    "Full build clean (cmake --build build --target eshkol-run stdlib -j8, zero new warnings from the changed files).",
+    "TCO suite / SICP 88/88 / exception+guard suites / AD oracle 56/56 re-verified after the change (see verifications)."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "guard-wrapped per-iteration error boundaries around a tail-recursive loop are the natural, idiomatic way to write a resilient long-running daemon/resident/agent tick loop in Eshkol. Before this fix that pattern was a silent stack-overflow trap (either via disabled TCO for plain define loops, or via a leaking dynamic alloca + unbalanced handler stack for named-let loops) with no diagnostic beyond a generic SIGSEGV. Selene's noesis resident is the first production consumer; the fix + docs/LONG_RUNNING_LOOPS.md make the pattern a documented, tested, supported part of the language rather than an accidental crash-every-hour behavior.",
+  "repro": "tests/tco/guard_loop_tail_test.esk",
+  "verifications": [
+    {
+      "date": "2026-07-06",
+      "branch": "fix/guard-tail-position",
+      "verdict": "fixed",
+      "evidence": "tests/tco/guard_loop_tail_test.esk 4/4 shapes PASS (correctness verified against guard-free reference loops). Shape (a) (Selene's exact top-level-define pattern) flat at N=1e6: RSS ~45MB, peak footprint ~22MB, 0.5s wall — no stack growth, no crash. Pre-fix, the identical pattern hit isSelfTailRecursive()'s total_recursive_calls==0 short-circuit and fell back to unbounded real recursion. See ESH-0223 for the separate pre-existing named-let-without-guard stack bug discovered during this investigation (does not affect define-based loops; Selene's actual code is define-based)."
+    }
+  ]
+}
