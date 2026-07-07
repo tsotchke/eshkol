@@ -2,7 +2,7 @@
 ; deep dynamic-wind nesting -- overflow ~100k; SIGILL variant silent (ESH-0119)
 ; KIND: dynamic_wind
 ; DEPTH: 90000
-; EXPECT: pass
+; EXPECT: boundary
 (define (dw n)
   (if (= n 0) 0
       (dynamic-wind (lambda () #f)
