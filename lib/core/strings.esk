@@ -67,9 +67,15 @@
 (define (string-reverse str)
   (list->string (reverse (string->list str))))
 
-;; string-copy: Create a copy of string
-(define (string-copy str)
-  (substring str 0 (string-length str)))
+;; string-copy: Create a copy of string, optionally bounded by start/end.
+(define (string-copy str . bounds)
+  (let ((len (string-length str)))
+    (if (null? bounds)
+        (substring str 0 len)
+        (let ((start (car bounds)))
+          (if (null? (cdr bounds))
+              (substring str start len)
+              (substring str start (car (cdr bounds))))))))
 
 ;; string-repeat: Repeat string n times
 (define (string-repeat str n)

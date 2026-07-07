@@ -1,0 +1,5 @@
+;; list / apply_leading_args  (R7RS-small portable; reference-differential corpus)
+(display (apply + 1 2 '(3 4 5)))(newline)
+(display (apply + 1 (list 3 4 5)))(newline)
+(display (apply max 1 '(9 2)))(newline)
+(display (apply list 'a 'b '(c d)))(newline)

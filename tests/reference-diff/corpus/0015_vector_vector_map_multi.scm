@@ -1,0 +1,5 @@
+;; vector / vector_map_multi  (R7RS-small portable; reference-differential corpus)
+(display (vector-map + #(1 2 3) #(10 20 30)))(newline)
+(display (vector-map * #(1 2 3) #(4 5 6)))(newline)
+(display (vector-map + #(1 2 3) #(10 20 30) #(100 200 300)))(newline)
+(vector-for-each (lambda (a b) (display (+ a b)) (display " ")) #(1 2 3) #(10 20 30))(newline)
