@@ -37781,11 +37781,10 @@ namespace ControlFlowCallbacks {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         auto* tv = static_cast<TypedValue*>(typed_value);
         llvm::Value* result = codegen->typedValueToTaggedValue(*tv);
-        // Pop the TypedValue we pushed in codegenTypedASTWrapper
-        // Only pop if the pointer matches the top (safety check)
-        if (!typed_value_stack.empty() && tv == &typed_value_stack.back()) {
-            typed_value_stack.pop_back();
-        }
+        // Keep the storage alive for sibling callbacks. BindingCodegen may pass
+        // this same TypedValue pointer to registerFuncBindingWrapper after the
+        // value has been converted to tagged form; popping here leaves that
+        // callback with a pointer into poisoned deque storage under ASan.
         return result;
     }
 

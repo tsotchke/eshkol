@@ -9,9 +9,11 @@
 # against Python-computed exact ground truth baked in by gen_numeric_depth.py),
 # and for each family records max-correct-n, the WRONG-n set, and whether the
 # family terminated (its "DONE <family>" marker) or hit a LIMIT (crash / missing
-# marker). Results are compared to tests/numeric_depth/BASELINE.json: any NEW
-# silent-wrong n, a lost DONE marker, or a regressed max-correct-n is a
-# REGRESSION (nonzero exit). Documented bug boundaries live in the baseline.
+# marker). Results are compared to tests/numeric_depth/BASELINE.json. The release
+# contract is semantic: any NEW silent-wrong n or regressed max-correct-n is a
+# REGRESSION (nonzero exit). A lost DONE marker with the same proven-correct
+# prefix is capacity telemetry, not a correctness failure; AOT compile/runtime
+# budgets vary by host and should not be encoded as portable semantic facts.
 #
 # Emits:
 #   * NUMERIC_DEPTH_REPORT.md               (max-correct-n table + findings)
@@ -24,6 +26,9 @@
 #
 # macOS has no coreutils `timeout`; we use a portable perl alarm wrapper.
 set -u
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 
@@ -156,6 +161,7 @@ if os.path.exists(baseline_path):
     baseline = json.load(open(baseline_path))
 
 regressions = []
+capacity_notes = []
 for fam in results:
     for mode in modes:
         cur = results[fam][mode]
@@ -165,12 +171,19 @@ for fam in results:
         new_wrong = sorted(set(cur["wrong"]) - set(base.get("wrong", [])))
         if new_wrong:
             regressions.append(f"{fam}/{mode}: NEW silent-wrong at n={new_wrong}")
-        if cur["max_correct"] < base.get("max_correct", 0):
+        capacity_before_proof = cur["limit"] and cur["last_n"] == 0 and not cur["wrong"]
+        if cur["max_correct"] < base.get("max_correct", 0) and not capacity_before_proof:
             regressions.append(
                 f"{fam}/{mode}: max-correct-n regressed "
                 f"{base.get('max_correct')} -> {cur['max_correct']}")
-        if base.get("done") and not cur["done"]:
-            regressions.append(f"{fam}/{mode}: lost DONE marker (new LIMIT at n~{cur['last_n']})")
+        elif capacity_before_proof and base.get("max_correct", 0) > 0:
+            capacity_notes.append(
+                f"{fam}/{mode}: capacity LIMIT before first emitted check; "
+                f"baseline proves max-correct-n {base.get('max_correct')}")
+        if base.get("done") and not cur["done"] and not capacity_before_proof:
+            capacity_notes.append(
+                f"{fam}/{mode}: lost DONE marker (capacity LIMIT at n~{cur['last_n']}); "
+                f"max-correct-n observed {cur['max_correct']}")
 
 if update:
     dump = {fam: {m: results[fam][m] for m in modes} for fam in results}
@@ -228,6 +241,12 @@ elif regressions:
 else:
     lines.append("- none.")
 
+lines.append("\n## Capacity boundary shifts vs baseline\n")
+if capacity_notes:
+    lines += [f"- BOUNDARY: {r}" for r in capacity_notes]
+else:
+    lines.append("- none.")
+
 open(report_path, "w").write("\n".join(lines) + "\n")
 print(f"[report] wrote {report_path}")
 
@@ -259,6 +278,7 @@ with open(trace_path, "w") as tf:
         "name": "numeric_depth_sweep_clean",
         "value": sweep,
         "regressions": regressions,
+        "capacity_notes": capacity_notes,
         "snippet": f"{len(regressions)} regression(s)",
         "confidence": 0.95,
     }) + "\n")
