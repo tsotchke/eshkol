@@ -126,6 +126,7 @@ deps/
 compile_commands.json
 .aider*
 .claude/
+.codex/
 .cache/
 
 *.tcl
