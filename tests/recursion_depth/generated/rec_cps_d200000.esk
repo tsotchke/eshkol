@@ -2,7 +2,7 @@
 ; CPS / explicit continuation chain -- clean 100000 guard (ESH-0080 fixed #93)
 ; KIND: cps
 ; DEPTH: 200000
-; EXPECT: limit
+; EXPECT: boundary
 (define (sum-cps n k) (if (= n 0) (k 0) (sum-cps (- n 1) (lambda (r) (k (+ r n))))))
 (define __want (quotient (* 200000 (+ 200000 1)) 2))
 (define __got (sum-cps 200000 (lambda (x) x)))

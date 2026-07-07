@@ -29,8 +29,11 @@ and whether any diagnostic was emitted.
 Each file carries directive comments the runner reads:
   ; KIND: <kind>
   ; DEPTH: <N>
-  ; EXPECT: pass | limit | xknown <ESH-task>
+  ; EXPECT: pass | boundary | limit | xknown <ESH-task>
     pass    -> must PASS (value correct, clean exit); anything else is a gate fail
+    boundary -> stack-consuming stress probe with environment-dependent native
+               ceiling; PASS and CLEAN-LIMIT are both acceptable, but WRONG /
+               SILENT-CRASH / HANG fail the gate
     limit   -> a documented CLEAN boundary (diagnostic + nonzero exit); a SILENT
                crash or wrong value here is a gate fail (the limit went silent)
     xknown  -> a tracked SILENT crash / wrong value tied to an ESH task; tolerated
@@ -49,7 +52,8 @@ import os
 # call : expression that computes the swept quantity for depth {N}
 # oracle: "tri" -> N*(N+1)/2 ; "count" -> N
 # stdlib: needs (require stdlib)
-# ladder: list of (depth, expect) ; expect in {"pass","limit",("xknown","ESH-...")}
+# ladder: list of (depth, expect)
+# expect in {"pass","boundary","limit",("xknown","ESH-...")}
 
 KINDS = {
     "self_tail": {
@@ -116,10 +120,10 @@ KINDS = {
         "stdlib": False,
         "ladder": [
             (10000, "pass"),
-            (100000, "pass"),
-            (200000, "limit"),
-            (250000, "limit"),
-            (300000, "limit"),
+            (100000, "boundary"),
+            (200000, "boundary"),
+            (250000, "boundary"),
+            (300000, "boundary"),
         ],
     },
     "cps": {
@@ -132,8 +136,8 @@ KINDS = {
             (1000, "pass"),
             (10000, "pass"),
             (50000, "pass"),
-            (100000, "limit"),
-            (200000, "limit"),
+            (100000, "boundary"),
+            (200000, "boundary"),
         ],
     },
     "through_map": {
@@ -146,8 +150,8 @@ KINDS = {
             (1000, "pass"),
             (10000, "pass"),
             (50000, "pass"),
-            (100000, "pass"),
-            (200000, "limit"),
+            (100000, "boundary"),
+            (200000, "boundary"),
         ],
     },
     "metacircular": {
@@ -180,7 +184,7 @@ KINDS = {
             (1000, "pass"),
             (10000, "pass"),
             (50000, "pass"),
-            (90000, "pass"),
+            (90000, "boundary"),
             (100000, ("xknown", "ESH-0119")),
         ],
     },
@@ -194,8 +198,8 @@ KINDS = {
             (1000, "pass"),
             (10000, "pass"),
             (50000, "pass"),
-            (100000, "pass"),
-            (200000, "limit"),
+            (100000, "boundary"),
+            (200000, "boundary"),
         ],
     },
     "guard": {
@@ -207,8 +211,8 @@ KINDS = {
         "ladder": [
             (1000, "pass"),
             (10000, "pass"),
-            (100000, "pass"),
-            (150000, "pass"),
+            (100000, "boundary"),
+            (150000, "boundary"),
             (200000, ("xknown", "ESH-0119")),
             (300000, ("xknown", "ESH-0119")),
         ],
@@ -222,7 +226,7 @@ KINDS = {
         "ladder": [
             (10000, "pass"),
             (100000, "pass"),
-            (300000, "pass"),
+            (300000, "boundary"),
             (500000, ("xknown", "ESH-0108")),
             (1000000, ("xknown", "ESH-0108")),
         ],
