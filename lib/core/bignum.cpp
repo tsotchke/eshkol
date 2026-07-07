@@ -637,7 +637,11 @@ bool eshkol_bignum_fits_int64(const eshkol_bignum_t* a, int64_t* out) {
         return false;
     } else {
         /* Negative: magnitude must fit in [0, INT64_MAX+1] (for INT64_MIN) */
-        if (val <= (uint64_t)INT64_MAX + 1) {
+        if (val == (uint64_t)INT64_MAX + 1) {
+            if (out) *out = INT64_MIN;
+            return true;
+        }
+        if (val <= (uint64_t)INT64_MAX) {
             if (out) *out = -(int64_t)val;
             return true;
         }

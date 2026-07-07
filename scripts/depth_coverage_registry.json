@@ -59,6 +59,8 @@
     "ESHKOL_TENSOR_OP": {"class": "composable", "pillar": "P6f", "note": "nested tensor construction / rank depth"},
     "ESHKOL_DIFF_OP": {"class": "composable", "pillar": "P6a", "note": "differentiation nesting"},
     "ESHKOL_DERIVATIVE_OP": {"class": "composable", "pillar": "P6a", "note": "derivative^n"},
+    "ESHKOL_TAYLOR_OP": {"class": "composable", "pillar": "P6a", "note": "Taylor tower coefficient depth"},
+    "ESHKOL_DERIVATIVE_N_OP": {"class": "composable", "pillar": "P6a", "note": "arbitrary-order derivative depth"},
     "ESHKOL_GRADIENT_OP": {"class": "composable", "pillar": "P6a", "note": "gradient-over-nested-forward (the ESH-0117 blind spot)"},
     "ESHKOL_JACOBIAN_OP": {"class": "composable", "pillar": "P6a", "note": "jacobian nesting"},
     "ESHKOL_HESSIAN_OP": {"class": "composable", "pillar": "P6a", "note": "hessian nesting"},

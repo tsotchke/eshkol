@@ -2,7 +2,7 @@
 ; deep call/cc nesting -- clean 100000 guard
 ; KIND: callcc
 ; DEPTH: 200000
-; EXPECT: limit
+; EXPECT: boundary
 (define (cc n) (if (= n 0) 0 (call/cc (lambda (k) (+ n (cc (- n 1)))))))
 (define __want (quotient (* 200000 (+ 200000 1)) 2))
 (define __got (cc 200000))

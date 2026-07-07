@@ -7925,18 +7925,37 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // PHASE 1 FIX: Set AD mode flag back to false after lambda call
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
 
+    // ESH-0121: hessian-over-forward may return a plain scalar from the inner
+    // derivative rather than an AD-node. Do not reinterpret scalar bits as a
+    // writable AD-node pointer; if the result is tape-independent for this pass,
+    // its gradient contribution is zero (the known semantic gap remains tracked).
+    Value* bg_partial_slot = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "hess_bg_partial");
+    Value* bg_out_base = tagged_.getBaseType(tagged_.getType(bg_output_tagged));
+    Value* bg_out_callable = ctx_.builder().CreateICmpEQ(bg_out_base,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    BasicBlock* bg_backprop_bb = BasicBlock::Create(ctx_.context(), "hess_bg_backprop", current_func);
+    BasicBlock* bg_const_bb = BasicBlock::Create(ctx_.context(), "hess_bg_const", current_func);
+    BasicBlock* bg_after_bp = BasicBlock::Create(ctx_.context(), "hess_bg_after_bp", current_func);
+    ctx_.builder().CreateCondBr(bg_out_callable, bg_backprop_bb, bg_const_bb);
+
+    ctx_.builder().SetInsertPoint(bg_backprop_bb);
     Value* bg_output_int = tagged_.unpackInt64(bg_output_tagged);
     Value* bg_output_node = ctx_.builder().CreateIntToPtr(bg_output_int, PointerType::getUnqual(ctx_.context()));
-    
-    // Backward pass
     backpropagate(bg_tape, bg_output_node);
-    
-    // Extract gradient for component bg_i
     Value* bg_active_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
         typed_bg_nodes, bg_i);
     Value* bg_active_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), bg_active_slot);
-    Value* bg_partial = loadNodeGradient(bg_active_node);
-    
+    Value* bg_partial_live = loadNodeGradient(bg_active_node);
+    ctx_.builder().CreateStore(bg_partial_live, bg_partial_slot);
+    ctx_.builder().CreateBr(bg_after_bp);
+
+    ctx_.builder().SetInsertPoint(bg_const_bb);
+    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), bg_partial_slot);
+    ctx_.builder().CreateBr(bg_after_bp);
+
+    ctx_.builder().SetInsertPoint(bg_after_bp);
+    Value* bg_partial = ctx_.builder().CreateLoad(ctx_.doubleType(), bg_partial_slot);
+
     // Store in base gradient array
     Value* bg_store_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(),
         typed_base_grad, bg_i);
@@ -8136,18 +8155,35 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
     ctx_.builder().CreateStore(ConstantPointerNull::get(PointerType::getUnqual(ctx_.context())), ctx_.currentAdTape());
     
-    Value* pert_output_int = tagged_.unpackInt64(pert_output_tagged);
-    Value* pert_output_node = ctx_.builder().CreateIntToPtr(pert_output_int, PointerType::getUnqual(ctx_.context()));
-    
-    // Run backward pass
-    backpropagate(pert_tape, pert_output_node);
-    
     // Allocate array for perturbed gradient via arena (OALR compliant - no malloc)
     Value* pert_grad_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(double)));
     Value* pert_grad_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, pert_grad_size});
     Value* typed_pert_grad = ctx_.builder().CreatePointerCast(pert_grad_ptr, ctx_.builder().getPtrTy());
     
+    Value* pert_out_base = tagged_.getBaseType(tagged_.getType(pert_output_tagged));
+    Value* pert_out_callable = ctx_.builder().CreateICmpEQ(pert_out_base,
+        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+    BasicBlock* pert_backprop_bb = BasicBlock::Create(ctx_.context(), "hess_pert_backprop", current_func);
+    BasicBlock* pert_const_bb = BasicBlock::Create(ctx_.context(), "hess_pert_const", current_func);
+    BasicBlock* pert_extract_start = BasicBlock::Create(ctx_.context(), "hess_pert_extract_start", current_func);
+    ctx_.builder().CreateCondBr(pert_out_callable, pert_backprop_bb, pert_const_bb);
+
+    ctx_.builder().SetInsertPoint(pert_backprop_bb);
+    Value* pert_output_int = tagged_.unpackInt64(pert_output_tagged);
+    Value* pert_output_node = ctx_.builder().CreateIntToPtr(pert_output_int, PointerType::getUnqual(ctx_.context()));
+    backpropagate(pert_tape, pert_output_node);
+    ctx_.builder().CreateBr(pert_extract_start);
+
+    // The function result was not an AD-node; leave `typed_pert_grad` as zeros
+    // for this column instead of treating a scalar/other value as a pointer.
+    ctx_.builder().SetInsertPoint(pert_const_bb);
+    ctx_.builder().CreateMemSet(typed_pert_grad, ConstantInt::get(ctx_.int8Type(), 0),
+        pert_grad_size, llvm::MaybeAlign(8));
+    ctx_.builder().CreateBr(pert_extract_start);
+
+    ctx_.builder().SetInsertPoint(pert_extract_start);
+
     // Extract perturbed gradient into array
     BasicBlock* pert_extract_cond = BasicBlock::Create(ctx_.context(), "pert_extract_cond", current_func);
     BasicBlock* pert_extract_body = BasicBlock::Create(ctx_.context(), "pert_extract_body", current_func);

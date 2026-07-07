@@ -2,7 +2,7 @@
 ; recursion routed through map (higher-order) -- clean 100000 guard
 ; KIND: through_map
 ; DEPTH: 200000
-; EXPECT: limit
+; EXPECT: boundary
 (require stdlib)
 (define (rec n) (if (= n 0) 0 (+ n (car (map (lambda (_) (rec (- n 1))) (list 0))))))
 (define __want (quotient (* 200000 (+ 200000 1)) 2))

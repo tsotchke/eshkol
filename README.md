@@ -478,7 +478,7 @@ Dependent types enable **compile-time verification** of array bounds, matrix dim
 ### Prerequisites
 
 - **CMake** 3.14+ (build system)
-- **LLVM** 17 (backend and JIT)
+- **LLVM** 21 (backend and JIT)
 - **C17/C++20 compiler** (GCC 11+, Clang 14+)
 - **Ninja** (recommended build tool)
 - **Readline** (optional, for REPL enhancements)

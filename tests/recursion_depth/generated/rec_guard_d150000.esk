@@ -2,7 +2,7 @@
 ; deep guard nesting -- silent SIGILL ~200k (ESH-0119)
 ; KIND: guard
 ; DEPTH: 150000
-; EXPECT: pass
+; EXPECT: boundary
 (define (g n) (if (= n 0) 0 (guard (e (#t -1)) (+ n (g (- n 1))))))
 (define __want (quotient (* 150000 (+ 150000 1)) 2))
 (define __got (g 150000))

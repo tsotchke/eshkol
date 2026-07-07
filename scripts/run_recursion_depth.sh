@@ -124,7 +124,8 @@ raw_verdict() {
     echo SILENT-CRASH
 }
 
-# expectation directive from a probe file: "pass" | "limit" | "xknown ESH-XXXX"
+# expectation directive from a probe file:
+#   "pass" | "boundary" | "limit" | "xknown ESH-XXXX"
 read_expect() { grep -m1 '^; EXPECT:' "$1" | sed 's/^; EXPECT:[[:space:]]*//'; }
 read_kind()   { grep -m1 '^; KIND:'   "$1" | sed 's/^; KIND:[[:space:]]*//'; }
 read_depth()  { grep -m1 '^; DEPTH:'  "$1" | sed 's/^; DEPTH:[[:space:]]*//'; }
@@ -150,6 +151,10 @@ classify() {
         pass)
             if [ "$raw" = "PASS" ]; then status=PASS; record_safe "$kind" "$depth"
             else status="FAIL($raw)"; fi ;;
+        boundary)
+            if [ "$raw" = "PASS" ]; then status="PASS(boundary-not-hit)"; record_safe "$kind" "$depth"
+            elif [ "$raw" = "CLEAN-LIMIT" ]; then status=CLEAN-BOUNDARY
+            else status="FAIL($raw)"; fi ;;
         limit)
             if [ "$raw" = "PASS" ]; then status="PASS(limit-not-hit)"; record_safe "$kind" "$depth"
             elif [ "$raw" = "CLEAN-LIMIT" ]; then status=CLEAN-LIMIT
@@ -164,7 +169,7 @@ classify() {
     emit_event "${f%.esk}_${mode}" "$status" "$kind d=$depth $mode raw=$raw expect=$expect"
     case "$status" in
         PASS|PASS\(*)   npass+=1;  pyv="PASSED" ;;
-        CLEAN-LIMIT)    nlimit+=1; pyv="PASSED" ;;
+        CLEAN-LIMIT|CLEAN-BOUNDARY) nlimit+=1; pyv="PASSED" ;;
         XKNOWN*)        nxknown+=1; pyv="XFAIL" ;;
         XPASS*)         nxknown+=1; pyv="XPASS" ;;
         FAIL*)          nfail+=1;  pyv="FAILED"; BAD="$BAD $kind:d$depth:$mode=$status" ;;

@@ -8,7 +8,7 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 
-set(ESHKOL_VERSION "1.2.4")
+set(ESHKOL_VERSION "1.3.0")
 
 project("Eshkol" VERSION ${ESHKOL_VERSION} LANGUAGES C CXX)
 
@@ -1498,7 +1498,7 @@ endif()
 file(GLOB REPL_SRC RELATIVE ${CMAKE_SOURCE_DIR} "lib/repl/*.cpp")
 
 add_compile_definitions(
-  ESHKOL_VER="${ESHKOL_VERSION}-scale"
+  ESHKOL_VER="${ESHKOL_VERSION}-evolve"
 )
 
 if(ESHKOL_USING_MSVC)

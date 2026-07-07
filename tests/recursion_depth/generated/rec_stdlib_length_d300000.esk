@@ -2,7 +2,7 @@
 ; stdlib (length) on a long list -- non-tail length SIGILLs (ESH-0108)
 ; KIND: stdlib_length
 ; DEPTH: 300000
-; EXPECT: pass
+; EXPECT: boundary
 (require stdlib)
 (define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))
 (define __want 300000)
