@@ -1,0 +1,7 @@
+;; binding / set_local  (R7RS-small portable; reference-differential corpus)
+(define (counter)
+  (let ((n 0))
+    (lambda () (set! n (+ n 1)) n)))
+(define c (counter))
+(display (c))(display (c))(display (c))(newline)
+(let ((x 10)) (set! x (* x x)) (display x))(newline)

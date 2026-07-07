@@ -1,0 +1,5 @@
+;; control / tail_recursion  (R7RS-small portable; reference-differential corpus)
+(define (sum-to n acc) (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+(display (sum-to 1000000 0))(newline)
+(define (count-down n) (if (= n 0) 'done (count-down (- n 1))))
+(display (count-down 1000000))(newline)
