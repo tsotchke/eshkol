@@ -290,6 +290,42 @@ public:
                                               // per-iteration arena scope; the TCO
                                               // back edge must end it (pop/commit)
                                               // before jumping to the loop header
+
+        // --- ESH-0222: tail calls through `guard` inside a TCO loop ---
+        //
+        // A self-call that textually appears inside a `guard`'s protected body
+        // (in tail position) or one of its handler clauses (also tail position)
+        // gets rewritten by codegenTailCallFromContext into an unconditional
+        // branch back to `loop_header`, bypassing whatever cleanup code
+        // codegenGuard would otherwise have emitted after a *normal* return
+        // from the body. Two kinds of per-iteration state must be reclaimed
+        // before that branch, or they leak once per loop iteration:
+        //
+        //  1. `open_guard_handlers` — the number of
+        //     eshkol_push_exception_handler() calls, made within the CURRENT
+        //     loop body since `loop_header` was entered, that have not yet
+        //     been balanced by a compile-time-emitted
+        //     eshkol_pop_exception_handler() along this control-flow path.
+        //     codegenGuard saves/restores this around its own body exactly
+        //     like a stack; codegenTailCallFromContext drains it (emitting
+        //     that many pops) immediately before branching back, so the
+        //     runtime handler chain (g_exception_handler_stack) never grows
+        //     across iterations and never retains a stale jmp_buf pointer.
+        //
+        //  2. `loop_stack_save` — the result of `llvm.stacksave()` captured
+        //     right after entering `loop_header`. guard's jmp_buf is a
+        //     dynamically-sized `alloca` (its size comes from a runtime call,
+        //     not a compile-time constant), so LLVM cannot hoist or reuse it
+        //     across iterations of a hand-rolled branch-based loop the way it
+        //     would for a real recursive call's stack frame. Without an
+        //     explicit `llvm.stackrestore(loop_stack_save)` before the
+        //     back-edge, every iteration that passes through `guard` (or any
+        //     other dynamic-alloca construct) permanently consumes more of
+        //     the native stack until it overflows — this is the direct cause
+        //     of the "stack overflow" SIGSEGV in long-running tick loops that
+        //     wrap each iteration in a per-iteration `guard` error boundary.
+        unsigned open_guard_handlers = 0;
+        llvm::Value* loop_stack_save = nullptr;
     };
 
     /**

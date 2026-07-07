@@ -1,0 +1,17 @@
+{
+  "id": "ESH-0223",
+  "title": "named-let TCO loop overflows the native stack around n~300-500k even with NO guard/call-cc/dynamic-alloca construct in the body",
+  "status": "open",
+  "priority": "high",
+  "workstream": "language/tco",
+  "goal": "Discovered while reproducing ESH-0222 (tail calls through guard). A completely plain named-let tail loop — `(define (f) (let loop ((n 0)) (if (>= n N) n (loop (+ n 1)))))` — SIGSEGVs/SIGBUSes with the 'stack overflow' diagnostic somewhere between N=300,000 and N=500,000 on unmodified master (verified both before and independent of the ESH-0222 guard fix; a top-level `(define (f n) (if (>= n N) n (f (+ n 1))))` with the identical arithmetic does NOT crash at N=1,000,000+). This means named-let TCO is NOT actually flat today for any sufficiently long-running loop, regardless of guard usage.",
+  "root_cause": "NOT YET DIAGNOSED — out of scope for ESH-0222's time budget, filed here as a clean follow-up. Candidate hypotheses to check first: (1) does `all_tail` (areAllSelfCallsInTailPosition) actually evaluate true for this trivial shape, i.e. is codegenTailCallFromContext's `br` back-edge actually being taken at runtime, or is the self-call falling through to a genuine recursive `CreateCall` for some named-let-specific reason (e.g. a function-table/symbol-table lookup race between the loop's own name and the enclosing define, or the loop_func not being found as 'the active TCO function' by isTCOActive() for some param-count-independent reason)? (2) if TCO IS engaging, is there some OTHER per-iteration dynamic/growing allocation in the named-let loop-header/body path unrelated to guard (e.g. capture-pointer handling, arena-moved-captures bookkeeping, or something in the parameter alloca setup) that isn't a `guard`-specific dynamic alloca but still grows unboundedly per textual loop-header re-entry? Bisect with a debug build (ESHKOL_DEBUG output around 'TCO: named let ... all-tail=' in llvm_codegen.cpp) to settle (1) first — that's the fast, cheap check.",
+  "fix": [],
+  "acceptance": [
+    "A plain named-let tail loop with zero guard/call-cc/dynamic-alloca constructs runs flat (O(1) stack, bounded RSS) to at least N=10,000,000, matching the existing top-level-define TCO guarantee (tests/stress/rec_tco_1e8.esk already proves this for define-based loops).",
+    "tests/tco/guard_loop_tail_test.esk's shape (a') NL_N cap can be raised back to 1,000,000 once this is fixed (currently capped at 50,000 to avoid tripping this unrelated bug — see that test's comment and ESH-0222's ledger entry)."
+  ],
+  "blocked_by": [],
+  "campaign_payoff": "named-let is one of the two syntactic forms Eshkol offers for writing a tail-recursive loop (the other being top-level define); if it silently can't sustain more than a few hundred thousand iterations regardless of body content, that's a hard ceiling on a common, idiomatic Scheme looping construct with no diagnostic pointing at the real cause (it reports as a generic stack-overflow, indistinguishable from genuine unbounded recursion).",
+  "repro": "(define N 500000) (define (f) (let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))) (display (f))  -- crashes with 'fatal signal: SIGBUS ... this is most likely a stack overflow' on unmodified master (verified 2026-07-06, both before and after the ESH-0222 guard-tail-position fix landed; the guard fix neither causes nor cures this)."
+}
