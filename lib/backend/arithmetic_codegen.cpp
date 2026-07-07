@@ -2057,7 +2057,14 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
         llvm::Value* is_rat = b.CreateICmpEQ(sub,
             llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
-        return b.CreateAnd(is_heap, b.CreateOr(is_bn, is_rat));
+        // ESH-0194 (P9): a Taylor tower (HEAP_SUBTYPE_TAYLOR) is a number too —
+        // comparisons on a tower compare its primal coefficient c[0] (see
+        // extractAsDouble's ead_taylor_bb below), which is what lets a
+        // data-dependent `(if (> x 0) ...)` branch on a differentiated
+        // variable instead of raising "expected number, got heap-object".
+        llvm::Value* is_twr = b.CreateICmpEQ(sub,
+            llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TAYLOR));
+        return b.CreateAnd(is_heap, b.CreateOr(b.CreateOr(is_bn, is_rat), is_twr));
     };
     llvm::Value* left_is_numeric_heap = numericHeap(left, left_is_heap);
     llvm::Value* right_is_numeric_heap = numericHeap(right, right_is_heap);
@@ -2137,11 +2144,18 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* rational_cmp_exit = ctx_.builder().GetInsertBlock();
 
-    // Check for double, AD node, or dual-number operands (all extract via primal/value to double)
+    // Check for double, AD node, dual-number, or Taylor-tower operands (all
+    // extract via primal/value to double). A tower reaches here having
+    // already failed the bignum/rational checks above (it is neither), so
+    // without this it would wrongly fall through to int_path and unpackInt64
+    // a heap pointer.
     ctx_.builder().SetInsertPoint(check_double);
+    llvm::Value* any_taylor = emitIsTaylorCheck(left, right);
     llvm::Value* any_double_or_ad = ctx_.builder().CreateOr(
-        ctx_.builder().CreateOr(any_double, any_callable),
-        any_dual);
+        ctx_.builder().CreateOr(
+            ctx_.builder().CreateOr(any_double, any_callable),
+            any_dual),
+        any_taylor);
     ctx_.builder().CreateCondBr(any_double_or_ad, dbl_cmp_path, int_path);
 
     // Double comparison: use extractAsDouble which handles DOUBLE, INT64, HEAP_PTR, and AD nodes
