@@ -1,0 +1,255 @@
+;; ─────────────────────────────────────────────────────────────────────────
+;;  core.ad.taylor_numerics — Tower-based user numerics  (Phase P11)
+;; ─────────────────────────────────────────────────────────────────────────
+;;
+;;  Exposes the univariate Taylor tower (`taylor` / `derivative-n`, see
+;;  docs/design/AD_TAYLOR_TOWER.md sec 4-5, Phases P1/P2/P6) as general-
+;;  purpose numerical methods rather than an internal-only AD representation
+;;  (design doc sec 13, Phase P11):
+;;
+;;    (taylor-eval coeffs dt)
+;;        Horner evaluation of a coefficient list c[0..k] (as returned by
+;;        `taylor`) at an offset dt: sum_n c[n]*dt^n. Shared by every
+;;        operator below.
+;;
+;;    (taylor-ode-solve f y0 t0 t1 k n)
+;;        Recursive/automatic Taylor-series integrator for the scalar IVP
+;;        y' = f(t, y), y(t0) = y0, advanced from t0 to t1 in n fixed steps
+;;        of order k.
+;;
+;;    (taylor-root f x0 k)
+;;        Householder-family root refinement: k=1 is Newton (quadratic),
+;;        k=2 is Halley (cubic), general k gives order-(k+1) local
+;;        convergence -- all derived from ONE series reversion of f's own
+;;        tower per iteration.
+;;
+;;    (taylor-inverse-series f x0 k)
+;;        Local functional inverse: given f analytic at x0 with
+;;        f'(x0) != 0, returns the K+1 Taylor coefficients of f^-1 expanded
+;;        around f(x0), via Lagrange inversion / series reversion of f's
+;;        own tower.
+;;
+;;  NOTE on argument style: the design doc's API sketch (sec 13) writes
+;;  these with `#:order`/`#:steps` keyword arguments. That is NOT used
+;;  here: `(require ...)`-loaded modules are compiled in a pass that
+;;  precedes stdlib.esk's own definitions, and keyword-formal desugaring
+;;  expands to calls to stdlib.esk's `__keyword-arg`/`__keyword-args-
+;;  validate` -- so a keyword-arg formal inside ANY required module (core
+;;  or otherwise) fails to compile ("Unknown function: __keyword-arg"),
+;;  and the same failure reappears in any FILE that both requires a
+;;  dotted module and defines its own keyword-arg formal, independent of
+;;  where the two appear relative to each other (verified with a minimal
+;;  repro; filed as ESH-0220). All arguments here are therefore plain
+;;  positional, exactly mirroring core.ad.guw's precedent of never using
+;;  a stdlib-dependent feature inside lib/core/ad/*.esk.
+;;
+;;  ── Method ────────────────────────────────────────────────────────────
+;;  All three higher-level operators reduce to ONE primitive already in the
+;;  language: `(taylor g h0 k)`, the K+1 coefficients c[n] = g^(n)(h0)/n! of
+;;  a scalar function g. No new AD primitive, no codegen change -- pure
+;;  orchestration over the existing kernel, exactly like core.ad.guw's
+;;  `taylor-propagate` (Phase P4).
+;;
+;;    * ODE (classic recursive Taylor-series method). If y(t+h) has Taylor
+;;      coefficients b[0..k] (b[0] = y(t)), then because
+;;      y'(t+h) = f(t+h, y(t+h)), differentiating that identity n times and
+;;      evaluating at h=0 gives (n+1)*b[n+1] = the n-th Taylor coefficient
+;;      of g_n(h) = f(t+h, Y_n(h)), where Y_n(h) = b[0]+b[1] h+...+b[n] h^n
+;;      is the PARTIAL polynomial built from the coefficients already
+;;      known. Formal power-series composition is lower-triangular: the
+;;      degree-n coefficient of g_n(h) cannot depend on b[m] for m > n, so
+;;      this recursion is well-founded. b[0..k] is built one order at a
+;;      time via `taylor` calls of growing order 0..k-1 (each a fresh,
+;;      non-nested differentiation epoch), then the step is advanced with
+;;      `taylor-eval`. Local error is O(h^(k+1)) per step (the first
+;;      dropped term); for smooth/entire f (e.g. y'=y => y=exp), increasing
+;;      k converges geometrically/spectrally for a fixed step budget --
+;;      see the error-vs-order table in tests/ad/taylor_numerics_test.esk.
+;;
+;;    * root: `(taylor f x k)` gives c[0..k] expanded at the CURRENT
+;;      iterate x. Drop c[0] (the value) to get the series
+;;      g(h) = f(x+h) - f(x) = c[1] h + c[2] h^2 + ... (zero constant term,
+;;      so it can be REVERTED: solve for h(w) with g(h(w)) = w). The
+;;      Householder-k correction is h(w) evaluated at w = -f(x) (the
+;;      perturbation that would cancel f(x) if the series were exact):
+;;      f(x + h(-f(x))) = 0 to O(f(x)^(k+1)), i.e. order-(k+1) local
+;;      convergence. k=1 (only c[1] known) collapses exactly to Newton's
+;;      step -f(x)/f'(x); k=2 collapses to Halley's method.
+;;
+;;    * inverse: same reversion, reported directly:
+;;      f^-1(f(x0)+w) = x0 + h(w), so the coefficient list is
+;;      (x0 . reversion of (taylor f x0 k) with c[0] zeroed).
+;;
+;;  Series reversion (Lagrange inversion by undetermined coefficients): for
+;;  g(h) = c1 h + c2 h^2 + ... + ck h^k (c1 != 0), the inverse series
+;;  a(w) = a1 w + ... + ak w^k satisfies g(a(w)) = w + O(w^(k+1)). Because
+;;  a(w) has no constant term, the degree-n coefficient of a(w)^i (i >= 2)
+;;  never depends on the still-unknown a[n] (a(w)^i's minimum possible
+;;  degree is i, so for i > n it cannot reach degree n at all, and for
+;;  2 <= i <= n reaching exactly degree n from i factors each of degree
+;;  >= 1 leaves no room for one of them to be the degree-n term a[n] w^n
+;;  itself). So each a[n] (n=2..k) is solved in closed form from
+;;  a[1..n-1] alone, with a[n] itself acting as a zero placeholder while
+;;  summing:
+;;      a[n] = -(1/c1) * sum_{i=1}^{n} c[i] * [w^n] a(w)^i
+;;  and a[1] = 1/c1. This is exact power-series algebra (+, -, *, / only),
+;;  so it preserves EXACT (rational/bignum, Phase P6) coefficients whenever
+;;  f's own tower coefficients come back exact (e.g. f a polynomial/
+;;  rational function evaluated at an exact point).
+;;
+;;  Self-contained (own list / power-series helpers, `tn-` prefix; no
+;;  stdlib map/for-each dependency), following lib/core/ad/tape.esk and
+;;  lib/core/ad/guw.esk's core-module discipline.
+;; ─────────────────────────────────────────────────────────────────────────
+
+(provide taylor-eval taylor-ode-solve taylor-root taylor-inverse-series)
+
+;; ── Generic self-contained list helpers (no stdlib map/for-each) ────────
+
+(define (tn-list-ref lst i)
+  (if (<= i 0) (car lst) (tn-list-ref (cdr lst) (- i 1))))
+
+(define (tn-list-set lst i v)
+  (if (<= i 0)
+      (cons v (cdr lst))
+      (cons (car lst) (tn-list-set (cdr lst) (- i 1) v))))
+
+(define (tn-reverse lst)
+  (let loop ((l lst) (acc '()))
+    (if (pair? l) (loop (cdr l) (cons (car l) acc)) acc)))
+
+(define (tn-zeros n)
+  (if (<= n 0) '() (cons 0 (tn-zeros (- n 1)))))
+
+;; ── Horner evaluation (public: taylor-eval) ─────────────────────────────
+;; sum_{n=0}^{k} coeffs[n] * dt^n, evaluated as
+;;   c0 + dt*(c1 + dt*(c2 + ... + dt*ck))
+(define (tn-horner coeffs dt)
+  (if (null? (cdr coeffs))
+      (car coeffs)
+      (+ (car coeffs) (* dt (tn-horner (cdr coeffs) dt)))))
+
+(define (taylor-eval coeffs dt) (tn-horner coeffs dt))
+
+;; ── Truncated power-series multiply (Cauchy product to degree k) ───────
+;; a, b: degree-indexed coefficient lists (index i = coefficient of x^i),
+;; each of length >= k+1. Returns a length-(k+1) list truncated at x^k.
+(define (tn-ps-coeff a b d)
+  (let loop ((i 0) (acc 0))
+    (if (> i d)
+        acc
+        (loop (+ i 1) (+ acc (* (tn-list-ref a i) (tn-list-ref b (- d i))))))))
+
+(define (tn-ps-mul-from a b k d)
+  (if (> d k) '() (cons (tn-ps-coeff a b d) (tn-ps-mul-from a b k (+ d 1)))))
+
+(define (tn-ps-mul a b k) (tn-ps-mul-from a b k 0))
+
+;; ── Series reversion (Lagrange inversion by undetermined coefficients) ──
+;; g: degree-indexed list, length k+1, g[0] MUST be 0 (a translated series
+;; with no constant term); g[1] (the linear coefficient) must be nonzero.
+;; Returns a: degree-indexed list, length k+1, a[0] = 0, such that
+;; g(a(w)) = w + O(w^(k+1)).
+(define (tn-series-reversion g k)
+  (let ((g1 (tn-list-ref g 1)))
+    (if (= g1 0)
+        (error "taylor series reversion: zero linear coefficient (f'(x0) = 0); series is not locally invertible")
+        (tn-reversion-loop g k g1
+                            (tn-list-set (tn-zeros (+ k 1)) 1 (/ 1 g1))
+                            2))))
+
+(define (tn-reversion-loop g k g1 a n)
+  (if (> n k)
+      a
+      (tn-reversion-loop g k g1
+                          (tn-list-set a n (tn-reversion-coeff g a g1 n))
+                          (+ n 1))))
+
+;; a[n] = -(1/g1) * sum_{i=1}^{n} g[i] * [w^n] a(w)^i, where `a` currently
+;; holds a[n] = 0 as a placeholder while this sum is computed (see the
+;; module-header proof that a[n] cannot otherwise appear in the sum).
+(define (tn-reversion-coeff g a g1 n)
+  (- (/ (tn-reversion-power-sum g a n 1 a 0) g1)))
+
+(define (tn-reversion-power-sum g a n i ai acc)
+  (if (> i n)
+      acc
+      (tn-reversion-power-sum g a n (+ i 1) (tn-ps-mul ai a n)
+                               (+ acc (* (tn-list-ref g i) (tn-list-ref ai n))))))
+
+;; ── ODE: recursive Taylor-series method for y' = f(t,y), y(t0) = y0 ─────
+;; k = order, n = number of fixed steps from t0 to t1.
+(define (taylor-ode-solve f y0 t0 t1 k n)
+  (let ((h (/ (- t1 t0) n)))
+    (tn-ode-loop f t0 y0 h n k)))
+
+(define (tn-ode-loop f t y h steps-left k)
+  (if (<= steps-left 0)
+      y
+      (let* ((bs    (tn-ode-coeffs f t y k))
+             (ynew  (tn-horner bs h)))
+        (tn-ode-loop f (+ t h) ynew h (- steps-left 1) k))))
+
+;; b[0..k]: the order-k Taylor coefficients of the local solution y(t+h)
+;; of y' = f(t,y), y(t) = y (b[0] = y). Built one order at a time: at step
+;; i, `bs` already holds the CORRECT b[0..i] (a genuine Taylor-tower
+;; property, not an approximation), so a fresh order-i `taylor` call on
+;; g(h) = f(t+h, Y_i(h)) recovers the exact i-th coefficient of y'(t+h),
+;; from which b[i+1] = c[i]/(i+1).
+(define (tn-ode-coeffs f t y k)
+  (tn-ode-coeffs-loop f t (list y) 0 k))
+
+;; NOTE: `f0`/`t0`/`bs` below are deliberately rebound (copied) from the
+;; enclosing self-recursive function's own loop-carried parameters `f`/`t`
+;; before being captured by the fresh closure `g`. A tail-recursive
+;; Eshkol function's parameters are carried as PHI-loop variables once
+;; TCO'd; constructing a closure that captures `f`/`t` DIRECTLY (the raw
+;; loop-carried SSA values) and handing it to `taylor` reads stale/
+;; corrupted values through that PHI once the recursive call is taken
+;; (verified with a minimal repro: filed as ESH-0221, same root cause
+;; class as the known PHI-in-loop codegen bug family). Rebinding into a
+;; fresh, non-loop-carried local before building the closure sidesteps it
+;; without needing a codegen fix here; `bs`, unlike `f`/`t`, is already a
+;; fresh local (built via `tn-reverse` each call), not a raw loop
+;; parameter, so it needs no extra copy.
+(define (tn-ode-coeffs-loop f t bs-rev i k)
+  (if (= i k)
+      (tn-reverse bs-rev)
+      (let* ((f0     f)
+             (t0     t)
+             (bs     (tn-reverse bs-rev))
+             (g      (lambda (h) (f0 (+ t0 h) (tn-horner bs h))))
+             (gc     (taylor g 0.0 i))
+             (bnext  (/ (tn-list-ref gc i) (+ i 1))))
+        (tn-ode-coeffs-loop f t (cons bnext bs-rev) (+ i 1) k))))
+
+;; ── Root finding: order-k Householder refinement via series reversion ──
+(define (taylor-root f x0 k)
+  (tn-root-loop f x0 k 0))
+
+(define tn-root-max-iter 60)
+(define tn-root-tol 1e-15)
+
+(define (tn-root-loop f x k iter)
+  (if (>= iter tn-root-max-iter)
+      x
+      (let* ((c  (taylor f x k))
+             (fx (tn-list-ref c 0)))
+        (if (< (abs fx) tn-root-tol)
+            x
+            (let* ((g (tn-list-set c 0 0))
+                   (a (tn-series-reversion g k))
+                   (h (tn-horner a (- fx))))
+              (if (< (abs h) tn-root-tol)
+                  (+ x h)
+                  (tn-root-loop f (+ x h) k (+ iter 1))))))))
+
+;; ── Local functional inverse via series reversion ───────────────────────
+;; f analytic at x0, f'(x0) != 0. Returns the k+1 Taylor coefficients of
+;; f^-1 expanded around f(x0): index 0 is x0 itself (= f^-1(f(x0))), index
+;; n (n=1..k) is the n-th coefficient of f^-1's series in (y - f(x0)).
+(define (taylor-inverse-series f x0 k)
+  (let* ((c (taylor f x0 k))
+         (g (tn-list-set c 0 0))
+         (a (tn-series-reversion g k)))
+    (tn-list-set a 0 x0)))
