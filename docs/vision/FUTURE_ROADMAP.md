@@ -12,66 +12,66 @@ This document outlines Eshkol's evolution from the **completed v1.0-foundation**
 
 ## v1.0-foundation: COMPLETED (2025)
 
-**Status:** ✅ **Production Release**
+**Status:** **Production Release**
 
 Eshkol v1.0-foundation delivers a production-ready compiler that tightly integrates automatic differentiation, deterministic arena memory management, and homoiconic native-code execution.
 
 ### Completed Achievements
 
 **Core Compiler:**
-- ✅ LLVM-based modular backend (21 specialized codegen modules)
-- ✅ Recursive descent parser with HoTT type expressions
-- ✅ Bidirectional type checker with gradual typing
-- ✅ Ownership and escape analysis
-- ✅ Module system with dependency resolution and cycle detection
-- ✅ Macro expansion (syntax-rules with hygienic macros)
-- ✅ Exception handling (guard/raise with R7RS semantics)
+- LLVM-based modular backend (21 specialized codegen modules)
+- Recursive descent parser with HoTT type expressions
+- Bidirectional type checker with gradual typing
+- Ownership and escape analysis
+- Module system with dependency resolution and cycle detection
+- Macro expansion (syntax-rules with hygienic macros)
+- Exception handling (guard/raise with R7RS semantics)
 
 **Automatic Differentiation:**
-- ✅ Forward-mode AD with dual numbers
-- ✅ Reverse-mode AD with computational graphs
-- ✅ Nested gradients up to 32 levels deep
-- ✅ Vector calculus operators: derivative, gradient, jacobian, hessian, divergence, curl, laplacian
-- ✅ Polymorphic arithmetic supporting int64/double/dual/tensor/AD-node
+- Forward-mode AD with dual numbers
+- Reverse-mode AD with computational graphs
+- Nested gradients up to 32 levels deep
+- Vector calculus operators: derivative, gradient, jacobian, hessian, divergence, curl, laplacian
+- Polymorphic arithmetic supporting int64/double/dual/tensor/AD-node
 
 **Memory Management:**
-- ✅ Arena allocation with OALR (Ownership-Aware Lexical Regions)
-- ✅ Escape analysis determining stack/region/shared allocation
-- ✅ with-region syntax for lexical memory scopes
-- ✅ Ownership tracking (owned, moved, borrowed states)
-- ✅ Deterministic deallocation (no garbage collection)
+- Arena allocation with OALR (Ownership-Aware Lexical Regions)
+- Escape analysis determining stack/region/shared allocation
+- with-region syntax for lexical memory scopes
+- Ownership tracking (owned, moved, borrowed states)
+- Deterministic deallocation (no garbage collection)
 
 **Data Structures:**
-- ✅ 16-byte tagged values with consolidated type system
-- ✅ 32-byte cons cells supporting mixed-type lists
-- ✅ N-dimensional tensors with element-wise operations
-- ✅ Hash tables with FNV-1a hashing
-- ✅ Heterogeneous vectors
-- ✅ UTF-8 strings with escape sequences
+- 16-byte tagged values with consolidated type system
+- 32-byte cons cells supporting mixed-type lists
+- N-dimensional tensors with element-wise operations
+- Hash tables with FNV-1a hashing
+- Heterogeneous vectors
+- UTF-8 strings with escape sequences
 
 **Standard Library:**
-- ✅ 60+ list operations (map, filter, fold, etc.)
-- ✅ 30+ string utilities
-- ✅ Functional programming (compose, curry, flip)
-- ✅ JSON parsing and serialization
-- ✅ CSV processing
-- ✅ Base64 encoding/decoding
-- ✅ Math library (linear algebra: det, inv, solve; numerical integration; root finding; statistics)
+- 60+ list operations (map, filter, fold, etc.)
+- 30+ string utilities
+- Functional programming (compose, curry, flip)
+- JSON parsing and serialization
+- CSV processing
+- Base64 encoding/decoding
+- Math library (linear algebra: det, inv, solve; numerical integration; root finding; statistics)
 
 **Development Tools:**
-- ✅ Interactive REPL with LLVM ORC JIT
-- ✅ Standalone compiler (eshkol-run)
-- ✅ Library compilation mode
-- ✅ Comprehensive test suite (170+ test files)
-- ✅ CMake build system
-- ✅ Docker containers
+- Interactive REPL with LLVM ORC JIT
+- Standalone compiler (eshkol-run)
+- Library compilation mode
+- Comprehensive test suite (170+ test files)
+- CMake build system
+- Docker containers
 
 **Documentation:**
-- ✅ Complete language specification (300+ features)
-- ✅ Language reference with examples
-- ✅ Architecture documentation
-- ✅ API reference
-- ✅ Quickstart guide
+- Complete language specification (300+ features)
+- Language reference with examples
+- Architecture documentation
+- API reference
+- Quickstart guide
 
 **What v1.0-foundation Proves:**
 - Compiler-integrated AD is achievable and practical
@@ -83,17 +83,26 @@ Eshkol v1.0-foundation delivers a production-ready compiler that tightly integra
 
 | Release | Timeframe | Status | Focus |
 |---------|-----------|--------|-------|
-| **v1.0-foundation** | **2025** | **✅ COMPLETE** | **Core compiler, AD system, arena memory, REPL** |
-| **v1.1-accelerate** | **Q1 2026** | **✅ COMPLETE** | **XLA backend, GPU acceleration, parallelism, consciousness engine** |
-| **v1.2-scale** | **Q2 2026** | **✅ COMPLETE** | **Full numeric tower (bignum / rational / complex), Metal + CUDA, XLA dual-mode, FFI hardening (HTTP / SQLite / subprocess / fs-watch), 22-builtin consciousness engine** |
-| **v1.2.1-scale** | **2026-05-20** | **✅ COMPLETE** | **Edge-case hardening: stdlib `LinkOnceODR`, parser line-tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation, agent-FFI link wiring** |
-| **v1.3-evolve** | **Target Q3 2026** | 📋 Planned | **Effect/refinement type system, PGO + whole-program opt, distributed training, automatic C-header bindings** |
-| **v1.5-intelligence** | **Q4 2026** | 📋 Planned | **Neuro-symbolic integration, advanced optimizers, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
-| **v2.0-quantum** | **2027+** | 🔬 Research | **Quantum computing, formal verification, fully verified compilation chain** |
+| **v1.0-foundation** | **2025** | **COMPLETE** | **Core compiler, AD system, arena memory, REPL** |
+| **v1.1-accelerate** | **Q1 2026** | **COMPLETE** | **XLA backend, GPU acceleration, parallelism, consciousness engine** |
+| **v1.2-scale** | **Q2 2026** | **COMPLETE** | **Full numeric tower (bignum / rational / complex), Metal + CUDA, XLA dual-mode, FFI hardening (HTTP / SQLite / subprocess / fs-watch), 22-builtin consciousness engine** |
+| **v1.2.1-scale** | **2026-05-20** | **COMPLETE** | **Edge-case hardening: stdlib `LinkOnceODR`, parser line-tracking, closure capture in `dynamic-wind` / `call-cc` / `guard`, TCO context preservation, agent-FFI link wiring** |
+| **v1.3.0-evolve** | **Jul 2026** | **SHIPPED** | **Arbitrary-order Taylor-tower AD matrix (all 13 phases P0–P12: exact bignum/rational coefficients, GUW multivariate mixed partials, reverse-over-Taylor, tensor towers, validated Taylor models, sparse high-order tensors, differentiable control flow, checkpointed reverse, tower numerics); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure. See [`../../ROADMAP.md`](../../ROADMAP.md) (canonical) and [`../../CHANGELOG.md`](../../CHANGELOG.md).** |
+| **v1.4-connection** | **Target Q3 2026** | **Planned** | **Networking, TLS, event loop, linear resource types** |
+| **v1.5-intelligence** | **Q4 2026** | **Planned** | **Symbol embeddings, differentiable logic, LSTM/GRU, neuro-symbolic integration, VM-as-transformer Stage 3 (lift remaining delegated opcodes into weight matrices)** |
+| **v1.9-types** | **Dec 2026** | **Planned** | **Effect / refinement type system, dependent types, algebraic effects, session types** |
+| **v2.0-quantum** | **2027+** | **Research** | **Quantum computing, formal verification (Lean-certified validated-AD Taylor models), fully verified compilation chain** |
+
+> **Note:** items previously slotted under "v1.3" in this vision view — effect/refinement
+> types, PGO + whole-program optimization, distributed training, automatic C-header
+> bindings — were never part of what v1.3.0-evolve actually shipped. Effect/refinement
+> types now track to **v1.9-types**; PGO and whole-program opt are ongoing backend work;
+> C-header binding generation is a stdlib/tooling item. The canonical
+> [`ROADMAP.md`](../../ROADMAP.md) is authoritative for release contents.
 
 ## v1.1-accelerate: Performance and Parallelism (Q1 2026)
 
-**Status:** ✅ **COMPLETE (Production Release)**
+**Status:** **COMPLETE (Production Release)**
 
 Building on the v1.0 foundation, this release focuses on **computational acceleration** through XLA integration, automatic vectorization, and multi-core parallelism.
 
@@ -164,7 +173,7 @@ Building on the v1.0 foundation, this release focuses on **computational acceler
 
 ## v1.2-scale: Numeric Tower, GPU, Agent FFI, Production Deployment (Q2 2026)
 
-**Status:** ✅ **COMPLETE (Production Release).** Closed out as v1.2.1-scale on 2026-05-20.
+**Status:** **COMPLETE (Production Release).** Closed out as v1.2.1-scale on 2026-05-20.
 
 The release combined a production-grade numeric tower with the GPU dispatch infrastructure (Metal + CUDA + XLA) and the native agent FFI surface, plus the hardening pass that brought sanitiser-clean status across the regression suite.
 
@@ -213,7 +222,7 @@ The release combined a production-grade numeric tower with the GPU dispatch infr
 
 ## v1.5-intelligence: Neuro-Symbolic Integration (Q4 2026)
 
-**Status:** 📋 **Planned**
+**Status:** **Planned**
 
 Advanced AI capabilities building on v1.0's homoiconic foundation.
 
@@ -245,7 +254,7 @@ Advanced AI capabilities building on v1.0's homoiconic foundation.
 
 ## v2.0-quantum: Advanced Research Features (Q4 2026)
 
-**Status:** 🔬 **Research Phase**
+**Status:** **Research Phase**
 
 Long-term research directions extending Eshkol's capabilities into emerging computational paradigms.
 
