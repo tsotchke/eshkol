@@ -224,8 +224,22 @@ void daxpy(int n, double alpha, const double* x, int incx, double* y, int incy);
 namespace eshkol {
 namespace blas {
 
+/**
+ * Stub: BLAS is not compiled in, so it is never available.
+ * @return Always false
+ */
 inline bool isAvailable() { return false; }
+
+/**
+ * Stub: no BLAS backend is compiled in.
+ * @return Always "none"
+ */
 inline const char* getBackendName() { return "none"; }
+
+/**
+ * Stub: without a BLAS backend, BLAS dispatch is never selected.
+ * @return Always false
+ */
 inline bool shouldUseBLAS(size_t) { return false; }
 
 } // namespace blas

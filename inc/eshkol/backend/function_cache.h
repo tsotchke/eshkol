@@ -41,20 +41,29 @@ public:
 
     // String functions
     llvm::Function* getStrlen();   // size_t strlen(const char*)
+    /** @brief Get (declaring if needed) `int strcmp(const char*, const char*)`. */
     llvm::Function* getStrcmp();   // int strcmp(const char*, const char*)
+    /** @brief Get (declaring if needed) `int strncmp(const char*, const char*, size_t)`. */
     llvm::Function* getStrncmp();  // int strncmp(const char*, const char*, size_t)
+    /** @brief Get (declaring if needed) `char* strcpy(char*, const char*)`. */
     llvm::Function* getStrcpy();   // char* strcpy(char*, const char*)
+    /** @brief Get (declaring if needed) `char* strcat(char*, const char*)`. */
     llvm::Function* getStrcat();   // char* strcat(char*, const char*)
+    /** @brief Get (declaring if needed) `char* strstr(const char*, const char*)`. */
     llvm::Function* getStrstr();      // char* strstr(const char*, const char*)
+    /** @brief Get (declaring if needed) `int strcasecmp(const char*, const char*)`. */
     llvm::Function* getStrcasecmp();  // int strcasecmp(const char*, const char*)
 
     // Memory functions
     llvm::Function* getMalloc();   // void* malloc(size_t)
+    /** @brief Get (declaring if needed) `void* memcpy(void*, const void*, size_t)`. */
     llvm::Function* getMemcpy();   // void* memcpy(void*, const void*, size_t)
+    /** @brief Get (declaring if needed) `void* memset(void*, int, size_t)`. */
     llvm::Function* getMemset();   // void* memset(void*, int, size_t)
 
     // Formatting/conversion functions
     llvm::Function* getSnprintf(); // int snprintf(char*, size_t, const char*, ...)
+    /** @brief Get (declaring if needed) `double strtod(const char*, char**)`. */
     llvm::Function* getStrtod();   // double strtod(const char*, char**)
 
     /**

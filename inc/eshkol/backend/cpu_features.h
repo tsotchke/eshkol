@@ -111,10 +111,18 @@ public:
 
 private:
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+    /**
+     * Detect x86/x86-64 SIMD and FMA capabilities via CPUID and populate
+     * the corresponding flags on @p features.
+     */
     static void detectX86Features(CPUFeatures& features);
 #endif
 
 #if defined(__aarch64__) || defined(_M_ARM64)
+    /**
+     * Detect ARM64 NEON and related feature extensions (FP16, dot product,
+     * FHM, BF16, I8MM) and populate the corresponding flags on @p features.
+     */
     static void detectARMFeatures(CPUFeatures& features);
 #endif
 };
@@ -125,31 +133,48 @@ private:
  */
 class CPUCapabilities {
 public:
+    /**
+     * Get the process-wide singleton instance, detecting CPU features on
+     * first access.
+     */
     static CPUCapabilities& instance();
 
+    /** Get the cached detected CPU features. */
     const CPUFeatures& getFeatures() const { return features_; }
+    /** Get the cached best available SIMD level. */
     SIMDLevel getSIMDLevel() const { return features_.getBestSIMDLevel(); }
+    /** Get the cached optimal vector width in doubles. */
     unsigned getVectorWidth() const { return features_.getOptimalVectorWidth(); }
 
     // Convenience accessors - x86
     bool hasAVX() const { return features_.has_avx; }
+    /** True if the host CPU supports AVX2. */
     bool hasAVX2() const { return features_.has_avx2; }
+    /** True if the host CPU supports AVX-512 Foundation. */
     bool hasAVX512() const { return features_.has_avx512f; }
+    /** True if the host CPU supports FMA (fused multiply-add). */
     bool hasFMA() const { return features_.has_fma; }
 
     // Convenience accessors - ARM
     bool hasNEON() const { return features_.has_neon; }
+    /** True if the host CPU supports NEON FP16 arithmetic (FEAT_FP16). */
     bool hasNEON_FP16() const { return features_.has_neon_fp16; }
+    /** True if the host CPU supports NEON SDOT/UDOT dot product (FEAT_DotProd). */
     bool hasNEON_DotProd() const { return features_.has_neon_dotprod; }
+    /** True if the host CPU supports NEON FP16 fused multiply-accumulate (FEAT_FHM). */
     bool hasNEON_FHM() const { return features_.has_neon_fhm; }
+    /** True if the host CPU supports NEON BFloat16 (FEAT_BF16). */
     bool hasNEON_BF16() const { return features_.has_neon_bf16; }
+    /** True if the host CPU supports NEON Int8 matrix multiply (FEAT_I8MM). */
     bool hasNEON_I8MM() const { return features_.has_neon_i8mm; }
 
     // Architecture detection
     bool isARM64() const { return features_.is_arm64; }
+    /** True if the host architecture is x86/x86-64. */
     bool isX86() const { return features_.is_x86; }
 
 private:
+    /** Detects and caches CPU features for the current host. */
     CPUCapabilities();
     CPUFeatures features_;
 };
