@@ -139,7 +139,7 @@ read_depth()  { grep -m1 '^; DEPTH:'  "$1" | sed 's/^; DEPTH:[[:space:]]*//'; }
 declare -i total=0 npass=0 nlimit=0 nxknown=0 nfail=0
 BAD=""
 # per-kind max safe depth (largest PASS depth), tracked via temp file
-SAFE_TMP="$(mktemp)"; : > "$SAFE_TMP"
+SAFE_TMP="$(mktemp)"; : "${SAFE_TMP:?SAFE_TMP must be set}"; : > "$SAFE_TMP"
 
 record_safe() { # kind depth
     printf '%s\t%s\n' "$1" "$2" >> "$SAFE_TMP"

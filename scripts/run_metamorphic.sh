@@ -12,6 +12,7 @@ REPO_ROOT="$(pwd)"
 
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/metamorphic.jsonl"
+: "${TRACE_FILE:?TRACE_FILE not set}"
 mkdir -p "$TRACE_DIR"
 : > "$TRACE_FILE"
 

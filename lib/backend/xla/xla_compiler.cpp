@@ -261,7 +261,8 @@ void XLACompiler::freeExecutable(void* executable) {
 }
 
 /// Serialize a compiled executable to bytes for caching.
-/// TODO: XLA JIT cache — wire into compilation pipeline when StableHLO is active.
+/// Tracked as ESH-0234 (.swarm/tasks/ESH-0234.json): not yet wired into
+/// the compilation pipeline when StableHLO is active.
 /// StableHLO mode: serializes the MLIR module as textual IR.
 /// LLVM-direct mode: not applicable (empty return).
 std::vector<uint8_t> XLACompiler::serializeExecutable(void* executable) {
@@ -280,7 +281,8 @@ std::vector<uint8_t> XLACompiler::serializeExecutable(void* executable) {
 }
 
 /// Deserialize an executable from bytes.
-/// TODO: XLA JIT cache — implement with llvm::parseIR() for StableHLO mode.
+/// Tracked as ESH-0234 (.swarm/tasks/ESH-0234.json): needs
+/// llvm::parseIR() for StableHLO mode.
 /// Not yet implemented for StableHLO mode — would require parsing LLVM IR.
 /// Returns nullptr in LLVM-direct mode.
 void* XLACompiler::deserializeExecutable(const std::vector<uint8_t>& data, Target target) {

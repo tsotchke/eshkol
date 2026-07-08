@@ -1,0 +1,33 @@
+{
+  "id": "ESH-0232",
+  "title": "type-name codegen wiring deferred pending safe cstr->string helper (source-span stack-trace work)",
+  "status": "open",
+  "priority": "low",
+  "workstream": "compiler/diagnostics",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "lib/backend/llvm_codegen.cpp's `type-name` builtin (returns the human-readable Eshkol string for a value's type tag, using the same eshkol_format_value_type_tag registry that eshkol_type_error_with_operand uses for error messages) has its codegen-side wiring deferred: it still needs a safe cstr->string helper that intern-cstrings the runtime's C string return through the existing intern-cstring-as-string path without a use-after-scope or double-intern hazard. The comment at lib/backend/llvm_codegen.cpp (near the type-of/type-name dispatch, ~line 13830) notes this is intentionally deferred until the source-span stack-trace work touches the same runtime surface, to avoid two separate teams building overlapping cstr-to-Eshkol-string plumbing.",
+  "file_globs": [
+    "lib/backend/llvm_codegen.cpp",
+    "lib/core/runtime_errors_hosted.cpp",
+    "inc/eshkol/core/runtime.h",
+    "tests/v1_3_edge_cases/type_name_test.esk"
+  ],
+  "next_actions": [
+    "Once the source-span stack-trace work lands its cstr->string runtime helper, reuse it (rather than duplicating) to wire the `type-name` builtin's codegen path.",
+    "Add tests/v1_3_edge_cases/type_name_test.esk covering type-name on every canonical type tag (integer, rational, bignum, double, complex, dual-number, symbol, string, character, boolean, pair, vector, tensor, procedure, continuation, environment, hash-table, port, handle, null)."
+  ],
+  "acceptance": [
+    "(type-name v) returns the correct human-readable Eshkol string for every canonical type tag.",
+    "No new intern-cstring lifetime bug (double-free / use-after-scope) introduced by the wiring.",
+    "Blocked_by note stays accurate: do not implement ahead of the source-span stack-trace work landing its shared helper, to avoid duplicate plumbing — check first whether that work has already landed."
+  ],
+  "blocked_by": ["source-span stack-trace runtime helper (not yet a filed ticket as of 2026-07-08 — file one if starting this work and it still doesn't exist)"],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/v1_3_edge_cases/type_name_test.esk"
+  ],
+  "ux_payoff": "Small diagnostics completeness win — type-name already has a design and a shared type-name registry; this just finishes the codegen wiring once the shared runtime helper it depends on exists."
+}

@@ -236,38 +236,6 @@ static VmFact* vm_make_fact(VmRegionStack* rs, uint64_t predicate,
 
 #define WALK_DEEP_MAX 10000
 
-static VmValue vm_walk_deep_impl(VmRegionStack* rs, const VmValue* term,
-    const VmSubstitution* subst, int depth)
-{
-    if (!term || !rs) return vm_val_null();
-    if (depth > WALK_DEEP_MAX) return *term;
-
-    VmValue walked = vm_walk(term, subst);
-
-    /* If it's a fact (HEAP_PTR), recurse into its arguments */
-    if (walked.type == VM_VAL_HEAP_PTR && walked.data.ptr_val) {
-        /* We tag facts distinctly in our VM — check subtype via convention:
-         * Since we control allocation, we know the pointer came from vm_make_fact
-         * and we cast accordingly. For safety, we use a simple approach:
-         * facts are passed via vm_val_ptr from vm_make_fact, so the user
-         * passes facts, not random heap pointers. */
-
-        /* For walk_deep, we need to detect facts. We use the object header
-         * pattern from vm_arena: the 8 bytes before the data pointer. */
-        /* However, vm_alloc doesn't set headers by default. For the logic
-         * engine, we use vm_alloc_object and check subtypes. */
-    }
-
-    return walked;
-}
-
-/* 506: walk-deep */
-static VmValue vm_walk_deep(VmRegionStack* rs, const VmValue* term,
-    const VmSubstitution* subst)
-{
-    return vm_walk_deep_impl(rs, term, subst, 0);
-}
-
 /* ========================================================================
  * Occurs Check — prevent circular bindings
  * ======================================================================== */
@@ -578,46 +546,6 @@ static VmValue vm_walk_deep_full(VmRegionStack* rs, const VmValue* term,
     }
 
     return walked;
-}
-
-/* ========================================================================
- * Display helpers
- * ======================================================================== */
-
-static void vm_display_value(const VmValue* v) {
-    if (!v) { printf("NULL"); return; }
-    switch (v->type) {
-        case VM_VAL_NULL:      printf("()"); break;
-        case VM_VAL_INT64:     printf("%lld", (long long)v->data.int_val); break;
-        case VM_VAL_DOUBLE:    printf("%g", v->data.double_val); break;
-        case VM_VAL_BOOL:      printf("%s", v->data.int_val ? "#t" : "#f"); break;
-        case VM_VAL_LOGIC_VAR: {
-            const char* name = vm_logic_var_name((uint64_t)v->data.int_val);
-            if (name) printf("?%s", name);
-            else printf("?_%lld", (long long)v->data.int_val);
-            break;
-        }
-        case VM_VAL_HEAP_PTR:
-            printf("#<ptr:%p>", (void*)(uintptr_t)v->data.ptr_val);
-            break;
-        default:
-            printf("#<type:%d>", v->type);
-            break;
-    }
-}
-
-static void vm_display_substitution(const VmSubstitution* s) {
-    if (!s) { printf("{}"); return; }
-    printf("{");
-    for (int i = 0; i < s->n_bindings; i++) {
-        if (i > 0) printf(", ");
-        const char* name = vm_logic_var_name(s->var_ids[i]);
-        if (name) printf("?%s", name);
-        else printf("?_%llu", (unsigned long long)s->var_ids[i]);
-        printf(" -> ");
-        vm_display_value(&s->terms[i]);
-    }
-    printf("}");
 }
 
 /* ========================================================================

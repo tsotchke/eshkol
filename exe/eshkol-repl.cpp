@@ -244,47 +244,6 @@ extern "C++" {
     eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
 }
 
-// Helper: Check if input has balanced parentheses
-bool is_balanced(const std::string& input) {
-    int depth = 0;
-    bool in_string = false;
-    bool in_comment = false;
-
-    for (size_t i = 0; i < input.length(); ++i) {
-        char c = input[i];
-
-        if (c == ';' && !in_string) {
-            in_comment = true;
-        }
-        if (c == '\n' && in_comment) {
-            in_comment = false;
-            continue;
-        }
-        if (in_comment) {
-            continue;
-        }
-
-        if (c == '"' && (i == 0 || input[i-1] != '\\')) {
-            in_string = !in_string;
-            continue;
-        }
-        if (in_string) {
-            continue;
-        }
-
-        if (c == '(') {
-            depth++;
-        } else if (c == ')') {
-            depth--;
-            if (depth < 0) {
-                return false;
-            }
-        }
-    }
-
-    return depth == 0;
-}
-
 // Helper: Calculate paren depth
 int get_paren_depth(const std::string& input) {
     int depth = 0;

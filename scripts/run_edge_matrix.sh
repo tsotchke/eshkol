@@ -33,6 +33,7 @@ REPO_ROOT="$(pwd)"
 GEN_DIR="$REPO_ROOT/tests/edge_matrix/generated"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/edge_matrix.jsonl"
+: "${TRACE_FILE:?TRACE_FILE not set}"
 KNOWN_FAILURES="$REPO_ROOT/tests/edge_matrix/KNOWN_FAILURES.txt"
 ESHKOL_RUN="$REPO_ROOT/build/eshkol-run"
 
@@ -137,6 +138,7 @@ export WORK_DIR ESHKOL_RUN JIT_TIMEOUT AOT_COMPILE_TIMEOUT AOT_RUN_TIMEOUT
 
 # Build the work list (deterministic order).
 WORK_LIST="$WORK_DIR/worklist"
+: "${WORK_LIST:?WORK_LIST not set}"
 : > "$WORK_LIST"
 shopt -s nullglob
 for f in "$GEN_DIR"/$FILTER; do

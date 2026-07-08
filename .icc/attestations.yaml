@@ -1,0 +1,885 @@
+attestations:
+- finding_key: 8ff6ca9b1129f1800e7746f032d586c6bfac5ec3b872cf9b401a70ea211ebf21
+  path: tests/v1_2_edge_cases/object_emit_phase_trace_test.sh
+  line: 23
+  pattern: direct_variable_heredoc
+  severity: high
+  reason: 'SRC is derived from WORK=$(mktemp -d ...), a fresh 0700 per-invocation
+    directory removed by ''trap rm -rf $WORK EXIT'' on any exit path. The heredoc
+    body is a fixed literal Scheme fixture, not attacker- or environment-influenced.
+    SRC/LOG are additionally defended with explicit '': ${SRC:?}'' / '': ${LOG:?}''
+    guards immediately after assignment. Reviewed 2026-07-08 for v1.3.0-evolve post-release
+    cleanup (PR #183).'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:11Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: cat > "$SRC" <<'ESK'
+- finding_key: ceff91bda9ed8efb1b1ddba68568548889f4a8dab9ac2d1025dd9d3f8e46f670
+  path: scripts/run_ad_depth.sh
+  line: 37
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:12Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: trap 'rm -f "$RAW_LOG"' EXIT
+- finding_key: 32e1b098fc93062398080dfd88d07dfc83cae6dcb767f87cad5eed47ba9b7397
+  path: scripts/run_ad_depth.sh
+  line: 83
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:12Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    printf ''RUN\t%s\t%s\t%s\t%s\n'' "$mode" "$file" "$rc" "$crashed"
+    >> "$RAW_LOG"'
+- finding_key: d6b554a7d30171c9cddd760fe2d84e2a240e18f1873ef79bb6357b3dfb3efe87
+  path: scripts/run_ad_depth.sh
+  line: 85
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:12Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        printf ''OUT\t%s\t%s\t%s\n'' "$mode" "$file" "$ln" >> "$RAW_LOG"'
+- finding_key: 5942e476f0a722a3bc340e972a8101239fef0a26c8963db7d18a116b71c5d85a
+  path: scripts/run_ad_oracle.sh
+  line: 92
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:13Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$esc_name" "$esc_value" "$esc_snippet" >> "$TRACE_FILE"'
+- finding_key: f9b5cbc8a685826b6e45c8c2fdfb69c77391434723f11410361c5a31c22e7dfc
+  path: scripts/run_ad_validated_bounds_gate.sh
+  line: 129
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:13Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    "$overall" "$snip" >> "$TRACE_FILE"'
+- finding_key: a586a4ba262b9b59e8b8c434512b49d051bae236a2d75392b9cb55b5257de56e
+  path: scripts/run_differential.sh
+  line: 105
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:13Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")"
+    >> "$TRACE_FILE"'
+- finding_key: 946c7ff8086869bc73a4ab3a30887b9e3e9d16310d422f031ce13a6d8a67f6a4
+  path: scripts/run_edge_matrix.sh
+  line: 146
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:14Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        printf ''%s\n%s\n'' "$f" "$mode" >> "$WORK_LIST"'
+- finding_key: 32b7cb11379b967977b2bccd51675003ade7a9d685e3683994b845ef08386c04
+  path: scripts/run_edge_matrix.sh
+  line: 163
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:14Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$TRACE_FILE"'
+- finding_key: c5c4790149d9ea660550e2894ceb3713a295d3988c3d73f2bdafbcf89cf3fd31
+  path: scripts/run_edge_matrix.sh
+  line: 168
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:15Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$1" "$2" "$esc" >> "$TRACE_FILE"'
+- finding_key: a87352930432632c5ec779336385f868108d85bcb2b1d037f0bb6fe6a3a1cff6
+  path: scripts/run_metamorphic.sh
+  line: 85
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:15Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$(json_escape "$name")" "$(json_escape "$value")" "$(json_escape
+    "$snippet")" >> "$TRACE_FILE"'
+- finding_key: 49e047d06154dd5224764c9950b949cb10e59f5cb6a1437377348b97febc1045
+  path: scripts/run_metaprog_depth.sh
+  line: 72
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:15Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$TRACE_FILE"'
+- finding_key: 64100293466491cb35ed324265770acc91e7a177f9cd4f3b867dbd10fc387dbd
+  path: scripts/run_metaprog_depth.sh
+  line: 92
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:16Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$1" "$2" "$3" "$4" "$5" "$(json_escape "$6")" >> "$TRACE_FILE"'
+- finding_key: 186378aeba77f3cd858ee1d38d42a24c2c05e5b45db7c3d69ab14ed8d096c5d4
+  path: scripts/run_metaprog_depth.sh
+  line: 98
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:16Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: cleanup() { rm -f "$RESULTS"; rm -rf "$WORK"; }
+- finding_key: 1a01b644f554a0b9027c4b96e2b185db51a363069d1c3f748afc8bddc2358ed5
+  path: scripts/run_metaprog_depth.sh
+  line: 143
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:16Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        printf ''%s\t%s\t%s\t%s\t%s\n'' "$family" "$mode" "$depth" "$cls"
+    "$detail" >> "$RESULTS"'
+- finding_key: 279485a36f539ddb4722972e59e5228977072b252dc7acd44fda3eda22324ee5
+  path: scripts/run_nesting_depth.sh
+  line: 126
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:17Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$en" "$ev" "$es" >> "$TRACE_FILE"'
+- finding_key: 67a1ad3fd45c92e7aab766da0108236e07869aa2053ba1f82ee29015dc4842c0
+  path: scripts/run_nesting_depth.sh
+  line: 152
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:17Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            rm -f "$BIN"'
+- finding_key: 3e222d1199077ef74782d46d28f344dde81aa9df0ce24ccd5b1242715cf394a6
+  path: scripts/run_nesting_depth.sh
+  line: 157
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:18Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            rm -f "$BIN" ;;'
+- finding_key: 36ee45bb8c47d42f0fd92fd2693d35743f022eeb80ec5b6f75d21017a964eaaa
+  path: scripts/run_recursion_depth.sh
+  line: 113
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:18Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$esc_name" "$esc_value" "$esc_snippet" >> "$TRACE_FILE"'
+- finding_key: 82c59cfe48340febab5ffe5cd7ade542881ce150b716856d177faa50c5317904
+  path: scripts/run_recursion_depth.sh
+  line: 234
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:18Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: rm -f "$SAFE_TMP"
+- finding_key: 53fe62081cb1adb461a2f1ae3e672986343f92f4660a4046cb8ccb47f344a204
+  path: scripts/run_reference_differential.sh
+  line: 78
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:19Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: cleanup() { rm -f "$AOT_BIN" "$ESK_SRC" "$SCM_SRC"; rm -rf "$WORK_DIR";
+    }
+- finding_key: 27c0d640ba11a3b8c94ea5417ed6da4ef88ce9786834b9375ac4a075ecdd8688
+  path: scripts/run_reference_differential.sh
+  line: 148
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:19Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$name" "$value" "$esnip" >> "$TRACE_FILE"'
+- finding_key: f2664623fc30e205020ac03cd390d0cc30d20d7f280c28a373c41ff8bb9ff324
+  path: scripts/run_reference_differential.sh
+  line: 170
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:20Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    { printf ''%s\n'' "$REF_PROLOGUE"; cat "$scm"; } > "$SCM_SRC"'
+- finding_key: 61e2c5644da25a2fb0852aea5f03efa62b52a78a39d7cbc59132061986b15d07
+  path: scripts/run_reference_differential.sh
+  line: 181
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:20Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    rm -f "$AOT_BIN"'
+- finding_key: a37039b4bd812509106cb2ce990d0fcef080a1b8cbcda1c08957c567ea9b8f08
+  path: scripts/run_reference_differential.sh
+  line: 189
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:20Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    rm -f "$AOT_BIN"'
+- finding_key: 17b40621c3607a8bbf106a3d0c7bf6002a00a3a57d4c5ad43be28f05769f2c8b
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 197
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:21Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    rm -f "$CORPUS_RAW" "$CORPUS_LIST" "$RUNS_TSV" "$SELF_TSV" "$RETAINED_SIGNATURES"
+    "$AOT_BIN"'
+- finding_key: 8e34777ee390394f214f079bdcdb0adbaf8f6415d3c39dd03532a7592b9992c0
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 202
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:21Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: rm -f "$CORPUS_RAW" "$AOT_BIN"
+- finding_key: 4703856818348ea83a7e42f5f860dd246912d27b8fc0c62b2e2ca83e971586a8
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 207
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:22Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$RUNS_TSV" || exit 2'
+- finding_key: c68ded5a0cd1d05b4a2840cb26fba869d54e8db30078da76a0cbd24e3d8bb2e9
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 208
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:22Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$SELF_TSV" || exit 2'
+- finding_key: 4167bb4a83b200b4e1e7867d612f26b6b5ae24926be078a3f08821d91add8ee9
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 209
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:23Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$TRACE_FILE_ABS" || exit 2'
+- finding_key: 9a583fee40a80a724abc9bb5a55d9d15bad117f2c0ff4c3c3fa6e3aa75d97c19
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 210
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:23Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: ': > "$RETAINED_SIGNATURES" || exit 2'
+- finding_key: 0ce71310151da14099388de72dd5230c6eb3edf596776b54c97dfe95cf030904
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 289
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:23Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    printf ''%s\t%s\t%s\t%s\t%s\t%s\n'' "$src" "$axis" "$phase" "$rc"
+    "$out" "$err" >> "$RUNS_TSV"'
+- finding_key: 2e3ae08e45d90e5d6b879bf185961f6d24ec70acdc7f1da351d7a4ff3d2894e3
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 385
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:24Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    printf ''%s\n'' "$top" >> "$RETAINED_SIGNATURES"'
+- finding_key: 104e110a844b04c2fe5601c410b87fdea068922eeaa4afc5652d39defabda91a
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 435
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:24Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        } > "$SELF_TSV"'
+- finding_key: caab528c1f16a34c670d17306d2e0f7378f0c8ebcaf3f3593f01d85e9cf2900e
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 453
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:25Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        } > "$SELF_TSV"'
+- finding_key: 6532776b96abf8debe842619793a4459b9222ccc6a1db08fa43de86b2279386d
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 478
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:25Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        } > "$SELF_TSV"'
+- finding_key: f0c924efe42dd949f81c520af2c40803fb853eb3692c7172ecac265d35f4abc5
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 486
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:26Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        } > "$SELF_TSV"'
+- finding_key: 9184d09aec91679e795e7b269e9fb71fe1bfe4ac2934a4fb4de42180ae228bc9
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 491
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:26Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    : > "$CORPUS_RAW"'
+- finding_key: 608ce3e8c655ee077efff8a8b130d0683c92d6cdf5d9f489122e2cac4b136cad
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 495
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:26Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        find "$GENERATED_DIR" -type f -name ''*.esk'' -print >> "$CORPUS_RAW"
+    || exit 2'
+- finding_key: b98760843be5d14f414fd52d54e10eadec6b0e5c6a14a8c87ab2d1c693761c2a
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 497
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:27Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    find "$REPO_ROOT/tests" -type f -name ''*.esk'' -print >> "$CORPUS_RAW"
+    || exit 2'
+- finding_key: 263aa2c13cf38bd4f814f140271a0fa6a546629bb8fcbbd1e54daf8a53fced96
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 498
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:27Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    sort -u "$CORPUS_RAW" > "$CORPUS_LIST" || exit 2'
+- finding_key: 0dbcdb9cec002b9367dda37969bb5a2401f40efa953e9e4dabd47a3fed79ee3f
+  path: scripts/run_sicp_smoke.sh
+  line: 76
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:28Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$esc_name" "$esc_value" "$esc_snippet" >> "$TRACE_FILE"'
+- finding_key: ac1cde346e494d11ba4b88036f505d12051e400feb8da7ab8e673bb014582203
+  path: scripts/run_stress.sh
+  line: 92
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:28Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")"
+    >> "$TRACE_FILE"'
+- finding_key: 05f074733552fdd623213fe1a7688060614c5c07935dbf024d35d6fa1fd42339
+  path: scripts/run_stress.sh
+  line: 110
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:29Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$tmo" "$@" > "$RB_OUT_FILE" 2> "$RB_TIME_FILE" < /dev/null'
+- finding_key: 13243a7d784c0a817453c7bc596c2085ca057ac653981525fae21981d685bb92
+  path: scripts/run_stress.sh
+  line: 119
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:29Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$RB_TIME_FILE" >> "$RB_OUT_FILE" 2>/dev/null || true'
+- finding_key: f1978ed0076c757b8d82868c64e4d1a862ac3949970265192ac2181338c1c400
+  path: scripts/run_tensor_collection_depth.sh
+  line: 90
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:29Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: cleanup() { rm -f "$WORK_BIN" "$RESULTS"; }
+- finding_key: 78a649c913ec8be0b948a20504d51cbb8b2f2d40922bcb6f5931462130ef292c
+  path: scripts/run_tensor_collection_depth.sh
+  line: 99
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:30Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        rm -f "$WORK_BIN"; rm -rf "$LOG_DIR"; exit 4'
+- finding_key: 984187bac91c3fa76a42e9bb48095934090d58729759070fff38d215e490b193
+  path: scripts/run_tensor_collection_depth.sh
+  line: 114
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:30Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$1" "$2" "$3" "$4" "$5" "$(json_escape "$6")" >> "$TRACE_FILE"'
+- finding_key: 842bf0f5054cdadf1e78eb9977fc5ef4d2b973c763c48ee89cbe0d37704653ab
+  path: scripts/run_tensor_collection_depth.sh
+  line: 129
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:31Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            rm -f "$WORK_BIN"'
+- finding_key: 5641a0552a4a952d2c81904d28026670f2a0d09c3220a1b94469dd05950170d7
+  path: scripts/run_tensor_collection_depth.sh
+  line: 135
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:31Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            rm -f "$WORK_BIN"'
+- finding_key: a8c0571c54c4c709ad2ced089303b75ea5bd9241beecc075b64e4032d42d15ef
+  path: scripts/run_tensor_collection_depth.sh
+  line: 177
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:32Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        printf ''AX\t%s\t%s\t%s\t%s\t%s\n'' "$family" "$axis" "$depth"
+    "$axcls" "$val" >> "$RESULTS"'
+- finding_key: d50d5e682e4c4835537c84ebce0d492e435571e3f3aee0db652160bff99fe2cc
+  path: scripts/run_tensor_collection_depth.sh
+  line: 196
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:32Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    printf ''CB\t%s\t%s\t%s\t%s\n'' "$family" "$depth" "$cls" "$detail"
+    >> "$RESULTS"'
+- finding_key: d7c9ea54101ff519d7414e716c334958d1c06ed11588981f987ff2bbd5320e47
+  path: scripts/run_v1_3_readiness.sh
+  line: 15
+  pattern: variable_rm
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    removed variable is unconditionally assigned earlier from mktemp output or a fixed
+    repo-controlled work/artifact path, always double-quoted at the rm site, and guarded
+    with `: "${VAR:?}"` at its assignment. No QEMU-harness marker (the tool''s only
+    variable_rm exemption) applies to this codebase.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:33Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: trap 'rm -f "$READINESS_JSON"' EXIT
+- finding_key: b8286f325108db93fb8c04b1ad2f4c697792bd2072e07e02448eba7539a74a7a
+  path: scripts/run_v1_3_readiness.sh
+  line: 23
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:33Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '  --format json > "$READINESS_JSON"'
+- finding_key: cf358826d85135725cb146379984b4b4884ead6de3fd2e2fe95d8c7d1c304505
+  path: scripts/run_vm_parity.sh
+  line: 90
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:33Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")"
+    >> "$TRACE_FILE"'
+- finding_key: 4f36982a3523b3cb5b9dc92416a879e0170354a2a9008e33e6118ccb4fb0f37a
+  path: scripts/test_run_sicp_smoke_gate.sh
+  line: 108
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:34Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"$LAST_OUT" 2>&1'
+- finding_key: cb988c94becd2e779b7df85a355f17a0cb0ec9ce041c247158a9a5effd58a2a6
+  path: scripts/test_run_sicp_smoke_gate.sh
+  line: 112
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:34Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '            "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"$LAST_OUT" 2>&1'
+- finding_key: 36b253c8bd1af686a7b413fe0daf6164f55b6c29efc62cafb24fbf287b356c08
+  path: tests/v1_2_edge_cases/capability_denied_signal_test.sh
+  line: 70
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:35Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: if ! env LC_ALL=C LANG=C ESHKOL_PATH=. "$RUN" -r "$WORK/env_and_file_denied.esk"
+    >"$DENIED_LOG" 2>&1; then
+- finding_key: f5a59ee0177220285b5d81b5b755de0b65680a7a8b60cbde7f6e9e73123a0f26
+  path: tests/v1_2_edge_cases/object_emit_phase_trace_test.sh
+  line: 31
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'Verified 2026-07-08 (v1.3.0-evolve post-release cleanup, PR #183): the
+    redirected-to variable is unconditionally assigned earlier from mktemp output
+    or a fixed repo-controlled work/trace/report path, always double-quoted, and guarded
+    with `: "${VAR:?}"` at its assignment site; not reassigned between guard and use.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:35Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    "$RUN" --no-stdlib --compile-only --output "$OUT" "$SRC" >"$LOG"
+    2>&1; then'
+- finding_key: fd1e84b776ddaae728fc947c1ed81d5a8d67c0e68e77193ecd1dce4138e5d18b
+  path: scripts/run_sanitizer_fuzz.sh
+  line: 428
+  pattern: command_v_probe
+  severity: low
+  reason: 'Verified 2026-07-08 (PR #183): non-destructive existence probe (`command
+    -v "$VAR"`), not a write/delete; the variable is quoted and already defaulted
+    safely earlier in the script.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:36Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    if ! command -v "$cc_bin" >/dev/null 2>&1; then'
+- finding_key: 6e0e540618ae9e8f04f13406792d149f35b7a4047eddeec5a92bb8c88abf4707
+  path: tests/v1_2_edge_cases/precompiled_external_body_prune_test.sh
+  line: 37
+  pattern: command_v_probe
+  severity: low
+  reason: 'Verified 2026-07-08 (PR #183): non-destructive existence probe (`command
+    -v "$VAR"`), not a write/delete; the variable is quoted and already defaulted
+    safely earlier in the script.'
+  attested_by: tsotchke
+  attested_at: '2026-07-08T08:11:36Z'
+  valid_until: null
+  evidence_link: 'chore/post-release-cleanup PR #183'
+  line_text: '    *) ESHKOL_RUN="$(command -v "$ESHKOL_RUN")" ;;'

@@ -17,6 +17,8 @@ trap 'rm -rf "$WORK"' EXIT
 SRC="$WORK/object_emit_phase_trace.esk"
 OUT="$WORK/object_emit_phase_trace"
 LOG="$WORK/object_emit_phase_trace.log"
+: "${SRC:?SRC not set}"
+: "${LOG:?LOG not set}"
 
 cat > "$SRC" <<'ESK'
 (define (square x) (* x x))

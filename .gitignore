@@ -92,6 +92,7 @@ math_test_outputs/
 *.ll
 *.ast
 *.tmp
+*.tmp-*
 *.bak*
 *.backup
 a.out
@@ -105,6 +106,14 @@ inline_test.txt
 port_test.txt
 simple_test.txt
 trace_test.txt
+
+# Python cache (scripts/*.py harness/test helpers)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Package manager
 eshkol_deps/

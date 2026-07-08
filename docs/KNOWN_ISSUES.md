@@ -94,10 +94,48 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
   resolved (2026-07-04). The remaining exception is a higher-order tail call that
   forwards a stack-allocated closure argument, which falls back to a bounded call.
+- **Plain named-let TCO loops overflow the native stack around n≈300k-500k**
+  even with zero `guard`/`call/cc`/dynamic-alloca in the loop body — e.g.
+  `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))` SIGSEGVs/SIGBUSes
+  between N=300,000 and N=500,000, while the equivalent top-level
+  `(define (f n) (if (>= n N) n (f (+ n 1))))` runs flat past N=1,000,000.
+  **Status: open, root cause not yet diagnosed** (ESH-0223). This is
+  *distinct* from, and not fixed by, PR #157/ESH-0211 (named-let TCO in
+  `if`/`case`/`when`/`unless` tail positions, merged 2026-07-06) or
+  ESH-0222 (tail calls through `guard`) — both were re-verified against this
+  bug and neither causes nor cures it; it reproduces on unmodified master
+  independent of either fix.
 
 **Language edges**
 - A closure created inside a named-let loop that `set!`s a global loses the
   mutation (ESH-0094).
+- **A lambda that closes over a TCO'd self-recursive function's OWN
+  loop-carried parameter and is passed to `derivative`/`gradient` (and, once
+  merged, `taylor`) reads a stale/corrupted value or segfaults** once the
+  function actually recurses — e.g. a captured double reads back as
+  unrelated garbage, a captured list corrupts and crashes downstream `cdr`
+  calls. Root cause: `derivative()`/`gradient()`'s free-variable-capture
+  reconstruction didn't recognize a TCO loop alloca's value-vs-pointer
+  capture convention (the same class of bug `map`'s `isTcoLoopAlloca` check
+  already guarded against). Independently flagged by three adversarial
+  agents during the P8/P9/P11 campaign passes and confirmed to be **one**
+  root cause, **one** ticket. **Status: fixed** 2026-07-06 in
+  `lib/backend/autodiff_codegen.cpp` (ESH-0221); regression test
+  `tests/closures/tco_loop_capture_test.esk`.
+- `(apply loop lst)` is **not** a proper tail call — `call_apply_codegen.cpp`
+  never consults the TCO context, so using `apply` for a loop's back-edge
+  grows the native call stack by one frame per iteration regardless of the
+  target function's body. Documented in
+  [LONG_RUNNING_LOOPS.md](LONG_RUNNING_LOOPS.md) (Q3); call the loop function
+  directly with its arguments spelled out instead. **Status: open, tracked**
+  (ESH-0227).
+- `sleep-ms` does not type-check its argument — the AOT/JIT builtin
+  (`eshkol_builtin_sleep_ms_v`) casts the tagged value's raw `.data` field
+  straight to `int64_t` with no tag check, so a non-numeric argument
+  reinterprets whatever bits happen to be there (a pointer, for heap-tagged
+  values) as a millisecond count instead of raising a type error. Flagged
+  during the v1.3 campaign (Selene slow-tick lead). **Status: open, tracked**
+  (ESH-0228).
 - Exact rational arithmetic degrades to double once a bignum is involved
   (ESH-0105).
 - Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
@@ -108,6 +146,16 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
 **VM parity**
 - 27 bytecode-VM behavioral divergences and 351 parity gaps are documented and
   tracked in `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)).
+- A prior campaign pass reported "5 pre-existing surface-audit failures" for
+  `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
+  (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`
+  passes clean end to end (stage 1 surface audit: 920 codegen symbols, all
+  VM-supported or waived; stages 2-3 corpus differential + OOS probes: 56/56).
+  No reproducible surface-audit failure currently exists on this branch — the
+  earlier report is presumed to have referred to a transient state before a
+  since-landed fix, or to a CI lane not exercised by this verification (e.g.
+  ASAN/XLA). Not filing a ticket for a failure that doesn't currently
+  reproduce; re-open if a specific lane is found to still fail.
 
 ---
 

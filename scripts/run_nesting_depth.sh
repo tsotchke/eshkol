@@ -58,6 +58,7 @@ mkdir -p "$TRACE_DIR" "$ART_DIR"
 ART_CAP_MB=1024
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/nesting-depth.XXXXXX")"
 BIN="$WORK/probe.bin"
+: "${BIN:?BIN not set}"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
 du_mb() { du -sm "$1" 2>/dev/null | awk '{print $1}'; }

@@ -2330,24 +2330,6 @@ public:
         return scope_stack.back().count(var) > 0;
     }
     
-    bool isInAnyParentScope(const std::string& var) const {
-        // Check all scopes except current
-        for (size_t i = 0; i + 1 < scope_stack.size(); i++) {
-            if (scope_stack[i].count(var) > 0) {
-                return true;
-            }
-        }
-        return false;
-    }
-    
-    std::set<std::string> getAllParentScopeVars() const {
-        std::set<std::string> all_vars;
-        // Collect from all scopes except current
-        for (size_t i = 0; i + 1 < scope_stack.size(); i++) {
-            all_vars.insert(scope_stack[i].begin(), scope_stack[i].end());
-        }
-        return all_vars;
-    }
 };
 
 // Global scope tracker (will be reset for each file)
@@ -2748,19 +2730,6 @@ static std::vector<std::string> analyzeLambdaCaptures(
     }
     
     return captures;
-}
-
-// Static analysis helper: Build scope context for analyzing a function body
-// Returns set of all variables available in the current scope
-static std::set<std::string> buildScopeContext(const eshkol_ast_t* enclosing_func_body) {
-    std::set<std::string> available_vars;
-    
-    if (!enclosing_func_body) return available_vars;
-    
-    // Collect all defines from enclosing function body
-    collectBodyDefinedVariables(enclosing_func_body, available_vars);
-    
-    return available_vars;
 }
 
 // ===== END CLOSURE CAPTURE ANALYSIS =====

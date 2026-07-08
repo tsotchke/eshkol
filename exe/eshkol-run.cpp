@@ -2243,33 +2243,6 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
     }
 }
 
-// Find the stdlib.esk file
-static std::string find_stdlib()
-{
-    auto cwd = eshkol::platform::current_directory();
-    auto exe_dir = eshkol::platform::executable_directory();
-
-    std::vector<std::filesystem::path> candidates = {
-        cwd / "lib/stdlib.esk",
-        cwd.parent_path() / "lib/stdlib.esk",
-        cwd / "share/eshkol/stdlib.esk",
-        cwd / "share/eshkol/lib/stdlib.esk",
-        exe_dir / "stdlib.esk",
-        exe_dir / "../lib/stdlib.esk",
-        exe_dir / "../share/eshkol/stdlib.esk",
-        exe_dir / "../share/eshkol/lib/stdlib.esk",
-    };
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/share/eshkol/stdlib.esk");
-    candidates.emplace_back("/usr/local/share/eshkol/lib/stdlib.esk");
-    candidates.emplace_back("/usr/share/eshkol/stdlib.esk");
-    candidates.emplace_back("/usr/share/eshkol/lib/stdlib.esk");
-#endif
-
-    return eshkol::platform::find_first_existing(candidates);
-}
-
 // Find the pre-compiled stdlib.o file
 static void append_library_candidates(std::vector<std::filesystem::path>& candidates,
                                       const std::vector<char*>& lib_paths,

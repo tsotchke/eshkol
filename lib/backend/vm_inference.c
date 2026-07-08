@@ -582,27 +582,6 @@ static int vm_fg_update_cpt(VmFactorGraph* fg, int factor_idx,
 }
 
 /* ========================================================================
- * Display
- * ======================================================================== */
-
-static void vm_display_factor_graph(const VmFactorGraph* fg) {
-    if (!fg) { printf("#<factor-graph: empty>"); return; }
-    printf("#<factor-graph: %d factors, %d vars>", fg->num_factors, fg->num_vars);
-}
-
-static void vm_display_beliefs(const VmFactorGraph* fg) {
-    if (!fg) return;
-    for (int v = 0; v < fg->num_vars; v++) {
-        printf("  var %d: [", v);
-        for (int s = 0; s < fg->var_dims[v]; s++) {
-            if (s > 0) printf(", ");
-            printf("%.4f", exp(fg->beliefs[v][s]));
-        }
-        printf("]\n");
-    }
-}
-
-/* ========================================================================
  * Self-tests
  * ======================================================================== */
 

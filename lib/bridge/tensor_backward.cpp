@@ -46,13 +46,6 @@ static double* alloc_grad(size_t n) {
     return (double*)arena_allocate_zeroed(get_global_arena(), n * sizeof(double));
 }
 
-/* Accumulate gradient: dst += src */
-static void accumulate_grad(double* dst, const double* src, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        dst[i] += src[i];
-    }
-}
-
 /*******************************************************************************
  * MatMul Backward
  *
@@ -561,9 +554,9 @@ extern "C" void tensor_broadcast_mul_backward(ad_node_t* node) {
  * the idx vector wired through the node structure yet — until that's
  * threaded, fall back to the conservative "sum grad into row 0" so
  * the gradient signal still reaches the weight tensor non-zero and
- * subsequent training steps don't silently stall. Mark with a
- * TODO once the forward-pass wiring delivers node->input2 as the
- * index tensor. */
+ * subsequent training steps don't silently stall. Tracked as ESH-0230
+ * (.swarm/tasks/ESH-0230.json) — implement once the forward-pass wiring
+ * delivers node->input2 as the index tensor. */
 extern "C" void tensor_embedding_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* W = node->input1;
@@ -584,8 +577,9 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
             warned = 1;
             fprintf(stderr,
                 "WARNING: tensor_embedding_backward is a row-0 stub — "
-                "gradients past row 0 are dropped. This is a known v1.2 "
-                "limitation; full indexed scatter ships in v1.3. Training "
+                "gradients past row 0 are dropped. Tracked as ESH-0230; "
+                "full indexed scatter needs the lookup-index tensor "
+                "threaded through the AD node first. Training "
                 "with embeddings against rows other than 0 will not "
                 "converge correctly. See "
                 "lib/bridge/tensor_backward.cpp tensor_embedding_backward "

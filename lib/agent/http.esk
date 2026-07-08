@@ -138,8 +138,9 @@
   (http-check-url url)
   (http-check-headers headers)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
-         ;; For now, use the JSON convenience function with auth header extraction
-         ;; TODO: once the full header-passing FFI is wired, use http-post-raw
+         ;; For now, use the JSON convenience function with auth header extraction.
+         ;; Tracked as ESH-0231 (.swarm/tasks/ESH-0231.json): once the full
+         ;; header-passing FFI is wired, use http-post-raw instead.
          (auth-header (let ((h (assoc "Authorization" headers)))
                         (if h (cdr h)
                             (let ((h2 (assoc "x-api-key" headers)))
