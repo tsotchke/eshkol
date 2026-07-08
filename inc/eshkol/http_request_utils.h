@@ -32,6 +32,23 @@ constexpr int kMaxConcurrentConnections = 128;
 
 // ─── Content-Length parser ───────────────────────────────────────────────────
 
+/**
+ * @brief Parses and validates the value of an HTTP Content-Length header.
+ *
+ * Trims leading/trailing whitespace, requires the remaining text to be
+ * composed entirely of decimal digits, and rejects values that would not
+ * fit in a size_t. This function only validates syntax and range; callers
+ * are responsible for separately comparing the result against server-side
+ * limits such as kMaxRequestBodySize.
+ *
+ * @param raw_value Raw header value as received from the client (may
+ *        contain surrounding whitespace).
+ * @param content_length Output parameter set to the parsed length on
+ *        success; left unmodified on failure.
+ * @return true if raw_value is a valid non-negative integer that fits in
+ *         size_t; false if raw_value is empty/whitespace-only, contains
+ *         non-digit characters, or overflows size_t.
+ */
 inline bool eshkol_parse_content_length(const std::string& raw_value, size_t& content_length) {
     size_t start = 0;
     while (start < raw_value.size() && std::isspace(static_cast<unsigned char>(raw_value[start]))) {
@@ -74,6 +91,14 @@ inline bool eshkol_parse_content_length(const std::string& raw_value, size_t& co
 // sending `content-length: abc` instead of `Content-Length: abc` would
 // bypass all Content-Length validation.
 
+/**
+ * @brief Returns an ASCII-lowercased copy of an HTTP header field name.
+ *
+ * @param name Header name to normalize; not modified.
+ * @return A new std::string containing the lowercased header name, suitable
+ *         as a case-insensitive lookup key (e.g. in an unordered_map keyed
+ *         by header name).
+ */
 inline std::string eshkol_normalize_header_name(const std::string& name) {
     std::string lower = name;
     std::transform(lower.begin(), lower.end(), lower.begin(),
@@ -92,6 +117,22 @@ inline std::string eshkol_normalize_header_name(const std::string& name) {
 // Call AFTER URL-decoding if the server does its own decoding, or call on
 // the raw path to catch encoded traversals that the server doesn't decode.
 
+/**
+ * @brief Checks whether a request path is safe to resolve against the
+ *        server's document root.
+ *
+ * Rejects the path if it is empty, does not start with '/', contains a
+ * null byte or backslash, or — after internally percent-decoding it purely
+ * for inspection — contains a ".." path component. This catches both
+ * literal and percent-encoded (including mixed-case, e.g. %2E%2e)
+ * traversal attempts.
+ *
+ * @param path Request path to validate.
+ * @return true if the path is safe to use; false otherwise.
+ * @note This function does not return the decoded path; it only inspects a
+ *       local copy to detect traversal. Callers that need the decoded path
+ *       must decode it themselves.
+ */
 inline bool eshkol_is_safe_url_path(const std::string& path) {
     if (path.empty() || path[0] != '/') return false;
 
