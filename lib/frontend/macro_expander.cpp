@@ -13,31 +13,62 @@
 
 namespace eshkol {
 
+/**
+ * @brief Constructs a macro expander with a single, empty global scope.
+ */
 MacroExpander::MacroExpander() {
     // Initialize with a global scope
     scope_stack_.emplace_back();
 }
 
+/**
+ * @brief Destroys the expander. Registered macro definitions are owned by the
+ * AST they came from, so nothing is freed here.
+ */
 MacroExpander::~MacroExpander() {
     // Macro definitions are owned by the AST, not by us
 }
 
+/**
+ * @brief Pushes a new, empty macro scope onto the scope stack (used when
+ * entering a `let-syntax`/`letrec-syntax` body).
+ */
 void MacroExpander::pushScope() {
     scope_stack_.emplace_back();
 }
 
+/**
+ * @brief Pops the innermost macro scope, restoring the enclosing one.
+ *
+ * The global (outermost) scope is never popped, so this is a no-op once only
+ * one scope remains on the stack.
+ */
 void MacroExpander::popScope() {
     if (scope_stack_.size() > 1) {
         scope_stack_.pop_back();
     }
 }
 
+/**
+ * @brief Registers a `define-syntax` (or `let-syntax`/`letrec-syntax`) macro
+ * definition under its name in the innermost scope.
+ *
+ * Silently does nothing if @p macro is null, has no name, or the scope stack
+ * is empty.
+ */
 void MacroExpander::registerMacro(const eshkol_macro_def_t* macro) {
     if (macro && macro->name && !scope_stack_.empty()) {
         scope_stack_.back()[macro->name] = const_cast<eshkol_macro_def_t*>(macro);
     }
 }
 
+/**
+ * @brief Looks up a macro by name, searching scopes from innermost to
+ * outermost so that locally shadowing definitions win.
+ *
+ * @return The matching macro definition, or nullptr if @p name is not bound
+ * to a macro in any active scope.
+ */
 eshkol_macro_def_t* MacroExpander::lookupMacro(const std::string& name) const {
     // Search from innermost scope to outermost
     for (auto it = scope_stack_.rbegin(); it != scope_stack_.rend(); ++it) {
@@ -49,10 +80,25 @@ eshkol_macro_def_t* MacroExpander::lookupMacro(const std::string& name) const {
     return nullptr;
 }
 
+/**
+ * @brief Reports whether @p name currently resolves to a registered macro.
+ */
 bool MacroExpander::isMacro(const std::string& name) const {
     return lookupMacro(name) != nullptr;
 }
 
+/**
+ * @brief Expands a top-level sequence of forms, applying two passes so
+ * macros can be used before their textually-later `define-syntax` sibling
+ * definitions are all visible (mirrors R7RS top-level macro scoping).
+ *
+ * The first pass registers every top-level `define-syntax` definition. The
+ * second pass expands every non-`define-syntax` form (define-syntax forms
+ * themselves produce no runtime code and are dropped from the result).
+ *
+ * @return The expanded forms, in original order, with all `define-syntax`
+ * forms removed.
+ */
 std::vector<eshkol_ast_t> MacroExpander::expandAll(const std::vector<eshkol_ast_t>& asts) {
     std::vector<eshkol_ast_t> result;
 
@@ -77,10 +123,41 @@ std::vector<eshkol_ast_t> MacroExpander::expandAll(const std::vector<eshkol_ast_
     return result;
 }
 
+/**
+ * @brief Public entry point for expanding a single top-level or nested form.
+ *
+ * Thin forwarding wrapper around expandNode().
+ */
 eshkol_ast_t MacroExpander::expand(const eshkol_ast_t& ast) {
     return expandNode(ast);
 }
 
+/**
+ * @brief Core recursive macro-expansion driver: repeatedly expands macro
+ * calls at the current node, then descends into sub-expressions.
+ *
+ * A macro call is expanded iteratively (via a `for (;;)` loop) rather than by
+ * recursive self-call, so a macro that expands into another macro call does
+ * not grow the C++ call stack; a per-expansion-chain @c expansion_chain set
+ * detects a macro expanding back into itself and reports a circular-expansion
+ * error instead of looping forever. A thread-local @c expansion_depth guard
+ * also caps total nested expandNode() recursion (from descending into child
+ * forms) at 1000 to bound runaway expansion.
+ *
+ * Along the way this handles the three macro-introducing forms directly:
+ * `define-syntax` is registered and erased (replaced with a null AST, since
+ * it produces no runtime code); `let-syntax`/`letrec-syntax` push a scope,
+ * register their local macros, expand the body, and pop the scope. Once no
+ * more macro calls apply at this node, sub-expressions of every recognized
+ * operation kind (calls, sequences, define/lambda/let-family bindings and
+ * bodies, cond/case/when/unless/do, set!, guard, raise, values, call/cc,
+ * dynamic-wind, and quasiquote/unquote/unquote-splicing operands) are
+ * recursively expanded so nested macro uses anywhere in the tree are also
+ * expanded. Quoted (`quote`) data is deliberately left un-expanded since it
+ * is literal data, not code.
+ *
+ * @return The fully macro-expanded AST for this node and its subtree.
+ */
 eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     // Use iterative re-expansion for macro calls to prevent unbounded recursion.
     // A macro expanding to another macro call is handled by looping, not recursing.
@@ -342,6 +419,19 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
     return result;
 }
 
+/**
+ * @brief Attempts to expand one macro call by trying each `syntax-rules` rule
+ * of the called macro in order until one matches.
+ *
+ * Looks up the macro named by @p call's callee, builds its literals list, and
+ * for each rule tries matchPatternSeq() against the call's arguments
+ * (skipping the macro-name pattern element itself). The first rule whose
+ * pattern matches has its template instantiated via instantiateTemplate().
+ *
+ * @return The instantiated template AST on a matching rule; if the macro
+ * name is not actually registered, or no rule's pattern matches (a syntax
+ * error, reported via eshkol_error()), returns @p call unchanged.
+ */
 eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
     const auto* call_op = &call.operation.call_op;
     std::string macro_name = call_op->func->variable.id;
@@ -391,6 +481,20 @@ eshkol_ast_t MacroExpander::tryExpandMacroCall(const eshkol_ast_t& call) {
     return call;
 }
 
+/**
+ * @brief Instantiates a matched macro rule's template into a concrete AST
+ * node, dispatching on the template's shape.
+ *
+ * A @c MACRO_TPL_LITERAL template is literal AST data with pattern variables
+ * substituted via substituteBindings(); a @c MACRO_TPL_VARIABLE template
+ * looks up its name in @p bindings and copies the bound value (falling back
+ * to a bare symbol reference if unbound); a @c MACRO_TPL_LIST template
+ * recursively instantiates each element and rebuilds them as a call
+ * expression (first element is the callee, the rest are arguments).
+ *
+ * @return The instantiated AST. Returns a null AST for a null @p tmpl, an
+ * unbound/absent variable template, or an empty list template.
+ */
 eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* tmpl,
                                                   const Bindings& bindings) {
     if (!tmpl) {
@@ -472,21 +576,53 @@ eshkol_ast_t MacroExpander::instantiateTemplate(const eshkol_macro_template_t* t
     return null_ast;
 }
 
+/**
+ * @brief Reports whether @p ast is the literal ellipsis symbol `...` used to
+ * mark repeated pattern/template elements in `syntax-rules`.
+ */
 bool MacroExpander::isEllipsisSymbol(const eshkol_ast_t& ast) const {
     return ast.type == ESHKOL_VAR && ast.variable.id &&
            std::string(ast.variable.id) == "...";
 }
 
+/**
+ * @brief Reports whether a MatchTree holds at least one concrete matched
+ * value.
+ *
+ * A depth-0 (scalar) tree always has a value; a repeated (depth >= 1) tree
+ * has a value only if it matched at least one repetition.
+ */
 bool MacroExpander::matchTreeHasValue(const MatchTree& tree) {
     if (tree.depth == 0) return true;
     return !tree.elements.empty();
 }
 
+/**
+ * @brief Descends into a MatchTree's first repetition at each level until
+ * reaching a scalar (depth-0) leaf, and returns that matched AST.
+ *
+ * Used to obtain a representative concrete value for a pattern variable
+ * without needing to know its full repetition structure.
+ */
 const eshkol_ast_t& MacroExpander::matchTreeFirstScalar(const MatchTree& tree) {
     if (tree.depth == 0) return tree.scalar;
     return matchTreeFirstScalar(tree.elements.front());
 }
 
+/**
+ * @brief Produces the bindings map for one repetition of an ellipsis
+ * expansion by "peeling" every repeated binding down one MatchTree level.
+ *
+ * For each entry in @p bindings: a non-repeated (depth-0) binding is shared
+ * unchanged across every repetition; a repeated binding with at least one
+ * matched element selects the sub-tree at @p index (clamped to the last
+ * available element, matching how R7RS treats unequal-length repeated
+ * bindings under one ellipsis); a repeated binding that matched zero
+ * repetitions peels to an empty tree one level shallower.
+ *
+ * @return A new Bindings map holding the binding values applicable to
+ * repetition @p index.
+ */
 MacroExpander::Bindings MacroExpander::peelBindingsAtIndex(const Bindings& bindings, size_t index) const {
     Bindings result;
     for (const auto& kv : bindings) {
@@ -508,6 +644,22 @@ MacroExpander::Bindings MacroExpander::peelBindingsAtIndex(const Bindings& bindi
     return result;
 }
 
+/**
+ * @brief Searches a template subtree for a pattern variable bound at
+ * ellipsis depth >= 1, to use as the "driver" that determines how many
+ * repetitions an adjacent `...` should expand to.
+ *
+ * Recurses through variable references, cons cells, and every recognized
+ * operation kind's sub-expressions (mirroring the same traversal shape used
+ * by expandNode()/substituteBindings()), stopping as soon as any qualifying
+ * variable is found.
+ *
+ * @param binding_name Out-parameter set to the name of the first
+ * depth->=1 pattern variable found; left unmodified if none is found.
+ * @return true if a driver variable was found (and @p binding_name set),
+ * false otherwise (e.g. the template element has no repeated pattern
+ * variable at all — a misplaced-ellipsis error case handled by the caller).
+ */
 bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
                                         const Bindings& bindings,
                                         std::string& binding_name) const {
@@ -648,6 +800,26 @@ bool MacroExpander::findEllipsisDriver(const eshkol_ast_t& ast,
     }
 }
 
+/**
+ * @brief Expands a single template element followed by one or more
+ * consecutive `...` markers into the list of AST nodes it produces.
+ *
+ * Finds the repetition count via findEllipsisDriver() (the number of matched
+ * repetitions of the driving pattern variable), then for each repetition
+ * index peels @p bindings down to that repetition's values
+ * (peelBindingsAtIndex()) and substitutes @p ast against them. When
+ * @p ellipsis_count is greater than 1 (R7RS nested-ellipsis flattening, e.g.
+ * `row ... ...`), each repetition's result is itself recursively expanded one
+ * ellipsis shallower and the results are concatenated (spliced) rather than
+ * nested.
+ *
+ * @param ellipsis_count Number of consecutive `...` markers following
+ * @p ast in the template.
+ * @return The flattened list of expanded AST nodes, one per repetition (or
+ * more, if further nested ellipsis splice additional elements in). If no
+ * driver variable can be found, reports a misplaced-ellipsis error and
+ * returns a single-element vector holding @p ast substituted as-is.
+ */
 std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElementN(const eshkol_ast_t& ast,
                                                                   const Bindings& bindings,
                                                                   int ellipsis_count) {
@@ -680,6 +852,21 @@ std::vector<eshkol_ast_t> MacroExpander::expandEllipsisElementN(const eshkol_ast
     return expanded;
 }
 
+/**
+ * @brief Substitutes template bindings across a flat array of template
+ * elements, expanding and flattening any element followed by one or more
+ * `...` markers.
+ *
+ * Walks @p items left to right; for each element it counts how many
+ * consecutive ellipsis-symbol items follow it (R7RS nested ellipsis, e.g.
+ * `row ... ...`, flattens one extra level per additional consecutive `...`),
+ * and if at least one follows, delegates to expandEllipsisElementN() and
+ * inlines its results. A bare `...` with no preceding element to repeat is a
+ * misplaced-ellipsis error and is skipped. Elements with no following
+ * ellipsis are substituted individually via substituteBindings().
+ *
+ * @return The fully substituted and ellipsis-flattened list of AST nodes.
+ */
 std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_ast_t* items,
                                                                    uint64_t count,
                                                                    const Bindings& bindings) {
@@ -717,6 +904,26 @@ std::vector<eshkol_ast_t> MacroExpander::substituteBindingsInList(const eshkol_a
     return result;
 }
 
+/**
+ * @brief Recursively substitutes matched pattern-variable bindings into a
+ * macro template subtree, producing the (non-ellipsis-flattened) expanded
+ * AST for @p ast.
+ *
+ * A variable reference bound in @p bindings is replaced by a copy of its
+ * matched value (via matchTreeFirstScalar()); an unbound variable is copied
+ * as-is. Cons cells recurse into car/cdr. Operation nodes recurse into their
+ * relevant sub-expressions per operation kind (calls, sequences,
+ * define/lambda/let-family bindings and bodies, cond/case/when/unless/do,
+ * set!, guard, raise, values, call/cc, dynamic-wind, and
+ * quote/quasiquote/unquote/unquote-splicing operands — quoted data is
+ * recursed into here, unlike expandNode(), because pattern variables inside
+ * quoted template data must still be substituted per R7RS 4.3.2). List-typed
+ * sub-expression arrays are substituted via substituteBindingsInList() so
+ * ellipsis elements within them are expanded/flattened. Any other AST type is
+ * simply deep-copied via copyAst().
+ *
+ * @return The substituted AST subtree.
+ */
 eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
                                                  const Bindings& bindings) {
     // Check if this is a variable that should be substituted
@@ -981,6 +1188,19 @@ eshkol_ast_t MacroExpander::substituteBindings(const eshkol_ast_t& ast,
     return copyAst(ast);
 }
 
+/**
+ * @brief Shallow-copies an AST node, deep-copying any owned string data so
+ * the copy does not alias the original's heap allocations.
+ *
+ * For @c ESHKOL_STRING and @c ESHKOL_VAR nodes, the string/identifier
+ * pointer is duplicated via strdup(). @c ESHKOL_OP nodes are copied
+ * shallowly here; deep-copying their nested operand pointers is the
+ * responsibility of the caller (expandNode()/substituteBindings()), which
+ * know which sub-pointers are relevant for each operation kind. All other
+ * node types are plain (primitive) data and are copied as-is.
+ *
+ * @return The copied AST node.
+ */
 eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     eshkol_ast_t result = ast;
 
@@ -1012,6 +1232,10 @@ eshkol_ast_t MacroExpander::copyAst(const eshkol_ast_t& ast) {
     return result;
 }
 
+/**
+ * @brief Reports whether @p ast is a variable reference whose identifier
+ * equals @p name.
+ */
 bool MacroExpander::isSymbol(const eshkol_ast_t& ast, const std::string& name) const {
     if (ast.type == ESHKOL_VAR && ast.variable.id) {
         return std::string(ast.variable.id) == name;
@@ -1019,6 +1243,12 @@ bool MacroExpander::isSymbol(const eshkol_ast_t& ast, const std::string& name) c
     return false;
 }
 
+/**
+ * @brief Returns the identifier of a variable-reference AST node.
+ *
+ * @return The variable's name, or an empty string if @p ast is not a
+ * variable reference (or has a null identifier).
+ */
 std::string MacroExpander::getSymbolName(const eshkol_ast_t& ast) const {
     if (ast.type == ESHKOL_VAR && ast.variable.id) {
         return std::string(ast.variable.id);
@@ -1026,11 +1256,34 @@ std::string MacroExpander::getSymbolName(const eshkol_ast_t& ast) const {
     return "";
 }
 
+/**
+ * @brief Reports whether @p name is one of a macro's declared
+ * `syntax-rules` literal identifiers (which must match exactly rather than
+ * bind as a pattern variable).
+ */
 bool MacroExpander::isLiteral(const std::string& name,
                                const std::vector<std::string>& literals) const {
     return std::find(literals.begin(), literals.end(), name) != literals.end();
 }
 
+/**
+ * @brief Matches a single `syntax-rules` pattern node against an input AST,
+ * recording any pattern-variable bindings on success.
+ *
+ * Dispatches on pattern kind: @c MACRO_PAT_VARIABLE binds the matched AST
+ * under the pattern's identifier (the wildcard `_` matches anything without
+ * binding); @c MACRO_PAT_LITERAL requires @p ast to be a symbol reference
+ * exactly equal to the pattern's literal identifier; @c MACRO_PAT_LIST
+ * requires @p ast to be a call-shaped form and delegates element-by-element
+ * matching (including ellipsis handling) to matchPatternSeq().
+ *
+ * @param bindings Accumulates matched pattern-variable bindings; only
+ * modified on a successful match (partial matches from a failed sub-pattern
+ * may still leave entries in @p bindings, since callers discard the whole
+ * attempt on failure).
+ * @return true if @p pattern matches @p ast, false otherwise (including a
+ * null @p pattern).
+ */
 bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
                                   const eshkol_ast_t& ast,
                                   const std::vector<std::string>& literals,
@@ -1084,6 +1337,27 @@ bool MacroExpander::matchPattern(const eshkol_macro_pattern_t* pattern,
     }
 }
 
+/**
+ * @brief Matches a sequence of `syntax-rules` pattern elements (starting at
+ * @p pat_start) against a sequence of input argument ASTs, handling ellipsis
+ * repetition.
+ *
+ * Shared by both top-level macro-call matching (tryExpandMacroCall(), which
+ * skips the macro-name element) and nested list sub-pattern matching
+ * (matchPattern()'s @c MACRO_PAT_LIST case), so nested ellipsis (e.g.
+ * `((r ...) ...)`) is handled uniformly wherever it occurs. A pattern element
+ * marked @c followed_by_ellipsis greedily consumes every remaining argument
+ * as one repetition each of that element's sub-pattern; the per-repetition
+ * bindings are then merged into a single depth+1 MatchTree per pattern
+ * variable the element can bind (computed via collectPatternVarDepths()), so
+ * even a zero-repetition match binds those variables to an empty sequence
+ * rather than leaving them unbound. An element with no ellipsis consumes
+ * exactly one argument.
+ *
+ * @return true only if every pattern element matched and the entire argument
+ * sequence was consumed exactly (no leftover arguments or unmatched
+ * patterns); false otherwise.
+ */
 bool MacroExpander::matchPatternSeq(eshkol_macro_pattern_t* const* elements,
                                      uint64_t pat_start, uint64_t pat_count,
                                      const eshkol_ast_t* args, uint64_t arg_count,
@@ -1148,6 +1422,21 @@ bool MacroExpander::matchPatternSeq(eshkol_macro_pattern_t* const* elements,
     return arg_idx == arg_count;
 }
 
+/**
+ * @brief Recursively walks a `syntax-rules` sub-pattern, recording each
+ * pattern variable's ellipsis-nesting depth (number of enclosing `...`
+ * repetitions) into @p out.
+ *
+ * @p depth is the nesting depth accumulated so far by the caller; each
+ * @c MACRO_PAT_LIST child adds one more level if that child itself is
+ * marked @c followed_by_ellipsis. Used by matchPatternSeq() to know, for
+ * every variable bindable within an ellipsis-repeated element, what depth of
+ * MatchTree to build even when a given repetition doesn't happen to bind it.
+ *
+ * @param out Out-parameter map of pattern-variable name to depth; entries
+ * are added, never cleared, so callers should pass a fresh map per
+ * ellipsis element.
+ */
 void MacroExpander::collectPatternVarDepths(const eshkol_macro_pattern_t* pattern,
                                              const std::vector<std::string>& literals,
                                              int depth,

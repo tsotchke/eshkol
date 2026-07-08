@@ -75,10 +75,18 @@ using namespace llvm;
 // Extracts the module's original LLVMContext and releases module ownership from g_llvm_modules.
 std::unique_ptr<LLVMContext> eshkol_extract_module_context_for_jit(LLVMModuleRef module_ref);
 
+/**
+ * @brief Reinterprets an opaque C-ABI @p module_ref back into the LLVM Module it wraps.
+ */
 static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
     return reinterpret_cast<llvm::Module*>(module_ref);
 }
 
+/**
+ * @brief Heap-allocates a NUL-terminated copy of @p value for embedding into a synthesized eshkol_ast_t.
+ *
+ * The caller (and ultimately the AST it is attached to) owns the returned buffer.
+ */
 static char* repl_copy_ast_cstr(const std::string& value) {
     char* out = new char[value.size() + 1];
     if (out) {
@@ -87,6 +95,11 @@ static char* repl_copy_ast_cstr(const std::string& value) {
     return out;
 }
 
+/**
+ * @brief Synthesizes an ESHKOL_VAR AST node referencing variable @p name, for use in generated aliasing code.
+ * @param line Source line to attribute to the synthesized node (for diagnostics).
+ * @param column Source column to attribute to the synthesized node (for diagnostics).
+ */
 static eshkol_ast_t repl_make_var_ast(const std::string& name,
                                       uint32_t line,
                                       uint32_t column) {
@@ -99,6 +112,13 @@ static eshkol_ast_t repl_make_var_ast(const std::string& name,
     return ast;
 }
 
+/**
+ * @brief Synthesizes a `(define alias source)` AST node used to materialize an R7RS import prefix alias.
+ *
+ * Builds an ESHKOL_OP/ESHKOL_DEFINE_OP node whose value is an ESHKOL_VAR
+ * referencing @p source, so evaluating it binds @p alias to the same value
+ * as the already-imported @p source name.
+ */
 static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
                                                const std::string& source,
                                                uint32_t line,
@@ -114,6 +134,15 @@ static eshkol_ast_t repl_make_define_alias_ast(const std::string& alias,
     return ast;
 }
 
+/**
+ * @brief Appends synthesized `(define prefixed-name original-name)` AST nodes for an R7RS `(prefix ...)` import clause.
+ *
+ * For the module at @p module_index within @p require_ast, if an import
+ * prefix was specified, generates one alias definition per name in
+ * @p exports (skipping any listed in that module's `except` clause) and
+ * pushes them onto @p out in sorted order. No-op if @p require_ast has no
+ * prefix configured for @p module_index.
+ */
 static void append_repl_r7rs_prefix_aliases(const eshkol_ast_t& require_ast,
                                             uint64_t module_index,
                                             const std::unordered_set<std::string>& exports,
@@ -525,6 +554,14 @@ namespace eshkol {
 static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& content);
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir = ".");
 
+/**
+ * @brief Constructs an empty REPL JIT context and enables REPL-mode codegen immediately.
+ *
+ * The LLJIT instance itself is not created here; call initializeJIT() before
+ * compiling or executing any forms. Enabling REPL mode up front ensures
+ * modules compiled prior to LLJIT startup still emit shared runtime globals
+ * as extern declarations instead of local definitions.
+ */
 ReplJITContext::ReplJITContext()
     : jit_(nullptr)
     , eval_counter_(0)
@@ -535,6 +572,12 @@ ReplJITContext::ReplJITContext()
     eshkol_repl_enable();
 }
 
+/**
+ * @brief Destroys the REPL JIT context, freeing forward-reference pointer slots allocated during evaluation.
+ *
+ * The underlying LLJIT instance's own destructor handles teardown of
+ * compiled modules and JIT dylibs.
+ */
 ReplJITContext::~ReplJITContext() {
     // Free all forward-reference pointer slots allocated with 'new void*'
     for (auto& [name, ptr_slot] : forward_ref_slots_) {
@@ -545,6 +588,23 @@ ReplJITContext::~ReplJITContext() {
     // LLJIT destructor handles remaining cleanup
 }
 
+/**
+ * @brief Creates and configures the LLJIT instance used to compile and run REPL forms.
+ *
+ * Initializes all LLVM targets, loads the current process's symbols into the
+ * dynamic-library search path, and builds a JITTargetMachineBuilder from the
+ * detected host CPU/features so the JIT's code generation matches the
+ * precompiled stdlib.o exactly: PIC relocation, the Large code model (needed
+ * so AArch64 Branch26 PC-relative calls can reach across the >128 MB stdlib
+ * IR without JITLink range errors), and -O0 codegen (matching stdlib.o's ABI
+ * for tagged-value struct arguments). Also installs the AArch64 Branch26
+ * range-extension JITLink plugin when applicable, installs an error reporter
+ * that filters out benign "became defunct" teardown errors, registers the
+ * runtime's manually-exported symbols (registerRuntimeSymbols()), and binds
+ * shared_arena_ to the process-global arena. Must be called once before any
+ * form is compiled or executed. Exits the process on unrecoverable LLJIT
+ * creation failures.
+ */
 void ReplJITContext::initializeJIT() {
     // Match the batch compiler's target initialization so the Windows LLVM SDK
     // exposes registered targets to LLJIT before host detection runs.
@@ -688,6 +748,21 @@ void ReplJITContext::initializeJIT() {
 // REMOVED: Failed IR manipulation approach - now using AST-level wrapping instead
 // void ReplJITContext::modifyToDisplayResult(Module* module, Function* func) { ... }
 
+/**
+ * @brief Manually registers every eshkol-static runtime function/global the JIT needs, since dlsym-based discovery is unreliable on some platforms.
+ *
+ * Builds an orc::SymbolMap of process-local addresses (arena allocation,
+ * exception handling, platform runtime exports, optional agent-FFI hooks,
+ * type-error reporting, automatic differentiation, closure/tensor/hash-table/
+ * region/ref-counted memory management, BLAS acceleration, bignum/rational
+ * numerics, global data symbols, and the parallel-execution runtime) using
+ * the ADD_SYMBOL / ADD_DATA_SYMBOL / ADD_TLS_SYMBOL helper macros, then
+ * defines them all in the JIT's main JITDylib via orc::absoluteSymbols().
+ * This is required because macOS does not export symbols from statically
+ * linked libraries through the normal dynamic-library search path, so
+ * DynamicLibrarySearchGenerator alone cannot resolve them. Exits the process
+ * if defining the symbols in the dylib fails.
+ */
 void ReplJITContext::registerRuntimeSymbols() {
     // Build a symbol map with addresses of runtime functions
     // These are all from eshkol-static which is statically linked
@@ -1335,6 +1410,14 @@ void ReplJITContext::registerRuntimeSymbols() {
 }
 
 // Stub function called when a forward-referenced function hasn't been defined yet
+/**
+ * @brief Placeholder callee for a forward-referenced function that was never actually defined; raises a catchable exception when invoked.
+ *
+ * This is the legacy fallback path: most call sites are now guarded by
+ * eshkol_check_forward_ref, which reports a named error before reaching this
+ * stub. It still runs if a pointer to an unresolved forward reference
+ * escapes through another route (apply, function-as-value, REPL eval).
+ */
 static eshkol_tagged_value __repl_forward_ref_stub() {
     // Raise an exception so that (guard ...) can catch it in user code.
     // This is the LEGACY path — the call-site guard added for Bug W (see
@@ -1358,10 +1441,17 @@ static eshkol_tagged_value __repl_forward_ref_stub() {
 // `eshkol_repl_forward_ref_stub_addr` and passes it to
 // eshkol_check_forward_ref so the helper can compare without needing
 // link-time access to the C++ static.
+/**
+ * @brief Returns the address of __repl_forward_ref_stub() so generated code can compare a callee pointer against it.
+ * @return Opaque function pointer identifying the unresolved-forward-reference stub.
+ */
 extern "C" void* eshkol_repl_forward_ref_stub_addr(void) {
     return reinterpret_cast<void*>(&__repl_forward_ref_stub);
 }
 
+/**
+ * @brief Tests whether @p global_var is one of the host-provided REPL runtime globals (argc/argv/shared-arena pointer).
+ */
 static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {
     auto name = global_var.getName();
     return name == "__eshkol_argc" ||
@@ -1376,6 +1466,10 @@ static bool is_repl_runtime_global(const llvm::GlobalVariable& global_var) {
 // registries (versioned for direct JIT lookup, unversioned for code that uses
 // the function as a value, e.g. (map sq lst)). Returns "" if `vname` is not
 // in versioned form.
+/**
+ * @brief Recovers the original user-visible function name from a hot-reload versioned symbol like "name__rv3".
+ * @return The unversioned name, or "" if @p vname is not in `<name>__rv<digits>` form.
+ */
 static std::string strip_repl_version_suffix(const std::string& vname) {
     auto pos = vname.rfind("__rv");
     if (pos == std::string::npos || pos == 0) return "";
@@ -1386,6 +1480,13 @@ static std::string strip_repl_version_suffix(const std::string& vname) {
     return vname.substr(0, pos);
 }
 
+/**
+ * @brief Derives a stable JIT symbol name for a top-level variable's persistent storage slot from its Scheme @p name.
+ *
+ * Prefixes with "__repl_storage_" and percent-escapes (as "_XX" hex) any
+ * byte that is not alphanumeric, so identifiers containing characters like
+ * `-`, `!`, or `?` still produce a valid, collision-resistant symbol name.
+ */
 static std::string repl_var_storage_symbol_name(const std::string& name) {
     std::string out = "__repl_storage_";
     char encoded[4];
@@ -1400,6 +1501,35 @@ static std::string repl_var_storage_symbol_name(const std::string& name) {
     return out;
 }
 
+/**
+ * @brief Compiles-in and hot-reload-links one freshly generated LLVM @p module into the running JIT session.
+ *
+ * This is the central per-eval linking routine and performs, in order:
+ * (1) rewrites REPL host-provided globals (argc/argv/shared-arena) to
+ * external declarations so they resolve against the single host-registered
+ * definition instead of duplicating it per module; (2) processes
+ * `__repl_fwd_<X>` forward-reference markers, remapping any privatized
+ * variable-storage globals and recording which markers should later be
+ * pointed at real function addresses; (3) processes `__repl_var_<X>`
+ * top-level-variable markers, lazily allocating a persistent 16-byte tagged
+ * value storage slot per variable name (reused across redefinitions) and
+ * registering it as an absolute JIT symbol under a private, collision-free
+ * storage name; (4) creates forward-reference pointer-slot stubs for any
+ * externally referenced `__repl_fwd_<X>` symbol not yet resolvable; (5)
+ * evicts any previously JIT-linked module that defined a symbol this module
+ * is about to redefine, via ResourceTracker::remove(), enabling hot-reload
+ * without duplicate-symbol errors; (6) verifies the module and optionally
+ * dumps its IR/DataLayout for debugging; (7) wraps @p module with
+ * @p module_context in a ThreadSafeModule and adds it to the JIT under a
+ * fresh ResourceTracker; (8) if the module defines
+ * `__eshkol_init_parallel_workers`, invokes it immediately since ORC does
+ * not reliably run it as an initializer for REPL snippets; and (9) resolves
+ * every collected forward-reference update to the real function address now
+ * materialized in the JIT, allocating the pointer slot if this is the
+ * symbol's first definition. Lazily calls initializeJIT() if the JIT has not
+ * been created yet. Throws std::runtime_error on module verification failure
+ * or if addIRModule fails.
+ */
 void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
     if (!jit_) {
         initializeJIT();
@@ -1758,6 +1888,10 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
     }
 }
 
+/**
+ * @brief Resolves @p name to its runtime address, checking the local symbol-table cache before falling back to a JIT lookup.
+ * @return The symbol's address, or 0 if @p name could not be resolved (not an error — callers handle this case).
+ */
 uint64_t ReplJITContext::lookupSymbol(const std::string& name) {
     if (!jit_) {
         initializeJIT();
@@ -1785,6 +1919,9 @@ uint64_t ReplJITContext::lookupSymbol(const std::string& name) {
     return address;
 }
 
+/**
+ * @brief Checks whether @p name is already known to the REPL, searching the local symbol table, pending-lambda/global registries, and finally the live JIT.
+ */
 bool ReplJITContext::isSymbolDefined(const std::string& name) {
     if (!jit_) {
         initializeJIT();
@@ -1816,6 +1953,12 @@ bool ReplJITContext::isSymbolDefined(const std::string& name) {
     return false;
 }
 
+/**
+ * @brief Registers @p name -> @p address in both the local symbol-table cache and the JIT's main dylib, so later modules can link against it.
+ *
+ * Applies the target's global symbol-name mangling (e.g. a leading `_` on
+ * Darwin) before defining the absolute symbol in the JIT.
+ */
 void ReplJITContext::registerSymbol(const std::string& name, uint64_t address) {
     if (!jit_) {
         initializeJIT();
@@ -1851,6 +1994,13 @@ void ReplJITContext::registerSymbol(const std::string& name, uint64_t address) {
     }
 }
 
+/**
+ * @brief Marks @p var_name as pending a lambda binding, before the lambda's compiled name/arity are known.
+ *
+ * Records a placeholder entry ("" name, 0 arity) in defined_lambdas_; the
+ * real function name and arity are filled in once the corresponding module
+ * has been compiled and inspected.
+ */
 void ReplJITContext::registerLambdaVar(const std::string& var_name) {
     // Mark that this variable will hold a lambda
     // The actual lambda function name and arity will be discovered after compilation
@@ -1858,6 +2008,10 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
     defined_lambdas_[var_name] = {"", 0};  // Empty name and 0 arity means "pending"
 }
 
+/**
+ * @brief Searches a set of platform-specific candidate paths for a precompiled stdlib.o object file.
+ * @return The first existing candidate path, or an empty string if none is found.
+ */
 // Find the pre-compiled stdlib.o file
 static std::string findStdlibObject() {
     auto cwd = platform::current_directory();
@@ -1891,6 +2045,10 @@ static std::string findStdlibObject() {
     return platform::find_first_existing(candidates);
 }
 
+/**
+ * @brief Searches a set of platform-specific candidate paths for a precompiled stdlib.bc bitcode file.
+ * @return The first existing candidate path, or an empty string if none is found.
+ */
 // Find the pre-compiled stdlib.bc bitcode file
 static std::string findStdlibBitcode() {
     auto cwd = platform::current_directory();
@@ -1927,6 +2085,24 @@ static std::string findStdlibBitcode() {
 // Discover and register stdlib symbols dynamically from .bc metadata.
 // No hardcoded function lists — iterates the bitcode module's IR to find
 // all exported functions (names + arities) and _sexpr globals.
+/**
+ * @brief Discovers all stdlib functions and data globals by parsing stdlib.bc's IR, and registers them with the REPL's compiler-visible symbol tables.
+ *
+ * Marks the built-in stdlib module names as already-loaded (to prevent
+ * circular re-import), then, if stdlib.bc can be located and parsed,
+ * iterates every non-declaration, non-internal-linkage function to register
+ * its name/arity (via eshkol_repl_register_function() and
+ * defined_lambdas_/registered_lambdas_), reading back the `eshkol-variadic`
+ * function attribute where present so REPL callers know how many trailing
+ * arguments to cons into a rest list. It also registers `_sexpr` metadata
+ * globals and externally linked `eshkol_tagged_value`-typed data globals
+ * (top-level `(define name expr)` bindings) so codegen does not attempt to
+ * redefine them and so closures capturing those names can resolve them. Uses
+ * bitcode (not the precompiled object) specifically because it preserves
+ * original (unscalarized) IR types, giving accurate arities. Falls back to a
+ * warning if stdlib.bc is unavailable, in which case stdlib symbol discovery
+ * is disabled.
+ */
 void ReplJITContext::registerStdlibSymbols() {
     // Mark stdlib modules as loaded to prevent re-loading
     loaded_modules.insert("stdlib");
@@ -2066,6 +2242,27 @@ void ReplJITContext::registerStdlibSymbols() {
     std::cerr << "Warning: stdlib.bc not found — stdlib symbol discovery unavailable" << std::endl;
 }
 
+/**
+ * @brief Loads the Eshkol standard library into the JIT session, trying progressively slower fallback paths until one succeeds.
+ *
+ * Idempotent (returns true immediately if already loaded). Tries, in order:
+ * (1) a cached, JIT-ABI-matched stdlib object file keyed on a content hash of
+ * stdlib.bc plus the target triple — emitted once with the exact
+ * TargetMachine configuration (host CPU, PIC, CodeModel::Large,
+ * CodeGenOptLevel::None, per-function/data sections for Branch26 range
+ * extension) the JIT itself uses, then added via addObjectFile() on every
+ * subsequent run to skip SelectionDAG entirely; (2) parsing stdlib.bc
+ * directly and adding it as an ORC IR module, keeping stdlib in the same
+ * compilation pipeline as REPL-compiled code so aggregate tagged-value
+ * arguments use a consistent ABI; (3) the legacy precompiled stdlib.o via
+ * addObjectFile() for installations that have not shipped stdlib.bc; and
+ * (4) JIT-compiling the stdlib from source via loadModule(), the slowest but
+ * always-correct path. On success, registers stdlib symbols
+ * (registerStdlibSymbols()) and explicitly invokes
+ * `__eshkol_lib_init__`/`__eshkol_init_parallel_workers` since ORC does not
+ * reliably run Eshkol's library/global-ctor initializers for REPL preloads.
+ * @return true if the stdlib was loaded (or already had been) by any path.
+ */
 bool ReplJITContext::loadStdlib() {
     if (stdlib_loaded_) {
         return true;  // Already loaded — idempotent.
@@ -2304,10 +2501,35 @@ bool ReplJITContext::loadStdlib() {
     return loaded;
 }
 
+/**
+ * @brief Loads @p module_name (a stdlib module or a user `(require ...)`-resolved file), preferring precompiled stdlib when available.
+ *
+ * Convenience overload equivalent to loadModule(module_name, true).
+ */
 bool ReplJITContext::loadModule(const std::string& module_name) {
     return loadModule(module_name, true);
 }
 
+/**
+ * @brief Loads @p module_name into the REPL, parsing and batch-compiling its source unless it can be satisfied from the precompiled stdlib.
+ *
+ * If @p allow_precompiled_stdlib is set and @p module_name is "stdlib" or a
+ * `core.*` module, first tries loadStdlib(); if the precompiled stdlib
+ * genuinely provides that module name, returns immediately. Otherwise
+ * resolves the module's source path (resolveModulePath()), reads and parses
+ * it into ASTs, and processes it in two passes: `(provide ...)` and
+ * `(define ...)` forms determine each module's exported vs. private symbol
+ * surface (recorded into module_exports_ and, for private symbols,
+ * private_symbols_ / eshkol_repl_register_private_symbol() after compilation
+ * so intra-module forward references still work during loading); then
+ * `(require/import ...)` dependency forms are executed immediately
+ * (continuing past a failed dependency with a warning rather than aborting
+ * the whole module), while all remaining top-level forms are collected and
+ * compiled together in one executeBatch() call so later definitions can
+ * forward-reference earlier ones. Idempotent per module name and per
+ * resolved path via the loaded_modules set.
+ * @return true on success; false if the module cannot be found/opened.
+ */
 bool ReplJITContext::loadModule(const std::string& module_name, bool allow_precompiled_stdlib) {
     // Check if already loaded by NAME first (for stdlib.o preloaded modules)
     if (loaded_modules.count(module_name)) {
@@ -2461,6 +2683,17 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     return true;
 }
 
+/**
+ * @brief Adds external declarations to @p module for every previously REPL-defined lambda and global variable it does not already contain.
+ *
+ * For each entry in defined_lambdas_ with a resolved (non-pending) name,
+ * declares an external function of the standard all-tagged-value signature
+ * matching its recorded arity if @p module does not already define/declare
+ * it. For each name in defined_globals_, declares an external i64 global if
+ * not already present. This lets newly compiled REPL code call/reference
+ * symbols that were defined in earlier evaluations without needing to
+ * recompile them.
+ */
 void ReplJITContext::injectPreviousSymbols(Module* module) {
     // Inject external function declarations for all previously defined lambdas
     // This allows new code to reference functions defined in previous REPL evaluations
@@ -2522,6 +2755,14 @@ void ReplJITContext::injectPreviousSymbols(Module* module) {
     }
 }
 
+/**
+ * @brief Records every `(define-syntax ...)` form in @p asts into persistent_macro_asts_ so later MacroExpander instances can still see them, replacing any prior definition of the same macro name.
+ *
+ * Non-macro ASTs in @p asts are ignored. Only a shallow copy of each macro
+ * AST is stored, which is safe because the parser allocates macro
+ * definitions for the process lifetime and eshkol_ast_clean() does not free
+ * them.
+ */
 void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& asts) {
     for (const auto& ast_item : asts) {
         if (ast_item.type != ESHKOL_OP ||
@@ -2550,6 +2791,13 @@ void ReplJITContext::rememberPersistentMacros(const std::vector<eshkol_ast_t>& a
     }
 }
 
+/**
+ * @brief Parses every top-level form in @p content into a vector of ASTs, skipping blank lines and `;`-comments.
+ *
+ * Resets the parser's cumulative line counter first so the first form in
+ * @p content is reported as starting at line 1. Stops at end of stream or on
+ * the first ESHKOL_INVALID parse result.
+ */
 // Helper to parse all ASTs from a string content
 // Returns a vector of parsed ASTs
 // Note: Uses ::eshkol_parse_next_ast_from_stream from global namespace (declared in eshkol.h)
@@ -2588,6 +2836,10 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
     return results;
 }
 
+/**
+ * @brief Searches a set of platform-specific candidate paths for the Eshkol `lib` directory (module source root).
+ * @return The first existing candidate directory path, or an empty string if none is found.
+ */
 // Find the lib directory (matches eshkol-run.cpp logic)
 static std::string findLibDir() {
     auto cwd = platform::current_directory();
@@ -2615,6 +2867,21 @@ static std::string g_lib_dir;
 
 // Helper to resolve module path (e.g., "core.functional.compose" -> "lib/core/functional/compose.esk")
 // Matches eshkol-run.cpp module resolution logic
+/**
+ * @brief Resolves a `(require ...)` module name (or literal `(load ...)` path) to a canonical, existing `.esk` file path.
+ *
+ * If @p module_name already looks like a path literal (absolute, `./`,
+ * `../`, contains a `/`, or ends in `.esk`), it is used as-is (appending
+ * `.esk` only if missing and the bare path does not already exist);
+ * otherwise dots are converted to path separators and `.esk` appended (e.g.
+ * "core.functional.compose" -> "core/functional/compose.esk"). The resulting
+ * relative path is then searched for, in order: @p base_dir, the cached
+ * library directory (found via findLibDir(), memoized in g_lib_dir),
+ * each colon/semicolon-separated directory in `$ESHKOL_PATH`, and finally a
+ * short list of legacy fallback paths.
+ * @return The canonicalized absolute path of the first match found, or "" if
+ * the module could not be located anywhere.
+ */
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir) {
     // PATH-LITERAL DETECTION:
     //
@@ -2709,6 +2976,32 @@ static std::string resolveModulePath(const std::string& module_name, const std::
     return "";
 }
 
+/**
+ * @brief Compiles and runs a batch of top-level forms as a single LLVM module, allowing forward references between them.
+ *
+ * Pre-registers every top-level lambda `(define ...)` in @p asts via
+ * registerLambdaVar() (clearing any stale hot-reload registration first),
+ * then generates one LLVM module for the whole batch (prepending any
+ * persistent macro definitions collected via rememberPersistentMacros()) by
+ * calling eshkol_generate_llvm_ir(). Injects declarations for previously
+ * defined REPL symbols (injectPreviousSymbols()), scans the generated
+ * functions to update defined_lambdas_ arities, locates the batch's entry
+ * function (exactly named "main" or "__top_level" — matched by whole name,
+ * not substring, per historical Bug U — falling back to the first
+ * non-internal, non-locally-linked function), and renames it to a unique
+ * `__repl_batch_eval_<N>` symbol before handing the module to addModule()
+ * for JIT linking. After linking, resolves and registers every exported
+ * function's address and arity with the REPL's function registry (including
+ * the unversioned user-visible name for hot-reloaded `__rv<N>` symbols) and
+ * every top-level global variable's address, then invokes the entry
+ * function (if one was found) with empty argv.
+ * @param asts Top-level forms to compile together; if empty, this is a no-op.
+ * @param silent If true, suppresses diagnostic stderr output on internal
+ * codegen anomalies (used for module loading).
+ * @return A heap-allocated int64_t holding the entry function's return value
+ * (caller-owned), or nullptr if there was no entry function (define-only
+ * batch).
+ */
 void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent) {
     if (asts.empty()) {
         return nullptr;
@@ -2990,6 +3283,36 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
     return result;
 }
 
+/**
+ * @brief Compiles and JIT-executes a single top-level form as its own LLVM module, the primary single-form REPL evaluation entry point.
+ *
+ * Handles several AST shapes specially before falling into the general
+ * single-module compile path: an ESHKOL_SEQUENCE_OP (as emitted by macro
+ * expansions like define-record-type) is flattened by recursively calling
+ * execute() on each inner expression so each `define` becomes its own
+ * top-level binding rather than a local one, returning the last
+ * sub-expression's result; `(import "path")` reads, parses, and
+ * batch-compiles the target file (rejecting `..`-traversal paths, skipping
+ * already-loaded files); `(require module ...)` delegates to loadModule()
+ * per module and executes any generated R7RS import-prefix aliases; and
+ * `(provide ...)` is a no-op (exports are implicit in the REPL). For an
+ * ordinary top-level form, pre-registers any lambda `(define ...)` for
+ * hot-reload tracking, generates a single-form LLVM module via
+ * eshkol_generate_llvm_ir(), injects previously defined REPL symbols
+ * (injectPreviousSymbols()), locates the entry function (matching
+ * "__top_level"/"main" as a substring, or falling back to the first
+ * non-internal function), renames it to a unique `__repl_eval_<N>` symbol,
+ * hands the module to addModule() for JIT linking, registers the resulting
+ * exported functions/globals with the REPL's symbol registry (mirroring
+ * executeBatch()), invokes the entry function, and — for any `_sexpr`
+ * globals the entry function just initialized — captures their values via
+ * eshkol_repl_register_sexpr() after execution completes.
+ * @return A heap-allocated int64_t holding the raw (untyped) result value
+ * promoted from the entry function's i32 return (caller-owned); use
+ * executeTagged() instead when a properly typed tagged value is needed.
+ * Throws std::runtime_error on codegen, module-unwrap, or entry-function
+ * lookup failure.
+ */
 void* ReplJITContext::execute(eshkol_ast_t* ast) {
     if (!ast) {
         throw std::runtime_error("Cannot execute null AST");
@@ -3454,6 +3777,26 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     return result_ptr;
 }
 
+/**
+ * @brief Evaluates @p ast via execute() and returns a properly typed eshkol_tagged_value_t rather than a raw promoted-i32 result.
+ *
+ * Clears the thread-local "last value" capture slot first so a parse/codegen
+ * failure cannot surface a stale tagged value from a previous evaluation.
+ * After calling execute(), prefers whatever typed value the JIT-compiled
+ * code itself captured via eshkol_repl_get_last_value() (the fix for
+ * evaluations that previously always read back as `{type=INT64, val=0}`
+ * because `main` unconditionally returns `ret i32 0`); the raw legacy
+ * pointer result is freed and discarded in that case. If no captured value
+ * is available, falls back to reinterpreting the raw int64 result according
+ * to @p ast's inferred HoTT type (`ast->inferred_hott_type`, unpacked into a
+ * TypeId and exactness/flag bits), mapping each numeric/text/collection/
+ * function/resource/autodiff BuiltinTypes case to its corresponding
+ * ESHKOL_VALUE_* tag; if no type was inferred (packed_type == 0), falls back
+ * further to a coarser classification based on the raw AST node's own type
+ * (ESHKOL_INT64, ESHKOL_DOUBLE, ESHKOL_STRING, etc.).
+ * @return A fully tagged eshkol_tagged_value_t; ESHKOL_VALUE_NULL if @p ast
+ * is null or execution produced no result.
+ */
 eshkol_tagged_value_t ReplJITContext::executeTagged(eshkol_ast_t* ast) {
     eshkol_tagged_value_t result;
     result.type = ESHKOL_VALUE_NULL;

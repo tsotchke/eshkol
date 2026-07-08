@@ -85,6 +85,20 @@ namespace eshkol {
 class Branch26RangeExtensionPlugin
     : public llvm::orc::LinkGraphLinkingLayer::Plugin {
 public:
+  /**
+   * @brief Installs the Branch26 range-extension pass on eligible LinkGraphs.
+   *
+   * No-op unless the graph's target triple is AArch64 (or AArch64_be) with
+   * an ELF or COFF object format (the formats where AArch64's large code
+   * model is incomplete; Mach-O already emits correct far calls and is
+   * skipped). Also honors the `ESHKOL_JIT_NO_BRANCH26_VENEER=1` environment
+   * variable as a debugging escape hatch. When active, appends
+   * extendBranches() to @p Config's PostPrunePasses.
+   *
+   * @param G The LinkGraph being processed; its target triple determines
+   *          whether the pass is installed.
+   * @param Config Pass configuration to append the PostPrune pass to.
+   */
   void modifyPassConfig(llvm::orc::MaterializationResponsibility &,
                         llvm::jitlink::LinkGraph &G,
                         llvm::jitlink::PassConfiguration &Config) override {
@@ -119,13 +133,31 @@ public:
   }
 
   // Required overrides; this plugin tracks no per-resource state.
+  /**
+   * @brief Required Plugin override for materialization-failure notification.
+   *
+   * This plugin holds no per-resource state, so there is nothing to clean
+   * up; always succeeds.
+   */
   llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility &) override {
     return llvm::Error::success();
   }
+  /**
+   * @brief Required Plugin override for resource-removal notification.
+   *
+   * This plugin holds no per-resource state, so there is nothing to clean
+   * up; always succeeds.
+   */
   llvm::Error notifyRemovingResources(llvm::orc::JITDylib &,
                                       llvm::orc::ResourceKey) override {
     return llvm::Error::success();
   }
+  /**
+   * @brief Required Plugin override for resource-transfer notification.
+   *
+   * This plugin holds no per-resource state, so there is nothing to
+   * transfer; intentionally empty.
+   */
   void notifyTransferringResources(llvm::orc::JITDylib &,
                                    llvm::orc::ResourceKey,
                                    llvm::orc::ResourceKey) override {}
@@ -135,6 +167,22 @@ private:
   // movk x16,#0,lsl#48 ; br x16   (little-endian, imm fields zeroed)
   static constexpr std::size_t kStubSize = 20;
 
+  /**
+   * @brief Rewrites every AArch64 Branch26PCRel edge in @p G to jump through
+   * a range-extension stub instead of directly to its target.
+   *
+   * For each `Branch26PCRel` edge found, emits (or reuses) a stub block in
+   * the same Section as the calling block, containing an absolute
+   * movz/movk/movk/movk/br x16 sequence that can reach any 64-bit address;
+   * the original edge is then re-pointed at the stub with its addend
+   * cleared (the addend is folded into the stub's target instead). Stubs
+   * are deduplicated per (section ordinal, target symbol) so callers in the
+   * same section sharing a callee share one stub. See the file-level
+   * comment for the full rationale.
+   *
+   * @param G The LinkGraph to modify in place.
+   * @return Always llvm::Error::success(); failure is not currently possible.
+   */
   static llvm::Error extendBranches(llvm::jitlink::LinkGraph &G) {
     using namespace llvm::jitlink;
 

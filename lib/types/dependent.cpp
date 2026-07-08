@@ -24,6 +24,7 @@ struct ConstValue {
     int64_t int_val = 0;
     double float_val = 0.0;
 
+    /** @brief Create an integer-kind ConstValue holding @p v (also caching the double-converted value). */
     static ConstValue makeInt(int64_t v) {
         ConstValue cv;
         cv.kind = Kind::Integer;
@@ -32,6 +33,7 @@ struct ConstValue {
         return cv;
     }
 
+    /** @brief Create a float-kind ConstValue holding @p v (also caching the truncated integer value). */
     static ConstValue makeFloat(double v) {
         ConstValue cv;
         cv.kind = Kind::Float;
@@ -40,21 +42,31 @@ struct ConstValue {
         return cv;
     }
 
+    /** @brief Create an invalid/empty ConstValue representing "could not evaluate". */
     static ConstValue none() {
         return ConstValue();
     }
 
+    /** @brief True if this ConstValue holds an actual evaluated result (kind != None). */
     bool isValid() const { return kind != Kind::None; }
+    /** @brief True if this ConstValue holds an integer result. */
     bool isInt() const { return kind == Kind::Integer; }
+    /** @brief True if this ConstValue holds a floating-point result. */
     bool isFloat() const { return kind == Kind::Float; }
 
     // Get as double (works for both int and float)
+    /** @brief Get the value as a double, regardless of whether it was stored as int or float. */
     double asDouble() const { return float_val; }
 
     // Get as int64 (truncates floats)
+    /** @brief Get the value as an int64_t, truncating toward zero if it was stored as a float. */
     int64_t asInt() const { return int_val; }
 
     // Promote to float if either operand is float
+    /**
+     * @brief Add two constant values, promoting to float if either operand is a float.
+     * @return The sum, or an invalid ConstValue if either operand is invalid.
+     */
     static ConstValue add(const ConstValue& a, const ConstValue& b) {
         if (!a.isValid() || !b.isValid()) return none();
         if (a.isFloat() || b.isFloat()) {
@@ -63,6 +75,10 @@ struct ConstValue {
         return makeInt(a.asInt() + b.asInt());
     }
 
+    /**
+     * @brief Subtract two constant values, promoting to float if either operand is a float.
+     * @return The difference (a - b), or an invalid ConstValue if either operand is invalid.
+     */
     static ConstValue sub(const ConstValue& a, const ConstValue& b) {
         if (!a.isValid() || !b.isValid()) return none();
         if (a.isFloat() || b.isFloat()) {
@@ -71,6 +87,10 @@ struct ConstValue {
         return makeInt(a.asInt() - b.asInt());
     }
 
+    /**
+     * @brief Multiply two constant values, promoting to float if either operand is a float.
+     * @return The product, or an invalid ConstValue if either operand is invalid.
+     */
     static ConstValue mul(const ConstValue& a, const ConstValue& b) {
         if (!a.isValid() || !b.isValid()) return none();
         if (a.isFloat() || b.isFloat()) {
@@ -79,6 +99,11 @@ struct ConstValue {
         return makeInt(a.asInt() * b.asInt());
     }
 
+    /**
+     * @brief Divide two constant values, promoting to float if either operand is a float.
+     * @return The quotient (a / b), or an invalid ConstValue if either operand is invalid or if
+     * division by zero is detected.
+     */
     static ConstValue div(const ConstValue& a, const ConstValue& b) {
         if (!a.isValid() || !b.isValid()) return none();
         // Check for division by zero
@@ -201,6 +226,15 @@ ConstValue evaluateConstExpr(const eshkol_ast_t* expr) {
 
 } // anonymous namespace
 
+/**
+ * @brief Try to evaluate this CTValue as a concrete natural number (uint64_t).
+ *
+ * For Kind::Nat returns the stored value directly. For Kind::Expr, folds the referenced AST
+ * expression via evaluateConstExpr(), accepting non-negative integer literals and integer-valued
+ * float literals (and arithmetic combinations thereof).
+ *
+ * @return The evaluated value, or std::nullopt if it depends on a runtime value or is negative/non-integral.
+ */
 std::optional<uint64_t> CTValue::tryEvalNat() const {
     switch (kind_) {
         case Kind::Nat:
@@ -232,6 +266,14 @@ std::optional<uint64_t> CTValue::tryEvalNat() const {
     }
 }
 
+/**
+ * @brief Try to evaluate this CTValue as a concrete double.
+ *
+ * For Kind::Nat, converts the stored natural number to double. For Kind::Expr, folds the
+ * referenced AST expression via evaluateConstExpr().
+ *
+ * @return The evaluated value, or std::nullopt if it depends on a runtime value.
+ */
 std::optional<double> CTValue::tryEvalFloat() const {
     switch (kind_) {
         case Kind::Nat:
@@ -255,6 +297,12 @@ std::optional<double> CTValue::tryEvalFloat() const {
 
 // ===== DependentType Implementation =====
 
+/**
+ * @brief Render this dependent type as a string such as "Type#104<Type#16, 3, 4>".
+ *
+ * Note: base and parameter type names are printed as "Type#<id>" since no TypeEnvironment is
+ * available here to resolve human-readable names; value indices use CTValue::toString().
+ */
 std::string DependentType::toString() const {
     std::ostringstream ss;
 
@@ -285,6 +333,12 @@ std::string DependentType::toString() const {
     return ss.str();
 }
 
+/**
+ * @brief Structural equality check for dependent types.
+ *
+ * Requires the same base type, the same type indices (in order), and the same value indices
+ * (compared via CTValue::equals(), each of which must yield CompareResult::True).
+ */
 bool DependentType::equals(const DependentType& other) const {
     // Check base type
     if (base != other.base) return false;
@@ -305,6 +359,15 @@ bool DependentType::equals(const DependentType& other) const {
     return true;
 }
 
+/**
+ * @brief Subtype check for dependent types.
+ *
+ * Requires the base types to be subtypes per @p env, requires type indices to be pairwise equal
+ * or subtypes (covariant), and requires all value indices to be provably equal
+ * (CompareResult::True) — dimensions cannot differ between subtype and supertype.
+ *
+ * @return True if this type is a subtype of @p other under @p env.
+ */
 bool DependentType::isSubtypeOf(const DependentType& other, const TypeEnvironment& env) const {
     // First check if base types are subtypes
     if (!env.isSubtype(base, other.base)) {
@@ -336,6 +399,17 @@ bool DependentType::isSubtypeOf(const DependentType& other, const TypeEnvironmen
 
 // ===== DimensionChecker Implementation =====
 
+/**
+ * @brief Check that a compile-time index is within `[0, bound)`.
+ *
+ * If both @p idx and @p bound evaluate to concrete naturals, checks the bound directly. If only
+ * @p idx is known, or if @p idx cannot be evaluated at all, the check conservatively fails since
+ * it cannot be statically proven.
+ *
+ * @return Result::success() only when both values are known and the index is in bounds;
+ * otherwise a Result::failure() carrying a diagnostic message that includes @p context when
+ * non-empty.
+ */
 DimensionChecker::Result DimensionChecker::checkBounds(
     const CTValue& idx, const CTValue& bound, const std::string& context) {
 
@@ -375,6 +449,12 @@ DimensionChecker::Result DimensionChecker::checkBounds(
     return Result::failure(ss.str());
 }
 
+/**
+ * @brief Check that two compile-time dimensions are equal.
+ *
+ * @return Result::success() if CTValue::equals() proves equality; a Result::failure() with a
+ * mismatch or "proof required" message otherwise, including @p context when non-empty.
+ */
 DimensionChecker::Result DimensionChecker::checkDimensionsEqual(
     const CTValue& dim1, const CTValue& dim2, const std::string& context) {
 
@@ -404,6 +484,13 @@ DimensionChecker::Result DimensionChecker::checkDimensionsEqual(
     return Result::failure(ss.str());
 }
 
+/**
+ * @brief Check matrix-multiplication dimension compatibility: (m x n) * (n x p) requires the
+ * left matrix's column count to equal the right matrix's row count.
+ *
+ * @return Result::failure() if either side has fewer than 2 dimension indices; otherwise the
+ * result of checkDimensionsEqual() on the shared "n" dimension.
+ */
 DimensionChecker::Result DimensionChecker::checkMatMulDimensions(
     const DependentType& left, const DependentType& right, const std::string& context) {
 
@@ -421,6 +508,13 @@ DimensionChecker::Result DimensionChecker::checkMatMulDimensions(
         context.empty() ? "matrix multiplication" : context);
 }
 
+/**
+ * @brief Check vector dot-product dimension compatibility: both vectors must have the same
+ * (first) dimension.
+ *
+ * @return Result::failure() if either side has no dimension indices; otherwise the result of
+ * checkDimensionsEqual() on the first dimension of each.
+ */
 DimensionChecker::Result DimensionChecker::checkDotProductDimensions(
     const DependentType& left, const DependentType& right, const std::string& context) {
 

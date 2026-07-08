@@ -41,6 +41,16 @@
  * Returns: number of ready fds (0=timeout, -1=error)
  ******************************************************************************/
 
+/**
+ * @brief Waits for any of several file descriptors to become ready for I/O, batching a poll(2) call.
+ *
+ * @param fds Array of @p nfds file descriptors to watch.
+ * @param directions Array of @p nfds direction flags per fd: bit 0 (1) = watch for readable (POLLIN), bit 1 (2) = watch for writable (POLLOUT); either or both may be set.
+ * @param nfds Number of entries in @p fds / @p directions (must be in (0, 256]).
+ * @param timeout_ms Milliseconds to wait; -1 blocks indefinitely, 0 polls without blocking.
+ * @param ready_out Array of @p nfds ints filled with a status bitmask per fd: 1=readable, 2=writable, 4=error/hangup/invalid (bits may combine).
+ * @return Number of ready fds, 0 on timeout (including an interrupting signal), or -1 on invalid arguments or a poll() error.
+ */
 int32_t eshkol_poll(const int32_t* fds, const int32_t* directions,
                      int32_t nfds, int32_t timeout_ms, int32_t* ready_out) {
     if (!fds || !directions || !ready_out || nfds <= 0 || nfds > 256) return -1;
@@ -77,6 +87,15 @@ int32_t eshkol_poll(const int32_t* fds, const int32_t* directions,
  * Returns: 1=readable, 0=timeout, -1=error/hangup
  ******************************************************************************/
 
+/**
+ * @brief Checks whether a single file descriptor becomes readable within a timeout.
+ *
+ * Convenience wrapper around poll() for the common single-fd case.
+ *
+ * @param fd File descriptor to watch for POLLIN.
+ * @param timeout_ms Milliseconds to wait; -1 blocks indefinitely, 0 polls without blocking.
+ * @return 1 if readable, 0 on timeout (including an interrupting signal), -1 on error, hangup, or invalid fd.
+ */
 int32_t eshkol_poll_read(int32_t fd, int32_t timeout_ms) {
     struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
     int ret = poll(&pfd, 1, timeout_ms);
@@ -90,12 +109,24 @@ int32_t eshkol_poll_read(int32_t fd, int32_t timeout_ms) {
  * Non-blocking fd operations
  ******************************************************************************/
 
+/**
+ * @brief Sets O_NONBLOCK on a file descriptor.
+ *
+ * @param fd File descriptor to modify.
+ * @return 0 on success, -1 if the current flags could not be read or fcntl(F_SETFL) failed.
+ */
 int32_t eshkol_fd_set_nonblocking(int32_t fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 ? 0 : -1;
 }
 
+/**
+ * @brief Clears O_NONBLOCK on a file descriptor, restoring blocking I/O.
+ *
+ * @param fd File descriptor to modify.
+ * @return 0 on success, -1 if the current flags could not be read or fcntl(F_SETFL) failed.
+ */
 int32_t eshkol_fd_set_blocking(int32_t fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
@@ -109,6 +140,14 @@ int32_t eshkol_fd_set_blocking(int32_t fd) {
  * Returns: bytes read (>0), 0=nothing available, -1=EOF/error
  ******************************************************************************/
 
+/**
+ * @brief Reads whatever data is immediately available from a (typically non-blocking) fd.
+ *
+ * @param fd File descriptor to read from.
+ * @param buf Destination buffer.
+ * @param buf_size Size of @p buf in bytes.
+ * @return Number of bytes read (> 0), 0 if no data is currently available (EAGAIN/EWOULDBLOCK), or -1 on EOF, error, or invalid arguments.
+ */
 int32_t eshkol_fd_read_available(int32_t fd, char* buf, int32_t buf_size) {
     if (!buf || buf_size <= 0) return -1;
     ssize_t n = read(fd, buf, (size_t)buf_size);
@@ -125,6 +164,14 @@ int32_t eshkol_fd_read_available(int32_t fd, char* buf, int32_t buf_size) {
  * Returns: bytes written (>0), 0=would block, -1=error
  ******************************************************************************/
 
+/**
+ * @brief Writes data to a (typically non-blocking) fd without blocking if the write would stall.
+ *
+ * @param fd File descriptor to write to.
+ * @param data Bytes to write.
+ * @param len Number of bytes in @p data.
+ * @return Number of bytes written (> 0, possibly less than @p len for a partial write), 0 if the write would block (EAGAIN/EWOULDBLOCK), or -1 on error or invalid arguments.
+ */
 int32_t eshkol_fd_write_available(int32_t fd, const char* data, int32_t len) {
     if (!data || len <= 0) return -1;
     ssize_t n = write(fd, data, (size_t)len);
@@ -140,6 +187,13 @@ int32_t eshkol_fd_write_available(int32_t fd, const char* data, int32_t len) {
  * Returns: 0 success (read_fd and write_fd filled), -1 error
  ******************************************************************************/
 
+/**
+ * @brief Creates a unidirectional OS pipe.
+ *
+ * @param read_fd Out-parameter set to the pipe's read-end fd.
+ * @param write_fd Out-parameter set to the pipe's write-end fd.
+ * @return 0 on success, -1 if either out-parameter is NULL or pipe() failed.
+ */
 int32_t eshkol_make_pipe(int32_t* read_fd, int32_t* write_fd) {
     if (!read_fd || !write_fd) return -1;
     int pipefd[2];
@@ -173,6 +227,15 @@ typedef struct {
 static LineReader* g_line_readers[MAX_LINE_READERS] = {0};
 static int g_next_reader = 1;
 
+/**
+ * @brief Finds a free slot in the global line-reader table.
+ *
+ * Scans forward from the last allocated index (wrapping around) so
+ * slot reuse spreads across the table rather than always restarting
+ * at index 1.
+ *
+ * @return A free slot index in [1, MAX_LINE_READERS), or -1 if the table is full.
+ */
 static int alloc_reader(void) {
     for (int i = g_next_reader; i < MAX_LINE_READERS; i++) {
         if (!g_line_readers[i]) { g_next_reader = i + 1; return i; }
@@ -183,6 +246,12 @@ static int alloc_reader(void) {
     return -1;
 }
 
+/**
+ * @brief Looks up a LineReader by its handle, validating the handle range.
+ *
+ * @param handle Handle previously returned by eshkol_line_reader_create().
+ * @return The LineReader, or NULL if @p handle is out of range or the slot is unallocated.
+ */
 static LineReader* get_reader(int64_t handle) {
     if (handle < 1 || handle >= MAX_LINE_READERS) return NULL;
     return g_line_readers[handle];
@@ -192,6 +261,15 @@ static LineReader* get_reader(int64_t handle) {
  * Create a line reader for the given file descriptor.
  * The fd should already be open and preferably non-blocking.
  * Returns: handle (>= 1), -1 on error
+ */
+/**
+ * @brief Allocates and registers a buffered line reader for a file descriptor.
+ *
+ * @p fd should already be open, and preferably set to non-blocking mode
+ * (see eshkol_fd_set_nonblocking()) so eshkol_line_reader_next() never stalls.
+ *
+ * @param fd File descriptor to read lines from; ownership stays with the caller (not closed by this module).
+ * @return A handle (>= 1) usable with the other eshkol_line_reader_* functions, or -1 if the reader table is full or allocation failed.
  */
 int64_t eshkol_line_reader_create(int32_t fd) {
     int slot = alloc_reader();
@@ -218,6 +296,23 @@ int64_t eshkol_line_reader_create(int32_t fd) {
  *   0:   no complete line available yet (not an error, call again later)
  *   -1:  EOF or error (no more lines will come)
  *   -2:  handle invalid
+ */
+/**
+ * @brief Reads the next complete, newline-terminated line from a line reader, without blocking.
+ *
+ * Reads whatever is currently available on the underlying fd into an
+ * internal 64KB buffer, then returns the first complete line found
+ * (the trailing '\n' is stripped and not included in the output). If
+ * EOF is reached with a trailing partial line (no '\n'), that
+ * remaining data is delivered as a final line.
+ *
+ * @param handle Handle from eshkol_line_reader_create().
+ * @param out_buf Destination buffer for the line text (NUL-terminated); truncated if longer than @p out_size - 1.
+ * @param out_size Size of @p out_buf in bytes.
+ * @return Line length in bytes if a complete line was delivered, 0 if
+ *   no complete line is available yet (not an error, call again
+ *   later), -1 on EOF/error with nothing left to deliver, or -2 if
+ *   @p handle or the buffer arguments are invalid.
  */
 int32_t eshkol_line_reader_next(int64_t handle, char* out_buf, int32_t out_size) {
     LineReader* lr = get_reader(handle);
@@ -275,6 +370,12 @@ int32_t eshkol_line_reader_next(int64_t handle, char* out_buf, int32_t out_size)
  * Check if the reader has reached EOF.
  * Returns: 1 if EOF reached, 0 if more data may come
  */
+/**
+ * @brief Reports whether a line reader has hit EOF with no buffered data left.
+ *
+ * @param handle Handle from eshkol_line_reader_create().
+ * @return 1 if the underlying fd reached EOF and all buffered bytes have been consumed (or @p handle is invalid), 0 if more data may still arrive.
+ */
 int32_t eshkol_line_reader_eof(int64_t handle) {
     LineReader* lr = get_reader(handle);
     if (!lr) return 1;
@@ -285,6 +386,12 @@ int32_t eshkol_line_reader_eof(int64_t handle) {
  * Peek at buffered data without consuming it.
  * Returns: number of bytes currently buffered
  */
+/**
+ * @brief Returns the number of bytes currently buffered but not yet delivered as a line.
+ *
+ * @param handle Handle from eshkol_line_reader_create().
+ * @return Buffered byte count, or 0 if @p handle is invalid.
+ */
 int32_t eshkol_line_reader_buffered(int64_t handle) {
     LineReader* lr = get_reader(handle);
     if (!lr) return 0;
@@ -293,6 +400,13 @@ int32_t eshkol_line_reader_buffered(int64_t handle) {
 
 /*
  * Close and free a line reader. Does NOT close the underlying fd.
+ */
+/**
+ * @brief Frees a line reader and removes it from the reader table.
+ *
+ * Does not close the underlying file descriptor; the caller retains ownership of it.
+ *
+ * @param handle Handle from eshkol_line_reader_create(); invalid handles are a no-op.
  */
 void eshkol_line_reader_close(int64_t handle) {
     LineReader* lr = get_reader(handle);
@@ -320,18 +434,46 @@ void eshkol_line_reader_close(int64_t handle) {
 /*   stdout_fd: offset 8 (4 bytes)                                        */
 /*   stderr_fd: offset 12 (4 bytes)                                       */
 
+/**
+ * @brief Extracts the stdout pipe fd from an opaque qllm_process_t handle.
+ *
+ * Reinterprets @p proc as a flat array of ints per the qllm_process_t
+ * layout `{ pid_t pid; int stdin_fd; int stdout_fd; int stderr_fd; ... }`
+ * (pid_t is 4 bytes on both macOS and Linux), so stdout_fd is the 3rd
+ * int field. This creates a coupling to that struct's layout: if it
+ * changes, this offset must be updated too.
+ *
+ * @param proc Pointer to a qllm_process_t; NULL is rejected.
+ * @return The stdout file descriptor, or -1 if @p proc is NULL.
+ */
 int32_t eshkol_process_stdout_fd(void* proc) {
     if (!proc) return -1;
     const int* fields = (const int*)proc;
     return fields[2];  /* stdout_fd is the 3rd int field */
 }
 
+/**
+ * @brief Extracts the stderr pipe fd from an opaque qllm_process_t handle.
+ *
+ * See eshkol_process_stdout_fd() for the assumed struct layout and its caveats.
+ *
+ * @param proc Pointer to a qllm_process_t; NULL is rejected.
+ * @return The stderr file descriptor, or -1 if @p proc is NULL.
+ */
 int32_t eshkol_process_stderr_fd(void* proc) {
     if (!proc) return -1;
     const int* fields = (const int*)proc;
     return fields[3];  /* stderr_fd is the 4th int field */
 }
 
+/**
+ * @brief Extracts the process ID from an opaque qllm_process_t handle.
+ *
+ * See eshkol_process_stdout_fd() for the assumed struct layout and its caveats.
+ *
+ * @param proc Pointer to a qllm_process_t; NULL is rejected.
+ * @return The process ID, or -1 if @p proc is NULL.
+ */
 int32_t eshkol_process_pid(void* proc) {
     if (!proc) return -1;
     const int* fields = (const int*)proc;
