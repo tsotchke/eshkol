@@ -1,0 +1,136 @@
+;;; reader_long_list_test.esk — Bug 2 regression: reader stack overflow on
+;;; long lists.
+;;;
+;;; lib/core/runtime_reader_hosted.cpp's read_list() used to recurse via
+;;; read_list() once per list element (one native C stack frame per
+;;; element) to read the cdr of a list. A flat persisted list of ~46,000+
+;;; elements overflowed the native stack during (read), independent of
+;;; ESHKOL_STACK_SIZE — this is what blocked booting a resident program
+;;; that reloads a large persisted data file.
+;;;
+;;; Fix: read_list() now collects elements iteratively into a growable
+;;; heap buffer (realloc-grown, mirroring read_vector's approach) with a
+;;; plain loop, then conses the proper/improper list together
+;;; right-to-left over that buffer. No native recursion occurs per list
+;;; element any more. Nested lists still legitimately recurse through
+;;; read_datum, bounded by the pre-existing g_reader_depth /
+;;; ESHKOL_READ_MAX_DEPTH (4096) guard — that path, and its guard, are
+;;; untouched by this fix and are exercised (well under the cap) below.
+;;;
+;;; This test writes a 100,000-element flat list and a 2,000-deep nested
+;;; list to files (as raw text — element-by-element — so the *writer*
+;;; side of this test doesn't depend on serializing a giant in-memory
+;;; list, which would risk conflating an unrelated display/write
+;;; recursion path with the reader bug this test targets), then reads
+;;; each back at the process's DEFAULT stack size (ESHKOL_STACK_SIZE is
+;;; deliberately left unset) and checks the resulting structure.
+
+(define FLAT-N 100000)
+(define NEST-DEPTH 2000) ; comfortably below the intentional 4096 nesting cap
+
+(define flat-file "/tmp/eshkol_reader_long_list_test_flat.txt")
+(define nested-file "/tmp/eshkol_reader_long_list_test_nested.txt")
+
+;; --- Writers -----------------------------------------------------------
+
+(define (write-flat-list!)
+  (let ((port (open-output-file flat-file)))
+    (display "(" port)
+    (let loop ((i 1))
+      (if (<= i FLAT-N)
+          (begin
+            (display i port)
+            (display " " port)
+            (loop (+ i 1)))))
+    (display ")" port)
+    (close-output-port port)))
+
+(define (write-nested-list!)
+  (let ((port (open-output-file nested-file)))
+    (let open-loop ((i 0))
+      (if (< i NEST-DEPTH)
+          (begin (display "(" port) (open-loop (+ i 1)))))
+    (display "99" port)
+    (let close-loop ((i 0))
+      (if (< i NEST-DEPTH)
+          (begin (display ")" port) (close-loop (+ i 1)))))
+    (close-output-port port)))
+
+(write-flat-list!)
+(write-nested-list!)
+
+;; --- Readers (the actual regression surface) ----------------------------
+
+(define in1 (open-input-file flat-file))
+(define flat-result (read in1))
+(close-input-port in1)
+
+(define in2 (open-input-file nested-file))
+(define nested-result (read in2))
+(close-input-port in2)
+
+;; --- Tail-recursive (TCO'd) structural checks — traversal itself must
+;; not add native recursion depth either, so these use accumulator-style
+;; named-let loops. ---------------------------------------------------
+
+(define (list-length-tco lst)
+  (let loop ((l lst) (n 0))
+    (if (pair? l)
+        (loop (cdr l) (+ n 1))
+        n)))
+
+(define (list-last-tco lst)
+  (let loop ((l lst))
+    (if (pair? (cdr l))
+        (loop (cdr l))
+        (car l))))
+
+(define (nesting-depth-tco v)
+  (let loop ((x v) (d 0))
+    (if (pair? x)
+        (loop (car x) (+ d 1))
+        d)))
+
+(define (innermost-atom-tco v)
+  (let loop ((x v))
+    (if (pair? x)
+        (loop (car x))
+        x)))
+
+(define flat-len (list-length-tco flat-result))
+(define flat-first (car flat-result))
+(define flat-last (list-last-tco flat-result))
+
+(define nest-depth (nesting-depth-tco nested-result))
+(define nest-atom (innermost-atom-tco nested-result))
+
+(display "flat-length: ") (display flat-len) (newline)
+(display "flat-first: ") (display flat-first) (newline)
+(display "flat-last: ") (display flat-last) (newline)
+(display "nest-depth: ") (display nest-depth) (newline)
+(display "nest-atom: ") (display nest-atom) (newline)
+
+;; --- Verdict -------------------------------------------------------------
+
+(define passed 0)
+(define failed 0)
+(define (check name cnd)
+  (if cnd
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(check "flat list did not crash and has correct length" (= flat-len FLAT-N))
+(check "flat list first element == 1" (= flat-first 1))
+(check "flat list last element == 100000" (= flat-last FLAT-N))
+(check "nested list did not crash and has correct depth" (= nest-depth NEST-DEPTH))
+(check "nested list innermost atom == 99" (= nest-atom 99))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
