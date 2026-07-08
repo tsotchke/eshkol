@@ -29,50 +29,50 @@ struct MLIRContext;
  */
 enum class StableHLOOp {
     // Arithmetic
-    ADD,
-    SUBTRACT,
-    MULTIPLY,
-    DIVIDE,
-    NEGATE,
-    ABS,
+    ADD,       // Element-wise addition
+    SUBTRACT,  // Element-wise subtraction
+    MULTIPLY,  // Element-wise multiplication
+    DIVIDE,    // Element-wise division
+    NEGATE,    // Element-wise negation
+    ABS,       // Element-wise absolute value
 
     // Transcendental
-    EXP,
-    LOG,
-    SIN,
-    COS,
-    TANH,
+    EXP,       // Element-wise exponential
+    LOG,       // Element-wise natural logarithm
+    SIN,       // Element-wise sine
+    COS,       // Element-wise cosine
+    TANH,      // Element-wise hyperbolic tangent
 
     // Matrix
-    DOT_GENERAL,
-    TRANSPOSE,
+    DOT_GENERAL, // General matrix/batched contraction
+    TRANSPOSE,   // Permute tensor dimensions
 
     // Shape
-    RESHAPE,
-    BROADCAST,
-    SLICE,
-    CONCATENATE,
+    RESHAPE,     // Change tensor shape without changing data
+    BROADCAST,   // Expand a tensor along new/size-1 dimensions
+    SLICE,       // Extract a sub-tensor
+    CONCATENATE, // Join tensors along an axis
 
     // Reduction
-    REDUCE_SUM,
-    REDUCE_MAX,
-    REDUCE_MIN,
-    REDUCE_PROD,
+    REDUCE_SUM,  // Sum-reduce along axes
+    REDUCE_MAX,  // Max-reduce along axes
+    REDUCE_MIN,  // Min-reduce along axes
+    REDUCE_PROD, // Product-reduce along axes
 
     // Activation
-    RELU,
-    SIGMOID,
-    SOFTMAX
+    RELU,        // Rectified linear unit
+    SIGMOID,     // Logistic sigmoid
+    SOFTMAX      // Softmax normalization
 };
 
 /**
  * Dot dimension specification for DOT_GENERAL
  */
 struct DotDimensionNumbers {
-    std::vector<int64_t> lhs_batching_dims;
-    std::vector<int64_t> rhs_batching_dims;
-    std::vector<int64_t> lhs_contracting_dims;
-    std::vector<int64_t> rhs_contracting_dims;
+    std::vector<int64_t> lhs_batching_dims;      // Batch dimensions of the LHS operand
+    std::vector<int64_t> rhs_batching_dims;      // Batch dimensions of the RHS operand
+    std::vector<int64_t> lhs_contracting_dims;   // Contracted (summed-over) dimensions of the LHS operand
+    std::vector<int64_t> rhs_contracting_dims;   // Contracted (summed-over) dimensions of the RHS operand
 };
 
 /**
@@ -83,7 +83,14 @@ struct DotDimensionNumbers {
  */
 class StableHLOEmitter {
 public:
+    /**
+     * Construct an emitter with an empty StableHLO module.
+     */
     StableHLOEmitter();
+
+    /**
+     * Destroy the emitter and release any owned MLIR resources.
+     */
     ~StableHLOEmitter();
 
     // Non-copyable
@@ -142,10 +149,39 @@ public:
 
     // ===== Transcendental Operations =====
 
+    /**
+     * Emit element-wise exponential.
+     * @param input Input value
+     * @return Result value
+     */
     void* emitExp(void* input);
+
+    /**
+     * Emit element-wise natural logarithm.
+     * @param input Input value
+     * @return Result value
+     */
     void* emitLog(void* input);
+
+    /**
+     * Emit element-wise sine.
+     * @param input Input value
+     * @return Result value
+     */
     void* emitSin(void* input);
+
+    /**
+     * Emit element-wise cosine.
+     * @param input Input value
+     * @return Result value
+     */
     void* emitCos(void* input);
+
+    /**
+     * Emit element-wise hyperbolic tangent.
+     * @param input Input value
+     * @return Result value
+     */
     void* emitTanh(void* input);
 
     // ===== Reduction Operations =====
@@ -161,8 +197,30 @@ public:
 
     // ===== Shape Operations =====
 
+    /**
+     * Emit a reshape to a new shape (same element count).
+     * @param input Input tensor
+     * @param new_shape Target shape
+     * @return Reshaped tensor
+     */
     void* emitReshape(void* input, const std::vector<int64_t>& new_shape);
+
+    /**
+     * Emit a broadcast along the given dimensions.
+     * @param input Input tensor
+     * @param broadcast_dims Mapping of input dimensions to output dimensions
+     * @return Broadcasted tensor
+     */
     void* emitBroadcast(void* input, const std::vector<int64_t>& broadcast_dims);
+
+    /**
+     * Emit a strided slice of a tensor.
+     * @param input Input tensor
+     * @param start Start indices per dimension
+     * @param limit End indices per dimension
+     * @param strides Step sizes per dimension
+     * @return Sliced tensor
+     */
     void* emitSlice(void* input, const std::vector<int64_t>& start,
                     const std::vector<int64_t>& limit,
                     const std::vector<int64_t>& strides);

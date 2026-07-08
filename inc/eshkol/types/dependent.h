@@ -61,6 +61,7 @@ public:
     CTValue() : kind_(Kind::Unknown), nat_val_(0), expr_(nullptr) {}
 
     // Factory methods
+    /** Create a Nat-kind CTValue holding the given natural number. */
     static CTValue makeNat(uint64_t n) {
         CTValue v;
         v.kind_ = Kind::Nat;
@@ -69,6 +70,7 @@ public:
         return v;
     }
 
+    /** Create a Bool-kind CTValue holding the given boolean. */
     static CTValue makeBool(bool b) {
         CTValue v;
         v.kind_ = Kind::Bool;
@@ -77,6 +79,7 @@ public:
         return v;
     }
 
+    /** Create an Expr-kind CTValue referencing a (non-owned) AST expression. */
     static CTValue makeExpr(const eshkol_ast_t* e) {
         CTValue v;
         v.kind_ = Kind::Expr;
@@ -85,20 +88,30 @@ public:
         return v;
     }
 
+    /** Create an Unknown-kind CTValue (runtime-only, not checkable statically). */
     static CTValue makeUnknown() {
         return CTValue();
     }
 
     // Accessors
+    /** Get the discriminant kind of this value. */
     Kind kind() const { return kind_; }
+    /** True if this holds a Nat value. */
     bool isNat() const { return kind_ == Kind::Nat; }
+    /** True if this holds a Bool value. */
     bool isBool() const { return kind_ == Kind::Bool; }
+    /** True if this holds a symbolic Expr reference. */
     bool isExpr() const { return kind_ == Kind::Expr; }
+    /** True if this is Unknown (no compile-time value available). */
     bool isUnknown() const { return kind_ == Kind::Unknown; }
+    /** True if this is anything other than Unknown. */
     bool isKnown() const { return kind_ != Kind::Unknown; }
 
+    /** Raw natural-number payload. Only valid when kind() == Nat. */
     uint64_t natValue() const { return nat_val_; }
+    /** Raw boolean payload. Only valid when kind() == Bool. */
     bool boolValue() const { return bool_val_; }
+    /** Raw AST expression pointer. Only valid when kind() == Expr. */
     const eshkol_ast_t* exprValue() const { return expr_; }
 
     /**
@@ -170,6 +183,7 @@ public:
     }
 
     // Arithmetic operations (for type-level computations)
+    /** Add two compile-time naturals, or Unknown if either is not evaluable. */
     CTValue add(const CTValue& other) const {
         auto lhs = tryEvalNat();
         auto rhs = other.tryEvalNat();
@@ -179,6 +193,7 @@ public:
         return makeUnknown();
     }
 
+    /** Multiply two compile-time naturals, or Unknown if either is not evaluable. */
     CTValue mul(const CTValue& other) const {
         auto lhs = tryEvalNat();
         auto rhs = other.tryEvalNat();
@@ -215,10 +230,13 @@ public:
     std::vector<TypeId> type_indices;  // Type parameters
     std::vector<CTValue> value_indices; // Value parameters (dimensions, etc.)
 
+    /** Construct with base type Value and no indices. */
     DependentType() : base(BuiltinTypes::Value) {}
 
+    /** Construct a simple (non-parameterized) dependent type wrapping base type @p b. */
     DependentType(TypeId b) : base(b) {}
 
+    /** Construct a fully parameterized dependent type with type and value indices. */
     DependentType(TypeId b, std::vector<TypeId> types, std::vector<CTValue> values)
         : base(b), type_indices(std::move(types)), value_indices(std::move(values)) {}
 
@@ -278,11 +296,13 @@ struct SigmaType {
     TypeId body_type;            // Type of second component (may reference witness)
     bool is_dependent;           // True if body_type references witness_name
 
+    /** Construct a trivial Sigma type with Value/Value components and no dependency. */
     SigmaType()
         : witness_type(BuiltinTypes::Value)
         , body_type(BuiltinTypes::Value)
         , is_dependent(false) {}
 
+    /** Construct a Sigma type Sigma(name:wit_type).bod_type, dependent unless @p dep is false. */
     SigmaType(const std::string& name, TypeId wit_type, TypeId bod_type, bool dep = true)
         : witness_name(name)
         , witness_type(wit_type)
@@ -315,10 +335,12 @@ struct SigmaValue {
     TypeId witness_runtime_type; // Runtime type of witness
     TypeId body_runtime_type;    // Runtime type of body (after substitution)
 
+    /** Construct with an Unknown witness and Value/Value runtime types. */
     SigmaValue()
         : witness_runtime_type(BuiltinTypes::Value)
         , body_runtime_type(BuiltinTypes::Value) {}
 
+    /** Construct a dependent pair value from a witness and its component runtime types. */
     SigmaValue(const CTValue& wit, TypeId wit_type, TypeId bod_type)
         : witness(wit)
         , witness_runtime_type(wit_type)
@@ -337,11 +359,16 @@ struct SigmaValue {
  */
 class DimensionChecker {
 public:
+    /**
+     * @brief Outcome of a single dimension-checking query.
+     */
     struct Result {
-        bool valid;
-        std::string error_message;
+        bool valid;                   // True if the check passed
+        std::string error_message;    // Diagnostic message when valid is false (empty otherwise)
 
+        /** Construct a successful (valid) result. */
         static Result success() { return {true, ""}; }
+        /** Construct a failed result carrying the given diagnostic message. */
         static Result failure(const std::string& msg) { return {false, msg}; }
     };
 

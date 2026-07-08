@@ -27,9 +27,9 @@ namespace eshkol::hott {
  * Result of a type checking operation
  */
 struct TypeCheckResult {
-    bool success;
-    TypeId inferred_type;
-    std::string error_message;
+    bool success;                  // True if the check/synthesis succeeded
+    TypeId inferred_type;          // Resulting type (valid when success is true)
+    std::string error_message;     // Diagnostic message (populated when success is false)
 
     // Source location for error reporting
     int line = 0;
@@ -42,10 +42,12 @@ struct TypeCheckResult {
     std::string hint;              // Suggested fix
 
     // Factory methods
+    /** Construct a successful result carrying the given inferred/checked type. */
     static TypeCheckResult ok(TypeId type) {
         return {true, type, "", 0, 0, "", "", "", ""};
     }
 
+    /** Construct a failed result with a plain error message and optional source location. */
     static TypeCheckResult error(const std::string& msg, int line = 0, int col = 0) {
         return {false, TypeId{}, msg, line, col, "", "", "", ""};
     }
@@ -88,23 +90,32 @@ struct TypeCheckResult {
  */
 class Context {
 public:
+    /** Construct a context with a single (global) empty scope. */
     Context();
 
     // Scope management
+    /** Push a new (empty) variable scope. */
     void pushScope();
+    /** Pop the innermost variable scope, discarding its bindings. */
     void popScope();
 
     // Variable bindings
+    /** Bind @p name to @p type in the innermost scope. */
     void bind(const std::string& name, TypeId type);
+    /** Look up @p name, searching from the innermost scope outward. Returns nullopt if unbound. */
     std::optional<TypeId> lookup(const std::string& name) const;
 
     // Type aliases (from define-type)
+    /** Register a (possibly parameterized) type alias introduced by `define-type`. */
     void defineTypeAlias(const std::string& name, hott_type_expr_t* type_expr,
                         const std::vector<std::string>& params = {});
+    /** Look up a type alias by name. Returns nullopt if not defined. */
     std::optional<hott_type_expr_t*> lookupTypeAlias(const std::string& name) const;
 
     // Parameterized type alias support
+    /** True if the named type alias has formal type parameters. */
     bool hasTypeAliasParams(const std::string& name) const;
+    /** Get the formal parameter names for a parameterized type alias. */
     const std::vector<std::string>& getTypeAliasParams(const std::string& name) const;
 
     /**
@@ -117,15 +128,23 @@ public:
                                            const std::vector<hott_type_expr_t*>& type_args) const;
 
     // Linear type binding (Phase 6)
+    /** Bind @p name as a linear variable of the given type (must be used exactly once). */
     void bindLinear(const std::string& name, TypeId type);
+    /** Record a use of the linear variable @p name, incrementing its usage count. */
     void useLinear(const std::string& name);
+    /** Mark the linear variable @p name as consumed (fully used). */
     void consumeLinear(const std::string& name);
+    /** True if @p name was bound via bindLinear(). */
     bool isLinear(const std::string& name) const;
+    /** True if the linear variable @p name has been used at least once. */
     bool isLinearUsed(const std::string& name) const;
 
     // Linear type verification
+    /** Get names of linear variables in scope that were never used. */
     std::vector<std::string> getUnusedLinear() const;
+    /** Get names of linear variables in scope that were used more than once. */
     std::vector<std::string> getOverusedLinear() const;
+    /** True if all linear variables in scope were used exactly once. */
     bool checkLinearConstraints() const;
 
 private:
@@ -151,18 +170,30 @@ private:
  */
 class LinearContext {
 public:
-    enum class Usage { Unused, UsedOnce, UsedMultiple };
+    /** Usage state of a tracked linear variable. */
+    enum class Usage {
+        Unused,       // Declared but never used
+        UsedOnce,     // Used exactly once (satisfies linearity)
+        UsedMultiple  // Used more than once (violates linearity)
+    };
 
+    /** Declare @p name as a tracked linear variable (initially Unused). */
     void declareLinear(const std::string& name);
+    /** Record a use of @p name, advancing its usage state. */
     void use(const std::string& name);
     void consume(const std::string& name);  // Mark as fully consumed (must use exactly once)
 
+    /** True if every declared linear variable has been used exactly once. */
     bool checkAllUsedOnce() const;
+    /** Get names of declared linear variables that were never used. */
     std::vector<std::string> getUnused() const;
+    /** Get names of declared linear variables that were used more than once. */
     std::vector<std::string> getOverused() const;
 
     // Query usage
+    /** Get the current usage state of @p name. */
     Usage getUsage(const std::string& name) const;
+    /** True if @p name is a declared linear variable. */
     bool isLinear(const std::string& name) const;
 
 private:
@@ -198,6 +229,7 @@ enum class BorrowState {
  */
 class BorrowChecker {
 public:
+    /** Per-variable ownership/borrow bookkeeping. */
     struct BorrowInfo {
         BorrowState state;
         size_t borrow_count;        // Number of active shared borrows
@@ -211,28 +243,35 @@ public:
             , scope_depth(0) {}
     };
 
+    /** A single ownership/borrow-checking violation. */
     struct BorrowError {
+        /** Category of ownership/borrow violation. */
         enum class Kind {
-            UseAfterMove,
-            UseAfterDrop,
-            MoveWhileBorrowed,
-            DoubleMutableBorrow,
-            MutableBorrowWhileShared,
-            BorrowOutlivesValue
+            UseAfterMove,             // Value used after being moved
+            UseAfterDrop,             // Value used after being dropped
+            MoveWhileBorrowed,        // Attempted to move a value with active borrows
+            DoubleMutableBorrow,      // Attempted a second mutable borrow while one is active
+            MutableBorrowWhileShared, // Attempted a mutable borrow while shared borrows are active
+            BorrowOutlivesValue       // Borrow's scope outlived the borrowed value
         };
-        Kind kind;
-        std::string variable;
-        std::string message;
+        Kind kind;              // Violation category
+        std::string variable;   // Name of the offending variable
+        std::string message;    // Human-readable diagnostic
     };
 
+    /** Construct a checker starting at scope depth 0 with no tracked values. */
     BorrowChecker() : current_scope_(0) {}
 
     // Scope management
+    /** Enter a new nested scope. */
     void pushScope();
+    /** Exit the current scope, returning to its parent. */
     void popScope();
+    /** Get the current scope nesting depth. */
     size_t currentScope() const { return current_scope_; }
 
     // Ownership operations
+    /** Declare @p name as a newly owned value in the current scope. */
     void declareOwned(const std::string& name);
     bool move(const std::string& name);          // Returns false if move not allowed
     bool drop(const std::string& name);          // Explicitly drop a value
@@ -243,15 +282,23 @@ public:
     void returnBorrow(const std::string& name);  // End a borrow
 
     // State queries
+    /** Get the current BorrowState of @p name. */
     BorrowState getState(const std::string& name) const;
+    /** True if @p name can currently be used (not moved-from or dropped). */
     bool canUse(const std::string& name) const;
+    /** True if @p name can currently be moved (owned, no active borrows). */
     bool canMove(const std::string& name) const;
+    /** True if @p name can currently be borrowed immutably. */
     bool canBorrowShared(const std::string& name) const;
+    /** True if @p name can currently be borrowed mutably (no other active borrows). */
     bool canBorrowMut(const std::string& name) const;
 
     // Error access
+    /** True if any borrow-checking violations have been recorded. */
     bool hasErrors() const { return !errors_.empty(); }
+    /** Get all recorded borrow-checking violations. */
     const std::vector<BorrowError>& errors() const { return errors_; }
+    /** Discard all recorded violations. */
     void clearErrors() { errors_.clear(); }
 
 private:
@@ -278,10 +325,13 @@ private:
  */
 class UnsafeContext {
 public:
+    /** Construct a context outside any unsafe block (depth 0). */
     UnsafeContext() : unsafe_depth_(0) {}
 
     // Enter/exit unsafe blocks
+    /** Enter an unsafe block, incrementing the nesting depth. */
     void enterUnsafe() { unsafe_depth_++; }
+    /** Exit an unsafe block, decrementing the nesting depth (floored at 0). */
     void exitUnsafe() { if (unsafe_depth_ > 0) unsafe_depth_--; }
 
     // Check if currently in unsafe context
@@ -293,7 +343,9 @@ public:
     // RAII helper for scoped unsafe blocks
     class ScopedUnsafe {
     public:
+        /** Enter an unsafe block on @p ctx for the lifetime of this object. */
         explicit ScopedUnsafe(UnsafeContext& ctx) : ctx_(ctx) { ctx_.enterUnsafe(); }
+        /** Exit the unsafe block entered by the constructor. */
         ~ScopedUnsafe() { ctx_.exitUnsafe(); }
         ScopedUnsafe(const ScopedUnsafe&) = delete;
         ScopedUnsafe& operator=(const ScopedUnsafe&) = delete;
@@ -320,6 +372,13 @@ private:
  */
 class TypeChecker {
 public:
+    /**
+     * Construct a type checker over the given type environment.
+     * @param env Type environment providing type registration/lookup/subtyping
+     * @param strict_types If true, type issues call eshkol_error() and abort compilation;
+     *                     if false (default), issues call eshkol_warn() and compilation continues
+     * @param unsafe_mode If true, starts with type/linear/borrow issues silently ignored
+     */
     explicit TypeChecker(TypeEnvironment& env, bool strict_types = false, bool unsafe_mode = false);
 
     // === Bidirectional Type Checking ===
@@ -340,13 +399,18 @@ public:
 
     // === Error Management ===
 
+    /** True if any type errors have been recorded during synthesis/checking. */
     bool hasErrors() const { return !errors_.empty(); }
+    /** Get all recorded type errors. */
     const std::vector<TypeCheckResult>& errors() const { return errors_; }
+    /** Discard all recorded type errors. */
     void clearErrors() { errors_.clear(); }
 
     // === Context Access ===
 
+    /** Get the mutable variable-binding context. */
     Context& context() { return ctx_; }
+    /** Get the variable-binding context. */
     const Context& context() const { return ctx_; }
 
     // === Type Resolution ===
@@ -432,7 +496,9 @@ public:
     /**
      * Get the borrow checker for ownership tracking
      */
+    /** Get the mutable borrow checker used for ownership/borrow tracking. */
     BorrowChecker& borrowChecker() { return borrow_; }
+    /** Get the borrow checker used for ownership/borrow tracking. */
     const BorrowChecker& borrowChecker() const { return borrow_; }
 
     // === Unified Enforcement ===

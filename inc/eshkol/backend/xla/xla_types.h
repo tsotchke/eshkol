@@ -21,7 +21,10 @@ namespace hott {
 struct ParameterizedType;
 } // namespace hott
 
-// Type alias for backward compatibility
+/**
+ * Type alias for backward compatibility with code referring to the
+ * un-namespaced ParameterizedType (now defined in eshkol::hott).
+ */
 using ParameterizedType = hott::ParameterizedType;
 
 namespace xla {
@@ -51,32 +54,74 @@ enum class ElementType {
  * Tensor type with shape and element type
  */
 struct TensorType {
-    ElementType element_type;
+    ElementType element_type;         // Scalar element type
     std::vector<int64_t> shape;      // Empty for scalar
     bool is_dynamic = false;          // Any dynamic dimensions?
 
     // Static factory methods
+    /**
+     * Create a scalar (rank-0) tensor type.
+     * @param elem Element type
+     * @return Scalar tensor type
+     */
     static TensorType scalar(ElementType elem);
+
+    /**
+     * Create a rank-1 (vector) tensor type.
+     * @param elem Element type
+     * @param size Vector length
+     * @return Vector tensor type
+     */
     static TensorType vector(ElementType elem, int64_t size);
+
+    /**
+     * Create a rank-2 (matrix) tensor type.
+     * @param elem Element type
+     * @param rows Number of rows
+     * @param cols Number of columns
+     * @return Matrix tensor type
+     */
     static TensorType matrix(ElementType elem, int64_t rows, int64_t cols);
+
+    /**
+     * Create a tensor type with an arbitrary shape.
+     * @param elem Element type
+     * @param shape Dimension sizes
+     * @return Tensor type with the given shape
+     */
     static TensorType tensor(ElementType elem, std::vector<int64_t> shape);
 
-    // Dynamic shape marker
+    /** Sentinel dimension size used to mark a dynamic (runtime-determined) dimension. */
     static constexpr int64_t kDynamic = -1;
 
     // Queries
+    /** Number of dimensions (0 for scalar). */
     size_t rank() const { return shape.size(); }
+
+    /** Total number of elements (product of shape dimensions; 1 for scalar). */
     int64_t numElements() const;
+
+    /** Total storage size in bytes (numElements() * element size). */
     size_t sizeInBytes() const;
+
+    /** True if this is a scalar (rank-0) type. */
     bool isScalar() const { return shape.empty(); }
+
+    /** True if this is a rank-1 (vector) type. */
     bool isVector() const { return shape.size() == 1; }
+
+    /** True if this is a rank-2 (matrix) type. */
     bool isMatrix() const { return shape.size() == 2; }
 
     // Comparison
+    /** Structural equality: same element type and shape. */
     bool operator==(const TensorType& other) const;
+
+    /** Structural inequality. */
     bool operator!=(const TensorType& other) const { return !(*this == other); }
 
     // String representation
+    /** Human-readable representation, e.g. "f64[3,4]". */
     std::string toString() const;
 };
 
@@ -88,7 +133,15 @@ struct TensorType {
  */
 class XLATypes {
 public:
+    /**
+     * Construct a type mapper with no MLIR context bound.
+     * Call setMLIRContext() before using toMLIRType()/toMLIRElementType().
+     */
     XLATypes();
+
+    /**
+     * Destroy the type mapper.
+     */
     ~XLATypes();
 
     // Non-copyable

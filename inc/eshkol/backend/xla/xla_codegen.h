@@ -27,41 +27,58 @@ class CodegenContext;
 
 namespace xla {
 
-// Runtime-configurable threshold (default: 100000 elements = ~320x320 matrix)
-// XLA is reserved for massive tensors only to amortize compilation overhead
-// Dispatch hierarchy: XLA (≥100K) → cBLAS (≥4K) → SIMD (≥64) → scalar
-// Override via ESHKOL_XLA_THRESHOLD environment variable
+/**
+ * Runtime-configurable threshold (default: 100000 elements = ~320x320 matrix).
+ *
+ * XLA is reserved for massive tensors only to amortize compilation overhead.
+ * Dispatch hierarchy: XLA (>=100K) -> cBLAS (>=4K) -> SIMD (>=64) -> scalar.
+ * Override via the ESHKOL_XLA_THRESHOLD environment variable.
+ */
 extern size_t g_xla_threshold;
 
-// API for runtime configuration
+/**
+ * Set the global XLA dispatch threshold (in elements).
+ * @param threshold Minimum element count for XLA to be used
+ */
 void xla_set_threshold(size_t threshold);
+
+/**
+ * Get the current global XLA dispatch threshold (in elements).
+ * @return Minimum element count for XLA to be used
+ */
 size_t xla_get_threshold();
 
-// Element-wise operation types
+/**
+ * Element-wise operation types supported by the XLA backend.
+ */
 enum class ElementwiseOp {
-    ADD,
-    SUB,
-    MUL,
-    DIV,
-    EXP,
-    LOG,
-    SIN,
-    COS,
-    TANH,
-    RELU,
-    SIGMOID
+    ADD,     // Element-wise addition
+    SUB,     // Element-wise subtraction
+    MUL,     // Element-wise multiplication
+    DIV,     // Element-wise division
+    EXP,     // Element-wise exponential
+    LOG,     // Element-wise natural logarithm
+    SIN,     // Element-wise sine
+    COS,     // Element-wise cosine
+    TANH,    // Element-wise hyperbolic tangent
+    RELU,    // Rectified linear unit
+    SIGMOID  // Logistic sigmoid
 };
 
-// Reduce operation types
+/**
+ * Reduction operation types supported by the XLA backend.
+ */
 enum class ReduceOp {
-    SUM,
-    MEAN,
-    MAX,
-    MIN,
-    PROD
+    SUM,   // Sum-reduce
+    MEAN,  // Mean-reduce
+    MAX,   // Max-reduce
+    MIN,   // Min-reduce
+    PROD   // Product-reduce
 };
 
-// Target backend for compilation
+/**
+ * Target backend for XLA compilation.
+ */
 enum class Target {
     CPU,      // XLA CPU backend
     CUDA,     // NVIDIA GPU via CUDA
@@ -80,7 +97,15 @@ enum class Target {
  */
 class XLACodegen {
 public:
+    /**
+     * Construct an XLA codegen instance bound to a codegen context.
+     * @param ctx Codegen context to integrate with (owns LLVM module/builder state)
+     */
     explicit XLACodegen(CodegenContext& ctx);
+
+    /**
+     * Destroy the codegen instance and release any owned XLA resources.
+     */
     ~XLACodegen();
 
     // Non-copyable
@@ -88,7 +113,14 @@ public:
     XLACodegen& operator=(const XLACodegen&) = delete;
 
     // Movable
+    /**
+     * Move-construct, transferring ownership of the underlying XLA state.
+     */
     XLACodegen(XLACodegen&&) noexcept;
+
+    /**
+     * Move-assign, transferring ownership of the underlying XLA state.
+     */
     XLACodegen& operator=(XLACodegen&&) noexcept;
 
     // ===== Backend Selection =====

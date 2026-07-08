@@ -47,11 +47,11 @@ struct CompileOptions {
  * Compilation result
  */
 struct CompileResult {
-    bool success;
-    void* executable;
-    std::string error_message;
-    int64_t compile_time_ms;
-    size_t executable_size_bytes;
+    bool success;                    // True if compilation succeeded
+    void* executable;                // Compiled executable (nullptr on failure)
+    std::string error_message;       // Diagnostic message on failure (empty on success)
+    int64_t compile_time_ms;         // Wall-clock compilation time in milliseconds
+    size_t executable_size_bytes;    // Size of the compiled executable in bytes
 };
 
 /**
@@ -62,7 +62,14 @@ struct CompileResult {
  */
 class XLACompiler {
 public:
+    /**
+     * Construct a compiler instance with no cached state.
+     */
     XLACompiler();
+
+    /**
+     * Destroy the compiler instance.
+     */
     ~XLACompiler();
 
     // Non-copyable
