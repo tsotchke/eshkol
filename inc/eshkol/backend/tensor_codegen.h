@@ -107,7 +107,9 @@ public:
      * Channel values are passed as a stack-allocated double[] to the
      * runtime so per-pixel cost is one memcpy, not a tagged dispatch.
      */
+    /** @brief (tensor-rect-fill! t row0 col0 row1 col1 v0 ...) — fill a rectangular region. */
     llvm::Value* tensorRectFill(const eshkol_operations_t* op);
+    /** @brief (tensor-disk-fill! t cy cx radius v0 ...) — fill a disk-shaped region. */
     llvm::Value* tensorDiskFill(const eshkol_operations_t* op);
 
     // === Tensor Arithmetic ===

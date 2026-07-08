@@ -47,6 +47,7 @@ public:
     // Target-dependent size type (i32 on wasm32, i64 on native 64-bit)
     // Use for: arena sizes, string lengths, array counts, memcpy sizes —
     // anything that maps to C's size_t.
+    /** @brief Get the target's size_t-equivalent integer type (i32 on wasm32, i64 on native 64-bit). */
     llvm::IntegerType* getSizeType() const { return size_type_; }
 
     // Target-dependent pointer-width integer (i32 on wasm32, i64 on native 64-bit)
@@ -54,26 +55,40 @@ public:
     // closure func_ptr params, lambda registry pointer params.
     // On wasm32: getSizeType() == getIntPtrType() == i32.
     // On native 64-bit: both == i64.
+    /** @brief Get the target's pointer-width integer type (i32 on wasm32, i64 on native 64-bit). */
     llvm::IntegerType* getIntPtrType() const { return intptr_type_; }
 
+    /** @brief Whether this TypeSystem was constructed for the wasm32 target. */
     bool isWasm32() const { return is_wasm32_; }
 
     // Primitive types
+
+    /** @brief Get the cached i64 integer type. */
     llvm::IntegerType* getInt64Type() const { return int64_type; }
+    /** @brief Get the cached i32 integer type. */
     llvm::IntegerType* getInt32Type() const { return int32_type; }
+    /** @brief Get the cached i16 integer type. */
     llvm::IntegerType* getInt16Type() const { return int16_type; }
+    /** @brief Get the cached i8 integer type. */
     llvm::IntegerType* getInt8Type() const { return int8_type; }
+    /** @brief Get the cached i1 (boolean) integer type. */
     llvm::IntegerType* getInt1Type() const { return int1_type; }
+    /** @brief Get the cached double (IEEE-754 binary64) type. */
     llvm::Type* getDoubleType() const { return double_type; }
+    /** @brief Get the cached void type. */
     llvm::Type* getVoidType() const { return void_type; }
+    /** @brief Get the cached opaque pointer type. */
     llvm::PointerType* getPtrType() const { return ptr_type; }
 
     // SIMD vector types for tensor operations
     // SSE2: 128-bit = 2 x double
+    /** @brief Get the cached <2 x double> vector type (128-bit, SSE2/NEON). */
     llvm::VectorType* getDouble2Type() const { return double2_type; }
     // AVX/AVX2: 256-bit = 4 x double
+    /** @brief Get the cached <4 x double> vector type (256-bit, AVX/AVX2). */
     llvm::VectorType* getDouble4Type() const { return double4_type; }
     // AVX-512: 512-bit = 8 x double (for future use)
+    /** @brief Get the cached <8 x double> vector type (512-bit, AVX-512). */
     llvm::VectorType* getDouble8Type() const { return double8_type; }
 
     // SIMD configuration
@@ -82,13 +97,21 @@ public:
     static constexpr unsigned SIMD_AVX512_WIDTH = 8; // 8 doubles (512-bit)
 
     // Struct types for Eshkol runtime
+
+    /** @brief Get the cached LLVM struct type for eshkol_tagged_value_t. */
     llvm::StructType* getTaggedValueType() const { return tagged_value_type; }
+    /** @brief Get the cached LLVM struct type for the forward-mode AD dual-number representation. */
     llvm::StructType* getDualNumberType() const { return dual_number_type; }
+    /** @brief Get the cached LLVM struct type for the complex-number representation. */
     llvm::StructType* getComplexNumberType() const { return complex_number_type; }
+    /** @brief Get the cached LLVM struct type for the reverse-mode AD node representation. */
     llvm::StructType* getAdNodeType() const { return ad_node_type; }
+    /** @brief Get the cached LLVM struct type for the tensor representation. */
     llvm::StructType* getTensorType() const { return tensor_type; }
 
     // Context accessor (for when raw context is needed)
+
+    /** @brief Get the underlying LLVM context, for callers that need the raw context. */
     llvm::LLVMContext& getContext() { return context; }
 
     // Tagged value field indices (matching C struct layout)
