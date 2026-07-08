@@ -104,14 +104,21 @@ struct TypeId {
     Universe level;       // Universe membership
     uint8_t flags;        // Type flags
 
+    /** Equality by numeric id. */
     bool operator==(const TypeId& other) const { return id == other.id; }
+    /** Inequality by numeric id. */
     bool operator!=(const TypeId& other) const { return id != other.id; }
+    /** Ordering by numeric id (for use in ordered containers). */
     bool operator<(const TypeId& other) const { return id < other.id; }
 
     // Flag queries
+    /** True if TYPE_FLAG_EXACT is set (Scheme exactness). */
     bool isExact() const { return flags & TYPE_FLAG_EXACT; }
+    /** True if TYPE_FLAG_LINEAR is set (must be used exactly once). */
     bool isLinear() const { return flags & TYPE_FLAG_LINEAR; }
+    /** True if TYPE_FLAG_PROOF is set (compile-time only, erased at runtime). */
     bool isProof() const { return flags & TYPE_FLAG_PROOF; }
+    /** True if TYPE_FLAG_ABSTRACT is set (cannot be instantiated directly). */
     bool isAbstract() const { return flags & TYPE_FLAG_ABSTRACT; }
 
     // Check if this is a valid (non-null) type
@@ -166,7 +173,11 @@ struct TypeNode {
     bool is_type_family = false;
 
     // Source of definition
-    enum class Origin { Builtin, UserDefined } origin = Origin::Builtin;
+    /** Where a type came from: a builtin registered at startup, or a user `define-type`. */
+    enum class Origin {
+        Builtin,      // Registered by initializeBuiltinTypes()
+        UserDefined   // Registered via registerUserType()
+    } origin = Origin::Builtin;
 };
 
 // ============================================================================
@@ -260,6 +271,7 @@ struct CTValueSimple {
     Kind kind = Kind::Unknown;
     uint64_t nat_value = 0;
 
+    /** Create a Nat-kind value holding @p n. */
     static CTValueSimple makeNat(uint64_t n) {
         CTValueSimple v;
         v.kind = Kind::Nat;
@@ -267,22 +279,28 @@ struct CTValueSimple {
         return v;
     }
 
+    /** Create an Unknown-kind value (no compile-time value available). */
     static CTValueSimple makeUnknown() {
         return CTValueSimple();
     }
 
+    /** True if this holds a known (Nat) value. */
     bool isKnown() const { return kind != Kind::Unknown; }
+    /** True if this holds a Nat value. */
     bool isNat() const { return kind == Kind::Nat; }
 
+    /** Get the natural-number value, or nullopt if this is Unknown. */
     std::optional<uint64_t> tryGetNat() const {
         if (kind == Kind::Nat) return nat_value;
         return std::nullopt;
     }
 
+    /** Structural equality (same kind and value). */
     bool operator==(const CTValueSimple& other) const {
         return kind == other.kind && nat_value == other.nat_value;
     }
 
+    /** Ordering by kind then value (for use in ordered containers/maps). */
     bool operator<(const CTValueSimple& other) const {
         if (kind != other.kind) return static_cast<int>(kind) < static_cast<int>(other.kind);
         return nat_value < other.nat_value;
@@ -300,12 +318,14 @@ struct ParameterizedType {
     std::vector<TypeId> type_args;           // The type arguments (e.g., [Int64])
     std::vector<CTValueSimple> value_args;   // Value arguments for dimensions (e.g., [100])
 
+    /** Structural equality (same base type, type args, and value args). */
     bool operator==(const ParameterizedType& other) const {
         return base_type == other.base_type &&
                type_args == other.type_args &&
                value_args == other.value_args;
     }
 
+    /** Ordering by base type id, then type args, then value args (for ordered containers/maps). */
     bool operator<(const ParameterizedType& other) const {
         if (base_type.id != other.base_type.id) return base_type.id < other.base_type.id;
         if (type_args != other.type_args) return type_args < other.type_args;
@@ -348,6 +368,7 @@ struct ParameterizedType {
  * When the return type doesn't depend on the input, it degenerates to (A -> B).
  */
 struct PiType {
+    /** A single formal parameter of a Pi-type (function type). */
     struct Parameter {
         std::string name;      // Parameter name (for dependent references)
         TypeId type;           // Parameter type
@@ -359,8 +380,10 @@ struct PiType {
     bool is_dependent;              // True if return type references params
     bool is_variadic = false;       // True if last param is a rest-arg (. rest)
 
+    /** Construct a trivial Pi-type: no parameters, returns Value, non-dependent. */
     PiType() : return_type(BuiltinTypes::Value), is_dependent(false) {}
 
+    /** Construct a Pi-type from explicit parameters, return type, and dependency flag. */
     PiType(std::vector<Parameter> p, TypeId ret, bool dep = false)
         : params(std::move(p)), return_type(ret), is_dependent(dep) {}
 

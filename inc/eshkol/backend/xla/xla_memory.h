@@ -62,7 +62,15 @@ enum class BufferScope {
  */
 class XLAMemoryIntegration {
 public:
+    /**
+     * Construct a memory integration instance bound to a codegen context.
+     * @param ctx Codegen context to integrate with (owns LLVM module/builder state)
+     */
     explicit XLAMemoryIntegration(CodegenContext& ctx);
+
+    /**
+     * Destroy the memory integration instance and release owned resources.
+     */
     ~XLAMemoryIntegration();
 
     // Non-copyable

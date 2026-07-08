@@ -35,9 +35,9 @@ struct BufferDescriptor {
  * Execution result
  */
 struct ExecutionResult {
-    bool success;
-    std::string error_message;
-    int64_t execution_time_ns;
+    bool success;                    // True if execution succeeded
+    std::string error_message;       // Diagnostic message on failure (empty on success)
+    int64_t execution_time_ns;       // Wall-clock execution time in nanoseconds
 };
 
 /**
@@ -48,7 +48,14 @@ struct ExecutionResult {
  */
 class XLARuntime {
 public:
+    /**
+     * Construct an uninitialized runtime. Call initialize() before use.
+     */
     XLARuntime();
+
+    /**
+     * Destroy the runtime, releasing any device resources.
+     */
     ~XLARuntime();
 
     // Non-copyable
