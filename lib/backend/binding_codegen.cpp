@@ -22,19 +22,49 @@ using namespace llvm;
 
 namespace eshkol {
 
+/**
+ * @brief Construct a BindingCodegen bound to the shared codegen context.
+ *
+ * @param ctx Shared LLVM codegen context (module, builder, type helpers).
+ * @param tagged Tagged-value packing/unpacking helper used to normalize
+ *               bound values before storing them.
+ */
 BindingCodegen::BindingCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx), tagged_(tagged) {}
 
-// Helper to get current function
+/**
+ * @brief Dereference the caller-owned "current function" out-pointer, if set.
+ *
+ * @param ptr Pointer to the main codegen's current-function slot (may be null).
+ * @return The current LLVM function being generated, or nullptr if @p ptr is
+ *         null or points to null (i.e. at top level).
+ */
 static Function* getCurrentFunction(Function** ptr) {
     return ptr ? *ptr : nullptr;
 }
 
-// Helper to check REPL mode
+/**
+ * @brief Dereference the caller-owned "REPL mode" out-pointer, if set.
+ *
+ * @param ptr Pointer to the main codegen's REPL-mode flag (may be null).
+ * @return True if REPL/hot-reload mode is active, false if @p ptr is null or
+ *         points to false.
+ */
 static bool isReplMode(bool* ptr) {
     return ptr ? *ptr : false;
 }
 
+/**
+ * @brief Mangle a Scheme variable name into a private REPL storage-slot symbol name.
+ *
+ * Produces `__repl_storage_<encoded name>`, where every character that is not
+ * alphanumeric is percent-style encoded as `_XX` (two uppercase hex digits).
+ * Used so REPL user variables live in a stable, collision-free LLVM global
+ * name across hot-reloads.
+ *
+ * @param name Scheme variable name.
+ * @return Encoded LLVM global symbol name.
+ */
 static std::string replVarStorageSymbolName(const std::string& name) {
     std::string out = "__repl_storage_";
     char encoded[4];
@@ -82,11 +112,30 @@ static std::string userGlobalStorageName(const std::string& name,
     return out;
 }
 
+/**
+ * @brief Thin alias for userGlobalStorageName(), used by the binding call sites.
+ *
+ * @param name Scheme variable name.
+ * @param is_repl True to use private REPL storage naming.
+ * @param is_public True to keep the raw (unmangled) name for library `provide`/`:external` bindings.
+ * @return LLVM global symbol name to store/load the binding under.
+ */
 static std::string bindingStorageName(const std::string& name, bool is_repl,
                                       bool is_public) {
     return userGlobalStorageName(name, is_repl, is_public);
 }
 
+/**
+ * @brief Emit (once) a weak marker global for a REPL user variable and notify the runtime.
+ *
+ * Creates a `__repl_var_<name>` byte-sized WeakODR global (if not already
+ * present in the module) so hot-reload tooling can enumerate user variables,
+ * then calls eshkol_repl_mark_user_variable() to register the name with the
+ * runtime's REPL bookkeeping.
+ *
+ * @param ctx Codegen context supplying the module to emit the marker global into.
+ * @param name Scheme variable name being marked as a REPL user variable.
+ */
 static void emitReplVarMarker(CodegenContext& ctx, const std::string& name) {
     std::string marker_name = std::string("__repl_var_") + name;
     if (!ctx.module().getNamedGlobal(marker_name)) {
@@ -102,6 +151,23 @@ static void emitReplVarMarker(CodegenContext& ctx, const std::string& name) {
     eshkol_repl_mark_user_variable(name.c_str());
 }
 
+/**
+ * @brief Coerce a raw LLVM value into the uniform tagged_value representation.
+ *
+ * If @p value already has the tagged_value struct type, it is returned
+ * unchanged. Otherwise it is packed according to @p value_type: doubles,
+ * i1/int bools, null, chars, and int64s go through their dedicated
+ * TaggedValueCodegen::pack* helpers (truncating/sign-extending narrower
+ * integers as needed); every other value type (cons/string/port/etc.
+ * pointers) is packed via packInt64WithType() so the type tag is preserved,
+ * converting pointer values to integers first. If none of the expected LLVM
+ * types match for the given @p value_type, falls back to packing as a
+ * signed INT64 tagged value and logs an error.
+ *
+ * @param value LLVM value to coerce (double, i1/iN, or pointer), or nullptr.
+ * @param value_type Eshkol value-type tag describing how to interpret @p value.
+ * @return Tagged value, or nullptr if @p value was nullptr.
+ */
 Value* BindingCodegen::ensureTaggedValue(Value* value, eshkol_value_type_t value_type) {
     if (!value) return nullptr;
 
@@ -172,6 +238,27 @@ Value* BindingCodegen::ensureTaggedValue(Value* value, eshkol_value_type_t value
     return value;
 }
 
+/**
+ * @brief Store a value into a named binding, creating its storage if needed.
+ *
+ * Converts @p value to a tagged_value via ensureTaggedValue(), then either:
+ * - Global (@p is_global true): finds or creates a 16-byte-aligned
+ *   GlobalVariable named via bindingStorageName() (mangled unless REPL mode,
+ *   in which case a `__repl_storage_*` external decl is used and a REPL
+ *   variable marker is emitted), stores the tagged value into it, and
+ *   registers the binding in both the local and global symbol tables.
+ * - Local (@p is_global false): creates a 16-byte-aligned AllocaInst at the
+ *   current insertion point, stores the tagged value into it, and registers
+ *   the binding only in the local symbol table.
+ *
+ * @param name Scheme variable name.
+ * @param value Value to store (converted to tagged_value if not already).
+ * @param value_type Eshkol value-type tag used to interpret @p value.
+ * @param is_global True to allocate/lookup module-level storage, false for a
+ *                   local stack alloca.
+ * @return The storage location (GlobalVariable* or AllocaInst*, as an LLVM
+ *         Value*), or nullptr on failure.
+ */
 Value* BindingCodegen::storeBinding(
     const std::string& name,
     Value* value,
@@ -232,6 +319,21 @@ Value* BindingCodegen::storeBinding(
     }
 }
 
+/**
+ * @brief Register a `<var>_func` alias so direct calls can resolve a bound lambda by name.
+ *
+ * Looks up @p lambda_name in the function table and, if found, records it
+ * under the key `<var_name>_func`. When generating inside a function (a
+ * nested define), the entry is stored under a function-scoped key
+ * (`<current_func>.` + `<var_name>_func`) in both the local and global
+ * symbol tables — the unscoped key is deliberately NOT added to the global
+ * table so same-named nested helpers in different enclosing functions don't
+ * clobber each other. At top level, both the local and global symbol tables
+ * get the unscoped key.
+ *
+ * @param var_name Scheme variable name the lambda is bound to.
+ * @param lambda_name LLVM function name of the already-generated lambda.
+ */
 void BindingCodegen::registerLambdaBinding(const std::string& var_name, const std::string& lambda_name) {
     if (!function_table_) return;
 
@@ -273,6 +375,34 @@ void BindingCodegen::registerLambdaBinding(const std::string& var_name, const st
     }
 }
 
+/**
+ * @brief Generate code for a top-level or local `(define name value)` form.
+ *
+ * Handles both plain and self-recursive lambda defines:
+ * - Determines storage scope: global storage is used at true top level, in
+ *   `__global_init`/`__eshkol_lib_init*`/`main`, or under REPL mode; a local
+ *   alloca is used for defines nested inside an ordinary function.
+ * - For lambda-valued defines, pre-declares the binding (global or alloca)
+ *   *before* evaluating the lambda body so the lambda can call itself
+ *   recursively (mirrors letrec's self-reference handling), and temporarily
+ *   adds the name to the letrec capture-exclusion set so the lambda does not
+ *   try to capture itself as a free variable.
+ * - Evaluates the value expression via the typed-AST callback, converts it
+ *   to a tagged_value, and — for direct lambda values only (not closures
+ *   returned from a call) — registers a `<name>_func` binding so direct
+ *   calls can dispatch to it without going through the closure-call path.
+ * - Stores the tagged value into the resolved global/local storage,
+ *   re-declaring the REPL variable marker as needed, and updates the
+ *   relevant symbol table(s).
+ *
+ * Library `provide` bindings compiled inside `__eshkol_lib_init*` keep their
+ * raw public name (for cross-object linking); ordinary user globals are
+ * mangled via bindingStorageName() so they can never collide with a C/libm
+ * symbol.
+ *
+ * @param op `define` operation AST node (name + value expression).
+ * @return The tagged value that was bound, or nullptr on error.
+ */
 Value* BindingCodegen::define(const eshkol_operations_t* op) {
     if (!op) return nullptr;
 
@@ -498,6 +628,31 @@ Value* BindingCodegen::define(const eshkol_operations_t* op) {
     return tagged_val;
 }
 
+/**
+ * @brief Generate code for `(let ((var val) ...) body)` with non-recursive, parallel bindings.
+ *
+ * Bindings are evaluated in order but each value expression is compiled
+ * against the *outer* scope (standard `let` semantics: no binding can see
+ * any other binding in the same `let`). Each value is converted to a
+ * tagged_value and stored into a 16-byte-aligned AllocaInst; when TCO is
+ * active for the enclosing loop, the alloca is hoisted into the function's
+ * entry block (via save/restore of the insertion point) so repeated loop
+ * iterations don't grow the stack, while the store still happens at the
+ * current position. Bails out early if a binding's value expression
+ * terminates the current block (e.g. `raise`).
+ *
+ * After the body is evaluated, the symbol table is restored to its
+ * pre-`let` snapshot, except for entries that must survive: scoped
+ * `<..>._func` function aliases, GlobalVariable bindings created when an
+ * inner lambda's mutable capture was promoted to global storage, and
+ * arena-backed (non-alloca) storage created for arena-captured bindings.
+ * Plain AllocaInst let-bindings are always discarded so they don't leak
+ * outside the `let`'s scope.
+ *
+ * @param op `let` operation AST node (bindings array + body).
+ * @return The body's result value, or a constant zero i64 if the body
+ *         produced no callback result; nullptr on error.
+ */
 Value* BindingCodegen::let(const eshkol_operations_t* op) {
     if (!op || !op->let_op.body) {
         eshkol_error("let: missing body");
@@ -662,6 +817,41 @@ Value* BindingCodegen::let(const eshkol_operations_t* op) {
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
 
+/**
+ * @brief Generate code for `(letrec ((var val) ...) body)` with mutually-recursive bindings.
+ *
+ * Uses a two-phase, "storage-first" strategy so all bindings can see each
+ * other (including forward references) regardless of definition order:
+ *  1. Allocate storage for every binding up front — a per-activation
+ *     16-byte-aligned AllocaInst when generating inside a function (so
+ *     closures returned from separate calls don't race through one shared
+ *     cell), or a module-level GlobalVariable at top level (the historical
+ *     path). All names are registered in the symbol table immediately.
+ *  2. Evaluate and store all *lambda* bindings first (so mutually-recursive
+ *     lambdas can call each other and non-lambda bindings that reference
+ *     them see fully-initialized closures), applying TCO setup when a
+ *     binding is self-tail-recursive; then evaluate and store the
+ *     remaining non-lambda bindings, which may safely reference the
+ *     already-stored lambdas. If a captured lambda's storage cell was
+ *     rewritten to arena storage by the lambda codegen (closure escape),
+ *     the current symbol_table_ entry is re-consulted before storing so the
+ *     final per-instance location is used, not the original alloca/global.
+ *
+ * Top-level lambda bindings are registered as `<var>_func` aliases
+ * immediately after being stored; local (per-activation) closures are
+ * deliberately left un-aliased so calls always go through their storage
+ * cell (preserving capture semantics). Saves and restores the outer
+ * TailCallContext around the whole form so an inner `letrec`'s TCO setup
+ * cannot corrupt an enclosing tail-recursive loop's context. After the body
+ * runs, restores the symbol table to its pre-`letrec` snapshot except for
+ * preserved `_func` aliases, GlobalVariable captures, and arena-backed
+ * (non-alloca) modified entries — mirroring let()'s scope-restoration
+ * rules.
+ *
+ * @param op `letrec` operation AST node (bindings array + body).
+ * @return The body's result value, or a constant zero i64 if the body
+ *         produced no callback result; nullptr on error.
+ */
 Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     if (!op || !op->let_op.body) {
         eshkol_error("letrec: missing body");
@@ -972,6 +1162,26 @@ Value* BindingCodegen::letrec(const eshkol_operations_t* op) {
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
 
+/**
+ * @brief Generate code for `(let* ((var val) ...) body)` with sequential bindings.
+ *
+ * Unlike let(), each binding's value expression is compiled and its
+ * AllocaInst added to the symbol table immediately, so subsequent bindings
+ * (and their initializer expressions) can see all preceding ones. Bails out
+ * of the binding loop early if evaluating or converting a binding's value
+ * fails, or if lambda registration is needed it happens right after that
+ * binding's alloca is created.
+ *
+ * After the body runs, the symbol table is restored to its pre-`let*`
+ * snapshot except for preserved scoped `_func` aliases and GlobalVariable
+ * entries created by mutable-capture promotion — the same preservation
+ * rules as let(), minus the arena-capture-modification tracking that
+ * letrec()/letrecStar() perform.
+ *
+ * @param op `let*` operation AST node (bindings array + body).
+ * @return The body's result value, or a constant zero i64 if the body
+ *         produced no callback result; nullptr on error.
+ */
 Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     if (!op || !op->let_op.body) {
         eshkol_error("let*: missing body");
@@ -1081,6 +1291,28 @@ Value* BindingCodegen::letStar(const eshkol_operations_t* op) {
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
 
+/**
+ * @brief Generate code for `(letrec* ((var val) ...) body)`: sequential, mutually-visible bindings.
+ *
+ * Combines letrec()'s mutual visibility (every binding name is declared and
+ * storage-allocated up front, so any binding's initializer may reference
+ * any other) with let*()'s strict left-to-right evaluation order (each
+ * binding is evaluated and stored immediately, in AST order, unlike
+ * letrec()'s lambdas-before-non-lambdas phasing). Storage is a
+ * per-activation AllocaInst when generating inside a function, or a
+ * module-level GlobalVariable at top level, matching letrec()'s
+ * local-vs-global strategy (and the same re-consultation of symbol_table_
+ * before each store, in case a closure-escape rewrite moved a binding to
+ * arena storage). Self-tail-recursive lambda bindings get TCO context setup
+ * exactly as in letrec(). Saves/restores the outer TailCallContext around
+ * the whole form, and restores the symbol table afterward preserving scoped
+ * `_func` aliases and non-alloca modified entries, as in the other `let`
+ * variants.
+ *
+ * @param op `letrec*` operation AST node (bindings array + body).
+ * @return The body's result value, or a constant zero i64 if the body
+ *         produced no callback result; nullptr on error.
+ */
 Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
     // letrec* (R7RS): Sequential recursive bindings
     // - Like letrec: all bindings are mutually visible (can call each other)
@@ -1298,6 +1530,20 @@ Value* BindingCodegen::letrecStar(const eshkol_operations_t* op) {
     return body_result ? body_result : ConstantInt::get(ctx_.int64Type(), 0);
 }
 
+/**
+ * @brief Generate code for `(set! name value)`.
+ *
+ * Looks up the existing storage location for @p name via lookupVariable()
+ * (local symbol table, then global symbol table, then module globals under
+ * the mangled/public naming scheme) and errors if the variable is
+ * undefined. Evaluates the new value expression through the typed-AST
+ * callback, converts it to a tagged_value, and stores it into the existing
+ * storage in place (mutation, not rebinding).
+ *
+ * @param op `set!` operation AST node (name + new-value expression).
+ * @return The newly stored tagged value, or nullptr on error (missing name,
+ *         undefined variable, or failed value evaluation/conversion).
+ */
 Value* BindingCodegen::set(const eshkol_operations_t* op) {
     if (!op) return nullptr;
 
@@ -1340,6 +1586,21 @@ Value* BindingCodegen::set(const eshkol_operations_t* op) {
     return tagged_val;
 }
 
+/**
+ * @brief Resolve a variable name to its LLVM storage location.
+ *
+ * Search order: local symbol table, then global symbol table, then module
+ * globals. For the module-globals fallback, tries the mangled user-variable
+ * storage name first (bindingStorageName() — `__repl_storage_*` under REPL
+ * mode, otherwise `eshkol_g_*`) so a user variable can shadow a
+ * runtime/libm function name without colliding with it (see ESH-0092/0103),
+ * then falls back to the raw @p name, which backs library `provide` /
+ * `:external` public bindings.
+ *
+ * @param name Scheme variable name to resolve.
+ * @return The storage Value* (AllocaInst*, GlobalVariable*, or other
+ *         symbol-table entry), or nullptr if the name is not bound anywhere.
+ */
 Value* BindingCodegen::lookupVariable(const std::string& name) {
     // Check local symbol table first
     if (symbol_table_) {
@@ -1379,6 +1640,15 @@ Value* BindingCodegen::lookupVariable(const std::string& name) {
     return nullptr;
 }
 
+/**
+ * @brief Load the current tagged_value of a variable from its storage.
+ *
+ * Resolves @p name via lookupVariable() and, if found, emits a load of the
+ * tagged_value type from that storage location.
+ *
+ * @param name Scheme variable name to load.
+ * @return The loaded tagged value, or nullptr if @p name is not bound.
+ */
 Value* BindingCodegen::loadVariable(const std::string& name) {
     Value* storage = lookupVariable(name);
     if (!storage) return nullptr;

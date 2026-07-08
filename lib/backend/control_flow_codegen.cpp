@@ -23,12 +23,30 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct a ControlFlowCodegen bound to the shared codegen context and tagged-value helper.
+ *
+ * @param ctx Shared LLVM codegen context (IR builder, LLVM context, type helpers).
+ * @param tagged Helper for packing/unpacking eshkol tagged values.
+ */
 ControlFlowCodegen::ControlFlowCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx)
     , tagged_(tagged) {
     eshkol_debug("ControlFlowCodegen initialized");
 }
 
+/**
+ * @brief Compute the Scheme truthiness of an LLVM value as an i1 boolean.
+ *
+ * Raw i1 values are returned as-is. Raw int64 and double values are always
+ * truthy (Scheme's 0 and 0.0 are not false). For an eshkol tagged_value, only
+ * a BOOL-tagged value carrying 0 is falsy (#f) — every other tagged value,
+ * including '(), "", and 0, is truthy. Any other/unrecognized LLVM type
+ * defaults to truthy.
+ *
+ * @param val Value to test; may be null, i1, i64, double, or tagged_value.
+ * @return i1 LLVM value that is true iff @p val is Scheme-truthy.
+ */
 llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
     if (!val) return llvm::ConstantInt::getFalse(ctx_.context());
 
@@ -76,6 +94,22 @@ llvm::Value* ControlFlowCodegen::isTruthy(llvm::Value* val) {
 // Boolean Logic
 // ============================================================================
 
+/**
+ * @brief Generate short-circuiting code for `(and a b ...)`.
+ *
+ * Builds one basic block per argument: each non-final argument is evaluated,
+ * tested with isTruthy(), and if falsy the walk short-circuits by branching
+ * straight to a shared merge block carrying that falsy value; otherwise
+ * control falls through to evaluate the next argument. The last argument's
+ * value is always forwarded to the merge block unconditionally. All argument
+ * values are coerced to tagged_value_type before reaching the merge PHI node
+ * so the incoming edges are type-consistent. Handles the zero-argument case
+ * `(and)` (returns #t) and blocks already terminated by a noreturn
+ * sub-expression (e.g. `raise`).
+ *
+ * @param op AST operation node for `and` (ESHKOL_AND_OP) or an equivalent call op.
+ * @return Tagged boolean/value result of the short-circuit evaluation.
+ */
 llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenAnd - callbacks not set");
@@ -165,6 +199,18 @@ llvm::Value* ControlFlowCodegen::codegenAnd(const eshkol_operations_t* op) {
     return result;
 }
 
+/**
+ * @brief Generate short-circuiting code for `(or a b ...)`.
+ *
+ * Mirrors codegenAnd()'s basic-block-per-argument structure, but branches to
+ * the short-circuit block when an argument is truthy (returning that value)
+ * and continues to the next argument otherwise. The last argument's value is
+ * always forwarded to the merge block. Handles the zero-argument case `(or)`
+ * (returns #f) and blocks already terminated by a noreturn sub-expression.
+ *
+ * @param op AST operation node for `or` (ESHKOL_OR_OP) or an equivalent call op.
+ * @return Tagged boolean/value result of the short-circuit evaluation.
+ */
 llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenOr - callbacks not set");
@@ -252,6 +298,17 @@ llvm::Value* ControlFlowCodegen::codegenOr(const eshkol_operations_t* op) {
     return result;
 }
 
+/**
+ * @brief Generate code for `(not x)`.
+ *
+ * Evaluates the single argument via the typed AST callback, converts it to a
+ * tagged value, tests it with isTruthy(), and packs the logical negation as a
+ * tagged boolean.
+ *
+ * @param op Call operation AST node; must have exactly one argument.
+ * @return Tagged boolean value: #t if the argument is falsy, #f otherwise (or
+ *         nullptr if the argument count is wrong or codegen fails).
+ */
 llvm::Value* ControlFlowCodegen::codegenNot(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenNot - callbacks not set");
@@ -276,6 +333,25 @@ llvm::Value* ControlFlowCodegen::codegenNot(const eshkol_operations_t* op) {
 // Conditional Expressions
 // ============================================================================
 
+/**
+ * @brief Generate code for `(cond (test1 expr...) (test2 expr...) ... [else expr...])`.
+ *
+ * Walks the clauses in order, emitting a conditional branch per non-`else`
+ * clause: a `then` block evaluates the clause body and branches to a shared
+ * `done` block, and a `next` block continues the search. Supports the R7RS
+ * §5.5 `(test => receiver)` arrow form by applying the receiver closure to
+ * the test's value via the closure-call callback, and the R7RS §6.3 `(test)`
+ * no-body clause by returning the test's own value when truthy. An `else`
+ * clause (if present) always terminates the clause walk. Each reachable
+ * clause exit is collected as a PHI input on the merge block; clauses whose
+ * body diverges via TCO/tail-call/raise are excluded from the merge. If
+ * control falls through every clause unmatched, a default `#f` PHI input is
+ * added. If no clause exit reaches `done_block` (e.g. every clause tail-calls
+ * out), the block is discarded and an undef value is returned.
+ *
+ * @param op Call operation AST node holding the cond clauses.
+ * @return Tagged value result of whichever clause matched (or #f if none did).
+ */
 llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenCond - callbacks not set");
@@ -430,6 +506,25 @@ llvm::Value* ControlFlowCodegen::codegenCond(const eshkol_operations_t* op) {
     }
 }
 
+/**
+ * @brief Generate code for `(if condition then-expr else-expr)`.
+ *
+ * Evaluates the condition and converts it with isTruthy(), then emits
+ * `then`/`else`/`ifcont` basic blocks joined by a conditional branch. Each
+ * branch's value is coerced to a common result type: tagged_value_type is
+ * used whenever either branch already produces a tagged value or the two
+ * branches disagree on raw LLVM type (preserving type information), otherwise
+ * the shared raw type is kept as-is. Handles tail-call optimization: if a
+ * branch already terminated its block (e.g. via a tail call), it is excluded
+ * from the final merge/PHI — if both branches terminated, the merge block is
+ * discarded entirely and an undef value is returned (its result is never
+ * observed), and if only one branch terminated the surviving branch's value
+ * is returned directly without a PHI.
+ *
+ * @param op Call operation AST node; must have exactly 3 arguments (condition,
+ *           then-expr, else-expr).
+ * @return Tagged or raw value result of whichever branch was taken.
+ */
 llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenIf - callbacks not set");
@@ -577,6 +672,24 @@ llvm::Value* ControlFlowCodegen::codegenIf(const eshkol_operations_t* op) {
 // When/Unless Conditionals
 // ============================================================================
 
+/**
+ * @brief Generate code for `(when test expr...)`.
+ *
+ * Evaluates the test and branches directly to a `done` block if falsy
+ * (skipping the body and carrying a precomputed #f value on that edge), or
+ * into a `then` block if truthy. The `then` block evaluates the body
+ * expressions in order, stopping early if any expression already terminates
+ * the block (e.g. a tail call), and defaults to #t if the body is empty. The
+ * two paths are joined at `done_block` with a PHI node; if the `then` block
+ * never reaches `done_block` (its body diverged via a tail call), the PHI is
+ * skipped and the precomputed #f value is returned directly, since that is
+ * the only value still reaching this program point.
+ *
+ * @param op Call operation AST node; variables[0] is the test, remaining
+ *           variables are the body expressions.
+ * @return Tagged value: result of the last body expression if the test was
+ *         truthy (or #t if the body is empty), otherwise #f.
+ */
 llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenWhen - callbacks not set");
@@ -646,6 +759,22 @@ llvm::Value* ControlFlowCodegen::codegenWhen(const eshkol_operations_t* op) {
     }
 }
 
+/**
+ * @brief Generate code for `(unless test expr...)`.
+ *
+ * Mirrors codegenWhen() with the branches swapped: evaluates the test and
+ * branches directly to `done_block` if truthy (carrying a precomputed #f
+ * value on that edge), or into an `else` block if falsy, which evaluates the
+ * body expressions in order (defaulting to #t if the body is empty) and
+ * joins with the #f path via a PHI node at `done_block`. If the body's
+ * evaluation already terminated the block (e.g. a tail call), the PHI is
+ * skipped and the precomputed #f value is returned directly.
+ *
+ * @param op Call operation AST node; variables[0] is the test, remaining
+ *           variables are the body expressions.
+ * @return Tagged value: result of the last body expression if the test was
+ *         falsy (or #t if the body is empty), otherwise #f.
+ */
 llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenUnless - callbacks not set");
@@ -720,6 +849,25 @@ llvm::Value* ControlFlowCodegen::codegenUnless(const eshkol_operations_t* op) {
 // Case Expression
 // ============================================================================
 
+/**
+ * @brief Generate code for `(case key ((datum...) expr...) ... [else expr...])`.
+ *
+ * Evaluates the key expression once, then for each clause builds a `then`/
+ * `next` block pair: all datums in the clause are compared against the key
+ * with the eqv?-comparison callback and OR'd together into a single match
+ * condition, which conditionally branches into the clause body or continues
+ * the scan. Supports the R7RS §5.5 `(datums => receiver)` arrow form by
+ * applying the receiver closure to the key value. An `else` clause (if
+ * present) always terminates the scan. Each clause whose body reaches the
+ * end of its block (i.e. did not already terminate via a TCO tail call or
+ * noreturn expression) contributes a PHI input to the shared `done_block`;
+ * if no clause matched, a default `#f` input is added.
+ *
+ * @param op Call operation AST node; op->call_op.func is the key expression,
+ *           op->call_op.variables holds the clauses (each a CONS of
+ *           datums-AST . body-AST, or an `else` marker).
+ * @return Tagged value result of the matched clause's body (or #f if none matched).
+ */
 llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_ || !eqv_compare_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenCase - callbacks not set");
@@ -875,6 +1023,22 @@ llvm::Value* ControlFlowCodegen::codegenCase(const eshkol_operations_t* op) {
 // Sequencing
 // ============================================================================
 
+/**
+ * @brief Generate code for `(begin expr1 expr2 ... exprN)`.
+ *
+ * Splits the body into internal `define`s and non-define expressions (an
+ * Eshkol extension over strict R5RS/R7RS `begin`, which allows defines
+ * interleaved with other statements). If any defines are present, all of
+ * them are codegen'd first in letrec-like fashion (every binding visible to
+ * every other), then the non-define expressions are evaluated in order;
+ * otherwise all expressions are simply evaluated in sequence. Evaluation
+ * stops early if an expression already terminates the current block (e.g.
+ * `raise`), to avoid emitting unreachable instructions after a terminator.
+ *
+ * @param op Call operation AST node holding the body expressions.
+ * @return Value of the last expression evaluated (a default zero constant if
+ *         the body is empty or produced no value).
+ */
 llvm::Value* ControlFlowCodegen::codegenBegin(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("ControlFlowCodegen::codegenBegin - callbacks not set");
