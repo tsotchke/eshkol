@@ -168,7 +168,6 @@ static llvm::Function* getOrDeclareUngetc(CodegenContext& ctx);
 static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx);
-static llvm::Function* getOrDeclareStderrStream(CodegenContext& ctx);
 
 llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
     // (newline) or (newline port) — R7RS: optional port argument
@@ -2080,27 +2079,6 @@ static llvm::Value* getStdin(CodegenContext& ctx) {
     return ctx.builder().CreateCall(callee, {});
 }
 
-// Helper to get stderr global variable
-static llvm::Value* getStderr(CodegenContext& ctx) {
-#ifdef _WIN32
-    llvm::Function* stderr_stream_func = getOrDeclareStderrStream(ctx);
-    return ctx.builder().CreateCall(stderr_stream_func, {});
-#else
-#ifdef __APPLE__
-    const char* stderr_name = "__stderrp";
-#else
-    const char* stderr_name = "stderr";
-#endif
-    llvm::GlobalVariable* stderr_var = ctx.module().getGlobalVariable(stderr_name);
-    if (!stderr_var) {
-        stderr_var = new llvm::GlobalVariable(
-            ctx.module(), ctx.ptrType(), false,
-            llvm::GlobalVariable::ExternalLinkage, nullptr, stderr_name);
-    }
-    return ctx.builder().CreateLoad(ctx.ptrType(), stderr_var);
-#endif
-}
-
 // Helper that returns the FILE* for the IMPLICIT output port. Goes through
 // the runtime cell `eshkol_runtime_current_output_fp()` so that
 // `parameterize ((current-output-port p)) (display x)` actually writes into
@@ -2135,19 +2113,6 @@ static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx) {
         ft,
         llvm::Function::ExternalLinkage,
         runtime::stdin_stream_symbol,
-        ctx.module()
-    );
-}
-
-static llvm::Function* getOrDeclareStderrStream(CodegenContext& ctx) {
-    if (auto* existing = ctx.module().getFunction(runtime::stderr_stream_symbol)) {
-        return existing;
-    }
-    auto* ft = llvm::FunctionType::get(ctx.ptrType(), {}, false);
-    return llvm::Function::Create(
-        ft,
-        llvm::Function::ExternalLinkage,
-        runtime::stderr_stream_symbol,
         ctx.module()
     );
 }

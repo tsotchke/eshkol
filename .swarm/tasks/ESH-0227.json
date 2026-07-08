@@ -1,0 +1,37 @@
+{
+  "id": "ESH-0227",
+  "title": "`(apply loop lst)` is never tail-call-optimized — call_apply_codegen never consults TailCallContext",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "language/tco",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "call_apply_codegen.cpp compiles every `apply` call to a genuine (non-tail) LLVM `call`, regardless of whether the target is the enclosing function's own self-recursive loop. Using `(apply loop next-args)` as a long-running loop's back-edge therefore grows the native call stack by one frame per iteration no matter what the target function's body looks like, unlike a direct `(loop arg1 arg2 ...)` call which does participate in TCO. Documented as a known, unfixed gap in docs/LONG_RUNNING_LOOPS.md (Q3) and noted as an explicit non-goal inside ESH-0222's fix (guard-tail-position), but never had its own tracked ticket. Filed here as a clean follow-up: make `apply` consult `isTCOActive`/`TailCallContext` the same way ordinary self-calls do when the applied function is provably the active TCO target, so `(apply loop lst)` becomes a legitimate flat loop back-edge.",
+  "file_globs": [
+    "lib/backend/call_apply_codegen.cpp",
+    "lib/backend/tail_call_codegen.cpp",
+    "inc/eshkol/backend/tail_call_codegen.h",
+    "docs/LONG_RUNNING_LOOPS.md",
+    "tests/tco/*.esk"
+  ],
+  "next_actions": [
+    "Read call_apply_codegen.cpp's apply-call lowering and compare with the ordinary self-call TCO path in tail_call_codegen.cpp to find where the tail-position check needs to hook in.",
+    "Determine statically when `apply`'s target is provably the active TCO loop function (e.g. `(apply loop args)` where `loop` names the enclosing named-let/define being compiled) vs a dynamically-unknown target, and gate the optimization to the provable case only.",
+    "Add a regression test exercising `(apply loop (list ...))` for >= 10,000,000 iterations under a reduced stack ulimit, mirroring tests/tco/named_let_tail_positions_test.esk.",
+    "Update docs/LONG_RUNNING_LOOPS.md Q3 once fixed; until then it accurately documents the gap and should not be edited."
+  ],
+  "acceptance": [
+    "`(define (f) (let loop ((n 0)) (if (>= n N) n (apply loop (list (+ n 1)))))) ` runs flat (O(1) stack) to at least N=10,000,000 when the apply target is the loop's own self-recursive call.",
+    "Dynamically-dispatched `apply` calls (target not statically the active loop) remain correctly non-tail — no regression to general `apply` semantics.",
+    "scripts/run_stress.sh and the existing tco test suite stay green."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/tco/apply_loop_tail_test.esk (new test)",
+    "scripts/run_stress.sh"
+  ],
+  "ux_payoff": "Closes the last documented gap in Eshkol's two idiomatic tail-loop forms (named-let and apply-based dispatch); today users must be steered away from a natural-looking pattern with no compiler diagnostic."
+}

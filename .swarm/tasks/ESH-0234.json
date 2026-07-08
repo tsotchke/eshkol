@@ -1,0 +1,33 @@
+{
+  "id": "ESH-0234",
+  "title": "XLA JIT cache serialize/deserialize not implemented for StableHLO mode",
+  "status": "open",
+  "priority": "low",
+  "workstream": "backend/xla",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "XLACompiler::serializeExecutable and XLACompiler::deserializeExecutable (lib/backend/xla/xla_compiler.cpp) are not wired into the compilation pipeline's JIT cache. serializeExecutable does have a working StableHLO-mode implementation (prints the LLVM module to textual IR) but nothing calls it; deserializeExecutable is a stub that always returns nullptr in StableHLO mode (would need llvm::parseIR()). The XLA backend is disabled by default (ESHKOL_XLA_ENABLED=OFF) and only relevant when built with -DESHKOL_XLA_ENABLED=ON and ESHKOL_XLA_FULL_MLIR, so this has no impact on the default build.",
+  "file_globs": [
+    "lib/backend/xla/xla_compiler.cpp",
+    "inc/eshkol/backend/xla/xla_compiler.h",
+    "lib/backend/xla/xla_codegen.cpp"
+  ],
+  "next_actions": [
+    "Wire serializeExecutable's output into whatever on-disk/in-memory JIT cache the LLVM-direct backend already uses (see stdlib object-cache precedent in project memory: stdlib .bc -> object once), so a repeated XLA compilation of the same StableHLO module can skip recompilation.",
+    "Implement deserializeExecutable using llvm::parseIR() to reconstruct the llvm::Module* from the cached textual IR.",
+    "Add a cache-hit/cache-miss test under the ESHKOL_XLA_ENABLED build configuration (CI XLA lane) verifying a second compile of the same module is faster and produces identical results."
+  ],
+  "acceptance": [
+    "Building with -DESHKOL_XLA_ENABLED=ON -DESHKOL_XLA_FULL_MLIR, a repeated compilation of the same StableHLO module hits the cache instead of recompiling.",
+    "No behavior change for the default (XLA-disabled) build.",
+    "No behavior change for the LLVM-direct (non-StableHLO) XLA mode, which already correctly no-ops both functions."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cmake -S . -B build-xla -DESHKOL_XLA_ENABLED=ON && cmake --build build-xla --target eshkol-run",
+    "run the XLA CI lane's existing test suite plus the new cache-hit test"
+  ],
+  "ux_payoff": "Compile-time win for XLA-backend users recompiling the same model repeatedly (e.g. iterative REPL workflows); zero impact on the default, non-XLA build most users run."
+}

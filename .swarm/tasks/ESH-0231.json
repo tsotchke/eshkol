@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0231",
+  "title": "http-post falls back to JSON-convenience + manual auth-header extraction pending full header-passing FFI",
+  "status": "open",
+  "priority": "low",
+  "workstream": "agent-ffi/http",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "lib/agent/http.esk's (http-post url headers body . timeout) currently only forwards the Authorization / x-api-key header through to the underlying http-post-json-raw FFI call (via manual assoc extraction); any other custom header in the caller's `headers` list is silently dropped because the full header-passing FFI (http-post-raw with an arbitrary header list) is not wired yet. This is a real, working fallback for the common case (bearer/API-key auth) but not a complete implementation of the documented 'headers: list of (name . value) pairs' contract.",
+  "file_globs": [
+    "lib/agent/http.esk",
+    "lib/agent/c/agent_http.c",
+    "inc/eshkol/agent/http.h",
+    "tests/agent/http_post_headers_test.esk"
+  ],
+  "next_actions": [
+    "Wire http-post-raw (or extend http-post-json-raw) to accept and forward the full headers list, not just Authorization/x-api-key.",
+    "Update http-post in lib/agent/http.esk to pass the complete headers list through once the FFI supports it, removing the manual auth-header extraction special-case.",
+    "Add tests/agent/http_post_headers_test.esk asserting a custom header (e.g. 'X-Request-Id') set via http-post reaches the server (use the existing local HTTP test fixture server if present under tests/agent/)."
+  ],
+  "acceptance": [
+    "http-post forwards every (name . value) pair in its headers argument to the outgoing request, not just Authorization/x-api-key.",
+    "Existing Authorization/x-api-key-based callers keep working unchanged.",
+    "No regression in tests/agent/*http* suite."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/agent/http_post_headers_test.esk"
+  ],
+  "ux_payoff": "Removes a documented-but-not-fully-implemented gap in the agent HTTP FFI's header contract; low urgency since the two most common auth header shapes already work."
+}

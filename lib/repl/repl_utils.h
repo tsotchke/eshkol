@@ -218,17 +218,6 @@ inline const std::vector<std::string>& get_builtin_symbols() {
     return builtins;
 }
 
-// Check if a string is a builtin
-inline bool is_builtin(const std::string& name) {
-    static std::unordered_set<std::string> builtin_set;
-    if (builtin_set.empty()) {
-        for (const auto& b : get_builtin_symbols()) {
-            builtin_set.insert(b);
-        }
-    }
-    return builtin_set.count(name) > 0;
-}
-
 // ============================================================================
 // REPL Commands
 // ============================================================================

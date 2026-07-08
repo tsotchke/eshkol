@@ -550,34 +550,6 @@ static void chunk_free_arrays(FuncChunk* c) {
     c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
 }
 
-/* Heap-allocate a FuncChunk with dynamic arrays (~300 bytes vs. 354KB fixed) */
-static FuncChunk* chunk_create(void) {
-    FuncChunk* c = (FuncChunk*)calloc(1, sizeof(FuncChunk));
-    if (!c) { fprintf(stderr, "ERROR: cannot allocate FuncChunk\n"); return NULL; }
-    c->code_cap = CHUNK_INIT_CODE;
-    c->code = (Instr*)calloc(c->code_cap, sizeof(Instr));
-    c->const_cap = CHUNK_INIT_CONSTS;
-    c->constants = (Value*)calloc(c->const_cap, sizeof(Value));
-    c->local_cap = CHUNK_INIT_LOCALS;
-    c->locals = (Local*)calloc(c->local_cap, sizeof(Local));
-    c->entry_cap = CHUNK_INIT_ENTRIES;
-    c->entries = (ChunkEntry*)calloc(c->entry_cap, sizeof(ChunkEntry));
-    if (!c->code || !c->constants || !c->locals || !c->entries) {
-        free(c->code); free(c->constants); free(c->locals); free(c->entries); free(c);
-        fprintf(stderr, "ERROR: cannot allocate FuncChunk arrays\n");
-        return NULL;
-    }
-    return c;
-}
-static void chunk_destroy(FuncChunk* c) {
-    if (!c) return;
-    for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
-    for (int i = 0; i < c->n_entries; i++) free(c->entries[i].name);
-    for (int i = 0; i < c->n_upvalues; i++) free(c->upvalues[i].name);
-    free(c->code); free(c->constants); free(c->locals); free(c->entries);
-    free(c);
-}
-
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
 
 static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
