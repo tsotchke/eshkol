@@ -10,6 +10,8 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.0--evolve-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
+📣 **v1.3.0-evolve released** — see [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
+
 <br>
 
 <img alt="Eshkol" src="./site/static/img/eshkol-logo-light-transparent.png" width="320">
