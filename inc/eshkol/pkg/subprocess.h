@@ -62,11 +62,27 @@
 
 namespace eshkol::pkg {
 
-// Returned when a bounded wait expires and the child is killed.
+/**
+ * @brief Exit code returned by run_subprocess() when a bounded wait expires.
+ *
+ * Mirrors the convention used by GNU coreutils `timeout(1)`: if
+ * `timeout_seconds` elapses before the child exits, the child is killed and
+ * this value is returned instead of the child's real exit status.
+ */
 constexpr int SUBPROCESS_TIMEOUT = 124;
 
 #ifdef _WIN32
 
+/**
+ * @brief Convert a UTF-8 encoded string to a UTF-16 wide string (Windows only).
+ *
+ * Uses MultiByteToWideChar with CP_UTF8. Needed because CreateProcessW and
+ * related Win32 APIs take wide-character strings.
+ *
+ * @param text UTF-8 encoded input string
+ * @return Equivalent UTF-16 string, or an empty string if `text` is empty or
+ *         the conversion fails
+ */
 inline std::wstring widen_utf8(const std::string& text) {
     if (text.empty()) return {};
     int size = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
@@ -76,12 +92,20 @@ inline std::wstring widen_utf8(const std::string& text) {
     return wide;
 }
 
-// Quote a single argv element using the documented msvcrt parsing rules so
-// CommandLineToArgvW reverses it correctly. The interesting case is a run
-// of N backslashes followed by a quote: those backslashes get doubled
-// (2N) and an extra backslash is inserted before the quote, otherwise a
-// run of backslashes is left alone. See:
-//   https://learn.microsoft.com/en-us/cpp/cpp/main-function-command-line-args
+/**
+ * @brief Append a single argv element to a Windows command line, quoted per
+ * the documented msvcrt parsing rules (Windows only).
+ *
+ * Quoting follows the rules CommandLineToArgvW uses to reverse the process,
+ * so `arg` round-trips exactly. The interesting case is a run of N
+ * backslashes followed by a quote: those backslashes get doubled (2N) and an
+ * extra backslash is inserted before the quote; otherwise a run of
+ * backslashes is left alone. See:
+ *   https://learn.microsoft.com/en-us/cpp/cpp/main-function-command-line-args
+ *
+ * @param out Wide-character command line to append to
+ * @param arg Single argv element (already UTF-16) to quote and append
+ */
 inline void append_quoted_windows_arg(std::wstring& out, const std::wstring& arg) {
     out.push_back(L'"');
     size_t i = 0;
@@ -107,6 +131,16 @@ inline void append_quoted_windows_arg(std::wstring& out, const std::wstring& arg
     out.push_back(L'"');
 }
 
+/**
+ * @brief Build a full Windows command line string from an argv-style vector.
+ *
+ * Widens each UTF-8 argument to UTF-16 and quotes it with
+ * append_quoted_windows_arg(), joining the results with single spaces, ready
+ * to pass as `lpCommandLine` to CreateProcessW.
+ *
+ * @param args Argv-style argument list (args[0] is the program)
+ * @return Windows command line string
+ */
 inline std::wstring build_windows_command_line(const std::vector<std::string>& args) {
     std::wstring command_line;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -118,10 +152,25 @@ inline std::wstring build_windows_command_line(const std::vector<std::string>& a
 
 #endif // _WIN32
 
-// Launch `args[0]` with the rest of `args` as its argv. If `cwd` is non-null,
-// the child runs with that working directory. No shell is involved on either
-// platform — all elements are passed verbatim, so manifest data can never
-// inject commands.
+/**
+ * @brief Launch a child process with an explicit argv, no shell involved.
+ *
+ * `args[0]` is the program to run; the remaining elements are passed as its
+ * argv, exactly as given — on POSIX via fork()+execvp(), on Windows via
+ * CreateProcessW with a hand-quoted command line. Because no shell parses
+ * the arguments on either platform, data from a dependency manifest can
+ * never inject additional commands.
+ *
+ * @param args           Argv-style argument list; args[0] is the program.
+ *                       Must be non-empty.
+ * @param cwd            If non-null, the child's working directory
+ * @param timeout_seconds If non-zero, bounds the wait for the child; on
+ *                       expiry the child is killed and SUBPROCESS_TIMEOUT is
+ *                       returned. If zero (the default), waits unboundedly.
+ * @return The child's exit code on normal completion, a platform-specific
+ *         failure code (see the file-level comment for the POSIX codes), or
+ *         SUBPROCESS_TIMEOUT if the timeout elapsed.
+ */
 inline int run_subprocess(const std::vector<std::string>& args,
                           const std::filesystem::path* cwd = nullptr,
                           unsigned int timeout_seconds = 0) {
