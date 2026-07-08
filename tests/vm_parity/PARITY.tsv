@@ -11,6 +11,7 @@
 # Seeded 2026-07-03 from the live extraction; regenerate a skeleton with
 #   scripts/vm_parity_audit.py --seed
 # name	status	justification
+__arena-used	native-only-justified	native arena introspection probe; bytecode VM has separate region accounting
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
@@ -488,6 +489,7 @@ op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
 op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
 op:DERIVATIVE	gap	AD surface diverges in VM (found/ad_gradient_wrong.esk)
+op:DERIVATIVE_N	gap	arbitrary-order Taylor-tower AD operator not implemented on VM surface
 op:DIFF	gap	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
 op:DIV	vm-supported	OP_DIV bytecode (exact-rational result diverges: see / gap row)
@@ -566,6 +568,7 @@ op:SHARED	native-only-justified	OALR ownership — native-arena construct
 op:SUB	vm-supported	OP_SUB bytecode
 op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
 op:SYNTAX_ERROR	native-only-justified	parse-time form handled by the native front-end
+op:TAYLOR	gap	arbitrary-order Taylor-series AD operator not implemented on VM surface
 op:TENSOR	vm-supported	tensor/make-tensor fids 410+
 op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codegen
 op:UNIFY	vm-supported	BUILTINS fid 502
@@ -883,6 +886,7 @@ vector	gap	(vector ...) constructor form returns () (found/vector_constructor_em
 vector->list	gap	BUILTINS fid 140 unimplemented in vm_native.c (found/vector_constructor_empty.esk)
 vector->tensor	gap	tensor linalg/manipulation fid missing in VM
 vector-append	gap	no VM name binding
+vector-copy	gap	R7RS vector-copy is missing on the VM; intertwined with tensor-backed #(...) vector-literal parity
 vector-copy!	gap	no VM name binding
 vector-fill!	gap	no VM name binding
 vector-for-each	gap	no VM name binding
