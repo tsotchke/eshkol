@@ -138,6 +138,8 @@ public:
     llvm::Value* loadVariable(const std::string& name);
 
 private:
+    // Shared codegen state and tagged-value helper (not owned; refs injected
+    // via the constructor)
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
 
@@ -150,6 +152,8 @@ private:
     // Register function binding (for apply/call resolution)
     using RegisterFuncBindingFunc = void (*)(const char* var_name, void* typed_value, void* context);
 
+    // Stored callback instances set via setCodegenCallbacks() (see the
+    // typedefs above for each callback's signature/purpose)
     CodegenASTFunc codegen_ast_callback_ = nullptr;
     CodegenTypedASTFunc codegen_typed_ast_callback_ = nullptr;
     TypedToTaggedFunc typed_to_tagged_callback_ = nullptr;
@@ -350,6 +354,8 @@ public:
     }
 
 private:
+    // Backing storage for the active TCO context and the self-tail-recursion
+    // detection callback (see getTCOContext()/setTCOCallbacks() above)
     TailCallContext tco_context_ = {};
     IsTailRecursiveFunc is_tail_recursive_callback_ = nullptr;
 };

@@ -67,14 +67,58 @@ public:
 
     // Hash table operations
     llvm::Value* hashSet(const eshkol_operations_t* op);
+
+    /**
+     * @brief Get a value by key: (hash-ref table key [default])
+     *
+     * Looks up key via the runtime hash_table_get. Returns the found value
+     * if present, otherwise the provided default argument if given, or #f
+     * if no default was given. Never errors on a missing key.
+     * @param op The HASH_REF operation AST node
+     * @return Tagged value found for key, the default, or #f
+     */
     llvm::Value* hashRef(const eshkol_operations_t* op);
+
+    /**
+     * @brief Check if a key exists: (hash-has-key? table key)
+     * @param op The operation AST node
+     * @return Tagged boolean, #t if the key is present, #f otherwise
+     */
     llvm::Value* hashHasKey(const eshkol_operations_t* op);
+
+    /**
+     * @brief Remove a key: (hash-remove! table key)
+     * @param op The operation AST node
+     * @return Tagged boolean, #t if the key was removed, #f if not found
+     */
     llvm::Value* hashRemove(const eshkol_operations_t* op);
 
     // Hash table queries
     llvm::Value* hashKeys(const eshkol_operations_t* op);
+
+    /**
+     * @brief Get all values as a list: (hash-values table)
+     * @param op The operation AST node
+     * @return Tagged null for an empty table, otherwise a tagged pointer
+     *         to a cons list of the table's values
+     */
     llvm::Value* hashValues(const eshkol_operations_t* op);
+
+    /**
+     * @brief Get number of entries: (hash-count table)
+     * @param op The operation AST node
+     * @return Tagged 64-bit integer entry count
+     */
     llvm::Value* hashCount(const eshkol_operations_t* op);
+
+    /**
+     * @brief Clear all entries: (hash-clear! table)
+     *
+     * Clears the table in place and returns it unchanged, following
+     * Scheme's `!` convention of returning the mutated object.
+     * @param op The operation AST node
+     * @return The original (now-empty) table argument
+     */
     llvm::Value* hashClear(const eshkol_operations_t* op);
 
 private:

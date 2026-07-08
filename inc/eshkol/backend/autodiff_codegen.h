@@ -135,6 +135,10 @@ public:
     // tangent (instead of the reverse tape swallowing the tower). Pushed in
     // seedForwardAndPush and popped in popAndExtractForward when in tower mode.
     void towerCtxPush(llvm::Value* order_i32);
+    /**
+     * Leave a Taylor-tower differentiation context (decrement the runtime
+     * tower depth counter pushed by towerCtxPush, clamped at 0).
+     */
     void towerCtxPop();
     // If a tower differentiation is active and `operand_tagged` is a reverse-tape
     // AD node, freeze it to a dual-tower constant (value + seed tangent) so the
@@ -345,9 +349,20 @@ public:
     // mode below re-points seedForwardAndPush / popAndExtractForward at the
     // heap-tower runtime kernel (lib/core/runtime_taylor.c) instead of the jet.
     llvm::Value* taylorSeries(const eshkol_operations_t* op);  // ESHKOL_TAYLOR_OP
+    /**
+     * Compute (derivative-n f x k): the k-th derivative of f at x via the
+     * arbitrary-order Taylor tower. Attempts P2 compile-time-K
+     * monomorphization (tryMonomorphizedTaylor) when k is a literal integer,
+     * else falls back to the P1 runtime heap-tower path (taylorApiCore).
+     * @param op The ESHKOL_DERIVATIVE_N_OP AST node (function, point, order)
+     * @return Scalar derivative value (k! * c[k])
+     */
     llvm::Value* derivativeN(const eshkol_operations_t* op);   // ESHKOL_DERIVATIVE_N_OP
+    /** Selects which tower-API extraction mode a taylorApiCore call performs. */
     enum class TowerMode { NONE, DERIV_N, COEFFS };
+    /** Current tower-API mode; only meaningful while a tower-API call (taylor/derivative-n) is in progress. */
     TowerMode adTowerMode_ = TowerMode::NONE;   // set only during a tower-API call
+    /** Requested Taylor-tower order k (as an i32 runtime value) for the in-progress tower-API call. */
     llvm::Value* adTowerOrder_ = nullptr;       // i32 requested order k (runtime value)
     // Shared seed+call+extract core for the tower API and the nested-derivative
     // rewrite. `order_i32` is the requested order; `mode` selects extraction.
@@ -796,6 +811,7 @@ public:
 
     /** Closure call callback — dispatches runtime closure calls */
     using ClosureCallCallback = llvm::Value* (*)(llvm::Value*, const std::vector<llvm::Value*>&, const char*, void*);
+    /** Set the closure call callback used to dispatch runtime closure calls. */
     void setClosureCallCallback(ClosureCallCallback callback) {
         closure_call_callback_ = callback;
     }
@@ -830,6 +846,7 @@ public:
 
     /** Get arena-allocate-closure-with-header function declaration */
     using GetClosureAllocFunc = llvm::Function* (*)(void*);
+    /** Set the callback used to obtain the arena-allocate-closure-with-header function declaration. */
     void setGetClosureAllocFunc(GetClosureAllocFunc func) {
         get_closure_alloc_func_ = func;
     }
@@ -841,7 +858,25 @@ public:
 
     // Private helpers for vector calculus
     llvm::Value* createNullVectorTensor(llvm::Value* dimension);
+    /**
+     * Extract element `indices` from an N-dimensional tensor's element
+     * array, computing the linear offset via row-major strides over the
+     * tensor's dims field. Elements are stored as int64 bit patterns and
+     * bitcast back to double on load.
+     * @param tensor_ptr Pointer to the tensor struct
+     * @param indices Per-dimension indices (e.g. [row, col] for a Jacobian)
+     * @return The element value as a double
+     */
     llvm::Value* extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices);
+    /**
+     * Convenience wrapper over extractTensorElement for 2D tensors
+     * (Jacobian/Hessian matrices): extracts J[row_idx, col_idx].
+     * @param jacobian_ptr Pointer to the 2D tensor
+     * @param row_idx Row index
+     * @param col_idx Column index
+     * @param n Matrix dimension (unused by the current implementation, kept for callers)
+     * @return The element value as a double
+     */
     llvm::Value* extractJacobianElement(llvm::Value* jacobian_ptr, llvm::Value* row_idx, llvm::Value* col_idx, llvm::Value* n);
 
 private:

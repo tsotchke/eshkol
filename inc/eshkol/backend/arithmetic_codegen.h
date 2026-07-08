@@ -234,20 +234,109 @@ public:
 
     // === Bignum dispatch helpers (public for use by llvm_codegen eqv?/equal?) ===
 
+    /**
+     * Emit a call into the bignum runtime's binary-op kernel (add/sub/mul/
+     * div/mod/quotient/remainder/negate), used once emitIsBignumCheck has
+     * confirmed at least one operand is an arbitrary-precision integer.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Bignum binary operation code (e.g. 0=add, 1=sub, 2=mul, 3=div)
+     * @return Result as tagged_value
+     */
     llvm::Value* emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Emit a call into the bignum runtime's comparison kernel, used once
+     * emitIsBignumCheck has confirmed at least one operand is an
+     * arbitrary-precision integer.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Bignum comparison operation code (e.g. 0=lt, 1=gt)
+     * @return Boolean result as tagged_value
+     */
     llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Check whether either operand is a bignum (arbitrary-precision integer)
+     * tagged value, so arithmetic/comparison ops can be routed to the bignum
+     * dispatch helpers instead of the fixed-width int/double fast path.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return Boolean i1 value: true if either operand is a bignum
+     */
     llvm::Value* emitIsBignumCheck(llvm::Value* left, llvm::Value* right);
 
     // === Taylor-tower dispatch helpers (ESH-0186) ===
+
+    /**
+     * Check whether either operand is a Taylor tower (HEAP_PTR with
+     * HEAP_SUBTYPE_TAYLOR), so it can be intercepted before the generic
+     * vector/tensor heap path, which would otherwise misread its storage.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return i1 boolean: true if either operand is a Taylor tower
+     */
     llvm::Value* emitIsTaylorCheck(llvm::Value* left, llvm::Value* right);
+
+    /**
+     * Check whether a single operand is a Taylor tower.
+     * @param v Operand (tagged_value)
+     * @return i1 boolean: true if the operand is a Taylor tower
+     */
     llvm::Value* emitIsTaylorSingle(llvm::Value* v);
+
+    /**
+     * Emit a call into the Taylor-tower runtime's binary-op kernel
+     * (eshkol_taylor_binary_tagged), used once a Taylor tower operand has
+     * been detected.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Taylor binary operation code (e.g. 0=add, 1=sub, 2=mul, 3=div)
+     * @return Result as tagged_value
+     */
     llvm::Value* emitTaylorBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Emit a call into the Taylor-tower runtime's unary-op kernel
+     * (eshkol_taylor_unary_tagged).
+     * @param in Operand (tagged_value)
+     * @param op_code Taylor unary operation code
+     * @return Result as tagged_value
+     */
     llvm::Value* emitTaylorUnaryCall(llvm::Value* in, int op_code);
 
     // === Rational dispatch helpers ===
 
+    /**
+     * Check whether either operand is an exact rational number, so
+     * arithmetic/comparison ops can be routed to the rational dispatch
+     * helpers instead of the fixed-width int/double fast path.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return Boolean i1 value: true if either operand is a rational
+     */
     llvm::Value* emitIsRationalCheck(llvm::Value* left, llvm::Value* right);
+
+    /**
+     * Emit a call into the rational runtime's binary-op kernel
+     * (eshkol_rational_binary_tagged_ptr), used once emitIsRationalCheck has
+     * confirmed at least one operand is an exact rational.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Rational binary operation code (e.g. 0=add, 1=sub, 2=mul, 3=div)
+     * @return Result as tagged_value
+     */
     llvm::Value* emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code);
+
+    /**
+     * Emit a call into the rational runtime's comparison kernel
+     * (eshkol_rational_compare_tagged_ptr), used once emitIsRationalCheck has
+     * confirmed at least one operand is an exact rational.
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @param op_code Rational comparison operation code (e.g. 0=lt, 1=gt)
+     * @return Boolean result as tagged_value
+     */
     llvm::Value* emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
 
     /**

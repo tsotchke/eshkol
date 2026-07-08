@@ -220,15 +220,23 @@ public:
 
     // === AD (Automatic Differentiation) State ===
 
+    /** Get/set the global i1 flag that is true while forward- or reverse-mode
+     *  AD instrumentation is active, so numeric ops know to record onto the tape. */
     llvm::GlobalVariable* adModeActive() { return ad_mode_active_; }
     void setAdModeActive(llvm::GlobalVariable* var) { ad_mode_active_ = var; }
 
+    /** Get/set the global pointer to the AD tape currently being recorded to
+     *  (reverse-mode). Saved/restored around nested gradient/derivative calls. */
     llvm::GlobalVariable* currentAdTape() { return current_ad_tape_; }
     void setCurrentAdTape(llvm::GlobalVariable* var) { current_ad_tape_ = var; }
 
+    /** Get/set the global stack of saved AD tapes used to restore
+     *  currentAdTape() when a nested differentiation call returns. */
     llvm::GlobalVariable* adTapeStack() { return ad_tape_stack_; }
     void setAdTapeStack(llvm::GlobalVariable* var) { ad_tape_stack_ = var; }
 
+    /** Get/set the global counter tracking how many tapes are pushed on
+     *  adTapeStack(), i.e. the current AD nesting depth. */
     llvm::GlobalVariable* adTapeDepth() { return ad_tape_depth_; }
     void setAdTapeDepth(llvm::GlobalVariable* var) { ad_tape_depth_ = var; }
 
@@ -285,30 +293,48 @@ public:
 
     // === Mode Flags ===
 
+    /** Get/set whether the module is being compiled as a library (no
+     *  standalone entry point; exported symbols keep external linkage). */
     bool isLibraryMode() const { return library_mode_; }
     void setLibraryMode(bool mode) { library_mode_ = mode; }
 
+    /** Get/set whether code is being generated for incremental REPL
+     *  evaluation, which affects global storage naming/linkage decisions. */
     bool isReplMode() const { return repl_mode_; }
     void setReplMode(bool mode) { repl_mode_ = mode; }
 
+    /** Get/set the name-mangling prefix applied to this module's globals,
+     *  used to disambiguate symbols across separately loaded modules. */
     const std::string& modulePrefix() const { return module_prefix_; }
     void setModulePrefix(const std::string& prefix) { module_prefix_ = prefix; }
 
     // === Builtin Function Declarations ===
     // These are set during initialization and used throughout codegen
 
+    /** Get/set the declaration for `eshkol_deep_equal`, the runtime helper
+     *  implementing structural (deep) equality over tagged values. */
     llvm::Function* deepEqualFunc() { return deep_equal_func_; }
     void setDeepEqualFunc(llvm::Function* func) { deep_equal_func_ = func; }
 
+    /** Get/set the declaration for `eshkol_display_value`, the runtime
+     *  helper that prints a tagged value (used by display/write). */
     llvm::Function* displayValueFunc() { return display_value_func_; }
     void setDisplayValueFunc(llvm::Function* func) { display_value_func_ = func; }
 
+    /** Get/set the declaration for `eshkol_lambda_registry_init`, which
+     *  initializes the runtime registry mapping lambda function pointers to
+     *  their originating s-expression (used for eq?/display on closures). */
     llvm::Function* lambdaRegistryInitFunc() { return lambda_registry_init_func_; }
     void setLambdaRegistryInitFunc(llvm::Function* func) { lambda_registry_init_func_ = func; }
 
+    /** Get/set the declaration for `eshkol_lambda_registry_add`, which
+     *  registers a (function pointer, s-expression pointer, name) entry. */
     llvm::Function* lambdaRegistryAddFunc() { return lambda_registry_add_func_; }
     void setLambdaRegistryAddFunc(llvm::Function* func) { lambda_registry_add_func_ = func; }
 
+    /** Get/set the declaration for `eshkol_lambda_registry_lookup`, which
+     *  resolves a function pointer back to its registered s-expression
+     *  pointer (or 0 if not found). */
     llvm::Function* lambdaRegistryLookupFunc() { return lambda_registry_lookup_func_; }
     void setLambdaRegistryLookupFunc(llvm::Function* func) { lambda_registry_lookup_func_ = func; }
 

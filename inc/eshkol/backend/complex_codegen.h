@@ -44,6 +44,12 @@ class MemoryCodegen;
  */
 class ComplexCodegen {
 public:
+    /**
+     * Construct ComplexCodegen with context and helpers.
+     * @param ctx The shared codegen context
+     * @param tagged Tagged value operations helper
+     * @param mem Memory/arena allocation helper
+     */
     ComplexCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem);
 
     // ═══════════════════════════════════════════════════════════════════════

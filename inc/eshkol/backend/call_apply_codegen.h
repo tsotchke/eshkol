@@ -272,6 +272,8 @@ public:
     }
 
 private:
+    // Shared codegen state and helper modules (not owned; refs injected via
+    // the constructor)
     CodegenContext& ctx_;
     TaggedValueCodegen& tagged_;
     ArithmeticCodegen& arith_;
