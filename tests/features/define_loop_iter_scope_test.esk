@@ -1,0 +1,52 @@
+;;; tests/features/define_loop_iter_scope_test.esk — ESH-0214b Bug 1
+;;;
+;;; A TOP-LEVEL self-tail-recursive `define` loop whose body is wrapped in a
+;;; catch-all `guard` — the exact daemon-loop shape that used to accumulate
+;;; ~one iteration's arena garbage per pass FOREVER (unbounded RSS -> OOM /
+;;; SIGSEGV), because ESH-0214b's automatic per-iteration arena reclamation
+;;; was named-let-only (Gap A) AND the escape analysis rejected `guard`
+;;; outright (Gap B).
+;;;
+;;; With both gaps fixed:
+;;;   * codegenDefine's TCO path pushes a per-iteration arena scope at the
+;;;     loop header and ends it on every back edge + the base-case return;
+;;;   * iterScopeSafeExpr accepts a guard that has a CATCH-ALL clause (test
+;;;     #t or `else`) whose body/clauses are themselves escape-free — because
+;;;     such a guard can never let an exception propagate past the loop body,
+;;;     so the back edge's iter_scope_end is always reached (balanced LIFO).
+;;;
+;;; The loop's carried state is a plain counter (numeric every iteration), so
+;;; the dynamic escape check takes the POP (reclaim) path each pass; the
+;;; per-iteration `scratch` list + string is provably dead at the back edge
+;;; and gets reclaimed. Bounded-RSS is asserted by
+;;; scripts/run_rss_bounded_test.sh --test on this file (flat peak RSS across
+;;; a 10x pass-count scale). The value assertion below guards correctness.
+
+(define total-passes 300000)
+
+;; Self-tail-recursive define, body wrapped in a catch-all guard. Each
+;; iteration allocates a small list and a string that never escape the
+;; iteration; the carry is a plain integer count.
+(define (loop i acc)
+  (guard (e (#t acc))                     ; catch-all: any raise yields acc
+    (if (>= i total-passes)
+        acc
+        (let ((scratch (list i
+                             (* i 2)
+                             (number->string i)
+                             (string-append "iter-" (number->string i)))))
+          ;; length of scratch is always 4 -> deterministic checksum, and
+          ;; `scratch` itself is dead after this expression.
+          (loop (+ i 1) (+ acc (length scratch)))))))
+
+(let ((result (loop 0 0)))
+  (display "[define_loop_iter_scope_test] passes=")
+  (display total-passes)
+  (display " result=")
+  (display result)
+  (newline)
+  (if (= result (* total-passes 4))
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL expected ")
+             (display (* total-passes 4))
+             (newline))))

@@ -10796,6 +10796,16 @@ private:
         BasicBlock* tco_loop_bb = nullptr;
 
         bool is_tail_rec = op->define_op.value && isSelfTailRecursive(op, func_name);
+        // ESH-0214b (Bug 1): enable automatic per-iteration arena reclamation
+        // for a self-tail-recursive define exactly as codegenNamedLet does for
+        // named lets. Requires the branch-based TCO transform (is_tail_rec ==
+        // all recursive calls in tail position) AND that the escape analysis
+        // proves the body cannot leak an iteration-allocated value except
+        // through the loop-carried args / return value. The define's own name
+        // is the loop name, so its self-tail-calls are recognized as back
+        // edges by the analysis (local_fns) and by codegenTailCallFromContext.
+        bool define_iter_scope_safe = is_tail_rec &&
+            loopBodyIterScopeSafe(op->define_op.value, func_name);
         if (is_tail_rec) {
             use_tco = true;
             eshkol_debug("TCO: Enabling tail call optimization for define %s", func_name);
@@ -10804,11 +10814,11 @@ private:
             auto& tco_ctx = binding_->getTCOContext();
             tco_ctx.func_name = func_name;
             tco_ctx.enabled = true;
-            // ESH-0214b: automatic per-iteration scoping is named-let-only for
-            // now (its exit path is a single, known return point). Explicitly
-            // clear the flag so a define's back edges never inherit a stale
-            // iter_scope from an enclosing context.
-            tco_ctx.iter_scope = false;
+            // ESH-0214b (Bug 1): per-iteration arena scoping now applies to the
+            // define TCO path too, gated on the escape analysis above. When
+            // unsafe this is false, so a define's back edges never inherit a
+            // stale iter_scope from an enclosing context.
+            tco_ctx.iter_scope = define_iter_scope_safe;
             tco_ctx.param_allocas.clear();
             tco_ctx.param_names.clear();
 
@@ -10841,6 +10851,20 @@ private:
             // Branch to loop header
             builder->CreateBr(tco_loop_bb);
             builder->SetInsertPoint(tco_loop_bb);
+
+            // ESH-0214b (Bug 1): open the per-iteration arena scope at the top
+            // of the loop header, exactly like codegenNamedLet. Every path out
+            // of the iteration -- each TCO back edge (codegenTailCallFromContext,
+            // which ends the scope when tco_ctx.iter_scope is set) and the
+            // define's base-case return below -- ends it with
+            // eshkol_arena_iter_scope_end, so pushes and releases stay strictly
+            // balanced (LIFO).
+            if (define_iter_scope_safe) {
+                Value* iter_arena_ptr = getArenaPtr();
+                if (iter_arena_ptr) {
+                    builder->CreateCall(getArenaPushScopeFunc(), {iter_arena_ptr});
+                }
+            }
 
             // ESH-0222: see TailCallContext::loop_stack_save /
             // open_guard_handlers (binding_codegen.h) for the full
@@ -10908,6 +10932,9 @@ private:
             binding_->getTCOContext().enabled = false;
             binding_->getTCOContext().func_name = "";
             binding_->getTCOContext().loop_header = nullptr;
+            // ESH-0214b (Bug 1): clear iter_scope too so a later, non-tail
+            // define's back edges never inherit this loop's stale flag.
+            binding_->getTCOContext().iter_scope = false;
         }
         eshkol_debug("Function %s body_result: %p", func_name, body_result);
 
@@ -10938,6 +10965,14 @@ private:
                     eshkol_debug("Function %s returns closure/lambda %s (tagged value)",
                                 func_name, last_generated_lambda_name.c_str());
                 }
+                // ESH-0214b (Bug 1): the self-tail define loop exits here on
+                // its base case -- release the final iteration's arena scope.
+                // The result is the only datum flowing out; the runtime helper
+                // pops (reclaims) unless it points into the iteration span, in
+                // which case it commits (keeps the memory, balanced stack).
+                if (use_tco && define_iter_scope_safe) {
+                    emitIterScopeEnd({body_result});
+                }
                 builder->CreateRet(body_result);
             }
             // If body_result is a function (lambda), pack as function pointer
@@ -10955,12 +10990,22 @@ private:
                 Value* func_tagged = packPtrToTaggedValue(
                     builder->CreateIntToPtr(func_addr, builder->getPtrTy()),
                     ESHKOL_VALUE_CALLABLE);  // CRITICAL: Mark as LAMBDA_SEXPR, not CONS_PTR
+                // ESH-0214b (Bug 1): balance the per-iteration scope on this
+                // exit path too (see the tagged-value case above).
+                if (use_tco && define_iter_scope_safe) {
+                    emitIterScopeEnd({func_tagged});
+                }
                 builder->CreateRet(func_tagged);
             }
             // Otherwise, detect type and pack to tagged_value
             else {
                 TypedValue typed = detectValueType(body_result);
                 Value* tagged = typedValueToTaggedValue(typed);
+                // ESH-0214b (Bug 1): balance the per-iteration scope on this
+                // exit path too (see the tagged-value case above).
+                if (use_tco && define_iter_scope_safe) {
+                    emitIterScopeEnd({tagged});
+                }
                 builder->CreateRet(tagged);
             }
         } else {
@@ -10968,6 +11013,11 @@ private:
             eshkol_debug("Function %s has no body result, returning null tagged value", func_name);
             Value* null_tagged = packInt64ToTaggedValue(
                 ConstantInt::get(int64_type, 0), true);
+            // ESH-0214b (Bug 1): balance the per-iteration scope on this exit
+            // path too (see the tagged-value case above).
+            if (use_tco && define_iter_scope_safe) {
+                emitIterScopeEnd({null_tagged});
+            }
             builder->CreateRet(null_tagged);
         }
 
@@ -25173,10 +25223,65 @@ private:
                 }
                 return true;
 
+            case ESHKOL_GUARD_OP: {
+                // ESH-0214b (Bug 1): a guard is iter-scope-safe iff it can
+                // never let an exception propagate PAST the loop body. That
+                // holds exactly when the guard has a CATCH-ALL clause (test is
+                // boolean #t or the symbol `else`): then every raise inside the
+                // iteration is caught, the handler yields a value, and control
+                // rejoins the normal flow -> the back edge's / exit's
+                // iter_scope_end is always reached and the shared scope stack
+                // stays balanced (LIFO). WITHOUT a catch-all an unmatched raise
+                // re-raises (longjmp) straight past the back edge, leaving an
+                // un-ended scope that corrupts the stack -- so those stay
+                // unsafe. On top of that, every body expression AND every
+                // clause (test + result exprs) must itself be escape-free.
+                //
+                // Clause layout mirrors codegenGuard: each clause is a CALL_OP
+                // whose `func` is the test (the symbol `else`, or a #t literal
+                // for a catch-all) and whose `variables[]` are the result
+                // exprs.
+                bool has_catch_all = false;
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    const eshkol_ast_t* clause = &op->guard_op.clauses[i];
+                    if (!clause || clause->type != ESHKOL_OP ||
+                        clause->operation.op != ESHKOL_CALL_OP) {
+                        return false;  // malformed clause: cannot analyze
+                    }
+                    const eshkol_ast_t* test = clause->operation.call_op.func;
+                    // Detect catch-all: `else` symbol or a #t boolean literal.
+                    if (test) {
+                        if (test->type == ESHKOL_VAR && test->variable.id &&
+                            strcmp(test->variable.id, "else") == 0) {
+                            has_catch_all = true;
+                        } else if (test->type == ESHKOL_BOOL && test->int64_val != 0) {
+                            has_catch_all = true;
+                        }
+                    }
+                    // The test itself is evaluated every iteration a raise is
+                    // caught -- it must be escape-free too (`else`/#t are
+                    // trivially safe by the VAR/BOOL leaf cases).
+                    if (!iterScopeSafeExpr(test, local_fns, analyzing, depth + 1)) {
+                        return false;
+                    }
+                    for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                        if (!iterScopeSafeExpr(&clause->operation.call_op.variables[j],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                }
+                if (!has_catch_all) return false;
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    if (!iterScopeSafeExpr(&op->guard_op.body[i],
+                                           local_fns, analyzing, depth + 1)) return false;
+                }
+                return true;
+            }
+
             default:
-                // set!/define/guard/raise/call-cc/dynamic-wind/case/match/
+                // set!/define/raise/call-cc/dynamic-wind/case/match/
                 // do/parallel/AD/consciousness/... : conservative no. The
-                // loop keeps its exact pre-feature behavior.
+                // loop keeps its exact pre-feature behavior. (guard is handled
+                // above, but only when it has a catch-all clause.)
                 return false;
         }
     }
@@ -25202,9 +25307,12 @@ private:
         return ok;
     }
 
-    // Gate for codegenNamedLet: is this loop body eligible for automatic
-    // per-iteration scope reclamation?
-    bool namedLetIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name) {
+    // Gate for codegenNamedLet AND the self-tail-recursive define TCO path
+    // (ESH-0214b Bug 1): is this loop body eligible for automatic
+    // per-iteration scope reclamation? `loop_name` is the name whose
+    // self-tail-calls are the loop's back edges (the named-let name, or the
+    // define's own function name).
+    bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name) {
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
         // ESH-0214c: reject outright if this loop's body is reachable (via
@@ -25215,14 +25323,14 @@ private:
         // thread shares without synchronization; concurrent scope ops from
         // multiple threads race and corrupt it (parallel_flags_byte_regression.esk).
         if (parallel_worker_ast_nodes.count((const void*)body)) {
-            eshkol_debug("ESH-0214c: named let '%s' iter-scope disabled "
+            eshkol_debug("ESH-0214c: loop '%s' iter-scope disabled "
                          "(reachable from a parallel/future callback)", loop_name.c_str());
             return false;
         }
         std::set<std::string> local_fns = {loop_name};
         std::set<std::string> analyzing;
         bool ok = iterScopeSafeExpr(body, local_fns, analyzing, 0);
-        eshkol_debug("ESH-0214b: named let '%s' iter-scope %s",
+        eshkol_debug("ESH-0214b: loop '%s' iter-scope %s",
                      loop_name.c_str(), ok ? "ENABLED" : "disabled (analysis)");
         return ok;
     }
@@ -28031,7 +28139,7 @@ private:
         // dynamic extent). See the analysis block above codegenTailCall-
         // FromContext for the safety argument.
         bool iter_scope_safe = all_tail &&
-            namedLetIterScopeSafe(op->let_op.body, loop_name);
+            loopBodyIterScopeSafe(op->let_op.body, loop_name);
 
         // NESTED NAMED LET FIX: Save TCO context to prevent corruption by nested named lets
         // Each named let saves the outer TCO state, does its work, then restores it
