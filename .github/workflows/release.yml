@@ -352,8 +352,31 @@ jobs:
           if (-not (Test-Path $hostCxx)) {
             throw "clang++.exe not found in LLVM SDK at $hostCxx"
           }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe not found; cannot locate a Visual Studio generator"
+          }
+          $cmakeHelp = (cmake --help) -join "`n"
+          $generator = $null
+          foreach ($candidate in @(
+              @{ name = 'Visual Studio 18 2026'; version = '[18.0,19.0)' },
+              @{ name = 'Visual Studio 17 2022'; version = '[17.0,18.0)' }
+            )) {
+            if ($cmakeHelp -notmatch [regex]::Escape($candidate.name)) {
+              continue
+            }
+            $install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -version $candidate.version -property installationPath
+            if ($LASTEXITCODE -eq 0 -and $install) {
+              $generator = $candidate.name
+              Write-Host "Using CMake generator '$generator' from $install"
+              break
+            }
+          }
+          if (-not $generator) {
+            throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
+          }
           cmake -S . -B '${{ matrix.build_dir }}' `
-            -G 'Visual Studio 17 2022' `
+            -G $generator `
             -A $platform `
             -T ClangCL `
             -DBUILD_REPL=ON `
