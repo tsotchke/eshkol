@@ -4,7 +4,8 @@
 Reads the raw run log produced by scripts/run_ad_depth.sh, the cell registry
 (tests/ad_depth/generated/cells.tsv), and produces:
 
-  * AD_DEPTH_REPORT.md            per-cell depth table + MAX-CORRECT-DEPTH
+  * docs/reports/AD_DEPTH_REPORT.md
+    per-cell depth table + MAX-CORRECT-DEPTH
   * scripts/icc_traces/ad_depth.jsonl   ICC events (kind ad_depth)
 
 Verdict per (cell, mode, depth):
@@ -30,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 GEN = os.path.join(ROOT, "tests", "ad_depth", "generated")
 TRACE = os.path.join(ROOT, "scripts", "icc_traces", "ad_depth.jsonl")
-REPORT = os.path.join(ROOT, "AD_DEPTH_REPORT.md")
+REPORT = os.path.join(ROOT, "docs", "reports", "AD_DEPTH_REPORT.md")
 
 # Tracked baseline max-correct-depth per (comp, cap) — the KNOWN capability
 # boundary as measured by this oracle on master. A result >= baseline is
@@ -277,6 +278,7 @@ def write_report(rows, modes, regressions, improvements):
             mcd_s = "—" if mcd is None else f"**{mcd}**"
             L.append(f"| `{cid}` | {mode} | {cells_md} | {mcd_s} |")
 
+    os.makedirs(os.path.dirname(REPORT), exist_ok=True)
     with open(REPORT, "w") as f:
         f.write("\n".join(L) + "\n")
 

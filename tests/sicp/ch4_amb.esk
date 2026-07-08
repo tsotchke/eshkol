@@ -62,7 +62,7 @@
 ;; NOTE: bound kept at 13.  A full backtracking sweep with n>=~16 crashes the
 ;; JIT/AOT runtime with SIGILL — deep CPS continuation chains (thousands of
 ;; nested success/fail closures) exceed a runtime depth limit.  This is a
-;; separate gap from ESH-0078 and is recorded in SICP_COMPLETENESS_REPORT.md
+;; separate gap from ESH-0078 and is recorded in docs/reports/SICP_COMPLETENESS_REPORT.md
 ;; (bucket: deep-CPS-continuation-depth).  n=13 still finds three triples.
 (check "pyth first triple" '(3 4 5) (amb-first (pyth-triples 13)))
 (check "pyth all <=13" '((3 4 5) (5 12 13) (6 8 10))

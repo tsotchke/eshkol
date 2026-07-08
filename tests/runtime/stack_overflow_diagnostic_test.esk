@@ -9,7 +9,7 @@
 ;   (2) stderr contains the fatal-signal / stack-overflow diagnostic.
 ;
 ; Depth 5,000,000 is far past every measured overflow ceiling
-; (see RECURSION_DEPTH_REPORT.md: non_tail safe ~200k) on default stacks, so it
+; (see docs/reports/RECURSION_DEPTH_REPORT.md: non_tail safe ~200k) on default stacks, so it
 ; reliably exhausts the native stack on both the JIT (-r) and AOT lanes.
 (define (down n)
   (if (= n 0) 0 (+ 1 (down (- n 1)))))

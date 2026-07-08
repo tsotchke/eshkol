@@ -48,7 +48,7 @@ scripts/run_ad_depth.sh --quick      # CI smoke subset
 scripts/run_ad_depth.sh --max-depth 12
 ```
 
-Products: `AD_DEPTH_REPORT.md` (per-cell depth tables + max-correct-depth),
+Products: `docs/reports/AD_DEPTH_REPORT.md` (per-cell depth tables + max-correct-depth),
 `scripts/icc_traces/ad_depth.jsonl` (`kind:"ad_depth"` events), gated by
 `.icc/completion-oracles.yaml::ad-depth`. The gate is PASS when no construct
 REGRESSES below its tracked baseline max-depth

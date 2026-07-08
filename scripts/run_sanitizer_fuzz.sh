@@ -18,7 +18,7 @@ ulimit -c 0 2>/dev/null || true
 
 REPO_ROOT="$(pwd)"
 BUILD_DIR="build-asan-ubsan"
-REPORT="SANITIZER_FUZZ_REPORT.md"
+REPORT="docs/reports/SANITIZER_FUZZ_REPORT.md"
 WORK_ROOT="artifacts/sanitizer-fuzz"
 TRACE_FILE="scripts/icc_traces/sanitizer_fuzz.jsonl"
 SEED=42
@@ -52,7 +52,7 @@ Usage: scripts/run_sanitizer_fuzz.sh [options]
 
 Builds or reuses build-asan-ubsan and runs a corpus of tests/**/*.esk inputs
 plus a deterministic generated differential fuzz corpus through -r and AOT,
-writing SANITIZER_FUZZ_REPORT.md with ASan/UBSan reports deduped by top frame.
+writing docs/reports/SANITIZER_FUZZ_REPORT.md with ASan/UBSan reports deduped by top frame.
 
 By default this runs a BOUNDED gate sweep (first 150 corpus files) so it
 finishes fast and keeps the on-disk peak tiny (<300 MB). The ICC trace is
@@ -64,7 +64,7 @@ runs.
 Options:
   --skip-build             Reuse the existing sanitizer build.
   --build-dir DIR          Sanitizer build directory to use (default: build-asan-ubsan).
-  --report PATH            Markdown report path (default: SANITIZER_FUZZ_REPORT.md).
+  --report PATH            Markdown report path (default: docs/reports/SANITIZER_FUZZ_REPORT.md).
   --work-dir DIR           Log/work directory (default: artifacts/sanitizer-fuzz).
   --trace-file PATH        ICC trace path (default: scripts/icc_traces/sanitizer_fuzz.jsonl).
   --seed N                 Seed for generated differential programs (default: 42).

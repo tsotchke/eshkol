@@ -16,7 +16,7 @@
 # budgets vary by host and should not be encoded as portable semantic facts.
 #
 # Emits:
-#   * NUMERIC_DEPTH_REPORT.md               (max-correct-n table + findings)
+#   * docs/reports/NUMERIC_DEPTH_REPORT.md  (max-correct-n table + findings)
 #   * scripts/icc_traces/numeric_depth.jsonl (kind:"numeric_depth" events,
 #     consumed by .icc/completion-oracles.yaml::numeric-depth)
 #
@@ -40,7 +40,7 @@ MANIFEST="$TESTS_DIR/manifest.json"
 BASELINE="$TESTS_DIR/BASELINE.json"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/numeric_depth.jsonl"
-REPORT="$REPO_ROOT/NUMERIC_DEPTH_REPORT.md"
+REPORT="$REPO_ROOT/docs/reports/NUMERIC_DEPTH_REPORT.md"
 OUTDIR="$(mktemp -d)"
 TIMEOUT="${NUMERIC_DEPTH_TIMEOUT:-240}"
 
@@ -63,7 +63,7 @@ if [ ! -f "$MANIFEST" ]; then
     echo "run_numeric_depth.sh: $MANIFEST missing — run python3 scripts/gen_numeric_depth.py" >&2
     exit 2
 fi
-mkdir -p "$TRACE_DIR"
+mkdir -p "$TRACE_DIR" "$(dirname "$REPORT")"
 
 # portable timeout: alarm N cmd...
 alarm() { perl -e 'my $t=shift; my $p=fork; if($p==0){exec @ARGV or exit 127} local $SIG{ALRM}=sub{kill "KILL",$p; exit 124}; alarm $t; waitpid $p,0; exit($?>>8)' "$@"; }

@@ -23,7 +23,8 @@
 #   * ICC JSON-L events  : kind=tensor_collection_depth into
 #                          scripts/icc_traces/tensor_collection_depth.jsonl
 #     (consumed by .icc/completion-oracles.yaml::tensor-collection-depth)
-#   * TENSOR_COLLECTION_DEPTH_REPORT.md (per-family/axis max-correct + findings)
+#   * docs/reports/TENSOR_COLLECTION_DEPTH_REPORT.md
+#     (per-family/axis max-correct + findings)
 #
 # DISK BUDGET: a single reused AOT binary is deleted after every run; per-run
 # logs are kept only for non-PASS cases; the whole artifact dir is capped at
@@ -67,10 +68,10 @@ GEN_DIR="$REPO_ROOT/tests/tensor_collection_depth/generated"
 MANIFEST="$GEN_DIR/manifest.jsonl"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/tensor_collection_depth.jsonl"
-REPORT="$REPO_ROOT/TENSOR_COLLECTION_DEPTH_REPORT.md"
+REPORT="$REPO_ROOT/docs/reports/TENSOR_COLLECTION_DEPTH_REPORT.md"
 ARTIFACT_DIR="$REPO_ROOT/artifacts/tensor-collection-depth"
 LOG_DIR="$ARTIFACT_DIR/logs"
-mkdir -p "$TRACE_DIR" "$ARTIFACT_DIR" "$LOG_DIR"
+mkdir -p "$TRACE_DIR" "$ARTIFACT_DIR" "$LOG_DIR" "$(dirname "$REPORT")"
 : > "$TRACE_FILE"
 
 if [ "$REGEN" -eq 1 ]; then
@@ -291,7 +292,7 @@ SUMMARY_EC=$?
 if [ "$SUMMARY_EC" -eq 0 ]; then
     emit_event "tensor_collection_depth_gate" "PASS" "ALL" 0 "all" "no WRONG and no axis-divergence at any depth"
 else
-    emit_event "tensor_collection_depth_gate" "FAIL" "ALL" 0 "all" "one or more families WRONG or axis-divergent (see TENSOR_COLLECTION_DEPTH_REPORT.md)"
+    emit_event "tensor_collection_depth_gate" "FAIL" "ALL" 0 "all" "one or more families WRONG or axis-divergent (see docs/reports/TENSOR_COLLECTION_DEPTH_REPORT.md)"
 fi
 
 PEAK_MB="$(du -sm "$ARTIFACT_DIR" 2>/dev/null | awk '{print $1}')"
