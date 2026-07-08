@@ -266,6 +266,22 @@ Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 (directional-derivative f p dir)    ; D_v f: directional derivative
 ```
 
+**New in v1.3.0-evolve — the Taylor-tower AD matrix.** Beyond the classic
+operators, Eshkol now differentiates to *arbitrary order*, returns *exact*
+(bignum/rational) derivatives, and provides validated (Taylor-model),
+multivariate, tensor, sparse, and checkpointed-reverse AD:
+
+```scheme
+(derivative-n (lambda (x) (* x x x x x)) 2.0 3)   ; => 240   (d³/dx³ x⁵, any order)
+(derivative-n (lambda (x) (expt x 30)) 7 1)       ; => 96597172674395391805128210  (EXACT bignum)
+(taylor (lambda (x) (exp x)) 0.0 4)               ; => (1 1 0.5 0.166667 0.0416667)  (Taylor series)
+```
+
+See the **[Automatic Differentiation user guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)**
+for the full surface — arbitrary order, exact coefficients, mixed partials,
+tensor towers, Taylor models, sparse Hessians, checkpointed reverse,
+differentiable control flow, and tower numerics — every example runnable.
+
 #### N-Dimensional Tensors (30+ Operations)
 ```scheme
 ;; Tensor creation and manipulation
@@ -744,6 +760,7 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[Language Reference](ESHKOL_V1_LANGUAGE_REFERENCE.md)**: Complete function and syntax reference
 - **[Quickstart](docs/QUICKSTART.md)**: Hands-on introduction with examples
 - **[API Reference](docs/API_REFERENCE.md)**: Comprehensive function documentation
+- **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)**: The full v1.3 AD surface — arbitrary order, exact, validated, tensor, sparse, checkpointed — example-driven
 
 ### For Researchers
 - **[Automatic Differentiation](docs/breakdown/AUTODIFF.md)**: Mathematical foundations and implementation
