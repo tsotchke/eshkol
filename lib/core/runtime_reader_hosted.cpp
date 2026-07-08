@@ -197,37 +197,93 @@ static eshkol_tagged_value_t make_cons_tagged(arena_t* arena,
 }
 
 // Read a list: ( datum ... ) or ( datum ... . datum )
+//
+// Bug 2 (reader stack overflow on long lists): this used to recurse via
+// read_list() for the cdr of every element — one native stack frame per
+// list element. A flat list of ~46k elements overflowed the native stack
+// during `read`, independent of ESHKOL_STACK_SIZE. Rewritten to be
+// iterative: elements are collected into a growable heap buffer (realloc,
+// like read_vector's approach) with a plain loop, then the proper/
+// improper list is consed together right-to-left over the buffer — no
+// native recursion per element. Nested lists still legitimately recurse
+// through read_datum, bounded by g_reader_depth / ESHKOL_READ_MAX_DEPTH;
+// that path is untouched.
 static eshkol_tagged_value_t read_list(arena_t* arena, FILE* fp) {
-    int ch = read_skip_whitespace(fp);
-    if (ch == EOF) return make_eof_tagged();
-    if (ch == ')') return make_null_tagged(); // empty after elements
+    size_t capacity = 64;
+    size_t count = 0;
+    eshkol_tagged_value_t* elems =
+        (eshkol_tagged_value_t*)malloc(capacity * sizeof(eshkol_tagged_value_t));
+    if (!elems) return make_null_tagged(); // OOM: fail safe, mirrors make_cons_tagged's OOM path
 
-    // Read first element
-    eshkol_tagged_value_t car = read_datum(arena, fp, ch);
-    if (car.type == 0xFF) return car; // propagate EOF
+    eshkol_tagged_value_t tail = make_null_tagged();
 
-    // Check for dot notation
-    ch = read_skip_whitespace(fp);
-    if (ch == '.') {
-        // Improper list: (a . b)
-        int next = fgetc(fp);
-        if (next == ' ' || next == '\t' || next == '\n' || next == '\r') {
-            int ch2 = read_skip_whitespace(fp);
-            eshkol_tagged_value_t cdr = read_datum(arena, fp, ch2);
-            // Consume closing paren
-            read_skip_whitespace(fp); // should be ')'
-            return make_cons_tagged(arena, car, cdr);
+    for (;;) {
+        int ch = read_skip_whitespace(fp);
+        if (ch == EOF) {
+            // Matches original semantics: EOF before the closing ')'
+            // becomes the terminating tail rather than a hard error —
+            // e.g. an unterminated "(1 2 3" reads as (1 2 3 . #<eof>).
+            tail = make_eof_tagged();
+            break;
         }
-        // Not a dot pair, it's a symbol starting with .
-        ungetc(next, fp);
-        ungetc('.', fp);
-    } else {
-        ungetc(ch, fp);
+        if (ch == ')') {
+            tail = make_null_tagged(); // proper list end
+            break;
+        }
+
+        eshkol_tagged_value_t car = read_datum(arena, fp, ch);
+        if (car.type == 0xFF) {
+            // Propagate EOF / reader-depth error as the terminating tail
+            // (original code returned it bare from the recursive call,
+            // which became the enclosing cons's cdr — same shape here).
+            tail = car;
+            break;
+        }
+
+        if (count == capacity) {
+            capacity *= 2;
+            eshkol_tagged_value_t* grown = (eshkol_tagged_value_t*)realloc(
+                elems, capacity * sizeof(eshkol_tagged_value_t));
+            if (!grown) {
+                free(elems);
+                return make_null_tagged(); // OOM: fail safe
+            }
+            elems = grown;
+        }
+        elems[count++] = car;
+
+        // Check for dot notation
+        ch = read_skip_whitespace(fp);
+        if (ch == '.') {
+            // Improper list: (a . b)
+            int next = fgetc(fp);
+            if (next == ' ' || next == '\t' || next == '\n' || next == '\r') {
+                int ch2 = read_skip_whitespace(fp);
+                eshkol_tagged_value_t cdr = read_datum(arena, fp, ch2);
+                // Consume closing paren
+                read_skip_whitespace(fp); // should be ')'
+                tail = cdr;
+                break;
+            }
+            // Not a dot pair, it's a symbol starting with .
+            ungetc(next, fp);
+            ungetc('.', fp);
+            // Falls through to the next loop iteration, which re-reads
+            // '.' via read_skip_whitespace as the start of the next
+            // element — same as the original's recursive re-entry.
+        } else {
+            ungetc(ch, fp);
+        }
     }
 
-    // Read rest of list
-    eshkol_tagged_value_t cdr = read_list(arena, fp);
-    return make_cons_tagged(arena, car, cdr);
+    // Cons the collected elements onto the tail, right-to-left, so the
+    // whole list is built with a plain loop instead of native recursion.
+    eshkol_tagged_value_t result = tail;
+    for (size_t i = count; i > 0; i--) {
+        result = make_cons_tagged(arena, elems[i - 1], result);
+    }
+    free(elems);
+    return result;
 }
 
 // Read a vector: #( datum ... )
