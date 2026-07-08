@@ -30,25 +30,47 @@
 // Common Constants
 // ============================================================================
 
-// Null tagged value (type = NULL)
+/**
+ * @brief Construct the canonical NULL_VALUE tagged value inline.
+ *
+ * Produces a zero-initialized eshkol_tagged_value_t with type
+ * ESHKOL_VALUE_NULL. Guarded by an include-order-independent #ifndef so
+ * a definition provided elsewhere (e.g. eshkol.h) is not clobbered.
+ */
 #ifndef ESHKOL_MAKE_NULL_VALUE
 #define ESHKOL_MAKE_NULL_VALUE() \
     ((eshkol_tagged_value_t){ .type = ESHKOL_VALUE_NULL, .flags = 0, .reserved = 0, .data = {.raw_val = 0} })
 #endif
 
-// False tagged value
+/**
+ * @brief Construct the tagged boolean value for `#f` inline.
+ *
+ * Produces an eshkol_tagged_value_t with type ESHKOL_VALUE_BOOL and
+ * data.int_val = 0.
+ */
 #ifndef ESHKOL_MAKE_FALSE_VALUE
 #define ESHKOL_MAKE_FALSE_VALUE() \
     ((eshkol_tagged_value_t){ .type = ESHKOL_VALUE_BOOL, .flags = 0, .reserved = 0, .data = {.int_val = 0} })
 #endif
 
-// True tagged value
+/**
+ * @brief Construct the tagged boolean value for `#t` inline.
+ *
+ * Produces an eshkol_tagged_value_t with type ESHKOL_VALUE_BOOL and
+ * data.int_val = 1.
+ */
 #ifndef ESHKOL_MAKE_TRUE_VALUE
 #define ESHKOL_MAKE_TRUE_VALUE() \
     ((eshkol_tagged_value_t){ .type = ESHKOL_VALUE_BOOL, .flags = 0, .reserved = 0, .data = {.int_val = 1} })
 #endif
 
-// Closure flags (if not defined elsewhere)
+/**
+ * @brief Bit flags describing a closure's calling convention, as stored
+ * in the closure object's flags field.
+ *
+ * Each guarded by #ifndef so a definition supplied by the closure
+ * runtime representation header wins if included first.
+ */
 #ifndef ESHKOL_CLOSURE_FLAG_VARIADIC
 #define ESHKOL_CLOSURE_FLAG_VARIADIC  0x01  // Closure accepts variable arguments
 #endif

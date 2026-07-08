@@ -25,6 +25,13 @@
 #include <eshkol/eshkol.h>
 
 /* Forward declarations */
+/**
+ * @brief Opaque handle to the arena allocator used for workspace and module storage.
+ *
+ * Defined by the arena subsystem; only a forward declaration is needed here
+ * since workspace functions merely pass the pointer through to
+ * arena_allocate_with_header() / arena_allocate_aligned().
+ */
 typedef struct arena arena_t;
 
 /*
@@ -106,11 +113,37 @@ uint32_t eshkol_ws_get_step_count(const eshkol_workspace_t* ws);
 /* ===== Tagged Value Dispatch ===== */
 /* Called from LLVM codegen. Same alloca/store/call/load pattern as bignum. */
 
+/**
+ * @brief Tagged-value entry point for creating a workspace, called from LLVM codegen.
+ *
+ * Unpacks @p dim and @p max_modules from exact int64 tagged values and
+ * forwards to eshkol_make_workspace(). Follows the same
+ * alloca/store/call/load calling convention used for bignum intrinsics.
+ *
+ * @param arena       Arena to allocate the workspace from.
+ * @param dim         Tagged int64 giving the workspace content dimension.
+ * @param max_modules Tagged int64 giving the maximum number of modules.
+ * @param result      Output: HEAP_PTR tagged value wrapping the new
+ *                    workspace, or an ESHKOL_VALUE_NULL tagged value if
+ *                    any argument is invalid or allocation fails.
+ */
 void eshkol_make_workspace_tagged(arena_t* arena,
     const eshkol_tagged_value_t* dim,
     const eshkol_tagged_value_t* max_modules,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for registering a module, called from LLVM codegen.
+ *
+ * Unpacks the workspace pointer from @p ws, extracts the module name from
+ * a string or symbol heap object in @p name (defaulting to "unnamed" if it
+ * cannot be resolved), and forwards to eshkol_ws_register().
+ *
+ * @param arena      Arena used to copy the module name into workspace storage.
+ * @param ws         Tagged HEAP_PTR value wrapping the target workspace.
+ * @param name       Tagged value referencing a string or symbol heap object.
+ * @param process_fn Tagged closure value: (tensor -> (cons double tensor)).
+ */
 void eshkol_ws_register_tagged(arena_t* arena,
     const eshkol_tagged_value_t* ws,
     const eshkol_tagged_value_t* name,
@@ -137,6 +170,15 @@ void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
 
 /* ===== Display ===== */
 
+/**
+ * @brief Print a human-readable summary of a workspace to a file stream.
+ *
+ * Writes "#<workspace: dim=..., N modules, step=...>", or
+ * "#<workspace: empty>" if @p ws is NULL.
+ *
+ * @param ws   Workspace to describe (may be NULL).
+ * @param file Destination FILE*, or NULL to use stdout.
+ */
 void eshkol_display_workspace(const eshkol_workspace_t* ws, void* file);
 
 #ifdef __cplusplus

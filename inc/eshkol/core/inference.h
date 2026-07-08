@@ -139,33 +139,129 @@ double eshkol_expected_free_energy(arena_t* arena,
 /* ===== Tagged Value Dispatch ===== */
 /* Called from LLVM codegen. Same alloca/store/call/load pattern as bignum. */
 
+/**
+ * @brief Tagged-value entry point for factor-graph construction, called from LLVM codegen.
+ *
+ * Unpacks @p num_vars (must be a tagged INT64) and @p var_dims_tensor (a
+ * tensor `#(...)` or Scheme vector giving each variable's number of discrete
+ * states) and forwards to eshkol_make_factor_graph(). On success @p result
+ * is set to a HEAP_PTR tagged value wrapping the new graph; on a type
+ * mismatch, missing argument, or allocation failure @p result is set to the
+ * tagged NULL value.
+ *
+ * @param arena Arena used for all graph and belief allocations.
+ * @param num_vars Tagged INT64: number of random variables.
+ * @param var_dims_tensor Tagged tensor/vector of per-variable state counts.
+ * @param[out] result Destination tagged value (HEAP_PTR on success, NULL on failure).
+ */
 void eshkol_make_factor_graph_tagged(arena_t* arena,
     const eshkol_tagged_value_t* num_vars,
     const eshkol_tagged_value_t* var_dims_tensor,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for adding a factor to a graph, called from LLVM codegen.
+ *
+ * Unpacks @p var_indices (tensor or vector of variable indices) and @p
+ * cpt_tensor (tensor or vector of log-probabilities, with size equal to the
+ * product of the connected variables' dimensions) and builds/attaches a new
+ * factor to @p fg via eshkol_make_factor() and eshkol_fg_add_factor().
+ *
+ * @note @p fg is mutated in place; @p result is unconditionally set to the
+ * tagged NULL value regardless of success (the Scheme builtin discards the
+ * return value and relies on the in-place mutation).
+ *
+ * @param arena Arena used for factor and CPT allocations.
+ * @param fg Tagged HEAP_PTR wrapping the target eshkol_factor_graph_t.
+ * @param var_indices Tagged tensor/vector of variable indices the factor connects.
+ * @param cpt_tensor Tagged tensor/vector of log-probabilities for the CPT.
+ * @param[out] result Always set to the tagged NULL value.
+ */
 void eshkol_fg_add_factor_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg,
     const eshkol_tagged_value_t* var_indices,
     const eshkol_tagged_value_t* cpt_tensor,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for belief propagation, called from LLVM codegen.
+ *
+ * Runs eshkol_fg_infer() on @p fg with the given @p max_iters (defaults to
+ * 20 if not a tagged INT64) and a fixed convergence tolerance of 1e-6. On
+ * success, @p result is set to a HEAP_PTR wrapping a freshly allocated
+ * one-dimensional tensor containing every variable's belief vector,
+ * concatenated in variable order and converted from log-space back to
+ * probabilities. Set to the tagged NULL value if @p fg is not a valid
+ * factor-graph HEAP_PTR or allocation fails.
+ *
+ * @param arena Arena used for the result tensor and any BP scratch state.
+ * @param fg Tagged HEAP_PTR wrapping the eshkol_factor_graph_t to run inference on.
+ * @param max_iters Tagged INT64 iteration cap, or NULL/non-INT64 to use the default (20).
+ * @param[out] result Destination tagged value (HEAP_PTR tensor of beliefs on success, NULL on failure).
+ */
 void eshkol_fg_infer_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg,
     const eshkol_tagged_value_t* max_iters,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_free_energy(), called from LLVM codegen.
+ *
+ * Extracts observation pairs (var_index, observed_state) from @p
+ * observations_tensor (if given, otherwise treated as no observations) and
+ * computes the variational free energy of @p fg_tv's current beliefs.
+ * @p result is always set to a tagged (inexact) DOUBLE: 0.0 if @p fg_tv is
+ * not a valid factor-graph HEAP_PTR, otherwise the computed free energy.
+ *
+ * @param fg_tv Tagged HEAP_PTR wrapping the eshkol_factor_graph_t to evaluate.
+ * @param observations_tensor Optional tagged tensor of (var_index, state) pairs, or NULL.
+ * @param[out] result Destination tagged DOUBLE holding the free-energy value.
+ */
 void eshkol_free_energy_tagged(
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* observations_tensor,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_expected_free_energy(), called from LLVM codegen.
+ *
+ * Extracts @p action_var and @p action_state (tagged INT64, defaulting to 0
+ * if absent or of the wrong type) and evaluates the expected free energy of
+ * that action under @p fg. @p result is always set to a tagged (inexact)
+ * DOUBLE: 0.0 if @p fg is not a valid factor-graph HEAP_PTR, otherwise the
+ * computed G(a) value.
+ *
+ * @param arena Arena used for scratch allocations during evaluation.
+ * @param fg Tagged HEAP_PTR wrapping the eshkol_factor_graph_t to evaluate.
+ * @param action_var Tagged INT64 index of the action variable.
+ * @param action_state Tagged INT64 discrete action value to evaluate.
+ * @param[out] result Destination tagged DOUBLE holding the expected-free-energy value.
+ */
 void eshkol_efe_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg,
     const eshkol_tagged_value_t* action_var,
     const eshkol_tagged_value_t* action_state,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for `fg-update-cpt!`, called from LLVM codegen.
+ *
+ * Replaces the CPT of factor @p factor_idx within @p fg with the values from
+ * @p new_cpt (a tensor `#(...)` or Scheme vector, whose element count must
+ * equal the factor's existing CPT size). On success, resets the graph's
+ * cached factor-to-variable and variable-to-factor messages to NULL so the
+ * next eshkol_fg_infer_tagged() call reconverges from scratch, and sets
+ * @p result to a HEAP_PTR pointing back at the (mutated in place) @p fg.
+ * Sets @p result to the tagged NULL value on any argument-shape mismatch,
+ * out-of-range @p factor_idx, or size mismatch (an error is also logged via
+ * eshkol_error() in the mismatch cases).
+ *
+ * @param arena Arena used for any error/side allocations.
+ * @param fg Tagged HEAP_PTR wrapping the eshkol_factor_graph_t to update.
+ * @param factor_idx Tagged INT64 or DOUBLE index of the factor to update.
+ * @param new_cpt Tagged tensor/vector of replacement log-probabilities.
+ * @param[out] result Destination tagged value (HEAP_PTR to @p fg on success, NULL on failure).
+ */
 void eshkol_fg_update_cpt_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg,
     const eshkol_tagged_value_t* factor_idx,
@@ -174,6 +270,16 @@ void eshkol_fg_update_cpt_tagged(arena_t* arena,
 
 /* ===== Display ===== */
 
+/**
+ * @brief Print a short human-readable summary of a factor graph.
+ *
+ * Writes `#<factor-graph: empty>` if @p fg is NULL, otherwise
+ * `#<factor-graph: N factors, M vars>`. Used by the Scheme `display`/`write`
+ * machinery for HEAP_SUBTYPE_FACTOR_GRAPH values.
+ *
+ * @param fg Factor graph to describe, or NULL.
+ * @param file Destination `FILE*`, or NULL to write to stdout.
+ */
 void eshkol_display_factor_graph(const eshkol_factor_graph_t* fg, void* file);
 
 #ifdef __cplusplus
