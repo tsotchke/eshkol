@@ -24,6 +24,13 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+
+# macOS runner images do not consistently provide C.UTF-8. The Perl alarm
+# wrapper below must not fail before Eshkol is even invoked.
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
+
 GEN_DIR="$REPO_ROOT/tests/ad_depth/generated"
 RAW_LOG="$(mktemp "${TMPDIR:-/tmp}/ad_depth_raw.XXXXXX")"
 trap 'rm -f "$RAW_LOG"' EXIT
@@ -94,7 +101,7 @@ echo "== depth-parametric AD oracle (JIT$([ "$DO_AOT" -eq 1 ] && echo '+AOT')) =
 for f in $files; do
     base="$(basename "$f")"
     # ---- JIT (-r) ----
-    out="$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" "$f" -r 2>&1)"; rc=$?
+    out="$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$f" 2>&1)"; rc=$?
     cr=0; is_crash "$rc" "$out" && cr=1
     record "jit" "$base" "$rc" "$cr" "$out"
     jsum="$(printf '%s' "$out" | grep -c '^RESULT ')"

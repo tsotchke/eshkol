@@ -40,6 +40,12 @@
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+
+# Keep the Perl timeout wrapper independent of host locale availability.
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
+
 GEN_DIR="$REPO_ROOT/tests/nesting_depth/generated"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/nesting_depth.jsonl"

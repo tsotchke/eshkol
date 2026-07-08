@@ -199,6 +199,12 @@ def main():
                     esc(f"{len(rows)} cells swept d1..8 x {len(modes)} lanes; "
                         f"{len(regressions)} regressions, "
                         f"{len(improvements)} improvements vs baseline")))
+        tf.write('{"kind":"ad_depth","name":"ad_taylor_p1_runtime_tower",'
+                 '"value":"%s","snippet":"%s","confidence":0.95}\n'
+                 % (gate,
+                    esc(f"runtime Taylor tower derivative^d/ad-depth gate swept "
+                        f"{len(rows)} cells to d=8 across {len(modes)} lanes; "
+                        f"{len(regressions)} regressions, closes ESH-0118 when PASS")))
 
     # ---- markdown report --------------------------------------------------
     write_report(rows, modes, regressions, improvements)
