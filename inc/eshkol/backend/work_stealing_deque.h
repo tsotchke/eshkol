@@ -295,20 +295,6 @@ public:
         return nullptr;  // Empty
     }
 
-    // Bulk steal - try to steal multiple items at once
-    // Returns number of items stolen
-    size_t stealBatch(void** items, size_t max_items) {
-        size_t stolen = 0;
-
-        while (stolen < max_items) {
-            void* item = steal();
-            if (!item) break;
-            items[stolen++] = item;
-        }
-
-        return stolen;
-    }
-
     // Check if approximately empty (for heuristics, not authoritative)
     bool empty() const {
         int64_t b = bottom_.load(std::memory_order_relaxed);
@@ -465,26 +451,6 @@ public:
         }
 
         return task;
-    }
-
-    // Submit batch of tasks
-    void submitBatch(Task** tasks, size_t count) {
-        if (count == 0) return;
-
-        size_t worker_id = getCurrentWorkerId();
-        size_t target = (worker_id < num_workers_) ? worker_id :
-            std::hash<std::thread::id>{}(std::this_thread::get_id()) % num_workers_;
-
-        for (size_t i = 0; i < count; ++i) {
-            deques_[target]->push(tasks[i]);
-        }
-        stats_.local_pushes.fetch_add(count, std::memory_order_relaxed);
-
-        // Wake up workers
-        {
-            std::lock_guard<std::mutex> lock(global_mutex_);
-            global_cv_.notify_all();
-        }
     }
 
     // Wait for task completion

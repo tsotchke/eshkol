@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0228",
+  "title": "sleep-ms does not type-check its argument — non-numeric input reinterprets tagged-value bits as an integer",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "runtime/robustness",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "eshkol_builtin_sleep_ms_v (lib/core/system_builtins.c) takes its argument's raw `.data` field and casts it directly to int64_t with no check that the passed value is actually a number: `int64_t ms = (int64_t)ms_val.data;`. If a caller passes a non-numeric tagged value (string, boolean, pair, etc.), the function reinterprets whatever bit pattern happens to be in `.data` (a pointer, in the heap-tagged cases) as a millisecond count instead of raising a type error. Best case this sleeps for a nonsensical duration; worst case a huge reinterpreted value causes an effectively-hung process. The bytecode VM's case 1711 (lib/backend/vm_native.c) has the same shape: `int64_t ms = (int64_t)as_number(ms_val);` — check whether `as_number` itself already validates the tag (if so the VM path may already be safe; the AOT/JIT path via system_builtins.c is the confirmed gap). Flagged during the v1.3 campaign (Selene slow-tick lead).",
+  "file_globs": [
+    "lib/core/system_builtins.c",
+    "lib/backend/vm_native.c",
+    "lib/backend/system_codegen.cpp",
+    "tests/system/sleep_ms_test.esk"
+  ],
+  "next_actions": [
+    "Add a tag check to eshkol_builtin_sleep_ms_v (or its caller in system_codegen.cpp's ONE_ARG_BUILTIN wiring) that raises a proper Eshkol type error for non-numeric input instead of reinterpreting .data.",
+    "Verify lib/backend/vm_native.c case 1711's `as_number(ms_val)` call actually validates the value's tag before treating it as numeric; if it silently coerces non-numbers too, fix there as well.",
+    "Add tests/system/sleep_ms_test.esk covering: negative ms (already handled — no-op), zero (no-op), a valid positive integer, and a type-error case for e.g. (sleep-ms \"100\") and (sleep-ms #t)."
+  ],
+  "acceptance": [
+    "(sleep-ms \"not-a-number\") raises a clear Eshkol type error instead of sleeping for a garbage duration or hanging.",
+    "(sleep-ms 100) and (sleep-ms 0) and (sleep-ms -5) keep their current, correct behavior (sleep 100ms / no-op / no-op).",
+    "Same behavior on both the AOT/JIT path and the bytecode VM."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/system/sleep_ms_test.esk"
+  ],
+  "ux_payoff": "Closes a silent-corruption footgun in a commonly-used timing primitive for resident/daemon-style Eshkol programs."
+}

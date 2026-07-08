@@ -54,6 +54,7 @@ NORMALIZE="python3 $REPO_ROOT/scripts/lib/normalize_scheme_output.py"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/reference_diff.jsonl"
 mkdir -p "$TRACE_DIR"
+: "${TRACE_FILE:?TRACE_FILE must be set}"
 : > "$TRACE_FILE"
 
 ART_DIR="$REPO_ROOT/artifacts/reference-diff"
@@ -69,6 +70,9 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-60}"
 AOT_BIN="$WORK_DIR/prog.bin"
 ESK_SRC="$WORK_DIR/prog.esk"
 SCM_SRC="$WORK_DIR/prog.scm"
+: "${AOT_BIN:?AOT_BIN must be set}"
+: "${ESK_SRC:?ESK_SRC must be set}"
+: "${SCM_SRC:?SCM_SRC must be set}"
 
 # ---- cleanup trap ---------------------------------------------------------
 cleanup() { rm -f "$AOT_BIN" "$ESK_SRC" "$SCM_SRC"; rm -rf "$WORK_DIR"; }

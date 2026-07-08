@@ -98,6 +98,7 @@ run_smoke() {
     local label="$1"
     shift
     LAST_OUT="$WORK/${label}.out"
+    : "${LAST_OUT:?LAST_OUT must be set}"
     # The smoke script's timeout shim uses perl; force a portable locale so
     # macOS hosts without C.UTF-8 do not fail before the fake runner executes.
     if [ -n "${RUN_BUILD_DIR:-}" ]; then

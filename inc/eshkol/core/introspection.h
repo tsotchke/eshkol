@@ -344,45 +344,4 @@ eshkol_tagged_value_t eshkol_source_location(eshkol_tagged_value_t proc, void* a
 }
 #endif
 
-// ============================================================================
-// C++ Helpers
-// ============================================================================
-
-#ifdef __cplusplus
-
-namespace eshkol {
-
-/**
- * @brief RAII wrapper for gensym with automatic prefix.
- */
-class GensymGenerator {
-public:
-    explicit GensymGenerator(const char* prefix = "G")
-        : prefix_(prefix ? prefix : "G") {}
-
-    eshkol_tagged_value_t generate(void* arena) {
-        return eshkol_gensym_prefix(prefix_, arena);
-    }
-
-private:
-    const char* prefix_;
-};
-
-/**
- * @brief Helper to extract closure captures as a vector.
- */
-inline std::vector<eshkol_tagged_value_t> getCapturesVector(eshkol_tagged_value_t closure) {
-    std::vector<eshkol_tagged_value_t> result;
-    size_t count = eshkol_closure_capture_count(closure);
-    result.reserve(count);
-    for (size_t i = 0; i < count; ++i) {
-        result.push_back(eshkol_closure_capture_ref(closure, i));
-    }
-    return result;
-}
-
-} // namespace eshkol
-
-#endif // __cplusplus
-
 #endif // ESHKOL_CORE_INTROSPECTION_H

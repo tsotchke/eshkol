@@ -1,0 +1,33 @@
+{
+  "id": "ESH-0229",
+  "title": "record-fields runtime reflection — needs a record-type -> field-name registry",
+  "status": "open",
+  "priority": "low",
+  "workstream": "language/reflection",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 3.0,
+  "goal": "lib/core/reflection.esk documents `record-fields` as DEFERRED: R7RS records expand at parse time into a vector with a type-tag in slot 0 plus accessor/mutator definitions, but the field *names* exist only in the parser/codegen at expansion time and are never embedded in the runtime value. `(record-fields some-record)` therefore cannot recover field names today without a separate runtime registry. The file already contains a full implementation plan (see the comment block at the bottom of lib/core/reflection.esk): generate a global association list at expansion time of `((record-type-tag . (field1 field2 ...)) ...)`, then have `(record-fields obj)` extract slot 0 and look it up. Estimated effort noted inline as ~1 day in lib/frontend/parser.cpp plus a small runtime helper.",
+  "file_globs": [
+    "lib/core/reflection.esk",
+    "lib/frontend/parser.cpp",
+    "tests/features/record_fields_test.esk"
+  ],
+  "next_actions": [
+    "Implement the expansion-time record-type -> field-name registry in lib/frontend/parser.cpp per the plan already documented in lib/core/reflection.esk.",
+    "Wire (record-fields obj) to look up the type tag in that registry.",
+    "Add tests/features/record_fields_test.esk covering a simple record, a record with zero extra fields, and (record-fields on-a-non-record) error behavior."
+  ],
+  "acceptance": [
+    "(record-fields some-record) returns the field names in declaration order for any define-record-type-defined record.",
+    "Calling record-fields on a non-record value raises a clear type error, not a crash.",
+    "No change to existing record codegen size/perf for programs that never call record-fields."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/features/record_fields_test.esk"
+  ],
+  "ux_payoff": "Completes the reflection triad (procedure-arity / describe / record-fields) that lib/core/reflection.esk was built around; low urgency since describe already covers most debugging use cases."
+}

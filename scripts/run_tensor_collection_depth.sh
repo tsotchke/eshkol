@@ -72,6 +72,7 @@ REPORT="$REPO_ROOT/docs/reports/TENSOR_COLLECTION_DEPTH_REPORT.md"
 ARTIFACT_DIR="$REPO_ROOT/artifacts/tensor-collection-depth"
 LOG_DIR="$ARTIFACT_DIR/logs"
 mkdir -p "$TRACE_DIR" "$ARTIFACT_DIR" "$LOG_DIR" "$(dirname "$REPORT")"
+: "${TRACE_FILE:?TRACE_FILE must be set}"
 : > "$TRACE_FILE"
 
 if [ "$REGEN" -eq 1 ]; then
@@ -84,6 +85,8 @@ fi
 # ---- disk budget: single reused work binary + on-exit purge --------------
 WORK_BIN="$ARTIFACT_DIR/aot_work_bin"
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/tcd_results.XXXXXX")"
+: "${WORK_BIN:?WORK_BIN must be set}"
+: "${RESULTS:?RESULTS must be set}"
 cleanup() { rm -f "$WORK_BIN" "$RESULTS"; }
 trap cleanup EXIT
 

@@ -1,0 +1,37 @@
+{
+  "id": "ESH-0230",
+  "title": "tensor_embedding_backward is a row-0-only stub — gradients past row 0 are dropped",
+  "status": "open",
+  "priority": "high",
+  "workstream": "autodiff/tensor-backward",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "Embedding lookup forward is y[i,:] = W[idx[i],:]; the correct backward scatters dL/dy rows into dL/dW at idx[i]. tensor_embedding_backward (lib/bridge/tensor_backward.cpp) doesn't have the lookup-index tensor wired through the ad_node_t structure yet, so it falls back to accumulating every row's gradient into row 0 of the weight tensor. Training any model with embeddings indexed at rows other than 0 will not converge correctly. A one-shot stderr warning already fires on first invocation (so this cannot regress silently), and docs/breakdown/AUTODIFF.md documents the limitation. Previously the code/docs claimed this would ship 'in v1.3' without a tracked ticket backing that claim; both have now been corrected to reference this ticket instead of a version promise.",
+  "file_globs": [
+    "lib/bridge/tensor_backward.cpp",
+    "lib/backend/tensor_extras_codegen.cpp",
+    "inc/eshkol/backend/ad_node.h",
+    "docs/breakdown/AUTODIFF.md",
+    "tests/autodiff/embedding_backward_test.esk"
+  ],
+  "next_actions": [
+    "Thread the lookup-index tensor through node->input2 (or an equivalent new field) at the point the embedding forward op is recorded onto the AD tape, per the comment already left in tensor_embedding_backward.",
+    "Implement the real indexed scatter: dW[idx[i]] += dy[i] for each row i, replacing the row-0 accumulation fallback.",
+    "Add tests/autodiff/embedding_backward_test.esk with a multi-row lookup (indices hitting rows 0, 3, 7 of a small embedding table) and assert each row's gradient lands correctly, not just row 0.",
+    "Remove the one-shot stderr warning once the real scatter ships; update docs/breakdown/AUTODIFF.md's Embedding backward section to describe the completed implementation."
+  ],
+  "acceptance": [
+    "Training a model with embedding lookups against non-zero rows converges (gradient reaches the correct rows, not just row 0).",
+    "tests/autodiff/embedding_backward_test.esk passes with per-row gradient assertions.",
+    "The stderr stub warning is removed once fixed (its continued presence is itself evidence this ticket is still open)."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/autodiff/embedding_backward_test.esk",
+    "scripts/run_ad_oracle.sh"
+  ],
+  "ux_payoff": "Unblocks correct training of any embedding-based model (the standard first layer of virtually every NLP/recommendation architecture) — currently a silent correctness trap for anyone using embeddings beyond row 0."
+}

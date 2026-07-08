@@ -566,13 +566,14 @@ for multi-head with backprop through (W_Q, W_K, W_V, W_O) — ships in
 v1.3-evolve as part of the attention-codegen rewrite. Training attention
 layers under v1.2 will not converge correctly.
 
-**Embedding backward** in v1.2-scale is also a stub
+**Embedding backward** is still a stub as of v1.3.0-evolve
 (`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`).
 It scatters the upstream gradient into row 0 of the weight tensor only,
 because the lookup-index tensor is not yet threaded through the AD-node
 shape. A one-shot stderr warning fires on first invocation. The full
 indexed scatter — `dW[idx[i]] += dy[i]` over the lookup-index vector —
-ships in v1.3-evolve.
+is tracked as `ESH-0230` (`.swarm/tasks/ESH-0230.json`); no target
+release is committed until the index-tensor threading lands.
 
 **Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
 

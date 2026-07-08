@@ -130,66 +130,6 @@ static void refresh_repl_define_storage(void* jit, const eshkol_ast_t* ast) {
     eshkol_repl_mark_user_variable(name);
 }
 
-// Serialize a tagged value (S-expression) to a string buffer
-// Returns a malloc'd string that the caller must free
-char* serialize_sexp_to_string(eshkol_tagged_value_t value) {
-#ifdef _WIN32
-    FILE* memstream = tmpfile();
-    if (!memstream) {
-        eshkol_error("serialize_sexp_to_string: Failed to create temp stream");
-        return nullptr;
-    }
-#else
-    char* buffer = nullptr;
-    size_t size = 0;
-
-    // Use open_memstream to create a FILE* that writes to a buffer
-    FILE* memstream = open_memstream(&buffer, &size);
-    if (!memstream) {
-        eshkol_error("serialize_sexp_to_string: Failed to create memstream");
-        return nullptr;
-    }
-#endif
-
-    // Set up display options to write to the memstream
-    eshkol_display_opts_t opts = eshkol_display_default_opts();
-    opts.output = memstream;
-    opts.quote_strings = 1;  // Use 'write' semantics for proper serialization
-
-    // Display the value to the memstream
-    eshkol_display_value_opts(&value, &opts);
-
-#ifdef _WIN32
-    fflush(memstream);
-    if (fseek(memstream, 0, SEEK_END) != 0) {
-        fclose(memstream);
-        return nullptr;
-    }
-    long end_pos = ftell(memstream);
-    if (end_pos < 0) {
-        fclose(memstream);
-        return nullptr;
-    }
-    rewind(memstream);
-
-    char* buffer = static_cast<char*>(arena_allocate(get_global_arena(), static_cast<size_t>(end_pos) + 1));
-    if (!buffer) {
-        fclose(memstream);
-        return nullptr;
-    }
-
-    size_t read_len = end_pos > 0 ? fread(buffer, 1, static_cast<size_t>(end_pos), memstream) : 0;
-    buffer[read_len] = '\0';
-    fclose(memstream);
-    return buffer;
-#else
-    // Close the stream to finalize the buffer
-    fclose(memstream);
-
-    return buffer;
-#endif
-}
-
 // ============================================================================
 // Helper Functions
 // ============================================================================

@@ -3172,55 +3172,6 @@ static int add_flagged_linear(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
-/* Backward-gated neuron for cursor-indexed tape access.
- * Gate: sigmoid(SCALE*(IS_BACKWARD - 0.5)) → 1 when backward active
- * Up:   indicator(index_dim == slot) * value_dim → tape random-access
- * Product: AND of backward active and index match.
- * The gate×up product naturally implements multi-condition AND. */
-static int add_bw_cursor_neuron(InterpreterWeights* w, int L, int n,
-                                 int index_dim, int slot,
-                                 int value_dim, int out_dim, float coeff) {
-    for (int sign = 0; sign < 2; sign++) {
-        int j = n + sign;
-        float s = (sign == 0) ? 0.5f : -0.5f;
-        /* Gate: IS_BACKWARD */
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) = SCALE;
-        w->ff_gate_b[L][j] = SCALE * (-0.5f);
-        /* Up: indicator(index_dim == slot) * value_dim */
-        W(w->ff_up[L], index_dim, j, FFN_DIM) = SCALE;
-        W(w->ff_up[L], value_dim, j, FFN_DIM) = 1.0f;
-        w->ff_up_b[L][j] = SCALE * (-(float)slot + s);
-        /* Down: output */
-        float c = (sign == 0) ? coeff : -coeff;
-        W(w->ff_down[L], j, out_dim, D) = c;
-    }
-    return n + 2;
-}
-
-/* Backward-gated neuron for op-type-indexed gradient rule.
- * Gate: sigmoid(SCALE*(IS_BACKWARD - 0.5)) → 1 when backward
- * Up:   indicator(AD_CUR_OP == op_val) * value_dim */
-static int add_bw_op_neuron(InterpreterWeights* w, int L, int n,
-                             float op_val,
-                             int value_dim, float value_scale, float bias,
-                             int out_dim, float coeff) {
-    for (int sign = 0; sign < 2; sign++) {
-        int j = n + sign;
-        float s = (sign == 0) ? 0.5f : -0.5f;
-        /* Gate: IS_BACKWARD */
-        W(w->ff_gate[L], S_AD_IS_BACKWARD, j, FFN_DIM) = SCALE;
-        w->ff_gate_b[L][j] = SCALE * (-0.5f);
-        /* Up: indicator(CUR_OP == op_val) * value_dim */
-        W(w->ff_up[L], S_AD_CUR_OP, j, FFN_DIM) = SCALE;
-        if (value_dim >= 0) W(w->ff_up[L], value_dim, j, FFN_DIM) = value_scale;
-        w->ff_up_b[L][j] = SCALE * (-op_val + s) + bias;
-        /* Down */
-        float c = (sign == 0) ? coeff : -coeff;
-        W(w->ff_down[L], j, out_dim, D) = c;
-    }
-    return n + 2;
-}
-
 /* Unconditional (always-on) neuron */
 static int add_unconditional(InterpreterWeights* w, int L, int n,
                               int ud1, float us1, float ubias,
@@ -5542,27 +5493,6 @@ static void test(const char* name, const Instr* prog, int n, float expected) {
     /* Clear program name so any non-test() runs (Dynamic multiplication,
      * inline frame assertions, etc.) below don't pollute the trace by
      * re-emitting under this program's name + id. */
-    g_trace_program_name = NULL;
-}
-
-/* Reference + simulated test — 2-way comparison (Phase 2: no matrix weights yet) */
-static void test_ref(const char* name, const Instr* prog, int n, float expected) {
-    float r[64], s[64];
-    g_trace_program_name = name;
-    g_trace_program_seq++;
-    g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
-    if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
-    int rn = run_reference(prog, n, r, 64);
-    g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
-    if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
-    int sn = run_simulated(prog, n, s, 64);
-    float rv = rn>0?r[0]:-9999, sv = sn>0?s[0]:-9999;
-    int ok_r = fabsf(rv-expected)<0.01f;
-    int ok_s = fabsf(sv-expected)<0.01f;
-    printf("  %-40s ref=%7.2f sim=%7.2f  %s%s\n",
-           name, rv, sv,
-           ok_r?"":"ref:FAIL ", ok_s?"":"sim:FAIL ");
-    if (ok_r && ok_s) n_pass++; else n_fail++;
     g_trace_program_name = NULL;
 }
 

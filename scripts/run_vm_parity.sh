@@ -51,6 +51,7 @@ REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/vm_parity.jsonl"
 mkdir -p "$TRACE_DIR"
+: "${TRACE_FILE:?TRACE_FILE must be set}"
 : > "$TRACE_FILE"
 
 BUILD_DIR="${BUILD_DIR:-build}"
@@ -126,6 +127,7 @@ if [ ! -x "$ESHKOL_RUN" ] || [ ! -x "$VM_BIN" ]; then
 fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-vm-parity.XXXXXX")"
+: "${WORK:?WORK must be set}"
 trap 'rm -rf "$WORK"' EXIT
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
 mkdir -p "$ESHKOL_JIT_CACHE_DIR"
