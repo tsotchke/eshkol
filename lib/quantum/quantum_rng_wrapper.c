@@ -21,7 +21,7 @@ int eshkol_qrng_init(void) {
     return 0;
 }
 
-// Ensure initialization before any operation
+/** @brief Lazily initializes the global quantum RNG context on first use. */
 static inline void ensure_init(void) {
     if (!g_qrng_initialized) {
         eshkol_qrng_init();
