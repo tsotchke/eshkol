@@ -28,6 +28,15 @@ set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 
+# Keep the Perl timeout wrapper independent of host locale availability.
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
+
+: "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-metaprog-depth-jit-cache}"
+export ESHKOL_JIT_CACHE_DIR
+mkdir -p "$ESHKOL_JIT_CACHE_DIR"
+
 BUILD_DIR="${BUILD_DIR:-build}"
 case "$BUILD_DIR" in /*) : ;; *) BUILD_DIR="$REPO_ROOT/$BUILD_DIR" ;; esac
 ESHKOL_RUN="$BUILD_DIR/eshkol-run"

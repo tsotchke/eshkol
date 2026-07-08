@@ -7,6 +7,11 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# Keep Perl helper invocations independent of host locale availability.
+export LC_ALL=C
+export LANG=C
+export LC_CTYPE=C
+
 # Never let an aborting sanitizer process dump a (multi-GB, huge-shadow-memory)
 # core. This is a hard peak-disk guard independent of ASAN_OPTIONS.
 ulimit -c 0 2>/dev/null || true

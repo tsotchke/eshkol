@@ -5,24 +5,24 @@ MCD = max-correct-depth (largest d with 1..d all PASS). WRONG = ran but wrong va
 
 | family | mode | MCD | first-WRONG | first-LIMIT | max-d tested |
 |---|---|---|---|---|---|
-| deflib_chain | r | 16 | - | - | 16 |
-| deflib_chain | aot | 16 | - | - | 16 |
-| ellipsis_flat | r | 48 | - | - | 48 |
-| ellipsis_flat | aot | 48 | - | - | 48 |
-| match_nest | r | 48 | - | - | 48 |
-| match_nest | aot | 48 | - | - | 48 |
-| module_chain | r | 16 | - | - | 16 |
-| module_chain | aot | 16 | - | - | 16 |
-| nested_ellip | r | 48 | - | - | 48 |
-| nested_ellip | aot | 48 | - | - | 48 |
-| nested_macro | r | 48 | - | - | 48 |
-| nested_macro | aot | 48 | - | - | 48 |
-| qq_macro | r | 48 | - | - | 48 |
-| qq_macro | aot | 48 | - | - | 48 |
-| recmac_and | r | 48 | - | - | 48 |
-| recmac_and | aot | 48 | - | - | 48 |
-| recmac_list | r | 48 | - | - | 48 |
-| recmac_list | aot | 48 | - | - | 48 |
+| deflib_chain | r | 12 | - | - | 12 |
+| deflib_chain | aot | 12 | - | - | 12 |
+| ellipsis_flat | r | 32 | - | - | 32 |
+| ellipsis_flat | aot | 32 | - | - | 32 |
+| match_nest | r | 32 | - | - | 32 |
+| match_nest | aot | 32 | - | - | 32 |
+| module_chain | r | 12 | - | - | 12 |
+| module_chain | aot | 12 | - | - | 12 |
+| nested_ellip | r | 32 | - | - | 32 |
+| nested_ellip | aot | 32 | - | - | 32 |
+| nested_macro | r | 32 | - | - | 32 |
+| nested_macro | aot | 32 | - | - | 32 |
+| qq_macro | r | 32 | - | - | 32 |
+| qq_macro | aot | 32 | - | - | 32 |
+| recmac_and | r | 32 | - | - | 32 |
+| recmac_and | aot | 32 | - | - | 32 |
+| recmac_list | r | 32 | - | - | 32 |
+| recmac_list | aot | 32 | - | - | 32 |
 
 ## Findings (WRONG at some depth = silent-wrong bug)
 - none: every family is either all-PASS or degrades via a clean LIMIT.
