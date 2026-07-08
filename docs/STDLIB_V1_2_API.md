@@ -1765,7 +1765,7 @@ name:
 ### Where to look next
 
 - The v1.2 hardening trail (audit blockers each of these modules closed)
-  lives in [`HARDENING.md`](../HARDENING.md) and in the v1.2.x sections
+  lives in [`HARDENING.md`](HARDENING.md) and in the v1.2.x sections
   of [`RELEASE_NOTES.md`](../RELEASE_NOTES.md).
 - The standalone VM's surface for some of the same primitives differs
   in shape — `regex-match-groups` returns a list in the LLVM/JIT surface

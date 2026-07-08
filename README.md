@@ -74,6 +74,28 @@ The website itself is written in Eshkol (1,500+ lines) compiled to a 502KB WASM 
 
 ---
 
+## Automatic Differentiation
+
+Eshkol's AD is a compiler primitive: exact forward-mode, reverse-mode, and
+symbolic differentiation out of the box, plus — new in v1.3.0-evolve — an
+**arbitrary-order Taylor-tower engine**. `(derivative-n f x k)` and
+`(taylor f x k)` give you the `k`-th derivative or the full coefficient
+series for any `k`, exactly (arbitrary-precision bignum/rational, not
+floating-point) when the math supports it, with validated interval-remainder
+bounds (`taylor-model`) and sparse multivariate recovery
+(`sparse-hessian`, `mixed-partial`, `gradient-n`) on top:
+
+```scheme
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ;; => 27  (f'(x) = 3x^2 at x=3)
+(taylor (lambda (x) (exp x)) 0.5 4)          ;; => the first 5 Taylor coefficients of exp at x=0.5
+```
+
+See the [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
+for the full walkthrough, or [CHANGELOG.md](CHANGELOG.md) for the phase-by-phase
+(P0-P12) engineering detail.
+
+---
+
 ## Quick Start
 
 ### Installation
@@ -264,6 +286,18 @@ Eshkol implements **R7RS-compatible Scheme** with modern extensions:
 (curl F point)                      ; ∇×F: ℝ³ → ℝ³
 (laplacian f point)                 ; ∇²f: ℝⁿ → ℝ
 (directional-derivative f p dir)    ; D_v f: directional derivative
+```
+
+Plus, new in v1.3.0-evolve, arbitrary-order Taylor-tower AD — see the
+[Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md):
+
+```scheme
+(taylor f x k)                      ; K+1 Taylor coefficients of f at x
+(derivative-n f x k)                ; k-th derivative, any order, exact when possible
+(mixed-partial f xs idxs)           ; arbitrary-order mixed partial derivative
+(gradient-n f xs order)             ; full order->=3 symmetric derivative tensor
+(taylor-model f x0 r k)             ; validated AD: polynomial + interval remainder
+(sparse-hessian f xs)               ; sparse Hessian via colored recovery
 ```
 
 #### N-Dimensional Tensors (30+ Operations)
@@ -598,37 +632,59 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 
 ### v1.3.0-evolve Features
 
-**Evolve.** Full SICP coverage, exact nested/mixed-mode automatic differentiation,
-closure-semantics completion, every CI platform green, and a permanent
-adversarial-testing infrastructure.
+**Evolve.** An arbitrary-order automatic-differentiation system (Taylor
+towers, phases P0-P12), full R7RS conformance on the portable differential
+corpus, closure/TCO/memory robustness hardening, and a permanent
+multi-pillar adversarial-testing infrastructure.
 
+- **Arbitrary-order AD (Taylor towers)**: `(taylor f x k)` /
+  `(derivative-n f x k)` compute every derivative up to any order `k` in one
+  pass — exactly (bignum/rational coefficients) when the arithmetic
+  supports it, with no-heap compile-time-`k` monomorphization, arbitrary-order
+  mixed partials (`mixed-partial`, `gradient-n`) via a Griewank-Utke-Walther
+  layer, reverse-over-Taylor and checkpointed high-order reverse-mode,
+  tensor-valued towers through `matmul`/`conv2d`, validated Taylor models
+  with interval-remainder bounds (`taylor-model`), sparse high-order tensors
+  (`sparse-hessian`), differentiable control flow, and tower-based numerics
+  (`taylor-ode-solve`, `taylor-root`). See the
+  [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md).
+- **Full R7RS conformance**: the reference-Scheme differential oracle now
+  agrees with chibi-scheme 34/34 (100%) on the portable corpus — `apply`
+  with leading arguments, multi-vector `vector-map`, quasiquoted vector
+  literals, `cond`/`case` `=>` clauses, allocating `vector-copy` (including
+  on `#(...)` literals), the `error-object?`/`error-object-message`/
+  `error-object-irritants` family, R7RS `write` escaping, nested ellipsis in
+  `syntax-rules`, and 2-argument `substring` are all fixed.
 - **Full SICP support**: an 88-probe full-book gate (`tests/sicp/`,
   `scripts/run_sicp_smoke.sh`) covering chapters 1-5 — including the metacircular,
   analyzing, lazy, and `amb` nondeterministic evaluators, the query system, and
   the register-machine simulators — passing under both `-r` (JIT) and AOT.
-- **Exact higher-order AD**: iterated/nested higher-order differentiation is now
-  exact (no finite-difference fallback) for scalar derivatives, and mixed-mode
-  vector-gradient-over-derivative composes correctly (#75, #84, #95, #113).
-- **Closure-semantics completion**: `set!`-mutated variables shared across multiple
-  closures (assignment conversion, #83), per-activation `letrec` closure instances
-  (#89), first-class / `apply`'d equality predicates return proper booleans (#86).
-- **Parser correctness**: quote-token dispatch fixed across `guard`/`case`/`match`/
-  quasiquote clause parsers and let-family body tails (#110, #117); constructor
-  operands evaluated exactly once (#116).
-- **R7RS numeric tower**: exactness and promotion discipline, AD-visible `min`/`max`
-  (#82).
-- **Platforms**: windows-arm64 build unbroken (#77); `with-region` body allocations
-  routed into the region arena (#81). CI is green across all 14 lanes.
-- **Native agent/ML substrate**: EAGLE linear-head training over the FFI bridge (#104).
-- **Adversarial testing infrastructure** (new, permanent): a multi-path differential
-  harness + fuzzer, a feature-pair edge matrix, an AD finite-difference oracle, and a
-  stress harness with RSS/time budgets — all wired into the ICC readiness oracle.
-  See [`docs/TESTING.md`](docs/TESTING.md).
+- **Robustness**: mutual tail calls are proper O(1)-stack R7RS tail calls on
+  AArch64; named-let TCO covers every tail position including through
+  `guard`; the closure-capture ceiling is raised 16 → 64; a class of
+  unbounded RSS growth in long-running loops is fixed with automatic
+  per-iteration arena reclamation; a shutdown-teardown race and a deep-
+  recursion `SIGILL`-with-no-diagnostic bug are both fixed; `eshkol-run -r`/AOT
+  caching now invalidates correctly on transitive `(load ...)`/`(require ...)`
+  dependency changes.
+- **Build**: `--emit-depfile` plus a canonical `cmake/EshkolCompile.cmake` for
+  embedding the Eshkol compiler in a consumer's CMake build.
+- **VM/Web**: every example on [eshkol.ai](https://eshkol.ai) runs (browser
+  VM builtin table reconciled with the native compiler; WASM JS glue checked
+  in CI against every symbol the backend can emit).
+- **Adversarial testing infrastructure** (new, permanent): a multi-path
+  differential harness + fuzzer, a feature-pair edge matrix, an AD
+  finite-difference oracle, a stress harness with RSS/time budgets, a VM
+  parity ratchet, six depth-parametric sweep families, and external oracles
+  (reference-Scheme differential, sanitizer fuzzing, metamorphic-law
+  checking) — all wired into the ICC readiness oracle. See
+  [`docs/TESTING.md`](docs/TESTING.md).
 
-Some deep-edge findings surfaced by the new harnesses remain open and are tracked
-in the changelog's Known Issues section (e.g. vector gradient-of-gradient,
-`hessian`/`laplacian` on tensor points, deep non-tail recursion limits). See
-[CHANGELOG.md](CHANGELOG.md).
+Some deep-edge findings surfaced by the new harnesses remain open and are
+tracked in [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and the changelog's
+Known Issues section (e.g. order-≤2 vector gradient-of-gradient,
+`hessian`/`laplacian` on tensor points, deep non-tail recursion in stdlib
+`sort`/`filter`). See [CHANGELOG.md](CHANGELOG.md).
 
 ### Modern Language Features
 
@@ -740,8 +796,11 @@ Eshkol occupies a unique position combining the **mathematical rigor of Julia**,
 - **[All 27 Tutorials](docs/tutorials/README.md)**: Feature guides + complete project tutorials (neural networks, expert systems, self-improving programs)
 
 ### For Users
-- **[Language Guide](ESHKOL_LANGUAGE_GUIDE.md)**: Tutorial-style introduction to the language
-- **[Language Reference](ESHKOL_V1_LANGUAGE_REFERENCE.md)**: Complete function and syntax reference
+- **[Automatic Differentiation](docs/guide/AUTOMATIC_DIFFERENTIATION.md)**: Arbitrary-order Taylor-tower AD guide, new in v1.3.0-evolve
+- **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)**: Tutorial-style introduction to the language
+- **[Language Reference](docs/reference/language/INDEX.md)**: Complete, example-verified function and syntax reference
+- **[Complete Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)**: Full technical specification
+- **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)**: One-page cheat sheet
 - **[Quickstart](docs/QUICKSTART.md)**: Hands-on introduction with examples
 - **[API Reference](docs/API_REFERENCE.md)**: Comprehensive function documentation
 
@@ -802,8 +861,10 @@ See **[CONTRIBUTING.md](CONTRIBUTING.md)** for development setup and coding stan
 | **[QUICKSTART](docs/QUICKSTART.md)** | 15-minute getting-started guide |
 | **[Tutorials](docs/tutorials/README.md)** | 27 step-by-step tutorials |
 | **[API Reference](docs/API_REFERENCE.md)** | Complete reference (555+ builtins, 336 documented procedures) |
-| **[Language Guide](ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
-| **[Quick Reference](ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
+| **[Language Guide](docs/ESHKOL_LANGUAGE_GUIDE.md)** | Conceptual user guide |
+| **[Quick Reference](docs/ESHKOL_QUICK_REFERENCE.md)** | One-page cheat sheet |
+| **[Automatic Differentiation Guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)** | Arbitrary-order Taylor-tower AD walkthrough |
+| **[Complete Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)** | Full technical specification |
 | **[Standard Library API](docs/STDLIB_V1_2_API.md)** | Stdlib module surfaces, including infrastructure modules (Appendix B) |
 | **[Architecture deep-dives](docs/breakdown/README.md)** | Per-subsystem technical breakdowns (37 docs) |
 | **[FAQ](docs/FAQ.md)** | Installation, troubleshooting, common questions |

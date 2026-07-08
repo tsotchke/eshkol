@@ -692,7 +692,7 @@ Solve the 1D heat equation: ∂u/∂t = α∇²u
 
 1. **[API Reference](API_REFERENCE.md)** — Complete function reference (550+ functions)
 2. **[Architecture Guide](ESHKOL_V1_ARCHITECTURE.md)** — System internals (memory, types, compilation)
-3. **[Language Reference](../ESHKOL_V1_LANGUAGE_REFERENCE.md)** — Comprehensive language guide
+3. **[Language Reference](reference/language/INDEX.md)** — Comprehensive language guide
 4. **[Autodiff Deep Dive](breakdown/AUTODIFF.md)** — Three differentiation modes in detail
 
 ### Example Programs
@@ -1210,7 +1210,7 @@ eshkol-run --wasm app.esk -o app.wasm
 - **[Consciousness Engine](breakdown/CONSCIOUSNESS_ENGINE.md)** — Logic programming, factor graphs, global workspace
 - **[Automatic Differentiation](breakdown/AUTODIFF.md)** — Forward/reverse mode, vector calculus operators
 - **[Machine Learning](breakdown/MACHINE_LEARNING.md)** — Neural network training, optimizers, activations
-- **[Language Guide](../ESHKOL_LANGUAGE_GUIDE.md)** — Comprehensive language tutorial
+- **[Language Guide](ESHKOL_LANGUAGE_GUIDE.md)** — Comprehensive language tutorial
 - **[eshkol.ai](https://eshkol.ai)** — Interactive browser REPL with runnable tutorials
 
 ---

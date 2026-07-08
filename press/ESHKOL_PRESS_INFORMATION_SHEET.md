@@ -104,7 +104,7 @@ and *lib/frontend/macro_expander.cpp* (861 lines).
 Total compiler infrastructure is approximately 232,000 lines of C17 and C++20
 across more than 130 files. The standard library, written in pure Eshkol,
 adds roughly 4,400 lines across thirty-five auto-loaded modules (the broader stdlib tree under `lib/`, including opt-in modules like `core.merkle` / `core.threads` / `core.testing`, totals ~10,200 lines across 57 modules)
-(*DESIGN.md §Implementation Scale*).
+(*docs/DESIGN.md §Implementation Scale*).
 
 ### Target backend
 
@@ -183,7 +183,7 @@ consists of:
 The model is what makes the system bit-reproducible. Two back-to-back release
 builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`;
 hash-map iteration order is keyed on stable strings from the AST and does
-not reach the emitted IR (*HARDENING.md §`#184` deterministic execution*).
+not reach the emitted IR (*docs/HARDENING.md §`#184` deterministic execution*).
 
 ---
 
@@ -205,7 +205,7 @@ byte on each tagged value.
 R7RS semantics hold for mixed arithmetic: exact + exact = exact, exact + inexact
 = inexact. The thirty-five-gap bignum audit closed in v1.1 covers `number->string`,
 `string->number`, complex/rational/bignum conversions in autodiff, and
-exact comparison through `=`, `<`, `<=`. See *DESIGN.md §Exact arithmetic* and
+exact comparison through `=`, `<`, `<=`. See *docs/DESIGN.md §Exact arithmetic* and
 *lib/backend/arithmetic_codegen.cpp*.
 
 ---
@@ -506,7 +506,7 @@ backends without the user having to specify library flags.
 ## Hardening posture
 
 v1.2-scale closes fourteen audit blockers and seven critical/high security
-fixes. The list, with severities preserved from *HARDENING.md*:
+fixes. The list, with severities preserved from *docs/HARDENING.md*:
 
 | Severity | Item | Resolution |
 |:---|:---|:---|
@@ -571,7 +571,7 @@ interactive textbook has every example runnable in-browser.
 
 The browser REPL uses the bytecode VM rather than LLVM JIT: 64 opcodes,
 250+ native call IDs, ESKB binary format with LEB128 encoding and CRC32
-checksums (*DESIGN.md §Dual backend architecture*).
+checksums (*docs/DESIGN.md §Dual backend architecture*).
 
 ---
 

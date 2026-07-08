@@ -188,8 +188,8 @@ All vision documents in this directory:
 
 ## See Also
 
-- [`COMPLETE_LANGUAGE_SPECIFICATION.md`](../../COMPLETE_LANGUAGE_SPECIFICATION.md) - Technical specification of all 300+ language features
-- [`ESHKOL_V1_LANGUAGE_REFERENCE.md`](../../ESHKOL_V1_LANGUAGE_REFERENCE.md) - User reference with examples
+- [`COMPLETE_LANGUAGE_SPECIFICATION.md`](../COMPLETE_LANGUAGE_SPECIFICATION.md) - Technical specification of all 300+ language features
+- [`docs/reference/language/INDEX.md`](../reference/language/INDEX.md) - User reference with examples
 - [`docs/breakdown/`](../breakdown/) - Component-specific technical documentation
 - [`docs/ESHKOL_V1_ARCHITECTURE.md`](../ESHKOL_V1_ARCHITECTURE.md) - Complete architecture overview
 

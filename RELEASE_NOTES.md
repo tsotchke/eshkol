@@ -1,4 +1,124 @@
-# Eshkol v1.2.3-scale — Platform Artifact Closeout
+# Eshkol v1.3.0-evolve — Release Notes
+
+**Release Date**: July 7, 2026
+
+Eshkol v1.3.0-evolve is the "evolve" release: arbitrary-order automatic
+differentiation, full R7RS conformance on the portable differential
+corpus, and a hardening pass across closures, tail calls, and long-running
+processes. Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this
+page is the user-facing summary.
+
+**Release gates** (all green on the release SHA): ICC readiness oracle
+`v1.3-evolve` ready (100/100, trace-verified); CI 14/14 lanes including
+windows-arm64 lite/CUDA/XLA; SICP full-book gate 88/88 probes across all 5
+chapters under both `-r` and AOT; reference-Scheme differential oracle 34/34
+AGREE vs. chibi-scheme.
+
+## Highlights
+
+### Automatic differentiation, best-in-class and beyond
+
+Eshkol's AD system already did exact forward-mode, reverse-mode, and
+symbolic differentiation. v1.3.0-evolve adds a second axis on top: **order**.
+A new Taylor-tower engine (13 phases, P0 through P12 — see the
+[Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
+and the [CHANGELOG](CHANGELOG.md#added--automatic-differentiation-taylor-tower-campaign-p0-p12)
+for the full phase-by-phase breakdown) computes *every* derivative up to an
+arbitrary order `k` in a single pass:
+
+- **Arbitrary order** — `(taylor f x k)` and `(derivative-n f x k)` return
+  the full coefficient series or the `k`-th derivative for any `k`, not just
+  first/second order.
+- **Exact, not approximate** — when the input is an exact number and the
+  function only uses exact-preserving arithmetic, the coefficients come back
+  as exact arbitrary-precision (bignum/rational) values instead of `double`
+  approximations. Most autodiff systems, JAX included, only ever produce
+  floating-point derivatives; Eshkol can hand you the exact rational
+  derivative when the math supports it.
+- **Validated** — Taylor models (`taylor-model`, `tm-range`, `tm-eval`) pair
+  the polynomial with a rigorous interval-remainder bound, giving a
+  *provable* enclosure of a function's range or value, not just a point
+  estimate. This is a step beyond what mainstream AD/ML frameworks expose to
+  user code at all.
+- **Multivariate and sparse** — `mixed-partial`/`gradient-n` recover
+  arbitrary-order mixed partials via a Griewank-Utke-Walther (GUW)
+  propagation layer; `sparse-hessian`/`sparse-mixed-partials` exploit sparsity
+  with graph-coloring so the cost scales with variable-interaction bandwidth,
+  not dimension.
+- **Composes with everything else** — tensor-valued towers differentiate
+  through `matmul`/`conv2d`/`sigmoid`/`tanh`; reverse-over-Taylor lets
+  `gradient` differentiate through a `derivative-n` call; checkpointed
+  reverse-mode keeps the memory cost of high-order reverse AD sub-linear;
+  towers work correctly through `if`/`cond`/named-let/recursion; and
+  tower-based numerics (`taylor-ode-solve`, `taylor-root`,
+  `taylor-inverse-series`) put all of this to work solving ODEs, root-finding,
+  and series inversion.
+
+See the [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
+for worked examples and the full API reference.
+
+### Full R7RS conformance on the portable corpus
+
+A new reference-Scheme differential oracle diffs Eshkol's behavior against
+chibi-scheme 0.12.0 across a 34-program portable R7RS corpus (numeric, list,
+vector, string, char, binding, control-flow, equality, and I/O). It started
+this release cycle at 27/34 (79.4%) and every divergence is now fixed:
+**34/34 (100%) AGREE** with chibi-scheme on that corpus. Fixed along the way:
+`apply` with leading arguments, multi-vector `vector-map`/`vector-for-each`,
+quasiquoted vector literals, `cond`/`case` `=>` arrow clauses, an allocating
+`vector-copy` (including on `#(...)` tensor-backed literals), the
+`error-object?`/`error-object-message`/`error-object-irritants` condition
+family, R7RS string-escaping in `write`, nested ellipsis (`x ... ...`) in
+`syntax-rules`, and the 2-argument form of `substring`. See the
+[CHANGELOG](CHANGELOG.md#fixed--r7rs-conformance) for the itemized list.
+
+### Robustness: closures, tail calls, and long-running processes
+
+A cluster of fixes targets programs that run for a long time or recurse
+deeply — the kind of bug that only shows up in production, not in a quick
+test:
+
+- Mutual tail calls (`even?`/`odd?`-style cross-function recursion) are now
+  proper O(1)-stack R7RS tail calls on AArch64.
+- Named-let loops are tail-call-optimized in every legal tail position, not
+  just the immediate loop body — including tail calls made through a `guard`
+  error-boundary wrapper.
+- Curried closures can now capture up to 64 variables (up from a
+  silently-corrupting ceiling of 16).
+- A production-triggered class of unbounded RSS growth in long-running loops
+  is fixed, and loops that are provably safe now get automatic,
+  zero-annotation per-iteration memory reclamation.
+- A graceful-shutdown race that could SIGSEGV after `SIGTERM` is fixed, deep
+  recursion overflow now fails with a diagnostic instead of an unexplained
+  `SIGILL`, and `eshkol-run -r`/AOT caching now correctly invalidates when an
+  indirectly loaded/required dependency changes.
+
+See [CHANGELOG.md](CHANGELOG.md#fixed--compiler--runtime-robustness) for the
+full list with root causes.
+
+### Also in this release
+
+- A new build integration surface: `--emit-depfile` plus a canonical
+  `cmake/EshkolCompile.cmake` for consumers embedding the Eshkol compiler in
+  their own CMake build.
+- Browser REPL / WASM fixes so every example on [eshkol.ai](https://eshkol.ai)
+  runs, including the tensor computing examples.
+- A permanent, ICC-wired adversarial-testing infrastructure — differential,
+  edge-matrix, AD-oracle, stress, VM-parity, depth-parametric, and external
+  (reference-Scheme / sanitizer-fuzz / metamorphic) test pillars — so these
+  classes of bug keep getting caught going forward. See
+  [docs/TESTING.md](docs/TESTING.md).
+
+### Known issues
+
+See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and the CHANGELOG's Known
+Issues section for the current, itemized list (none block ordinary use).
+
+---
+
+## Previous Releases
+
+### Eshkol v1.2.3-scale — Platform Artifact Closeout
 
 **Base Release Date**: May 1, 2026
 **Closeout Date**: May 20, 2026
@@ -644,8 +764,8 @@ This isn't a research prototype - it's a complete compiler with comprehensive te
 
 ## Documentation
 
-- **[Language Specification](COMPLETE_LANGUAGE_SPECIFICATION.md)** - Complete technical specification
-- **[Language Reference](ESHKOL_V1_LANGUAGE_REFERENCE.md)** - User-focused reference with examples
+- **[Language Specification](docs/COMPLETE_LANGUAGE_SPECIFICATION.md)** - Complete technical specification
+- **[Language Reference](docs/reference/language/INDEX.md)** - User-focused reference with examples
 - **[Vision Documents](docs/vision/)** - Purpose, competitive analysis, roadmap
 - **[Architecture Guide](docs/ESHKOL_V1_ARCHITECTURE.md)** - Technical architecture overview
 - **[API Reference](docs/API_REFERENCE.md)** - Comprehensive function documentation
@@ -665,7 +785,7 @@ See [ROADMAP.md](ROADMAP.md) and [docs/vision/FUTURE_ROADMAP.md](docs/vision/FUT
 
 1. **Explore the REPL**: `build/eshkol-repl`
 2. **Try the examples**: `build/eshkol-run tests/autodiff/*.esk`
-3. **Read the docs**: Start with [ESHKOL_V1_LANGUAGE_REFERENCE.md](ESHKOL_V1_LANGUAGE_REFERENCE.md)
+3. **Read the docs**: Start with [docs/ESHKOL_LANGUAGE_GUIDE.md](docs/ESHKOL_LANGUAGE_GUIDE.md)
 4. **Experiment with AD**: The automatic differentiation system is production-ready
 
 ### For Contributors
