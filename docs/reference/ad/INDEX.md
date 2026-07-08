@@ -44,5 +44,6 @@ pass, numeric-type boundary) see the breakdown:
 
 ## See also
 
+- [../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md) — the example-driven AD user guide (v1.3 Taylor-tower matrix: arbitrary order, exact, validated, tensor, sparse, checkpointed, control flow, tower numerics)
 - [../tensors/INDEX.md](../tensors/INDEX.md) — tensors, ML ops, and the modules AD flows through
 - [../../breakdown/AUTODIFF.md](../../breakdown/AUTODIFF.md) — AD internals breakdown
