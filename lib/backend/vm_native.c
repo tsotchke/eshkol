@@ -5985,6 +5985,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, INT_VAL(s ? (int64_t)vm_string_hash(s) : 0));
         break;
     }
+    case 571: { /* string-byte-length */
+        Value s_val = vm_pop(vm);
+        VmString* s = (s_val.type == VAL_STRING) ? (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr : NULL;
+        vm_push(vm, INT_VAL(s ? (int64_t)s->byte_len : 0));
+        break;
+    }
 
     /* ══════════════════════════════════════════════════════════════════════
      * I/O Operations (580-602) — port-based I/O

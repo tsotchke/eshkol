@@ -289,6 +289,7 @@ static const BuiltinDef BUILTINS[] = {
     {"string-upcase", 557, 1}, {"string-downcase", 558, 1},
     {"string=?", 560, 2}, {"string<?", 561, 2}, {"string-ci=?", 562, 2},
     {"string-fill!", 556, 2}, {"string-copy", 566, 1},
+    {"string-byte-length", 571, 1},
     /* Misc — IDs 236-238 */
     {"boolean=?", 236, 2}, {"error", 237, 1}, {"void", 238, 0},
     {"symbol->string", 184, 1}, {"string->symbol", 185, 1},

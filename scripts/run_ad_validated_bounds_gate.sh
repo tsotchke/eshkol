@@ -21,6 +21,13 @@
 #
 # Usage: scripts/run_ad_validated_bounds_gate.sh [--no-aot]
 set -u
+
+# The timeout/json helpers are byte-oriented Perl snippets. Force a portable
+# locale instead of relying on C.UTF-8 being installed on every host.
+export LC_ALL=C
+export LC_CTYPE=C
+export LANG=C
+
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"

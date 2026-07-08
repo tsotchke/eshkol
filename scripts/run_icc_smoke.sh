@@ -190,7 +190,7 @@ probe stdlib_o_loads "build/stdlib.o exists and is non-empty" \
     'test -s "$REPO_ROOT/build/stdlib.o"'
 
 probe stdlib_compiles_clean "stdlib rebuilds without errors" \
-    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build build --target stdlib 2>&1 | grep -qE "Built target stdlib"'
+    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build build --target stdlib >/dev/null 2>&1'
 
 probe error_messages_have_source_locations "Diagnostic includes line:col" \
     'tmp=$(mktemp).esk; bin=$(mktemp).bin; rm -f "$bin";

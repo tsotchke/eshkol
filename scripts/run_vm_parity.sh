@@ -38,6 +38,14 @@
 #
 # Usage: scripts/run_vm_parity.sh [--no-eskb] [--audit-only]
 set -u
+
+# Keep the Perl timeout/json helpers portable. Some macOS hosts inherit a
+# UTF-8 locale name that Perl cannot materialize; the C locale is sufficient
+# for this byte-oriented gate and avoids false infrastructure failures.
+export LC_ALL=C
+export LC_CTYPE=C
+export LANG=C
+
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
