@@ -208,35 +208,166 @@ eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
 /* ===== Tagged Value Dispatch ===== */
 /* Called from LLVM codegen. Same alloca/store/call/load pattern as bignum. */
 
+/**
+ * @brief Tagged-value entry point for eshkol_unify(), called from LLVM codegen.
+ *
+ * Extracts a substitution pointer from @p subst (treated as the empty
+ * substitution if it is not a HEAP_PTR) and unifies @p t1 with @p t2 under
+ * it. On success @p result is set to a HEAP_PTR wrapping the extended
+ * substitution; on unification failure @p result is set to the tagged NULL
+ * value, which the Scheme surface displays as `#f`.
+ *
+ * @param arena Arena used for any new substitution allocated during unification.
+ * @param t1 First term to unify.
+ * @param t2 Second term to unify.
+ * @param subst Tagged HEAP_PTR wrapping the substitution to unify under, or NULL/non-HEAP_PTR for empty.
+ * @param[out] result Destination tagged value (HEAP_PTR substitution on success, NULL on failure).
+ */
 void eshkol_unify_tagged(arena_t* arena,
     const eshkol_tagged_value_t* t1, const eshkol_tagged_value_t* t2,
     const eshkol_tagged_value_t* subst, eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_walk(), called from LLVM codegen.
+ *
+ * Extracts a substitution pointer from @p subst (treated as the empty
+ * substitution if it is not a HEAP_PTR) and copies the shallow-walked result
+ * of @p term into @p result.
+ *
+ * @param term Term to resolve.
+ * @param subst Tagged HEAP_PTR wrapping the substitution to walk under, or NULL/non-HEAP_PTR for empty.
+ * @param[out] result Destination for the walked tagged value.
+ */
 void eshkol_walk_tagged(
     const eshkol_tagged_value_t* term, const eshkol_tagged_value_t* subst,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_fact(), called from LLVM codegen.
+ *
+ * @p pred must be a HEAP_PTR to a symbol/string; its text is interned via
+ * eshkol_intern_predicate() so later unification and KB lookups can compare
+ * predicates by pointer equality. Builds a fact with @p arity arguments
+ * copied from @p args. On success @p result is set to a HEAP_PTR wrapping
+ * the new fact; on missing @p arena/@p pred or allocation failure @p result
+ * is set to the tagged NULL value.
+ *
+ * @param arena Arena used for the fact allocation.
+ * @param pred Tagged HEAP_PTR to the predicate symbol/string.
+ * @param args Array of @p arity tagged argument values (may be NULL if arity is 0).
+ * @param arity Number of arguments in @p args.
+ * @param[out] result Destination tagged value (HEAP_PTR fact on success, NULL on failure).
+ */
 void eshkol_make_fact_tagged(arena_t* arena,
     const eshkol_tagged_value_t* pred, const eshkol_tagged_value_t* args,
     int32_t arity, eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_kb(), called from LLVM codegen.
+ *
+ * On success @p result is set to a HEAP_PTR wrapping a new empty knowledge
+ * base; on allocation failure @p result is set to the tagged NULL value.
+ *
+ * @param arena Arena used for the knowledge-base allocation.
+ * @param[out] result Destination tagged value (HEAP_PTR knowledge base on success, NULL on failure).
+ */
 void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_kb_assert(), called from LLVM codegen.
+ *
+ * Requires both @p kb and @p fact to be non-NULL tagged HEAP_PTR values;
+ * otherwise this is a no-op. Mutates @p kb in place (growing its fact array
+ * as needed) — there is no result parameter because the operation returns
+ * no value on the Scheme side.
+ *
+ * @param arena Arena used to grow the KB's fact array if it is at capacity.
+ * @param kb Tagged HEAP_PTR wrapping the target eshkol_knowledge_base_t.
+ * @param fact Tagged HEAP_PTR wrapping the eshkol_fact_t to append.
+ */
 void eshkol_kb_assert_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb, const eshkol_tagged_value_t* fact);
 
+/**
+ * @brief Tagged-value entry point for eshkol_kb_query(), called from LLVM codegen.
+ *
+ * Requires @p kb and @p pattern to be non-NULL tagged HEAP_PTR values;
+ * otherwise @p result is set to the tagged NULL value. Otherwise delegates
+ * to eshkol_kb_query() with an empty initial substitution and copies the
+ * resulting cons-list of matching substitutions into @p result.
+ *
+ * @param arena Arena used for substitutions and cons cells built during the query.
+ * @param kb Tagged HEAP_PTR wrapping the eshkol_knowledge_base_t to search.
+ * @param pattern Tagged HEAP_PTR wrapping the eshkol_fact_t pattern to match.
+ * @param[out] result Destination tagged value: cons-list of matching substitutions, or tagged NULL if none/invalid input.
+ */
 void eshkol_kb_query_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb, const eshkol_tagged_value_t* pattern,
     eshkol_tagged_value_t* result);
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_substitution(), called from LLVM codegen.
+ *
+ * Creates an empty substitution with a fixed default capacity of 8
+ * bindings (it grows automatically as needed via eshkol_extend_subst()).
+ * On success @p result is set to a HEAP_PTR wrapping the substitution; on
+ * allocation failure @p result is set to the tagged NULL value.
+ *
+ * @param arena Arena used for the substitution allocation.
+ * @param[out] result Destination tagged value (HEAP_PTR substitution on success, NULL on failure).
+ */
 void eshkol_make_substitution_tagged(arena_t* arena,
     eshkol_tagged_value_t* result);
 
 /* ===== Display ===== */
 
+/**
+ * @brief Print a logic variable's name, e.g. `?x`.
+ *
+ * Looks up @p var_id via eshkol_logic_var_name(); if the id has no
+ * registered name (out of range or never created), falls back to printing
+ * `?_<id>`.
+ *
+ * @param var_id Logic variable id to print.
+ * @param file Destination `FILE*`, or NULL to write to stdout.
+ */
 void eshkol_display_logic_var(uint64_t var_id, void* file);
+
+/**
+ * @brief Print a substitution as `{var -> term, var -> term, ...}`.
+ *
+ * Prints `{}` if @p s is NULL. Each bound term is formatted according to
+ * its tagged type (integers, doubles via eshkol_fprint_double(), booleans as
+ * `#t`/`#f`, nested logic variables, `()` for NULL, interned symbol strings
+ * for HEAP_PTR/HEAP_SUBTYPE_SYMBOL, or a generic `#<heap:N>` / `#<type:N>`
+ * placeholder for anything else).
+ *
+ * @param s Substitution to print, or NULL.
+ * @param file Destination `FILE*`, or NULL to write to stdout.
+ */
 void eshkol_display_substitution(const eshkol_substitution_t* s, void* file);
+
+/**
+ * @brief Print a fact as `(predicate arg1 arg2 ...)`.
+ *
+ * Prints `(fact)` if @p f is NULL, and `?` in place of the predicate if it
+ * is unset (0). Arguments use the same per-type formatting as
+ * eshkol_display_substitution()'s bound terms.
+ *
+ * @param f Fact to print, or NULL.
+ * @param file Destination `FILE*`, or NULL to write to stdout.
+ */
 void eshkol_display_fact(const eshkol_fact_t* f, void* file);
+
+/**
+ * @brief Print a short human-readable summary of a knowledge base.
+ *
+ * Writes `#<knowledge-base: empty>` if @p kb is NULL, otherwise
+ * `#<knowledge-base: N facts>`.
+ *
+ * @param kb Knowledge base to describe, or NULL.
+ * @param file Destination `FILE*`, or NULL to write to stdout.
+ */
 void eshkol_display_kb(const eshkol_knowledge_base_t* kb, void* file);
 
 #ifdef __cplusplus

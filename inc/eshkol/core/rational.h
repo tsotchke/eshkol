@@ -30,8 +30,43 @@ void* eshkol_rational_create(void* arena, int64_t num, int64_t denom);
 
 /* Arithmetic: returns arena-allocated rational pointer */
 void* eshkol_rational_add(void* arena, void* a, void* b);
+/**
+ * @brief Subtract two rationals: a - b.
+ *
+ * Computed via 128-bit intermediates to guard against int64 overflow before
+ * GCD-reduction.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Minuend, a rational pointer (eshkol_rational_t*) produced by
+ *          eshkol_rational_create() or another rational operation.
+ * @param b Subtrahend, likewise a rational pointer.
+ * @return Newly allocated, GCD-reduced rational pointer, or NULL if the
+ *         exact result overflows int64 (caller should fall back to double arithmetic).
+ */
 void* eshkol_rational_sub(void* arena, void* a, void* b);
+/**
+ * @brief Multiply two rationals: a * b.
+ *
+ * Computed via 128-bit intermediates to guard against int64 overflow before
+ * GCD-reduction.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Left rational operand.
+ * @param b Right rational operand.
+ * @return Newly allocated, GCD-reduced rational pointer, or NULL on int64 overflow.
+ */
 void* eshkol_rational_mul(void* arena, void* a, void* b);
+/**
+ * @brief Divide two rationals: a / b.
+ *
+ * Raises an ESHKOL_EXCEPTION_DIVIDE_BY_ZERO exception (via eshkol_raise) if
+ * @p b's numerator is zero.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Dividend rational.
+ * @param b Divisor rational.
+ * @return Newly allocated, GCD-reduced rational pointer, or NULL on int64 overflow.
+ */
 void* eshkol_rational_div(void* arena, void* a, void* b);
 
 /* Comparison: returns -1, 0, or 1 */
@@ -39,6 +74,12 @@ int eshkol_rational_compare(void* a, void* b);
 
 /* Extract fields */
 int64_t eshkol_rational_numerator(void* r);
+/**
+ * @brief Extract the denominator of a rational.
+ *
+ * @param r Rational pointer (an eshkol_rational_t*).
+ * @return The denominator, always strictly positive in the normalized representation.
+ */
 int64_t eshkol_rational_denominator(void* r);
 
 /* Convert to double (exact->inexact) */
@@ -62,6 +103,20 @@ int eshkol_is_rational_tagged(eshkol_tagged_value_t val);
 
 /* Pointer-based versions for LLVM codegen (avoids ABI issues with by-value structs) */
 int eshkol_is_rational_tagged_ptr(const eshkol_tagged_value_t* val);
+/**
+ * @brief Pointer-based binary dispatch for LLVM codegen.
+ *
+ * Equivalent to eshkol_rational_binary_tagged() but takes and writes tagged
+ * values by pointer, avoiding ABI issues with by-value eshkol_tagged_value_t
+ * struct passing/returning from generated code.
+ *
+ * @param arena Arena to allocate any resulting rational from.
+ * @param a Left operand (tagged int, double, or rational).
+ * @param b Right operand (tagged int, double, or rational).
+ * @param op Operation selector: 0=add, 1=sub, 2=mul, 3=div.
+ * @param[out] result Tagged value written with the operation's result
+ *             (rational or int if both operands are exact, double otherwise).
+ */
 void eshkol_rational_binary_tagged_ptr(
     void* arena, const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b,
     int op, eshkol_tagged_value_t* result);
@@ -84,8 +139,26 @@ void eshkol_rationalize_tagged(
  * floor: toward -infinity, ceil: toward +infinity,
  * truncate: toward zero, round: nearest (ties to even) */
 int64_t eshkol_rational_floor(void* r);
+/**
+ * @brief Round a rational toward +infinity (ceiling).
+ *
+ * @param r Rational pointer (an eshkol_rational_t*).
+ * @return Exact int64 result of ceil(numerator/denominator).
+ */
 int64_t eshkol_rational_ceil(void* r);
+/**
+ * @brief Round a rational toward zero (truncation).
+ *
+ * @param r Rational pointer (an eshkol_rational_t*).
+ * @return Exact int64 result of numerator/denominator, using C truncating division.
+ */
 int64_t eshkol_rational_truncate(void* r);
+/**
+ * @brief Round a rational to the nearest integer, with ties rounding to even (banker's rounding).
+ *
+ * @param r Rational pointer (an eshkol_rational_t*).
+ * @return Nearest exact int64 to numerator/denominator, per R7RS round semantics.
+ */
 int64_t eshkol_rational_round(void* r);
 
 #ifdef __cplusplus

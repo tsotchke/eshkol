@@ -26,6 +26,12 @@ extern "C" {
 // Configuration Structure
 // ============================================================================
 
+/**
+ * @brief Logging verbosity levels, ordered from most to least verbose.
+ *
+ * Any log message with a severity below the configured
+ * eshkol_config_t::log_level is suppressed.
+ */
 typedef enum {
     ESHKOL_LOG_LEVEL_DEBUG = 0,
     ESHKOL_LOG_LEVEL_INFO,
@@ -34,11 +40,17 @@ typedef enum {
     ESHKOL_LOG_LEVEL_NONE
 } eshkol_log_level_t;
 
+/**
+ * @brief Output format used for emitted log messages.
+ */
 typedef enum {
     ESHKOL_LOG_FORMAT_TEXT = 0,  // Human-readable text
     ESHKOL_LOG_FORMAT_JSON       // Structured JSON
 } eshkol_log_format_t;
 
+/**
+ * @brief LLVM code generation optimization level, analogous to -O0..-O3.
+ */
 typedef enum {
     ESHKOL_OPT_LEVEL_0 = 0,  // No optimization
     ESHKOL_OPT_LEVEL_1,      // Basic optimization
@@ -46,6 +58,16 @@ typedef enum {
     ESHKOL_OPT_LEVEL_3       // Aggressive optimization
 } eshkol_opt_level_t;
 
+/**
+ * @brief Complete runtime/compiler configuration, assembled from defaults,
+ * an optional config file, environment variables, and command-line flags,
+ * in that priority order (see eshkol_config_load()).
+ *
+ * Obtain a populated instance via eshkol_config_defaults() (defaults only)
+ * or eshkol_config_get() (fully loaded, process-wide singleton). Any
+ * heap-allocated fields (log_file, lib_paths) must be released with
+ * eshkol_config_cleanup() before an owned instance is discarded.
+ */
 typedef struct eshkol_config {
     // Runtime settings
     size_t max_heap_bytes;           // Maximum heap allocation
@@ -88,6 +110,13 @@ typedef struct eshkol_config {
 // Configuration Source Priority
 // ============================================================================
 
+/**
+ * @brief Identifies where a configuration value was ultimately sourced from.
+ *
+ * Ordered by increasing priority. Provided for callers/tools that want to
+ * report provenance; the loader itself does not currently track this
+ * per-field.
+ */
 typedef enum {
     ESHKOL_CONFIG_SRC_DEFAULT = 0,   // Built-in defaults
     ESHKOL_CONFIG_SRC_FILE,          // Config file
@@ -133,21 +162,70 @@ void eshkol_config_set(const eshkol_config_t* config);
 // Individual Setting Getters
 // ============================================================================
 
+/**
+ * @brief Get the configured maximum heap allocation, in bytes.
+ * @return eshkol_config_get()->max_heap_bytes.
+ */
 size_t eshkol_config_get_max_heap(void);
+/**
+ * @brief Get the configured execution timeout, in milliseconds.
+ * @return eshkol_config_get()->timeout_ms; 0 means unlimited.
+ */
 uint64_t eshkol_config_get_timeout(void);
+/**
+ * @brief Get the configured maximum recursion/stack depth.
+ * @return eshkol_config_get()->max_stack_depth.
+ */
 size_t eshkol_config_get_max_stack(void);
+/**
+ * @brief Get the configured minimum log level.
+ * @return eshkol_config_get()->log_level.
+ */
 eshkol_log_level_t eshkol_config_get_log_level(void);
+/**
+ * @brief Get the configured log output format.
+ * @return eshkol_config_get()->log_format.
+ */
 eshkol_log_format_t eshkol_config_get_log_format(void);
+/**
+ * @brief Get the configured LLVM optimization level.
+ * @return eshkol_config_get()->llvm_opt_level.
+ */
 eshkol_opt_level_t eshkol_config_get_opt_level(void);
+/**
+ * @brief Check whether SIMD vectorization is enabled.
+ * @return eshkol_config_get()->enable_simd.
+ */
 bool eshkol_config_is_simd_enabled(void);
+/**
+ * @brief Check whether the XLA backend is enabled.
+ * @return eshkol_config_get()->enable_xla.
+ */
 bool eshkol_config_is_xla_enabled(void);
+/**
+ * @brief Check whether GPU acceleration is enabled.
+ * @return eshkol_config_get()->enable_gpu.
+ */
 bool eshkol_config_is_gpu_enabled(void);
+/**
+ * @brief Check whether debug mode is enabled.
+ * @return eshkol_config_get()->debug_mode.
+ */
 bool eshkol_config_is_debug_mode(void);
 
 // ============================================================================
 // Environment Variable Names
 // ============================================================================
 
+/**
+ * @brief Names of the environment variables consulted by eshkol_config_load_env().
+ *
+ * Environment variables take priority over config-file values but are
+ * overridden by explicit command-line flags (see eshkol_config_load()).
+ * Boolean-valued variables are parsed permissively
+ * ("true"/"1"/"yes"/"on", case-insensitive); size-valued variables accept
+ * an optional K/M/G suffix.
+ */
 // Runtime
 #define ESHKOL_ENV_MAX_HEAP         "ESHKOL_MAX_HEAP"
 #define ESHKOL_ENV_TIMEOUT_MS       "ESHKOL_TIMEOUT_MS"
@@ -205,11 +283,26 @@ namespace eshkol {
 // C++ wrapper for configuration
 class Config {
 public:
+    /**
+     * @brief Access the process-wide singleton Config wrapper.
+     *
+     * The instance is default-constructed (with eshkol_config_defaults())
+     * on first access and is not automatically loaded — call load() to
+     * populate it from config files and the environment.
+     *
+     * @return Reference to the single shared Config instance.
+     */
     static Config& instance();
 
     // Load from all sources
     bool load();
 
+    /**
+     * @brief Typed read-only accessors mirroring the fields of the
+     * underlying eshkol_config_t (see the C API above for per-field
+     * semantics). All values reflect config_ as last populated by load()
+     * or overwritten via raw().
+     */
     // Accessors
     size_t maxHeap() const { return config_.max_heap_bytes; }
     uint64_t timeout() const { return config_.timeout_ms; }
@@ -231,10 +324,21 @@ public:
     bool strictTypes() const { return config_.strict_types; }
     bool unsafeMode() const { return config_.unsafe_mode; }
 
+    /**
+     * @brief Get the configured library search paths as a vector of strings.
+     *
+     * Copies eshkol_config_t::lib_paths into an owned std::vector<std::string>.
+     *
+     * @return Library search paths, in configured order.
+     */
     std::vector<std::string> libPaths() const;
 
     // Raw access
     const eshkol_config_t& raw() const { return config_; }
+    /**
+     * @brief Mutable access to the underlying C configuration struct.
+     * @return Reference to the wrapped eshkol_config_t, allowing in-place edits.
+     */
     eshkol_config_t& raw() { return config_; }
 
 private:
