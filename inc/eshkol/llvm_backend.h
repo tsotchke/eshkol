@@ -95,6 +95,12 @@ int eshkol_get_optimization_level(void);
  * Pass NULL to reset to native target (default).
  */
 void eshkol_set_target(const char* triple);
+
+/**
+ * @brief Get the compilation target triple previously set via eshkol_set_target().
+ * @return The target triple string (e.g. "wasm32-unknown-unknown"), or NULL if
+ *         no explicit target has been set (native target is used).
+ */
 const char* eshkol_get_target(void);
 
 /*
@@ -102,6 +108,12 @@ const char* eshkol_get_target(void);
  * Must be set before eshkol_generate_llvm_ir*().
  */
 void eshkol_set_freestanding_codegen(int enabled);
+
+/**
+ * @brief Query whether freestanding codegen policy is enabled for the next
+ *        generated module.
+ * @return Non-zero if freestanding codegen is enabled, 0 otherwise.
+ */
 int eshkol_get_freestanding_codegen(void);
 
 /*
