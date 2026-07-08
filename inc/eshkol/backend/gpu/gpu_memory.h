@@ -489,12 +489,19 @@ namespace gpu {
  */
 class Buffer {
 public:
+    /** @brief Construct an empty (unallocated) buffer. */
     Buffer() : buffer_{} {}
 
+    /**
+     * @brief Allocate a GPU-accessible buffer of size_bytes.
+     * @param size_bytes Size to allocate
+     * @param mem_type Memory type to allocate (default: unified/shared memory)
+     */
     explicit Buffer(size_t size_bytes, EshkolMemoryType mem_type = ESHKOL_MEM_UNIFIED) {
         eshkol_gpu_alloc(size_bytes, mem_type, &buffer_);
     }
 
+    /** @brief Free the buffer, if allocated. */
     ~Buffer() {
         if (buffer_.host_ptr || buffer_.device_ptr) {
             eshkol_gpu_free(&buffer_);
@@ -502,10 +509,12 @@ public:
     }
 
     // Move only
+    /** @brief Take ownership of another buffer's allocation, leaving it empty. */
     Buffer(Buffer&& other) noexcept : buffer_(other.buffer_) {
         other.buffer_ = {};
     }
 
+    /** @brief Free this buffer (if allocated) and take ownership of other's allocation. */
     Buffer& operator=(Buffer&& other) noexcept {
         if (this != &other) {
             if (buffer_.host_ptr || buffer_.device_ptr) {
@@ -522,18 +531,30 @@ public:
     Buffer& operator=(const Buffer&) = delete;
 
     // Accessors
+
+    /** @brief Get the host-accessible pointer. */
     void* host_ptr() const { return buffer_.host_ptr; }
+    /** @brief Get the device pointer (may equal host_ptr() for unified memory). */
     void* device_ptr() const { return buffer_.device_ptr; }
+    /** @brief Get the buffer's size in bytes. */
     size_t size() const { return buffer_.size_bytes; }
+    /** @brief Get the buffer's memory type. */
     EshkolMemoryType mem_type() const { return buffer_.mem_type; }
+    /** @brief Get the GPU backend this buffer was allocated under. */
     EshkolGPUBackend backend() const { return buffer_.backend; }
 
+    /** @brief Get a mutable pointer to the underlying C EshkolGPUBuffer, for use with the C API. */
     EshkolGPUBuffer* raw() { return &buffer_; }
+    /** @brief Get a read-only pointer to the underlying C EshkolGPUBuffer, for use with the C API. */
     const EshkolGPUBuffer* raw() const { return &buffer_; }
 
     // Sync helpers
+
+    /** @brief Copy this buffer's contents from host to device. No-op for unified memory. */
     void syncToDevice() { eshkol_gpu_sync(&buffer_, ESHKOL_SYNC_HOST_TO_DEVICE); }
+    /** @brief Copy this buffer's contents from device to host. No-op for unified memory. */
     void syncToHost() { eshkol_gpu_sync(&buffer_, ESHKOL_SYNC_DEVICE_TO_HOST); }
+    /** @brief Block until all pending operations on this buffer complete. */
     void wait() { eshkol_gpu_wait(&buffer_); }
 
 private:

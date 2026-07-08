@@ -22,18 +22,21 @@
 extern "C" {
 #endif
 
-// Forward declarations
+/** @brief Opaque handle to a thread pool instance. */
 typedef struct eshkol_thread_pool eshkol_thread_pool_t;
+/** @brief Opaque handle to a pending/completed task's result. */
 typedef struct eshkol_future eshkol_future_t;
+/** @brief Opaque handle to a queued task (internal to the pool implementation). */
 typedef struct eshkol_task eshkol_task_t;
 
-// Task function signature: takes user data, returns result
+/** @brief Task function signature: takes user data, returns a result pointer. */
 typedef void* (*eshkol_task_fn)(void* arg);
 
 // ============================================================================
 // Thread Pool Configuration
 // ============================================================================
 
+/** @brief Configuration used to construct a thread pool. */
 typedef struct eshkol_thread_pool_config {
     size_t num_threads;           // Number of worker threads (0 = hardware_concurrency)
     size_t task_queue_capacity;   // Max pending tasks (0 = unlimited)
@@ -55,35 +58,47 @@ typedef struct eshkol_thread_pool_config {
 // Thread Pool Lifecycle
 // ============================================================================
 
-// Create thread pool with configuration
+/** @brief Create a thread pool with an explicit configuration. */
 eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* config);
 
-// Create thread pool with default configuration
+/** @brief Create a thread pool using ESHKOL_THREAD_POOL_DEFAULT_CONFIG. */
 eshkol_thread_pool_t* thread_pool_create_default(void);
 
-// Destroy thread pool (waits for all tasks to complete)
+/** @brief Destroy a thread pool. Waits for all queued/running tasks to complete first. */
 void thread_pool_destroy(eshkol_thread_pool_t* pool);
 
-// Get global thread pool (lazily initialized)
+/** @brief Get the process-wide thread pool, lazily created on first call. */
 eshkol_thread_pool_t* thread_pool_global(void);
 
-// Shutdown global thread pool (call at program exit)
+/** @brief Shut down the global thread pool. Call at program exit. */
 void thread_pool_global_shutdown(void);
 
 // ============================================================================
 // Task Submission
 // ============================================================================
 
-// Submit a task and get a future
-// Returns NULL on failure (queue full, pool shutting down)
+/**
+ * @brief Submit a task and get a future for its result.
+ * @param pool Thread pool to submit to
+ * @param fn Task function to run
+ * @param arg Argument passed to fn
+ * @return A future handle, or NULL on failure (queue full, pool shutting down)
+ */
 eshkol_future_t* thread_pool_submit(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn fn,
     void* arg
 );
 
-// Submit multiple tasks in batch (more efficient)
-// Returns number of successfully submitted tasks
+/**
+ * @brief Submit multiple tasks in one batch call (more efficient than repeated thread_pool_submit).
+ * @param pool Thread pool to submit to
+ * @param fns Array of task functions, one per task
+ * @param args Array of arguments, one per task
+ * @param futures Output array of future handles, one per task
+ * @param count Number of tasks in the batch
+ * @return Number of tasks successfully submitted
+ */
 size_t thread_pool_submit_batch(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn* fns,
@@ -92,7 +107,13 @@ size_t thread_pool_submit_batch(
     size_t count
 );
 
-// Submit task without future (fire-and-forget)
+/**
+ * @brief Submit a task without creating a future (fire-and-forget).
+ * @param pool Thread pool to submit to
+ * @param fn Task function to run
+ * @param arg Argument passed to fn
+ * @return true if the task was queued, false on failure
+ */
 bool thread_pool_submit_detached(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn fn,
@@ -103,32 +124,58 @@ bool thread_pool_submit_detached(
 // Future Operations
 // ============================================================================
 
-// Wait for future to complete and get result
-// Blocks until the task finishes
+/**
+ * @brief Block until a future's task completes and return its result.
+ * @param future The future to wait on
+ * @return The task's return value
+ */
 void* future_get(eshkol_future_t* future);
 
-// Wait for future with timeout (milliseconds)
-// Returns true if completed, false if timed out
+/**
+ * @brief Wait for a future with a timeout.
+ * @param future The future to wait on
+ * @param timeout_ms Maximum time to wait, in milliseconds
+ * @return true if the task completed, false if the wait timed out
+ */
 bool future_wait(eshkol_future_t* future, uint64_t timeout_ms);
 
-// Check if future is ready (non-blocking)
+/**
+ * @brief Non-blocking check of whether a future's task has completed.
+ * @param future The future to check
+ * @return true if the task has completed
+ */
 bool future_is_ready(const eshkol_future_t* future);
 
-// Release future resources
-// Must be called after future_get() or when abandoning the future
+/**
+ * @brief Release a future's resources.
+ * Must be called after future_get() or when abandoning the future.
+ * @param future The future to release
+ */
 void future_release(eshkol_future_t* future);
 
-// Wait for multiple futures
-// Returns index of first completed future, or -1 on timeout
+/**
+ * @brief Wait for the first of several futures to complete.
+ * @param futures Array of future handles
+ * @param count Number of futures in the array
+ * @param timeout_ms Maximum time to wait, in milliseconds
+ * @return Index of the first completed future, or -1 on timeout
+ */
 int future_wait_any(eshkol_future_t** futures, size_t count, uint64_t timeout_ms);
 
-// Wait for all futures to complete
+/**
+ * @brief Wait for all of several futures to complete.
+ * @param futures Array of future handles
+ * @param count Number of futures in the array
+ * @param timeout_ms Maximum time to wait, in milliseconds
+ * @return true if all futures completed, false if the wait timed out
+ */
 bool future_wait_all(eshkol_future_t** futures, size_t count, uint64_t timeout_ms);
 
 // ============================================================================
 // Thread Pool Metrics
 // ============================================================================
 
+/** @brief Snapshot of a thread pool's performance counters. */
 typedef struct eshkol_thread_pool_metrics {
     size_t tasks_submitted;       // Total tasks submitted
     size_t tasks_completed;       // Total tasks completed
@@ -142,46 +189,55 @@ typedef struct eshkol_thread_pool_metrics {
     size_t num_threads;           // Number of worker threads
 } eshkol_thread_pool_metrics_t;
 
-// Get current metrics
+/**
+ * @brief Read a thread pool's current performance metrics.
+ * @param pool Thread pool to query
+ * @param metrics Output metrics struct to fill
+ */
 void thread_pool_get_metrics(
     const eshkol_thread_pool_t* pool,
     eshkol_thread_pool_metrics_t* metrics
 );
 
-// Reset metrics (useful for benchmarking)
+/** @brief Reset a thread pool's metrics counters to zero (useful for benchmarking). */
 void thread_pool_reset_metrics(eshkol_thread_pool_t* pool);
 
-// Print metrics to stderr
+/** @brief Print a thread pool's current metrics to stderr. */
 void thread_pool_print_metrics(const eshkol_thread_pool_t* pool);
 
 // ============================================================================
 // Thread Pool Control
 // ============================================================================
 
-// Get number of worker threads
+/** @brief Get the number of worker threads in a pool. */
 size_t thread_pool_num_threads(const eshkol_thread_pool_t* pool);
 
-// Pause all workers (tasks already running will complete)
+/** @brief Pause all workers. Tasks already running are allowed to complete. */
 void thread_pool_pause(eshkol_thread_pool_t* pool);
 
-// Resume paused workers
+/** @brief Resume workers previously paused with thread_pool_pause. */
 void thread_pool_resume(eshkol_thread_pool_t* pool);
 
-// Wait for all pending tasks to complete
+/** @brief Block until all currently queued/running tasks complete. */
 void thread_pool_wait_idle(eshkol_thread_pool_t* pool);
 
 // ============================================================================
 // Thread-Local Arena Access
 // ============================================================================
 
-// Get thread-local arena for current worker thread
-// Returns NULL if called from non-worker thread
+/**
+ * @brief Get the calling worker thread's thread-local arena.
+ * @return The arena, or NULL if called from a non-worker thread
+ */
 struct arena* thread_pool_get_thread_arena(void);
 
-// Get or create thread-local arena (works from any thread)
+/**
+ * @brief Get or lazily create a thread-local arena for the calling thread.
+ * Unlike thread_pool_get_thread_arena, this works from any thread, not just workers.
+ */
 struct arena* get_thread_local_arena(void);
 
-// Reset thread-local arena (call after completing independent work)
+/** @brief Reset the calling thread's thread-local arena. Call after completing independent work. */
 void thread_pool_reset_thread_arena(void);
 
 #ifdef __cplusplus
@@ -198,12 +254,23 @@ void thread_pool_reset_thread_arena(void);
 
 namespace eshkol {
 
+/**
+ * @brief RAII / template-friendly C++ wrapper around the eshkol_thread_pool_t C API.
+ *
+ * Provides std::future-based task submission and STL-style parallel algorithms
+ * (parallelFor, parallelMap, parallelReduce) on top of the same underlying pool.
+ */
 class ThreadPool {
 public:
     // Constructors
+
+    /** @brief Construct a pool sized to hardware_concurrency with default settings. */
     ThreadPool();
+    /** @brief Construct a pool with an explicit worker-thread count. */
     explicit ThreadPool(size_t num_threads);
+    /** @brief Construct a pool from an explicit C configuration struct. */
     explicit ThreadPool(const eshkol_thread_pool_config_t& config);
+    /** @brief Destroy the pool, waiting for outstanding tasks to complete (if owned). */
     ~ThreadPool();
 
     // Non-copyable
@@ -214,42 +281,80 @@ public:
     ThreadPool(ThreadPool&& other) noexcept;
     ThreadPool& operator=(ThreadPool&& other) noexcept;
 
-    // Submit with std::function and std::future
+    /**
+     * @brief Submit a callable and get a std::future for its result.
+     * @param f Callable to invoke on a worker thread
+     * @param args Arguments forwarded to f
+     * @return A std::future resolving to f's return value
+     */
     template<typename F, typename... Args>
     auto submit(F&& f, Args&&... args)
         -> std::future<typename std::invoke_result<F, Args...>::type>;
 
-    // Submit without return value
+    /**
+     * @brief Submit a callable without tracking its result (fire-and-forget).
+     * @param f Callable to invoke on a worker thread
+     * @param args Arguments forwarded to f
+     */
     template<typename F, typename... Args>
     void submitDetached(F&& f, Args&&... args);
 
-    // Parallel algorithms
+    /**
+     * @brief Apply f to every element in [begin, end) in parallel, blocking until all complete.
+     * @param begin Iterator to the first element
+     * @param end Iterator past the last element
+     * @param f Function applied to each dereferenced element
+     */
     template<typename Iterator, typename Func>
     void parallelFor(Iterator begin, Iterator end, Func&& f);
 
+    /**
+     * @brief Apply f to each element of input in parallel and collect the results.
+     * @param input Elements to map over
+     * @param f Mapping function applied to each element
+     * @return Vector of results in the same order as input
+     */
     template<typename T, typename Func>
     std::vector<T> parallelMap(const std::vector<T>& input, Func&& f);
 
+    /**
+     * @brief Map input with map_fn in parallel, then sequentially fold the results with reduce_fn.
+     * @param input Elements to map over
+     * @param init Initial accumulator value
+     * @param map_fn Mapping function applied to each element (in parallel)
+     * @param reduce_fn Binary reduction function folding (accumulator, mapped value) -> accumulator
+     * @return The final reduced value
+     */
     template<typename T, typename Func, typename Reducer>
     T parallelReduce(const std::vector<T>& input, T init, Func&& map_fn, Reducer&& reduce_fn);
 
     // Control
+
+    /** @brief Pause all workers. Tasks already running are allowed to complete. */
     void pause();
+    /** @brief Resume workers previously paused with pause(). */
     void resume();
+    /** @brief Block until all currently queued/running tasks complete. */
     void waitIdle();
 
     // Metrics
+
+    /** @brief Read this pool's current performance metrics. */
     eshkol_thread_pool_metrics_t getMetrics() const;
+    /** @brief Reset this pool's metrics counters to zero. */
     void resetMetrics();
+    /** @brief Print this pool's current metrics to stderr. */
     void printMetrics() const;
 
     // Properties
+
+    /** @brief Number of worker threads in this pool. */
     size_t numThreads() const;
 
-    // Get underlying C handle
+    /** @brief Get the underlying C API handle (for interop with the C thread_pool_* functions). */
     eshkol_thread_pool_t* handle() const { return pool_; }
 
-    // Global pool access
+    /** @brief Get the process-wide global ThreadPool instance, lazily created on first call. */
     static ThreadPool& global();
 
 private:

@@ -40,18 +40,35 @@ constexpr size_t CACHE_LINE_SIZE = 64;
 // Epoch-Based Memory Reclamation
 // ============================================================================
 
+/**
+ * @brief Epoch-based memory reclamation manager.
+ *
+ * Tracks, per registered thread, the global epoch observed the last time
+ * that thread entered a critical section. Once every active thread has
+ * observed an epoch, any memory retired before that epoch is safe to
+ * reclaim (no thread can still hold a reference to it). Used by
+ * WorkStealingDeque to safely free old CircularArray buffers after a
+ * resize, without requiring readers (thieves) to take a lock.
+ */
 class EpochManager {
 public:
+    /** @brief Maximum number of threads that can be registered concurrently. */
     static constexpr size_t MAX_THREADS = 256;
+    /** @brief Sentinel epoch value meaning "this thread slot is not in a critical section". */
     static constexpr uint64_t EPOCH_INACTIVE = UINT64_MAX;
 
+    /** @brief Construct an EpochManager with all thread slots inactive. */
     EpochManager() : global_epoch_(0), retire_epoch_(0) {
         for (size_t i = 0; i < MAX_THREADS; ++i) {
             thread_epochs_[i].epoch.store(EPOCH_INACTIVE, std::memory_order_relaxed);
         }
     }
 
-    // Register thread and return slot ID
+    /**
+     * @brief Register the calling thread with the epoch manager.
+     * @return The assigned thread slot id, or MAX_THREADS if no slot was free
+     *         (should not happen in practice).
+     */
     size_t registerThread() {
         for (size_t i = 0; i < MAX_THREADS; ++i) {
             uint64_t expected = EPOCH_INACTIVE;
@@ -65,13 +82,14 @@ public:
         return MAX_THREADS;
     }
 
+    /** @brief Unregister a thread slot previously obtained from registerThread(). */
     void unregisterThread(size_t slot) {
         if (slot < MAX_THREADS) {
             thread_epochs_[slot].epoch.store(EPOCH_INACTIVE, std::memory_order_release);
         }
     }
 
-    // Enter critical section
+    /** @brief Mark thread slot as entering a critical section at the current global epoch. */
     void enterCritical(size_t slot) {
         if (slot < MAX_THREADS) {
             thread_epochs_[slot].epoch.store(
@@ -80,14 +98,20 @@ public:
         }
     }
 
-    // Exit critical section
+    /** @brief Mark thread slot as having exited its critical section. */
     void exitCritical(size_t slot) {
         if (slot < MAX_THREADS) {
             thread_epochs_[slot].epoch.store(EPOCH_INACTIVE, std::memory_order_release);
         }
     }
 
-    // Try to advance global epoch
+    /**
+     * @brief Advance the global epoch and update the safe-to-reclaim epoch.
+     *
+     * Scans all registered thread slots for the minimum observed epoch among
+     * active threads, and if enough progress has been made, raises the
+     * safe-to-reclaim epoch so retired memory older than it can be freed.
+     */
     void tryAdvanceEpoch() {
         uint64_t current = global_epoch_.load(std::memory_order_relaxed);
         uint64_t min_epoch = current;
@@ -109,10 +133,12 @@ public:
         global_epoch_.fetch_add(1, std::memory_order_acq_rel);
     }
 
+    /** @brief Get the current global epoch counter. */
     uint64_t currentEpoch() const {
         return global_epoch_.load(std::memory_order_acquire);
     }
 
+    /** @brief Get the epoch below which retired memory is safe to reclaim. */
     uint64_t safeToReclaimEpoch() const {
         return retire_epoch_.load(std::memory_order_acquire);
     }
@@ -128,12 +154,19 @@ private:
     AlignedEpoch thread_epochs_[MAX_THREADS];
 };
 
-// RAII guard for epoch critical section
+/**
+ * @brief RAII guard that brackets an epoch-based critical section.
+ *
+ * Calls EpochManager::enterCritical() on construction and
+ * EpochManager::exitCritical() on destruction for the given thread slot.
+ */
 class EpochGuard {
 public:
+    /** @brief Enter the critical section for thread slot on the given epoch manager. */
     EpochGuard(EpochManager& mgr, size_t slot) : mgr_(mgr), slot_(slot) {
         mgr_.enterCritical(slot_);
     }
+    /** @brief Exit the critical section entered by the constructor. */
     ~EpochGuard() {
         mgr_.exitCritical(slot_);
     }
@@ -146,8 +179,21 @@ private:
 // Circular Array with Safe Reclamation
 // ============================================================================
 
+/**
+ * @brief Fixed-capacity circular buffer of `void*` slots backing a WorkStealingDeque.
+ *
+ * Capacity is always a power of two (2^log_size). When a deque outgrows its
+ * current array, a larger CircularArray is created via grow() and the old
+ * one is retained (retired) until epoch-based reclamation confirms no thief
+ * can still be reading from it.
+ */
 class CircularArray {
 public:
+    /**
+     * @brief Construct a circular array of size 2^log_size, all slots initialised to nullptr.
+     * @param log_size Log2 of the desired capacity
+     * @param retire_epoch Epoch at which this array itself was created/retired (for reclamation bookkeeping)
+     */
     explicit CircularArray(size_t log_size, uint64_t retire_epoch = 0)
         : log_size_(log_size)
         , mask_((1ULL << log_size) - 1)
@@ -164,19 +210,30 @@ public:
         delete[] buffer_;
     }
 
+    /** @brief Get the array's capacity (2^log_size). */
     size_t capacity() const { return mask_ + 1; }
+    /** @brief Get log2 of the array's capacity. */
     size_t logSize() const { return log_size_; }
+    /** @brief Get the epoch this array was retired at (for reclamation bookkeeping). */
     uint64_t retireEpoch() const { return retire_epoch_; }
 
+    /** @brief Load the slot at index i (wrapped modulo capacity). */
     void* get(int64_t i) const {
         return buffer_[static_cast<size_t>(i) & mask_].load(std::memory_order_relaxed);
     }
 
+    /** @brief Store item into the slot at index i (wrapped modulo capacity). */
     void put(int64_t i, void* item) {
         buffer_[static_cast<size_t>(i) & mask_].store(item, std::memory_order_relaxed);
     }
 
-    // Create larger array and copy elements
+    /**
+     * @brief Create a new CircularArray with double the capacity and copy elements [top, bottom) into it.
+     * @param bottom Current bottom index of the deque (exclusive upper bound of live elements)
+     * @param top Current top index of the deque (inclusive lower bound of live elements)
+     * @param epoch Epoch to stamp on the new array's retire_epoch
+     * @return A newly allocated, larger CircularArray (caller takes ownership)
+     */
     CircularArray* grow(int64_t bottom, int64_t top, uint64_t epoch) const {
         auto* new_array = new CircularArray(log_size_ + 1, epoch);
         for (int64_t i = top; i < bottom; ++i) {
@@ -196,9 +253,22 @@ private:
 // Work-Stealing Deque
 // ============================================================================
 
+/**
+ * @brief Chase-Lev lock-free work-stealing deque.
+ *
+ * The owning thread pushes and pops from the bottom (LIFO), while other
+ * ("thief") threads steal from the top (FIFO). Backed by a resizable
+ * CircularArray whose old buffers are reclaimed via epoch-based memory
+ * reclamation once no thief can still be reading them. See the file-level
+ * comment for the full algorithm reference.
+ */
 class WorkStealingDeque {
 public:
-    // Initial capacity: 2^log_initial_size (default 4096 items)
+    /**
+     * @brief Construct a deque with an initial capacity of 2^log_initial_size items (default 4096).
+     * @param epoch_mgr Epoch manager used to safely reclaim old backing arrays after a resize
+     * @param log_initial_size Log2 of the initial capacity
+     */
     explicit WorkStealingDeque(EpochManager& epoch_mgr, size_t log_initial_size = 12)
         : epoch_mgr_(epoch_mgr)
         , top_(0)
@@ -218,7 +288,14 @@ public:
         }
     }
 
-    // Push item to bottom (owner only, not thread-safe with other pushes)
+    /**
+     * @brief Push an item onto the bottom of the deque.
+     *
+     * Owner-thread only; not safe to call concurrently with another push() or
+     * pop() from a different thread. Grows the backing array (and retires the
+     * old one) if the deque is at capacity.
+     * @param item Opaque task pointer to enqueue
+     */
     void push(void* item) {
         int64_t b = bottom_.load(std::memory_order_relaxed);
         int64_t t = top_.load(std::memory_order_acquire);
@@ -240,8 +317,14 @@ public:
         bottom_.store(b + 1, std::memory_order_relaxed);
     }
 
-    // Pop item from bottom (owner only, not thread-safe with other pops)
-    // Returns nullptr if empty
+    /**
+     * @brief Pop an item from the bottom of the deque.
+     *
+     * Owner-thread only; not safe to call concurrently with another pop() from
+     * a different thread. Competes with concurrent steal() calls when only one
+     * item remains.
+     * @return The popped item, or nullptr if the deque is empty (or lost the race for the last item)
+     */
     void* pop() {
         int64_t b = bottom_.load(std::memory_order_relaxed) - 1;
         CircularArray* a = array_.load(std::memory_order_relaxed);
@@ -272,8 +355,12 @@ public:
         }
     }
 
-    // Steal item from top (thread-safe, called by thieves)
-    // Returns nullptr if empty or contended
+    /**
+     * @brief Steal an item from the top of the deque.
+     *
+     * Thread-safe; may be called concurrently by any number of thief threads.
+     * @return The stolen item, or nullptr if the deque is empty or the steal lost a race
+     */
     void* steal() {
         int64_t t = top_.load(std::memory_order_acquire);
         std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -295,14 +382,14 @@ public:
         return nullptr;  // Empty
     }
 
-    // Check if approximately empty (for heuristics, not authoritative)
+    /** @brief Approximate emptiness check (heuristic only, not authoritative under concurrency). */
     bool empty() const {
         int64_t b = bottom_.load(std::memory_order_relaxed);
         int64_t t = top_.load(std::memory_order_relaxed);
         return b <= t;
     }
 
-    // Approximate size (for heuristics)
+    /** @brief Approximate item count (heuristic only, for load-balancing decisions). */
     size_t size() const {
         int64_t b = bottom_.load(std::memory_order_relaxed);
         int64_t t = top_.load(std::memory_order_relaxed);
@@ -310,7 +397,7 @@ public:
         return s > 0 ? static_cast<size_t>(s) : 0;
     }
 
-    // Clean up retired arrays that are safe to delete
+    /** @brief Delete any retired backing arrays that the epoch manager has confirmed are safe to free. */
     void reclaimRetired() {
         uint64_t safe_epoch = epoch_mgr_.safeToReclaimEpoch();
 
@@ -354,6 +441,7 @@ private:
 // Work-Stealing Scheduler
 // ============================================================================
 
+/** @brief Atomic performance counters tracked by a WorkStealingScheduler. */
 struct WorkStealingStats {
     std::atomic<uint64_t> tasks_executed{0};
     std::atomic<uint64_t> tasks_stolen{0};
@@ -363,8 +451,17 @@ struct WorkStealingStats {
     std::atomic<uint64_t> local_pushes{0};
 };
 
+/**
+ * @brief Multi-worker task scheduler built on per-worker WorkStealingDeque instances.
+ *
+ * Each worker thread owns a deque; it pops its own work first (LIFO, cache-
+ * friendly) and, when empty, steals from a randomly chosen peer's deque
+ * (FIFO). Workers sleep on a condition variable when no work is found after
+ * a bounded number of spin/yield attempts.
+ */
 class WorkStealingScheduler {
 public:
+    /** @brief A unit of scheduled work along with its completion state, for use with wait()/isDone(). */
     struct Task {
         void* (*fn)(void*);
         void* arg;
@@ -375,6 +472,10 @@ public:
         std::condition_variable waiter_cv;
     };
 
+    /**
+     * @brief Construct a scheduler with the given number of worker deques (workers are not started yet).
+     * @param num_workers Number of workers; 0 uses std::thread::hardware_concurrency() (falling back to 4)
+     */
     explicit WorkStealingScheduler(size_t num_workers = 0)
         : num_workers_(num_workers == 0 ? std::thread::hardware_concurrency() : num_workers)
         , running_(false)
@@ -401,6 +502,7 @@ public:
         stop();
     }
 
+    /** @brief Start the worker threads. No-op if already running. */
     void start() {
         if (running_.exchange(true)) return;  // Already running
 
@@ -410,6 +512,7 @@ public:
         }
     }
 
+    /** @brief Stop and join all worker threads. No-op if not running. */
     void stop() {
         if (!running_.exchange(false)) return;  // Already stopped
 
@@ -425,7 +528,16 @@ public:
         workers_.clear();
     }
 
-    // Submit task (can be called from any thread)
+    /**
+     * @brief Submit a task for execution. Callable from any thread (worker or external).
+     *
+     * If called from a worker thread, the task is pushed to that worker's own
+     * deque; otherwise it is pushed to a randomly chosen worker's deque.
+     * @param fn Task function to run
+     * @param arg Argument passed to fn
+     * @return A newly allocated Task*; pass it to wait() or isDone() to retrieve its result.
+     *         Ownership transfers to the caller of wait(), which deletes it.
+     */
     Task* submit(void* (*fn)(void*), void* arg) {
         auto* task = new Task();
         task->fn = fn;
@@ -453,7 +565,11 @@ public:
         return task;
     }
 
-    // Wait for task completion
+    /**
+     * @brief Block until a submitted task completes, then return its result and delete the Task.
+     * @param task Task returned by submit()
+     * @return The value returned by the task's function, or nullptr if task is null
+     */
     void* wait(Task* task) {
         if (!task) return nullptr;
 
@@ -470,15 +586,18 @@ public:
         return result;
     }
 
-    // Check if task is done (non-blocking)
+    /** @brief Non-blocking check of whether a submitted task has completed. */
     bool isDone(Task* task) const {
         return task && task->completed.load(std::memory_order_acquire);
     }
 
+    /** @brief Get the number of worker threads configured for this scheduler. */
     size_t numWorkers() const { return num_workers_; }
 
+    /** @brief Get the scheduler's live performance counters. */
     const WorkStealingStats& stats() const { return stats_; }
 
+    /** @brief Reset all performance counters to zero. */
     void resetStats() {
         stats_.tasks_executed.store(0, std::memory_order_relaxed);
         stats_.tasks_stolen.store(0, std::memory_order_relaxed);

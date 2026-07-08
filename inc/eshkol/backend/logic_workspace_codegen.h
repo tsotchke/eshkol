@@ -60,6 +60,11 @@ public:
         const char* caller_info,
         void* context);
 
+    /**
+     * @brief Construct a LogicWorkspaceCodegen.
+     * @param ctx CodegenContext shared by all backend codegen modules.
+     * @param tagged TaggedValueCodegen used to pack/unpack runtime values.
+     */
     LogicWorkspaceCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged);
 
     /// Wire the codegenAST callback before any generator method runs.
@@ -69,36 +74,177 @@ public:
     void setCodegenClosureCallCallback(CodegenClosureCallCallback cb);
 
     // ─── Logic primitives ─────────────────────────────────────────────────
+
+    /**
+     * @brief Generate code for (logic-var 'name) — create a fresh logic variable.
+     * @param op The operation AST node
+     * @return Tagged logic-variable value
+     */
     llvm::Value* codegenLogicVar(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (unify a b subst) — unify two terms under a substitution.
+     * @param op The operation AST node
+     * @return Extended substitution on success, or #f on failure
+     */
     llvm::Value* codegenUnify(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (make-subst) — create an empty substitution.
+     * @param op The operation AST node
+     * @return Tagged substitution value
+     */
     llvm::Value* codegenMakeSubst(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (walk term subst) — resolve a term through a substitution.
+     * @param op The operation AST node
+     * @return The fully-walked term
+     */
     llvm::Value* codegenWalk(const eshkol_operations_t* op);
 
     // ─── Knowledge base ───────────────────────────────────────────────────
+
+    /**
+     * @brief Generate code for (make-fact ...) — build a knowledge-base fact.
+     * @param op The operation AST node
+     * @return Tagged fact value
+     */
     llvm::Value* codegenMakeFact(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (make-kb) — create an empty knowledge base.
+     * @param op The operation AST node
+     * @return Tagged knowledge-base value
+     */
     llvm::Value* codegenMakeKB(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (kb-assert! kb fact) — add a fact to a knowledge base.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenKBAssert(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (kb-query kb pattern) — query facts matching a pattern.
+     * @param op The operation AST node
+     * @return List of matching bindings/facts
+     */
     llvm::Value* codegenKBQuery(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (kb-query-prefix kb prefix) — query facts by key prefix.
+     * @param op The operation AST node
+     * @return List of matching bindings/facts
+     */
     llvm::Value* codegenKBQueryPrefix(const eshkol_operations_t* op);
 
     // ─── Factor graph + active inference ──────────────────────────────────
+
+    /**
+     * @brief Generate code for (make-factor-graph) — create an empty factor graph.
+     * @param op The operation AST node
+     * @return Tagged factor-graph value
+     */
     llvm::Value* codegenMakeFactorGraph(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (fg-add-factor! graph ...) — add a factor/CPT to a factor graph.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenFGAddFactor(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (fg-infer! graph) — run belief propagation / inference.
+     * @param op The operation AST node
+     * @return Inference result (posterior beliefs)
+     */
     llvm::Value* codegenFGInfer(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (free-energy graph) — compute variational free energy.
+     * @param op The operation AST node
+     * @return Scalar free-energy value
+     */
     llvm::Value* codegenFreeEnergy(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (expected-free-energy graph ...) — compute EFE for active inference.
+     * @param op The operation AST node
+     * @return Scalar expected free-energy value
+     */
     llvm::Value* codegenEFE(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (fg-update-cpt! graph ...) — update a factor's conditional probability table.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenFGUpdateCPT(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for observing evidence on a factor graph node.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenFGObserve(const eshkol_operations_t* op);
 
     // ─── Global workspace ─────────────────────────────────────────────────
+
+    /**
+     * @brief Generate code for (make-workspace) — create the global workspace.
+     * @param op The operation AST node
+     * @return Tagged workspace value
+     */
     llvm::Value* codegenMakeWorkspace(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (ws-register! workspace module) — register a processing module.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenWSRegister(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (ws-step! workspace) — run one global-workspace broadcast cycle.
+     *
+     * Invokes each registered module's process closure against the workspace
+     * content tensor via the closure-call callback.
+     * @param op The operation AST node
+     * @return Unspecified value
+     */
     llvm::Value* codegenWSStep(const eshkol_operations_t* op);
 
     // ─── Tensor / model serialization ─────────────────────────────────────
+
+    /**
+     * @brief Generate code for (tensor-save tensor path) — serialize a tensor to disk.
+     * @param op The operation AST node
+     * @return #t on success, #f on failure
+     */
     llvm::Value* codegenTensorSave(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (tensor-load path) — deserialize a tensor from disk.
+     * @param op The operation AST node
+     * @return Loaded tensor, or #f on failure
+     */
     llvm::Value* codegenTensorLoad(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (model-save model path) — serialize a model (collection of tensors) to disk.
+     * @param op The operation AST node
+     * @return #t on success, #f on failure
+     */
     llvm::Value* codegenModelSave(const eshkol_operations_t* op);
+
+    /**
+     * @brief Generate code for (model-load path) — deserialize a model from disk.
+     * @param op The operation AST node
+     * @return Loaded model, or #f on failure
+     */
     llvm::Value* codegenModelLoad(const eshkol_operations_t* op);
 
 private:

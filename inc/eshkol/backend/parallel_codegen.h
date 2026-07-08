@@ -141,12 +141,19 @@ public:
 
     // === Runtime Function Accessors ===
 
+    /** @brief Get the declared C runtime function backing (parallel-map). */
     llvm::Function* getParallelMapFunc() const { return parallel_map_func_; }
+    /** @brief Get the declared C runtime function backing (parallel-fold). */
     llvm::Function* getParallelFoldFunc() const { return parallel_fold_func_; }
+    /** @brief Get the declared C runtime function backing (parallel-filter). */
     llvm::Function* getParallelFilterFunc() const { return parallel_filter_func_; }
+    /** @brief Get the declared C runtime function backing (parallel-for-each). */
     llvm::Function* getParallelForEachFunc() const { return parallel_for_each_func_; }
+    /** @brief Get the declared C runtime function backing (parallel-execute). */
     llvm::Function* getParallelExecuteFunc() const { return parallel_execute_func_; }
+    /** @brief Get the declared C runtime function returning the thread pool's worker count. */
     llvm::Function* getThreadPoolNumThreadsFunc() const { return thread_pool_num_threads_func_; }
+    /** @brief Get the declared C runtime function that prints thread pool statistics. */
     llvm::Function* getThreadPoolPrintStatsFunc() const { return thread_pool_print_stats_func_; }
 
 private:
@@ -224,6 +231,12 @@ private:
 public:
     // === Callback Interface ===
     // These allow the main codegen to inject AST processing callbacks
+
+    /**
+     * @brief Wire the recursive AST codegen callback used to evaluate thunk/lambda arguments.
+     * @param callback Function pointer bouncing back into the parent codegen's codegenAST().
+     * @param context Opaque context pointer passed back to callback.
+     */
     void setCodegenASTCallback(CodegenASTCallback callback, void* context);
 };
 
