@@ -7,7 +7,13 @@
 #ifndef ESHKOL_ESHKOL_H
 #define ESHKOL_ESHKOL_H
 
-// Version information
+/**
+ * @brief Eshkol runtime/compiler version numbers and version string.
+ *
+ * ESHKOL_VERSION_MAJOR / _MINOR / _PATCH are the numeric semantic-version
+ * components; ESHKOL_VERSION_STRING is the human-readable release tag
+ * embedded in binaries and reported by `--version`.
+ */
 #define ESHKOL_VERSION_MAJOR 1
 #define ESHKOL_VERSION_MINOR 2
 #define ESHKOL_VERSION_PATCH 1
@@ -21,6 +27,13 @@
 // _Static_assert is C11, static_assert is C++11. GCC in C++ mode doesn't
 // recognize _Static_assert. This macro provides a unified interface.
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * @brief Compile-time assertion, portable across C11 and C++11 compilation.
+ *
+ * Expands to `static_assert` in C++ and `_Static_assert` in C, since GCC in
+ * C++ mode does not recognize `_Static_assert`. @p cond must be a constant
+ * expression; @p msg is the diagnostic emitted if it evaluates to false.
+ */
 #ifdef __cplusplus
 #define ESHKOL_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
 #else
@@ -34,6 +47,14 @@
 extern "C" {
 #endif
 
+/**
+ * @brief AST/parser-level value type tag used by eshkol_ast_t.
+ *
+ * Distinguishes the primitive and compound value kinds the frontend AST can
+ * hold (as opposed to eshkol_value_type_t, which tags runtime tagged
+ * values). ESHKOL_BIGNUM_LITERAL and ESHKOL_SYMBOL literals are stored as
+ * strings until lowered by codegen.
+ */
 typedef enum {
     ESHKOL_INVALID,
     ESHKOL_UNTYPED,
@@ -62,6 +83,17 @@ typedef enum {
 // ═══════════════════════════════════════════════════════════════════════════
 // VALUE TYPE TAGS - 8-bit type field with subtype headers for pointers
 // ═══════════════════════════════════════════════════════════════════════════
+/**
+ * @brief Runtime tag stored in eshkol_tagged_value_t::type.
+ *
+ * Identifies the kind of value carried by a tagged value. Values 0-10 are
+ * immediates or consolidated pointer kinds that resolve to a concrete
+ * representation via the object header's subtype (see heap_subtype_t /
+ * callable_subtype_t); values 16-19 are multimedia resource kinds; values
+ * 32+ are deprecated single-purpose pointer tags kept only so the display
+ * system can render data produced before the M1 pointer-consolidation
+ * migration. New code must not use the deprecated values.
+ */
 typedef enum {
     // ═══════════════════════════════════════════════════════════════════════
     // IMMEDIATE VALUES (0-7) - data stored directly in tagged value
@@ -127,7 +159,14 @@ typedef enum {
 #define ESHKOL_VALUE_EXACT_INT64     (ESHKOL_VALUE_INT64 | ESHKOL_VALUE_EXACT_FLAG)
 #define ESHKOL_VALUE_INEXACT_DOUBLE  (ESHKOL_VALUE_DOUBLE | ESHKOL_VALUE_INEXACT_FLAG)
 
-// Tagged data union for cons cell values
+/**
+ * @brief Raw payload union backing eshkol_tagged_value_t and cons cell slots.
+ *
+ * Exactly one member is active at a time, selected by the owning tagged
+ * value's `type` field. All members occupy the same 8 bytes; `raw_val`
+ * exists purely to allow bit-level manipulation/zero-initialization without
+ * caring which typed member is logically active.
+ */
 typedef union eshkol_tagged_data {
     int64_t int_val;     // Integer value
     double double_val;   // Double-precision floating point value
@@ -135,8 +174,17 @@ typedef union eshkol_tagged_data {
     uint64_t raw_val;    // Raw 64-bit value for manipulation
 } eshkol_tagged_data_t;
 
-// Runtime tagged value representation for ALL Eshkol values
-// This struct is used throughout the system to preserve type information
+/**
+ * @brief Universal runtime representation of an Eshkol value.
+ *
+ * Every Scheme value flowing through the compiled runtime and the embedding
+ * API is carried in this 16-byte struct: `type` selects the active member of
+ * `data` (see eshkol_value_type_t), `flags` records exactness and other
+ * per-value bits (ESHKOL_VALUE_EXACT_FLAG / ESHKOL_VALUE_INEXACT_FLAG /
+ * port flags), and `reserved` is unused padding kept available for future
+ * tag bits. For heap-allocated kinds (HEAP_PTR, CALLABLE, ...) `data.ptr_val`
+ * points past an eshkol_object_header_t that carries the concrete subtype.
+ */
 typedef struct eshkol_tagged_value {
     uint8_t type;        // Value type (eshkol_value_type_t)
     uint8_t flags;       // Exactness and other flags
@@ -153,8 +201,14 @@ typedef struct eshkol_tagged_value {
 ESHKOL_STATIC_ASSERT(sizeof(eshkol_tagged_value_t) <= 16,
                      "Tagged value must fit in 16 bytes for efficiency");
 
-// Dual number for forward-mode automatic differentiation
-// Stores value and derivative simultaneously for efficient chain rule computation
+/**
+ * @brief Dual number for forward-mode automatic differentiation.
+ *
+ * Carries a function value and its derivative together so that arithmetic
+ * on dual numbers propagates derivatives via the chain rule without a
+ * separate backward pass. Used as the scalar unit of forward-mode AD
+ * (see also esh_taylor_t for the arbitrary-order generalization).
+ */
 typedef struct eshkol_dual_number {
     double value;       // f(x) - the function value
     double derivative;  // f'(x) - the derivative value
@@ -207,8 +261,13 @@ typedef struct esh_taylor {
     (((uint32_t)(coeff) & ESH_TAYLOR_COEFF_MASK) | \
      (((uint32_t)(epoch) << ESH_TAYLOR_EPOCH_SHIFT) & ESH_TAYLOR_EPOCH_MASK))
 
-// Complex number for signal processing, FFT, and general complex analysis
-// Stores real and imaginary components as IEEE 754 double-precision floats
+/**
+ * @brief Complex number for signal processing, FFT, and complex analysis.
+ *
+ * Stores the real and imaginary components as IEEE 754 double-precision
+ * floats. Complex-valued tagged values (ESHKOL_VALUE_COMPLEX) store a
+ * pointer to a heap-allocated instance of this struct.
+ */
 typedef struct eshkol_complex_number {
     double real;        // Real component (ℜ)
     double imag;        // Imaginary component (𝕴)
@@ -219,6 +278,12 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_complex_number_t) == 16,
                      "Complex number must be 16 bytes for cache efficiency");
 
 // Helper functions for tagged value manipulation
+/**
+ * @brief Construct a tagged value wrapping a 64-bit signed integer.
+ * @param val Integer payload.
+ * @param exact Whether the value is R7RS-exact; sets ESHKOL_VALUE_EXACT_FLAG.
+ * @return A tagged value of type ESHKOL_VALUE_INT64.
+ */
 static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
     eshkol_tagged_value_t result;
     result.type = ESHKOL_VALUE_INT64;
@@ -228,6 +293,11 @@ static inline eshkol_tagged_value_t eshkol_make_int64(int64_t val, bool exact) {
     return result;
 }
 
+/**
+ * @brief Construct a tagged value wrapping an inexact double.
+ * @param val Double-precision payload.
+ * @return A tagged value of type ESHKOL_VALUE_DOUBLE with the inexact flag set.
+ */
 static inline eshkol_tagged_value_t eshkol_make_double(double val) {
     eshkol_tagged_value_t result;
     result.type = ESHKOL_VALUE_DOUBLE;
@@ -237,6 +307,12 @@ static inline eshkol_tagged_value_t eshkol_make_double(double val) {
     return result;
 }
 
+/**
+ * @brief Construct a tagged value wrapping a raw pointer with an explicit type tag.
+ * @param ptr Pointer value, stored in the tagged value's ptr_val union member.
+ * @param type Type tag to assign (e.g. ESHKOL_VALUE_HEAP_PTR, ESHKOL_VALUE_CALLABLE).
+ * @return A tagged value with `flags`/`reserved` cleared and `data.ptr_val = ptr`.
+ */
 static inline eshkol_tagged_value_t eshkol_make_ptr(uint64_t ptr, uint8_t type) {
     eshkol_tagged_value_t result;
     result.type = type;
@@ -246,6 +322,11 @@ static inline eshkol_tagged_value_t eshkol_make_ptr(uint64_t ptr, uint8_t type) 
     return result;
 }
 
+/**
+ * @brief Construct a tagged value wrapping a heap-allocated complex number.
+ * @param ptr Pointer to an eshkol_complex_number_t.
+ * @return A tagged value of type ESHKOL_VALUE_COMPLEX (always inexact).
+ */
 static inline eshkol_tagged_value_t eshkol_make_complex(uint64_t ptr) {
     eshkol_tagged_value_t result;
     result.type = ESHKOL_VALUE_COMPLEX;
@@ -255,14 +336,29 @@ static inline eshkol_tagged_value_t eshkol_make_complex(uint64_t ptr) {
     return result;
 }
 
+/**
+ * @brief Read the integer payload from a tagged value.
+ * @param val Tagged value; caller must ensure its type stores int64 data.
+ * @return The raw `data.int_val` field, without any type checking.
+ */
 static inline int64_t eshkol_unpack_int64(const eshkol_tagged_value_t* val) {
     return val->data.int_val;
 }
 
+/**
+ * @brief Read the double payload from a tagged value.
+ * @param val Tagged value; caller must ensure its type stores double data.
+ * @return The raw `data.double_val` field, without any type checking.
+ */
 static inline double eshkol_unpack_double(const eshkol_tagged_value_t* val) {
     return val->data.double_val;
 }
 
+/**
+ * @brief Read the pointer payload from a tagged value.
+ * @param val Tagged value; caller must ensure its type stores pointer data.
+ * @return The raw `data.ptr_val` field, without any type checking.
+ */
 static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
     return val->data.ptr_val;
 }
@@ -361,7 +457,15 @@ static inline uint64_t eshkol_unpack_ptr(const eshkol_tagged_value_t* val) {
 #define ESHKOL_OBJ_FLAG_PINNED    0x40  // Pinned in memory (no relocation)
 #define ESHKOL_OBJ_FLAG_EXTERNAL  0x80  // External resource (needs explicit cleanup)
 
-// Object header structure (8 bytes, prepended to all heap objects)
+/**
+ * @brief 8-byte header prepended to every heap-allocated object.
+ *
+ * Enables pointer-type consolidation: ESHKOL_VALUE_HEAP_PTR, CALLABLE,
+ * HANDLE, BUFFER, STREAM, and EVENT tagged values all point past one of
+ * these headers, with `subtype` identifying the concrete representation
+ * (see heap_subtype_t / callable_subtype_t / handle_subtype_t / etc.).
+ * Accessed via the ESHKOL_GET_HEADER family of macros below.
+ */
 typedef struct eshkol_object_header {
     uint8_t  subtype;      // Distinguishes types within HEAP_PTR/CALLABLE/HANDLE
     uint8_t  flags;        // Object flags (GC marks, linear status, etc.)
@@ -377,6 +481,15 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_object_header_t) == 8,
 // HEAP_PTR SUBTYPES (type = ESHKOL_VALUE_HEAP_PTR = 8)
 // Data structures allocated on the arena
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete data-structure kind for a value tagged ESHKOL_VALUE_HEAP_PTR.
+ *
+ * Stored in the eshkol_object_header_t::subtype field prepended to the
+ * object. Distinguishes the arena-allocated heap data structures (lists,
+ * strings, vectors, tensors, hash tables, records, ports, bignums, and the
+ * neuro-symbolic/AD structures added for the consciousness engine and
+ * Taylor-tower AD) that share the single consolidated HEAP_PTR type tag.
+ */
 typedef enum {
     HEAP_SUBTYPE_CONS        = 0,   // Cons cell (pair/list node)
     HEAP_SUBTYPE_STRING      = 1,   // String (UTF-8 with length)
@@ -410,6 +523,14 @@ typedef enum {
 // CALLABLE SUBTYPES (type = ESHKOL_VALUE_CALLABLE = 9)
 // Function-like objects that can be invoked
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete callable kind for a value tagged ESHKOL_VALUE_CALLABLE.
+ *
+ * Stored in the eshkol_object_header_t::subtype field prepended to the
+ * callable object, distinguishing compiled closures, homoiconic
+ * lambda-as-data representations, autodiff nodes, built-in primitives, and
+ * (reserved for future use) first-class continuations.
+ */
 typedef enum {
     CALLABLE_SUBTYPE_CLOSURE      = 0,  // Compiled closure (func_ptr + env)
     CALLABLE_SUBTYPE_LAMBDA_SEXPR = 1,  // Lambda as data (homoiconicity)
@@ -423,6 +544,13 @@ typedef enum {
 // HANDLE SUBTYPES (type = ESHKOL_VALUE_HANDLE = 16, future multimedia)
 // External resources requiring explicit lifecycle management
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete external-resource kind for a value tagged ESHKOL_VALUE_HANDLE.
+ *
+ * Reserved for the future multimedia/systems API: window, GPU context,
+ * audio/MIDI/camera devices, sockets, framebuffers, files, threads, and
+ * mutexes each requiring explicit lifecycle management outside the GC.
+ */
 typedef enum {
     HANDLE_SUBTYPE_WINDOW       = 0,   // Window/surface handle
     HANDLE_SUBTYPE_GL_CONTEXT   = 1,   // OpenGL/Vulkan/Metal context
@@ -441,6 +569,13 @@ typedef enum {
 // BUFFER SUBTYPES (type = ESHKOL_VALUE_BUFFER = 17, future multimedia)
 // Memory regions for zero-copy data transfer
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete memory-region kind for a value tagged ESHKOL_VALUE_BUFFER.
+ *
+ * Reserved for the future multimedia API's zero-copy data buffers (raw
+ * bytes, image/audio samples, GPU vertex/index/uniform buffers, textures,
+ * and memory-mapped files).
+ */
 typedef enum {
     BUFFER_SUBTYPE_RAW         = 0,   // Raw byte buffer
     BUFFER_SUBTYPE_IMAGE       = 1,   // Image pixel data
@@ -457,6 +592,12 @@ typedef enum {
 // STREAM SUBTYPES (type = ESHKOL_VALUE_STREAM = 18, future multimedia)
 // Async I/O and data flow pipelines
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete async data-flow kind for a value tagged ESHKOL_VALUE_STREAM.
+ *
+ * Reserved for the future multimedia API's lazy/async I/O pipelines (byte,
+ * audio, video, MIDI, and network streams, plus transform/filter stages).
+ */
 typedef enum {
     STREAM_SUBTYPE_BYTE        = 0,   // Raw byte stream
     STREAM_SUBTYPE_AUDIO       = 1,   // Audio sample stream
@@ -471,6 +612,12 @@ typedef enum {
 // EVENT SUBTYPES (type = ESHKOL_VALUE_EVENT = 19, future multimedia)
 // Real-time event handling
 // ───────────────────────────────────────────────────────────────────────────
+/**
+ * @brief Concrete real-time event kind for a value tagged ESHKOL_VALUE_EVENT.
+ *
+ * Reserved for the future multimedia API's event system (input, window,
+ * audio, MIDI, timer, network, and user-defined custom events).
+ */
 typedef enum {
     EVENT_SUBTYPE_INPUT        = 0,   // Keyboard/mouse/touch input
     EVENT_SUBTYPE_WINDOW       = 1,   // Window resize/focus/close
@@ -658,6 +805,12 @@ typedef enum {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Dual number helper functions for forward-mode automatic differentiation
+/**
+ * @brief Construct a dual number from a value and its derivative.
+ * @param value Function value f(x).
+ * @param derivative Derivative value f'(x).
+ * @return An eshkol_dual_number_t with both fields set.
+ */
 static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivative) {
     eshkol_dual_number_t result;
     result.value = value;
@@ -665,10 +818,20 @@ static inline eshkol_dual_number_t eshkol_make_dual(double value, double derivat
     return result;
 }
 
+/**
+ * @brief Read the value component f(x) of a dual number.
+ * @param d Dual number to read.
+ * @return The `value` field.
+ */
 static inline double eshkol_dual_value(const eshkol_dual_number_t* d) {
     return d->value;
 }
 
+/**
+ * @brief Read the derivative component f'(x) of a dual number.
+ * @param d Dual number to read.
+ * @return The `derivative` field.
+ */
 static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) {
     return d->derivative;
 }
@@ -676,6 +839,16 @@ static inline double eshkol_dual_derivative(const eshkol_dual_number_t* d) {
 // ===== COMPUTATIONAL GRAPH NODE TYPES =====
 // AD node types for reverse-mode automatic differentiation
 
+/**
+ * @brief Operation kind recorded at each node of the reverse-mode AD tape.
+ *
+ * Selects which forward computation and backward gradient rule ad_node_t
+ * represents: constants/variables, elementwise arithmetic and math
+ * functions, neural-network activation and tensor/transformer operations,
+ * qLLM hyperbolic-geometry operations, and their scalar/tensor variants.
+ * AD_NODE_TYPE_COUNT is a sentinel for bounds-checked dispatch tables and is
+ * not itself a valid node type.
+ */
 typedef enum {
     // Core operations (0-11)
     AD_NODE_CONSTANT,
@@ -781,8 +954,19 @@ typedef enum {
     AD_NODE_TYPE_COUNT
 } ad_node_type_t;
 
-// Computational graph node for reverse-mode AD
-// Stores the computational graph for backpropagation
+/**
+ * @brief One node of the reverse-mode AD computational graph.
+ *
+ * Records a single operation's forward value, accumulated backward
+ * gradient, and links to its input nodes so the tape can be walked in
+ * reverse topological order during backpropagation. Scalar operations use
+ * `value`/`gradient`; tensor operations additionally use `tensor_value` /
+ * `tensor_gradient` and, where a backward rule needs forward-pass
+ * intermediates (softmax output, conv indices, etc.), `saved_tensors`.
+ * `params` holds the small set of operation-specific scalars (e.g. conv
+ * kernel/stride/padding, attention head count) needed to run the correct
+ * backward rule for `type`.
+ */
 typedef struct ad_node {
     ad_node_type_t type;     // Type of operation
     double value;            // Computed value during forward pass (scalar)
@@ -827,8 +1011,15 @@ typedef struct ad_node {
     size_t ndim;             // Number of dimensions
 } ad_node_t;
 
-// Computational graph tape for recording operations
-// Maintains all nodes in evaluation order for backpropagation
+/**
+ * @brief Tape recording all AD nodes created during a forward pass.
+ *
+ * Nodes are appended to `nodes` in evaluation (creation) order as the
+ * forward computation executes; backpropagation walks the tape in reverse.
+ * `variables` tracks the subset of nodes that are independent input
+ * variables, so gradients with respect to them can be extracted after the
+ * backward pass completes.
+ */
 typedef struct ad_tape {
     ad_node_t** nodes;       // Array of nodes in evaluation order
     size_t num_nodes;        // Current number of nodes
@@ -849,6 +1040,15 @@ typedef struct ad_tape {
 //   - Bit 63:     is_variadic flag (1 = variadic, 0 = not variadic)
 //
 // Use the macros below to extract/encode these values:
+/**
+ * @brief Accessors/constructor for the packed `num_captures` field of
+ * eshkol_closure_env_t.
+ *
+ * The single size_t packs three logically distinct values so the header
+ * stays minimal: capture count, fixed parameter count, and a variadic flag
+ * (see field layout above). CLOSURE_ENV_PACK builds the packed value;
+ * the GET_* macros extract each component.
+ */
 #define CLOSURE_ENV_GET_NUM_CAPTURES(packed) ((packed) & 0xFFFF)
 #define CLOSURE_ENV_GET_FIXED_PARAMS(packed) (((packed) >> 16) & 0xFFFF)
 #define CLOSURE_ENV_IS_VARIADIC(packed) (((packed) >> 63) & 1)
@@ -857,6 +1057,14 @@ typedef struct ad_tape {
      (((size_t)(fixed_params) & 0xFFFF) << 16) | \
      ((size_t)(is_var) << 63))
 
+/**
+ * @brief Arena-allocated environment holding a closure's captured variables.
+ *
+ * Laid out as a minimal packed header (`num_captures`, see the
+ * CLOSURE_ENV_* macros) followed by a flexible array of the captured
+ * tagged values themselves, so the whole environment is a single
+ * contiguous allocation.
+ */
 typedef struct eshkol_closure_env {
     size_t num_captures;                  // Packed: num_captures | (fixed_params << 16) | (is_variadic << 63)
     eshkol_tagged_value_t captures[];     // Flexible array of captured values
@@ -883,8 +1091,17 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_env_t) == sizeof(size_t),
 #define ESHKOL_CLOSURE_FLAG_VARIADIC       CLOSURE_FLAG_VARIADIC  // Alias for consistency
 #define ESHKOL_CLOSURE_FLAG_NAMED          CLOSURE_FLAG_NAMED     // Alias for consistency
 
-// Full closure structure combining function pointer and environment
-// This is what gets allocated when a closure-returning function is called
+/**
+ * @brief Full closure object: function pointer plus captured environment.
+ *
+ * Allocated whenever a closure-returning form (lambda, named let, etc.)
+ * produces a first-class function value. `env` may be NULL for closures
+ * with no captures (top-level defines). `sexpr_ptr` links back to the
+ * closure's S-expression form to support homoiconicity (e.g. `(display
+ * some-lambda)`); `return_type` records enough static information
+ * (CLOSURE_RETURN_*) to make dispatch decisions (e.g. for autodiff) without
+ * invoking the closure.
+ */
 typedef struct eshkol_closure {
     uint64_t func_ptr;                    // Pointer to the lambda function
     eshkol_closure_env_t* env;            // Pointer to captured environment (may be NULL for no captures)
@@ -907,8 +1124,18 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_closure_t) == 40,
 #define CLOSURE_RETURNS_FUNCTION(closure) ((closure)->return_type == CLOSURE_RETURN_FUNCTION)
 #define CLOSURE_TYPE_KNOWN(closure) ((closure)->return_type != CLOSURE_RETURN_UNKNOWN)
 
-// Get closure return type from a tagged value
-// Supports both consolidated CALLABLE type and legacy CLOSURE_PTR
+/**
+ * @brief Get a closure's static return-type category from a tagged value.
+ *
+ * Supports both the consolidated CALLABLE type (verifying the object
+ * header's subtype is CALLABLE_SUBTYPE_CLOSURE before dereferencing) and
+ * the deprecated legacy CLOSURE_PTR tag.
+ *
+ * @param tagged Tagged value expected to hold a closure.
+ * @return One of the CLOSURE_RETURN_* constants, or CLOSURE_RETURN_UNKNOWN
+ *         if @p tagged is not a closure, is NULL, or has an unrecognized
+ *         subtype.
+ */
 static inline uint8_t eshkol_closure_get_return_type(eshkol_tagged_value_t tagged) {
     uint8_t base_type = tagged.type & 0x3F;  // Mask off flags
 
@@ -935,12 +1162,22 @@ static inline uint8_t eshkol_closure_get_return_type(eshkol_tagged_value_t tagge
     return CLOSURE_RETURN_UNKNOWN;
 }
 
-// Check if a closure returns a vector (for autodiff)
+/**
+ * @brief Check whether a closure's static return type is a vector/tensor.
+ * @param tagged Tagged value expected to hold a closure.
+ * @return true if eshkol_closure_get_return_type() reports CLOSURE_RETURN_VECTOR.
+ * @note Used by autodiff to pick the scalar vs. tensor differentiation path.
+ */
 static inline bool eshkol_closure_returns_vector(eshkol_tagged_value_t tagged) {
     return eshkol_closure_get_return_type(tagged) == CLOSURE_RETURN_VECTOR;
 }
 
-// Check if a closure returns a scalar (for autodiff)
+/**
+ * @brief Check whether a closure's static return type is a scalar.
+ * @param tagged Tagged value expected to hold a closure.
+ * @return true if eshkol_closure_get_return_type() reports CLOSURE_RETURN_SCALAR.
+ * @note Used by autodiff to pick the scalar vs. tensor differentiation path.
+ */
 static inline bool eshkol_closure_returns_scalar(eshkol_tagged_value_t tagged) {
     return eshkol_closure_get_return_type(tagged) == CLOSURE_RETURN_SCALAR;
 }
@@ -984,7 +1221,13 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_primitive_t) == 24,
 // ===== EXCEPTION HANDLING STRUCTURES =====
 // Support for R7RS-compatible exception handling (guard, raise, error)
 
-// Exception type codes for built-in exception types
+/**
+ * @brief Built-in exception type codes for R7RS-style error handling.
+ *
+ * Stored in eshkol_exception_t::type; ESHKOL_EXCEPTION_USER_DEFINED marks
+ * exceptions raised by user code via `(raise ...)` / `(error ...)` with a
+ * condition type not covered by the built-in categories.
+ */
 typedef enum {
     ESHKOL_EXCEPTION_ERROR = 0,        // Generic error
     ESHKOL_EXCEPTION_TYPE_ERROR,       // Type mismatch
@@ -997,7 +1240,15 @@ typedef enum {
     ESHKOL_EXCEPTION_USER_DEFINED      // User-defined exception
 } eshkol_exception_type_t;
 
-// Exception object structure (arena-allocated)
+/**
+ * @brief Arena-allocated exception/condition object.
+ *
+ * Represents a raised R7RS condition: its type code, human-readable
+ * message, an array of irritant values (additional data attached via
+ * `error`/`raise`), and source location for diagnostics. Wrapped in a
+ * tagged value via eshkol_make_exception_value() for use as an ordinary
+ * Scheme value (e.g. bound by `guard`).
+ */
 typedef struct eshkol_exception {
     eshkol_exception_type_t type;      // Exception type code
     char* message;                      // Error message
@@ -1008,7 +1259,13 @@ typedef struct eshkol_exception {
     char* filename;                     // Source filename (NULL = unknown)
 } eshkol_exception_t;
 
-// Exception handler entry for the handler stack
+/**
+ * @brief One entry in the `guard`/exception handler stack.
+ *
+ * Each active `guard` form pushes one of these, storing the setjmp buffer
+ * to longjmp back into when an exception is raised, and linking to the
+ * previously active handler so it can be restored on exit.
+ */
 typedef struct eshkol_exception_handler {
     void* jmp_buf_ptr;                  // Pointer to setjmp buffer
     struct eshkol_exception_handler* prev;  // Previous handler in stack
@@ -1021,21 +1278,95 @@ extern eshkol_exception_t* g_current_exception;
 extern eshkol_exception_handler_t* g_exception_handler_stack;
 
 // Exception API functions (implemented in arena_memory.cpp)
+/**
+ * @brief Allocate a new exception object of the given type and message.
+ * @param type Exception type code.
+ * @param message Human-readable error message; copied/owned by the runtime arena.
+ * @return Newly allocated eshkol_exception_t, with no irritants and no location set.
+ */
 eshkol_exception_t* eshkol_make_exception(eshkol_exception_type_t type, const char* message);
+/**
+ * @brief Like eshkol_make_exception(), but also allocates the object's heap header.
+ *
+ * Use this variant when the exception will be wrapped directly into an
+ * ESHKOL_VALUE_HEAP_PTR-tagged value (subtype HEAP_SUBTYPE_EXCEPTION) rather
+ * than the legacy ESHKOL_VALUE_EXCEPTION tag.
+ * @param type Exception type code.
+ * @param message Human-readable error message.
+ * @return Newly allocated eshkol_exception_t preceded by an object header.
+ */
 eshkol_exception_t* eshkol_make_exception_with_header(eshkol_exception_type_t type, const char* message);
+/**
+ * @brief Append an irritant value to an exception's irritant list.
+ * @param exc Exception to modify.
+ * @param irritant Tagged value to append (copied by value).
+ */
 void eshkol_exception_add_irritant(eshkol_exception_t* exc, eshkol_tagged_value_t irritant);
+/**
+ * @brief Append an irritant value to an exception's irritant list, by pointer.
+ * @param exc Exception to modify.
+ * @param irritant Pointer to the tagged value to append (dereferenced and copied).
+ */
 void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc, const eshkol_tagged_value_t* irritant);
+/**
+ * @brief Attach source-location information to an exception for diagnostics.
+ * @param exc Exception to modify.
+ * @param line Source line (0 = unknown).
+ * @param column Source column (0 = unknown).
+ * @param filename Source file name (NULL = unknown); ownership per the implementation's convention.
+ */
 void eshkol_exception_set_location(eshkol_exception_t* exc, uint32_t line, uint32_t column, const char* filename);
+/**
+ * @brief Raise an exception, transferring control to the innermost active handler.
+ *
+ * Sets @p exception as `g_current_exception` and longjmps to the buffer at
+ * the top of `g_exception_handler_stack`. Does not return if a handler is
+ * active; behavior with no active handler follows the runtime's top-level
+ * uncaught-exception path.
+ * @param exception Exception to raise.
+ */
 void eshkol_raise(eshkol_exception_t* exception);
 // R7RS error-object accessors (implemented in runtime_exceptions_hosted.cpp)
+/**
+ * @brief R7RS `error-object?` predicate.
+ * @param obj Tagged value to test.
+ * @return Nonzero if @p obj is an error/exception object, zero otherwise.
+ */
 int  eshkol_error_object_p(const eshkol_tagged_value_t* obj);
+/**
+ * @brief R7RS `error-object-message` accessor.
+ * @param obj Error object to query.
+ * @param out Output tagged value receiving the message string.
+ */
 void eshkol_error_object_message(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
+/**
+ * @brief R7RS `error-object-irritants` accessor.
+ * @param obj Error object to query.
+ * @param out Output tagged value receiving the list of irritants.
+ */
 void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj, eshkol_tagged_value_t* out);
+/**
+ * @brief Push a new exception handler frame onto the handler stack.
+ * @param jmp_buf_ptr Pointer to the setjmp buffer to longjmp to on raise.
+ */
 void eshkol_push_exception_handler(void* jmp_buf_ptr);
+/**
+ * @brief Pop the innermost exception handler frame, restoring the previous one.
+ */
 void eshkol_pop_exception_handler(void);
+/**
+ * @brief Test whether an exception matches a given type code.
+ * @param exc Exception to test.
+ * @param type Type code to compare against.
+ * @return Nonzero if `exc->type == type`, zero otherwise.
+ */
 int eshkol_exception_type_matches(eshkol_exception_t* exc, eshkol_exception_type_t type);
 
-// Helper to create tagged exception value
+/**
+ * @brief Wrap an exception pointer in a tagged value (legacy EXCEPTION tag).
+ * @param exc Exception object to wrap.
+ * @return A tagged value of type ESHKOL_VALUE_EXCEPTION pointing at @p exc.
+ */
 static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception_t* exc) {
     eshkol_tagged_value_t result;
     result.type = ESHKOL_VALUE_EXCEPTION;
@@ -1049,14 +1380,28 @@ static inline eshkol_tagged_value_t eshkol_make_exception_value(eshkol_exception
 
 // ===== FIRST-CLASS CONTINUATIONS =====
 
-// Continuation state: captures the setjmp point and holds the value being passed
+/**
+ * @brief Captured state for a first-class continuation created by `call/cc`.
+ *
+ * Holds the setjmp point on the capturing call/cc's stack frame, the value
+ * to be delivered when the continuation is later invoked, and the
+ * dynamic-wind stack marker at capture time (used to correctly run
+ * before/after thunks when the continuation is invoked from a different
+ * dynamic extent).
+ */
 typedef struct eshkol_continuation_state {
     void* jmp_buf_ptr;                  // Points to jmp_buf on the call/cc caller's stack
     eshkol_tagged_value_t value;        // Value passed when continuation is invoked
     void* wind_mark;                    // Dynamic-wind stack marker at capture time
 } eshkol_continuation_state_t;
 
-// Dynamic-wind handler entry for the handler stack
+/**
+ * @brief One entry in the `dynamic-wind` stack.
+ *
+ * Records the before/after thunks of an active `dynamic-wind` so that
+ * eshkol_unwind_dynamic_wind() can run the appropriate after-thunks when a
+ * continuation invocation unwinds past this dynamic extent.
+ */
 typedef struct eshkol_dynamic_wind_entry {
     eshkol_tagged_value_t before;       // Before thunk (callable)
     eshkol_tagged_value_t after;        // After thunk (callable)
@@ -1067,27 +1412,75 @@ typedef struct eshkol_dynamic_wind_entry {
 extern eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack;
 
 // Continuation runtime functions
+/**
+ * @brief Allocate the captured state for a new continuation.
+ * @param arena Arena to allocate from.
+ * @param jmp_buf_ptr setjmp buffer captured at the call/cc call site.
+ * @return Newly allocated eshkol_continuation_state_t.
+ */
 eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena, void* jmp_buf_ptr);
+/**
+ * @brief Wrap a captured continuation state in an invocable closure.
+ * @param arena Arena to allocate the closure from.
+ * @param state_ptr Continuation state previously created by
+ *        eshkol_make_continuation_state(); invoking the returned closure
+ *        with a value longjmps back to the capture point delivering it.
+ * @return Opaque pointer to the resulting closure object.
+ */
 void* eshkol_make_continuation_closure(void* arena, void* state_ptr);
+/**
+ * @brief Push a new dynamic-wind frame with the given before/after thunks.
+ * @param arena Arena to allocate the stack entry from.
+ * @param before Thunk invoked when entering this dynamic extent.
+ * @param after Thunk invoked when leaving this dynamic extent.
+ */
 void eshkol_push_dynamic_wind(void* arena, const eshkol_tagged_value_t* before, const eshkol_tagged_value_t* after);
+/**
+ * @brief Pop the innermost dynamic-wind frame without running its after-thunk.
+ *
+ * Used for normal (non-continuation) exit from the dynamic-wind body, where
+ * the after-thunk is invoked directly by the generated code.
+ */
 void eshkol_pop_dynamic_wind(void);
+/**
+ * @brief Run after-thunks for all dynamic-wind frames above a saved marker.
+ *
+ * Invoked when a continuation is called from outside the dynamic extent in
+ * which it was captured, to correctly unwind (running after-thunks) or
+ * rewind (running before-thunks) through intervening dynamic-wind frames.
+ * @param saved_wind_mark Dynamic-wind stack marker captured with the
+ *        continuation (eshkol_continuation_state_t::wind_mark).
+ */
 void eshkol_unwind_dynamic_wind(void* saved_wind_mark);
 
 // ===== END FIRST-CLASS CONTINUATIONS =====
 
-// Initialize process/thread stack sizing for deep recursion support.
+/**
+ * @brief Initialize process/thread stack sizing for deep recursion support.
+ *
+ * Should be called early in program startup (before deep recursive Scheme
+ * code runs) to raise the OS thread/process stack limit so that
+ * non-tail-recursive Scheme programs have adequate headroom before
+ * overflowing the native stack.
+ */
 void eshkol_init_stack_size(void);
 
 // ===== LAMBDA REGISTRY FOR HOMOICONICITY =====
 // Runtime table mapping function pointers to their S-expression representations
 // This enables full homoiconicity: (display (list double)) shows the lambda source
 
+/**
+ * @brief One entry mapping a compiled function pointer to its source form.
+ */
 typedef struct eshkol_lambda_entry {
     uint64_t func_ptr;      // Function pointer as uint64
     uint64_t sexpr_ptr;     // Pointer to S-expression cons cell (0 if none)
     const char* name;       // Function name for debugging (may be NULL)
 } eshkol_lambda_entry_t;
 
+/**
+ * @brief Growable table of eshkol_lambda_entry_t used for homoiconicity.
+ */
 typedef struct eshkol_lambda_registry {
     eshkol_lambda_entry_t* entries;
     size_t count;
@@ -1098,9 +1491,29 @@ typedef struct eshkol_lambda_registry {
 extern eshkol_lambda_registry_t* g_lambda_registry;
 
 // Lambda registry API
+/**
+ * @brief Initialize the global lambda registry (allocate backing storage).
+ *
+ * Must be called once during runtime startup before any
+ * eshkol_lambda_registry_add() calls.
+ */
 void eshkol_lambda_registry_init(void);
+/**
+ * @brief Free the global lambda registry's backing storage.
+ */
 void eshkol_lambda_registry_destroy(void);
+/**
+ * @brief Register a compiled function pointer's S-expression source and name.
+ * @param func_ptr Compiled function pointer, as a uint64.
+ * @param sexpr_ptr Pointer to the cons-cell S-expression representation (0 if none).
+ * @param name Function name for debugging/display (may be NULL for anonymous lambdas).
+ */
 void eshkol_lambda_registry_add(uint64_t func_ptr, uint64_t sexpr_ptr, const char* name);
+/**
+ * @brief Look up the S-expression pointer registered for a function pointer.
+ * @param func_ptr Compiled function pointer to look up.
+ * @return The registered sexpr_ptr, or 0 if @p func_ptr is not registered.
+ */
 uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr);
 
 // ===== END LAMBDA REGISTRY =====
@@ -1111,7 +1524,9 @@ uint64_t eshkol_lambda_registry_lookup(uint64_t func_ptr);
 // Forward declaration for tagged cons cell
 struct arena_tagged_cons_cell;
 
-// Display options for customizing output
+/**
+ * @brief Options controlling how eshkol_display_value_opts() renders a value.
+ */
 typedef struct eshkol_display_opts {
     int max_depth;          // Maximum recursion depth (default: 100)
     int current_depth;      // Current depth (internal use)
@@ -1120,7 +1535,10 @@ typedef struct eshkol_display_opts {
     void* output;           // Output stream (FILE*, default: stdout)
 } eshkol_display_opts_t;
 
-// Default display options
+/**
+ * @brief Construct the default eshkol_display_opts_t (display semantics, stdout).
+ * @return Options with max_depth=100, unquoted strings, no type tags, output=stdout.
+ */
 static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
     eshkol_display_opts_t opts;
     opts.max_depth = 100;
@@ -1134,14 +1552,46 @@ static inline eshkol_display_opts_t eshkol_display_default_opts(void) {
 // R7RS flonum external representation (+inf.0 / -inf.0 / +nan.0). Single
 // source of truth shared by display/write/number->string/logic printing.
 // Defined in runtime_display_hosted.cpp.
+/**
+ * @brief Format a double using Eshkol's R7RS flonum external representation.
+ * @param buf Destination buffer.
+ * @param n Size of @p buf in bytes.
+ * @param v Value to format.
+ * @return Number of characters that would be written (as with snprintf),
+ *         not counting the terminating NUL; truncated to fit @p n.
+ */
 int  eshkol_format_double(char* buf, size_t n, double v);
+/**
+ * @brief Print a double to a FILE* using Eshkol's flonum external representation.
+ * @param file Destination stream, as a `FILE*` cast to `void*`.
+ * @param v Value to print.
+ */
 void eshkol_fprint_double(void* file, double v);
 
 // Main display functions (implemented in arena_memory.cpp)
+/**
+ * @brief Display a tagged value to stdout using default options ('display' semantics).
+ * @param value Value to display.
+ */
 void eshkol_display_value(const eshkol_tagged_value_t* value);
+/**
+ * @brief Display a tagged value to stdout with caller-specified options.
+ * @param value Value to display.
+ * @param opts Display options (depth limit, quoting, type-tag debug output, output stream).
+ */
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts);
 void eshkol_write_value(const eshkol_tagged_value_t* value);  // Scheme 'write' semantics
+/**
+ * @brief Write a tagged value (R7RS `write` semantics: strings/chars quoted) to a port.
+ * @param value Value to write.
+ * @param port Destination port, as a runtime port pointer cast to `void*`.
+ */
 void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port);
+/**
+ * @brief Display a tagged value (R7RS `display` semantics: strings/chars unquoted) to a port.
+ * @param value Value to display.
+ * @param port Destination port, as a runtime port pointer cast to `void*`.
+ */
 void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port);
 
 // ─── R7RS current-{input,output,error}-port parameter cells ───────────────
@@ -1149,27 +1599,75 @@ void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port
 // `(current-output-port)` consult these. `(parameterize ((current-output-port
 // p)) …)` invokes the setters via the Scheme-level closure that wraps the
 // FILE* extracted from the port tagged value.
+/** @brief Get the current-output-port's underlying `FILE*` (as `void*`). */
 void* eshkol_runtime_current_output_fp(void);
+/** @brief Get the current-input-port's underlying `FILE*` (as `void*`). */
 void* eshkol_runtime_current_input_fp(void);
+/** @brief Get the current-error-port's underlying `FILE*` (as `void*`). */
 void* eshkol_runtime_current_error_fp(void);
+/**
+ * @brief Set the current-output-port's underlying `FILE*`.
+ * @param fp New `FILE*`, as `void*`; invoked by `parameterize` on `current-output-port`.
+ */
 void  eshkol_runtime_set_current_output_fp(void* fp);
+/**
+ * @brief Set the current-input-port's underlying `FILE*`.
+ * @param fp New `FILE*`, as `void*`; invoked by `parameterize` on `current-input-port`.
+ */
 void  eshkol_runtime_set_current_input_fp(void* fp);
+/**
+ * @brief Set the current-error-port's underlying `FILE*`.
+ * @param fp New `FILE*`, as `void*`; invoked by `parameterize` on `current-error-port`.
+ */
 void  eshkol_runtime_set_current_error_fp(void* fp);
 
 // Process-global runtime helpers emitted by codegen/JIT modules.
+/**
+ * @brief Look up a compiled function or global's address by interned symbol name.
+ * @param name Symbol name to resolve.
+ * @return Address of the resolved symbol, or NULL if not found.
+ */
 void* eshkol_intern_symbol_lookup(const char* name);
+/**
+ * @brief Resolve a forward-declared function reference at first call.
+ *
+ * Emitted by codegen at call sites of functions that may not yet be defined
+ * (e.g. mutual recursion in the REPL/JIT). If @p loaded_fn_ptr is non-NULL
+ * it is used directly; otherwise the runtime attempts to resolve @p name
+ * and reports an error referencing it if resolution fails.
+ * @param loaded_fn_ptr Already-resolved function pointer, or NULL if not yet loaded.
+ * @param unresolved_stub_ptr Stub pointer to compare against/replace once resolved.
+ * @param name Function name, for lookup and diagnostics.
+ * @return The resolved function pointer to call.
+ */
 void* eshkol_check_forward_ref(void* loaded_fn_ptr,
                                void* unresolved_stub_ptr,
                                const char* name);
+/**
+ * @brief Raise a runtime "not a pair" error for an operation requiring a pair.
+ * @param op_name Name of the operation being performed (e.g. "car", "cdr"), used in the error message.
+ */
 void  eshkol_raise_not_pair(const char* op_name);
 
-// Display a list (cons cell chain)
+/**
+ * @brief Display a list (cons cell chain) as its printed representation.
+ * @param cons_ptr Pointer to the head cons cell, as a uint64.
+ * @param opts Display options.
+ */
 void eshkol_display_list(uint64_t cons_ptr, eshkol_display_opts_t* opts);
 
-// Display a lambda by looking up its S-expression in the registry
+/**
+ * @brief Display a raw lambda by looking up its S-expression in the lambda registry.
+ * @param func_ptr Compiled function pointer, as a uint64.
+ * @param opts Display options.
+ */
 void eshkol_display_lambda(uint64_t func_ptr, eshkol_display_opts_t* opts);
 
-// Display a closure by extracting its embedded S-expression
+/**
+ * @brief Display a closure by extracting and printing its embedded S-expression.
+ * @param closure_ptr Pointer to an eshkol_closure_t, as a uint64.
+ * @param opts Display options.
+ */
 void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
 
 // ===== END UNIFIED DISPLAY SYSTEM =====
@@ -1179,7 +1677,14 @@ void eshkol_display_closure(uint64_t closure_ptr, eshkol_display_opts_t* opts);
 // ===== HoTT TYPE SYSTEM =====
 // Homotopy Type Theory inspired type expressions for static type checking
 
-// Type expression kinds
+/**
+ * @brief Kind discriminator for hott_type_expr_t.
+ *
+ * Selects which member of hott_type_expr_t's union is active: none for the
+ * primitive types, `var_name` for HOTT_TYPE_VAR, `arrow`/`forall`/
+ * `container`/`pair`/`sum`/`universe` for the corresponding compound kinds.
+ * HOTT_TYPE_DEPENDENT/_PATH are reserved for future dependent-type support.
+ */
 typedef enum {
     HOTT_TYPE_INVALID,
     // Primitive types
@@ -1214,7 +1719,16 @@ typedef enum {
 // Forward declaration
 struct hott_type_expr;
 
-// Type expression structure
+/**
+ * @brief Homotopy-Type-Theory-inspired static type expression.
+ *
+ * Represents the type of an Eshkol expression for the optional static type
+ * checker: `kind` selects the active union member. Primitive kinds (e.g.
+ * HOTT_TYPE_INTEGER) carry no payload; compound kinds recursively reference
+ * child hott_type_expr_t nodes (arrow/forall/container/pair/sum), and
+ * HOTT_TYPE_VAR carries a type-variable name. See the hott_make_*()
+ * constructor functions below for the supported ways to build one.
+ */
 typedef struct hott_type_expr {
     hott_type_kind_t kind;
     union {
@@ -1260,13 +1774,20 @@ typedef struct hott_type_expr {
 } hott_type_expr_t;
 
 // Helper macros for type construction
+/**
+ * @brief Construct a primitive hott_type_expr_t value with no payload.
+ * @param kind One of the primitive hott_type_kind_t values (e.g. HOTT_TYPE_INTEGER).
+ * @return A compound literal hott_type_expr_t with `kind` set and the union left zero-initialized.
+ */
 #define HOTT_MAKE_PRIMITIVE(kind) ((hott_type_expr_t){.kind = (kind)})
 
 // ===== END HoTT TYPE SYSTEM =====
 
 // ===== PATTERN MATCHING SYSTEM =====
 
-// Pattern types for match expressions
+/**
+ * @brief Kind discriminator for eshkol_pattern_t, one per `match` pattern form.
+ */
 typedef enum {
     PATTERN_INVALID,
     PATTERN_LITERAL,      // Literal value: 42, "hello", #t
@@ -1282,7 +1803,13 @@ typedef enum {
 struct eshkol_pattern;
 struct eshkol_ast;
 
-// Pattern structure for match expressions
+/**
+ * @brief One pattern node in a `match` expression's pattern tree.
+ *
+ * `type` selects the active union member, mirroring pattern_type_t's forms:
+ * literals, variable bindings, wildcards, cons/list destructuring,
+ * predicate guards (with optional binding), and alternation (`or`).
+ */
 typedef struct eshkol_pattern {
     pattern_type_t type;
     union {
@@ -1324,7 +1851,9 @@ typedef struct eshkol_pattern {
     };
 } eshkol_pattern_t;
 
-// Match clause structure
+/**
+ * @brief One `(pattern [when guard] body)` clause of a `match` expression.
+ */
 typedef struct eshkol_match_clause {
     eshkol_pattern_t *pattern;      // Pattern to match
     struct eshkol_ast *guard;       // Optional (when ...) guard expression
@@ -1340,7 +1869,9 @@ typedef struct eshkol_match_clause {
 // Supports: literals, pattern variables, ellipsis (...), nested patterns
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Macro pattern element types
+/**
+ * @brief Kind discriminator for eshkol_macro_pattern_t elements.
+ */
 typedef enum {
     MACRO_PAT_LITERAL,      // Literal identifier that must match exactly
     MACRO_PAT_VARIABLE,     // Pattern variable to capture value
@@ -1352,7 +1883,14 @@ typedef enum {
 // Forward declaration
 struct eshkol_macro_pattern;
 
-// Macro pattern element
+/**
+ * @brief One element of a `syntax-rules` macro pattern.
+ *
+ * `type` selects the active union member: `identifier` for a literal or
+ * pattern-variable name, or `list` for a nested (possibly improper)
+ * sub-pattern. `followed_by_ellipsis` marks elements matched repeatedly
+ * via a following `...`.
+ */
 typedef struct eshkol_macro_pattern {
     macro_pattern_type_t type;
     union {
@@ -1369,7 +1907,9 @@ typedef struct eshkol_macro_pattern {
     uint8_t followed_by_ellipsis;  // True if this element is followed by ...
 } eshkol_macro_pattern_t;
 
-// Template element types (for template construction)
+/**
+ * @brief Kind discriminator for eshkol_macro_template_t elements.
+ */
 typedef enum {
     MACRO_TPL_LITERAL,      // Literal value (copied as-is)
     MACRO_TPL_VARIABLE,     // Pattern variable reference
@@ -1380,7 +1920,14 @@ typedef enum {
 // Forward declaration
 struct eshkol_macro_template;
 
-// Macro template element
+/**
+ * @brief One element of a `syntax-rules` macro expansion template.
+ *
+ * `type` selects the active union member: a literal AST subtree copied
+ * as-is, a reference to a captured pattern variable, or a nested list
+ * constructor. `followed_by_ellipsis` marks elements expanded once per
+ * capture of a preceding ellipsis pattern variable.
+ */
 typedef struct eshkol_macro_template {
     macro_template_type_t type;
     union {
@@ -1399,13 +1946,17 @@ typedef struct eshkol_macro_template {
     uint8_t followed_by_ellipsis;  // True if template element followed by ...
 } eshkol_macro_template_t;
 
-// Macro rule: (pattern template)
+/**
+ * @brief One `(pattern template)` rewrite rule of a `syntax-rules` macro.
+ */
 typedef struct eshkol_macro_rule {
     eshkol_macro_pattern_t *pattern;    // Pattern to match (including macro name)
     eshkol_macro_template_t *template_; // Template for expansion
 } eshkol_macro_rule_t;
 
-// Macro definition: (define-syntax name (syntax-rules (literals...) rules...))
+/**
+ * @brief Full macro definition: `(define-syntax name (syntax-rules (literals...) rules...))`.
+ */
 typedef struct eshkol_macro_def {
     char *name;                         // Macro name
     char **literals;                    // Literal identifiers that must match exactly
@@ -1416,6 +1967,19 @@ typedef struct eshkol_macro_def {
 
 // ===== END MACRO SYSTEM =====
 
+/**
+ * @brief Operation/special-form tag for eshkol_ast_t's `operation` union member.
+ *
+ * Selects which member of eshkol_operations_t's union holds the operands
+ * for a given AST node: core language forms (if/define/let/lambda/...),
+ * R7RS special forms (guard, call/cc, dynamic-wind, case-lambda, ...),
+ * OALR memory-management forms (with-region/owned/move/borrow/shared/
+ * weak-ref), automatic-differentiation operators (derivative/gradient/
+ * jacobian/hessian/taylor/...), the HoTT type-annotation forms, and the
+ * neuro-symbolic consciousness-engine and differentiable-memory (DNC/SDNC)
+ * primitives. New members are appended at the end of relevant groups to
+ * preserve on-disk/ABI ordering where noted.
+ */
 typedef enum {
     ESHKOL_INVALID_OP,
     ESHKOL_COMPOSE_OP,
@@ -1545,6 +2109,17 @@ typedef enum {
 struct eshkol_ast;
 struct eshkol_operation;
 
+/**
+ * @brief Tagged union of operands for every special form/operator kind.
+ *
+ * `op` (eshkol_op_t) selects which anonymous struct in the union is active;
+ * each sub-struct holds the AST subtrees and scalar parameters specific to
+ * that form (e.g. `if_op` holds true/false branches, `lambda_op` holds
+ * parameters/body/captures, `derivative_op` holds the function/point/mode
+ * for automatic differentiation). This is the payload referenced by
+ * eshkol_ast_t::operation for AST nodes representing operations rather
+ * than literals or variable references.
+ */
 typedef struct eshkol_operation {
     eshkol_op_t op;
     union {
@@ -1814,6 +2389,20 @@ typedef struct eshkol_operation {
     };
 } eshkol_operations_t;
 
+/**
+ * @brief Frontend abstract-syntax-tree node.
+ *
+ * The single node type used throughout parsing, macro expansion, type
+ * checking, and codegen. `type` (eshkol_type_t) selects the active union
+ * member: scalar literal fields (`int64_val`, `double_val`, ...), string
+ * literal storage (`str_val`), a function/lambda definition
+ * (`eshkol_func`), a variable reference (`variable`), a cons cell
+ * (`cons_cell`), a tensor literal (`tensor_val`), or a compound operation
+ * (`operation`, an eshkol_operations_t tagged by its own `op` field).
+ * `inferred_hott_type` caches the type checker's result (0 = not yet
+ * checked); `line`/`column` give 1-based source location for diagnostics
+ * (0 = unknown).
+ */
 typedef struct eshkol_ast {
     eshkol_type_t type;
     union {
@@ -1874,6 +2463,15 @@ typedef struct eshkol_ast {
 // These set both the AST type fields AND inferred_hott_type for consistent type tracking.
 // Packed HoTT TypeId format: bits 0-15 = id, bits 16-23 = universe, bits 24-31 = flags
 
+/**
+ * @brief In-place literal-node builders for eshkol_ast_t.
+ *
+ * Each `eshkol_ast_make_*` function sets both the AST node's `type` tag and
+ * value union member AND its `inferred_hott_type` (to the corresponding
+ * BuiltinTypes constant) in one step, so literal nodes are always
+ * consistently type-tagged without a separate type-checking pass. @p node
+ * must already be allocated; these functions only populate its fields.
+ */
 static inline void eshkol_ast_make_int64(eshkol_ast_t* node, int64_t val) {
     node->type = ESHKOL_INT64;
     node->int64_val = val;
@@ -1918,23 +2516,82 @@ static inline void eshkol_ast_make_symbol(eshkol_ast_t* node, const char* ptr, u
     node->inferred_hott_type = 27; // BuiltinTypes::Symbol
 }
 
+/**
+ * @brief Recursively release resources owned by an AST node (not the node itself).
+ * @param ast Node to clean up; may be modified in place.
+ */
 void eshkol_ast_clean(eshkol_ast_t *ast);
+/**
+ * @brief Print a human-readable, indented dump of an AST subtree (debugging aid).
+ * @param ast Root of the subtree to print.
+ * @param indent Current indentation level (spaces per nesting level), 0 for the top call.
+ */
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent);
 
 // Symbolic differentiation AST helpers
+/**
+ * @brief Allocate a zero-initialized eshkol_ast_t for use in symbolic-differentiation construction.
+ * @return Newly allocated AST node.
+ */
 eshkol_ast_t* eshkol_alloc_symbolic_ast(void);
+/**
+ * @brief Build a variable-reference AST node.
+ * @param name Variable name.
+ * @return Newly allocated AST node referencing @p name.
+ */
 eshkol_ast_t* eshkol_make_var_ast(const char* name);
+/**
+ * @brief Build an integer literal AST node.
+ * @param value Integer value.
+ * @return Newly allocated AST node.
+ */
 eshkol_ast_t* eshkol_make_int_ast(int64_t value);
+/**
+ * @brief Build a double literal AST node.
+ * @param value Double value.
+ * @return Newly allocated AST node.
+ */
 eshkol_ast_t* eshkol_make_double_ast(double value);
+/**
+ * @brief Build a binary operator call AST node, e.g. for symbolic differentiation results.
+ * @param op Operator name (e.g. "+", "*").
+ * @param left Left operand subtree.
+ * @param right Right operand subtree.
+ * @return Newly allocated AST node representing `(op left right)`.
+ */
 eshkol_ast_t* eshkol_make_binary_op_ast(const char* op, eshkol_ast_t* left, eshkol_ast_t* right);
+/**
+ * @brief Build a unary function call AST node, e.g. for symbolic differentiation results.
+ * @param func Function name (e.g. "sin", "exp").
+ * @param arg Argument subtree.
+ * @return Newly allocated AST node representing `(func arg)`.
+ */
 eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg);
+/**
+ * @brief Deep-copy an AST subtree.
+ * @param ast Subtree to copy.
+ * @return Newly allocated, independent copy of @p ast.
+ */
 eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast);
 
 // REPL display helper
+/**
+ * @brief Wrap a top-level expression so the REPL displays its resulting value.
+ * @param expr Expression to wrap.
+ * @return A new AST node that evaluates @p expr and displays its result.
+ */
 eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr);
 
 // ===== HoTT Type Expression Helpers =====
 // Create primitive type expressions
+/**
+ * @brief Constructors for the primitive (payload-free) hott_type_expr_t kinds.
+ *
+ * Each returns a newly allocated hott_type_expr_t with `kind` set to the
+ * corresponding HOTT_TYPE_* constant (integer, real, boolean, string,
+ * char, symbol, null, the `any` top type, and the `nothing` bottom type).
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_integer_type(void);
 hott_type_expr_t* hott_make_real_type(void);
 hott_type_expr_t* hott_make_boolean_type(void);
@@ -1946,46 +2603,144 @@ hott_type_expr_t* hott_make_any_type(void);
 hott_type_expr_t* hott_make_nothing_type(void);
 
 // Create type variables
+/**
+ * @brief Construct a HOTT_TYPE_VAR type expression (a type variable, e.g. 'a in forall).
+ * @param name Type variable name.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_type_var(const char* name);
 
 // Create compound types
+/**
+ * @brief Construct a HOTT_TYPE_ARROW function type `(-> param_types... return_type)`.
+ * @param param_types Array of parameter type expressions.
+ * @param num_params Number of entries in @p param_types.
+ * @param return_type Return type expression.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types, uint64_t num_params, hott_type_expr_t* return_type);
+/**
+ * @brief Construct a HOTT_TYPE_LIST type expression `(list element_type)`.
+ * @param element_type Element type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type);
+/**
+ * @brief Construct a HOTT_TYPE_VECTOR type expression `(vector element_type)`.
+ * @param element_type Element type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type);
+/**
+ * @brief Construct a HOTT_TYPE_TENSOR type expression `(tensor element_type)`.
+ * @param element_type Element type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type);
+/**
+ * @brief Construct a HOTT_TYPE_POINTER type expression `(ptr element_type)`.
+ * @param element_type Pointee type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type);
+/**
+ * @brief Construct a HOTT_TYPE_PAIR type expression `(pair left right)` (cons cell type).
+ * @param left Car type.
+ * @param right Cdr type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right);
+/**
+ * @brief Construct a HOTT_TYPE_PRODUCT type expression `(* left right)`.
+ * @param left Left component type.
+ * @param right Right component type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right);
+/**
+ * @brief Construct a HOTT_TYPE_SUM type expression `(+ left right)` (either type).
+ * @param left Left alternative type.
+ * @param right Right alternative type.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right);
+/**
+ * @brief Construct a HOTT_TYPE_FORALL type expression `(forall (type_vars...) body)`.
+ * @param type_vars Array of quantified type-variable names.
+ * @param num_vars Number of entries in @p type_vars.
+ * @param body Body type expression under the quantifier.
+ * @return Newly allocated type expression.
+ */
 hott_type_expr_t* hott_make_forall_type(char** type_vars, uint64_t num_vars, hott_type_expr_t* body);
 
 // Copy and free type expressions
+/**
+ * @brief Deep-copy a type expression.
+ * @param type Type expression to copy.
+ * @return Newly allocated, independent copy.
+ */
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type);
+/**
+ * @brief Recursively free a type expression and its owned children.
+ * @param type Type expression to free (may be NULL, a no-op).
+ */
 void hott_free_type_expr(hott_type_expr_t* type);
 
 // Type expression to string (for display/error messages)
+/**
+ * @brief Render a type expression as a human-readable string, for display/error messages.
+ * @param type Type expression to render.
+ * @return Newly allocated, NUL-terminated string; caller owns and must free it.
+ */
 char* hott_type_to_string(const hott_type_expr_t* type);
 
 // ===== Inferred HoTT Type Helpers =====
 // Pack/unpack TypeId to/from uint32_t for AST storage
 // Format: bits 0-15 = id, bits 16-23 = universe, bits 24-31 = flags
 
+/**
+ * @brief Pack a TypeId into the uint32_t format stored in eshkol_ast_t::inferred_hott_type.
+ * @param id Type identifier (bits 0-15).
+ * @param universe Universe level (bits 16-23).
+ * @param flags Type flags (bits 24-31).
+ * @return The packed uint32_t value.
+ */
 static inline uint32_t hott_pack_type_id(uint16_t id, uint8_t universe, uint8_t flags) {
     return (uint32_t)id | ((uint32_t)universe << 16) | ((uint32_t)flags << 24);
 }
 
+/**
+ * @brief Extract the type identifier from a packed HoTT TypeId.
+ * @param packed Value produced by hott_pack_type_id() (or eshkol_ast_t::inferred_hott_type).
+ * @return The id component (bits 0-15).
+ */
 static inline uint16_t hott_unpack_type_id(uint32_t packed) {
     return (uint16_t)(packed & 0xFFFF);
 }
 
+/**
+ * @brief Extract the universe level from a packed HoTT TypeId.
+ * @param packed Value produced by hott_pack_type_id().
+ * @return The universe component (bits 16-23).
+ */
 static inline uint8_t hott_unpack_universe(uint32_t packed) {
     return (uint8_t)((packed >> 16) & 0xFF);
 }
 
+/**
+ * @brief Extract the flags byte from a packed HoTT TypeId.
+ * @param packed Value produced by hott_pack_type_id().
+ * @return The flags component (bits 24-31).
+ */
 static inline uint8_t hott_unpack_flags(uint32_t packed) {
     return (uint8_t)((packed >> 24) & 0xFF);
 }
 
+/**
+ * @brief Check whether a packed HoTT TypeId represents "already type-checked".
+ * @param packed Value to test (e.g. eshkol_ast_t::inferred_hott_type).
+ * @return Nonzero if @p packed is non-zero (a type has been assigned), zero if unset.
+ */
 static inline int hott_type_is_set(uint32_t packed) {
     return packed != 0;
 }
@@ -1993,14 +2748,34 @@ static inline int hott_type_is_set(uint32_t packed) {
 #ifdef __cplusplus
 };
 
-// Parse next AST from file stream
+/**
+ * @brief Parse the next top-level S-expression from an open file stream.
+ * @param in_file Input file stream positioned at the next form to parse.
+ * @return The parsed AST node (type ESHKOL_INVALID or similar sentinel at end of input,
+ *         per the parser's end-of-stream convention).
+ */
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file);
 
-// Parse next AST from any input stream (including string streams for stdlib)
+/**
+ * @brief Parse the next top-level S-expression from any input stream.
+ *
+ * Generalizes eshkol_parse_next_ast() to any std::istream (e.g.
+ * std::istringstream), which the stdlib loader uses to parse
+ * in-memory/embedded source text.
+ * @param in_stream Input stream positioned at the next form to parse.
+ * @return The parsed AST node.
+ */
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
 
 // Reset cumulative file line/column counter — call before parsing a new file
 // so the next eshkol_parse_next_ast call starts at file line 1, column 1.
+/**
+ * @brief Reset the parser's cumulative line/column counter to line 1, column 1.
+ *
+ * Call before parsing a new file so that source-location tracking in
+ * subsequent eshkol_parse_next_ast() calls starts fresh instead of
+ * continuing to accumulate from a previously parsed file/stream.
+ */
 extern "C" void eshkol_reset_parse_line_counter(void);
 
 #endif
