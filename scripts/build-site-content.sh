@@ -11,7 +11,7 @@ mkdir -p "$CONTENT_DIR"
 echo "Building site content from markdown docs..."
 
 # Root docs
-for doc in ESHKOL_LANGUAGE_GUIDE ESHKOL_QUICK_REFERENCE ROADMAP CONTRIBUTING; do
+for doc in ESHKOL_LANGUAGE_GUIDE ESHKOL_QUICK_REFERENCE ROADMAP CONTRIBUTING ANNOUNCEMENT; do
     if [ -f "${doc}.md" ]; then
         out="$CONTENT_DIR/$(echo "$doc" | tr '[:upper:]' '[:lower:]').html"
         pandoc "${doc}.md" -f markdown -t html --no-highlight -o "$out"

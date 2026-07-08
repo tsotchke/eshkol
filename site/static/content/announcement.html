@@ -1,0 +1,226 @@
+<h1
+id="eshkol-v1.3.0-evolve-arbitrary-order-automatic-differentiation-and-a-compiler-you-can-trust-with-long-running-programs">Eshkol
+v1.3.0-evolve — arbitrary-order automatic differentiation, and a
+compiler you can trust with long-running programs</h1>
+<p><strong>Eshkol v1.3.0-evolve ships a Taylor-tower
+automatic-differentiation engine that computes exact derivatives of
+<em>any</em> order — including exact bignum/rational coefficients no
+double-based system can produce — alongside 100% conformance with a
+portable R7RS corpus verified against chibi-scheme, and a hardening pass
+across tail calls, memory, and shutdown that targets the kind of bug
+that only shows up in a program that runs for a long time.</strong></p>
+<p>Eshkol is Scheme (R7RS) compiled to native code via LLVM, with
+automatic differentiation as a compiler primitive rather than a library.
+v1.3.0-evolve is the “evolve” release: it takes AD from “correct at
+first and second order” to “correct, exact, and validated at
+<em>every</em> order,” and closes out a long list of robustness gaps
+found by a new permanent adversarial-testing program shipped in the same
+release.</p>
+<p>Full engineering detail lives in <a
+href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary is <a
+href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the complete AD
+walkthrough is the <a
+href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+guide</a> (PR #180). This document is the release announcement —
+quotable, and every claim below is grounded in shipped code and a real,
+run command.</p>
+<hr />
+<h2 id="whats-new">What’s new</h2>
+<h3
+id="arbitrary-order-automatic-differentiation-the-headline">Arbitrary-order
+automatic differentiation (the headline)</h3>
+<p>Eshkol’s forward-mode, reverse-mode, and symbolic AD were already
+exact at first and second order. v1.3.0-evolve adds a second axis on top
+of that: <strong>order</strong>. A new Taylor-tower engine — designed in
+<a
+href="docs/design/AD_TAYLOR_TOWER.md"><code>docs/design/AD_TAYLOR_TOWER.md</code></a>
+and delivered across thirteen gated phases, P0 through P12 (PRs #147,
+#158, #160, #162, #163, #167–#169, #173, #174, #177, #178) — computes
+<em>every</em> derivative up to an arbitrary order <code>k</code> in one
+pass, using closed Taylor recurrences
+(<code>lib/core/taylor_recurrences.def</code>,
+<code>lib/core/runtime_taylor.c</code>) instead of nested dual numbers.
+Nested/hyper-dual AD doubles its representation with every additional
+order (2^k); Taylor-mode is <code>k+1</code> coefficients and O(k²) work
+— polynomial, not exponential, in the order.</p>
+<p>That matters because it is the same design JAX’s
+<code>jax.experimental.jet</code> uses — and Eshkol’s implementation
+goes further in three ways mainstream AD/ML frameworks (JAX, PyTorch) do
+not offer at the language level:</p>
+<ul>
+<li><strong>Exact coefficients.</strong> When the seed point is an exact
+number (an integer or rational, not a <code>double</code>) and the
+differentiated function only uses exact-preserving operators
+(<code>+ - * /</code> and integer <code>expt</code>),
+<code>derivative-n</code> and <code>taylor</code> return <strong>exact
+arbitrary-precision</strong> (bignum/rational) results — not
+floating-point approximations. The moment a transcendental primitive
+(<code>exp</code>, <code>sin</code>, …) enters the computation, the
+tower gracefully demotes to the ordinary double tower, matching R7RS’s
+own exactness-contagion discipline.</li>
+<li><strong>Validated enclosures.</strong> <code>taylor-model</code>,
+<code>tm-range</code>, and <code>tm-eval</code> pair the Taylor
+polynomial with a rigorous interval-remainder bound, giving a
+<em>provable</em> enclosure of a function’s range — not just a point
+estimate.</li>
+<li><strong>AD as a language property, not a library call.</strong>
+Towers are tensor-valued (differentiate through
+<code>matmul</code>/<code>conv2d</code>/activations), compose through
+reverse-mode (checkpointed reverse-over-Taylor for memory-efficient
+high-order gradients), recover sparse high-order structure via graph
+coloring (<code>sparse-hessian</code>), and work correctly through
+<code>if</code>/<code>cond</code>/named-let/recursion — differentiable
+control flow, not just differentiable expressions.</li>
+</ul>
+<p>Perturbation confusion (the classic nested-derivative correctness
+trap) is handled structurally: every differentiation context gets its
+own epoch tag carried in the tower’s header, so an inner and outer
+<code>derivative</code> can never silently cross-contaminate.</p>
+<p>Here it is, run for real — bignum-exact derivatives and a full Taylor
+series, straight from <code>eshkol-run -r</code>:</p>
+<pre class="scheme"><code>;; f(x) = x^30 — arbitrary order, exact
+(define (f x) (expt x 30))
+
+(display &quot;f^(12)(7), exact bignum: &quot;)
+(display (derivative-n f 7 12))
+(newline)
+(display &quot;  exact? &quot;) (display (exact? (derivative-n f 7 12))) (newline)
+
+;; 1/(1-x) — exact rational-point derivative
+(define (geom x) (/ 1 (- 1 x)))
+(display &quot;geom^(6)(1/2), exact: &quot;)
+(display (derivative-n geom (/ 1 2) 6))
+(newline)
+
+;; Full Taylor series, order 5, exact rational coefficients
+(display &quot;taylor(f, x0=2, order 5): &quot;)
+(display (taylor f 2 5))
+(newline)</code></pre>
+<p>Real output, on this release:</p>
+<pre><code>f^(12)(7), exact bignum: 67465815595294257109436307840000
+  exact? #t
+geom^(6)(1/2), exact: 92160
+taylor(f, x0=2, order 5): (1073741824 16106127360 116769423360 544923975680 1839118417920 4781707886592)</code></pre>
+<p>Every value is exact — <code>(exact? ...)</code> returns
+<code>#t</code> — and the first Taylor coefficient,
+<code>1073741824</code>, is <code>2^30</code> on the nose, confirming
+the series is centered correctly. No floating-point error anywhere in
+the pipeline. See the <a
+href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+guide</a> for the full operator-by-operator walkthrough with verified
+output for all thirteen phases, and <a
+href="docs/reference/ad/INDEX.md"><code>docs/reference/ad/INDEX.md</code></a>
+for the API reference.</p>
+<h3 id="r7rs-conformance-on-the-portable-corpus">100% R7RS conformance
+on the portable corpus</h3>
+<p>A new reference-Scheme differential oracle (P7a) runs the same
+portable R7RS-small program on Eshkol and on <strong>chibi-scheme
+0.12.0</strong> — the strictest mainstream R7RS-small implementation —
+and diffs the output. It started the release cycle at 27/34 (79.4%)
+programs agreeing; every divergence found is now fixed:
+<code>apply</code> with leading arguments before the final list,
+multi-vector <code>vector-map</code>/<code>vector-for-each</code>,
+quasiquoted vector literals, <code>cond</code>/<code>case</code>
+<code>=&gt;</code> arrow clauses, an allocating
+<code>vector-copy</code>, and more. Re-run live for this
+announcement:</p>
+<pre><code>Total         : 34
+AGREE         : 34
+ESHKOL-DIVERGES : 0
+Agreement rate: 100.0%
+Gate          : PASS  (PASS iff every program AGREES)</code></pre>
+<p>(<code>scripts/run_reference_differential.sh</code>, corpus in
+<code>tests/reference-diff/corpus/</code>.)</p>
+<h3 id="robustness-tail-calls-memory-and-shutdown">Robustness: tail
+calls, memory, and shutdown</h3>
+<p>A cluster of fixes targets the class of bug that only shows up in a
+program that runs for a long time or recurses deeply, not in a quick
+test:</p>
+<ul>
+<li><strong>Proper mutual tail calls</strong> (ESH-0102): a call in tail
+position to another function is now emitted as an LLVM
+<code>musttail</code> call, so mutually tail-recursive functions
+(<code>even?</code>/<code>odd?</code>-style state machines) run in O(1)
+stack instead of overflowing after ~300k hops.</li>
+<li><strong>Bounded-RSS long-running loops</strong>
+(ESH-0214/ESH-0214b): named-let TCO loops get automatic, zero-annotation
+per-iteration arena-scope reclamation, closing a production-triggered
+class of unbounded memory growth.</li>
+<li><strong>Safe teardown</strong> (ESH-0216):
+<code>eshkol_runtime_shutdown()</code> now stops and joins the global
+parallel thread pool before running shutdown hooks, closing a
+use-after-free race that could <code>SIGSEGV</code> well after a
+graceful <code>SIGTERM</code> was already logged; AOT-compiled binaries
+now also emit the paired runtime shutdown call they were previously
+skipping entirely.</li>
+</ul>
+<p>Full root-cause detail for each: <a
+href="CHANGELOG.md">CHANGELOG.md</a>.</p>
+<h3 id="a-hardened-permanent-adversarial-testing-program">A hardened,
+permanent adversarial-testing program</h3>
+<p>This release also ships the testing infrastructure that found and
+closed the gaps above, wired permanently into the ICC release oracle
+rather than run once and discarded: a multi-path differential harness
+with a seeded fuzzer, a feature-pair edge matrix, an AD
+finite-difference oracle, a stress harness with RSS/time budgets, a
+VM-parity ratchet, depth-parametric sweeps, and now the external
+reference-Scheme differential oracle described above. See <a
+href="docs/TESTING.md"><code>docs/TESTING.md</code></a>.</p>
+<hr />
+<h2 id="why-it-matters">Why it matters</h2>
+<p>Differentiable programming today mostly means “trace a Python
+function with a library and hope the trace is faithful.” Eshkol takes
+the opposite bet: make the derivative operator part of the language the
+compiler already understands, so it composes with closures, recursion,
+control flow, and the numeric tower the same way <code>+</code> does —
+and, as of this release, at any order, exactly, with a provable error
+bound when you need one. That is a meaningfully larger AD surface than
+what JAX or PyTorch expose to user code today, delivered from an
+ahead-of-time native compiler rather than a runtime tracer.</p>
+<p>The robustness work matters for a different reason: a differentiable
+systems language is only useful if the programs built on it can run
+unattended. Proper tail calls, bounded memory in long-running loops, and
+a shutdown path that doesn’t race are the difference between a research
+demo and something you can leave running.</p>
+<h2 id="get-started">Get started</h2>
+<pre class="bash"><code>brew tap tsotchke/eshkol &amp;&amp; brew install eshkol</code></pre>
+<p>Or build from source (LLVM 21+, C++20, CMake 3.14+) — see <a
+href="README.md#quick-start">README.md</a> and <a
+href="docs/tutorials/00_FIRST_5_MINUTES.md"><code>docs/tutorials/00_FIRST_5_MINUTES.md</code></a>.</p>
+<p>Try the AD example above yourself:</p>
+<pre class="bash"><code>eshkol-run -r your_file.esk</code></pre>
+<ul>
+<li><strong><a href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
+Differentiation guide</a></strong> — the full P0–P12 walkthrough, every
+example verified against a real build (PR #180).</li>
+<li><strong><a href="ESHKOL_LANGUAGE_GUIDE.md">Eshkol Language
+Guide</a></strong> — tutorial introduction to the language.</li>
+<li><strong><a href="CHANGELOG.md">CHANGELOG.md</a></strong> — itemized
+engineering detail, phase by phase.</li>
+<li><strong><a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a></strong> —
+the user-facing release summary, with the full gate matrix.</li>
+</ul>
+<h2 id="under-the-hood">Under the hood</h2>
+<p>The Taylor tower represents a function’s local behavior as a
+truncated power series, <code>f(x0 + t) = Σ c_k · t^k</code>, so
+<code>f⁽ⁿ⁾(x0) = n! · c_n</code>. Each primitive operator
+(<code>+ - * / exp log sin cos sqrt tan atan tanh pow ...</code>) has a
+closed recurrence for producing its output series’ coefficients from its
+input series’ coefficients — for example, Cauchy convolution for
+multiplication (<code>s_k = Σ_{j=0..k} u_j · w_{k-j}</code>) and a
+linear recurrence for
+<code>exp</code>/<code>log</code>/<code>sin</code>/<code>cos</code>.
+Composing these recurrences through a program the way the LLVM backend
+already composes arithmetic gives arbitrary-order differentiation at
+<code>O(k²)</code> cost, with <strong>zero heap allocation</strong> on
+the common path: when the order <code>k</code> is a literal at the call
+site — the overwhelmingly common case in a compiler — the entire tower
+is unrolled into stack-allocated, branch-free SSA IR at compile time. A
+runtime heap-allocated tower (<code>HEAP_SUBTYPE_TAYLOR</code>) is the
+correctness fallback for a dynamically chosen order. Every recurrence in
+the shared table (<code>taylor_recurrences.def</code>) auto-generates
+its own per-primitive analytic correctness gate, so adding a new
+differentiable primitive adds its own test.</p>
+<hr />
+<p><em>Eshkol v1.3.0-evolve. MIT License. <a
+href="https://github.com/tsotchke/eshkol">github.com/tsotchke/eshkol</a></em></p>
