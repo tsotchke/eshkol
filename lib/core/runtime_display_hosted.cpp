@@ -94,15 +94,25 @@ static FILE* g_current_output_fp = nullptr;
 static FILE* g_current_input_fp  = nullptr;
 static FILE* g_current_error_fp  = nullptr;
 
+/** @brief Return the current-output-port FILE*, defaulting to stdout when unset. */
 extern "C" void* eshkol_runtime_current_output_fp(void) {
     return (void*)(g_current_output_fp ? g_current_output_fp : stdout);
 }
+/** @brief Return the current-input-port FILE*, defaulting to stdin when unset. */
 extern "C" void* eshkol_runtime_current_input_fp(void) {
     return (void*)(g_current_input_fp ? g_current_input_fp : stdin);
 }
+/** @brief Return the current-error-port FILE*, defaulting to stderr when unset. */
 extern "C" void* eshkol_runtime_current_error_fp(void) {
     return (void*)(g_current_error_fp ? g_current_error_fp : stderr);
 }
+/**
+ * @brief Set the FILE* backing `current-output-port`.
+ *
+ * Called by the `parameterize` machinery when rebinding the port parameter;
+ * a null `fp` reverts subsequent reads to the stdio default.
+ * @param fp  New output FILE* (may be null).
+ */
 extern "C" void eshkol_runtime_set_current_output_fp(void* fp) {
     g_current_output_fp = (FILE*)fp;
 }
@@ -170,9 +180,17 @@ extern "C" void* eshkol_string_from_codepoints(void* arena_void,
     *p = '\0';
     return (void*)str;
 }
+/**
+ * @brief Set the FILE* backing `current-input-port`.
+ * @param fp  New input FILE* (may be null to revert to the stdio default).
+ */
 extern "C" void eshkol_runtime_set_current_input_fp(void* fp) {
     g_current_input_fp = (FILE*)fp;
 }
+/**
+ * @brief Set the FILE* backing `current-error-port`.
+ * @param fp  New error FILE* (may be null to revert to the stdio default).
+ */
 extern "C" void eshkol_runtime_set_current_error_fp(void* fp) {
     g_current_error_fp = (FILE*)fp;
 }
@@ -191,6 +209,22 @@ void eshkol_display_value(const eshkol_tagged_value_t* value) {
     eshkol_display_value_opts(value, &opts);
 }
 
+/**
+ * @brief Core dispatcher that renders one tagged value to `opts->output` (or the
+ * current-output-port default).
+ *
+ * Switches on the value's base type (masking off exactness flags for immediate
+ * types, using the raw tag for consolidated HEAP_PTR/CALLABLE/legacy types) and
+ * recurses into the appropriate helper: lists, vectors, tensors, closures,
+ * lambdas, bignums, rationals, complex numbers, logic-engine objects, etc.
+ * Honors `opts->quote_strings` (write vs. display semantics), `opts->max_depth`
+ * / `opts->current_depth` (truncates with "..." past the depth limit), and
+ * `opts->show_types` for the unknown-type fallback. This is the single
+ * recursion point every other display helper in this file calls back into.
+ *
+ * @param value  Tagged value to render; a null pointer prints "()".
+ * @param opts   Display options (output port, depth state, quoting); must be non-null.
+ */
 void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_display_opts_t* opts) {
     if (!value) {
         fprintf(get_output(opts), "()");
@@ -488,6 +522,7 @@ void eshkol_write_value(const eshkol_tagged_value_t* value) {
     eshkol_display_value_opts(value, &opts);
 }
 
+/** @brief Like `eshkol_write_value`, but renders to an explicit port (FILE*) instead of current-output-port. */
 void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port) {
     eshkol_display_opts_t opts = eshkol_display_default_opts();
     opts.quote_strings = 1;
@@ -495,6 +530,7 @@ void eshkol_write_value_to_port(const eshkol_tagged_value_t* value, void* port) 
     eshkol_display_value_opts(value, &opts);
 }
 
+/** @brief Display a value (unquoted strings) to an explicit port (FILE*) instead of current-output-port. */
 void eshkol_display_value_to_port(const eshkol_tagged_value_t* value, void* port) {
     eshkol_display_opts_t opts = eshkol_display_default_opts();
     opts.output = port;

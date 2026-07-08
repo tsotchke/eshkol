@@ -34,6 +34,18 @@ std::atomic<uint32_t> g_next_hook_id{1};
 
 extern "C" {
 
+/**
+ * @brief Register a callback to run when the runtime shuts down.
+ *
+ * Thread-safe: takes g_hooks_mutex while appending to the shared hook
+ * registry. Assigns the hook a fresh monotonically increasing id (starting
+ * at 1) so it can later be looked up by eshkol_unregister_shutdown_hook().
+ *
+ * @param hook     Callback to invoke at shutdown; registration is rejected (returns 0) if NULL.
+ * @param context  Opaque pointer passed back to `hook` on invocation.
+ * @param name     Optional human-readable name for logging; "(unnamed)" if NULL.
+ * @return         The new hook's id, or 0 if `hook` is NULL.
+ */
 uint32_t eshkol_register_shutdown_hook(eshkol_shutdown_hook_t hook,
                                         void* context,
                                         const char* name) {
@@ -56,6 +68,16 @@ uint32_t eshkol_register_shutdown_hook(eshkol_shutdown_hook_t hook,
     return id;
 }
 
+/**
+ * @brief Remove a previously registered shutdown hook by id.
+ *
+ * Thread-safe: takes g_hooks_mutex while searching and erasing from the
+ * shared hook registry.
+ *
+ * @param hook_id  Id previously returned by eshkol_register_shutdown_hook().
+ * @return         True if a matching hook was found and removed; false if
+ *                 `hook_id` is 0 or no such hook is registered.
+ */
 bool eshkol_unregister_shutdown_hook(uint32_t hook_id) {
     if (hook_id == 0) {
         return false;
@@ -79,6 +101,17 @@ bool eshkol_unregister_shutdown_hook(uint32_t hook_id) {
 
 namespace eshkol::runtime_hosted {
 
+/**
+ * @brief Invoke all registered shutdown hooks in LIFO (most-recently-registered-first) order.
+ *
+ * Takes a snapshot copy of the hook registry under g_hooks_mutex (so hook
+ * callbacks are free to register/unregister hooks without deadlocking or
+ * racing on the shared vector), reverses it, then calls each hook's
+ * callback with `reason`, logging a warning for any hook that returns a
+ * non-zero (error) result.
+ *
+ * @param reason  Reason code passed through to every hook callback.
+ */
 void run_shutdown_hooks(eshkol_shutdown_reason_t reason) {
     std::vector<ShutdownHook> hooks_copy;
     {

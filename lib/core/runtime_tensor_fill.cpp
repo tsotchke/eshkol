@@ -18,6 +18,25 @@
 
 extern "C" {
 
+/**
+ * @brief Unwrap a tagged tensor value into its raw element buffer and HWC extents.
+ *
+ * Validates that `t_tv` is a HEAP_PTR (tolerating a legacy low-nibble-only
+ * type tag) referencing a heap object whose header subtype is
+ * HEAP_SUBTYPE_TENSOR, then reads the tensor's dimensions according to a
+ * local `fill_tensor_layout` view matching eshkol_tensor_t's field order.
+ * Only rank-2 (height, width; channels forced to 1) and rank-3 (height,
+ * width, channels) tensors are supported — any other rank fails. Does not
+ * allocate; this is a read-only view into the existing arena-owned tensor's
+ * element storage.
+ *
+ * @param t_tv    Tagged value expected to reference a tensor.
+ * @param out_h   Set to the tensor's height (dimension 0), or 0 on failure.
+ * @param out_w   Set to the tensor's width (dimension 1), or 0 on failure.
+ * @param out_c   Set to the channel count (1 for rank-2, dimension 2 for rank-3), or 0 on failure.
+ * @return        Pointer to the tensor's raw element storage (int64 bit patterns
+ *                of doubles), or nullptr if t_tv is not a rank-2/3 tensor.
+ */
 static inline void* eshkol_tensor_payload(
     const eshkol_tagged_value_t* t_tv,
     int64_t* out_h, int64_t* out_w, int64_t* out_c) {
@@ -58,6 +77,27 @@ static inline void* eshkol_tensor_payload(
     return tensor->elements;
 }
 
+/**
+ * @brief Write one pixel's channel values into a tensor's raw element buffer.
+ *
+ * Computes the base index `(y * width + x) * channels` into `elements` and
+ * writes up to `channels` values there, each stored as the raw int64 bit
+ * pattern of the corresponding double (matching eshkol_tensor_t's
+ * doubles-as-int64-bits element encoding). If exactly one fill value is
+ * given and the tensor has more than one channel, that single value is
+ * broadcast to every channel (e.g. filling an RGB tensor with one
+ * grayscale-style value); otherwise, values are copied channel-for-channel
+ * up to `min(fill_value_count, channels)`, leaving any remaining channels
+ * untouched.
+ *
+ * @param elements          Tensor's raw element buffer (caller-validated bounds).
+ * @param y                 Row coordinate of the pixel.
+ * @param x                 Column coordinate of the pixel.
+ * @param width             Tensor width, used to compute the row stride.
+ * @param channels          Number of channels per pixel in the tensor.
+ * @param fill_values       Array of double values to write.
+ * @param fill_value_count  Number of entries in fill_values.
+ */
 static inline void eshkol_tensor_write_pixel(
     int64_t* elements, int64_t y, int64_t x,
     int64_t width, int64_t channels,
@@ -80,6 +120,24 @@ static inline void eshkol_tensor_write_pixel(
     }
 }
 
+/**
+ * @brief Fill an axis-aligned rectangular region of a 2D/3D tensor with a color.
+ *
+ * Resolves `t_tv` to its element buffer and extents via
+ * eshkol_tensor_payload (no-op if it isn't a rank-2/3 tensor), normalizes
+ * the rectangle so row0<=row1 and col0<=col1 (swapping if needed), clamps
+ * it to the tensor's bounds ([0, height) x [0, width)), and then writes
+ * `channels`/`num_channels` into every pixel in the clamped rectangle via
+ * eshkol_tensor_write_pixel.
+ *
+ * @param t_tv          Tagged value expected to reference a rank-2/3 tensor.
+ * @param row0          One row endpoint of the rectangle (any order relative to row1).
+ * @param col0          One column endpoint of the rectangle (any order relative to col1).
+ * @param row1          Other row endpoint of the rectangle.
+ * @param col1          Other column endpoint of the rectangle.
+ * @param channels      Fill color/value(s) to write to each pixel.
+ * @param num_channels  Number of entries in channels.
+ */
 void eshkol_tensor_rect_fill(
     const eshkol_tagged_value_t* t_tv,
     int64_t row0, int64_t col0,
@@ -115,6 +173,25 @@ void eshkol_tensor_rect_fill(
     }
 }
 
+/**
+ * @brief Fill a filled disk (circle) region of a 2D/3D tensor with a color.
+ *
+ * Resolves `t_tv` to its element buffer and extents via
+ * eshkol_tensor_payload (no-op if it isn't a rank-2/3 tensor) and returns
+ * immediately if `radius < 0`. Computes the disk's bounding box
+ * `[cy-radius, cy+radius] x [cx-radius, cx+radius]`, clamps it to the
+ * tensor's bounds, then for every pixel in that box writes
+ * `channels`/`num_channels` (via eshkol_tensor_write_pixel) only if the
+ * pixel's squared distance from `(cy, cx)` is within `radius^2` (a standard
+ * midpoint-free circle membership test, not anti-aliased).
+ *
+ * @param t_tv          Tagged value expected to reference a rank-2/3 tensor.
+ * @param cy            Row coordinate of the disk's center.
+ * @param cx            Column coordinate of the disk's center.
+ * @param radius        Disk radius in pixels; negative values are a no-op.
+ * @param channels      Fill color/value(s) to write to each pixel inside the disk.
+ * @param num_channels  Number of entries in channels.
+ */
 void eshkol_tensor_disk_fill(
     const eshkol_tagged_value_t* t_tv,
     int64_t cy, int64_t cx, int64_t radius,
