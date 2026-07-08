@@ -35,7 +35,19 @@ namespace eshkol {
  */
 class MacroExpander {
 public:
+    /**
+     * Construct an empty macro expander with no macros registered yet.
+     * A global scope is pushed onto the scope stack so top-level
+     * define-syntax forms have somewhere to register.
+     */
     MacroExpander();
+
+    /**
+     * Destroy the macro expander.
+     *
+     * Registered eshkol_macro_def_t entries are owned by the AST they came
+     * from, not by the expander, so no macro definitions are freed here.
+     */
     ~MacroExpander();
 
     /**

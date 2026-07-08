@@ -20,8 +20,14 @@ extern "C" {
 #endif
 
 /* Forward declarations — avoid including full headers */
+
+/** @brief Opaque qLLM tensor handle (defined by the qLLM library). */
 typedef struct qllm_tensor qllm_tensor_t;
+
+/** @brief Opaque handle to an Eshkol automatic-differentiation tape. */
 typedef struct ad_tape ad_tape_t;
+
+/** @brief Opaque handle to a node on an Eshkol AD tape (a recorded value). */
 typedef struct ad_node ad_node_t;
 
 /*******************************************************************************
