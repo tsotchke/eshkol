@@ -13,6 +13,14 @@
 #
 # Usage: scripts/run_sicp_smoke.sh [--no-aot] [--allow-incomplete]
 set -u
+
+# The timeout/json helpers are byte-oriented Perl snippets. Force a portable
+# locale here, not only in the test wrapper, so real release runs do not depend
+# on host-specific C.UTF-8 availability.
+export LC_ALL=C
+export LC_CTYPE=C
+export LANG=C
+
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
