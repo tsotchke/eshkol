@@ -76,7 +76,7 @@ Verification snapshot:
 | Version | Codename | Target date | Theme |
 |---|---|---|---|
 | v1.2.x | scale | May 2026 | Model I/O + Noesis M0 closeout |
-| v1.3 | evolve | Jun 2026 | R7RS polish + dev-experience + stdlib surface |
+| v1.3.0-evolve | evolve | Jul 2026 — **SHIPPED** | R7RS polish + dev-experience + stdlib surface — **plus the full arbitrary-order Taylor-tower AD matrix (P0–P12), 34/34 R7RS conformance, and permanent adversarial-testing infrastructure, all delivered ahead of the original plan** |
 | v1.4 | connection | Jul 2026 | Networking + concurrency + linear types |
 | v1.5 | intelligence | Aug 2026 | Neuro-symbolic bridge |
 | v1.6 | reasoning | Sep 2026 | Production logic engine |
@@ -90,31 +90,31 @@ Verification snapshot:
 ## v1.2.x — "scale" (closeout)
 
 Already-shipped items as of current branch:
-- #136 quasiquote codegen ✅
-- #137 hash-table SRFI-125 aliases ✅
-- #139 match `(? pred)` scoping ✅
-- Per-thread AD tape + arena init (#130) ✅
-- Image I/O arena safety (#107, #132) ✅
-- Symbol tagged-value consistency (#129) ✅
-- Python FFI structured returns + error recovery (#110) ✅
-- Car/cdr type guards on non-pair input (#135) ✅
-- v1.2 regression suite plus current 87-test edge/security suite ✅
+- #136 quasiquote codegen
+- #137 hash-table SRFI-125 aliases
+- #139 match `(? pred)` scoping
+- Per-thread AD tape + arena init (#130)
+- Image I/O arena safety (#107, #132)
+- Symbol tagged-value consistency (#129)
+- Python FFI structured returns + error recovery (#110)
+- Car/cdr type guards on non-pair input (#135)
+- v1.2 regression suite plus current 87-test edge/security suite
 
 **Noesis M0 closeout status (verified 2026-05-19)**
 
 | # | Item | Effort | Noesis tier |
 |---|---|---|---|
-| #138 | `define-record-type` codegen | ✅ done | M0 |
-| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | ✅ done | M0 |
-| #142 | Testing framework (`define-test`, `check-equal?`) | ✅ done | M0 |
-| #143 | timing helpers / `(time …)` surface | ✅ done | M0 |
-| #144 | Binary ports + bytevector I/O | ✅ done | M0 |
-| #166 | `call-with-values` consumer-lambda stdlib | ✅ done | M0 |
-| #167 | Regex capture groups | ✅ done | M0 |
-| #168 | Time API (ISO8601 parse/format, duration) | ✅ done | M0 |
-| #169 | CLI argument parser stdlib | ✅ done | M0 |
-| #134 | Compile-to-binary `eval` linker | ✅ done | — |
-| #141 | match apostrophe-quote subject hang | ✅ done | — |
+| #138 | `define-record-type` codegen | done | M0 |
+| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | done | M0 |
+| #142 | Testing framework (`define-test`, `check-equal?`) | done | M0 |
+| #143 | timing helpers / `(time …)` surface | done | M0 |
+| #144 | Binary ports + bytevector I/O | done | M0 |
+| #166 | `call-with-values` consumer-lambda stdlib | done | M0 |
+| #167 | Regex capture groups | done | M0 |
+| #168 | Time API (ISO8601 parse/format, duration) | done | M0 |
+| #169 | CLI argument parser stdlib | done | M0 |
+| #134 | Compile-to-binary `eval` linker | done | — |
+| #141 | match apostrophe-quote subject hang | done | — |
 
 **Exit criterion for v1.2**: Noesis M0 is fully unblocked. All 11 closeout
 items shipped. The current v1.2 edge/security suite passes 87/87,
@@ -145,7 +145,18 @@ Eshkol. The remaining work is v1.3+ productization.
 
 ---
 
-## v1.3 — "evolve" (June 2026)
+## v1.3 — "evolve" (SHIPPED as v1.3.0-evolve, July 2026)
+
+> **SHIPPED.** v1.3.0-evolve is released (tag `v1.3.0-evolve`; ICC
+> `v1.3-evolve` readiness oracle: `ready`, score 100). It delivered the
+> planned R7RS/dev-experience/stdlib work below **and much more**: the full
+> arbitrary-order Taylor-tower AD matrix (all 13 phases P0–P12), full R7RS
+> conformance (34/34 vs. chibi-scheme 0.12.0), TCO/closure/memory robustness
+> hardening, and permanent adversarial-testing infrastructure. The AD phases
+> P4–P12 — originally staged across v1.4 through v2.0 — all landed here ahead
+> of schedule. The task tiers below are retained as the as-planned engineering
+> record; see the canonical [`../ROADMAP.md`](../ROADMAP.md) and
+> [`../CHANGELOG.md`](../CHANGELOG.md) for as-shipped contents.
 
 R7RS polish, language ergonomics, stdlib expansion, developer experience.
 
@@ -265,15 +276,15 @@ Acceptance:
 ### Noesis M1 (Hiereia production stack)
 | # | Item | Effort |
 |---|---|---|
-| #154 | Extra AD ops (atan2, asin, acos, softmax, gelu, silu, sinh, cosh) | ✅ finite-difference coverage landed in v1.2.x |
-| #155 | Priority queues + sets + deques stdlib | ✅ landed in v1.2.x |
+| #154 | Extra AD ops (atan2, asin, acos, softmax, gelu, silu, sinh, cosh) | finite-difference coverage landed in v1.2.x |
+| #155 | Priority queues + sets + deques stdlib | landed in v1.2.x |
 | #147 | Structured logging (JSON-L + trace IDs) | core contracts tested; needs Noesis integration |
 | #149 | Capability / permission hooks | hosted allow-list hooks landed for agent surfaces and core file I/O |
 | #150 | Resource limits (CPU / memory / wall-time) | hosted env initialization, accounting, and watchdog primitives tested |
-| #170 | Reflection primitives (`procedure-arity`, `record-fields`, `describe`) | ✅ landed in v1.2.x |
-| #171 | Memoization / LRU cache stdlib | ✅ landed in v1.2.x |
-| #172 | JSON Schema validation | ✅ landed in v1.2.x |
-| #173 | PRNG seeding + deterministic replay | ✅ landed in v1.2.x |
+| #170 | Reflection primitives (`procedure-arity`, `record-fields`, `describe`) | landed in v1.2.x |
+| #171 | Memoization / LRU cache stdlib | landed in v1.2.x |
+| #172 | JSON Schema validation | landed in v1.2.x |
+| #173 | PRNG seeding + deterministic replay | landed in v1.2.x |
 
 Phase 2 productionizes this surface:
 - Keep focused tests for `core.logging`, including JSON escaping, trace-id
@@ -322,7 +333,7 @@ Acceptance:
 ### Stdlib — Noesis M2 items that are pure stdlib (no new substrate)
 | # | Item | Effort |
 |---|---|---|
-| #174 | SRFI-41 lazy streams | ✅ landed in v1.2.x |
+| #174 | SRFI-41 lazy streams | landed in v1.2.x |
 | #176 | Unicode `string-normalize`, TOML, YAML, URL parse/encode | 5-7 days |
 | #177 | SQLite migrations stdlib | 2 days |
 
@@ -720,15 +731,15 @@ target release version. Use this as the handoff cheatsheet.
 
 | # | Item | Noesis tier | Release |
 |---|---|---|---|
-| #136 | Quasiquote interpolation | M0 | v1.2.x ✅ |
-| #137 | Hash tables | M0 | v1.2.x ✅ |
-| #138 | `define-record-type` | M0 | v1.2.x ✅ |
-| #139 | match `(? pred)` | M0 | v1.2.x ✅ |
-| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | M0 | v1.2.x ✅ |
-| #141 | match apostrophe-quote subject | — | v1.2.x ✅ |
-| #142 | Testing framework | M0 | v1.2.x ✅ |
-| #143 | `(time …)` macro | M0 | v1.2.x ✅ |
-| #144 | Binary ports + bytevector I/O | M0 | v1.2.x ✅ |
+| #136 | Quasiquote interpolation | M0 | v1.2.x |
+| #137 | Hash tables | M0 | v1.2.x |
+| #138 | `define-record-type` | M0 | v1.2.x |
+| #139 | match `(? pred)` | M0 | v1.2.x |
+| #140 | keyword-symbol parsing used by Noesis `':keyword` paths | M0 | v1.2.x |
+| #141 | match apostrophe-quote subject | — | v1.2.x |
+| #142 | Testing framework | M0 | v1.2.x |
+| #143 | `(time …)` macro | M0 | v1.2.x |
+| #144 | Binary ports + bytevector I/O | M0 | v1.2.x |
 | #145 | HTTP server | M1 | v1.4 |
 | #146 | WebSocket server | M1 | v1.4 |
 | #147 | Structured logging | M1 | v1.3 |
@@ -739,7 +750,7 @@ target release version. Use this as the handoff cheatsheet.
 | #152 | Tokenizer | M2 | v1.5 |
 | #153 | Sparse tensors | M2 | v1.5 |
 | #154 | Extra AD ops | M1 | v1.3 |
-| #155 | Priority queues / sets / deques | M1 | v1.2.x ✅ |
+| #155 | Priority queues / sets / deques | M1 | v1.2.x |
 | #156 | Threads + mutex + condvars | M3 | v1.4 |
 | #157 | Channels | M3 | v1.4 |
 | #158 | Async I/O event loop | M3 | v1.4 |
@@ -750,19 +761,19 @@ target release version. Use this as the handoff cheatsheet.
 | #163 | Protocol Buffers | M4 | v1.4 |
 | #164 | CRDT library | M4 | v1.8 |
 | #165 | Byzantine consensus | M4 | v2.0 |
-| #166 | call-with-values consumer | M0 | v1.2.x ✅ |
-| #167 | Regex capture groups | M0 | v1.2.x ✅ |
-| #168 | Time API (ISO8601 + duration) | M0 | v1.2.x ✅ |
-| #169 | CLI argparse | M0 | v1.2.x ✅ |
-| #170 | Reflection (`procedure-arity`, `type-name`, `describe`) | M1 | v1.2.x ✅ |
-| #171 | LRU cache | M1 | v1.2.x ✅ |
-| #172 | JSON Schema validation | M1 | v1.2.x ✅ |
-| #173 | PRNG seeding + deterministic replay | M1 | v1.2.x ✅ |
-| #174 | SRFI-41 streams | M2 stdlib | v1.2.x ✅ |
+| #166 | call-with-values consumer | M0 | v1.2.x |
+| #167 | Regex capture groups | M0 | v1.2.x |
+| #168 | Time API (ISO8601 + duration) | M0 | v1.2.x |
+| #169 | CLI argparse | M0 | v1.2.x |
+| #170 | Reflection (`procedure-arity`, `type-name`, `describe`) | M1 | v1.2.x |
+| #171 | LRU cache | M1 | v1.2.x |
+| #172 | JSON Schema validation | M1 | v1.2.x |
+| #173 | PRNG seeding + deterministic replay | M1 | v1.2.x |
+| #174 | SRFI-41 streams | M2 stdlib | v1.2.x |
 | #175 | CAS + Merkle trees | M2 | v1.4 |
 | #176 | Unicode NFC/NFD + TOML + YAML + URL | M2 stdlib | v1.3 |
 | #177 | SQLite migrations | M2 | v1.3 |
-| #134 | Compile-to-binary eval linker | — | v1.2.x ✅ |
+| #134 | Compile-to-binary eval linker | — | v1.2.x |
 
 ---
 
