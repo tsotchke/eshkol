@@ -11,6 +11,7 @@ cd "$(dirname "$0")/.."
 ICC_BIN="${ICC_BIN:-/Users/tyr/Desktop/infinite_context_coder/bin/icc}"
 TRACE_DIR="${TRACE_DIR:-scripts/icc_traces}"
 READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
+: "${READINESS_JSON:?READINESS_JSON must be set}"
 trap 'rm -f "$READINESS_JSON"' EXIT
 
 scripts/run_icc_smoke.sh

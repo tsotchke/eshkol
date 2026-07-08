@@ -53,6 +53,8 @@ EOF
 
 ALLOWED_LOG="$WORK/env_read_absent.log"
 DENIED_LOG="$WORK/env_and_file_denied.log"
+: "${ALLOWED_LOG:?ALLOWED_LOG not set}"
+: "${DENIED_LOG:?DENIED_LOG not set}"
 
 if ! env LC_ALL=C LANG=C ESHKOL_PATH=. "$RUN" -r "$WORK/env_read_absent.esk" >"$ALLOWED_LOG" 2>&1; then
     sed -n '1,160p' "$ALLOWED_LOG" >&2

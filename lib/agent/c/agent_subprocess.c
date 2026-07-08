@@ -292,8 +292,9 @@ static void eshkol_unset_env_injection_vars(void) {
  * DYLD_* / LD_* / *_PATH overrides out of the child env. Other env
  * vars (PATH, HOME, USER, LANG, etc.) still pass through so tools
  * keep working. Callers that truly need a specific LD_* var for a
- * child set it via an explicit (env ...) form in the Scheme wrapper
- * (TODO once we wire env override).
+ * child set it via an explicit (env ...) form in the Scheme wrapper.
+ * That override form does not exist yet — tracked as ESH-0233
+ * (.swarm/tasks/ESH-0233.json).
  *
  * The returned pointer is a malloc'd char** that callers must free
  * after posix_spawn / execvp returns. Entry strings themselves alias

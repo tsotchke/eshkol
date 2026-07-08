@@ -10,8 +10,9 @@ mkdir -p "$CONTENT_DIR"
 
 echo "Building site content from markdown docs..."
 
-# Root docs
-for doc in ROADMAP CONTRIBUTING; do
+# Root docs (LANGUAGE_GUIDE/QUICK_REFERENCE moved under docs/ in the v1.3 root
+# reorg and are handled by the docs/ loop below; ANNOUNCEMENT added in v1.3).
+for doc in ROADMAP CONTRIBUTING ANNOUNCEMENT; do
     if [ -f "${doc}.md" ]; then
         out="$CONTENT_DIR/$(echo "$doc" | tr '[:upper:]' '[:lower:]').html"
         pandoc "${doc}.md" -f markdown -t html --no-highlight -o "$out"

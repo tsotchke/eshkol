@@ -66,6 +66,7 @@ GEN_DIR="$REPO_ROOT/tests/metaprog_depth/generated"
 MANIFEST="$GEN_DIR/manifest.jsonl"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/metaprog_depth.jsonl"
+: "${TRACE_FILE:?TRACE_FILE not set}"
 REPORT="$REPO_ROOT/docs/reports/METAPROG_DEPTH_REPORT.md"
 mkdir -p "$TRACE_DIR" "$(dirname "$REPORT")"
 : > "$TRACE_FILE"
@@ -92,6 +93,7 @@ emit_event() { # name value family depth mode detail
 }
 
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/metaprog_results.XXXXXX")"
+: "${RESULTS:?RESULTS not set}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/metaprog_aot.XXXXXX")"
 cleanup() { rm -f "$RESULTS"; rm -rf "$WORK"; }
 trap cleanup EXIT

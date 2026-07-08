@@ -45,6 +45,7 @@ STRESS_DIR="$REPO_ROOT/tests/stress"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/stress_smoke.jsonl"
 mkdir -p "$TRACE_DIR"
+: "${TRACE_FILE:?TRACE_FILE must be set}"
 : > "$TRACE_FILE"
 
 BUILD_DIR="${BUILD_DIR:-build}"
@@ -73,6 +74,7 @@ JITCACHE_RUNS=50
 [ "$QUICK" -eq 1 ] && JITCACHE_RUNS=5
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-stress.XXXXXX")"
+: "${WORK:?WORK must be set}"
 trap 'rm -rf "$WORK"' EXIT
 # Fresh, harness-private JIT cache: first -r per file is genuinely cold.
 export ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache"
@@ -94,6 +96,8 @@ emit_event() { # name value snippet
 # Globals set: RB_RC RB_WALL_S RB_RSS_MB RB_OUT_FILE
 RB_OUT_FILE="$WORK/out.txt"
 RB_TIME_FILE="$WORK/time.txt"
+: "${RB_OUT_FILE:?RB_OUT_FILE must be set}"
+: "${RB_TIME_FILE:?RB_TIME_FILE must be set}"
 run_budgeted() {
     local tmo="$1"; shift
     local t0 t1

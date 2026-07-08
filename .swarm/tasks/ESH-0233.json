@@ -1,0 +1,34 @@
+{
+  "id": "ESH-0233",
+  "title": "No explicit (env ...) override form for child processes that legitimately need a scrubbed LD_*/DYLD_* var",
+  "status": "open",
+  "priority": "medium",
+  "workstream": "agent-ffi/security",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 2.0,
+  "goal": "lib/agent/c/agent_subprocess.c's scrubbed-child-environment builder (audit C6) filters dynamic-linker injection vars (LD_PRELOAD, DYLD_INSERT_LIBRARIES, LD_AUDIT, LD_LIBRARY_PATH, DYLD_LIBRARY_PATH, DYLD_FRAMEWORK_PATH, LD_BIND_NOW) out of every child process's environment by default, which is the correct default (prevents lateral movement via a compromised shell profile injecting a library into every tool the agent launches). But there is currently no supported way for a caller that legitimately needs one of those vars for a specific child (e.g. a sanitizer harness that needs LD_PRELOAD for its own instrumentation) to opt back in — the comment marks this 'TODO once we wire env override', meaning today such a caller has no sanctioned path and would have to bypass the scrubbing entirely or hand-roll process spawning.",
+  "file_globs": [
+    "lib/agent/c/agent_subprocess.c",
+    "lib/agent/subprocess.esk",
+    "inc/eshkol/agent/subprocess.h",
+    "tests/agent/subprocess_env_override_test.esk"
+  ],
+  "next_actions": [
+    "Design an explicit, opt-in (env (\"LD_PRELOAD\" . \"/path/to/lib.so\") ...) form on the Scheme subprocess-spawning API that re-adds specific scrubbed vars for that one call only (never silently for all children).",
+    "Wire it through to the scrubbed-env builder in agent_subprocess.c so an explicit override always wins over the default scrub list, but the default (no override) stays fully scrubbed.",
+    "Add tests/agent/subprocess_env_override_test.esk asserting: (a) default subprocess spawn has LD_PRELOAD stripped even if set in the parent env; (b) explicit (env ...) override on a spawn call restores it for that child only; (c) sibling/subsequent spawns without the override remain scrubbed."
+  ],
+  "acceptance": [
+    "A subprocess spawned without any override never receives LD_PRELOAD/DYLD_INSERT_LIBRARIES/etc even if the parent process has them set.",
+    "A subprocess spawned WITH an explicit (env ...) override receives exactly the overridden vars, nothing more.",
+    "No change in default behavior for any existing caller that doesn't use the new override form."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "cd build && cmake --build . --target eshkol-run",
+    "./build/eshkol-run tests/agent/subprocess_env_override_test.esk"
+  ],
+  "ux_payoff": "Closes the one documented escape hatch gap in the C6 environment-scrubbing hardening — without it, a legitimate advanced use case has no sanctioned path and might otherwise motivate someone to weaken the default scrub instead."
+}

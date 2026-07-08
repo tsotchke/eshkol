@@ -1147,6 +1147,10 @@
           (render-sidebar-item gs "Computable Transformer" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/COMPUTABLE_TRANSFORMER.md")
           (render-sidebar-item gs "VM as Weight Matrices" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md"))
 
+        ;; Announcements
+        (let ((ga (render-sidebar-group sidebar "ANNOUNCEMENTS")))
+          (render-sidebar-item ga "v1.3.0-evolve: Arbitrary-Order AD" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ANNOUNCEMENT.md"))
+
         ;; Project
         (let ((g6 (render-sidebar-group sidebar "PROJECT")))
           (render-sidebar-item g6 "Roadmap" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ROADMAP.md")

@@ -128,6 +128,7 @@ case "$TRACE_FILE" in
     /*) TRACE_FILE_ABS="$TRACE_FILE" ;;
     *) TRACE_FILE_ABS="$REPO_ROOT/$TRACE_FILE" ;;
 esac
+: "${TRACE_FILE_ABS:?TRACE_FILE_ABS must be set}"
 
 LOG_DIR="$WORK_ROOT_ABS/logs"
 BIN_DIR="$WORK_ROOT_ABS/bin"
@@ -140,6 +141,12 @@ CORPUS_RAW="$WORK_ROOT_ABS/corpus.raw"
 CORPUS_LIST="$WORK_ROOT_ABS/corpus.txt"
 AOT_BIN="$BIN_DIR/aot-test.bin"
 RETAINED_SIGNATURES="$WORK_ROOT_ABS/retained-signatures.txt"
+: "${RUNS_TSV:?RUNS_TSV must be set}"
+: "${SELF_TSV:?SELF_TSV must be set}"
+: "${CORPUS_RAW:?CORPUS_RAW must be set}"
+: "${CORPUS_LIST:?CORPUS_LIST must be set}"
+: "${AOT_BIN:?AOT_BIN must be set}"
+: "${RETAINED_SIGNATURES:?RETAINED_SIGNATURES must be set}"
 ESHKOL_RUN="$BUILD_DIR_ABS/eshkol-run"
 TASK_DIR="$REPO_ROOT/.swarm/tasks"
 STARTED_AT="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

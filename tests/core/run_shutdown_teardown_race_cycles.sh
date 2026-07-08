@@ -21,6 +21,7 @@ trap 'rm -rf "$WORK"' EXIT
 fail_count=0
 for i in $(seq 1 "$CYCLES"); do
     LOG="$WORK/cycle_${i}.log"
+    : "${LOG:?LOG not set}"
     "$BIN" >"$LOG" 2>&1
     rc=$?
 

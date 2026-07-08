@@ -33,6 +33,7 @@ export LC_CTYPE=C
 
 GEN_DIR="$REPO_ROOT/tests/ad_depth/generated"
 RAW_LOG="$(mktemp "${TMPDIR:-/tmp}/ad_depth_raw.XXXXXX")"
+: "${RAW_LOG:?RAW_LOG not set}"
 trap 'rm -f "$RAW_LOG"' EXIT
 
 : "${ESHKOL_JIT_CACHE_DIR:=${TMPDIR:-/tmp}/eshkol-ad-depth-jit-cache}"

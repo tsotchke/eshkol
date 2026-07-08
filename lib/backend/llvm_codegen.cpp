@@ -13830,9 +13830,10 @@ private:
         // of truth for "what does the user see in error messages?")
         // through the existing intern-cstring-as-string runtime path.
         // The same name registry is what eshkol_type_error_with_operand
-        // uses.  TODO(v1.3-followup): codegen-side wiring still needs a
-        // safe cstr→string helper; deferring until the source-span
-        // stack trace work touches the same runtime surface.
+        // uses.  Tracked as ESH-0232 (.swarm/tasks/ESH-0232.json):
+        // codegen-side wiring still needs a safe cstr→string helper;
+        // deferring until the source-span stack trace work touches the
+        // same runtime surface.
 
         // String functions (dispatched to StringIOCodegen)
         if (func_name == "string-length") return strio_->stringLength(op);

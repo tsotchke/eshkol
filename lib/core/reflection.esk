@@ -13,7 +13,9 @@
 ;;;                             *names* live only in the parser/codegen at
 ;;;                             expansion time. Adding a runtime registry of
 ;;;                             record-type → field-names is its own task —
-;;;                             see TODO at the bottom of this file.
+;;;                             tracked as ESH-0229 (.swarm/tasks/ESH-0229.json);
+;;;                             see the implementation plan at the bottom of
+;;;                             this file.
 
 (require core.list.transform)
 
