@@ -55,11 +55,16 @@ namespace {
 constexpr int kMaxImageDimension = 65535;
 constexpr int kMaxChannels = 16;
 
+/** Reject non-positive or absurdly large image dimensions/channel counts
+ *  (guards against overflow and pathological allocations downstream). */
 bool valid_dimensions(int w, int h, int channels) {
     return w > 0 && h > 0 && channels > 0 && channels <= kMaxChannels &&
            w <= kMaxImageDimension && h <= kMaxImageDimension;
 }
 
+/** Compute w*h*channels into @p out_total with overflow checks at each
+ *  multiplication step (plus a final check against the double-array byte
+ *  size); returns false on invalid dimensions or any overflow. */
 bool checked_total(int w, int h, int channels, size_t* out_total) {
     if (!valid_dimensions(w, h, channels) || !out_total) {
         return false;
@@ -82,6 +87,8 @@ bool checked_total(int w, int h, int channels, size_t* out_total) {
     return true;
 }
 
+/** Allocate an array of @p count doubles from the global arena, or nullptr on
+ *  overflow/allocation failure. */
 double* arena_doubles(size_t count) {
     if (count > std::numeric_limits<size_t>::max() / sizeof(double)) {
         return nullptr;
@@ -89,6 +96,7 @@ double* arena_doubles(size_t count) {
     return static_cast<double*>(arena_allocate(get_global_arena(), count * sizeof(double)));
 }
 
+/** Convert a normalized [0,1] double sample to an 8-bit byte, clamping out-of-range values. */
 uint8_t double_to_byte(double value) {
     double scaled = value * 255.0;
     if (!(scaled >= 0.0)) scaled = 0.0;
@@ -96,6 +104,8 @@ uint8_t double_to_byte(double value) {
     return static_cast<uint8_t>(scaled + 0.5);
 }
 
+/** Return an ASCII-lowercased copy of @p s (treats NULL as empty string); used to
+ *  normalize format names like "PNG"/"png" before comparison. */
 std::string lower_ascii(const char* s) {
     std::string out = s ? s : "";
     for (char& ch : out) {
@@ -106,6 +116,9 @@ std::string lower_ascii(const char* s) {
     return out;
 }
 
+/** Convert a decoded byte pixel buffer into an arena-allocated array of
+ *  doubles normalized to [0,1] (used by every native decode path to produce
+ *  the tensor representation the Scheme side expects). */
 double* bytes_to_arena_doubles(const uint8_t* pixels, int w, int h, int channels) {
     size_t total = 0;
     if (!pixels || !checked_total(w, h, channels, &total)) {
@@ -121,6 +134,9 @@ double* bytes_to_arena_doubles(const uint8_t* pixels, int w, int h, int channels
     return result;
 }
 
+/** Convert a normalized [0,1] double tensor into an 8-bit byte buffer @p out,
+ *  same channel count/layout as the input (used before handing pixels to
+ *  format-specific encoders). Returns false on invalid dimensions. */
 bool tensor_to_bytes(const double* data, int w, int h, int channels,
                      std::vector<uint8_t>* out) {
     size_t total = 0;
@@ -134,6 +150,18 @@ bool tensor_to_bytes(const double* data, int w, int h, int channels,
     return true;
 }
 
+/**
+ * @brief Convert a normalized double tensor of any supported channel count into 8-bit RGBA bytes.
+ *
+ * Missing channels are filled in (grayscale replicated to R/G/B, alpha
+ * defaults to 255), producing a 4-channel byte buffer regardless of the
+ * source channel count. If @p premultiply is set, RGB is premultiplied by
+ * alpha (needed by APIs like CoreGraphics that expect premultiplied alpha).
+ *
+ * @param premultiply Whether to premultiply RGB by alpha in the output.
+ * @param[out] out Resulting RGBA byte buffer, resized to w*h*4.
+ * @return false on invalid dimensions or pixel-count overflow.
+ */
 bool tensor_to_rgba_bytes(const double* data, int w, int h, int channels,
                           bool premultiply, std::vector<uint8_t>* out) {
     size_t ignored = 0;
@@ -166,6 +194,16 @@ bool tensor_to_rgba_bytes(const double* data, int w, int h, int channels,
     return true;
 }
 
+/**
+ * @brief Convert a decoded 4-channel RGBA byte buffer to the desired output channel layout.
+ *
+ * Drops the alpha channel if @p has_alpha is false. If @p unpremultiply is
+ * set and a pixel's alpha is neither 0 nor 255, reverses alpha
+ * premultiplication on R/G/B (needed after decoding from APIs, like
+ * CoreGraphics, that hand back premultiplied pixels).
+ *
+ * @return Byte buffer with 3 (RGB) or 4 (RGBA) channels per pixel, per @p has_alpha.
+ */
 std::vector<uint8_t> rgba_to_output_bytes(const uint8_t* rgba, int w, int h,
                                           bool has_alpha, bool unpremultiply) {
     const int channels = has_alpha ? 4 : 3;
@@ -196,6 +234,7 @@ std::vector<uint8_t> rgba_to_output_bytes(const uint8_t* rgba, int w, int h,
 
 #if defined(ESHKOL_IMAGE_IO_APPLE)
 
+/** Determine whether a CGImageAlphaInfo value indicates the image carries an alpha channel. */
 bool apple_alpha_info_has_alpha(CGImageAlphaInfo info) {
     switch (info & kCGBitmapAlphaInfoMask) {
         case kCGImageAlphaPremultipliedLast:
@@ -208,6 +247,7 @@ bool apple_alpha_info_has_alpha(CGImageAlphaInfo info) {
     }
 }
 
+/** Build a CFURLRef for a local file @p path (UTF-8, POSIX style); caller owns the returned reference. */
 CFURLRef apple_file_url(const char* path) {
     CFStringRef cf_path = CFStringCreateWithCString(kCFAllocatorDefault, path,
                                                      kCFStringEncodingUTF8);
@@ -218,6 +258,19 @@ CFURLRef apple_file_url(const char* path) {
     return url;
 }
 
+/**
+ * @brief Apple (ImageIO/CoreGraphics) backend: decode an image file into a normalized double tensor.
+ *
+ * Loads @p path via CGImageSource, draws it into an RGBA8 bitmap context
+ * (premultiplied alpha), then converts to the output channel layout (RGB or
+ * RGBA depending on whether the source has alpha), un-premultiplying and
+ * normalizing to [0,1] doubles.
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (3 or 4).
+ * @return Arena-allocated double array, or nullptr on any failure.
+ */
 double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) {
     CFURLRef url = apple_file_url(path);
     if (!url) return nullptr;
@@ -261,6 +314,8 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
     return result;
 }
 
+/** Map a lowercase format name ("png", "jpg"/"jpeg", "bmp", "tif"/"tiff", "webp")
+ *  to its ImageIO UTI, or nullptr if unrecognized. */
 CFStringRef apple_type_for_format(const std::string& format) {
     if (format.empty() || format == "png") return CFSTR("public.png");
     if (format == "jpg" || format == "jpeg") return CFSTR("public.jpeg");
@@ -270,6 +325,15 @@ CFStringRef apple_type_for_format(const std::string& format) {
     return nullptr;
 }
 
+/**
+ * @brief Apple (ImageIO/CoreGraphics) backend: encode a normalized double tensor to an image file.
+ *
+ * Converts @p data to premultiplied RGBA bytes, wraps them in a CGImage, and
+ * writes it to @p path using the ImageIO destination API for the UTI
+ * resolved from @p format (defaults to "png" if NULL/empty).
+ *
+ * @return 0 on success, -1 on any failure (unsupported format, bad dimensions, I/O error).
+ */
 int write_image_native(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
     const std::string fmt = lower_ascii(format ? format : "png");
@@ -319,16 +383,19 @@ int write_image_native(const char* path, const double* data,
 ULONG_PTR gdiplus_token = 0;
 std::once_flag gdiplus_once;
 
+/** One-time GDI+ startup (invoked via std::call_once from ensure_gdiplus()). */
 void init_gdiplus_once() {
     Gdiplus::GdiplusStartupInput input;
     Gdiplus::GdiplusStartup(&gdiplus_token, &input, nullptr);
 }
 
+/** Lazily initialize GDI+ exactly once; returns true if a valid startup token was obtained. */
 bool ensure_gdiplus() {
     std::call_once(gdiplus_once, init_gdiplus_once);
     return gdiplus_token != 0;
 }
 
+/** Convert a UTF-8 (falling back to the system ANSI code page) @p path to a wide string for Win32 APIs. */
 std::wstring utf8_to_wide(const char* path) {
     if (!path) return std::wstring();
     int len = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
@@ -344,6 +411,8 @@ std::wstring utf8_to_wide(const char* path) {
     return out;
 }
 
+/** Look up the GDI+ image encoder CLSID matching @p mime_type, writing it to @p clsid.
+ *  @return 0 on success, -1 if no matching encoder is registered. */
 int get_encoder_clsid(const WCHAR* mime_type, CLSID* clsid) {
     UINT num = 0;
     UINT size = 0;
@@ -361,6 +430,8 @@ int get_encoder_clsid(const WCHAR* mime_type, CLSID* clsid) {
     return -1;
 }
 
+/** Map a lowercase format name ("png", "jpg"/"jpeg", "bmp", "gif") to its MIME
+ *  type string for GDI+ encoder lookup, or nullptr if unrecognized. */
 const WCHAR* mime_for_format(const std::string& format) {
     if (format.empty() || format == "png") return L"image/png";
     if (format == "jpg" || format == "jpeg") return L"image/jpeg";
@@ -369,6 +440,18 @@ const WCHAR* mime_for_format(const std::string& format) {
     return nullptr;
 }
 
+/**
+ * @brief GDI+ backend: decode an image file into a normalized double tensor.
+ *
+ * Loads @p path via Gdiplus::Bitmap and reads it back pixel-by-pixel with
+ * GetPixel(), converting each channel to [0,1]. Output channel count is 4
+ * (RGBA) if the source has an alpha flag, else 3 (RGB).
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (3 or 4).
+ * @return Arena-allocated double array, or nullptr on any failure.
+ */
 double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) {
     if (!ensure_gdiplus()) return nullptr;
     std::wstring wide_path = utf8_to_wide(path);
@@ -404,6 +487,15 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
     return result;
 }
 
+/**
+ * @brief GDI+ backend: encode a normalized double tensor to an image file.
+ *
+ * Builds a 32bpp ARGB Gdiplus::Bitmap pixel-by-pixel from @p data, then
+ * saves it via the encoder CLSID resolved from @p format's MIME type
+ * (defaults to "png"); uses quality 90 for JPEG output.
+ *
+ * @return 0 on success, -1 on any failure (GDI+ not available, unsupported format, bad dimensions).
+ */
 int write_image_native(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
     if (!ensure_gdiplus()) return -1;
@@ -440,6 +532,19 @@ int write_image_native(const char* path, const double* data,
 
 #elif defined(ESHKOL_IMAGE_IO_LIBPNG)
 
+/**
+ * @brief libpng backend: decode a PNG file into a normalized double tensor.
+ *
+ * Normalizes source formats via libpng transforms (16-bit strip, palette
+ * expansion, sub-8-bit gray expansion, tRNS-to-alpha, gray-to-RGB) so the
+ * output is always RGB or RGBA. Uses libpng's setjmp-based error handling to
+ * clean up and return nullptr on any decode error.
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (3 or 4).
+ * @return Arena-allocated double array, or nullptr on any failure.
+ */
 double* read_png_native(const char* path, int* out_w, int* out_h, int* out_c) {
     FILE* fp = eshkol_fopen(path, "rb");
     if (!fp) return nullptr;
@@ -513,6 +618,11 @@ double* read_png_native(const char* path, int* out_w, int* out_h, int* out_c) {
     return result;
 }
 
+/**
+ * @brief libpng backend: encode a byte pixel buffer to a PNG file.
+ * @param channels Must be 1 (gray), 3 (RGB), or 4 (RGBA); other values fail.
+ * @return true on success, false on invalid input or any libpng error.
+ */
 bool write_png_native(const char* path, const uint8_t* pixels, int w, int h, int channels) {
     if (!pixels || !valid_dimensions(w, h, channels) ||
         !(channels == 1 || channels == 3 || channels == 4)) {
@@ -549,6 +659,8 @@ bool write_png_native(const char* path, const uint8_t* pixels, int w, int h, int
     return true;
 }
 
+/** Read the entire contents of file @p path into @p out (used to load an
+ *  encoded image blob for sniffing/decoding, e.g. WebP). Returns false on any I/O error. */
 bool read_file_bytes(const char* path, std::vector<uint8_t>* out) {
     if (!path || !out) return false;
     FILE* fp = eshkol_fopen(path, "rb");
@@ -579,11 +691,26 @@ struct JpegErrorManager {
     jmp_buf jump_buffer;
 };
 
+/** libjpeg error callback: longjmp back to the enclosing setjmp instead of
+ *  letting libjpeg call exit() on a fatal error. */
 void jpeg_error_exit(j_common_ptr cinfo) {
     auto* err = reinterpret_cast<JpegErrorManager*>(cinfo->err);
     longjmp(err->jump_buffer, 1);
 }
 
+/**
+ * @brief libjpeg backend: decode a JPEG file into a normalized double tensor (always RGB).
+ *
+ * Decompresses scanline-by-scanline into a malloc'd byte buffer via
+ * libjpeg's public API, forcing JCS_RGB output, then converts to an
+ * arena-allocated normalized double array. Uses jpeg_error_exit()'s longjmp
+ * to recover from libjpeg errors and return nullptr instead of crashing.
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (always 3).
+ * @return Arena-allocated double array, or nullptr on any failure.
+ */
 double* read_jpeg_native(const char* path, int* out_w, int* out_h, int* out_c) {
     FILE* fp = eshkol_fopen(path, "rb");
     if (!fp) return nullptr;
@@ -647,6 +774,16 @@ double* read_jpeg_native(const char* path, int* out_w, int* out_h, int* out_c) {
     return result;
 }
 
+/**
+ * @brief libjpeg backend: encode a byte pixel buffer to a JPEG file at quality 90.
+ *
+ * Grayscale (1-channel) input is compressed as JCS_GRAYSCALE; 4-channel
+ * (RGBA) input has its alpha dropped per-scanline into a scratch RGB row
+ * before compression, since JPEG has no alpha channel.
+ *
+ * @param channels Must be 1, 3, or 4; other values fail.
+ * @return true on success, false on invalid input or any libjpeg error.
+ */
 bool write_jpeg_native(const char* path, const uint8_t* pixels, int w, int h, int channels) {
     if (!pixels || !valid_dimensions(w, h, channels) ||
         !(channels == 1 || channels == 3 || channels == 4)) {
@@ -719,6 +856,18 @@ bool write_jpeg_native(const char* path, const uint8_t* pixels, int w, int h, in
 
 #if defined(ESHKOL_IMAGE_IO_LIBWEBP)
 
+/**
+ * @brief libwebp backend: decode a WebP file into a normalized double tensor.
+ *
+ * Reads the whole file, inspects its bitstream features to check for alpha,
+ * decodes via WebPDecodeRGBA()/WebPDecodeRGB() accordingly, then converts to
+ * an arena-allocated normalized double array.
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (3 or 4).
+ * @return Arena-allocated double array, or nullptr on any failure.
+ */
 double* read_webp_native(const char* path, int* out_w, int* out_h, int* out_c) {
     std::vector<uint8_t> encoded;
     if (!read_file_bytes(path, &encoded) || encoded.empty()) return nullptr;
@@ -750,6 +899,16 @@ double* read_webp_native(const char* path, int* out_w, int* out_h, int* out_c) {
     return result;
 }
 
+/**
+ * @brief libwebp backend: encode a byte pixel buffer to a WebP file at quality 90.
+ *
+ * Grayscale (1-channel) input is expanded to an RGB scratch buffer first
+ * (WebP's encoder has no grayscale entry point), then encoded via
+ * WebPEncodeRGBA()/WebPEncodeRGB() depending on channel count.
+ *
+ * @param channels Must be 1, 3, or 4; other values fail.
+ * @return true on success, false on invalid input or encode/write failure.
+ */
 bool write_webp_native(const char* path, const uint8_t* pixels, int w, int h, int channels) {
     if (!pixels || !valid_dimensions(w, h, channels) ||
         !(channels == 1 || channels == 3 || channels == 4)) {
@@ -796,6 +955,14 @@ bool write_webp_native(const char* path, const uint8_t* pixels, int w, int h, in
 
 #endif
 
+/**
+ * @brief Unix/libpng backend dispatcher: sniff @p path's file signature and decode with the matching backend.
+ *
+ * Reads the first 12 bytes and checks for the PNG magic number, then (if
+ * compiled in) the JPEG SOI marker, then the RIFF/WEBP container tag,
+ * dispatching to read_png_native()/read_jpeg_native()/read_webp_native()
+ * accordingly. Returns nullptr if the signature doesn't match any compiled-in format.
+ */
 double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) {
     uint8_t sig[12] = {0};
     FILE* fp = eshkol_fopen(path, "rb");
@@ -819,6 +986,15 @@ double* read_image_native(const char* path, int* out_w, int* out_h, int* out_c) 
     return nullptr;
 }
 
+/**
+ * @brief Unix/libpng backend dispatcher: encode @p data to @p path using the backend matching @p format.
+ *
+ * Converts to byte pixels once, then dispatches by lowercased @p format
+ * (default "png") to write_png_native(), and (if compiled in)
+ * write_jpeg_native() or write_webp_native().
+ *
+ * @return 0 on success, -1 on invalid input or an unsupported/uncompiled format.
+ */
 int write_image_native(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
     const std::string fmt = lower_ascii(format ? format : "png");
@@ -842,10 +1018,12 @@ int write_image_native(const char* path, const double* data,
 
 #else
 
+/** Fallback backend (no platform image API compiled in): always fails. */
 double* read_image_native(const char*, int*, int*, int*) {
     return nullptr;
 }
 
+/** Fallback backend (no platform image API compiled in): always fails. */
 int write_image_native(const char*, const double*, int, int, int, const char*) {
     return -1;
 }
@@ -854,6 +1032,18 @@ int write_image_native(const char*, const double*, int, int, int, const char*) {
 
 } // namespace
 
+/**
+ * @brief Public entry point: read an image file into a normalized [0,1] double tensor (row-major HWC).
+ *
+ * Validates arguments, checks the "file-read" capability (denying and
+ * returning nullptr if not permitted), then dispatches to the
+ * platform-specific read_image_native() (Apple/GDI+/libpng+friends/stub).
+ *
+ * @param[out] out_w Image width.
+ * @param[out] out_h Image height.
+ * @param[out] out_c Channel count (1=gray, 3=RGB, 4=RGBA).
+ * @return Arena-allocated array of w*h*c doubles, or NULL on failure/denial. Do not free().
+ */
 double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) {
     if (!path || !out_w || !out_h || !out_c) {
         return nullptr;
@@ -865,6 +1055,16 @@ double* eshkol_image_read(const char* path, int* out_w, int* out_h, int* out_c) 
     return read_image_native(path, out_w, out_h, out_c);
 }
 
+/**
+ * @brief Public entry point: write a normalized [0,1] double tensor to an image file.
+ *
+ * Validates arguments and dimensions, checks the "file-write" capability
+ * (denying and returning -1 if not permitted), then dispatches to the
+ * platform-specific write_image_native().
+ *
+ * @param format "png", "jpg"/"jpeg", "webp", "bmp" depending on backend support; NULL defaults to "png".
+ * @return 0 on success, -1 on failure or capability denial.
+ */
 int eshkol_image_write(const char* path, const double* data,
                        int w, int h, int channels, const char* format) {
     if (!path || !data || !valid_dimensions(w, h, channels)) {
@@ -877,6 +1077,15 @@ int eshkol_image_write(const char* path, const double* data,
     return write_image_native(path, data, w, h, channels, format);
 }
 
+/**
+ * @brief Convert a color image tensor to single-channel grayscale using ITU-R BT.709 luma weights.
+ *
+ * If @p channels is already 1, just copies the data. Otherwise computes
+ * 0.2126*R + 0.7152*G + 0.0722*B per pixel (missing G/B channels fall back
+ * to R, matching the other helpers' single/dual-channel handling).
+ *
+ * @return Arena-allocated array of w*h doubles, or NULL on invalid input/allocation failure.
+ */
 double* eshkol_image_to_grayscale(const double* data, int w, int h, int channels) {
     if (!data || !valid_dimensions(w, h, channels)) {
         return nullptr;
@@ -898,6 +1107,15 @@ double* eshkol_image_to_grayscale(const double* data, int w, int h, int channels
     return result;
 }
 
+/**
+ * @brief Resize an image tensor to (new_w, new_h) using bilinear interpolation.
+ *
+ * For each destination pixel, maps back to source coordinates (half-pixel
+ * center convention), clamps to the source bounds, and blends the four
+ * surrounding source pixels per channel.
+ *
+ * @return Arena-allocated array of new_w*new_h*channels doubles, or NULL on invalid dimensions/allocation failure.
+ */
 double* eshkol_image_resize(const double* data, int w, int h, int channels,
                             int new_w, int new_h) {
     size_t src_total = 0;

@@ -76,6 +76,15 @@ extern "C" void eshkol_logic_registry_reset(void) {
     g_var_count.store(0, std::memory_order_release);
 }
 
+/**
+ * @brief Intern @p name into the global predicate string pool, returning a stable pointer.
+ *
+ * Scans the existing predicate table for a matching string (under
+ * g_pred_mutex) and returns its interned pointer if found; otherwise copies
+ * @p name into the pool and registers a new table entry. Interning lets fact
+ * predicates be compared by pointer equality in eshkol_unify(). Returns
+ * @p name unchanged (as a defensive fallback) if the table or pool is full.
+ */
 extern "C" const char* eshkol_intern_predicate(const char* name) {
     if (!name) return nullptr;
     size_t len = strlen(name);
@@ -107,6 +116,9 @@ extern "C" const char* eshkol_intern_predicate(const char* name) {
     return g_pred_pool + offset;
 }
 
+/** Copy @p name (truncated to 63 chars) into the static logic-variable name
+ *  pool using a lock-free atomic bump allocator, returning the stable interned
+ *  pointer; returns a static "<pool-exhausted>" placeholder if the pool is full. */
 static const char* intern_var_name(const char* name) {
     size_t len = strlen(name);
     if (len >= 63) len = 63; /* truncate to fit pool slot */
@@ -125,6 +137,17 @@ static const char* intern_var_name(const char* name) {
     return g_var_name_pool + offset;
 }
 
+/**
+ * @brief Create or look up a logic variable by name, returning its stable var_id.
+ *
+ * Holds g_var_mutex for the duration of the find-or-register check so
+ * concurrent callers never race to register the same name twice. Returns the
+ * existing id if @p name was already registered, otherwise interns the name
+ * and assigns the next id from the atomic g_var_count counter.
+ *
+ * @param name Variable name (e.g. "x" for `?x`); must be non-NULL.
+ * @return Unique var_id, or UINT64_MAX if @p name is NULL or the variable limit is exceeded.
+ */
 extern "C" uint64_t eshkol_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
 
@@ -153,12 +176,14 @@ extern "C" uint64_t eshkol_make_logic_var(const char* name) {
     return id;
 }
 
+/** Look up the registered name for @p var_id, or NULL if out of range. */
 extern "C" const char* eshkol_logic_var_name(uint64_t var_id) {
     if (var_id >= g_var_count) return NULL;
     std::lock_guard<std::mutex> lock(g_var_mutex);
     return g_var_names[var_id];
 }
 
+/** Check whether a tagged value is a logic variable (ESHKOL_VALUE_LOGIC_VAR). */
 extern "C" bool eshkol_is_logic_var(const eshkol_tagged_value_t* tv) {
     if (!tv) return false;
     return tv->type == ESHKOL_VALUE_LOGIC_VAR;
@@ -173,6 +198,8 @@ extern "C" void* arena_allocate_with_header(arena_t* arena, size_t data_size,
 /* Forward declaration for cons cell creation */
 extern "C" void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment);
 
+/** Allocate a substitution with room for @p capacity (var_id, term) bindings
+ *  (SUBST_VAR_IDS/SUBST_TERMS trailer layout); num_bindings starts at 0. */
 static eshkol_substitution_t* alloc_substitution(arena_t* arena, uint32_t capacity) {
     size_t data_size = sizeof(eshkol_substitution_t)
                      + capacity * sizeof(uint64_t)
@@ -186,6 +213,8 @@ static eshkol_substitution_t* alloc_substitution(arena_t* arena, uint32_t capaci
     return s;
 }
 
+/** Allocate a zero-initialized eshkol_fact_t with room for @p arity trailing
+ *  argument slots (FACT_ARGS layout); predicate starts unset (0). */
 static eshkol_fact_t* alloc_fact(arena_t* arena, uint32_t arity) {
     size_t data_size = sizeof(eshkol_fact_t)
                      + arity * sizeof(eshkol_tagged_value_t);
@@ -199,6 +228,7 @@ static eshkol_fact_t* alloc_fact(arena_t* arena, uint32_t arity) {
     return f;
 }
 
+/** Allocate a bare (uninitialized fields) eshkol_knowledge_base_t header. */
 static eshkol_knowledge_base_t* alloc_kb(arena_t* arena) {
     eshkol_knowledge_base_t* kb = (eshkol_knowledge_base_t*)arena_allocate_with_header(
         arena, sizeof(eshkol_knowledge_base_t), HEAP_SUBTYPE_KNOWLEDGE_BASE, 0);
@@ -207,12 +237,32 @@ static eshkol_knowledge_base_t* alloc_kb(arena_t* arena) {
 
 /* ===== Substitution ===== */
 
+/**
+ * @brief Create an empty substitution with the given initial @p capacity.
+ * @param capacity Initial binding capacity; 0 is replaced with a default of 8.
+ * @return New empty substitution, or NULL if @p arena is NULL or allocation fails.
+ */
 extern "C" eshkol_substitution_t* eshkol_make_substitution(arena_t* arena, uint32_t capacity) {
     if (!arena) return NULL;
     if (capacity == 0) capacity = 8; /* default initial capacity */
     return alloc_substitution(arena, capacity);
 }
 
+/**
+ * @brief Immutably extend @p s with a new (var_id -> term) binding.
+ *
+ * Since substitutions are immutable, this allocates a new substitution
+ * (doubling capacity if @p s is at capacity), copies all of @p s's existing
+ * bindings into it, then appends the new binding. @p s itself is left
+ * untouched, which is what makes Prolog-style backtracking cheap (just
+ * discard the extended substitution to "undo").
+ *
+ * @param arena Arena for the new substitution's allocation.
+ * @param s Existing substitution to extend, or NULL to start from empty.
+ * @param var_id Logic variable id to bind.
+ * @param term Term to bind it to.
+ * @return New substitution with the binding added, or NULL on invalid input or allocation failure.
+ */
 extern "C" eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     const eshkol_substitution_t* s, uint64_t var_id,
     const eshkol_tagged_value_t* term) {
@@ -252,6 +302,8 @@ extern "C" eshkol_substitution_t* eshkol_extend_subst(arena_t* arena,
     return new_s;
 }
 
+/** Linear-scan @p s for a binding of @p var_id, returning a pointer to its
+ *  bound term, or NULL if @p s is NULL or the variable is unbound. */
 extern "C" const eshkol_tagged_value_t* eshkol_subst_lookup(
     const eshkol_substitution_t* s, uint64_t var_id) {
     if (!s) return NULL;
@@ -267,6 +319,18 @@ extern "C" const eshkol_tagged_value_t* eshkol_subst_lookup(
 
 /* ===== Walk ===== */
 
+/**
+ * @brief Shallow-resolve @p term by following variable-binding chains in @p subst.
+ *
+ * If @p term is a logic variable bound in @p subst, follows the chain of
+ * bindings (?x -> ?y -> 42 resolves to 42) until reaching an unbound
+ * variable or a non-variable value. Does not recurse into compound
+ * structures — see eshkol_walk_deep() for that.
+ *
+ * @param term Term to resolve; if NULL, returns tagged NULL.
+ * @param subst Substitution to resolve against, or NULL (term returned as-is if a variable).
+ * @return The resolved term (copy, not a fresh allocation).
+ */
 extern "C" eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
     const eshkol_substitution_t* subst) {
     if (!term) {
@@ -291,6 +355,20 @@ extern "C" eshkol_tagged_value_t eshkol_walk(const eshkol_tagged_value_t* term,
 
 static const int WALK_DEEP_MAX_DEPTH = 10000;
 
+/**
+ * @brief Recursive worker for eshkol_walk_deep(): shallow-walk, then recurse into fact arguments.
+ *
+ * Shallow-walks @p term, and if the result is a fact, allocates a new fact
+ * with each argument itself recursively walk-deep'd, so the whole compound
+ * structure comes back fully resolved. Bails out (returning the term as-is)
+ * past WALK_DEEP_MAX_DEPTH to guard against pathological/cyclic structures.
+ *
+ * @param arena Arena for any new fact copies created along the way.
+ * @param term Term to deep-resolve.
+ * @param subst Substitution to resolve against.
+ * @param depth Current recursion depth (0 at the top-level call).
+ * @return Fully resolved (possibly newly-allocated) term.
+ */
 static eshkol_tagged_value_t walk_deep_impl(arena_t* arena,
     const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst, int depth) {
     if (!term || !arena) {
@@ -335,6 +413,10 @@ static eshkol_tagged_value_t walk_deep_impl(arena_t* arena,
     return walked;
 }
 
+/**
+ * @brief Deep-resolve @p term, recursively walking inside compound (fact) structures.
+ * @return A fully resolved copy of @p term, with any bound logic variables (at any depth) replaced by their values.
+ */
 extern "C" eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
     const eshkol_tagged_value_t* term, const eshkol_substitution_t* subst) {
     return walk_deep_impl(arena, term, subst, 0);
@@ -344,6 +426,13 @@ extern "C" eshkol_tagged_value_t eshkol_walk_deep(arena_t* arena,
 
 static const int OCCURS_CHECK_MAX_DEPTH = 1000;
 
+/**
+ * @brief Recursive worker for occurs(): checks whether @p var_id appears (bound or free) in @p term.
+ *
+ * Walks @p term; if it resolves to @p var_id directly, returns true. If it
+ * resolves to a fact, recurses into each argument. Returns false past
+ * OCCURS_CHECK_MAX_DEPTH as a safety limit against runaway recursion.
+ */
 static bool occurs_impl(uint64_t var_id, const eshkol_tagged_value_t* term,
                         const eshkol_substitution_t* subst, int depth) {
     if (depth > OCCURS_CHECK_MAX_DEPTH) return false; /* safety limit */
@@ -369,6 +458,8 @@ static bool occurs_impl(uint64_t var_id, const eshkol_tagged_value_t* term,
     return false;
 }
 
+/** Occurs check: true if @p var_id appears anywhere within @p term under @p subst
+ *  (used by eshkol_unify() to reject circular bindings like ?x = f(?x)). */
 static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
                    const eshkol_substitution_t* subst) {
     return occurs_impl(var_id, term, subst, 0);
@@ -383,6 +474,8 @@ static bool occurs(uint64_t var_id, const eshkol_tagged_value_t* term,
 extern "C" bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
                                    const eshkol_tagged_value_t* val2);
 
+/** Structural equality for unification: logic variables compare by id,
+ *  everything else delegates to eshkol_deep_equal(). */
 static bool tagged_values_equal(const eshkol_tagged_value_t* a,
                                 const eshkol_tagged_value_t* b) {
     /* Logic variables unify by id — deep_equal does not know about them,
@@ -395,6 +488,23 @@ static bool tagged_values_equal(const eshkol_tagged_value_t* a,
 
 /* ===== Unification ===== */
 
+/**
+ * @brief Unify two terms under @p subst (Robinson's algorithm with occurs check).
+ *
+ * Walks both terms, then: if they're already equal (tagged_values_equal),
+ * returns @p subst unchanged; if either is an unbound logic variable, binds
+ * it to the other term (after an occurs check, failing on circular
+ * bindings); if both are facts, requires matching (interned or
+ * string-compared) predicate and arity and recursively unifies each
+ * argument pair, threading the substitution through. Any other combination
+ * of types fails.
+ *
+ * @param arena Arena for any new substitutions created via eshkol_extend_subst().
+ * @param t1 First term to unify.
+ * @param t2 Second term to unify.
+ * @param subst Substitution to unify under (may be NULL for empty).
+ * @return Extended substitution on success, or NULL on unification failure or invalid input.
+ */
 extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
     const eshkol_tagged_value_t* t1, const eshkol_tagged_value_t* t2,
     const eshkol_substitution_t* subst) {
@@ -466,6 +576,12 @@ extern "C" eshkol_substitution_t* eshkol_unify(arena_t* arena,
 
 /* ===== Facts ===== */
 
+/**
+ * @brief Create a fact with the given @p predicate symbol pointer and @p arity arguments.
+ * @param predicate Pointer to an interned predicate symbol (see eshkol_intern_predicate()).
+ * @param args Array of @p arity tagged argument values to copy in, or NULL if arity is 0.
+ * @return New fact, or NULL if @p arena is NULL or allocation fails.
+ */
 extern "C" eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
     const eshkol_tagged_value_t* args, uint32_t arity) {
     if (!arena) return NULL;
@@ -486,6 +602,7 @@ extern "C" eshkol_fact_t* eshkol_make_fact(arena_t* arena, uint64_t predicate,
 
 #define KB_INITIAL_CAPACITY 16
 
+/** Create an empty knowledge base with an initial fact-array capacity of KB_INITIAL_CAPACITY. */
 extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
     if (!arena) return NULL;
 
@@ -505,6 +622,12 @@ extern "C" eshkol_knowledge_base_t* eshkol_make_kb(arena_t* arena) {
     return kb;
 }
 
+/**
+ * @brief Append @p fact to @p kb's fact array, growing (doubling) the array if at capacity.
+ * @param arena Arena used to reallocate the fact array when it grows.
+ * @param kb Knowledge base to mutate; no-op if NULL, along with any other NULL argument.
+ * @param fact Fact to append.
+ */
 extern "C" void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
     const eshkol_fact_t* fact) {
     if (!arena || !kb || !fact) return;
@@ -523,6 +646,20 @@ extern "C" void eshkol_kb_assert(arena_t* arena, eshkol_knowledge_base_t* kb,
     kb->facts[kb->num_facts++] = (eshkol_fact_t*)fact;
 }
 
+/**
+ * @brief Query @p kb for all facts unifying with @p pattern (exact arity match).
+ *
+ * For each fact in @p kb whose predicate (when both are set) and arity match
+ * @p pattern, attempts to unify each argument pair starting from
+ * @p initial_subst (or a fresh empty substitution if NULL). Every successful
+ * unification's resulting substitution is prepended to a cons list.
+ *
+ * @param arena Arena for substitutions and cons cells built during the query.
+ * @param kb Knowledge base to search.
+ * @param pattern Fact pattern to match against (predicate 0 matches any).
+ * @param initial_subst Starting substitution, or NULL for empty.
+ * @return Cons list of matching substitutions (tagged HEAP_PTR values), or tagged NULL if none/invalid input.
+ */
 extern "C" eshkol_tagged_value_t eshkol_kb_query(arena_t* arena,
     const eshkol_knowledge_base_t* kb, const eshkol_fact_t* pattern,
     const eshkol_substitution_t* initial_subst) {
@@ -668,6 +805,14 @@ extern "C" eshkol_tagged_value_t eshkol_kb_query_prefix(arena_t* arena,
 
 /* ===== Tagged Value Dispatch ===== */
 
+/**
+ * @brief Tagged-value entry point for eshkol_unify(), called from LLVM codegen.
+ *
+ * Extracts a substitution pointer from @p subst_tv (treated as empty if not
+ * a HEAP_PTR) and unifies @p t1 with @p t2 under it. Sets @p result to a
+ * HEAP_PTR wrapping the extended substitution on success, or the tagged
+ * NULL value (displays as `#f`) on unification failure.
+ */
 extern "C" void eshkol_unify_tagged(arena_t* arena,
     const eshkol_tagged_value_t* t1, const eshkol_tagged_value_t* t2,
     const eshkol_tagged_value_t* subst_tv, eshkol_tagged_value_t* result) {
@@ -689,6 +834,12 @@ extern "C" void eshkol_unify_tagged(arena_t* arena,
     }
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_walk(), called from LLVM codegen.
+ *
+ * Extracts a substitution pointer from @p subst_tv (treated as empty if not
+ * a HEAP_PTR) and writes the shallow-walked result of @p term into @p result.
+ */
 extern "C" void eshkol_walk_tagged(
     const eshkol_tagged_value_t* term, const eshkol_tagged_value_t* subst_tv,
     eshkol_tagged_value_t* result) {
@@ -703,6 +854,15 @@ extern "C" void eshkol_walk_tagged(
     *result = eshkol_walk(term, subst);
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_fact(), called from LLVM codegen.
+ *
+ * @p pred must be a HEAP_PTR to a symbol/string; its text is interned via
+ * eshkol_intern_predicate() so later unification/KB lookups can compare by
+ * pointer. Builds a fact with @p arity arguments copied from @p args. Sets
+ * @p result to a HEAP_PTR wrapping the new fact on success, or the tagged
+ * NULL value if @p arena/@p pred is missing or allocation fails.
+ */
 extern "C" void eshkol_make_fact_tagged(arena_t* arena,
     const eshkol_tagged_value_t* pred, const eshkol_tagged_value_t* args,
     int32_t arity, eshkol_tagged_value_t* result) {
@@ -737,6 +897,11 @@ extern "C" void eshkol_make_fact_tagged(arena_t* arena,
     }
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_kb(), called from LLVM codegen.
+ * Sets @p result to a HEAP_PTR wrapping a new empty knowledge base, or the
+ * tagged NULL value on allocation failure.
+ */
 extern "C" void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* result) {
     if (!result) return;
     memset(result, 0, sizeof(*result));
@@ -750,6 +915,13 @@ extern "C" void eshkol_make_kb_tagged(arena_t* arena, eshkol_tagged_value_t* res
     }
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_kb_assert(), called from LLVM codegen.
+ *
+ * Requires both @p kb_tv and @p fact_tv to be non-NULL tagged HEAP_PTR
+ * values; otherwise this is a no-op. Mutates the KB in place (no result
+ * parameter, since the Scheme-side operation returns no value).
+ */
 extern "C" void eshkol_kb_assert_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* fact_tv) {
     if (!arena || !kb_tv || !fact_tv) return;
@@ -762,6 +934,14 @@ extern "C" void eshkol_kb_assert_tagged(arena_t* arena,
     eshkol_kb_assert(arena, kb, fact);
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_kb_query(), called from LLVM codegen.
+ *
+ * Requires @p kb_tv and @p pattern_tv to be non-NULL tagged HEAP_PTR values
+ * (else @p result is set to tagged NULL); otherwise delegates to
+ * eshkol_kb_query() with an empty initial substitution and copies the
+ * resulting cons-list of matching substitutions into @p result.
+ */
 extern "C" void eshkol_kb_query_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* pattern_tv,
     eshkol_tagged_value_t* result) {
@@ -787,6 +967,13 @@ extern "C" void eshkol_kb_query_tagged(arena_t* arena,
     *result = eshkol_kb_query(arena, kb, pattern, NULL);
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_kb_query_prefix(), called from LLVM codegen.
+ *
+ * Same argument validation and empty-initial-substitution behavior as
+ * eshkol_kb_query_tagged(), but delegates to eshkol_kb_query_prefix() so
+ * @p pattern_tv only needs to match a prefix of each candidate fact's arguments.
+ */
 extern "C" void eshkol_kb_query_prefix_tagged(arena_t* arena,
     const eshkol_tagged_value_t* kb_tv, const eshkol_tagged_value_t* pattern_tv,
     eshkol_tagged_value_t* result) {
@@ -806,6 +993,12 @@ extern "C" void eshkol_kb_query_prefix_tagged(arena_t* arena,
     *result = eshkol_kb_query_prefix(arena, kb, pattern, NULL);
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_make_substitution(), called from LLVM codegen.
+ * Creates an empty substitution with a fixed default capacity of 8 bindings
+ * (grows automatically via eshkol_extend_subst()); sets @p result to a
+ * HEAP_PTR on success or the tagged NULL value on allocation failure.
+ */
 extern "C" void eshkol_make_substitution_tagged(arena_t* arena,
     eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -822,6 +1015,11 @@ extern "C" void eshkol_make_substitution_tagged(arena_t* arena,
 
 /* ===== Display ===== */
 
+/**
+ * @brief Print a logic variable's name, e.g. `?x`.
+ * Falls back to `?_<id>` if @p var_id has no registered name.
+ * @param file Destination FILE*, or NULL to write to stdout.
+ */
 extern "C" void eshkol_display_logic_var(uint64_t var_id, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     const char* name = eshkol_logic_var_name(var_id);
@@ -836,6 +1034,14 @@ extern "C" void eshkol_display_logic_var(uint64_t var_id, void* file) {
 extern "C" void eshkol_display_value_opts(const eshkol_tagged_value_t* value,
                                            eshkol_display_opts_t* opts);
 
+/**
+ * @brief Print a substitution as `{var -> term, var -> term, ...}` (or `{}` if @p s is NULL).
+ * Each bound term is formatted per its tagged type: integers, doubles (via
+ * eshkol_fprint_double()), booleans as `#t`/`#f`, nested logic variables,
+ * `()` for NULL, interned symbol strings, or a generic `#<heap:N>`/`#<type:N>`
+ * placeholder otherwise.
+ * @param file Destination FILE*, or NULL to write to stdout.
+ */
 extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!s) {
@@ -896,6 +1102,12 @@ extern "C" void eshkol_display_substitution(const eshkol_substitution_t* s, void
     fprintf(f, "}");
 }
 
+/**
+ * @brief Print a fact as `(predicate arg1 arg2 ...)`.
+ * Prints `(fact)` if @p fact is NULL, and `?` for an unset (0) predicate.
+ * Arguments use the same per-type formatting as eshkol_display_substitution().
+ * @param file Destination FILE*, or NULL to write to stdout.
+ */
 extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!fact) {
@@ -954,6 +1166,12 @@ extern "C" void eshkol_display_fact(const eshkol_fact_t* fact, void* file) {
     fprintf(f, ")");
 }
 
+/**
+ * @brief Print a short human-readable summary of a knowledge base.
+ * Writes `#<knowledge-base: empty>` if @p kb is NULL, otherwise
+ * `#<knowledge-base: N facts>`.
+ * @param file Destination FILE*, or NULL to write to stdout.
+ */
 extern "C" void eshkol_display_kb(const eshkol_knowledge_base_t* kb, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!kb) {

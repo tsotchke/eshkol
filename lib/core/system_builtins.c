@@ -72,6 +72,9 @@ extern size_t arena_get_used_memory(const void* a);
  * pointer into it (or into a static buffer); ours always work in-place,
  * matching the POSIX modify-in-place behaviour our callers already expect.
  * Treats both '/' and '\\' as separators so they DTRT on Windows paths. */
+/** Portable in-place dirname: truncates @p path to its directory component,
+ *  treating both '/' and '\\' as separators. Returns "." if there is no
+ *  directory part. Modifies the input buffer, matching POSIX dirname(3). */
 static char* eshkol_portable_dirname(char* path) {
     if (!path || !*path) return (char*)".";
     size_t n = strlen(path);
@@ -86,6 +89,8 @@ static char* eshkol_portable_dirname(char* path) {
     return path;
 }
 
+/** Portable in-place basename: returns a pointer to the final path component
+ *  of @p path (after the last '/' or '\\'), matching POSIX basename(3). */
 static char* eshkol_portable_basename(char* path) {
     if (!path || !*path) return (char*)".";
     size_t n = strlen(path);
@@ -123,11 +128,13 @@ typedef struct {
 #define SYS_TYPE_CHAR    4
 #define SYS_TYPE_HEAP_PTR 8
 
+/** Construct a tagged null (empty-list / unspecified) value. */
 static eshkol_sysbuiltin_value_t sys_make_null(void) {
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     return v;
 }
 
+/** Construct a tagged boolean value from a C truth value. */
 static eshkol_sysbuiltin_value_t sys_make_bool(int val) {
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_BOOL;
@@ -135,6 +142,7 @@ static eshkol_sysbuiltin_value_t sys_make_bool(int val) {
     return v;
 }
 
+/** Construct a tagged fixnum (int64) value. */
 static eshkol_sysbuiltin_value_t sys_make_int64(int64_t val) {
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_INT64;
@@ -142,6 +150,7 @@ static eshkol_sysbuiltin_value_t sys_make_int64(int64_t val) {
     return v;
 }
 
+/** Construct a tagged flonum (double) value. */
 static eshkol_sysbuiltin_value_t sys_make_double(double val) {
     eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
     v.type = SYS_TYPE_DOUBLE;
@@ -149,6 +158,10 @@ static eshkol_sysbuiltin_value_t sys_make_double(double val) {
     return v;
 }
 
+/** Construct a tagged heap string of exactly @p len bytes copied from @p s,
+ *  allocated in the global arena with a proper object header (NUL-terminated
+ *  for interop with C string functions). Returns null on allocation failure
+ *  or a NULL @p s. */
 static eshkol_sysbuiltin_value_t sys_make_string_len(const char* s, size_t len) {
     if (!s) return sys_make_null();
     void* arena = get_global_arena();
@@ -166,10 +179,15 @@ static eshkol_sysbuiltin_value_t sys_make_string_len(const char* s, size_t len) 
     return v;
 }
 
+/** Construct a tagged heap string from a NUL-terminated C string (or a
+ *  tagged null if @p s is NULL). */
 static eshkol_sysbuiltin_value_t sys_make_string(const char* s) {
     return s ? sys_make_string_len(s, strlen(s)) : sys_make_null();
 }
 
+/** Allocate an R7RS cons cell in the global arena with the given car/cdr and
+ *  return it as a tagged heap pointer (used to build Scheme-visible lists
+ *  and alists from C). */
 static eshkol_sysbuiltin_value_t sys_make_pair(eshkol_sysbuiltin_value_t car,
                                                 eshkol_sysbuiltin_value_t cdr) {
     void* arena = get_global_arena();
@@ -185,11 +203,16 @@ static eshkol_sysbuiltin_value_t sys_make_pair(eshkol_sysbuiltin_value_t car,
     return v;
 }
 
+/** Build a single (key . value) alist entry pair with a string key, used when
+ *  assembling alist-shaped results (e.g. file-stat, url-parse) for Scheme. */
 static eshkol_sysbuiltin_value_t sys_alist_entry(const char* key,
                                                   eshkol_sysbuiltin_value_t value) {
     return sys_make_pair(sys_make_string(key), value);
 }
 
+/** Extract the raw C string pointer from a tagged value if it is a heap
+ *  string (accepting both the LLVM-codegen and FFI string tagging
+ *  conventions), or NULL if @p v is not a string. */
 static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
     /* Strings from LLVM codegen have type=HEAP_PTR, flags=0 (subtype is in
      * the object header at ptr-8, not in the tagged value flags byte).
@@ -201,12 +224,19 @@ static const char* sys_extract_string(eshkol_sysbuiltin_value_t v) {
     return NULL;
 }
 
+/** Check the runtime capability sandbox for @p capability; if it is not
+ *  allowed, records/denies it (for diagnostics) and returns 0, else 1. Used
+ *  as a guard at the top of security-sensitive builtins (process spawn,
+ *  filesystem mutation, network access, etc). */
 static int sys_require_capability(const char* capability) {
     if (eshkol_capability_runtime_allows(capability)) return 1;
     eshkol_capability_runtime_deny(capability);
     return 0;
 }
 
+/** Extract an int64 from a tagged value, truncating a double via cast if
+ *  @p v is tagged as a flonum, otherwise reinterpreting its data payload
+ *  as an int64. */
 static int64_t sys_extract_int64(eshkol_sysbuiltin_value_t v) {
     if (v.type == SYS_TYPE_DOUBLE) {
         double d = 0.0;
@@ -222,6 +252,9 @@ static int64_t sys_extract_int64(eshkol_sysbuiltin_value_t v) {
  * System Information
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(os-type)`: returns a lower-case string naming the host OS
+ *  ("darwin", "windows", "linux", "freebsd", or "unknown"), decided at
+ *  compile time. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_os_type_v(void) {
 #ifdef __APPLE__
     return sys_make_string("darwin");
@@ -236,6 +269,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_os_type_v(void) {
 #endif
 }
 
+/** Implements `(os-arch)`: returns a string naming the target CPU
+ *  architecture ("arm64", "x86_64", "x86", or "unknown"), decided at
+ *  compile time. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_os_arch_v(void) {
 #if defined(__aarch64__) || defined(_M_ARM64)
     return sys_make_string("arm64");
@@ -248,6 +284,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_os_arch_v(void) {
 #endif
 }
 
+/** Implements `(hostname)`: returns the machine's network host name, or
+ *  "unknown" if it cannot be determined. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_hostname_v(void) {
 #ifndef _WIN32
     char buf[256];
@@ -265,6 +303,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_hostname_v(void) {
     return sys_make_string("unknown");
 }
 
+/** Implements `(username)`: returns the current user's login name (via the
+ *  password database or, failing that, the USER/GetUserNameA environment),
+ *  or "unknown". */
 static eshkol_sysbuiltin_value_t eshkol_builtin_username_v(void) {
 #ifndef _WIN32
     struct passwd* pw = getpwuid(getuid());
@@ -279,6 +320,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_username_v(void) {
     return sys_make_string("unknown");
 }
 
+/** Implements `(cpu-count)`: returns the number of online logical CPUs as
+ *  an integer (at least 1). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_cpu_count_v(void) {
 #ifndef _WIN32
     long n = sysconf(_SC_NPROCESSORS_ONLN);
@@ -290,6 +333,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_cpu_count_v(void) {
 #endif
 }
 
+/** Implements `(getpid)`: returns the current process ID as an integer. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_getpid_v(void) {
 #ifndef _WIN32
     return sys_make_int64((int64_t)getpid());
@@ -298,6 +342,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_getpid_v(void) {
 #endif
 }
 
+/** Implements `(home-directory)`: returns the user's home directory path
+ *  (HOME on POSIX, USERPROFILE on Windows), or "" if unset. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_home_directory_v(void) {
 #ifndef _WIN32
     const char* home = getenv("HOME");
@@ -309,6 +355,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_home_directory_v(void) {
     return sys_make_string("");
 }
 
+/** Implements `(sleep-ms n)`: blocks the calling thread for @p ms_val
+ *  milliseconds (no-op for non-positive values). Returns null. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_sleep_ms_v(eshkol_sysbuiltin_value_t ms_val) {
     int64_t ms = (int64_t)ms_val.data;
     if (ms <= 0) return sys_make_null();
@@ -336,6 +384,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_sleep_ms_v(eshkol_sysbuiltin_val
  * zero.
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(format-iso8601 ns)`: formats @p ns_val nanoseconds-since-epoch
+ *  as a UTC ISO-8601 string "YYYY-MM-DDTHH:MM:SS.mmmZ" (millisecond
+ *  precision). Returns null on conversion failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_format_iso8601_v(eshkol_sysbuiltin_value_t ns_val) {
     /* The argument is nanoseconds since Unix epoch. current-time-ns packs
      * its int64 ns count as a double (SIToFP in system_codegen), so DOUBLE
@@ -372,12 +423,16 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_format_iso8601_v(eshkol_sysbuilt
 /* Days-before-month in a non-leap year. Adjusted for Feb in leap years. */
 static int days_before_month[] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
 
+/** Returns non-zero if @p y is a Gregorian leap year. */
 static int is_leap_year(int y) {
     return (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0);
 }
 
 /* Compute Unix epoch seconds from a calendar datetime (UTC). Portable
  * equivalent of timegm() — avoids locale / TZ state that mktime carries. */
+/** Convert a UTC calendar datetime to Unix epoch seconds (portable timegm),
+ *  avoiding the locale/TZ global state that mktime()/timegm() rely on.
+ *  Returns 0 for an out-of-range month. */
 static int64_t timegm_portable(int year, int mon, int day,
                                int hour, int min, int sec) {
     int64_t days = 0;
@@ -391,6 +446,10 @@ static int64_t timegm_portable(int year, int mon, int day,
     return days * 86400LL + hour * 3600LL + min * 60LL + sec;
 }
 
+/** Implements `(parse-iso8601 s)`: parses an ISO-8601 datetime string
+ *  ("YYYY-MM-DDTHH:MM:SS" with optional .fff fraction and Z/±HH:MM zone)
+ *  into an int64 nanoseconds-since-epoch value, or returns #f on any
+ *  malformed input. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_parse_iso8601_v(eshkol_sysbuiltin_value_t str_val) {
     const char* s = sys_extract_string(str_val);
     if (!s) return sys_make_bool(0);
@@ -445,6 +504,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_parse_iso8601_v(eshkol_sysbuilti
     return sys_make_int64(ns);
 }
 
+/** Implements `(current-timestamp)`: returns wall-clock UTC time as a double
+ *  of seconds-since-epoch (with sub-second precision). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_current_timestamp_v(void) {
 #ifndef _WIN32
     struct timespec ts;
@@ -462,6 +523,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_current_timestamp_v(void) {
 #endif
 }
 
+/** Implements `(format-relative seconds)`: renders an elapsed duration
+ *  @p seconds_val (seconds ago) as a compact human string like "5s ago",
+ *  "3m ago", "2h ago", or "4d ago". */
 static eshkol_sysbuiltin_value_t eshkol_builtin_format_relative_v(eshkol_sysbuiltin_value_t seconds_val) {
     int64_t seconds_ago = sys_extract_int64(seconds_val);
     if (seconds_ago < 0) seconds_ago = 0;
@@ -477,6 +541,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_format_relative_v(eshkol_sysbuil
     return sys_make_string(buf);
 }
 
+/** Implements `(local-timezone-offset)`: returns the local timezone's offset
+ *  from UTC in seconds (0 on WASM or on failure). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_local_timezone_offset_v(void) {
 #if defined(ESHKOL_VM_WASM)
     return sys_make_int64(0);
@@ -495,6 +561,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_local_timezone_offset_v(void) {
 #endif
 }
 
+/** Implements `(executable-exists? name)`: returns #t if an executable named
+ *  @p name_val is found on PATH (via access(X_OK) / SearchPathA), else #f. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_executable_exists_v(eshkol_sysbuiltin_value_t name_val) {
     const char* name = sys_extract_string(name_val);
     if (!name) return sys_make_bool(0);
@@ -525,6 +593,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_executable_exists_v(eshkol_sysbu
 #endif
 }
 
+/** Implements `(executable-path name)`: resolves @p name_val to the full path
+ *  of the executable that would run (searching PATH, or checking directly if
+ *  @p name contains a slash), returning the path string or #f if not found. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_executable_path_v(eshkol_sysbuiltin_value_t name_val) {
     const char* name = sys_extract_string(name_val);
     if (!name || !*name) return sys_make_bool(0);
@@ -560,12 +631,17 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_executable_path_v(eshkol_sysbuil
 #endif
 }
 
+/** Implements `(arena-used)`: returns the number of bytes currently
+ *  allocated in the global arena (a debug/benchmark introspection hook). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_arena_used_v(void) {
     /* ESH-0187: bytes currently allocated in the global arena. Debug hook for
      * the no-heap Taylor-tower monomorphization benchmark (tests/ad). */
     return sys_make_int64((int64_t)arena_get_used_memory(get_global_arena()));
 }
 
+/** Implements `(monotonic-time-ms)`: returns a monotonic clock reading in
+ *  milliseconds (CLOCK_MONOTONIC / GetTickCount64), suitable for measuring
+ *  elapsed intervals but not wall-clock time. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_monotonic_time_ms_v(void) {
 #ifndef _WIN32
     struct timespec ts;
@@ -579,6 +655,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_monotonic_time_ms_v(void) {
 #endif
 }
 
+/** Implements `(temp-directory)`: returns the system temp directory path
+ *  (TMPDIR/TMP/TEMP or /tmp on POSIX; GetTempPathA on Windows), with any
+ *  trailing separator stripped. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_temp_directory_v(void) {
 #ifndef _WIN32
     const char* tmp = getenv("TMPDIR");
@@ -606,6 +685,10 @@ typedef struct {
 static eshkol_sys_sleep_inhibitor_t g_sys_sleep_inhibitors[16];
 static int64_t g_sys_next_sleep_inhibitor = 1;
 
+/** Implements `(prevent-sleep reason)`: registers a sleep inhibitor in a
+ *  fixed-size slot table (and calls SetThreadExecutionState on Windows),
+ *  returning an integer handle to be passed to allow-sleep, or #f if no
+ *  slot is free. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_prevent_sleep_v(eshkol_sysbuiltin_value_t reason_val) {
     (void)reason_val;
     int slot = -1;
@@ -626,6 +709,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_prevent_sleep_v(eshkol_sysbuilti
     return sys_make_int64(handle);
 }
 
+/** Implements `(allow-sleep handle)`: releases the sleep inhibitor previously
+ *  returned by prevent-sleep (restoring the default execution state on Windows
+ *  once no inhibitors remain). Returns #t if the handle was found, else #f. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_allow_sleep_v(eshkol_sysbuiltin_value_t handle_val) {
     int64_t handle = (int64_t)handle_val.data;
     if (handle <= 0) return sys_make_bool(0);
@@ -648,6 +734,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_allow_sleep_v(eshkol_sysbuiltin_
  * Path Manipulation
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(path-join a b)`: concatenates two path components with a
+ *  single '/' separator (avoiding a doubled slash if @p a already ends in
+ *  one). Returns null if either argument is not a string. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_join_v(eshkol_sysbuiltin_value_t a, eshkol_sysbuiltin_value_t b) {
     const char* sa = sys_extract_string(a);
     const char* sb = sys_extract_string(b);
@@ -662,6 +751,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_join_v(eshkol_sysbuiltin_va
     return sys_make_string(buf);
 }
 
+/** Implements `(path-dirname path)`: returns the directory portion of a path
+ *  (POSIX dirname semantics via a scratch copy). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_dirname_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -673,6 +764,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_dirname_v(eshkol_sysbuiltin
     return result;
 }
 
+/** Implements `(path-basename path)`: returns the final component of a path
+ *  (POSIX basename semantics via a scratch copy). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_basename_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -684,6 +777,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_basename_v(eshkol_sysbuilti
     return result;
 }
 
+/** Implements `(path-extname path)`: returns the file extension of a path
+ *  including the leading dot (e.g. ".txt"), or "" if the basename has no
+ *  extension. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_extname_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -695,6 +791,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_extname_v(eshkol_sysbuiltin
     return sys_make_string("");
 }
 
+/** Implements `(path-absolute? path)`: returns #t if @p path_val is an
+ *  absolute path (leading '/' on POSIX; drive-letter or leading separator
+ *  on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_is_absolute_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
@@ -706,6 +805,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_is_absolute_v(eshkol_sysbui
 #endif
 }
 
+/** Implements `(path-normalize path)`: lexically normalizes a path by
+ *  resolving "." and ".." components and collapsing redundant separators
+ *  (no filesystem access). Rejects inputs at/over PATH_MAX. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_normalize_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -765,6 +867,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_normalize_v(eshkol_sysbuilt
     return sys_make_string(buf);
 }
 
+/** Implements `(realpath path)`: resolves @p path_val to a canonical absolute
+ *  path via the OS (realpath / GetFullPathNameA), following symlinks. Requires
+ *  the "file-read" capability; returns null on failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_realpath_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -787,6 +892,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_realpath_v(eshkol_sysbuiltin_val
  * Filesystem Operations
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(file-stat path)`: returns the file size in bytes as an
+ *  integer (via stat / GetFileAttributesExA). Requires "file-read"; returns
+ *  null if the file does not exist or on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_stat_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -806,6 +914,10 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_stat_v(eshkol_sysbuiltin_va
 #endif
 }
 
+/** Implements `(file-copy src dst)`: copies the contents of @p src to @p dst.
+ *  On POSIX it uses O_NOFOLLOW/O_EXCL-style TOCTOU hardening (refusing symlink
+ *  swaps and clobbering) and reports a failed close as failure. Requires the
+ *  "file-read" and "file-write" capabilities; returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_value_t src_val, eshkol_sysbuiltin_value_t dst_val) {
     const char* src = sys_extract_string(src_val);
     const char* dst = sys_extract_string(dst_val);
@@ -858,6 +970,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_copy_v(eshkol_sysbuiltin_va
 #endif
 }
 
+/** Implements `(file-rename old new)`: renames/moves a file (rename /
+ *  MoveFileExA with replace-existing). Requires "file-write"; returns #t on
+ *  success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_rename_v(eshkol_sysbuiltin_value_t old_val, eshkol_sysbuiltin_value_t new_val) {
     const char* old_path = sys_extract_string(old_val);
     const char* new_path = sys_extract_string(new_val);
@@ -871,6 +986,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_rename_v(eshkol_sysbuiltin_
 #endif
 }
 
+/** Create @p path and all missing parent directories (like `mkdir -p`),
+ *  ignoring already-existing intermediates. Returns the result of the final
+ *  mkdir (0 on success). */
 static int mkdir_recursive_impl(const char* path) {
 #ifndef _WIN32
     struct stat st;
@@ -902,6 +1020,9 @@ static int mkdir_recursive_impl(const char* path) {
 #endif
 }
 
+/** Implements `(mkdir-recursive path)`: creates @p path_val and any missing
+ *  parents. Requires "file-write"; returns #t if the directory exists
+ *  afterward. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkdir_recursive_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
@@ -917,6 +1038,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkdir_recursive_v(eshkol_sysbuil
 #endif
 }
 
+/** Implements `(mkdtemp template)`: creates a uniquely-named temporary
+ *  directory from a mkdtemp-style @p template_val (trailing "XXXXXX") and
+ *  returns its path. Requires "file-write"; returns null on failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkdtemp_v(eshkol_sysbuiltin_value_t template_val) {
     const char* tmpl = sys_extract_string(template_val);
     if (!tmpl) return sys_make_null();
@@ -945,6 +1069,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkdtemp_v(eshkol_sysbuiltin_valu
 #endif
 }
 
+/** Return @p dir if it is non-empty, otherwise the system temp directory
+ *  (TMPDIR/TMP/TEMP or /tmp; GetTempPathA on Windows). Helper for the
+ *  make-temp-file / make-temp-dir builtins. */
 static const char* sys_temp_dir_or_default(const char* dir) {
     if (dir && *dir) return dir;
 #ifndef _WIN32
@@ -964,6 +1091,10 @@ static const char* sys_temp_dir_or_default(const char* dir) {
 #endif
 }
 
+/** Implements `(make-temp-file prefix suffix dir)`: atomically creates a new
+ *  empty temp file (O_EXCL / CREATE_NEW) whose name combines @p prefix, a
+ *  process/time-derived random nonce, and @p suffix, retrying on collision.
+ *  Requires "file-write"; returns the path string or #f. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
     eshkol_sysbuiltin_value_t prefix_val,
     eshkol_sysbuiltin_value_t suffix_val,
@@ -1016,6 +1147,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_file_v(
     return sys_make_bool(0);
 }
 
+/** Implements `(make-temp-dir prefix dir)`: atomically creates a new
+ *  directory with a @p prefix plus random-nonce name under @p dir, retrying
+ *  on collision. Requires "file-write"; returns the path string or #f. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
     eshkol_sysbuiltin_value_t prefix_val,
     eshkol_sysbuiltin_value_t dir_val) {
@@ -1055,6 +1189,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_make_temp_dir_v(
     return sys_make_bool(0);
 }
 
+/** Recursively delete @p path and everything under it (like `rm -rf`).
+ *  Uses a thread-local depth guard (max 100) against runaway recursion and
+ *  lstat so symlinks are unlinked rather than followed. Returns 0 on success. */
 static int rmdir_recursive_impl(const char* path) {
     /* P2: thread-local so concurrent rmdir-recursive (parallel-map/execute)
        don't race on a shared depth counter. */
@@ -1107,6 +1244,8 @@ static int rmdir_recursive_impl(const char* path) {
 #endif
 }
 
+/** Implements `(directory-delete-recursive path)`: recursively removes a
+ *  directory tree. Requires "file-write"; returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_directory_delete_recursive_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_bool(0);
@@ -1118,6 +1257,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_delete_recursive_v(esh
  * Shell Utilities
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(shell-quote s)`: returns @p str_val wrapped in single quotes
+ *  with embedded single-quotes escaped as '\'' , producing a token safe to
+ *  splice into a POSIX shell command line. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_value_t str_val) {
     const char* s = sys_extract_string(str_val);
     if (!s) return sys_make_null();
@@ -1150,6 +1292,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_shell_quote_v(eshkol_sysbuiltin_
  * Process Management
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(fork)`: forks the process, returning the child PID to the
+ *  parent and 0 to the child (POSIX only; returns #f where unavailable). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fork_v(void) {
 #if !defined(_WIN32)
     pid_t pid = fork();
@@ -1158,6 +1302,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fork_v(void) {
     return sys_make_bool(0);
 }
 
+/** Flatten a Scheme list of strings @p list into a NULL-terminated C
+ *  argv[] array (bounded by @p max_args). Returns the argument count, or -1
+ *  on overflow, a non-string element, or an improper list. */
 static int sys_execv_argv_from_list(eshkol_sysbuiltin_value_t list,
                                     char** argv,
                                     int max_args) {
@@ -1179,6 +1326,9 @@ static int sys_execv_argv_from_list(eshkol_sysbuiltin_value_t list,
     return argc;
 }
 
+/** Implements `(execv path argv)`: replaces the current process image with
+ *  the program at @p path_val, passing the string list @p argv_val as its
+ *  argument vector (POSIX execv). Only returns — as #f — if the exec fails. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_t path_val,
                                                          eshkol_sysbuiltin_value_t argv_val) {
     const char* path = sys_extract_string(path_val);
@@ -1199,6 +1349,10 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_execv_v(eshkol_sysbuiltin_value_
     return sys_make_bool(0);
 }
 
+/** Implements `(process-spawn cmd env)`: spawns @p cmd_val via the system
+ *  shell in a forked child, optionally applying a space-separated "KEY=VAL"
+ *  environment string @p args_val first. Returns the child PID, or -1 on
+ *  failure. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuiltin_value_t cmd_val,
                                                         eshkol_sysbuiltin_value_t args_val) {
     const char* cmd = sys_extract_string(cmd_val);
@@ -1260,6 +1414,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_v(eshkol_sysbuilti
 #endif
 }
 
+/** Implements `(process-wait pid)`: blocks until process @p pid_val exits and
+ *  returns its exit code (128+signal if killed by a signal), or -1 on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin_value_t pid_val) {
     int64_t pid = (int64_t)pid_val.data;
     if (pid <= 0) return sys_make_int64(-1);
@@ -1285,6 +1441,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_wait_v(eshkol_sysbuiltin
  * IO Multiplexing
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(poll-fd fd timeout-ms)`: waits up to @p timeout_val ms for
+ *  @p fd_val to become readable (POLLIN), returning #t if it is ready or #f
+ *  on timeout/error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_poll_fd_v(eshkol_sysbuiltin_value_t fd_val,
                                                    eshkol_sysbuiltin_value_t timeout_val) {
     int64_t fd = (int64_t)fd_val.data;
@@ -1307,6 +1466,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_poll_fd_v(eshkol_sysbuiltin_valu
  * Additional Filesystem Operations (VM parity)
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(file-chmod path mode)`: sets the permission bits of @p path_val
+ *  to @p mode_val (POSIX chmod). Requires "file-write"; returns #t on success
+ *  (no-op returning #f on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_chmod_v(eshkol_sysbuiltin_value_t path_val,
                                                               eshkol_sysbuiltin_value_t mode_val) {
     const char* path = sys_extract_string(path_val);
@@ -1321,6 +1483,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_chmod_v(eshkol_sysbuiltin_v
 #endif
 }
 
+/** Implements `(symlink-create target link)`: creates a symbolic link at
+ *  @p link_val pointing to @p target_val (POSIX symlink). Requires
+ *  "file-write"; returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_create_v(eshkol_sysbuiltin_value_t target_val,
                                                                   eshkol_sysbuiltin_value_t link_val) {
     const char* target = sys_extract_string(target_val);
@@ -1334,6 +1499,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_create_v(eshkol_sysbuilt
 #endif
 }
 
+/** Implements `(symlink-read path)`: returns the target path a symlink points
+ *  to (POSIX readlink). Requires "file-read"; returns null if @p path_val is
+ *  not a symlink or on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_read_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -1349,6 +1517,10 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_symlink_read_v(eshkol_sysbuiltin
     return sys_make_null();
 }
 
+/** Implements `(directory-walk path)`: recursively walks @p path_val
+ *  (breadth-first, using an arena-backed queue to avoid stack overflow) and
+ *  returns a flat Scheme list of all file paths found beneath it, bounded by
+ *  fixed directory/result caps. Requires "file-read". */
 static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuiltin_value_t path_val) {
     /* Returns a flat list of all file paths under path (recursive BFS) */
     const char* path = sys_extract_string(path_val);
@@ -1434,6 +1606,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
 #endif
 }
 
+/** Implements `(mkstemp template)`: creates a unique temp file from a
+ *  mkstemp-style @p tmpl_val ("XXXXXX" suffix) and returns its path (the
+ *  descriptor is closed; the caller reopens by path). Requires "file-write". */
 static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_value_t tmpl_val) {
     const char* tmpl = sys_extract_string(tmpl_val);
     if (!tmpl) return sys_make_null();
@@ -1454,6 +1629,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_mkstemp_v(eshkol_sysbuiltin_valu
     return sys_make_null();
 }
 
+/** Implements `(process-kill pid sig)`: sends signal @p sig_val to process
+ *  @p pid_val (POSIX kill). Returns #t on success (no-op #f on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin_value_t pid_val,
                                                                 eshkol_sysbuiltin_value_t sig_val) {
     int64_t pid = (int64_t)pid_val.data;
@@ -1470,6 +1647,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_v(eshkol_sysbuiltin
  * New Builtins — not in VM yet either
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(file-mtime path)`: returns the file's last-modification time
+ *  as Unix epoch seconds. Requires "file-read"; returns null on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -1491,6 +1670,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_mtime_v(eshkol_sysbuiltin_v
     return sys_make_null();
 }
 
+/** Implements `(file-atime path)`: returns the file's last-access time as
+ *  Unix epoch seconds. Requires "file-read"; returns null on error. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_atime_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path) return sys_make_null();
@@ -1512,6 +1693,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_atime_v(eshkol_sysbuiltin_v
     return sys_make_null();
 }
 
+/** Implements `(file-lock fd)`: acquires a non-blocking exclusive (write)
+ *  advisory lock on descriptor @p fd_val (fcntl F_SETLK). Returns #t on
+ *  success (no-op #f on Windows). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_lock_v(eshkol_sysbuiltin_value_t fd_val) {
     int64_t fd = (int64_t)fd_val.data;
 #ifndef _WIN32
@@ -1526,6 +1710,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_lock_v(eshkol_sysbuiltin_va
 #endif
 }
 
+/** Implements `(file-unlock fd)`: releases an advisory lock held on
+ *  descriptor @p fd_val (fcntl F_UNLCK). Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_file_unlock_v(eshkol_sysbuiltin_value_t fd_val) {
     int64_t fd = (int64_t)fd_val.data;
 #ifndef _WIN32
@@ -1540,6 +1726,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_file_unlock_v(eshkol_sysbuiltin_
 #endif
 }
 
+/** Implements `(path-relative from to)`: computes a relative path from
+ *  directory @p from_val to @p to_val by stripping the common prefix and
+ *  emitting ".." segments as needed (lexical, no filesystem access). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_relative_v(eshkol_sysbuiltin_value_t from_val,
                                                                  eshkol_sysbuiltin_value_t to_val) {
     const char* from = sys_extract_string(from_val);
@@ -1584,6 +1773,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_relative_v(eshkol_sysbuilti
     return sys_make_string(buf);
 }
 
+/** Implements `(path-resolve base rel)`: resolves @p rel_val against @p
+ *  base_val — returning @p rel directly if it is absolute, otherwise joining
+ *  and lexically normalizing base+rel. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_path_resolve_v(eshkol_sysbuiltin_value_t base_val,
                                                                 eshkol_sysbuiltin_value_t rel_val) {
     const char* base = sys_extract_string(base_val);
@@ -1604,6 +1796,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_path_resolve_v(eshkol_sysbuiltin
     return eshkol_builtin_path_normalize_v(norm_input);
 }
 
+/** Implements `(glob-expand pattern)`: expands a shell glob @p pattern_val
+ *  (with tilde expansion) and returns the matching paths as a
+ *  newline-separated string, or null if nothing matches. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_glob_expand_v(eshkol_sysbuiltin_value_t pattern_val) {
     const char* pattern = sys_extract_string(pattern_val);
     if (!pattern) return sys_make_null();
@@ -1643,6 +1838,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_glob_expand_v(eshkol_sysbuiltin_
 #endif
 }
 
+/** Implements `(glob-match? pattern str)`: returns #t if @p str_val matches
+ *  the glob @p pattern_val (fnmatch). POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_glob_match_v(eshkol_sysbuiltin_value_t pattern_val,
                                                               eshkol_sysbuiltin_value_t str_val) {
     const char* pattern = sys_extract_string(pattern_val);
@@ -1668,6 +1865,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_pid_v(void) {
  * Advanced Process Management
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(process-setpgid pid pgid)`: sets the process group of @p
+ *  pid_val to @p pgid_val (POSIX setpgid). Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuiltin_value_t pid_val,
                                                                     eshkol_sysbuiltin_value_t pgid_val) {
     int64_t pid = (int64_t)pid_val.data;
@@ -1680,6 +1879,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_setpgid_v(eshkol_sysbuil
 #endif
 }
 
+/** Implements `(process-kill-tree pid sig)`: sends signal @p sig_val to the
+ *  whole process group led by @p pid_val (kill(-pid,...)), falling back to
+ *  the single process if the group send fails. Returns #t on success. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbuiltin_value_t pid_val,
                                                                      eshkol_sysbuiltin_value_t sig_val) {
     int64_t pid = (int64_t)pid_val.data;
@@ -1702,6 +1904,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_kill_tree_v(eshkol_sysbu
 #endif
 }
 
+/** Implements `(process-spawn-pty cmd)`: spawns @p cmd_val under a newly
+ *  allocated pseudo-terminal (forkpty) so it behaves as if attached to a
+ *  real TTY, and returns the child PID (-1 on failure). POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbuiltin_value_t cmd_val) {
     /* PTY spawn — allocate a pseudo-terminal for interactive processes */
     const char* cmd = sys_extract_string(cmd_val);
@@ -1724,6 +1929,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_spawn_pty_v(eshkol_sysbu
 #endif
 }
 
+/** Implements `(process-read-nonblocking fd max)`: temporarily sets @p fd_val
+ *  non-blocking and reads up to @p max_val bytes, returning them as a string,
+ *  or null on EAGAIN/EOF/error (the original fd flags are restored). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshkol_sysbuiltin_value_t fd_val,
                                                                             eshkol_sysbuiltin_value_t max_val) {
     int64_t fd = (int64_t)fd_val.data;
@@ -1761,6 +1969,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_process_read_nonblocking_v(eshko
  * Unix-domain socket helpers
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Implements `(unix-socket-connect path)`: opens a stream connection to the
+ *  Unix-domain socket at @p path_val and returns its file descriptor, or #f
+ *  on failure. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_unix_socket_connect_v(eshkol_sysbuiltin_value_t path_val) {
     const char* path = sys_extract_string(path_val);
     if (!path || !*path) return sys_make_bool(0);
@@ -1789,6 +2000,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_unix_socket_connect_v(eshkol_sys
     return sys_make_bool(0);
 }
 
+/** Implements `(socket-send fd data)`: sends string @p data_val on socket
+ *  @p fd_val (suppressing SIGPIPE) and returns the byte count sent, or #f on
+ *  error. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_socket_send_v(eshkol_sysbuiltin_value_t fd_val,
                                                                eshkol_sysbuiltin_value_t data_val) {
     int64_t fd = (int64_t)fd_val.data;
@@ -1805,6 +2019,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_send_v(eshkol_sysbuiltin_
     return sys_make_bool(0);
 }
 
+/** Implements `(socket-recv fd max)`: non-blocking receive of up to @p max_val
+ *  bytes (capped at 64 KiB) from socket @p fd_val, returned as a string, or
+ *  #f if no data is available or on error. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_socket_recv_v(eshkol_sysbuiltin_value_t fd_val,
                                                                eshkol_sysbuiltin_value_t max_val) {
     int64_t fd = (int64_t)fd_val.data;
@@ -1834,6 +2051,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_recv_v(eshkol_sysbuiltin_
     return sys_make_bool(0);
 }
 
+/** Implements `(socket-close fd)`: closes socket descriptor @p fd_val,
+ *  returning #t on success. POSIX only. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_socket_close_v(eshkol_sysbuiltin_value_t fd_val) {
     int64_t fd = (int64_t)fd_val.data;
     if (fd < 0) return sys_make_bool(0);
@@ -1847,6 +2066,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_socket_close_v(eshkol_sysbuiltin
 /* Terminal helpers.  These mirror the standalone VM surface with conservative
  * compiled-runtime behavior: write escape sequences only for real TTY output
  * and return #f for interactive reads that need a terminal response. */
+/** Returns non-zero if standard output is connected to a terminal. */
 static int eshkol_sys_stdout_is_tty(void) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     return isatty(STDOUT_FILENO);
@@ -1855,6 +2075,8 @@ static int eshkol_sys_stdout_is_tty(void) {
 #endif
 }
 
+/** Write raw string @p s (typically an ANSI escape sequence) to stdout and
+ *  flush, but only when stdout is a real TTY; a no-op otherwise. */
 static void eshkol_sys_term_write_tty(const char* s) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     if (s && eshkol_sys_stdout_is_tty()) {
@@ -1866,6 +2088,9 @@ static void eshkol_sys_term_write_tty(const char* s) {
 #endif
 }
 
+/** Implements `(term-set-scroll-region top bottom)`: emits the ANSI DECSTBM
+ *  escape to confine scrolling to rows @p top_val..@p bottom_val on a TTY.
+ *  Returns #f for an invalid range, else #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_set_scroll_region_v(
     eshkol_sysbuiltin_value_t top_val,
     eshkol_sysbuiltin_value_t bottom_val) {
@@ -1881,37 +2106,52 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_term_set_scroll_region_v(
     return sys_make_bool(1);
 }
 
+/** Implements `(term-reset-scroll-region)`: resets the terminal scroll region
+ *  to the full screen (ANSI "\033[r"). Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_reset_scroll_region_v(void) {
     eshkol_sys_term_write_tty("\033[r");
     return sys_make_bool(1);
 }
 
+/** Implements `(term-enable-mouse)`: enables xterm mouse reporting (SGR
+ *  mode 1000/1006). Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_enable_mouse_v(void) {
     eshkol_sys_term_write_tty("\033[?1000h\033[?1006h");
     return sys_make_bool(1);
 }
 
+/** Implements `(term-disable-mouse)`: disables xterm mouse reporting. Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_disable_mouse_v(void) {
     eshkol_sys_term_write_tty("\033[?1006l\033[?1000l");
     return sys_make_bool(1);
 }
 
+/** Implements `(term-read-mouse-event timeout)`: stub in the compiled runtime
+ *  that always returns #f (mouse events are not read without a terminal
+ *  input loop). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_read_mouse_event_v(
     eshkol_sysbuiltin_value_t timeout_val) {
     (void)timeout_val;
     return sys_make_bool(0);
 }
 
+/** Implements `(term-enable-alternate-screen)`: switches the terminal to the
+ *  alternate screen buffer (ANSI 1049h). Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_enable_alternate_screen_v(void) {
     eshkol_sys_term_write_tty("\033[?1049h");
     return sys_make_bool(1);
 }
 
+/** Implements `(term-disable-alternate-screen)`: restores the primary screen
+ *  buffer (ANSI 1049l). Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_disable_alternate_screen_v(void) {
     eshkol_sys_term_write_tty("\033[?1049l");
     return sys_make_bool(1);
 }
 
+/** Implements `(term-clipboard-write text)`: copies @p text_val to the system
+ *  clipboard via the OSC 52 terminal escape (base64-encoded, capped at 4 KiB
+ *  and only on a TTY). Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_clipboard_write_v(
     eshkol_sysbuiltin_value_t text_val) {
     const char* text = sys_extract_string(text_val);
@@ -1938,10 +2178,15 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_term_clipboard_write_v(
     return sys_make_bool(1);
 }
 
+/** Implements `(term-clipboard-read)`: stub returning #f (OSC 52 clipboard
+ *  read-back is not supported in the compiled runtime). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_clipboard_read_v(void) {
     return sys_make_bool(0);
 }
 
+/** Implements `(term-hyperlink url text)`: builds and returns the OSC 8
+ *  escape sequence string that renders @p text_val as a clickable hyperlink
+ *  to @p url_val in supporting terminals. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_hyperlink_v(
     eshkol_sysbuiltin_value_t url_val,
     eshkol_sysbuiltin_value_t text_val) {
@@ -1962,6 +2207,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_term_hyperlink_v(
     return v;
 }
 
+/** Implements `(term-detect-capabilities)`: inspects TERM/COLORTERM/LANG and
+ *  TTY status and returns a summary string "color-depth=N unicode=B tty=B"
+ *  describing the terminal's capabilities. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_detect_capabilities_v(void) {
     const char* term = getenv("TERM");
     const char* colorterm = getenv("COLORTERM");
@@ -1979,6 +2227,7 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_term_detect_capabilities_v(void)
     return sys_make_string(buf);
 }
 
+/** Implements `(term-bell)`: emits the terminal bell character. Returns #t. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_term_bell_v(void) {
     eshkol_sys_term_write_tty("\a");
     return sys_make_bool(1);
@@ -1995,6 +2244,9 @@ typedef struct {
 
 static eshkol_sys_file_watcher_t g_sys_file_watchers[32];
 
+/** Compute a change-detection signature for @p path — existence, mtime in
+ *  nanoseconds, and size — into the output pointers (each zeroed if the file
+ *  is missing). Used by the polling filesystem watcher. */
 static void eshkol_sys_file_watch_signature(const char* path,
                                             int* exists,
                                             int64_t* mtime_ns,
@@ -2026,6 +2278,11 @@ static void eshkol_sys_file_watch_signature(const char* path,
 #endif
 }
 
+/** Register a filesystem watcher on @p path_val in the watcher slot table,
+ *  recording its initial existence/mtime/size signature so later polls can
+ *  detect changes. Returns an integer handle (slot index), or #f if no slot
+ *  is free or the path is invalid. Shared implementation of the fs-watch
+ *  builtins; @p recursive marks it for recursive watching. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_start_v(eshkol_sysbuiltin_value_t path_val,
                                                                   int recursive) {
     const char* path = sys_extract_string(path_val);
@@ -2054,18 +2311,28 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_start_v(eshkol_sysbuilt
     return sys_make_int64(slot);
 }
 
+/** Implements `(fs-watch-native path callback)`: starts a non-recursive
+ *  watcher on @p path_val (the callback is accepted for API parity but not
+ *  invoked here). Returns the watcher handle. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_native_v(eshkol_sysbuiltin_value_t path_val,
                                                                    eshkol_sysbuiltin_value_t callback_val) {
     (void)callback_val;
     return eshkol_builtin_fs_watch_start_v(path_val, 0);
 }
 
+/** Implements `(fs-watch-recursive path callback)`: starts a recursive
+ *  watcher on @p path_val (callback accepted for parity, not invoked here).
+ *  Returns the watcher handle. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_recursive_v(eshkol_sysbuiltin_value_t path_val,
                                                                       eshkol_sysbuiltin_value_t callback_val) {
     (void)callback_val;
     return eshkol_builtin_fs_watch_start_v(path_val, 1);
 }
 
+/** Implements `(fs-watch-poll handle)`: re-samples the watched path and, if it
+ *  changed since the last poll, returns a "EVENT\tPATH" string (EVENT being
+ *  "create", "delete", or "change"); returns #f if nothing changed or the
+ *  handle is invalid. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_poll_v(eshkol_sysbuiltin_value_t handle_val) {
     int handle = (int)((int64_t)handle_val.data);
     if (handle <= 0 || handle >= (int)(sizeof(g_sys_file_watchers) / sizeof(g_sys_file_watchers[0])) ||
@@ -2105,6 +2372,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fs_watch_poll_v(eshkol_sysbuilti
     return v;
 }
 
+/** Implements `(fs-unwatch handle)`: releases the watcher slot @p handle_val,
+ *  returning #t if it was active, else #f. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_fs_unwatch_v(eshkol_sysbuiltin_value_t handle_val) {
     int handle = (int)((int64_t)handle_val.data);
     if (handle > 0 && handle < (int)(sizeof(g_sys_file_watchers) / sizeof(g_sys_file_watchers[0])) &&
@@ -2115,6 +2384,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_fs_unwatch_v(eshkol_sysbuiltin_v
     return sys_make_bool(0);
 }
 
+/** Return the byte length of the ANSI/terminal escape sequence beginning at
+ *  offset @p pos in @p s (CSI, OSC, DCS/PM/APC/SOS, and simple ESC-prefixed
+ *  forms), or 0 if no escape starts there. Helper for width/strip routines. */
 static int sys_ansi_escape_len(const char* s, int len, int pos) {
     if (!s || pos < 0 || pos >= len) return 0;
     unsigned char c = (unsigned char)s[pos];
@@ -2163,6 +2435,8 @@ static int sys_ansi_escape_len(const char* s, int len, int pos) {
     return 2;
 }
 
+/** Return 1 if Unicode code point @p cp is a double-width (East Asian wide /
+ *  emoji) glyph that occupies two terminal columns. */
 static int sys_display_is_wide_char(uint32_t cp) {
     if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
     if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
@@ -2180,6 +2454,8 @@ static int sys_display_is_wide_char(uint32_t cp) {
     return 0;
 }
 
+/** Return 1 if Unicode code point @p cp is zero-width (combining marks,
+ *  joiners, variation selectors, BOM) and contributes no terminal columns. */
 static int sys_display_is_zero_width(uint32_t cp) {
     if (cp >= 0x0300 && cp <= 0x036F) return 1;
     if (cp >= 0x1AB0 && cp <= 0x1AFF) return 1;
@@ -2193,6 +2469,9 @@ static int sys_display_is_zero_width(uint32_t cp) {
     return 0;
 }
 
+/** Decode one UTF-8 code point from @p str at *@p pos, advancing *@p pos past
+ *  the consumed bytes and returning the code point (U+FFFD on malformed or
+ *  truncated input). */
 static uint32_t sys_decode_utf8_display(const char* str, int len, int* pos) {
     unsigned char c = (unsigned char)str[*pos];
     uint32_t cp = 0xFFFD;
@@ -2217,6 +2496,9 @@ static uint32_t sys_decode_utf8_display(const char* str, int len, int* pos) {
     return cp;
 }
 
+/** Compute the terminal display width (in columns) of the @p len-byte string
+ *  @p data, skipping ANSI escapes and accounting for wide (2-col) and
+ *  zero-width code points. */
 static int64_t sys_string_display_width_bytes(const char* data, int len) {
     if (!data || len <= 0) return 0;
     int64_t width = 0;
@@ -2234,6 +2516,9 @@ static int64_t sys_string_display_width_bytes(const char* data, int len) {
     return width;
 }
 
+/** Return the byte length of the longest prefix of @p data whose display
+ *  width does not exceed @p max_cols (ANSI escapes pass through free, keeping
+ *  multibyte characters whole). Helper for width-aware truncation. */
 static int sys_display_prefix_byte_len(const char* data, int len, int64_t max_cols) {
     if (!data || len <= 0 || max_cols < 0) return 0;
     int64_t width = 0;
@@ -2259,6 +2544,8 @@ static int sys_display_prefix_byte_len(const char* data, int len, int64_t max_co
     return end;
 }
 
+/** Implements `(ansi-strip s)`: returns a copy of @p str_val with all ANSI
+ *  terminal escape sequences removed, leaving only printable content. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_ansi_strip_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_bool(0);
@@ -2282,12 +2569,18 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_ansi_strip_v(eshkol_sysbuiltin_v
     return result;
 }
 
+/** Implements `(string-display-width s)`: returns the number of terminal
+ *  columns @p str_val occupies (ANSI-aware, wide/zero-width aware). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_string_display_width_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_int64(0);
     return sys_make_int64(sys_string_display_width_bytes(input, (int)strlen(input)));
 }
 
+/** Implements `(string-truncate-display s max suffix)`: truncates @p str_val
+ *  so its display width fits in @p max_val columns, appending @p suffix_val
+ *  (e.g. an ellipsis) when truncation occurs and reserving columns for it.
+ *  Returns the original string unchanged if it already fits. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_string_truncate_display_v(
     eshkol_sysbuiltin_value_t str_val,
     eshkol_sysbuiltin_value_t max_val,
@@ -2326,12 +2619,16 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_string_truncate_display_v(
     return result;
 }
 
+/** Return 1 if byte @p c is an RFC 3986 unreserved URL character
+ *  (A-Z a-z 0-9 - _ . ~) that need not be percent-encoded. */
 static int sys_url_is_unreserved(unsigned char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
            c == '.' || c == '~';
 }
 
+/** Return the numeric value 0-15 of hex digit @p c, or -1 if not a hex
+ *  digit. Helper for percent-decoding. */
 static int sys_url_hex_value(unsigned char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -2339,6 +2636,9 @@ static int sys_url_hex_value(unsigned char c) {
     return -1;
 }
 
+/** Implements `(url-encode s)`: percent-encodes @p str_val per RFC 3986,
+ *  leaving unreserved characters intact and encoding everything else as
+ *  %XX (uppercase hex). */
 static eshkol_sysbuiltin_value_t eshkol_builtin_url_encode_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_bool(0);
@@ -2363,6 +2663,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_encode_v(eshkol_sysbuiltin_v
     return result;
 }
 
+/** Implements `(url-decode s)`: decodes percent-escapes (%XX) in @p str_val
+ *  and converts '+' to space, returning the decoded string. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_url_decode_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input) return sys_make_bool(0);
@@ -2389,6 +2691,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_decode_v(eshkol_sysbuiltin_v
     return result;
 }
 
+/** Return a pointer to the first URL path/query/fragment separator
+ *  ('/', '?', or '#') in @p p, or to its terminating NUL if none. */
 static const char* sys_find_url_sep(const char* p) {
     while (*p) {
         if (*p == '/' || *p == '?' || *p == '#') return p;
@@ -2397,10 +2701,15 @@ static const char* sys_find_url_sep(const char* p) {
     return p;
 }
 
+/** Return 1 if the @p len-byte span starting at @p p equals C string @p s. */
 static int sys_span_eq_cstr(const char* p, size_t len, const char* s) {
     return p && s && len == strlen(s) && memcmp(p, s, len) == 0;
 }
 
+/** Implements `(url-parse s)`: parses a "scheme://host[:port][/path][?query]
+ *  [#fragment]" URL and returns an alist with "scheme", "host", "port"
+ *  (defaulting to 80/443 for http/https), "path", and optional "query" and
+ *  "fragment" entries; returns #f on a malformed URL. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_url_parse_v(eshkol_sysbuiltin_value_t str_val) {
     const char* input = sys_extract_string(str_val);
     if (!input || !*input) return sys_make_bool(0);
@@ -2487,6 +2796,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_parse_v(eshkol_sysbuiltin_va
     return result;
 }
 
+/** Implements `(base64url-encode data)`: encodes @p data_val using the
+ *  URL-safe base64 alphabet (- and _), without padding. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbuiltin_value_t data_val) {
     static const char table[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -2522,6 +2833,8 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbui
     return result;
 }
 
+/** Return the 6-bit value 0-63 of a URL-safe base64 character @p c, or -1 if
+ *  it is not part of the alphabet. */
 static int sys_base64url_value(unsigned char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -2531,6 +2844,9 @@ static int sys_base64url_value(unsigned char c) {
     return -1;
 }
 
+/** Implements `(base64url-decode data)`: decodes a URL-safe base64 string
+ *  @p data_val (optional trailing '=' padding tolerated) back to its raw
+ *  bytes, returning #f on invalid input. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbuiltin_value_t data_val) {
     const char* data = sys_extract_string(data_val);
     if (!data) return sys_make_bool(0);
@@ -2562,6 +2878,9 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
     return result;
 }
 
+/** Fill @p out with @p len cryptographically-random bytes from /dev/urandom,
+ *  falling back to rand() seeded from time/address if that is unavailable.
+ *  Returns 1. */
 static int sys_random_bytes(unsigned char* out, size_t len) {
     if (!out) return 0;
 #ifndef _WIN32
@@ -2582,6 +2901,9 @@ static int sys_random_bytes(unsigned char* out, size_t len) {
     return 1;
 }
 
+/** Implements `(uuid-v4)`: generates a random RFC 4122 version-4 UUID (with
+ *  the version/variant bits set) and returns it as a canonical hyphenated
+ *  string. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_uuid_v4_v(void) {
     unsigned char bytes[16];
     if (!sys_random_bytes(bytes, sizeof(bytes))) return sys_make_bool(0);

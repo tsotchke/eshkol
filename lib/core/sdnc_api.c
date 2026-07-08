@@ -68,12 +68,16 @@ typedef struct sdnc_tensor_layout {
 } sdnc_tensor_layout_t;
 
 /* ===== Param flatten/unflatten (canonical order, mirror SdncWeights) ===== */
+/** Total number of trainable float parameters across all layers, in
+ *  the canonical flatten order used by sdnc_visit_params/sdnc_visit_grads. */
 static size_t sdnc_param_count(void) {
     const int D = SDNC_D, N = SDNC_N_LAYERS, F = SDNC_FFN_DIM;
     return (size_t)N * ( (size_t)4*D*D + D + 2*(size_t)D*F + 2*F + (size_t)F*D + D );
 }
 
 typedef void (*sdnc_param_visit_cb)(size_t idx, float* slot, void* ud);
+/** Walk every trainable weight slot in `w`, layer by layer, in the
+ *  canonical flatten order, invoking `cb(idx, slot, ud)` for each. */
 static void sdnc_visit_params(SdncWeights* w, sdnc_param_visit_cb cb, void* ud) {
     const int D = SDNC_D, N = SDNC_N_LAYERS, F = SDNC_FFN_DIM;
     size_t idx = 0;
@@ -113,6 +117,9 @@ static void sdnc_visit_grads(SdncGrads* g, sdnc_param_visit_cb cb, void* ud) {
 }
 
 /* ===== Helpers ===== */
+/** Unwrap a tagged value into an SdncHandle*, verifying it's a heap
+ *  pointer whose object header subtype is HEAP_SUBTYPE_SDNC.
+ *  @return The handle, or NULL if `tv` is not a valid sdnc program. */
 static SdncHandle* sdnc_extract_handle(const eshkol_tagged_value_t* tv) {
     if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return NULL;
     void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
@@ -121,6 +128,8 @@ static SdncHandle* sdnc_extract_handle(const eshkol_tagged_value_t* tv) {
     return (SdncHandle*)ptr;
 }
 
+/** Coerce a tagged int64/double value to int, or return `dflt` if
+ *  `tv` is NULL or neither numeric type. */
 static int sdnc_get_int(const eshkol_tagged_value_t* tv, int dflt) {
     if (!tv) return dflt;
     uint8_t t = tv->type & 0x0F;
@@ -128,6 +137,8 @@ static int sdnc_get_int(const eshkol_tagged_value_t* tv, int dflt) {
     if (t == ESHKOL_VALUE_DOUBLE) return (int)tv->data.double_val;
     return dflt;
 }
+/** Coerce a tagged double/int64 value to double, or return `dflt` if
+ *  `tv` is NULL or neither numeric type. */
 static double sdnc_get_double(const eshkol_tagged_value_t* tv, double dflt) {
     if (!tv) return dflt;
     uint8_t t = tv->type & 0x0F;
@@ -172,6 +183,9 @@ static int sdnc_read_vector_into(const eshkol_tagged_value_t* tv, float* dst, in
     return -1;
 }
 
+/** Allocate a #(...) tensor of `len` doubles (widened from float
+ *  `data`) into the arena and store it as a tagged heap pointer in
+ *  `result` (tagged null on invalid arguments or allocation failure). */
 static void sdnc_make_tensor_f(arena_t* arena, const float* data, int len,
                                eshkol_tagged_value_t* result) {
     memset(result, 0, sizeof(*result));
@@ -204,6 +218,10 @@ static void sdnc_setup_program(SdncHandle* h, unsigned long seed) {
         for (int i = 0; i < SDNC_D; i++) h->pe[p][i] = sdnc_randf(&r);
 }
 
+/** Hash a program name (if `name_tv` is a tagged string) to a seed
+ *  for sdnc_setup_program, so each named program gets a distinct but
+ *  reproducible set of position embeddings. Returns 0 (the FNV-1a
+ *  offset basis) if `name_tv` is not a string. */
 static unsigned long sdnc_name_hash(const eshkol_tagged_value_t* name_tv) {
     /* FNV-1a over the string payload if a string is supplied; else 0. */
     unsigned long hsh = 1469598103934665603UL;
@@ -261,6 +279,9 @@ void eshkol_sdnc_run_tagged(arena_t* arena,
 
 /* ===== (sdnc-weight-grad θ input target) -> flat ∂L/∂weights ===== */
 struct sdnc_grad_flatten_ctx { float* dst; size_t n; };
+/** sdnc_visit_grads callback: copy each gradient slot into a flat
+ *  destination buffer at its canonical index (bounds-checked against
+ *  the context's `n`). */
 static void sdnc_grad_flatten_cb(size_t idx, float* slot, void* ud) {
     struct sdnc_grad_flatten_ctx* fc = (struct sdnc_grad_flatten_ctx*)ud;
     if (idx < fc->n) fc->dst[idx] = *slot;
@@ -309,6 +330,9 @@ void eshkol_sdnc_weight_grad_tagged(arena_t* arena,
 
 /* ===== (sdnc-params θ) -> #(...) ===== */
 struct sdnc_pflatten_ctx { float* dst; size_t n; };
+/** sdnc_visit_params callback: copy each weight slot into a flat
+ *  destination buffer at its canonical index (bounds-checked against
+ *  the context's `n`). */
 static void sdnc_pflatten_cb(size_t idx, float* slot, void* ud) {
     struct sdnc_pflatten_ctx* fc = (struct sdnc_pflatten_ctx*)ud;
     if (idx < fc->n) fc->dst[idx] = *slot;
@@ -331,6 +355,9 @@ void eshkol_sdnc_params_tagged(arena_t* arena,
 
 /* ===== (sdnc-set-params! θ vec) -> θ ===== */
 struct sdnc_unflatten_ctx { const float* src; size_t n; };
+/** sdnc_visit_params callback: write each weight slot from a flat
+ *  source buffer at its canonical index (bounds-checked against the
+ *  context's `n`), the inverse of sdnc_pflatten_cb. */
 static void sdnc_unflatten_cb(size_t idx, float* slot, void* ud) {
     struct sdnc_unflatten_ctx* uc = (struct sdnc_unflatten_ctx*)ud;
     if (idx < uc->n) *slot = uc->src[idx];

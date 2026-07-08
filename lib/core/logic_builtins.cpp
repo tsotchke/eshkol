@@ -18,6 +18,16 @@
 
 extern "C" {
 
+/** @brief Compute the marginal belief distribution for one variable of a
+ *  factor graph and return it as a newly allocated tensor of probabilities.
+ *  Converts the stored log-beliefs to probabilities via a numerically
+ *  stable exp/normalize (subtract max log-belief before exponentiating).
+ *  @param arena Arena used to allocate the result tensor.
+ *  @param fg_tv Tagged heap pointer to the factor graph.
+ *  @param idx_tv Tagged int index of the variable.
+ *  @param result Out param: tensor of per-state probabilities, or NULL
+ *  (ESHKOL_VALUE_NULL) if `fg_tv` is not a heap pointer or the index is
+ *  out of range. */
 void eshkol_fg_marginal_tagged(arena_t* arena,
                                 const eshkol_tagged_value_t* fg_tv,
                                 const eshkol_tagged_value_t* idx_tv,
@@ -78,6 +88,14 @@ void eshkol_fg_marginal_tagged(arena_t* arena,
     result->data.ptr_val = (uint64_t)t;
 }
 
+/** @brief Compute the Shannon entropy (in nats) of the marginal belief
+ *  distribution for one variable of a factor graph.
+ *  @param arena Unused (kept for calling-convention symmetry with the
+ *  other tagged-value builtins).
+ *  @param fg_tv Tagged heap pointer to the factor graph.
+ *  @param idx_tv Tagged int index of the variable.
+ *  @param result Out param: double entropy value, or 0.0 if `fg_tv` is
+ *  not a heap pointer or the index is out of range. */
 void eshkol_fg_entropy_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* fg_tv,
                                const eshkol_tagged_value_t* idx_tv,
@@ -121,6 +139,15 @@ void eshkol_fg_entropy_tagged(arena_t* arena,
     *result = eshkol_make_double(entropy);
 }
 
+/** @brief Remove a fact from a knowledge base by pointer identity,
+ *  shifting later facts down to fill the gap.
+ *  @param arena Unused (kept for calling-convention symmetry with the
+ *  other tagged-value builtins).
+ *  @param kb_tv Tagged heap pointer to the knowledge base.
+ *  @param fact_tv Tagged heap pointer to the fact to remove.
+ *  @param result Out param: tagged bool, true if the fact was found and
+ *  removed, false otherwise (including if either argument is not a
+ *  heap pointer). */
 void eshkol_kb_retract_tagged(arena_t* arena,
                                const eshkol_tagged_value_t* kb_tv,
                                const eshkol_tagged_value_t* fact_tv,
