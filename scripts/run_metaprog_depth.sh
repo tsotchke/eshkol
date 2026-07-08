@@ -19,7 +19,8 @@
 #   * ICC JSON-L events  : kind=metaprog_depth into
 #                          scripts/icc_traces/metaprog_depth.jsonl
 #     (consumed by .icc/completion-oracles.yaml::metaprog-depth)
-#   * METAPROG_DEPTH_REPORT.md  (per-family depth table + max-correct-depth)
+#   * docs/reports/METAPROG_DEPTH_REPORT.md
+#     (per-family depth table + max-correct-depth)
 #
 # Usage:
 #   scripts/run_metaprog_depth.sh [--max-depth N] [--module-max-depth M]
@@ -65,8 +66,8 @@ GEN_DIR="$REPO_ROOT/tests/metaprog_depth/generated"
 MANIFEST="$GEN_DIR/manifest.jsonl"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
 TRACE_FILE="$TRACE_DIR/metaprog_depth.jsonl"
-REPORT="$REPO_ROOT/METAPROG_DEPTH_REPORT.md"
-mkdir -p "$TRACE_DIR"
+REPORT="$REPO_ROOT/docs/reports/METAPROG_DEPTH_REPORT.md"
+mkdir -p "$TRACE_DIR" "$(dirname "$REPORT")"
 : > "$TRACE_FILE"
 
 if [ "$REGEN" -eq 1 ]; then
@@ -224,7 +225,7 @@ SUMMARY_EC=$?
 if [ "$SUMMARY_EC" -eq 0 ]; then
     emit_event "metaprog_depth_sweep_clean" "PASS" "ALL" 0 "all" "no WRONG values at any depth"
 else
-    emit_event "metaprog_depth_sweep_clean" "FAIL" "ALL" 0 "all" "one or more families produced WRONG values at depth (see METAPROG_DEPTH_REPORT.md)"
+    emit_event "metaprog_depth_sweep_clean" "FAIL" "ALL" 0 "all" "one or more families produced WRONG values at depth (see docs/reports/METAPROG_DEPTH_REPORT.md)"
 fi
 
 echo ""

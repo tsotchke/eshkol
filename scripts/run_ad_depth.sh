@@ -11,7 +11,7 @@
 #   LIMIT  clean crash / timeout boundary
 #
 # Products:
-#   AD_DEPTH_REPORT.md                     per-cell depth tables + MCD
+#   docs/reports/AD_DEPTH_REPORT.md       per-cell depth tables + MCD
 #   scripts/icc_traces/ad_depth.jsonl      ICC events (kind ad_depth),
 #                                          consumed by .icc/completion-oracles.yaml::ad-depth
 #
@@ -128,5 +128,5 @@ done
 modes="jit"; [ "$DO_AOT" -eq 1 ] && modes="jit aot"
 python3 "$REPO_ROOT/scripts/ad_depth_report.py" "$RAW_LOG" $modes
 gate_rc=$?
-echo "AD_DEPTH_REPORT.md + scripts/icc_traces/ad_depth.jsonl written."
+echo "docs/reports/AD_DEPTH_REPORT.md + scripts/icc_traces/ad_depth.jsonl written."
 exit $gate_rc
