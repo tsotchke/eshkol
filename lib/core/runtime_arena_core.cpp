@@ -167,10 +167,22 @@ void arena_destroy(arena_t* arena) {
         eshkol_arena_mutex_destroy(arena->mutex);
     }
 
-    // Free all blocks
+    // Free all blocks. When arena poisoning is enabled (ESHKOL_ARENA_POISON),
+    // fill each block's live bytes with the 0xCB sentinel BEFORE releasing it.
+    // arena_destroy() is the teardown path for region arenas (region_pop ->
+    // region_destroy -> arena_destroy), which — unlike scope pops — otherwise
+    // hand memory back to the allocator untouched, so a stale interior pointer
+    // into a popped region would silently read valid-looking data. Poisoning
+    // here turns any such region use-after-free into an immediate crash at an
+    // obvious 0xCB.. address, which is what the region-escape evacuator gates
+    // rely on to distinguish a real fix from working by luck.
+    const bool poison = eshkol_arena_poison_enabled() != 0;
     arena_block_t* block = arena->current_block;
     while (block) {
         arena_block_t* next = block->next;
+        if (poison && block->memory && block->used > 0) {
+            std::memset(block->memory, 0xCB, block->used);
+        }
         free_arena_block(block);
         block = next;
     }
