@@ -158,6 +158,12 @@ struct ConfigSection {
     std::vector<std::pair<std::string, std::string>> values;
 };
 
+/** @brief Parse simple TOML-like content into a list of config sections.
+ *  Recognizes `[section]` headers and `key = value` lines, skipping blanks and
+ *  `#` comments; values are trimmed and unquoted. Keys before any header land in
+ *  an initial global (unnamed) section.
+ *  @param content Full text of the config file.
+ *  @return One ConfigSection per section encountered, in order. */
 std::vector<ConfigSection> parse_toml(const std::string& content) {
     std::vector<ConfigSection> sections;
     ConfigSection current;
@@ -278,6 +284,7 @@ void apply_config_section(eshkol_config_t* config, const ConfigSection& section)
 
 extern "C" {
 
+/** @brief Return an eshkol_config_t populated with all built-in default values. */
 eshkol_config_t eshkol_config_defaults(void) {
     eshkol_config_t config = {};
 
@@ -320,6 +327,9 @@ eshkol_config_t eshkol_config_defaults(void) {
     return config;
 }
 
+/** @brief Populate @p config from defaults, then config file, then environment.
+ *  Later sources override earlier ones (env has highest priority here).
+ *  @return 0 on success, -1 if @p config is NULL. */
 int eshkol_config_load(eshkol_config_t* config) {
     if (!config) return -1;
 
@@ -335,6 +345,12 @@ int eshkol_config_load(eshkol_config_t* config) {
     return 0;
 }
 
+/** @brief Load configuration from a TOML file into @p config.
+ *  If @p path is NULL, searches default locations (./.eshkol.toml, ./eshkol.toml,
+ *  and per-user config directories). The first readable file found is applied.
+ *  @param config Config to update in place.
+ *  @param path Explicit config file path, or NULL to search defaults.
+ *  @return -1 if @p config is NULL; 0 otherwise (a missing file is not an error). */
 int eshkol_config_load_file(eshkol_config_t* config, const char* path) {
     if (!config) return -1;
 
@@ -377,6 +393,9 @@ int eshkol_config_load_file(eshkol_config_t* config, const char* path) {
     return 0;  // No config file found is not an error
 }
 
+/** @brief Override @p config fields from ESHKOL_* environment variables.
+ *  Covers runtime limits, logging, optimization, debug, and a delimiter-separated
+ *  library search path. Only variables that are set take effect. */
 void eshkol_config_load_env(eshkol_config_t* config) {
     if (!config) return;
 
@@ -461,6 +480,9 @@ void eshkol_config_load_env(eshkol_config_t* config) {
     }
 }
 
+/** @brief Apply command-line arguments to @p config.
+ *  Currently a no-op placeholder for future extensibility (actual CLI parsing
+ *  lives in eshkol-run.cpp). */
 void eshkol_config_apply_args(eshkol_config_t* config, int argc, char** argv) {
     if (!config || argc <= 0 || !argv) return;
 
@@ -468,6 +490,7 @@ void eshkol_config_apply_args(eshkol_config_t* config, int argc, char** argv) {
     // This function is for future extensibility
 }
 
+/** @brief Return the process-wide singleton config, loading it once on first use. */
 const eshkol_config_t* eshkol_config_get(void) {
     std::call_once(g_config_once, []() {
         eshkol_config_load(&g_config);
@@ -476,6 +499,8 @@ const eshkol_config_t* eshkol_config_get(void) {
     return &g_config;
 }
 
+/** @brief Overwrite the global singleton config with @p config (thread-safe).
+ *  Ensures the one-time default initialization has run before replacing. */
 void eshkol_config_set(const eshkol_config_t* config) {
     if (!config) return;
 
@@ -489,46 +514,57 @@ void eshkol_config_set(const eshkol_config_t* config) {
 }
 
 // Individual getters
+/** Return the configured maximum heap size in bytes. */
 size_t eshkol_config_get_max_heap(void) {
     return eshkol_config_get()->max_heap_bytes;
 }
 
+/** Return the configured execution timeout in milliseconds (0 = none). */
 uint64_t eshkol_config_get_timeout(void) {
     return eshkol_config_get()->timeout_ms;
 }
 
+/** Return the configured maximum stack depth. */
 size_t eshkol_config_get_max_stack(void) {
     return eshkol_config_get()->max_stack_depth;
 }
 
+/** Return the configured log level. */
 eshkol_log_level_t eshkol_config_get_log_level(void) {
     return eshkol_config_get()->log_level;
 }
 
+/** Return the configured log output format. */
 eshkol_log_format_t eshkol_config_get_log_format(void) {
     return eshkol_config_get()->log_format;
 }
 
+/** Return the configured LLVM optimization level. */
 eshkol_opt_level_t eshkol_config_get_opt_level(void) {
     return eshkol_config_get()->llvm_opt_level;
 }
 
+/** Return whether SIMD codegen is enabled. */
 bool eshkol_config_is_simd_enabled(void) {
     return eshkol_config_get()->enable_simd;
 }
 
+/** Return whether the XLA backend is enabled. */
 bool eshkol_config_is_xla_enabled(void) {
     return eshkol_config_get()->enable_xla;
 }
 
+/** Return whether GPU execution is enabled. */
 bool eshkol_config_is_gpu_enabled(void) {
     return eshkol_config_get()->enable_gpu;
 }
 
+/** Return whether debug mode is enabled. */
 bool eshkol_config_is_debug_mode(void) {
     return eshkol_config_get()->debug_mode;
 }
 
+/** @brief Free heap-allocated members of @p config (log file path and library paths). */
 void eshkol_config_cleanup(eshkol_config_t* config) {
     if (!config) return;
 
@@ -555,19 +591,24 @@ void eshkol_config_cleanup(eshkol_config_t* config) {
 
 namespace eshkol {
 
+/** Return the lazily-constructed singleton Config instance. */
 Config& Config::instance() {
     static Config instance;
     return instance;
 }
 
+/** Construct a Config initialized to built-in defaults. */
 Config::Config() {
     config_ = eshkol_config_defaults();
 }
 
+/** Release resources owned by the underlying config struct. */
 Config::~Config() {
     eshkol_config_cleanup(&config_);
 }
 
+/** @brief Load configuration from file and environment once.
+ *  @return True if loading succeeded (or was already done), false on error. */
 bool Config::load() {
     if (loaded_) return true;
 
@@ -576,6 +617,7 @@ bool Config::load() {
     return loaded_;
 }
 
+/** @brief Return the configured library search paths as a string vector. */
 std::vector<std::string> Config::libPaths() const {
     std::vector<std::string> paths;
     for (size_t i = 0; i < config_.lib_path_count; i++) {

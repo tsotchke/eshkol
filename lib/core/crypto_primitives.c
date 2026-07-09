@@ -62,6 +62,8 @@
  * Hex Encoding
  ******************************************************************************/
 
+/** Encode `len` bytes as lowercase hex into `hex`, truncating to fit
+ *  `hex_size` (including the terminating NUL). */
 static void bytes_to_hex(const unsigned char* bytes, size_t len,
                           char* hex, size_t hex_size) {
     static const char hexchars[] = "0123456789abcdef";
@@ -100,6 +102,10 @@ static int bcrypt_digest(LPCWSTR alg_id, ULONG open_flags,
  * HMAC-SHA256
  ******************************************************************************/
 
+/** Compute HMAC-SHA256 of `data` keyed by `key`, writing the 64-char
+ *  hex digest (plus NUL) to `hex_output`. Uses CommonCrypto on Apple,
+ *  BCrypt on Windows, OpenSSL elsewhere.
+ *  @return 0 on success, -1 on invalid arguments or platform failure. */
 int eshkol_hmac_sha256(const char* key, size_t key_len,
                         const char* data, size_t data_len,
                         char* hex_output, size_t output_size) {
@@ -135,6 +141,10 @@ int eshkol_hmac_sha256(const char* key, size_t key_len,
  * SHA256
  ******************************************************************************/
 
+/** Compute SHA-256 of `data`, writing the 64-char hex digest (plus
+ *  NUL) to `hex_output`. Uses CommonCrypto on Apple, BCrypt on
+ *  Windows, OpenSSL elsewhere.
+ *  @return 0 on success, -1 on invalid arguments or platform failure. */
 int eshkol_sha256(const char* data, size_t data_len,
                    char* hex_output, size_t output_size) {
     if (!data || !hex_output || output_size < 65) return -1;
@@ -162,6 +172,10 @@ int eshkol_sha256(const char* data, size_t data_len,
  * Secure Random
  ******************************************************************************/
 
+/** Fill `buf` with `len` cryptographically secure random bytes, using
+ *  the platform CSPRNG (SecRandomCopyBytes / BCryptGenRandom /
+ *  RAND_bytes), falling back to /dev/urandom if none is compiled in.
+ *  @return 0 on success, -1 on invalid arguments or failure. */
 int eshkol_random_bytes(char* buf, size_t len) {
     if (!buf || len == 0) return -1;
 
@@ -183,6 +197,10 @@ int eshkol_random_bytes(char* buf, size_t len) {
 #endif
 }
 
+/** Fill `buf` with `hex_len` characters (plus NUL) of secure random
+ *  hex digits, generating hex_len/2 random bytes internally via
+ *  eshkol_random_bytes and hex-encoding them.
+ *  @return 0 on success, -1 on invalid arguments or allocation/RNG failure. */
 int eshkol_random_hex(char* buf, size_t hex_len) {
     if (!buf || hex_len < 2) return -1;
 

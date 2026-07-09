@@ -30,12 +30,14 @@ struct ParsedTensorRecord {
     std::vector<std::uint64_t> element_bits;
 };
 
+/** Construct a NULL-tagged Eshkol value. */
 eshkol_tagged_value_t make_null() {
     eshkol_tagged_value_t result{};
     result.type = ESHKOL_VALUE_NULL;
     return result;
 }
 
+/** Construct a boolean-tagged Eshkol value. */
 eshkol_tagged_value_t make_bool(bool value) {
     eshkol_tagged_value_t result{};
     result.type = ESHKOL_VALUE_BOOL;
@@ -43,6 +45,7 @@ eshkol_tagged_value_t make_bool(bool value) {
     return result;
 }
 
+/** Construct a heap-pointer-tagged Eshkol value wrapping @p ptr. */
 eshkol_tagged_value_t make_heap_ptr(void* ptr) {
     eshkol_tagged_value_t result{};
     result.type = ESHKOL_VALUE_HEAP_PTR;
@@ -50,25 +53,30 @@ eshkol_tagged_value_t make_heap_ptr(void* ptr) {
     return result;
 }
 
+/** Check whether a tagged value is a cons pair. */
 bool is_pair(const eshkol_tagged_value_t& value) {
     return ESHKOL_IS_CONS_COMPAT(value);
 }
 
+/** Reinterpret a pair-tagged value as a cons cell pointer, or NULL if it is not a pair. */
 const arena_tagged_cons_cell_t* as_pair(const eshkol_tagged_value_t& value) {
     if (!is_pair(value)) return nullptr;
     return reinterpret_cast<const arena_tagged_cons_cell_t*>(value.data.ptr_val);
 }
 
+/** Return the car of a pair, or a NULL tagged value if @p value is not a pair. */
 eshkol_tagged_value_t pair_car(const eshkol_tagged_value_t& value) {
     const arena_tagged_cons_cell_t* pair = as_pair(value);
     return pair ? pair->car : make_null();
 }
 
+/** Return the cdr of a pair, or a NULL tagged value if @p value is not a pair. */
 eshkol_tagged_value_t pair_cdr(const eshkol_tagged_value_t& value) {
     const arena_tagged_cons_cell_t* pair = as_pair(value);
     return pair ? pair->cdr : make_null();
 }
 
+/** Return the C string backing a tagged string/symbol value, or NULL if @p value is neither. */
 const char* tagged_c_string(const eshkol_tagged_value_t* value) {
     if (!value || value->type != ESHKOL_VALUE_HEAP_PTR || value->data.ptr_val == 0) return nullptr;
     const auto* ptr = reinterpret_cast<const void*>(value->data.ptr_val);
@@ -77,10 +85,16 @@ const char* tagged_c_string(const eshkol_tagged_value_t* value) {
     return reinterpret_cast<const char*>(ptr);
 }
 
+/** Check whether a tagged value holds a tensor. */
 bool tagged_is_tensor(const eshkol_tagged_value_t* value) {
     return value && ESHKOL_IS_TENSOR_COMPAT(*value);
 }
 
+/** @brief Incrementally fold @p len bytes into a running CRC-32 (IEEE 802.3 polynomial) checksum.
+ *  @param crc Running CRC value (0 to start a new checksum).
+ *  @param data Bytes to fold into the checksum.
+ *  @param len Number of bytes in @p data.
+ *  @return Updated CRC-32 value. */
 std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t* data, std::size_t len) {
     crc = ~crc;
     for (std::size_t i = 0; i < len; ++i) {
@@ -93,16 +107,24 @@ std::uint32_t crc32_update(std::uint32_t crc, const std::uint8_t* data, std::siz
     return ~crc;
 }
 
+/** @brief Buffered binary file writer used for checkpoint serialization.
+ *  Tracks a running CRC-32 of everything written (unless explicitly excluded)
+ *  so callers can append a trailing checksum footer. */
 class FileWriter {
 public:
+    /** Open @p path for binary writing; callers must check good() before use. */
     explicit FileWriter(const char* path) : file_(std::fopen(path, "wb")) {}
+    /** Close the underlying file if it was opened. */
     ~FileWriter() {
         if (file_) std::fclose(file_);
     }
 
+    /** True if the file opened successfully and no write has failed yet. */
     bool good() const { return file_ != nullptr && ok_; }
+    /** Running CRC-32 of all bytes written with include_in_crc left at its default. */
     std::uint32_t crc() const { return crc_; }
 
+    /** Write raw bytes, optionally folding them into the running CRC. */
     bool write_bytes(const void* data, std::size_t size, bool include_in_crc = true) {
         if (!good()) return false;
         if (size != 0 && std::fwrite(data, 1, size, file_) != size) {
@@ -115,10 +137,12 @@ public:
         return true;
     }
 
+    /** Write a single byte. */
     bool write_u8(std::uint8_t value, bool include_in_crc = true) {
         return write_bytes(&value, sizeof(value), include_in_crc);
     }
 
+    /** Write a 32-bit value in little-endian byte order. */
     bool write_u32(std::uint32_t value, bool include_in_crc = true) {
         std::array<std::uint8_t, 4> bytes{{
             static_cast<std::uint8_t>(value & 0xFFu),
@@ -129,6 +153,7 @@ public:
         return write_bytes(bytes.data(), bytes.size(), include_in_crc);
     }
 
+    /** Write a 64-bit value in little-endian byte order. */
     bool write_u64(std::uint64_t value, bool include_in_crc = true) {
         std::array<std::uint8_t, 8> bytes{{
             static_cast<std::uint8_t>(value & 0xFFu),
@@ -149,6 +174,10 @@ private:
     std::uint32_t crc_ = 0;
 };
 
+/** @brief Read an entire file into a byte vector.
+ *  @param path File path to read.
+ *  @param bytes Output vector, resized to the file's contents.
+ *  @return True on success; false on any I/O error or null argument. */
 bool read_file(const char* path, std::vector<std::uint8_t>* bytes) {
     if (!path || !bytes) return false;
     FILE* file = std::fopen(path, "rb");
@@ -173,17 +202,22 @@ bool read_file(const char* path, std::vector<std::uint8_t>* bytes) {
     return true;
 }
 
+/** @brief Bounds-checked cursor over an in-memory byte buffer.
+ *  Reads little-endian scalars and length-prefixed strings, advancing @c offset
+ *  and refusing to read past @c size. */
 struct BufferReader {
     const std::uint8_t* data = nullptr;
     std::size_t size = 0;
     std::size_t offset = 0;
 
+    /** Read one byte; false if out of bounds. */
     bool read_u8(std::uint8_t* out) {
         if (!out || offset + 1 > size) return false;
         *out = data[offset++];
         return true;
     }
 
+    /** Read a little-endian 32-bit value; false if out of bounds. */
     bool read_u32(std::uint32_t* out) {
         if (!out || offset + 4 > size) return false;
         *out = static_cast<std::uint32_t>(data[offset]) |
@@ -194,6 +228,7 @@ struct BufferReader {
         return true;
     }
 
+    /** Read a little-endian 64-bit value; false if out of bounds. */
     bool read_u64(std::uint64_t* out) {
         if (!out || offset + 8 > size) return false;
         *out = static_cast<std::uint64_t>(data[offset]) |
@@ -208,6 +243,7 @@ struct BufferReader {
         return true;
     }
 
+    /** Read exactly @p len raw bytes into @p out as a string; false if out of bounds. */
     bool read_string(std::uint32_t len, std::string* out) {
         if (!out || offset + len > size) return false;
         out->assign(reinterpret_cast<const char*>(data + offset), len);
@@ -216,6 +252,10 @@ struct BufferReader {
     }
 };
 
+/** @brief Compute the product of tensor dimensions with overflow protection.
+ *  @param dims Dimension sizes; a zero dimension yields a total of 0.
+ *  @param total Output element count.
+ *  @return False on multiplication overflow or null @p total, true otherwise. */
 bool compute_total_elements(const std::vector<std::uint64_t>& dims, std::uint64_t* total) {
     if (!total) return false;
     std::uint64_t value = 1;
@@ -231,6 +271,13 @@ bool compute_total_elements(const std::vector<std::uint64_t>& dims, std::uint64_
     return true;
 }
 
+/** @brief Serialize a set of named tensors to a checkpoint file.
+ *  Writes the ESKM magic, format version, record count, then each tensor's
+ *  name, dimensions, dtype and float64 element bits, ending with a trailing
+ *  CRC-32 of the payload.
+ *  @param path Destination file path.
+ *  @param records Named tensor views to serialize.
+ *  @return True if the file was written completely, false on any error. */
 bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& records) {
     if (!path) return false;
 
@@ -263,6 +310,12 @@ bool write_checkpoint(const char* path, const std::vector<TensorRecordView>& rec
     return writer.write_u32(writer.crc(), false);
 }
 
+/** @brief Read and validate a checkpoint file into parsed tensor records.
+ *  Verifies the trailing CRC-32, magic bytes, format version, and structural
+ *  bounds before populating @p records.
+ *  @param path Source file path.
+ *  @param records Output vector of parsed records.
+ *  @return True on a fully consumed, valid file; false on any corruption or mismatch. */
 bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records) {
     if (!path || !records) return false;
 
@@ -323,6 +376,13 @@ bool parse_checkpoint(const char* path, std::vector<ParsedTensorRecord>* records
     return reader.offset == reader.size;
 }
 
+/** @brief Materialize an arena-allocated tensor from a parsed checkpoint record.
+ *  Allocates the tensor header, dimension array and element storage, then copies
+ *  dimensions and reinterprets the stored bit patterns as elements.
+ *  @param arena Arena to allocate from.
+ *  @param record Parsed record describing dimensions and element bits.
+ *  @param out Receives the newly allocated tensor.
+ *  @return True on success; false on null args or allocation/overflow failure. */
 bool tensor_from_record(arena_t* arena, const ParsedTensorRecord& record, eshkol_tensor_t** out) {
     if (!arena || !out) return false;
     std::uint64_t total_elements = 0;
@@ -353,6 +413,12 @@ bool tensor_from_record(arena_t* arena, const ParsedTensorRecord& record, eshkol
     return true;
 }
 
+/** @brief Extract named-tensor records from an Eshkol association list.
+ *  Walks a proper list of (name . tensor) pairs, validating that each name is a
+ *  string/symbol and each value is a tensor.
+ *  @param list_value Tagged value expected to be a list of (name . tensor) pairs.
+ *  @param out Receives one TensorRecordView per entry.
+ *  @return True only if the whole list is well-formed and NULL-terminated. */
 bool extract_model_entries(const eshkol_tagged_value_t* list_value, std::vector<TensorRecordView>* out) {
     if (!list_value || !out) return false;
     out->clear();
@@ -377,6 +443,8 @@ bool extract_model_entries(const eshkol_tagged_value_t* list_value, std::vector<
     return current.type == ESHKOL_VALUE_NULL;
 }
 
+/** @brief Allocate an Eshkol string in @p arena and wrap it as a heap-pointer tagged value.
+ *  @return True on success; false on null args or allocation failure. */
 bool make_string_value(arena_t* arena, std::string_view text, eshkol_tagged_value_t* out) {
     if (!arena || !out) return false;
     char* buffer = arena_allocate_string_with_header(arena, text.size());
@@ -387,6 +455,8 @@ bool make_string_value(arena_t* arena, std::string_view text, eshkol_tagged_valu
     return true;
 }
 
+/** @brief Allocate a cons cell (@p car . @p cdr) in @p arena and return it as a tagged value.
+ *  @return True on success; false on null args or allocation failure. */
 bool prepend_list_node(arena_t* arena,
                        const eshkol_tagged_value_t& car,
                        const eshkol_tagged_value_t& cdr,
@@ -400,6 +470,12 @@ bool prepend_list_node(arena_t* arena,
     return true;
 }
 
+/** @brief Build an Eshkol association list of (name . tensor) pairs from parsed records.
+ *  Iterates records in reverse so the resulting list preserves original order.
+ *  @param arena Arena to allocate tensors, strings and cons cells from.
+ *  @param records Parsed records to convert.
+ *  @param result Receives the head of the constructed list.
+ *  @return True on success; false on null args or any allocation failure. */
 bool build_model_list(arena_t* arena,
                       const std::vector<ParsedTensorRecord>& records,
                       eshkol_tagged_value_t* result) {
@@ -425,6 +501,11 @@ bool build_model_list(arena_t* arena,
 
 } // namespace
 
+/** @brief Save a single tensor to a checkpoint file (Scheme `tensor-save`).
+ *  @param arena Unused (kept for ABI uniformity).
+ *  @param path_tv Tagged string/symbol destination path.
+ *  @param tensor_tv Tagged tensor to persist.
+ *  @param result Receives a boolean tagged value: true on success, false otherwise. */
 extern "C" void eshkol_tensor_save_tagged(arena_t* arena,
                                            const eshkol_tagged_value_t* path_tv,
                                            const eshkol_tagged_value_t* tensor_tv,
@@ -440,6 +521,10 @@ extern "C" void eshkol_tensor_save_tagged(arena_t* arena,
     *result = make_bool(write_checkpoint(path, {{"", tensor}}));
 }
 
+/** @brief Load a single-tensor checkpoint (Scheme `tensor-load`).
+ *  @param arena Arena to allocate the reconstructed tensor in.
+ *  @param path_tv Tagged string/symbol source path.
+ *  @param result Receives a heap-pointer tagged tensor, or NULL on any failure. */
 extern "C" void eshkol_tensor_load_tagged(arena_t* arena,
                                            const eshkol_tagged_value_t* path_tv,
                                            eshkol_tagged_value_t* result) {
@@ -486,6 +571,9 @@ struct NormParam {
     double         scalar = 0.0;     /* used when elems == nullptr */
 };
 
+/** @brief Decode a gamma/beta tagged value into a NormParam.
+ *  A tensor becomes a per-feature element pointer; a scalar double/int becomes a
+ *  broadcast scalar; anything else falls back to @p dflt. */
 NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
     NormParam p;
     p.scalar = dflt;
@@ -507,6 +595,8 @@ NormParam decode_norm_param(const eshkol_tagged_value_t* tv, double dflt) {
     return p;
 }
 
+/** Fetch the gamma/beta value for feature index @p k: per-feature element
+ *  (wrapping when a single element is broadcast) or the scalar fallback. */
 inline double norm_param_at(const NormParam& p, int64_t k) {
     if (p.elems) {
         int64_t idx = (p.len == 1) ? 0 : (k % p.len);
@@ -517,6 +607,12 @@ inline double norm_param_at(const NormParam& p, int64_t k) {
 
 } // namespace
 
+/** @brief Apply grouped batch-/layer-normalization to a tensor (numeric path).
+ *  For each group defined by @p group_len and @p inner_stride, normalizes to zero
+ *  mean and unit variance (stabilized by @p epsilon), then scales/shifts by gamma
+ *  and beta (each either a broadcast scalar or a per-feature tensor). See the
+ *  block comment above for the grouping/indexing convention shared with the AD path.
+ *  @return A newly arena-allocated result tensor, or NULL on invalid input/allocation. */
 extern "C" void* eshkol_tensor_normalize_apply(
     arena_t* arena,
     const eshkol_tagged_value_t* input_tv,
@@ -657,6 +753,11 @@ extern "C" void* eshkol_tensor_pow_scalar(arena_t* arena,
     return out;
 }
 
+/** @brief Save a whole model (Scheme `model-save`) to a checkpoint file.
+ *  @param arena Unused (kept for ABI uniformity).
+ *  @param path_tv Tagged string/symbol destination path.
+ *  @param entries_tv Tagged association list of (name . tensor) pairs.
+ *  @param result Receives a boolean tagged value: true on success, false otherwise. */
 extern "C" void eshkol_model_save_tagged(arena_t* arena,
                                           const eshkol_tagged_value_t* path_tv,
                                           const eshkol_tagged_value_t* entries_tv,
@@ -673,6 +774,10 @@ extern "C" void eshkol_model_save_tagged(arena_t* arena,
     *result = make_bool(write_checkpoint(path, entries));
 }
 
+/** @brief Load a whole model (Scheme `model-load`) from a checkpoint file.
+ *  @param arena Arena to allocate the reconstructed tensors and list in.
+ *  @param path_tv Tagged string/symbol source path.
+ *  @param result Receives an association list of (name . tensor) pairs, or NULL on failure. */
 extern "C" void eshkol_model_load_tagged(arena_t* arena,
                                           const eshkol_tagged_value_t* path_tv,
                                           eshkol_tagged_value_t* result) {

@@ -23,6 +23,11 @@ extern "C" void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alig
 
 /* ===== Construction ===== */
 
+/** @brief Allocate and zero-initialize a global workspace: the module
+ *  table (sized for `max_modules` entries) and a `dim`-wide content
+ *  buffer, both arena-backed.
+ *  @return New workspace, or NULL on invalid arguments or allocation
+ *  failure. */
 eshkol_workspace_t* eshkol_make_workspace(arena_t* arena,
     uint32_t dim, uint32_t max_modules) {
     if (!arena || dim == 0 || max_modules == 0) return NULL;
@@ -48,6 +53,10 @@ eshkol_workspace_t* eshkol_make_workspace(arena_t* arena,
     return ws;
 }
 
+/** Register a new module in the workspace: copies `name` into
+ *  arena-owned storage and appends a module entry with `process_fn`
+ *  and salience 0.0. No-op if the module table is already full or any
+ *  argument is invalid. */
 void eshkol_ws_register(arena_t* arena, eshkol_workspace_t* ws,
     const char* name, eshkol_tagged_value_t process_fn) {
     if (!arena || !ws || !name) return;
@@ -71,11 +80,14 @@ void eshkol_ws_register(arena_t* arena, eshkol_workspace_t* ws,
 
 /* ===== Content Access ===== */
 
+/** Return the workspace's content buffer, or NULL if `ws` is NULL. */
 const double* eshkol_ws_get_content(const eshkol_workspace_t* ws) {
     if (!ws) return NULL;
     return ws->content;
 }
 
+/** Overwrite the workspace's content buffer with `data`, copying at
+ *  most min(dim, ws->dim) doubles. No-op if `ws` or `data` is NULL. */
 void eshkol_ws_set_content(eshkol_workspace_t* ws,
     const double* data, uint32_t dim) {
     if (!ws || !data) return;
@@ -83,16 +95,24 @@ void eshkol_ws_set_content(eshkol_workspace_t* ws,
     memcpy(ws->content, data, copy_dim * sizeof(double));
 }
 
+/** Return the workspace's content dimensionality, or 0 if `ws` is NULL. */
 uint32_t eshkol_ws_get_dim(const eshkol_workspace_t* ws) {
     return ws ? ws->dim : 0;
 }
 
+/** Return the number of ws-step! iterations run so far, or 0 if `ws`
+ *  is NULL. */
 uint32_t eshkol_ws_get_step_count(const eshkol_workspace_t* ws) {
     return ws ? ws->step_count : 0;
 }
 
 /* ===== Tagged Value Dispatch ===== */
 
+/** @brief Tagged-value entry point for (make-workspace dim max-modules):
+ *  unpacks int64 tagged args and forwards to eshkol_make_workspace.
+ *  @param result Out param: tagged heap pointer to the new workspace,
+ *  or tagged null if any argument is missing or not an int64, or the
+ *  underlying allocation fails. */
 void eshkol_make_workspace_tagged(arena_t* arena,
     const eshkol_tagged_value_t* dim_tv,
     const eshkol_tagged_value_t* max_modules_tv,
@@ -131,6 +151,11 @@ void eshkol_make_workspace_tagged(arena_t* arena,
     }
 }
 
+/** @brief Tagged-value entry point for (ws-register! ws name process-fn):
+ *  extracts the workspace pointer and a string/symbol name from tagged
+ *  args (falling back to "unnamed" if `name_tv` isn't a string or
+ *  symbol) and forwards to eshkol_ws_register. No-op if `ws_tv` is not
+ *  a valid heap pointer or any argument is NULL. */
 void eshkol_ws_register_tagged(arena_t* arena,
     const eshkol_tagged_value_t* ws_tv,
     const eshkol_tagged_value_t* name_tv,
@@ -168,6 +193,12 @@ typedef struct ws_tensor_layout {
     uint64_t  total_elements;
 } ws_tensor_layout_t;
 
+/** @brief Copy a raw double array into a newly allocated 1-D tensor
+ *  (ws_tensor_layout_t), for handing workspace content to Scheme code
+ *  as a tensor value. Doubles are stored as their int64 bit patterns,
+ *  matching the layout LLVM codegen emits for #(...) tensor literals.
+ *  @param result Out param: tagged heap pointer to the tensor, or
+ *  tagged null on invalid arguments or allocation failure. */
 void eshkol_ws_make_content_tensor(arena_t* arena, const double* content,
     uint32_t dim, eshkol_tagged_value_t* result) {
     if (!result) return;
@@ -210,6 +241,18 @@ void eshkol_ws_make_content_tensor(arena_t* arena, const double* content,
     result->data.ptr_val = (uint64_t)tensor;
 }
 
+/** @brief Finalize one ws-step! iteration: given each module's
+ *  `(salience . proposal-tensor)` result (as a cons cell of tagged
+ *  values), run a numerically stable softmax over the salience scores
+ *  to pick a winning module, store the normalized saliences back onto
+ *  the module table, copy the winner's proposal tensor into the
+ *  workspace content buffer, and increment the step counter.
+ *
+ *  Supports at most 16 modules per step (results beyond that are
+ *  ignored); a result with a malformed cons/salience is treated as
+ *  effectively zero probability. No-op if `ws`/`results` is NULL or
+ *  `num_modules` is 0, and leaves content unchanged if every result is
+ *  malformed. */
 void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
     const eshkol_tagged_value_t* results, uint32_t num_modules) {
     if (!ws || !results || num_modules == 0) return;
@@ -297,6 +340,9 @@ void eshkol_ws_step_finalize(eshkol_workspace_t* ws,
 
 /* ===== Display ===== */
 
+/** Print a human-readable summary of the workspace (`#<workspace: ...>`)
+ *  to `file`, or to stdout if `file` is NULL. Handles a NULL workspace
+ *  by printing an "empty" marker. */
 void eshkol_display_workspace(const eshkol_workspace_t* ws, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!ws) {

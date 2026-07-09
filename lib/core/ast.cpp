@@ -11,7 +11,9 @@
 #include <cstdlib>
 #include <cmath>
 
-// Arena-aware strdup: allocate string copy in the global arena
+/** @brief Arena-aware strdup: allocate a string copy in the global arena.
+ *  @return Newly allocated copy of @p s (including terminator), or null if
+ *          @p s is null. */
 static char* arena_strdup(const char* s) {
     if (!s) return nullptr;
     size_t len = strlen(s);
@@ -20,6 +22,13 @@ static char* arena_strdup(const char* s) {
     return copy;
 }
 
+/** @brief Release heap-owned payloads inside an AST node and mark it invalid.
+ *
+ * Frees the string buffer for ESHKOL_STRING/ESHKOL_BIGNUM_LITERAL nodes,
+ * or recursively cleans and frees the element/dimension arrays of an
+ * ESHKOL_TENSOR node. No-op if @p ast is null. Does not free @p ast
+ * itself, and sets ast->type to ESHKOL_INVALID when done.
+ * @param ast Node whose owned payloads should be released. */
 void eshkol_ast_clean(eshkol_ast_t *ast)
 {
     if (ast == nullptr) return;
@@ -53,6 +62,7 @@ void eshkol_ast_clean(eshkol_ast_t *ast)
 // ===== SYMBOLIC DIFFERENTIATION AST HELPERS =====
 // Memory management for symbolic AST nodes created during differentiation
 
+/** Allocate a zero-initialized @ref eshkol_ast_t node from the global arena. */
 eshkol_ast_t* eshkol_alloc_symbolic_ast() {
     eshkol_ast_t* node = (eshkol_ast_t*)arena_allocate(get_global_arena(),sizeof(eshkol_ast_t));
     memset(node, 0, sizeof(eshkol_ast_t));
@@ -60,6 +70,7 @@ eshkol_ast_t* eshkol_alloc_symbolic_ast() {
 }
 
 // Helper: Create variable AST node
+/** Create an ESHKOL_VAR AST node referencing variable/symbol @p name. */
 eshkol_ast_t* eshkol_make_var_ast(const char* name) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_VAR;
@@ -69,6 +80,7 @@ eshkol_ast_t* eshkol_make_var_ast(const char* name) {
 }
 
 // Helper: Create integer constant AST node
+/** Create an ESHKOL_INT64 constant AST node holding @p value. */
 eshkol_ast_t* eshkol_make_int_ast(int64_t value) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_INT64;
@@ -77,6 +89,7 @@ eshkol_ast_t* eshkol_make_int_ast(int64_t value) {
 }
 
 // Helper: Create double constant AST node
+/** Create an ESHKOL_DOUBLE constant AST node holding @p value. */
 eshkol_ast_t* eshkol_make_double_ast(double value) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_DOUBLE;
@@ -85,6 +98,14 @@ eshkol_ast_t* eshkol_make_double_ast(double value) {
 }
 
 // Helper: Create binary operation AST node (*, +, -, /)
+/** @brief Build a call-op AST node applying binary operator @p op to
+ *  @p left and @p right (e.g. `(+ left right)`).
+ *
+ * @p left and @p right are shallow-copied by value into the new node's
+ * argument array; the caller retains ownership of the originals.
+ * @param op Operator name (e.g. "+", "-", "*", "/").
+ * @param left First argument.
+ * @param right Second argument. */
 eshkol_ast_t* eshkol_make_binary_op_ast(const char* op,
                                          eshkol_ast_t* left,
                                          eshkol_ast_t* right) {
@@ -106,6 +127,13 @@ eshkol_ast_t* eshkol_make_binary_op_ast(const char* op,
 }
 
 // Helper: Create unary function call AST node (sin, cos, exp, log)
+/** @brief Build a call-op AST node applying unary function @p func to
+ *  @p arg (e.g. `(sin arg)`).
+ *
+ * @p arg is shallow-copied by value into the new node's argument array;
+ * the caller retains ownership of the original.
+ * @param func Function name (e.g. "sin", "cos", "exp", "log").
+ * @param arg Single argument expression. */
 eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
     eshkol_ast_t* ast = eshkol_alloc_symbolic_ast();
     ast->type = ESHKOL_OP;
@@ -121,6 +149,13 @@ eshkol_ast_t* eshkol_make_unary_call_ast(const char* func, eshkol_ast_t* arg) {
 }
 
 // Helper: Deep copy AST node
+/** @brief Deep-copy an AST node, including its string payload and, for
+ *  call-op nodes, the callee and argument subtrees.
+ *
+ * All copies are allocated in the global arena. Returns null if @p ast
+ * is null.
+ * @param ast Node to copy (not modified).
+ * @return Newly allocated deep copy of @p ast. */
 eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
     if (!ast) return nullptr;
     
@@ -157,6 +192,8 @@ eshkol_ast_t* eshkol_copy_ast(const eshkol_ast_t* ast) {
 // Memory management and construction for HoTT type expressions
 
 // Allocate and initialize a type expression with a given kind
+/** Allocate a zero-initialized @ref hott_type_expr_t from the global arena
+ *  and set its `kind` field to @p kind. */
 static hott_type_expr_t* hott_alloc_type_expr(hott_type_kind_t kind) {
     hott_type_expr_t* type = (hott_type_expr_t*)arena_allocate(get_global_arena(),sizeof(hott_type_expr_t));
     memset(type, 0, sizeof(hott_type_expr_t));
@@ -165,43 +202,53 @@ static hott_type_expr_t* hott_alloc_type_expr(hott_type_kind_t kind) {
 }
 
 // Primitive type constructors
+/** Create a HOTT_TYPE_INTEGER type expression. */
 hott_type_expr_t* hott_make_integer_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_INTEGER);
 }
 
+/** Create a HOTT_TYPE_REAL type expression. */
 hott_type_expr_t* hott_make_real_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_REAL);
 }
 
+/** Create a HOTT_TYPE_BOOLEAN type expression. */
 hott_type_expr_t* hott_make_boolean_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_BOOLEAN);
 }
 
+/** Create a HOTT_TYPE_STRING type expression. */
 hott_type_expr_t* hott_make_string_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_STRING);
 }
 
+/** Create a HOTT_TYPE_CHAR type expression. */
 hott_type_expr_t* hott_make_char_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_CHAR);
 }
 
+/** Create a HOTT_TYPE_SYMBOL type expression. */
 hott_type_expr_t* hott_make_symbol_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_SYMBOL);
 }
 
+/** Create a HOTT_TYPE_NULL type expression. */
 hott_type_expr_t* hott_make_null_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_NULL);
 }
 
+/** Create a HOTT_TYPE_ANY type expression. */
 hott_type_expr_t* hott_make_any_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_ANY);
 }
 
+/** Create a HOTT_TYPE_NOTHING type expression. */
 hott_type_expr_t* hott_make_nothing_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_NOTHING);
 }
 
 // Type variable constructor
+/** Create a HOTT_TYPE_VAR type expression referencing type variable @p name. */
 hott_type_expr_t* hott_make_type_var(const char* name) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_VAR);
     type->var_name = arena_strdup(name);
@@ -209,6 +256,15 @@ hott_type_expr_t* hott_make_type_var(const char* name) {
 }
 
 // Arrow (function) type: (-> param1 param2 ... return)
+/** @brief Create a HOTT_TYPE_ARROW (function) type expression:
+ *  `(-> param1 param2 ... return)`.
+ *
+ * Deep-copies each entry of @p param_types and @p return_type into the
+ * new node.
+ * @param param_types Array of @p num_params parameter type expressions
+ *        (may be null if num_params is 0).
+ * @param num_params Number of parameter types.
+ * @param return_type Function's return type. */
 hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types,
                                         uint64_t num_params,
                                         hott_type_expr_t* return_type) {
@@ -230,24 +286,32 @@ hott_type_expr_t* hott_make_arrow_type(hott_type_expr_t** param_types,
 }
 
 // Container types
+/** Create a HOTT_TYPE_LIST type expression with the given element type
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_list_type(hott_type_expr_t* element_type) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_LIST);
     type->container.element_type = hott_copy_type_expr(element_type);
     return type;
 }
 
+/** Create a HOTT_TYPE_VECTOR type expression with the given element type
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_vector_type(hott_type_expr_t* element_type) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_VECTOR);
     type->container.element_type = hott_copy_type_expr(element_type);
     return type;
 }
 
+/** Create a HOTT_TYPE_TENSOR type expression with the given element type
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_tensor_type(hott_type_expr_t* element_type) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_TENSOR);
     type->container.element_type = hott_copy_type_expr(element_type);
     return type;
 }
 
+/** Create a HOTT_TYPE_POINTER type expression with the given element type
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_POINTER);
     type->container.element_type = hott_copy_type_expr(element_type);
@@ -255,6 +319,8 @@ hott_type_expr_t* hott_make_pointer_type(hott_type_expr_t* element_type) {
 }
 
 // Pair and product types
+/** Create a HOTT_TYPE_PAIR type expression from @p left and @p right
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* right) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_PAIR);
     type->pair.left = hott_copy_type_expr(left);
@@ -262,6 +328,8 @@ hott_type_expr_t* hott_make_pair_type(hott_type_expr_t* left, hott_type_expr_t* 
     return type;
 }
 
+/** Create a HOTT_TYPE_PRODUCT type expression from @p left and @p right
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_t* right) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_PRODUCT);
     type->pair.left = hott_copy_type_expr(left);
@@ -270,6 +338,8 @@ hott_type_expr_t* hott_make_product_type(hott_type_expr_t* left, hott_type_expr_
 }
 
 // Sum type
+/** Create a HOTT_TYPE_SUM type expression from @p left and @p right
+ *  (deep-copied). */
 hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* right) {
     hott_type_expr_t* type = hott_alloc_type_expr(HOTT_TYPE_SUM);
     type->sum.left = hott_copy_type_expr(left);
@@ -278,6 +348,14 @@ hott_type_expr_t* hott_make_sum_type(hott_type_expr_t* left, hott_type_expr_t* r
 }
 
 // Forall (polymorphic) type: (forall (a b ...) body-type)
+/** @brief Create a HOTT_TYPE_FORALL (polymorphic) type expression:
+ *  `(forall (a b ...) body-type)`.
+ *
+ * Copies each name in @p type_vars and deep-copies @p body.
+ * @param type_vars Array of @p num_vars type variable names (may be null
+ *        if num_vars is 0).
+ * @param num_vars Number of bound type variables.
+ * @param body The quantified body type. */
 hott_type_expr_t* hott_make_forall_type(char** type_vars,
                                          uint64_t num_vars,
                                          hott_type_expr_t* body) {
@@ -298,6 +376,11 @@ hott_type_expr_t* hott_make_forall_type(char** type_vars,
 }
 
 // Deep copy a type expression
+/** @brief Deep-copy a HoTT type expression, recursively copying nested
+ *  type structure (arrow params/return, forall vars/body, container
+ *  element types, pair/product/sum branches, universe level).
+ * @param type Type expression to copy (not modified).
+ * @return Newly allocated deep copy, or null if @p type is null. */
 hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
     if (!type) return nullptr;
 
@@ -363,12 +446,22 @@ hott_type_expr_t* hott_copy_type_expr(const hott_type_expr_t* type) {
 
 // Free a type expression and all its children.
 // No-op: all type expressions are arena-allocated and bulk-freed with the arena.
+/** No-op: type expressions are arena-allocated and bulk-freed with the
+ *  arena, so no per-node freeing is needed. */
 void hott_free_type_expr(hott_type_expr_t* type) {
     (void)type;
 }
 
 // Convert type expression to string (for display/error messages)
 // Returns a newly allocated string that must be freed by the caller
+/** @brief Render a HoTT type expression as a human-readable Scheme-like
+ *  string (for display/error messages).
+ *
+ * Recursively formats nested types into a fixed 1024-byte stack buffer,
+ * truncating with "..." if the rendering would overflow.
+ * @param type Type expression to render (null renders as "null").
+ * @return Newly arena-allocated string; caller does not need to free it
+ *         given arena bulk-free semantics. */
 char* hott_type_to_string(const hott_type_expr_t* type) {
     if (!type) return arena_strdup("null");
 
@@ -513,6 +606,11 @@ char* hott_type_to_string(const hott_type_expr_t* type) {
 
 // Helper: Wrap expression in (begin (display expr) (newline))
 // Used by REPL to automatically display expression results
+/** @brief Wrap an expression AST so the REPL automatically prints its
+ *  result: builds `(begin (display expr) (newline))`.
+ * @param expr Expression to wrap (shallow-copied by value into the new
+ *        `display` call's argument).
+ * @return Newly allocated `begin` call-op AST node. */
 eshkol_ast_t* eshkol_wrap_with_display(eshkol_ast_t* expr) {
     // Create: (begin (display expr) (newline))
     eshkol_ast_t* wrapper = eshkol_alloc_symbolic_ast();

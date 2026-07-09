@@ -78,12 +78,16 @@ char* alloc_symbol_block(const char* src, size_t len) {
     return data;
 }
 
+/** Free a symbol's char block previously returned by alloc_symbol_block,
+ *  accounting for the header offset. No-op if `symbol_ptr` is NULL. */
 void free_symbol_block(char* symbol_ptr) {
     if (!symbol_ptr) return;
     std::free(reinterpret_cast<uint8_t*>(symbol_ptr) -
               sizeof(eshkol_object_header_t));
 }
 
+/** Free every interned symbol's backing block and clear the table.
+ *  Registered via std::atexit so it runs once at process exit. */
 void cleanup_symbol_table() {
     std::lock_guard<std::mutex> lock(g_symbol_mutex);
     for (auto& item : g_interned_symbols) {

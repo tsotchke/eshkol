@@ -102,10 +102,12 @@ static const char* g_log_colors[] = {
 // Helper Functions
 // ============================================================================
 
+/** Return the active log sink: the configured log file, or stderr if none. */
 static FILE* get_output() {
     return g_log_file ? g_log_file : stderr;
 }
 
+/** Format the current UTC time as an ISO 8601 "YYYY-MM-DDThh:mm:ssZ" string. */
 static std::string get_iso_timestamp() {
     time_t now = time(nullptr);
     struct tm* gmt = gmtime(&now);
@@ -114,6 +116,8 @@ static std::string get_iso_timestamp() {
     return std::string(buf);
 }
 
+/** Escape a C string for embedding in a JSON string literal, encoding quotes,
+ *  backslashes, common control chars, and any other control byte as \\uXXXX. */
 static std::string escape_json(const char* str) {
     if (!str) return "";
 
@@ -153,6 +157,9 @@ struct eshkol_dbghelp_api_t {
     bool initialized = false;
 };
 
+/** @brief Lazily load dbghelp.dll and resolve its symbol-lookup entry points (Windows).
+ *  Initialized exactly once via std::call_once; on failure the returned struct's
+ *  @c initialized flag stays false and stack traces degrade to raw addresses. */
 static eshkol_dbghelp_api_t& get_dbghelp_api() {
     static eshkol_dbghelp_api_t api;
     static std::once_flag once;
@@ -182,6 +189,14 @@ static eshkol_dbghelp_api_t& get_dbghelp_api() {
     return api;
 }
 
+/** @brief Capture and print the current call stack to @p out (Windows).
+ *  Resolves each frame's symbol name, offset and source line via dbghelp when
+ *  available, otherwise prints raw addresses.
+ *  @param out Output stream.
+ *  @param prefix Log-level prefix label.
+ *  @param color ANSI color escape (or empty).
+ *  @param reset ANSI reset escape (or empty).
+ *  @param frames_to_skip Number of innermost frames to omit. */
 static void output_windows_stacktrace(FILE* out, const char* prefix,
                                       const char* color, const char* reset,
                                       USHORT frames_to_skip = 0) {
@@ -232,6 +247,9 @@ static void output_windows_stacktrace(FILE* out, const char* prefix,
 }
 #endif
 
+/** @brief Emit a log message in human-readable TEXT format.
+ *  Writes a colored level prefix followed by @p msg, appending a trailing
+ *  newline if one is not already present. */
 static void output_text(eshkol_logger_t level, const char* msg) {
     FILE* out = get_output();
     const char* prefix = g_log_names[level];
@@ -256,6 +274,9 @@ static void output_text(eshkol_logger_t level, const char* msg) {
     }
 }
 
+/** @brief Emit a log message as one structured JSON object per line.
+ *  Includes timestamp, level and message, plus optional file/line/func fields
+ *  when supplied. */
 static void output_json(eshkol_logger_t level, const char* msg,
                         const char* file, int line, const char* func) {
     FILE* out = get_output();
@@ -286,24 +307,32 @@ static void output_json(eshkol_logger_t level, const char* msg,
 
 extern "C" {
 
+/** Set the maximum log level that will be emitted (higher levels are suppressed). */
 void eshkol_set_logger_level(eshkol_logger_t level) {
     g_max_level.store(level, std::memory_order_relaxed);
 }
 
+/** Return the current maximum emitted log level. */
 eshkol_logger_t eshkol_get_logger_level(void) {
     return g_max_level.load(std::memory_order_relaxed);
 }
 
+/** Select the output format (TEXT or JSON) for subsequent log messages. */
 void eshkol_set_log_format(eshkol_log_format_t format) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_log_format = format;
 }
 
+/** Return the currently configured log output format. */
 eshkol_log_format_t eshkol_get_log_format(void) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     return g_log_format;
 }
 
+/** @brief Redirect log output to the file at @p path (appended), or back to stderr.
+ *  Closes any previously owned log file first.
+ *  @param path File to append logs to, or NULL to revert to stderr.
+ *  @return 0 on success, -1 if @p path could not be opened. */
 int eshkol_set_log_file(const char* path) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
 
@@ -329,16 +358,23 @@ int eshkol_set_log_file(const char* path) {
     return 0;
 }
 
+/** Enable or disable ANSI color codes in TEXT-format output. */
 void eshkol_set_color_output(bool enabled) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_color_enabled = enabled;
 }
 
+/** Enable or disable timestamp emission in log output. */
 void eshkol_set_timestamps(bool enabled) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_timestamps_enabled = enabled;
 }
 
+/** @brief Log a printf-style formatted message at @p level.
+ *  Suppressed cheaply (no lock) when @p level exceeds the configured maximum.
+ *  Terminates the process via exit(1) when @p level is ESHKOL_FATAL.
+ *  @param level Severity level.
+ *  @param msg printf-style format string, followed by its arguments. */
 void eshkol_printf(eshkol_logger_t level, const char* msg, ...) {
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
@@ -365,6 +401,14 @@ void eshkol_printf(eshkol_logger_t level, const char* msg, ...) {
     }
 }
 
+/** @brief Log a formatted message annotated with source location.
+ *  In JSON mode the location becomes structured fields; in TEXT mode it is
+ *  appended as "[file:line]". Exits the process when @p level is ESHKOL_FATAL.
+ *  @param level Severity level.
+ *  @param file Source file name (may be NULL).
+ *  @param line Source line number (0 to omit).
+ *  @param func Enclosing function name (may be NULL).
+ *  @param msg printf-style format string, followed by its arguments. */
 void eshkol_log_with_location(eshkol_logger_t level,
                                const char* file,
                                int line,
@@ -412,6 +456,12 @@ void eshkol_log_with_location(eshkol_logger_t level,
     }
 }
 
+/** @brief Log a message with an arbitrary set of key/value string pairs.
+ *  Variadic arguments are consumed as alternating (key, value) C strings,
+ *  terminated by a NULL key or value. In JSON mode each pair becomes a field;
+ *  in TEXT mode the pairs are appended to the plain message.
+ *  @param level Severity level.
+ *  @param msg Base message string, followed by NULL-terminated key/value pairs. */
 void eshkol_log_structured(eshkol_logger_t level, const char* msg, ...) {
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
@@ -455,6 +505,7 @@ void eshkol_log_structured(eshkol_logger_t level, const char* msg, ...) {
     }
 }
 
+/** Return the display name for @p level ("FATAL"…"DEBUG"), or "UNKNOWN" if out of range. */
 const char* eshkol_log_level_name(eshkol_logger_t level) {
     if (level >= 0 && level <= ESHKOL_DEBUG) {
         return g_log_names[level];
@@ -462,12 +513,14 @@ const char* eshkol_log_level_name(eshkol_logger_t level) {
     return "UNKNOWN";
 }
 
+/** Flush the active log output stream. */
 void eshkol_log_flush(void) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     FILE* out = get_output();
     fflush(out);
 }
 
+/** Close the owned log file (if any) and revert output to stderr. */
 void eshkol_log_close(void) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     if (g_log_file && g_owns_log_file) {
@@ -477,6 +530,10 @@ void eshkol_log_close(void) {
     }
 }
 
+/** @brief Print the current call stack at @p level using platform facilities.
+ *  Uses dbghelp on Windows and backtrace()/demangling on macOS/Linux; on other
+ *  platforms it logs that stack traces are unavailable. Suppressed cheaply when
+ *  @p level exceeds the configured maximum, and exits when @p level is ESHKOL_FATAL. */
 void eshkol_stacktrace(eshkol_logger_t level) {
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
@@ -644,6 +701,14 @@ static void eshkol_diagnostic_at(eshkol_logger_t level,
     }
 }
 
+/** @brief Emit a clang/gcc-style "error" diagnostic at a source location.
+ *  Prints "file:line:col: error: message" and, when @p source_text is supplied,
+ *  the offending source line with a caret under @p column.
+ *  @param file Source file name.
+ *  @param line 1-based line number (0 to omit).
+ *  @param column 1-based column number (0 to omit the caret).
+ *  @param source_text Full source buffer for rendering the line, or NULL.
+ *  @param msg printf-style format string, followed by its arguments. */
 void eshkol_error_at(const char* file, unsigned line, unsigned column,
                      const char* source_text, const char* msg, ...) {
     va_list ap;
@@ -652,6 +717,13 @@ void eshkol_error_at(const char* file, unsigned line, unsigned column,
     va_end(ap);
 }
 
+/** @brief Emit a clang/gcc-style "warning" diagnostic at a source location.
+ *  Identical to eshkol_error_at() but at warning severity.
+ *  @param file Source file name.
+ *  @param line 1-based line number (0 to omit).
+ *  @param column 1-based column number (0 to omit the caret).
+ *  @param source_text Full source buffer for rendering the line, or NULL.
+ *  @param msg printf-style format string, followed by its arguments. */
 void eshkol_warn_at(const char* file, unsigned line, unsigned column,
                     const char* source_text, const char* msg, ...) {
     va_list ap;

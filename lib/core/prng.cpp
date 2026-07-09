@@ -47,6 +47,7 @@ constexpr uint64_t kDrand48Addend     = 0xBULL;
 constexpr uint64_t kDrand48Mask       = (1ULL << 48) - 1;
 constexpr uint64_t kDrand48Range      = (1ULL << 48);
 
+/** Advance a drand48-style LCG state by one step. */
 inline uint64_t step_lcg(uint64_t state) {
     return (state * kDrand48Multiplier + kDrand48Addend) & kDrand48Mask;
 }
@@ -71,6 +72,7 @@ extern "C" uint64_t* eshkol_prng_make(int64_t seed) {
     return state;
 }
 
+/** Advance `state` and return the next uniform double in [0.0, 1.0). */
 extern "C" double eshkol_prng_random(uint64_t* state) {
     if (!state) return 0.0;
     *state = step_lcg(*state);

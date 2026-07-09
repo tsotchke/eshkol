@@ -10,12 +10,15 @@
 #include <stdio.h>
 #include <string.h>
 
+/** Print @p indent levels of two-space indentation to stdout. */
 static void print_indent(int indent) {
     for (int i = 0; i < indent; i++) {
         printf("  ");
     }
 }
 
+/** Return the printable name of an @ref eshkol_type_t enumerator (e.g.
+ *  "INT64", "STRING"), or "UNKNOWN" if unrecognized. */
 static const char* type_to_string(eshkol_type_t type) {
     switch (type) {
         case ESHKOL_INVALID: return "INVALID";
@@ -44,6 +47,8 @@ static const char* type_to_string(eshkol_type_t type) {
     }
 }
 
+/** Return the printable name of an @ref eshkol_op_t enumerator (e.g.
+ *  "IF_OP", "CALL_OP"), or "UNKNOWN_OP" if unrecognized. */
 static const char* op_to_string(eshkol_op_t op) {
     switch (op) {
         case ESHKOL_INVALID_OP: return "INVALID_OP";
@@ -143,6 +148,15 @@ static const char* op_to_string(eshkol_op_t op) {
     }
 }
 
+/** @brief Pretty-print an @ref eshkol_operations_t node's operator and its
+ *  operator-specific sub-fields to stdout at the given indent level.
+ *
+ * Dispatches on op->op: recurses into sub-expressions via
+ * eshkol_ast_pretty_print()/print_operation() as appropriate, and gives
+ * call-op nodes on +,-,*,/ a special "Arithmetic Formula" rendering in
+ * addition to the normal function/arguments breakdown.
+ * @param op Operation node to print.
+ * @param indent Current indentation depth (in two-space units). */
 static void print_operation(const eshkol_operations_t *op, int indent) {
     print_indent(indent);
     printf("Operation: %s\n", op_to_string(op->op));
@@ -328,6 +342,15 @@ static void print_operation(const eshkol_operations_t *op, int indent) {
     }
 }
 
+/** @brief Recursively pretty-print an AST node and its children to stdout
+ *  in an indented, human-readable tree form.
+ *
+ * Prints "(null AST)" if @p ast is null; otherwise prints the node's type
+ * tag followed by type-specific fields (literal value, cons car/cdr,
+ * variable id, function definition, or delegates operator nodes to
+ * print_operation()).
+ * @param ast Node to print (may be null).
+ * @param indent Current indentation depth (in two-space units). */
 void eshkol_ast_pretty_print(const eshkol_ast_t *ast, int indent) {
     if (!ast) {
         print_indent(indent);

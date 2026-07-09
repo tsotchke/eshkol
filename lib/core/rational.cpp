@@ -21,6 +21,7 @@ extern "C" void* arena_allocate_with_header(void* arena, uint64_t data_size,
 extern "C" void* arena_allocate(void* arena, uint64_t size);
 extern "C" void* arena_allocate_string_with_header(void* arena, uint64_t size);
 
+/** Euclidean greatest common divisor of two 64-bit integers (operates on absolute values). */
 static int64_t gcd(int64_t a, int64_t b) {
     if (a < 0) a = -a;
     if (b < 0) b = -b;
@@ -73,6 +74,10 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
     return eshkol_rational_create(arena, (int64_t)num, (int64_t)denom);
 }
 
+/** @brief Create a normalized rational number in @p arena from a numerator/denominator pair.
+ *  Normalizes the sign to a positive denominator and reduces by the GCD. A zero
+ *  denominator (or an unsafe INT64_MIN sign-flip) reports an error and yields 0/1.
+ *  @return Pointer to a header-tagged eshkol_rational_t. */
 extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom) {
     if (denom == 0) {
         eshkol_error("rational: division by zero (denominator is 0)");
@@ -116,6 +121,7 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
     return r;
 }
 
+/** @brief Add two rationals, returning a reduced result (NULL on int64 overflow). */
 extern "C" void* eshkol_rational_add(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
@@ -126,6 +132,7 @@ extern "C" void* eshkol_rational_add(void* arena, void* a, void* b) {
     return rational_create_safe(arena, num, denom);
 }
 
+/** @brief Subtract rational @p b from @p a, returning a reduced result (NULL on int64 overflow). */
 extern "C" void* eshkol_rational_sub(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
@@ -135,6 +142,7 @@ extern "C" void* eshkol_rational_sub(void* arena, void* a, void* b) {
     return rational_create_safe(arena, num, denom);
 }
 
+/** @brief Multiply two rationals, returning a reduced result (NULL on int64 overflow). */
 extern "C" void* eshkol_rational_mul(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
@@ -143,6 +151,8 @@ extern "C" void* eshkol_rational_mul(void* arena, void* a, void* b) {
     return rational_create_safe(arena, num, denom);
 }
 
+/** @brief Divide rational @p a by @p b, returning a reduced result.
+ *  Raises a divide-by-zero exception if @p b is zero; returns NULL on int64 overflow. */
 extern "C" void* eshkol_rational_div(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
@@ -156,6 +166,8 @@ extern "C" void* eshkol_rational_div(void* arena, void* a, void* b) {
     return rational_create_safe(arena, num, denom);
 }
 
+/** @brief Compare two rationals via cross-multiplication.
+ *  @return -1 if a < b, 1 if a > b, 0 if equal. */
 extern "C" int eshkol_rational_compare(void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
@@ -167,19 +179,23 @@ extern "C" int eshkol_rational_compare(void* a, void* b) {
     return 0;
 }
 
+/** Return the numerator of a rational. */
 extern "C" int64_t eshkol_rational_numerator(void* r) {
     return ((eshkol_rational_t*)r)->numerator;
 }
 
+/** Return the (always positive) denominator of a rational. */
 extern "C" int64_t eshkol_rational_denominator(void* r) {
     return ((eshkol_rational_t*)r)->denominator;
 }
 
+/** Convert a rational to its nearest double-precision floating-point value. */
 extern "C" double eshkol_rational_to_double(void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
     return (double)rat->numerator / (double)rat->denominator;
 }
 
+/** Return non-zero if the rational represents an integer (denominator == 1). */
 extern "C" int eshkol_rational_is_integer(void* r) {
     return ((eshkol_rational_t*)r)->denominator == 1;
 }

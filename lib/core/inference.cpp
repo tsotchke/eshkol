@@ -35,12 +35,14 @@ typedef struct {
     uint64_t  total_elements;
 } tensor_layout_t;
 
+/** Read the double at index @p idx from a tensor's raw int64 element storage. */
 static inline double tensor_get(const tensor_layout_t* t, uint32_t idx) {
     union { int64_t i; double d; } u;
     u.i = t->elements[idx];
     return u.d;
 }
 
+/** Write @p val as a double into a tensor's raw int64 element storage at index @p idx. */
 static inline void tensor_set(tensor_layout_t* t, uint32_t idx, double val) {
     union { int64_t i; double d; } u;
     u.d = val;
@@ -154,6 +156,8 @@ static void log_normalize(double* arr, uint32_t n) {
 
 /* ===== Arena Allocation Helpers ===== */
 
+/** Allocate a zero-initialized eshkol_factor_t with room for @p num_vars trailing
+ *  variable indices (FACTOR_VAR_INDICES layout); sets num_vars on success. */
 static eshkol_factor_t* alloc_factor(arena_t* arena, uint32_t num_vars) {
     size_t data_size = sizeof(eshkol_factor_t) + num_vars * sizeof(uint32_t);
     /* Factor doesn't get its own heap subtype — it's part of the factor graph */
@@ -165,16 +169,31 @@ static eshkol_factor_t* alloc_factor(arena_t* arena, uint32_t num_vars) {
     return f;
 }
 
+/** Allocate an 8-byte-aligned array of @p n doubles from the arena (uninitialized). */
 static double* alloc_doubles(arena_t* arena, uint32_t n) {
     return (double*)arena_allocate_aligned(arena, n * sizeof(double), 8);
 }
 
+/** Allocate an 8-byte-aligned array of @p n uint32_t values from the arena (uninitialized). */
 static uint32_t* alloc_uint32s(arena_t* arena, uint32_t n) {
     return (uint32_t*)arena_allocate_aligned(arena, n * sizeof(uint32_t), 8);
 }
 
 /* ===== Factor Graph Construction ===== */
 
+/**
+ * @brief Allocate and initialize a factor graph with @p num_vars discrete variables.
+ *
+ * Copies @p var_dims into the graph, allocates a per-variable belief vector
+ * initialized to a uniform log-distribution (log(1/dim)), and allocates the
+ * (initially empty) factor pointer array. Message arrays are left NULL and
+ * allocated lazily by eshkol_fg_infer() on first use.
+ *
+ * @param arena Arena for all graph, belief, and dimension allocations.
+ * @param num_vars Number of random variables in the graph.
+ * @param var_dims var_dims[i] = number of discrete states for variable i.
+ * @return New factor graph, or NULL on invalid arguments or allocation failure.
+ */
 eshkol_factor_graph_t* eshkol_make_factor_graph(arena_t* arena,
     uint32_t num_vars, const uint32_t* var_dims) {
     if (!arena || num_vars == 0 || !var_dims) return NULL;
@@ -222,6 +241,20 @@ eshkol_factor_graph_t* eshkol_make_factor_graph(arena_t* arena,
     return fg;
 }
 
+/**
+ * @brief Build a standalone factor connecting @p num_vars variables via a CPT.
+ *
+ * Computes the CPT size as the product of @p dims, copies the CPT data,
+ * dimensions, and connected variable indices into arena-allocated storage
+ * following the eshkol_factor_t layout (FACTOR_VAR_INDICES trailer).
+ *
+ * @param arena Arena for the factor and its CPT/dims/indices allocations.
+ * @param var_indices Indices (into the factor graph's variables) this factor connects.
+ * @param num_vars Number of connected variables (length of @p var_indices/@p dims).
+ * @param cpt_data Flat log-probability table of size prod(dims).
+ * @param dims Per-connected-variable state-space size, parallel to @p var_indices.
+ * @return New factor, or NULL on invalid arguments or allocation failure.
+ */
 eshkol_factor_t* eshkol_make_factor(arena_t* arena,
     const uint32_t* var_indices, uint32_t num_vars,
     const double* cpt_data, const uint32_t* dims) {
@@ -254,6 +287,12 @@ eshkol_factor_t* eshkol_make_factor(arena_t* arena,
     return f;
 }
 
+/**
+ * @brief Append @p factor to @p fg's factor list, growing the array (doubling) if full.
+ * @param arena Arena used to reallocate the factor pointer array when it grows.
+ * @param fg Factor graph to mutate.
+ * @param factor Factor to append; ignored (no-op) if any argument is NULL.
+ */
 void eshkol_fg_add_factor(arena_t* arena, eshkol_factor_graph_t* fg,
     eshkol_factor_t* factor) {
     if (!arena || !fg || !factor) return;
@@ -422,6 +461,21 @@ static void compute_var_to_factor_message(
     log_normalize(out_msg, dim);
 }
 
+/**
+ * @brief Run loopy belief propagation (sum-product, log-space) to convergence.
+ *
+ * Lazily allocates message storage, then iterates: update all
+ * variable-to-factor messages, update all factor-to-variable messages, then
+ * recompute each non-observed variable's belief as the (log-space) product
+ * of its incoming factor messages. Observed variables (fg->observed[v]) are
+ * skipped so their clamped beliefs from eshkol_fg_observe_tagged() persist.
+ *
+ * @param arena Arena used for lazy message-array allocation.
+ * @param fg Factor graph to run inference on (mutated in place: messages and beliefs).
+ * @param max_iterations Upper bound on BP sweeps.
+ * @param tolerance Convergence threshold on the max message delta.
+ * @return true if converged before @p max_iterations, false otherwise (or on invalid input).
+ */
 bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
     uint32_t max_iterations, double tolerance) {
     if (!arena || !fg || fg->num_factors == 0) return false;
@@ -511,6 +565,21 @@ bool eshkol_fg_infer(arena_t* arena, eshkol_factor_graph_t* fg,
 
 /* ===== Free Energy ===== */
 
+/**
+ * @brief Compute the variational free energy F = E_q[ln q(s)] - E_q[ln p(o,s)] of @p fg.
+ *
+ * Uses the mean-field approximation: entropy is the sum of per-variable
+ * marginal entropies, and the expected log-joint is the sum over factors of
+ * E_q[ln f(x)] evaluated by enumerating each factor's configuration space.
+ * If @p observations is given (pairs of var_index, observed_state), each
+ * observed variable's clamped log-belief is folded into the expected
+ * log-joint as an observation term.
+ *
+ * @param fg Factor graph whose current beliefs are evaluated.
+ * @param observations Optional flat array of (var_index, observed_state) pairs.
+ * @param num_obs Number of observation pairs in @p observations.
+ * @return Free energy (lower is a better fit); 0.0 if @p fg is NULL.
+ */
 double eshkol_free_energy(const eshkol_factor_graph_t* fg,
     const double* observations, uint32_t num_obs) {
     if (!fg) return 0.0;
@@ -585,6 +654,20 @@ double eshkol_free_energy(const eshkol_factor_graph_t* fg,
     return free_energy;
 }
 
+/**
+ * @brief Compute the expected free energy G(a) of taking @p action_state on @p action_var.
+ *
+ * For every factor touching @p action_var, marginalizes the CPT over
+ * configurations matching @p action_state, accumulating a pragmatic term
+ * (-q * ln p(config)) and an epistemic term (q * ln q) using the current
+ * beliefs of the factor's other connected variables.
+ *
+ * @param arena Arena used for scratch (per-factor state) allocations.
+ * @param fg Factor graph providing beliefs and factor structure.
+ * @param action_var Index of the action variable.
+ * @param action_state Discrete action value to evaluate.
+ * @return G(a) (lower = more preferred action); 0.0 on invalid input.
+ */
 double eshkol_expected_free_energy(arena_t* arena,
     const eshkol_factor_graph_t* fg,
     uint32_t action_var, uint32_t action_state) {
@@ -662,6 +745,14 @@ double eshkol_expected_free_energy(arena_t* arena,
 
 /* ===== Tagged Value Dispatch ===== */
 
+/**
+ * @brief Tagged-value entry point for factor-graph construction, called from LLVM codegen.
+ *
+ * Unpacks @p num_vars_tv (must be a tagged INT64) and @p var_dims_tv (a
+ * tensor or Scheme vector of per-variable state counts, via fg_read_numeric())
+ * and forwards to eshkol_make_factor_graph(). Sets @p result to a HEAP_PTR on
+ * success or the tagged NULL value on any type mismatch or allocation failure.
+ */
 void eshkol_make_factor_graph_tagged(arena_t* arena,
     const eshkol_tagged_value_t* num_vars_tv,
     const eshkol_tagged_value_t* var_dims_tv,
@@ -703,6 +794,17 @@ void eshkol_make_factor_graph_tagged(arena_t* arena,
     }
 }
 
+/**
+ * @brief Tagged-value entry point for adding a factor to a graph, called from LLVM codegen.
+ *
+ * Unpacks @p var_indices_tv (tensor/vector of variable indices), derives each
+ * connected variable's dimension from @p fg_tv, and accepts @p cpt_tv as
+ * either a homogeneous tensor (fast path) or a heterogeneous vector, then
+ * builds and appends a new factor via eshkol_make_factor() /
+ * eshkol_fg_add_factor(). @p result is always set to the tagged NULL value
+ * (the graph is mutated in place; callers rely on that mutation, not the
+ * return value). Logs an error via eshkol_error() on CPT size mismatch.
+ */
 void eshkol_fg_add_factor_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* var_indices_tv,
@@ -768,6 +870,16 @@ void eshkol_fg_add_factor_tagged(arena_t* arena,
     }
 }
 
+/**
+ * @brief Tagged-value entry point for belief propagation, called from LLVM codegen.
+ *
+ * Runs eshkol_fg_infer() on @p fg_tv with @p max_iters_tv (defaults to 20 if
+ * absent/non-INT64) and a fixed tolerance of 1e-6, then packages every
+ * variable's post-inference belief vector (converted from log-space to
+ * probabilities) into a single flat 1-D result tensor, concatenated in
+ * variable order. Sets @p result to the tagged NULL value if @p fg_tv isn't
+ * a valid factor-graph HEAP_PTR or a result allocation fails.
+ */
 void eshkol_fg_infer_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* max_iters_tv,
@@ -836,6 +948,15 @@ void eshkol_fg_infer_tagged(arena_t* arena,
     result->data.ptr_val = (uint64_t)tensor;
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_free_energy(), called from LLVM codegen.
+ *
+ * Extracts (var_index, observed_state) pairs from @p obs_tv's tensor
+ * elements, if provided, and computes the variational free energy of @p
+ * fg_tv's current beliefs. @p result is always a tagged inexact DOUBLE: 0.0
+ * if @p fg_tv is not a valid factor-graph HEAP_PTR, otherwise the computed
+ * free energy.
+ */
 void eshkol_free_energy_tagged(
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* obs_tv,
@@ -873,6 +994,15 @@ void eshkol_free_energy_tagged(
     result->data.double_val = fe;
 }
 
+/**
+ * @brief Tagged-value entry point for eshkol_expected_free_energy(), called from LLVM codegen.
+ *
+ * Extracts @p action_var_tv and @p action_state_tv (tagged INT64, each
+ * defaulting to 0 if absent or of the wrong type) and evaluates the expected
+ * free energy of that action under @p fg_tv. @p result is always a tagged
+ * inexact DOUBLE: 0.0 if @p fg_tv is not a valid factor-graph HEAP_PTR,
+ * otherwise the computed G(a) value.
+ */
 void eshkol_efe_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* action_var_tv,
@@ -909,6 +1039,18 @@ void eshkol_efe_tagged(arena_t* arena,
 
 /* ===== CPT Update ===== */
 
+/**
+ * @brief Tagged-value entry point for `fg-update-cpt!`, called from LLVM codegen.
+ *
+ * Replaces the CPT of the factor at @p factor_idx_tv within @p fg_tv with
+ * the values from @p new_cpt_tv (a tensor or heterogeneous vector, whose
+ * element count must equal the factor's existing CPT size), then resets the
+ * graph's cached BP messages to NULL so the next eshkol_fg_infer_tagged()
+ * call reconverges from scratch. Sets @p result to a HEAP_PTR back at the
+ * mutated @p fg_tv on success, or the tagged NULL value (with an
+ * eshkol_error() call) on any argument-shape mismatch, out-of-range index,
+ * or CPT size mismatch.
+ */
 void eshkol_fg_update_cpt_tagged(arena_t* arena,
     const eshkol_tagged_value_t* fg_tv,
     const eshkol_tagged_value_t* factor_idx_tv,
@@ -990,6 +1132,11 @@ void eshkol_fg_update_cpt_tagged(arena_t* arena,
 
 /* ===== Display ===== */
 
+/**
+ * @brief Print a short human-readable summary of a factor graph.
+ * Writes `#<factor-graph: empty>` if @p fg is NULL, otherwise
+ * `#<factor-graph: N factors, M vars>` to @p file (or stdout if NULL).
+ */
 void eshkol_display_factor_graph(const eshkol_factor_graph_t* fg, void* file) {
     FILE* f = file ? (FILE*)file : stdout;
     if (!fg) {
