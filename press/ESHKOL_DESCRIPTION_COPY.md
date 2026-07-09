@@ -3,14 +3,17 @@
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
 Eshkol is a compiled programming language for mathematical and cognitive computing.
-The repository ships v1.2.1-scale (May 2026) of the compiler together with the
-reproducibility artefact for *The Self-Differentiating Neural Computer: Computable
-Transformers via Analytical Weight Construction* (tsotchke, 2026), in which a
-six-layer transformer with 12.22 million analytically-constructed parameters
-executes a bounded 83-opcode bytecode VM bit-identically. The result is a constructive,
-not statistical, demonstration that a fixed-weight transformer can be an interpreter
-when its weights are derived from an instruction-set specification rather than fit
-by gradient descent.
+The repository ships v1.3.1 (July 2026) of the compiler — an arbitrary-order
+automatic-differentiation system, 100% conformance on a portable R7RS
+differential corpus, and hardening that makes long-running/resident programs
+safe to leave running — together with the reproducibility artefact for
+*The Self-Differentiating Neural Computer: Computable Transformers via
+Analytical Weight Construction* (tsotchke, 2026), in which a six-layer
+transformer with 12.22 million analytically-constructed parameters executes
+a bounded 83-opcode bytecode VM bit-identically. The result is a
+constructive, not statistical, demonstration that a fixed-weight transformer
+can be an interpreter when its weights are derived from an instruction-set
+specification rather than fit by gradient descent.
 
 ---
 
@@ -21,10 +24,12 @@ binaries on macOS, Linux, and Windows, and to WebAssembly for browser execution.
 The language treats automatic differentiation, arena memory, and a neuro-symbolic
 computation layer as compiler primitives rather than library add-ons. Differentiation
 is available in symbolic, forward, and reverse modes alongside eight vector-calculus
-operators; memory is allocated through Ownership-Aware Lexical Regions with
-deterministic, per-scope deallocation and no garbage collector; the consciousness
-engine exposes twenty-two builtins covering unification, factor-graph belief
-propagation, free-energy minimisation, and global-workspace softmax competition.
+operators — and, as of v1.3.0-evolve, at arbitrary order via a Taylor-tower engine that
+returns exact bignum/rational derivatives when the math supports it; memory is
+allocated through Ownership-Aware Lexical Regions with deterministic, per-scope
+deallocation and no garbage collector; the consciousness engine exposes twenty-two
+builtins covering unification, factor-graph belief propagation, free-energy
+minimisation, and global-workspace softmax competition.
 
 The flagship demonstration is the SDNC paper artefact: a single shell invocation
 regenerates the 12.22M-parameter weight tensor and verifies that a reference C
@@ -46,7 +51,19 @@ Each item below cites the file or measurement that grounds the claim.
   See *docs/SDNC.md* and *lib/backend/weight_matrices.c*. The reproduction harness is
   *scripts/paper/run_paper_suite.sh*; expected wall time is under five minutes on a 2023 M2 Max.
 
-- **Compiler-integrated automatic differentiation.** Three modes: symbolic AST
+- **Arbitrary-order automatic differentiation.** A Taylor-tower engine (thirteen gated
+  phases, P0-P12) computes every derivative up to an arbitrary order `k` in one pass —
+  `k+1` coefficients and O(k²) work, not the 2^k blow-up of nested dual numbers. When the
+  seed point is exact and the function only uses exact-preserving operators, `derivative-n`
+  and `taylor` return exact arbitrary-precision (bignum/rational) results rather than
+  floating-point approximations; `taylor-model`/`tm-range`/`tm-eval` pair the polynomial
+  with a rigorous interval-remainder bound for a provable range enclosure. Towers are
+  tensor-valued, compose through reverse-mode (checkpointed reverse-over-Taylor), recover
+  sparse Hessian structure via graph coloring, and work through `if`/`cond`/named-let/
+  recursion. See *lib/core/taylor_recurrences.def*, *lib/core/runtime_taylor.c*, and the
+  [Automatic Differentiation guide](../docs/guide/AUTOMATIC_DIFFERENTIATION.md).
+
+- **Compiler-integrated automatic differentiation (order ≤ 2).** Three modes: symbolic AST
   rewriting at compile time using twelve differentiation rules; forward mode through
   16-byte dual numbers `{value, derivative}`; reverse mode through a computational
   graph spanning more than twenty AD node types with a 32-level tape stack for
@@ -55,11 +72,29 @@ Each item below cites the file or measurement that grounds the claim.
   `directional-derivative` — are language primitives. See *lib/backend/autodiff_codegen.cpp*
   (9,205 lines) and *docs/DESIGN.md §Automatic Differentiation*.
 
+- **100% R7RS conformance on the portable differential corpus.** A reference-Scheme
+  oracle runs the same 34-program portable R7RS-small corpus on Eshkol and on
+  chibi-scheme 0.12.0 and diffs the output: 34 of 34 AGREE (100%), up from 27/34 at the
+  start of the v1.3.0-evolve cycle. Separately, Eshkol implements roughly 95% of the
+  broader R7RS-small procedure surface (232 of 244 procedures) — full numeric tower,
+  continuations, exceptions, promises, `eval`, records, bytevectors, hygienic macros.
+  See *scripts/run_reference_differential.sh* and *tests/reference-diff/corpus/*.
+
 - **Full R7RS numeric tower.** int64, arbitrary-precision bignum (with automatic
   overflow promotion and demotion), exact rational with GCD reduction, IEEE 754 double,
   and complex numbers with Smith's-formula division. Exactness tracked via a flags
   byte on each 16-byte tagged value. See *lib/backend/arithmetic_codegen.cpp* and
   *inc/eshkol/eshkol.h §Heap subtypes*.
+
+- **Flat memory for resident and daemon workloads.** Self-tail-recursive loops — both
+  named-let and plain `define`, including a catch-all guard body — get automatic,
+  zero-annotation per-iteration arena-scope reclamation, verified to hold RSS flat
+  (1,369 MB unbounded growth to 224 MB flat on a 1,000,000-iteration test loop). The
+  S-expression reader was rewritten from per-element native recursion to an iterative
+  loop, so reading back a very large persisted data structure no longer risks a
+  native-stack overflow (verified clean at 20 million elements, where the prior
+  implementation crashed with SIGBUS). See *lib/backend/llvm_codegen.cpp* and
+  *lib/core/runtime_reader_hosted.cpp*.
 
 - **Neuro-symbolic stack as compiler primitives.** Twenty-two builtins:
   `unify`, `walk`, `make-substitution`, `make-fact`, `make-kb`, `kb-assert!`,
@@ -92,17 +127,25 @@ Each item below cites the file or measurement that grounds the claim.
   sqlite3 (*lib/agent/c/agent_sqlite.c*), `posix_spawn` subprocess execution with
   argv arrays (*lib/agent/c/agent_subprocess.c*; the `popen("sh -c …")` path was
   removed in v1.2 to eliminate shell-metacharacter exposure), kqueue/inotify
-  filesystem watching (*lib/agent/c/agent_watch.c*). Path-traversal, TOCTOU, and
-  Windows command-line buffer issues are addressed in *docs/HARDENING.md §`#192`/`#193`*.
+  filesystem watching (*lib/agent/c/agent_watch.c*).
 
-- **Hardened release pipeline.** Fourteen audit blockers closed in v1.2-scale,
-  seven critical/high security fixes (shell-injection, Python-FFI AST-injection,
-  integer-overflow guards on arena/KB/image, path-traversal, TOCTOU,
-  ReDoS, SQLi, URL/header CRLF). 87 edge/security regression tests pass; the master
-  suite reports 37 of 37 sub-suites and 528 of 528 self-reported tests passing
-  (*RELEASE_NOTES.md §v1.2.1 Noesis M0 Closeout Addendum*). ASan + UBSan clean on
-  196 checks / 9 suites; TSan clean on the seven parallel-execution suites
-  (*docs/HARDENING.md §`#178`, `#180`*).
+- **Comprehensively documented public API and implementation.** v1.3.1 adds
+  Doxygen-format documentation across 50 of the 64 public headers under
+  `inc/eshkol/` (~4,650 lines) and 56 previously-undocumented implementation files
+  under `lib/` (~7,478 lines) — 116 files and roughly 12,600 lines total, comments
+  only. A navigable per-subsystem reference index
+  (*docs/reference/{language,ad,runtime,tensors,stdlib,agent}/INDEX.md*) organizes
+  the language surface for lookup.
+
+- **Hardened, permanent adversarial-testing program.** A multi-pillar adversarial
+  harness — differential, feature-pair edge matrix, AD finite-difference oracle,
+  stress (RSS/time budgets), VM-parity ratchet, depth-parametric sweeps, and the
+  external reference-Scheme differential oracle — is wired permanently into the ICC
+  release oracle rather than run once and discarded. Release gates green on the
+  v1.3.0-evolve SHA: ICC readiness oracle 100/100 (trace-verified); CI 14/14 lanes
+  including windows-arm64; SICP full-book gate 88/88 probes across all five chapters
+  under both `-r` and AOT; reference-Scheme differential oracle 34/34 AGREE. See
+  *docs/TESTING.md*.
 
 ---
 
@@ -131,6 +174,14 @@ the compiler.
 (display (train 0.0 0.01 200))  ;; => 2.0
 ```
 
+Arbitrary-order AD, run for real (`eshkol-run -r`):
+
+```scheme
+(define (f x) (expt x 30))
+(display (derivative-n f 7 12))   ;; => 67465815595294257109436307840000 (exact bignum)
+(display (exact? (derivative-n f 7 12)))  ;; => #t
+```
+
 ---
 
 ## Dual backend
@@ -151,23 +202,6 @@ The weight-matrix transformer artefact (*lib/backend/weight_matrices.c*,
 ≈6,800 lines) is the third execution surface — the one that proves the
 SDNC theorem by being a transformer that runs the same VM through its
 forward and backward passes.
-
----
-
-## Hardening
-
-v1.2-scale closes fourteen audit blockers and seven critical/high security
-fixes (subprocess shell-injection, Python-FFI AST-injection, integer-overflow
-guards on arena, KB persistence, and image I/O, path-traversal and TOCTOU
-on the file copy path, a Windows subprocess command-line buffer issue,
-ReDoS, SQL-injection guards, and URL/header CRLF). The eighty-seven-test
-edge-and-security suite at *tests/v1_2_edge_cases/* regression-covers each
-fix. The master test runner reports 37 of 37 sub-suites and 528 of 528
-self-reported tests passing; ASan and UBSan are clean across 196 checks
-in 9 suites; TSan is clean across the parallel-execution surface
-(*docs/HARDENING.md §`#178`, `#180`*). Two back-to-back release builds produce
-byte-identical `build/stdlib.bc` and `build/eshkol-run` (*docs/HARDENING.md
-§`#184`*).
 
 ---
 
@@ -210,8 +244,8 @@ release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.2.1-scale |
-| Release date | base 1 May 2026, Noesis-M0 closeout 20 May 2026 |
+| Version | v1.3.1 |
+| Release date | 8 July 2026 (builds on v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM 21 (version-enforced) |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
