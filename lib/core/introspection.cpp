@@ -1409,6 +1409,12 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
                         case HEAP_SUBTYPE_WORKSPACE:
                             type_name = "workspace";
                             break;
+                        case HEAP_SUBTYPE_PRNG:
+                            type_name = "prng";
+                            break;
+                        case HEAP_SUBTYPE_PARAMETER:
+                            type_name = "parameter";
+                            break;
                         default:
                             eshkol_warn("unknown heap subtype: %d", header->subtype);
                             type_name = "heap-object";

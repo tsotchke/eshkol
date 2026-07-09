@@ -15763,6 +15763,19 @@ private:
             return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
         }
 
+        if (func_name == "parameter?") {
+            // (parameter? obj) — heap-subtype check for HEAP_SUBTYPE_PARAMETER.
+            if (op->call_op.num_vars != 1) {
+                eshkol_warn("parameter? requires exactly 1 argument");
+                return packBoolToTaggedValue(ConstantInt::getFalse(*context));
+            }
+            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
+            if (!tv.llvm_value) return nullptr;
+            Value* tagged = ensureTaggedValue(tv.llvm_value);
+            Value* matches = isHeapSubtype(tagged, HEAP_SUBTYPE_PARAMETER);
+            return packBoolToTaggedValue(matches);
+        }
+
         // =========================================================================
         // R7RS Bytevector Operations
         // Layout: [header(-8) | length(i64,+0) | data(uint8[],+8)]
