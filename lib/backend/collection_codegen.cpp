@@ -2149,7 +2149,12 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
             llvm::ConstantInt::get(ctx_.int64Type(), 8));
         llvm::Value* elem_base_typed = ctx_.builder().CreatePointerCast(elem_base, ctx_.ptrType());
         llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), elem_base_typed, idx);
-        ctx_.builder().CreateStore(tagged_val, elem_ptr);
+        // ESH-0214c region write barrier: if a region is active and `tagged_val`
+        // points into it while this vector lives outside it, deep-promote the
+        // value's subgraph so it survives region_pop. Fast path (no region) is a
+        // single load+branch inside the runtime helper.
+        llvm::Value* barriered = ctx_.emitRegionWriteBarrier(vec_ptr, tagged_val);
+        ctx_.builder().CreateStore(barriered, elem_ptr);
         ctx_.builder().CreateBr(vset_merge);
     }
 
@@ -2253,6 +2258,23 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
         dest_ptr, llvm::MaybeAlign(8),
         src_ptr, llvm::MaybeAlign(8),
         byte_count);
+
+    // ESH-0214c region write barrier (range form): the copied slots may hold
+    // region-allocated values while `to` lives outside the region; promote each
+    // in place. Fast path (no active region) is one load+branch in the runtime.
+    {
+        llvm::Function* wb_range =
+            ctx_.module().getFunction("eshkol_region_write_barrier_range");
+        if (!wb_range) {
+            llvm::FunctionType* wb_ty = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(),
+                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
+            wb_range = llvm::Function::Create(
+                wb_ty, llvm::GlobalValue::ExternalLinkage,
+                "eshkol_region_write_barrier_range", &ctx_.module());
+        }
+        ctx_.builder().CreateCall(wb_range, {to_ptr, dest_ptr, count});
+    }
 
     return tagged_.packNull();
 }
@@ -2601,6 +2623,12 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     // Extract vector pointer and length
     llvm::Value* vec_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
     llvm::Value* length = ctx_.builder().CreateLoad(ctx_.int64Type(), vec_ptr, "vfill_len");
+
+    // ESH-0214c region write barrier: like vector-set!, vector-fill! can store a
+    // region value into an outer vector. One barrier call suffices — every slot
+    // receives the same (possibly promoted) value.
+    if (fill_val->getType() == ctx_.taggedValueType())
+        fill_val = ctx_.emitRegionWriteBarrier(vec_ptr, fill_val);
 
     // Get element base
     llvm::Value* elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), vec_ptr,

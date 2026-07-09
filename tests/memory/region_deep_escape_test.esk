@@ -1,0 +1,141 @@
+;;; tests/memory/region_deep_escape_test.esk — ESH-0214c deep transitive
+;;; escape-promotion correctness fixture.
+;;;
+;;; Before ESH-0214c, (with-region ...) promoted an escaping value with a
+;;; SHALLOW single-object copy: for a graph-bearing value (cons list, vector of
+;;; tagged values, closure, hash table) the copied object's interior pointers
+;;; (car/cdr, vector slots, captured env) still pointed INTO the region arena,
+;;; which region_pop then freed — leaving dangling interior pointers. Reading
+;;; the escaped structure back after the region exit produced garbage or a
+;;; "car/cdr: argument is not a pair" crash.
+;;;
+;;; The fix rewrites the escape path as a deep evacuator (forwarding map +
+;;; worklist) and adds a mutation write barrier so a region value stored into an
+;;; OUTER container (vector-set!/set-car!/hash-table-set!/global set!) is
+;;; deep-promoted before region_pop. This fixture verifies:
+;;;   1. large-N cons-list / vector / closure mutation into an outer vector,
+;;;   2. shared-tail preservation (no duplication of a shared list tail),
+;;;   3. a small cyclic structure surviving escape,
+;;; all read back correct AFTER the region has exited.
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; ─── 1. Large-N: cons a fresh 3-element list into an OUTER vector each
+;;        iteration, inside a per-iteration region. After the loop, every stored
+;;        list must read back intact. Pre-fix: dangling car/cdr → crash/garbage.
+(define N 100000)
+(define store (make-vector N 0))
+
+(define (fill-loop i)
+  (if (< i N)
+      (begin
+        (with-region 'r
+          ;; Fresh region-allocated list; vector-set! stores it into the OUTER
+          ;; `store` vector — the write barrier must deep-promote it.
+          (vector-set! store i (list i (* i 2) (* i 3))))
+        (fill-loop (+ i 1)))))
+(fill-loop 0)
+
+;; Verify a representative sample (checking all 100k with `equal?` is slow but
+;; we spot-check the boundaries and a stride through the middle).
+(define (verify-loop i step ok)
+  (if (>= i N)
+      ok
+      (let ((lst (vector-ref store i)))
+        (verify-loop
+         (+ i step) step
+         (and ok
+              (= (car lst) i)
+              (= (cadr lst) (* i 2))
+              (= (caddr lst) (* i 3)))))))
+(check "deep list escape via vector-set! (100k, sampled)" #t
+       (verify-loop 0 97 #t))
+(check "deep list escape: first element intact" 0 (car (vector-ref store 0)))
+(check "deep list escape: last element intact"
+       (* (- N 1) 3) (caddr (vector-ref store (- N 1))))
+
+;; ─── 1b. A vector-of-tagged-values (nested vector) escaping into an outer slot.
+(define vstore (make-vector 4 0))
+(define (vfill i)
+  (if (< i 4)
+      (begin
+        (with-region 'rv
+          (let ((v (make-vector 3 0)))
+            (vector-set! v 0 (* i 10))
+            (vector-set! v 1 (list i i))     ; nested list inside the vector
+            (vector-set! v 2 (+ i 100))
+            (vector-set! vstore i v)))
+        (vfill (+ i 1)))))
+(vfill 0)
+(check "deep vector escape: elem 0" 20 (vector-ref (vector-ref vstore 2) 0))
+(check "deep vector escape: nested list" (list 3 3)
+       (vector-ref (vector-ref vstore 3) 1))
+(check "deep vector escape: elem 2" 101 (vector-ref (vector-ref vstore 1) 2))
+
+;; ─── 1c. A closure capturing a region-allocated value, escaping into an outer
+;;        slot. The captured environment must be deep-promoted with the closure.
+(define cstore (make-vector 3 0))
+(define (cfill i)
+  (if (< i 3)
+      (begin
+        (with-region 'rc
+          (let* ((captured (list i (* i i)))          ; region-allocated capture
+                 (f (lambda () captured)))
+            (vector-set! cstore i f)))
+        (cfill (+ i 1)))))
+(cfill 0)
+(check "deep closure escape: env capture 0" (list 0 0) ((vector-ref cstore 0)))
+(check "deep closure escape: env capture 2" (list 2 4) ((vector-ref cstore 2)))
+
+;; ─── 2. Shared-tail preservation. Two lists built inside the region share a
+;;        common tail; after escape the shared structure must remain shared (or
+;;        at minimum be structurally correct — we assert structural equality of
+;;        both the tail and the full lists).
+(define pair-store (make-vector 2 0))
+(with-region 'rshare
+  (let* ((tail (list 100 200 300))
+         (a (cons 1 tail))
+         (b (cons 2 tail)))
+    (vector-set! pair-store 0 a)
+    (vector-set! pair-store 1 b)))
+(let ((a (vector-ref pair-store 0))
+      (b (vector-ref pair-store 1)))
+  (check "shared-tail: list a intact" (list 1 100 200 300) a)
+  (check "shared-tail: list b intact" (list 2 100 200 300) b)
+  (check "shared-tail: tails structurally equal" (cdr a) (cdr b))
+  ;; Sharing preserved: mutating the tail through a is visible through b.
+  (set-car! (cdr a) 999)
+  (check "shared-tail: mutation through a visible through b" 999 (cadr b)))
+
+;; ─── 3. Small cyclic structure surviving escape. Build a 2-node cycle inside a
+;;        region, store it outside, and confirm we can walk it a bounded number
+;;        of steps without corruption after region exit.
+(define cyc-store (make-vector 1 0))
+(with-region 'rcyc
+  (let ((node (list 'a 'b)))
+    (set-cdr! (cdr node) node)   ; (a b a b a b ...) cyclic
+    (vector-set! cyc-store 0 node)))
+(let ((c (vector-ref cyc-store 0)))
+  (check "cycle: node 0" 'a (car c))
+  (check "cycle: node 1" 'b (cadr c))
+  ;; After two cdrs we are back at the head (cycle preserved, not duplicated).
+  (check "cycle: caddr wraps to head car" 'a (caddr c))
+  (check "cycle: cadddr wraps to head cadr" 'b (car (cdddr c))))
+
+;; ─── Report ─────────────────────────────────────────────────────────────────
+(display "[region_deep_escape_test] passed=")
+(display passed)
+(display " failed=")
+(display failed)
+(newline)
+(if (= failed 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline) (exit 1)))

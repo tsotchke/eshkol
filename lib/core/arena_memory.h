@@ -317,6 +317,23 @@ struct eshkol_region {
     size_t size_hint;                // Size hint provided at creation
     size_t escape_count;             // Track escaping allocations
     uint8_t is_active;               // Whether this region is currently active
+    // ESH-0214c: the arena that outlives this region — where escaping values are
+    // promoted to. Captured at region_push (BEFORE with-region codegen hijacks
+    // the __global_arena slot to point at this region's arena), so it is the
+    // TRUE enclosing arena: the parent region's arena when nested, or the real
+    // process/global arena at top level. Must NOT be recomputed from
+    // get_global_arena() at escape time, which by then returns this very region.
+    arena_t* escape_base;
+    // ESH-0214c: persistent forwarding map (old data ptr -> promoted copy) for
+    // deep escape promotion, living for exactly this region's lifetime. Keys
+    // reference memory in this region (or an enclosing one), values reference
+    // fwd_target -- both strictly outlive the map, which region_destroy frees.
+    // Persisting it across separate escapes preserves shared structure (two
+    // stores of lists sharing a tail keep sharing it) and makes re-storing an
+    // already-escaped object free. Opaque (std::unordered_map) -- only
+    // runtime_regions.cpp touches it.
+    void* fwd_map;
+    arena_t* fwd_target;   // target arena the fwd_map entries were promoted into
 };
 
 // Thread-local region stack (safe for parallel-map + with-region)
@@ -362,6 +379,19 @@ void* region_escape_string(const char* str);
 arena_tagged_cons_cell_t* region_escape_tagged_cons_cell(const arena_tagged_cons_cell_t* cell);
 eshkol_tagged_value_t region_escape_tagged_value(eshkol_tagged_value_t val);
 void region_escape_tagged_value_into(eshkol_tagged_value_t* out, const eshkol_tagged_value_t* val);
+
+// Region write barrier (ESH-0214c): promote a value's in-region subgraph when it
+// is stored (by set-car!/set-cdr!/vector-set!/hash-table-set!/global set!) into a
+// destination that outlives the value's region. Fast path (no active region) is a
+// single thread-local load + branch. See runtime_regions.cpp for full semantics.
+void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
+                                      const void* dst,
+                                      const eshkol_tagged_value_t* value);
+// Range form for bulk copies (vector-copy!): promotes each copied slot in
+// place. Fast path (no region) is a single thread-local load + branch.
+void eshkol_region_write_barrier_range(const void* dst,
+                                       eshkol_tagged_value_t* slots,
+                                       uint64_t n);
 
 // Region statistics
 size_t region_get_used_memory(const eshkol_region_t* region);

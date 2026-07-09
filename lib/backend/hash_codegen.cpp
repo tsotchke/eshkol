@@ -356,6 +356,15 @@ llvm::Value* HashCodegen::hashSet(const eshkol_operations_t* op) {
     // Extract table pointer
     llvm::Value* table_ptr = tagged_.unpackPtr(table_arg);
 
+    // ESH-0214c region write barrier: the table's backing arrays live in the
+    // table's home_arena (which may be an OUTER arena while a region is active).
+    // Deep-promote any region-allocated key/value subgraph into that home arena
+    // so it survives region_pop. Fast path (no region) is a single load+branch.
+    if (key_arg->getType() == ctx_.taggedValueType())
+        key_arg = ctx_.emitRegionWriteBarrier(table_ptr, key_arg);
+    if (value_arg->getType() == ctx_.taggedValueType())
+        value_arg = ctx_.emitRegionWriteBarrier(table_ptr, value_arg);
+
     // Get arena pointer
     llvm::Value* arena_ptr = builder.CreateLoad(
         llvm::PointerType::get(context, 0), ctx_.globalArena());
