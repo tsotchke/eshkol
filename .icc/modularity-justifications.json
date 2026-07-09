@@ -47,8 +47,8 @@
    ],
    "status": "accepted",
    "task_id": "v1.3.1-docs-pass",
-   "reason": "complete_language_specification.html is a pandoc-generated site artifact (built by scripts/build-site-content.sh from docs/COMPLETE_LANGUAGE_SPECIFICATION.md); splitting a generated file is meaningless. inc/eshkol/eshkol.h crossed the 2000-line threshold because the v1.3.1 documentation pass added comprehensive Doxygen doc-comments to every public symbol; it is the single umbrella public-API header by design and its code content is unchanged.",
-   "mitigation": "The HTML is regenerated from its markdown source on every site build; eshkol.h growth is documentation-only (verified comment-only diffs in PR #188). Real code monoliths remain tracked by the existing accepted entry."
+   "reason": "complete_language_specification.html is a pandoc-generated site artifact (built from docs/COMPLETE_LANGUAGE_SPECIFICATION.md by scripts/build-site-content.sh); it is a cohesive registry of the whole language spec kept as one page for reader compatibility. inc/eshkol/eshkol.h is the single umbrella public-API facade header by design; it crossed the size threshold only because the v1.3.1 pass added Doxygen doc-comments to every public symbol (comment-only growth, code unchanged).",
+   "mitigation": "The HTML is regenerated from its markdown source module on every site build, so any future split happens at the docs/ source boundary, not the generated artifact. For eshkol.h, real code growth (not comments) would be addressed by extracting subsystem headers behind the existing facade (module boundaries already exist under inc/eshkol/{core,backend,types}/); tracked with the v1.8 modular-boundaries plan."
   }
  ]
 }
