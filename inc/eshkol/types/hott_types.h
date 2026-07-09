@@ -392,15 +392,6 @@ struct PiType {
         return PiType({{std::string(), input, false}}, output, false);
     }
 
-    // Create a multi-argument function type ((A, B) -> C)
-    static PiType makeMulti(std::vector<TypeId> inputs, TypeId output) {
-        std::vector<Parameter> params;
-        for (auto& t : inputs) {
-            params.push_back({std::string(), t, false});
-        }
-        return PiType(params, output, false);
-    }
-
     // Get arity (number of parameters)
     size_t arity() const { return params.size(); }
 
