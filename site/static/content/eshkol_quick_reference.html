@@ -1,5 +1,5 @@
 <h1 id="eshkol-quick-reference-card">Eshkol Quick Reference Card</h1>
-<p><strong>v1.3.0-evolve</strong> – 555+ built-in functions</p>
+<p><strong>v1.3.1</strong> – 555+ built-in functions</p>
 <h2 id="basics">Basics</h2>
 <pre class="scheme"><code>;; Variables
 (define x 42)
@@ -48,6 +48,17 @@
   ((1 2 3) =&gt; (lambda (x) (* x 100)))
   ((4 5 6) =&gt; (lambda (x) (* x 10)))          ;; -&gt; 50
   (else 0))</code></pre>
+<h2 id="quoting-macros">Quoting &amp; Macros</h2>
+<pre class="scheme"><code>&#39;(1 2 3)                          ;; quote -&gt; (1 2 3)
+`(1 ,(+ 1 1) 3)                   ;; quasiquote + unquote -&gt; (1 2 3)
+`(1 ,@(list 2 3) 4)               ;; unquote-splicing -&gt; (1 2 3 4)
+`#(1 ,@(list 2 3) 4)              ;; quasiquoted vector literal -&gt; #(1 2 3 4)
+
+;; Hygienic macros via syntax-rules, including nested ellipsis
+(define-syntax my-flatten
+  (syntax-rules ()
+    ((_ (a ...) ...) (list a ... ...))))
+(my-flatten (1 2) (3 4 5))        ;; -&gt; (1 2 3 4 5)</code></pre>
 <h2 id="lists">Lists</h2>
 <pre class="scheme"><code>(list 1 2 3)              ;; create list
 (cons 1 (list 2 3))       ;; prepend
@@ -147,6 +158,34 @@
 (curl F v)                ;; curl(F) at v (3D)
 (laplacian f v)           ;; laplacian(f) at v
 (directional-derivative f v dir)</code></pre>
+<h3 id="arbitrary-order-ad-taylor-towers-v1.3.0-evolve">Arbitrary-Order
+AD (Taylor Towers, v1.3.0-evolve)</h3>
+<p>See the <a href="guide/AUTOMATIC_DIFFERENTIATION.md">Automatic
+Differentiation guide</a> for the full walkthrough.</p>
+<pre class="scheme"><code>;; Core tower builtins (no require needed)
+(taylor f x k)                    ;; k+1 Taylor coefficients c[0..k] of f at x
+(derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
+                                   ;; exact (bignum/rational) when x is exact
+                                   ;; and f uses only +,-,*,/,non-negative expt
+
+(require core.ad.guw)
+(mixed-partial f xs idxs)         ;; e.g. (mixed-partial f xs &#39;(0 1 1)) = d^3f/dx0dx1^2
+(gradient-n f xs order)           ;; full order-&gt;=3 symmetric derivative tensor
+(taylor-propagate f xs v k)       ;; Taylor coefficients of g(t) = f(xs + t*v)
+
+(require core.ad.taylor_models)
+(taylor-model f x0 r k)           ;; validated AD: polynomial + interval remainder
+(tm-range tm)                     ;; guaranteed range enclosure, a (lo . hi) pair
+(tm-eval tm x)                    ;; guaranteed point enclosure at x
+
+(require core.ad.sparse_guw)
+(sparse-hessian f xs)             ;; sparse Hessian via colored reverse-over-Taylor
+(sparse-hessian-nonzeros sp)      ;; nonzero (i j) index pairs
+
+(require core.ad.taylor_numerics)
+(taylor-ode-solve f y0 t0 t1 k n) ;; order-k fixed-step scalar IVP solver
+(taylor-root f x0 k)              ;; Householder root refinement (k=1 Newton, k=2 Halley)
+(taylor-inverse-series f x0 k)    ;; Taylor series of f^-1 via Lagrange inversion</code></pre>
 <h2 id="exact-arithmetic">Exact Arithmetic</h2>
 <pre class="scheme"><code>;; Bignums (automatic promotion beyond 64-bit)
 (expt 2 256)              ;; arbitrary precision integer
@@ -220,6 +259,12 @@ Handling</h2>
 
 ;; Raise exceptions
 (raise value)               ;; raise any value as exception
+(error &quot;boom&quot; 1 2)          ;; raise an R7RS error-object with irritants 1 2
+
+;; R7RS condition-object accessors (bound inside guard)
+(guard (e (#t (list (error-object-message e) (error-object-irritants e))))
+  (error &quot;boom&quot; 1 2))       ;; -&gt; (&quot;boom&quot; (1 2))
+(error-object? e)           ;; -&gt; #t for an (error ...)-raised condition
 
 ;; Multiple values
 (values 1 2 3)              ;; return multiple values

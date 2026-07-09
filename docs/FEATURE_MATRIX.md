@@ -1,4 +1,4 @@
-# Eshkol v1.3.0-evolve Feature Matrix
+# Eshkol v1.3.1 Feature Matrix
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 
@@ -690,6 +690,10 @@ This matrix documents all implemented and planned features for the Eshkol langua
 
 ## Roadmap
 
+> This section is a historical snapshot and may lag; see the canonical,
+> continuously-updated [ROADMAP.md](../ROADMAP.md) for current status. As of
+> v1.3.1, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve have all shipped.
+
 ### v1.1-accelerate (Q1 2026) — COMPLETED
 
 - ✅ **GPU Support**: Metal (Apple Silicon) + CUDA (NVIDIA)
@@ -701,7 +705,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - ✅ **Optimizers**: Adam, L-BFGS, conjugate gradient in stdlib
 - ✅ **R7RS Extensions**: call/cc, dynamic-wind, bytevectors, let-syntax
 
-### v1.2-scale (Q2 2026)
+### v1.2-scale (Q2 2026) — SHIPPED
 
 - **Data I/O**: Image/audio I/O, typed buffers, streams, DataFrame, plotting
 - **Vulkan Compute**: Cross-platform GPU backend, multi-GPU
@@ -709,7 +713,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 - **Python Bindings**: Call Eshkol from Python and vice versa
 - **Distributed Training**: AllReduce, MPI, gRPC
 
-### v1.3-evolve (Q3 2026)
+### v1.3-evolve (Q3 2026) — SHIPPED as v1.3.0-evolve
 
 - **Language Extensions**: Full R7RS library system, string interpolation, keyword arguments
 - **Advanced Types**: Refinement types, effect types, higher-rank types, row polymorphism
@@ -905,7 +909,7 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 
 ---
 
-**Last Updated**: 2026-05-20
-**Document Version**: 1.3.0-evolve
+**Last Updated**: 2026-07-08
+**Document Version**: 1.3.1
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)
