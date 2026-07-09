@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reference encodings are reproduced exactly (`I` = `0010`, `K` = `0000110`,
   pairing `λλλ.132` = `0000000101101110110`). See
   `docs/guide/BINARY_LAMBDA_CALCULUS.md`.
+- **`core.blc` — universal machine U, BLC8 byte I/O, and lambda diagrams**:
+  three deepenings of the BLC module. `(blc-U)` decodes Tromp's 232-bit
+  (29-byte) self-interpreter `U`; applied via `(blc-encode-input (blc-encode M)
+  input)` it runs the encoded program `M` on the input bit stream (Scott-list
+  of `True`/`False` bits built with the `blc-pair` combinator), demonstrated on
+  identity and constant-output programs. `blc-bytes->term`/`blc-term->bytes`
+  (plus `blc-string->term`/`blc-term->string`) implement the BLC8 convention —
+  a byte is a delimited big-endian list of 8 bits — round-tripping byte
+  strings through lambda terms. `(blc-diagram term)` renders a term as a
+  Tromp-style ASCII lambda diagram (abstractions as horizontal bars, variables
+  as vertical lines, applications as horizontal links). Ground-truth `U` bits
+  cross-checked against Tromp's De Bruijn term.
 
 ## [1.3.1-evolve] - 2026-07-09
 
