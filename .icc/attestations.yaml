@@ -883,3 +883,31 @@ attestations:
   valid_until: null
   evidence_link: 'chore/post-release-cleanup PR #183'
   line_text: '    *) ESHKOL_RUN="$(command -v "$ESHKOL_RUN")" ;;'
+- finding_key: 17092b1166cd0aef084df6bb47981280bcdde7a34846c8375968a6879c1b2251
+  path: tests/memory/region_mutating_loop_flat_rss_test.sh
+  line: 104
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'RUN_OUT="$WORK/run.out" where WORK is a fresh per-invocation mktemp -d
+    dir (0700, trap-removed on EXIT); guarded with `: "${WORK:?}"` and `: "${RUN_OUT:?}"`
+    immediately after assignment, always double-quoted at the redirect. Test-harness
+    temp file, not attacker/environment-influenced. Post-v1.3.1 hardening campaign.'
+  attested_by: tsotchke
+  attested_at: '2026-07-09T19:02:37Z'
+  valid_until: null
+  evidence_link: post-v1.3.1 hardening
+  line_text: '        "$TIMEOUT_S" "$BIN" ) > "$RUN_OUT" 2> "$TIME_LOG"'
+- finding_key: a21a769a5a4093efc42a12ab35c87f1b0ccd891762357adaa532aa0fd7291b25
+  path: tests/memory/region_mutating_loop_flat_rss_test.sh
+  line: 109
+  pattern: variable_output_redirect
+  severity: medium
+  reason: 'RUN_OUT="$WORK/run.out" where WORK is a fresh per-invocation mktemp -d
+    dir (0700, trap-removed on EXIT); guarded with `: "${WORK:?}"` and `: "${RUN_OUT:?}"`
+    immediately after assignment, always double-quoted at the redirect. Test-harness
+    temp file, not attacker/environment-influenced. Post-v1.3.1 hardening campaign.'
+  attested_by: tsotchke
+  attested_at: '2026-07-09T19:02:38Z'
+  valid_until: null
+  evidence_link: post-v1.3.1 hardening
+  line_text: '        "$TIMEOUT_S" "$BIN" ) > "$RUN_OUT" 2> "$TIME_LOG"'
