@@ -1,0 +1,319 @@
+;;; lib/core/blc.esk — Binary Lambda Calculus (BLC) for Eshkol.
+;;;
+;;; A pure-Eshkol implementation of John Tromp's Binary Lambda Calculus:
+;;; a bit-level encoding of De Bruijn-indexed lambda terms, together with
+;;; a faithful normal-order (leftmost-outermost) beta-reducer.
+;;;
+;;; This module showcases Eshkol's lambda-calculus foundations. Terms are
+;;; represented homoiconically as ordinary s-expressions:
+;;;
+;;;   (var i)     ; variable, i a POSITIVE (1-based) De Bruijn index.
+;;;               ; index 1 refers to the innermost enclosing binder.
+;;;   (lam B)     ; abstraction over body B.
+;;;   (app M N)   ; application of M to N.
+;;;
+;;; Encoding (Tromp, https://tromp.github.io/cl/Binary_lambda_calculus.html):
+;;;
+;;;   blc(lam M)  = 00 . blc(M)
+;;;   blc(app M N)= 01 . blc(M) . blc(N)
+;;;   blc(var i)  = (1 repeated i times) . 0        ; i is 1-based
+;;;
+;;; Verified reference encodings (reproduced exactly by this module):
+;;;
+;;;   I = (lam (var 1))                 => "0010"
+;;;   K = (lam (lam (var 2)))           => "0000110"
+;;;   pairing (lam(lam(lam ((1 3) 2)))) => "0000000101101110110"
+;;;
+;;; API:
+;;;   (blc-var i) (blc-lam b) (blc-app m n)   — constructors
+;;;   (blc-var? t) (blc-lam? t) (blc-app? t)  — predicates
+;;;   (blc-term? t)                           — recognises any BLC term
+;;;   (blc-encode term)   -> bit string of #\0 / #\1 characters
+;;;   (blc-decode bits)   -> term (trailing bits ignored; see note below)
+;;;   (blc-eval term)     -> beta normal form (normal-order reduction)
+;;;   (blc-apply p a)     -> (blc-eval (blc-app p a))
+;;;   (blc->debruijn-string term) -> pretty printer, e.g. "λλλ.132"
+;;;   Predefined: blc-I blc-K blc-S  (De Bruijn terms)
+;;;               blc-I-bits blc-K-bits blc-S-bits (their bit strings)
+;;;               blc-true blc-false (Church booleans)
+;;;               blc-omega (divergent term, for testing the step cap)
+;;;
+;;; Decoding note: BLC terms are self-delimiting. (blc-decode) parses one
+;;; complete term starting at the front of the string and silently ignores
+;;; any trailing bits. Truncated / invalid input signals a clear error
+;;; (never crashes or loops).
+;;;
+;;; Reduction note: (blc-eval) uses NORMAL-ORDER (leftmost-outermost)
+;;; reduction to normal form, which is required for BLC faithfulness.
+;;; A step bound (blc-max-steps) guards against divergent terms: exceeding
+;;; it signals "no normal form within step bound".
+
+(provide blc-var blc-lam blc-app
+         blc-var? blc-lam? blc-app? blc-term?
+         blc-var-index blc-lam-body blc-app-fun blc-app-arg
+         blc-encode blc-decode
+         blc-shift blc-subst blc-step blc-eval blc-apply
+         blc->debruijn-string
+         blc-I blc-K blc-S
+         blc-I-bits blc-K-bits blc-S-bits
+         blc-true blc-false blc-omega
+         blc-max-steps)
+
+;; ============================================================================
+;; Term constructors, predicates, accessors
+;; ============================================================================
+
+(define (blc-var i) (list 'var i))
+(define (blc-lam b) (list 'lam b))
+(define (blc-app m n) (list 'app m n))
+
+(define (blc-tagged? t tag)
+  (and (pair? t) (eq? (car t) tag)))
+
+(define (blc-var? t) (blc-tagged? t 'var))
+(define (blc-lam? t) (blc-tagged? t 'lam))
+(define (blc-app? t) (blc-tagged? t 'app))
+
+(define (blc-var-index t) (cadr t))
+(define (blc-lam-body t) (cadr t))
+(define (blc-app-fun t) (cadr t))
+(define (blc-app-arg t) (caddr t))
+
+;; Recognise a structurally well-formed BLC term.
+(define (blc-term? t)
+  (cond
+    ((blc-var? t) (let ((i (blc-var-index t)))
+                    (and (integer? i) (>= i 1))))
+    ((blc-lam? t) (blc-term? (blc-lam-body t)))
+    ((blc-app? t) (and (blc-term? (blc-app-fun t))
+                       (blc-term? (blc-app-arg t))))
+    (else #f)))
+
+;; ============================================================================
+;; Encoding:  term -> bit string
+;; ============================================================================
+
+;; A run of n #\1 characters.
+(define (blc-ones n) (make-string n #\1))
+
+(define (blc-encode term)
+  (cond
+    ((blc-var? term)
+     (let ((i (blc-var-index term)))
+       (if (and (integer? i) (>= i 1))
+           (string-append (blc-ones i) "0")
+           (error "blc-encode: variable index must be a positive integer" i))))
+    ((blc-lam? term)
+     (string-append "00" (blc-encode (blc-lam-body term))))
+    ((blc-app? term)
+     (string-append "01"
+                    (blc-encode (blc-app-fun term))
+                    (blc-encode (blc-app-arg term))))
+    (else
+     (error "blc-encode: not a valid BLC term" term))))
+
+;; ============================================================================
+;; Decoding:  bit string -> term
+;; ============================================================================
+;;
+;; blc-decode-at returns a pair (term . next-position). Errors on any
+;; truncated or malformed input rather than crashing or looping.
+
+(define (blc-decode bits)
+  (if (or (not (string? bits)) (= (string-length bits) 0))
+      (error "blc-decode: empty input, no term to decode")
+      (car (blc-decode-at bits 0 (string-length bits)))))
+
+(define (blc-decode-at bits pos len)
+  (if (>= pos len)
+      (error "blc-decode: unexpected end of input (truncated term)" pos)
+      (let ((c (string-ref bits pos)))
+        (cond
+          ((char=? c #\0) (blc-decode-compound bits pos len))
+          ((char=? c #\1) (blc-decode-var bits pos len 0))
+          (else (error "blc-decode: invalid bit character (expected 0 or 1)" c))))))
+
+;; At a leading #\0: the next bit selects abstraction (0) or application (1).
+(define (blc-decode-compound bits pos len)
+  (if (>= (+ pos 1) len)
+      (error "blc-decode: unexpected end of input after '0'" pos)
+      (let ((c2 (string-ref bits (+ pos 1))))
+        (cond
+          ((char=? c2 #\0)
+           ;; abstraction: "00" . body
+           (let ((body (blc-decode-at bits (+ pos 2) len)))
+             (cons (blc-lam (car body)) (cdr body))))
+          ((char=? c2 #\1)
+           ;; application: "01" . fun . arg
+           (let* ((m (blc-decode-at bits (+ pos 2) len))
+                  (n (blc-decode-at bits (cdr m) len)))
+             (cons (blc-app (car m) (car n)) (cdr n))))
+          (else (error "blc-decode: invalid bit character (expected 0 or 1)" c2))))))
+
+;; At a leading #\1: count the run of 1s, which must be terminated by a 0.
+;; A run of i ones followed by a 0 denotes (var i).
+(define (blc-decode-var bits pos len count)
+  (if (>= pos len)
+      (error "blc-decode: unexpected end of input in variable (missing terminating 0)" pos)
+      (let ((c (string-ref bits pos)))
+        (cond
+          ((char=? c #\1) (blc-decode-var bits (+ pos 1) len (+ count 1)))
+          ((char=? c #\0)
+           (if (= count 0)
+               (error "blc-decode: zero-length variable" pos)
+               (cons (blc-var count) (+ pos 1))))
+          (else (error "blc-decode: invalid bit character (expected 0 or 1)" c))))))
+
+;; ============================================================================
+;; De Bruijn substitution (the subtle part)
+;; ============================================================================
+;;
+;; Indices are 1-based: (var 1) is the innermost binder. We use the
+;; standard shift / substitute pair, adapted to 1-based indexing.
+;;
+;;   blc-shift d c t   adds d to every FREE variable of t, where a variable
+;;                     is free when its index is >= the cutoff c. Going under
+;;                     a binder raises the cutoff by 1.
+;;
+;;   blc-subst t j s   replaces (var j) by s inside t, raising j and shifting
+;;                     s as it descends under binders.
+;;
+;;   Beta:  (app (lam B) N)  ->  shift(-1, 1, subst(B, 1, shift(1, 1, N)))
+
+(define (blc-shift d cutoff term)
+  (cond
+    ((blc-var? term)
+     (let ((k (blc-var-index term)))
+       (if (>= k cutoff) (blc-var (+ k d)) (blc-var k))))
+    ((blc-lam? term)
+     (blc-lam (blc-shift d (+ cutoff 1) (blc-lam-body term))))
+    ((blc-app? term)
+     (blc-app (blc-shift d cutoff (blc-app-fun term))
+              (blc-shift d cutoff (blc-app-arg term))))
+    (else (error "blc-shift: invalid term" term))))
+
+(define (blc-subst term j s)
+  (cond
+    ((blc-var? term)
+     (if (= (blc-var-index term) j) s term))
+    ((blc-lam? term)
+     (blc-lam (blc-subst (blc-lam-body term) (+ j 1) (blc-shift 1 1 s))))
+    ((blc-app? term)
+     (blc-app (blc-subst (blc-app-fun term) j s)
+              (blc-subst (blc-app-arg term) j s)))
+    (else (error "blc-subst: invalid term" term))))
+
+;; Contract a single beta redex (app (lam B) N).
+(define (blc-beta redex)
+  (let ((b (blc-lam-body (blc-app-fun redex)))
+        (n (blc-app-arg redex)))
+    (blc-shift -1 1 (blc-subst b 1 (blc-shift 1 1 n)))))
+
+;; ============================================================================
+;; Normal-order (leftmost-outermost) reduction
+;; ============================================================================
+;;
+;; blc-step performs ONE leftmost-outermost reduction and returns a pair
+;; (reduced? . term). At an application whose head is an abstraction we
+;; contract that (outermost) redex; otherwise we descend into the function
+;; (leftmost) before the argument. We also reduce under abstractions so as
+;; to reach full beta normal form.
+
+(define (blc-step term)
+  (cond
+    ((blc-var? term) (cons #f term))
+    ((blc-lam? term)
+     (let ((r (blc-step (blc-lam-body term))))
+       (if (car r)
+           (cons #t (blc-lam (cdr r)))
+           (cons #f term))))
+    ((blc-app? term)
+     (let ((m (blc-app-fun term))
+           (n (blc-app-arg term)))
+       (if (blc-lam? m)
+           ;; leftmost-outermost redex: contract it now
+           (cons #t (blc-beta term))
+           ;; otherwise reduce the function first, then the argument
+           (let ((rm (blc-step m)))
+             (if (car rm)
+                 (cons #t (blc-app (cdr rm) n))
+                 (let ((rn (blc-step n)))
+                   (if (car rn)
+                       (cons #t (blc-app m (cdr rn)))
+                       (cons #f term))))))))
+    (else (error "blc-step: invalid term" term))))
+
+;; Upper bound on reduction steps before declaring divergence.
+(define blc-max-steps 1000000)
+
+(define (blc-eval term)
+  (blc-eval-loop term 0))
+
+(define (blc-eval-loop term steps)
+  (if (> steps blc-max-steps)
+      (error "blc-eval: no normal form within step bound" blc-max-steps)
+      (let ((r (blc-step term)))
+        (if (car r)
+            (blc-eval-loop (cdr r) (+ steps 1))
+            term))))
+
+(define (blc-apply program arg)
+  (blc-eval (blc-app program arg)))
+
+;; ============================================================================
+;; Pretty printer  ("λλλ.132" De Bruijn style)
+;; ============================================================================
+
+(define (blc->debruijn-string term)
+  (cond
+    ((blc-var? term) (number->string (blc-var-index term)))
+    ((blc-lam? term)
+     (let ((body (blc-lam-body term)))
+       (if (blc-lam? body)
+           (string-append "λ" (blc->debruijn-string body))
+           (string-append "λ." (blc->debruijn-string body)))))
+    ((blc-app? term)
+     (string-append (blc-render-fun (blc-app-fun term))
+                    (blc-render-arg (blc-app-arg term))))
+    (else (error "blc->debruijn-string: invalid term" term))))
+
+;; Left operand of an application: parenthesise only abstractions
+;; (application is left-associative, variables need no parens).
+(define (blc-render-fun t)
+  (if (blc-lam? t)
+      (string-append "(" (blc->debruijn-string t) ")")
+      (blc->debruijn-string t)))
+
+;; Right operand: parenthesise anything compound (abstraction or application).
+(define (blc-render-arg t)
+  (if (blc-var? t)
+      (blc->debruijn-string t)
+      (string-append "(" (blc->debruijn-string t) ")")))
+
+;; ============================================================================
+;; Predefined terms
+;; ============================================================================
+
+;; I = λx.x
+(define blc-I (blc-lam (blc-var 1)))
+;; K = λx.λy.x
+(define blc-K (blc-lam (blc-lam (blc-var 2))))
+;; S = λx.λy.λz. (x z)(y z)   (x=3, y=2, z=1 under all three binders)
+(define blc-S
+  (blc-lam (blc-lam (blc-lam
+    (blc-app (blc-app (blc-var 3) (blc-var 1))
+             (blc-app (blc-var 2) (blc-var 1)))))))
+
+;; Church booleans: true = λx.λy.x (= K), false = λx.λy.y.
+(define blc-true (blc-lam (blc-lam (blc-var 2))))
+(define blc-false (blc-lam (blc-lam (blc-var 1))))
+
+;; Omega = (λx.x x)(λx.x x) — has no normal form; used to exercise the cap.
+(define blc-omega
+  (blc-app (blc-lam (blc-app (blc-var 1) (blc-var 1)))
+           (blc-lam (blc-app (blc-var 1) (blc-var 1)))))
+
+;; Known bit strings (verified against Tromp's grammar).
+(define blc-I-bits "0010")
+(define blc-K-bits "0000110")
+(define blc-S-bits "00000001011110100111010")
