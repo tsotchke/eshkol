@@ -10812,6 +10812,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 1711: { /* sleep-ms(milliseconds) → void */
         Value ms_val = vm_pop(vm);
+        /* ESH-0228: type-check the argument. as_number() silently returns 0.0
+         * for non-numeric values, so a bad argument used to no-op instead of
+         * signalling an error; match the AOT/JIT path and reject non-numbers
+         * cleanly (the VM's runtime-error idiom: message + vm->error = 1). */
+        if (ms_val.type != VAL_INT && ms_val.type != VAL_FLOAT) {
+            fprintf(stderr, "ERROR: sleep-ms: expected a number\n");
+            vm->error = 1;
+            break;
+        }
 #ifndef ESHKOL_VM_WASM
         int64_t ms = (int64_t)as_number(ms_val);
         if (ms > 0) {

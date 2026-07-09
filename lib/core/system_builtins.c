@@ -109,6 +109,11 @@ extern char* arena_allocate_string_with_header(void* arena, size_t length);
 extern void* arena_allocate_cons_with_header(void* arena);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
+/* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
+ * expected <type>" and terminates via ESHKOL_EXCEPTION_TYPE_ERROR). Declared
+ * here rather than via runtime.h, which pulls in the C++/C23 tagged-value
+ * typedefs this C11 TU does not use. Does not return. */
+extern void eshkol_type_error(const char* proc_name, const char* expected_type);
 
 /* Tagged value layout MUST match LLVM IR: {i8, i8, i16, i32, i64} = 16 bytes.
  * The i32 is explicit padding — this matches the LLVM struct exactly so that
@@ -358,7 +363,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_home_directory_v(void) {
 /** Implements `(sleep-ms n)`: blocks the calling thread for @p ms_val
  *  milliseconds (no-op for non-positive values). Returns null. */
 static eshkol_sysbuiltin_value_t eshkol_builtin_sleep_ms_v(eshkol_sysbuiltin_value_t ms_val) {
-    int64_t ms = (int64_t)ms_val.data;
+    /* ESH-0228: type-check the argument. Previously this cast ms_val.data
+     * (a raw uint64) straight to int64 with no tag check, so a non-numeric
+     * argument (string, boolean, pair, …) reinterpreted whatever bits happened
+     * to be in .data — a heap pointer, in the heap-tagged cases — as a
+     * millisecond count, sleeping for a garbage duration or effectively
+     * hanging. Accept only fixnums and flonums; raise a clean type error
+     * otherwise. sys_extract_int64 handles the double case correctly (bit-cast,
+     * then truncate) rather than reinterpreting the raw payload as an integer. */
+    if (ms_val.type != SYS_TYPE_INT64 && ms_val.type != SYS_TYPE_DOUBLE) {
+        eshkol_type_error("sleep-ms", "number");
+        return sys_make_null();  /* not reached: eshkol_type_error does not return */
+    }
+    int64_t ms = sys_extract_int64(ms_val);
     if (ms <= 0) return sys_make_null();
 #ifndef _WIN32
     struct timespec ts;
