@@ -1,7 +1,7 @@
 <h1 id="eshkol-language---complete-technical-specification">Eshkol
 Language - Complete Technical Specification</h1>
-<p><strong>Version:</strong> v1.3.0-evolve <strong>Generated:</strong>
-2026-05-20 <strong>Status:</strong> Comprehensive implementation
+<p><strong>Version:</strong> v1.3.1 <strong>Generated:</strong>
+2026-07-08 <strong>Status:</strong> Comprehensive implementation
 documentation from source code</p>
 <hr />
 <h2 id="table-of-contents">Table of Contents</h2>
@@ -657,6 +657,14 @@ Multi-way Conditional</h4>
 <pre class="scheme"><code>(cond ((&lt; x 0) &quot;negative&quot;)
       ((= x 0) &quot;zero&quot;)
       ((&gt; x 0) &quot;positive&quot;))</code></pre>
+<p><strong>R7RS <code>=&gt;</code> arrow clause</strong>
+(<code>(test =&gt; receiver)</code>): if <code>test</code> evaluates to
+a true value, that value (evaluated exactly once) is passed to the unary
+procedure <code>receiver</code>, whose result becomes the value of the
+<code>cond</code>:</p>
+<pre class="scheme"><code>(cond ((assv 1 (list (cons 1 10))) =&gt; cdr)
+      (else 0))
+; =&gt; 10  (assv returns (1 . 10); cdr of that is 10)</code></pre>
 <h4 id="case---switch-on-value">3.4.3 <code>case</code> - Switch on
 Value</h4>
 <p><strong>Syntax:</strong></p>
@@ -670,6 +678,14 @@ Value</h4>
   ((1) &quot;one&quot;)
   ((2) &quot;two&quot;)
   (else &quot;other&quot;))  ; =&gt; &quot;two&quot;</code></pre>
+<p><strong>R7RS <code>=&gt;</code> arrow clause</strong>, same semantics
+as <code>cond</code>’s: the matched key is passed to a unary receiver
+procedure:</p>
+<pre class="scheme"><code>(case 5
+  ((1 2 3) =&gt; (lambda (x) (* x 100)))
+  ((4 5 6) =&gt; (lambda (x) (* x 10)))
+  (else 0))
+; =&gt; 50</code></pre>
 <h4 id="match---pattern-matching">3.4.4 <code>match</code> - Pattern
 Matching</h4>
 <p><strong>Syntax:</strong></p>
@@ -750,6 +766,11 @@ and substitute - <code>,@expr</code> - Evaluate and splice into list</p>
 <pre class="scheme"><code>(define x 5)
 `(1 2 ,x 4)    ; =&gt; (1 2 5 4)
 `(1 ,@(list 2 3) 4)  ; =&gt; (1 2 3 4)</code></pre>
+<p><strong>Quasiquoted vector literals</strong> (v1.3.0-evolve):
+<code>unquote</code>/<code>unquote-splicing</code> also work inside a
+<code>#(...)</code> vector literal under quasiquote:</p>
+<pre class="scheme"><code>`#(1 ,(+ 1 1) 3)        ; =&gt; #(1 2 3)
+`#(1 ,@(list 2 3) 4)    ; =&gt; #(1 2 3 4)</code></pre>
 <h3 id="type-annotations">3.6 Type Annotations</h3>
 <h4 id="type-annotation-syntax">3.6.1 Type Annotation Syntax</h4>
 <pre class="scheme"><code>(: name type)  ; Standalone type declaration</code></pre>
@@ -845,6 +866,19 @@ Exception</h4>
 <pre class="scheme"><code>(raise exception-object)</code></pre>
 <p><strong>Example:</strong></p>
 <pre class="scheme"><code>(raise (error &quot;Something went wrong&quot;))</code></pre>
+<h4 id="error-and-the-r7rs-condition-object-family">3.8.3
+<code>error</code> and the R7RS Condition-Object Family</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(error message irritant ...)     ; raise an R7RS error object
+(error-object? obj)               ; #t iff obj was raised via (error ...)
+(error-object-message e)          ; the message string
+(error-object-irritants e)        ; the irritants, as a list</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(guard (e (#t (list (error-object-message e) (error-object-irritants e))))
+  (error &quot;boom&quot; 1 2))
+; =&gt; (&quot;boom&quot; (1 2))
+
+(guard (e (#t (error-object? e))) (raise &quot;plain-string&quot;))  ; =&gt; #f</code></pre>
 <h3 id="multiple-return-values">3.9 Multiple Return Values</h3>
 <h4 id="values---return-multiple-values">3.9.1 <code>values</code> -
 Return Multiple Values</h4>
@@ -892,6 +926,16 @@ repetition - Nested lists</p>
   (syntax-rules ()
     ((when test expr ...)
      (if test (begin expr ...)))))</code></pre>
+<p><strong>Nested ellipsis</strong> (v1.3.0-evolve): a pattern variable
+bound at ellipsis depth N is followed by N ellipses in the template to
+flatten one level per extra ellipsis. Pattern matching tracks ellipsis
+depth explicitly, so <code>(x ... ...)</code>-style templates over a
+list-of-lists now expand correctly:</p>
+<pre class="scheme"><code>(define-syntax my-flatten
+  (syntax-rules ()
+    ((_ (a ...) ...) (list a ... ...))))
+
+(my-flatten (1 2) (3 4 5))  ; =&gt; (1 2 3 4 5)</code></pre>
 <h3 id="external-ffi">3.11 External FFI</h3>
 <h4 id="extern---declare-external-function">3.11.1 <code>extern</code> -
 Declare External Function</h4>
@@ -1163,11 +1207,18 @@ Function to List</h4>
 </ul>
 <h4 id="string-access">4.7.2 String Access</h4>
 <ul>
-<li><code>(string-length str)</code> - Character count</li>
+<li><code>(string-length str)</code> - Codepoint (character) count</li>
+<li><code>(string-byte-length str)</code> - UTF-8 byte count
+(v1.3.0-evolve; differs from <code>string-length</code> for any
+multibyte-UTF-8 string)</li>
 <li><code>(string-ref str k)</code> - Get character at index k</li>
 <li><code>(string-set! str k char)</code> - Set character at index
 k</li>
-<li><code>(substring str start end)</code> - Extract substring</li>
+<li><code>(substring str start end)</code> - Extract substring
+<code>[start, end)</code></li>
+<li><code>(substring str start)</code> - Extract from <code>start</code>
+to the end of the string (2-argument form, equivalent to
+<code>(substring str start (string-length str))</code>)</li>
 </ul>
 <h4 id="string-predicates">4.7.3 String Predicates</h4>
 <ul>
@@ -1228,11 +1279,28 @@ fill value</li>
 <li><code>(vector-length vec)</code> - Element count</li>
 <li><code>(vector-ref vec k)</code> - Get element at index k</li>
 <li><code>(vector-set! vec k val)</code> - Set element at index k</li>
+<li><code>(vector-copy vec)</code> /
+<code>(vector-copy vec start)</code> /
+<code>(vector-copy vec start end)</code> - Fresh (shallow) copy of
+<code>vec</code>, or of the <code>[start,end)</code> slice. Also accepts
+a tensor-backed <code>#(...)</code> vector literal, not just
+<code>(vector ...)</code>-allocated vectors (v1.3.0-evolve).</li>
+<li><code>(vector-copy! to at from)</code> /
+<code>(vector-copy! to at from start end)</code> - In-place copy into
+<code>to</code> starting at index <code>at</code></li>
 </ul>
 <h4 id="vector-conversions">4.9.3 Vector Conversions</h4>
 <ul>
 <li><code>(vector-&gt;list vec)</code> - Convert to list</li>
 <li><code>(list-&gt;vector lst)</code> - Convert from list</li>
+</ul>
+<h4 id="vector-iteration">4.9.4 Vector Iteration</h4>
+<ul>
+<li><code>(vector-map proc vec1 vec2 ...)</code> - Apply
+<code>proc</code> element-wise across one or more vectors in lockstep
+(R7RS 6.9), stopping at the shortest vector</li>
+<li><code>(vector-for-each proc vec1 vec2 ...)</code> - Same iteration,
+for side effects</li>
 </ul>
 <h3 id="tensor-operations">4.10 Tensor Operations</h3>
 <h4 id="tensor-creation">4.10.1 Tensor Creation</h4>
@@ -2128,6 +2196,102 @@ recording</li>
       (vector 1.0)))
   (vector 2.0))
 ; Computes ∂/∂x[∂/∂y(xy²)]</code></pre>
+<h3 id="arbitrary-order-ad-taylor-towers-v1.3.0-evolve">8.5
+Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)</h3>
+<p>A second, orthogonal AD engine computes every derivative up to an
+arbitrary order <code>k</code> in a single pass. Full detail: the <a
+href="guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+guide</a> and <code>docs/design/AD_TAYLOR_TOWER.md</code>.</p>
+<h4 id="taylor-derivative-n-core-tower-builtins">8.5.1
+<code>taylor</code> / <code>derivative-n</code> — Core Tower
+Builtins</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(taylor function point k)          ; List of k+1 Taylor coefficients c[0..k]
+(derivative-n function point k)    ; Scalar: the k-th derivative f^(k)(point)</code></pre>
+<p>Coefficient <code>c[n] = f^(n)(point)/n!</code>. Stored on a new heap
+subtype (<code>HEAP_SUBTYPE_TAYLOR</code>). When <code>point</code> is
+exact (integer/rational) and <code>function</code> uses only
+exact-preserving arithmetic (<code>+ - * /</code>, non-negative integer
+<code>expt</code>), the coefficients are returned as exact
+bignum/rational values instead of <code>double</code> (automatic
+demotion to <code>double</code> on overflow or on the first
+transcendental call). When <code>k</code> is a compile-time literal, the
+tower may be compiled with zero heap allocation (compile-time-K
+monomorphization).</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(taylor (lambda (x) (exp x)) 0.5 4)
+; =&gt; (1.64872 1.64872 0.824361 0.274787 0.0686967)
+
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; =&gt; 27  (f&#39;(x) = 3x^2 at x=3)</code></pre>
+<h4 id="core.ad.guw-arbitrary-order-multivariate-mixed-partials">8.5.2
+<code>core.ad.guw</code> — Arbitrary-Order Multivariate Mixed
+Partials</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(require core.ad.guw)
+(taylor-propagate function point direction k)  ; Taylor coeffs of g(t) = f(point + t*direction)
+(mixed-partial function point multi-index)     ; scalar D^beta f(point)
+(gradient-n function point order)              ; order&gt;=3 symmetric derivative tensor</code></pre>
+<p><code>multi-index</code> is a list of variable indices with
+repetition, e.g. <code>(0 0 1)</code> denotes
+<code>d^3f/dx0^2 dx1</code>. Implemented via Griewank-Utke-Walther (GUW)
+directional propagation of univariate towers along principal-lattice
+direction vectors. <code>order</code> &lt;= 2 continues to use the
+existing <code>gradient</code>/<code>hessian</code> jet path.</p>
+<h4 id="core.ad.taylor_models-validated-ad">8.5.3
+<code>core.ad.taylor_models</code> — Validated AD</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(require core.ad.taylor_models)
+(taylor-model function center radius k)  ; polynomial + interval remainder
+(tm-range tm)                            ; guaranteed range enclosure (lo . hi)
+(tm-eval tm x)                           ; guaranteed point enclosure (lo . hi)
+(tm-add tm1 tm2) (tm-mul tm1 tm2)        ; Makino-Berz Taylor-model arithmetic
+(tm-order tm) (tm-coeffs tm) (tm-center tm) (tm-radius tm) (tm-remainder tm) (tm-domain tm)</code></pre>
+<p>Pairs a Taylor polynomial with a rigorous interval-remainder bound so
+<code>tm-range</code>/<code>tm-eval</code> are provable enclosures, not
+point estimates.</p>
+<h4 id="core.ad.sparse_guw-sparse-high-order-tensors">8.5.4
+<code>core.ad.sparse_guw</code> — Sparse High-Order Tensors</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(require core.ad.sparse_guw)
+(sparse-hessian function point)                        ; auto-probed sparsity structure
+(sparse-hessian-pat function point pattern)            ; explicit hyperedge pattern
+(sparse-hessian-ref sp i j) (sparse-hessian-nonzeros sp)
+(sparse-hessian-row-ptr sp) (sparse-hessian-col-idx sp) (sparse-hessian-values sp)
+(sparse-hessian-colors sp) (sparse-hessian-directions sp) (sparse-hessian-dense? sp)
+(sparse-mixed-partials function point order pattern)   ; order&gt;=3 sparse recovery
+(sparse-mixed-partials-ref sp multi-index) (sparse-mixed-partials-entries sp)</code></pre>
+<p>Recovers a sparse Hessian/mixed-partial tensor via greedy distance-2
+(star) graph coloring plus one reverse-over-Taylor Hessian-vector
+product per color, so cost scales with variable-interaction bandwidth
+rather than dimension. <code>sparse-mixed-partials</code> is
+order-&gt;=3 only.</p>
+<h4 id="core.ad.taylor_numerics-tower-based-user-numerics">8.5.5
+<code>core.ad.taylor_numerics</code> — Tower-Based User Numerics</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(require core.ad.taylor_numerics)
+(taylor-eval coefficients dt)                    ; Horner-evaluate a taylor coefficient list at offset dt
+(taylor-ode-solve function y0 t0 t1 k n)         ; order-k, n-step fixed-step scalar IVP solver
+(taylor-root function x0 k)                      ; Householder root refinement (k=1 Newton, k=2 Halley)
+(taylor-inverse-series function x0 k)            ; Taylor series of f^-1 via Lagrange inversion</code></pre>
+<p>All arguments are positional (no keyword-arg formals).</p>
+<h4 id="core.ad.tensor_tower-and-core.ad.checkpoint">8.5.6
+<code>core.ad.tensor_tower</code> and
+<code>core.ad.checkpoint</code></h4>
+<p><code>core.ad.tensor_tower</code> generalizes a tower to a “tower of
+tensors” (one Cauchy-convolution series per tensor element, sharing a
+single shape), so high-order AD composes with
+<code>matmul</code>/<code>conv2d</code>/<code>sigmoid</code>/<code>tanh</code>
+unchanged. <code>core.ad.checkpoint</code> demonstrates checkpointed
+(Griewank/binomial sqrt(N)-schedule) high-order reverse-mode
+differentiation, holding at most one block’s tape live at a time instead
+of the whole chain.</p>
+<p>Differentiable control flow
+(<code>if</code>/<code>cond</code>/<code>case</code>/named-let/recursion/
+<code>map</code>/<code>fold</code> over Taylor-tower values) and
+reverse-over-Taylor (a <code>gradient</code> that differentiates through
+an inner <code>derivative-n</code>/<code>taylor</code> call) require no
+separate API — they are properties of the core tower engine and the
+reverse-mode tape described in 8.2.</p>
 <hr />
 <h2 id="module-system-1">9. Module System</h2>
 <h3 id="module-resolution">9.1 Module Resolution</h3>
@@ -3437,8 +3601,10 @@ through <code>tenth</code></p>
 <h3 id="all-string-functions-30">22.4 All String Functions (30+)</h3>
 <p><strong>Construction:</strong> <code>string</code>,
 <code>make-string</code>, <code>string-append</code>,
-<code>substring</code></p>
+<code>substring</code> (2-arg <code>(substring s start)</code> or 3-arg
+<code>(substring s start end)</code>)</p>
 <p><strong>Access:</strong> <code>string-length</code>,
+<code>string-byte-length</code> (UTF-8 byte count),
 <code>string-ref</code>, <code>string-set!</code></p>
 <p><strong>Comparison:</strong> <code>string=?</code>,
 <code>string&lt;?</code>, <code>string&gt;?</code>,
@@ -3462,7 +3628,10 @@ through <code>tenth</code></p>
 <code>linspace</code></p>
 <p><strong>Access:</strong> <code>vref</code>, <code>tensor-get</code>,
 <code>tensor-set</code>, <code>vector-ref</code>,
-<code>vector-set!</code>, <code>vector-length</code></p>
+<code>vector-set!</code>, <code>vector-length</code>,
+<code>vector-copy</code>, <code>vector-copy!</code>,
+<code>vector-map</code> (multi-vector), <code>vector-for-each</code>
+(multi-vector)</p>
 <p><strong>Arithmetic:</strong> <code>tensor-add</code>,
 <code>tensor-sub</code>, <code>tensor-mul</code>,
 <code>tensor-div</code>, <code>tensor-dot</code>,
@@ -3487,13 +3656,25 @@ through <code>tenth</code></p>
 <code>hash-table-exists?</code>, <code>hash-table-delete!</code>,
 <code>hash-table-keys</code>, <code>hash-table-values</code>,
 <code>hash-table-size</code>, <code>hash-table-clear!</code>.</p>
-<h3 id="all-autodiff-operators-8">22.7 All Autodiff Operators (8)</h3>
+<h3 id="all-autodiff-operators">22.7 All Autodiff Operators</h3>
 <p><strong>Univariate:</strong> <code>derivative</code></p>
 <p><strong>Multivariate:</strong> <code>gradient</code>,
 <code>jacobian</code>, <code>hessian</code></p>
 <p><strong>Vector Calculus:</strong> <code>divergence</code>,
 <code>curl</code>, <code>laplacian</code>,
 <code>directional-derivative</code></p>
+<p><strong>Arbitrary-Order Taylor Towers (v1.3.0-evolve, see
+8.5):</strong> <code>taylor</code>, <code>derivative-n</code> (core, no
+<code>require</code> needed); <code>taylor-propagate</code>,
+<code>mixed-partial</code>, <code>gradient-n</code>
+(<code>core.ad.guw</code>); <code>taylor-model</code>,
+<code>tm-range</code>, <code>tm-eval</code>, <code>tm-add</code>,
+<code>tm-mul</code> and accessors (<code>core.ad.taylor_models</code>);
+<code>sparse-hessian</code>, <code>sparse-hessian-pat</code>,
+<code>sparse-mixed-partials</code> and accessors
+(<code>core.ad.sparse_guw</code>); <code>taylor-ode-solve</code>,
+<code>taylor-root</code>, <code>taylor-inverse-series</code>
+(<code>core.ad.taylor_numerics</code>)</p>
 <h3 id="all-type-predicates-20">22.8 All Type Predicates (20+)</h3>
 <p><code>null?</code>, <code>boolean?</code>, <code>char?</code>,
 <code>string?</code>, <code>symbol?</code>, <code>number?</code>,
@@ -3501,7 +3682,8 @@ through <code>tenth</code></p>
 <code>pair?</code>, <code>list?</code>, <code>vector?</code>,
 <code>procedure?</code>, <code>hash-table?</code>, <code>tensor?</code>,
 <code>input-port?</code>, <code>output-port?</code>, <code>port?</code>,
-<code>eof-object?</code></p>
+<code>eof-object?</code>, <code>error-object?</code> (R7RS
+condition-object predicate, see 3.8.3)</p>
 <h3 id="all-equalitycomparison-3">22.9 All Equality/Comparison (3)</h3>
 <p><code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
 <h3 id="all-io-functions-20">22.10 All I/O Functions (20+)</h3>
@@ -3638,8 +3820,24 @@ Automatic handler cleanup</p>
 <code>provide</code>)</p>
 <hr />
 <h2 id="version-information">26. Version Information</h2>
-<p><strong>Current Version:</strong> v1.3.0-evolve</p>
-<p><strong>Version History:</strong> - v1.2.0-scale - Production
+<p><strong>Current Version:</strong> v1.3.1</p>
+<p><strong>Version History:</strong> - v1.3.1 - Robustness for
+long-running, resident programs: per-iteration arena reclamation for
+define-loops guarded by a catch-all handler, an iterative reader so
+large persisted structures load without native stack overflow, and
+comprehensive C-API documentation. See <a
+href="../CHANGELOG.md">CHANGELOG.md</a>. - v1.3.0-evolve -
+Arbitrary-order automatic differentiation (Taylor towers, phases P0-P12:
+exact bignum/rational coefficients, no-heap monomorphization, GUW
+multivariate mixed partials, reverse-over-Taylor, tensor towers,
+validated Taylor models, sparse high-order tensors, differentiable
+control flow, checkpointed reverse-mode, tower-based numerics), full
+R7RS conformance on the portable differential corpus (34/34
+vs. chibi-scheme), closure/TCO/memory robustness hardening (mutual tail
+calls, named-let TCO in every position, 16-&gt;64 capture ceiling,
+bounded-RSS long-running loops), and a permanent multi-pillar
+adversarial-testing infrastructure. See <a
+href="../CHANGELOG.md">CHANGELOG.md</a>. - v1.2.0-scale - Production
 readiness: model serialization, stable C ABI + Python bindings,
 per-thread arenas, 512 MB main-thread stack on Darwin, image I/O,
 plotting stdlib, actionable error messages with file:line:col + caret,
@@ -3742,7 +3940,7 @@ exit.</p>
 <hr />
 <h2 id="conclusion">Conclusion</h2>
 <p>This document provides a <strong>complete</strong> specification of
-the Eshkol programming language version v1.3.0-evolve, documenting
+the Eshkol programming language version v1.3.1, documenting
 <strong>every</strong> feature, function, operator, and capability found
 in the implementation.</p>
 <p><strong>Total Coverage:</strong> - All 101 special forms and parser

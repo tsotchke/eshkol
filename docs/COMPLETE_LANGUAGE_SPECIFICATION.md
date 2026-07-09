@@ -1,7 +1,7 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.0-evolve
-**Generated:** 2026-05-20
+**Version:** v1.3.1
+**Generated:** 2026-07-08
 **Status:** Comprehensive implementation documentation from source code
 
 ---
@@ -4043,9 +4043,14 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.0-evolve
+**Current Version:** v1.3.1
 
 **Version History:**
+- v1.3.1 - Robustness for long-running, resident programs: per-iteration
+  arena reclamation for define-loops guarded by a catch-all handler, an
+  iterative reader so large persisted structures load without native stack
+  overflow, and comprehensive C-API documentation. See
+  [CHANGELOG.md](../CHANGELOG.md).
 - v1.3.0-evolve - Arbitrary-order automatic differentiation (Taylor towers,
   phases P0-P12: exact bignum/rational coefficients, no-heap
   monomorphization, GUW multivariate mixed partials, reverse-over-Taylor,
@@ -4163,7 +4168,7 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.0-evolve, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.3.1, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:**
 - All 101 special forms and parser operations
