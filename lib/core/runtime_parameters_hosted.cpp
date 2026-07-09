@@ -16,7 +16,13 @@
 #include <cstdint>
 #include <cstdlib>
 
-#define HEAP_SUBTYPE_PARAMETER 20
+// HEAP_SUBTYPE_PARAMETER is defined canonically in inc/eshkol/eshkol.h
+// (heap_subtype_t). It used to be locally #define'd here as 20, which
+// numerically collided with HEAP_SUBTYPE_PRNG (also 20) — since both flow
+// through the same ESHKOL_VALUE_HEAP_PTR dispatch (isHeapSubtype checks,
+// eshkol_format_value_type_tag, display), a parameter object could be
+// misidentified as a PRNG object (e.g. `(prng? a-parameter)` => #t). Fixed
+// by giving HEAP_SUBTYPE_PARAMETER its own id (24) in the canonical table.
 
 extern "C" {
 

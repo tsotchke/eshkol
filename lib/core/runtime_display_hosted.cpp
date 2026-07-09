@@ -349,6 +349,12 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                         (long long)rat->numerator, (long long)rat->denominator);
                     break;
                 }
+                case HEAP_SUBTYPE_PRNG:
+                    fprintf(get_output(opts), "#<prng>");
+                    break;
+                case HEAP_SUBTYPE_PARAMETER:
+                    fprintf(get_output(opts), "#<parameter>");
+                    break;
                 default:
                     fprintf(get_output(opts), "#<heap:%d>", header->subtype);
                     break;
