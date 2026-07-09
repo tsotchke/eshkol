@@ -131,6 +131,13 @@ build-xla/
 build-*/
 deps/
 
+# Fuzz harness disk-budget hygiene (tests/fuzz/): artifact/corpus dirs
+# are capped and pruned by the harnesses themselves, but never tracked —
+# see tests/fuzz/reader_fuzz_driver.cpp and scripts/run_reader_fuzz.sh.
+fuzz-artifacts/
+tests/fuzz/fuzz-artifacts/
+tests/fuzz/corpus-*/
+
 
 compile_commands.json
 .aider*
