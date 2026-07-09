@@ -12,6 +12,13 @@
 #include <cstddef>
 #include <cstdint>
 
+/**
+ * @brief Allocate a single tagged cons cell with both car and cdr initialized to NULL.
+ *
+ * @param arena Arena to allocate the cell from.
+ * @return      Newly allocated cell (16-byte aligned), or NULL if @p arena
+ *              is NULL or allocation failed.
+ */
 arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate tagged cons cell: null arena");
@@ -39,6 +46,19 @@ arena_tagged_cons_cell_t* arena_allocate_tagged_cons_cell(arena_t* arena) {
     return cell;
 }
 
+/**
+ * @brief Allocate a contiguous array of @p count tagged cons cells, each with car/cdr set to NULL.
+ *
+ * Cheaper than @p count separate calls to arena_allocate_tagged_cons_cell()
+ * when a caller (e.g. list-building codegen) knows the needed length up
+ * front. Checks for multiplication overflow before allocating.
+ *
+ * @param arena Arena to allocate the cells from.
+ * @param count Number of cells to allocate; must be > 0.
+ * @return      Pointer to the first cell in the contiguous array (16-byte
+ *              aligned), or NULL on invalid parameters, overflow, or
+ *              allocation failure.
+ */
 arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_t count) {
     if (!arena || count == 0) {
         eshkol_error("Invalid parameters for batch tagged cons allocation");
@@ -74,6 +94,21 @@ arena_tagged_cons_cell_t* arena_allocate_tagged_cons_batch(arena_t* arena, size_
     return cells;
 }
 
+/**
+ * @brief Allocate a cons cell whose car and cdr are both stored as raw int64 payloads.
+ *
+ * Convenience constructor for the common case where both slots hold an
+ * integer-storage-tagged value (e.g. INT64, BOOL, CHAR); sets each slot's
+ * type tag and int_val directly without going through the generic tagged-value
+ * setters.
+ *
+ * @param arena    Arena to allocate the cell from.
+ * @param car      Raw int64 payload for the car.
+ * @param car_type Type tag to store on the car.
+ * @param cdr      Raw int64 payload for the cdr.
+ * @param cdr_type Type tag to store on the cdr.
+ * @return         Newly allocated cell, or NULL on allocation failure.
+ */
 arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
                                                    int64_t car, uint8_t car_type,
                                                    int64_t cdr, uint8_t cdr_type) {
@@ -88,6 +123,21 @@ arena_tagged_cons_cell_t* arena_create_int64_cons(arena_t* arena,
     return cell;
 }
 
+/**
+ * @brief Allocate a cons cell from raw tagged-data payloads, without validating the type tags.
+ *
+ * Unlike arena_create_int64_cons(), accepts any raw eshkol_tagged_data_t
+ * union payload (int, double, or pointer bits) for car and cdr alongside an
+ * arbitrary type tag, copying the raw bits through unchanged. Used where the
+ * caller already knows the payload/type pairing is consistent.
+ *
+ * @param arena    Arena to allocate the cell from.
+ * @param car      Raw payload for the car.
+ * @param car_type Type tag to store on the car.
+ * @param cdr      Raw payload for the cdr.
+ * @param cdr_type Type tag to store on the cdr.
+ * @return         Newly allocated cell, or NULL on allocation failure.
+ */
 arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
                                                    eshkol_tagged_data_t car, uint8_t car_type,
                                                    eshkol_tagged_data_t cdr, uint8_t cdr_type) {
@@ -103,6 +153,16 @@ arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
     return cell;
 }
 
+/**
+ * @brief Read the car or cdr of a cons cell as an int64, validating the slot's type tag.
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       The slot's int_val if its type tag is an integer-storage
+ *               type (ESHKOL_IS_INT_STORAGE_TYPE); 0 (with a logged error)
+ *               if @p cell is NULL or the slot does not hold an int-storage
+ *               value.
+ */
 int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot get int64 from null tagged cons cell");
@@ -119,6 +179,15 @@ int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool i
     return tv->data.int_val;
 }
 
+/**
+ * @brief Read the car or cdr of a cons cell as a double, validating the slot's type tag.
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       The slot's double_val if its type tag is a double type
+ *               (ESHKOL_IS_DOUBLE_TYPE); 0.0 (with a logged error) if
+ *               @p cell is NULL or the slot does not hold a double.
+ */
 double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot get double from null tagged cons cell");
@@ -135,6 +204,17 @@ double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool i
     return tv->data.double_val;
 }
 
+/**
+ * @brief Read the car or cdr of a cons cell as a raw pointer value, validating the slot's type tag.
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       0 if the slot's base type is ESHKOL_VALUE_NULL; the slot's
+ *               ptr_val if its type is any pointer type
+ *               (ESHKOL_IS_ANY_PTR_TYPE); 0 (with a logged error) if
+ *               @p cell is NULL or the slot holds neither NULL nor a
+ *               pointer type.
+ */
 uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot get pointer from null tagged cons cell");
@@ -157,6 +237,16 @@ uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is
     return tv->data.ptr_val;
 }
 
+/**
+ * @brief Set the car or cdr of a cons cell to an int64 value, validating @p type.
+ *
+ * @param cell   Cons cell to modify.
+ * @param is_cdr false to set the car, true to set the cdr.
+ * @param value  Integer value to store.
+ * @param type   Type tag to store; must be an integer-storage type
+ *               (ESHKOL_IS_INT_STORAGE_TYPE) or the call is rejected (logged
+ *               error, cell left unchanged).
+ */
 void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                   int64_t value, uint8_t type) {
     if (!cell) {
@@ -174,6 +264,16 @@ void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
     tv->data.int_val = value;
 }
 
+/**
+ * @brief Set the car or cdr of a cons cell to a double value, validating @p type.
+ *
+ * @param cell   Cons cell to modify.
+ * @param is_cdr false to set the car, true to set the cdr.
+ * @param value  Double value to store.
+ * @param type   Type tag to store; must be a double type
+ *               (ESHKOL_IS_DOUBLE_TYPE) or the call is rejected (logged
+ *               error, cell left unchanged).
+ */
 void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                    double value, uint8_t type) {
     if (!cell) {
@@ -191,6 +291,16 @@ void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
     tv->data.double_val = value;
 }
 
+/**
+ * @brief Set the car or cdr of a cons cell to a raw pointer value, validating @p type.
+ *
+ * @param cell   Cons cell to modify.
+ * @param is_cdr false to set the car, true to set the cdr.
+ * @param value  Pointer value (as uint64_t) to store.
+ * @param type   Type tag to store; must be a pointer type
+ *               (ESHKOL_IS_ANY_PTR_TYPE) or the call is rejected (logged
+ *               error, cell left unchanged).
+ */
 void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                 uint64_t value, uint8_t type) {
     if (!cell) {
@@ -208,6 +318,12 @@ void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
     tv->data.ptr_val = value;
 }
 
+/**
+ * @brief Set the car or cdr of a cons cell to the tagged empty-list ('()) value.
+ *
+ * @param cell   Cons cell to modify (no-op, logged error, if NULL).
+ * @param is_cdr false to set the car, true to set the cdr.
+ */
 void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot set null on null tagged cons cell");
@@ -219,6 +335,14 @@ void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr) {
     tv->data.raw_val = 0;
 }
 
+/**
+ * @brief Read the raw type tag stored on the car or cdr of a cons cell.
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       The slot's type tag, or ESHKOL_VALUE_NULL (with a logged
+ *               error) if @p cell is NULL.
+ */
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot get type from null tagged cons cell");
@@ -229,6 +353,14 @@ uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is
     return tv->type;
 }
 
+/**
+ * @brief Read the flags byte stored on the car or cdr of a cons cell.
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       The slot's flags byte, or 0 (with a logged error) if
+ *               @p cell is NULL.
+ */
 uint8_t arena_tagged_cons_get_flags(const arena_tagged_cons_cell_t* cell, bool is_cdr) {
     if (!cell) {
         eshkol_error("Cannot get flags from null tagged cons cell");
@@ -239,6 +371,19 @@ uint8_t arena_tagged_cons_get_flags(const arena_tagged_cons_cell_t* cell, bool i
     return tv->flags;
 }
 
+/**
+ * @brief Test whether the car or cdr of a cons cell has a given base type.
+ *
+ * Compares base types via ESHKOL_GET_BASE_TYPE on both sides, so flag bits
+ * set on either the slot's stored type or @p type do not affect the
+ * comparison.
+ *
+ * @param cell   Cons cell to inspect (returns false if NULL).
+ * @param is_cdr false to inspect the car, true to inspect the cdr.
+ * @param type   Type to compare against (base type extracted before
+ *               comparing).
+ * @return       true if the slot's base type matches @p type's base type.
+ */
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type) {
     if (!cell) return false;
 
@@ -247,6 +392,13 @@ bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr
     return ESHKOL_GET_BASE_TYPE(actual_type) == ESHKOL_GET_BASE_TYPE(type);
 }
 
+/**
+ * @brief Overwrite the car or cdr of a cons cell with a full tagged value (type + payload + flags).
+ *
+ * @param cell   Cons cell to modify (no-op, logged error, if NULL).
+ * @param is_cdr false to set the car, true to set the cdr.
+ * @param value  Tagged value to copy in (no-op, logged error, if NULL).
+ */
 void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
                                          bool is_cdr,
                                          const eshkol_tagged_value_t* value) {
@@ -262,6 +414,15 @@ void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
     }
 }
 
+/**
+ * @brief Read the car or cdr of a cons cell as a full tagged value (by copy).
+ *
+ * @param cell   Cons cell to read from.
+ * @param is_cdr false to read the car, true to read the cdr.
+ * @return       A copy of the requested slot's tagged value, or a
+ *               NULL-typed tagged value (with a logged error) if @p cell is
+ *               NULL.
+ */
 eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
                                                           bool is_cdr) {
     if (!cell) {

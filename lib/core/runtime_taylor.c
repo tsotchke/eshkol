@@ -165,6 +165,7 @@ esh_taylor_t* eshkol_taylor_alloc_exact(arena_t* arena, uint32_t order_k, uint32
     return t;
 }
 
+/** @brief True iff tower `t` stores EXACT-COEFFICIENT (rational/bignum/int64) coefficients rather than raw doubles. */
 static inline int taylor_is_exact(const esh_taylor_t* t) {
     return t != NULL && (t->flags & ESH_TAYLOR_COEFF_MASK) == ESH_TAYLOR_COEFF_RATIONAL;
 }
@@ -174,6 +175,7 @@ static inline int taylor_is_exact(const esh_taylor_t* t) {
 static inline eshkol_tagged_value_t* taylor_exact_c(esh_taylor_t* t) {
     return (eshkol_tagged_value_t*)(void*)t->c;
 }
+/** @brief Const-qualified counterpart of taylor_exact_c(): reinterpret an EXACT tower's coefficient storage as tagged values. */
 static inline const eshkol_tagged_value_t* taylor_exact_c_const(const esh_taylor_t* t) {
     return (const eshkol_tagged_value_t*)(const void*)t->c;
 }
@@ -189,18 +191,26 @@ static int tagged_is_exact_number(const eshkol_tagged_value_t* v) {
     }
     return 0;
 }
+/** @brief True iff tagged value `v` is a heap pointer to a bignum object. */
 static inline int tagged_is_bignum(const eshkol_tagged_value_t* v) {
     uint8_t bt = (uint8_t)(v->type & 0x0F);
     if (bt != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0) return 0;
     const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
     return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_BIGNUM;
 }
+/** @brief True iff tagged value `v` is a heap pointer to a rational object. */
 static inline int tagged_is_rational(const eshkol_tagged_value_t* v) {
     uint8_t bt = (uint8_t)(v->type & 0x0F);
     if (bt != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0) return 0;
     const eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
     return hdr != NULL && hdr->subtype == HEAP_SUBTYPE_RATIONAL;
 }
+/**
+ * @brief True iff exact tagged value `v` (int64, bignum, or rational) is negative.
+ *
+ * Used to fix the sign of the base point when computing the exact-tower
+ * `abs` recurrence.
+ */
 static inline int tagged_is_negative_exact(const eshkol_tagged_value_t* v) {
     if (tagged_is_bignum(v)) return eshkol_bignum_is_negative((eshkol_bignum_t*)(uintptr_t)v->data.ptr_val);
     if (tagged_is_rational(v)) return eshkol_rational_numerator((void*)(uintptr_t)v->data.ptr_val) < 0;
@@ -264,11 +274,16 @@ static eshkol_tagged_value_t exact_binary(arena_t* arena, eshkol_tagged_value_t 
     eshkol_rational_binary_tagged_ptr((void*)arena, &a, &b, op, &r);
     return r;
 }
+/** @brief Exact addition: dispatches to exact_binary() with op=0 (add). */
 static inline eshkol_tagged_value_t exact_add(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 0); }
+/** @brief Exact subtraction: dispatches to exact_binary() with op=1 (sub). */
 static inline eshkol_tagged_value_t exact_sub(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 1); }
+/** @brief Exact multiplication: dispatches to exact_binary() with op=2 (mul). */
 static inline eshkol_tagged_value_t exact_mul(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 2); }
+/** @brief Exact division: dispatches to exact_binary() with op=3 (div). */
 static inline eshkol_tagged_value_t exact_div(arena_t* ar, eshkol_tagged_value_t a, eshkol_tagged_value_t b) { return exact_binary(ar, a, b, 3); }
 
+/** @brief Allocate an uninitialised array of `n` tagged-value coefficients from `arena`, used as EXACT-tower scratch/result storage. */
 static eshkol_tagged_value_t* alloc_exact_series(arena_t* arena, int n) {
     return (eshkol_tagged_value_t*)arena_allocate(arena, (size_t)n * sizeof(eshkol_tagged_value_t));
 }
@@ -301,6 +316,12 @@ static void taylor_materialize_exact_or_demote(arena_t* arena, const eshkol_tagg
     *result = v;
 }
 
+/**
+ * @brief Wrap a Taylor tower pointer `t` in an inexact heap-pointer tagged value.
+ *
+ * Used to return a freshly allocated (or existing) tower from the
+ * binary/unary/seed/shift helpers as an eshkol_tagged_value_t.
+ */
 static inline eshkol_tagged_value_t taylor_to_tagged(const esh_taylor_t* t) {
     eshkol_tagged_value_t v;
     memset(&v, 0, sizeof(v));
@@ -321,6 +342,11 @@ static inline esh_taylor_t* tagged_as_taylor(const eshkol_tagged_value_t* tv) {
     return (esh_taylor_t*)ptr;
 }
 
+/**
+ * @brief Predicate: does tagged value `tv` reference a Taylor tower object?
+ * @param tv  Tagged value to inspect.
+ * @return    Non-zero if `tv` is a heap pointer to a HEAP_SUBTYPE_TAYLOR object.
+ */
 int eshkol_is_taylor_tagged(const eshkol_tagged_value_t* tv) {
     return tagged_as_taylor(tv) != NULL;
 }
@@ -348,12 +374,15 @@ double eshkol_taylor_c0(const eshkol_tagged_value_t* tv) {
 /* recurrences (operate on raw coefficient arrays, n = K+1 entries)         */
 /* ----------------------------------------------------------------------- */
 
+/** @brief s = u + w, elementwise over n Taylor coefficients. */
 static void tr_add(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) s[k] = u[k] + w[k];
 }
+/** @brief s = u - w, elementwise over n Taylor coefficients. */
 static void tr_sub(double* s, const double* u, const double* w, int n) {
     for (int k = 0; k < n; k++) s[k] = u[k] - w[k];
 }
+/** @brief s = -u, elementwise negation of n Taylor coefficients. */
 static void tr_neg(double* s, const double* u, int n) {
     for (int k = 0; k < n; k++) s[k] = -u[k];
 }
@@ -461,10 +490,12 @@ static void tr_conv(double* s, const double* a, const double* b, int n) {
 /* that is identical to ordinary add/sub/mul/div contagion.                */
 /* ----------------------------------------------------------------------- */
 
+/** @brief Exact-coefficient counterpart of tr_add(): s = u + w via exact_add() over n coefficients. */
 static void tre_add(arena_t* ar, eshkol_tagged_value_t* s,
                     const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
     for (int k = 0; k < n; k++) s[k] = exact_add(ar, u[k], w[k]);
 }
+/** @brief Exact-coefficient counterpart of tr_sub(): s = u - w via exact_sub() over n coefficients. */
 static void tre_sub(arena_t* ar, eshkol_tagged_value_t* s,
                     const eshkol_tagged_value_t* u, const eshkol_tagged_value_t* w, int n) {
     for (int k = 0; k < n; k++) s[k] = exact_sub(ar, u[k], w[k]);
@@ -516,15 +547,18 @@ static void ddual_mul(double* sv, double* st, const double* uv, const double* ut
     tr_mul(sv, uv, wv, n);
     trd_mul(st, uv, ut, wv, wt, n);
 }
+/** @brief Dual (value + tangent) division: sv = uv/wv via tr_div(), then its seed-tangent st via trd_div(). */
 static void ddual_div(double* sv, double* st, const double* uv, const double* ut,
                       const double* wv, const double* wt, int n) {
     tr_div(sv, uv, wv, n);
     trd_div(st, sv, ut, wv, wt, n);
 }
+/** @brief Dual (value + tangent) exp: sv = exp(uv) via tr_exp(); tangent st = (exp u)' = exp(u)*u' via convolution. */
 static void ddual_exp(double* sv, double* st, const double* uv, const double* ut, int n) {
     tr_exp(sv, uv, n);
     tr_conv(st, sv, ut, n);                 /* (exp u)' = exp(u)·u' */
 }
+/** @brief Dual (value + tangent) log: sv = log(uv) via tr_log(); tangent st = (log u)' = u'/u via tr_div(). */
 static void ddual_log(double* sv, double* st, const double* uv, const double* ut, int n) {
     tr_log(sv, uv, n);
     tr_div(st, ut, uv, n);                  /* (log u)' = u'/u */
@@ -812,6 +846,34 @@ static void normalise_operand_dual(const eshkol_tagged_value_t* tv, uint32_t act
 /* tagged binary / unary dispatch (called from codegen)                     */
 /* ----------------------------------------------------------------------- */
 
+/**
+ * @brief Apply a binary op (add/sub/mul/div/pow) to two Taylor-tower and/or
+ *        scalar operands; entry point called from codegen's numeric dispatch.
+ *
+ * Determines the result's order and active epoch from whichever operand(s)
+ * are towers (result_shape()), then routes to one of three tiers, in
+ * priority order:
+ *   1. Dual (value + first-order seed-tangent) path, when either operand
+ *      carries a tangent (reverse-over-Taylor, P5/ESH-0190): both series are
+ *      propagated via the ddual_* recurrences (or tr_add/tr_sub for
+ *      add/sub, which are already linear).
+ *   2. Exact-coefficient path, when both operands are exact at the active
+ *      epoch (P6/ESH-0191): add/sub/mul/div and non-negative-integer pow
+ *      stay exact via taylor_binary_exact()/taylor_pow_exact(); any other
+ *      op/exponent shape falls through to the next tier.
+ *   3. General COEFF_F64 path: normalises both operands to raw double
+ *      coefficient arrays (normalise_operand()) and applies the tr_*
+ *      recurrence for the op, with pow using tr_pow_const() for a constant
+ *      exponent or u^w = exp(w*log(u)) otherwise.
+ *
+ * `arena` defaults to the global arena when NULL.
+ *
+ * @param arena   Allocation arena for any new tower/scratch storage (or NULL for global).
+ * @param left    Left operand: a Taylor tower or a plain scalar tagged value.
+ * @param right   Right operand: a Taylor tower or a plain scalar tagged value.
+ * @param op      One of the ESH_TAYLOR_OP_* op-codes (add/sub/mul/div/pow).
+ * @param result  Out-parameter receiving the tagged result.
+ */
 void eshkol_taylor_binary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
@@ -947,6 +1009,32 @@ void eshkol_taylor_binary_tagged(arena_t* arena,
     *result = taylor_to_tagged(out);
 }
 
+/**
+ * @brief Apply a unary op (neg/exp/log/sin/cos/tan/sqrt/abs/sinh/cosh/tanh) to
+ *        a Taylor-tower or scalar operand; entry point called from codegen's
+ *        numeric dispatch.
+ *
+ * Mirrors eshkol_taylor_binary_tagged()'s three-tier dispatch:
+ *   1. Dual (value + seed-tangent) path when the operand carries a tangent
+ *      (P5/ESH-0190), via the ddual_* recurrences (sin/cos/tan/sinh/cosh/tanh
+ *      are composed from ddual_exp/ddual_log/ddual_sincos/ddual_div/
+ *      ddual_pow_const, mirroring the F64 tier's composition below).
+ *   2. Exact-coefficient path (P6/ESH-0191), applicable only to neg/abs --
+ *      the only unary ops that stay exact (every transcendental primitive
+ *      here is irrational even at an exact base point, so those always
+ *      demote to F64 via normalise_operand()).
+ *   3. General COEFF_F64 path: normalises the operand (normalise_operand())
+ *      and applies the matching tr_* recurrence; sin/cos/tan/sinh/cosh/tanh
+ *      are composed from tr_sincos()/tr_exp()/tr_div()/tr_pow_const().
+ *
+ * `arena` defaults to the global arena when NULL. A non-tower operand
+ * produces an order-0 result.
+ *
+ * @param arena   Allocation arena for any new tower/scratch storage (or NULL for global).
+ * @param in      Operand: a Taylor tower or a plain scalar tagged value.
+ * @param op      One of the ESH_TAYLOR_UOP_* op-codes.
+ * @param result  Out-parameter receiving the tagged result.
+ */
 void eshkol_taylor_unary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* in, int op, eshkol_tagged_value_t* result) {
     if (!arena) arena = get_global_arena();
@@ -1163,6 +1251,7 @@ void eshkol_taylor_unary_tagged(arena_t* arena,
  * (scalars / constants); every fresh differentiation context gets >= 1. */
 #ifdef __cplusplus
 static std::atomic<uint32_t> g_taylor_epoch{0};
+/** @brief Atomically allocate and return the next process-wide Taylor differentiation epoch tag (1..0xFFFF, wrapping, never 0). */
 uint32_t eshkol_taylor_next_epoch(void) {
     uint32_t e = g_taylor_epoch.fetch_add(1) + 1;
     /* 16-bit tag: wrap back to 1 (never 0). */
@@ -1170,6 +1259,7 @@ uint32_t eshkol_taylor_next_epoch(void) {
 }
 #else
 static uint32_t g_taylor_epoch = 0;
+/** @brief Allocate and return the next process-wide Taylor differentiation epoch tag (1..0xFFFF, wrapping, never 0). */
 uint32_t eshkol_taylor_next_epoch(void) {
     uint32_t e = ++g_taylor_epoch;
     return ((e - 1) & 0xFFFFu) + 1;
@@ -1234,6 +1324,7 @@ void eshkol_taylor_seed_tagged(arena_t* arena, const eshkol_tagged_value_t* poin
     eshkol_taylor_seed(arena, x0, 1, (uint32_t)order_k, epoch, out);
 }
 
+/** @brief Compute n! as a double, used to convert Taylor coefficient c[n] to the n-th derivative f^(n)(x0) = n! * c[n]. */
 static double factorial_d(uint32_t n) {
     double f = 1.0;
     for (uint32_t i = 2; i <= n; i++) f *= (double)i;

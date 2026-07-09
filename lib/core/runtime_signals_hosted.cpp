@@ -89,6 +89,18 @@ bool g_altstack_installed = false;  // true only if WE installed the altstack
 #endif
 bool g_signals_installed = false;
 
+/**
+ * @brief Write a fixed-length message to stderr using only async-signal-safe
+ * primitives.
+ *
+ * Uses raw write()/`_write()` (never fprintf/printf, which are not
+ * async-signal-safe and may allocate or take locks) so this can be called
+ * safely from inside a signal handler such as eshkol_signal_handler() or
+ * eshkol_fatal_signal_handler().
+ *
+ * @param msg      Buffer to write; not required to be null-terminated.
+ * @param msg_len  Number of bytes from `msg` to write.
+ */
 inline void eshkol_signal_safe_write(const char* msg, size_t msg_len) {
 #ifdef _WIN32
     (void)_write(kEshkolStderrFd, msg, (unsigned int)msg_len);
@@ -97,11 +109,22 @@ inline void eshkol_signal_safe_write(const char* msg, size_t msg_len) {
 #endif
 }
 
+/**
+ * @brief Terminate the process immediately using the async-signal-safe
+ * `_exit()`, bypassing atexit handlers and stdio buffer flushing.
+ *
+ * Used from signal-handling code paths where std::exit()'s cleanup work
+ * would not be safe to run (e.g. after a fatal signal or a forced
+ * second-Ctrl-C exit).
+ *
+ * @param code  Process exit status.
+ */
 [[noreturn]] inline void eshkol_signal_safe_exit(int code) {
     _exit(code);
 }
 
 #ifdef _WIN32
+/** @brief Map a Windows structured-exception code to a human-readable name for diagnostic output. */
 const char* eshkol_exception_code_name(DWORD code) {
     switch (code) {
         case EXCEPTION_ACCESS_VIOLATION: return "EXCEPTION_ACCESS_VIOLATION";
@@ -118,6 +141,22 @@ const char* eshkol_exception_code_name(DWORD code) {
     }
 }
 
+/**
+ * @brief Windows top-level unhandled-exception filter installed via
+ * SetUnhandledExceptionFilter(), the Windows analog of the POSIX fatal
+ * signal handler below.
+ *
+ * Guards against re-entrancy with g_handling_unhandled_exception (a second
+ * concurrent exception during handling terminates the process immediately
+ * with the second exception's code), then prints the exception code, its
+ * name (via eshkol_exception_code_name()), and fault address to stderr,
+ * dumps a stack trace, flushes logs/stderr, and terminates the process with
+ * the exception code as exit status.
+ *
+ * @param exception_info  Exception context supplied by Windows; may be NULL.
+ * @return                EXCEPTION_EXECUTE_HANDLER (unreachable in practice
+ *                         since TerminateProcess() does not return).
+ */
 LONG WINAPI eshkol_unhandled_exception_filter(EXCEPTION_POINTERS* exception_info) {
     bool expected = false;
     if (!g_handling_unhandled_exception.compare_exchange_strong(expected, true)) {
@@ -244,6 +283,22 @@ void eshkol_fatal_signal_handler(int signum, siginfo_t* info, void* /*ucontext*/
 }
 #endif  // !_WIN32
 
+/**
+ * @brief Handler for the graceful-shutdown signals (SIGINT/SIGTERM on POSIX;
+ * installed via std::signal() on Windows).
+ *
+ * Async-signal-safe: only touches `volatile sig_atomic_t` globals
+ * (g_eshkol_interrupt_flag, g_sig_shutdown_reason, g_sig_runtime_state —
+ * never std::atomic, which C++ does not guarantee is async-signal-safe) and
+ * writes a fixed diagnostic message via eshkol_signal_safe_write() (raw
+ * write(), not fprintf). On a second signal received while already
+ * shutting down, it forces an immediate process exit via
+ * eshkol_signal_safe_exit() with the conventional 128+signum status instead
+ * of waiting for graceful shutdown again.
+ *
+ * @param signum  The signal number that was delivered (SIGINT, SIGTERM, or
+ *                 another handled signal).
+ */
 void eshkol_signal_handler(int signum) {
     // Set the volatile flag (signal-safe: volatile sig_atomic_t)
     g_eshkol_interrupt_flag = 1;
@@ -290,6 +345,29 @@ void eshkol_signal_handler(int signum) {
 
 extern "C" {
 
+/**
+ * @brief Install the runtime's signal/exception handlers for graceful and
+ * fatal termination; idempotent (no-op if already installed).
+ *
+ * On Windows: installs eshkol_signal_handler() for SIGINT/SIGTERM, ignores
+ * SIGPIPE, and registers eshkol_unhandled_exception_filter() as the
+ * top-level unhandled-exception filter.
+ *
+ * On POSIX: installs eshkol_signal_handler() for SIGINT/SIGTERM (without
+ * SA_RESTART, so blocking syscalls are interrupted rather than
+ * transparently restarted) and ignores SIGPIPE. Unless compiled under a
+ * sanitizer (ESHKOL_UNDER_SANITIZER — ASan/TSan/MSan install their own fatal
+ * handlers and we must not fight them), it also installs an alternate
+ * signal stack (reusing one if already present) and registers
+ * eshkol_fatal_signal_handler() for SIGSEGV/SIGBUS/SIGILL/SIGFPE with
+ * SA_SIGINFO and, when the altstack is available, SA_ONSTACK, so the
+ * handler can still run after a stack-overflow crash. SIGABRT is
+ * deliberately left on its default disposition (see the comment at its
+ * `(void)` cast below).
+ *
+ * Failures to install any individual handler are logged via eshkol_warn()
+ * and do not prevent the rest of installation from proceeding.
+ */
 void eshkol_runtime_init_signals(void) {
     if (g_signals_installed) {
         return;
@@ -429,6 +507,15 @@ void eshkol_runtime_init_signals(void) {
     eshkol_debug("Signal handlers installed");
 }
 
+/**
+ * @brief Undo eshkol_runtime_init_signals(): restore all previously-saved
+ * signal/exception dispositions and tear down the alternate signal stack.
+ *
+ * No-op if handlers were never installed (or have already been restored).
+ * Frees g_altstack_mem and restores the previous altstack only if this
+ * runtime instance installed its own (g_altstack_installed), so it never
+ * clobbers an altstack that pre-existed before eshkol_runtime_init_signals().
+ */
 void eshkol_runtime_restore_signals(void) {
     if (!g_signals_installed) {
         return;
@@ -477,10 +564,29 @@ void eshkol_runtime_restore_signals(void) {
 
 namespace eshkol::runtime_hosted {
 
+/**
+ * @brief Update the signal-safe shadow of the runtime's lifecycle state.
+ *
+ * This mirrors the runtime's main (non-signal-safe) state tracking into the
+ * `volatile sig_atomic_t` variable that eshkol_signal_handler() is allowed
+ * to read, so the handler can tell whether a shutdown is already in
+ * progress without touching std::atomic.
+ *
+ * @param state  New runtime lifecycle state.
+ */
 void set_signal_runtime_state(eshkol_runtime_state_t state) {
     g_sig_runtime_state = (sig_atomic_t)state;
 }
 
+/**
+ * @brief Update the signal-safe shadow of the runtime's shutdown reason.
+ *
+ * Mirrors the shutdown reason into the `volatile sig_atomic_t` variable
+ * readable from within a signal handler, analogous to
+ * set_signal_runtime_state().
+ *
+ * @param reason  New shutdown reason.
+ */
 void set_signal_shutdown_reason(eshkol_shutdown_reason_t reason) {
     g_sig_shutdown_reason = (sig_atomic_t)reason;
 }

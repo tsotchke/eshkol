@@ -19,6 +19,16 @@ extern "C" {
 
 extern void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...);
 
+/**
+ * @brief Test whether a tagged value denotes a live (non-null) cons cell.
+ *
+ * Accepts either the dedicated ESHKOL_VALUE_CONS_PTR tag (with a non-zero
+ * pointer) or a generic ESHKOL_VALUE_HEAP_PTR whose object header reports
+ * HEAP_SUBTYPE_CONS.
+ *
+ * @param value Value to test (may be NULL).
+ * @return      true if @p value is a non-null pointer to a cons cell.
+ */
 static bool tagged_is_cons(const eshkol_tagged_value_t* value) {
     if (!value) return false;
     if (value->type == ESHKOL_VALUE_CONS_PTR) return value->data.ptr_val != 0;
@@ -29,6 +39,7 @@ static bool tagged_is_cons(const eshkol_tagged_value_t* value) {
     return header && header->subtype == HEAP_SUBTYPE_CONS;
 }
 
+/** @brief Overwrite *out in place with the tagged representation of the empty list ('()). */
 static void set_null_tagged(eshkol_tagged_value_t* out) {
     out->type = ESHKOL_VALUE_NULL;
     out->flags = 0;
@@ -36,6 +47,7 @@ static void set_null_tagged(eshkol_tagged_value_t* out) {
     out->data.ptr_val = 0;
 }
 
+/** @brief Overwrite *out in place with a HEAP_PTR tagged value pointing at @p cell. */
 static void set_cons_tagged(eshkol_tagged_value_t* out,
                             arena_tagged_cons_cell_t* cell) {
     out->type = ESHKOL_VALUE_HEAP_PTR;
@@ -252,6 +264,18 @@ int64_t eshkol_ad_extract_doubles(const eshkol_tagged_value_t* input,
 static thread_local int64_t __eshkol_recursion_depth = 0;
 static const int64_t ESHKOL_MAX_RECURSION_DEPTH = 100000;  // 100K frames
 
+/**
+ * @brief Increment and check the calling thread's recursion-depth counter.
+ *
+ * Emitted inline by codegen at the entry of recursive-call sites to guard
+ * against native stack overflow. If the counter exceeds
+ * ESHKOL_MAX_RECURSION_DEPTH (100,000), resets it to 0 and raises a fatal
+ * ESHKOL_EXCEPTION_ERROR rather than letting the recursion continue.
+ *
+ * @return The thread-local recursion depth after incrementing (only
+ *         reachable if under the limit; otherwise this call does not
+ *         return normally).
+ */
 int64_t eshkol_check_recursion_depth(void) {
     __eshkol_recursion_depth++;
     if (__eshkol_recursion_depth > ESHKOL_MAX_RECURSION_DEPTH) {
@@ -263,6 +287,7 @@ int64_t eshkol_check_recursion_depth(void) {
     return __eshkol_recursion_depth;
 }
 
+/** @brief Decrement the calling thread's recursion-depth counter on return from a guarded call (no-op if already 0). */
 void eshkol_decrement_recursion_depth(void) {
     if (__eshkol_recursion_depth > 0) {
         __eshkol_recursion_depth--;
@@ -401,6 +426,14 @@ void eshkol_list_to_vector_sret(eshkol_tagged_value_t* out,
     out->data.ptr_val = (uint64_t)(uintptr_t)vec;
 }
 
+/**
+ * @brief Raise a fatal out-of-bounds-index error from codegen-generated index checks.
+ *
+ * @param op_name Name of the offending operation (e.g. "list-ref",
+ *                "vector-ref"), or a default message if NULL.
+ * @param idx     Index that was out of bounds.
+ * @param length  Length of the collection being indexed.
+ */
 void eshkol_raise_index_oob(const char* op_name, int64_t idx, int64_t length) {
     eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                          "%s: index %lld out of bounds (length=%lld)",
@@ -418,6 +451,7 @@ void eshkol_raise_improper_list(const char* msg) {
                          msg ? msg : "improper list");
 }
 
+/** @brief Reset the calling thread's recursion-depth counter to 0 (e.g. after recovering from a caught exception). */
 void eshkol_reset_recursion_depth(void) {
     __eshkol_recursion_depth = 0;
 }
