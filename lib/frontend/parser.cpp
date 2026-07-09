@@ -55,6 +55,20 @@ static thread_local uint32_t g_stream_column = 1;
 // Stack space check: detect remaining stack and bail before overflow.
 // Uses platform APIs to measure actual stack consumption rather than
 // imposing an arbitrary depth limit.
+/**
+ * @brief Checks whether the current thread has enough remaining stack space
+ * to safely continue recursive parsing.
+ *
+ * Uses platform-specific APIs (pthread stack introspection on macOS/Linux)
+ * to measure how much of the thread's stack has actually been consumed,
+ * rather than imposing an arbitrary recursion-depth limit. Reserves a fixed
+ * @c STACK_SAFETY_MARGIN (64 KB) below the top of the stack.
+ *
+ * @return true if there is still more than the safety margin of stack space
+ *         free (or the check is unsupported/unavailable on this platform,
+ *         in which case it conservatively returns true); false if the
+ *         thread is at risk of stack overflow and parsing should bail out.
+ */
 static bool check_stack_space() {
     static const size_t STACK_SAFETY_MARGIN = 65536; // 64 KB reserved
 #ifdef _WIN32
@@ -864,6 +878,13 @@ private:
 
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 
+/**
+ * @brief Builds an eshkol_ast_t string-literal node from a C++ string.
+ *
+ * Heap-allocates a NUL-terminated copy of @p value and wires it into the
+ * AST via eshkol_ast_make_string(), stamping the node with the given
+ * source @p line and @p column for diagnostics.
+ */
 static eshkol_ast_t make_parser_string_ast(const std::string& value,
                                            uint32_t line,
                                            uint32_t column) {
@@ -877,6 +898,12 @@ static eshkol_ast_t make_parser_string_ast(const std::string& value,
     return ast;
 }
 
+/**
+ * @brief Builds an ESHKOL_VAR AST node referencing the symbol @p name.
+ *
+ * Heap-allocates a NUL-terminated copy of @p name for ast.variable.id and
+ * stamps the node with @p line / @p column.
+ */
 static eshkol_ast_t make_parser_var_ast(const char* name,
                                         uint32_t line,
                                         uint32_t column) {
@@ -891,6 +918,16 @@ static eshkol_ast_t make_parser_var_ast(const char* name,
     return ast;
 }
 
+/**
+ * @brief Builds an ESHKOL_CALL_OP AST node calling the function named @p name
+ * with the given @p args.
+ *
+ * Synthesizes a variable-reference AST node for @p name as the callee and
+ * copies @p args into a heap-allocated array, producing the same shape a
+ * parsed `(name arg...)` form would produce. Used by the parser to inject
+ * synthetic calls (e.g. to helper procedures such as "list", "format",
+ * "string-append") that don't come directly from source text.
+ */
 static eshkol_ast_t make_parser_call_ast(const char* name,
                                          const std::vector<eshkol_ast_t>& args,
                                          uint32_t line,
@@ -921,17 +958,37 @@ struct KeywordFormal {
     uint32_t column;
 };
 
+/**
+ * @brief Heap-allocates a NUL-terminated copy of @p value.
+ *
+ * @return Newly allocated buffer owned by the caller, or nullptr on
+ *         allocation failure.
+ */
 static char* copy_parser_string(const std::string& value) {
     char* out = new char[value.size() + 1];
     if (out) memcpy(out, value.c_str(), value.size() + 1);
     return out;
 }
 
+/**
+ * @brief Generates a unique synthetic parameter name for the "rest" argument
+ * that collects keyword arguments not bound to an explicit formal.
+ *
+ * The name is derived from @p line and @p column so it cannot collide with
+ * any other synthetic or user-written identifier at a different source
+ * location.
+ */
 static std::string make_keyword_rest_name(uint32_t line, uint32_t column) {
     return "__eshkol_kw_rest_" + std::to_string(line) + "_" +
            std::to_string(column);
 }
 
+/**
+ * @brief Checks whether @p keyword already appears among @p formals.
+ *
+ * Used to detect duplicate `#:keyword` formal parameters in a lambda/define
+ * argument list.
+ */
 static bool has_keyword_formal(const std::vector<KeywordFormal>& formals,
                                const std::string& keyword) {
     for (const KeywordFormal& formal : formals) {
@@ -940,6 +997,15 @@ static bool has_keyword_formal(const std::vector<KeywordFormal>& formals,
     return false;
 }
 
+/**
+ * @brief Builds an AST node equivalent to `(quote name)` for the symbol
+ * @p name.
+ *
+ * Wraps a synthesized ESHKOL_VAR node for @p name in an ESHKOL_QUOTE_OP,
+ * so the symbol evaluates to itself rather than being looked up as a
+ * variable. Used e.g. to embed keyword-formal names as quoted symbol
+ * literals in synthesized validation calls.
+ */
 static eshkol_ast_t make_parser_quoted_symbol_ast(const std::string& name,
                                                   uint32_t line,
                                                   uint32_t column) {
@@ -957,6 +1023,14 @@ static eshkol_ast_t make_parser_quoted_symbol_ast(const std::string& name,
     return ast;
 }
 
+/**
+ * @brief Builds a `(list 'kw1 'kw2 ...)` AST node enumerating the allowed
+ * keywords from @p formals.
+ *
+ * Used to synthesize the second argument of a `(__keyword-args-validate
+ * rest allowed-list)` call so unrecognized `#:keyword` arguments can be
+ * rejected at run time.
+ */
 static eshkol_ast_t make_keyword_allowed_list_ast(
     const std::vector<KeywordFormal>& formals,
     uint32_t line,
@@ -971,6 +1045,13 @@ static eshkol_ast_t make_keyword_allowed_list_ast(
     return make_parser_call_ast("list", args, line, column);
 }
 
+/**
+ * @brief Builds a single `(name . value)` cons-cell AST node representing
+ * one let-binding.
+ *
+ * @p name becomes an ESHKOL_VAR node stored in the car; @p value (already
+ * a parsed/synthesized AST) is stored in the cdr.
+ */
 static eshkol_ast_t make_parser_binding_ast(const char* name,
                                             eshkol_ast_t value,
                                             uint32_t line,
@@ -986,6 +1067,30 @@ static eshkol_ast_t make_parser_binding_ast(const char* name,
     return binding;
 }
 
+/**
+ * @brief Wraps @p body in a synthesized `let` that destructures keyword
+ * arguments (`#:key val ...`) collected in @p rest_param into their
+ * matching @p formals.
+ *
+ * For each keyword formal, generates a binding that calls the
+ * `__keyword-arg` helper against @p rest_param to fetch that keyword's
+ * value. When @p validate_rest is true, prepends a call to
+ * `__keyword-args-validate` (via an ESHKOL_SEQUENCE_OP) that raises an
+ * error if @p rest_param contains any keyword not present in @p formals.
+ * If @p formals is empty, returns @p body unchanged.
+ *
+ * @param formals        Keyword formal parameters to bind (keyword name,
+ *                        local parameter name, and source location).
+ * @param rest_param      Name of the synthetic rest-argument variable
+ *                        (see make_keyword_rest_name()) holding the raw
+ *                        keyword-argument list at run time.
+ * @param body            Original lambda/define body to wrap.
+ * @param validate_rest   Whether to emit a run-time check rejecting
+ *                        unknown keywords.
+ * @param line, column    Source location used for the synthesized nodes.
+ * @return The original @p body when there are no keyword formals,
+ *         otherwise a synthesized ESHKOL_LET_OP node.
+ */
 static eshkol_ast_t wrap_keyword_formal_body(
     const std::vector<KeywordFormal>& formals,
     const char* rest_param,
@@ -1043,6 +1148,10 @@ static eshkol_ast_t wrap_keyword_formal_body(
     return ast;
 }
 
+/**
+ * @brief Returns true if @p value is empty or contains only whitespace
+ * characters.
+ */
 static bool is_blank_string(const std::string& value) {
     for (char c : value) {
         if (!std::isspace(static_cast<unsigned char>(c))) return false;
@@ -1050,6 +1159,18 @@ static bool is_blank_string(const std::string& value) {
     return true;
 }
 
+/**
+ * @brief Parses the Scheme expression embedded in a `~{...}`-style string
+ * interpolation placeholder and wraps it in a `(format "~a" expr)` call.
+ *
+ * @p source is the raw text between the interpolation delimiters. Rejects
+ * blank/empty expressions and expressions that don't parse to exactly one
+ * complete form (any trailing tokens after the first expression are an
+ * error). @p token is used only for diagnostic source-location reporting.
+ *
+ * @return The synthesized `(format "~a" expr)` call AST, or an
+ *         ESHKOL_INVALID node (with an error already reported) on failure.
+ */
 static eshkol_ast_t parse_string_interpolation_expr(const Token& token,
                                                     const std::string& source) {
     if (is_blank_string(source)) {
@@ -1076,6 +1197,23 @@ static eshkol_ast_t parse_string_interpolation_expr(const Token& token,
     return make_parser_call_ast("format", args, token.line, token.column);
 }
 
+/**
+ * @brief Converts a (possibly interpolated) string token into its AST
+ * representation.
+ *
+ * String tokens containing embedded expressions are delimited internally
+ * by the sentinel bytes kStringInterpolationStart/kStringInterpolationEnd
+ * (inserted by the tokenizer). Splits @p token's value on those markers
+ * into literal text segments and interpolated-expression segments (each
+ * parsed via parse_string_interpolation_expr()), then joins them with a
+ * synthesized `(string-append ...)` call. Tokens with no interpolation
+ * markers are returned as a plain string-literal AST unchanged. Returns a
+ * single string-literal node if only one segment results, or an empty
+ * string literal if the token is empty.
+ *
+ * @return AST node for the (possibly concatenated) string, or
+ *         ESHKOL_INVALID on an unterminated or malformed interpolation.
+ */
 static eshkol_ast_t parse_interpolated_string_token(const Token& token) {
     if (token.value.find(kStringInterpolationStart) == std::string::npos) {
         return make_parser_string_ast(token.value, token.line, token.column);
@@ -1127,6 +1265,33 @@ static eshkol_ast_t parse_interpolated_string_token(const Token& token) {
     return make_parser_call_ast("string-append", parts, token.line, token.column);
 }
 
+/**
+ * @brief Parses a single atomic (non-list) token into its eshkol_ast_t
+ * representation.
+ *
+ * Dispatches on token.type:
+ *  - TOKEN_STRING: delegates to parse_interpolated_string_token().
+ *  - TOKEN_NUMBER: recognizes R7RS special float literals (+inf.0,
+ *    -inf.0, +nan.0/-nan.0); rational literals of the form `num/den`
+ *    (synthesized as a `(make-rational num den)` call); floating-point
+ *    literals (containing '.', 'e', or 'E', parsed with strtod); and
+ *    plain integers (parsed with std::stoll, falling back to an
+ *    ESHKOL_BIGNUM_LITERAL string payload for values that overflow
+ *    int64_t, to be reconstructed as a bignum at codegen time).
+ *  - TOKEN_BOOLEAN: `#t`/`#f` literal.
+ *  - TOKEN_KEYWORD: a Racket-style self-evaluating `#:name` keyword,
+ *    wrapped in ESHKOL_QUOTE_OP so it evaluates to itself.
+ *  - TOKEN_CHAR: decodes the token's UTF-8 byte sequence into a single
+ *    Unicode codepoint for eshkol_ast_make_char().
+ *  - TOKEN_SYMBOL: logic-variable syntax (`?x`, `?name`, ...) becomes an
+ *    ESHKOL_LOGIC_VAR_OP node; all other symbols become a plain
+ *    ESHKOL_VAR reference.
+ *  - Any other token type: returns an ESHKOL_INVALID node.
+ *
+ * Malformed numeric literals report a parse error via PARSE_ERROR_AT and
+ * leave the node's type as whatever was set before the error (typically
+ * ESHKOL_INVALID or a partially-built node).
+ */
 static eshkol_ast_t parse_atom(const Token& token) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_INVALID;
@@ -1294,6 +1459,24 @@ static eshkol_ast_t parse_atom(const Token& token) {
     return ast;
 }
 
+/**
+ * @brief Maps a special-form keyword (e.g. "if", "lambda", "let", "quote")
+ * to its eshkol_op_t enum value.
+ *
+ * Covers R7RS core special forms, Eshkol's ownership-aware memory
+ * operators (with-region, owned, move, borrow, shared, weak-ref),
+ * automatic-differentiation operators (diff, derivative, gradient,
+ * jacobian, hessian, ...), exception handling (guard, raise), multiple
+ * values, the neuro-symbolic consciousness engine (unify, make-kb,
+ * kb-query, ...), differentiable external memory (dnc-*, sdnc-*), active
+ * inference (make-factor-graph, fg-infer!, ...), the global workspace
+ * (make-workspace, ws-step!, ...), and R7RS "Wave 3" forms
+ * (case-lambda, define-record-type, parameterize, cond-expand, ...).
+ *
+ * @return The matching eshkol_op_t, or ESHKOL_CALL_OP if @p op is not a
+ *         recognized special form (i.e. it should be treated as an
+ *         ordinary function call).
+ */
 static eshkol_op_t get_operator_type(const std::string& op) {
     if (op == "if") return ESHKOL_IF_OP;
     if (op == "lambda") return ESHKOL_LAMBDA_OP;
@@ -1427,6 +1610,12 @@ static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Tok
 static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer);
 static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer);
 
+/**
+ * @brief Heap-allocates a NUL-terminated copy of @p value.
+ *
+ * Equivalent helper to copy_parser_string(), used for token text elsewhere
+ * in the parser.
+ */
 static char* copy_token_text(const std::string& value) {
     char* ptr = new char[value.length() + 1];
     if (ptr) {
@@ -1435,6 +1624,18 @@ static char* copy_token_text(const std::string& value) {
     return ptr;
 }
 
+/**
+ * @brief Parses @p token as an unsigned 64-bit decimal integer literal.
+ *
+ * Rejects negative signs, decimal points, fractions ('/'), and exponent
+ * markers ('e'/'E'), so it only accepts plain non-negative integer tokens
+ * (used by declaration modifiers such as `:align`). On success stores the
+ * parsed value in @p out.
+ *
+ * @param token Tokenizer token to parse; must be a TOKEN_NUMBER.
+ * @param out   Receives the parsed value on success; must not be null.
+ * @return true if @p token is a valid unsigned 64-bit decimal integer.
+ */
 static bool parse_uint64_token(const Token& token, uint64_t* out) {
     if (!out || token.type != TOKEN_NUMBER || token.value.empty()) {
         return false;
@@ -1460,17 +1661,35 @@ static bool parse_uint64_token(const Token& token, uint64_t* out) {
     }
 }
 
+/**
+ * @brief Returns true if @p value is a nonzero power of two.
+ */
 static bool is_power_of_two_u64(uint64_t value) {
     return value != 0 && (value & (value - 1)) == 0;
 }
 
 static constexpr uint64_t kMaxLlvmGlobalAlignment = uint64_t{1} << 32;
 
+/**
+ * @brief Checks whether @p token begins a `:modifier` declaration tail (e.g. on `define`/`extern` forms).
+ *
+ * True for a bare TOKEN_COLON, or a TOKEN_SYMBOL that begins with ':'
+ * (such as `:align`).
+ */
 static bool is_declaration_modifier_start(const Token& token) {
     return token.type == TOKEN_COLON ||
            (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':');
 }
 
+/**
+ * @brief Extracts the modifier name following a leading ':' from @p token.
+ *
+ * If @p token is a symbol like `:align`, returns "align" directly. If
+ * @p token is a bare TOKEN_COLON, reads the next token from @p tokenizer
+ * and returns its text (stripping a redundant leading ':' if present).
+ *
+ * @return The modifier name, or an empty string if no valid name follows.
+ */
 static std::string declaration_modifier_name(const Token& token, SchemeTokenizer& tokenizer) {
     if (token.type == TOKEN_SYMBOL && token.value.size() > 1 && token.value[0] == ':') {
         return token.value.substr(1);
@@ -1484,6 +1703,21 @@ static std::string declaration_modifier_name(const Token& token, SchemeTokenizer
     return "";
 }
 
+/**
+ * @brief Parses the trailing `:modifier` clauses of a `(define ...)` form.
+ *
+ * Starting from @p modifier_start (the first modifier token already read),
+ * repeatedly parses declaration modifiers and applies them to @p ast, which
+ * must be an ESHKOL_DEFINE_OP node. Supports `:link-section <name>`,
+ * `:align <power-of-two>`, `:used`, `:weak`, `:export-symbol [<name>]`
+ * (which may itself be followed by further modifiers), and `:no-return`
+ * (only valid on function definitions). Each modifier may appear at most
+ * once. Consumes tokens up to and including the closing `)`.
+ *
+ * @param modifier_start The first modifier-start token (':' or `:name`).
+ * @return true on success; false and reports a parse error on malformed
+ *         or duplicate modifiers.
+ */
 static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
                                        eshkol_ast_t* ast,
                                        Token modifier_start) {
@@ -1589,6 +1823,18 @@ static bool parse_define_modifier_tail(SchemeTokenizer& tokenizer,
     }
 }
 
+/**
+ * @brief Parses the trailing `:modifier` clauses of an `(extern ...)` form.
+ *
+ * Mirrors parse_define_modifier_tail() for ESHKOL_EXTERN_OP nodes.
+ * Supports `:extern-symbol <name>` / `:real <name>` (the external linkage
+ * name), `:weak`, and `:no-return`, each at most once, terminated by the
+ * form's closing `)`.
+ *
+ * @param modifier_start The first modifier-start token (':' or `:name`).
+ * @return true on success; false and reports a parse error on malformed
+ *         or duplicate modifiers.
+ */
 static bool parse_extern_modifier_tail(SchemeTokenizer& tokenizer,
                                        eshkol_ast_t* ast,
                                        Token modifier_start) {
@@ -1646,6 +1892,18 @@ static bool parse_extern_modifier_tail(SchemeTokenizer& tokenizer,
     }
 }
 
+/**
+ * @brief Parses the trailing `:modifier` clauses of an `(extern-var ...)` form.
+ *
+ * Mirrors parse_extern_modifier_tail() for ESHKOL_EXTERN_VAR_OP nodes.
+ * Currently only supports `:extern-symbol <name>` / `:real <name>` to
+ * override the external variable's linkage name, at most once, terminated
+ * by the form's closing `)`.
+ *
+ * @param modifier_start The first modifier-start token (':' or `:name`).
+ * @return true on success; false and reports a parse error on malformed
+ *         or duplicate modifiers.
+ */
 static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
                                            eshkol_ast_t* ast,
                                            Token modifier_start) {
@@ -1969,6 +2227,13 @@ static hott_type_expr_t* parseTypeExpression(SchemeTokenizer& tokenizer) {
 // Parse quoted data - allows any expression including data lists like (1 2 3)
 // Helper: build a (cons car cdr) CALL_OP node used by both quoted and
 // quasiquoted list parsers when they encounter a dotted-pair tail.
+/**
+ * @brief Builds a `(cons @p car_ast @p cdr_ast)` CALL_OP AST node.
+ *
+ * Shared helper used by the quoted- and quasiquoted-list parsers to
+ * represent a dotted-pair tail, e.g. `'(a b . c)` lowers to
+ * `(cons a (cons b c))`.
+ */
 static eshkol_ast_t make_cons_call(eshkol_ast_t car_ast, eshkol_ast_t cdr_ast) {
     eshkol_ast_t ast;
     ast.type = ESHKOL_OP;
@@ -1986,12 +2251,27 @@ static eshkol_ast_t make_cons_call(eshkol_ast_t car_ast, eshkol_ast_t cdr_ast) {
 }
 
 // This is called AFTER consuming the opening token (QUOTE or first element of quote form)
+/**
+ * @brief Reads the next token and parses it as a quoted datum, e.g. the body of `'expr` or `(quote expr)`.
+ *
+ * Thin wrapper around parse_quoted_data_with_token() for callers that have
+ * not yet consumed the datum's first token.
+ */
 static eshkol_ast_t parse_quoted_data(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
     return parse_quoted_data_with_token(tokenizer, token);
 }
 
 // Parse quoted data when we already have the first token
+/**
+ * @brief Parses a quoted datum whose first token, @p token, has already been consumed.
+ *
+ * Dispatches on @p token: `(` begins a (possibly dotted) quoted list via
+ * parse_quoted_list_internal(); a nested quote token recurses and wraps
+ * the result in an ESHKOL_QUOTE_OP node; anything else is parsed as a
+ * literal atom via parse_atom(). Unlike expression parsing, quoted data is
+ * treated as literal — symbols and lists are not evaluated as calls.
+ */
 static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Token token) {
     if (token.type == TOKEN_LPAREN) {
         // Parse a list without requiring a symbol as first element
@@ -2015,6 +2295,18 @@ static eshkol_ast_t parse_quoted_data_with_token(SchemeTokenizer& tokenizer, Tok
 
 // Parse a quoted list - called after consuming '('
 // Handles both proper lists '(a b c) and dotted/improper lists '(a b . c).
+/**
+ * @brief Parses the elements of a quoted list after the opening `(` has been consumed.
+ *
+ * Handles both proper lists `'(a b c)`, which are built as a `(list a b c)`
+ * CALL_OP node, and dotted/improper lists `'(a b . c)` (R7RS 7.1.2), which
+ * are built as a right-nested chain of make_cons_call() nodes:
+ * `(cons a (cons b c))`. Each element is parsed recursively so quoted data
+ * can nest arbitrarily.
+ *
+ * @return The resulting list AST, or an ESHKOL_INVALID node on a malformed
+ *         dotted pair or unexpected end of input.
+ */
 static eshkol_ast_t parse_quoted_list_internal(SchemeTokenizer& tokenizer) {
     std::vector<eshkol_ast_t> elements;
     bool has_dot_tail = false;
@@ -2090,12 +2382,31 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer);
 
 // Parse quasiquoted data - similar to quoted data but handles unquote/unquote-splicing
+/**
+ * @brief Reads the next token and parses it as a quasiquoted datum, e.g. the body of `` `expr `` or `(quasiquote expr)`.
+ *
+ * Thin wrapper around parse_quasiquoted_data_with_token() for callers that
+ * have not yet consumed the datum's first token.
+ */
 static eshkol_ast_t parse_quasiquoted_data(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
     return parse_quasiquoted_data_with_token(tokenizer, token);
 }
 
 // Parse quasiquoted data when we already have the first token
+/**
+ * @brief Parses a quasiquoted datum whose first token, @p token, has already been consumed.
+ *
+ * Extends parse_quoted_data_with_token() with R7RS §4.2.8 quasiquote
+ * escapes: `(` recurses into parse_quasiquoted_list_internal(); `#(` parses
+ * a quasiquoted vector literal into a 1-D ESHKOL_TENSOR_OP whose elements
+ * may themselves contain unquotes; `,expr` / `,@expr` (TOKEN_COMMA /
+ * TOKEN_COMMA_AT) escape back to full expression-mode parsing via
+ * parse_expression() and become ESHKOL_UNQUOTE_OP / ESHKOL_UNQUOTE_SPLICING_OP
+ * nodes (their bodies are evaluated, not treated as literal data); a nested
+ * backquote recurses as a nested ESHKOL_QUASIQUOTE_OP; anything else is a
+ * literal atom.
+ */
 static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer, Token token) {
     if (token.type == TOKEN_LPAREN) {
         // Parse a list without requiring a symbol as first element
@@ -2187,6 +2498,21 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
 }
 
 // Parse a quasiquoted list - called after consuming '('
+/**
+ * @brief Parses the elements of a quasiquoted list after the opening `(` has been consumed.
+ *
+ * First checks for the long-form spellings `(unquote e)`,
+ * `(unquote-splicing e)`, `(quasiquote e)`, and `(quote e)`, which R7RS
+ * §4.2.8 requires to behave identically to the `,e` / `,@e` / `` `e `` / `'e`
+ * reader sugar; if none match, the head token is pushed back and the list
+ * is parsed as an ordinary (possibly dotted) quasiquoted list via
+ * parse_quasiquoted_data_with_token(), mirroring parse_quoted_list_internal()
+ * but preserving unquote/unquote-splicing escapes and building dotted
+ * tails with make_cons_call().
+ *
+ * @return The resulting list (or long-form escape) AST, or an
+ *         ESHKOL_INVALID node on malformed input.
+ */
 static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) {
     std::vector<eshkol_ast_t> elements;
     bool has_dot_tail = false;
@@ -2340,6 +2666,14 @@ static ScopeTracker g_scope_tracker;
 // Static AST analysis for closure capture detection
 
 // Helper: Collect all defined variables at a given AST level (not recursing into nested functions)
+/**
+ * @brief Records the name bound by @p ast if it is a top-level `(define ...)` node.
+ *
+ * Does not recurse into nested subexpressions; used to gather the set of
+ * names a single body-level form introduces, for closure-capture analysis.
+ *
+ * @param defined_vars Set of variable names to insert into.
+ */
 static void collectDefinedVariables(const eshkol_ast_t* ast, std::set<std::string>& defined_vars) {
     if (!ast) return;
     
@@ -2352,6 +2686,15 @@ static void collectDefinedVariables(const eshkol_ast_t* ast, std::set<std::strin
 }
 
 // Helper: Collect defined variables from function body (for function's local scope)
+/**
+ * @brief Collects all top-level defined variable names from a function/lambda body.
+ *
+ * If @p body is an ESHKOL_SEQUENCE_OP, applies collectDefinedVariables() to
+ * each expression in the sequence; otherwise treats @p body itself as the
+ * single expression to inspect.
+ *
+ * @param defined_vars Set of variable names to insert into.
+ */
 static void collectBodyDefinedVariables(const eshkol_ast_t* body, std::set<std::string>& defined_vars) {
     if (!body) return;
     
@@ -2366,6 +2709,18 @@ static void collectBodyDefinedVariables(const eshkol_ast_t* body, std::set<std::
 }
 
 // Recursively collect all variable references in an AST subtree
+/**
+ * @brief Recursively collects every variable name referenced within @p ast into @p refs.
+ *
+ * Walks ESHKOL_VAR leaves, call arguments/function position, lambda bodies
+ * (lambda parameters are not collected, since they shadow), define values,
+ * let / let* / letrec bindings and bodies, sequences, and the AD-operator
+ * function/point/order subexpressions (derivative, gradient, taylor,
+ * derivative-n). Used by analyzeLambdaCaptures() to determine which outer
+ * variables a lambda body references.
+ *
+ * @param refs Set of variable names to insert into.
+ */
 static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::string>& refs) {
     if (!ast) return;
     
@@ -2488,6 +2843,27 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
 // Becomes:
 //   (letrec ((a 1) (helper (lambda (x) (+ x 1))))
 //     (begin (display "before") (+ a (helper 2))))
+/**
+ * @brief Hoists all internal `define`s in a body into a single `letrec*`, per R7RS §5.3.3 (Racket-compatible interspersed-define semantics).
+ *
+ * Splits @p body_expressions into defines and non-define expressions,
+ * regardless of where the defines appear in the body (interspersed defines
+ * are accepted, matching Racket/MIT/Guile/Chez rather than requiring all
+ * defines to precede all expressions). Each define becomes a `letrec*`
+ * binding — function defines are wrapped in an ESHKOL_LAMBDA_OP capturing
+ * the original parameters/rest-param/type annotations, and simple variable
+ * defines use their value expression directly — bound left-to-right so
+ * each definition's initializer can see earlier ones. All non-define
+ * expressions are preserved in their original relative order and become
+ * the resulting letrec*'s body (wrapped in an ESHKOL_SEQUENCE_OP if there
+ * is more than one), so side effects still execute in source order even
+ * though the defines' initializers all evaluate up front.
+ *
+ * @param body_expressions The body's expressions in source order.
+ * @return An ESHKOL_LETREC_STAR_OP AST node; if there are no defines,
+ *         returns @p body_expressions unchanged (a single expression, or a
+ *         plain ESHKOL_SEQUENCE_OP of them).
+ */
 static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_ast_t>& body_expressions) {
     eshkol_ast_t result;
 
@@ -2697,6 +3073,19 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
 // Analyze lambda for captured variables using STATIC AST ANALYSIS
 // Returns a list of variable names that are captured from parent scope
 // parent_defined_vars: variables available in the enclosing scope
+/**
+ * @brief Determines which outer-scope variables a lambda body captures, via static AST analysis.
+ *
+ * A referenced variable in @p lambda_body counts as a capture when it is
+ * not one of @p params, not locally defined within @p lambda_body (per
+ * collectBodyDefinedVariables()), and is present in @p parent_defined_vars
+ * (the enclosing scope's defined names).
+ *
+ * @param lambda_body          The lambda's body AST.
+ * @param params               The lambda's parameter list (these shadow outer bindings).
+ * @param parent_defined_vars  Variable names defined in the enclosing scope.
+ * @return The captured variable names.
+ */
 static std::vector<std::string> analyzeLambdaCaptures(
     const eshkol_ast_t* lambda_body,
     const std::vector<eshkol_ast_t>& params,
@@ -2739,6 +3128,24 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer);
 static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer);
 static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer);
 
+/**
+ * @brief Parses a `define`-style function signature `(name param...)` into an ESHKOL_FUNC AST node.
+ *
+ * Consumes tokens for the function name followed by its parameter list,
+ * supporting plain symbol parameters, inline-typed parameters
+ * `(param : type)`, a dotted rest parameter `(name a b . rest)`, and (when
+ * @p keyword_formals is non-null) `#:keyword` formals collected into
+ * @p keyword_formals. If keyword formals were parsed and no explicit rest
+ * parameter was given, a synthetic rest parameter is generated to collect
+ * them and @p generated_keyword_rest is set to true.
+ *
+ * @param keyword_formals Out-param collecting any `#:keyword name` formals;
+ *   if null, encountering a keyword formal is a parse error.
+ * @param generated_keyword_rest Out-param set to true if a rest parameter
+ *   was synthesized to hold keyword formals.
+ * @return An ESHKOL_FUNC AST populated with name, parameters, and (if any)
+ *   rest-parameter/variadic info, or an ESHKOL_INVALID AST on parse error.
+ */
 static eshkol_ast_t parse_function_signature(
     SchemeTokenizer& tokenizer,
     std::vector<KeywordFormal>* keyword_formals,
@@ -2928,6 +3335,21 @@ static eshkol_ast_t parse_function_signature(
 // ===== PATTERN MATCHING HELPER =====
 
 // Recursive pattern parser - handles nested patterns
+/**
+ * @brief Recursively parses a single `match`/`let-match` pattern datum into an eshkol_pattern_t tree.
+ *
+ * Handles wildcard (`_`) and variable-binding symbols, literal atoms
+ * (numbers/strings/booleans/chars), quoted literals (wrapped in an
+ * ESHKOL_QUOTE_OP AST so codegen compares against the datum rather than
+ * evaluating it as a variable reference), and parenthesized forms:
+ * `(cons car-pat cdr-pat)`, `(list p1 p2 ...)`, `(? pred [name])` predicate
+ * patterns with an optional binding name, `(or p1 p2 ...)`, the empty-list
+ * pattern `()`, and unrecognized/other forms which are skipped and treated
+ * as an invalid or literal placeholder pattern.
+ *
+ * @return A newly-allocated eshkol_pattern_t; callers own the result. Its
+ *   `type` is PATTERN_INVALID if the input did not form a recognized pattern.
+ */
 static eshkol_pattern_t* parse_pattern(SchemeTokenizer& tokenizer) {
     Token token = tokenizer.nextToken();
 
@@ -3100,12 +3522,28 @@ struct LetMatchBinding {
     eshkol_ast_t expr;
 };
 
+/**
+ * @brief Creates a fresh PATTERN_WILDCARD pattern node (matches anything, binds nothing).
+ *
+ * Used, e.g., as the catch-all clause in `let-match`'s generated failure branch.
+ * @return A newly-allocated eshkol_pattern_t; caller owns the result.
+ */
 static eshkol_pattern_t* make_wildcard_pattern() {
     eshkol_pattern_t* pattern = new eshkol_pattern_t;
     pattern->type = PATTERN_WILDCARD;
     return pattern;
 }
 
+/**
+ * @brief Wraps zero or more expressions into a single AST node for use as a body/sequence.
+ *
+ * Empty @p exprs yields a null-datum AST; a single expression is returned
+ * unwrapped; two or more are combined into an ESHKOL_SEQUENCE_OP node
+ * evaluated in order. Used to lower `define-library`/`import`/`let-match`
+ * bodies (which may lower to any number of forms) into one AST value.
+ *
+ * @return The resulting AST node, tagged with @p line / @p column.
+ */
 static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& exprs,
                                               uint32_t line,
                                               uint32_t column) {
@@ -3133,12 +3571,23 @@ static eshkol_ast_t make_sequence_or_null_ast(const std::vector<eshkol_ast_t>& e
     return ast;
 }
 
+/**
+ * @brief Heap-allocates a NUL-terminated copy of @p value for storage in a C-style AST field.
+ * @return A newly `new[]`-allocated `char*` owned by the caller, or null on allocation failure.
+ */
 static char* parser_copy_cstr(const std::string& value) {
     char* out = new char[value.size() + 1];
     if (out) memcpy(out, value.c_str(), value.size() + 1);
     return out;
 }
 
+/**
+ * @brief Joins an R7RS library-name's symbol @p parts (e.g. `(foo bar baz)`) into an internal module-name string.
+ *
+ * Special-cases the standard `(scheme base)` library name, mapping it to
+ * Eshkol's built-in "stdlib" module; otherwise joins the parts with `.`
+ * (e.g. `(foo bar baz)` becomes `"foo.bar.baz"`).
+ */
 static std::string join_r7rs_library_name(const std::vector<std::string>& parts) {
     if (parts.size() == 2 && parts[0] == "scheme" && parts[1] == "base") {
         return "stdlib";
@@ -3165,6 +3614,14 @@ struct R7rsImportSpec {
     std::string prefix;
 };
 
+/**
+ * @brief Builds an ESHKOL_REQUIRE_OP AST node requiring @p modules, with empty per-module prefix/except metadata.
+ *
+ * Allocates parallel arrays (module names, import prefixes, except-name
+ * lists) sized to @p modules.size(), initializing the prefix/except entries
+ * to empty/null; callers such as make_r7rs_require_ast() may subsequently
+ * fill in per-module prefix and except-name data.
+ */
 static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
                                      uint32_t line,
                                      uint32_t column) {
@@ -3187,6 +3644,15 @@ static eshkol_ast_t make_require_ast(const std::vector<std::string>& modules,
     return ast;
 }
 
+/**
+ * @brief Builds an ESHKOL_REQUIRE_OP AST for a set of parsed R7RS import specs, wiring up per-module prefix/except data.
+ *
+ * Delegates module-name collection to make_require_ast(), then for each
+ * spec whose prefix should apply to the *whole* module (i.e. it has a
+ * @c prefix but no @c only list and no @c renames — those cases instead
+ * generate individual alias defines via append_r7rs_import_forms()),
+ * fills in that module's import prefix and except-name list.
+ */
 static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& specs,
                                           uint32_t line,
                                           uint32_t column) {
@@ -3216,6 +3682,13 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
     return ast;
 }
 
+/**
+ * @brief Builds an ESHKOL_DEFINE_OP AST that defines @p alias as a plain variable bound to the value of @p source.
+ *
+ * Used to lower R7RS `rename` and prefixed `only` import-set entries into
+ * `(define alias source)` forms so the renamed/prefixed name resolves to
+ * the underlying imported binding.
+ */
 static eshkol_ast_t make_define_alias_ast(const std::string& alias,
                                           const std::string& source,
                                           uint32_t line,
@@ -3247,6 +3720,12 @@ static eshkol_ast_t make_define_alias_ast(const std::string& alias,
     return ast;
 }
 
+/**
+ * @brief Builds an ESHKOL_PROVIDE_OP AST node exporting the given symbol names.
+ *
+ * Used to lower an R7RS `define-library` `(export ...)` clause into
+ * Eshkol's native provide/export form.
+ */
 static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
                                      uint32_t line,
                                      uint32_t column) {
@@ -3263,6 +3742,21 @@ static eshkol_ast_t make_provide_ast(const std::vector<std::string>& exports,
     return ast;
 }
 
+/**
+ * @brief Parses a parenthesized R7RS library-name datum, e.g. `(foo bar baz)`, into a joined module name.
+ *
+ * Expects an opening `(` followed by one or more symbol tokens up to the
+ * matching `)`; each part must be a bare symbol (nested sub-forms like
+ * `(bar 1)` version specifiers are not supported here). On success, the
+ * joined name (via join_r7rs_library_name()) is written to @p out_name.
+ *
+ * @param form_token Token of the enclosing form, used for error location on
+ *   unexpected end-of-input.
+ * @param out_name Out-param receiving the joined library/module name; may be null.
+ * @param context Short description of the calling form (e.g. "define-library"),
+ *   used in error messages.
+ * @return true on success; false (with a parse error emitted) on malformed input.
+ */
 static bool parse_r7rs_library_name(SchemeTokenizer& tokenizer,
                                     const Token& form_token,
                                     std::string* out_name,
@@ -3297,11 +3791,27 @@ static bool parse_r7rs_library_name(SchemeTokenizer& tokenizer,
     return true;
 }
 
+/**
+ * @brief Checks whether @p value names one of the R7RS import-set modifiers: `only`, `except`, `prefix`, or `rename`.
+ */
 static bool is_r7rs_import_modifier(const std::string& value) {
     return value == "only" || value == "except" ||
            value == "prefix" || value == "rename";
 }
 
+/**
+ * @brief Reads a non-empty list of bare symbol tokens up to a closing `)` and appends them to @p out.
+ *
+ * Used for the symbol lists inside `only`/`except` import-set modifiers.
+ *
+ * @param form_token Token of the enclosing form, used for error location on
+ *   unexpected end-of-input.
+ * @param context Short description of the calling construct, used in error messages.
+ * @param out Vector that parsed symbol names are appended to.
+ * @return true on success; false (with a parse error emitted) if a
+ *   non-symbol token is encountered, input ends unexpectedly, or the list
+ *   turns out to be empty.
+ */
 static bool parse_r7rs_symbol_list_until_rparen(SchemeTokenizer& tokenizer,
                                                 const Token& form_token,
                                                 const char* context,
@@ -3326,6 +3836,22 @@ static bool parse_r7rs_symbol_list_until_rparen(SchemeTokenizer& tokenizer,
     return true;
 }
 
+/**
+ * @brief Recursively parses the body of one R7RS import-set datum (already past its opening `(`) into an R7rsImportSpec.
+ *
+ * A plain import set is a library name, e.g. `(foo bar)`, which sets
+ * @p out_spec's `module`. Otherwise the set may be wrapped in one of the
+ * four R7RS modifiers, each of which recursively parses a nested import
+ * set and then augments it: `(only <set> name...)` sets the allowed name
+ * list, `(except <set> name...)` extends the excluded-name list,
+ * `(prefix <set> prefix)` prepends @p prefix to any existing prefix, and
+ * `(rename <set> (old new)...)` accumulates old/new rename pairs. The
+ * (possibly nested-and-augmented) resulting spec is written to @p out_spec.
+ *
+ * @param open_token The already-consumed opening `(` token of this import
+ *   set, used for error location on unexpected end-of-input.
+ * @return true on success; false (with a parse error emitted) on malformed input.
+ */
 static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
                                        const Token& open_token,
                                        R7rsImportSpec* out_spec) {
@@ -3443,6 +3969,18 @@ static bool parse_r7rs_import_set_body(SchemeTokenizer& tokenizer,
     return true;
 }
 
+/**
+ * @brief Parses a sequence of parenthesized R7RS import sets up to a closing `)`, appending each to @p specs.
+ *
+ * Used for the body of an `import` form (or a `define-library` `import`
+ * clause): each element must itself be a parenthesized import set, parsed
+ * via parse_r7rs_import_set_body().
+ *
+ * @param form_token Token of the enclosing form, used for error location.
+ * @return true on success; false (with a parse error emitted) if a
+ *   non-list element is found, input ends unexpectedly, or no import sets
+ *   were present.
+ */
 static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
                                    const Token& form_token,
                                    std::vector<R7rsImportSpec>* specs) {
@@ -3472,11 +4010,26 @@ static bool parse_r7rs_import_sets(SchemeTokenizer& tokenizer,
     return true;
 }
 
+/**
+ * @brief Checks whether @p name is listed in @p spec's `except` names (from an R7RS `(except <set> name...)` import set).
+ */
 static bool r7rs_name_is_excepted(const R7rsImportSpec& spec,
                                   const std::string& name) {
     return std::find(spec.except.begin(), spec.except.end(), name) != spec.except.end();
 }
 
+/**
+ * @brief Lowers parsed R7RS import specs into a sequence of AST forms, appending them to @p forms.
+ *
+ * First appends a single require-all form (via make_r7rs_require_ast()).
+ * Then, for each spec's rename pairs not excluded via `except`, appends a
+ * `(define new old)` alias (make_define_alias_ast()) so the renamed binding
+ * is visible under its new name. If a spec has a non-empty `prefix`, also
+ * appends a `(define prefix+name name)` alias for each of its `only` names
+ * that wasn't already covered by a rename, so prefixed names resolve
+ * correctly (per-module prefix-of-everything is instead handled directly by
+ * make_r7rs_require_ast() when there is no `only`/`renames` narrowing).
+ */
 static void append_r7rs_import_forms(const std::vector<R7rsImportSpec>& specs,
                                      std::vector<eshkol_ast_t>* forms,
                                      uint32_t line,
@@ -3508,6 +4061,13 @@ static void append_r7rs_import_forms(const std::vector<R7rsImportSpec>& specs,
     }
 }
 
+/**
+ * @brief Builds the AST for a top-level R7RS `import` form from its parsed import specs.
+ *
+ * Lowers @p specs into a require form plus any alias defines (via
+ * append_r7rs_import_forms()) and wraps them into a single AST node with
+ * make_sequence_or_null_ast().
+ */
 static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& specs,
                                          uint32_t line,
                                          uint32_t column) {
@@ -3516,6 +4076,26 @@ static eshkol_ast_t make_r7rs_import_ast(const std::vector<R7rsImportSpec>& spec
     return make_sequence_or_null_ast(forms, line, column);
 }
 
+/**
+ * @brief Parses an R7RS `(define-library (name ...) <library-declaration>*)` top-level form into a lowered AST.
+ *
+ * First parses the parenthesized library name (its joined form is
+ * currently unused beyond validation), then iterates the library's
+ * declaration clauses:
+ *  - `(export name...)` becomes a provide/export AST (make_provide_ast());
+ *    renamed exports (`(export (old new))`) are not yet supported.
+ *  - `(import <import-set>...)` is parsed via parse_r7rs_import_sets() and
+ *    lowered to require/alias forms via append_r7rs_import_forms().
+ *  - `(begin expr...)` has each contained expression parsed in place via
+ *    parse_expression() and appended as-is.
+ *  - any other clause name is a parse error (unsupported clause).
+ *
+ * All lowered forms across the library's clauses are combined into a
+ * single AST via make_sequence_or_null_ast().
+ *
+ * @return The combined AST for the whole library body, or an
+ *   ESHKOL_INVALID AST on any parse error.
+ */
 static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
                                              const Token& form_token) {
     std::string library_name;
@@ -3601,12 +4181,29 @@ static eshkol_ast_t parse_define_library_form(SchemeTokenizer& tokenizer,
     return make_sequence_or_null_ast(lowered_forms, form_token.line, form_token.column);
 }
 
+/**
+ * @brief Builds the AST for the fallback `(error "let-match pattern failed")` call raised when a `let-match` binding pattern fails to match.
+ */
 static eshkol_ast_t make_let_match_failure_ast(uint32_t line, uint32_t column) {
     std::vector<eshkol_ast_t> args;
     args.push_back(make_parser_string_ast("let-match pattern failed", line, column));
     return make_parser_call_ast("error", args, line, column);
 }
 
+/**
+ * @brief Recursively lowers `let-match` bindings starting at @p index into nested ESHKOL_MATCH_OP AST nodes wrapping @p body.
+ *
+ * For binding @p index, builds a two-clause match on that binding's
+ * expression: the first clause uses the binding's pattern with the
+ * recursively-built continuation (bindings after @p index, terminating in
+ * @p body) as its success branch, and the second is a wildcard clause
+ * whose body raises the let-match failure error
+ * (make_let_match_failure_ast()). Once @p index reaches the end of
+ * @p bindings, simply returns @p body unchanged — the base case of the
+ * recursion.
+ *
+ * @return The (possibly nested) AST implementing all remaining pattern-matched bindings.
+ */
 static eshkol_ast_t build_let_match_ast(const std::vector<LetMatchBinding>& bindings,
                                         size_t index,
                                         eshkol_ast_t body,
@@ -3642,6 +4239,21 @@ static eshkol_ast_t build_let_match_ast(const std::vector<LetMatchBinding>& bind
     return ast;
 }
 
+/**
+ * @brief Parses the `let-match` special form `(let-match ((pattern expr) ...) body ...)` into a lowered AST.
+ *
+ * Parses a required parenthesized list of `(pattern expr)` bindings — each
+ * pattern via parse_pattern() and each expression via parse_expression() —
+ * followed by one or more body expressions. The body expressions are
+ * combined with make_sequence_or_null_ast(), then each binding is lowered,
+ * outermost-first, into a chain of pattern-match tests via
+ * build_let_match_ast(): if a binding's expression fails to match its
+ * pattern, evaluation raises a runtime error instead of proceeding to the
+ * next binding or the body.
+ *
+ * @return The lowered AST for the whole `let-match` form, or an
+ *   ESHKOL_INVALID AST if the bindings, patterns, or body fail to parse.
+ */
 static eshkol_ast_t parse_let_match_form(SchemeTokenizer& tokenizer,
                                          const Token& form_token) {
     std::vector<LetMatchBinding> bindings;
@@ -3718,6 +4330,42 @@ static eshkol_ast_t parse_let_match_form(SchemeTokenizer& tokenizer,
     return build_let_match_ast(bindings, 0, body, form_token.line, form_token.column);
 }
 
+/**
+ * @brief Parses a parenthesized form after the opening `(` has been consumed,
+ * dispatching over the entire set of Scheme/Eshkol special forms.
+ *
+ * Called with @p tokenizer positioned to read the head of the list. Reads
+ * the first token and, when it is a symbol, classifies it via
+ * get_operator_type() and then branches through a long if/else-if chain keyed
+ * on the resulting operator (with a handful of forms — e.g. `let-match` and
+ * `define-library` — dispatched by name to dedicated helper parsers before
+ * that). Recognized categories include: binding forms (`let`/`let*`/`letrec`/
+ * `letrec*`/`let-values`/`let*-values`/`let-match`/`let-syntax`/
+ * `letrec-syntax`); definition forms (`define`, `define-type`,
+ * `define-record-type`, `define-syntax`, `define-library`); `lambda` and
+ * `case-lambda`; quoting forms (`quote`, `quasiquote`, and their unquote/
+ * unquote-splicing counterparts); ordinary control forms (`if`, `cond`,
+ * `case`, `when`, `unless`, `do`, `and`, `or`, `begin`, `set!`); R7RS
+ * library/module forms (`import`, `require`, `provide`, `include`,
+ * `cond-expand`, `extern`, `extern-var`); multiple-values forms (`values`,
+ * `call-with-values`); exception handling (`guard`, `raise`) and
+ * continuations (`call/cc`, `dynamic-wind`); pattern matching (`match`,
+ * `let-match`); ownership/borrow-checking forms (`with-region`, `owned`,
+ * `move`, `borrow`, `shared`, `weak-ref`); automatic-differentiation forms
+ * (`diff`, `derivative`, `taylor`, `derivative-n`, `gradient`, `jacobian`,
+ * `hessian`, `divergence`, `curl`, `laplacian`, `directional-derivative`);
+ * tensor literals (`tensor`); parameter objects (`make-parameter`,
+ * `parameterize`); promises (`delay`, `delay-force`); a `(: name type)` type
+ * annotation; and the neuro-symbolic consciousness-engine operation family
+ * (unify/kb-query/workspace/DNC ops).
+ *
+ * When the head symbol matches none of the recognized special forms (i.e.
+ * get_operator_type() reports an ordinary call), or when the head itself is
+ * not a bare symbol (e.g. `((lambda ...) ...)` or `(#t 'yes)` appearing as a
+ * list head), the function falls through to the default case: the head is
+ * treated as the callee expression and the remaining elements are parsed as
+ * argument expressions, producing an ESHKOL_CALL_OP AST node.
+ */
 static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     eshkol_ast_t ast = {};  // Zero-initialize all fields
     ast.type = ESHKOL_OP;
@@ -9500,6 +10148,29 @@ static eshkol_ast_t parse_vector_body(SchemeTokenizer& tokenizer) {
     return ast;
 }
 
+/**
+ * @brief Top-level recursive-descent dispatcher: reads one token and parses the
+ * single datum/expression it begins, delegating to the appropriate specialized
+ * parser for its syntactic form.
+ *
+ * Consumes exactly one token from @p tokenizer via nextToken() and switches on
+ * its type: `(` recurses into parse_list() for lists and special forms; `#(`
+ * delegates to parse_vector_body() for vector literals (including nested
+ * vectors flattened into tensors); `'`, `` ` ``, `,`, and `,@` build
+ * ESHKOL_QUOTE_OP / ESHKOL_QUASIQUOTE_OP / ESHKOL_UNQUOTE_OP /
+ * ESHKOL_UNQUOTE_SPLICING_OP wrapper nodes around the recursively parsed
+ * sub-expression (quote uses parse_quoted_data(), quasiquote uses
+ * parse_quasiquoted_data() so list *shape* is preserved for unquote splicing);
+ * symbols, strings, numbers, booleans, characters, and keywords are handed to
+ * parse_atom(). Before consuming any token it calls check_stack_space() to
+ * detect near-exhausted native stack (guards against segfaults from
+ * pathologically deep nesting) and, on a stray `)` or EOF, reports an error
+ * and returns an invalid node instead of recursing further.
+ *
+ * @return The parsed eshkol_ast_t for the single datum read; an ESHKOL_INVALID
+ * node on a stack-space guard trip, unexpected `)`, EOF, or a parse error
+ * propagated from a delegate parser.
+ */
 static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     // Stack space guard: detect actual remaining stack space using platform APIs.
     // This prevents segfaults from deeply nested input without imposing arbitrary limits.
@@ -9620,7 +10291,34 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
     }
 }
 
-// Generic stream-based parser (works with any std::istream)
+/**
+ * @brief Public entry point: reads and parses the next complete top-level
+ * S-expression from an arbitrary std::istream.
+ *
+ * Scans @p in_stream character-by-character (not via SchemeTokenizer) to find
+ * the boundary of one complete top-level form, tracking string-quote state
+ * (`"`, honoring backslash-escaping) and parenthesis nesting depth so commas,
+ * quotes, and nested parens inside strings or character literals (`#\(`,
+ * `#\)`, `#\"`, `#\;`) are not mistaken for structural tokens. Line comments
+ * (`;`) are stripped from the accumulated text but their terminating newline
+ * is preserved so downstream line-number tracking (@c g_stream_line /
+ * @c g_stream_column) stays accurate. A bare top-level atom (not inside
+ * parens) is read up to the next whitespace/paren/comment; reader-prefix
+ * characters (`'`, `` ` ``, `,`, `#`) are treated as part of the following
+ * expression rather than standalone atoms. Once a complete form's text is
+ * isolated, leading/trailing whitespace is trimmed (advancing the line/column
+ * counters for any skipped newlines), a fresh SchemeTokenizer is constructed
+ * over just that form, and parse_expression() is invoked to produce the AST.
+ * The cumulative @c g_stream_line / @c g_stream_column counters are advanced
+ * by the exact text consumed on every call, whether or not a form was found,
+ * so repeated calls over the same stream keep accurate source positions for
+ * error reporting.
+ *
+ * @param in_stream Input stream positioned at (or before) the next form; may
+ * have leading whitespace/comments.
+ * @return The parsed eshkol_ast_t for the next top-level form, or an
+ * ESHKOL_INVALID node at end of stream or on a parse error.
+ */
 eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 {
     std::string input;
@@ -9777,13 +10475,34 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
     return {.type = ESHKOL_INVALID};
 }
 
-// Reset the cumulative line/column counter — call before parsing a new file.
+/**
+ * @brief Resets the cumulative stream line/column counters (@c g_stream_line,
+ * @c g_stream_column) used by eshkol_parse_next_ast_from_stream() for error
+ * reporting.
+ *
+ * Must be called before parsing a new file/stream from its start; otherwise
+ * line numbers reported for the new stream would continue accumulating from
+ * wherever a previous stream left off.
+ */
 extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_line = 1;
     g_stream_column = 1;
 }
 
-// File-based parser (wrapper for backwards compatibility)
+/**
+ * @brief Public entry point: reads and parses the next top-level S-expression
+ * from a file stream.
+ *
+ * Thin wrapper that forwards @p in_file to
+ * eshkol_parse_next_ast_from_stream() (an std::ifstream is-a std::istream),
+ * kept for source/binary backwards compatibility with callers that pass an
+ * ifstream specifically.
+ *
+ * @param in_file Open input file stream positioned at (or before) the next
+ * form.
+ * @return The parsed eshkol_ast_t for the next top-level form, or an
+ * ESHKOL_INVALID node at end of file or on a parse error.
+ */
 eshkol_ast_t eshkol_parse_next_ast(std::ifstream &in_file)
 {
     return eshkol_parse_next_ast_from_stream(in_file);

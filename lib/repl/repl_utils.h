@@ -24,6 +24,17 @@ namespace repl {
 // ============================================================================
 
 // Check if terminal supports colors
+/**
+ * @brief Detects whether the current stdout stream supports ANSI color escape codes.
+ *
+ * Checks (in order) the `NO_COLOR` env var (disables colors if set), whether
+ * stdout is a TTY, the `COLORTERM` env var, Windows terminal env vars
+ * (`WT_SESSION`/`ANSICON`), and finally heuristics on the `TERM` env var
+ * (looking for "color", "256", "xterm", "screen", "tmux", or "vt100").
+ * The result is cached in a static variable after the first call.
+ *
+ * @return true if ANSI colors should be emitted, false otherwise.
+ */
 inline bool supports_color() {
     static int cached = -1;
     if (cached == -1) {
@@ -59,51 +70,89 @@ inline bool supports_color() {
 // ANSI Color Codes
 namespace color {
     // Reset
+    /** @brief Returns the ANSI escape code that resets all text formatting, or "" if color output is disabled/unsupported. */
     inline const char* reset()    { return supports_color() ? "\033[0m" : ""; }
 
     // Regular colors
+    /** @brief Returns the ANSI escape code for black text, or "" if color output is disabled/unsupported. */
     inline const char* black()    { return supports_color() ? "\033[30m" : ""; }
+    /** @brief Returns the ANSI escape code for red text, or "" if color output is disabled/unsupported. */
     inline const char* red()      { return supports_color() ? "\033[31m" : ""; }
+    /** @brief Returns the ANSI escape code for green text, or "" if color output is disabled/unsupported. */
     inline const char* green()    { return supports_color() ? "\033[32m" : ""; }
+    /** @brief Returns the ANSI escape code for yellow text, or "" if color output is disabled/unsupported. */
     inline const char* yellow()   { return supports_color() ? "\033[33m" : ""; }
+    /** @brief Returns the ANSI escape code for blue text, or "" if color output is disabled/unsupported. */
     inline const char* blue()     { return supports_color() ? "\033[34m" : ""; }
+    /** @brief Returns the ANSI escape code for magenta text, or "" if color output is disabled/unsupported. */
     inline const char* magenta()  { return supports_color() ? "\033[35m" : ""; }
+    /** @brief Returns the ANSI escape code for cyan text, or "" if color output is disabled/unsupported. */
     inline const char* cyan()     { return supports_color() ? "\033[36m" : ""; }
+    /** @brief Returns the ANSI escape code for white text, or "" if color output is disabled/unsupported. */
     inline const char* white()    { return supports_color() ? "\033[37m" : ""; }
 
     // Bright colors
+    /** @brief Returns the ANSI escape code for bright black (gray) text, or "" if color output is disabled/unsupported. */
     inline const char* bright_black()   { return supports_color() ? "\033[90m" : ""; }
+    /** @brief Returns the ANSI escape code for bright red text, or "" if color output is disabled/unsupported. */
     inline const char* bright_red()     { return supports_color() ? "\033[91m" : ""; }
+    /** @brief Returns the ANSI escape code for bright green text, or "" if color output is disabled/unsupported. */
     inline const char* bright_green()   { return supports_color() ? "\033[92m" : ""; }
+    /** @brief Returns the ANSI escape code for bright yellow text, or "" if color output is disabled/unsupported. */
     inline const char* bright_yellow()  { return supports_color() ? "\033[93m" : ""; }
+    /** @brief Returns the ANSI escape code for bright blue text, or "" if color output is disabled/unsupported. */
     inline const char* bright_blue()    { return supports_color() ? "\033[94m" : ""; }
+    /** @brief Returns the ANSI escape code for bright magenta text, or "" if color output is disabled/unsupported. */
     inline const char* bright_magenta() { return supports_color() ? "\033[95m" : ""; }
+    /** @brief Returns the ANSI escape code for bright cyan text, or "" if color output is disabled/unsupported. */
     inline const char* bright_cyan()    { return supports_color() ? "\033[96m" : ""; }
+    /** @brief Returns the ANSI escape code for bright white text, or "" if color output is disabled/unsupported. */
     inline const char* bright_white()   { return supports_color() ? "\033[97m" : ""; }
 
     // Styles
+    /** @brief Returns the ANSI escape code for bold text, or "" if color output is disabled/unsupported. */
     inline const char* bold()      { return supports_color() ? "\033[1m" : ""; }
+    /** @brief Returns the ANSI escape code for dim/faint text, or "" if color output is disabled/unsupported. */
     inline const char* dim()       { return supports_color() ? "\033[2m" : ""; }
+    /** @brief Returns the ANSI escape code for italic text, or "" if color output is disabled/unsupported. */
     inline const char* italic()    { return supports_color() ? "\033[3m" : ""; }
+    /** @brief Returns the ANSI escape code for underlined text, or "" if color output is disabled/unsupported. */
     inline const char* underline() { return supports_color() ? "\033[4m" : ""; }
 
     // Semantic colors for Eshkol REPL
+    /** @brief Semantic color for numeric literals in REPL output (bright cyan). */
     inline const char* number()    { return bright_cyan(); }      // Numbers
+    /** @brief Semantic color for string literals in REPL output (bright green). */
     inline const char* string()    { return bright_green(); }     // Strings
+    /** @brief Semantic color for symbols/variable names in REPL output (bright yellow). */
     inline const char* symbol()    { return bright_yellow(); }    // Symbols/variables
+    /** @brief Semantic color for language keywords such as define/lambda in REPL output (bright magenta). */
     inline const char* keyword()   { return bright_magenta(); }   // Keywords (define, lambda, etc.)
+    /** @brief Semantic color for function names in REPL output (bright blue). */
     inline const char* function()  { return bright_blue(); }      // Function names
+    /** @brief Semantic color for arithmetic operators such as +, -, *, / in REPL output (yellow). */
     inline const char* operator_() { return yellow(); }           // Operators (+, -, *, /)
+    /** @brief Semantic color for comments in REPL output (bright black). */
     inline const char* comment()   { return bright_black(); }     // Comments
+    /** @brief Semantic color for error messages in REPL output (bright red). */
     inline const char* error()     { return bright_red(); }       // Errors
+    /** @brief Semantic color for success messages in REPL output (bright green). */
     inline const char* success()   { return bright_green(); }     // Success messages
+    /** @brief Semantic color for informational messages in REPL output (bright cyan). */
     inline const char* info()      { return bright_cyan(); }      // Info messages
+    /** @brief Semantic color for the REPL prompt (bright blue). */
     inline const char* prompt()    { return bright_blue(); }      // Prompt
+    /** @brief Semantic color for evaluated result values in REPL output (cyan). */
     inline const char* result()    { return cyan(); }             // Result values
+    /** @brief Semantic color for type annotations in REPL output (dim). */
     inline const char* type()      { return dim(); }              // Type annotations
+    /** @brief Semantic color for boolean literals in REPL output (bright magenta). */
     inline const char* boolean()   { return bright_magenta(); }   // Booleans
+    /** @brief Semantic color for the null/empty-list value in REPL output (bright black). */
     inline const char* null()      { return bright_black(); }     // Null/empty list
+    /** @brief Semantic color for list delimiters in REPL output (white). */
     inline const char* list()      { return white(); }            // List delimiters
+    /** @brief Semantic color for the lambda indicator in REPL output (bright yellow). */
     inline const char* lambda()    { return bright_yellow(); }    // Lambda indicator
 }
 
@@ -112,6 +161,17 @@ namespace color {
 // ============================================================================
 
 // All built-in functions and special forms
+/**
+ * @brief Returns the static list of all built-in function and special-form names used for REPL tab completion.
+ *
+ * Covers special forms, the module system, arithmetic/comparison/math
+ * functions, list/vector/string/hash-table operations, type predicates and
+ * conversions, I/O, control-flow constructs, exception handling,
+ * OALR memory-management forms, automatic-differentiation operators, tensor
+ * operations, functional-programming helpers, and the REPL's `exit` form.
+ *
+ * @return A const reference to the static vector of symbol names.
+ */
 inline const std::vector<std::string>& get_builtin_symbols() {
     static const std::vector<std::string> builtins = {
         // Special forms
@@ -229,6 +289,11 @@ struct ReplCommand {
     std::string usage;
 };
 
+/**
+ * @brief Returns the static table of REPL colon-commands (e.g. `:help`, `:quit`, `:doc`) with their aliases, descriptions, and usage strings.
+ *
+ * @return A const reference to the static vector of ReplCommand entries.
+ */
 inline const std::vector<ReplCommand>& get_repl_commands() {
     static const std::vector<ReplCommand> commands = {
         {":help",    ":h",  "Show this help message", ":help"},
@@ -255,6 +320,14 @@ inline const std::vector<ReplCommand>& get_repl_commands() {
 // History File Path
 // ============================================================================
 
+/**
+ * @brief Builds the path to the REPL's persistent command-history file.
+ *
+ * Uses `$HOME/.eshkol_history` when the `HOME` environment variable is set,
+ * falling back to the relative path `.eshkol_history` otherwise.
+ *
+ * @return The history file path.
+ */
 inline std::string get_history_file_path() {
     const char* home = std::getenv("HOME");
     if (home) {
@@ -268,6 +341,16 @@ inline std::string get_history_file_path() {
 // ============================================================================
 
 // Format a number with appropriate precision
+/**
+ * @brief Formats a double for REPL display, printing it without a decimal point when it represents an exact integer.
+ *
+ * Values that equal their int64_t truncation and fall within
+ * [-1e15, 1e15] are printed as plain integers; all other values are
+ * formatted with `%.15g` precision.
+ *
+ * @param value The number to format.
+ * @return The formatted string representation of @p value.
+ */
 inline std::string format_number(double value) {
     // Check if it's effectively an integer
     if (value == static_cast<int64_t>(value) &&
@@ -282,6 +365,13 @@ inline std::string format_number(double value) {
 }
 
 // Truncate long strings with ellipsis
+/**
+ * @brief Truncates a string to at most @p max_len characters, appending "..." if it was shortened.
+ *
+ * @param str The input string.
+ * @param max_len Maximum length of the returned string, including the ellipsis (default 80).
+ * @return @p str unchanged if it fits within @p max_len, otherwise the first (max_len - 3) characters followed by "...".
+ */
 inline std::string truncate_string(const std::string& str, size_t max_len = 80) {
     if (str.length() <= max_len) {
         return str;
@@ -293,6 +383,13 @@ inline std::string truncate_string(const std::string& str, size_t max_len = 80) 
 // Welcome Banner
 // ============================================================================
 
+/**
+ * @brief Prints the Eshkol REPL's ASCII-art welcome banner, version string, and quick-start hints to stdout.
+ *
+ * Displays the boxed "ESHKOL" logo, the tagline, the compiled
+ * ESHKOL_VERSION_STRING, and reminders for the `:help`/`:examples` commands
+ * and how to quit the REPL.
+ */
 inline void print_welcome_banner() {
     using namespace color;
 
@@ -323,6 +420,9 @@ inline void print_welcome_banner() {
 // Example Expressions
 // ============================================================================
 
+/**
+ * @brief Prints a categorized set of example Eshkol expressions (arithmetic, functions, closures, lists, control flow, modules, hash tables, functional programming, automatic differentiation, and vector calculus) to stdout.
+ */
 inline void print_examples() {
     using namespace color;
 
@@ -393,6 +493,19 @@ inline void print_examples() {
 // Colored Prompt
 // ============================================================================
 
+/**
+ * @brief Builds the colored REPL prompt string for a new top-level input or a multi-line continuation.
+ *
+ * For a fresh input, returns the "eshkol> " prompt. For a continuation
+ * line (when more input is needed to complete an expression), returns a
+ * "  [line_num,depth]> " prompt showing the current line number and
+ * nesting depth.
+ *
+ * @param continuation Whether this is a continuation of a multi-line input.
+ * @param line_num Current input line number, shown only when @p continuation is true.
+ * @param depth Current nesting depth (e.g. open-paren count), shown only when @p continuation is true.
+ * @return The formatted, color-escaped prompt string.
+ */
 inline std::string make_prompt(bool continuation = false, int line_num = 0, int depth = 0) {
     using namespace color;
     std::string p;
@@ -424,6 +537,12 @@ inline std::string make_prompt(bool continuation = false, int line_num = 0, int 
 // AST Type Names
 // ============================================================================
 
+/**
+ * @brief Maps an eshkol_type_t enum value to its human-readable REPL type name (e.g. ESHKOL_INT64 -> "integer", ESHKOL_DOUBLE -> "number").
+ *
+ * @param type The AST/value type tag to name.
+ * @return A static string naming @p type, or "unknown" if it is not recognized.
+ */
 inline const char* get_type_name(eshkol_type_t type) {
     switch (type) {
         case ESHKOL_INVALID: return "invalid";
@@ -449,6 +568,12 @@ inline const char* get_type_name(eshkol_type_t type) {
     }
 }
 
+/**
+ * @brief Maps an eshkol_op_t enum value to its Scheme-syntax operator/form name (e.g. ESHKOL_IF_OP -> "if", ESHKOL_ADD_OP -> "+").
+ *
+ * @param op The AST operation tag to name.
+ * @return A static string naming @p op, or "unknown-op" if it is not recognized.
+ */
 inline const char* get_op_name(eshkol_op_t op) {
     switch (op) {
         case ESHKOL_INVALID_OP:      return "invalid-op";
@@ -491,6 +616,17 @@ inline const char* get_op_name(eshkol_op_t op) {
 }
 
 // Get detailed type string for an AST node
+/**
+ * @brief Produces a detailed, human-readable description of an AST node's type for the REPL's `:type`/`:ast` commands.
+ *
+ * Beyond the plain type name, includes the symbol's name for ESHKOL_VAR
+ * nodes, distinguishes lambdas from named procedures for ESHKOL_FUNC nodes,
+ * and includes the operator name (via get_op_name()) for ESHKOL_OP nodes.
+ * Falls back to get_type_name() for any other type.
+ *
+ * @param ast The AST node to describe; may be nullptr.
+ * @return "nil" if @p ast is nullptr, otherwise a descriptive type string.
+ */
 inline std::string get_ast_type_string(const eshkol_ast_t* ast) {
     if (!ast) return "nil";
 
@@ -538,6 +674,11 @@ struct FunctionDoc {
     std::string example;
 };
 
+/**
+ * @brief Returns the static table of built-in function documentation entries (name, signature, description, and example) used by the REPL's `:doc` command.
+ *
+ * @return A const reference to the static vector of FunctionDoc entries.
+ */
 inline const std::vector<FunctionDoc>& get_function_docs() {
     static const std::vector<FunctionDoc> docs = {
         // Arithmetic
@@ -688,6 +829,12 @@ inline const std::vector<FunctionDoc>& get_function_docs() {
 }
 
 // Look up documentation for a function
+/**
+ * @brief Finds the FunctionDoc entry matching a given function name.
+ *
+ * @param name The built-in function name to look up.
+ * @return A pointer to the matching entry in get_function_docs(), or nullptr if no entry has that name.
+ */
 inline const FunctionDoc* lookup_doc(const std::string& name) {
     const auto& docs = get_function_docs();
     for (const auto& doc : docs) {
@@ -699,6 +846,11 @@ inline const FunctionDoc* lookup_doc(const std::string& name) {
 }
 
 // Print documentation for a function
+/**
+ * @brief Prints the documentation (signature, description, and example) for a named built-in function to stdout, or an error message if no documentation is found.
+ *
+ * @param name The function name to look up via lookup_doc().
+ */
 inline void print_doc(const std::string& name) {
     using namespace color;
 
@@ -720,6 +872,9 @@ inline void print_doc(const std::string& name) {
 }
 
 // Print list of documented topics
+/**
+ * @brief Prints a categorized index of all documented built-in function names (arithmetic, math, comparison, lists, control, binding, modules, hash tables, functional, I/O, types, equality, memory/OALR, autodiff, and tensors) for the REPL's `:doc` command with no arguments.
+ */
 inline void print_doc_topics() {
     using namespace color;
 
@@ -783,6 +938,12 @@ inline void print_doc_topics() {
 // Error Formatting
 // ============================================================================
 
+/**
+ * @brief Prints a formatted error message to stderr, with an optional dimmed detail line.
+ *
+ * @param message The main error message.
+ * @param detail Optional additional detail printed on a second, dimmed line; omitted if empty.
+ */
 inline void print_error(const std::string& message, const std::string& detail = "") {
     using namespace color;
     std::cerr << bold() << error() << "Error: " << reset();
@@ -793,17 +954,32 @@ inline void print_error(const std::string& message, const std::string& detail = 
     std::cerr << "\n";
 }
 
+/**
+ * @brief Prints a formatted warning message to stderr.
+ *
+ * @param message The warning text.
+ */
 inline void print_warning(const std::string& message) {
     using namespace color;
     std::cerr << bold() << yellow() << "Warning: " << reset();
     std::cerr << message << "\n";
 }
 
+/**
+ * @brief Prints an informational message to stdout in the REPL's info color.
+ *
+ * @param message The message to print.
+ */
 inline void print_info(const std::string& message) {
     using namespace color;
     std::cout << info() << message << reset() << "\n";
 }
 
+/**
+ * @brief Prints a success message to stdout in the REPL's success color.
+ *
+ * @param message The message to print.
+ */
 inline void print_success(const std::string& message) {
     using namespace color;
     std::cout << success() << message << reset() << "\n";

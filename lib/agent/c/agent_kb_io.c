@@ -40,6 +40,16 @@ typedef struct {
     size_t cap;
 } JsonBuf;
 
+/**
+ * @brief Initializes a JsonBuf with a freshly malloc'd buffer.
+ *
+ * Allocates @p initial bytes for the buffer and resets the length to
+ * zero. If the allocation fails, @p jb's buf is left NULL and
+ * subsequent jb_append()/jb_puts() calls become no-ops.
+ *
+ * @param jb Buffer to initialize.
+ * @param initial Initial capacity in bytes to allocate.
+ */
 static void jb_init(JsonBuf* jb, size_t initial) {
     jb->buf = (char*)malloc(initial);
     jb->len = 0;
@@ -47,6 +57,19 @@ static void jb_init(JsonBuf* jb, size_t initial) {
     if (jb->buf) jb->buf[0] = '\0';
 }
 
+/**
+ * @brief Appends a raw byte span to a JsonBuf, growing the buffer as needed.
+ *
+ * Doubles the buffer capacity until the new content plus a NUL
+ * terminator fits, then copies the bytes in. If @p jb's buffer is
+ * already NULL (a prior allocation failed) or a realloc() fails here,
+ * the buffer is left/marked NULL so further writes are silently
+ * skipped.
+ *
+ * @param jb Buffer to append to.
+ * @param str Bytes to append (need not be NUL-terminated).
+ * @param slen Number of bytes to copy from @p str.
+ */
 static void jb_append(JsonBuf* jb, const char* str, size_t slen) {
     if (!jb->buf) return;
     while (jb->len + slen + 1 > jb->cap) {
@@ -60,11 +83,25 @@ static void jb_append(JsonBuf* jb, const char* str, size_t slen) {
     jb->buf[jb->len] = '\0';
 }
 
+/**
+ * @brief Appends a NUL-terminated C string to a JsonBuf.
+ *
+ * Convenience wrapper around jb_append() that computes the length via
+ * strlen().
+ */
 static void jb_puts(JsonBuf* jb, const char* str) {
     jb_append(jb, str, strlen(str));
 }
 
 /* Write a JSON-escaped string (with surrounding quotes) */
+/**
+ * @brief Writes a JSON string literal (quoted and escaped) into the buffer.
+ *
+ * Wraps @p str in double quotes and escapes control characters per the
+ * JSON spec: `"`, `\`, newline, carriage return, and tab get their
+ * short escapes; other bytes below 0x20 become `\u00XX`. A NULL
+ * @p str is written as an empty string `""`.
+ */
 static void jb_string(JsonBuf* jb, const char* str) {
     jb_puts(jb, "\"");
     if (str) {
@@ -89,6 +126,9 @@ static void jb_string(JsonBuf* jb, const char* str) {
     jb_puts(jb, "\"");
 }
 
+/**
+ * @brief Frees a JsonBuf's backing buffer and resets it to an empty state.
+ */
 static void jb_free(JsonBuf* jb) {
     free(jb->buf);
     jb->buf = NULL;
@@ -121,6 +161,21 @@ static int32_t g_fact_count = 0;
  * Add a fact to the in-memory store.
  * Returns: fact index (>= 0), -1 if full
  */
+/**
+ * @brief Appends a new fact to the flat in-memory fact store.
+ *
+ * Copies @p subject, @p predicate, and @p object into the next free
+ * slot (truncating each to MAX_FIELD_LEN - 1 characters), along with
+ * @p value and the @p has_value flag. NULL string arguments are
+ * stored as empty strings.
+ *
+ * @param subject Fact subject field, or NULL for empty.
+ * @param predicate Fact predicate field, or NULL for empty.
+ * @param object Fact object field, or NULL for empty.
+ * @param value Numeric value associated with the fact (meaningful only if @p has_value is nonzero).
+ * @param has_value Non-zero if @p value should be considered set.
+ * @return The new fact's index (>= 0) on success, or -1 if the store is full (MAX_FACTS reached).
+ */
 int32_t eshkol_kb_fact_add(const char* subject, const char* predicate,
                              const char* object, double value, int32_t has_value) {
     if (g_fact_count >= MAX_FACTS) return -1;
@@ -140,12 +195,21 @@ int32_t eshkol_kb_fact_add(const char* subject, const char* predicate,
 /*
  * Clear all facts.
  */
+/**
+ * @brief Discards all stored facts by resetting the fact count to zero.
+ *
+ * Does not zero or free the underlying g_facts array; existing slots
+ * are simply overwritten as new facts are added.
+ */
 void eshkol_kb_fact_clear(void) {
     g_fact_count = 0;
 }
 
 /*
  * Get fact count.
+ */
+/**
+ * @brief Returns the number of facts currently stored.
  */
 int32_t eshkol_kb_fact_count(void) {
     return g_fact_count;
@@ -155,6 +219,18 @@ int32_t eshkol_kb_fact_count(void) {
  * Get fact field by index.
  * field: 0=subject, 1=predicate, 2=object
  * Returns: strlen written to buf, -1 error
+ */
+/**
+ * @brief Copies one string field of a stored fact into a caller-supplied buffer.
+ *
+ * Truncates to fit if the field is longer than @p buf_size - 1 and
+ * always NUL-terminates @p buf.
+ *
+ * @param idx Fact index, must be in [0, eshkol_kb_fact_count()).
+ * @param field Which field to fetch: 0=subject, 1=predicate, 2=object.
+ * @param buf Destination buffer.
+ * @param buf_size Size of @p buf in bytes.
+ * @return Number of characters written (excluding the NUL terminator), or -1 on an invalid index, field, or NULL/zero-size buffer.
  */
 int32_t eshkol_kb_fact_get_field(int32_t idx, int32_t field,
                                    char* buf, int32_t buf_size) {
@@ -178,11 +254,23 @@ int32_t eshkol_kb_fact_get_field(int32_t idx, int32_t field,
  * Get fact value by index.
  * Returns: the numeric value, 0.0 if not applicable
  */
+/**
+ * @brief Returns the numeric value stored with a fact.
+ *
+ * @param idx Fact index.
+ * @return The fact's value field, or 0.0 if @p idx is out of range.
+ */
 double eshkol_kb_fact_get_value(int32_t idx) {
     if (idx < 0 || idx >= g_fact_count) return 0.0;
     return g_facts[idx].value;
 }
 
+/**
+ * @brief Reports whether a fact's numeric value field is meaningful.
+ *
+ * @param idx Fact index.
+ * @return 1 if the fact has a valid numeric value, 0 if it does not or @p idx is out of range.
+ */
 int32_t eshkol_kb_fact_has_value(int32_t idx) {
     if (idx < 0 || idx >= g_fact_count) return 0;
     return g_facts[idx].has_value;
@@ -195,6 +283,21 @@ int32_t eshkol_kb_fact_has_value(int32_t idx) {
 /*
  * Save all facts to a JSON file.
  * Returns: 0 success, -1 error
+ */
+/**
+ * @brief Serializes all stored facts to a JSON array file at @p path.
+ *
+ * Builds the JSON text in memory (see the JsonBuf/jb_* helpers above),
+ * writing each fact as an object with subject/predicate/object string
+ * fields and, when the fact has a value (see eshkol_kb_fact_has_value()),
+ * a numeric "value" field formatted with up to 15 significant digits.
+ * The buffer is then written to @p path in one fwrite() call,
+ * overwriting any existing file.
+ *
+ * @param path Filesystem path to write; NULL is rejected.
+ * @return 0 on success, -1 if @p path is NULL, the in-memory buffer
+ *   failed to allocate, the file could not be opened, or not all
+ *   bytes were written.
  */
 int32_t eshkol_kb_save_json(const char* path) {
     if (!path) return -1;
@@ -238,6 +341,23 @@ int32_t eshkol_kb_save_json(const char* path) {
  * produced by eshkol_kb_save_json.
  *
  * Returns: number of facts loaded, -1 error
+ */
+/**
+ * @brief Loads facts from a JSON file produced by eshkol_kb_save_json(), appending them to the in-memory store.
+ *
+ * Reads the whole file into memory (rejecting files that are empty,
+ * unreadable, or larger than 10 MiB), then runs a minimal hand-written
+ * parser that only understands the specific
+ * `[ {"subject":..,"predicate":..,"object":..,"value":..}, ... ]` shape
+ * this module itself writes — it is not a general JSON parser.
+ * Recognized string fields are unescaped for `\"`, `\\`, `\n`, `\r`,
+ * `\t`; unrecognized keys/value types are skipped. Objects whose
+ * subject/predicate/object all come out empty are not added.
+ *
+ * @param path Filesystem path to read; NULL is rejected.
+ * @return Number of facts successfully appended, or -1 if @p path is
+ *   NULL, the file cannot be opened, or the file size is invalid
+ *   (empty or over 10 MiB).
  */
 int32_t eshkol_kb_load_json(const char* path) {
     if (!path) return -1;

@@ -63,6 +63,17 @@ typedef struct {
 
 static Watcher* g_watchers[MAX_WATCHERS] = {0};
 
+/**
+ * @brief Appends an event to a watcher's ring buffer of pending events.
+ *
+ * Formats @p type and @p path as "type\tpath" for later retrieval by
+ * eshkol_watch_poll(). If the buffer is full, the new event is silently
+ * dropped (oldest events are kept, not overwritten).
+ *
+ * @param w Watcher whose event ring buffer is appended to.
+ * @param type Event type string (e.g. "change", "create", "delete", "rename").
+ * @param path Path the event pertains to.
+ */
 static void push_event(Watcher* w, const char* type, const char* path) {
     if (w->event_count >= MAX_EVENTS) return;  /* Drop oldest */
     snprintf(w->events[w->event_head], sizeof(w->events[0]),
@@ -73,6 +84,16 @@ static void push_event(Watcher* w, const char* type, const char* path) {
 
 #ifdef USE_KQUEUE
 
+/**
+ * @brief Opens @p path and registers a kqueue EVFILT_VNODE watch on it.
+ *
+ * Watches for write, delete, rename, and attribute-change events with
+ * EV_CLEAR (edge-triggered) semantics, and records the opened fd/path in the
+ * watcher's entry table for later lookup and cleanup.
+ *
+ * @param w Watcher to add the entry to.
+ * @param path Filesystem path to watch.
+ */
 static void add_kqueue_watch(Watcher* w, const char* path) {
     if (w->n_entries >= MAX_WATCH_FDS) return;
     int fd = open(path, O_RDONLY | O_EVTONLY);
@@ -91,6 +112,15 @@ static void add_kqueue_watch(Watcher* w, const char* path) {
     e->wd = fd;
 }
 
+/**
+ * @brief Recursively registers kqueue watches on @p path and every subdirectory beneath it.
+ *
+ * Skips dotfiles/dot-directories. Each subdirectory found via readdir() is
+ * watched via add_kqueue_watch() and then recursed into.
+ *
+ * @param w Watcher to add entries to.
+ * @param path Root directory path to watch recursively.
+ */
 static void add_recursive(Watcher* w, const char* path) {
     add_kqueue_watch(w, path);
     DIR* dir = opendir(path);
@@ -110,6 +140,15 @@ static void add_recursive(Watcher* w, const char* path) {
 
 #elif defined(USE_INOTIFY)
 
+/**
+ * @brief Registers an inotify watch on @p path for create/delete/modify/rename events.
+ *
+ * Records the returned watch descriptor and path in the watcher's entry
+ * table for later lookup and cleanup.
+ *
+ * @param w Watcher to add the entry to.
+ * @param path Filesystem path to watch.
+ */
 static void add_inotify_watch(Watcher* w, const char* path) {
     if (w->n_entries >= MAX_WATCH_FDS) return;
     int wd = inotify_add_watch(w->inotify_fd, path,
@@ -121,6 +160,15 @@ static void add_inotify_watch(Watcher* w, const char* path) {
     e->wd = wd;
 }
 
+/**
+ * @brief Recursively registers inotify watches on @p path and every subdirectory beneath it.
+ *
+ * Skips dotfiles/dot-directories. Each subdirectory found via readdir() is
+ * watched via add_inotify_watch() and then recursed into.
+ *
+ * @param w Watcher to add entries to.
+ * @param path Root directory path to watch recursively.
+ */
 static void add_recursive(Watcher* w, const char* path) {
     add_inotify_watch(w, path);
     DIR* dir = opendir(path);
@@ -140,6 +188,18 @@ static void add_recursive(Watcher* w, const char* path) {
 
 #endif
 
+/**
+ * @brief Starts watching a filesystem path for change events, returning a handle.
+ *
+ * Allocates a Watcher slot and backing OS resource (a kqueue on macOS, an
+ * inotify instance on Linux), then registers a watch on @p path — and, if
+ * @p recursive is set, on every subdirectory beneath it.
+ *
+ * @param path Filesystem path to watch.
+ * @param recursive Nonzero to also watch all subdirectories.
+ * @return Watcher handle (>= 1) on success, -1 on error or on platforms with
+ *         no supported file-watching backend.
+ */
 /*
  * Start watching a path for filesystem events.
  * recursive: 1 to watch all subdirectories
@@ -177,6 +237,20 @@ int64_t eshkol_watch_start(const char* path, int32_t recursive) {
     return (int64_t)slot;
 }
 
+/**
+ * @brief Retrieves the next pending filesystem event for a watcher, if any.
+ *
+ * Drains the watcher's internal event buffer first; if empty, does a
+ * non-blocking poll of the underlying OS mechanism (kqueue or inotify),
+ * translates any new events into "type\tpath" strings via push_event(), and
+ * returns the oldest buffered event.
+ *
+ * @param handle Watcher handle from eshkol_watch_start().
+ * @param buf Output buffer receiving "event_type\tpath", NUL-terminated.
+ * @param buf_size Size of @p buf in bytes.
+ * @return Length of the event string written to @p buf, 0 if no events are
+ *         pending, or -1 on an invalid handle/buffer.
+ */
 /*
  * Poll for filesystem events.
  *
@@ -261,6 +335,14 @@ int32_t eshkol_watch_poll(int64_t handle, char* buf, int32_t buf_size) {
     return 0;  /* No events */
 }
 
+/**
+ * @brief Stops a watcher and releases all of its OS and memory resources.
+ *
+ * Closes every per-entry fd/removes every inotify watch descriptor, closes
+ * the kqueue/inotify fd, frees the Watcher struct, and clears its handle slot.
+ *
+ * @param handle Watcher handle from eshkol_watch_start(). No-op if invalid.
+ */
 /*
  * Stop watching and free resources.
  */

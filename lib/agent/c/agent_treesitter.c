@@ -77,6 +77,12 @@ static const LangEntry g_languages[] = {
     { NULL, NULL }
 };
 
+/**
+ * @brief Looks up the tree-sitter grammar factory registered under @p name in g_languages.
+ *
+ * @param name Language name or short alias (e.g. "javascript"/"js", "python"/"py").
+ * @return The matching TSLanguage, or NULL if @p name is not registered.
+ */
 static const TSLanguage* find_language(const char* name) {
     for (const LangEntry* e = g_languages; e->name; e++) {
         if (strcmp(e->name, name) == 0) return e->factory();
@@ -99,6 +105,13 @@ static uint32_t g_tree_source_lens[MAX_TREES] = {0};
 static TSQuery*  g_queries[MAX_QUERIES] = {0};
 static const TSLanguage* g_query_langs[MAX_QUERIES] = {0};
 
+/**
+ * @brief Finds the first NULL (free) entry in a fixed-size handle table, skipping index 0 so handle 0 is never valid.
+ *
+ * @param table Array of @p max opaque pointers, one per handle slot.
+ * @param max Number of entries in @p table.
+ * @return Index of a free slot (>= 1), or -1 if the table is full.
+ */
 static int alloc_slot(void** table, int max) {
     for (int i = 1; i < max; i++) {
         if (!table[i]) return i;
@@ -117,6 +130,12 @@ static int alloc_slot(void** table, int max) {
  *           "ruby", "bash", "typescript" (and short aliases "js", "py", etc.)
  *
  * Returns: parser handle (>= 1), -1 if language unknown or slots full
+ */
+/**
+ * @brief Creates a tree-sitter parser configured for @p language and stores it in the parser handle table.
+ *
+ * @param language Language name or short alias, as accepted by find_language() (e.g. "javascript", "js", "python", "rust", "go", "c", "cpp", "java", "ruby", "bash").
+ * @return Parser handle (>= 1) on success, -1 if @p language is unknown, the parser slot table is full, or allocation fails.
  */
 int64_t eshkol_ts_parser_new(const char* language) {
     if (!language) return -1;
@@ -138,6 +157,11 @@ int64_t eshkol_ts_parser_new(const char* language) {
 
 /*
  * Free a parser and its slot.
+ */
+/**
+ * @brief Deletes the parser at @p handle and clears its slot.
+ *
+ * @param handle Parser handle from eshkol_ts_parser_new(). No-op if out of range or already freed.
  */
 void eshkol_ts_parser_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_PARSERS) return;
@@ -163,6 +187,14 @@ void eshkol_ts_parser_free(int64_t handle) {
  * The source string is NOT copied — caller must keep it alive while the
  * tree is in use. The handle stores a reference to it.
  */
+/**
+ * @brief Parses @p source with the parser at @p parser_handle and stores the resulting syntax tree in the tree handle table.
+ *
+ * @param parser_handle Parser handle from eshkol_ts_parser_new().
+ * @param source Source code bytes; need not be NUL-terminated. Not copied — must remain valid for the lifetime of the returned tree handle, since node-text extraction reads directly from it.
+ * @param source_len Length of @p source in bytes.
+ * @return Tree handle (>= 1) on success, -1 on invalid handle/arguments, parse failure, or if the tree slot table is full.
+ */
 int64_t eshkol_ts_parse(int64_t parser_handle, const char* source, int32_t source_len) {
     if (parser_handle < 1 || parser_handle >= MAX_PARSERS) return -1;
     TSParser* parser = g_parsers[parser_handle];
@@ -182,6 +214,11 @@ int64_t eshkol_ts_parse(int64_t parser_handle, const char* source, int32_t sourc
 /*
  * Free a tree and its slot.
  */
+/**
+ * @brief Deletes the tree at @p handle and clears its slot, including the stored source-text reference.
+ *
+ * @param handle Tree handle from eshkol_ts_parse(). No-op if out of range or already freed.
+ */
 void eshkol_ts_tree_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_TREES) return;
     if (g_trees[handle]) {
@@ -199,6 +236,16 @@ void eshkol_ts_tree_free(int64_t handle) {
  *   "type\tstart_row\tstart_col\tend_row\tend_col\tstart_byte\tend_byte\tchild_count\tnamed"
  ******************************************************************************/
 
+/**
+ * @brief Serializes a single TSNode's type, position, byte range, and child count into a tab-separated line.
+ *
+ * Output format: "type\tstart_row\tstart_col\tend_row\tend_col\tstart_byte\tend_byte\tchild_count\tnamed".
+ *
+ * @param node Node to serialize.
+ * @param buf Destination buffer.
+ * @param buf_size Size of @p buf.
+ * @return Value from snprintf(): the number of characters that would have been written (excluding the NUL), which may exceed @p buf_size if truncated.
+ */
 static int serialize_node(TSNode node, char* buf, int buf_size) {
     const char* type = ts_node_type(node);
     TSPoint start = ts_node_start_point(node);
@@ -226,6 +273,14 @@ static int serialize_node(TSNode node, char* buf, int buf_size) {
  *
  * Returns: strlen written to buf, -1 error
  */
+/**
+ * @brief Serializes the root node of tree @p tree_handle into @p buf via serialize_node().
+ *
+ * @param tree_handle Tree handle from eshkol_ts_parse().
+ * @param buf Destination buffer for the serialized node.
+ * @param buf_size Size of @p buf.
+ * @return Number of bytes written to @p buf, or -1 on invalid handle/arguments or if the serialized node would not fit.
+ */
 int32_t eshkol_ts_tree_root(int64_t tree_handle, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
     TSTree* tree = g_trees[tree_handle];
@@ -247,6 +302,23 @@ int32_t eshkol_ts_tree_root(int64_t tree_handle, char* buf, int32_t buf_size) {
  * count_out receives the number of children.
  *
  * Returns: total bytes written to buf, -1 error
+ */
+/**
+ * @brief Serializes the named children of the root node, or of the smallest named node containing [@p start_byte, @p end_byte), as NUL-separated records in @p buf.
+ *
+ * When @p start_byte and @p end_byte are both 0, the children of the tree
+ * root are returned. Otherwise the smallest named descendant covering that
+ * byte range is located first (via
+ * ts_node_named_descendant_for_byte_range()) and its named children are
+ * returned instead.
+ *
+ * @param tree_handle Tree handle from eshkol_ts_parse().
+ * @param start_byte Start of the byte range identifying the target node, or 0 with @p end_byte 0 for the root.
+ * @param end_byte End of the byte range identifying the target node, or 0 with @p start_byte 0 for the root.
+ * @param buf Destination buffer for NUL-separated serialized child nodes.
+ * @param buf_size Size of @p buf.
+ * @param count_out Output: number of children written.
+ * @return Total bytes written to @p buf, or -1 on invalid handle/arguments.
  */
 int32_t eshkol_ts_node_children(int64_t tree_handle,
                                   uint32_t start_byte, uint32_t end_byte,
@@ -293,6 +365,16 @@ int32_t eshkol_ts_node_children(int64_t tree_handle,
  *
  * Returns: strlen of extracted text, -1 error
  */
+/**
+ * @brief Copies the source text spanning [@p start_byte, @p end_byte) of tree @p tree_handle's original source into @p buf.
+ *
+ * @param tree_handle Tree handle from eshkol_ts_parse(); its stored source pointer/length are used.
+ * @param start_byte Start byte offset (inclusive).
+ * @param end_byte End byte offset (exclusive); must be > @p start_byte and within the source length.
+ * @param buf Destination buffer, truncated to @p buf_size - 1 bytes if the range is longer.
+ * @param buf_size Size of @p buf.
+ * @return Number of bytes written to @p buf, or -1 on invalid handle/arguments or an out-of-range/empty byte range.
+ */
 int32_t eshkol_ts_node_text(int64_t tree_handle, uint32_t start_byte,
                               uint32_t end_byte, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
@@ -323,6 +405,13 @@ int32_t eshkol_ts_node_text(int64_t tree_handle, uint32_t start_byte,
  *
  * Returns: query handle (>= 1), -1 on error
  */
+/**
+ * @brief Compiles a tree-sitter S-expression @p pattern for @p language and stores it in the query handle table.
+ *
+ * @param language Language name or alias the pattern is written against; must match the language used to parse any tree the query is later run on.
+ * @param pattern Tree-sitter query pattern, e.g. "(function_declaration name: (identifier) @name)".
+ * @return Query handle (>= 1) on success, -1 if @p language is unknown, @p pattern fails to compile, or the query slot table is full.
+ */
 int64_t eshkol_ts_query_new(const char* language, const char* pattern) {
     if (!language || !pattern) return -1;
     const TSLanguage* lang = find_language(language);
@@ -344,6 +433,11 @@ int64_t eshkol_ts_query_new(const char* language, const char* pattern) {
 /*
  * Free a query.
  */
+/**
+ * @brief Deletes the query at @p handle and clears its slot.
+ *
+ * @param handle Query handle from eshkol_ts_query_new(). No-op if out of range or already freed.
+ */
 void eshkol_ts_query_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_QUERIES) return;
     if (g_queries[handle]) {
@@ -364,6 +458,22 @@ void eshkol_ts_query_free(int64_t handle) {
  * count_out: receives number of captures written
  *
  * Returns: total bytes written to buf, -1 error
+ */
+/**
+ * @brief Runs query @p query_handle against tree @p tree_handle and serializes each capture as a NUL-separated record in @p buf.
+ *
+ * Each capture is written as
+ * "capture_name\tstart_byte\tend_byte\tstart_row\tstart_col\tend_row\tend_col".
+ * Iterates matches via a fresh TSQueryCursor until either @p max_matches
+ * matches have been processed or @p buf is full.
+ *
+ * @param query_handle Query handle from eshkol_ts_query_new().
+ * @param tree_handle Tree handle from eshkol_ts_parse(); must have been parsed with the same language as the query.
+ * @param max_matches Maximum number of matches to process, or 0 for effectively unlimited (bounded only by @p buf capacity).
+ * @param buf Destination buffer for NUL-separated capture records.
+ * @param buf_size Size of @p buf.
+ * @param count_out Output: number of captures written.
+ * @return Total bytes written to @p buf, or -1 on invalid handle/arguments.
  */
 int32_t eshkol_ts_query_matches(int64_t query_handle, int64_t tree_handle,
                                   int32_t max_matches,
@@ -424,6 +534,14 @@ done:
  *
  * Returns: strlen, -1 error
  */
+/**
+ * @brief Renders the S-expression form of tree @p tree_handle's root node (via ts_node_string()) into @p buf, for debugging.
+ *
+ * @param tree_handle Tree handle from eshkol_ts_parse().
+ * @param buf Destination buffer, truncated to @p buf_size - 1 bytes if the S-expression is longer.
+ * @param buf_size Size of @p buf.
+ * @return Number of bytes written to @p buf, or -1 on invalid handle/arguments or allocation failure.
+ */
 int32_t eshkol_ts_tree_sexp(int64_t tree_handle, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
     TSTree* tree = g_trees[tree_handle];
@@ -445,6 +563,11 @@ int32_t eshkol_ts_tree_sexp(int64_t tree_handle, char* buf, int32_t buf_size) {
  * Check if tree-sitter is available.
  * Returns: 1 (compiled with tree-sitter support)
  */
+/**
+ * @brief Reports whether this build was compiled with tree-sitter support.
+ *
+ * @return 1 when compiled with HAS_TREE_SITTER (this definition).
+ */
 int32_t eshkol_ts_available(void) { return 1; }
 
 #else /* !HAS_TREE_SITTER */
@@ -453,23 +576,38 @@ int32_t eshkol_ts_available(void) { return 1; }
  * Graceful stubs when tree-sitter is not available
  ******************************************************************************/
 
+/** @brief Stub: tree-sitter support was not compiled in, so parser creation always fails. */
 int64_t eshkol_ts_parser_new(const char* language) { (void)language; return -1; }
+/** @brief Stub: no-op since no parsers exist without tree-sitter support. */
 void    eshkol_ts_parser_free(int64_t h) { (void)h; }
+/** @brief Stub: tree-sitter support was not compiled in, so parsing always fails. */
 int64_t eshkol_ts_parse(int64_t p, const char* s, int32_t l) { (void)p;(void)s;(void)l; return -1; }
+/** @brief Stub: no-op since no trees exist without tree-sitter support. */
 void    eshkol_ts_tree_free(int64_t h) { (void)h; }
+/** @brief Stub: always fails since no trees exist without tree-sitter support. */
 int32_t eshkol_ts_tree_root(int64_t h, char* b, int32_t s) { (void)h;(void)b;(void)s; return -1; }
+/** @brief Stub: always fails since no trees exist without tree-sitter support. */
 int32_t eshkol_ts_node_children(int64_t h, uint32_t sb, uint32_t eb, char* b, int32_t bs, int32_t* c) {
     (void)h;(void)sb;(void)eb;(void)b;(void)bs;(void)c; return -1;
 }
+/** @brief Stub: always fails since no trees exist without tree-sitter support. */
 int32_t eshkol_ts_node_text(int64_t h, uint32_t sb, uint32_t eb, char* b, int32_t bs) {
     (void)h;(void)sb;(void)eb;(void)b;(void)bs; return -1;
 }
+/** @brief Stub: tree-sitter support was not compiled in, so query compilation always fails. */
 int64_t eshkol_ts_query_new(const char* l, const char* p) { (void)l;(void)p; return -1; }
+/** @brief Stub: no-op since no queries exist without tree-sitter support. */
 void    eshkol_ts_query_free(int64_t h) { (void)h; }
+/** @brief Stub: always fails since no queries or trees exist without tree-sitter support. */
 int32_t eshkol_ts_query_matches(int64_t q, int64_t t, int32_t m, char* b, int32_t bs, int32_t* c) {
     (void)q;(void)t;(void)m;(void)b;(void)bs;(void)c; return -1;
 }
+/** @brief Stub: always fails since no trees exist without tree-sitter support. */
 int32_t eshkol_ts_tree_sexp(int64_t h, char* b, int32_t s) { (void)h;(void)b;(void)s; return -1; }
+/**
+ * @brief Reports whether this build was compiled with tree-sitter support.
+ * @return 0 (this build lacks HAS_TREE_SITTER).
+ */
 int32_t eshkol_ts_available(void) { return 0; }
 
 #endif /* HAS_TREE_SITTER */

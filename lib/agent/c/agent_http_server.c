@@ -51,6 +51,18 @@
 #  define ESHKOL_WS_HAS_ARC4RANDOM 0
 #endif
 
+/**
+ * @brief Fills a 4-byte WebSocket frame masking key with unpredictable bytes.
+ *
+ * RFC 6455 section 5.3 requires every client-to-server frame to be masked
+ * with a key that is not predictable to an attacker. Prefers
+ * arc4random_buf() where available, falls back to reading from
+ * /dev/urandom, and as a last resort (both unavailable) uses a
+ * time-seeded linear congruential generator that is not
+ * cryptographically strong but avoids the RFC-violating all-zero mask.
+ *
+ * @param out Buffer of 4 bytes to receive the mask.
+ */
 static void eshkol_ws_random_mask(unsigned char out[4]) {
 #if ESHKOL_WS_HAS_ARC4RANDOM
     arc4random_buf(out, 4);
@@ -90,6 +102,18 @@ static HttpServer* g_servers[MAX_HTTP_SERVERS] = {0};
  * Create HTTP server and bind to port.
  * port: TCP port (0 = random available port)
  * Returns: handle (>= 1), -1 error
+ */
+/**
+ * @brief Allocates a server slot, creates a loopback-only TCP listening socket, and binds/listens on @p port.
+ *
+ * Binds to 127.0.0.1 (INADDR_LOOPBACK) only, never all interfaces, since
+ * this server exists for local OAuth PKCE callbacks and similar short-lived
+ * local IPC, not for serving remote clients. If @p port is 0, the OS
+ * assigns an ephemeral port, which can be retrieved with
+ * eshkol_http_server_port().
+ *
+ * @param port TCP port to bind, or 0 to let the OS choose one.
+ * @return Server handle (>= 1) on success, -1 on socket/bind/listen failure or if all server slots are in use.
  */
 int64_t eshkol_http_server_create(int32_t port) {
     int slot = -1;
@@ -136,6 +160,15 @@ int64_t eshkol_http_server_create(int32_t port) {
 /*
  * Get actual port number.
  */
+/**
+ * @brief Returns the TCP port a server handle is actually bound to.
+ *
+ * Useful when eshkol_http_server_create() was called with port 0 and the
+ * OS assigned an ephemeral port.
+ *
+ * @param handle Server handle from eshkol_http_server_create().
+ * @return The bound port number, or -1 if @p handle is invalid.
+ */
 int32_t eshkol_http_server_port(int64_t handle) {
     if (handle < 1 || handle >= MAX_HTTP_SERVERS || !g_servers[handle]) return -1;
     return (int32_t)g_servers[handle]->port;
@@ -148,6 +181,22 @@ int32_t eshkol_http_server_port(int64_t handle) {
  * then "\n" then body.
  *
  * Returns: strlen written to buf, 0 on timeout, -1 error
+ */
+/**
+ * @brief Blocks up to @p timeout_ms waiting for one client connection, then reads its HTTP request into @p buf.
+ *
+ * Accepts a single connection on the listening socket, sets a 5-second
+ * receive timeout on the accepted client socket, and reads until either
+ * @p buf fills or the "\r\n\r\n" end-of-headers marker is seen (the request
+ * body, if any, is not read separately here). The accepted client fd is
+ * stashed on the server so a subsequent eshkol_http_server_respond() can
+ * reply on the same connection.
+ *
+ * @param handle Server handle from eshkol_http_server_create().
+ * @param buf Destination buffer for the raw request text (method/path, headers, and any body read so far).
+ * @param buf_size Size of @p buf, including space for the terminating NUL.
+ * @param timeout_ms How long to wait for an incoming connection before giving up.
+ * @return Number of bytes written to @p buf on success, 0 on timeout, -1 on error.
  */
 int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
                                     int32_t timeout_ms) {
@@ -187,6 +236,19 @@ int32_t eshkol_http_server_accept(int64_t handle, char* buf, int32_t buf_size,
 /*
  * Send HTTP response on the current connection.
  */
+/**
+ * @brief Writes a complete HTTP/1.1 response (status line, Content-Type/Length headers, body) to the currently connected client and closes the connection.
+ *
+ * Maps a handful of common status codes (301, 400, 404, 500) to their
+ * reason phrases, defaulting to "OK" otherwise. Always sends
+ * "Connection: close" since this server is single-shot per client. Does
+ * nothing if there is no client currently connected on @p handle.
+ *
+ * @param handle Server handle from eshkol_http_server_create().
+ * @param status HTTP status code to send.
+ * @param content_type Value for the Content-Type header, or "text/html" if NULL.
+ * @param body Response body, or NULL/empty for no body.
+ */
 void eshkol_http_server_respond(int64_t handle, int32_t status,
                                   const char* content_type, const char* body) {
     if (handle < 1 || handle >= MAX_HTTP_SERVERS || !g_servers[handle]) return;
@@ -222,6 +284,11 @@ void eshkol_http_server_respond(int64_t handle, int32_t status,
 /*
  * Close and free HTTP server.
  */
+/**
+ * @brief Closes any open client/listening sockets for @p handle, frees the server, and clears its slot.
+ *
+ * @param handle Server handle from eshkol_http_server_create().
+ */
 void eshkol_http_server_close(int64_t handle) {
     if (handle < 1 || handle >= MAX_HTTP_SERVERS || !g_servers[handle]) return;
     HttpServer* srv = g_servers[handle];
@@ -235,6 +302,16 @@ void eshkol_http_server_close(int64_t handle) {
  * Unix Domain Socket Connect (for IDE IPC: VS Code VSCODE_IPC_HOOK)
  ******************************************************************************/
 
+/**
+ * @brief Opens a Unix domain socket and connects it to @p path.
+ *
+ * Used for local IDE IPC (e.g. VS Code's VSCODE_IPC_HOOK socket). The
+ * connected fd is returned directly rather than through a handle table,
+ * since callers manage it like any other raw socket fd.
+ *
+ * @param path Filesystem path of the Unix domain socket to connect to.
+ * @return Connected file descriptor (>= 0) on success, -1 on error or if @p path is NULL.
+ */
 int64_t eshkol_unix_socket_connect(const char* path) {
     if (!path) return -1;
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -278,6 +355,16 @@ static WsConnection* g_ws[MAX_WS_HANDLES] = {0};
  * operations and let the Eshkol wrapper handle the upgrade via
  * the existing HTTP client. */
 
+/**
+ * @brief Wraps an already-connected, already-upgraded TCP socket fd in a WebSocket handle for use with the eshkol_ws_* frame functions.
+ *
+ * Does not perform the HTTP Upgrade handshake itself — the caller is
+ * expected to complete the WebSocket upgrade (e.g. via the Eshkol HTTP
+ * client) before calling this, and pass in the resulting fd.
+ *
+ * @param fd Already-connected, already-upgraded socket file descriptor.
+ * @return WebSocket handle (>= 1) on success, -1 if all handle slots are in use.
+ */
 int64_t eshkol_ws_wrap_fd(int32_t fd) {
     for (int i = 1; i < MAX_WS_HANDLES; i++) {
         if (!g_ws[i]) {
@@ -293,6 +380,21 @@ int64_t eshkol_ws_wrap_fd(int32_t fd) {
 }
 
 /* Send WebSocket text frame (opcode 0x81, masked) */
+/**
+ * @brief Encodes and sends @p data as a single masked WebSocket text frame (opcode 0x1).
+ *
+ * Builds an RFC 6455 frame header with the appropriate extended-length
+ * encoding for @p len (7-bit, 16-bit, or 64-bit length), generates a fresh
+ * random mask per eshkol_ws_random_mask(), and masks the payload in
+ * place — using a 4096-byte stack buffer directly when the payload fits,
+ * otherwise masking and sending it in 4096-byte chunks to avoid a heap
+ * allocation.
+ *
+ * @param handle WebSocket handle from eshkol_ws_wrap_fd().
+ * @param data Text payload bytes to send.
+ * @param len Length of @p data in bytes.
+ * @return 0 on success, -1 on error, invalid handle, closed connection, or a short send().
+ */
 int32_t eshkol_ws_send_text(int64_t handle, const char* data, int32_t len) {
     if (handle < 1 || handle >= MAX_WS_HANDLES || !g_ws[handle]) return -1;
     WsConnection* ws = g_ws[handle];
@@ -350,6 +452,17 @@ int32_t eshkol_ws_send_text(int64_t handle, const char* data, int32_t len) {
 }
 
 /* Send WebSocket binary frame (opcode 0x82) */
+/**
+ * @brief Encodes and sends @p data as a single masked WebSocket binary frame (opcode 0x2).
+ *
+ * Identical framing/masking logic to eshkol_ws_send_text(), differing
+ * only in the opcode byte.
+ *
+ * @param handle WebSocket handle from eshkol_ws_wrap_fd().
+ * @param data Binary payload bytes to send.
+ * @param len Length of @p data in bytes.
+ * @return 0 on success, -1 on error, invalid handle, closed connection, or a short send().
+ */
 int32_t eshkol_ws_send_binary(int64_t handle, const char* data, int32_t len) {
     if (handle < 1 || handle >= MAX_WS_HANDLES || !g_ws[handle]) return -1;
     WsConnection* ws = g_ws[handle];
@@ -401,6 +514,23 @@ int32_t eshkol_ws_send_binary(int64_t handle, const char* data, int32_t len) {
 }
 
 /* Receive WebSocket frame */
+/**
+ * @brief Waits up to @p timeout_ms for a WebSocket frame, decodes and unmasks it into @p buf, and reports its opcode via @p frame_type.
+ *
+ * Reads the 2-byte base header plus any RFC 6455 extended length field
+ * (16-bit or 64-bit) and mask key, then reads and (if masked) unmasks the
+ * payload, truncating to @p buf_size if the frame is larger than the
+ * buffer. Close frames (opcode 0x8) mark the connection closed; ping
+ * frames (opcode 0x9) are answered automatically with an empty pong
+ * before returning.
+ *
+ * @param handle WebSocket handle from eshkol_ws_wrap_fd().
+ * @param buf Destination buffer for the (unmasked) payload.
+ * @param buf_size Size of @p buf, including space for the terminating NUL.
+ * @param frame_type Output: 1 text, 2 binary, 8 close, 9 ping, 10 pong, 0 unknown opcode.
+ * @param timeout_ms How long to wait for a frame before returning 0.
+ * @return Number of payload bytes written to @p buf, 0 on timeout, -1 on error.
+ */
 int32_t eshkol_ws_receive(int64_t handle, char* buf, int32_t buf_size,
                             int32_t* frame_type, int32_t timeout_ms) {
     if (handle < 1 || handle >= MAX_WS_HANDLES || !g_ws[handle]) return -1;
@@ -474,6 +604,11 @@ int32_t eshkol_ws_receive(int64_t handle, char* buf, int32_t buf_size,
 }
 
 /* Close WebSocket connection */
+/**
+ * @brief Sends a WebSocket close frame (if not already closed), closes the underlying socket, and frees @p handle.
+ *
+ * @param handle WebSocket handle from eshkol_ws_wrap_fd().
+ */
 void eshkol_ws_close(int64_t handle) {
     if (handle < 1 || handle >= MAX_WS_HANDLES || !g_ws[handle]) return;
     WsConnection* ws = g_ws[handle];

@@ -54,6 +54,15 @@ typedef struct qllm_http_response {
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_init_refs = 0;
 
+/**
+ * @brief malloc() wrapper that aborts the process on allocation failure.
+ *
+ * Used throughout this file so out-of-memory is treated as fatal
+ * rather than requiring every call site to check for NULL.
+ *
+ * @param n Number of bytes to allocate.
+ * @return Newly allocated, uninitialized buffer of @p n bytes; never NULL (aborts instead of returning NULL).
+ */
 static void* xmalloc(size_t n) {
     void* p = malloc(n);
     if (!p) {
@@ -63,6 +72,13 @@ static void* xmalloc(size_t n) {
     return p;
 }
 
+/**
+ * @brief Allocates a NUL-terminated copy of @p n bytes from @p src.
+ *
+ * @param src Source bytes to copy; may be NULL if @p n is 0.
+ * @param n Number of bytes to copy from @p src.
+ * @return Newly allocated, NUL-terminated buffer of @p n + 1 bytes.
+ */
 static char* xstrdup_n(const char* src, size_t n) {
     char* out = (char*)xmalloc(n + 1);
     if (n > 0 && src) memcpy(out, src, n);
@@ -78,6 +94,19 @@ typedef struct {
     size_t cap;
 } body_buf_t;
 
+/**
+ * @brief libcurl write callback that appends received bytes into a body_buf_t.
+ *
+ * Grows @p userdata's buffer geometrically (doubling) so repeated
+ * chunked writes stay amortized O(n), and keeps the buffer
+ * NUL-terminated after each append.
+ *
+ * @param ptr Chunk of received data from libcurl.
+ * @param size Element size, per libcurl's CURLOPT_WRITEFUNCTION contract.
+ * @param nmemb Element count; total bytes received is @p size * @p nmemb.
+ * @param userdata The body_buf_t* accumulator passed via CURLOPT_WRITEDATA.
+ * @return Number of bytes consumed; returning 0 (on a realloc failure) signals libcurl to abort the transfer.
+ */
 static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* userdata) {
     body_buf_t* buf = (body_buf_t*)userdata;
     size_t add = size * nmemb;
@@ -98,6 +127,18 @@ static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* userdata) {
 /* Configure shared curl options for all requests. Centralizing this
  * means TLS cert verification and redirect policy are consistent
  * across get/post/post_json. */
+/**
+ * @brief Applies the curl options shared by all HTTP requests (GET/POST/POST-JSON).
+ *
+ * Wires up the write callback/buffer, enables following redirects (up
+ * to 10), disables libcurl's SIGPIPE handling for thread-safety, sets
+ * the connect and total timeouts, sets a fixed User-Agent, and enables
+ * TLS peer and host verification.
+ *
+ * @param curl The easy handle to configure.
+ * @param buf Body accumulator to receive the response via write_cb().
+ * @param timeout_ms Total request timeout in milliseconds; values <= 0 default to 30000ms.
+ */
 static void apply_common_opts(CURL* curl, body_buf_t* buf, int32_t timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
@@ -114,6 +155,21 @@ static void apply_common_opts(CURL* curl, body_buf_t* buf, int32_t timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 }
 
+/**
+ * @brief Builds a qllm_http_response_t from a completed curl transfer.
+ *
+ * On a transfer-level failure (@p rc != CURLE_OK), returns a response
+ * with status 0 and an error string from curl_easy_strerror(), and
+ * frees the partially-accumulated body. On success, reads the HTTP
+ * status code from @p curl and transfers ownership of @p buf's data
+ * into the response body, allocating an empty string instead if no
+ * body bytes were ever written so callers never see a NULL body.
+ *
+ * @param curl The completed easy handle (read only for the status code on success).
+ * @param buf Body accumulator populated by write_cb(); its buffer ownership transfers to the returned response on success.
+ * @param rc The CURLcode result of curl_easy_perform().
+ * @return Newly allocated response; never NULL.
+ */
 static qllm_http_response_t* finalize_response(CURL* curl, body_buf_t* buf, CURLcode rc) {
     qllm_http_response_t* resp = (qllm_http_response_t*)xmalloc(sizeof(*resp));
     memset(resp, 0, sizeof(*resp));
@@ -142,6 +198,14 @@ static qllm_http_response_t* finalize_response(CURL* curl, body_buf_t* buf, CURL
  * Public ABI — qllm_http_*
  * ============================================================================ */
 
+/**
+ * @brief Initializes libcurl's global state, ref-counted so concurrent/nested init calls are safe.
+ *
+ * Only the first call (when the ref count is 0) actually invokes
+ * curl_global_init(); subsequent calls just increment the ref count.
+ *
+ * @return 1 on success, 0 if curl_global_init() failed.
+ */
 int32_t qllm_http_init(void) {
     pthread_mutex_lock(&g_init_mutex);
     if (g_init_refs == 0) {
@@ -156,6 +220,11 @@ int32_t qllm_http_init(void) {
     return 1;
 }
 
+/**
+ * @brief Decrements the libcurl init ref count, tearing down global state only when it reaches zero.
+ *
+ * Pairs with qllm_http_init(); safe to call even if the ref count is already 0.
+ */
 void qllm_http_shutdown(void) {
     pthread_mutex_lock(&g_init_mutex);
     if (g_init_refs > 0) {
@@ -167,6 +236,11 @@ void qllm_http_shutdown(void) {
     pthread_mutex_unlock(&g_init_mutex);
 }
 
+/**
+ * @brief Reports whether the linked libcurl build has TLS/SSL support.
+ *
+ * @return 1 if the CURL_VERSION_SSL feature bit is set, 0 otherwise or if version info is unavailable.
+ */
 int32_t qllm_http_has_ssl(void) {
     /* libcurl built without TLS would still link; check the feature
      * bitmap to give an accurate answer. */
@@ -175,6 +249,17 @@ int32_t qllm_http_has_ssl(void) {
     return (info->features & CURL_VERSION_SSL) ? 1 : 0;
 }
 
+/**
+ * @brief Performs a blocking HTTP GET and returns the response.
+ *
+ * Lazily calls qllm_http_init() if the agent never initialized libcurl
+ * explicitly. Each call creates and destroys its own CURL easy handle,
+ * so this is safe to call concurrently from multiple threads.
+ *
+ * @param url Target URL; NULL returns NULL immediately.
+ * @param timeout_ms Total request timeout in milliseconds (see apply_common_opts()).
+ * @return Newly allocated response (caller must call qllm_http_response_free()), or NULL if @p url is NULL or the easy handle could not be created.
+ */
 qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
     if (!url) return NULL;
     /* Lazy-init: the agent may forget to call http-init before its first
@@ -199,6 +284,17 @@ qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
  * style array — that's the layout the qLLM C client uses. Eshkol's
  * http.esk currently doesn't pass headers through this path (it goes
  * via http-post-json-raw), but provide the full ABI for forward compat. */
+/**
+ * @brief Performs a blocking HTTP POST with an optional body and header list.
+ *
+ * @param url Target URL; NULL returns NULL immediately.
+ * @param headers Array of @p header_count "Name: value" header strings; may be NULL.
+ * @param header_count Number of entries in @p headers.
+ * @param body Request body bytes; ignored if @p body_len <= 0.
+ * @param body_len Length of @p body in bytes.
+ * @param timeout_ms Total request timeout in milliseconds.
+ * @return Newly allocated response (caller must call qllm_http_response_free()), or NULL if @p url is NULL or the easy handle could not be created.
+ */
 qllm_http_response_t* qllm_http_post(const char* url,
                                      const char** headers,
                                      int64_t header_count,
@@ -239,6 +335,15 @@ qllm_http_response_t* qllm_http_post(const char* url,
  * body with Content-Type application/json plus an optional auth header.
  * The auth_header string is taken verbatim — caller is responsible
  * for choosing "Authorization: Bearer ..." vs "x-api-key: ..." etc. */
+/**
+ * @brief Performs a blocking HTTP POST of a JSON body with Content-Type/Accept headers, plus an optional auth header.
+ *
+ * @param url Target URL; NULL returns NULL immediately.
+ * @param body JSON request body; its strlen() determines the length sent, empty/NULL sends no body.
+ * @param auth_header Full "Header-Name: value" line to add verbatim, or NULL/empty to omit.
+ * @param timeout_ms Total request timeout in milliseconds.
+ * @return Newly allocated response (caller must call qllm_http_response_free()), or NULL if @p url is NULL or the easy handle could not be created.
+ */
 qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* body,
                                           const char* auth_header,
@@ -280,18 +385,41 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
     return resp;
 }
 
+/**
+ * @brief Returns the HTTP status code of a response.
+ *
+ * @param resp Response to inspect; NULL is safe.
+ * @return The HTTP status code, or 0 if @p resp is NULL or the transfer failed before a response was received.
+ */
 int32_t qllm_http_response_status(qllm_http_response_t* resp) {
     return resp ? resp->status : 0;
 }
 
+/**
+ * @brief Returns the response body as a NUL-terminated string.
+ *
+ * @param resp Response to inspect; NULL is safe.
+ * @return Pointer to the NUL-terminated body (owned by @p resp), or NULL if @p resp is NULL.
+ */
 const char* qllm_http_response_body(qllm_http_response_t* resp) {
     return resp ? resp->body : NULL;
 }
 
+/**
+ * @brief Returns the response body length in bytes (binary-safe, excludes the NUL terminator).
+ *
+ * @param resp Response to inspect; NULL is safe.
+ * @return Body length in bytes, or 0 if @p resp is NULL.
+ */
 int64_t qllm_http_response_body_len(qllm_http_response_t* resp) {
     return resp ? resp->body_len : 0;
 }
 
+/**
+ * @brief Frees a response and its owned body/error strings.
+ *
+ * @param resp Response to free; NULL is a no-op.
+ */
 void qllm_http_response_free(qllm_http_response_t* resp) {
     if (!resp) return;
     free(resp->body);
@@ -299,6 +427,12 @@ void qllm_http_response_free(qllm_http_response_t* resp) {
     free(resp);
 }
 
+/**
+ * @brief Maps a curl error code to a human-readable string.
+ *
+ * @param code A CURLcode value; codes <= 0 are treated as "no error".
+ * @return A static, non-owned string describing the error.
+ */
 const char* qllm_http_error_string(int32_t code) {
     /* Map curl error codes to human strings. Negative or zero → no error. */
     if (code <= 0) return "no error";
@@ -309,6 +443,12 @@ const char* qllm_http_error_string(int32_t code) {
  * Eshkol's http.esk doesn't currently call this directly (it uses
  * the get/post/post_json convenience entries). Provide a NULL-returning
  * stub so the symbol resolves at link time without crashing. */
+/**
+ * @brief Stub for the qLLM packed-request ABI entry point; not implemented.
+ *
+ * @param req Unused.
+ * @return Always NULL.
+ */
 void* qllm_http_request(void* req) {
     (void)req;
     return NULL;
@@ -317,6 +457,13 @@ void* qllm_http_request(void* req) {
 /* SSE streaming entry points: deliberately return NULL/error so the
  * Eshkol fallback path runs. Real implementation needs CURL multi
  * interface or chunked-transfer line parsing; deferred to a follow-up. */
+/**
+ * @brief Stub for opening an SSE stream; not implemented, always fails.
+ *
+ * Deliberately returns NULL so callers fall back to Eshkol's existing non-streaming path.
+ *
+ * @return Always NULL.
+ */
 void* qllm_http_stream_open(const char* url, const char** headers, int64_t hdr_count,
                             const char* body, int64_t body_len, int32_t timeout_ms,
                             void* callback) {
@@ -325,20 +472,32 @@ void* qllm_http_stream_open(const char* url, const char** headers, int64_t hdr_c
     return NULL;
 }
 
+/**
+ * @brief Stub for reading the next SSE event; not implemented.
+ *
+ * @return Always -1 (error/no event).
+ */
 int32_t qllm_http_stream_next(void* stream, void* event_out, int32_t timeout_ms) {
     (void)stream; (void)event_out; (void)timeout_ms;
     return -1;
 }
 
+/**
+ * @brief Stub for checking whether an SSE stream is finished.
+ *
+ * @return Always 1 (done), since streaming is not implemented.
+ */
 int32_t qllm_http_stream_done(void* stream) {
     (void)stream;
     return 1;
 }
 
+/** @brief Stub for closing an SSE stream; not implemented (no-op). */
 void qllm_http_stream_close(void* stream) {
     (void)stream;
 }
 
+/** @brief Stub for freeing an SSE event; not implemented (no-op). */
 void qllm_sse_event_free(void* event) {
     (void)event;
 }

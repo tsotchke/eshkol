@@ -16,27 +16,51 @@ namespace eshkol::hott {
 // Context Implementation
 // ============================================================================
 
+/**
+ * @brief Construct a type-checking context, seeding it with a single global scope.
+ */
 Context::Context() {
     // Start with global scope
     scopes_.push_back({});
 }
 
+/**
+ * @brief Push a new, empty variable-binding scope onto the scope stack.
+ */
 void Context::pushScope() {
     scopes_.push_back({});
 }
 
+/**
+ * @brief Pop the innermost variable-binding scope, discarding its bindings.
+ *
+ * The outermost (global) scope is never popped, so the scope stack always
+ * has at least one entry.
+ */
 void Context::popScope() {
     if (scopes_.size() > 1) {
         scopes_.pop_back();
     }
 }
 
+/**
+ * @brief Bind @p name to @p type in the innermost (current) scope.
+ *
+ * If @p name is already bound in the innermost scope, the previous binding
+ * is shadowed/overwritten.
+ */
 void Context::bind(const std::string& name, TypeId type) {
     if (!scopes_.empty()) {
         scopes_.back()[name] = type;
     }
 }
 
+/**
+ * @brief Look up the type bound to @p name, searching from the innermost
+ * scope outward to the global scope.
+ * @return The bound TypeId, or std::nullopt if @p name is not bound in any
+ * scope.
+ */
 std::optional<TypeId> Context::lookup(const std::string& name) const {
     // Search from innermost to outermost scope
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
@@ -48,6 +72,13 @@ std::optional<TypeId> Context::lookup(const std::string& name) const {
     return std::nullopt;
 }
 
+/**
+ * @brief Register a type alias introduced by a `define-type` form.
+ *
+ * Records @p type_expr under @p name so later references to @p name resolve
+ * to it. If @p params is non-empty, @p name is also recorded as a
+ * parameterized (generic) alias, e.g. `(define-type (MyList a) (list a))`.
+ */
 void Context::defineTypeAlias(const std::string& name, hott_type_expr_t* type_expr,
                               const std::vector<std::string>& params) {
     type_aliases_[name] = type_expr;
@@ -57,10 +88,18 @@ void Context::defineTypeAlias(const std::string& name, hott_type_expr_t* type_ex
     }
 }
 
+/**
+ * @brief True if the type alias @p name was declared with formal type parameters.
+ */
 bool Context::hasTypeAliasParams(const std::string& name) const {
     return type_alias_params_.find(name) != type_alias_params_.end();
 }
 
+/**
+ * @brief Get the formal type parameter names for the parameterized type alias @p name.
+ * @return The declared parameter names, or a reference to an empty vector if
+ * @p name has no parameters (or is not a known alias).
+ */
 const std::vector<std::string>& Context::getTypeAliasParams(const std::string& name) const {
     auto it = type_alias_params_.find(name);
     if (it != type_alias_params_.end()) {
@@ -69,6 +108,11 @@ const std::vector<std::string>& Context::getTypeAliasParams(const std::string& n
     return empty_params_;
 }
 
+/**
+ * @brief Look up the type expression registered for the type alias @p name.
+ * @return The alias's type expression, or std::nullopt if @p name is not a
+ * known alias.
+ */
 std::optional<hott_type_expr_t*> Context::lookupTypeAlias(const std::string& name) const {
     auto found = type_aliases_.find(name);
     if (found != type_aliases_.end()) {
@@ -77,7 +121,11 @@ std::optional<hott_type_expr_t*> Context::lookupTypeAlias(const std::string& nam
     return std::nullopt;
 }
 
-// Helper function to allocate a type expression
+/**
+ * @brief Allocate a zero-initialized hott_type_expr_t of the given @p kind from the global arena.
+ * @return The new type expression with `kind` set (and all other fields
+ * zeroed), or nullptr if arena allocation fails.
+ */
 static hott_type_expr_t* allocTypeExpr(hott_type_kind_t kind) {
     void* mem = arena_allocate_zeroed(get_global_arena(), sizeof(hott_type_expr_t));
     hott_type_expr_t* type = (hott_type_expr_t*)mem;
@@ -85,7 +133,19 @@ static hott_type_expr_t* allocTypeExpr(hott_type_kind_t kind) {
     return type;
 }
 
-// Helper function to substitute type variables in a type expression
+/**
+ * @brief Recursively substitute type variables in @p type_expr per @p substitutions.
+ *
+ * Deep-copies @p type_expr, replacing any HOTT_TYPE_VAR node whose name is a
+ * key of @p substitutions with a copy of the corresponding replacement type
+ * (falling back to copying the variable itself if unmapped). For
+ * HOTT_TYPE_FORALL, the variables bound by the forall are removed from the
+ * substitution map before recursing into its body so bound variables are not
+ * accidentally captured/replaced. Used to instantiate parameterized type
+ * aliases (see Context::instantiateTypeAlias).
+ * @return A freshly allocated type expression with substitutions applied, or
+ * nullptr if @p type_expr is nullptr.
+ */
 static hott_type_expr_t* substituteTypeVars(
     const hott_type_expr_t* type_expr,
     const std::map<std::string, hott_type_expr_t*>& substitutions) {
@@ -176,6 +236,18 @@ static hott_type_expr_t* substituteTypeVars(
     return result;
 }
 
+/**
+ * @brief Instantiate the parameterized type alias @p name with concrete type arguments.
+ *
+ * Looks up @p name's registered type expression and formal parameters, binds
+ * each formal parameter to the corresponding entry of @p type_args (pairing
+ * up to `min(params.size(), type_args.size())`), and returns the result of
+ * substituting those bindings into the alias body via substituteTypeVars().
+ * If @p name has no declared parameters, a plain copy of the alias's type
+ * expression is returned.
+ * @return The instantiated type expression, or nullptr if @p name is not a
+ * known type alias.
+ */
 hott_type_expr_t* Context::instantiateTypeAlias(
     const std::string& name,
     const std::vector<hott_type_expr_t*>& type_args) const {
@@ -210,11 +282,22 @@ hott_type_expr_t* Context::instantiateTypeAlias(
 // LinearContext Implementation
 // ============================================================================
 
+/**
+ * @brief Declare @p name as a tracked linear variable, starting in the Unused state.
+ */
 void LinearContext::declareLinear(const std::string& name) {
     linear_vars_.insert(name);
     usage_[name] = Usage::Unused;
 }
 
+/**
+ * @brief Record a use of @p name, advancing its usage state.
+ *
+ * No-op if @p name is not a declared linear variable. Otherwise transitions
+ * Unused -> UsedOnce on the first use, and UsedOnce/UsedMultiple ->
+ * UsedMultiple on any subsequent use, so a linearity violation (used more
+ * than once) is detectable later via getOverused()/checkAllUsedOnce().
+ */
 void LinearContext::use(const std::string& name) {
     if (linear_vars_.count(name) == 0) return;
 
@@ -226,6 +309,11 @@ void LinearContext::use(const std::string& name) {
     }
 }
 
+/**
+ * @brief Check that every declared linear variable was used exactly once.
+ * @return True if all tracked variables are in the UsedOnce state; false if
+ * any is Unused or UsedMultiple.
+ */
 bool LinearContext::checkAllUsedOnce() const {
     for (const auto& name : linear_vars_) {
         auto it = usage_.find(name);
@@ -236,6 +324,10 @@ bool LinearContext::checkAllUsedOnce() const {
     return true;
 }
 
+/**
+ * @brief Get the names of declared linear variables that were never used.
+ * @return Names currently in the Unused usage state.
+ */
 std::vector<std::string> LinearContext::getUnused() const {
     std::vector<std::string> result;
     for (const auto& name : linear_vars_) {
@@ -247,6 +339,10 @@ std::vector<std::string> LinearContext::getUnused() const {
     return result;
 }
 
+/**
+ * @brief Get the names of declared linear variables that were used more than once.
+ * @return Names currently in the UsedMultiple usage state.
+ */
 std::vector<std::string> LinearContext::getOverused() const {
     std::vector<std::string> result;
     for (const auto& name : linear_vars_) {
@@ -258,11 +354,22 @@ std::vector<std::string> LinearContext::getOverused() const {
     return result;
 }
 
+/**
+ * @brief Mark @p name as fully consumed (must be used exactly once).
+ *
+ * Semantically delegates to use(); provided as a clearer-named API entry
+ * point for call sites that consume a linear variable outright.
+ */
 void LinearContext::consume(const std::string& name) {
     // Mark as used exactly once (same as use() semantically, but clearer for API)
     use(name);
 }
 
+/**
+ * @brief Get the current usage state of @p name.
+ * @return The tracked Usage value, or Usage::Unused if @p name has no
+ * recorded usage (including if it is not a declared linear variable).
+ */
 LinearContext::Usage LinearContext::getUsage(const std::string& name) const {
     auto it = usage_.find(name);
     if (it == usage_.end()) {
@@ -271,6 +378,9 @@ LinearContext::Usage LinearContext::getUsage(const std::string& name) const {
     return it->second;
 }
 
+/**
+ * @brief True if @p name was declared via declareLinear().
+ */
 bool LinearContext::isLinear(const std::string& name) const {
     return linear_vars_.count(name) > 0;
 }
@@ -279,10 +389,21 @@ bool LinearContext::isLinear(const std::string& name) const {
 // BorrowChecker Implementation (Phase 6.3)
 // ============================================================================
 
+/**
+ * @brief Enter a new nested scope, incrementing the current scope depth.
+ */
 void BorrowChecker::pushScope() {
     current_scope_++;
 }
 
+/**
+ * @brief Exit the current scope, checking that no borrows outlive it.
+ *
+ * For every tracked value whose BorrowInfo::scope_depth equals the scope
+ * being popped and which still has an active shared or mutable borrow,
+ * records a BorrowError::Kind::BorrowOutlivesValue error before decrementing
+ * the scope depth. No-op if already at the outermost scope (depth 0).
+ */
 void BorrowChecker::popScope() {
     if (current_scope_ > 0) {
         // Check for borrows that outlive their scope
@@ -297,6 +418,12 @@ void BorrowChecker::popScope() {
     }
 }
 
+/**
+ * @brief Declare @p name as a newly owned value in the current scope.
+ *
+ * Initializes (or resets) its BorrowInfo to BorrowState::Owned, no active
+ * borrows, and BorrowInfo::scope_depth set to the current scope.
+ */
 void BorrowChecker::declareOwned(const std::string& name) {
     BorrowInfo info;
     info.state = BorrowState::Owned;
@@ -304,6 +431,15 @@ void BorrowChecker::declareOwned(const std::string& name) {
     values_[name] = info;
 }
 
+/**
+ * @brief Attempt to move the value bound to @p name.
+ *
+ * Fails (recording the corresponding BorrowError) if @p name is unknown,
+ * already moved (UseAfterMove), already dropped (UseAfterDrop), or has any
+ * active shared/mutable borrow (MoveWhileBorrowed). On success, transitions
+ * @p name's state to BorrowState::Moved.
+ * @return True if the move succeeded; false otherwise.
+ */
 bool BorrowChecker::move(const std::string& name) {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -335,6 +471,15 @@ bool BorrowChecker::move(const std::string& name) {
     return true;
 }
 
+/**
+ * @brief Explicitly drop the value bound to @p name.
+ *
+ * Fails silently (returns false, no error recorded) if @p name is unknown or
+ * already moved/dropped. Fails with a MoveWhileBorrowed error if @p name has
+ * any active shared/mutable borrow. On success, transitions @p name's state
+ * to BorrowState::Dropped.
+ * @return True if the drop succeeded; false otherwise.
+ */
 bool BorrowChecker::drop(const std::string& name) {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -357,6 +502,15 @@ bool BorrowChecker::drop(const std::string& name) {
     return true;
 }
 
+/**
+ * @brief Attempt to take an immutable (shared) borrow of @p name.
+ *
+ * Fails if @p name is unknown, already moved (UseAfterMove), already dropped
+ * (UseAfterDrop), or currently has an active mutable borrow
+ * (MutableBorrowWhileShared). On success, increments the shared borrow
+ * count and, if the value was Owned, transitions it to BorrowedShared.
+ * @return True if the borrow succeeded; false otherwise.
+ */
 bool BorrowChecker::borrowShared(const std::string& name) {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -390,6 +544,16 @@ bool BorrowChecker::borrowShared(const std::string& name) {
     return true;
 }
 
+/**
+ * @brief Attempt to take an exclusive (mutable) borrow of @p name.
+ *
+ * Fails if @p name is unknown, already moved (UseAfterMove), already dropped
+ * (UseAfterDrop), has any active shared borrows (MutableBorrowWhileShared),
+ * or already has an active mutable borrow (DoubleMutableBorrow). On success,
+ * sets BorrowInfo::has_mutable_borrow and transitions the state to
+ * BorrowState::BorrowedMut.
+ * @return True if the borrow succeeded; false otherwise.
+ */
 bool BorrowChecker::borrowMut(const std::string& name) {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -426,6 +590,14 @@ bool BorrowChecker::borrowMut(const std::string& name) {
     return true;
 }
 
+/**
+ * @brief End one active borrow of @p name (mutable borrow takes priority over shared).
+ *
+ * No-op if @p name is unknown. Releases the mutable borrow if one is active,
+ * otherwise decrements the shared borrow count if positive. If no borrows
+ * remain afterward, restores the state from BorrowedShared/BorrowedMut back
+ * to BorrowState::Owned.
+ */
 void BorrowChecker::returnBorrow(const std::string& name) {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -449,6 +621,11 @@ void BorrowChecker::returnBorrow(const std::string& name) {
     }
 }
 
+/**
+ * @brief Get the current BorrowState of @p name.
+ * @return The tracked state, or BorrowState::Owned if @p name is not tracked
+ * (treated as an untracked value that is assumed owned).
+ */
 BorrowState BorrowChecker::getState(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -457,6 +634,11 @@ BorrowState BorrowChecker::getState(const std::string& name) const {
     return it->second.state;
 }
 
+/**
+ * @brief True if @p name can currently be used, i.e. it has not been moved-from or dropped.
+ *
+ * Untracked names are assumed usable.
+ */
 bool BorrowChecker::canUse(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -466,6 +648,11 @@ bool BorrowChecker::canUse(const std::string& name) const {
            it->second.state != BorrowState::Dropped;
 }
 
+/**
+ * @brief True if @p name can currently be moved: owned, with no active shared or mutable borrows.
+ *
+ * Untracked names are assumed movable.
+ */
 bool BorrowChecker::canMove(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -477,6 +664,12 @@ bool BorrowChecker::canMove(const std::string& name) const {
            !info.has_mutable_borrow;
 }
 
+/**
+ * @brief True if @p name can currently be borrowed immutably: owned or already
+ * shared-borrowed, and not mutably borrowed.
+ *
+ * Untracked names are assumed borrowable.
+ */
 bool BorrowChecker::canBorrowShared(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -488,6 +681,12 @@ bool BorrowChecker::canBorrowShared(const std::string& name) const {
            !info.has_mutable_borrow;
 }
 
+/**
+ * @brief True if @p name can currently be borrowed mutably: owned, with no
+ * active shared or mutable borrows.
+ *
+ * Untracked names are assumed borrowable.
+ */
 bool BorrowChecker::canBorrowMut(const std::string& name) const {
     auto it = values_.find(name);
     if (it == values_.end()) {
@@ -499,6 +698,9 @@ bool BorrowChecker::canBorrowMut(const std::string& name) const {
            !info.has_mutable_borrow;
 }
 
+/**
+ * @brief Record a borrow-checking violation of the given @p kind for variable @p var.
+ */
 void BorrowChecker::addError(BorrowError::Kind kind, const std::string& var,
                               const std::string& msg) {
     errors_.push_back({kind, var, msg});
@@ -508,6 +710,13 @@ void BorrowChecker::addError(BorrowError::Kind kind, const std::string& var,
 // Context Linear Methods (Phase 6)
 // ============================================================================
 
+/**
+ * @brief Bind @p name to @p type in the innermost scope and mark it as a
+ * linear variable (must be used exactly once).
+ *
+ * Combines an ordinary Context::bind() with registering @p name in the
+ * linear-variable tracking set with a fresh usage count of 0.
+ */
 void Context::bindLinear(const std::string& name, TypeId type) {
     // Bind the variable normally
     bind(name, type);
@@ -516,26 +725,49 @@ void Context::bindLinear(const std::string& name, TypeId type) {
     linear_usage_count_[name] = 0;  // Unused initially
 }
 
+/**
+ * @brief Record a use of the linear variable @p name, incrementing its usage count.
+ *
+ * No-op if @p name was not bound via bindLinear(). A count greater than 1
+ * indicates a linearity violation, surfaced via getOverusedLinear().
+ */
 void Context::useLinear(const std::string& name) {
     if (linear_vars_.count(name) > 0) {
         linear_usage_count_[name]++;
     }
 }
 
+/**
+ * @brief Mark the linear variable @p name as consumed.
+ *
+ * Currently identical to useLinear(); kept as a distinctly named entry point
+ * for call sites that consume a linear binding outright (e.g. at let scope
+ * exit).
+ */
 void Context::consumeLinear(const std::string& name) {
     // Same as useLinear for tracking
     useLinear(name);
 }
 
+/**
+ * @brief True if @p name was bound via bindLinear().
+ */
 bool Context::isLinear(const std::string& name) const {
     return linear_vars_.count(name) > 0;
 }
 
+/**
+ * @brief True if the linear variable @p name has been used at least once.
+ */
 bool Context::isLinearUsed(const std::string& name) const {
     auto it = linear_usage_count_.find(name);
     return it != linear_usage_count_.end() && it->second > 0;
 }
 
+/**
+ * @brief Get the names of linear variables in scope that were never used.
+ * @return Names whose usage count is zero (or has no recorded entry).
+ */
 std::vector<std::string> Context::getUnusedLinear() const {
     std::vector<std::string> result;
     for (const auto& name : linear_vars_) {
@@ -547,6 +779,10 @@ std::vector<std::string> Context::getUnusedLinear() const {
     return result;
 }
 
+/**
+ * @brief Get the names of linear variables in scope that were used more than once.
+ * @return Names whose usage count exceeds 1.
+ */
 std::vector<std::string> Context::getOverusedLinear() const {
     std::vector<std::string> result;
     for (const auto& name : linear_vars_) {
@@ -558,6 +794,9 @@ std::vector<std::string> Context::getOverusedLinear() const {
     return result;
 }
 
+/**
+ * @brief True if every linear variable currently in scope was used exactly once.
+ */
 bool Context::checkLinearConstraints() const {
     for (const auto& name : linear_vars_) {
         auto it = linear_usage_count_.find(name);
@@ -572,10 +811,25 @@ bool Context::checkLinearConstraints() const {
 // TypeChecker Implementation
 // ============================================================================
 
+/**
+ * @brief Construct a type checker over @p env with the given strictness/safety mode.
+ * @param env Type environment providing type registration/lookup/subtyping.
+ * @param strict_types If true, reported type issues call eshkol_error() and
+ * abort compilation; if false, they call eshkol_warn() and compilation
+ * continues (gradual typing).
+ * @param unsafe_mode If true, the checker starts with type/linear/borrow
+ * issues silently ignored.
+ */
 TypeChecker::TypeChecker(TypeEnvironment& env, bool strict_types, bool unsafe_mode)
     : strict_types_(strict_types), unsafe_mode_(unsafe_mode), env_(env) {}
 
-// Helper to store inferred type in AST and return result
+/**
+ * @brief Store a successful result's inferred type into @p expr->inferred_hott_type, then return the result unchanged.
+ *
+ * Common tail call used by the synthesize()/check() helpers so every
+ * synthesis/checking rule records its result type on the AST node it typed.
+ * Failed results pass through without touching @p expr.
+ */
 static TypeCheckResult storeAndReturn(eshkol_ast_t* expr, TypeCheckResult result) {
     if (result.success && expr) {
         expr->inferred_hott_type = result.inferred_type.pack();
@@ -583,7 +837,11 @@ static TypeCheckResult storeAndReturn(eshkol_ast_t* expr, TypeCheckResult result
     return result;
 }
 
-// Helper to create error with source location from AST node
+/**
+ * @brief Build a TypeCheckResult::error() using @p expr's source line/column, if available.
+ *
+ * Falls back to an error with no location (line/column 0) if @p expr is null.
+ */
 static TypeCheckResult errorAt(const eshkol_ast_t* expr, const std::string& msg) {
     if (expr) {
         return TypeCheckResult::error(msg, expr->line, expr->column);
@@ -591,6 +849,14 @@ static TypeCheckResult errorAt(const eshkol_ast_t* expr, const std::string& msg)
     return TypeCheckResult::error(msg);
 }
 
+/**
+ * @brief Bind @p name in @p ctx to a synthetic function type of the given @p arity.
+ *
+ * Used to seed the context with the signatures of well-known stdlib
+ * procedures (see bindKnownRequireExports()) whose parameter/return types
+ * are approximated as BuiltinTypes::Value, so calls to them type-check
+ * without requiring full stdlib type declarations.
+ */
 static void bindKnownProcedure(Context& ctx,
                                TypeEnvironment& env,
                                const char* name,
@@ -600,6 +866,9 @@ static void bindKnownProcedure(Context& ctx,
     ctx.bind(name, env.makeFunctionType(params, BuiltinTypes::Value, is_variadic));
 }
 
+/**
+ * @brief True if a `require` operation @p op lists @p module_name among its imported modules.
+ */
 static bool requireNamesModule(const eshkol_operation& op, const char* module_name) {
     for (uint64_t i = 0; i < op.require_op.num_modules; ++i) {
         const char* candidate = op.require_op.module_names[i];
@@ -610,6 +879,16 @@ static bool requireNamesModule(const eshkol_operation& op, const char* module_na
     return false;
 }
 
+/**
+ * @brief Bind the known exported procedures of a `require`d module into @p ctx.
+ *
+ * Given a `require` operation @p op, checks whether it imports the "stdlib"
+ * or "core.list.higher_order" module and, if so, binds the well-known
+ * higher-order list procedures (map1/map2/map3, fold variants, for-each,
+ * any, every) via bindKnownProcedure() so subsequent calls to them
+ * type-check even though the stdlib's own type declarations are not loaded
+ * during isolated type checking.
+ */
 static void bindKnownRequireExports(Context& ctx,
                                     TypeEnvironment& env,
                                     const eshkol_operation& op) {
@@ -632,6 +911,19 @@ static void bindKnownRequireExports(Context& ctx,
     }
 }
 
+/**
+ * @brief Synthesis-mode entry point: infer the type of @p expr bottom-up (Γ ⊢ e ⇒ τ).
+ *
+ * Dispatches on @p expr's AST node kind to the appropriate synthesize*
+ * helper (literals/symbols to synthesizeLiteral(), variable references to
+ * synthesizeVariable(), operation forms to synthesizeOperation(), lambdas to
+ * synthesizeLambda(), and cons cells trivially to BuiltinTypes::List). On
+ * success, stores the inferred type into @p expr->inferred_hott_type via
+ * storeAndReturn().
+ * @return A successful TypeCheckResult carrying the inferred type, or a
+ * failing result (e.g. null expression, or an AST node kind with no
+ * synthesis rule).
+ */
 TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
     if (!expr) {
         return TypeCheckResult::error("Null expression");
@@ -674,6 +966,20 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
     return storeAndReturn(expr, result);
 }
 
+/**
+ * @brief Checking-mode entry point: verify @p expr has the expected type, top-down (Γ ⊢ e ⇐ τ).
+ *
+ * Lambdas get a dedicated checking rule (checkLambda()) so their parameter
+ * types can be inferred from @p expected rather than requiring annotations.
+ * All other expression kinds fall back to synthesizing @p expr's type and
+ * verifying it is a subtype of @p expected via TypeEnvironment::isSubtype().
+ * @param expr The expression to check.
+ * @param expected The type @p expr is expected to have.
+ * @return TypeCheckResult::ok(expected) on success; a type-mismatch error
+ * (also recorded via addTypeMismatch()) if synthesis succeeds but the
+ * inferred type is not a subtype of @p expected; or the failing result from
+ * synthesis if that fails first.
+ */
 TypeCheckResult TypeChecker::check(eshkol_ast_t* expr, TypeId expected) {
     if (!expr) {
         return TypeCheckResult::error("Null expression");
@@ -701,6 +1007,16 @@ TypeCheckResult TypeChecker::check(eshkol_ast_t* expr, TypeId expected) {
         ", got " + env_.getTypeName(result.inferred_type));
 }
 
+/**
+ * @brief Synthesis rule for self-evaluating literals and bare symbols.
+ *
+ * Maps each literal AST node kind to its builtin type: ESHKOL_INT64 ->
+ * Int64, ESHKOL_BIGNUM_LITERAL -> BigInt, ESHKOL_DOUBLE -> Float64,
+ * ESHKOL_STRING -> String, ESHKOL_BOOL -> Boolean, ESHKOL_NULL -> Null,
+ * ESHKOL_CHAR -> Char, and ESHKOL_SYMBOL -> Symbol.
+ * @return TypeCheckResult::ok() with the corresponding builtin type, or an
+ * error if @p expr->type is not one of the recognized literal kinds.
+ */
 TypeCheckResult TypeChecker::synthesizeLiteral(eshkol_ast_t* expr) {
     switch (expr->type) {
         case ESHKOL_INT64:
@@ -731,6 +1047,21 @@ TypeCheckResult TypeChecker::synthesizeLiteral(eshkol_ast_t* expr) {
     }
 }
 
+/**
+ * @brief Synthesis rule for variable references (Γ ⊢ x ⇒ τ).
+ *
+ * Looks up the variable's name in the context. If unbound, special-cases a
+ * few builtins used as first-class values: the arithmetic operators
+ * (+, -, *, /) synthesize a variadic-looking (Int64, Int64) -> Int64
+ * function type, and the I/O procedures (display, write, newline)
+ * synthesize a (Value) -> Null function type, matching how codegen wraps
+ * them as unary closures. Any other unbound name is an error. If the
+ * variable is bound and tracked as linear (Context::isLinear()), records a
+ * use via Context::useLinear() and reports a type issue if it was already
+ * used (linearity violation).
+ * @return The variable's bound type (or the synthesized builtin function
+ * type), or an error if the name is unbound and not a recognized builtin.
+ */
 TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
     if (!expr->variable.id) {
         return errorAt(expr, "Variable has no name");
@@ -769,6 +1100,33 @@ TypeCheckResult TypeChecker::synthesizeVariable(eshkol_ast_t* expr) {
     return TypeCheckResult::ok(*type);
 }
 
+/**
+ * @brief Synthesis rule for ESHKOL_OP nodes: dispatches on the operation kind
+ * (expr->operation.op) to the appropriate typing rule.
+ *
+ * Delegates the structurally interesting forms to dedicated helpers:
+ * `define` to synthesizeDefine(), `let`/`let*`/`letrec`/`letrec*` to
+ * synthesizeLet(), `if` to synthesizeIf(), `lambda`/`case-lambda` to
+ * synthesizeLambda(), and function calls to synthesizeApplication().
+ * `define-type` is handled inline: it registers the named (possibly
+ * parameterized) type alias into the context via Context::defineTypeAlias()
+ * and synthesizes BuiltinTypes::Null. `require` binds the known exported
+ * procedures of imported stdlib modules via bindKnownRequireExports() and
+ * also synthesizes Null. Arithmetic (+, -, *, /) synthesizes its first two
+ * operands and returns their arithmetic-promoted type via
+ * TypeEnvironment::promoteForArithmetic(); `begin`/sequence returns the type
+ * of its last sub-expression (or Null if empty). All remaining operation
+ * kinds (tensors, booleans, predicates, control flow, continuations,
+ * multiple values, quoting, logic/consciousness/DNC constructors, memory
+ * management, extern declarations, macro/syntax forms, and the catch-all
+ * default) synthesize a fixed builtin type — mostly BuiltinTypes::Value for
+ * forms whose precise result type is branch- or runtime-dependent, Boolean
+ * for predicates and and/or, and Function for calculus operators
+ * (diff/gradient/jacobian/etc).
+ * @return A successful TypeCheckResult per the rule above; this function has
+ * no failure path of its own (unsuccessful results only propagate from
+ * delegated helpers or nested synthesize() calls).
+ */
 TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
     switch (expr->operation.op) {
         case ESHKOL_DEFINE_OP:
@@ -979,6 +1337,23 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
     }
 }
 
+/**
+ * @brief Synthesis rule for lambda/case-lambda expressions (Γ ⊢ (lambda ...) ⇒ τ).
+ *
+ * Pushes a fresh scope and binds each parameter: its type comes from an
+ * explicit annotation (resolveType()) if present, otherwise defaults to
+ * BuiltinTypes::Value; parameters whose type carries TYPE_FLAG_LINEAR are
+ * bound via Context::bindLinear() so single-use is enforced. The body is
+ * then synthesized in this scope. Before popping the scope, verifies linear
+ * parameter usage via Context::checkLinearConstraints(), reporting a type
+ * issue for every unused or overused linear parameter. If the lambda has a
+ * return type annotation, checks the synthesized body type is a subtype of
+ * it (failing otherwise) and uses the annotated type for the result;
+ * otherwise uses the body's inferred type directly.
+ * @return A function type (via TypeEnvironment::makeFunctionType()) from the
+ * parameter types to the return type, respecting lambda.is_variadic; or an
+ * error if the body fails to synthesize or violates the return annotation.
+ */
 TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
     const auto& lambda = expr->operation.lambda_op;
 
@@ -1051,6 +1426,61 @@ TypeCheckResult TypeChecker::synthesizeLambda(eshkol_ast_t* expr) {
                                                       lambda.is_variadic));
 }
 
+/**
+ * @brief Synthesis rule for function application, ESHKOL_CALL_OP (Γ ⊢ (f a...) ⇒ τ).
+ *
+ * This is the largest and most detail-heavy synthesis rule in the checker:
+ * it implements per-builtin typing for essentially all of Eshkol's
+ * primitive procedures, then falls back to generic function-type lookup for
+ * user-defined calls and inline lambdas.
+ *
+ * Structure:
+ * - If there is no callee expression, synthesizes BuiltinTypes::Value.
+ * - Determines whether the callee is a named builtin (a bare ESHKOL_VAR),
+ *   and computes should_skip_builtin_designator_arg(), a local predicate
+ *   identifying positional arguments that are compile-time designators
+ *   rather than ordinary values (e.g. the ordering/width argument of
+ *   atomic-, volatile-, target-intrinsic builtins) so those slots are not
+ *   mistakenly type-checked as values.
+ * - Pre-synthesizes every argument (skipping designator slots, which are
+ *   given BuiltinTypes::Value) so nested sub-expressions are always
+ *   type-checked even when the callee's own return type doesn't depend on
+ *   argument types (e.g. `(display (vector-ref v -1))` still checks the
+ *   vector-ref).
+ * - If the callee is a recognized builtin name, dispatches through a long
+ *   chain of name comparisons covering: arithmetic (+,-,*,/) with backward
+ *   inference that narrows Value-typed variable operands to Number;
+ *   comparison and numeric predicates (returns Boolean, also narrowing
+ *   operands to Number); polymorphic type predicates (equal?, pair?,
+ *   number?, ...); list operations with parametric Pair<A,B> tracking for
+ *   car/cdr/cons (including the R7RS proper-vs-improper list narrowing rule
+ *   for cons); string operations (with Value->String narrowing); numeric
+ *   library functions (abs, sqrt, trig, floor/ceiling/round, expt, modulo,
+ *   etc.); low-level FFI/memory intrinsics (volatile-load/store,
+ *   atomic-load/store/exchange/compare-exchange/fetch-*, target-intrinsic,
+ *   compiler-fence, memory-fence, addr-of, null-ptr, ptr->usize,
+ *   usize->ptr, ptr-add); vector operations (vector-ref/length/set!/copy/
+ *   append, list<->vector conversions); port and I/O predicates/procedures;
+ *   promises; bytevectors; tensor/model save-load; rational and complex
+ *   number constructors/accessors; DSP operations (fft, filters, window
+ *   functions, convolution); numerical optimization (gradient-descent,
+ *   adam, l-bfgs, conjugate-gradient, line-search, tensor-dot/norm/svd);
+ *   display/newline/write, set!, begin, textual/binary I/O; and the
+ *   not/and/or and `if`-as-procedure forms, with `if` computing the least
+ *   common supertype of its branches via TypeEnvironment::leastCommonSupertype().
+ * - If the callee is not (or is no longer, having fallen through) a
+ *   recognized builtin, resolves its function type by looking it up in the
+ *   context (named callee) or synthesizing it (inline lambda callee). If
+ *   that resolves to a function type, checks argument count against the
+ *   PiType (skipped for variadic callees) and checks each argument's
+ *   synthesized type against the parameter type (allowing Value on either
+ *   side, and using leastCommonSupertype() for compatibility), reporting a
+ *   type issue via reportTypeIssue() for any mismatch, then returns the
+ *   function's return type.
+ * @return A TypeCheckResult per the builtin/generic rule above.
+ * BuiltinTypes::Value is used as the fallback whenever the callee's
+ * signature or the call itself cannot be determined precisely.
+ */
 TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
     const auto& call = expr->operation.call_op;
 
@@ -2210,6 +2640,36 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
     return TypeCheckResult::ok(BuiltinTypes::Value);
 }
 
+/**
+ * @brief Synthesis rule for `define` forms, both variable and function shapes.
+ *
+ * External declarations (`def.is_external`, e.g. `extern` FFI bindings) are
+ * bound directly from their (optional) parameter/return type annotations
+ * without checking a body, since none exists.
+ *
+ * For a genuine function define `(define (name params...) body)`: computes
+ * parameter types from annotations (defaulting to BuiltinTypes::Value), then
+ * pre-binds `name` in the context to a function type built from those
+ * parameter types and the declared (or Value) return type *before*
+ * synthesizing the body — this makes recursive calls to `name` resolve
+ * during body checking. The body is then synthesized in a fresh scope with
+ * parameters bound. Because arithmetic/comparison rules in
+ * synthesizeApplication() can narrow a Value-typed parameter to a more
+ * precise type (e.g. Number) as a side effect of checking the body, the
+ * parameter types are re-read from the context immediately after body
+ * synthesis but before the scope is popped, and this narrowed parameter
+ * list is what the function's final type is built from. If a return type
+ * annotation exists, the body's inferred type must be a subtype of it
+ * (error otherwise); the final inferred function type (narrowed params +
+ * resolved return) replaces the pre-binding.
+ *
+ * For a variable define `(define name value)`: simply synthesizes @p value's
+ * type and binds `name` to it.
+ * @return TypeCheckResult::ok(BuiltinTypes::Null) on success (define itself
+ * has no value in this type system); an error if unnamed, if body synthesis
+ * fails for a variable define, or if a function's body type violates its
+ * return annotation.
+ */
 TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
     const auto& def = expr->operation.define_op;
 
@@ -2338,6 +2798,23 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
     return TypeCheckResult::ok(BuiltinTypes::Null);
 }
 
+/**
+ * @brief Synthesis rule for `let`/`let*`/`letrec`/`letrec*` forms (all share this rule).
+ *
+ * Pushes a fresh scope, then for each binding determines its type from an
+ * explicit annotation (resolveType()) or, failing that, by synthesizing the
+ * bound expression, and binds the name in the (already-pushed) scope — so
+ * later bindings and the body can see earlier ones, matching letrec-style
+ * visibility for all four let variants. For a named let (`(let loop
+ * ((i 0)) body)`), pre-binds `loop` as a recursive function from the
+ * binding types to BuiltinTypes::Value so recursive calls resolve during
+ * body synthesis, then re-binds it with the body's actual inferred return
+ * type afterward (best-effort, since this happens after the body was
+ * already checked against the placeholder type). The body is synthesized
+ * and its result becomes the let's type; the scope is popped before
+ * returning.
+ * @return The body's TypeCheckResult (success or failure).
+ */
 TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     const auto& let = expr->operation.let_op;
 
@@ -2399,6 +2876,24 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     return body_result;
 }
 
+/**
+ * @brief Synthesis rule for `if` expressions: type is the least common
+ * supertype (LCS) of the branch types.
+ *
+ * Requires at least a condition and a then-branch (error otherwise); the
+ * condition itself is not type-checked here. Synthesizes the then-branch
+ * type, and if an else-branch is present, synthesizes it too. As a
+ * special case for named-let recursive loops (where a recursive call
+ * branch often still carries the placeholder BuiltinTypes::Value while the
+ * base-case branch has a concrete type), if exactly one branch is Value,
+ * the other (concrete) branch's type is preferred outright rather than
+ * computing an LCS. Otherwise the result is
+ * TypeEnvironment::leastCommonSupertype() of the two branch types. With no
+ * else-branch, the then-branch's type is returned directly.
+ * @return The then-branch's TypeCheckResult if there is no else-branch or
+ * synthesis of a branch fails; otherwise the LCS (or preferred concrete
+ * branch type) of both branches.
+ */
 TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     // if has: condition, then-branch, else-branch
     // For now, just synthesize branches and take LCS
@@ -2435,23 +2930,73 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     return then_type;
 }
 
+/**
+ * @brief Checking rule for lambda expressions (Γ ⊢ (lambda ...) ⇐ τ).
+ *
+ * Currently a placeholder: rather than propagating @p expected's domain
+ * types down into unannotated parameters, it simply defers entirely to the
+ * synthesis rule synthesizeLambda(). The @p expected parameter is unused.
+ * @return Whatever synthesizeLambda() returns for @p expr.
+ */
 TypeCheckResult TypeChecker::checkLambda(eshkol_ast_t* expr, TypeId expected) {
     // If expected is a function type, use its domain for param types
     // For now, just synthesize
     return synthesizeLambda(expr);
 }
 
+/**
+ * @brief Check whether @p type is a function type, and if so extract its domain/codomain.
+ *
+ * Currently simplified: only recognizes the single builtin
+ * BuiltinTypes::Function marker and never populates @p domain/@p codomain
+ * (both output parameters are unused placeholders for a future
+ * parameterized function-type representation).
+ * @return True if @p type.id equals BuiltinTypes::Function.id.
+ */
 bool TypeChecker::isFunctionType(TypeId type, TypeId& domain, TypeId& codomain) const {
     // Check if type is Function or a parameterized function type
     // Simplified for now
     return type.id == BuiltinTypes::Function.id;
 }
 
+/**
+ * @brief Simple type unification: true if @p a and @p b are equal or either
+ * is a subtype of the other.
+ *
+ * This is not full bidirectional unification with substitution/metavariable
+ * solving — it is a compatibility check used where the checker needs a
+ * best-effort answer to "can these two types be reconciled."
+ */
 bool TypeChecker::unify(TypeId a, TypeId b) {
     // Simple unification - just check equality or subtyping
     return a == b || env_.isSubtype(a, b) || env_.isSubtype(b, a);
 }
 
+/**
+ * @brief Resolve a parsed HoTT type expression (as written in source, e.g.
+ * a type annotation) to a concrete TypeId in the type environment.
+ */
+/**
+ * @brief Resolve a parsed hott_type_expr_t (a type annotation as written in
+ * source) to a concrete runtime TypeId.
+ *
+ * Maps each HOTT_TYPE_* primitive kind to its corresponding BuiltinTypes
+ * entry (Integer->Int64, Real->Float64, String, Boolean, Char, Null, Symbol,
+ * Any->Value). HOTT_TYPE_VAR is resolved by first checking whether its name
+ * is a registered type alias (Context::lookupTypeAlias(), recursing into the
+ * alias's expansion) and otherwise a builtin type name
+ * (TypeEnvironment::lookupType()), falling back to Value if neither matches.
+ * HOTT_TYPE_ARROW recursively resolves its parameter and return types and
+ * builds a proper function type via TypeEnvironment::makeFunctionType().
+ * List/Vector/Tensor/Pointer/Pair map to their respective builtin container
+ * types; Product and Sum types are both represented at runtime as Pair
+ * (Sum specifically as a tagged `(tag . value)` cons cell, since HoTT
+ * polymorphism is erased and tagged values carry their own type tag).
+ * HOTT_TYPE_FORALL resolves to its body's type (the quantifier itself has no
+ * runtime representation — instantiation/substitution happens at compile
+ * time via substituteTypeVars()). Any other/unrecognized kind, or a null @p
+ * type_expr, resolves to BuiltinTypes::Value.
+ */
 TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
     if (!type_expr) {
         return BuiltinTypes::Value;
@@ -2550,10 +3095,16 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
     }
 }
 
+/**
+ * @brief Append a plain error TypeCheckResult (@p msg at @p line:@p col) to the recorded error list.
+ */
 void TypeChecker::addError(const std::string& msg, int line, int col) {
     errors_.push_back(TypeCheckResult::error(msg, line, col));
 }
 
+/**
+ * @brief Record a formatted "type mismatch: expected X, got Y" error at @p line:@p col.
+ */
 void TypeChecker::addTypeMismatch(TypeId expected, TypeId actual, int line, int col) {
     std::ostringstream ss;
     ss << "Type mismatch: expected " << env_.getTypeName(expected)
@@ -2561,6 +3112,16 @@ void TypeChecker::addTypeMismatch(TypeId expected, TypeId actual, int line, int 
     addError(ss.str(), line, col);
 }
 
+/**
+ * @brief Unified type-issue reporting entry point, respecting unsafe/strict mode.
+ *
+ * In unsafe mode, does nothing (issues are silently ignored). Otherwise
+ * appends @p node's line/column (when available) to @p msg and prints it to
+ * stderr — as `[ERROR] Type error: ...` if strict_types_ is set, or
+ * `[WARN] Type warning: ...` otherwise (gradual typing: warn and continue) —
+ * and always records the unformatted @p msg via addError() so it also
+ * appears in errors().
+ */
 void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* node) {
     if (unsafe_mode_) return;
 
@@ -2585,6 +3146,15 @@ void TypeChecker::reportTypeIssue(const std::string& msg, const eshkol_ast_t* no
 // Dimension Checking (Phase 5.3)
 // ============================================================================
 
+/**
+ * @brief Check that a vector/tensor access @p index is within the compile-time bound @p bound.
+ *
+ * Delegates to DimensionChecker::checkBounds(); on failure, both records the
+ * error via addError() and returns it.
+ * @param context Description used in the diagnostic message on failure.
+ * @return TypeCheckResult::ok(BuiltinTypes::Boolean) if in bounds, otherwise
+ * a failing result carrying DimensionChecker's error message.
+ */
 TypeCheckResult TypeChecker::checkVectorBounds(const CTValue& index, const CTValue& bound,
                                                const std::string& context) {
     auto result = DimensionChecker::checkBounds(index, bound, context);
@@ -2595,6 +3165,15 @@ TypeCheckResult TypeChecker::checkVectorBounds(const CTValue& index, const CTVal
     return TypeCheckResult::error(result.error_message);
 }
 
+/**
+ * @brief Check that @p left and @p right have compatible dimensions for a dot product.
+ *
+ * Delegates to DimensionChecker::checkDotProductDimensions(); on failure,
+ * both records the error via addError() and returns it.
+ * @return TypeCheckResult::ok(BuiltinTypes::Float64) (a dot product is a
+ * scalar) if the dimensions are compatible, otherwise a failing result
+ * carrying DimensionChecker's error message.
+ */
 TypeCheckResult TypeChecker::checkDotProductDimensions(const DependentType& left,
                                                        const DependentType& right) {
     auto result = DimensionChecker::checkDotProductDimensions(left, right, "dot product");
@@ -2606,6 +3185,17 @@ TypeCheckResult TypeChecker::checkDotProductDimensions(const DependentType& left
     return TypeCheckResult::error(result.error_message);
 }
 
+/**
+ * @brief Check that @p left and @p right have compatible dimensions for matrix multiplication.
+ *
+ * Delegates to DimensionChecker::checkMatMulDimensions(); on failure, both
+ * records the error via addError() and returns it. The result dimensions
+ * for a valid (m x n) * (n x p) -> (m x p) multiply are not yet tracked
+ * precisely — only the generic Tensor type is returned.
+ * @return TypeCheckResult::ok(BuiltinTypes::Tensor) if the dimensions are
+ * compatible, otherwise a failing result carrying DimensionChecker's error
+ * message.
+ */
 TypeCheckResult TypeChecker::checkMatrixMultiplyDimensions(const DependentType& left,
                                                            const DependentType& right) {
     auto result = DimensionChecker::checkMatMulDimensions(left, right, "matrix multiply");
@@ -2618,6 +3208,17 @@ TypeCheckResult TypeChecker::checkMatrixMultiplyDimensions(const DependentType& 
     return TypeCheckResult::error(result.error_message);
 }
 
+/**
+ * @brief Extract the compile-time size of dimension @p dim_index of a vector/tensor @p type.
+ *
+ * First checks the type environment's per-@p type dimension cache
+ * (TypeEnvironment::getDimensionInfo()); if that misses and @p type is
+ * exactly BuiltinTypes::Tensor or BuiltinTypes::Vector, falls back to
+ * checking the cache keyed by that base builtin type (dimensions recorded
+ * generically rather than per concrete instantiation).
+ * @return The dimension's CTValue if it is known and statically a natural
+ * number (CTValue::isNat()); std::nullopt if unknown or symbolic.
+ */
 std::optional<CTValue> TypeChecker::extractDimension(TypeId type, size_t dim_index) const {
     // Look up dimension info from the type environment's cache
     auto dim_info = env_.getDimensionInfo(type);
@@ -2661,6 +3262,14 @@ std::optional<CTValue> TypeChecker::extractDimension(TypeId type, size_t dim_ind
 // Linear Type Checking (Phase 6.2)
 // ============================================================================
 
+/**
+ * @brief True if @p type is linear (must be used exactly once): the no-cloning constraint.
+ *
+ * Checks both @p type's own TYPE_FLAG_LINEAR bit and, as a fallback, the
+ * flags on the type's registered TypeNode in the environment
+ * (TypeEnvironment::getTypeNode()), in case the flag was set at
+ * registration time rather than on this particular TypeId instance.
+ */
 bool TypeChecker::isLinearType(TypeId type) const {
     // Check if the type has the LINEAR flag set
     if (type.flags & TYPE_FLAG_LINEAR) {
@@ -2676,6 +3285,15 @@ bool TypeChecker::isLinearType(TypeId type) const {
     return false;
 }
 
+/**
+ * @brief Check linear variable usage across the current context, recording
+ * an error for every violation found.
+ *
+ * Reports (via addError()) one error per linear variable in
+ * Context::getUnusedLinear() (never used) and one per variable in
+ * Context::getOverusedLinear() (used more than once). Does not itself
+ * return a result — callers inspect errors() afterward.
+ */
 void TypeChecker::checkLinearUsage() {
     // Check for unused linear variables
     auto unused = ctx_.getUnusedLinear();
@@ -2690,6 +3308,18 @@ void TypeChecker::checkLinearUsage() {
     }
 }
 
+/**
+ * @brief Verify a single use-site of variable @p name, enforcing linear no-cloning.
+ *
+ * If @p name is not tracked as linear, this is just a normal variable
+ * lookup. If it is linear, checks whether it was already used
+ * (Context::isLinearUsed()): in isUnsafe() mode, a repeat use is tolerated
+ * (still recorded via Context::useLinear() for tracking) and its type
+ * returned; otherwise a repeat use is an error. On a fresh (first) use,
+ * marks it used and returns its type.
+ * @return The variable's type on success; an error if @p name is unbound,
+ * or if it is linear and already used outside unsafe mode.
+ */
 TypeCheckResult TypeChecker::checkLinearVariable(const std::string& name) {
     // Check if this is a linear variable
     if (!ctx_.isLinear(name)) {
@@ -2726,6 +3356,20 @@ TypeCheckResult TypeChecker::checkLinearVariable(const std::string& name) {
     return TypeCheckResult::error("Undefined linear variable: " + name);
 }
 
+/**
+ * @brief Check that all linear @p bindings introduced by a let scope were consumed exactly once.
+ *
+ * Intended to be called at the end of a let scope's lifetime. In isUnsafe()
+ * mode, all checks are skipped and success is returned unconditionally.
+ * Otherwise, filters @p bindings down to those tracked as linear
+ * (Context::isLinear()) and collects any that were never used
+ * (Context::isLinearUsed() false); overuse is not re-checked here since
+ * checkLinearVariable() already reports it at the use site. If any bindings
+ * are unused, records and returns a single combined error listing all of
+ * their names.
+ * @return TypeCheckResult::ok(BuiltinTypes::Null) if unsafe or all linear
+ * bindings were used; otherwise an error naming the unconsumed bindings.
+ */
 TypeCheckResult TypeChecker::checkLinearLet(const std::vector<std::string>& bindings) {
     // Check that all linear bindings were consumed exactly once
     // This is called at the end of a let scope
@@ -2771,14 +3415,27 @@ TypeCheckResult TypeChecker::checkLinearLet(const std::vector<std::string>& bind
 // Unsafe Context (Phase 6.4)
 // ============================================================================
 
+/**
+ * @brief Enter an unsafe block: relax linear/borrow restrictions for its duration.
+ *
+ * Delegates to UnsafeContext::enterUnsafe(), incrementing the nesting depth.
+ */
 void TypeChecker::enterUnsafe() {
     unsafe_.enterUnsafe();
 }
 
+/**
+ * @brief Exit the innermost unsafe block, restoring the previous safety level.
+ *
+ * Delegates to UnsafeContext::exitUnsafe(), decrementing the nesting depth.
+ */
 void TypeChecker::exitUnsafe() {
     unsafe_.exitUnsafe();
 }
 
+/**
+ * @brief True if the checker is currently inside one or more nested unsafe blocks.
+ */
 bool TypeChecker::isUnsafe() const {
     return unsafe_.isUnsafe();
 }
@@ -2787,6 +3444,24 @@ bool TypeChecker::isUnsafe() const {
 // Program-Level Type Checking
 // ============================================================================
 
+/**
+ * @brief Type check a complete program: synthesize the type of every
+ * top-level AST in @p asts.
+ *
+ * Constructs a fresh TypeChecker over @p env (using default strict/unsafe
+ * settings) and calls synthesize() on each of the @p num_asts top-level
+ * definitions in order. If @p strict is true, returns immediately with the
+ * accumulated errors as soon as any top-level synthesis fails; if false,
+ * continues checking all remaining top-level forms regardless of earlier
+ * failures so all errors can be reported together.
+ * @param env The type environment.
+ * @param asts Array of top-level ASTs.
+ * @param num_asts Number of ASTs.
+ * @param strict If true, stop and return on the first error; if false,
+ * collect all errors across the whole program.
+ * @return The type checker's accumulated errors (empty if the program is
+ * well-typed).
+ */
 std::vector<TypeCheckResult> typeCheckProgram(
     TypeEnvironment& env,
     eshkol_ast_t* asts,

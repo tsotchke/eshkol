@@ -103,6 +103,15 @@ static void set_pipes_nonblocking(eshkol_subprocess_t* proc);
  * Also bail if we see a \n or \r — newlines are rare in command
  * strings and reserved for scripts.
  */
+/**
+ * @brief Check whether @p cmd is free of shell metacharacters and can be
+ *        exec'd directly instead of via `/bin/sh -c`.
+ *
+ * @param cmd NUL-terminated command string; NULL is treated as unsafe.
+ * @return 1 if @p cmd contains only whitespace-separated tokens with no
+ *         shell metacharacters or control bytes (see the block comment
+ *         above for the exact character set), 0 otherwise.
+ */
 static int command_is_shell_safe(const char* cmd) {
     if (!cmd) return 0;
     for (const char* p = cmd; *p; p++) {
@@ -133,6 +142,20 @@ static int command_is_shell_safe(const char* cmd) {
 /* Split a metacharacter-free command string on whitespace into an
  * argv array. Returns NULL on OOM or empty input. Caller frees with
  * `free(argv[0]); free(argv);`. */
+/**
+ * @brief Tokenize a metacharacter-free command string into an argv array.
+ *
+ * Splits @p cmd on runs of spaces/tabs into a NULL-terminated argv vector
+ * suitable for execvp/posix_spawnp. Only safe to call after
+ * command_is_shell_safe() has confirmed @p cmd contains no shell
+ * metacharacters.
+ *
+ * @param cmd      Whitespace-separated command string (must be
+ *                 shell-metacharacter-free).
+ * @param out_argc Optional out-parameter receiving the token count.
+ * @return Newly allocated argv array, or NULL on OOM or empty input.
+ *         Caller frees with `free(argv[0]); free(argv);`.
+ */
 static char** split_shell_safe_command(const char* cmd, int* out_argc) {
     if (!cmd) return NULL;
     /* Work on a mutable copy. The returned argv[i] all point into it,
@@ -201,6 +224,16 @@ static char** split_shell_safe_command(const char* cmd, int* out_argc) {
  *
  * Setting a limit > the hard limit is silently ignored so we don't
  * block legitimate tools on a host that already has lower caps. */
+/**
+ * @brief Apply default resource limits (RLIMIT_AS/CPU/NOFILE/NPROC) to the
+ *        calling process, meant to be invoked in the child after fork().
+ *
+ * Limits are read from the ESHKOL_SUBPROC_MEM_MB / ESHKOL_SUBPROC_CPU_SEC /
+ * ESHKOL_SUBPROC_NOFILE / ESHKOL_SUBPROC_NPROC environment variables (with
+ * generous defaults) and only lowered, never raised, past the existing hard
+ * limit. No-op on Windows. See the comment above this function for the
+ * posix_spawn coverage gap.
+ */
 static void eshkol_apply_subproc_rlimits(void) {
 #ifndef _WIN32
     struct rlimit r;
@@ -261,6 +294,14 @@ static void eshkol_apply_subproc_rlimits(void) {
  * exec (audit C6). Used on fork+exec paths where we don't have the
  * posix_spawn attr machinery to pass a filtered env — call this in
  * the child process right before execvp/execlp. */
+/**
+ * @brief Unset dynamic-linker injection environment variables (LD_PRELOAD,
+ *        DYLD_INSERT_LIBRARIES, etc.) in the calling process.
+ *
+ * Meant to be called in the child right before execvp/execlp on the
+ * fork+exec path, where the posix_spawn attr machinery to pass a
+ * pre-filtered environment isn't available. No-op on Windows.
+ */
 static void eshkol_unset_env_injection_vars(void) {
 #ifndef _WIN32
     static const char* const kVars[] = {
@@ -315,6 +356,21 @@ static pthread_mutex_t g_env_cache_mu = PTHREAD_MUTEX_INITIALIZER;
 static char** g_env_cache = NULL;
 static char** g_env_cache_source = NULL;  /* the environ ptr we scrubbed */
 
+/**
+ * @brief Return a copy of `environ` with dynamic-linker injection variables
+ *        (LD_PRELOAD, DYLD_INSERT_LIBRARIES, LD_LIBRARY_PATH, etc.) removed,
+ *        for use as the envp passed to posix_spawn.
+ *
+ * The result is cached in g_env_cache and rebuilt only if `environ` itself
+ * changes identity; callers must NOT free the returned pointer. Entries in
+ * the returned array alias the original `environ` strings. Returns NULL on
+ * Windows (a different env API is used there) or if `environ` is NULL; on
+ * allocation failure inside the rebuild, falls back to returning the raw
+ * `environ` pointer so a scrub failure never blocks a spawn outright.
+ *
+ * @return Malloc'd, NUL-terminated envp array (do not free), the raw
+ *         `environ` pointer as a fallback, or NULL.
+ */
 static char** eshkol_scrub_environ(void) {
 #ifdef _WIN32
     return NULL;  /* Windows uses a different env API */
@@ -382,6 +438,31 @@ static char** eshkol_scrub_environ(void) {
 #endif
 }
 
+/**
+ * @brief Shared implementation behind qllm_process_spawn() and
+ *        qllm_process_spawn_shell(): spawns @p command with stdin/stdout/
+ *        stderr wired to pipes (or stdin to /dev/null when
+ *        ESHKOL_SPAWN_STDIN_NULL is set in @p flags).
+ *
+ * On POSIX, uses posix_spawn on the hot path when @p cwd_arg is empty or
+ * "." (no chdir needed), bypassing /bin/sh entirely when @p force_shell is
+ * false and command_is_shell_safe(@p command) holds; otherwise falls back
+ * to `/bin/sh -c command`. When a chdir is required, falls back to
+ * fork+exec so the child can chdir before exec. The child's environment is
+ * scrubbed via eshkol_scrub_environ() and, on the fork+exec path, resource
+ * limits are applied via eshkol_apply_subproc_rlimits(). On Windows, uses
+ * CreateProcessA with `cmd /c command`.
+ *
+ * @param command    Command string to run (shell form).
+ * @param cwd_arg    Working directory for the child, or NULL/""/"." for
+ *                   the parent's current directory.
+ * @param flags      ESHKOL_SPAWN_STDIN_NULL or 0.
+ * @param force_shell If nonzero, always go through /bin/sh -c even when
+ *                    @p command has no shell metacharacters.
+ * @return Newly allocated eshkol_subprocess_t handle, or NULL on failure
+ *         (OOM, pipe/spawn/fork error); errno is set to the spawn error on
+ *         posix_spawn failure paths.
+ */
 static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
                                                             const char* cwd_arg,
                                                             int64_t flags,
@@ -646,18 +727,40 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
 #endif
 }
 
+/**
+ * @brief Public qllm_process_spawn entry point: spawn @p command via the
+ *        legacy shell-compatible path (may bypass /bin/sh when safe).
+ *
+ * Delegates to qllm_process_spawn_command_impl() with force_shell=0.
+ * @p unused_arg is accepted for ABI compatibility with callers but ignored.
+ *
+ * @return New process handle, or NULL on failure.
+ */
 eshkol_subprocess_t* qllm_process_spawn(const char* command, const char* cwd_arg,
                                          const char* unused_arg, int64_t flags) {
     (void)unused_arg;
     return qllm_process_spawn_command_impl(command, cwd_arg, flags, 0);
 }
 
+/**
+ * @brief Spawn @p command, always via the platform shell
+ *        (/bin/sh -c on POSIX, cmd /c on Windows).
+ *
+ * Delegates to qllm_process_spawn_command_impl() with force_shell=1, so
+ * shell grammar (pipes, redirection, globbing) is always honored.
+ *
+ * @return New process handle, or NULL on failure.
+ */
 eshkol_subprocess_t* qllm_process_spawn_shell(const char* command,
                                                const char* cwd_arg,
                                                int64_t flags) {
     return qllm_process_spawn_command_impl(command, cwd_arg, flags, 1);
 }
 
+/**
+ * @brief Free a buffer previously returned by qllm_process_read_all_stdout()
+ *        or qllm_process_read_all_stderr().
+ */
 void qllm_process_free_buffer(char* buf) {
     free(buf);
 }
@@ -681,6 +784,21 @@ void qllm_process_free_buffer(char* buf) {
  * ═══════════════════════════════════════════════════════════════════ */
 
 #ifndef _WIN32
+/**
+ * @brief Split a tab-separated packed argv string into a NULL-terminated
+ *        argv array for execvp.
+ *
+ * @p packed is a single C string of the form "program\targ1\targ2\t…";
+ * tab is used as the separator because the FFI layer only exposes `ptr` as
+ * a plain C string.
+ *
+ * @param packed    Tab-separated argv string.
+ * @param argc_out  Out-parameter receiving the number of tokens (0 on
+ *                  failure).
+ * @return Newly allocated argv array, or NULL on NULL/empty input or OOM.
+ *         Caller must free both the array and its underlying buffer via
+ *         `free(argv[0]); free(argv);`.
+ */
 static char** parse_tab_argv(const char* packed, int* argc_out) {
     if (!packed) { *argc_out = 0; return NULL; }
     /* Count tabs + 1. */
@@ -710,6 +828,25 @@ static char** parse_tab_argv(const char* packed, int* argc_out) {
 }
 #endif
 
+/**
+ * @brief Spawn a program directly via execvp semantics (no shell), from a
+ *        tab-packed argv string, with stdin/stdout/stderr wired to pipes
+ *        (or stdin to /dev/null when ESHKOL_SPAWN_STDIN_NULL is set).
+ *
+ * Parses @p tab_packed_argv with parse_tab_argv() and execs argv[0]
+ * directly — there is no shell expansion, so this is the safe entry point
+ * for callers that interpolate untrusted values into arguments. Uses
+ * posix_spawn on the hot path when @p cwd_arg is empty or ".", falling
+ * back to fork+exec when a chdir is required (posix_spawn has no portable
+ * chdir action here). Not implemented on Windows (returns NULL).
+ *
+ * @param tab_packed_argv Tab-separated "program\targ1\targ2\t…" string;
+ *                        must be non-NULL and non-empty.
+ * @param cwd_arg         Working directory for the child, or NULL/""/"."
+ *                        for the parent's current directory.
+ * @param flags           ESHKOL_SPAWN_STDIN_NULL or 0.
+ * @return Newly allocated eshkol_subprocess_t handle, or NULL on failure.
+ */
 eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
                                                     const char* cwd_arg,
                                                     int64_t flags) {
@@ -894,6 +1031,15 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
 /* Back-compat shim: original 2-arg signature, still referenced by the
  * extern decl in subprocess.esk and the legacy callers. Delegates to
  * the _flags variant with flags=0 (wires a stdin pipe). */
+/**
+ * @brief Back-compat 2-argument entry point for argv-based spawn.
+ *
+ * Delegates to qllm_process_spawn_argv_flags() with flags=0 (stdin wired
+ * to a pipe). Kept for the extern declaration in subprocess.esk and other
+ * legacy callers.
+ *
+ * @return Newly allocated eshkol_subprocess_t handle, or NULL on failure.
+ */
 eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
                                               const char* cwd_arg) {
     return qllm_process_spawn_argv_flags(tab_packed_argv, cwd_arg, 0);
@@ -903,6 +1049,16 @@ eshkol_subprocess_t* qllm_process_spawn_argv(const char* tab_packed_argv,
  * Stdin Write / Close
  * ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * @brief Write @p len bytes from @p data to the child's stdin pipe.
+ *
+ * If the process was spawned with ESHKOL_SPAWN_STDIN_NULL (stdin wired to
+ * /dev/null), the write is ignored and a one-time warning is printed to
+ * stderr rather than silently losing data (audit H9).
+ *
+ * @return Number of bytes actually written, or -1 on a NULL/invalid
+ *         argument or a write error (including the /dev/null-stdin case).
+ */
 int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, int64_t len) {
     if (!proc || !data || len <= 0) return -1;
 #ifndef _WIN32
@@ -927,6 +1083,9 @@ int64_t qllm_process_write_stdin(eshkol_subprocess_t* proc, const char* data, in
 #endif
 }
 
+/**
+ * @brief Close the child's stdin pipe/handle, signalling EOF to the child.
+ */
 void qllm_process_close_stdin(eshkol_subprocess_t* proc) {
     if (!proc) return;
 #ifndef _WIN32
@@ -940,6 +1099,13 @@ void qllm_process_close_stdin(eshkol_subprocess_t* proc) {
  * Stdout / Stderr Read
  * ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * @brief Non-blocking read of up to @p buf_size bytes from the child's
+ *        stdout pipe into @p buf.
+ *
+ * @return Number of bytes read, 0 if no data is currently available
+ *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
+ */
 int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
     if (!proc || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
@@ -954,6 +1120,13 @@ int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t b
 #endif
 }
 
+/**
+ * @brief Non-blocking read of up to @p buf_size bytes from the child's
+ *        stderr pipe into @p buf.
+ *
+ * @return Number of bytes read, 0 if no data is currently available
+ *         (EAGAIN), or -1 on a NULL/invalid argument, closed fd, or error.
+ */
 int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t buf_size) {
     if (!proc || !buf || buf_size <= 0) return -1;
 #ifndef _WIN32
@@ -972,6 +1145,27 @@ int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t b
  * qllm_process_wait plus any remainder still in the pipe. The buffer
  * is malloc'd for the caller to free; internal proc buffer is
  * zero'd after transfer so a second call returns empty string. */
+/**
+ * @brief Shared POSIX implementation behind qllm_process_read_all_stdout()
+ *        and qllm_process_read_all_stderr(): return everything captured
+ *        from @p fd so far, plus whatever remains in the pipe.
+ *
+ * First hands over the bytes already accumulated in `*inline_buf` (drained
+ * by qllm_process_wait's drain loop), then, if the fd isn't at EOF, keeps
+ * reading (briefly polling across EAGAIN) until EOF or @p max_size bytes
+ * have been collected. The inline buffer is freed and reset afterward so a
+ * second call on the same stream returns an empty string.
+ *
+ * @param fd          Pipe fd to read from (POSIX only; may be closed/-1).
+ * @param inline_buf  In/out pointer to the proc's accumulated buffer.
+ * @param inline_len  In/out length of `*inline_buf`.
+ * @param inline_cap  In/out capacity of `*inline_buf`.
+ * @param eof_flag    In/out EOF flag for this stream.
+ * @param max_size    Maximum number of bytes to return.
+ * @param out_len     Optional out-parameter receiving the returned length.
+ * @return Newly malloc'd, NUL-terminated buffer (caller frees), or NULL on
+ *         OOM or non-positive @p max_size. Always NULL on Windows.
+ */
 static char* read_all_stream_posix(int fd,
                                    char** inline_buf, size_t* inline_len, size_t* inline_cap,
                                    int* eof_flag,
@@ -1035,6 +1229,16 @@ static char* read_all_stream_posix(int fd,
 #endif
 }
 
+/**
+ * @brief Return all stdout output captured for @p proc so far (accumulated
+ *        during qllm_process_wait plus any pipe remainder), up to
+ *        @p max_size bytes.
+ *
+ * @param out_len Optional out-parameter receiving the returned length.
+ * @return Newly malloc'd, NUL-terminated buffer (caller frees via
+ *         qllm_process_free_buffer), or NULL on NULL @p proc, OOM, or
+ *         non-positive @p max_size. Always NULL on Windows.
+ */
 char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
     if (!proc) return NULL;
 #ifndef _WIN32
@@ -1047,6 +1251,16 @@ char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, 
 #endif
 }
 
+/**
+ * @brief Return all stderr output captured for @p proc so far (accumulated
+ *        during qllm_process_wait plus any pipe remainder), up to
+ *        @p max_size bytes.
+ *
+ * @param out_len Optional out-parameter receiving the returned length.
+ * @return Newly malloc'd, NUL-terminated buffer (caller frees via
+ *         qllm_process_free_buffer), or NULL on NULL @p proc, OOM, or
+ *         non-positive @p max_size. Always NULL on Windows.
+ */
 char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, int64_t* out_len) {
     if (!proc) return NULL;
 #ifndef _WIN32
@@ -1074,8 +1288,33 @@ char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, 
  * interrupt a blocking syscall with EINTR rather than killing us (the
  * SIGALRM default). Defined at file scope so its address is usable
  * inside nested functions. */
+/**
+ * @brief No-op SIGALRM handler; installed only so signal delivery
+ *        interrupts a blocking syscall with EINTR instead of terminating
+ *        the process (SIGALRM's default disposition).
+ *
+ * @param sig Unused; present to match the sa_handler signature.
+ */
 static void eshkol_subprocess_alrm_noop(int sig) { (void)sig; }
 
+/**
+ * @brief Drain all currently-available bytes from non-blocking fd @p fd
+ *        into the growable buffer described by @p buf/@p len/@p cap,
+ *        stopping at EAGAIN, EOF, or a hard read error.
+ *
+ * Once @p len reaches @p max_bytes, continues reading (and discarding) so
+ * the child is never blocked on a full pipe, without growing the buffer
+ * further. Sets `*eof_flag` on EOF or a hard error.
+ *
+ * @param fd        Non-blocking pipe fd to read from.
+ * @param buf       In/out pointer to the (possibly reallocated) buffer.
+ * @param len       In/out number of valid bytes in `*buf`.
+ * @param cap       In/out allocated capacity of `*buf`.
+ * @param max_bytes Cap on retained bytes (0 means unlimited).
+ * @param eof_flag  In/out EOF flag for this fd.
+ * @return Nonzero if any bytes were read (retained or discarded) this
+ *         call, 0 otherwise.
+ */
 static int drain_fd_nonblocking(int fd,
                                 char** buf, size_t* len, size_t* cap,
                                 size_t max_bytes,
@@ -1124,6 +1363,14 @@ static int drain_fd_nonblocking(int fd,
  * `nonblock_set`); drain_proc_pipes therefore runs in the hot path without
  * any per-iteration fcntl() cost. The earlier version re-tested every
  * iteration which turned out to dominate the 20-call loop benchmark. */
+/**
+ * @brief Opportunistically drain both @p proc's stdout and stderr pipes
+ *        (up to @p max_per_stream bytes each) into their accumulation
+ *        buffers.
+ *
+ * Called repeatedly from qllm_process_wait's event loop so a chatty child
+ * never blocks on a full pipe while the parent waits for it to exit.
+ */
 static void drain_proc_pipes(eshkol_subprocess_t* proc, size_t max_per_stream) {
     if (!proc) return;
     drain_fd_nonblocking(proc->stdout_fd,
@@ -1135,6 +1382,12 @@ static void drain_proc_pipes(eshkol_subprocess_t* proc, size_t max_per_stream) {
 }
 
 /* Set both stdout/stderr pipe fds to O_NONBLOCK. Call once at spawn. */
+/**
+ * @brief Put @p proc's stdout and stderr pipe fds into O_NONBLOCK mode.
+ *
+ * Called once at spawn time so later drain/read paths never pay a
+ * per-iteration fcntl() cost.
+ */
 static void set_pipes_nonblocking(eshkol_subprocess_t* proc) {
     if (!proc) return;
     for (int which = 0; which < 2; which++) {
@@ -1152,6 +1405,13 @@ static void set_pipes_nonblocking(eshkol_subprocess_t* proc) {
  * EAGAIN. The fd goes back to non-blocking after the drain thread
  * exits, so callers observing pipes post-wait still see the
  * non-blocking behaviour the older drain-in-wait path relied on. */
+/**
+ * @brief Re-enable blocking mode on @p fd.
+ *
+ * Used by the pthread drain path so a helper thread's read() can sleep
+ * waiting for bytes instead of spinning on EAGAIN; the fd is expected to
+ * go back to non-blocking afterward via set_pipes_nonblocking-style logic.
+ */
 static void set_fd_blocking(int fd) {
     if (fd < 0) return;
     int f = fcntl(fd, F_GETFL);
@@ -1178,6 +1438,18 @@ typedef struct {
     int* eof_flag;
 } drain_thread_arg_t;
 
+/**
+ * @brief Pthread entry point that blockingly reads from one pipe fd into
+ *        a growable buffer until EOF, for the Linux/non-kqueue fallback
+ *        drain path of qllm_process_wait.
+ *
+ * @p vp is a drain_thread_arg_t*. Sets the fd to blocking mode first, then
+ * loops on read(), growing `*buf` as needed (dropping bytes past
+ * `max_bytes` once reached) until read() returns 0 (EOF) or a non-EINTR
+ * error, setting `*eof_flag` accordingly.
+ *
+ * @return Always NULL.
+ */
 static void* drain_thread_fn(void* vp) {
     drain_thread_arg_t* a = (drain_thread_arg_t*)vp;
     if (!a || a->fd < 0) return NULL;
@@ -1225,6 +1497,13 @@ static void* drain_thread_fn(void* vp) {
  * Process Status
  * ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * @brief Non-blocking check of whether @p proc's child has exited, updating
+ *        `proc->exited` / `proc->exit_code` if so.
+ *
+ * Uses waitpid(..., WNOHANG) on POSIX and GetExitCodeProcess on Windows.
+ * No-op if @p proc is NULL or already marked exited.
+ */
 static void check_exit_status(eshkol_subprocess_t* proc) {
     if (!proc || proc->exited) return;
 #ifndef _WIN32
@@ -1260,6 +1539,23 @@ static void check_exit_status(eshkol_subprocess_t* proc) {
  *
  * This implementation ALSO drains stdout/stderr pipes while waiting so a
  * chatty child (> ~64 KB output) doesn't deadlock blocking on write.
+ */
+/**
+ * @brief Wait for @p proc's child to exit, up to @p timeout_ms
+ *        milliseconds, while draining its stdout/stderr pipes so a chatty
+ *        child never deadlocks on a full pipe.
+ *
+ * On macOS/FreeBSD, uses a single kqueue with EVFILT_PROC (NOTE_EXIT) and
+ * EVFILT_READ on both pipes so one syscall wakes on exit or new output. On
+ * other POSIX platforms, falls back to one blocking-read pthread per pipe
+ * (drain_thread_fn) alongside a SIGALRM-based waitpid timeout. On Windows,
+ * uses WaitForSingleObject.
+ *
+ * @param timeout_ms Milliseconds to wait, or a negative value to block
+ *                   indefinitely.
+ * @return 0 if the child exited (read the code via
+ *         qllm_process_exit_code), 1 if @p timeout_ms elapsed first, or -1
+ *         on error (NULL @p proc, waitpid failure, kqueue setup failure).
  */
 int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
     if (!proc) return -1;
@@ -1459,12 +1755,26 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
 #endif
 }
 
+/**
+ * @brief Report whether @p proc's child is still running.
+ *
+ * Refreshes exit status via check_exit_status() first.
+ * @return 1 if still running (or @p proc has no recorded exit yet), 0 if
+ *         it has exited or @p proc is NULL.
+ */
 int32_t qllm_process_running(eshkol_subprocess_t* proc) {
     if (!proc) return 0;
     check_exit_status(proc);
     return !proc->exited;
 }
 
+/**
+ * @brief Return @p proc's child exit code, refreshing exit status first.
+ *
+ * @return The child's exit code (128+signal if it was signaled), -1 if
+ *         @p proc is NULL, or the still-pending sentinel if it hasn't
+ *         exited yet.
+ */
 int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
     if (!proc) return -1;
     check_exit_status(proc);
@@ -1475,6 +1785,13 @@ int32_t qllm_process_exit_code(eshkol_subprocess_t* proc) {
  * Process Kill / Destroy
  * ═══════════════════════════════════════════════════════════════════ */
 
+/**
+ * @brief Send @p signal to @p proc's child process.
+ *
+ * On POSIX this is kill((pid_t)proc->pid, signal); on Windows @p signal is
+ * ignored and TerminateProcess is used unconditionally. No-op if @p proc
+ * is NULL.
+ */
 void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
     if (!proc) return;
 #ifndef _WIN32
@@ -1494,11 +1811,34 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
  * across log streams, and (d) emitting WARN if a stale handle outlives
  * its OS process. Without an accessor, callers were either parsing
  * the proc handle pointer (meaningless) or rolling a synthetic ID. */
+/**
+ * @brief Return the OS process identity (PID / dwProcessId) of @p proc's
+ *        child.
+ *
+ * Exists so callers can build child-aware trace IDs, support external
+ * observability (pgrep, top), correlate log streams, and detect a stale
+ * handle whose OS process has already gone away.
+ *
+ * @return The child's PID (always > 0 for a live OS process), or 0 if
+ *         @p proc is NULL.
+ */
 int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
     if (!proc) return 0;
     return proc->pid;
 }
 
+/**
+ * @brief Tear down @p proc: terminate the child if still running, close
+ *        all pipe fds/handles, free accumulated drain buffers, and free
+ *        the handle itself.
+ *
+ * On POSIX, a still-running child is first sent SIGTERM and given up to
+ * ~500ms (50 * 10ms polls) to exit gracefully before SIGKILL is used to
+ * force it. On Windows, a still-active process is terminated via
+ * TerminateProcess with a 5-second wait. process-destroy is a hard cleanup
+ * boundary; callers wanting a graceful shutdown should signal/wait
+ * explicitly beforehand. No-op if @p proc is NULL.
+ */
 void qllm_process_destroy(eshkol_subprocess_t* proc) {
     if (!proc) return;
 #ifndef _WIN32

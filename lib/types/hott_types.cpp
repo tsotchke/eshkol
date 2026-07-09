@@ -17,6 +17,11 @@ namespace eshkol::hott {
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/**
+ * @brief Convert a Universe level to a human-readable label.
+ * @param u Universe level to describe.
+ * @return A static UTF-8 string such as "Type₀"/"Type₁"/"Type₂"/"Typeω", or "Type?" for an unrecognized value.
+ */
 const char* universeToString(Universe u) {
     switch (u) {
         case Universe::U0: return "Type\342\202\200";  // Type₀ (UTF-8 subscript 0)
@@ -27,6 +32,11 @@ const char* universeToString(Universe u) {
     }
 }
 
+/**
+ * @brief Convert a RuntimeRep to its short lowercase name (e.g. "int64", "ptr").
+ * @param rep Runtime representation to describe.
+ * @return A static string naming the representation, or "unknown" if unrecognized.
+ */
 const char* runtimeRepToString(RuntimeRep rep) {
     switch (rep) {
         case RuntimeRep::Int8: return "int8";
@@ -47,10 +57,22 @@ const char* runtimeRepToString(RuntimeRep rep) {
     }
 }
 
+/**
+ * @brief Check whether a type is numeric, i.e. Number or one of its subtypes.
+ * @param env Type environment used to resolve the subtype relationship.
+ * @param id Type to test.
+ * @return True if @p id is Number or a subtype of Number.
+ */
 bool isNumericType(const TypeEnvironment& env, TypeId id) {
     return env.isSubtype(id, BuiltinTypes::Number);
 }
 
+/**
+ * @brief Check whether a type is a collection type (List, Vector, or Tensor, or a subtype thereof).
+ * @param env Type environment used to resolve the subtype relationships.
+ * @param id Type to test.
+ * @return True if @p id is a subtype of List, Vector, or Tensor.
+ */
 bool isCollectionType(const TypeEnvironment& env, TypeId id) {
     return env.isSubtype(id, BuiltinTypes::List) ||
            env.isSubtype(id, BuiltinTypes::Vector) ||
@@ -61,10 +83,19 @@ bool isCollectionType(const TypeEnvironment& env, TypeId id) {
 // TYPE ENVIRONMENT IMPLEMENTATION
 // ============================================================================
 
+/**
+ * @brief Construct a TypeEnvironment and populate it with all builtin types via initializeBuiltinTypes().
+ */
 TypeEnvironment::TypeEnvironment() {
     initializeBuiltinTypes();
 }
 
+/**
+ * @brief Register every builtin type (universes, the numeric tower, text types,
+ * collection/type-constructor families, autodiff and hash types, resource types, and proposition
+ * types) and populate the common name aliases (e.g. "int", "i32", "float64") used for parsing
+ * type annotations.
+ */
 void TypeEnvironment::initializeBuiltinTypes() {
     using namespace BuiltinTypes;
 
@@ -241,6 +272,15 @@ void TypeEnvironment::initializeBuiltinTypes() {
     name_to_id_["adnode"] = ADNode;
 }
 
+/**
+ * @brief Register a non-parameterized builtin type in the type graph.
+ *
+ * Creates a TypeNode for @p id with the given @p name, @p level, @p flags, and runtime
+ * representation @p rep, records it under both its numeric id and its @p name, and (if
+ * @p supertype is given) links it into the supertype's subtype list via addSubtype().
+ *
+ * @return The TypeId assigned to the newly registered type.
+ */
 TypeId TypeEnvironment::registerBuiltinType(uint16_t id, const std::string& name,
                                              Universe level, uint8_t flags,
                                              RuntimeRep rep,
@@ -266,6 +306,14 @@ TypeId TypeEnvironment::registerBuiltinType(uint16_t id, const std::string& name
     return type_id;
 }
 
+/**
+ * @brief Register a parameterized type family (e.g. List<A>, Pair<A,B>).
+ *
+ * Creates a TypeNode marked as a type family (is_type_family = true) with the given
+ * @p param_names, and records it under both its numeric id and its @p name.
+ *
+ * @return The TypeId assigned to the newly registered type family.
+ */
 TypeId TypeEnvironment::registerTypeFamily(uint16_t id, const std::string& name,
                                             Universe level,
                                             const std::vector<std::string>& param_names,
@@ -286,6 +334,15 @@ TypeId TypeEnvironment::registerTypeFamily(uint16_t id, const std::string& name,
     return type_id;
 }
 
+/**
+ * @brief Register a user-defined type (from a `define-type` form), assigning it a fresh id
+ * starting at 1000.
+ *
+ * Creates a TypeNode marked with Origin::UserDefined, records it by name, and (if @p supertype
+ * is given) links it into the supertype's subtype list via addSubtype().
+ *
+ * @return The newly assigned TypeId.
+ */
 TypeId TypeEnvironment::registerUserType(const std::string& name, Universe level,
                                           uint8_t flags,
                                           std::optional<TypeId> supertype) {
@@ -310,6 +367,11 @@ TypeId TypeEnvironment::registerUserType(const std::string& name, Universe level
     return type_id;
 }
 
+/**
+ * @brief Record @p subtype as a child of @p supertype in the type graph.
+ *
+ * No-op if @p supertype is not a registered type.
+ */
 void TypeEnvironment::addSubtype(TypeId supertype, TypeId subtype) {
     auto it = types_.find(supertype.id);
     if (it != types_.end()) {
@@ -317,6 +379,10 @@ void TypeEnvironment::addSubtype(TypeId supertype, TypeId subtype) {
     }
 }
 
+/**
+ * @brief Look up a type by name, trying an exact match first and then a lowercase fallback.
+ * @return The TypeId if found, or std::nullopt otherwise.
+ */
 std::optional<TypeId> TypeEnvironment::lookupType(const std::string& name) const {
     // Try exact match first
     auto it = name_to_id_.find(name);
@@ -335,11 +401,21 @@ std::optional<TypeId> TypeEnvironment::lookupType(const std::string& name) const
     return std::nullopt;
 }
 
+/**
+ * @brief Look up the TypeNode for a given TypeId.
+ * @return Pointer to the stored TypeNode, or nullptr if @p id is not registered.
+ */
 const TypeNode* TypeEnvironment::getTypeNode(TypeId id) const {
     auto it = types_.find(id.id);
     return (it != types_.end()) ? &it->second : nullptr;
 }
 
+/**
+ * @brief Get a human-readable name for a type.
+ *
+ * If @p id is a tracked pair type, returns "Pair<car, cdr>" built recursively from the element
+ * types; otherwise returns the registered name, or "unknown" if @p id is not registered.
+ */
 std::string TypeEnvironment::getTypeName(TypeId id) const {
     // Check if this is a tracked pair type
     auto pair_elems = getPairElementTypes(id);
@@ -351,6 +427,12 @@ std::string TypeEnvironment::getTypeName(TypeId id) const {
     return node ? node->name : "unknown";
 }
 
+/**
+ * @brief Check whether @p sub is a subtype of @p super, using a cache to avoid re-walking the
+ * type graph.
+ *
+ * On a cache miss, delegates to isSubtypeUncached() and stores the result.
+ */
 bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
     // Check cache
     auto key = std::make_pair(sub.id, super.id);
@@ -364,6 +446,13 @@ bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
     return result;
 }
 
+/**
+ * @brief Compute (without using the cache) whether @p sub is a subtype of @p super.
+ *
+ * Handles reflexivity (a type is a subtype of itself), tracked pair types (which are treated as
+ * subtypes of the generic Pair type), and otherwise walks the supertype chain from @p sub looking
+ * for @p super.
+ */
 bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
     // Reflexivity
     if (sub == super) return true;
@@ -387,6 +476,14 @@ bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
     return false;
 }
 
+/**
+ * @brief Find the least (most specific) common supertype of two types.
+ *
+ * Walks both types' supertype chains (via getSupertypeChain()) from most specific to most
+ * general and returns the first type that appears in both.
+ *
+ * @return The common supertype, or std::nullopt if none exists.
+ */
 std::optional<TypeId> TypeEnvironment::leastCommonSupertype(TypeId a, TypeId b) const {
     // Same type
     if (a == b) return a;
@@ -405,6 +502,11 @@ std::optional<TypeId> TypeEnvironment::leastCommonSupertype(TypeId a, TypeId b) 
     return std::nullopt;
 }
 
+/**
+ * @brief Compute the chain of supertypes from @p type up to the root, inclusive of @p type itself.
+ *
+ * Tracked pair types delegate to the generic Pair type's chain (prefixed by the pair type itself).
+ */
 std::vector<TypeId> TypeEnvironment::getSupertypeChain(TypeId type) const {
     std::vector<TypeId> chain;
     chain.push_back(type);
@@ -425,6 +527,13 @@ std::vector<TypeId> TypeEnvironment::getSupertypeChain(TypeId type) const {
     return chain;
 }
 
+/**
+ * @brief Determine the result type of an arithmetic operation between two types, implementing
+ * the Scheme numeric tower promotion rules (exact/inexact contagion, Complex/BigInt/Real handling).
+ *
+ * @return The promoted TypeId, falling back to the least common supertype (or Number) if no
+ * specific promotion rule applies.
+ */
 TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
     using namespace BuiltinTypes;
 
@@ -482,16 +591,32 @@ TypeId TypeEnvironment::promoteForArithmetic(TypeId a, TypeId b) const {
     return lcs.value_or(Number);
 }
 
+/**
+ * @brief Check whether two types are equivalent. Currently this is identity only; type aliasing
+ * is not yet implemented.
+ */
 bool TypeEnvironment::areEquivalent(TypeId a, TypeId b) const {
     // For now, just identity. Will support type aliases later.
     return a == b;
 }
 
+/**
+ * @brief Get the runtime representation (LLVM/C-level layout) for a type.
+ * @return The registered RuntimeRep, or RuntimeRep::TaggedValue if @p id is not registered.
+ */
 RuntimeRep TypeEnvironment::getRuntimeRep(TypeId id) const {
     const TypeNode* node = getTypeNode(id);
     return node ? node->runtime_rep : RuntimeRep::TaggedValue;
 }
 
+/**
+ * @brief Map a runtime `eshkol_value_type_t` tag to the corresponding HoTT TypeId.
+ *
+ * Strips exactness flags for immediate types (tag < 8) but passes legacy pointer tags (>= 8,
+ * e.g. CONS_PTR, STRING_PTR) through unmasked.
+ *
+ * @return The corresponding TypeId, or BuiltinTypes::Value if the tag is not recognized.
+ */
 TypeId TypeEnvironment::fromRuntimeType(uint8_t runtime_type) const {
     using namespace BuiltinTypes;
 
@@ -538,6 +663,10 @@ TypeId TypeEnvironment::fromRuntimeType(uint8_t runtime_type) const {
     }
 }
 
+/**
+ * @brief Map a HoTT TypeId back to a runtime `eshkol_value_type_t` tag.
+ * @return The corresponding runtime tag, or ESHKOL_VALUE_NULL as a fallback for supertypes/unknown types.
+ */
 uint8_t TypeEnvironment::toRuntimeType(TypeId id) const {
     using namespace BuiltinTypes;
 
@@ -570,6 +699,11 @@ uint8_t TypeEnvironment::toRuntimeType(TypeId id) const {
 // PARAMETERIZED TYPES IMPLEMENTATION
 // ============================================================================
 
+/**
+ * @brief Create (and cache) a ParameterizedType instance for @p base_type applied to @p type_args.
+ *
+ * For example, instantiateType(List, {Int64}) represents List<Int64>.
+ */
 ParameterizedType TypeEnvironment::instantiateType(TypeId base_type,
                                                     const std::vector<TypeId>& type_args) const {
     ParameterizedType ptype;
@@ -582,31 +716,49 @@ ParameterizedType TypeEnvironment::instantiateType(TypeId base_type,
     return ptype;
 }
 
+/** @brief Create a List<element_type> parameterized type. Convenience wrapper over instantiateType(). */
 ParameterizedType TypeEnvironment::makeListType(TypeId element_type) const {
     return instantiateType(BuiltinTypes::List, {element_type});
 }
 
+/** @brief Create a Vector<element_type> parameterized type. Convenience wrapper over instantiateType(). */
 ParameterizedType TypeEnvironment::makeVectorType(TypeId element_type) const {
     return instantiateType(BuiltinTypes::Vector, {element_type});
 }
 
+/** @brief Create a Ptr<element_type> parameterized type. Convenience wrapper over instantiateType(). */
 ParameterizedType TypeEnvironment::makePointerType(TypeId element_type) const {
     return instantiateType(BuiltinTypes::Pointer, {element_type});
 }
 
+/** @brief Create a HashTable<key_type, value_type> parameterized type. */
 ParameterizedType TypeEnvironment::makeHashTableType(TypeId key_type, TypeId value_type) const {
     return instantiateType(BuiltinTypes::HashTable, {key_type, value_type});
 }
 
+/** @brief Check whether a type is a type family (parameterized type constructor like List or Vector). */
 bool TypeEnvironment::isTypeFamily(TypeId id) const {
     const TypeNode* node = getTypeNode(id);
     return node && node->is_type_family;
 }
 
+/**
+ * @brief Get the element type of a parameterized collection type.
+ * @return @p ptype's first type argument, or BuiltinTypes::Value if it has none.
+ */
 TypeId TypeEnvironment::getElementType(const ParameterizedType& ptype) const {
     return ptype.elementType();
 }
 
+/**
+ * @brief Infer the common element type of a homogeneous list from its elements' types.
+ *
+ * Starts from the first element's type and, for each subsequent differing type, attempts to
+ * widen to their least common supertype.
+ *
+ * @return The inferred common type, or BuiltinTypes::Value if the list is empty or no common
+ * supertype exists among the element types.
+ */
 TypeId TypeEnvironment::inferListElementType(const std::vector<TypeId>& element_types) const {
     if (element_types.empty()) {
         return BuiltinTypes::Value;  // Empty list has unknown element type
@@ -635,6 +787,10 @@ TypeId TypeEnvironment::inferListElementType(const std::vector<TypeId>& element_
 // Dependent Type Dimension Tracking
 // ============================================================================
 
+/**
+ * @brief Create a Vector<element_type, dimension> parameterized type carrying a known
+ * compile-time dimension, and cache the instantiation.
+ */
 ParameterizedType TypeEnvironment::makeVectorTypeWithDim(TypeId element_type, uint64_t dimension) const {
     ParameterizedType ptype;
     ptype.base_type = BuiltinTypes::Vector;
@@ -647,6 +803,10 @@ ParameterizedType TypeEnvironment::makeVectorTypeWithDim(TypeId element_type, ui
     return ptype;
 }
 
+/**
+ * @brief Create a Tensor<element_type, dims...> parameterized type carrying known compile-time
+ * dimensions, and cache the instantiation.
+ */
 ParameterizedType TypeEnvironment::makeTensorTypeWithDims(TypeId element_type,
                                                            const std::vector<uint64_t>& dimensions) const {
     ParameterizedType ptype;
@@ -663,10 +823,15 @@ ParameterizedType TypeEnvironment::makeTensorTypeWithDims(TypeId element_type,
     return ptype;
 }
 
+/** @brief Store dimension info for @p type_id so it can later be retrieved via getDimensionInfo(). */
 void TypeEnvironment::storeDimensionInfo(TypeId type_id, const std::vector<CTValueSimple>& dimensions) {
     dimension_cache_[type_id.id] = dimensions;
 }
 
+/**
+ * @brief Retrieve previously stored dimension info for a TypeId.
+ * @return The stored dimensions, or std::nullopt if none were stored via storeDimensionInfo().
+ */
 std::optional<std::vector<CTValueSimple>> TypeEnvironment::getDimensionInfo(TypeId type_id) const {
     auto it = dimension_cache_.find(type_id.id);
     if (it != dimension_cache_.end()) {
@@ -679,10 +844,24 @@ std::optional<std::vector<CTValueSimple>> TypeEnvironment::getDimensionInfo(Type
 // FUNCTION TYPES (Π-TYPES)
 // ============================================================================
 
+/**
+ * @brief Create a non-variadic function type. Convenience overload forwarding to the
+ * 3-argument makeFunctionType() with is_variadic = false.
+ */
 TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type) const {
     return makeFunctionType(param_types, return_type, /*is_variadic=*/false);
 }
 
+/**
+ * @brief Create or retrieve a cached function type for the given parameter types, return type,
+ * and variadic flag.
+ *
+ * Searches function_type_cache_ for an existing PiType with matching return type, parameter
+ * count, variadic flag, and parameter types; if found, its TypeId is reused. Otherwise a new
+ * PiType is built and assigned a fresh id from next_function_type_id_.
+ *
+ * @return The TypeId identifying this function type.
+ */
 TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types, TypeId return_type,
                                           bool is_variadic) const {
     // Check if we already have this exact function type cached
@@ -717,10 +896,15 @@ TypeId TypeEnvironment::makeFunctionType(const std::vector<TypeId>& param_types,
     return TypeId{type_id, Universe::U0, 0};
 }
 
+/** @brief Create a simple unary function type `input -> output`. */
 TypeId TypeEnvironment::makeSimpleFunctionType(TypeId input, TypeId output) const {
     return makeFunctionType({input}, output);
 }
 
+/**
+ * @brief Look up the PiType describing a function TypeId.
+ * @return Pointer to the cached PiType, or nullptr if @p id is not a function type.
+ */
 const PiType* TypeEnvironment::getFunctionType(TypeId id) const {
     // Check if it's in the function type cache
     auto it = function_type_cache_.find(id.id);
@@ -732,6 +916,10 @@ const PiType* TypeEnvironment::getFunctionType(TypeId id) const {
     return nullptr;
 }
 
+/**
+ * @brief Check whether a TypeId represents a function type (the generic Function type or a
+ * specific cached function signature).
+ */
 bool TypeEnvironment::isFunctionType(TypeId id) const {
     // Check if it's the base Function type or a specific function type
     if (id == BuiltinTypes::Function) {
@@ -740,6 +928,10 @@ bool TypeEnvironment::isFunctionType(TypeId id) const {
     return function_type_cache_.find(id.id) != function_type_cache_.end();
 }
 
+/**
+ * @brief Get the return type of a function TypeId.
+ * @return The function's return type, or BuiltinTypes::Value if @p id is not a function type.
+ */
 TypeId TypeEnvironment::getFunctionReturnType(TypeId id) const {
     const PiType* pi = getFunctionType(id);
     if (pi) {
@@ -748,6 +940,11 @@ TypeId TypeEnvironment::getFunctionReturnType(TypeId id) const {
     return BuiltinTypes::Value;
 }
 
+/**
+ * @brief Get the parameter types of a function TypeId.
+ * @return The function's parameter types in order, or an empty vector if @p id is not a
+ * function type.
+ */
 std::vector<TypeId> TypeEnvironment::getFunctionParamTypes(TypeId id) const {
     const PiType* pi = getFunctionType(id);
     if (pi) {
@@ -761,6 +958,10 @@ std::vector<TypeId> TypeEnvironment::getFunctionParamTypes(TypeId id) const {
     return {};
 }
 
+/**
+ * @brief Build a human-readable name for a function type, e.g. "(Int64, Float64) -> Boolean".
+ * @return "Function" if @p id is not a registered function type.
+ */
 std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
     const PiType* pi = getFunctionType(id);
     if (!pi) {
@@ -789,6 +990,13 @@ std::string TypeEnvironment::getFunctionTypeName(TypeId id) const {
 // PAIR TYPE TRACKING
 // ============================================================================
 
+/**
+ * @brief Create or retrieve a cached Pair<car_type, cdr_type> TypeId, used by cons to propagate
+ * element types through car/cdr.
+ *
+ * Searches pair_element_cache_ for a matching (car_type, cdr_type) pair; if found, its TypeId is
+ * reused, otherwise a new id is allocated from next_pair_type_id_.
+ */
 TypeId TypeEnvironment::makePairType(TypeId car_type, TypeId cdr_type) const {
     // Check if we already have this exact pair type cached
     for (const auto& entry : pair_element_cache_) {
@@ -804,6 +1012,10 @@ TypeId TypeEnvironment::makePairType(TypeId car_type, TypeId cdr_type) const {
     return TypeId{type_id, Universe::U1, 0};
 }
 
+/**
+ * @brief Retrieve the (car_type, cdr_type) element types for a tracked pair TypeId.
+ * @return The element type pair, or std::nullopt if @p id is not a tracked pair type.
+ */
 std::optional<std::pair<TypeId, TypeId>> TypeEnvironment::getPairElementTypes(TypeId id) const {
     auto it = pair_element_cache_.find(id.id);
     if (it != pair_element_cache_.end()) {
@@ -812,6 +1024,10 @@ std::optional<std::pair<TypeId, TypeId>> TypeEnvironment::getPairElementTypes(Ty
     return std::nullopt;
 }
 
+/**
+ * @brief Check whether a TypeId represents a tracked pair type (one with known element types
+ * created via makePairType()).
+ */
 bool TypeEnvironment::isTrackedPairType(TypeId id) const {
     return pair_element_cache_.find(id.id) != pair_element_cache_.end();
 }
