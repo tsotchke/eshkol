@@ -1,4 +1,4 @@
-.PHONY: help eshkol-swarm-status eshkol-swarm-cycle eshkol-icc-audit eshkol-icc-smoke
+.PHONY: help eshkol-swarm-status eshkol-swarm-cycle eshkol-icc-audit eshkol-icc-smoke api-docs api-docs-check
 
 help:
 	@echo "Eshkol swarm + ICC make targets"
@@ -7,6 +7,8 @@ help:
 	@printf '  %-30s %s\n' 'eshkol-swarm-cycle'     'Run scripts/run_icc_smoke.sh, refresh status, audit v1.3-release'
 	@printf '  %-30s %s\n' 'eshkol-icc-smoke'       'Run the ICC smoke probes (writes scripts/icc_traces/eshkol_smoke.jsonl)'
 	@printf '  %-30s %s\n' 'eshkol-icc-audit'       'Run the ICC production-audit for v1.3-release'
+	@printf '  %-30s %s\n' 'api-docs'               'Regenerate docs/api/ from the inc/eshkol/**/*.h Doxygen comments'
+	@printf '  %-30s %s\n' 'api-docs-check'         'Fail if docs/api/ is stale relative to inc/eshkol/**/*.h'
 	@echo
 	@echo "For full build options see CMakeLists.txt; this Makefile is the swarm-coordination top-level only."
 
@@ -22,3 +24,9 @@ eshkol-icc-audit:
 	python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py production-audit \
 	    --repo eshkol_lang --target v1.3-release \
 	    --trace-dir scripts/icc_traces --format markdown
+
+api-docs:
+	python3 scripts/gen_api_docs.py
+
+api-docs-check:
+	python3 scripts/gen_api_docs.py --check
