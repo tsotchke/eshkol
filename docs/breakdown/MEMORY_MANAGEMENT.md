@@ -1007,7 +1007,7 @@ moves: per-thread arenas with explicit lifecycle (`arena_create_thread_local`,
 `arena_merge_to_parent`), scoped sub-arenas with LIFO push/pop on the main
 arena, a 512 MB stack configured at link time plus an `ESHKOL_STACK_SIZE`
 env override, and integer-overflow hardening on every variable-size
-allocation site (HARDENING.md §192). This section documents each, with
+allocation site (docs/HARDENING.md §192). This section documents each, with
 citations to the current source.
 
 ### The Object Header, Field by Field
@@ -1058,7 +1058,7 @@ arena's lifetime (until `arena_reset` or `arena_destroy`).
 ### Allocation Hardening: SIZE_MAX and UINT32_MAX Guards
 
 `arena_allocate_with_header` (`lib/core/arena_memory.cpp` §358–403)
-guards against two integer-overflow classes flagged in HARDENING.md §192:
+guards against two integer-overflow classes flagged in docs/HARDENING.md §192:
 
 ```c
 // #192 CRITICAL: total_size overflow if data_size is near SIZE_MAX

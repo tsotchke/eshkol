@@ -48,6 +48,29 @@
   ((val1) result1)
   ((val2 val3) result2)
   (else default))
+
+;; R7RS "=>" arrow clauses: apply the receiver to the test/key value
+(cond ((assv 1 (list (cons 1 10))) => cdr)   ;; -> 10
+      (else 0))
+(case 5
+  ((1 2 3) => (lambda (x) (* x 100)))
+  ((4 5 6) => (lambda (x) (* x 10)))          ;; -> 50
+  (else 0))
+```
+
+## Quoting & Macros
+
+```scheme
+'(1 2 3)                          ;; quote -> (1 2 3)
+`(1 ,(+ 1 1) 3)                   ;; quasiquote + unquote -> (1 2 3)
+`(1 ,@(list 2 3) 4)               ;; unquote-splicing -> (1 2 3 4)
+`#(1 ,@(list 2 3) 4)              ;; quasiquoted vector literal -> #(1 2 3 4)
+
+;; Hygienic macros via syntax-rules, including nested ellipsis
+(define-syntax my-flatten
+  (syntax-rules ()
+    ((_ (a ...) ...) (list a ... ...))))
+(my-flatten (1 2) (3 4 5))        ;; -> (1 2 3 4 5)
 ```
 
 ## Lists
@@ -70,6 +93,18 @@
 (drop lst n)              ;; skip first n elements
 ```
 
+## Strings
+
+```scheme
+(string-length s)               ;; codepoint count
+(string-byte-length s)          ;; byte count (differs from string-length on multibyte UTF-8)
+(substring s start)              ;; from start to end of string (2-arg R7RS form)
+(substring s start end)          ;; from start to end (exclusive)
+(string-append s1 s2 ...)        ;; concatenate
+(string->number "999999999999999999999")  ;; -> bignum
+(number->string n)
+```
+
 ## Higher-Order Functions
 
 ```scheme
@@ -86,6 +121,11 @@
 (string-map f str)        ;; map over chars
 (vector-for-each f vec)   ;; iterate vector elements
 (vector-map f vec)        ;; map over vector elements
+(vector-map f vec1 vec2 ...)  ;; map over N vectors in lockstep (R7RS 6.9), stops at shortest
+
+;; apply: leading fixed args before the final list argument
+(apply + '(1 2 3))              ;; -> 6
+(apply + 1 2 '(3 4 5))          ;; -> 15 (leading args consed onto the list)
 ```
 
 ## Vectors & Tensors
@@ -96,6 +136,10 @@
 (vector-set! v i x)       ;; set element
 (make-vector n val)       ;; n copies of val
 (vector-length v)         ;; length
+(vector-copy v)           ;; fresh shallow copy
+(vector-copy v start)     ;; fresh copy from start to end
+(vector-copy v start end) ;; fresh copy of [start,end); works on #(...) literals too
+(vector-copy! to at from) ;; in-place copy into to, starting at index at
 
 ;; Tensor creation (homogeneous doubles, 8-byte)
 #(1.0 2.0 3.0)            ;; tensor literal
@@ -146,6 +190,38 @@
 (curl F v)                ;; curl(F) at v (3D)
 (laplacian f v)           ;; laplacian(f) at v
 (directional-derivative f v dir)
+```
+
+### Arbitrary-Order AD (Taylor Towers, v1.3.0-evolve)
+
+See the [Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md)
+for the full walkthrough.
+
+```scheme
+;; Core tower builtins (no require needed)
+(taylor f x k)                    ;; k+1 Taylor coefficients c[0..k] of f at x
+(derivative-n f x k)              ;; the k-th derivative f^(k)(x), any order
+                                   ;; exact (bignum/rational) when x is exact
+                                   ;; and f uses only +,-,*,/,non-negative expt
+
+(require core.ad.guw)
+(mixed-partial f xs idxs)         ;; e.g. (mixed-partial f xs '(0 1 1)) = d^3f/dx0dx1^2
+(gradient-n f xs order)           ;; full order->=3 symmetric derivative tensor
+(taylor-propagate f xs v k)       ;; Taylor coefficients of g(t) = f(xs + t*v)
+
+(require core.ad.taylor_models)
+(taylor-model f x0 r k)           ;; validated AD: polynomial + interval remainder
+(tm-range tm)                     ;; guaranteed range enclosure, a (lo . hi) pair
+(tm-eval tm x)                    ;; guaranteed point enclosure at x
+
+(require core.ad.sparse_guw)
+(sparse-hessian f xs)             ;; sparse Hessian via colored reverse-over-Taylor
+(sparse-hessian-nonzeros sp)      ;; nonzero (i j) index pairs
+
+(require core.ad.taylor_numerics)
+(taylor-ode-solve f y0 t0 t1 k n) ;; order-k fixed-step scalar IVP solver
+(taylor-root f x0 k)              ;; Householder root refinement (k=1 Newton, k=2 Halley)
+(taylor-inverse-series f x0 k)    ;; Taylor series of f^-1 via Lagrange inversion
 ```
 
 ## Exact Arithmetic
@@ -230,6 +306,12 @@
 
 ;; Raise exceptions
 (raise value)               ;; raise any value as exception
+(error "boom" 1 2)          ;; raise an R7RS error-object with irritants 1 2
+
+;; R7RS condition-object accessors (bound inside guard)
+(guard (e (#t (list (error-object-message e) (error-object-irritants e))))
+  (error "boom" 1 2))       ;; -> ("boom" (1 2))
+(error-object? e)           ;; -> #t for an (error ...)-raised condition
 
 ;; Multiple values
 (values 1 2 3)              ;; return multiple values

@@ -1108,16 +1108,17 @@
 
         ;; Language
         (let ((g2 (render-sidebar-group sidebar "LANGUAGE")))
-          (render-sidebar-item g2 "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md")
-          (render-sidebar-item g2 "Language Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_V1_LANGUAGE_REFERENCE.md")
-          (render-sidebar-item g2 "Language Specification" "https://raw.githubusercontent.com/tsotchke/eshkol/master/COMPLETE_LANGUAGE_SPECIFICATION.md"))
+          (render-sidebar-item g2 "Language Guide" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md")
+          (render-sidebar-item g2 "Automatic Differentiation" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/guide/AUTOMATIC_DIFFERENTIATION.md")
+          (render-sidebar-item g2 "Language Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/reference/language/INDEX.md")
+          (render-sidebar-item g2 "Language Specification" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/COMPLETE_LANGUAGE_SPECIFICATION.md"))
 
         ;; Reference
         (let ((g3 (render-sidebar-group sidebar "REFERENCE")))
           (render-sidebar-item g3 "API Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/API_REFERENCE.md")
           (render-sidebar-item g3 "Standard Library API" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/STDLIB_V1_2_API.md")
           (render-sidebar-item g3 "Feature Matrix" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FEATURE_MATRIX.md")
-          (render-sidebar-item g3 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_QUICK_REFERENCE.md")
+          (render-sidebar-item g3 "Quick Reference" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_QUICK_REFERENCE.md")
           (render-sidebar-item g3 "Known Issues" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/KNOWN_ISSUES.md")
           (render-sidebar-item g3 "FAQ" "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/FAQ.md"))
 
@@ -1163,7 +1164,7 @@
         (style! doc-area "minHeight" "600px")
 
         ;; Load Language Guide by default
-        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/ESHKOL_LANGUAGE_GUIDE.md" doc-area)
+        (web-load-content "https://raw.githubusercontent.com/tsotchke/eshkol/master/docs/ESHKOL_LANGUAGE_GUIDE.md" doc-area)
 
         (let ((hint (create-text "p" "Select a document from the sidebar to load it." doc-area)))
           (style! hint "color" "#71717a")

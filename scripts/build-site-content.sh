@@ -10,8 +10,9 @@ mkdir -p "$CONTENT_DIR"
 
 echo "Building site content from markdown docs..."
 
-# Root docs
-for doc in ESHKOL_LANGUAGE_GUIDE ESHKOL_QUICK_REFERENCE ROADMAP CONTRIBUTING ANNOUNCEMENT; do
+# Root docs (LANGUAGE_GUIDE/QUICK_REFERENCE moved under docs/ in the v1.3 root
+# reorg and are handled by the docs/ loop below; ANNOUNCEMENT added in v1.3).
+for doc in ROADMAP CONTRIBUTING ANNOUNCEMENT; do
     if [ -f "${doc}.md" ]; then
         out="$CONTENT_DIR/$(echo "$doc" | tr '[:upper:]' '[:lower:]').html"
         pandoc "${doc}.md" -f markdown -t html --no-highlight -o "$out"
@@ -20,7 +21,7 @@ for doc in ESHKOL_LANGUAGE_GUIDE ESHKOL_QUICK_REFERENCE ROADMAP CONTRIBUTING ANN
 done
 
 # docs/ subdirectory
-for doc in docs/API_REFERENCE docs/FEATURE_MATRIX docs/QUICKSTART; do
+for doc in docs/ESHKOL_LANGUAGE_GUIDE docs/ESHKOL_QUICK_REFERENCE docs/COMPLETE_LANGUAGE_SPECIFICATION docs/API_REFERENCE docs/FEATURE_MATRIX docs/QUICKSTART; do
     if [ -f "${doc}.md" ]; then
         base=$(basename "$doc")
         out="$CONTENT_DIR/$(echo "$base" | tr '[:upper:]' '[:lower:]').html"

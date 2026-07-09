@@ -105,7 +105,7 @@ unconditionally now (`lib/core/crypto_primitives.c
 JIT in REPL mode can dlsym every symbol — none of these symbols
 are referenced from eshkol-run's C++, only from `(extern …
 :real …)` declarations inside `lib/agent/*.esk`
-(`CMakeLists.txt:1970-1988`, see also v2 BUG 3 in HARDENING.md).
+(`CMakeLists.txt:1970-1988`, see also v2 BUG 3 in docs/HARDENING.md).
 The same force-load wiring is applied to `eshkol-repl`
 (`CMakeLists.txt:1990-2007`) so long-lived control sessions and
 warm `--machine`-mode workers can resolve the agent symbols
@@ -754,7 +754,7 @@ if (pipe(stdin_pipe) != 0 ||
 
 When the first call succeeded and the second failed, the
 two stdin-pipe fds leaked — a classical partial-success
-resource leak (HARDENING.md §`#182`). The current code gates
+resource leak (docs/HARDENING.md §`#182`). The current code gates
 every `pipe()` separately so cleanup closes exactly the fds
 that actually opened (`agent_subprocess.c` for shell
 form, `:730-753` for argv form). The pattern is identical on
@@ -844,7 +844,7 @@ identical caps via the normal POSIX inheritance rule.
 `CreateProcessA` mutates its lpCommandLine buffer in place.
 The historical code passed a 4096-byte stack buffer and
 silently `snprintf`-truncated longer commands, producing a
-valid-looking but malformed command line (HARDENING.md `#193`
+valid-looking but malformed command line (docs/HARDENING.md `#193`
 HIGH). The current code measures `"cmd /c " + command` ahead
 of time, rejects ≥ 32768 (the Windows cmdline limit), and
 heap-allocates the exact size — no silent truncation, no
@@ -1252,7 +1252,7 @@ on the explicit understanding that they own the quoting.
 
 `sqlite-exec-safe` is explicitly *not* a substitute for prepared
 statements — it blocks the dumbest injection attempts on call
-sites that absolutely cannot migrate today. The HARDENING.md
+sites that absolutely cannot migrate today. The docs/HARDENING.md
 table records this as DOC, not FIX.
 
 ### 10.3 CRLF injection — URL + header sanitisation
@@ -1279,7 +1279,7 @@ between the open-of-src and open-of-dst calls cannot redirect
 writes to a sensitive target. `O_CLOEXEC` ensures the fds are
 closed across an exec — defensive against fd-passing
 amplification in the rare case file-copy is called from a
-about-to-exec context (HARDENING.md `#193`).
+about-to-exec context (docs/HARDENING.md `#193`).
 
 ### 10.5 ReDoS — match-limit + depth-limit
 
@@ -1321,7 +1321,7 @@ spawn boundary.
 
 | Surface | Mitigation | Implementation |
 |---|---|---|
-| `qllm_process_spawn*` | separate gate per pipe() call | `agent_subprocess.c` (HARDENING.md `#182`) |
+| `qllm_process_spawn*` | separate gate per pipe() call | `agent_subprocess.c` (docs/HARDENING.md `#182`) |
 
 ### 10.9 Resource limits — RLIMIT_AS / CPU / NOFILE / NPROC
 
@@ -1435,7 +1435,7 @@ Items called out explicitly in the source as deferred:
 - `cmake/build_config.h.in:15` — `ESHKOL_HOST_AGENT_FFI_LINK_ARGS`
 - `CMakeLists.txt:1711-2007` — agent FFI build wiring and force-load
 - `lib/repl/repl_jit.cpp` — JIT symbol registration for agent FFI
-- `HARDENING.md` `#178`, `#182`, `#190`, `#191`, `#192`, `#193`, `#195` —
+- `docs/HARDENING.md` `#178`, `#182`, `#190`, `#191`, `#192`, `#193`, `#195` —
   the hardening commits that closed each guard documented above
 - [`WEB_PLATFORM.md`](WEB_PLATFORM.md) — browser-side counterpart;
   the `--wasm` path emits the same kind of `(extern …)` bindings but

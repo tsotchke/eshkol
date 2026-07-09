@@ -35,7 +35,7 @@ stdlib harden:
 - **External data → runtime**: `kb-load` / `model-load` / `image-read` /
   regex / JSON / CSV / HTTP responses are treated as untrusted. Size
   caps, integer-overflow checks, and injection guards are in place
-  (see `HARDENING.md`).
+  (see `docs/HARDENING.md`).
 - **User program → OS**: subprocess, filesystem, network calls are
   guarded against shell injection (argv-based spawn), path traversal
   (`O_NOFOLLOW` on file_copy), and CRLF injection (HTTP URL/header
@@ -118,4 +118,4 @@ Under this model, the hardening priorities are, in order:
 4. No silent error swallowing — every ingest point logs or returns
    a specific failure value.
 
-See `HARDENING.md` for the per-module status.
+See `docs/HARDENING.md` for the per-module status.

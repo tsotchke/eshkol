@@ -7,128 +7,361 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+No changes yet since [1.3.0-evolve].
 
-- Proper mutual tail calls (ESH-0102): a call in tail position to another
-  function is now emitted as an LLVM `musttail` call, so mutually tail-recursive
-  functions (the canonical Scheme state-machine idiom, e.g. `even?`/`odd?` or a
-  ping/pong 2- or 3-cycle) run in O(1) stack per R7RS 3.5 instead of burning a
-  native frame per hop. Previously only a `TCK_Tail` hint was emitted on LLVM
-  >= 18 (a hint the backend ignored, so mutual recursion overflowed the stack
-  by ~300k hops). The `musttail` is guarded by a matching signature/calling
-  convention and the absence of pointer-into-frame arguments (which is what made
-  LLVM's X86 backend fatally reject some closure-forwarding stdlib wrappers).
-  Verified to 5,000,000+ hops on both `-r` and AOT via the P6b recursion-depth
-  sweep.
-- Recursion-depth gate calibration (P6b): `non_tail` deep cells are now marked
-  `limit` rather than `pass`, so a CLEAN diagnostic ceiling on genuinely
-  bounded non-tail recursion is accepted while a silent crash / wrong value is
-  still a gate failure; proper tail calls (self AND mutual) remain `pass` and
-  must be unbounded.
+## [1.3.0-evolve] - 2026-07-07
 
-## [1.3.0-evolve] - 2026-07-03
+The "evolve" release: an arbitrary-order automatic-differentiation system
+(Taylor towers, phases P0-P12), full R7RS conformance on the portable
+differential corpus, closure/TCO/memory robustness hardening, and a
+permanent multi-pillar adversarial-testing infrastructure.
 
-The "evolve" release: full SICP coverage, exact nested/mixed-mode automatic
-differentiation, closure-semantics completion, every CI platform green, and a
-new permanent adversarial-testing infrastructure.
+Release gates (green on the release SHA): SICP full-book gate 88/88 probes
+under both `-r` and AOT (`scripts/run_sicp_smoke.sh`); CI 14/14 lanes
+including windows-arm64; reference-Scheme differential oracle 34/34 AGREE vs
+chibi-scheme 0.12.0 on the P7a portable corpus; ICC readiness oracle
+`v1.3-evolve` ready.
 
-Release gates (green on the release SHA): SICP full-book gate 88/88 probes under
-both `-r` and AOT (`scripts/run_sicp_smoke.sh`); CI 14/14 lanes including
-windows-arm64; ICC readiness oracle `v1.3-evolve` ready.
+### Added — Automatic Differentiation (Taylor-tower campaign, P0-P12)
 
-### Added
+Eshkol's AD system gains a second, orthogonal axis: **order**. Where the
+existing forward-dual / reverse-tape engine differentiates once (or, with
+perturbation tagging, is nested by hand), the Taylor-tower engine computes
+*all* derivatives up to an arbitrary compile- or run-time order `k` in one
+pass, exactly where the arithmetic allows it. Full design writeup:
+`docs/design/AD_TAYLOR_TOWER.md`; campaign-to-release map: `docs/AD_CAMPAIGN.md`.
+See the [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
+for a user-facing walkthrough and worked examples.
 
-- Parser-level string interpolation: string literals can embed `~{expr}` forms,
-  each formatted with display semantics; `~~{` preserves a literal opener.
-- Keyword formal support for function and lambda parameters (e.g. `#:scale scale`)
-  plus `let-match` destructuring bindings.
-- First R7RS library surface: `(import (scheme base))` and
-  `(define-library ... (export ...) (import ...) (begin ...))` lower onto the
-  module loader; import-set modifiers `only`/`except`/`rename`/prefix are wired.
-- SICP full-book corpus and smoke oracle: 88 probes across chapters 1-5 including
-  the metacircular, analyzing, lazy, and `amb` evaluators, the query system, and
-  the register-machine simulators, made a v1.3 gate (#85, #87, #102, #105-#109).
-- Native EAGLE linear-head training over the FFI bridge, with a durable
-  hash-chained memory store (#104); `core.memory` v0 content-addressed CRDT
-  event-log faculty (#61).
-- Adversarial testing infrastructure (permanent, ICC-wired): multi-path
-  differential harness + seeded fuzzer (#114), feature-pair edge matrix (#112),
-  AD finite-difference composition oracle (#111), and a stress harness with
-  RSS/time budgets (#115). A VM parity ratchet + manifest lands with the release
-  (#118). See `docs/TESTING.md` and `docs/VM_PARITY.md`.
-- Stdlib completeness: `take-right`/`drop-right`, `filter-map`, and `core.alist`
-  aggregated into `(require stdlib)` (#72, #76).
+- **P0 — design + proof of concept** (#147, ESH-0185): Taylor recurrence
+  design doc plus a standalone C proof-of-concept validating the recurrences
+  to order 8 (63/63 checks) before any compiler work started.
+- **P1 — runtime Taylor tower** (#148, ESH-0186): new heap subtype
+  (`HEAP_SUBTYPE_TAYLOR`) and the core builtins:
+  - `(taylor f x k)` → list of `k+1` coefficients `c[0..k]` where
+    `c[n] = f⁽ⁿ⁾(x)/n!`, e.g. `(taylor (lambda (x) (exp x)) 0.5 4)`.
+  - `(derivative-n f x k)` → the scalar `k`-th derivative `f⁽ᵏ⁾(x)`, e.g.
+    `(derivative-n (lambda (y) (* y y y)) 3.0 1)` → `27`.
+  - Epoch-tagged perturbations keep nested towers safe against
+    perturbation confusion.
+- **P2 — no-heap monomorphization** (#158, ESH-0187): when `k` is a
+  compile-time literal and `f`'s body stays inside a whitelisted set of
+  primitive ops, the whole tower is unrolled into branch-free SSA IR with
+  zero heap/arena allocation (measured 0 B/iteration vs. P1's 288 B/iteration,
+  ~1.2x faster at `-O2`), and is bit-exact with the P1 heap path.
+- **P3 — JET8 subsumption analysis** (#160, ESH-0188): investigated folding
+  the existing 8-jet forward/reverse-composition dual representation into the
+  tower; found this is not fully achievable until P4/P5 land, so JET8 is kept
+  as-is and the finding is documented rather than forcing a premature merge.
+- **P4 — GUW multivariate (mixed partials)** (#162, ESH-0189): a
+  Griewank-Utke-Walther directional-propagation layer, `core.ad.guw`,
+  recovering arbitrary-order mixed partials of `f : ℝᵐ → ℝ` by propagating
+  univariate towers along principal-lattice direction vectors and solving
+  the resulting linear system:
+  - `(taylor-propagate f xs v k)` → coefficients of `g(t) = f(xs + t·v)`.
+  - `(mixed-partial f xs idxs)` → scalar `Dᵝf(xs)` for a multi-index list of
+    variable indices with repetition, e.g. `(mixed-partial f xs '(0 1 1))`
+    is `∂³f/∂x₀∂x₁²`.
+  - `(gradient-n f xs order)` → the full symmetric order-`≥3` tensor as
+    `(β . value)` pairs. `gradient`/`hessian` (order ≤ 2) are unchanged and
+    still use the existing jet path.
+- **P5 — reverse-over-Taylor** (#167, ESH-0190): fixes `gradient` composed
+  with an inner `derivative-n`/`taylor` call, which previously returned 0
+  because the tower was disconnected from the reverse tape. Tower
+  coefficients now carry a parallel seed-tangent series so a `gradient` over
+  a function containing a Taylor-tower call differentiates through it
+  correctly.
+- **P6 — exact-coefficient towers** (#163, ESH-0191): an
+  `ESH_TAYLOR_COEFF_RATIONAL` tower mode stores coefficients as Eshkol's
+  existing tagged numeric values (int64 / arbitrary-precision bignum /
+  rational) instead of `double`, so `taylor`/`derivative-n` return **exact**
+  arbitrary-order derivatives when `x` is exact and `f` uses only
+  exact-preserving ops (`+ - * /`, non-negative-integer `expt`); the tower
+  automatically demotes to `double` on overflow or on first transcendental
+  call (verified with 68 exact-coefficient checks).
+- **P7 — tensor-valued Taylor towers** (#169, ESH-0192): `core.ad.tensor_tower`
+  generalizes a tower to "a tower of tensors" (one Cauchy-convolution series
+  per tensor element, sharing a single shape), so high-order AD now composes
+  with `matmul`/`conv2d`/`sigmoid`/`tanh` and other tensor ops unchanged.
+- **P8 — Taylor models (validated AD)** (#173, ESH-0193): `core.ad.taylor_models`
+  pairs a Taylor polynomial with a rigorous interval remainder bound, giving
+  provable range/point enclosures — `(taylor-model f x0 r k)`,
+  `(tm-range tm)`, `(tm-eval tm x)`, plus `tm-add`/`tm-mul` (Makino-Berz
+  arithmetic) and accessors (`tm-order`, `tm-coeffs`, `tm-center`,
+  `tm-radius`, `tm-remainder`, `tm-domain`).
+- **P9 — differentiable control flow** (#178, ESH-0194): `if`/`cond`/`case`,
+  named-let, recursion, and `map`/`fold` over Taylor-tower values now branch
+  correctly — the one real gap was `compare()` in the arithmetic codegen not
+  recognizing the Taylor heap subtype as numeric for `< > = <= >=`.
+- **P10 — checkpointed high-order reverse** (#177, ESH-0195): a
+  Griewank/binomial √N checkpoint schedule for reverse-mode differentiation
+  through long chains, demonstrated in `core.ad.checkpoint`
+  (`checkpointed-gradient` et al.), holding at most one block's tape live at
+  a time instead of the whole chain (measured peak-node ratio ≈1.8 at N=200
+  vs. ≈4.0 for the dense/non-checkpointed reverse sweep at the same depth).
+- **P11 — tower-based user numerics** (#168, ESH-0196): `core.ad.taylor_numerics`
+  builds numerical methods directly on top of the tower: `(taylor-ode-solve
+  f y0 t0 t1 k n)` (fixed-step order-`k` scalar IVP solver),
+  `(taylor-root f x0 k)` (Householder-family root refinement; `k=1` Newton,
+  `k=2` Halley), and `(taylor-inverse-series f x0 k)` (Lagrange-inversion
+  series reversion). All arguments are positional — the design doc's
+  `#:order`/`#:steps` keyword-arg sketch had to be dropped because
+  keyword-arg formals don't compile in any file with a dotted `require`
+  (tracked as ESH-0220).
+- **P12 — sparse high-order tensors** (#174, ESH-0197): `core.ad.sparse_guw`
+  adds `(sparse-hessian f xs)` / `(sparse-hessian-pat f xs pattern)` (greedy
+  star-coloring graph recovery of a sparse Hessian via one
+  reverse-over-Taylor Hessian-vector product per color, plus accessors
+  `sparse-hessian-{ref,nonzeros,row-ptr,col-idx,values,colors,directions,dense?}`)
+  and `(sparse-mixed-partials f xs order pattern)` (order-≥3 block-decomposed
+  sparse recovery). `sparse-mixed-partials` is implemented and unit-verified
+  but not yet exercised by the release gate, since it triggers a pre-existing
+  multivariate tower-codegen fragility at vector length ≥4 — treat it as
+  available but not yet gate-hardened.
 
-### Fixed
+Known, documented AD limitations after this campaign (see
+[Known Issues](docs/KNOWN_ISSUES.md) for the full, current list): plain
+(order-≤2) vector gradient-of-gradient via `gradient`/`hessian` composition
+is unaffected by P0-P12 and still needs the ESH-0096/ESH-0097 workarounds
+below; `sparse-mixed-partials` is order-≥3-only and not gate-verified.
 
-Automatic differentiation
-- True nested/higher-order AD via perturbation tagging — nested scalar
-  derivatives are now exact instead of finite-difference approximations (#75).
-- Perturbation/tape state scoped across named-let TCO, giving exact iterated
-  higher-order AD (#84); runtime scalar nested gradients through a named inner
-  function (#95).
-- Mixed-mode vector-gradient-over-derivative: captured-parameter dependencies
-  propagate through the inner derivative onto the outer reverse tape (#113).
-- Centralized, type-checked tensor operand unpack — a type error instead of a
-  SIGSEGV on wrong-typed tensor-op inputs (#79); conv2d forward unified and
-  corrected (NCHW) across codegen and VM (#80); tensor structural integer
-  metadata guarded (#97).
+### Added — Build
 
-Language and closures
-- `set!`-mutated variables captured by multiple closures are now shared
-  (assignment conversion) (#83); local `letrec` closures get per-activation
-  instances instead of module-level globals (#89).
-- First-class / `apply`'d equality predicates return proper `#t`/`#f` booleans
-  (#86).
-- Quote-token dispatch fixed across `guard`/`case`/`match`/quasiquote clause
-  parsers (#117) and preserved in let-family body tails inside defines (#110).
-- Top-level constructor operands are evaluated exactly once (#116).
-- Macros expand inside internal-define (`letrec*`) bodies (#74); hash tables match
-  compound (cons/list/vector) keys by structural equality (#73).
-- R7RS numeric tower: exactness and promotion discipline, AD-visible `min`/`max`,
-  exact `expt` (#82).
-- R7RS string ops: first-class `string-map` procedure, `string->number` radix (#78).
+- `--emit-depfile PATH` (#164, ESH-0215, `exe/eshkol-run.cpp`): walks the
+  entry file's full `(load ...)`/`(import ...)`/`(require ...)` graph and
+  writes a Makefile-format depfile, so incremental builds correctly
+  recompile when an indirectly-loaded dependency changes (previously only
+  the entry file itself was tracked, so editing a `(load ...)`ed helper left
+  a stale object "up to date").
+- `cmake/EshkolCompile.cmake` (#164, ESH-0215): the canonical
+  `eshkol_compile_library` / `eshkol_compile_executable` CMake functions
+  (previously only vendored ad hoc by downstream consumers), wiring
+  `--emit-depfile` into `DEPFILE` on Ninja/Makefiles generators. See
+  `docs/BUILD_INTEGRATION.md`.
 
-Memory and control
-- `with-region` body allocations routed into the region arena (#81).
-- Deep-CPS continuation chains run an O0 native cleanup to avoid SIGILL (#93).
+### Fixed — R7RS Conformance
 
-Platforms and toolchain
-- windows-arm64 build unbroken: portable `sincos` shim (#77), Windows x64
-  in-process JIT symbol gap (#70), AArch64 Branch26 range extension (#64).
-- Portable JIT/AOT link across the build mesh (objc + LLVM libdir + bounded
-  link timeout) (#71); runtime transitive link deps exported (#69).
-- GPU: bounded Metal command-buffer waits (#66), lazy GPU init + Jetson CUDA
-  GEMM (#68), tensor dtype hardening (#63); parallel-map logger lock race fixed
-  (#67).
-- AOT backend hardening: atomic object emission (#92), object-emit watchdog (#99),
-  interned error strings (#100), external-define body-scan pruning (#101).
+The reference-Scheme differential oracle (P7a, #140) diffs Eshkol against
+chibi-scheme 0.12.0 "magnesium" over a 34-program portable corpus (numeric,
+list, vector, string, char, binding, control-flow, equality, and I/O
+probes). It started the campaign at 27/34 AGREE (79.4%) and the fixes below
+bring it to **34/34 AGREE (100%) on that corpus**:
+
+- `apply` with leading arguments before the final list argument, e.g.
+  `(apply + 1 2 '(3 4 5))`, previously SIGSEGV'd (#142, ESH-0150).
+- `vector-map`/`vector-for-each` over multiple vectors (R7RS §6.9), e.g.
+  `(vector-map + #(1 2 3) #(10 20 30) #(100 200 300))`, previously ignored
+  every vector past the first (#142, ESH-0151).
+- Quasiquoted vector literals, `` `#(1 ,@(list 2 3) 4) ``, previously
+  produced no output (#142, ESH-0154).
+- `(substring s start)` (2-argument form) previously silently returned an
+  empty result instead of defaulting `end` to `(string-length s)` (#155,
+  ESH-0180).
+- `cond`/`case` `=>` arrow clauses (`(cond (test => proc) ...)`), an
+  allocating `vector-copy` (`(vector-copy v)`/`(vector-copy v start)`/
+  `(vector-copy v start end)` — previously only the in-place `vector-copy!`
+  existed), the `error-object?`/`error-object-message`/`error-object-irritants`
+  condition-object family, and R7RS-conformant `write` string escaping
+  (`\"`, `\\`, `\a`, `\b`, `\t`, `\n`, `\r`, and `\xNN;` for other control
+  bytes) all landed together (#156, ESH-0152/0153/0155/0156).
+- Nested ellipsis in `syntax-rules` templates, e.g. `(x ... ...)`/
+  `((row ...) ...)` with `row ... ...` in the template, previously
+  mis-expanded silently (exit 0, wrong value); pattern matching now tracks
+  ellipsis depth via a `MatchTree` (#159, ESH-0128).
+- `vector-copy` on a tensor-backed vector literal `#(...)` (as opposed to a
+  `(vector ...)`-allocated vector) previously rejected the argument as "not
+  a vector"; it now dispatches on heap subtype like `vector-ref`/`vector-map`
+  already did (#175, ESH-0225) — this was the fix that closed the last gap
+  in the reference-differential corpus.
+
+The stale pre-fix reference-differential snapshot has been superseded by
+this changelog entry; see `docs/reports/REFERENCE_DIFFERENTIAL_REPORT.md`
+for the underlying probe list.
+
+### Fixed — Compiler / Runtime Robustness
+
+- **Mutual tail-call TCO** (#143, ESH-0102): a tail call from one function
+  to a *different* function now emits a real LLVM `musttail` (guarded by
+  matching signature/arity and no pointer-into-frame arguments) instead of
+  the `TCK_Tail` hint the backend ignored, so mutually tail-recursive state
+  machines (`even?`/`odd?`, ping/pong cycles) run in O(1) stack instead of
+  overflowing at ~200-300k hops — verified to 5,000,000+ hops on AArch64.
+  x86_64/i386/arm32/riscv64 keep the hint (their backends reject `musttail`
+  for the tagged-value aggregate return); a real fix there needs an i128
+  tagged-return ABI, tracked separately as ESH-0171.
+- **Named-let TCO in every tail position** (#157, ESH-0211): the self-tail-call
+  walk now recognizes named-let self-calls inside `cond`/`when`/`and`/`or`
+  and nested-body tails, not just the loop's immediate body.
+- **Closure-capture ceiling raised 16 → 64** (#154, ESH-0210): deeply curried
+  lambda chains beyond 16 captures aliased into the wrong dispatch case and
+  SIGSEGV'd (misreported as "stack overflow"); the call-site dispatch now
+  over-provisions all capture-pointer slots instead of switching on capture
+  count, so the callee reads only its own N ≤ 64 captures by address, not by
+  dispatch axis.
+- **TCO-loop capture-by-address bug in AD codegen** (#170, ESH-0221/ESH-0220):
+  a distinct bug from the above — a TCO loop-carried alloca's *address*
+  (rather than its current value) was forwarded as a derivative/gradient
+  capture, producing garbage doubles; fixed with the same `isTcoLoopAlloca()`
+  guard already used elsewhere in the map codegen. The same PR fixes
+  keyword-args-with-dotted-`require` failing to compile.
+- **`make-tensor` arbitrary rank** (#153, ESH-0205): `(make-tensor '(2 3 4 5)
+  v)` previously silently truncated to a 3D shape; the dimension walk now
+  follows the full cons chain (up to 16 dims) for any rank.
+- **Iterative `length`** (#153, ESH-0206): stdlib `length` was non-tail-recursive
+  and SIGBUS'd near 10⁶ elements; rewritten as a tail-recursive accumulator
+  loop, now handling 10⁷+ elements in O(1) stack.
+- **AOT/JIT cache invalidation on transitive dependencies** (#146, ESH-0183):
+  the run cache key hashed only the entry file's own bytes, so editing a
+  `(load ...)`/`(require ...)`/`(import ...)`ed dependency left `eshkol-run
+  -r` silently running a stale cached binary; the cache key now hashes every
+  file reachable from the entry file's full module graph.
+- **Shutdown teardown-ordering race** (#165, ESH-0216): runtime shutdown now
+  joins the parallel worker pool before running shutdown hooks and restoring
+  signal handlers (previously a hook could race a still-running worker and
+  use-after-free); AOT `main()` now always pairs `eshkol_runtime_init()` with
+  `eshkol_runtime_shutdown()` at every return site. Verified clean across 50
+  adversarial shutdown cycles and 50 external `SIGTERM` restart cycles.
+- **Bounded-RSS long-running loops** (#166, ESH-0214/ESH-0214b/ESH-0214c): a
+  production `read-line`-in-a-loop daemon ballooned to 9-24 GB RSS from
+  three compounding bugs (an `if`-guarded named-let losing TCO, in-loop
+  scratch allocas that leaked native stack per iteration, and a
+  `with-region` control struct allocated from the arena instead of
+  malloc/free). Fixed, and a new *automatic, zero-annotation* per-iteration
+  arena-scoping optimization was added on top: a named-let TCO loop whose
+  body is proven escape-safe by a conservative static analysis
+  (`namedLetIterScopeSafe`) now reclaims its arena scope on every iteration
+  back-edge, with a whole-program reachability pre-pass to hard-disable the
+  optimization for any loop invoked from inside a `parallel-map` worker.
+- **SIGILL on stack overflow / no altstack** (#135, ESH-0119): deep recursion
+  overflow often surfaced as an uncaught `SIGILL` with zero diagnostic
+  because the fatal-signal handler wasn't registered for `SIGILL`/`SIGFPE`
+  and wasn't installed on an alternate signal stack. The handler now runs on
+  a dedicated `sigaltstack`, stays async-signal-safe (`write()`-only), and is
+  skipped under sanitizer builds so it doesn't fight ASan/TSan/MSan's own
+  handlers. This was the shared root cause behind several previously-silent
+  crash reports.
+- **Tail calls through `guard`** (#172, ESH-0222): a self-recursive
+  `define`/named-let tail call made through a `guard` error-boundary wrapper
+  wasn't recognized as a tail call at all, so a per-tick `guard`-wrapped loop
+  stack-overflowed after tens of minutes; the tail-position/recursive-call
+  analyses now recurse into the guard node, and `guard`'s setjmp-based
+  handler stack and dynamic allocas are kept sound across TCO back-edges
+  (stacksave/stackrestore per iteration). A remaining named-let-only variant
+  is tracked as ESH-0223.
+- **Bare `()` in call/macro-argument position** (#171, ESH-0217): now lowers
+  to the same zero-arg `CALL_OP` shape as `'()`/`(list)`, so macro pattern
+  matching (which structurally matches that shape) recognizes it.
+- **Forward-over-forward-over-reverse nested AD** (#138, ESH-0117): `gradient`
+  over a 2-level nested `derivative` returned 0 from jet exhaustion (the
+  4-jet dual had no free perturbation slot); extended to an 8-jet
+  representation with a third nilpotent perturbation, plus a fix for a
+  transitively-captured variable being double-indirected. Verified 56/56
+  against a new `gofdofd` oracle generator.
+- **Quasiquote inside macro templates** (#144, ESH-0126/ESH-0127): a
+  `syntax-rules` template containing a quasiquote with an unquoted pattern
+  variable stopped substituting past depth 1, because template substitution
+  never recursed into the quote family of AST nodes; max correct depth went
+  from 1 to 48.
+- **FFI ergonomics** (#161): crypto FFI symbols moved from the optional
+  agent-FFI archive into the always-linked core runtime archive (closing an
+  AOT link race); added `string-byte-length` (byte count vs. codepoint
+  count, needed anywhere a byte-sized `fwrite` was using `string-length` and
+  truncating multibyte UTF-8 output).
+
+### Fixed — VM / Web
+
+- **Browser-REPL builtin reconciliation** (#179, ESH-0226): `tensor-matmul`
+  had no VM `BUILTINS` table entry despite the native call existing; fixing
+  the alias surfaced and fixed three deeper VM gaps in the same pass — every
+  tensor-op case now type-checks its operand before reinterpreting it as a
+  `VmTensor*` (previously segfaulted on a bare vector literal), variadic
+  `(reshape tensor d1 d2 ...)` is a real VM compile-time special form, and
+  `vm_tensor_matmul` gained the same 1D-operand promotion/contraction as the
+  LLVM path. The precompiled `vm_prelude_cache.h` was regenerated (surfacing
+  8 more pre-existing gaps: `gpu-*` ops and `tensor-cast`/`tensor-data`/
+  `tensor-dtype`, tracked in `tests/vm_parity/PARITY.tsv`).
+- **WASM glue completeness for eshkol.ai** (#176, ESH-0224, plus the
+  precursor stub batches that led up to it): the hand-written WASM JS glue
+  (`web/eshkol-repl.js`, `site/static/eshkol-runtime.js`) is now checked by
+  `scripts/check_wasm_imports.py` in CI and stubs every `eshkol_*` symbol the
+  LLVM wasm backend can emit as an `env` import — arena multi-value returns,
+  tensor libm mapping, exception irritants, Taylor-tower reverse-over-Taylor
+  helpers, and the new R7RS error-object accessors, among others. Previously
+  a program reaching an unstubbed path LinkError'd at
+  `WebAssembly.instantiate()`, surfacing on the live site as an endless
+  "Loading Eshkol...".
+
+### Added — Adversarial Testing Infrastructure
+
+A permanent, ICC-wired set of test pillars beyond example-based regression
+tests, aimed at classes of bug that fixed-shallow-depth, single-path testing
+structurally cannot find. See `docs/TESTING.md` and `docs/VM_PARITY.md`.
+
+- **P1 — differential harness + fuzzer** (#114): checks identical behavior
+  (exit code, normalized stdout) across `jit`, `jit-nocache`, `aot-o0`, and
+  `aot-o2` execution paths for a corpus plus a seeded fuzzer.
+- **P2 — feature-pair edge matrix** (#112): ~30 language-feature axes
+  composed pairwise, classified PASS/ASSERT-FAIL/CRASH/COMPILE-ERR/HANG.
+- **P3 — AD finite-difference oracle** (#111): every generated AD probe
+  self-checks against an in-language central finite-difference
+  approximation, under both `-r` and AOT.
+- **P4 — stress harness** (#115): wall-time and max-RSS budgets per
+  workload (`tests/stress/budgets.tsv`), gated on exit 0 plus required
+  stdout.
+- **P5 — VM parity ratchet** (#118): `tests/vm_parity/PARITY.tsv` tracks
+  every language surface as `vm-supported`/`native-only-justified`/`gap`;
+  seeded at release time with 520 vm-supported / 41 native-only-justified /
+  351 gap rows (27 of the gap rows are confirmed bytecode-VM behavioral
+  divergences, not just missing coverage).
+- **P6 — depth-parametric sweeps**: the meta-lesson from ESH-0117 (fixed
+  shallow test depths miss depth-*dependent* bugs) turned into six permanent
+  sweep families plus a coverage auditor: AD depth (#133), recursion/control
+  depth (#132), syntax/data nesting depth (#152), numeric-tower depth/scale
+  (#136), metaprogramming/module depth (#134), tensor/collection/string
+  depth (#151), and a whole-language depth-coverage completeness gate (#131,
+  `scripts/check_depth_coverage.py`). See
+  `.swarm/DEPTH_PARAMETRIC_TESTING.md`.
+- **P7 — external oracles**: reference-Scheme differential against
+  chibi-scheme (#140, the R7RS-conformance oracle described above), a
+  sanitizer fuzz harness with a bounded disk budget (#139), and a
+  metamorphic-law oracle checking algebraic invariants (list/vector,
+  numeric, roundtrip/control, sorting, string/char laws) (#137).
 
 ### Known Issues
 
-Deep-edge findings surfaced by the new adversarial harnesses; each has a minimal
-repro and a ledger entry under `.swarm/tasks/`. None block ordinary use.
+Deep-edge findings surfaced by the adversarial harnesses; each has a minimal
+repro and a ledger entry under `.swarm/tasks/`. None block ordinary use. The
+canonical, continuously-maintained list is
+[docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) — the summary below reflects
+this release:
 
-- Vector gradient-of-gradient silently returns zeros; use nested scalar
-  `derivative` for exact higher-order results (ESH-0096).
-- `hessian`/`laplacian` SIGSEGV when the evaluation point is a tensor literal
-  `#(...)` / `(tensor ...)` (ESH-0095).
+- Vector gradient-of-gradient (order-≤2 `gradient`/`hessian` composition,
+  unaffected by the P0-P12 Taylor-tower work above) silently returns zeros;
+  use nested scalar `derivative`/`derivative-n`, or the new order-≥3
+  `mixed-partial`/`gradient-n` builtins, for exact higher-order results
+  (ESH-0096).
+- `hessian`/`laplacian` SIGSEGV when the evaluation point is a tensor
+  literal `#(...)`/`(tensor ...)`; a `(vector ...)` point works (ESH-0095).
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
 - A closure created inside a named-let loop that `set!`s a global loses the
   mutation (ESH-0094).
-- Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
-  stdlib `sort`/`length`/`filter` are non-tail-recursive and fail on very large
-  inputs (ESH-0098, ESH-0101, ESH-0108). Mutual tail calls are now proper R7RS
-  tail calls (LLVM `musttail`) and run in O(1) stack — ESH-0102 resolved.
-- Exact rational arithmetic degrades to double once a bignum is involved
-  (ESH-0105).
-- Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)
-  are not fully wired (ESH-0104, ESH-0107).
-- JIT compile of a ~10k-deep nested expression uses excessive RSS/time; AOT is
-  unaffected (ESH-0103).
-- 27 bytecode-VM divergences and 351 VM parity gaps are documented and tracked
-  in the VM parity manifest (`tests/vm_parity/PARITY.tsv`, ships with #118).
+- Deep non-tail recursion (~270k frames) is now a diagnosed error rather
+  than a silent SIGILL (ESH-0119 fixed the missing diagnostic), but stdlib
+  `sort`/`filter` are still non-tail-recursive and fail on very large inputs
+  (ESH-0098, ESH-0101, ESH-0108). Mutual tail calls are proper R7RS tail
+  calls on AArch64 (ESH-0102 resolved there); x86_64/arm32/riscv64 remain a
+  bounded call pending an i128 tagged-return ABI (ESH-0171).
+- Exact rational arithmetic degrades to double once a bignum is involved in
+  ordinary (non-AD) arithmetic (ESH-0105) — this is orthogonal to the P6
+  Taylor-tower exact-coefficient mode, which has its own dedicated
+  bignum/rational representation.
+- `sparse-mixed-partials` (P12) is implemented and unit-verified but not yet
+  exercised by the release gate at vector length ≥4 (pre-existing
+  multivariate tower-codegen fragility).
+- 27 confirmed bytecode-VM behavioral divergences and 351 VM parity gaps are
+  documented and tracked in the VM parity manifest
+  (`tests/vm_parity/PARITY.tsv`, see `docs/VM_PARITY.md`).
 
 ## [1.2.3-scale] - 2026-05-25
 
@@ -978,7 +1211,7 @@ Four waves of Noesis residual audits (v2 → v5) closed:
 
 ### Fixed — hardening (epics #189–#195 landed)
 
-- `#189` — SECURITY.md + HARDENING.md + threat model.
+- `#189` — SECURITY.md + docs/HARDENING.md + threat model.
 - `#190` — subprocess shell-string injection: `run-argv` / `process-
   spawn-argv` (execvp, no shell).
 - `#191` — Python FFI `derivative` method AST injection: input

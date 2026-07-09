@@ -1356,6 +1356,28 @@ href="../lib/backend/llvm_codegen.cpp"><code>codegenNumericPredicate()</code></a
 <p><strong>Implementation</strong>: <a
 href="../lib/backend/string_io_codegen.cpp"><code>StringIOCodegen</code></a></p>
 <hr />
+<h4 id="string-byte-length"><code>string-byte-length</code></h4>
+<p><strong>Syntax</strong>: <code>(string-byte-length str)</code></p>
+<p>Returns the string’s <strong>byte</strong> length (the heap object
+header’s <code>size</code> field, minus the trailing NUL) — distinct
+from <code>string-length</code>, which counts
+<strong>codepoints</strong>. For ASCII-only strings the two agree; for
+strings containing multibyte UTF-8 they diverge. This matters at the FFI
+boundary: C functions like <code>fwrite</code> take a byte count, so
+<code>(fwrite s 1 (string-length s) f)</code> silently truncates a
+string containing e.g. an em-dash (<code>—</code>, 3 bytes / 1 char).
+Use <code>string-byte-length</code> there instead:</p>
+<pre class="scheme"><code>(string-length &quot;café&quot;)       ; =&gt; 4  (4 codepoints)
+(string-byte-length &quot;café&quot;)  ; =&gt; 5  (the é is 2 bytes in UTF-8)
+
+(fwrite s 1 (string-byte-length s) f)  ; correct — writes every byte
+(fwrite s 1 (string-length s) f)       ; WRONG on multibyte input — truncates</code></pre>
+<p><strong>Implementation</strong>: <a
+href="../lib/backend/string_io_codegen.cpp"><code>StringIOCodegen::stringByteLength</code></a>,
+backed by the existing runtime helper
+<code>eshkol_string_byte_length</code>
+(<code>lib/core/runtime_string.cpp</code>).</p>
+<hr />
 <h4 id="string-append-substring"><code>string-append</code>,
 <code>substring</code></h4>
 <p><strong>Syntax</strong>: <code>(string-append str...)</code>,
