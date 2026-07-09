@@ -54,10 +54,13 @@ namespace xla {
 // Can be overridden via ESHKOL_XLA_THRESHOLD environment variable
 size_t g_xla_threshold = 100000;
 
+/** @brief Set the global minimum element count above which tensor ops
+ *         dispatch to XLA instead of cBLAS/SIMD/scalar. */
 void xla_set_threshold(size_t threshold) {
     g_xla_threshold = threshold;
 }
 
+/** @brief Get the global XLA dispatch element-count threshold. */
 size_t xla_get_threshold() {
     return g_xla_threshold;
 }
@@ -101,6 +104,10 @@ public:
 
     // Build a StableHLO matmul function
     // Returns the MLIR function for the operation
+    /** @brief Build an MLIR function wrapping a single `stablehlo.dot_general`
+     *         matmul op for the given input shapes, contracting the last dim
+     *         of `a` with the second-to-last of `b`. Registered into the
+     *         module for later lowering via compileStableHLOFunc(). */
     mlir::func::FuncOp buildMatmulFunc(
         const std::vector<int64_t>& a_shape,
         const std::vector<int64_t>& b_shape,
@@ -168,7 +175,9 @@ public:
         return funcOp;
     }
 
-    // Build a StableHLO elementwise function (binary or unary)
+    /** @brief Build an MLIR function wrapping a single elementwise StableHLO
+     *         op selected by `op_code` (unary: exp/log/sin/cos/tanh=4-8;
+     *         binary: add/sub/mul/div=0-3), operating on tensors of `shape`. */
     mlir::func::FuncOp buildElementwiseFunc(
         const std::vector<int64_t>& shape,
         int op_code,
@@ -224,7 +233,11 @@ public:
         return funcOp;
     }
 
-    // Build a StableHLO reduce function
+    /** @brief Build an MLIR function wrapping a `stablehlo.reduce` over
+     *         `axes` with `op_code` (0=sum,1=mean,2=max,3=min,4=prod),
+     *         constructing the appropriate identity constant and reduction
+     *         body, and (for mean) dividing by the reduced element count
+     *         after the reduce. */
     mlir::func::FuncOp buildReduceFunc(
         const std::vector<int64_t>& shape,
         int op_code,
@@ -329,7 +342,8 @@ public:
         return funcOp;
     }
 
-    // Build a StableHLO transpose function
+    /** @brief Build an MLIR function wrapping a single `stablehlo.transpose`
+     *         op for `shape` permuted by `permutation`. */
     mlir::func::FuncOp buildTransposeFunc(
         const std::vector<int64_t>& shape,
         const std::vector<int64_t>& permutation,
@@ -365,7 +379,9 @@ public:
         return funcOp;
     }
 
-    // Build a StableHLO broadcast function
+    /** @brief Build an MLIR function wrapping a single
+     *         `stablehlo.broadcast_in_dim` op from `src_shape` to
+     *         `tgt_shape` along `broadcast_dims`. */
     mlir::func::FuncOp buildBroadcastFunc(
         const std::vector<int64_t>& src_shape,
         const std::vector<int64_t>& tgt_shape,
@@ -396,7 +412,10 @@ public:
         return funcOp;
     }
 
-    // Build a StableHLO slice function
+    /** @brief Build an MLIR function wrapping a single `stablehlo.slice` op
+     *         with the given per-dimension `[starts, limits)` bounds and
+     *         `strides`, computing the output shape as
+     *         `ceil((limit-start)/stride)`. */
     mlir::func::FuncOp buildSliceFunc(
         const std::vector<int64_t>& shape,
         const std::vector<int64_t>& starts,
@@ -436,8 +455,13 @@ public:
         return funcOp;
     }
 
-    // Compile a StableHLO function through the MLIR pipeline → LLVM IR
-    // Returns the lowered llvm::Function* or nullptr on failure
+    /** @brief Lower the currently-built StableHLO module (containing one of
+     *         the buildXFunc-constructed functions named `cache_key`)
+     *         through the MLIR pipeline to LLVM IR via XLACompiler, caching
+     *         the resulting llvm::Function* by `cache_key` and resetting the
+     *         MLIR module for the next operation. Returns nullptr on any
+     *         compilation failure or if the named function isn't found in
+     *         the lowered module. */
     llvm::Function* compileStableHLOFunc(const std::string& cache_key) {
         // Check cache first
         auto it = compiled_ops_.find(cache_key);
@@ -475,7 +499,8 @@ public:
         return loweredFunc;
     }
 
-    // Generate unique operation name for caching
+    /** @brief Generate a unique, shape-qualified operation name (e.g.
+     *         "xla_matmul_3_4_8") for use as an MLIR function name / cache key. */
     std::string makeOpName(const char* op, const std::vector<int64_t>& shape) {
         std::ostringstream oss;
         oss << "xla_" << op << "_" << (op_counter_++);
@@ -488,6 +513,9 @@ public:
     // The LLVM-direct path always uses these; the StableHLO path falls
     // through to these when MLIR compilation fails or shapes are dynamic.
 
+    /** @brief Find or declare an external LLVM runtime function taking
+     *         `paramTypes` and returning a pointer, used as the LLVM-direct
+     *         fallback entry point for XLA tensor ops. */
     llvm::Function* getOrCreateRuntime(const char* funcName,
                                         const std::vector<llvm::Type*>& paramTypes) {
         auto& module = ctx_->module();
@@ -500,6 +528,8 @@ public:
             funcTy, llvm::GlobalValue::ExternalLinkage, funcName, &module);
     }
 
+    /** @brief Find or declare the `eshkol_xla_matmul` C runtime entry point
+     *         (LLVM-direct fallback for matmul). */
     llvm::Function* getOrCreateMatmulRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -507,6 +537,8 @@ public:
             {ptrTy, ptrTy, ptrTy, ptrTy, ptrTy, i64Ty, i64Ty});
     }
 
+    /** @brief Find or declare the `eshkol_xla_elementwise` C runtime entry
+     *         point (LLVM-direct fallback for elementwise unary/binary ops). */
     llvm::Function* getOrCreateElementwiseRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -514,6 +546,8 @@ public:
             {ptrTy, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty});
     }
 
+    /** @brief Find or declare the `eshkol_xla_reduce` C runtime entry point
+     *         (LLVM-direct fallback for reductions). */
     llvm::Function* getOrCreateReduceRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -521,6 +555,8 @@ public:
             {ptrTy, ptrTy, i64Ty, ptrTy, i64Ty, i64Ty, i64Ty});
     }
 
+    /** @brief Find or declare the `eshkol_xla_transpose` C runtime entry
+     *         point (LLVM-direct fallback for transpose). */
     llvm::Function* getOrCreateTransposeRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -528,6 +564,8 @@ public:
             {ptrTy, ptrTy, ptrTy, i64Ty, ptrTy});
     }
 
+    /** @brief Find or declare the `eshkol_xla_broadcast` C runtime entry
+     *         point (LLVM-direct fallback for broadcast). */
     llvm::Function* getOrCreateBroadcastRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -535,6 +573,8 @@ public:
             {ptrTy, ptrTy, ptrTy, i64Ty, ptrTy, i64Ty});
     }
 
+    /** @brief Find or declare the `eshkol_xla_slice` C runtime entry point
+     *         (LLVM-direct fallback for slicing). */
     llvm::Function* getOrCreateSliceRuntime() {
         auto* ptrTy = llvm::PointerType::get(ctx_->context(), 0);
         auto* i64Ty = llvm::Type::getInt64Ty(ctx_->context());
@@ -544,7 +584,9 @@ public:
 };
 
 #ifdef ESHKOL_XLA_FULL_MLIR
-// Full MLIR + StableHLO constructor — initializes MLIR context, dialects, builder
+/** @brief Full MLIR + StableHLO constructor: initializes the MLIR context
+ *         with func/arith/stablehlo dialects loaded, a builder, and an
+ *         empty module; marks XLA as available. */
 XLACodegen::Impl::Impl(CodegenContext& ctx) : ctx_(&ctx), threshold_(g_xla_threshold) {
     // Initialize MLIR context
     mlir_ctx_ = std::make_unique<mlir::MLIRContext>();
@@ -564,14 +606,16 @@ XLACodegen::Impl::Impl(CodegenContext& ctx) : ctx_(&ctx), threshold_(g_xla_thres
     available_ = true;
 }
 #else
-// LLVM-only mode constructor — MLIR/StableHLO not available
-// XLA operations emit direct LLVM IR calling C runtime functions
-// (BLAS/SIMD/GPU dispatch happens inside the runtime functions)
+/** @brief LLVM-only mode constructor (MLIR/StableHLO not linked): XLA
+ *         operations emit direct LLVM IR calling C runtime functions, which
+ *         internally dispatch to BLAS/SIMD/GPU. Still marks XLA as available
+ *         since this path needs no MLIR compilation step. */
 XLACodegen::Impl::Impl(CodegenContext& ctx) : ctx_(&ctx), threshold_(g_xla_threshold) {
     available_ = true;
 }
 #endif
 
+/** @brief Construct the XLA codegen backend for a given LLVM codegen context. */
 XLACodegen::XLACodegen(CodegenContext& ctx)
     : impl_(std::make_unique<Impl>(ctx)) {}
 
@@ -582,10 +626,13 @@ XLACodegen& XLACodegen::operator=(XLACodegen&&) noexcept = default;
 
 // ===== Backend Selection =====
 
+/** @brief Set this codegen instance's minimum-element XLA dispatch threshold. */
 void XLACodegen::setThreshold(size_t min_elements) {
     impl_->threshold_ = min_elements;
 }
 
+/** @brief True if the XLA backend is available and `num_elements` meets the
+ *         dispatch threshold (large enough to justify XLA's overhead). */
 bool XLACodegen::shouldUseXLA(size_t num_elements) const {
     // Use XLA when:
     // 1. Backend is available (LLVM direct mode or MLIR+StableHLO)
@@ -595,6 +642,9 @@ bool XLACodegen::shouldUseXLA(size_t num_elements) const {
 
 // ===== Tensor Operations =====
 
+/** @brief Emit LLVM IR that extracts the dims/rank/data fields of tensors
+ *         `a` and `b` and calls the `eshkol_xla_matmul` runtime entry point.
+ *         Returns nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitMatmul(llvm::Value* a, llvm::Value* b) {
     if (!impl_->available_) {
         return nullptr;
@@ -658,6 +708,11 @@ llvm::Value* XLACodegen::emitMatmul(llvm::Value* a, llvm::Value* b) {
     return builder.CreateCall(matmulFunc, args, "matmul_result");
 }
 
+/** @brief Emit LLVM IR that extracts tensor `a`'s (and, for binary ops, `b`'s)
+ *         data/shape fields and calls the `eshkol_xla_elementwise` runtime
+ *         entry point with the given op code. `b` is ignored (passed as a
+ *         null pointer) for unary ops (op >= ElementwiseOp::EXP). Returns
+ *         nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitElementwise(llvm::Value* a, llvm::Value* b, ElementwiseOp op) {
     if (!impl_->available_) return nullptr;
 
@@ -706,6 +761,9 @@ llvm::Value* XLACodegen::emitElementwise(llvm::Value* a, llvm::Value* b, Element
         "elementwise_result");
 }
 
+/** @brief Emit LLVM IR that extracts `input`'s data/shape fields and calls
+ *         the `eshkol_xla_reduce` runtime entry point over `axis` with the
+ *         given reduction op. Returns nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitReduce(llvm::Value* input, int64_t axis, ReduceOp op) {
     if (!impl_->available_) return nullptr;
 
@@ -746,6 +804,11 @@ llvm::Value* XLACodegen::emitReduce(llvm::Value* input, int64_t axis, ReduceOp o
 
 // ===== Transpose =====
 
+/** @brief Emit LLVM IR that builds a reverse-order permutation array
+ *         (`[rank-1, ..., 1, 0]`, generated via a runtime loop rather than a
+ *         compile-time constant since rank is only known at runtime) and
+ *         calls the `eshkol_xla_transpose` runtime entry point. Returns
+ *         nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitTranspose(llvm::Value* input) {
     if (!impl_->available_) return nullptr;
 
@@ -809,6 +872,9 @@ llvm::Value* XLACodegen::emitTranspose(llvm::Value* input) {
 
 // ===== Broadcast =====
 
+/** @brief Emit LLVM IR that stack-allocates the target shape array from
+ *         `tgt_shape` and calls the `eshkol_xla_broadcast` runtime entry
+ *         point. Returns nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitBroadcast(llvm::Value* input,
                                         const std::vector<llvm::Value*>& tgt_shape,
                                         int64_t tgt_rank) {
@@ -854,6 +920,10 @@ llvm::Value* XLACodegen::emitBroadcast(llvm::Value* input,
 
 // ===== Slice =====
 
+/** @brief Emit LLVM IR that stack-allocates start/limit/stride arrays
+ *         (defaulting missing strides to 1) and calls the
+ *         `eshkol_xla_slice` runtime entry point. Returns nullptr if the
+ *         XLA backend isn't available. */
 llvm::Value* XLACodegen::emitSlice(llvm::Value* input,
                                     const std::vector<llvm::Value*>& starts,
                                     const std::vector<llvm::Value*>& limits,
@@ -922,7 +992,11 @@ llvm::Value* XLACodegen::emitSlice(llvm::Value* input,
 
 // ===== Autodiff Integration =====
 
-// Matmul gradient: C = A @ B → dA = grad @ B^T, dB = A^T @ grad
+/** @brief Compute the matmul backward pass for `C = A @ B`: dA = grad @ B^T,
+ *         dB = A^T @ grad, packed into a 2-element pointer array [dA, dB].
+ *         Requires exactly 2 operands in `wrt_vars` (A, B). Returns nullptr
+ *         if the XLA backend isn't available, `wrt_vars` isn't size 2, or
+ *         any intermediate transpose/matmul fails. */
 llvm::Value* XLACodegen::emitGradient(llvm::Value* output_node,
                                        const std::vector<llvm::Value*>& wrt_vars) {
     if (!impl_->available_) return nullptr;
@@ -964,9 +1038,14 @@ llvm::Value* XLACodegen::emitGradient(llvm::Value* output_node,
     return arrayAlloca;
 }
 
-// Elementwise gradient: applies chain rule based on operation type
-// grad = upstream gradient, a/b = forward operands, result = forward output
-// Returns array of gradients [grad_a, grad_b] (grad_b may be null for unary ops)
+/** @brief Apply the chain rule for one elementwise op's backward pass: given
+ *         the upstream gradient `grad`, forward operands `a`/`b`, and
+ *         forward output `result`, computes grad_a (and grad_b for binary
+ *         ops) per the op's derivative, packed into a 2-element pointer
+ *         array (grad_b is null for unary ops). Some branches (SUB's
+ *         negation, COS's sign, DIV's sign) note in comments that the
+ *         caller is responsible for an additional negation not applied
+ *         here. Returns nullptr if the XLA backend isn't available. */
 llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
                                                    llvm::Value* a,
                                                    llvm::Value* b,
@@ -1095,9 +1174,15 @@ llvm::Value* XLACodegen::emitElementwiseGradient(llvm::Value* grad,
     return arrayAlloca;
 }
 
-// Reduce gradient: broadcast upstream gradient back to original shape
-// For SUM: grad is broadcast to input shape
-// For MEAN: grad / n is broadcast to input shape
+/** @brief Compute a reduction's backward pass by broadcasting the upstream
+ *         `grad` back to `input`'s original shape: for SUM, a plain
+ *         broadcast; for MEAN, broadcast then scale in-place by 1/n; for
+ *         MAX/MIN/PROD, delegates to the `eshkol_xla_reduce_gradient`
+ *         runtime entry point (which needs the original input values to
+ *         route the gradient to the winning/relevant elements). Only
+ *         reduce-all (not partial-axis) is fully supported in this version.
+ *         Returns nullptr if the XLA backend isn't available or `op` is
+ *         unrecognized. */
 llvm::Value* XLACodegen::emitReduceGradient(llvm::Value* grad,
                                               llvm::Value* input,
                                               int64_t axis,
@@ -1219,7 +1304,9 @@ llvm::Value* XLACodegen::emitReduceGradient(llvm::Value* grad,
     return nullptr;
 }
 
-// Transpose gradient: transpose the upstream gradient with inverse permutation
+/** @brief Compute a transpose's backward pass: since transpose is applied
+ *         with a fixed reverse permutation, its own inverse is the same
+ *         reverse permutation, so this just re-transposes `grad`. */
 llvm::Value* XLACodegen::emitTransposeGradient(llvm::Value* grad) {
     if (!impl_->available_) return nullptr;
     // For 2D transpose with perm [1,0], the inverse is also [1,0]
@@ -1228,6 +1315,10 @@ llvm::Value* XLACodegen::emitTransposeGradient(llvm::Value* grad) {
 
 // ===== Compilation =====
 
+/** @brief In StableHLO mode, lower any pending MLIR ops accumulated in the
+ *         module through XLACompiler for `target` and reset the module for
+ *         the next batch (no-op if there are no pending operations). In
+ *         LLVM-direct mode, this is a no-op — operations are already inline IR. */
 void XLACodegen::compile(Target target) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     // StableHLO path: compile any pending MLIR operations through the pipeline.
@@ -1256,6 +1347,9 @@ void XLACodegen::compile(Target target) {
 #endif
 }
 
+/** @brief Return the compiled executable handle: in StableHLO mode, the
+ *         MLIR module's underlying Operation*; in LLVM-direct mode, nullptr
+ *         (there's no separate executable since IR is emitted inline). */
 void* XLACodegen::getExecutable() const {
 #ifdef ESHKOL_XLA_FULL_MLIR
     // StableHLO path: return the underlying Operation* (stable, owned by OwningOpRef)
@@ -1268,12 +1362,16 @@ void* XLACodegen::getExecutable() const {
 
 // ===== Memory Integration =====
 
+/** @brief Wrap an arena-allocated tensor as an XLA buffer. CPU path is
+ *         zero-copy: the arena tensor is already in the right format. */
 llvm::Value* XLACodegen::wrapArenaBuffer(llvm::Value* arena_ptr, llvm::Value* tensor_ptr) {
     // CPU path: arena tensors are already in the right format — zero-copy
     (void)arena_ptr;
     return tensor_ptr;
 }
 
+/** @brief Ensure a tensor is resident on `target`'s device. CPU path is a
+ *         no-op since data is already on the host. */
 llvm::Value* XLACodegen::ensureDevice(llvm::Value* tensor_ptr, Target target) {
     // CPU path: data is already on the host — no-op
     (void)target;
@@ -1282,10 +1380,12 @@ llvm::Value* XLACodegen::ensureDevice(llvm::Value* tensor_ptr, Target target) {
 
 // ===== Status =====
 
+/** @brief True if the XLA backend (StableHLO or LLVM-direct) is available for use. */
 bool XLACodegen::isAvailable() const {
     return impl_->available_;
 }
 
+/** @brief Human-readable description of this backend's current mode/threshold, for diagnostics. */
 std::string XLACodegen::getDescription() const {
     std::ostringstream oss;
     oss << "XLA Backend (";

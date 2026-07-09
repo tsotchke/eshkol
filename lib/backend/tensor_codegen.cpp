@@ -33,6 +33,13 @@
 
 namespace eshkol {
 
+/**
+ * @brief Coerce a value to a raw double for tensor element storage.
+ *
+ * Tagged values are branched on their type tag (INT64 is converted via
+ * SIToFP, DOUBLE is unpacked directly); raw integer values are converted
+ * via SIToFP; anything else (already a double) is returned unchanged.
+ */
 llvm::Value* TensorCodegen::taggedNumericToDouble(CodegenContext& ctx,
                                                   TaggedValueCodegen& tagged,
                                                   llvm::Value* value) {
@@ -61,6 +68,10 @@ llvm::Value* TensorCodegen::taggedNumericToDouble(CodegenContext& ctx,
     return value;
 }
 
+/**
+ * @brief Construct the tensor codegen helper, optionally initializing the
+ *        XLA backend (when ESHKOL_XLA_ENABLED) for accelerated tensor ops.
+ */
 TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
     , tagged_(tagged)
@@ -78,6 +89,8 @@ TensorCodegen::TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, Me
 }
 
 #ifdef ESHKOL_XLA_ENABLED
+/** @brief Whether a tensor op of @p num_elements elements should be routed
+ *         through XLA rather than the scalar/SIMD codegen path. */
 bool TensorCodegen::shouldUseXLA(size_t num_elements) const {
     // Use XLA if available and tensor size exceeds threshold
     return xla_ && xla_->shouldUseXLA(num_elements);
@@ -87,10 +100,14 @@ bool TensorCodegen::shouldUseXLA(size_t num_elements) const {
 // Destructor must be defined where XLACodegen is complete
 TensorCodegen::~TensorCodegen() = default;
 
+/** @brief Report the host's SIMD vector width (in doubles) as detected by
+ *         CPUCapabilities. */
 unsigned TensorCodegen::getSIMDWidth() const {
     return CPUCapabilities::instance().getVectorWidth();
 }
 
+/** @brief Return the LLVM vector type matching getSIMDWidth() (double2/4/8),
+ *         or nullptr when the width is 1 (scalar-only, no vectorization). */
 llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
     unsigned width = getSIMDWidth();
     switch (width) {
@@ -106,6 +123,11 @@ llvm::VectorType* TensorCodegen::getSIMDVectorType() const {
     }
 }
 
+/**
+ * @brief Attach `llvm.loop` metadata (vectorize.enable/width and/or
+ *        unroll.count hints) to a loop's back-edge branch instruction, so
+ *        LLVM's optimizer vectorizes/unrolls tensor loops as requested.
+ */
 void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
                                         bool vectorize, unsigned vecWidth,
                                         bool unroll, unsigned unrollCount) {
@@ -154,6 +176,12 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
 // `eshkol_tensor_operand_checked`, so there is exactly one source of truth and
 // the per-op codegen stays a single call.
 // ─────────────────────────────────────────────────────────────────────────────
+/** @brief Type-checked unpack of a tensor operand to an `eshkol_tensor_t*`
+ *         (see ESH-0069 note above): records the current source location
+ *         for error reporting, coerces non-tagged operands to a tagged
+ *         INT64 so the runtime helper can report a clean type error instead
+ *         of dereferencing garbage, and calls
+ *         `eshkol_tensor_operand_checked` to validate/coerce the operand. */
 llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
                                                        const char* op_name) {
     auto& b = ctx_.builder();
@@ -215,11 +243,25 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
 //
 // These implementations remain in llvm_codegen.cpp until those modules are extracted.
 
+/** @brief Unimplemented fallback for AST-driven tensor creation; logs a
+ *         warning and returns a packed null (real tensor-literal codegen is
+ *         handled by tensorOperation()). */
 llvm::Value* TensorCodegen::createTensor(const eshkol_ast_t* ast) {
     eshkol_warn("TensorCodegen::createTensor called - using fallback");
     return tagged_.packNull();
 }
 
+/**
+ * @brief Codegen for the `(tensor ...)` literal/constructor form.
+ *
+ * A single-element form whose argument is a runtime list/vector/scalar is
+ * routed through `eshkol_tensor_from_collection` to build a 1-D tensor
+ * (numpy-like unpacking). Otherwise allocates a tensor object (with header),
+ * its dimensions array, and its elements array from the arena, evaluates
+ * and stores each element (converted to a double bit pattern), and returns
+ * the tensor as a packed HEAP_PTR tagged value. Raises an "out of memory"
+ * Eshkol exception if arena allocation fails.
+ */
 llvm::Value* TensorCodegen::tensorOperation(const eshkol_operations_t* op) {
     if (!op || op->op != ESHKOL_TENSOR_OP) return nullptr;
 
@@ -719,12 +761,27 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     return result;
 }
 
+/** @brief Unimplemented fallback for `vref`; the real AD-aware
+ *         implementation lives in codegenTensorVectorRef() in
+ *         llvm_codegen.cpp. Logs a warning and returns a packed null. */
 llvm::Value* TensorCodegen::vectorRef(const eshkol_operations_t* op) {
     // vref is AD-aware and complex - remains in llvm_codegen.cpp
     eshkol_warn("TensorCodegen::vectorRef called - AD-aware vref should use codegenTensorVectorRef");
     return tagged_.packNull();
 }
 
+/**
+ * @brief Codegen for `(tensor-set! tensor index... value)` (R7RS-style,
+ *        value is the last argument).
+ *
+ * Supports both a flat list of scalar per-dimension indices and a single
+ * list/cons argument packing all dimensions (dispatched via
+ * `eshkol_tensor_linear_from_index_arg`), computes and bounds-checks the
+ * row-major linear offset, then stores the new value (converted to its
+ * double bit pattern) into the tensor's backing element array. Emits a
+ * runtime error and traps (unreachable) on too many indices or an
+ * out-of-bounds index; returns the (validated) tensor pointer on success.
+ */
 llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
     // tensor-set!: (tensor-set! tensor index1 index2 ... value)
     // R7RS-style: value is the LAST argument (matches vector-set!)
@@ -1034,6 +1091,10 @@ llvm::Value* TensorCodegen::tensorDiskFill(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/** @brief Codegen entry point for binary tensor arithmetic
+ *         (`tensor-add`/`tensor-sub`/`tensor-mul`/`tensor-div`): evaluates
+ *         both operands and delegates to tensorArithmeticInternal(), which
+ *         handles both Scheme vectors and tensors plus SIMD dispatch. */
 llvm::Value* TensorCodegen::tensorArithmetic(const eshkol_operations_t* op, const std::string& operation) {
     // tensor-add/sub/mul/div: (tensor-op arg1 arg2)
     // Supports both scheme vectors (VECTOR_PTR) and tensors (TENSOR_PTR)
@@ -1057,6 +1118,12 @@ llvm::Value* TensorCodegen::tensorArithmetic(const eshkol_operations_t* op, cons
 
 // ===== TYPE CONVERSION: VECTOR ↔ TENSOR =====
 
+/**
+ * @brief Codegen for `(vector->tensor vec)`: allocates a 1-D tensor with the
+ *        same length as the Scheme vector, then emits a copy loop that
+ *        unpacks each 16-byte tagged vector element to a double and stores
+ *        it into the tensor's element array.
+ */
 llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
     // vector->tensor: (vector->tensor vec) - Convert Scheme vector to 1D tensor
     if (op->call_op.num_vars != 1) {
@@ -1160,6 +1227,12 @@ llvm::Value* TensorCodegen::vectorToTensor(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+/**
+ * @brief Codegen for `(tensor->vector tensor)`: allocates a Scheme vector
+ *        sized to the tensor's total element count, then emits a copy loop
+ *        that wraps each tensor double as a tagged value and stores it into
+ *        the vector's element array (flattening any shape to 1-D).
+ */
 llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
     // tensor->vector: (tensor->vector tensor) - Convert tensor to flattened Scheme vector
     if (op->call_op.num_vars != 1) {
@@ -1242,6 +1315,10 @@ llvm::Value* TensorCodegen::tensorToVector(const eshkol_operations_t* op) {
 // Statistics Operations
 // ============================================================
 
+/** @brief Codegen for `(tensor-var t)`: computes the variance E[(x-mean)^2]
+ *         of a tensor's elements via two generated loops (one to accumulate
+ *         the mean, one to accumulate squared deviations from it) and
+ *         returns the result as a packed double. */
 llvm::Value* TensorCodegen::tensorVar(const eshkol_operations_t* op) {
     // Variance: E[(x - mean)^2]
     if (op->call_op.num_vars != 1) {
@@ -1329,6 +1406,8 @@ llvm::Value* TensorCodegen::tensorVar(const eshkol_operations_t* op) {
     return tagged_.packDouble(variance);
 }
 
+/** @brief Codegen for `(tensor-std t)`: standard deviation, computed as
+ *         sqrt(tensorVar(t)). */
 llvm::Value* TensorCodegen::tensorStd(const eshkol_operations_t* op) {
     // Standard deviation = sqrt(variance)
     if (op->call_op.num_vars != 1) {
@@ -1355,6 +1434,9 @@ llvm::Value* TensorCodegen::tensorStd(const eshkol_operations_t* op) {
 // Random Tensor Generation
 // ============================================================
 
+/** @brief Codegen for `(rand dim1 dim2 ...)`: allocates a tensor of the
+ *         given shape and fills it with uniform random doubles in [0, 1)
+ *         generated via `drand48` in an emitted fill loop. */
 llvm::Value* TensorCodegen::tensorRand(const eshkol_operations_t* op) {
     // rand: create tensor with uniform random values [0, 1)
     // Syntax: (rand dim1 dim2 ...)
@@ -1426,6 +1508,10 @@ llvm::Value* TensorCodegen::tensorRand(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+/** @brief Codegen for `(randn dim1 dim2 ...)`: allocates a tensor of the
+ *         given shape and fills it with standard-normal random doubles
+ *         (mean 0, std 1) using the Box-Muller transform on `drand48`
+ *         samples, in an emitted fill loop. */
 llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
     // randn: create tensor with standard normal random values (mean=0, std=1)
     // Uses Box-Muller transform
@@ -1522,6 +1608,9 @@ llvm::Value* TensorCodegen::tensorRandn(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+/** @brief Codegen for `(randint low high dim1 dim2 ...)`: allocates a
+ *         tensor of the given shape and fills it with random integers in
+ *         [low, high), stored as doubles, in an emitted fill loop. */
 llvm::Value* TensorCodegen::tensorRandint(const eshkol_operations_t* op) {
     // randint: create tensor with random integers in [low, high)
     // Syntax: (randint low high dim1 dim2 ...)

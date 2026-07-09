@@ -20,18 +20,23 @@ extern "C" void eshkol_matmul_f64(const double*, const double*, double*,
 
 // ===== Device Management =====
 
+/** @brief Stub GPU init: always reports zero devices found. */
 int eshkol_gpu_init(void) {
     return 0;  // No GPU devices found
 }
 
+/** @brief Stub GPU shutdown: no-op, since no GPU resources were ever acquired. */
 void eshkol_gpu_shutdown(void) {
     // No-op: no GPU resources to free
 }
 
+/** @brief Stub backend query: always reports no GPU backend. */
 EshkolGPUBackend eshkol_gpu_get_backend(void) {
     return ESHKOL_GPU_NONE;
 }
 
+/** @brief Human-readable name for a GPU backend enum value (stub build: all
+ *         non-CPU backends are annotated "(not available)"). */
 const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
     switch (backend) {
         case ESHKOL_GPU_NONE:   return "CPU only";
@@ -42,21 +47,26 @@ const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
     }
 }
 
+/** @brief Stub availability check: no GPU backend is ever available in this build. */
 int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
     (void)backend;
     return 0;  // No GPU backend available
 }
 
+/** @brief Stub fp64 support check: always false (no GPU present). */
 int eshkol_gpu_supports_f64(void) {
     return 0;
 }
 
+/** @brief Stub fp64 support check (alternate name): always false. */
 int eshkol_gpu_has_fp64(void) {
     return 0;
 }
 
 // ===== Memory Allocation =====
 
+/** @brief Stub GPU allocation: always fails with a logged error explaining
+ *         no GPU backend was compiled in; zeroes `*out_buffer` if given. */
 int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type,
                      EshkolGPUBuffer* out_buffer) {
     (void)size_bytes;
@@ -68,6 +78,8 @@ int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type,
     return -1;
 }
 
+/** @brief Stub aligned GPU allocation: ignores `alignment` and delegates to
+ *         eshkol_gpu_alloc() (which always fails). */
 int eshkol_gpu_alloc_aligned(size_t size_bytes, size_t alignment,
                               EshkolMemoryType mem_type,
                               EshkolGPUBuffer* out_buffer) {
@@ -75,12 +87,16 @@ int eshkol_gpu_alloc_aligned(size_t size_bytes, size_t alignment,
     return eshkol_gpu_alloc(size_bytes, mem_type, out_buffer);
 }
 
+/** @brief Stub GPU free: zeroes the buffer descriptor (there is no GPU
+ *         resource to actually release). */
 void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
     if (buffer) {
         memset(buffer, 0, sizeof(*buffer));
     }
 }
 
+/** @brief Stub host-pointer wrap: always fails with a logged error (no GPU
+ *         backend to wrap the pointer for). */
 int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes,
                           EshkolGPUBuffer* out_buffer) {
     (void)host_ptr;
@@ -94,6 +110,7 @@ int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes,
 
 // ===== Data Transfer =====
 
+/** @brief Stub host/device sync: always fails with a logged error. */
 int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     (void)buffer;
     (void)direction;
@@ -101,12 +118,16 @@ int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     return -1;
 }
 
+/** @brief Stub async sync: ignores `stream_handle` and delegates to
+ *         eshkol_gpu_sync() (which always fails). */
 int eshkol_gpu_sync_async(EshkolGPUBuffer* buffer, EshkolSyncDirection direction,
                            void* stream_handle) {
     (void)stream_handle;
     return eshkol_gpu_sync(buffer, direction);
 }
 
+/** @brief Stub GPU wait: no-op, since there is never an in-flight GPU
+ *         operation to wait on. */
 void eshkol_gpu_wait(EshkolGPUBuffer* buffer) {
     (void)buffer;
     // No-op: nothing to wait on
@@ -114,6 +135,9 @@ void eshkol_gpu_wait(EshkolGPUBuffer* buffer) {
 
 // ===== Matrix Operations =====
 
+/** @brief GPU-absent matmul: reads host pointers from the buffer
+ *         descriptors and dispatches directly to the CPU BLAS/SIMD
+ *         eshkol_matmul_f64() implementation. */
 int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
                            EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
@@ -128,6 +152,8 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
     return 0;
 }
 
+/** @brief GPU-absent single-precision matmul: naive triple-loop scalar
+ *         implementation directly on the buffers' host pointers. */
 int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
                            EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
@@ -158,14 +184,17 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B,
 
 size_t g_gpu_threshold = 100000;
 
+/** @brief Set the (unused, in this stub build) minimum-element GPU dispatch threshold. */
 void eshkol_gpu_set_threshold(size_t threshold) {
     g_gpu_threshold = threshold;
 }
 
+/** @brief Get the (unused, in this stub build) GPU dispatch threshold. */
 size_t eshkol_gpu_get_threshold(void) {
     return g_gpu_threshold;
 }
 
+/** @brief Stub dispatch decision: always false, since there is no GPU backend to use. */
 int eshkol_gpu_should_use(size_t num_elements) {
     (void)num_elements;
     return 0;  // Never use GPU — no backend available
@@ -173,6 +202,10 @@ int eshkol_gpu_should_use(size_t num_elements) {
 
 // ===== Elementwise / Reduce / Transpose =====
 
+/** @brief GPU-absent elementwise op: CPU scalar loop over `n` elements
+ *         applying the unary/binary op selected by `op` directly on the
+ *         buffers' host pointers (missing `b` treated as an identity
+ *         operand per op: 0 for add/sub, 1 for mul/div). */
 int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
                                 EshkolGPUBuffer* out, uint64_t n,
                                 EshkolElementwiseOp op) {
@@ -204,6 +237,9 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
     return 0;
 }
 
+/** @brief GPU-absent full reduction: CPU scalar loop applying `op`
+ *         (sum/mean/prod/min/max) over all `n` input elements to a single
+ *         output value. */
 int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                            uint64_t n, EshkolReduceOp op) {
     if (!in || !out || n == 0) return -1;
@@ -230,6 +266,9 @@ int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief GPU-absent axis reduction: CPU implementation that computes
+ *         inner/outer strides around the reduced `axis` and applies `op`
+ *         over each slice. */
 int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                                 uint64_t rank, const uint64_t* shape,
                                 uint64_t axis, EshkolReduceOp op) {
@@ -272,6 +311,7 @@ int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief GPU-absent 2-D transpose: CPU nested loop swapping row/column strides. */
 int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t rows, uint64_t cols) {
     if (!in || !out || rows == 0 || cols == 0) return -1;
@@ -288,6 +328,10 @@ int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 
 // ===== Softmax / Normalize =====
 
+/** @brief GPU-absent numerically-stable softmax: for each of `num_slices`
+ *         contiguous slices of length `slice_len`, subtracts the slice max
+ *         before exponentiating and normalizes by the sum (guarding against
+ *         a zero sum). */
 int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                             uint64_t num_slices, uint64_t slice_len) {
     if (!in || !out || num_slices == 0 || slice_len == 0) return -1;
@@ -311,6 +355,9 @@ int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief GPU-absent layer-normalize: for each of `num_slices` slices of
+ *         length `slice_len`, computes mean/variance and applies
+ *         `gamma * (x - mean) / sqrt(var + epsilon) + beta`. */
 int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t num_slices, uint64_t slice_len,
                               double gamma, double beta, double epsilon) {
@@ -337,6 +384,10 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 
 // ===== Runtime Integration =====
 
+/** @brief Runtime matmul entry point used by generated code: GPU absent, so
+ *         dispatches straight to the CPU BLAS/SIMD eshkol_matmul_f64().
+ *         `dtype` is ignored — storage is already precision-reduced for the
+ *         logical dtype, so plain f64 matmul stays correct. */
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t /*dtype*/) {
     // GPU not available — dispatch directly to BLAS/SIMD via eshkol_matmul_f64.
@@ -348,6 +399,8 @@ void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
 extern "C" void eshkol_batch_matmul_f64(const double*, const double*, double*,
                                         int64_t, int64_t, int64_t, int64_t);
 
+/** @brief Runtime batched-matmul entry point used by generated code: GPU
+ *         absent, so dispatches straight to the CPU batched f64 path. */
 void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
                                   int64_t batch, int64_t M, int64_t K, int64_t N,
                                   int32_t /*dtype*/) {
@@ -358,6 +411,9 @@ void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
 
 // ===== Backward Pass GPU Stubs =====
 
+/** @brief Stub conv2d input-gradient backward pass: unimplemented on this
+ *         platform (no GPU), always fails. Callers must fall back to a CPU
+ *         AD path elsewhere. */
 int eshkol_gpu_conv2d_backward_input_f64(
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
     uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
@@ -365,6 +421,8 @@ int eshkol_gpu_conv2d_backward_input_f64(
     return -1; // No GPU
 }
 
+/** @brief Stub conv2d kernel-gradient backward pass: unimplemented on this
+ *         platform (no GPU), always fails. */
 int eshkol_gpu_conv2d_backward_kernel_f64(
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
     uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
@@ -372,6 +430,8 @@ int eshkol_gpu_conv2d_backward_kernel_f64(
     return -1;
 }
 
+/** @brief Stub batch-norm backward pass: unimplemented on this platform (no
+ *         GPU), always fails. */
 int eshkol_gpu_batchnorm_backward_f64(
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
@@ -379,6 +439,8 @@ int eshkol_gpu_batchnorm_backward_f64(
     return -1;
 }
 
+/** @brief Stub layer-norm backward pass: unimplemented on this platform (no
+ *         GPU), always fails. */
 int eshkol_gpu_layernorm_backward_f64(
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,
     EshkolGPUBuffer*, EshkolGPUBuffer*, EshkolGPUBuffer*,

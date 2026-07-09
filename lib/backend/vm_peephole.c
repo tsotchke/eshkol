@@ -1,3 +1,12 @@
+/**
+ * @brief Run a fixed-point pass of local bytecode peephole optimizations
+ *        over chunk @p c: eliminates `CONST 0 + ADD` and `CONST 1 + MUL`
+ *        identities, `NOT + NOT` / `NEG + NEG` double-negation pairs, and
+ *        `DUP + POP` pairs, replacing eliminated instructions with OP_NOP
+ *        in place (never compacted, since compaction would require fixing
+ *        up jump targets — the VM treats NOP as near-zero cost). Prints a
+ *        summary of eliminated instruction count.
+ */
 static void peephole_optimize(FuncChunk* c) {
     int changed = 1;
     while (changed) {

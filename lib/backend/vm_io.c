@@ -61,6 +61,8 @@ static VmPort vm_stdin_port  = { VM_PORT_FILE, VM_PORT_INPUT,  1, { .file = NULL
 static VmPort vm_stdout_port = { VM_PORT_FILE, VM_PORT_OUTPUT, 1, { .file = NULL } };
 static VmPort vm_stderr_port = { VM_PORT_FILE, VM_PORT_OUTPUT, 1, { .file = NULL } };
 
+/** @brief Bind the static stdin/stdout/stderr VmPort structs to the C
+ *         standard streams; must be called once at VM startup. */
 static void vm_io_init_std_ports(void) {
     vm_stdin_port.file  = stdin;
     vm_stdout_port.file = stdout;
@@ -69,7 +71,8 @@ static void vm_io_init_std_ports(void) {
 
 /* ── File Ports ── */
 
-/* 580: open-input-file */
+/** @brief Native call 580: `(open-input-file path)`; NULL if the file
+ *         can't be opened. */
 static VmPort* vm_port_open_input_file(VmRegionStack* rs, const char* path) {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
@@ -83,7 +86,8 @@ static VmPort* vm_port_open_input_file(VmRegionStack* rs, const char* path) {
     return port;
 }
 
-/* 581: open-output-file */
+/** @brief Native call 581: `(open-output-file path)`; NULL if the file
+ *         can't be opened. */
 static VmPort* vm_port_open_output_file(VmRegionStack* rs, const char* path) {
     FILE* f = fopen(path, "wb");
     if (!f) return NULL;
@@ -99,7 +103,8 @@ static VmPort* vm_port_open_output_file(VmRegionStack* rs, const char* path) {
 
 /* ── String Ports ── */
 
-/* 582: open-input-string */
+/** @brief Native call 582: `(open-input-string str)` — allocate an input
+ *         port over a copy of @p str's bytes (arena-backed, fixed size). */
 static VmPort* vm_port_open_input_string(VmRegionStack* rs, const VmString* str) {
     VmPort* port = (VmPort*)vm_alloc(rs, sizeof(VmPort));
     if (!port) return NULL;
@@ -118,7 +123,8 @@ static VmPort* vm_port_open_input_string(VmRegionStack* rs, const VmString* str)
     return port;
 }
 
-/* 583: open-output-string */
+/** @brief Native call 583: `(open-output-string)` — allocate a growable
+ *         (malloc-backed, so it can realloc) output string port. */
 static VmPort* vm_port_open_output_string(VmRegionStack* rs) {
     VmPort* port = (VmPort*)vm_alloc(rs, sizeof(VmPort));
     if (!port) return NULL;
@@ -138,7 +144,11 @@ static VmPort* vm_port_open_output_string(VmRegionStack* rs) {
 
 /* ── Close ── */
 
-/* 584: close-port */
+/** @brief Native call 584: `(close-port port)` — close a file port (never
+ *         closing the underlying stdin/stdout/stderr FILE*) or free an
+ *         output string port's malloc'd buffer. Input string port buffers
+ *         are arena-allocated and simply left for the region to reclaim.
+ *         No-op if already closed. */
 static void vm_port_close(VmPort* port) {
     if (!port || !port->is_open) return;
     port->is_open = 0;
@@ -157,7 +167,8 @@ static void vm_port_close(VmPort* port) {
     /* Input string port buffer is arena-allocated, freed with region */
 }
 
-/* ── Grow output string port buffer ── */
+/** @brief Grow an output string port's buffer (doubling repeatedly) so it
+ *         can hold @p need more bytes past the current write position. */
 static int vm_port_string_ensure(VmPort* port, int need) {
     if (port->string.pos + need < port->string.cap) return 1;
     int new_cap = port->string.cap;
@@ -176,7 +187,10 @@ static int vm_port_eof(VmPort* port);
 
 /* ── Read Operations ── */
 
-/* Helper: read one raw byte from port, returns byte or -1 on EOF */
+/** @brief Read one raw byte from @p port (file or string), advancing its
+ *         position.
+ * @return The byte value, or -1 on EOF/closed port.
+ */
 static int vm_port_read_byte(VmPort* port) {
     if (!port || !port->is_open) return -1;
 
@@ -189,7 +203,8 @@ static int vm_port_read_byte(VmPort* port) {
     }
 }
 
-/* Helper: peek one raw byte without advancing */
+/** @brief Peek one raw byte from @p port without advancing its position
+ *         (-1 on EOF/closed port). */
 static int vm_port_peek_byte(VmPort* port) {
     if (!port || !port->is_open) return -1;
 
@@ -204,7 +219,9 @@ static int vm_port_peek_byte(VmPort* port) {
     }
 }
 
-/* Helper: unread a byte */
+/** @brief Push one byte back onto @p port so the next read sees it again
+ *         (via ungetc() for file ports, or rewinding the position for
+ *         string ports). */
 static void vm_port_unread_byte(VmPort* port, int byte) {
     if (!port || !port->is_open || byte < 0) return;
 
@@ -215,8 +232,12 @@ static void vm_port_unread_byte(VmPort* port, int byte) {
     }
 }
 
-/* 585: read-char → codepoint (-1 = EOF)
- * Reads 1-4 bytes to decode one full UTF-8 codepoint. */
+/**
+ * @brief Native call 585: `(read-char port)` — decode one full UTF-8
+ *        codepoint (1-4 bytes) from @p port, rejecting overlong encodings,
+ *        surrogates, and out-of-range values as VM_UNICODE_REPLACEMENT.
+ * @return The codepoint, or -1 on EOF.
+ */
 static int vm_port_read_char(VmPort* port) {
     if (!port || !port->is_open || port->dir != VM_PORT_INPUT) return -1;
 
@@ -256,8 +277,9 @@ static int vm_port_read_char(VmPort* port) {
     return cp;
 }
 
-/* 586: peek-char → codepoint without advancing
- * Reads bytes, then unreads them. */
+/** @brief Native call 586: `(peek-char port)` — read one codepoint via
+ *         vm_port_read_char() then rewind the port position (save/restore
+ *         for string ports, ftell/fseek for file ports). */
 static int vm_port_peek_char(VmPort* port) {
     if (!port || !port->is_open || port->dir != VM_PORT_INPUT) return -1;
 
@@ -278,8 +300,11 @@ static int vm_port_peek_char(VmPort* port) {
     return cp;
 }
 
-/* 587: read-line → VmString* (reads until \n or EOF, strips \n)
- * Returns NULL on EOF with no chars read. */
+/** @brief Native call 587: `(read-line port)` — read bytes until `\n`,
+ *         `\r\n` (both stripped), or EOF.
+ * @return The line as a new VmString, or NULL if EOF was reached with no
+ *         characters read.
+ */
 static VmString* vm_port_read_line(VmRegionStack* rs, VmPort* port) {
     if (!port || !port->is_open || port->dir != VM_PORT_INPUT) return NULL;
 
@@ -321,7 +346,9 @@ static VmString* vm_port_read_line(VmRegionStack* rs, VmPort* port) {
 
 /* ── Write Operations ── */
 
-/* Helper: write raw bytes to port */
+/** @brief Write @p len raw bytes to output port @p port (fwrite for file
+ *         ports, growing the buffer via vm_port_string_ensure() for string
+ *         ports). No-op on a null/closed/input port. */
 static void vm_port_write_bytes(VmPort* port, const char* data, int len) {
     if (!port || !port->is_open || port->dir != VM_PORT_OUTPUT || len <= 0) return;
 
@@ -339,26 +366,30 @@ static void vm_port_write_bytes(VmPort* port, const char* data, int len) {
     }
 }
 
-/* 588: write-char → write one codepoint */
+/** @brief Native call 588: `(write-char port cp)` — UTF-8-encode and write
+ *         one codepoint. */
 static void vm_port_write_char(VmPort* port, int cp) {
     char buf[4];
     int len = vm_utf8_encode(cp, buf);
     vm_port_write_bytes(port, buf, len);
 }
 
-/* 589: write-string */
+/** @brief Native call 589: `(write-string port str)`. */
 static void vm_port_write_string(VmPort* port, const VmString* str) {
     if (!str) return;
     vm_port_write_bytes(port, str->data, str->byte_len);
 }
 
-/* 590: write-cstr (convenience for C strings) */
+/** @brief Native call 590: write-string convenience overload for a plain
+ *         C string. */
 static void vm_port_write_cstr(VmPort* port, const char* cstr) {
     if (!cstr) return;
     vm_port_write_bytes(port, cstr, (int)strlen(cstr));
 }
 
-/* 591: get-output-string → VmString* (for string output ports) */
+/** @brief Native call 591: `(get-output-string port)` — snapshot an output
+ *         string port's accumulated buffer as a new VmString; NULL if
+ *         @p port isn't an output string port. */
 static VmString* vm_port_get_output_string(VmRegionStack* rs, VmPort* port) {
     if (!port || port->kind != VM_PORT_STRING || port->dir != VM_PORT_OUTPUT) return NULL;
     return vm_string_new(rs, port->string.buf, port->string.len);
@@ -366,7 +397,10 @@ static VmString* vm_port_get_output_string(VmRegionStack* rs, VmPort* port) {
 
 /* ── Status ── */
 
-/* 592: eof? */
+/** @brief Port-level EOF check. Null/closed ports report EOF; output
+ *         ports never report EOF; input ports peek a byte without
+ *         consuming it (fgetc+ungetc for files, position compare for
+ *         strings) to determine whether more data remains. */
 static int vm_port_eof(VmPort* port) {
     if (!port || !port->is_open) return 1;
 
@@ -381,24 +415,25 @@ static int vm_port_eof(VmPort* port) {
     }
 }
 
-/* 593: port-open? */
+/** @brief Native call 593: `(port-open? port)`. */
 static int vm_port_is_open(VmPort* port) {
     return port ? port->is_open : 0;
 }
 
-/* 594: input-port? */
+/** @brief Native call 594: `(input-port? port)`. */
 static int vm_port_is_input(VmPort* port) {
     return port ? (port->dir == VM_PORT_INPUT) : 0;
 }
 
-/* 595: output-port? */
+/** @brief Native call 595: `(output-port? port)`. */
 static int vm_port_is_output(VmPort* port) {
     return port ? (port->dir == VM_PORT_OUTPUT) : 0;
 }
 
 /* ── File System ── */
 
-/* 596: file-exists? */
+/** @brief Native call 596: `(file-exists? path)`. Always false when built
+ *         for WASM (no filesystem). */
 static int vm_port_file_exists(const char* path) {
 #ifdef ESHKOL_VM_WASM
     (void)path;
@@ -409,7 +444,8 @@ static int vm_port_file_exists(const char* path) {
 #endif
 }
 
-/* 597: delete-file */
+/** @brief Native call 597: `(delete-file path)`. Always fails (returns 0)
+ *         when built for WASM (no filesystem). */
 static int vm_port_delete_file(const char* path) {
 #ifdef ESHKOL_VM_WASM
     (void)path;
@@ -421,34 +457,38 @@ static int vm_port_delete_file(const char* path) {
 
 /* ── Display / Write (Scheme-style) ── */
 
-/* 598: display — write string without quotes, char without #\ prefix */
+/** @brief Native call 598: `(display str port)` — write a string's raw
+ *         contents without quoting (the display/write distinction is
+ *         handled by the caller choosing a pre-formatted string). */
 static void vm_port_display(VmPort* port, const VmString* str) {
     vm_port_write_string(port, str);
 }
 
-/* 599: newline */
+/** @brief Native call 599: `(newline port)`. */
 static void vm_port_newline(VmPort* port) {
     vm_port_write_char(port, '\n');
 }
 
-/* 600: write-u8 (write single byte) */
+/** @brief Native call 600: `(write-u8 byte port)` — write a single raw
+ *         byte. */
 static void vm_port_write_u8(VmPort* port, int byte) {
     if (!port || !port->is_open || port->dir != VM_PORT_OUTPUT) return;
     char b = (char)(unsigned char)byte;
     vm_port_write_bytes(port, &b, 1);
 }
 
-/* 601: read-u8 (read single byte) */
+/** @brief Native call 601: `(read-u8 port)`. */
 static int vm_port_read_u8(VmPort* port) {
     return vm_port_read_byte(port);
 }
 
-/* 602: peek-u8 */
+/** @brief Native call 602: `(peek-u8 port)`. */
 static int vm_port_peek_u8(VmPort* port) {
     return vm_port_peek_byte(port);
 }
 
-/* 603: flush-output-port */
+/** @brief Native call 603: `(flush-output-port port)`. String ports need
+ *         no flushing (already fully in memory). */
 static void vm_port_flush(VmPort* port) {
     if (!port || !port->is_open || port->dir != VM_PORT_OUTPUT) return;
     if (port->kind == VM_PORT_FILE && port->file) {
@@ -457,25 +497,33 @@ static void vm_port_flush(VmPort* port) {
     /* String ports don't need flushing */
 }
 
-/* 604: current-input-port */
+/** @brief Native call 604: `(current-input-port)`, lazily initializing
+ *         the standard ports on first use. */
 static VmPort* vm_port_current_input(void) {
     if (!vm_stdin_port.file) vm_io_init_std_ports();
     return &vm_stdin_port;
 }
 
-/* 605: current-output-port */
+/** @brief Native call 605: `(current-output-port)`, lazily initializing
+ *         the standard ports on first use. */
 static VmPort* vm_port_current_output(void) {
     if (!vm_stdout_port.file) vm_io_init_std_ports();
     return &vm_stdout_port;
 }
 
-/* 606: current-error-port */
+/** @brief Native call 606: `(current-error-port)`, lazily initializing
+ *         the standard ports on first use. */
 static VmPort* vm_port_current_error(void) {
     if (!vm_stderr_port.file) vm_io_init_std_ports();
     return &vm_stderr_port;
 }
 
-/* 607: read-string — read up to k characters, return VmString* */
+/**
+ * @brief Native call 607: `(read-string k port)` — read up to @p k
+ *        characters (UTF-8 codepoints), stopping early on EOF.
+ * @return The characters read as a new VmString, or NULL if EOF was hit
+ *         immediately (no characters read).
+ */
 static VmString* vm_port_read_string(VmRegionStack* rs, VmPort* port, int k) {
     if (!port || !port->is_open || port->dir != VM_PORT_INPUT || k <= 0) return NULL;
 
@@ -513,16 +561,21 @@ static VmString* vm_port_read_string(VmRegionStack* rs, VmPort* port, int k) {
 }
 
 /* 608: write-bytevector (write raw bytes) */
+/** @brief Native call 608: `(write-bytevector bv port)` — write raw bytes
+ *         (thin wrapper over vm_port_write_bytes()). */
 static void vm_port_write_bytevector(VmPort* port, const char* data, int len) {
     vm_port_write_bytes(port, data, len);
 }
 
-/* 609: open-binary-input-file */
+/** @brief Native call 609: `(open-binary-input-file path)`; identical to
+ *         vm_port_open_input_file() since files are already opened in
+ *         binary mode ("rb") on the platforms this VM targets. */
 static VmPort* vm_port_open_binary_input_file(VmRegionStack* rs, const char* path) {
     return vm_port_open_input_file(rs, path); /* already binary on most systems */
 }
 
-/* 610: open-binary-output-file */
+/** @brief Native call 610: `(open-binary-output-file path)`; identical to
+ *         vm_port_open_output_file() ("wb" mode). */
 static VmPort* vm_port_open_binary_output_file(VmRegionStack* rs, const char* path) {
     return vm_port_open_output_file(rs, path);
 }
@@ -532,6 +585,8 @@ static VmPort* vm_port_open_binary_output_file(VmRegionStack* rs, const char* pa
 #ifdef VM_IO_TEST
 #include <assert.h>
 
+/** @brief Self-test: write two chunks to an output string port, read the
+ *         combined result back, then close it. */
 static void test_string_port_write_read(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -554,6 +609,8 @@ static void test_string_port_write_read(void) {
     printf("  string_port_write_read: PASS\n");
 }
 
+/** @brief Self-test: write individual (including non-ASCII) codepoints to
+ *         an output string port and verify the resulting string. */
 static void test_string_port_chars(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -575,6 +632,8 @@ static void test_string_port_chars(void) {
     printf("  string_port_chars: PASS\n");
 }
 
+/** @brief Self-test: read UTF-8 characters (including a multi-byte one)
+ *         one at a time from an input string port through EOF. */
 static void test_string_port_read_char(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -594,6 +653,7 @@ static void test_string_port_read_char(void) {
     printf("  string_port_read_char: PASS\n");
 }
 
+/** @brief Self-test: verify peek_char() doesn't advance the port position. */
 static void test_peek_char(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -613,6 +673,8 @@ static void test_peek_char(void) {
     printf("  peek_char: PASS\n");
 }
 
+/** @brief Self-test: read three `\n`-separated lines and verify EOF
+ *         after the last one. */
 static void test_read_line(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -638,6 +700,8 @@ static void test_read_line(void) {
     printf("  read_line: PASS\n");
 }
 
+/** @brief Self-test: verify read_line() correctly handles `\r\n`
+ *         line endings. */
 static void test_read_line_crlf(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -656,6 +720,8 @@ static void test_read_line_crlf(void) {
     printf("  read_line_crlf: PASS\n");
 }
 
+/** @brief Self-test: verify vm_port_eof() flips true only after the last
+ *         character has been consumed. */
 static void test_eof_detection(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -674,6 +740,8 @@ static void test_eof_detection(void) {
     printf("  eof_detection: PASS\n");
 }
 
+/** @brief Self-test: end-to-end file I/O — write two lines to a temp file,
+ *         read them back, then verify file-exists?/delete-file. */
 static void test_file_io(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -711,12 +779,17 @@ static void test_file_io(void) {
     printf("  file_io: PASS\n");
 }
 
+/** @brief Self-test: vm_port_file_exists() on a known-present and a
+ *         known-absent path. */
 static void test_file_exists(void) {
     assert(vm_port_file_exists("/tmp") == 1);
     assert(vm_port_file_exists("/nonexistent_path_12345") == 0);
     printf("  file_exists: PASS\n");
 }
 
+/** @brief Self-test: port-open?/input-port?/output-port? across an
+ *         output string port and an input string port, including after
+ *         closing. */
 static void test_port_predicates(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -739,6 +812,7 @@ static void test_port_predicates(void) {
     printf("  port_predicates: PASS\n");
 }
 
+/** @brief Self-test: vm_port_write_string() on a VmString object. */
 static void test_write_string_obj(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -755,6 +829,8 @@ static void test_write_string_obj(void) {
     printf("  write_string_obj: PASS\n");
 }
 
+/** @brief Self-test: vm_port_newline() output and that vm_port_flush() is
+ *         a safe no-op on string ports. */
 static void test_newline_flush(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -775,6 +851,8 @@ static void test_newline_flush(void) {
     printf("  newline_flush: PASS\n");
 }
 
+/** @brief Self-test: vm_port_read_string() reading a bounded prefix, then
+ *         the remainder past @p k, then EOF. */
 static void test_read_string(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -797,6 +875,8 @@ static void test_read_string(void) {
     printf("  read_string: PASS\n");
 }
 
+/** @brief Self-test: raw byte write_u8/read_u8/peek_u8 round-trip through
+ *         EOF. */
 static void test_binary_io(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -823,6 +903,8 @@ static void test_binary_io(void) {
     printf("  binary_io: PASS\n");
 }
 
+/** @brief Self-test: current-input/output/error-port() return open ports
+ *         with the expected direction. */
 static void test_std_ports(void) {
     vm_io_init_std_ports();
 
@@ -838,6 +920,8 @@ static void test_std_ports(void) {
     printf("  std_ports: PASS\n");
 }
 
+/** @brief Self-test: write past the output string port's initial capacity
+ *         (256 bytes) to exercise vm_port_string_ensure()'s growth path. */
 static void test_large_string_port(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -863,6 +947,8 @@ static void test_large_string_port(void) {
     printf("  large_string_port: PASS\n");
 }
 
+/** @brief Self-test: reads on an empty input string port immediately
+ *         report EOF. */
 static void test_empty_input(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -879,6 +965,8 @@ static void test_empty_input(void) {
     printf("  empty_input: PASS\n");
 }
 
+/** @brief Standalone self-test entry point (built when VM_IO_TEST is
+ *         defined): runs all test_* functions above in sequence. */
 int main(void) {
     printf("vm_io self-tests:\n");
     test_string_port_write_read();

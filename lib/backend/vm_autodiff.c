@@ -62,7 +62,8 @@ typedef struct {
 
 /* ── Tape Management ── */
 
-/* 390: ad-tape-new — create a fresh tape */
+/** @brief Native call 390: `(ad-tape-new)` — allocate a fresh Wengert tape
+ *         backed by the given region stack. */
 AdTape* ad_tape_new(VmRegionStack* rs) {
     AdTape* tape = (AdTape*)vm_alloc_object(rs, VM_SUBTYPE_AD_TAPE, sizeof(AdTape));
     if (!tape) return NULL;
@@ -74,7 +75,10 @@ AdTape* ad_tape_new(VmRegionStack* rs) {
     return tape;
 }
 
-/* Grow tape capacity when full. Returns 0 on success, -1 on failure. */
+/** @brief Double @p tape's node array capacity, copying existing nodes
+ *         (old array is abandoned in the arena, reclaimed on region pop).
+ * @return 0 on success, -1 on allocation failure.
+ */
 static int ad_tape_grow(AdTape* tape) {
     int new_cap = tape->cap * 2;
     AdNode* new_nodes = (AdNode*)vm_alloc(tape->rs, sizeof(AdNode) * (size_t)new_cap);
@@ -86,7 +90,11 @@ static int ad_tape_grow(AdTape* tape) {
     return 0;
 }
 
-/* Append a node to the tape. Returns the node index, or -1 on error. */
+/** @brief Append a new node (@p op, forward @p value, parent indices
+ *         @p left/@p right, backward-pass auxiliary @p saved) to the tape,
+ *         growing it if full.
+ * @return The new node's index, or -1 on allocation failure.
+ */
 static int ad_tape_push(AdTape* tape, AdOpType op, double value,
                         int left, int right, double saved) {
     if (tape->len >= tape->cap) {
@@ -105,45 +113,49 @@ static int ad_tape_push(AdTape* tape, AdOpType op, double value,
 
 /* ── Leaf Nodes ── */
 
-/* 391: ad-const — record a constant (gradient does not flow through) */
+/** @brief Native call 391: record a constant leaf node (gradient never
+ *         flows through it). */
 int ad_const(AdTape* tape, double value) {
     return ad_tape_push(tape, AD_CONST, value, -1, -1, 0.0);
 }
 
-/* 392: ad-var — record a variable (gradient collection point) */
+/** @brief Native call 392: record a variable leaf node (a gradient
+ *         collection point for ad_get_gradient()/ad_gradient()). */
 int ad_var(AdTape* tape, double value) {
     return ad_tape_push(tape, AD_VAR, value, -1, -1, 0.0);
 }
 
 /* ── Binary Operations ── */
 
-/* 393: ad-add */
+/** @brief Native call 393: record @p left + @p right. */
 int ad_add(AdTape* tape, int left, int right) {
     double v = tape->nodes[left].value + tape->nodes[right].value;
     return ad_tape_push(tape, AD_ADD, v, left, right, 0.0);
 }
 
-/* 394: ad-sub */
+/** @brief Native call 394: record @p left - @p right. */
 int ad_sub(AdTape* tape, int left, int right) {
     double v = tape->nodes[left].value - tape->nodes[right].value;
     return ad_tape_push(tape, AD_SUB, v, left, right, 0.0);
 }
 
-/* 395: ad-mul */
+/** @brief Native call 395: record @p left * @p right. */
 int ad_mul(AdTape* tape, int left, int right) {
     double lv = tape->nodes[left].value;
     double rv = tape->nodes[right].value;
     return ad_tape_push(tape, AD_MUL, lv * rv, left, right, 0.0);
 }
 
-/* 396: ad-div */
+/** @brief Native call 396: record @p left / @p right, saving the right
+ *         operand's forward value for the quotient-rule backward pass. */
 int ad_div(AdTape* tape, int left, int right) {
     double lv = tape->nodes[left].value;
     double rv = tape->nodes[right].value;
     return ad_tape_push(tape, AD_DIV, lv / rv, left, right, rv);
 }
 
-/* 397: ad-pow — saves exponent value for backward pass */
+/** @brief Native call 397: record @p base ^ @p exponent, saving the
+ *         exponent's forward value for the power-rule backward pass. */
 int ad_pow(AdTape* tape, int base, int exponent) {
     double bv = tape->nodes[base].value;
     double ev = tape->nodes[exponent].value;
@@ -153,62 +165,62 @@ int ad_pow(AdTape* tape, int base, int exponent) {
 
 /* ── Unary Operations ── */
 
-/* 398: ad-sin */
+/** @brief Native call 398: record sin(@p input). */
 int ad_sin(AdTape* tape, int input) {
     double v = sin(tape->nodes[input].value);
     return ad_tape_push(tape, AD_SIN, v, input, -1, 0.0);
 }
 
-/* 399: ad-cos */
+/** @brief Native call 399: record cos(@p input). */
 int ad_cos(AdTape* tape, int input) {
     double v = cos(tape->nodes[input].value);
     return ad_tape_push(tape, AD_COS, v, input, -1, 0.0);
 }
 
-/* 400: ad-exp */
+/** @brief Native call 400: record exp(@p input). */
 int ad_exp(AdTape* tape, int input) {
     double v = exp(tape->nodes[input].value);
     return ad_tape_push(tape, AD_EXP, v, input, -1, 0.0);
 }
 
-/* 401: ad-log */
+/** @brief Native call 401: record log(@p input). */
 int ad_log(AdTape* tape, int input) {
     double v = log(tape->nodes[input].value);
     return ad_tape_push(tape, AD_LOG, v, input, -1, 0.0);
 }
 
-/* 402: ad-sqrt */
+/** @brief Native call 402: record sqrt(@p input). */
 int ad_sqrt(AdTape* tape, int input) {
     double v = sqrt(tape->nodes[input].value);
     return ad_tape_push(tape, AD_SQRT, v, input, -1, 0.0);
 }
 
-/* 403: ad-neg */
+/** @brief Native call 403: record -@p input. */
 int ad_neg(AdTape* tape, int input) {
     double v = -tape->nodes[input].value;
     return ad_tape_push(tape, AD_NEG, v, input, -1, 0.0);
 }
 
-/* 404: ad-abs */
+/** @brief Native call 404: record |@p input|. */
 int ad_abs(AdTape* tape, int input) {
     double v = fabs(tape->nodes[input].value);
     return ad_tape_push(tape, AD_ABS, v, input, -1, 0.0);
 }
 
-/* 405: ad-relu */
+/** @brief Native call 405: record relu(@p input) = max(0, input). */
 int ad_relu(AdTape* tape, int input) {
     double iv = tape->nodes[input].value;
     double v = iv > 0.0 ? iv : 0.0;
     return ad_tape_push(tape, AD_RELU, v, input, -1, 0.0);
 }
 
-/* 406: ad-sigmoid */
+/** @brief Native call 406: record sigmoid(@p input). */
 int ad_sigmoid(AdTape* tape, int input) {
     double v = 1.0 / (1.0 + exp(-tape->nodes[input].value));
     return ad_tape_push(tape, AD_SIGMOID, v, input, -1, 0.0);
 }
 
-/* 407: ad-tanh */
+/** @brief Native call 407: record tanh(@p input). */
 int ad_tanh(AdTape* tape, int input) {
     double v = tanh(tape->nodes[input].value);
     return ad_tape_push(tape, AD_TANH, v, input, -1, 0.0);
@@ -349,13 +361,14 @@ void ad_backward(AdTape* tape, int output) {
     }
 }
 
-/* 409: ad-gradient — read the accumulated gradient of a node */
+/** @brief Native call 409: read node @p node's accumulated backward
+ *         gradient (call ad_backward() first). */
 double ad_gradient(const AdTape* tape, int node) {
     if (node < 0 || node >= tape->len) return 0.0;
     return tape->nodes[node].gradient;
 }
 
-/* Convenience: read the forward value of a node */
+/** @brief Read node @p node's forward-pass value. */
 double ad_value(const AdTape* tape, int node) {
     if (node < 0 || node >= tape->len) return 0.0;
     return tape->nodes[node].value;
@@ -464,10 +477,16 @@ void* vm_autodiff_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
 
 #define AD_EPS 1e-10
 
+/** @brief Approximate equality check used by the self-test assertions
+ *         below. */
 static int ad_near(double a, double b) {
     return fabs(a - b) < AD_EPS;
 }
 
+/** @brief Standalone self-test (built when VM_AUTODIFF_TEST is defined):
+ *         builds tape expressions and verifies both forward values and
+ *         backward gradients (including composite chain-rule expressions)
+ *         against known analytic derivatives. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -785,8 +804,13 @@ typedef struct {
 
 #define AD_TAPE_OWNED_MAGIC 0x5045544f444151ULL  /* "ADOWNER" */
 
-/* Legacy path — keep for VM-internal / test use. Caller's arena is
- * trusted for the tape's lifetime. NOT released by ad_tape_release. */
+/**
+ * @brief Legacy path — allocate a tape directly out of @p arena, kept for
+ *        VM-internal / test use. The caller's arena is trusted for the
+ *        tape's lifetime; the tape is NOT released by
+ *        ad_tape_release_owned() (its magic check fails, making that call
+ *        a no-op).
+ */
 AdTape* ad_tape_new_from_arena(void* arena) {
     if (!arena) return NULL;
     if (!g_arena_shim_initialized) {
@@ -803,9 +827,13 @@ AdTape* ad_tape_new_from_arena(void* arena) {
     return tape;
 }
 
-/* Sub-region-backed factory — pushes a scope on the main arena,
- * allocates the tape inside that scope. Scheme ad-tape-new routes
- * here. */
+/**
+ * @brief Sub-region-backed tape factory (what Scheme `(ad-tape-new)`
+ *        routes to): pushes a new scope on the global arena and allocates
+ *        an AdTapeOwned wrapper (tape + arena back-reference + a magic
+ *        sentinel) inside that scope, so ad_tape_release_owned() can later
+ *        reclaim the whole scope in one pop.
+ */
 AdTape* ad_tape_new_owned(void) {
     extern void* get_global_arena(void);
     void* arena = get_global_arena();
@@ -831,18 +859,18 @@ AdTape* ad_tape_new_owned(void) {
     return &owned->tape;
 }
 
-/* Release a sub-region-backed tape — pop its scope. Safe on:
- *   - owned tapes (ad_tape_new_owned) — reclaims the entire scope
- *   - non-owned tapes (ad_tape_new_from_arena) — magic check fails,
- *     no-op. Legacy caller still owns the arena.
- *   - NULL — no-op
- *   - double-release — magic is zeroed after first pop, second call
- *     no-ops
+/**
+ * @brief Release a sub-region-backed tape by popping its arena scope. Safe
+ *        to call on: owned tapes (ad_tape_new_owned()) — reclaims the
+ *        entire scope; non-owned tapes (ad_tape_new_from_arena()) — magic
+ *        check fails, no-op, legacy caller still owns the arena; NULL —
+ *        no-op; and double-release — the magic sentinel is zeroed after
+ *        the first pop, so a second call also no-ops.
  *
- * After release the tape pointer refers to freed arena memory;
- * callers must treat it as consumed. The Scheme layer's convention
- * is `(ad-tape-release tape)` at end of scope; use-after-release
- * is UB. */
+ * After release the tape pointer refers to freed arena memory; callers
+ * must treat it as consumed. The Scheme layer's convention is
+ * `(ad-tape-release tape)` at end of scope; use-after-release is UB.
+ */
 void ad_tape_release_owned(AdTape* tape) {
     if (!tape) return;
     /* The tape is the first field of AdTapeOwned, so the wrapper
@@ -860,13 +888,15 @@ void ad_tape_release_owned(AdTape* tape) {
     if (arena) arena_pop_scope(arena);
 }
 
-/* Get gradient for a node */
+/** @brief Null-safe accumulated gradient of node @p node (0.0 if @p tape
+ *         is null or @p node is out of range). */
 double ad_get_gradient(AdTape* tape, int node) {
     if (!tape || node < 0 || node >= tape->len) return 0.0;
     return tape->nodes[node].gradient;
 }
 
-/* Get forward value for a node */
+/** @brief Null-safe forward-pass value of node @p node (0.0 if @p tape is
+ *         null or @p node is out of range). */
 double ad_get_value(AdTape* tape, int node) {
     if (!tape || node < 0 || node >= tape->len) return 0.0;
     return tape->nodes[node].value;

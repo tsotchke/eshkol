@@ -43,6 +43,8 @@ typedef struct SymNode {
 static SymNode* sym_arena = NULL;
 static int sym_arena_len = 0, sym_arena_cap = 0;
 
+/** @brief Bump-allocate a zeroed SymNode from the growable sym_arena
+ *         (never individually freed — reset via sym_arena_reset()). */
 static SymNode* sym_alloc(void) {
     if (sym_arena_len >= sym_arena_cap) {
         sym_arena_cap = sym_arena_cap ? sym_arena_cap * 2 : 1024;
@@ -53,31 +55,43 @@ static SymNode* sym_alloc(void) {
     return n;
 }
 
+/** @brief Build a symbolic constant node with value @p v. */
 static SymNode* sym_const(double v) {
     SymNode* n = sym_alloc();
     n->type = SYM_CONST; n->const_val = v;
     return n;
 }
 
+/** @brief Build a symbolic variable node referencing local slot @p id. */
 static SymNode* sym_var(int id) {
     SymNode* n = sym_alloc();
     n->type = SYM_VAR; n->var_id = id;
     return n;
 }
 
+/** @brief Build a symbolic binary-operator node of the given @p type over
+ *         @p l and @p r. */
 static SymNode* sym_binop(SymNodeType type, SymNode* l, SymNode* r) {
     SymNode* n = sym_alloc();
     n->type = type; n->left = l; n->right = r;
     return n;
 }
 
+/** @brief Build a symbolic unary-operator node of the given @p type over
+ *         @p child. */
 static SymNode* sym_unop(SymNodeType type, SymNode* child) {
     SymNode* n = sym_alloc();
     n->type = type; n->left = child;
     return n;
 }
 
-/* Symbolic differentiation */
+/**
+ * @brief Symbolically differentiate @p expr with respect to variable
+ *        @p var_id, applying the standard calculus rules (sum/product/
+ *        quotient rule, chain rule through sin/cos/exp/log/sqrt, and
+ *        constant-exponent power rule; POW with a non-constant exponent
+ *        is not handled and returns 0).
+ */
 static SymNode* sym_differentiate(SymNode* expr, int var_id) {
     if (!expr) return sym_const(0);
 
@@ -146,7 +160,12 @@ static SymNode* sym_differentiate(SymNode* expr, int var_id) {
     }
 }
 
-/* Algebraic simplification */
+/**
+ * @brief Recursively simplify a symbolic expression tree in place:
+ *        constant folding, additive/multiplicative identities (x+0, x*1,
+ *        x*0, x/1, 0/x), double-negation elimination, and power identities
+ *        (x^0, x^1). Children are simplified first (bottom-up).
+ */
 static SymNode* sym_simplify(SymNode* expr) {
     if (!expr) return NULL;
 
@@ -196,7 +215,8 @@ static SymNode* sym_simplify(SymNode* expr) {
     return expr;
 }
 
-/* Reset the symbolic arena (call between compilations) */
+/** @brief Reset the symbolic-node arena's bump pointer to zero (call
+ *         between compilations to reclaim all nodes). */
 static void sym_arena_reset(void) {
     sym_arena_len = 0;
 }
@@ -205,8 +225,16 @@ static void sym_arena_reset(void) {
  * Bytecode Trace → Symbolic Graph
  ******************************************************************************/
 
-/* Build a symbolic expression graph from a bytecode instruction sequence.
- * Traces the stack effect of each instruction to build the expression tree. */
+/**
+ * @brief Build a symbolic expression graph from bytecode instructions
+ *        [start, end) by simulating their stack effect on a symbolic
+ *        stack (constants become SYM_CONST nodes, OP_GET_LOCAL becomes a
+ *        SYM_VAR, arithmetic ops combine the top operand(s); unrecognized
+ *        opcodes push an opaque variable placeholder keyed by PC so the
+ *        trace never aborts).
+ * @return The top-of-stack expression when tracing completes (or a zero
+ *         constant if the stack ended up empty).
+ */
 static SymNode* sym_trace_bytecode(const Instr* code, int start, int end,
                                      const Value* constants, int n_constants) {
     /* Symbolic stack — tracks expressions, not values */
@@ -259,9 +287,13 @@ static SymNode* sym_trace_bytecode(const Instr* code, int start, int end,
     return (sp > 0) ? stack[sp - 1] : sym_const(0);
 }
 
-/* Generate bytecode from a simplified symbolic expression.
- * Emits OP_CONST for constants, OP_GET_LOCAL for variables,
- * and arithmetic ops for operators. */
+/**
+ * @brief Recursively emit bytecode into @p output that recomputes
+ *        @p expr's value: OP_CONST for constants, OP_GET_LOCAL for
+ *        variables, the matching arithmetic opcode for add/sub/mul/div/neg,
+ *        and OP_NATIVE_CALL (with the appropriate native ID) for
+ *        sin/cos/exp/log/sqrt/pow.
+ */
 static void sym_compile(SymNode* expr, FuncChunk* output) {
     if (!expr || !output) return;
 

@@ -33,9 +33,13 @@ typedef struct {
 /* Replacement character for invalid UTF-8 */
 #define VM_UNICODE_REPLACEMENT 0xFFFD
 
-/* ── UTF-8 Decode ──
- * Decodes one codepoint from buf[pos..byte_len), advances pos.
- * Returns codepoint, or U+FFFD on invalid sequence.
+/**
+ * @brief Decode one UTF-8 codepoint from buf[*pos..byte_len), advancing
+ *        *pos past it. Rejects overlong encodings, bad continuation
+ *        bytes, surrogates, and out-of-range values as
+ *        VM_UNICODE_REPLACEMENT.
+ * @return The decoded codepoint, or -1 if *pos is already at/past
+ *         byte_len.
  */
 static int vm_utf8_decode(const char* buf, int byte_len, int* pos) {
     if (*pos >= byte_len) return -1;
@@ -90,9 +94,12 @@ static int vm_utf8_decode(const char* buf, int byte_len, int* pos) {
     return cp;
 }
 
-/* ── UTF-8 Encode ──
- * Encodes codepoint cp into buf (must have room for 4 bytes).
- * Returns number of bytes written (1-4), or 0 on invalid cp.
+/**
+ * @brief Encode codepoint @p cp into @p buf (must have room for 4 bytes).
+ *        Invalid codepoints (negative, surrogate range, or > 0x10FFFF)
+ *        are encoded as the replacement character U+FFFD instead.
+ * @return The number of bytes written (1-4, or 3 for the replacement
+ *         character).
  */
 static int vm_utf8_encode(int cp, char* buf) {
     if (cp < 0 || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) {
@@ -124,7 +131,7 @@ static int vm_utf8_encode(int cp, char* buf) {
     return 4;
 }
 
-/* ── Count codepoints in a UTF-8 buffer ── */
+/** @brief Count the number of UTF-8 codepoints in a byte buffer. */
 static int vm_utf8_char_count(const char* buf, int byte_len) {
     int count = 0;
     int pos = 0;
@@ -135,8 +142,9 @@ static int vm_utf8_char_count(const char* buf, int byte_len) {
     return count;
 }
 
-/* ── Find byte offset of the n-th codepoint (0-indexed) ──
- * Returns byte offset, or -1 if idx is out of range.
+/** @brief Find the byte offset of the @p idx'th (0-indexed) UTF-8
+ *         codepoint in @p buf.
+ * @return The byte offset, or -1 if @p idx is out of range.
  */
 static int vm_utf8_byte_offset(const char* buf, int byte_len, int idx) {
     int pos = 0;
@@ -149,7 +157,8 @@ static int vm_utf8_byte_offset(const char* buf, int byte_len, int idx) {
 
 /* ── Allocation ── */
 
-/* 550: vm_string_new — create string from raw bytes + byte_len */
+/** @brief Native call 550: allocate a new VmString by copying @p byte_len
+ *         bytes from @p data (computing its codepoint count). */
 static VmString* vm_string_new(VmRegionStack* rs, const char* data, int byte_len) {
     VmString* s = (VmString*)vm_alloc(rs, sizeof(VmString));
     if (!s) return NULL;
@@ -162,7 +171,8 @@ static VmString* vm_string_new(VmRegionStack* rs, const char* data, int byte_len
     return s;
 }
 
-/* 551: vm_string_from_cstr — create string from C string */
+/** @brief Native call 551: allocate a new VmString from a null-terminated
+ *         C string. */
 static VmString* vm_string_from_cstr(VmRegionStack* rs, const char* cstr) {
     if (!cstr) return vm_string_new(rs, "", 0);
     return vm_string_new(rs, cstr, (int)strlen(cstr));
@@ -170,13 +180,15 @@ static VmString* vm_string_from_cstr(VmRegionStack* rs, const char* cstr) {
 
 /* ── Core Operations ── */
 
-/* 552: string-length → codepoint count */
+/** @brief Native call 552: `(string-length s)` — codepoint count
+ *         (precomputed at construction). */
 static int vm_string_length(const VmString* s) {
     if (!s) return 0;
     return s->char_len;
 }
 
-/* 553: string-ref → codepoint at char index (O(n) scan) */
+/** @brief Native call 553: `(string-ref s idx)` — codepoint at character
+ *         index @p idx (O(n) UTF-8 scan to find the byte offset). */
 static int vm_string_ref(const VmString* s, int idx) {
     if (!s || idx < 0 || idx >= s->char_len) return -1;
     int pos = vm_utf8_byte_offset(s->data, s->byte_len, idx);
@@ -184,7 +196,9 @@ static int vm_string_ref(const VmString* s, int idx) {
     return vm_utf8_decode(s->data, s->byte_len, &pos);
 }
 
-/* 554: string-set → new string with codepoint replaced at idx (immutable) */
+/** @brief Native call 554: `(string-set! s idx cp)` R7RS-style — since
+ *         strings are immutable here, builds and returns a NEW string with
+ *         the codepoint at @p idx replaced by @p cp. */
 static VmString* vm_string_set(VmRegionStack* rs, const VmString* s, int idx, int cp) {
     if (!s || idx < 0 || idx >= s->char_len) return NULL;
 
@@ -216,7 +230,8 @@ static VmString* vm_string_set(VmRegionStack* rs, const VmString* s, int idx, in
     return result;
 }
 
-/* 555: substring → new string from char indices [start, end) */
+/** @brief Native call 555: `(substring s start end)` — new string from
+ *         character indices [start, end), clamped to bounds. */
 static VmString* vm_string_substring(VmRegionStack* rs, const VmString* s, int start, int end) {
     if (!s) return NULL;
     if (start < 0) start = 0;
@@ -231,7 +246,7 @@ static VmString* vm_string_substring(VmRegionStack* rs, const VmString* s, int s
     return vm_string_new(rs, s->data + start_byte, end_byte - start_byte);
 }
 
-/* 556: string-append → concatenated string */
+/** @brief Native call 556: `(string-append a b)`. */
 static VmString* vm_string_append(VmRegionStack* rs, const VmString* a, const VmString* b) {
     if (!a && !b) return vm_string_new(rs, "", 0);
     if (!a) return vm_string_new(rs, b->data, b->byte_len);
@@ -251,7 +266,7 @@ static VmString* vm_string_append(VmRegionStack* rs, const VmString* a, const Vm
     return result;
 }
 
-/* 557: string-upcase → uppercased (ASCII codepoints only) */
+/** @brief Native call 557: `(string-upcase s)` (ASCII codepoints only). */
 static VmString* vm_string_upcase(VmRegionStack* rs, const VmString* s) {
     if (!s) return NULL;
     VmString* result = (VmString*)vm_alloc(rs, sizeof(VmString));
@@ -271,7 +286,7 @@ static VmString* vm_string_upcase(VmRegionStack* rs, const VmString* s) {
     return result;
 }
 
-/* 558: string-downcase → lowercased (ASCII codepoints only) */
+/** @brief Native call 558: `(string-downcase s)` (ASCII codepoints only). */
 static VmString* vm_string_downcase(VmRegionStack* rs, const VmString* s) {
     if (!s) return NULL;
     VmString* result = (VmString*)vm_alloc(rs, sizeof(VmString));
@@ -291,8 +306,11 @@ static VmString* vm_string_downcase(VmRegionStack* rs, const VmString* s) {
     return result;
 }
 
-/* 559: string-contains → byte index of first occurrence, or -1
- * Returns codepoint index, not byte index. */
+/** @brief Native call 559: `(string-contains s substr)` — byte-level
+ *         memcmp() search, converted to a codepoint index on match.
+ * @return The codepoint index of the first occurrence, or -1 if not
+ *         found.
+ */
 static int vm_string_contains(const VmString* s, const VmString* substr) {
     if (!s || !substr) return -1;
     if (substr->byte_len == 0) return 0;
@@ -310,14 +328,15 @@ static int vm_string_contains(const VmString* s, const VmString* substr) {
 
 /* ── Comparison ── */
 
-/* 560: string=? */
+/** @brief Native call 560: `(string=? a b)` (byte-exact comparison). */
 static int vm_string_eq(const VmString* a, const VmString* b) {
     if (!a || !b) return (!a && !b);
     if (a->byte_len != b->byte_len) return 0;
     return memcmp(a->data, b->data, a->byte_len) == 0;
 }
 
-/* 561: string<? (lexicographic by codepoint) */
+/** @brief Native call 561: `(string<? a b)`, lexicographic comparison by
+ *         codepoint (a prefix of @p b is less than @p b). */
 static int vm_string_lt(const VmString* a, const VmString* b) {
     if (!a || !b) return (!a && b);
     int pa = 0, pb = 0;
@@ -330,7 +349,8 @@ static int vm_string_lt(const VmString* a, const VmString* b) {
     return (pa >= a->byte_len && pb < b->byte_len);
 }
 
-/* 562: string-ci=? (case-insensitive equality, ASCII folding) */
+/** @brief Native call 562: `(string-ci=? a b)`, case-insensitive equality
+ *         via ASCII case folding. */
 static int vm_string_ci_eq(const VmString* a, const VmString* b) {
     if (!a || !b) return (!a && !b);
     int pa = 0, pb = 0;
@@ -347,7 +367,9 @@ static int vm_string_ci_eq(const VmString* a, const VmString* b) {
 
 /* ── Conversion ── */
 
-/* 563: string->number → parse numeric string, returns NaN on failure */
+/** @brief Native call 563: `(string->number s)` — parses Scheme radix
+ *         prefixes (#x/#b/#o/#d) or a plain decimal/float via strtod().
+ *         Returns NaN on any parse failure or trailing garbage. */
 static double vm_string_to_number(const VmString* s) {
     if (!s || s->byte_len == 0) return NAN;
     const char* p = s->data;
@@ -377,7 +399,9 @@ static double vm_string_to_number(const VmString* s) {
     return val;
 }
 
-/* 564: number->string → format double */
+/** @brief Native call 564: `(number->string n)` — formats exact-integer
+ *         doubles (< 1e15 magnitude) as plain integers, else with
+ *         round-trip-safe `%.17g` precision. */
 static VmString* vm_number_to_string(VmRegionStack* rs, double n) {
     char buf[64];
     if (n == (int64_t)n && fabs(n) < 1e15) {
@@ -388,16 +412,19 @@ static VmString* vm_number_to_string(VmRegionStack* rs, double n) {
     return vm_string_from_cstr(rs, buf);
 }
 
-/* 565: string-copy → deep copy */
+/** @brief Native call 565: `(string-copy s)` — deep copy. */
 static VmString* vm_string_copy(VmRegionStack* rs, const VmString* s) {
     if (!s) return NULL;
     return vm_string_new(rs, s->data, s->byte_len);
 }
 
-/* 566: string->list → simple list of codepoints as int array
- * Returns array of ints (arena-allocated), writes count to *out_len.
- * For the bytecode VM, this produces a cons-list via the VM's CONS op.
- * Here we return the raw array of codepoints. */
+/**
+ * @brief Native call 566: `(string->list s)` support — decode @p s into
+ *        an arena-allocated array of codepoints, writing the count to
+ *        @p out_len. The bytecode VM turns this array into a proper
+ *        cons-list via its own CONS op; this function just does the UTF-8
+ *        decoding.
+ */
 static int* vm_string_to_list(VmRegionStack* rs, const VmString* s, int* out_len) {
     if (!s || s->char_len == 0) {
         *out_len = 0;
@@ -414,7 +441,9 @@ static int* vm_string_to_list(VmRegionStack* rs, const VmString* s, int* out_len
     return cps;
 }
 
-/* 567: list->string → build string from codepoint array */
+/** @brief Native call 567: `(list->string cps)` support — build a VmString
+ *         by UTF-8-encoding each codepoint in the @p count-length array
+ *         @p cps. */
 static VmString* vm_string_from_list(VmRegionStack* rs, const int* cps, int count) {
     if (!cps || count <= 0) return vm_string_new(rs, "", 0);
 
@@ -440,7 +469,8 @@ static VmString* vm_string_from_list(VmRegionStack* rs, const int* cps, int coun
     return result;
 }
 
-/* 568: make-string → string of n copies of char cp */
+/** @brief Native call 568: `(make-string n [cp])` — string of @p n copies
+ *         of codepoint @p cp. */
 static VmString* vm_string_make(VmRegionStack* rs, int n, int cp) {
     if (n <= 0) return vm_string_new(rs, "", 0);
 
@@ -462,7 +492,8 @@ static VmString* vm_string_make(VmRegionStack* rs, int n, int cp) {
     return result;
 }
 
-/* 569: string-hash → simple FNV-1a hash */
+/** @brief Native call 569: `(string-hash s)` — FNV-1a hash of the raw
+ *         UTF-8 bytes. */
 static uint64_t vm_string_hash(const VmString* s) {
     if (!s) return 0;
     uint64_t h = 14695981039346656037ULL;
@@ -473,7 +504,9 @@ static uint64_t vm_string_hash(const VmString* s) {
     return h;
 }
 
-/* 570: string-reverse → reversed string (by codepoints) */
+/** @brief Native call 570: `(string-reverse s)` — reverses the codepoint
+ *         sequence (via vm_string_to_list()/vm_string_from_list()), not
+ *         raw bytes. */
 static VmString* vm_string_reverse(VmRegionStack* rs, const VmString* s) {
     if (!s || s->char_len <= 1) {
         return s ? vm_string_copy(rs, s) : NULL;
@@ -493,7 +526,8 @@ static VmString* vm_string_reverse(VmRegionStack* rs, const VmString* s) {
     return vm_string_from_list(rs, cps, count);
 }
 
-/* 571: string-trim → remove leading/trailing whitespace */
+/** @brief Native call 571: `(string-trim s)` — strip leading/trailing
+ *         ASCII whitespace (space, tab, LF, CR). */
 static VmString* vm_string_trim(VmRegionStack* rs, const VmString* s) {
     if (!s || s->byte_len == 0) return vm_string_new(rs, "", 0);
 
@@ -516,8 +550,9 @@ static VmString* vm_string_trim(VmRegionStack* rs, const VmString* s) {
     return vm_string_from_list(rs, cps + start, end - start);
 }
 
-/* 572: string-split → array of VmString* (split by single-char delimiter)
- * Returns arena-allocated array. Writes count to *out_count. */
+/** @brief Native call 572: `(string-split s delim)` — split @p s on every
+ *         occurrence of codepoint @p delim_cp into an arena-allocated
+ *         array of VmString* (count written to @p out_count). */
 static VmString** vm_string_split(VmRegionStack* rs, const VmString* s, int delim_cp,
                                    int* out_count) {
     if (!s || s->byte_len == 0) {
@@ -555,7 +590,9 @@ static VmString** vm_string_split(VmRegionStack* rs, const VmString* s, int deli
     return parts;
 }
 
-/* 573: string-join → join array of VmString* with separator */
+/** @brief Native call 573: `(string-join parts sep)` — concatenate
+ *         @p count VmString* with @p sep inserted between consecutive
+ *         parts (no separator if @p sep is null). */
 static VmString* vm_string_join(VmRegionStack* rs, VmString** parts, int count,
                                  const VmString* sep) {
     if (!parts || count <= 0) return vm_string_new(rs, "", 0);
@@ -593,14 +630,14 @@ static VmString* vm_string_join(VmRegionStack* rs, VmString** parts, int count,
     return result;
 }
 
-/* 574: string-starts-with? */
+/** @brief Native call 574: `(string-starts-with? s prefix)`. */
 static int vm_string_starts_with(const VmString* s, const VmString* prefix) {
     if (!s || !prefix) return 0;
     if (prefix->byte_len > s->byte_len) return 0;
     return memcmp(s->data, prefix->data, prefix->byte_len) == 0;
 }
 
-/* 575: string-ends-with? */
+/** @brief Native call 575: `(string-ends-with? s suffix)`. */
 static int vm_string_ends_with(const VmString* s, const VmString* suffix) {
     if (!s || !suffix) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -608,7 +645,9 @@ static int vm_string_ends_with(const VmString* s, const VmString* suffix) {
                   suffix->data, suffix->byte_len) == 0;
 }
 
-/* 576: string-replace → replace first occurrence of old with new */
+/** @brief Native call 576: `(string-replace s old new)` — replace the
+ *         first byte-level occurrence of @p old_sub with @p new_sub;
+ *         returns a copy of @p s unchanged if @p old_sub isn't found. */
 static VmString* vm_string_replace(VmRegionStack* rs, const VmString* s,
                                      const VmString* old_sub, const VmString* new_sub) {
     if (!s || !old_sub || old_sub->byte_len == 0) return s ? vm_string_copy(rs, s) : NULL;
@@ -643,14 +682,16 @@ static VmString* vm_string_replace(VmRegionStack* rs, const VmString* s,
     return result;
 }
 
-/* 577: integer->char (codepoint to single-char string) */
+/** @brief Native call 577: `(integer->char cp)` — encode a codepoint as a
+ *         single-character string. */
 static VmString* vm_integer_to_char(VmRegionStack* rs, int cp) {
     char buf[4];
     int len = vm_utf8_encode(cp, buf);
     return vm_string_new(rs, buf, len);
 }
 
-/* 578: char->integer (first char of string to codepoint) */
+/** @brief Native call 578: `(char->integer s)` — decode @p s's first
+ *         character to its codepoint (-1 if empty/null). */
 static int vm_char_to_integer(const VmString* s) {
     if (!s || s->byte_len == 0) return -1;
     int pos = 0;
@@ -662,6 +703,8 @@ static int vm_char_to_integer(const VmString* s) {
 #ifdef VM_STRING_TEST
 #include <assert.h>
 
+/** @brief Self-test: UTF-8 encode/decode round-trip across ASCII and
+ *         multi-byte codepoints. */
 static void test_utf8_roundtrip(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -703,6 +746,7 @@ static void test_utf8_roundtrip(void) {
     printf("  utf8_roundtrip: PASS\n");
 }
 
+/** @brief Self-test: basic string construction, length, and ref. */
 static void test_string_basic(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -731,6 +775,8 @@ static void test_string_basic(void) {
     printf("  string_basic: PASS\n");
 }
 
+/** @brief Self-test: immutable vm_string_set() returns a correctly-edited
+ *         new string. */
 static void test_string_set(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -752,6 +798,7 @@ static void test_string_set(void) {
     printf("  string_set: PASS\n");
 }
 
+/** @brief Self-test: vm_string_substring() index ranges. */
 static void test_substring(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -773,6 +820,7 @@ static void test_substring(void) {
     printf("  substring: PASS\n");
 }
 
+/** @brief Self-test: vm_string_append() concatenation. */
 static void test_append(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -791,6 +839,7 @@ static void test_append(void) {
     printf("  append: PASS\n");
 }
 
+/** @brief Self-test: vm_string_upcase()/vm_string_downcase(). */
 static void test_case(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -812,6 +861,7 @@ static void test_case(void) {
     printf("  case: PASS\n");
 }
 
+/** @brief Self-test: vm_string_contains() found/not-found cases. */
 static void test_contains(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -834,6 +884,7 @@ static void test_contains(void) {
     printf("  contains: PASS\n");
 }
 
+/** @brief Self-test: string=?/string<?/string-ci=?. */
 static void test_comparison(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -862,6 +913,7 @@ static void test_comparison(void) {
     printf("  comparison: PASS\n");
 }
 
+/** @brief Self-test: string<->number conversion, including radix prefixes. */
 static void test_conversion(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -890,6 +942,7 @@ static void test_conversion(void) {
     printf("  conversion: PASS\n");
 }
 
+/** @brief Self-test: string->list/list->string round-trip. */
 static void test_list_roundtrip(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -916,6 +969,7 @@ static void test_list_roundtrip(void) {
     printf("  list_roundtrip: PASS\n");
 }
 
+/** @brief Self-test: vm_string_make() fill construction. */
 static void test_make_string(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -933,6 +987,7 @@ static void test_make_string(void) {
     printf("  make_string: PASS\n");
 }
 
+/** @brief Self-test: vm_string_hash() determinism/distinctness. */
 static void test_hash(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -952,6 +1007,7 @@ static void test_hash(void) {
     printf("  hash: PASS\n");
 }
 
+/** @brief Self-test: vm_string_reverse() by codepoint. */
 static void test_reverse(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -971,6 +1027,7 @@ static void test_reverse(void) {
     printf("  reverse: PASS\n");
 }
 
+/** @brief Self-test: vm_string_trim() whitespace stripping. */
 static void test_trim(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -987,6 +1044,7 @@ static void test_trim(void) {
     printf("  trim: PASS\n");
 }
 
+/** @brief Self-test: vm_string_split()/vm_string_join() round-trip. */
 static void test_split_join(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -1008,6 +1066,7 @@ static void test_split_join(void) {
     printf("  split_join: PASS\n");
 }
 
+/** @brief Self-test: vm_string_starts_with()/vm_string_ends_with(). */
 static void test_starts_ends_with(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -1026,6 +1085,7 @@ static void test_starts_ends_with(void) {
     printf("  starts_ends_with: PASS\n");
 }
 
+/** @brief Self-test: vm_string_replace() first-occurrence substitution. */
 static void test_replace(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -1045,6 +1105,7 @@ static void test_replace(void) {
     printf("  replace: PASS\n");
 }
 
+/** @brief Self-test: integer->char/char->integer round-trip. */
 static void test_char_conversion(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -1061,6 +1122,7 @@ static void test_char_conversion(void) {
     printf("  char_conversion: PASS\n");
 }
 
+/** @brief Self-test: edge-case behaviour on the empty string. */
 static void test_empty_string(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
@@ -1086,6 +1148,8 @@ static void test_empty_string(void) {
     printf("  empty_string: PASS\n");
 }
 
+/** @brief Standalone self-test entry point (built when VM_STRING_TEST is
+ *         defined): runs all test_* functions above in sequence. */
 int main(void) {
     printf("vm_string self-tests:\n");
     test_utf8_roundtrip();

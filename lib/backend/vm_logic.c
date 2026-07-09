@@ -45,6 +45,7 @@ typedef struct {
     } data;
 } VmValue;
 
+/** @brief Construct a null-typed VmValue. */
 static VmValue vm_val_null(void) {
     VmValue v;
     memset(&v, 0, sizeof(v));
@@ -52,6 +53,7 @@ static VmValue vm_val_null(void) {
     return v;
 }
 
+/** @brief Construct an int64-typed VmValue. */
 static VmValue vm_val_int64(int64_t x) {
     VmValue v;
     memset(&v, 0, sizeof(v));
@@ -60,6 +62,7 @@ static VmValue vm_val_int64(int64_t x) {
     return v;
 }
 
+/** @brief Construct a logic-variable-typed VmValue referencing var @p id. */
 static VmValue vm_val_logic_var(uint64_t id) {
     VmValue v;
     memset(&v, 0, sizeof(v));
@@ -68,6 +71,7 @@ static VmValue vm_val_logic_var(uint64_t id) {
     return v;
 }
 
+/** @brief Construct a heap-pointer-typed VmValue wrapping @p p. */
 static VmValue vm_val_ptr(void* p) {
     VmValue v;
     memset(&v, 0, sizeof(v));
@@ -90,7 +94,12 @@ typedef struct {
 static char     g_vm_var_names[VM_LOGIC_VAR_MAX][64];
 static uint64_t g_vm_var_count = 0;
 
-/* 500: make-logic-var — create or look up by name */
+/** @brief Native call 500: `(make-logic-var name)` — intern @p name in the
+ *         process-global logic-variable registry, deduplicating by linear
+ *         scan (fine for < VM_LOGIC_VAR_MAX vars).
+ * @return The variable's id, or UINT64_MAX if @p name is null or the
+ *         registry is full.
+ */
 static uint64_t vm_make_logic_var(const char* name) {
     if (!name) return UINT64_MAX;
     /* Deduplicate: linear scan (fine for < 4096 vars) */
@@ -106,13 +115,15 @@ static uint64_t vm_make_logic_var(const char* name) {
     return id;
 }
 
-/* 501: logic-var-name */
+/** @brief Native call 501: `(logic-var-name id)`; NULL if @p var_id is out
+ *         of range. */
 static const char* vm_logic_var_name(uint64_t var_id) {
     if (var_id >= g_vm_var_count) return NULL;
     return g_vm_var_names[var_id];
 }
 
-/* Reset variable registry (for tests) */
+/** @brief Reset the process-global logic-variable registry (used between
+ *         test runs). */
 static void vm_logic_var_reset(void) {
     g_vm_var_count = 0;
 }
@@ -128,7 +139,9 @@ typedef struct {
     int       capacity;
 } VmSubstitution;
 
-/* 502: make-substitution — empty with given capacity */
+/** @brief Native call 502: `(make-substitution [capacity])` — allocate an
+ *         empty substitution with room for @p capacity bindings (default
+ *         8 if <= 0). */
 static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
     if (capacity <= 0) capacity = 8;
     VmSubstitution* s = (VmSubstitution*)vm_alloc(rs, sizeof(VmSubstitution));
@@ -141,7 +154,10 @@ static VmSubstitution* vm_make_substitution(VmRegionStack* rs, int capacity) {
     return s;
 }
 
-/* 503: subst-lookup — returns pointer to bound term, or NULL */
+/** @brief Native call 503: `(subst-lookup s var-id)` — linear-scan lookup
+ *         of a variable's bound term.
+ * @return A pointer into @p s's terms array, or NULL if unbound.
+ */
 static const VmValue* vm_subst_lookup(const VmSubstitution* s, uint64_t var_id) {
     if (!s) return NULL;
     for (int i = 0; i < s->n_bindings; i++) {
@@ -150,7 +166,12 @@ static const VmValue* vm_subst_lookup(const VmSubstitution* s, uint64_t var_id) 
     return NULL;
 }
 
-/* 504: subst-extend — copy-on-extend, returns NEW substitution */
+/**
+ * @brief Native call 504: `(subst-extend s var-id term)` — immutable
+ *        extend: copies @p s's existing bindings into a fresh, larger
+ *        (capacity-doubled as needed) substitution and appends the new
+ *        (@p var_id, @p term) binding, leaving @p s untouched.
+ */
 static VmSubstitution* vm_subst_extend(VmRegionStack* rs,
     const VmSubstitution* s, uint64_t var_id, const VmValue* term)
 {
@@ -186,7 +207,9 @@ static VmSubstitution* vm_subst_extend(VmRegionStack* rs,
  * Walk — follow variable chains in a substitution
  * ======================================================================== */
 
-/* 505: walk — shallow: follow variable chain to terminus */
+/** @brief Native call 505: `(walk term subst)` — shallow dereference,
+ *         following a chain of bound logic variables until reaching a
+ *         non-variable term or an unbound variable. */
 static VmValue vm_walk(const VmValue* term, const VmSubstitution* subst) {
     if (!term) return vm_val_null();
     VmValue current = *term;
@@ -211,7 +234,9 @@ typedef struct {
     int32_t  datum_ptr;   /* heap pointer to the raw Scheme list */
 } VmFact;
 
-/* 509: make-fact */
+/** @brief Native call 509: `(make-fact predicate args...)` — allocate a
+ *         fact with the given predicate id and a copy of the @p arity
+ *         argument values. */
 static VmFact* vm_make_fact(VmRegionStack* rs, uint64_t predicate,
     const VmValue* args, int arity)
 {
@@ -242,6 +267,12 @@ static VmFact* vm_make_fact(VmRegionStack* rs, uint64_t predicate,
 
 #define OCCURS_MAX_DEPTH 1000
 
+/** @brief Recursive occurs-check: does variable @p var_id appear inside
+ *         @p term (after walking) under @p subst? Depth-limited to
+ *         OCCURS_MAX_DEPTH to guard against pathological/cyclic input.
+ *         Fact-internal recursion is not yet implemented (see inline
+ *         comment) — only checks whether the walked term itself is
+ *         @p var_id. */
 static int vm_occurs_impl(uint64_t var_id, const VmValue* term,
     const VmSubstitution* subst, int depth)
 {
@@ -260,6 +291,7 @@ static int vm_occurs_impl(uint64_t var_id, const VmValue* term,
     return 0;
 }
 
+/** @brief Public entry point for the occurs check (see vm_occurs_impl()). */
 static int vm_occurs(uint64_t var_id, const VmValue* term,
     const VmSubstitution* subst)
 {
@@ -270,6 +302,8 @@ static int vm_occurs(uint64_t var_id, const VmValue* term,
  * Value Equality
  * ======================================================================== */
 
+/** @brief Structural equality of two VmValues of the same type (raw bit
+ *         comparison per type; different types are never equal). */
 static int vm_values_equal(const VmValue* a, const VmValue* b) {
     if (a->type != b->type) return 0;
     switch (a->type) {
@@ -291,7 +325,15 @@ static int vm_values_equal(const VmValue* a, const VmValue* b) {
 static VmSubstitution* vm_unify_facts(VmRegionStack* rs,
     const VmFact* f1, const VmFact* f2, const VmSubstitution* subst);
 
-/* 507: unify */
+/**
+ * @brief Native call 507: `(unify t1 t2 subst)` — Robinson's unification
+ *        algorithm with occurs check. Walks both terms; if equal, returns
+ *        @p subst unchanged; if either is an unbound logic variable,
+ *        binds it to the other (failing on occurs-check violation); if
+ *        both are fact heap objects, recurses via vm_unify_facts().
+ * @return An extended substitution on success, or NULL on unification
+ *         failure.
+ */
 static VmSubstitution* vm_unify(VmRegionStack* rs,
     const VmValue* t1, const VmValue* t2, const VmSubstitution* subst)
 {
@@ -340,6 +382,11 @@ static VmSubstitution* vm_unify(VmRegionStack* rs,
     return NULL;
 }
 
+/**
+ * @brief Structural unification of two facts: fails if predicates or
+ *        arities differ, otherwise threads the substitution through
+ *        vm_unify() on each argument pair in order.
+ */
 static VmSubstitution* vm_unify_facts(VmRegionStack* rs,
     const VmFact* f1, const VmFact* f2, const VmSubstitution* subst)
 {
@@ -358,6 +405,10 @@ static VmSubstitution* vm_unify_facts(VmRegionStack* rs,
  * Fact allocation using object headers (for subtype-safe unification)
  * ======================================================================== */
 
+/** @brief Allocate a fact via vm_alloc_object() with the VM_SUBTYPE_FACT
+ *         header tag (unlike vm_make_fact(), which uses a plain, untagged
+ *         allocation), so it can be identified through a heap-pointer
+ *         VmValue during unification/occurs-check. */
 static VmFact* vm_make_fact_obj(VmRegionStack* rs, uint64_t predicate,
     const VmValue* args, int arity)
 {
@@ -375,6 +426,7 @@ static VmFact* vm_make_fact_obj(VmRegionStack* rs, uint64_t predicate,
     return f;
 }
 
+/** @brief Wrap a fact pointer as a heap-pointer-typed VmValue. */
 static VmValue vm_val_fact(VmFact* f) {
     VmValue v;
     memset(&v, 0, sizeof(v));
@@ -395,7 +447,8 @@ typedef struct {
     int      capacity;
 } VmKnowledgeBase;
 
-/* 510: make-kb */
+/** @brief Native call 510: `(make-kb)` — allocate an empty knowledge base
+ *         with an initial KB_INIT_CAP-fact capacity. */
 static VmKnowledgeBase* vm_make_kb(VmRegionStack* rs) {
     VmKnowledgeBase* kb = (VmKnowledgeBase*)vm_alloc_object(rs,
         VM_SUBTYPE_KB, sizeof(VmKnowledgeBase));
@@ -407,7 +460,8 @@ static VmKnowledgeBase* vm_make_kb(VmRegionStack* rs) {
     return kb;
 }
 
-/* 511: kb-assert! */
+/** @brief Native call 511: `(kb-assert! kb fact)` — append @p fact to the
+ *         knowledge base, growing its fact array (doubling) as needed. */
 static void vm_kb_assert(VmRegionStack* rs, VmKnowledgeBase* kb,
     VmFact* fact)
 {
@@ -434,6 +488,8 @@ typedef struct VmConsPair {
     VmValue cdr;
 } VmConsPair;
 
+/** @brief Allocate a cons cell (heap-object-tagged) holding (@p car, @p
+ *         cdr), for building the result list returned by vm_kb_query(). */
 static VmValue vm_cons(VmRegionStack* rs, VmValue car, VmValue cdr) {
     VmConsPair* pair = (VmConsPair*)vm_alloc_object(rs, VM_SUBTYPE_CONS, sizeof(VmConsPair));
     if (!pair) return vm_val_null();
@@ -446,10 +502,13 @@ static VmValue vm_cons(VmRegionStack* rs, VmValue car, VmValue cdr) {
     return v;
 }
 
-/*
- * 512: kb-query
- * Returns a cons list of substitutions that unify pattern with KB facts.
- * Returns NULL (empty list) if no matches.
+/**
+ * @brief Native call 512: `(kb-query kb pattern [subst])` — scan every
+ *        fact in @p kb, quick-filtering on predicate/arity match before
+ *        attempting full argument-by-argument unify() against @p pattern
+ *        (seeded from @p initial_subst, or a fresh empty substitution).
+ * @return A cons list of the resulting substitutions (one per matching
+ *         fact), or the empty list (null VmValue) if nothing matched.
  */
 static VmValue vm_kb_query(VmRegionStack* rs, const VmKnowledgeBase* kb,
     const VmFact* pattern, const VmSubstitution* initial_subst)
@@ -495,6 +554,12 @@ static VmValue vm_kb_query(VmRegionStack* rs, const VmKnowledgeBase* kb,
  * Occurs check inside facts (enhanced — recurses into fact args)
  * ======================================================================== */
 
+/**
+ * @brief Enhanced occurs check that recurses into a fact's arguments
+ *        (unlike vm_occurs_impl(), which only checks the top-level term):
+ *        walks each argument and, if it's itself a nested fact, recurses.
+ *        Depth-limited to OCCURS_MAX_DEPTH.
+ */
 static int vm_occurs_in_fact(uint64_t var_id, const VmFact* fact,
     const VmSubstitution* subst, int depth)
 {
@@ -516,7 +581,14 @@ static int vm_occurs_in_fact(uint64_t var_id, const VmFact* fact,
     return 0;
 }
 
-/* Enhanced walk_deep that handles facts */
+/**
+ * @brief Deep-walk a term: like vm_walk(), but if the shallow-walked
+ *        result is a fact, recursively deep-walks each of its arguments
+ *        and rebuilds a fresh fact with the resolved values (so bound
+ *        variables anywhere inside a fact's structure are fully
+ *        substituted, not just at the top level). Depth-limited to
+ *        WALK_DEEP_MAX to guard against cycles.
+ */
 static VmValue vm_walk_deep_full(VmRegionStack* rs, const VmValue* term,
     const VmSubstitution* subst, int depth)
 {
@@ -555,6 +627,11 @@ static VmValue vm_walk_deep_full(VmRegionStack* rs, const VmValue* term,
 #ifdef VM_LOGIC_TEST
 #include <assert.h>
 
+/** @brief Standalone self-test (built when this file's test guard is
+ *         defined): exercises logic-variable interning/dedup,
+ *         substitution extension, walk, unification (including occurs
+ *         check and fact structural unification), and knowledge-base
+ *         assert/query. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

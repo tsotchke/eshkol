@@ -76,17 +76,24 @@ public:
 #endif
 };
 
+/** @brief Construct the emitter, eagerly creating an MLIR context with the
+ *         func/arith/stablehlo dialects loaded and an empty module when
+ *         MLIR+StableHLO are compiled in; otherwise leaves it unavailable. */
 StableHLOEmitter::StableHLOEmitter()
     : impl_(std::make_unique<Impl>()) {}
 
 StableHLOEmitter::~StableHLOEmitter() = default;
 
+/** @brief True if this emitter was built with MLIR+StableHLO support and can
+ *         actually emit ops (all emit* methods are no-op nullptr returns
+ *         otherwise). */
 bool StableHLOEmitter::isAvailable() const {
     return impl_->available_;
 }
 
 // ===== Arithmetic Operations =====
 
+/** @brief Emit a StableHLO `stablehlo.add` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitAdd(void* lhs, void* rhs) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -102,6 +109,7 @@ void* StableHLOEmitter::emitAdd(void* lhs, void* rhs) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.subtract` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitSubtract(void* lhs, void* rhs) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -117,6 +125,7 @@ void* StableHLOEmitter::emitSubtract(void* lhs, void* rhs) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.multiply` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitMultiply(void* lhs, void* rhs) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -132,6 +141,7 @@ void* StableHLOEmitter::emitMultiply(void* lhs, void* rhs) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.divide` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitDivide(void* lhs, void* rhs) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -149,6 +159,10 @@ void* StableHLOEmitter::emitDivide(void* lhs, void* rhs) {
 
 // ===== Matrix Operations =====
 
+/** @brief Emit a StableHLO `stablehlo.dot_general` op, inferring the output
+ *         shape from `dims`' batching/contracting dimensions (fast path for
+ *         plain 2-D [M,K]x[K,N] matmul, general path otherwise). Returns
+ *         nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitMatmul(void* lhs, void* rhs, const DotDimensionNumbers& dims) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -205,6 +219,9 @@ void* StableHLOEmitter::emitMatmul(void* lhs, void* rhs, const DotDimensionNumbe
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.transpose` op, computing the output
+ *         shape by permuting `input`'s dimensions per `permutation`. Returns
+ *         nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitTranspose(void* input, const std::vector<int64_t>& permutation) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -232,6 +249,7 @@ void* StableHLOEmitter::emitTranspose(void* input, const std::vector<int64_t>& p
 
 // ===== Transcendental Operations =====
 
+/** @brief Emit a StableHLO `stablehlo.exponential` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitExp(void* input) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -246,6 +264,7 @@ void* StableHLOEmitter::emitExp(void* input) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.log` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitLog(void* input) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -260,6 +279,7 @@ void* StableHLOEmitter::emitLog(void* input) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.sine` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitSin(void* input) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -274,6 +294,7 @@ void* StableHLOEmitter::emitSin(void* input) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.cosine` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitCos(void* input) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -288,6 +309,7 @@ void* StableHLOEmitter::emitCos(void* input) {
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.tanh` op. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitTanh(void* input) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -304,6 +326,12 @@ void* StableHLOEmitter::emitTanh(void* input) {
 
 // ===== Reduction Operations =====
 
+/** @brief Emit a StableHLO `stablehlo.reduce` op over `axes` with `op`
+ *         (sum/prod/max/min): builds the appropriate identity-element
+ *         constant, constructs the reduction body region (a single binary
+ *         op matching `op`), and returns the reduced-shape result. Returns
+ *         nullptr for an unsupported element type/op or if MLIR support
+ *         isn't available. */
 void* StableHLOEmitter::emitReduce(void* input, const std::vector<int64_t>& axes, StableHLOOp op) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -412,6 +440,8 @@ void* StableHLOEmitter::emitReduce(void* input, const std::vector<int64_t>& axes
 
 // ===== Shape Operations =====
 
+/** @brief Emit a StableHLO `stablehlo.reshape` op to `new_shape`. Returns
+ *         nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitReshape(void* input, const std::vector<int64_t>& new_shape) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -428,6 +458,11 @@ void* StableHLOEmitter::emitReshape(void* input, const std::vector<int64_t>& new
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.broadcast_in_dim` op. Note: currently
+ *         reuses the input type as the result type (identity broadcast) —
+ *         callers needing an actual shape change must set up the true
+ *         output type via the XLA codegen layer. Returns nullptr if MLIR
+ *         support isn't available. */
 void* StableHLOEmitter::emitBroadcast(void* input, const std::vector<int64_t>& broadcast_dims) {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return nullptr;
@@ -450,6 +485,9 @@ void* StableHLOEmitter::emitBroadcast(void* input, const std::vector<int64_t>& b
 #endif
 }
 
+/** @brief Emit a StableHLO `stablehlo.slice` op with the given per-dimension
+ *         `[start, limit)` bounds and `strides`, computing the resulting
+ *         shape. Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::emitSlice(void* input, const std::vector<int64_t>& start,
                                    const std::vector<int64_t>& limit,
                                    const std::vector<int64_t>& strides) {
@@ -481,6 +519,9 @@ void* StableHLOEmitter::emitSlice(void* input, const std::vector<int64_t>& start
 
 // ===== Module Management =====
 
+/** @brief Return the underlying MLIR module as an opaque `Operation*`
+ *         (stable across the module's lifetime, owned by the emitter).
+ *         Returns nullptr if MLIR support isn't available. */
 void* StableHLOEmitter::getModule() const {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_ || !impl_->module_) return nullptr;
@@ -491,6 +532,8 @@ void* StableHLOEmitter::getModule() const {
 #endif
 }
 
+/** @brief Serialize the current MLIR module to its textual IR form. Returns
+ *         an empty string if MLIR support isn't available. */
 std::string StableHLOEmitter::serializeToString() const {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_ || !impl_->module_) return "";
@@ -503,6 +546,9 @@ std::string StableHLOEmitter::serializeToString() const {
 #endif
 }
 
+/** @brief Discard the emitted-value pool and start a fresh empty module,
+ *         releasing all previously returned opaque mlir::Value handles.
+ *         No-op if MLIR support isn't available. */
 void StableHLOEmitter::reset() {
 #ifdef ESHKOL_XLA_FULL_MLIR
     if (!impl_->available_) return;

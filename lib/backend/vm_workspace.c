@@ -68,7 +68,10 @@ typedef int (*VmClosureCallFn)(
  * Construction
  * ======================================================================== */
 
-/* 540: make-workspace */
+/** @brief Native call 540: `(make-workspace dim max-modules)` — allocate a
+ *         Global Workspace with a zero-initialized content buffer of
+ *         @p dim doubles and room for up to @p max_modules modules (capped
+ *         at VM_WS_MAX_MODULES). */
 static VmWorkspace* vm_ws_new(VmRegionStack* rs, int dim, int max_modules) {
     if (!rs || dim <= 0 || max_modules <= 0) return NULL;
     if (max_modules > VM_WS_MAX_MODULES) max_modules = VM_WS_MAX_MODULES;
@@ -91,7 +94,10 @@ static VmWorkspace* vm_ws_new(VmRegionStack* rs, int dim, int max_modules) {
     return ws;
 }
 
-/* 541: ws-register! */
+/** @brief Native call 541: `(ws-register! ws name closure)` — register a
+ *         cognitive-specialist module (name truncated to 63 chars);
+ *         silently ignored once @p ws->max_modules is reached (see
+ *         self-test 9). */
 static void vm_ws_register(VmWorkspace* ws, const char* name, void* closure_ptr) {
     if (!ws || !name) return;
     if (ws->n_modules >= ws->max_modules) return;
@@ -111,25 +117,28 @@ static void vm_ws_register(VmWorkspace* ws, const char* name, void* closure_ptr)
  * Content access
  * ======================================================================== */
 
-/* 543: ws-get-content */
+/** @brief Native call 543: current workspace content vector (length
+ *         ws->dim). */
 static const double* vm_ws_get_content(const VmWorkspace* ws) {
     if (!ws) return NULL;
     return ws->content;
 }
 
-/* 544: ws-set-content */
+/** @brief Native call 544: overwrite the leading min(@p dim, ws->dim)
+ *         entries of the workspace content from @p data. */
 static void vm_ws_set_content(VmWorkspace* ws, const double* data, int dim) {
     if (!ws || !data) return;
     int copy_dim = (dim < ws->dim) ? dim : ws->dim;
     memcpy(ws->content, data, (size_t)copy_dim * sizeof(double));
 }
 
-/* 545: ws-get-dim */
+/** @brief Native call 545: workspace content vector dimension. */
 static int vm_ws_get_dim(const VmWorkspace* ws) {
     return ws ? ws->dim : 0;
 }
 
-/* 546: ws-get-step-count */
+/** @brief Native call 546: number of cognitive cycles (vm_ws_step() calls)
+ *         run so far. */
 static int vm_ws_get_step_count(const VmWorkspace* ws) {
     return ws ? ws->step_count : 0;
 }
@@ -138,6 +147,9 @@ static int vm_ws_get_step_count(const VmWorkspace* ws) {
  * Softmax
  * ======================================================================== */
 
+/** @brief Numerically-stable softmax of @p input (length @p n) into
+ *         @p output: subtracts the max before exponentiating, then
+ *         normalizes by the sum. */
 static void softmax(const double* input, double* output, int n) {
     if (n <= 0) return;
 
@@ -172,7 +184,17 @@ static void softmax(const double* input, double* output, int n) {
  * 5. All modules see updated content next cycle
  * ======================================================================== */
 
-/* 542: ws-step! */
+/**
+ * @brief Native call 542: `(ws-step! ws)` — run one Global Workspace
+ *        cognitive cycle. Invokes every registered module's closure (via
+ *        @p call_closure_fn) with the current content, collecting each
+ *        module's (salience, proposal) pair; runs softmax competition over
+ *        the salience scores, updates each module's stored salience, and
+ *        overwrites the workspace content with the winning (highest
+ *        post-softmax score) module's proposal.
+ * @return 1 on success, 0 if inputs are invalid, there are no modules, or
+ *         no module call succeeded.
+ */
 static int vm_ws_step(VmRegionStack* rs, VmWorkspace* ws,
     VmClosureCallFn call_closure_fn)
 {
@@ -246,6 +268,8 @@ static int vm_ws_step(VmRegionStack* rs, VmWorkspace* ws,
  * Display
  * ======================================================================== */
 
+/** @brief Print a `#<workspace: ...>` summary of @p ws (dim, module count,
+ *         step count) for `display`/`write`. */
 static void vm_display_workspace(const VmWorkspace* ws) {
     if (!ws) { printf("#<workspace: empty>"); return; }
     printf("#<workspace: dim=%d, %d modules, step=%d>",
@@ -259,7 +283,8 @@ static void vm_display_workspace(const VmWorkspace* ws) {
 #ifdef VM_WORKSPACE_TEST
 #include <assert.h>
 
-/* Test closure: always returns salience=1.0, proposal=[1,0,0,...] */
+/** @brief Self-test fixture: fake module closure that always returns
+ *         salience=1.0 and proposal=[1,0,0,...]. */
 static int test_module1(void* closure_ptr, const double* content, int dim,
     double* out_salience, double* out_proposal, int out_dim)
 {
@@ -271,7 +296,8 @@ static int test_module1(void* closure_ptr, const double* content, int dim,
     return 1;
 }
 
-/* Test closure: always returns salience=0.5, proposal=[0,1,0,...] */
+/** @brief Self-test fixture: fake module closure that always returns
+ *         salience=0.5 and proposal=[0,1,0,...]. */
 static int test_module2(void* closure_ptr, const double* content, int dim,
     double* out_salience, double* out_proposal, int out_dim)
 {
@@ -283,7 +309,8 @@ static int test_module2(void* closure_ptr, const double* content, int dim,
     return 1;
 }
 
-/* Test closure: returns salience=2.0, proposal=[0,0,1] */
+/** @brief Self-test fixture: fake module closure that always returns
+ *         salience=2.0 and proposal=[0,0,1,...]. */
 static int test_module3(void* closure_ptr, const double* content, int dim,
     double* out_salience, double* out_proposal, int out_dim)
 {
@@ -295,7 +322,9 @@ static int test_module3(void* closure_ptr, const double* content, int dim,
     return 1;
 }
 
-/* Dispatcher for test closures — maps closure_ptr to test functions */
+/** @brief Self-test VmClosureCallFn implementation: dispatches to
+ *         test_module{1,2,3} based on @p closure_ptr's integer value
+ *         (1/2/3), as registered by vm_ws_register() in the tests below. */
 static int test_call_closure(void* closure_ptr, const double* content, int dim,
     double* out_salience, double* out_proposal, int out_dim)
 {
@@ -310,6 +339,11 @@ static int test_call_closure(void* closure_ptr, const double* content, int dim,
     }
 }
 
+/** @brief Standalone self-test (built when VM_WORKSPACE_TEST is defined):
+ *         12 cases covering construction, registration (incl. the
+ *         max-modules cap), the ws-step! competition/broadcast cycle,
+ *         softmax correctness and numerical stability, content get/set,
+ *         multi-step runs, display, and the dim/step-count getters. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

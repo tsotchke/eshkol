@@ -172,10 +172,12 @@ VmRational* vm_rational_from_int(VmArena *arena, int64_t n) {
  * Accessors (native IDs 346, 347)
  * ============================================================================ */
 
+/** @brief Native call 346: `(numerator r)` (0 if @p r is null). */
 int64_t vm_rational_numerator(const VmRational *r) {
     return r ? r->num : 0;
 }
 
+/** @brief Native call 347: `(denominator r)` (1 if @p r is null). */
 int64_t vm_rational_denominator(const VmRational *r) {
     return r ? r->denom : 1;
 }
@@ -184,6 +186,7 @@ int64_t vm_rational_denominator(const VmRational *r) {
  * Conversion (native ID 340)
  * ============================================================================ */
 
+/** @brief Native call 340: `(exact->inexact r)` — convert to a double. */
 double vm_rational_to_double(const VmRational *r) {
     if (!r) return 0.0;
     return (double)r->num / (double)r->denom;
@@ -430,10 +433,13 @@ int64_t vm_rational_round(const VmRational *a) {
  * GCD / LCM on integers (native ID 348 — exposed as builtins)
  * ============================================================================ */
 
+/** @brief Native call 348: `(gcd a b)`, exposed as a Scheme builtin. */
 int64_t vm_rational_gcd(int64_t a, int64_t b) {
     return vm_rational_gcd_i64(a, b);
 }
 
+/** @brief `(lcm a b)`, exposed as a Scheme builtin (returns -1 on
+ *         overflow). */
 int64_t vm_rational_lcm(int64_t a, int64_t b) {
     return vm_rational_lcm_i64(a, b);
 }
@@ -446,6 +452,12 @@ int64_t vm_rational_lcm(int64_t a, int64_t b) {
  * Uses the Stern-Brocot tree / mediant algorithm, max 1000 iterations.
  * ============================================================================ */
 
+/** @brief Native call 349: `(rationalize x tolerance)` — find the
+ *         simplest rational p/q (smallest denominator, then smallest
+ *         |numerator|) with |p/q - x| <= tolerance, via Stern-Brocot
+ *         mediant search (capped at 1000 iterations). Handles negative
+ *         @p x by rationalizing |x| and negating the result; returns NULL
+ *         for non-finite input. */
 VmRational* vm_rationalize(VmArena *arena, double x, double tolerance) {
     if (!isfinite(x) || !isfinite(tolerance) || tolerance < 0.0) return NULL;
 
@@ -591,6 +603,18 @@ VmRational* vm_rationalize(VmArena *arena, double x, double tolerance) {
  * @param out_int   Output integer (for floor, ceil, etc.)
  * @param out_dbl   Output double (for to_double)
  * @return          0 on success, -1 on error
+ */
+/**
+ * @brief Native-call dispatcher for the rational primitives (IDs
+ *        VM_NATIVE_RATIONAL_BASE + 0..19, i.e. 330-349): routes to
+ *        make/add/sub/mul/div/neg/abs/inv/compare/equal/to_double/
+ *        from_int/floor/ceil/truncate/round/numerator/denominator/gcd/
+ *        rationalize based on args interpreted as either rational
+ *        pointers (@p args) or raw int64 operands (@p int_args), writing
+ *        the result to whichever of @p out_rat/@p out_int/@p out_dbl
+ *        matches the op's result type.
+ * @return 0 on success, -1 on invalid/insufficient arguments or an
+ *         arithmetic failure (e.g. overflow, division by zero).
  */
 int vm_rational_dispatch(int id, VmArena *arena,
                          const VmRational **args, const int64_t *int_args,
@@ -773,6 +797,10 @@ static int pass_count = 0;
     PASS(); \
 } while(0)
 
+/** @brief Standalone self-test (built when this file's test guard is
+ *         defined): exercises GCD/LCM, construction, arithmetic,
+ *         comparison, conversions, rounding modes, and rationalize()
+ *         against known values. */
 int main(void) {
     printf("vm_rational self-test\n");
     printf("==================================================\n");

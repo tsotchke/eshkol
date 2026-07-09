@@ -39,6 +39,7 @@ namespace eshkol {
 
 // ===== ACTIVATION FUNCTIONS (SIMD-ACCELERATED) =====
 
+/** @brief Codegen for `(relu t)`: element-wise ReLU, max(0, x). */
 llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
     // ReLU: max(0, x) element-wise
     // Note: For large tensors (≥100K elements), GPU acceleration is available
@@ -185,6 +186,7 @@ llvm::Value* TensorCodegen::tensorRelu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(sigmoid t)`: element-wise sigmoid, 1/(1+exp(-x)). */
 llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     // Sigmoid: 1 / (1 + exp(-x)) element-wise
     if (op->call_op.num_vars != 1) {
@@ -354,6 +356,9 @@ llvm::Value* TensorCodegen::tensorSigmoid(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(softmax t [axis])`: numerically-stable softmax,
+ *         exp(x_i - max(x)) / sum(exp(x_j - max(x))), applied globally or
+ *         along the given axis. */
 llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
     // Softmax: exp(x_i - max(x)) / sum(exp(x_j - max(x)))
     // Numerically stable version
@@ -882,6 +887,8 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(gelu t)`: PyTorch-standard tanh-approximation GELU,
+ *         0.5*x*(1 + tanh(sqrt(2/pi)*(x + 0.044715*x^3))). */
 llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     // GELU: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³))) — PyTorch standard
     if (op->call_op.num_vars != 1) {
@@ -1073,6 +1080,8 @@ llvm::Value* TensorCodegen::tensorGelu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(leaky-relu t [alpha])`: x if x > 0, else alpha*x
+ *         (default alpha = 0.01). */
 llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
     // Leaky ReLU: x if x > 0, else alpha * x (default alpha = 0.01)
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
@@ -1216,6 +1225,7 @@ llvm::Value* TensorCodegen::tensorLeakyRelu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(silu t)` / Swish: x * sigmoid(x). */
 llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     // SiLU/Swish: x * sigmoid(x)
     if (op->call_op.num_vars != 1) {
@@ -1315,6 +1325,8 @@ llvm::Value* TensorCodegen::tensorSilu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(elu t [alpha])`: x if x > 0, else
+ *         alpha*(exp(x)-1) (default alpha = 1.0). */
 llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
     // ELU: x > 0 ? x : alpha * (exp(x) - 1)
     // Default alpha = 1.0
@@ -1438,6 +1450,9 @@ llvm::Value* TensorCodegen::tensorElu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(selu t)`: scaled ELU,
+ *         lambda*(x > 0 ? x : alpha*(exp(x)-1)) with the fixed
+ *         self-normalizing constants lambda ~= 1.0507, alpha ~= 1.6733. */
 llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
     // SELU: lambda * (x > 0 ? x : alpha * (exp(x) - 1))
     // lambda = 1.0507009873554804934193349852946
@@ -1557,6 +1572,9 @@ llvm::Value* TensorCodegen::tensorSelu(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(mish t)`: x * tanh(softplus(x)) = x *
+ *         tanh(ln(1+exp(x))), with the numerically-stable softplus ~= x
+ *         approximation for x > 20. */
 llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     // Mish: x * tanh(softplus(x)) = x * tanh(ln(1 + exp(x)))
     // Numerically stable: for x > 20, softplus(x) ≈ x, so mish ≈ x * tanh(x)
@@ -1686,6 +1704,8 @@ llvm::Value* TensorCodegen::tensorMish(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(hard-swish t)`: piecewise-linear Swish
+ *         approximation, x * min(max(x+3, 0), 6) / 6. */
 llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
     // Hard Swish: x * min(max(x + 3, 0), 6) / 6
     // Piecewise: x <= -3 → 0, x >= 3 → x, else → x * (x + 3) / 6
@@ -1785,6 +1805,8 @@ llvm::Value* TensorCodegen::tensorHardSwish(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(hard-sigmoid t)`: piecewise-linear sigmoid
+ *         approximation, clip((x+3)/6, 0, 1). */
 llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
     // Hard Sigmoid: clip((x + 3) / 6, 0, 1) = min(max((x + 3) / 6, 0), 1)
     if (op->call_op.num_vars != 1) {
@@ -1881,6 +1903,9 @@ llvm::Value* TensorCodegen::tensorHardSigmoid(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(softplus t [beta])`: (1/beta)*log(1+exp(beta*x))
+ *         (default beta = 1.0), with a numerically-stable early return of x
+ *         when beta*x exceeds a threshold of 20.0. */
 llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
     // Softplus: (1/beta) * log(1 + exp(beta * x))
     // Default beta = 1.0, threshold = 20.0
@@ -2014,6 +2039,10 @@ llvm::Value* TensorCodegen::tensorSoftplus(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(dropout t p)`: element-wise dropout,
+ *         x_i * mask_i / (1-p) with mask_i ~ Bernoulli(1-p); randomly zeros
+ *         elements with probability @p p and scales survivors during
+ *         training. */
 llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     // Dropout: x_i * mask_i / (1 - p), where mask_i ~ Bernoulli(1 - p)
     // During training, randomly zeros elements with probability p and scales survivors
@@ -2135,6 +2164,8 @@ llvm::Value* TensorCodegen::tensorDropout(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Codegen for `(celu t [alpha])`: continuously-differentiable ELU,
+ *         max(0, x) + min(0, alpha*(exp(x/alpha)-1)) (default alpha = 1.0). */
 llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
     // CELU: max(0, x) + min(0, alpha * (exp(x / alpha) - 1))
     // Default alpha = 1.0
@@ -2255,6 +2286,10 @@ llvm::Value* TensorCodegen::tensorCelu(const eshkol_operations_t* op) {
 // Activation Backward Functions (for autodiff)
 // ============================================================
 
+/** @brief Backward pass for tensor softmax: computes the
+ *         Jacobian-vector product dL/dx_i = s_i * (g_i - sum_j(g_j*s_j))
+ *         (where s = the saved softmax output, g = upstream_grad) without
+ *         materializing the full n×n Jacobian. */
 llvm::Value* TensorCodegen::tensorSoftmaxBackward(llvm::Value* softmax_output, llvm::Value* upstream_grad) {
     // Full tensor softmax gradient:
     // dL/dx_i = s_i * (g_i - sum_j(g_j * s_j))
@@ -2389,6 +2424,7 @@ llvm::Value* TensorCodegen::tensorSoftmaxBackward(llvm::Value* softmax_output, l
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Backward pass for ReLU: dL/dx = dL/dy * (x > 0 ? 1 : 0). */
 llvm::Value* TensorCodegen::tensorReluBackward(llvm::Value* input, llvm::Value* upstream_grad) {
     // ReLU backward: dL/dx = dL/dy * (x > 0 ? 1 : 0)
 
@@ -2484,6 +2520,8 @@ llvm::Value* TensorCodegen::tensorReluBackward(llvm::Value* input, llvm::Value* 
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Backward pass for sigmoid: dL/dx = dL/dy * sigma(x)*(1-sigma(x)),
+ *         computed from the saved forward output sigma(x) directly. */
 llvm::Value* TensorCodegen::tensorSigmoidBackward(llvm::Value* sigmoid_output, llvm::Value* upstream_grad) {
     // Sigmoid backward: dL/dx = dL/dy * σ(x) * (1 - σ(x))
     // We use the output directly since σ(x) is already computed
@@ -2579,6 +2617,9 @@ llvm::Value* TensorCodegen::tensorSigmoidBackward(llvm::Value* sigmoid_output, l
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Backward pass for the tanh-approximation GELU used by
+ *         tensorGelu(): with u = sqrt(2/pi)*(x + 0.044715*x^3), computes
+ *         gelu'(x) = 0.5*(1+tanh(u)) + 0.5*x*(1-tanh(u)^2)*u'. */
 llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* upstream_grad) {
     // GELU backward for the tanh approximation used by tensorGelu:
     // gelu(x) = 0.5*x*(1+tanh(u)), u = sqrt(2/pi)*(x + 0.044715*x^3)
@@ -2705,6 +2746,8 @@ llvm::Value* TensorCodegen::tensorGeluBackward(llvm::Value* input, llvm::Value* 
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Backward pass for leaky ReLU: dL/dx = dL/dy * (x > 0 ? 1 :
+ *         alpha). */
 llvm::Value* TensorCodegen::tensorLeakyReluBackward(llvm::Value* input, llvm::Value* upstream_grad, double alpha) {
     // Leaky ReLU backward: dL/dx = dL/dy * (x > 0 ? 1 : alpha)
 
@@ -2801,6 +2844,9 @@ llvm::Value* TensorCodegen::tensorLeakyReluBackward(llvm::Value* input, llvm::Va
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/** @brief Backward pass for SiLU/Swish: dL/dx = dL/dy *
+ *         (sigma(x) + x*sigma(x)*(1-sigma(x))) = dL/dy * sigma(x)*(1 +
+ *         x*(1-sigma(x))). */
 llvm::Value* TensorCodegen::tensorSiluBackward(llvm::Value* input, llvm::Value* upstream_grad) {
     // SiLU backward: dL/dx = dL/dy * (σ(x) + x * σ(x) * (1 - σ(x)))
     //                      = dL/dy * σ(x) * (1 + x * (1 - σ(x)))

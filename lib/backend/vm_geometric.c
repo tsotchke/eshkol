@@ -21,7 +21,8 @@
 #include <semiclassical_qllm/spherical.h>
 #endif
 
-/* Helper: convert VmTensor (f64) to float array for qllm API (VM-arena allocated) */
+/** @brief Convert a f64 VmTensor to a VM-arena-allocated float32 array,
+ *         for passing to the semiclassical_qllm C API. */
 static float* vm_tensor_to_float(VM* vm, const VmTensor* t) {
     if (!t || t->total <= 0) return NULL;
     float* f = (float*)vm_alloc(&vm->heap.regions, (size_t)(t->total * sizeof(float)));
@@ -30,18 +31,21 @@ static float* vm_tensor_to_float(VM* vm, const VmTensor* t) {
     return f;
 }
 
-/* Helper: get VmTensor from heap value */
+/** @brief Unwrap a tensor Value to its VmTensor*, or NULL if @p v isn't a
+ *         tensor heap object. */
 static VmTensor* vm_get_tensor(VM* vm, Value v) {
     if (!is_heap_type(vm, v, HEAP_TENSOR)) return NULL;
     return (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
 }
 
-/* Helper: push a scalar float result */
+/** @brief Push a scalar float result onto the VM stack. */
 static void vm_push_float(VM* vm, double val) {
     vm_push(vm, FLOAT_VAL(val));
 }
 
-/* Helper: push a manifold handle */
+/** @brief Wrap an opaque manifold pointer as a heap-boxed VAL_MANIFOLD
+ *         Value and push it (NIL if @p manifold is null or allocation
+ *         fails). */
 static void vm_push_manifold(VM* vm, void* manifold) {
     if (!manifold) { vm_push(vm, NIL_VAL); return; }
     int32_t ptr = heap_alloc(&vm->heap);
@@ -61,11 +65,18 @@ typedef struct {
     double curvature;
 } VmFallbackManifold;
 
+/** @brief Unwrap a manifold Value to its portable
+ *         constant-curvature VmFallbackManifold*, or NULL if @p mv isn't a
+ *         manifold heap object (used when ESHKOL_GEOMETRIC_ENABLED is
+ *         off). */
 static VmFallbackManifold* vm_fallback_manifold(VM* vm, Value mv) {
     if (mv.type != VAL_MANIFOLD || !is_heap_type(vm, mv, HEAP_MANIFOLD)) return NULL;
     return (VmFallbackManifold*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
 }
 
+/** @brief Allocate and push a portable constant-curvature fallback
+ *         manifold (type/dim/curvature); pushes NIL on invalid @p dim or
+ *         allocation failure. */
 static void vm_push_fallback_manifold(VM* vm, int type, int dim, double curvature) {
     if (dim <= 0) { vm_push(vm, NIL_VAL); return; }
     VmFallbackManifold* m = (VmFallbackManifold*)vm_alloc(&vm->heap.regions, sizeof(VmFallbackManifold));
@@ -86,12 +97,19 @@ typedef struct {
     double*  v;
 } VmRiemannianAdamState;
 
+/** @brief Allocate @p size bytes either from the VM-lifetime global arena
+ *         (@p vm_lifetime true, survives region pops — used for the
+ *         persistent per-slot Adam optimizer states) or the current
+ *         region-scoped arena (@p vm_lifetime false). */
 static void* vm_geometric_alloc(VM* vm, size_t size, int vm_lifetime) {
     if (!vm) return NULL;
     if (vm_lifetime) return vm_arena_alloc(&vm->heap.regions.global_arena, size);
     return vm_alloc(&vm->heap.regions, size);
 }
 
+/** @brief Allocate a zero-initialized Riemannian-Adam optimizer state
+ *         (first/second moment buffers @c m/@c v, shaped like @p ref),
+ *         with the given lifetime (see vm_geometric_alloc()). */
 static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
     VM* vm, const VmTensor* ref, int vm_lifetime) {
     if (!vm || !ref || ref->total <= 0 || ref->n_dims <= 0 || ref->n_dims > VM_TENSOR_MAX_DIMS)
@@ -112,10 +130,13 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_new_with_lifetime(
     return st;
 }
 
+/** @brief Allocate a region-scoped (not VM-lifetime) Riemannian-Adam
+ *         optimizer state shaped like @p ref. */
 static VmRiemannianAdamState* vm_riemannian_adam_state_new(VM* vm, const VmTensor* ref) {
     return vm_riemannian_adam_state_new_with_lifetime(vm, ref, 0);
 }
 
+/** @brief Whether optimizer state @p st's shape matches tensor @p ref's. */
 static int vm_riemannian_adam_state_matches(const VmRiemannianAdamState* st,
                                             const VmTensor* ref) {
     if (!st || !ref || st->total != ref->total || st->n_dims != ref->n_dims) return 0;
@@ -124,6 +145,8 @@ static int vm_riemannian_adam_state_matches(const VmRiemannianAdamState* st,
     return 1;
 }
 
+/** @brief Unwrap a Value to its VmRiemannianAdamState*, or NULL if @p v
+ *         isn't an optimizer-state heap object. */
 static VmRiemannianAdamState* vm_riemannian_adam_state_from_value(VM* vm, Value v) {
     if (v.type != VAL_RIEMANNIAN_ADAM_STATE ||
         !is_heap_type(vm, v, HEAP_RIEMANNIAN_ADAM_STATE))
@@ -131,6 +154,9 @@ static VmRiemannianAdamState* vm_riemannian_adam_state_from_value(VM* vm, Value 
     return (VmRiemannianAdamState*)vm->heap.objects[v.as.ptr]->opaque.ptr;
 }
 
+/** @brief Wrap an optimizer state pointer as a heap-boxed
+ *         VAL_RIEMANNIAN_ADAM_STATE Value and push it (NIL on null/
+ *         allocation failure). */
 static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
     if (!st) { vm_push(vm, NIL_VAL); return; }
     int32_t ptr = heap_alloc(&vm->heap);
@@ -140,6 +166,13 @@ static void vm_push_riemannian_adam_state(VM* vm, VmRiemannianAdamState* st) {
     vm_push(vm, (Value){.type = VAL_RIEMANNIAN_ADAM_STATE, .as.ptr = ptr});
 }
 
+/**
+ * @brief Find (or lazily create) a VM-lifetime Riemannian-Adam state
+ *        matching @p ref's shape from the VM's fixed-size
+ *        geometric_adam_states pool (VM_GEOMETRIC_ADAM_SLOTS slots,
+ *        reusing the first empty or, failing that, slot 0), used by
+ *        opcodes that need an implicit/default optimizer state.
+ */
 static VmRiemannianAdamState* vm_default_riemannian_adam_state(VM* vm,
                                                                const VmTensor* ref) {
     enum { VM_GEOMETRIC_ADAM_SLOTS = 16 };
@@ -157,6 +190,12 @@ static VmRiemannianAdamState* vm_default_riemannian_adam_state(VM* vm,
     return (VmRiemannianAdamState*)vm->geometric_adam_states[empty];
 }
 
+/**
+ * @brief Compute one Adam-style update delta from @p grad and optimizer
+ *        state @p st (standard bias-corrected first/second moment
+ *        estimates), without any manifold-specific retraction — the
+ *        result is a plain Euclidean step vector.
+ */
 static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* grad,
                                           VmRiemannianAdamState* st,
                                           double lr, double beta1, double beta2) {
@@ -184,6 +223,9 @@ static VmTensor* vm_riemannian_adam_delta(VM* vm, const VmTensor* grad,
     return delta;
 }
 
+/** @brief Apply one Euclidean (flat-manifold) Adam step: compute the
+ *         update delta via vm_riemannian_adam_delta() and add it to
+ *         @p point. */
 static VmTensor* vm_riemannian_adam_euclidean_step(VM* vm, const VmTensor* point,
                                                    const VmTensor* grad,
                                                    VmRiemannianAdamState* st,
@@ -197,11 +239,16 @@ static VmTensor* vm_riemannian_adam_euclidean_step(VM* vm, const VmTensor* point
     return vm_tensor_linear_combo_for_geometry(vm, point, 1.0, delta, 1.0);
 }
 
+/** @brief Whether @p mv is a manifold Value wrapping a non-null handle. */
 static int vm_manifold_has_value(VM* vm, Value mv) {
     return mv.type == VAL_MANIFOLD && is_heap_type(vm, mv, HEAP_MANIFOLD) &&
            vm->heap.objects[mv.as.ptr]->opaque.ptr != NULL;
 }
 
+/** @brief Get manifold @p mv's curvature (via the qllm C API when
+ *         ESHKOL_GEOMETRIC_ENABLED, else the fallback manifold's stored
+ *         constant curvature), setting *@p ok to whether the lookup
+ *         succeeded. */
 static double vm_geometric_manifold_curvature(VM* vm, Value mv, int* ok) {
     if (!vm_manifold_has_value(vm, mv)) {
         if (ok) *ok = 0;
@@ -221,6 +268,8 @@ static double vm_geometric_manifold_curvature(VM* vm, Value mv, int* ok) {
 #endif
 }
 
+/** @brief Get manifold @p mv's dimension (fallback-manifold path only;
+ *         returns 0 when ESHKOL_GEOMETRIC_ENABLED, per the inline TODO). */
 static int vm_geometric_manifold_dim(VM* vm, Value mv) {
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
     (void)vm; (void)mv;
@@ -231,6 +280,8 @@ static int vm_geometric_manifold_dim(VM* vm, Value mv) {
 #endif
 }
 
+/** @brief Deep-copy a tensor for use in geometric-op results (allocates a
+ *         fresh zero tensor of @p src's shape and memcpy's the data). */
 static VmTensor* vm_tensor_copy_for_geometry(VM* vm, const VmTensor* src) {
     if (!src || !src->data || src->n_dims <= 0) return NULL;
     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, src->shape, src->n_dims);
@@ -239,6 +290,8 @@ static VmTensor* vm_tensor_copy_for_geometry(VM* vm, const VmTensor* src) {
     return out;
 }
 
+/** @brief Compute the element-wise linear combination @p as*a + @p bs*b
+ *         into a freshly allocated tensor (shapes/totals must match). */
 static VmTensor* vm_tensor_linear_combo_for_geometry(VM* vm, const VmTensor* a, double as,
                                                      const VmTensor* b, double bs) {
     if (!a || !b || !a->data || !b->data || a->total != b->total) return NULL;
@@ -248,6 +301,7 @@ static VmTensor* vm_tensor_linear_combo_for_geometry(VM* vm, const VmTensor* a, 
     return out;
 }
 
+/** @brief Scale a tensor's elements by @p scale into a fresh tensor. */
 static VmTensor* vm_tensor_scale_for_geometry(VM* vm, const VmTensor* src, double scale) {
     if (!src || !src->data) return NULL;
     VmTensor* out = vm_tensor_zeros(&vm->heap.regions, src->shape, src->n_dims);
@@ -256,6 +310,8 @@ static VmTensor* vm_tensor_scale_for_geometry(VM* vm, const VmTensor* src, doubl
     return out;
 }
 
+/** @brief Euclidean dot product of two same-shaped tensors (0.0 if
+ *         mismatched/null). */
 static double vm_tensor_dot_for_geometry(const VmTensor* a, const VmTensor* b) {
     if (!a || !b || !a->data || !b->data || a->total != b->total) return 0.0;
     double sum = 0.0;
@@ -263,6 +319,7 @@ static double vm_tensor_dot_for_geometry(const VmTensor* a, const VmTensor* b) {
     return sum;
 }
 
+/** @brief Euclidean (L2) distance between two same-shaped tensors. */
 static double vm_tensor_distance_for_geometry(const VmTensor* a, const VmTensor* b) {
     if (!a || !b || !a->data || !b->data || a->total != b->total) return 0.0;
     double sum = 0.0;
@@ -273,6 +330,8 @@ static double vm_tensor_distance_for_geometry(const VmTensor* a, const VmTensor*
     return sqrt(sum);
 }
 
+/** @brief L2-normalize a tensor's elements in place (no-op if its norm is
+ *         zero). */
 static void vm_tensor_normalize_for_geometry(VmTensor* t) {
     if (!t || !t->data) return;
     double norm2 = 0.0;
@@ -282,6 +341,8 @@ static void vm_tensor_normalize_for_geometry(VmTensor* t) {
     for (int64_t i = 0; i < t->total; i++) t->data[i] *= inv;
 }
 
+/** @brief Wrap a tensor pointer as a heap-boxed VAL_TENSOR Value and push
+ *         it (NIL, flagging vm->error, on null/allocation failure). */
 static void vm_push_tensor_handle_for_geometry(VM* vm, VmTensor* t) {
     if (!t) { vm_push(vm, NIL_VAL); return; }
     int32_t ptr = heap_alloc(&vm->heap);
@@ -291,10 +352,16 @@ static void vm_push_tensor_handle_for_geometry(VM* vm, VmTensor* t) {
     vm_push(vm, (Value){.type = VAL_TENSOR, .as.ptr = ptr});
 }
 
+/** @brief Alias for vm_push_tensor_handle_for_geometry() used by opcode
+ *         handlers whose result may legitimately be NULL/nil. */
 static void vm_push_tensor_or_nil(VM* vm, VmTensor* t) {
     vm_push_tensor_handle_for_geometry(vm, t);
 }
 
+/** @brief VM opcode handler: `(manifold-metric-tensor m)` — pops a
+ *         manifold, pushes its dim x dim identity metric tensor (a
+ *         constant-curvature manifold's metric is Euclidean at this
+ *         level of approximation). */
 static void vm_geometric_metric_tensor(VM* vm) {
     Value mv = vm_pop(vm);
     int dim = vm_geometric_manifold_dim(vm, mv);
@@ -306,6 +373,11 @@ static void vm_geometric_metric_tensor(VM* vm) {
     vm_push_tensor_handle_for_geometry(vm, out);
 }
 
+/** @brief VM opcode handler: `(manifold-christoffel-tensor m point)` —
+ *         pops a manifold and a point tensor, pushes the dim x dim x dim
+ *         Christoffel symbols for a constant-curvature-K space evaluated
+ *         at @p point (a closed-form approximation, not a full
+ *         Riemann-tensor computation). */
 static void vm_geometric_christoffel_tensor(VM* vm) {
     Value pointv = vm_pop(vm);
     Value mv = vm_pop(vm);
@@ -337,6 +409,10 @@ static void vm_geometric_christoffel_tensor(VM* vm) {
     vm_push_tensor_handle_for_geometry(vm, out);
 }
 
+/** @brief VM opcode handler: `(pullback-tensor form jacobian)` — pops a
+ *         1-form (or a flattenable rows*cols source) and a Jacobian
+ *         matrix, pushes their pullback form^T @ jacobian as a new 1D
+ *         tensor. */
 static void vm_geometric_pullback_tensor(VM* vm) {
     Value jacv = vm_pop(vm);
     Value formv = vm_pop(vm);
@@ -368,6 +444,9 @@ static void vm_geometric_pullback_tensor(VM* vm) {
     vm_push_tensor_handle_for_geometry(vm, out);
 }
 
+/** @brief Number of arguments the geometric native call @p fid (804-861)
+ *         expects to pop from the VM stack, used by the caller to
+ *         validate/marshal arguments before dispatch. */
 static int vm_geometric_arity(int fid) {
     switch (fid) {
     case 804: case 806: case 808: case 823: case 824: case 825:
@@ -394,6 +473,16 @@ static int vm_geometric_arity(int fid) {
 }
 
 #if !defined(ESHKOL_GEOMETRIC_ENABLED)
+/**
+ * @brief Portable constant-curvature implementation of the geometric
+ *        native calls (IDs 804-861), used when the semiclassical_qllm
+ *        library isn't linked in. Pops each op's arguments per
+ *        vm_geometric_arity(fid) and pushes its result, covering manifold
+ *        construction (Euclidean/hyperbolic/spherical/product),
+ *        exp/log maps, geodesics, parallel transport, distance/norm/dot,
+ *        curvature and Christoffel-symbol queries, and Riemannian-Adam
+ *        optimizer steps.
+ */
 static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
     switch (fid) {
     case 804: { /* make-euclidean-manifold(dim) */
@@ -952,6 +1041,14 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
 }
 #endif
 
+/**
+ * @brief Top-level native-call dispatcher for the geometric primitives
+ *        (IDs 804-861): when ESHKOL_GEOMETRIC_ENABLED, implements each op
+ *        via the semiclassical_qllm manifold/geodesic/hyperbolic/spherical
+ *        C API (real Riemannian geometry); otherwise delegates entirely to
+ *        vm_dispatch_geometric_fallback()'s portable constant-curvature
+ *        approximation.
+ */
 static void vm_dispatch_geometric(VM* vm, int fid) {
 #if defined(ESHKOL_GEOMETRIC_ENABLED)
     switch (fid) {

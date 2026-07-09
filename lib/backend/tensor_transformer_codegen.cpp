@@ -40,6 +40,14 @@ namespace eshkol {
 
 // === Track 8.1: Scaled Dot-Product Attention ===
 
+/**
+ * @brief Codegen for `(scaled-dot-attention Q K V [mask])`.
+ *
+ * Implements scaled dot-product attention (Vaswani et al.): scores = Q@K^T /
+ * sqrt(d_k), attention_weights = softmax(scores + mask), output =
+ * attention_weights @ V. Supports both 2D (seq_len, d_k) and 3D (batch,
+ * seq_len, d_k) tensor inputs.
+ */
 llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t* op) {
     // Scaled Dot-Product Attention from "Attention Is All You Need"
     // scores = Q @ K^T / sqrt(d_k)
@@ -915,6 +923,15 @@ llvm::Value* TensorCodegen::scaledDotProductAttention(const eshkol_operations_t*
 
 // === Track 8.2: Multi-Head Attention ===
 
+/**
+ * @brief Codegen for `(multi-head-attention Q K V num-heads W_Q W_K W_V W_O
+ *        [mask])`.
+ *
+ * Projects Q/K/V through their weight matrices, splits into num_heads
+ * heads, applies scaledDotProductAttention() per head, concatenates the
+ * per-head outputs, and projects the result through the output weight
+ * matrix W_O.
+ */
 llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
     // Multi-Head Attention
     // 1. Project Q, K, V through weight matrices
@@ -1722,6 +1739,13 @@ llvm::Value* TensorCodegen::multiHeadAttention(const eshkol_operations_t* op) {
 
 // === Track 8.3: Positional Encoding ===
 
+/**
+ * @brief Codegen for `(positional-encoding max-len d-model)`: builds the
+ *        sinusoidal positional encoding table from "Attention Is All You
+ *        Need" — PE(pos, 2i) = sin(pos / 10000^(2i/d_model)), PE(pos, 2i+1)
+ *        = cos(pos / 10000^(2i/d_model)) — via a nested position/dimension
+ *        fill loop using LLVM's sin/cos/exp intrinsics.
+ */
 llvm::Value* TensorCodegen::positionalEncoding(const eshkol_operations_t* op) {
     // Sinusoidal positional encoding from "Attention Is All You Need"
     // PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
@@ -1853,6 +1877,12 @@ llvm::Value* TensorCodegen::positionalEncoding(const eshkol_operations_t* op) {
 
 // === Additional Transformer Helpers ===
 
+/**
+ * @brief Codegen for rotary position embedding (RoPE): rotates pairs of
+ *        dimensions by an angle theta = pos / 10000^(2i/dim) —
+ *        x_rot[2i] = x[2i]*cos(theta) - x[2i+1]*sin(theta),
+ *        x_rot[2i+1] = x[2i]*sin(theta) + x[2i+1]*cos(theta).
+ */
 llvm::Value* TensorCodegen::rotaryEmbedding(const eshkol_operations_t* op) {
     // RoPE (Rotary Position Embedding)
     // Applies rotation to pairs of dimensions based on position
@@ -2061,6 +2091,12 @@ llvm::Value* TensorCodegen::rotaryEmbedding(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/**
+ * @brief Codegen for `(causal-mask seq-len)`: builds an additive
+ *        (seq_len, seq_len) decoder self-attention mask where
+ *        mask[i,j] = 0 for j <= i (attend) and -inf otherwise (don't
+ *        attend), meant to be added to attention scores before softmax.
+ */
 llvm::Value* TensorCodegen::causalMask(const eshkol_operations_t* op) {
     // Creates causal mask for decoder self-attention (additive convention)
     // mask[i, j] = 0 if j <= i (attend), -inf otherwise (don't attend)
@@ -2153,6 +2189,11 @@ llvm::Value* TensorCodegen::causalMask(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(tensor_ptr);
 }
 
+/**
+ * @brief Codegen for `(padding-mask lengths max-len)`: builds an additive
+ *        (batch, max_len) mask from a per-batch-element sequence-length
+ *        tensor, where mask[b,i] = 0 for i < lengths[b] and -inf otherwise.
+ */
 llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     // Creates padding mask from sequence lengths
     // mask[b, i] = 0 if i < lengths[b], else -inf
@@ -2285,6 +2326,11 @@ llvm::Value* TensorCodegen::paddingMask(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/**
+ * @brief Codegen for `(feed-forward x W1 b1 W2 b2)`: the transformer
+ *        position-wise feed-forward network FFN(x) = W2 * GELU(W1*x + b1)
+ *        + b2.
+ */
 llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
     // Feed-forward network: FFN(x) = W2 * GELU(W1 * x + b1) + b2
 
@@ -2635,6 +2681,12 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/**
+ * @brief Codegen for `(dropout x rate training)`: when @p training is
+ *        truthy, zeros each element with probability @p rate (using an LCG
+ *        pseudo-random generator seeded with a fixed constant) and scales
+ *        surviving elements by 1/(1-rate); a no-op copy during inference.
+ */
 llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     // Dropout: randomly zero elements and scale by 1/(1-rate)
     // Only applied during training
@@ -2764,6 +2816,10 @@ llvm::Value* TensorCodegen::dropout(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+/**
+ * @brief Codegen for `(embedding indices weights)`: embedding table lookup,
+ *        output[b, s, :] = weights[indices[b, s], :].
+ */
 llvm::Value* TensorCodegen::embedding(const eshkol_operations_t* op) {
     // Embedding lookup: output[b, s, :] = weights[indices[b, s], :]
 

@@ -132,12 +132,17 @@ typedef struct {
 #define PAIR_VAL(p) ((Value){.type = VAL_PAIR, .as.ptr = (p)})
 #define CLOSURE_VAL(p) ((Value){.type = VAL_CLOSURE, .as.ptr = (p)})
 
+/** @brief R7RS truthiness: only `#f` is false, everything else (including
+ *         '()) is truthy. */
 static int is_truthy(Value v) {
     if (v.type == VAL_BOOL) return v.as.b;
     if (v.type == VAL_NIL) return 0;
     return 1;  /* everything else is truthy */
 }
 
+/** @brief Coerce a plain (non-heap-boxed) numeric Value to a double; 0.0
+ *         for non-numeric types. See as_number_vm() for the heap-aware
+ *         version that also handles rationals/bignums. */
 static double as_number(Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
@@ -146,6 +151,8 @@ static double as_number(Value v) {
 
 /* as_number_vm defined after VM struct (needs heap access for rationals) */
 
+/** @brief Wrap a double as an INT Value if it's an exact, small
+ *         (< 1e15 in magnitude) integer, else as a FLOAT Value. */
 static Value number_val(double d) {
     if (d == (int64_t)d && fabs(d) < 1e15) return INT_VAL((int64_t)d);
     return FLOAT_VAL(d);
@@ -201,6 +208,8 @@ typedef struct {
     int32_t capacity;
 } Heap;
 
+/** @brief Initialize the VM heap: sets up its arena region stack and the
+ *         object-pointer table (fixed capacity HEAP_SIZE). */
 static void heap_init(Heap* h) {
     vm_region_stack_init(&h->regions);
     h->capacity = HEAP_SIZE;
@@ -208,6 +217,11 @@ static void heap_init(Heap* h) {
     h->next_free = 0;
 }
 
+/** @brief Allocate a new (zeroed) HeapObject slot from the arena and
+ *         register it in the object table.
+ * @return The new object's heap index, or -1 on capacity/allocation
+ *         failure.
+ */
 static int32_t heap_alloc(Heap* h) {
     if (h->next_free >= h->capacity) {
         fprintf(stderr, "HEAP OVERFLOW (max %d objects)\n", h->capacity);
@@ -220,14 +234,21 @@ static int32_t heap_alloc(Heap* h) {
     return h->next_free++;
 }
 
+/** @brief Push a new arena region scope onto the heap (see OALR — objects
+ *         allocated after this call are freed in bulk by the matching
+ *         heap_region_pop()). */
 static void heap_region_push(Heap* h) {
     vm_region_push(&h->regions, NULL, 0);
 }
 
+/** @brief Pop the most recent arena region scope, bulk-freeing everything
+ *         allocated since the matching heap_region_push(). */
 static void heap_region_pop(Heap* h) {
     vm_region_pop(&h->regions);
 }
 
+/** @brief Tear down the heap's arena region stack and free its object
+ *         table. */
 static void heap_destroy(Heap* h) {
     vm_region_stack_destroy(&h->regions);
     free(h->objects);
@@ -467,8 +488,13 @@ typedef struct VM {
 /* Command-line arguments (set in main, read by native 602) */
 static int g_vm_argc = 0;
 static char** g_vm_argv = NULL;
+/** @brief Stash the process's argc/argv for later retrieval by native call
+ *         602 (`command-line`). */
 static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_argv = argv; }
 
+/** @brief Zero-initialize a VM instance: clears all state, initializes the
+ *         heap, sets the default native policy, and marks the AD tape
+ *         inactive with an empty node map. */
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
@@ -477,12 +503,15 @@ static void vm_init(VM* vm) {
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
 }
 
-/* Validate a heap pointer */
+/** @brief Bounds-check a heap object index against the live-object range
+ *         [0, next_free). */
 static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
     return ptr >= 0 && ptr < vm->heap.next_free;
 }
 
-/* VM-aware as_number: handles rationals and duals via heap access */
+/** @brief VM-aware coercion of a Value to a double, extending as_number()
+ *         to unwrap heap-boxed rationals (num/denom) and duals (primal
+ *         component) via the VM's heap. */
 static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
@@ -497,28 +526,38 @@ static double as_number_vm(VM* vm, Value v) {
     return 0.0;
 }
 
-/* Validate heap pointer AND check object type */
+/** @brief Validate that @p v's heap pointer is in range AND its object
+ *         header matches @p type. */
 static inline int is_heap_type(VM* vm, Value v, HeapType type) {
     return v.as.ptr >= 0 && v.as.ptr < vm->heap.next_free &&
            vm->heap.objects[v.as.ptr]->type == type;
 }
 
+/** @brief Push @p v onto the VM's value stack, setting vm->error on
+ *         overflow. */
 static void vm_push(VM* vm, Value v) {
     if (vm->sp >= STACK_SIZE) { fprintf(stderr, "STACK OVERFLOW\n"); vm->error = 1; return; }
     vm->stack[vm->sp++] = v;
 }
 
+/** @brief Pop and return the top of the VM's value stack, setting
+ *         vm->error and returning NIL on underflow. */
 static Value vm_pop(VM* vm) {
     if (vm->sp <= 0) { fprintf(stderr, "STACK UNDERFLOW\n"); vm->error = 1; return NIL_VAL; }
     return vm->stack[--vm->sp];
 }
 
+/** @brief Read the value @p offset slots below the top of the VM's value
+ *         stack without popping (offset 0 = TOS). */
 static Value vm_peek(VM* vm, int offset) {
     int idx = vm->sp - 1 - offset;
     if (idx < 0 || idx >= vm->sp) { fprintf(stderr, "PEEK OUT OF BOUNDS\n"); return NIL_VAL; }
     return vm->stack[idx];
 }
 
+/** @brief Append @p v to the VM's constant pool.
+ * @return The new constant's index, or -1 if MAX_CONSTS is exceeded.
+ */
 static int add_constant(VM* vm, Value v) {
     if (vm->n_constants >= MAX_CONSTS) return -1;
     vm->constants[vm->n_constants] = v;
@@ -534,11 +573,14 @@ typedef struct { Value* items; int len; int cap; } VmVector;
 
 static void print_value(VM* vm, Value v);
 
-/* ESH-0226: print an N-dimensional tensor as nested vector literal syntax
- * (#(...) for 1D, #((...)  (...)) for 2D, etc.), matching the native/LLVM
- * runtime's display_tensor()/display_tensor_recursive()
- * (lib/core/runtime_display_hosted.cpp) so `(display (tensor-matmul ...))`
- * renders identically on both the bytecode VM and the native compiler. */
+/**
+ * @brief ESH-0226: print an N-dimensional tensor as nested vector literal
+ *        syntax (#(...) for 1D, #((...) (...)) for 2D, etc.), matching the
+ *        native/LLVM runtime's display_tensor()/display_tensor_recursive()
+ *        (lib/core/runtime_display_hosted.cpp) so `(display
+ *        (tensor-matmul ...))` renders identically on both the bytecode VM
+ *        and the native compiler.
+ */
 static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t offset) {
     int64_t dim_size = t->shape[dim];
     if (dim == t->n_dims - 1) {
@@ -560,6 +602,13 @@ static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t o
     printf(")");
 }
 
+/**
+ * @brief Recursively print a runtime Value for `display`/`write`: dispatches
+ *        on @p v's type tag, unwrapping heap-boxed objects (pairs, strings,
+ *        vectors, complex/rational/tensor/factor-graph/workspace/etc.) via
+ *        the VM's heap. Most opaque heap types not yet given a full
+ *        printer render as a `<type-name>` placeholder.
+ */
 static void print_value(VM* vm, Value v) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
@@ -671,19 +720,17 @@ static void print_value(VM* vm, Value v) {
 
 static void vm_run(VM* vm);
 
-/*******************************************************************************
- * vm_call_closure_from_native — call a VM closure from native C code.
- *
- * This is the critical bridge that enables native functions (ws-step!,
- * parallel-map, call-with-values, etc.) to invoke user-defined closures.
+/**
+ * @brief Call a VM closure from native C code — the critical bridge that
+ *        lets native functions (ws-step!, parallel-map,
+ *        call-with-values, etc.) invoke user-defined closures.
  *
  * Protocol:
  *   1. Save entire VM state (pc, fp, sp, frame_count, halted)
  *   2. Push closure + args, set up frame with return_pc = -1 as sentinel
  *   3. Run vm_run — OP_RETURN detects sentinel, halts, pushes result
  *   4. Capture result, restore VM state, return it
- ******************************************************************************/
-
+ */
 static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int argc) {
     if (closure.type != VAL_CLOSURE || closure.as.ptr < 0) return NIL_VAL;
     HeapObject* cl = vm->heap.objects[closure.as.ptr];
@@ -739,6 +786,13 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
  * Returns number of dimensions filled (0 on error).
  ******************************************************************************/
 
+/**
+ * @brief Extract a tensor shape from a Scheme Value that may be either a
+ *        proper list of dimension sizes or a single scalar dimension
+ *        (treated as a 1-D shape), writing up to @p max_dims entries into
+ *        @p shape.
+ * @return The number of dimensions written.
+ */
 static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dims) {
     int n_dims = 0;
     if (shape_val.type == VAL_PAIR) {

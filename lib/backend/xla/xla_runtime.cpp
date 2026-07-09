@@ -1021,6 +1021,7 @@ public:
     size_t next_handle_id_ = 1;
 };
 
+/** @brief Construct an uninitialized XLA runtime; call initialize() before use. */
 XLARuntime::XLARuntime()
     : impl_(std::make_unique<Impl>()) {}
 
@@ -1028,6 +1029,11 @@ XLARuntime::~XLARuntime() = default;
 
 // ===== Initialization =====
 
+/** @brief Initialize the runtime for `target`. CPU always succeeds. For a
+ *         GPU target, initializes the GPU subsystem and verifies the
+ *         detected backend matches the requested one; if no GPU devices are
+ *         found, still marks initialized=true since every XLA runtime
+ *         function has a CPU fallback. Returns the resulting initialized state. */
 bool XLARuntime::initialize(Target target) {
     impl_->target_ = target;
 
@@ -1057,10 +1063,12 @@ bool XLARuntime::initialize(Target target) {
     return impl_->initialized_;
 }
 
+/** @brief True if initialize() has completed successfully. */
 bool XLARuntime::isInitialized() const {
     return impl_->initialized_;
 }
 
+/** @brief The compilation target this runtime was initialized for. */
 Target XLARuntime::getTarget() const {
     return impl_->target_;
 }
@@ -1070,6 +1078,11 @@ Target XLARuntime::getTarget() const {
 // interface for compiled XLA programs. Currently unused; actual XLA ops dispatch
 // through 11 C runtime functions called directly from codegen.
 
+/** @brief Synchronously run a compiled `executable` (in LLVM-direct mode, a
+ *         raw function pointer of type `void(const void* const*, void*
+ *         const*)`) against `inputs`/`outputs` buffer descriptors, timing
+ *         the call. Returns a failure result if the runtime isn't
+ *         initialized or `executable` is null. */
 ExecutionResult XLARuntime::execute(void* executable,
                                      const std::vector<BufferDescriptor>& inputs,
                                      std::vector<BufferDescriptor>& outputs) {
@@ -1108,6 +1121,10 @@ ExecutionResult XLARuntime::execute(void* executable,
     };
 }
 
+/** @brief Launch execute() on a background thread (std::async), storing its
+ *         future keyed by a newly minted opaque handle. Retrieve the result
+ *         later via wait(). Returns nullptr if the runtime isn't initialized
+ *         or `executable` is null. */
 void* XLARuntime::executeAsync(void* executable,
                                 const std::vector<BufferDescriptor>& inputs,
                                 std::vector<BufferDescriptor>& outputs) {
@@ -1127,6 +1144,9 @@ void* XLARuntime::executeAsync(void* executable,
     return handle;
 }
 
+/** @brief Block until an executeAsync() call identified by `handle`
+ *         completes, and return (and forget) its result. Returns a failure
+ *         result if `handle` is unknown/already consumed. */
 ExecutionResult XLARuntime::wait(void* handle) {
     auto it = impl_->async_handles_.find(handle);
     if (it == impl_->async_handles_.end()) {
@@ -1144,6 +1164,9 @@ ExecutionResult XLARuntime::wait(void* handle) {
 
 // ===== Buffer Management =====
 
+/** @brief Allocate a zero-initialized device buffer of the given shape/element
+ *         size. On CPU this is a plain heap allocation (calloc), tracked
+ *         against this runtime's allocation statistics. */
 BufferDescriptor XLARuntime::allocateDevice(const std::vector<int64_t>& shape,
                                              size_t element_size) {
     // CPU: allocate on host. Compute total size from shape.
@@ -1167,6 +1190,8 @@ BufferDescriptor XLARuntime::allocateDevice(const std::vector<int64_t>& shape,
     };
 }
 
+/** @brief Wrap host memory as a device buffer descriptor. CPU path is
+ *         zero-copy: the descriptor just points at `host_data` directly. */
 BufferDescriptor XLARuntime::toDevice(void* host_data,
                                        const std::vector<int64_t>& shape,
                                        size_t element_size) {
@@ -1179,6 +1204,8 @@ BufferDescriptor XLARuntime::toDevice(void* host_data,
     };
 }
 
+/** @brief Copy a device buffer's contents to host memory. CPU path is a
+ *         no-op if the pointers already alias, otherwise a memcpy. */
 void XLARuntime::toHost(const BufferDescriptor& device_buffer, void* host_data) {
     // CPU: data is already on host. If pointers differ, memcpy.
     if (device_buffer.data && host_data && device_buffer.data != host_data) {
@@ -1188,6 +1215,9 @@ void XLARuntime::toHost(const BufferDescriptor& device_buffer, void* host_data) 
     }
 }
 
+/** @brief Release a buffer allocated by allocateDevice() and update
+ *         allocation statistics. Does not attempt to free arena-managed
+ *         buffers (those are owned elsewhere). */
 void XLARuntime::freeBuffer(BufferDescriptor& buffer) {
     // Only free buffers we allocated (on_device=false for CPU allocs from allocateDevice)
     // Arena-managed buffers should NOT be freed here
@@ -1204,6 +1234,9 @@ void XLARuntime::freeBuffer(BufferDescriptor& buffer) {
 
 // ===== Synchronization =====
 
+/** @brief Wait for all pending executeAsync() operations to complete and
+ *         clear their handles. On CPU, ops are already synchronous, so this
+ *         only needs to drain outstanding async futures. */
 void XLARuntime::synchronize() {
     // CPU: all operations are synchronous. Wait for any pending async executions.
     for (auto& [handle, future] : impl_->async_handles_) {
@@ -1214,11 +1247,13 @@ void XLARuntime::synchronize() {
 
 // ===== Diagnostics =====
 
+/** @brief Retrieve current and peak device-buffer allocation byte counts. */
 void XLARuntime::getMemoryStats(size_t& allocated_bytes, size_t& peak_bytes) {
     allocated_bytes = impl_->allocated_bytes_;
     peak_bytes = impl_->peak_bytes_;
 }
 
+/** @brief Human-readable description of this runtime's target/state, for diagnostics. */
 std::string XLARuntime::getDescription() const {
     std::string desc = "XLA Runtime (";
     if (impl_->initialized_) {
@@ -1237,6 +1272,9 @@ std::string XLARuntime::getDescription() const {
 
 // ===== Global Runtime =====
 
+/** @brief Return the process-wide default XLARuntime singleton, lazily
+ *         initializing it (once, thread-safe) to the best available GPU
+ *         backend or CPU if none is detected. */
 XLARuntime& getDefaultRuntime() {
     static XLARuntime runtime;
     static std::once_flag init_flag;

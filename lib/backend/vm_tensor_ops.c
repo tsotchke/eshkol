@@ -19,8 +19,11 @@
  *  Broadcasting
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* Compute broadcast-compatible output shape from two input shapes.
- * Returns 0 on success, -1 if shapes are incompatible. */
+/** @brief Compute the NumPy-style broadcast-compatible output shape from
+ *         two input shapes (trailing dims aligned, size-1 dims stretch).
+ * @return 0 on success, -1 if shapes are incompatible or the result would
+ *         exceed VM_TENSOR_MAX_DIMS.
+ */
 static int vm_broadcast_shapes(const int64_t* a_shape, int a_dims,
                                const int64_t* b_shape, int b_dims,
                                int64_t* out_shape, int* out_dims) {
@@ -42,7 +45,9 @@ static int vm_broadcast_shapes(const int64_t* a_shape, int a_dims,
 
 typedef double (*VmBinaryFn)(double, double);
 
-/* Convert a flat output index to source flat index, clamping broadcast dims to 0. */
+/** @brief Convert a flat index into the broadcast output tensor to the
+ *         corresponding flat offset in a (possibly smaller-shaped) source
+ *         tensor, clamping any broadcast (size-1) dimension's index to 0. */
 static int64_t vm_broadcast_src_index(int64_t flat, const int64_t* out_shape, int out_dims,
                                       const int64_t* src_shape, int src_dims,
                                       const int64_t* src_strides) {
@@ -59,7 +64,10 @@ static int64_t vm_broadcast_src_index(int64_t flat, const int64_t* out_shape, in
     return off;
 }
 
-/* 440: Generic element-wise binary operation with broadcasting. */
+/** @brief Native call 440: apply a scalar binary function @p op
+ *         element-wise to @p a and @p b with NumPy-style broadcasting,
+ *         producing a new tensor of the promoted dtype
+ *         (vm_tensor_promote_dtype()). */
 static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
                                      const VmTensor* b, VmBinaryFn op) {
     if (!a || !b || !op) return NULL;
@@ -85,7 +93,7 @@ static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
     return out;
 }
 
-/* Scalar binary op helpers */
+/* Scalar binary op helpers (division by zero yields 0.0 rather than inf/nan) */
 static double vm_op_add(double a, double b) { return a + b; }
 static double vm_op_sub(double a, double b) { return a - b; }
 static double vm_op_mul(double a, double b) { return a * b; }
@@ -94,25 +102,34 @@ static double vm_op_pow(double a, double b) { return pow(a, b); }
 static double vm_op_max(double a, double b) { return a > b ? a : b; }
 static double vm_op_min(double a, double b) { return a < b ? a : b; }
 
-/* 441-447: Convenience wrappers */
+/** @brief Native calls 441-447: broadcasting element-wise tensor addition,
+ *         via vm_tensor_binary_op(). */
 static VmTensor* vm_tensor_add(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_add);
 }
+/** @brief Broadcasting element-wise tensor subtraction. */
 static VmTensor* vm_tensor_sub(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_sub);
 }
+/** @brief Broadcasting element-wise tensor multiplication (Hadamard
+ *         product). */
 static VmTensor* vm_tensor_mul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_mul);
 }
+/** @brief Broadcasting element-wise tensor division (0.0 where the
+ *         divisor is 0). */
 static VmTensor* vm_tensor_div(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_div);
 }
+/** @brief Broadcasting element-wise tensor exponentiation. */
 static VmTensor* vm_tensor_pow(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_pow);
 }
+/** @brief Broadcasting element-wise maximum. */
 static VmTensor* vm_tensor_maximum(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_max);
 }
+/** @brief Broadcasting element-wise minimum. */
 static VmTensor* vm_tensor_minimum(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     return vm_tensor_binary_op(rs, a, b, vm_op_min);
 }
@@ -123,7 +140,10 @@ static VmTensor* vm_tensor_minimum(VmRegionStack* rs, const VmTensor* a, const V
 
 typedef double (*VmUnaryFn)(double);
 
-/* 448: Generic element-wise unary operation. */
+/** @brief Native call 448: apply a scalar unary function @p op
+ *         element-wise to @p t, producing a new same-shape/dtype tensor
+ *         (handles non-contiguous sources, e.g. transposed views, via
+ *         index unraveling). */
 static VmTensor* vm_tensor_unary_op(VmRegionStack* rs, const VmTensor* t, VmUnaryFn op) {
     if (!t || !op) return NULL;
 
@@ -162,25 +182,32 @@ static double vm_op_log(double x) { return x > 0.0 ? log(x) : -INFINITY; }
 static double vm_op_sin(double x) { return sin(x); }
 static double vm_op_cos(double x) { return cos(x); }
 
-/* 449-455: Convenience wrappers */
+/** @brief Native calls 449-455: element-wise tensor negation, via
+ *         vm_tensor_unary_op(). */
 static VmTensor* vm_tensor_neg(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_neg);
 }
+/** @brief Element-wise absolute value. */
 static VmTensor* vm_tensor_abs(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_abs);
 }
+/** @brief Element-wise square root. */
 static VmTensor* vm_tensor_sqrt_op(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_sqrt);
 }
+/** @brief Element-wise exponential. */
 static VmTensor* vm_tensor_exp_op(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_exp);
 }
+/** @brief Element-wise natural log (-infinity for non-positive input). */
 static VmTensor* vm_tensor_log_op(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_log);
 }
+/** @brief Element-wise sine. */
 static VmTensor* vm_tensor_sin_op(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_sin);
 }
+/** @brief Element-wise cosine. */
 static VmTensor* vm_tensor_cos_op(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_cos);
 }
@@ -189,7 +216,8 @@ static VmTensor* vm_tensor_cos_op(VmRegionStack* rs, const VmTensor* t) {
  *  Scale (scalar * tensor)
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 456: Multiply every element by a scalar. */
+/** @brief Native call 456: multiply every element of @p t by scalar
+ *         @p s. */
 static VmTensor* vm_tensor_scale(VmRegionStack* rs, const VmTensor* t, double s) {
     if (!t) return NULL;
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
@@ -205,17 +233,20 @@ static VmTensor* vm_tensor_scale(VmRegionStack* rs, const VmTensor* t, double s)
  *  Matrix Multiplication
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 457: matmul — 2D matrix multiplication (MxK) @ (KxN) → (MxN), with the
- * same PEP-465-style 1D promotion/contraction the LLVM path implements
- * (llvm_codegen.cpp::codegenMatmul, ESH-0226): a bare 1D tensor/vector
- * operand is promoted to a matrix (1xK on the left, Kx1 on the right),
- * multiplied, and the artificial dimension is then contracted back out of
- * the result:
- *   2D x 2D -> 2D              (standard)
- *   2D x 1D -> 1D  ([M,K]@[K]     -> [M])
- *   1D x 2D -> 1D  ([K]@[K,N]     -> [N])
- *   1D x 1D -> 1D, length 1 (dot-product-shaped result)
- * Uses scalar triple loop. Optional BLAS dispatch point (not linked here). */
+/**
+ * @brief Native call 457: matrix multiplication (MxK) @ (KxN) -> (MxN),
+ *        with the same PEP-465-style 1D promotion/contraction the LLVM
+ *        path implements (llvm_codegen.cpp::codegenMatmul, ESH-0226): a
+ *        bare 1D tensor/vector operand is promoted to a matrix (1xK on
+ *        the left, Kx1 on the right), multiplied, and the artificial
+ *        dimension is then contracted back out of the result:
+ *          2D x 2D -> 2D              (standard)
+ *          2D x 1D -> 1D  ([M,K]@[K]     -> [M])
+ *          1D x 2D -> 1D  ([K]@[K,N]     -> [N])
+ *          1D x 1D -> 1D, length 1 (dot-product-shaped result)
+ *        Uses a scalar triple loop (an optional BLAS dispatch point, not
+ *        linked here).
+ */
 static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b) return NULL;
     if (a->n_dims != 1 && a->n_dims != 2) return NULL;
@@ -257,8 +288,9 @@ static VmTensor* vm_tensor_matmul(VmRegionStack* rs, const VmTensor* a, const Vm
     return result;
 }
 
-/* 458: Batched matmul — (..., M, K) @ (..., K, N) → (..., M, N).
- * Handles 3D tensors as batches of 2D matrices. */
+/** @brief Native call 458: batched matmul — (B, M, K) @ (B, K, N) ->
+ *         (B, M, N), treating 3D tensors as batches of 2D matrices
+ *         (batch size and K must match). */
 static VmTensor* vm_tensor_batch_matmul(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b) return NULL;
     if (a->n_dims != 3 || b->n_dims != 3) return NULL;
@@ -287,7 +319,8 @@ static VmTensor* vm_tensor_batch_matmul(VmRegionStack* rs, const VmTensor* a, co
     return out;
 }
 
-/* 459: Dot product — 1D inner product. */
+/** @brief Native call 459: 1D inner product (0.0 if either operand isn't
+ *         1D or lengths mismatch). */
 static double vm_tensor_dot(const VmTensor* a, const VmTensor* b) {
     if (!a || !b || a->n_dims != 1 || b->n_dims != 1) return 0.0;
     if (a->total != b->total) return 0.0;
@@ -310,8 +343,12 @@ typedef enum {
     VM_REDUCE_PROD
 } VmReduceOp;
 
-/* 460: Reduce along a single axis.
- * Output shape has the specified axis removed. */
+/**
+ * @brief Native call 460: reduce @p t along a single @p axis (negative
+ *        indexes from the end) using reduction @p op (sum/mean/max/min/
+ *        prod). Output shape has the reduced axis removed; a 1D input
+ *        reduces to a 1-element tensor rather than a 0-dim one.
+ */
 static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
                                   int axis, VmReduceOp op) {
     if (!t) return NULL;
@@ -398,7 +435,8 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
     return out;
 }
 
-/* 461: Full reduction (all axes) to a single scalar value. */
+/** @brief Native call 461: reduce @p t over all axes to a single scalar
+ *         value using reduction @p op. */
 static double vm_tensor_reduce_all(const VmTensor* t, VmReduceOp op) {
     if (!t || t->total == 0) return 0.0;
 
@@ -431,16 +469,19 @@ static double vm_tensor_reduce_all(const VmTensor* t, VmReduceOp op) {
     return acc;
 }
 
-/* Convenience wrappers */
+/** @brief `(tensor-sum t [axis])`, via vm_tensor_reduce(). */
 static VmTensor* vm_tensor_sum(VmRegionStack* rs, const VmTensor* t, int axis) {
     return vm_tensor_reduce(rs, t, axis, VM_REDUCE_SUM);
 }
+/** @brief `(tensor-mean t [axis])`, via vm_tensor_reduce(). */
 static VmTensor* vm_tensor_mean(VmRegionStack* rs, const VmTensor* t, int axis) {
     return vm_tensor_reduce(rs, t, axis, VM_REDUCE_MEAN);
 }
+/** @brief `(tensor-max t [axis])`, via vm_tensor_reduce(). */
 static VmTensor* vm_tensor_max(VmRegionStack* rs, const VmTensor* t, int axis) {
     return vm_tensor_reduce(rs, t, axis, VM_REDUCE_MAX);
 }
+/** @brief `(tensor-min t [axis])`, via vm_tensor_reduce(). */
 static VmTensor* vm_tensor_min(VmRegionStack* rs, const VmTensor* t, int axis) {
     return vm_tensor_reduce(rs, t, axis, VM_REDUCE_MIN);
 }
@@ -465,32 +506,41 @@ static double vm_op_gelu(double x) {
 }
 static double vm_op_swish(double x) { return x / (1.0 + exp(-x)); }
 
-/* 462-468: Activation function wrappers */
+/** @brief Native calls 462-468: element-wise ReLU activation. */
 static VmTensor* vm_tensor_relu(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_relu);
 }
+/** @brief Element-wise sigmoid activation. */
 static VmTensor* vm_tensor_sigmoid(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_sigmoid);
 }
+/** @brief Element-wise tanh activation. */
 static VmTensor* vm_tensor_tanh_act(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_tanh_act);
 }
+/** @brief Element-wise leaky-ReLU activation (slope 0.01 for x < 0). */
 static VmTensor* vm_tensor_leaky_relu(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_leaky_relu);
 }
+/** @brief Element-wise ELU activation (alpha = 1.0). */
 static VmTensor* vm_tensor_elu(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_elu);
 }
+/** @brief Element-wise GELU activation (tanh approximation). */
 static VmTensor* vm_tensor_gelu(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_gelu);
 }
+/** @brief Element-wise SiLU/Swish activation, x * sigmoid(x). */
 static VmTensor* vm_tensor_swish(VmRegionStack* rs, const VmTensor* t) {
     return vm_tensor_unary_op(rs, t, vm_op_swish);
 }
 
-/* 469: Softmax along specified axis.
- * softmax(x_i) = exp(x_i - max) / sum(exp(x_j - max))
- * Numerically stable: subtract max before exponentiating. */
+/**
+ * @brief Native call 469: numerically-stable softmax along @p axis,
+ *        softmax(x_i) = exp(x_i - max) / sum(exp(x_j - max)), computed
+ *        per-slice perpendicular to @p axis (max-subtract, exponentiate,
+ *        normalize).
+ */
 static VmTensor* vm_tensor_softmax(VmRegionStack* rs, const VmTensor* t, int axis) {
     if (!t) return NULL;
     if (axis < 0) axis += t->n_dims;
@@ -569,7 +619,8 @@ static VmTensor* vm_tensor_softmax(VmRegionStack* rs, const VmTensor* t, int axi
  *  Loss Functions
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 470: Mean Squared Error — mean((pred - target)^2) */
+/** @brief Native call 470: mean squared error loss,
+ *         mean((pred - target)^2). */
 static double vm_tensor_mse_loss(const VmTensor* pred, const VmTensor* target) {
     if (!pred || !target || pred->total != target->total || pred->total == 0) return 0.0;
     double sum = 0.0;
@@ -580,7 +631,8 @@ static double vm_tensor_mse_loss(const VmTensor* pred, const VmTensor* target) {
     return sum / (double)pred->total;
 }
 
-/* 471: Cross-entropy — -sum(target * log(pred + eps)) */
+/** @brief Native call 471: cross-entropy loss,
+ *         -sum(target * log(max(pred, eps))). */
 static double vm_tensor_cross_entropy_loss(const VmTensor* pred, const VmTensor* target) {
     if (!pred || !target || pred->total != target->total || pred->total == 0) return 0.0;
     double eps = 1e-12;
@@ -593,7 +645,9 @@ static double vm_tensor_cross_entropy_loss(const VmTensor* pred, const VmTensor*
     return sum;
 }
 
-/* 472: Binary Cross-Entropy — -mean(t*log(p) + (1-t)*log(1-p)) */
+/** @brief Native call 472: binary cross-entropy loss,
+ *         -mean(t*log(p) + (1-t)*log(1-p)), with @p pred clamped away from
+ *         0/1 to avoid log(0). */
 static double vm_tensor_bce_loss(const VmTensor* pred, const VmTensor* target) {
     if (!pred || !target || pred->total != target->total || pred->total == 0) return 0.0;
     double eps = 1e-12;
@@ -613,16 +667,21 @@ static double vm_tensor_bce_loss(const VmTensor* pred, const VmTensor* target) {
  *  Convolution
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 473: Conv2d — canonical NCHW cross-correlation with stride + zero-padding.
- *   Input:  [batch, in_channels, H, W]      (rank-4 NCHW), or
- *           [..., H, W]                      (rank-2 single-plane form)
- *   Kernel: [out_channels, in_channels, kH, kW]   (rank-4), or [kH, kW] (rank-2)
- *   Output: [batch, out_channels, oH, oW]    with oH/oW per eshkol_conv_out_dim
+/**
+ * @brief Native call 473: canonical NCHW cross-correlation with stride and
+ *        zero-padding.
+ *          Input:  [batch, in_channels, H, W] (rank-4 NCHW), or
+ *                  [..., H, W]                (rank-2 single-plane form)
+ *          Kernel: [out_channels, in_channels, kH, kW] (rank-4), or
+ *                  [kH, kW] (rank-2, depth-wise/single-plane)
+ *          Output: [batch, out_channels, oH, oW] with oH/oW per
+ *                  eshkol_conv_out_dim()
  *
- * Numerics are computed by eshkol_conv2d_kernel (tensor_conv_kernel.h), the
- * SAME shared kernel the LLVM codegen runtime calls via eshkol_rt_conv2d, so
- * the VM and the -r / AOT paths are guaranteed bit-identical (ESH-0068). The
- * shape interpretation mirrors eshkol_rt_conv2d exactly.
+ * Numerics are computed by eshkol_conv2d_kernel() (tensor_conv_kernel.h),
+ * the SAME shared kernel the LLVM codegen runtime calls via
+ * eshkol_rt_conv2d, so the VM and the -r / AOT paths are guaranteed
+ * bit-identical (ESH-0068). The shape interpretation mirrors
+ * eshkol_rt_conv2d exactly.
  */
 static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
                                   const VmTensor* kernel,
@@ -689,7 +748,9 @@ static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
  *  Pooling
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 474: Max pooling 2D — [batch, channels, H, W] with kernel_size, stride. */
+/** @brief Native call 474: 2D max pooling over NCHW input [batch,
+ *         channels, H, W] with kernel size (@p pool_h, @p pool_w) and
+ *         @p stride (no padding). */
 static VmTensor* vm_tensor_maxpool2d(VmRegionStack* rs, const VmTensor* input,
                                      int64_t pool_h, int64_t pool_w, int64_t stride) {
     if (!input || input->n_dims != 4) return NULL;
@@ -737,9 +798,12 @@ static VmTensor* vm_tensor_maxpool2d(VmRegionStack* rs, const VmTensor* input,
  *  Normalization
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 475: Layer normalization along last axis.
- * out[i] = (x[i] - mean) / sqrt(var + eps) * gamma[i] + beta[i]
- * gamma and beta can be NULL for no affine transform. */
+/**
+ * @brief Native call 475: layer normalization along the last axis,
+ *        out[i] = (x[i] - mean) / sqrt(var + eps) * gamma[i] + beta[i],
+ *        computed independently per slice along all leading axes.
+ *        @p gamma and @p beta may be NULL for no affine transform.
+ */
 static VmTensor* vm_tensor_layer_norm(VmRegionStack* rs, const VmTensor* t,
                                       const VmTensor* gamma, const VmTensor* beta) {
     if (!t || t->n_dims < 1) return NULL;
@@ -787,7 +851,8 @@ static VmTensor* vm_tensor_layer_norm(VmRegionStack* rs, const VmTensor* t,
  *  Comparison
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 476: Element-wise equality check (returns 1.0 if equal within eps, 0.0 otherwise). */
+/** @brief Native call 476: whether @p a and @p b have identical shapes and
+ *         every element pair is within @p atol of each other. */
 static int vm_tensor_allclose(const VmTensor* a, const VmTensor* b, double atol) {
     if (!a || !b) return 0;
     if (a->total != b->total) return 0;
@@ -805,7 +870,8 @@ static int vm_tensor_allclose(const VmTensor* a, const VmTensor* b, double atol)
  *  Concatenation
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 477: Concatenate two tensors along specified axis. */
+/** @brief Native call 477: concatenate @p a and @p b along @p axis (all
+ *         other dimensions must match). */
 static VmTensor* vm_tensor_concat(VmRegionStack* rs, const VmTensor* a,
                                   const VmTensor* b, int axis) {
     if (!a || !b) return NULL;
@@ -854,7 +920,8 @@ static VmTensor* vm_tensor_concat(VmRegionStack* rs, const VmTensor* a,
  *  Outer product
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 478: Outer product of two 1D tensors → 2D matrix. */
+/** @brief Native call 478: outer product of two 1D tensors, producing a
+ *         2D [len(a), len(b)] matrix. */
 static VmTensor* vm_tensor_outer(VmRegionStack* rs, const VmTensor* a, const VmTensor* b) {
     if (!a || !b || a->n_dims != 1 || b->n_dims != 1) return NULL;
 
@@ -876,7 +943,7 @@ static VmTensor* vm_tensor_outer(VmRegionStack* rs, const VmTensor* a, const VmT
  *  Clamp
  * ══════════════════════════════════════════════════════════════════════════════*/
 
-/* 479: Clamp all elements to [lo, hi]. */
+/** @brief Native call 479: clamp every element of @p t to [@p lo, @p hi]. */
 static VmTensor* vm_tensor_clamp(VmRegionStack* rs, const VmTensor* t, double lo, double hi) {
     if (!t) return NULL;
     VmTensor* out = vm_tensor_new(rs, t->shape, t->n_dims);
@@ -899,8 +966,9 @@ static VmTensor* vm_tensor_clamp(VmRegionStack* rs, const VmTensor* t, double lo
 #include <assert.h>
 #include <stdlib.h>     /* exit() */
 
-/* Helper: check double equality within tolerance.
- * Uses exit(1) instead of assert(0) so the test still fails under -DNDEBUG. */
+/** @brief Self-test helper: check double equality within @p tol, printing
+ *         a diagnostic and exit(1)-ing (instead of assert(0), so the
+ *         failure still registers under -DNDEBUG) on mismatch. */
 static void assert_near(double a, double b, double tol, const char* msg) {
     if (fabs(a - b) > tol) {
         fprintf(stderr, "FAIL: %s: expected %.10f, got %.10f (diff %.2e)\n",
@@ -909,6 +977,10 @@ static void assert_near(double a, double b, double tol, const char* msg) {
     }
 }
 
+/** @brief Standalone self-test (built when VM_TENSOR_OPS_TEST is defined):
+ *         exercises broadcasting binary/unary ops, matmul, reductions,
+ *         activations, losses, conv2d, pooling, normalization, concat,
+ *         outer product, and clamp against known values. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

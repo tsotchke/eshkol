@@ -353,10 +353,13 @@ static int bignum_compare(const VmBignum* a, const VmBignum* b) {
     return sa > 0 ? mag : -mag;
 }
 
+/** @brief Whether @p b represents zero (no limbs, or sign field zeroed). */
 static int bignum_is_zero(const VmBignum* b) {
     return b->n_limbs == 0 || b->sign == 0;
 }
 
+/** @brief Sign of @p b: -1, 0, or +1 (0 for the zero value regardless of
+ *         its stored sign field). */
 static int bignum_sign(const VmBignum* b) {
     return bignum_is_zero(b) ? 0 : b->sign;
 }
@@ -1308,6 +1311,10 @@ static int fail_count = 0;
     } \
 } while(0)
 
+/** @brief Standalone self-test (built when this file's test guard is
+ *         defined): exercises arbitrary-precision arithmetic, comparison,
+ *         conversions, and bitwise/shift operations against known values,
+ *         including cases that overflow int64. */
 int main(void) {
     printf("=== Eshkol VM Bignum Self-Test ===\n\n");
 
