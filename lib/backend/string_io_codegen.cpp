@@ -1139,6 +1139,45 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
         len = ctx_.builder().CreateZExt(len, ctx_.int64Type());
     }
 
+    // Guard against a negative length. `len` flows into memset as a size_t;
+    // a negative value wraps to an enormous unsigned count, hanging/OOMing the
+    // process (make-string requires a non-negative k in R7RS). Raise instead.
+    {
+        llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(len,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Function* ms_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* ms_ok = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_ok", ms_func);
+        llvm::BasicBlock* ms_fail = llvm::BasicBlock::Create(ctx_.context(), "mkstr_len_fail", ms_func);
+        ctx_.builder().CreateCondBr(neg_len, ms_fail, ms_ok);
+
+        ctx_.builder().SetInsertPoint(ms_fail);
+        {
+            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+            if (!raise_func) {
+                llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                    "eshkol_raise", &ctx_.module());
+                raise_func->setDoesNotReturn();
+            }
+            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", &ctx_.module());
+            }
+            llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+                "make-string: length must be non-negative");
+            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+            ctx_.builder().CreateCall(raise_func, {exception});
+            ctx_.builder().CreateUnreachable();
+        }
+
+        ctx_.builder().SetInsertPoint(ms_ok);
+    }
+
     // Get the fill character (default to space, ASCII 32)
     llvm::Value* fill_char;
     if (op->call_op.num_vars == 2) {
@@ -1214,6 +1253,58 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     // Get character value
     llvm::Value* char_val = tagged_.unpackInt64(char_arg);
     char_val = ctx_.builder().CreateTrunc(char_val, ctx_.int8Type());
+
+    // Bounds check: 0 <= idx < byte-length.  string-set! writes a raw byte
+    // straight at offset idx, so without this guard a negative or out-of-range
+    // index (e.g. (string-set! (make-string 4) 900000000000 #\z)) is an
+    // out-of-bounds heap WRITE (ASAN: BUS/SEGV on WRITE). Use the header byte
+    // length (payload size excluding the trailing NUL) as the exclusive upper
+    // bound so writing never clobbers the NUL terminator or beyond.
+    llvm::Function* byte_len_func = ctx_.module().getFunction("eshkol_string_byte_length");
+    if (!byte_len_func) {
+        llvm::FunctionType* byte_len_ty = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.ptrType()}, false);
+        byte_len_func = llvm::Function::Create(byte_len_ty,
+            llvm::Function::ExternalLinkage,
+            "eshkol_string_byte_length", &ctx_.module());
+    }
+    llvm::Value* sset_len = ctx_.builder().CreateCall(byte_len_func, {str_ptr});
+    llvm::Value* sset_neg = ctx_.builder().CreateICmpSLT(idx,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::Value* sset_big = ctx_.builder().CreateICmpSGE(idx, sset_len);
+    llvm::Value* sset_bad = ctx_.builder().CreateOr(sset_neg, sset_big);
+
+    llvm::Function* sset_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* sset_ok = llvm::BasicBlock::Create(ctx_.context(), "sset_ok", sset_func);
+    llvm::BasicBlock* sset_fail = llvm::BasicBlock::Create(ctx_.context(), "sset_fail", sset_func);
+    ctx_.builder().CreateCondBr(sset_bad, sset_fail, sset_ok);
+
+    ctx_.builder().SetInsertPoint(sset_fail);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* err_msg = ctx_.builder().CreateGlobalString(
+            "string-set!: index out of bounds");
+        llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        llvm::Value* exception = ctx_.builder().CreateCall(make_exc_func, {exc_type, err_msg});
+        ctx_.builder().CreateCall(raise_func, {exception});
+        ctx_.builder().CreateUnreachable();
+    }
+
+    ctx_.builder().SetInsertPoint(sset_ok);
 
     // Store character at index
     llvm::Value* char_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), str_ptr, idx);

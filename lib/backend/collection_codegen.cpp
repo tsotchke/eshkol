@@ -1465,6 +1465,46 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     // Extract length as i64
     llvm::Value* length = tagged_.unpackInt64(len_tagged);
 
+    // Guard against a negative length. The fill loop below compares with an
+    // unsigned predicate, so a negative length wraps to ~2^63 iterations of
+    // out-of-bounds stores (hang / OOM / heap corruption). make-vector
+    // requires a non-negative k in R7RS — raise a catchable error instead.
+    {
+        llvm::Value* neg_len = ctx_.builder().CreateICmpSLT(length,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Function* mv_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* mv_ok = llvm::BasicBlock::Create(ctx_.context(), "mkvec_len_ok", mv_func);
+        llvm::BasicBlock* mv_fail = llvm::BasicBlock::Create(ctx_.context(), "mkvec_len_fail", mv_func);
+        ctx_.builder().CreateCondBr(neg_len, mv_fail, mv_ok);
+
+        ctx_.builder().SetInsertPoint(mv_fail);
+        {
+            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+            if (!raise_func) {
+                llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                    "eshkol_raise", &ctx_.module());
+                raise_func->setDoesNotReturn();
+            }
+            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", &ctx_.module());
+            }
+            llvm::Value* msg = ctx_.builder().CreateGlobalString(
+                "make-vector: length must be non-negative");
+            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
+            ctx_.builder().CreateCall(raise_func, {exc});
+            ctx_.builder().CreateUnreachable();
+        }
+
+        ctx_.builder().SetInsertPoint(mv_ok);
+    }
+
     // Allocate from arena with header (for consolidated HEAP_PTR type)
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
     llvm::Value* vec_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(),
