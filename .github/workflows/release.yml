@@ -580,3 +580,56 @@ jobs:
             --generate-notes \
             "${prerelease_flags[@]}" \
             dist/*
+
+  bump-homebrew-tap:
+    name: bump-homebrew-tap
+    runs-on: ubuntu-22.04
+    needs:
+      - publish-release
+    steps:
+      - name: Update Formula in tsotchke/homebrew-eshkol
+        shell: bash
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${TAP_TOKEN:-}" ]]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN secret not configured; skipping tap bump." \
+                 "Add a repo-scoped PAT with write access to tsotchke/homebrew-eshkol to enable it."
+            exit 0
+          fi
+
+          case "$GITHUB_REF_NAME" in
+            *alpha*|*beta*|*rc*)
+              echo "::notice::Prerelease tag $GITHUB_REF_NAME; not bumping the tap."
+              exit 0;;
+          esac
+
+          tag="$GITHUB_REF_NAME"
+          tarball_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
+
+          # GitHub source archives are generated on demand; fetch and hash.
+          curl -fsSL -o /tmp/src.tar.gz "$tarball_url"
+          sha="$(sha256sum /tmp/src.tar.gz | awk '{print $1}')"
+          echo "tag=$tag sha256=$sha"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/tsotchke/homebrew-eshkol.git" /tmp/tap
+          cd /tmp/tap
+
+          formula=Formula/eshkol.rb
+          sed -i -E "s|url \"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/[^\"]+\"|url \"${tarball_url}\"|" "$formula"
+          sed -i -E "s|sha256 \"[0-9a-f]{64}\"|sha256 \"${sha}\"|" "$formula"
+
+          if git diff --quiet; then
+            echo "::notice::Formula already at ${tag}; nothing to do."
+            exit 0
+          fi
+
+          # Sanity: the new url and sha must both be present.
+          grep -q "$tarball_url" "$formula"
+          grep -q "$sha" "$formula"
+
+          git -c user.name=tsotchke -c user.email=tsotchkele@gmail.com \
+              commit -am "eshkol ${tag}"
+          git push origin HEAD
