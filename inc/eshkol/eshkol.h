@@ -15,9 +15,9 @@
  * embedded in binaries and reported by `--version`.
  */
 #define ESHKOL_VERSION_MAJOR 1
-#define ESHKOL_VERSION_MINOR 2
+#define ESHKOL_VERSION_MINOR 3
 #define ESHKOL_VERSION_PATCH 1
-#define ESHKOL_VERSION_STRING "1.2.1-scale"
+#define ESHKOL_VERSION_STRING "1.3.1-evolve"
 
 #include <stdint.h>
 #include <stdbool.h>

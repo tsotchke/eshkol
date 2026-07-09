@@ -1,0 +1,35 @@
+;;; tests/memory/define_loop_flat_rss_aot_test.esk — ESH-0214b AOT flat-RSS
+;;; regression fixture, gated by define_loop_flat_rss_aot_test.sh.
+;;;
+;;; A TOP-LEVEL self-tail-recursive `define` loop whose body is wrapped in a
+;;; catch-all `guard` — the exact daemon-loop shape ESH-0214b targets. Each
+;;; iteration allocates a small fresh list via `(make-list 12 i)` (non-
+;;; foldable — the fill value changes every iteration, so it cannot be
+;;; hoisted or constant-folded away) that never escapes the iteration; the
+;;; only carried state is a plain numeric accumulator. Without automatic
+;;; per-iteration arena reclamation, this shape leaks ~one iteration's worth
+;;; of list cells forever; with it, peak RSS stays flat regardless of
+;;; iteration count. See tests/features/define_loop_iter_scope_test.esk for
+;;; the sibling correctness fixture and scripts/run_rss_bounded_test.sh for
+;;; the JIT (-r) bounded-RSS gate this AOT gate complements.
+
+(define total-passes 1000000)
+
+(define (loop i acc)
+  (guard (e (#t acc))                     ; catch-all: any raise yields acc
+    (if (>= i total-passes)
+        acc
+        (let ((scratch (make-list 12 i))) ; fresh, non-foldable, dead at back edge
+          (loop (+ i 1) (+ acc (length scratch)))))))
+
+(let ((result (loop 0 0)))
+  (display "[define_loop_flat_rss_aot_test] passes=")
+  (display total-passes)
+  (display " result=")
+  (display result)
+  (newline)
+  (if (= result (* total-passes 12))
+      (begin (display "PASS") (newline))
+      (begin (display "FAIL expected ")
+             (display (* total-passes 12))
+             (newline))))
