@@ -1,0 +1,12 @@
+; R7RS integer division sign conventions — VM must match native codegen.
+;   modulo    -> sign of divisor
+;   remainder -> sign of dividend
+;   quotient  -> truncate toward zero
+(display (modulo -7 3)) (newline)
+(display (modulo 7 -3)) (newline)
+(display (modulo -7 -3)) (newline)
+(display (remainder -7 3)) (newline)
+(display (remainder 7 -3)) (newline)
+(display (remainder -7 -3)) (newline)
+(display (quotient -7 3)) (newline)
+(display (quotient 7 -3)) (newline)
