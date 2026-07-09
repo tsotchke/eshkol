@@ -328,6 +328,26 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
                 // Self-call found — must be in tail position
                 if (!in_tail_pos) return false;
             }
+
+            // ESH-0227: `(apply f ...)` where `f` names this very function is a
+            // self-recursive call routed through `apply`. Exactly like a direct
+            // self-call it is only sound to TCO-transform when it sits in tail
+            // position. A non-tail apply-self-call (e.g.
+            // `(+ 1 (apply loop (list ...)))`) must disable TCO for the whole
+            // function so codegenApply lowers it to a normal (correctly
+            // non-tail) call rather than an unconditional loop back-edge — the
+            // same reason a non-tail direct self-call disables TCO above.
+            // Only the statically provable case (first apply operand is a bare
+            // variable naming this function) is treated as a self-call; a
+            // dynamically-computed target is left alone (it stays a normal
+            // call and never triggers the codegenApply back-edge either).
+            if (call_name == "apply" && op->call_op.num_vars >= 1) {
+                const eshkol_ast_t* applied = &op->call_op.variables[0];
+                if (applied->type == ESHKOL_VAR && applied->variable.id &&
+                    func_name == applied->variable.id && !in_tail_pos) {
+                    return false;
+                }
+            }
             // Check arguments (they are NOT in tail position)
             for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                 if (!allSelfCallsInTailPosition(&op->call_op.variables[i], func_name, false)) {

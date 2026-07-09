@@ -1,0 +1,45 @@
+;;; sleep-ms argument type-checking (ESH-0228 regression)
+;;;
+;;; Bug: eshkol_builtin_sleep_ms_v (lib/core/system_builtins.c) cast the tagged
+;;; value's raw .data field straight to int64 with NO tag check, so a
+;;; non-numeric argument reinterpreted whatever bits were in .data (a heap
+;;; pointer, in the heap-tagged cases) as a millisecond count — sleeping for a
+;;; garbage duration or effectively hanging. The bytecode VM's case 1711
+;;; (lib/backend/vm_native.c) silently no-op'd non-numbers via as_number()==0.0.
+;;;
+;;; Fix (ESH-0228): both paths now type-check the argument. Valid fixnums and
+;;; flonums keep their behavior (sleep n ms / no-op for <= 0); any non-number
+;;; raises a clean, catchable type error ("Type error in sleep-ms: expected
+;;; number") instead of reinterpreting bits.
+;;;
+;;; The runner scores this test by exit code (0 = PASS). It exits non-zero if
+;;; any assertion fails, so a regression to the silent-reinterpret behavior
+;;; (bad input NOT raising) is caught.
+
+;; --- Good path: valid numeric args must NOT raise and must return promptly. ---
+(sleep-ms 0)      ; no-op
+(sleep-ms -5)     ; negative -> no-op
+(sleep-ms 3)      ; small positive -> ~3ms real sleep
+(display "good-args-ok") (newline)
+
+;; --- Bad path: a non-numeric arg must raise a (catchable) type error. ---
+;; If the guard body's (sleep-ms ...) does NOT raise, `guard` falls through to
+;; 'no-error and the assertion below fails the whole test.
+(define str-result
+  (guard (e (#t 'raised))
+    (sleep-ms "100")
+    'no-error))
+
+(define bool-result
+  (guard (e (#t 'raised))
+    (sleep-ms #t)
+    'no-error))
+
+(if (and (eq? str-result 'raised)
+         (eq? bool-result 'raised))
+    (begin (display "bad-args-rejected") (newline))
+    (begin
+      (display "FAIL: sleep-ms did not type-check its argument") (newline)
+      (exit 1)))
+
+(display "PASS") (newline)

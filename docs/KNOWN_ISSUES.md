@@ -94,17 +94,17 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   tail calls (emitted as LLVM `musttail`) and run in O(1) stack — ESH-0102
   resolved (2026-07-04). The remaining exception is a higher-order tail call that
   forwards a stack-allocated closure argument, which falls back to a bounded call.
-- **Plain named-let TCO loops overflow the native stack around n≈300k-500k**
-  even with zero `guard`/`call/cc`/dynamic-alloca in the loop body — e.g.
-  `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))` SIGSEGVs/SIGBUSes
-  between N=300,000 and N=500,000, while the equivalent top-level
-  `(define (f n) (if (>= n N) n (f (+ n 1))))` runs flat past N=1,000,000.
-  **Status: open, root cause not yet diagnosed** (ESH-0223). This is
-  *distinct* from, and not fixed by, PR #157/ESH-0211 (named-let TCO in
-  `if`/`case`/`when`/`unless` tail positions, merged 2026-07-06) or
-  ESH-0222 (tail calls through `guard`) — both were re-verified against this
-  bug and neither causes nor cures it; it reproduces on unmodified master
-  independent of either fix.
+- Plain named-let TCO loops used to overflow the native stack around
+  n≈300k-500k even with zero `guard`/`call/cc`/dynamic-alloca in the loop body
+  (e.g. `(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))`). **Status: fixed**
+  (ESH-0223) — no longer reproduces on current master. Re-tested after the
+  define-loop TCO + per-iteration arena reclamation (ESH-0214b/#192), the
+  iterative reader (#191), and deep region-escape (#210) landed: the bare
+  named-let loop now runs flat with O(1) stack (~28 MB RSS, <1 s at N=1e7 under
+  a 512 KB stack ulimit), matching the top-level-define TCO guarantee.
+  Regression test `tests/tco/named_let_long_loop_test.esk` (and Test 1 of
+  `tests/tco/named_let_tail_positions_test.esk`, which runs the identical shape
+  to 1e7).
 
 **Language edges**
 - A closure created inside a named-let loop that `set!`s a global loses the
@@ -122,20 +122,29 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   root cause, **one** ticket. **Status: fixed** 2026-07-06 in
   `lib/backend/autodiff_codegen.cpp` (ESH-0221); regression test
   `tests/closures/tco_loop_capture_test.esk`.
-- `(apply loop lst)` is **not** a proper tail call — `call_apply_codegen.cpp`
-  never consults the TCO context, so using `apply` for a loop's back-edge
-  grows the native call stack by one frame per iteration regardless of the
-  target function's body. Documented in
-  [LONG_RUNNING_LOOPS.md](LONG_RUNNING_LOOPS.md) (Q3); call the loop function
-  directly with its arguments spelled out instead. **Status: open, tracked**
-  (ESH-0227).
-- `sleep-ms` does not type-check its argument — the AOT/JIT builtin
-  (`eshkol_builtin_sleep_ms_v`) casts the tagged value's raw `.data` field
-  straight to `int64_t` with no tag check, so a non-numeric argument
-  reinterprets whatever bits happen to be there (a pointer, for heap-tagged
-  values) as a millisecond count instead of raising a type error. Flagged
-  during the v1.3 campaign (Selene slow-tick lead). **Status: open, tracked**
-  (ESH-0228).
+- `(apply f (list ...))` used as a loop's back-edge used to grow the native
+  call stack by one frame per iteration (and, for a named-let, could not even
+  resolve the local loop name — it warned "apply: Unknown function" and
+  returned `'()`). **Status: fixed** (ESH-0227). A statically spelled
+  `(apply f leading... (list ...))` whose target `f` names the enclosing
+  function's active TCO loop and whose total argument count matches the loop's
+  arity now lowers to the same O(1)-stack loop back-edge a direct
+  `(f arg ...)` self-call gets. The whole-function tail analysis recognizes
+  apply-self-calls, so a *non-tail* apply-self-call still correctly disables the
+  transform (the apply stays a normal call), and a dynamically-shaped final
+  list is left as an ordinary (non-tail) apply. Fixed in
+  `lib/backend/tail_call_codegen.cpp` and `lib/backend/llvm_codegen.cpp`;
+  regression test `tests/tco/apply_loop_tail_test.esk`.
+- `sleep-ms` used not to type-check its argument — the AOT/JIT builtin cast the
+  tagged value's raw `.data` field straight to `int64_t` with no tag check, so a
+  non-numeric argument reinterpreted whatever bits were there (a pointer, for
+  heap-tagged values) as a millisecond count instead of raising a type error;
+  the bytecode VM path silently no-op'd non-numbers. **Status: fixed**
+  (ESH-0228). Both paths now accept only fixnums/flonums (valid values keep
+  their behavior: sleep n ms, or a no-op for `<= 0`) and raise a clean,
+  catchable "Type error in sleep-ms: expected number" on any non-number. Fixed
+  in `lib/core/system_builtins.c` and `lib/backend/vm_native.c`; regression
+  test `tests/system/sleep_ms_test.esk`.
 - Exact rational arithmetic degrades to double once a bignum is involved
   (ESH-0105).
 - Long-form `(quasiquote x)`/`(unquote x)` and nested quasiquote (level >= 2)

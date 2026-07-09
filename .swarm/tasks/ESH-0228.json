@@ -1,7 +1,7 @@
 {
   "id": "ESH-0228",
   "title": "sleep-ms does not type-check its argument — non-numeric input reinterprets tagged-value bits as an integer",
-  "status": "open",
+  "status": "fixed",
   "priority": "medium",
   "workstream": "runtime/robustness",
   "owner": null,
