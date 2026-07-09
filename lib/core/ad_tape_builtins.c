@@ -60,29 +60,35 @@ double ad_get_value(AdTape* tape, int node);
 
 /* ── Sret wrappers ── */
 
+/** Wrap an int64 in a tagged value. */
 static ad_tagged_t make_int(int64_t v) {
     ad_tagged_t r = {AD_TYPE_INT64, 0, 0, 0, 0};
     memcpy(&r.data, &v, sizeof(int64_t));
     return r;
 }
 
+/** Wrap a double in a tagged value. */
 static ad_tagged_t make_double(double v) {
     ad_tagged_t r = {AD_TYPE_DOUBLE, 0, 0, 0, 0};
     memcpy(&r.data, &v, sizeof(double));
     return r;
 }
 
+/** Wrap a raw pointer in a tagged heap-pointer value. */
 static ad_tagged_t make_heap(void* p) {
     ad_tagged_t r = {AD_TYPE_HEAP_PTR, 0, 0, 0, 0};
     r.data = (uint64_t)p;
     return r;
 }
 
+/** Construct a tagged null value. */
 static ad_tagged_t make_null(void) {
     ad_tagged_t r = {AD_TYPE_NULL, 0, 0, 0, 0};
     return r;
 }
 
+/** Unwrap a tagged heap-pointer value into an AdTape*, or NULL if `v`
+ *  is not a (non-zero) heap pointer. */
 static AdTape* extract_tape(const ad_tagged_t* v) {
     if (v->type == AD_TYPE_HEAP_PTR && v->data != 0)
         return (AdTape*)(uintptr_t)v->data;
@@ -91,6 +97,8 @@ static AdTape* extract_tape(const ad_tagged_t* v) {
 
 /* All-pointer sret wrappers for LLVM codegen */
 
+/** Sret wrapper for (ad-tape-new): allocate a new owned AD tape and
+ *  return it as a tagged heap pointer (tagged null on allocation failure). */
 void eshkol_ad_tape_new_sret(ad_tagged_t* out) {
     /* Bug I (2026-04-20): route Scheme ad-tape-new to the owned-arena
      * factory so iterative fit loops can reclaim memory via
@@ -110,6 +118,9 @@ void eshkol_ad_tape_release_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv) {
     *out = make_null();
 }
 
+/** Sret wrapper for (ad-const tape value): record a constant leaf node
+ *  on the tape and return its node index (-1 if `tape_tv` is not a
+ *  valid tape). Accepts either an int or double tagged value. */
 void eshkol_ad_const_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* val_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_int(-1); return; }
@@ -119,6 +130,10 @@ void eshkol_ad_const_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad
     *out = make_int(ad_const(tape, val));
 }
 
+/** Sret wrapper for (ad-var tape value): record a differentiable
+ *  variable leaf node on the tape and return its node index (-1 if
+ *  `tape_tv` is not a valid tape). Accepts either an int or double
+ *  tagged value. */
 void eshkol_ad_var_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* val_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_int(-1); return; }
@@ -129,6 +144,9 @@ void eshkol_ad_var_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_t
 }
 
 /* Binary ops: (tape, left_node, right_node) → node_index */
+/** Defines an sret wrapper function `name` that records a binary AD
+ *  op (`func`) on the tape linking `left`/`right` node indices, and
+ *  returns the new node's index (-1 if `tape_tv` is not a valid tape). */
 #define AD_BINARY_SRET(name, func) \
 void name(ad_tagged_t* out, const ad_tagged_t* tape_tv, \
           const ad_tagged_t* left_tv, const ad_tagged_t* right_tv) { \
@@ -137,12 +155,19 @@ void name(ad_tagged_t* out, const ad_tagged_t* tape_tv, \
     *out = make_int(func(tape, (int)(int64_t)left_tv->data, (int)(int64_t)right_tv->data)); \
 }
 
+/** Sret wrapper for (ad-add tape left right). */
 AD_BINARY_SRET(eshkol_ad_add_sret, ad_add)
+/** Sret wrapper for (ad-sub tape left right). */
 AD_BINARY_SRET(eshkol_ad_sub_sret, ad_sub)
+/** Sret wrapper for (ad-mul tape left right). */
 AD_BINARY_SRET(eshkol_ad_mul_sret, ad_mul)
+/** Sret wrapper for (ad-div tape left right). */
 AD_BINARY_SRET(eshkol_ad_div_sret, ad_div)
 
 /* Unary ops: (tape, node) → node_index */
+/** Defines an sret wrapper function `name` that records a unary AD op
+ *  (`func`) on the tape for the given node index, and returns the new
+ *  node's index (-1 if `tape_tv` is not a valid tape). */
 #define AD_UNARY_SRET(name, func) \
 void name(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_tv) { \
     AdTape* tape = extract_tape(tape_tv); \
@@ -150,17 +175,30 @@ void name(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_
     *out = make_int(func(tape, (int)(int64_t)node_tv->data)); \
 }
 
+/** Sret wrapper for (ad-sin tape node). */
 AD_UNARY_SRET(eshkol_ad_sin_sret, ad_sin)
+/** Sret wrapper for (ad-cos tape node). */
 AD_UNARY_SRET(eshkol_ad_cos_sret, ad_cos)
+/** Sret wrapper for (ad-exp tape node). */
 AD_UNARY_SRET(eshkol_ad_exp_sret, ad_exp)
+/** Sret wrapper for (ad-log tape node). */
 AD_UNARY_SRET(eshkol_ad_log_sret, ad_log)
+/** Sret wrapper for (ad-sqrt tape node). */
 AD_UNARY_SRET(eshkol_ad_sqrt_sret, ad_sqrt)
+/** Sret wrapper for (ad-neg tape node). */
 AD_UNARY_SRET(eshkol_ad_neg_sret, ad_neg)
+/** Sret wrapper for (ad-abs tape node). */
 AD_UNARY_SRET(eshkol_ad_abs_sret, ad_abs)
+/** Sret wrapper for (ad-relu tape node). */
 AD_UNARY_SRET(eshkol_ad_relu_sret, ad_relu)
+/** Sret wrapper for (ad-sigmoid tape node). */
 AD_UNARY_SRET(eshkol_ad_sigmoid_sret, ad_sigmoid)
+/** Sret wrapper for (ad-tanh tape node). */
 AD_UNARY_SRET(eshkol_ad_tanh_sret, ad_tanh)
 
+/** Sret wrapper for (ad-backward tape output): run reverse-mode
+ *  backpropagation from `output` node to populate gradients on the
+ *  tape. Returns tagged null; no-op if `tape_tv` is not a valid tape. */
 void eshkol_ad_backward_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_null(); return; }
@@ -168,12 +206,18 @@ void eshkol_ad_backward_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const
     *out = make_null();
 }
 
+/** Sret wrapper for (ad-gradient tape node): return the accumulated
+ *  gradient at `node` as a tagged double (0.0 if `tape_tv` is not a
+ *  valid tape). Requires ad-backward to have been run first. */
 void eshkol_ad_gradient_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_double(0.0); return; }
     *out = make_double(ad_get_gradient(tape, (int)(int64_t)node_tv->data));
 }
 
+/** Sret wrapper for (ad-node-value tape node): return the forward
+ *  (primal) value stored at `node` as a tagged double (0.0 if
+ *  `tape_tv` is not a valid tape). */
 void eshkol_ad_node_value_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_double(0.0); return; }

@@ -981,6 +981,21 @@ eshkol_ast_t* convert_call(eshkol_tagged_value_t sexp) {
 // Main Conversion Function
 // ============================================================================
 
+/**
+ * @brief Recursively convert one S-expression node into an AST node.
+ *
+ * Dispatches on the tagged value's runtime type: atoms (null, int64,
+ * double, bool, symbol, string, char) convert directly; a pair/cons
+ * dispatches to the matching convert_* special-form handler when its head
+ * symbol names one (lambda, define, if, let family, quote, begin, set!,
+ * and, or, cond, case, when, unless, quasiquote, unquote,
+ * unquote-splicing), otherwise falls through to convert_call(). Recursion
+ * depth is capped (500) via a thread-local guard to avoid stack overflow
+ * on pathological/cyclic input.
+ *
+ * @param sexp S-expression (cons-cell-based) to convert.
+ * @return Newly allocated AST node, or NULL on error or if the depth cap is hit.
+ */
 eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
     static thread_local int depth = 0;
     if (depth >= 500) return nullptr;
@@ -1187,10 +1202,28 @@ eshkol_ast_t* convert_sexp(eshkol_tagged_value_t sexp) {
 
 extern "C" {
 
+/**
+ * @brief Convert a runtime S-expression to an AST node.
+ *
+ * Entry point for direct, single-pass conversion from cons-cell
+ * representation to AST structure; delegates to convert_sexp().
+ *
+ * @param sexp The S-expression to convert (cons cell structure).
+ * @return Pointer to allocated AST node, or NULL on error.
+ */
 eshkol_ast_t* eshkol_sexp_to_ast(eshkol_tagged_value_t sexp) {
     return convert_sexp(sexp);
 }
 
+/**
+ * @brief Free an AST node created by eshkol_sexp_to_ast.
+ *
+ * Recursively frees all sub-nodes via the standard AST cleanup path.
+ * Note: the JIT compiler may take ownership of AST nodes, in which case
+ * this should not be called on them.
+ *
+ * @param ast The AST node to free (may be NULL).
+ */
 void eshkol_free_sexp_ast(eshkol_ast_t* ast) {
     // Use the standard AST cleanup
     if (ast) {
@@ -1198,6 +1231,15 @@ void eshkol_free_sexp_ast(eshkol_ast_t* ast) {
     }
 }
 
+/**
+ * @brief Check whether an S-expression is headed by a recognized special-form symbol.
+ *
+ * @param sexp The S-expression to check.
+ * @return true if @p sexp is a pair whose head is a symbol matching one of
+ *         the known special forms (lambda, define, if, cond, case, match,
+ *         let, let-star, letrec, letrec-star, and, or, when, unless, begin,
+ *         quote, quasiquote, set!, define-syntax).
+ */
 bool eshkol_sexp_is_special_form(eshkol_tagged_value_t sexp) {
     if (!is_pair(sexp)) {
         return false;
@@ -1232,6 +1274,12 @@ bool eshkol_sexp_is_special_form(eshkol_tagged_value_t sexp) {
     return false;
 }
 
+/**
+ * @brief Get the head symbol name of an S-expression list.
+ *
+ * @param sexp The S-expression to examine.
+ * @return The head symbol's name, or NULL if @p sexp is not a pair whose car is a symbol.
+ */
 const char* eshkol_sexp_head_symbol(eshkol_tagged_value_t sexp) {
     if (!is_pair(sexp)) {
         return nullptr;
@@ -1241,10 +1289,12 @@ const char* eshkol_sexp_head_symbol(eshkol_tagged_value_t sexp) {
     return get_symbol_name(head);
 }
 
+/** Count the number of elements in an S-expression list (0 if not a proper list). */
 size_t eshkol_sexp_list_length(eshkol_tagged_value_t sexp) {
     return list_length(sexp);
 }
 
+/** Get the nth (zero-based) element of an S-expression list, or a null value if out of bounds. */
 eshkol_tagged_value_t eshkol_sexp_list_ref(eshkol_tagged_value_t sexp, size_t index) {
     return list_ref(sexp, index);
 }

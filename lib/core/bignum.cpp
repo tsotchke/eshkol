@@ -328,6 +328,16 @@ static void bignum_divmod_abs(arena_t* arena,
 
 extern "C" {
 
+/**
+ * @brief Construct a bignum equal to a machine int64 value.
+ *
+ * Handles INT64_MIN specially since its magnitude does not fit in a
+ * positive int64.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param value Value to convert.
+ * @return Newly allocated single-limb bignum, or NULL on allocation failure.
+ */
 eshkol_bignum_t* eshkol_bignum_from_int64(arena_t* arena, int64_t value) {
     eshkol_bignum_t* bn = bignum_alloc(arena, 1);
     if (!bn) return nullptr;
@@ -345,6 +355,16 @@ eshkol_bignum_t* eshkol_bignum_from_int64(arena_t* arena, int64_t value) {
     return bn;
 }
 
+/**
+ * @brief Compute the correct bignum result for two int64 operands whose
+ *        native operation overflowed.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Left operand.
+ * @param b Right operand.
+ * @param op Operation selector: 0=add, 1=sub, 2=mul.
+ * @return Newly allocated bignum result, or NULL on failure or unknown op.
+ */
 eshkol_bignum_t* eshkol_bignum_from_overflow(arena_t* arena, int64_t a, int64_t b, int op) {
     /* Convert both operands to bignum, then perform the operation */
     eshkol_bignum_t* ba = eshkol_bignum_from_int64(arena, a);
@@ -359,6 +379,17 @@ eshkol_bignum_t* eshkol_bignum_from_overflow(arena_t* arena, int64_t a, int64_t 
     }
 }
 
+/**
+ * @brief Parse a decimal string into a bignum.
+ *
+ * Accepts an optional leading '+'/'-' sign followed by one or more decimal
+ * digits. Parses by repeated multiply-by-10-and-add over the limb array.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param str String to parse (need not be NUL-terminated).
+ * @param len Number of characters in @p str to consume.
+ * @return Newly allocated bignum, or NULL on parse error or empty input.
+ */
 eshkol_bignum_t* eshkol_bignum_from_string(arena_t* arena, const char* str, size_t len) {
     if (!str || len == 0) return nullptr;
 
@@ -402,6 +433,17 @@ eshkol_bignum_t* eshkol_bignum_from_string(arena_t* arena, const char* str, size
     return result;
 }
 
+/**
+ * @brief Compute a + b for two arbitrary-precision integers.
+ *
+ * Dispatches to magnitude add/sub of the operands' absolute values based
+ * on their signs, then assigns the correct result sign.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Augend.
+ * @param b Addend.
+ * @return Newly allocated sum, or NULL if @p a or @p b is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_add(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
@@ -429,6 +471,17 @@ eshkol_bignum_t* eshkol_bignum_add(arena_t* arena,
     }
 }
 
+/**
+ * @brief Compute a - b for two arbitrary-precision integers.
+ *
+ * Implemented as a + (-b): same-sign operands are subtracted by magnitude,
+ * differing-sign operands are added by magnitude.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Minuend.
+ * @param b Subtrahend.
+ * @return Newly allocated difference, or NULL if @p a or @p b is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_sub(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
@@ -457,6 +510,16 @@ eshkol_bignum_t* eshkol_bignum_sub(arena_t* arena,
     }
 }
 
+/**
+ * @brief Compute a * b for two arbitrary-precision integers.
+ *
+ * Uses schoolbook O(n*m) multiplication over the limb arrays.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Multiplicand.
+ * @param b Multiplier.
+ * @return Newly allocated product, or NULL if @p a or @p b is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_mul(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
@@ -482,6 +545,17 @@ eshkol_bignum_t* eshkol_bignum_mul(arena_t* arena,
     return result;
 }
 
+/**
+ * @brief Compute truncating integer division a / b.
+ *
+ * Uses Knuth's Algorithm D for multi-limb divisors. Raises an
+ * ESHKOL_EXCEPTION_DIVIDE_BY_ZERO exception (via eshkol_raise) if @p b is zero.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Dividend.
+ * @param b Divisor.
+ * @return Newly allocated quotient, truncated toward zero.
+ */
 eshkol_bignum_t* eshkol_bignum_div(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
@@ -500,6 +574,18 @@ eshkol_bignum_t* eshkol_bignum_div(arena_t* arena,
     return q;
 }
 
+/**
+ * @brief Compute a mod b (remainder of truncating division).
+ *
+ * Raises an ESHKOL_EXCEPTION_DIVIDE_BY_ZERO exception (via eshkol_raise) if
+ * @p b is zero. The result's sign follows the sign of @p a, matching C's
+ * truncating-division remainder and eshkol_bignum_div().
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Dividend.
+ * @param b Divisor.
+ * @return Newly allocated remainder.
+ */
 eshkol_bignum_t* eshkol_bignum_mod(arena_t* arena,
                                     const eshkol_bignum_t* a,
                                     const eshkol_bignum_t* b) {
@@ -518,6 +604,13 @@ eshkol_bignum_t* eshkol_bignum_mod(arena_t* arena,
     return r;
 }
 
+/**
+ * @brief Negate an arbitrary-precision integer.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Value to negate.
+ * @return Newly allocated bignum equal to -a (negating zero yields zero), or NULL if @p a is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_neg(arena_t* arena, const eshkol_bignum_t* a) {
     if (!a) return nullptr;
     eshkol_bignum_t* result = bignum_alloc(arena, a->num_limbs);
@@ -530,16 +623,46 @@ eshkol_bignum_t* eshkol_bignum_neg(arena_t* arena, const eshkol_bignum_t* a) {
 
 /* ===== Mixed int64/bignum ===== */
 
+/**
+ * @brief Compute a + b, where b is a plain machine int64.
+ *
+ * Internally promotes @p b to a bignum and delegates to eshkol_bignum_add().
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Bignum operand.
+ * @param b Int64 operand.
+ * @return Newly allocated sum, or NULL on failure.
+ */
 eshkol_bignum_t* eshkol_bignum_add_int64(arena_t* arena, const eshkol_bignum_t* a, int64_t b) {
     eshkol_bignum_t* bb = eshkol_bignum_from_int64(arena, b);
     return bb ? eshkol_bignum_add(arena, a, bb) : nullptr;
 }
 
+/**
+ * @brief Compute a - b, where b is a plain machine int64.
+ *
+ * Internally promotes @p b to a bignum and delegates to eshkol_bignum_sub().
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Bignum operand.
+ * @param b Int64 operand.
+ * @return Newly allocated difference, or NULL on failure.
+ */
 eshkol_bignum_t* eshkol_bignum_sub_int64(arena_t* arena, const eshkol_bignum_t* a, int64_t b) {
     eshkol_bignum_t* bb = eshkol_bignum_from_int64(arena, b);
     return bb ? eshkol_bignum_sub(arena, a, bb) : nullptr;
 }
 
+/**
+ * @brief Compute a * b, where b is a plain machine int64.
+ *
+ * Internally promotes @p b to a bignum and delegates to eshkol_bignum_mul().
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Bignum operand.
+ * @param b Int64 operand.
+ * @return Newly allocated product, or NULL on failure.
+ */
 eshkol_bignum_t* eshkol_bignum_mul_int64(arena_t* arena, const eshkol_bignum_t* a, int64_t b) {
     eshkol_bignum_t* bb = eshkol_bignum_from_int64(arena, b);
     return bb ? eshkol_bignum_mul(arena, a, bb) : nullptr;
@@ -547,6 +670,7 @@ eshkol_bignum_t* eshkol_bignum_mul_int64(arena_t* arena, const eshkol_bignum_t* 
 
 /* ===== Comparison ===== */
 
+/** Compare two bignums by signed value. @return -1, 0, or 1. */
 int eshkol_bignum_compare(const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
     if (!a || !b) return 0;
 
@@ -561,6 +685,16 @@ int eshkol_bignum_compare(const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
     return a->sign ? -cmp : cmp; /* Negate if both negative */
 }
 
+/**
+ * @brief Compare a bignum against a machine int64 value.
+ *
+ * Takes a fast path with no allocation for single-limb bignums; otherwise
+ * constructs a temporary single-limb bignum for @p b on the stack.
+ *
+ * @param a Bignum operand.
+ * @param b Int64 operand to compare against.
+ * @return -1 if a < b, 0 if a == b, 1 if a > b.
+ */
 int eshkol_bignum_compare_int64(const eshkol_bignum_t* a, int64_t b) {
     /* Quick path: single-limb bignum */
     if (a->num_limbs == 1) {
@@ -600,29 +734,41 @@ int eshkol_bignum_compare_int64(const eshkol_bignum_t* a, int64_t b) {
 
 /* ===== Predicates ===== */
 
+/** Test whether a bignum represents zero. A NULL pointer is treated as zero. */
 bool eshkol_bignum_is_zero(const eshkol_bignum_t* a) {
     if (!a) return true;
     return (a->num_limbs == 1 && BIGNUM_LIMBS(a)[0] == 0);
 }
 
+/** Test whether a bignum is strictly negative (non-NULL, sign bit set, and not zero). */
 bool eshkol_bignum_is_negative(const eshkol_bignum_t* a) {
     return a && a->sign && !eshkol_bignum_is_zero(a);
 }
 
+/** Test whether a bignum is strictly positive (non-NULL, sign bit clear, and not zero). */
 bool eshkol_bignum_is_positive(const eshkol_bignum_t* a) {
     return a && !a->sign && !eshkol_bignum_is_zero(a);
 }
 
+/** Test whether a bignum is even, by checking the low bit of its lowest limb. NULL is treated as even. */
 bool eshkol_bignum_is_even(const eshkol_bignum_t* a) {
     if (!a) return true;
     return (BIGNUM_LIMBS(a)[0] & 1) == 0;
 }
 
+/** Test whether a bignum is odd, by checking the low bit of its lowest limb. NULL is treated as not odd. */
 bool eshkol_bignum_is_odd(const eshkol_bignum_t* a) {
     if (!a) return false;
     return (BIGNUM_LIMBS(a)[0] & 1) == 1;
 }
 
+/**
+ * @brief Check whether a bignum's value fits in a signed 64-bit integer.
+ *
+ * @param a Bignum to test.
+ * @param[out] out If non-NULL and the value fits, receives the int64 value.
+ * @return true if @p a fits in [INT64_MIN, INT64_MAX].
+ */
 bool eshkol_bignum_fits_int64(const eshkol_bignum_t* a, int64_t* out) {
     if (!a) return false;
     if (a->num_limbs > 1) return false;
@@ -651,6 +797,13 @@ bool eshkol_bignum_fits_int64(const eshkol_bignum_t* a, int64_t* out) {
 
 /* ===== Conversion ===== */
 
+/**
+ * @brief Convert a bignum to a double, accumulating limb contributions from
+ *        least to most significant (may lose precision for very large values).
+ *
+ * @param a Bignum to convert.
+ * @return Double approximation of @p a (0.0 if @p a is NULL).
+ */
 double eshkol_bignum_to_double(const eshkol_bignum_t* a) {
     if (!a) return 0.0;
     const uint64_t* limbs = BIGNUM_LIMBS(a);
@@ -668,6 +821,17 @@ double eshkol_bignum_to_double(const eshkol_bignum_t* a) {
     return a->sign ? -result : result;
 }
 
+/**
+ * @brief Convert a bignum to its decimal string representation.
+ *
+ * Extracts digits by repeatedly dividing a working copy by 10, then
+ * reverses the digit buffer and copies it into a properly-headered
+ * arena string.
+ *
+ * @param arena Arena to allocate the result string from.
+ * @param a Bignum to convert.
+ * @return Newly allocated NUL-terminated decimal string, or NULL if @p a is NULL or on allocation failure.
+ */
 char* eshkol_bignum_to_string(arena_t* arena, const eshkol_bignum_t* a) {
     if (!a) return nullptr;
 
@@ -725,6 +889,13 @@ char* eshkol_bignum_to_string(arena_t* arena, const eshkol_bignum_t* a) {
 
 /* ===== Tagged Value Dispatch ===== */
 
+/**
+ * @brief Coerce a tagged value to a bignum pointer, promoting int64 in place.
+ *
+ * @param arena Arena used to allocate a fresh bignum when @p val is an int64.
+ * @param val Tagged value (expected HEAP_PTR bignum or INT64).
+ * @return Bignum pointer, or NULL if @p val is neither a bignum nor an int64.
+ */
 static eshkol_bignum_t* tagged_to_bignum(arena_t* arena, const eshkol_tagged_value_t* val) {
     if (val->type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val != 0)
         return (eshkol_bignum_t*)(void*)val->data.ptr_val;
@@ -733,10 +904,27 @@ static eshkol_bignum_t* tagged_to_bignum(arena_t* arena, const eshkol_tagged_val
     return nullptr;
 }
 
+/** Test whether a tagged value currently holds a bignum (HEAP_PTR with HEAP_SUBTYPE_BIGNUM). */
 bool eshkol_is_bignum_tagged(const eshkol_tagged_value_t* val) {
     return ESHKOL_IS_BIGNUM(*val);
 }
 
+/**
+ * @brief Dispatch a binary arithmetic operation on two tagged numeric values, using bignum arithmetic.
+ *
+ * Called from LLVM-generated code. Accepts tagged value pointers (INT64 or
+ * bignum HEAP_PTR) and internally promotes int64 operands to bignum as
+ * needed. If either operand is a double, the operation is instead computed
+ * in double precision and an inexact result is returned (R7RS exact +
+ * inexact -> inexact). Exact integer results that fit back into int64 are
+ * demoted to avoid unnecessary bignum overhead.
+ *
+ * @param arena Arena to allocate any intermediate/result bignum from.
+ * @param left Left operand (tagged INT64, DOUBLE, or bignum HEAP_PTR).
+ * @param right Right operand (tagged INT64, DOUBLE, or bignum HEAP_PTR); ignored when op is unary negation.
+ * @param op Operation selector: 0=add, 1=sub, 2=mul, 3=div, 4=mod, 5=quotient, 6=remainder, 7=neg.
+ * @param[out] result Tagged value written with the operation's result.
+ */
 void eshkol_bignum_binary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
@@ -812,6 +1000,17 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
     }
 }
 
+/**
+ * @brief Dispatch a comparison operation on two tagged numeric values, using bignum comparison.
+ *
+ * If either operand is a double, comparison falls back to double precision.
+ * Otherwise compares bignum-vs-bignum or bignum-vs-int64 as appropriate.
+ *
+ * @param left Left operand (tagged INT64, DOUBLE, or bignum HEAP_PTR).
+ * @param right Right operand (tagged INT64, DOUBLE, or bignum HEAP_PTR).
+ * @param op Operation selector: 0=lt, 1=gt, 2=eq, 3=le, 4=ge.
+ * @param[out] result Tagged boolean value written with the comparison result.
+ */
 void eshkol_bignum_compare_tagged(
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
@@ -867,6 +1066,16 @@ void eshkol_bignum_compare_tagged(
 
 /* ===== Exponentiation ===== */
 
+/**
+ * @brief Exact bignum exponentiation via repeated squaring.
+ *
+ * O(log exp) multiplications. base^0 is defined as 1.
+ *
+ * @param arena Arena to allocate intermediate and result bignums from.
+ * @param base Base value.
+ * @param exp Non-negative exponent.
+ * @return Newly allocated bignum equal to base^exp, or NULL on failure.
+ */
 eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, uint64_t exp) {
     if (!arena || !base) return nullptr;
 
@@ -902,6 +1111,21 @@ eshkol_bignum_t* eshkol_bignum_pow(arena_t* arena, const eshkol_bignum_t* base, 
     return result;
 }
 
+/**
+ * @brief Dispatch (expt base exponent) on tagged values, preserving exactness per R7RS.
+ *
+ * If both operands are exact integers and the exponent is non-negative,
+ * computes an exact bignum result via eshkol_bignum_pow(), demoting to
+ * int64 when it fits. If the exponent is a negative exact integer, computes
+ * the exact rational 1/base^|exponent| (falling back to inexact double pow()
+ * only if the denominator overflows int64). Otherwise falls back to
+ * double pow().
+ *
+ * @param arena Arena to allocate intermediate/result values from.
+ * @param base Base operand (tagged INT64, DOUBLE, or bignum HEAP_PTR).
+ * @param exponent Exponent operand (tagged INT64 or DOUBLE).
+ * @param[out] result Tagged value written with the result (exact bignum/int64/rational, or inexact double).
+ */
 void eshkol_bignum_pow_tagged(arena_t* arena,
     const eshkol_tagged_value_t* base, const eshkol_tagged_value_t* exponent,
     eshkol_tagged_value_t* result) {
@@ -1193,6 +1417,16 @@ void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
     }
 }
 
+/**
+ * @brief Parse a string to a tagged number value using the default radix 10.
+ *
+ * Thin wrapper over eshkol_string_to_number_radix_tagged() with radix 10;
+ * #b/#o/#d/#x prefixes are still honored and override the default radix.
+ *
+ * @param arena Arena to allocate any bignum/rational result from.
+ * @param str NUL-terminated string to parse.
+ * @param[out] result Tagged value written with the parsed number, or #f on malformed input.
+ */
 void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
     eshkol_tagged_value_t* result) {
     /* 1-arg form: default radix 10, with #b/#o/#d/#x prefix support. */
@@ -1201,6 +1435,17 @@ void eshkol_string_to_number_tagged(arena_t* arena, const char* str,
 
 /* ===== Display ===== */
 
+/**
+ * @brief Write a bignum's decimal representation directly to a file stream.
+ *
+ * Single-limb values are printed directly via printf. Larger values are
+ * converted to decimal digits into a stack buffer (falls back to a
+ * `<bignum:N-limbs>` placeholder if the value would need more digits than
+ * the stack buffer holds).
+ *
+ * @param a Bignum to print (no-op if NULL).
+ * @param file Destination, cast internally to a `FILE*` (no-op if NULL).
+ */
 void eshkol_bignum_display(const eshkol_bignum_t* a, void* file) {
     if (!a || !file) return;
     FILE* f = (FILE*)file;
@@ -1311,6 +1556,17 @@ static eshkol_bignum_t* from_twos_complement(arena_t* arena, const uint64_t* tc,
     return result;
 }
 
+/**
+ * @brief Bitwise AND of two bignums, using two's-complement semantics.
+ *
+ * Negative operands are treated as an infinite-precision two's-complement
+ * bit string (R7RS bitwise-and semantics), not as sign+magnitude.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Left operand.
+ * @param b Right operand.
+ * @return Newly allocated bignum, or NULL if any argument is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_bitwise_and(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
     if (!arena || !a || !b) return nullptr;
     /* Use enough limbs + 1 sign extension limb */
@@ -1328,6 +1584,14 @@ eshkol_bignum_t* eshkol_bignum_bitwise_and(arena_t* arena, const eshkol_bignum_t
     return from_twos_complement(arena, tc_r, n);
 }
 
+/**
+ * @brief Bitwise OR of two bignums, using two's-complement semantics.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Left operand.
+ * @param b Right operand.
+ * @return Newly allocated bignum, or NULL if any argument is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_bitwise_or(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
     if (!arena || !a || !b) return nullptr;
     uint32_t n = (a->num_limbs > b->num_limbs ? a->num_limbs : b->num_limbs) + 1;
@@ -1343,6 +1607,14 @@ eshkol_bignum_t* eshkol_bignum_bitwise_or(arena_t* arena, const eshkol_bignum_t*
     return from_twos_complement(arena, tc_r, n);
 }
 
+/**
+ * @brief Bitwise XOR of two bignums, using two's-complement semantics.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Left operand.
+ * @param b Right operand.
+ * @return Newly allocated bignum, or NULL if any argument is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_bitwise_xor(arena_t* arena, const eshkol_bignum_t* a, const eshkol_bignum_t* b) {
     if (!arena || !a || !b) return nullptr;
     uint32_t n = (a->num_limbs > b->num_limbs ? a->num_limbs : b->num_limbs) + 1;
@@ -1358,6 +1630,15 @@ eshkol_bignum_t* eshkol_bignum_bitwise_xor(arena_t* arena, const eshkol_bignum_t
     return from_twos_complement(arena, tc_r, n);
 }
 
+/**
+ * @brief Bitwise NOT (one's-complement negation) of a bignum.
+ *
+ * Computed as -(a + 1), matching two's-complement bitwise-not semantics.
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Operand.
+ * @return Newly allocated bignum equal to ~a, or NULL if @p a is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_bitwise_not(arena_t* arena, const eshkol_bignum_t* a) {
     if (!arena || !a) return nullptr;
     /* NOT(x) = -(x+1) in two's complement = negate then subtract 1 */
@@ -1374,6 +1655,18 @@ eshkol_bignum_t* eshkol_bignum_bitwise_not(arena_t* arena, const eshkol_bignum_t
     }
 }
 
+/**
+ * @brief Arithmetic bit shift of a bignum by a signed bit count.
+ *
+ * A positive @p count shifts left (multiplies by 2^count); a negative
+ * @p count performs an arithmetic right shift, rounding toward -infinity
+ * for negative values (matching R7RS arithmetic-shift).
+ *
+ * @param arena Arena to allocate the result from.
+ * @param a Value to shift.
+ * @param count Signed shift amount in bits.
+ * @return Newly allocated shifted bignum, or NULL if @p a is NULL.
+ */
 eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, int64_t count) {
     if (!arena || !a) return nullptr;
     if (eshkol_bignum_is_zero(a) || count == 0) {
@@ -1434,6 +1727,18 @@ eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, i
     }
 }
 
+/**
+ * @brief Dispatch a bitwise operation on tagged numeric values, using bignum bitwise ops.
+ *
+ * Promotes INT64 operands to bignum as needed, then demotes an int64-sized
+ * result back to a tagged INT64 to avoid unnecessary bignum overhead.
+ *
+ * @param arena Arena to allocate any intermediate/result bignum from.
+ * @param left Left operand (tagged INT64 or bignum HEAP_PTR).
+ * @param right Right operand; ignored for the unary NOT operation.
+ * @param op Operation selector: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift.
+ * @param[out] result Tagged value written with the operation's result (0 if operands are invalid).
+ */
 void eshkol_bignum_bitwise_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {

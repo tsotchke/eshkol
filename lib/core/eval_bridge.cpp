@@ -36,6 +36,9 @@ static eshkol_eval_jit_lookup_fn_t  s_lookup  = nullptr;
 
 extern "C" {
 
+/** Register the real REPL JIT implementations. Called from the
+ *  eval_bridge_impl.cpp static constructor when eshkol-repl-lib is
+ *  linked; replaces the nullptr defaults with live function pointers. */
 void eshkol_eval_jit_register(eshkol_eval_jit_acquire_fn_t acquire,
                               eshkol_eval_jit_execute_fn_t execute,
                               eshkol_eval_jit_lookup_fn_t  lookup) {
@@ -44,14 +47,22 @@ void eshkol_eval_jit_register(eshkol_eval_jit_acquire_fn_t acquire,
     s_lookup  = lookup;
 }
 
+/** Return the registered JIT-context-acquire function pointer, or nullptr. */
 eshkol_eval_jit_acquire_fn_t eshkol_eval_jit_get_acquire(void) { return s_acquire; }
+/** Return the registered JIT-execute function pointer, or nullptr. */
 eshkol_eval_jit_execute_fn_t eshkol_eval_jit_get_execute(void) { return s_execute; }
+/** Return the registered JIT-lookup function pointer, or nullptr. */
 eshkol_eval_jit_lookup_fn_t  eshkol_eval_jit_get_lookup (void) { return s_lookup;  }
 
+/** @return Non-zero if a real JIT runtime has been registered (i.e.
+ *  eshkol-repl-lib is linked into this binary). */
 int eshkol_eval_jit_available(void) {
     return s_acquire != nullptr;
 }
 
+/** Emit a one-time error when eval/compile is invoked without the JIT
+ *  runtime linked. @param caller Name of the calling entry point, used
+ *  in the diagnostic message. */
 void eshkol_eval_jit_warn_missing(const char* caller) {
     static std::atomic<bool> s_warned{false};
     bool expected = false;

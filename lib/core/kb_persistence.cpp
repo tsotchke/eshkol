@@ -47,16 +47,24 @@ extern "C" {
  * Return true on success, false on error (then save/load should abort).
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** Write a single byte. @return true on success. */
 static bool write_u8(FILE* f, uint8_t v)   { return fwrite(&v, 1, 1, f) == 1; }
+/** Write a 4-byte little/native-endian value. @return true on success. */
 static bool write_u32(FILE* f, uint32_t v) { return fwrite(&v, 4, 1, f) == 1; }
+/** Write an 8-byte native-endian value. @return true on success. */
 static bool write_u64(FILE* f, uint64_t v) { return fwrite(&v, 8, 1, f) == 1; }
+/** Write `n` raw bytes (a no-op success if `n` is 0). @return true on success. */
 static bool write_bytes(FILE* f, const void* p, size_t n) {
     return n == 0 || fwrite(p, 1, n, f) == n;
 }
 
+/** Read a single byte. @return true on success. */
 static bool read_u8(FILE* f, uint8_t* v)   { return fread(v, 1, 1, f) == 1; }
+/** Read a 4-byte native-endian value. @return true on success. */
 static bool read_u32(FILE* f, uint32_t* v) { return fread(v, 4, 1, f) == 1; }
+/** Read an 8-byte native-endian value. @return true on success. */
 static bool read_u64(FILE* f, uint64_t* v) { return fread(v, 8, 1, f) == 1; }
+/** Read `n` raw bytes (a no-op success if `n` is 0). @return true on success. */
 static bool read_bytes(FILE* f, void* p, size_t n) {
     return n == 0 || fread(p, 1, n, f) == n;
 }
@@ -221,6 +229,13 @@ static bool read_arg(arena_t* arena, FILE* f, eshkol_tagged_value_t* out) {
  * Public: kb-save and kb-load tagged-value entry points.
  * ═══════════════════════════════════════════════════════════════════ */
 
+/** @brief Tagged-value entry point for (kb-save path kb): validates
+ *  `path_tv`/`kb_tv` are a string and a knowledge base respectively,
+ *  writes the ESKB v2 header and every fact (with its args) to the
+ *  file at `path`, and checks fclose's return value so a commit
+ *  failure (e.g. NFS/EIO) is reported rather than silently accepted.
+ *  @param result Out param: tagged bool, true on a fully committed
+ *  save, false on any validation, I/O, or unsupported-content error. */
 void eshkol_kb_save_tagged(arena_t* arena,
                            const eshkol_tagged_value_t* path_tv,
                            const eshkol_tagged_value_t* kb_tv,
@@ -314,6 +329,17 @@ void eshkol_kb_save_tagged(arena_t* arena,
     result->data.raw_val = 1;
 }
 
+/** @brief Tagged-value entry point for (kb-load path): opens the ESKB
+ *  file at `path`, validates magic and rejects any version other than
+ *  the current ESKB_VERSION (v1 files serialized raw pointers and are
+ *  unsound), then reads each fact's predicate name/arity/args into a
+ *  freshly allocated knowledge base. Rejects pathological predicate
+ *  name lengths (>255) and arities (>4096, or ones whose arg-array
+ *  size would overflow) from untrusted files. A fact truncated
+ *  mid-stream stops the load early (facts read so far are kept); a
+ *  truncated arg list aborts the whole load.
+ *  @param result Out param: tagged heap pointer to the loaded
+ *  knowledge base, or tagged null on any validation/I/O error. */
 void eshkol_kb_load_tagged(arena_t* arena,
                            const eshkol_tagged_value_t* path_tv,
                            eshkol_tagged_value_t* result) {

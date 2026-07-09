@@ -72,11 +72,22 @@ static inline eshkol_tagged_value_t jit_exec(void* jit, eshkol_ast_t* ast) {
     return exec(jit, ast);
 }
 
+/** Look up a compiled symbol's address in the JIT context, or 0 if no eval JIT is linked. */
 static inline uint64_t jit_lookup(void* jit, const char* name) {
     eshkol_eval_jit_lookup_fn_t lookup = eshkol_eval_jit_get_lookup();
     return lookup ? lookup(jit, name) : 0;
 }
 
+/**
+ * @brief Build the mangled JIT symbol name for a REPL variable's private storage slot.
+ *
+ * Prefixes with "__repl_storage_" and percent-encodes (as "_XX" hex) every
+ * character of @p name that is not alphanumeric, so arbitrary Scheme
+ * identifier characters produce a valid JIT symbol name.
+ *
+ * @param name Scheme variable name.
+ * @return Mangled storage symbol name.
+ */
 static std::string repl_var_storage_symbol_name(const char* name) {
     std::string out = "__repl_storage_";
     char encoded[4];
@@ -97,11 +108,23 @@ static std::string repl_var_storage_symbol_name(const char* name) {
     return out;
 }
 
+/** Look up only the REPL private-storage symbol for @p name (no fallback), or 0 if not found. */
 static uint64_t jit_lookup_repl_storage_only(void* jit, const char* name) {
     std::string storage_name = repl_var_storage_symbol_name(name);
     return jit_lookup(jit, storage_name.c_str());
 }
 
+/**
+ * @brief Look up a REPL variable's storage address, checking private storage first.
+ *
+ * Tries the REPL private-storage symbol name first; if not found, falls
+ * back to the plain symbol name (covers values `eval` captured via a
+ * generated top-level define rather than REPL variable storage).
+ *
+ * @param jit Eval JIT context.
+ * @param name Scheme variable name.
+ * @return Storage address, or 0 if not found under either name.
+ */
 static uint64_t jit_lookup_repl_variable_storage(void* jit, const char* name) {
     uint64_t addr = jit_lookup_repl_storage_only(jit, name);
     if (addr != 0) return addr;
@@ -112,6 +135,16 @@ static uint64_t jit_lookup_repl_variable_storage(void* jit, const char* name) {
     return jit_lookup(jit, name);
 }
 
+/**
+ * @brief After evaluating a top-level (define name value), re-register the
+ *        REPL variable's storage address so later lookups see the new value.
+ *
+ * No-op unless @p ast is a non-function ESHKOL_DEFINE_OP with a name and a
+ * live JIT context, and its REPL storage symbol actually resolves.
+ *
+ * @param jit Eval JIT context.
+ * @param ast The just-evaluated top-level AST node.
+ */
 static void refresh_repl_define_storage(void* jit, const eshkol_ast_t* ast) {
     if (!jit || !ast || ast->type != ESHKOL_OP ||
         ast->operation.op != ESHKOL_DEFINE_OP ||
@@ -282,14 +315,36 @@ extern "C" {
 // Closure Introspection API
 // ----------------------------------------------------------------------------
 
+/**
+ * @brief Check if a value is a closure/procedure.
+ *
+ * @param value Tagged value to check.
+ * @return true for any callable type (closure, primitive, continuation).
+ */
 bool eshkol_is_procedure(eshkol_tagged_value_t value) {
     return is_callable(value);
 }
 
+/**
+ * @brief Check if a value is specifically a closure (has captures).
+ *
+ * @param value Tagged value to check.
+ * @return true only for closures, not primitives or continuations.
+ */
 bool eshkol_is_closure(eshkol_tagged_value_t value) {
     return is_closure(value);
 }
 
+/**
+ * @brief Get the arity (minimum required argument count) of a procedure.
+ *
+ * Closures and primitives report their declared input arity. Continuations
+ * always report arity 1. Use eshkol_procedure_is_variadic() to check
+ * whether additional arguments are also accepted.
+ *
+ * @param value Procedure to inspect.
+ * @return Arity, or -1 if @p value is not a procedure.
+ */
 int eshkol_procedure_arity(eshkol_tagged_value_t value) {
     if (!is_callable(value)) {
         return -1;
@@ -321,6 +376,16 @@ int eshkol_procedure_arity(eshkol_tagged_value_t value) {
     return -1;
 }
 
+/**
+ * @brief Check if a procedure is variadic (accepts variable arguments).
+ *
+ * Closures report their ESHKOL_CLOSURE_FLAG_VARIADIC flag; primitives
+ * report their PRIMITIVE_IS_VARIADIC flag; continuations are never
+ * variadic (they accept exactly one value).
+ *
+ * @param value Procedure to inspect.
+ * @return true if variadic, false otherwise (including if not a procedure).
+ */
 bool eshkol_procedure_is_variadic(eshkol_tagged_value_t value) {
     if (!is_callable(value)) {
         return false;
@@ -345,6 +410,12 @@ bool eshkol_procedure_is_variadic(eshkol_tagged_value_t value) {
     return false;
 }
 
+/**
+ * @brief Get the number of captured values in a closure.
+ *
+ * @param value Closure to inspect.
+ * @return Number of captures, or 0 if @p value is not a closure or has no environment.
+ */
 size_t eshkol_closure_capture_count(eshkol_tagged_value_t value) {
     if (!is_closure(value)) {
         return 0;
@@ -360,6 +431,14 @@ size_t eshkol_closure_capture_count(eshkol_tagged_value_t value) {
     return closure->env->num_captures & 0xFFFF;
 }
 
+/**
+ * @brief Get a specific captured value from a closure by index.
+ *
+ * @param value Closure to inspect.
+ * @param index Zero-based index of the capture.
+ * @return The captured value, or a null tagged value if @p value is not a
+ *         closure or @p index is out of range.
+ */
 eshkol_tagged_value_t eshkol_closure_capture_ref(eshkol_tagged_value_t value, size_t index) {
     if (!is_closure(value)) {
         return make_null();
@@ -380,6 +459,14 @@ eshkol_tagged_value_t eshkol_closure_capture_ref(eshkol_tagged_value_t value, si
     return closure->env->captures[index];
 }
 
+/**
+ * @brief Get all captured values from a closure as a freshly-consed list.
+ *
+ * @param value Closure to inspect.
+ * @param arena Arena used to allocate the resulting cons cells.
+ * @return List of captured values in capture order, or a null value if
+ *         @p arena is NULL or the closure has no captures.
+ */
 eshkol_tagged_value_t eshkol_closure_captures(eshkol_tagged_value_t value, void* arena) {
     if (!arena) {
         return make_null();
@@ -401,6 +488,7 @@ eshkol_tagged_value_t eshkol_closure_captures(eshkol_tagged_value_t value, void*
     return result;
 }
 
+/** Get the raw closure pointer from a tagged value, or NULL if @p value is not a closure. */
 eshkol_closure_t* eshkol_get_closure(eshkol_tagged_value_t value) {
     if (!is_closure(value)) {
         return nullptr;
@@ -412,10 +500,28 @@ eshkol_closure_t* eshkol_get_closure(eshkol_tagged_value_t value) {
 // Symbol Manipulation API
 // ----------------------------------------------------------------------------
 
+/**
+ * @brief Generate a unique (uninterned) symbol with the default "G" prefix.
+ *
+ * @param arena Arena for symbol string allocation.
+ * @return New unique symbol as a tagged value (format G<counter>).
+ */
 eshkol_tagged_value_t eshkol_gensym(void* arena) {
     return eshkol_gensym_prefix("G", arena);
 }
 
+/**
+ * @brief Generate a unique (uninterned) symbol with a caller-supplied prefix.
+ *
+ * Appends a process-wide monotonically increasing counter to @p prefix and
+ * allocates the resulting string with a proper symbol object header (so
+ * later ESHKOL_GET_HEADER dispatch correctly identifies it as
+ * HEAP_SUBTYPE_SYMBOL) in the consolidated tagged-value encoding.
+ *
+ * @param prefix Prefix for the symbol name (defaults to "G" if NULL).
+ * @param arena Arena for symbol string allocation.
+ * @return New unique symbol as a tagged value, or a null value if @p arena is NULL or allocation fails.
+ */
 eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
     if (!arena) {
         return make_null();
@@ -456,6 +562,17 @@ eshkol_tagged_value_t eshkol_gensym_prefix(const char* prefix, void* arena) {
     return result;
 }
 
+/**
+ * @brief Convert a symbol to its string name.
+ *
+ * If @p arena is NULL, returns a string value that shares the symbol's
+ * underlying character data directly rather than copying it. Otherwise
+ * copies the name into a freshly arena-allocated, properly-headered string.
+ *
+ * @param symbol Symbol value to convert.
+ * @param arena Arena for string allocation (see above), or NULL to alias the symbol's data.
+ * @return String representation, or a null value if @p symbol is not a symbol.
+ */
 eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void* arena) {
     if (!is_symbol(symbol)) {
         return make_null();
@@ -500,6 +617,13 @@ eshkol_tagged_value_t eshkol_symbol_to_string(eshkol_tagged_value_t symbol, void
 /* Forward declaration of the C ABI intern helper (symbol_intern.cpp). */
 void* eshkol_intern_symbol_lookup(const char* name);
 
+/**
+ * @brief Wrap the result of an interned-symbol lookup as a tagged value.
+ *
+ * @param name Symbol name to intern/look up (may be NULL).
+ * @param null_on_fail If true, a failed lookup yields a null tagged value; otherwise it yields #f.
+ * @return Tagged HEAP_PTR symbol value on success, else the configured failure value.
+ */
 static eshkol_tagged_value_t wrap_interned(const char* name, bool null_on_fail) {
     void* ptr = name ? eshkol_intern_symbol_lookup(name) : nullptr;
     if (!ptr) {
@@ -513,6 +637,12 @@ static eshkol_tagged_value_t wrap_interned(const char* name, bool null_on_fail) 
     return tv;
 }
 
+/**
+ * @brief Convert a string to an interned symbol, interning a new one if needed.
+ *
+ * @param str String value to convert.
+ * @return Symbol with the given name, or a null value if @p str is not a string.
+ */
 eshkol_tagged_value_t eshkol_string_to_symbol(eshkol_tagged_value_t str) {
     if (!is_string(str)) {
         return make_null();
@@ -522,6 +652,17 @@ eshkol_tagged_value_t eshkol_string_to_symbol(eshkol_tagged_value_t str) {
     return wrap_interned(str_value, /*null_on_fail=*/true);
 }
 
+/**
+ * @brief Check if two symbols are equal.
+ *
+ * Interned symbols are compared by pointer identity first; falls back to
+ * a string comparison so uninterned symbols (gensyms) with matching names
+ * still compare equal.
+ *
+ * @param sym1 First symbol.
+ * @param sym2 Second symbol.
+ * @return true if both are symbols and equal, false otherwise.
+ */
 bool eshkol_symbol_equal(eshkol_tagged_value_t sym1, eshkol_tagged_value_t sym2) {
     if (!is_symbol(sym1) || !is_symbol(sym2)) {
         return false;
@@ -547,6 +688,18 @@ bool eshkol_symbol_equal(eshkol_tagged_value_t sym1, eshkol_tagged_value_t sym2)
 // Code Serialization API
 // ----------------------------------------------------------------------------
 
+/**
+ * @brief Get the S-expression representation of a procedure.
+ *
+ * For closures, returns the stored lambda S-expression captured at
+ * creation time. For primitives, synthesizes a descriptive `(primitive)`
+ * form (requires @p arena). Continuations and anonymous non-closure
+ * callables have no representation and yield a null value.
+ *
+ * @param proc Procedure to serialize.
+ * @param arena Arena for allocation (only needed for the primitive case).
+ * @return S-expression representation, or a null value if unavailable.
+ */
 eshkol_tagged_value_t eshkol_procedure_to_sexp(eshkol_tagged_value_t proc, void* arena) {
     if (!is_callable(proc)) {
         return make_null();
@@ -594,6 +747,16 @@ eshkol_tagged_value_t eshkol_procedure_to_sexp(eshkol_tagged_value_t proc, void*
     return make_null();
 }
 
+/**
+ * @brief Get just the body of a closure's lambda, without the `(lambda (params...) ...)` wrapper.
+ *
+ * Obtains the closure's stored S-expression via eshkol_procedure_to_sexp()
+ * and strips the leading `lambda` symbol and parameter list.
+ *
+ * @param closure Closure to inspect.
+ * @param arena Arena for allocation.
+ * @return Body S-expression (rest of the list after params), or a null value if not available.
+ */
 eshkol_tagged_value_t eshkol_closure_body(eshkol_tagged_value_t closure, void* arena) {
     eshkol_tagged_value_t sexp = eshkol_procedure_to_sexp(closure, arena);
 
@@ -618,6 +781,16 @@ eshkol_tagged_value_t eshkol_closure_body(eshkol_tagged_value_t closure, void* a
     return rest;
 }
 
+/**
+ * @brief Get the parameter list of a closure's lambda form.
+ *
+ * Obtains the closure's stored S-expression via eshkol_procedure_to_sexp()
+ * and returns the parameter list that follows the leading `lambda` symbol.
+ *
+ * @param closure Closure to inspect.
+ * @param arena Arena for allocation.
+ * @return Parameter list, or a null value if not available.
+ */
 eshkol_tagged_value_t eshkol_closure_params(eshkol_tagged_value_t closure, void* arena) {
     eshkol_tagged_value_t sexp = eshkol_procedure_to_sexp(closure, arena);
 
@@ -640,10 +813,21 @@ eshkol_tagged_value_t eshkol_closure_params(eshkol_tagged_value_t closure, void*
 // calls for symbol literals must not force introspection.cpp.o to be linked
 // into user binaries (ReplJITContext resolves only in eshkol-repl-lib).
 
+/** Intern @p name and wrap it as a tagged symbol value, yielding #f (not null) if interning fails. */
 static eshkol_tagged_value_t intern_symbol_from_cstr(const char* name) {
     return wrap_interned(name, /*null_on_fail=*/false);
 }
 
+/**
+ * @brief Get the bound name of a procedure, if it has one.
+ *
+ * Closures report the name field set by (define name ...); primitives
+ * report their builtin name. Anonymous lambdas and continuations have no
+ * name.
+ *
+ * @param proc Procedure to inspect.
+ * @return Interned symbol name, or #f if anonymous or not a procedure.
+ */
 eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
     if (!is_callable(proc)) {
         return make_false();
@@ -679,6 +863,19 @@ eshkol_tagged_value_t eshkol_procedure_name(eshkol_tagged_value_t proc) {
 // only i32 returns) stores the value in a named global we can read back.
 static std::atomic<uint64_t> g_eval_result_counter{0};
 
+/**
+ * @brief Evaluate an S-expression at runtime using the JIT compiler.
+ *
+ * Top-level define/import/require/provide forms are executed for effect
+ * and yield a null value. Any other expression is wrapped in a synthetic
+ * `(define __eshkol_eval_result_N__ <expr>)` so its value can be read back
+ * from the named global afterwards (the JIT entry point otherwise only
+ * exposes an i32 exit code, not the expression's actual value).
+ *
+ * @param sexp S-expression to evaluate.
+ * @param arena Unused (reserved for future allocation needs).
+ * @return Result of evaluation, or a null value on conversion/JIT failure.
+ */
 eshkol_tagged_value_t eshkol_eval(eshkol_tagged_value_t sexp, void* arena) {
     (void)arena;
 
@@ -768,6 +965,7 @@ extern "C" void eshkol_eval_sret(eshkol_tagged_value_t* result,
     *result = eshkol_eval(*sexp, arena);
 }
 
+/** SRET wrapper for eshkol_eval_env(), avoiding struct-return ABI mismatches at JIT call sites. */
 extern "C" void eshkol_eval_env_sret(eshkol_tagged_value_t* result,
                                       const eshkol_tagged_value_t* sexp,
                                       const eshkol_tagged_value_t* env,
@@ -777,6 +975,18 @@ extern "C" void eshkol_eval_env_sret(eshkol_tagged_value_t* result,
     *result = eshkol_eval_env(*sexp, *env, arena);
 }
 
+/**
+ * @brief Evaluate an S-expression with a custom environment.
+ *
+ * The environment is an association list mapping symbols to values. If
+ * non-empty, the converted AST is wrapped in an ESHKOL_LET_OP binding each
+ * alist entry before being executed via the JIT.
+ *
+ * @param sexp S-expression to evaluate.
+ * @param env Environment (alist of (symbol . value) pairs), or a null value for no bindings.
+ * @param arena Unused (reserved for future allocation needs).
+ * @return Result of evaluation, or a null value on conversion/JIT failure.
+ */
 eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
                                        eshkol_tagged_value_t env,
                                        void* arena) {
@@ -868,6 +1078,17 @@ eshkol_tagged_value_t eshkol_eval_env(eshkol_tagged_value_t sexp,
     return result;
 }
 
+/**
+ * @brief Compile an S-expression to a procedure without executing it as a top-level call.
+ *
+ * The S-expression is typically a lambda form; the JIT executes it once to
+ * produce the closure value itself (evaluating a bare lambda yields the
+ * closure object, not a call result).
+ *
+ * @param sexp Lambda S-expression to compile.
+ * @param arena Unused (reserved for future allocation needs).
+ * @return Compiled procedure (closure) value, or a null value on error.
+ */
 eshkol_tagged_value_t eshkol_compile(eshkol_tagged_value_t sexp, void* arena) {
     // Direct S-expression to AST conversion (O(n) single-pass)
     // Avoids serialize→parse overhead
@@ -901,6 +1122,16 @@ eshkol_tagged_value_t eshkol_compile(eshkol_tagged_value_t sexp, void* arena) {
     return result;
 }
 
+/**
+ * @brief Convert an S-expression to a procedure, validating it is a lambda form first.
+ *
+ * Thin wrapper around eshkol_compile() that rejects anything not headed by
+ * the `lambda` symbol.
+ *
+ * @param sexp Lambda S-expression.
+ * @param arena Arena forwarded to eshkol_compile().
+ * @return Compiled procedure, or a null value if @p sexp is not a lambda form.
+ */
 eshkol_tagged_value_t eshkol_sexp_to_procedure(eshkol_tagged_value_t sexp, void* arena) {
     // Validate that sexp is a lambda form
     if (!is_pair(sexp)) {
@@ -926,6 +1157,21 @@ eshkol_tagged_value_t eshkol_sexp_to_procedure(eshkol_tagged_value_t sexp, void*
     return eshkol_compile(sexp, arena);
 }
 
+/**
+ * @brief Compile an S-expression with environment bindings available as free variables.
+ *
+ * Converts @p sexp to AST, and if @p env has bindings, wraps it in an
+ * ESHKOL_LET_OP binding each (name, value) pair — each value is converted
+ * to the matching literal AST node type (int64/double/bool/char/null/
+ * string); complex runtime values (closures, cons cells, etc.) cannot
+ * currently be embedded this way and cause the call to fail. Executes the
+ * resulting AST through the JIT to compile the closure.
+ *
+ * @param sexp The S-expression to compile.
+ * @param env Environment bindings (may be NULL for no bindings).
+ * @param arena Unused (reserved for future allocation needs).
+ * @return Compiled procedure, or a null value on error (including an unembeddable complex-typed binding).
+ */
 eshkol_tagged_value_t eshkol_compile_with_env(
     eshkol_tagged_value_t sexp,
     const eshkol_compile_env_t* env,
@@ -1024,6 +1270,16 @@ eshkol_tagged_value_t eshkol_compile_with_env(
     return result;
 }
 
+/**
+ * @brief Parse and evaluate a string as Eshkol code.
+ *
+ * Parses a single expression from @p str and executes it through the JIT,
+ * refreshing REPL variable storage bookkeeping for a top-level define.
+ *
+ * @param str String containing Eshkol code.
+ * @param arena Unused (reserved for future allocation needs).
+ * @return Result of evaluation, or a null value if @p str is empty, fails to parse, or the JIT is unavailable.
+ */
 eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena) {
     if (!str || !*str) {
         return make_null();
@@ -1060,6 +1316,18 @@ eshkol_tagged_value_t eshkol_eval_string(const char* str, void* arena) {
 // Reflection API
 // ----------------------------------------------------------------------------
 
+/**
+ * @brief Get the type of a value as an interned symbol.
+ *
+ * Dispatches on the tagged value's immediate type, and for HEAP_PTR /
+ * CALLABLE values further dispatches on the object header's subtype to
+ * distinguish pairs, strings, vectors, tensors, hash tables, bignums,
+ * rationals, closures, primitives, continuations, etc. Legacy pointer
+ * type tags are recognized for backward compatibility.
+ *
+ * @param value Value to inspect.
+ * @return Interned type-name symbol (e.g. 'integer, 'string, 'closure, 'unknown).
+ */
 eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
     const char* type_name = nullptr;
 
@@ -1212,6 +1480,17 @@ eshkol_tagged_value_t eshkol_type_of(eshkol_tagged_value_t value) {
     return intern_symbol_from_cstr(type_name);
 }
 
+/**
+ * @brief Get source location information for a procedure.
+ *
+ * Always returns #f: source locations are tracked at compile-time in the
+ * AST but are not currently preserved in runtime closure structures (see
+ * the in-body comment for what would be needed to support this).
+ *
+ * @param proc Procedure to inspect.
+ * @param arena Unused (reserved for future allocation needs).
+ * @return #f (not currently available at runtime).
+ */
 eshkol_tagged_value_t eshkol_source_location(eshkol_tagged_value_t proc, void* arena) {
     if (!is_callable(proc)) {
         return make_false();

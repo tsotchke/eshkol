@@ -61,6 +61,9 @@ typedef struct dnc_tensor_layout {
 } dnc_tensor_layout_t;
 
 /* ===== Helpers ===== */
+/** Unwrap a tagged value into a DncHandle*, verifying it's a heap
+ *  pointer whose object header subtype is HEAP_SUBTYPE_DNC.
+ *  @return The handle, or NULL if `tv` is not a valid dnc-memory. */
 static DncHandle* dnc_extract_handle(const eshkol_tagged_value_t* tv) {
     if (!tv || tv->type != ESHKOL_VALUE_HEAP_PTR || !tv->data.ptr_val) return NULL;
     void* ptr = (void*)(uintptr_t)tv->data.ptr_val;
@@ -69,6 +72,8 @@ static DncHandle* dnc_extract_handle(const eshkol_tagged_value_t* tv) {
     return (DncHandle*)ptr;
 }
 
+/** Coerce a tagged int64/double value to int, or return `dflt` if
+ *  `tv` is NULL or neither numeric type. */
 static int dnc_get_int(const eshkol_tagged_value_t* tv, int dflt) {
     if (!tv) return dflt;
     uint8_t t = tv->type & 0x0F;
@@ -77,6 +82,8 @@ static int dnc_get_int(const eshkol_tagged_value_t* tv, int dflt) {
     return dflt;
 }
 
+/** Coerce a tagged double/int64 value to double, or return `dflt` if
+ *  `tv` is NULL or neither numeric type. */
 static double dnc_get_double(const eshkol_tagged_value_t* tv, double dflt) {
     if (!tv) return dflt;
     uint8_t t = tv->type & 0x0F;
