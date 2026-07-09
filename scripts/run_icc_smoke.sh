@@ -374,6 +374,9 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
+probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
+    'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"

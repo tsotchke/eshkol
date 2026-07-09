@@ -104,6 +104,18 @@ static eshkol_tagged_value_t make_char_tagged(int32_t ch) {
 
 static eshkol_tagged_value_t make_string_tagged(arena_t* arena, const char* str, size_t len) {
     char* s = (char*)arena_allocate_with_header(arena, len + 1, HEAP_SUBTYPE_STRING, 0);
+    if (!s) {
+        /* Fuzz hardening (reader-fuzz): arena_allocate_with_header returns
+         * NULL on OOM/overflow (bounded-arena exhaustion or a data_size
+         * that would overflow — see runtime_object_alloc.cpp). This call
+         * site memcpy'd into it unconditionally, so any read that drove
+         * the arena to exhaustion (e.g. a very large batch of strings
+         * against a bounded/region arena) was a NULL-deref crash. Every
+         * other allocator in this file already fails safe (see
+         * make_cons_tagged); mirror that here instead of trusting the
+         * allocation to always succeed on attacker-controlled input. */
+        return make_null_tagged();
+    }
     memcpy(s, str, len);
     s[len] = '\0';
     eshkol_tagged_value_t val;
@@ -287,28 +299,87 @@ static eshkol_tagged_value_t read_list(arena_t* arena, FILE* fp) {
 }
 
 // Read a vector: #( datum ... )
+//
+// Fuzz hardening (reader-fuzz, mirrors the Bug 2 fix in read_list above):
+// this used to hold elements in a 1024-entry *stack* array
+// (`eshkol_tagged_value_t elems[1024]`, ~16 KiB at 16 bytes/entry) that
+// lived in read_vector's own frame — one such frame per level of `#(`
+// nesting, since each nested vector element still recurses through
+// read_datum -> read_atom -> read_vector. A flat run of ~500 nested
+// `#(` (well under the intentional ESHKOL_READ_MAX_DEPTH=4096 guard,
+// which bounds *recursion count* but was never sized against read_vector's
+// per-frame footprint) was enough to blow an 8 MB default stack — a
+// deterministic SIGSEGV on adversarial input, found by
+// tests/fuzz/reader_fuzz_driver.cpp's mixed_vector_list_nesting category.
+// The 1024-element cap also silently truncated any longer vector and left
+// the unread remainder sitting in the stream for the *next* read to
+// misinterpret. Switch to the same realloc-grown heap buffer read_list
+// uses: O(1) stack per frame regardless of vector length, and no silent
+// truncation.
 static eshkol_tagged_value_t read_vector(arena_t* arena, FILE* fp) {
-    // Collect elements into a temporary list first, then convert to vector
-    // Use a bounded stack to avoid recursion issues
-    eshkol_tagged_value_t elems[1024];
-    int count = 0;
+    size_t capacity = 64;
+    size_t count = 0;
+    eshkol_tagged_value_t* elems =
+        (eshkol_tagged_value_t*)malloc(capacity * sizeof(eshkol_tagged_value_t));
+    if (!elems) return make_null_tagged(); // OOM: fail safe
 
     for (;;) {
         int ch = read_skip_whitespace(fp);
-        if (ch == EOF) return make_eof_tagged();
+        if (ch == EOF) { free(elems); return make_eof_tagged(); }
         if (ch == ')') break;
-        if (count >= 1024) break; // safety limit
-        elems[count++] = read_datum(arena, fp, ch);
+
+        if (count == capacity) {
+            capacity *= 2;
+            eshkol_tagged_value_t* grown = (eshkol_tagged_value_t*)realloc(
+                elems, capacity * sizeof(eshkol_tagged_value_t));
+            if (!grown) {
+                free(elems);
+                return make_null_tagged(); // OOM: fail safe
+            }
+            elems = grown;
+        }
+
+        eshkol_tagged_value_t elem = read_datum(arena, fp, ch);
+        if (elem.type == 0xFF) {
+            /* Fuzz hardening (reader-fuzz): read_datum returns the shared
+             * 0xFF EOF/depth-error sentinel both on real EOF and when the
+             * ESHKOL_READ_MAX_DEPTH recursion guard fires. This branch
+             * used to be missing entirely — the sentinel got stored as an
+             * ordinary vector element and the loop kept going, so a
+             * `#(#(#(...` nest deep enough to trip the depth guard didn't
+             * report an error at all: it silently embedded a poisoned
+             * EOF-shaped tagged value inside otherwise-successful vector
+             * data, and the reader's stream position was left wherever
+             * the truncated inner parse abandoned it, corrupting any
+             * subsequent (read) on the same port. read_list already
+             * propagates this sentinel as its terminating tail (see
+             * above); do the analogous thing here instead of dropping it
+             * on the floor. */
+            free(elems);
+            return elem;
+        }
+        elems[count++] = elem;
     }
 
     // Allocate vector: [header | length(i64) | elements(tagged_value * count)]
     size_t data_size = 8 + count * sizeof(eshkol_tagged_value_t);
     char* vec = (char*)arena_allocate_with_header(arena, data_size, HEAP_SUBTYPE_VECTOR, 0);
-    *(int64_t*)vec = count; // length
+    if (!vec) {
+        /* Fuzz hardening (reader-fuzz): same NULL-deref class as
+         * make_string_tagged — arena_allocate_with_header can return
+         * NULL on OOM/overflow, and this wrote through the pointer
+         * unconditionally. A large `#(...)` read against an exhausted
+         * bounded/region arena was a crash. Fail safe like every other
+         * allocator in this file. */
+        free(elems);
+        return make_null_tagged();
+    }
+    *(int64_t*)vec = (int64_t)count; // length
     eshkol_tagged_value_t* vec_elems = (eshkol_tagged_value_t*)(vec + 8);
-    for (int i = 0; i < count; i++) {
+    for (size_t i = 0; i < count; i++) {
         vec_elems[i] = elems[i];
     }
+    free(elems);
 
     eshkol_tagged_value_t val;
     memset(&val, 0, sizeof(val));
@@ -317,150 +388,181 @@ static eshkol_tagged_value_t read_vector(arena_t* arena, FILE* fp) {
     return val;
 }
 
-// Read an atom (number, symbol, string, #t, #f, #\char)
-static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char) {
-    // String literal (audit C4: bound *every* write into buf).
-    // Previously only the non-escape branch checked `len < 4095`; the
-    // escape branch wrote buf[len++] unconditionally. A crafted source
-    // with 4100+ `\\` escapes overflowed the stack buffer — stack smash
-    // / return-address overwrite surface reachable via (read port) on
-    // untrusted input. Apply the bound uniformly and consume-without-
-    // storing past the cap so the delimiter search still terminates.
-    if (first_char == '"') {
-        char buf[4096];
-        int len = 0;
-        int ch;
-        while ((ch = fgetc(fp)) != EOF && ch != '"') {
-            char decoded;
-            if (ch == '\\') {
-                ch = fgetc(fp);
-                if (ch == EOF) break;
-                switch (ch) {
-                    case 'n':  decoded = '\n'; break;
-                    case 't':  decoded = '\t'; break;
-                    case 'r':  decoded = '\r'; break;
-                    case '\\': decoded = '\\'; break;
-                    case '"':  decoded = '"';  break;
-                    default:   decoded = (char)ch; break;
-                }
-            } else {
-                decoded = (char)ch;
-            }
-            if (len < (int)sizeof(buf) - 1) {
-                buf[len++] = decoded;
-            }
-            /* else: silently drop past cap. An error-raising variant
-             * would be more correct but would change a 1-byte overflow
-             * from an RCE primitive into a hard-fail DoS; the cap is
-             * documented as a reader-level string-length ceiling. */
-        }
-        return make_string_tagged(arena, buf, len);
-    }
+/* Fuzz hardening (reader-fuzz): read_atom used to be one monolithic
+ * function whose body declared several large stack buffers (a 4096-byte
+ * string-literal buffer, two 256-byte symbol buffers, plus smaller
+ * char-name buffers) across different branches. A C++ function's stack
+ * frame reserves space for every local it declares regardless of which
+ * branch actually runs at a given call — measured with
+ * `-Wframe-larger-than`, the original read_atom was a 4480-byte frame
+ * *even on the `#(` fast-dispatch path that touches none of those
+ * buffers*. `#(` vectors recurse read_datum -> read_atom -> read_vector
+ * -> read_datum once per nesting level (mirroring how `(` recurses
+ * through read_list), so every level of `#(#(#(...` nesting paid that
+ * full 4480 bytes. A mixed vector/list nesting depth well under the
+ * intentional ESHKOL_READ_MAX_DEPTH=4096 recursion cap (~1700 levels on
+ * an 8 MB default stack) was enough to overflow the native stack —
+ * found by tests/fuzz/reader_fuzz_driver.cpp's mixed_vector_list_nesting
+ * category (SIGSEGV, reproducible with any fixed seed).
+ *
+ * Split the heavy-buffer branches into their own (non-inlined) leaf
+ * functions so their frames are only paid when that branch is actually
+ * taken. The `#(` case is checked and dispatched directly inside the
+ * thin read_atom dispatcher below, before any large buffer would be
+ * declared, so the recursive vector-nesting chain now costs roughly the
+ * same handful of stack bytes per level as plain list nesting does. The
+ * split changes stack-layout only; every branch's logic is unchanged.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define ESHKOL_READER_NOINLINE __attribute__((noinline))
+#else
+#define ESHKOL_READER_NOINLINE
+#endif
 
-    // Hash prefix: #t, #f, #\char, #(vector
-    if (first_char == '#') {
-        int ch = fgetc(fp);
-        if (ch == 't') {
-            int next = fgetc(fp);
-            if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
-                next == '\t' || next == ')' || next == '(') {
-                if (next != EOF) ungetc(next, fp);
-                return make_bool_tagged(1);
-            }
-            ungetc(next, fp);
-            // Could be #true
-            char rest[16];
-            int rlen = 0;
-            rest[rlen++] = 'r';
-            while (rlen < 15) {
-                int c = fgetc(fp);
-                if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
-                    if (c != EOF) ungetc(c, fp);
-                    break;
-                }
-                rest[rlen++] = c;
-            }
-            rest[rlen] = '\0';
-            if (strcmp(rest, "rue") == 0) return make_bool_tagged(1);
-            return make_bool_tagged(1); // fallback
-        }
-        if (ch == 'f') {
-            int next = fgetc(fp);
-            if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
-                next == '\t' || next == ')' || next == '(') {
-                if (next != EOF) ungetc(next, fp);
-                return make_bool_tagged(0);
-            }
-            ungetc(next, fp);
-            // Could be #false — consume rest and return false
-            while (1) {
-                int c = fgetc(fp);
-                if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
-                    if (c != EOF) ungetc(c, fp);
-                    break;
-                }
-            }
-            return make_bool_tagged(0);
-        }
+// Leaf: string literal "..." (audit C4: bound *every* write into buf).
+// Previously only the non-escape branch checked `len < 4095`; the
+// escape branch wrote buf[len++] unconditionally. A crafted source
+// with 4100+ `\\` escapes overflowed the stack buffer — stack smash
+// / return-address overwrite surface reachable via (read port) on
+// untrusted input. Apply the bound uniformly and consume-without-
+// storing past the cap so the delimiter search still terminates.
+static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_string_literal(
+    arena_t* arena, FILE* fp) {
+    char buf[4096];
+    int len = 0;
+    int ch;
+    while ((ch = fgetc(fp)) != EOF && ch != '"') {
+        char decoded;
         if (ch == '\\') {
-            // Character literal
-            int c1 = fgetc(fp);
-            if (c1 == EOF) return make_eof_tagged();
-            int c2 = fgetc(fp);
-            if (c2 == EOF || c2 == ' ' || c2 == '\n' || c2 == '\r' ||
-                c2 == '\t' || c2 == ')' || c2 == '(') {
-                if (c2 != EOF) ungetc(c2, fp);
-                return make_char_tagged(c1);
+            ch = fgetc(fp);
+            if (ch == EOF) break;
+            switch (ch) {
+                case 'n':  decoded = '\n'; break;
+                case 't':  decoded = '\t'; break;
+                case 'r':  decoded = '\r'; break;
+                case '\\': decoded = '\\'; break;
+                case '"':  decoded = '"';  break;
+                default:   decoded = (char)ch; break;
             }
-            // Multi-char name: space, newline, tab, etc.
-            char name[32];
-            name[0] = c1;
-            name[1] = c2;
-            int nlen = 2;
-            while (nlen < 31) {
-                int c = fgetc(fp);
-                if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
-                    if (c != EOF) ungetc(c, fp);
-                    break;
-                }
-                name[nlen++] = c;
-            }
-            name[nlen] = '\0';
-            if (strcmp(name, "space") == 0) return make_char_tagged(' ');
-            if (strcmp(name, "newline") == 0) return make_char_tagged('\n');
-            if (strcmp(name, "tab") == 0) return make_char_tagged('\t');
-            if (strcmp(name, "return") == 0) return make_char_tagged('\r');
-            if (strcmp(name, "null") == 0) return make_char_tagged(0);
-            if (name[0] == 'x') {
-                // Hex character: #\x41
-                int codepoint = (int)strtol(name + 1, NULL, 16);
-                return make_char_tagged(codepoint);
-            }
-            return make_char_tagged(c1); // fallback: first char
+        } else {
+            decoded = (char)ch;
         }
-        if (ch == '(') {
-            return read_vector(arena, fp);
+        if (len < (int)sizeof(buf) - 1) {
+            buf[len++] = decoded;
         }
-        // Unknown # form — treat as symbol
-        char buf[256];
-        buf[0] = '#';
-        buf[1] = ch;
-        int blen = 2;
-        while (blen < 255) {
+        /* else: silently drop past cap. An error-raising variant
+         * would be more correct but would change a 1-byte overflow
+         * from an RCE primitive into a hard-fail DoS; the cap is
+         * documented as a reader-level string-length ceiling. */
+    }
+    return make_string_tagged(arena, buf, len);
+}
+
+// Leaf: #t / #f / #\char / unknown-#-symbol. NOT #( — that is dispatched
+// directly by read_atom before any of these buffers would be reserved,
+// so the recursive #(-nesting chain never pays for this frame.
+static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_hash_non_vector(
+    arena_t* arena, FILE* fp, int ch) {
+    if (ch == 't') {
+        int next = fgetc(fp);
+        if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
+            next == '\t' || next == ')' || next == '(') {
+            if (next != EOF) ungetc(next, fp);
+            return make_bool_tagged(1);
+        }
+        ungetc(next, fp);
+        // Could be #true
+        char rest[16];
+        int rlen = 0;
+        rest[rlen++] = 'r';
+        while (rlen < 15) {
             int c = fgetc(fp);
-            if (c == EOF || c == ' ' || c == '\n' || c == '\r' ||
-                c == '\t' || c == ')' || c == '(' || c == '"') {
+            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
                 if (c != EOF) ungetc(c, fp);
                 break;
             }
-            buf[blen++] = c;
+            rest[rlen++] = c;
         }
-        return make_symbol_tagged(arena, buf, blen);
+        rest[rlen] = '\0';
+        if (strcmp(rest, "rue") == 0) return make_bool_tagged(1);
+        return make_bool_tagged(1); // fallback
     }
-
-    // Number or symbol
+    if (ch == 'f') {
+        int next = fgetc(fp);
+        if (next == EOF || next == ' ' || next == '\n' || next == '\r' ||
+            next == '\t' || next == ')' || next == '(') {
+            if (next != EOF) ungetc(next, fp);
+            return make_bool_tagged(0);
+        }
+        ungetc(next, fp);
+        // Could be #false — consume rest and return false
+        while (1) {
+            int c = fgetc(fp);
+            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
+                if (c != EOF) ungetc(c, fp);
+                break;
+            }
+        }
+        return make_bool_tagged(0);
+    }
+    if (ch == '\\') {
+        // Character literal
+        int c1 = fgetc(fp);
+        if (c1 == EOF) return make_eof_tagged();
+        int c2 = fgetc(fp);
+        if (c2 == EOF || c2 == ' ' || c2 == '\n' || c2 == '\r' ||
+            c2 == '\t' || c2 == ')' || c2 == '(') {
+            if (c2 != EOF) ungetc(c2, fp);
+            return make_char_tagged(c1);
+        }
+        // Multi-char name: space, newline, tab, etc.
+        char name[32];
+        name[0] = c1;
+        name[1] = c2;
+        int nlen = 2;
+        while (nlen < 31) {
+            int c = fgetc(fp);
+            if (c == EOF || c == ' ' || c == '\n' || c == ')' || c == '(') {
+                if (c != EOF) ungetc(c, fp);
+                break;
+            }
+            name[nlen++] = c;
+        }
+        name[nlen] = '\0';
+        if (strcmp(name, "space") == 0) return make_char_tagged(' ');
+        if (strcmp(name, "newline") == 0) return make_char_tagged('\n');
+        if (strcmp(name, "tab") == 0) return make_char_tagged('\t');
+        if (strcmp(name, "return") == 0) return make_char_tagged('\r');
+        if (strcmp(name, "null") == 0) return make_char_tagged(0);
+        if (name[0] == 'x') {
+            // Hex character: #\x41
+            int codepoint = (int)strtol(name + 1, NULL, 16);
+            return make_char_tagged(codepoint);
+        }
+        return make_char_tagged(c1); // fallback: first char
+    }
+    // Unknown # form — treat as symbol
     char buf[256];
-    buf[0] = first_char;
+    buf[0] = '#';
+    buf[1] = (char)ch;
+    int blen = 2;
+    while (blen < 255) {
+        int c = fgetc(fp);
+        if (c == EOF || c == ' ' || c == '\n' || c == '\r' ||
+            c == '\t' || c == ')' || c == '(' || c == '"') {
+            if (c != EOF) ungetc(c, fp);
+            break;
+        }
+        buf[blen++] = (char)c;
+    }
+    return make_symbol_tagged(arena, buf, blen);
+}
+
+// Leaf: number, rational, or symbol.
+static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_number_or_symbol(
+    arena_t* arena, FILE* fp, int first_char) {
+    char buf[256];
+    buf[0] = (char)first_char;
     int blen = 1;
     while (blen < 255) {
         int ch = fgetc(fp);
@@ -469,7 +571,7 @@ static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char)
             if (ch != EOF) ungetc(ch, fp);
             break;
         }
-        buf[blen++] = ch;
+        buf[blen++] = (char)ch;
     }
     buf[blen] = '\0';
 
@@ -509,6 +611,24 @@ static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char)
 
     // Symbol
     return make_symbol_tagged(arena, buf, blen);
+}
+
+// Read an atom (number, symbol, string, #t, #f, #\char, #(vector).
+// Thin dispatcher — see the stack-frame-size comment above
+// read_atom_string_literal for why the heavy branches are split out.
+static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char) {
+    if (first_char == '"') return read_atom_string_literal(arena, fp);
+
+    if (first_char == '#') {
+        int ch = fgetc(fp);
+        // #( — vector. Dispatched here, before any large buffer would be
+        // declared, so read_datum -> read_atom -> read_vector -> read_datum
+        // recursion (one frame set per nesting level) stays cheap.
+        if (ch == '(') return read_vector(arena, fp);
+        return read_atom_hash_non_vector(arena, fp, ch);
+    }
+
+    return read_atom_number_or_symbol(arena, fp, first_char);
 }
 
 // Read a single S-expression datum from a FILE*
