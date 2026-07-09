@@ -12530,6 +12530,21 @@ private:
                 }
             }
 
+            // ESH-0214c region write barrier: a set! that stores a region-
+            // allocated value into a GLOBAL variable (which outlives every
+            // region) would leave the global holding a dangling pointer after
+            // region_pop. Deep-promote such a value into the global arena.
+            // Restricted to GlobalVariable destinations: plain local allocas and
+            // closure-capture pointers are conservatively NOT barriered here to
+            // avoid over-promoting values that never actually cross a region
+            // boundary (see runtime_regions.cpp / PR notes). Fast path (no active
+            // region) is a single load+branch in the runtime helper.
+            if (ctx_ && store_type == tagged_value_type &&
+                isa<GlobalVariable>(var_ptr) &&
+                store_value->getType() == tagged_value_type) {
+                store_value = ctx_->emitRegionWriteBarrier(var_ptr, store_value);
+            }
+
             builder->CreateStore(store_value, var_ptr);
             eshkol_debug("set! updated variable: %s", var_name);
 
@@ -35132,6 +35147,12 @@ private:
         // it to an entry-block alloca and pass the pointer to the
         // tagged-value cons setter (same call used by allocConsCell).
         if (new_value->getType() == tagged_value_type) {
+            // ESH-0214c region write barrier: set-car!/set-cdr! can splice a
+            // region-allocated value into a pair that lives outside the region;
+            // deep-promote it so it survives region_pop. Fast path (no active
+            // region) is a single load+branch in the runtime helper.
+            Value* barriered = ctx_ ? ctx_->emitRegionWriteBarrier(cons_ptr, new_value)
+                                    : new_value;
             IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
             Function* func = builder->GetInsertBlock()->getParent();
             if (func && !func->empty()) {
@@ -35140,7 +35161,7 @@ private:
             }
             Value* tv_slot = builder->CreateAlloca(tagged_value_type, nullptr, "set_pair_tv");
             builder->restoreIP(saved_ip);
-            builder->CreateStore(new_value, tv_slot);
+            builder->CreateStore(barriered, tv_slot);
             builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
                                 {cons_ptr, slot_flag, tv_slot});
             return new_value;

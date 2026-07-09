@@ -12,8 +12,56 @@
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <llvm/IR/Constants.h>
+#include <llvm/IR/Function.h>
 
 namespace eshkol {
+
+// ESH-0214c: emit the region write barrier around a store of a tagged value
+// into a longer-lived destination. Spills value + result to entry-block allocas
+// (so the pattern is safe inside loop bodies) and calls the runtime helper.
+llvm::Value* CodegenContext::emitRegionWriteBarrier(llvm::Value* dst_ptr,
+                                                    llvm::Value* tagged_value) {
+    if (!tagged_value || tagged_value->getType() != taggedValueType()) {
+        // Only tagged values can carry a heap pointer that might dangle.
+        return tagged_value;
+    }
+
+    llvm::Type* tv_ty = taggedValueType();
+    llvm::PointerType* ptr_ty = ptrType();
+
+    // Hoist the spill/result slots to the function entry block: an alloca in a
+    // loop body re-adjusts the stack pointer every iteration and is only
+    // reclaimed at function return.
+    llvm::Function* fn = builder_.GetInsertBlock()->getParent();
+    llvm::IRBuilderBase::InsertPoint saved_ip = builder_.saveIP();
+    if (fn && !fn->empty()) {
+        llvm::BasicBlock& entry = fn->getEntryBlock();
+        builder_.SetInsertPoint(&entry, entry.begin());
+    }
+    llvm::AllocaInst* val_slot = builder_.CreateAlloca(tv_ty, nullptr, "wb_val_slot");
+    llvm::AllocaInst* out_slot = builder_.CreateAlloca(tv_ty, nullptr, "wb_out_slot");
+    builder_.restoreIP(saved_ip);
+
+    builder_.CreateStore(tagged_value, val_slot);
+
+    llvm::Function* wb = module_.getFunction("eshkol_region_write_barrier_into");
+    if (!wb) {
+        llvm::FunctionType* wb_ty = llvm::FunctionType::get(
+            voidType(), {ptr_ty, ptr_ty, ptr_ty}, false);
+        wb = llvm::Function::Create(wb_ty, llvm::GlobalValue::ExternalLinkage,
+                                    "eshkol_region_write_barrier_into", &module_);
+    }
+
+    llvm::Value* dst_cast = dst_ptr;
+    if (dst_ptr && dst_ptr->getType() != ptr_ty) {
+        dst_cast = builder_.CreateBitCast(dst_ptr, ptr_ty);
+    } else if (!dst_ptr) {
+        dst_cast = llvm::ConstantPointerNull::get(ptr_ty);
+    }
+
+    builder_.CreateCall(wb, {out_slot, dst_cast, val_slot});
+    return builder_.CreateLoad(tv_ty, out_slot, "wb_result");
+}
 
 CodegenContext::CodegenContext(llvm::LLVMContext& llvm_ctx,
                                llvm::Module& llvm_mod,

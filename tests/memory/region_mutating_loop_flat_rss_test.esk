@@ -1,0 +1,61 @@
+;;; tests/memory/region_mutating_loop_flat_rss_test.esk — ESH-0214c flat-RSS
+;;; regression fixture, gated by region_mutating_loop_flat_rss_test.sh.
+;;;
+;;; The resident-AI tick-loop shape from the field report: a guard-wrapped
+;;; top-level define loop where each iteration
+;;;   (a) allocates transient garbage that dies with the iteration, and
+;;;   (b) MUTATES one slot of a persistent OUTER vector with a freshly consed
+;;;       small list,
+;;; with the whole body wrapped in a PER-ITERATION (with-region ...). The
+;;; per-iteration placement (region inside the loop body, not around the loop)
+;;; is what reclaims each iteration's garbage: region_pop frees the region
+;;; arena every pass, and ONLY the freshly stored list escapes — deep-promoted
+;;; into the global arena by the ESH-0214c mutation write barrier.
+;;;
+;;; Without the region, this shape leaks ~17.5KB/iteration (~7GB at 400k
+;;; iterations). With the region but WITHOUT the deep-escape fix, RSS stays
+;;; flat but the outer vector's slots dangle into freed region arenas
+;;; (car/cdr corruption). With both, RSS stays flat AND every stored value
+;;; reads back correct at the end — which is what this fixture asserts.
+
+(define total-passes 400000)
+(define slots 64)
+(define state (make-vector slots 0))
+
+(define (tick i acc)
+  (guard (e (#t acc))                       ; catch-all error boundary (daemon shape)
+    (if (>= i total-passes)
+        acc
+        (begin
+          (with-region 'tick
+            ;; (a) transient garbage: dead at region exit, reclaimed by region_pop
+            (let ((scratch (make-list 100 i)))
+              ;; (b) persistent mutation: fresh small list into the OUTER vector.
+              ;; The write barrier must deep-promote it out of the region.
+              (vector-set! state (modulo i slots) (list i (* i 2) (length scratch)))))
+          (tick (+ i 1) (+ acc 1))))))
+
+(define result (tick 0 0))
+
+;; ─── Correctness read-back: every slot must hold the intact list from the
+;;     last iteration that touched it (no car/cdr errors, correct values).
+(define (verify s ok)
+  (if (>= s slots)
+      ok
+      (let* ((lst (vector-ref state s))
+             ;; last i that wrote slot s: largest i < total-passes with (modulo i slots) = s
+             (last-i (+ s (* (quotient (- total-passes 1 s) slots) slots))))
+        (verify (+ s 1)
+                (and ok
+                     (= (car lst) last-i)
+                     (= (cadr lst) (* last-i 2))
+                     (= (caddr lst) 100))))))
+
+(display "[region_mutating_loop_flat_rss_test] passes=")
+(display result)
+(display "/")
+(display total-passes)
+(newline)
+(if (and (= result total-passes) (verify 0 #t))
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline) (exit 1)))
