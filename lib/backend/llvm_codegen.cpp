@@ -29980,6 +29980,21 @@ private:
             false);
         FunctionCallee region_pop_fn = module->getOrInsertFunction("region_pop", region_pop_type);
 
+        // Thread-safe region allocation-scope routing (see runtime_regions.cpp).
+        // eshkol_region_enter(region) -> arena_t* saved; eshkol_region_leave(saved).
+        FunctionType* region_enter_type = FunctionType::get(
+            PointerType::get(*context, 0),      // returns arena_t* (displaced or sentinel)
+            {PointerType::get(*context, 0)},    // eshkol_region_t*
+            false);
+        FunctionCallee region_enter_fn =
+            module->getOrInsertFunction("eshkol_region_enter", region_enter_type);
+        FunctionType* region_leave_type = FunctionType::get(
+            void_type,
+            {PointerType::get(*context, 0)},    // arena_t* saved
+            false);
+        FunctionCallee region_leave_fn =
+            module->getOrInsertFunction("eshkol_region_leave", region_leave_type);
+
         // Create the region name string (or null)
         Value* name_ptr;
         if (op->with_region_op.name) {
@@ -30007,16 +30022,18 @@ private:
         // global arena and region_pop freed an empty region -> unbounded RSS
         // growth (Noesis OOM, exit 137).
         //
-        // Fix: temporarily overwrite the current-arena slot with region->arena
-        // for the duration of the body, then restore the previous value after
-        // region_pop. region->arena is the FIRST field of eshkol_region_t, so it
-        // lives at offset 0 of the region pointer returned by region_create.
-        GlobalVariable* arena_slot = ctx_ ? ctx_->currentArenaPtr() : global_arena;
-        Value* saved_arena = builder->CreateLoad(
-            PointerType::getUnqual(*context), arena_slot, "saved_arena_before_region");
-        Value* region_arena = builder->CreateLoad(
-            PointerType::getUnqual(*context), region, "region_arena");
-        builder->CreateStore(region_arena, arena_slot);
+        // Fix: temporarily redirect the current-arena slot to region->arena for
+        // the duration of the body, then restore afterwards. This redirect is NOT
+        // done inline here (that raced across worker threads sharing the single
+        // __global_arena pointer — parallel-map + with-region SIGSEGV); it is
+        // delegated to eshkol_region_enter/eshkol_region_leave, which perform it
+        // only when thread-safe (single-threaded, non-parallel context) and skip
+        // it on worker threads / inside a work-stealing construct. Body
+        // allocations there stay in the thread-safe shared arena and escape
+        // promotion still copies out anything region-resident. See
+        // runtime_regions.cpp.
+        Value* saved_arena =
+            builder->CreateCall(region_enter_fn, {region}, "region_saved_arena");
 
         // Evaluate body expressions - last one is the result
         Value* result = nullptr;
@@ -30071,7 +30088,9 @@ private:
         // Allocations after the region must NOT target the (now-freed) region
         // arena. region_escape above already copied the result into the parent /
         // global arena (region_escape is slot-independent), so it survives.
-        builder->CreateStore(saved_arena, arena_slot);
+        // eshkol_region_leave is the counterpart to eshkol_region_enter and is a
+        // no-op when enter declined to hijack (parallel/worker context).
+        builder->CreateCall(region_leave_fn, {saved_arena});
 
         if (!result) {
             result = packNullToTaggedValue();

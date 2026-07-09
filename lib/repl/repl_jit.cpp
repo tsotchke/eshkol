@@ -1290,6 +1290,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(region_push);
     ADD_SYMBOL(region_pop);
     ADD_SYMBOL(region_current);
+    ADD_SYMBOL(eshkol_region_enter);   // thread-safe with-region arena routing
+    ADD_SYMBOL(eshkol_region_leave);
     ADD_SYMBOL(region_allocate);
     ADD_SYMBOL(region_allocate_aligned);
     ADD_SYMBOL(region_allocate_zeroed);

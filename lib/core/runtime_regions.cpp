@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <vector>
 #include <utility>
+#include <atomic>
+#include <mutex>
 
 void eshkol_arena_global_once(void (*init)(void));
 
@@ -32,18 +34,59 @@ ESHKOL_RUNTIME_WEAK arena_t* __global_arena = nullptr;
 
 static thread_local arena_t* __thread_local_arena = nullptr;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// THREAD-SAFE REGION ARENA ROUTING (parallel-map/fold/execute/future × with-region)
+//
+// Generated code funnels *every* allocation through the single process-global
+// __global_arena pointer (the "current allocation arena" slot). `with-region`
+// makes body allocations land in the region's arena by temporarily overwriting
+// that slot with the region arena and restoring it on exit. That save/hijack/
+// restore is correct for a single thread, but __global_arena is ONE shared
+// location: when work-stealing workers run a body that uses with-region, several
+// threads hijack/restore the same pointer concurrently — a worker allocates into
+// another worker's region arena, whose region_pop then frees it out from under
+// the first — SIGSEGV / heap corruption.
+//
+// Making __global_arena itself thread-local is not viable: generated code reads
+// it as a plain (non-TLS) global across the LLVM↔C / JIT boundary, and this
+// codebase deliberately avoids TLS symbols there (see the __current_ad_tape note
+// in arena_memory.h). Instead the hijack is moved out of codegen into this
+// runtime, where it is performed ONLY when it is genuinely safe — a
+// single-threaded, non-parallel context — and a parallel-scope guard keeps the
+// shared slot pointed at the true thread-safe process arena for the duration of
+// any work-stealing construct, so concurrent workers never observe a hijacked
+// (non-thread-safe) region arena. In a parallel/worker context body allocations
+// stay in the thread-safe shared arena; escape promotion (region_escape*/write
+// barrier) still copies any region-arena-resident value out, so results are
+// correct. The only tradeoff is weaker region reclamation while parallel work is
+// in flight (transient region allocations land in the shared arena instead of
+// being freed at region_pop) — a bounded, documented cost, never a correctness
+// hazard. Single-threaded programs are entirely unaffected (identical hijack).
+static arena_t* s_shared_root_arena = nullptr;         // true process-wide thread-safe arena
+static std::atomic<int> s_parallel_depth{0};           // >0 while a work-stealing construct may run
+static std::mutex s_parallel_arena_mtx;                // guards the 0<->1 transition swap
+static arena_t* s_saved_arena_at_parallel = nullptr;   // __global_arena captured at the 0->1 edge
+
+// Sentinel returned by eshkol_region_enter when it did NOT hijack the shared
+// slot (parallel/worker context). No real arena lives at address 0x1.
+static arena_t* const REGION_NO_HIJACK = reinterpret_cast<arena_t*>(0x1);
+
 /**
  * @brief One-time initializer that creates the process-wide global arena.
  *
  * Invoked exactly once (via eshkol_arena_global_once) to create a
  * thread-safe arena and store it in __global_arena; logs an error if
- * creation fails.
+ * creation fails. Also records it as the immutable thread-safe "root" arena
+ * (s_shared_root_arena) that the parallel-scope guard points workers at while a
+ * work-stealing construct is active — captured here, before any with-region can
+ * hijack the __global_arena slot.
  */
 static void init_global_arena_internal() {
     __global_arena = arena_create_threadsafe(65536);
     if (!__global_arena) {
         eshkol_error("Failed to create global arena");
     }
+    s_shared_root_arena = __global_arena;
 }
 
 /**
@@ -411,6 +454,95 @@ void region_pop(void) {
 eshkol_region_t* region_current(void) {
     if (__region_stack_depth == 0) return nullptr;
     return __region_stack[__region_stack_depth - 1];
+}
+
+/**
+ * @brief Enter a region's allocation scope: redirect the shared current-arena
+ *        slot to @p region's arena, but ONLY when that is thread-safe.
+ *
+ * Called by with-region codegen immediately after region_push. Replaces the
+ * old inline codegen hijack of the __global_arena GlobalVariable so the decision
+ * of whether it is safe to mutate that process-shared pointer is made here, at
+ * runtime, with thread context in view:
+ *
+ *   • Single-threaded, non-parallel context — the common case, and every
+ *     sequential program — hijacks exactly as before: body allocations land in
+ *     the region arena and are freed at region_pop (full reclamation).
+ *   • Worker thread, or any thread while a work-stealing parallel construct is
+ *     active — does NOT touch the shared slot (returns REGION_NO_HIJACK). Body
+ *     allocations stay in the thread-safe shared arena; escape promotion still
+ *     copies any value that DID land in a region arena out at region_pop, so
+ *     results are correct. This is what makes parallel-map + with-region safe.
+ *
+ * @param region Region being entered (its arena is the hijack target).
+ * @return The arena that was displaced (to be restored by eshkol_region_leave),
+ *         or the REGION_NO_HIJACK sentinel if the slot was left untouched.
+ */
+extern "C" arena_t* eshkol_region_enter(eshkol_region_t* region) {
+    if (!region || !region->arena) return REGION_NO_HIJACK;
+
+    // Unsafe to mutate the process-shared __global_arena when other threads may
+    // be reading it concurrently: on a pool worker, or while any work-stealing
+    // construct is in flight (which also covers the main thread running the
+    // parallel-map JIT-warmup item while workers spin up).
+    if (s_parallel_depth.load(std::memory_order_acquire) != 0 ||
+        arena_is_worker_thread()) {
+        return REGION_NO_HIJACK;
+    }
+
+    arena_t* saved = __global_arena;
+    __global_arena = region->arena;
+    return saved;
+}
+
+/**
+ * @brief Leave a region's allocation scope: undo the redirect performed by
+ *        eshkol_region_enter (no-op if it declined to hijack).
+ *
+ * Called by with-region codegen after region_pop.
+ *
+ * @param saved The value returned by the matching eshkol_region_enter.
+ */
+extern "C" void eshkol_region_leave(arena_t* saved) {
+    if (saved == REGION_NO_HIJACK) return;
+    __global_arena = saved;
+}
+
+/**
+ * @brief Open a parallel scope around a work-stealing construct
+ *        (parallel-map/fold/execute/filter/for-each and async futures).
+ *
+ * While the scope is open, region hijacks are suppressed (eshkol_region_enter
+ * returns without touching the shared slot) and the shared current-arena slot is
+ * forced to the true thread-safe process arena (s_shared_root_arena) so every
+ * worker that reads __global_arena allocates into a lockable arena rather than
+ * into whatever region arena a with-region on the spawning thread may have
+ * hijacked it to. The displaced value (e.g. an enclosing region's arena) is
+ * captured on the 0->1 edge and restored on the 1->0 edge; nested/overlapping
+ * scopes just bump the depth. Idempotent w.r.t. the arena value because every
+ * scope forces the same root.
+ */
+extern "C" void eshkol_parallel_scope_begin(void) {
+    std::lock_guard<std::mutex> lk(s_parallel_arena_mtx);
+    if (s_parallel_depth.fetch_add(1, std::memory_order_acq_rel) == 0) {
+        arena_t* root = s_shared_root_arena;
+        if (!root) root = get_global_arena_shared();  // ensures init + captures root
+        s_saved_arena_at_parallel = __global_arena;
+        if (root) __global_arena = root;
+    }
+}
+
+/**
+ * @brief Close a parallel scope opened by eshkol_parallel_scope_begin(),
+ *        restoring the current-arena slot displaced on the 0->1 edge once the
+ *        last overlapping scope closes.
+ */
+extern "C" void eshkol_parallel_scope_end(void) {
+    std::lock_guard<std::mutex> lk(s_parallel_arena_mtx);
+    if (s_parallel_depth.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        __global_arena = s_saved_arena_at_parallel;
+        s_saved_arena_at_parallel = nullptr;
+    }
 }
 
 /**

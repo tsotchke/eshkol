@@ -649,6 +649,11 @@ class EshkolRuntime {
                 region_create: (_name, _size_hint) => 1,
                 region_push:   () => {},
                 region_pop:    () => {},
+                // with-region hijack (thread-safe region scope): JS has no region
+                // system, so decline the hijack. enter returns 0 (no displaced arena to
+                // restore); leave is a no-op for a declined enter.
+                eshkol_region_enter: (_region) => 0,
+                eshkol_region_leave: (_saved) => {},
                 region_escape_tagged_value_into: (out, val) => {
                     const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
                     if (!buf || !out || !val) return;
