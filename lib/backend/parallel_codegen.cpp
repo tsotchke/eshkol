@@ -251,6 +251,24 @@ struct eshkol_lazy_future_layout {
 };
 } // anonymous namespace
 
+/**
+ * @brief Kick off asynchronous evaluation of a `lazy_future` thunk on the
+ *        global thread pool.
+ *
+ * Allocates a heap result slot and an `eshkol_parallel_execute_task`, submits
+ * them to `g_parallel_execute_worker`, and stashes the resulting
+ * `eshkol_future_t*` plus the slot/task pointers into the lazy_future's async
+ * fields (see the layout comment above `eshkol_lazy_future_layout`) so that
+ * `eshkol_lazy_future_join_async` can later block on it and copy out the
+ * result.
+ *
+ * @param lf_void       Pointer to the `lazy_future` struct (as `void*`).
+ * @param closure_ptr   Raw pointer field of the thunk closure to invoke.
+ * @param closure_type  Tagged-value type byte of the thunk closure.
+ * @param closure_flags Tagged-value flags byte of the thunk closure.
+ * @return 1 on success (async submission started), 0 if `lf_void` is null,
+ *         the execute worker isn't registered, or no thread pool is available.
+ */
 extern "C" uint8_t eshkol_lazy_future_submit_async(
     void* lf_void, uint64_t closure_ptr, uint8_t closure_type, uint8_t closure_flags) {
     if (!lf_void) return 0;
@@ -280,6 +298,16 @@ extern "C" uint8_t eshkol_lazy_future_submit_async(
     return 1;
 }
 
+/**
+ * @brief Block until a `lazy_future` previously started with
+ *        `eshkol_lazy_future_submit_async` has finished, then copy the
+ *        worker's result into the lazy_future's result fields and release
+ *        the async bookkeeping (pool future, result slot, task).
+ *
+ * No-op if the future was already forced or was never submitted async.
+ *
+ * @param lf_void Pointer to the `lazy_future` struct (as `void*`).
+ */
 extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
     if (!lf_void) return;
     auto* lf = reinterpret_cast<eshkol_lazy_future_layout*>(lf_void);

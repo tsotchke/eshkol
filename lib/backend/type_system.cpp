@@ -16,6 +16,13 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct the type system, caching primitive/SIMD LLVM types and
+ *        building the shared struct types used across codegen.
+ * @param ctx LLVM context that owns all created types.
+ * @param is_wasm32 If true, size/pointer-sized types are created as i32
+ *                   instead of i64 to match the wasm32 target.
+ */
 TypeSystem::TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32)
     : context(ctx), is_wasm32_(is_wasm32) {
     // Cache primitive types (avoid repeated lookups)
@@ -42,6 +49,11 @@ TypeSystem::TypeSystem(llvm::LLVMContext& ctx, bool is_wasm32)
     createStructTypes();
 }
 
+/**
+ * @brief Create the shared LLVM struct types (tagged value, dual number,
+ *        complex number, AD node, tensor) that mirror the corresponding C
+ *        runtime struct layouts field-for-field.
+ */
 void TypeSystem::createStructTypes() {
     // Tagged value struct type (matches C struct exactly):
     // struct eshkol_tagged_value {
