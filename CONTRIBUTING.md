@@ -209,6 +209,26 @@ Good documentation is crucial for the project:
 - Keep the README and other high-level documentation up to date.
 - Use Markdown for all documentation files.
 
+#### API Reference (docs/api/)
+
+`docs/api/` is a generated browsable reference for the public C/C++ headers
+under `inc/eshkol/**/*.h`, harvested from their Doxygen `/** @brief ... */`
+comment blocks by `scripts/gen_api_docs.py`. It is not hand-edited.
+
+When you add or change a Doxygen comment on a public header symbol,
+regenerate the reference and commit the result alongside your change:
+
+```sh
+make api-docs          # regenerate docs/api/
+make api-docs-check    # verify docs/api/ has no drift (used before a PR)
+```
+
+The generator is documentation-only — it never modifies files under `inc/`
+— and its output is deterministic (sorted, stable across re-runs), so a
+regeneration with no underlying comment changes produces an empty diff. It
+is not run automatically in CI; regenerate locally when you touch a header
+comment.
+
 ### Testing
 
 We strive for good test coverage:
