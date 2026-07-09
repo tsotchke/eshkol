@@ -44,10 +44,7 @@
     (thunk)
     #f))
 
-;; The pairing term  λλλ.((1 3) 2).
-(define blc-pair
-  (blc-lam (blc-lam (blc-lam
-    (blc-app (blc-app (blc-var 1) (blc-var 3)) (blc-var 2))))))
+;; The pairing term  λλλ.((1 3) 2) is now provided by the module as blc-pair.
 
 ;; ============================================================================
 ;; 1. Exact encodings (ground truth from Tromp)
@@ -147,6 +144,94 @@
        (raised? (lambda () (blc-decode "001"))))
 (check-equal "decode \"0010\" = I  (valid, for contrast)"
              blc-I (blc-decode "0010"))
+
+;; ============================================================================
+;; 5. Universal machine U (232 bits, Tromp) — self-interpretation
+;; ============================================================================
+(display "=== 5. Universal machine U ===") (newline)
+
+;; The pairing combinator has Tromp's canonical encoding.
+(check-equal "blc-pair encodes to 0000000101101110110"
+             "0000000101101110110" (blc-encode blc-pair))
+
+;; U is 232 bits (29 bytes) and decodes to a closed, well-formed term whose
+;; re-encoding reproduces the exact bit string (round-trip).
+(check-equal "U is 232 bits" 232 (string-length blc-U-bits))
+(check "U decodes to a well-formed term" (blc-term? (blc-U)))
+(check-equal "U re-encodes to blc-U-bits" blc-U-bits (blc-encode (blc-U)))
+
+;; Acceptance: U runs a decoded program on the rest of the bit stream.
+;; (a) Identity program: U consumes encode(I) off the front, then applies I
+;;     to the remaining list — here a marker K — yielding K unchanged.
+(check-equal "U (encode(I) ++ K) = K"
+             blc-K
+             (blc-eval (blc-app (blc-U)
+                                (blc-list-of-bits (blc-encode blc-I) blc-K))))
+
+;; (b) Constant-output program (lambda i. True) ignores its input and yields
+;;     the fixed constant True; likewise (lambda i. False) yields False.
+(check-equal "U (const-True program) = True"
+             blc-true
+             (blc-eval (blc-app (blc-U)
+                                (blc-encode-input (blc-encode (blc-lam blc-true)) ""))))
+(check-equal "U (const-False program) = False"
+             blc-false
+             (blc-eval (blc-app (blc-U)
+                                (blc-encode-input (blc-encode (blc-lam blc-false)) ""))))
+
+;; (c) Identity program on nonempty input "10": U returns the input list.
+(check-equal "U (encode(I) ++ input \"10\") = list(\"10\")"
+             (blc-list-of-bits "10" blc-nil)
+             (blc-eval (blc-app (blc-U)
+                                (blc-encode-input (blc-encode blc-I) "10"))))
+
+;; ============================================================================
+;; 6. BLC8 byte I/O — byte = big-endian delimited list of 8 bits
+;; ============================================================================
+(display "=== 6. BLC8 byte I/O ===") (newline)
+
+(check-equal "byte 0 round-trips"   0   (blc-term->byte (blc-byte->term 0)))
+(check-equal "byte 72 round-trips"  72  (blc-term->byte (blc-byte->term 72)))
+(check-equal "byte 255 round-trips" 255 (blc-term->byte (blc-byte->term 255)))
+;; Big-endian: byte 72 = #b01001000, MSB first.  Its first bit is 0 -> True.
+(check-equal "byte 72 leading bit is True (big-endian)"
+             blc-true (blc-list-head (blc-byte->term 72)))
+
+;; Round-trip a small byte string "Hi" (bytes 72, 105) through term and back.
+(check-equal "bytes->term->bytes \"Hi\" = (72 105)"
+             (list 72 105) (blc-term->bytes (blc-string->term "Hi")))
+(check-equal "string->term->string \"Hi\" = \"Hi\""
+             "Hi" (blc-term->string (blc-string->term "Hi")))
+(check-equal "empty string round-trips"
+             "" (blc-term->string (blc-string->term "")))
+
+;; ============================================================================
+;; 7. Lambda diagrams (Tromp style, ASCII)
+;; ============================================================================
+(display "=== 7. Lambda diagrams ===") (newline)
+
+;; I = λx.x : one lambda bar over one variable line.
+(check-equal "diagram I"
+             (string-append "---" "\n"
+                            " |")
+             (blc-diagram blc-I))
+
+;; K = λx.λy.x : two stacked bars; x's line crosses the inner (λy) bar.
+(check-equal "diagram K"
+             (string-append "---" "\n"
+                            "-|-" "\n"
+                            " |")
+             (blc-diagram blc-K))
+
+;; S = λx.λy.λz.((x z)(y z)) : four variable lines, nested app links.
+(check-equal "diagram S"
+             (string-append "---------------" "\n"
+                            "-|-------------" "\n"
+                            "-|-------|-----" "\n"
+                            " |   |   |   |" "\n"
+                            " |----   |----" "\n"
+                            " |--------")
+             (blc-diagram blc-S))
 
 ;; ============================================================================
 ;; Summary
