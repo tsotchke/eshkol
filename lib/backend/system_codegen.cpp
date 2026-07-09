@@ -30,6 +30,11 @@ llvm::Function* getOrDeclareRuntimeFuncAllPtr(CodegenContext& ctx, llvm::Module*
 static llvm::Value* callPtrRuntime(CodegenContext& ctx, llvm::Function* f,
                                    llvm::ArrayRef<llvm::Value*> args);
 
+/**
+ * @brief Emit a runtime call checking whether @p capability is permitted
+ *        under the current capability/sandboxing policy.
+ * @return i1 SSA value: true if the runtime capability check allows it.
+ */
 static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* capability) {
     llvm::FunctionType* fn_type = llvm::FunctionType::get(
         ctx.int32Type(), {ctx.ptrType()}, false);
@@ -41,6 +46,11 @@ static llvm::Value* runtimeCapabilityAllowed(CodegenContext& ctx, const char* ca
         allowed, llvm::ConstantInt::get(ctx.int32Type(), 0));
 }
 
+/**
+ * @brief Emit a runtime call that raises a capability-denied error for
+ *        @p capability (used when a sandboxed program attempts a disallowed
+ *        system operation).
+ */
 static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
     llvm::FunctionType* fn_type = llvm::FunctionType::get(
         ctx.voidType(), {ctx.ptrType()}, false);
@@ -50,6 +60,7 @@ static void runtimeCapabilityDeny(CodegenContext& ctx, const char* capability) {
     ctx.builder().CreateCall(callee, {capability_name});
 }
 
+/** @brief Construct the system-operations codegen helper bound to the shared codegen context, tagged-value helper, memory codegen, and function table. */
 SystemCodegen::SystemCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
                              std::unordered_map<std::string, llvm::Function*>& function_table)
     : ctx_(ctx)
@@ -59,6 +70,7 @@ SystemCodegen::SystemCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, Me
     eshkol_debug("SystemCodegen initialized");
 }
 
+/** @brief Unpack a tagged string/pointer value's raw data field into an LLVM pointer. */
 llvm::Value* SystemCodegen::extractStringPtr(llvm::Value* tagged_val) {
     llvm::Value* ptr_int = tagged_.unpackInt64(tagged_val);
     return ctx_.builder().CreateIntToPtr(ptr_int, ctx_.ptrType());
@@ -184,6 +196,11 @@ llvm::Value* SystemCodegen::getenv(const eshkol_operations_t* op) {
     return final_phi;
 }
 
+/**
+ * @brief Codegen for `(setenv name value)`: gates on the "env-write"
+ *        capability, then calls libc `setenv(name, value, 1)` and packs
+ *        whether it succeeded.
+ */
 llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
         eshkol_warn("setenv requires exactly 2 arguments (name value)");
@@ -245,6 +262,10 @@ llvm::Value* SystemCodegen::setenv(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for `(unsetenv name)`: gates on the "env-write" capability,
+ *        then calls libc `unsetenv(name)` and packs whether it succeeded.
+ */
 llvm::Value* SystemCodegen::unsetenv(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("unsetenv requires exactly 1 argument");
@@ -335,6 +356,11 @@ llvm::Value* SystemCodegen::systemCall(const eshkol_operations_t* op) {
     return tagged_.packInt64(result_i64, true);
 }
 
+/**
+ * @brief Codegen for `(sleep seconds)`: converts the (possibly fractional)
+ *        second count to microseconds, clamps to the valid int32 range, and
+ *        calls libc `usleep`.
+ */
 llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("sleep requires exactly 1 argument");
@@ -391,6 +417,7 @@ llvm::Value* SystemCodegen::sleep(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/** @brief Codegen for `(current-seconds)`: calls libc `time(NULL)` and packs the result as an exact integer. */
 llvm::Value* SystemCodegen::currentSeconds(const eshkol_operations_t* op) {
     llvm::Function* time_func = function_table_["time"];
     if (!time_func) return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
@@ -402,6 +429,11 @@ llvm::Value* SystemCodegen::currentSeconds(const eshkol_operations_t* op) {
     return tagged_.packInt64(result, true);
 }
 
+/**
+ * @brief Codegen for `(current-time)`: returns Unix time as a fractional
+ *        double, computed via `gettimeofday` (tv_sec + tv_usec/1e6), or
+ *        falling back to whole-second `time(NULL)` if unavailable.
+ */
 llvm::Value* SystemCodegen::currentTime(const eshkol_operations_t* op) {
     (void)op;
 
@@ -442,6 +474,11 @@ llvm::Value* SystemCodegen::currentTime(const eshkol_operations_t* op) {
     return tagged_.packDouble(result);
 }
 
+/**
+ * @brief Codegen for `(current-time-ms)`: milliseconds since epoch, computed
+ *        via `gettimeofday` (tv_sec*1000 + tv_usec/1000), falling back to
+ *        `time(NULL)*1000` if `gettimeofday` is unavailable.
+ */
 llvm::Value* SystemCodegen::currentTimeMs(const eshkol_operations_t* op) {
     (void)op;  // No arguments needed
 
@@ -492,6 +529,10 @@ llvm::Value* SystemCodegen::currentTimeMs(const eshkol_operations_t* op) {
     return tagged_.packDouble(result);
 }
 
+/**
+ * @brief Codegen for `(current-time-ns)`: nanoseconds since epoch via
+ *        `clock_gettime(CLOCK_REALTIME, ...)` (tv_sec*1e9 + tv_nsec).
+ */
 llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
     (void)op;  // No arguments needed
 
@@ -533,6 +574,11 @@ llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
     return tagged_.packDouble(result);
 }
 
+/**
+ * @brief Codegen for `(exit code)`: coerces the exit code to a clamped i32
+ *        in [0, 255] (from a double, if that's the argument's type) and
+ *        calls libc `exit`.
+ */
 llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("exit requires exactly 1 argument (exit code)");
@@ -589,6 +635,15 @@ llvm::Value* SystemCodegen::exitProgram(const eshkol_operations_t* op) {
     return nullptr;
 }
 
+/**
+ * @brief Codegen for `(command-line)`.
+ *
+ * Declares (or reuses) the `__eshkol_argc`/`__eshkol_argv` externs backed by
+ * the host process/JIT (see ADD_DATA_SYMBOL in repl_jit.cpp), then emits an
+ * IR loop that walks argv in reverse, copies each arg into an arena-header
+ * string, and conses it onto the result so the final list is in original
+ * argv order.
+ */
 llvm::Value* SystemCodegen::commandLine(const eshkol_operations_t* op) {
     // The argc/argv globals are owned by the host process and exposed to
     // JIT via ADD_DATA_SYMBOL (lib/repl/repl_jit.cpp:558-559). The
@@ -743,6 +798,7 @@ llvm::Value* SystemCodegen::fileExists(const eshkol_operations_t* op) {
     return tagged_.packBool(exists);
 }
 
+/** @brief Codegen for `(file-readable? path)`: calls libc `access(path, R_OK)`. */
 llvm::Value* SystemCodegen::fileReadable(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("file-readable? requires exactly 1 argument");
@@ -768,6 +824,7 @@ llvm::Value* SystemCodegen::fileReadable(const eshkol_operations_t* op) {
     return tagged_.packBool(readable);
 }
 
+/** @brief Codegen for `(file-writable? path)`: calls libc `access(path, W_OK)`. */
 llvm::Value* SystemCodegen::fileWritable(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("file-writable? requires exactly 1 argument");
@@ -793,6 +850,7 @@ llvm::Value* SystemCodegen::fileWritable(const eshkol_operations_t* op) {
     return tagged_.packBool(writable);
 }
 
+/** @brief Codegen for `(file-delete path)`: calls libc `remove(path)`. */
 llvm::Value* SystemCodegen::fileDelete(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("file-delete requires exactly 1 argument");
@@ -816,6 +874,7 @@ llvm::Value* SystemCodegen::fileDelete(const eshkol_operations_t* op) {
     return tagged_.packBool(success);
 }
 
+/** @brief Codegen for `(file-rename old new)`: delegates to the `eshkol_builtin_file_rename` C runtime helper via callPtrRuntime(). */
 llvm::Value* SystemCodegen::fileRename(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
         eshkol_warn("file-rename requires exactly 2 arguments");
@@ -833,6 +892,11 @@ llvm::Value* SystemCodegen::fileRename(const eshkol_operations_t* op) {
     return callPtrRuntime(ctx_, rename_func, {old_arg, new_arg});
 }
 
+/**
+ * @brief Codegen for `(file-size path)`: opens the file with `fopen`,
+ *        seeks to the end via `fseek`/`ftell` to get the byte size, then
+ *        closes it. Returns #f if the file could not be opened.
+ */
 llvm::Value* SystemCodegen::fileSize(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("file-size requires exactly 1 argument");
@@ -895,6 +959,12 @@ llvm::Value* SystemCodegen::fileSize(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for `(read-file path)`: opens the file in "rb" mode, seeks
+ *        to determine its size, allocates a header-tagged string buffer of
+ *        that size, reads the whole file into it via `fread`, and
+ *        NUL-terminates it. Returns #f if the file could not be opened.
+ */
 llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("read-file requires exactly 1 argument");
@@ -987,6 +1057,10 @@ llvm::Value* SystemCodegen::readFile(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for `(write-file path content)`: opens the file in "wb"
+ *        (truncating) mode and writes the whole content string via `fwrite`.
+ */
 llvm::Value* SystemCodegen::writeFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
         eshkol_warn("write-file requires exactly 2 arguments");
@@ -1050,6 +1124,10 @@ llvm::Value* SystemCodegen::writeFile(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for `(append-file path content)`: like writeFile() but
+ *        opens in "ab" (append) mode.
+ */
 llvm::Value* SystemCodegen::appendFile(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 2) {
         eshkol_warn("append-file requires exactly 2 arguments");
@@ -1170,6 +1248,7 @@ llvm::Value* SystemCodegen::directoryExists(const eshkol_operations_t* op) {
     return phi;
 }
 
+/** @brief Codegen for `(make-directory path)`: calls libc `mkdir(path, 0755)`. */
 llvm::Value* SystemCodegen::makeDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("make-directory requires exactly 1 argument");
@@ -1195,6 +1274,7 @@ llvm::Value* SystemCodegen::makeDirectory(const eshkol_operations_t* op) {
     return tagged_.packBool(success);
 }
 
+/** @brief Codegen for `(delete-directory path)`: calls libc `rmdir(path)`. */
 llvm::Value* SystemCodegen::deleteDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("delete-directory requires exactly 1 argument");
@@ -1218,6 +1298,13 @@ llvm::Value* SystemCodegen::deleteDirectory(const eshkol_operations_t* op) {
     return tagged_.packBool(success);
 }
 
+/**
+ * @brief Codegen for `(directory-list path)`: opens the directory with
+ *        `opendir`, loops over `readdir` entries (reading the platform's
+ *        `d_name` field at a fixed offset), copies each entry name into an
+ *        arena-allocated string, conses it onto a result list, and closes
+ *        the directory on EOF.
+ */
 llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("directory-list requires exactly 1 argument");
@@ -1327,6 +1414,7 @@ llvm::Value* SystemCodegen::directoryList(const eshkol_operations_t* op) {
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_ptr);
 }
 
+/** @brief Codegen for `(current-directory)`: calls libc `getcwd` into a 4096-byte arena buffer. */
 llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     llvm::Function* getcwd_func = function_table_["getcwd"];
     if (!getcwd_func) return tagged_.packBool(llvm::ConstantInt::getFalse(ctx_.context()));
@@ -1369,6 +1457,7 @@ llvm::Value* SystemCodegen::currentDirectory(const eshkol_operations_t* op) {
     return phi;
 }
 
+/** @brief Codegen for `(set-current-directory! path)`: calls libc `chdir(path)`. */
 llvm::Value* SystemCodegen::setCurrentDirectory(const eshkol_operations_t* op) {
     if (op->call_op.num_vars != 1) {
         eshkol_warn("set-current-directory! requires exactly 1 argument");
@@ -1568,6 +1657,7 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callPtrRuntime(ctx_, f, {a, b, c}); \
 }
 
+/** @brief Defines a 4-argument SystemCodegen method delegating to the all-pointer C runtime builtin @p c_func_name. */
 #define FOUR_ARG_BUILTIN(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 4) return tagged_.packNull(); \
@@ -1582,6 +1672,7 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callPtrRuntime(ctx_, f, {a, b, c, d}); \
 }
 
+/** @brief Defines a 5-argument SystemCodegen method delegating to the all-pointer C runtime builtin @p c_func_name. */
 #define FIVE_ARG_BUILTIN(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 5) return tagged_.packNull(); \
@@ -1672,12 +1763,14 @@ static llvm::Value* callArenaTaggedFunc(CodegenContext& ctx, TaggedValueCodegen&
     return builder.CreateLoad(ctx.taggedValueType(), result_ptr);
 }
 
+/** @brief Defines a 0-argument SystemCodegen method delegating to the arena-first tagged consciousness-engine builtin @p c_func_name (via callArenaTaggedFunc()). */
 #define CE_ZERO_ARG(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     (void)op; \
     return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 0, {}); \
 }
 
+/** @brief Defines a 2-argument SystemCodegen method delegating to an arena-first tagged consciousness-engine builtin @p c_func_name. */
 #define CE_TWO_ARG(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 2) return tagged_.packNull(); \
@@ -1688,6 +1781,7 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 2, {a, b}); \
 }
 
+/** @brief Defines a 3-argument SystemCodegen method delegating to an arena-first tagged consciousness-engine builtin @p c_func_name. */
 #define CE_THREE_ARG(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 3) return tagged_.packNull(); \
@@ -1699,6 +1793,7 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 3, {a, b, c}); \
 }
 
+/** @brief Defines a 1-argument SystemCodegen method delegating to an arena-first tagged consciousness-engine builtin @p c_func_name. */
 #define CE_ONE_ARG(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 1) return tagged_.packNull(); \
@@ -1708,6 +1803,7 @@ llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     return callArenaTaggedFunc(ctx_, tagged_, c_func_name, 1, {a}); \
 }
 
+/** @brief Defines a 4-argument SystemCodegen method delegating to an arena-first tagged consciousness-engine builtin @p c_func_name. */
 #define CE_FOUR_ARG(method_name, c_func_name) \
 llvm::Value* SystemCodegen::method_name(const eshkol_operations_t* op) { \
     if (op->call_op.num_vars != 4) return tagged_.packNull(); \
@@ -1774,6 +1870,11 @@ ONE_ARG_BUILTIN(adTapeRelease, "eshkol_ad_tape_release_sret")
 TWO_ARG_BUILTIN(adConst, "eshkol_ad_const_sret")
 TWO_ARG_BUILTIN(adVar, "eshkol_ad_var_sret")
 
+/**
+ * @brief Shared codegen for reverse-mode AD tape binary node builders
+ *        (`(tape left right)` shape). Delegates to the all-pointer C runtime
+ *        function named @p func_name via callPtrRuntime().
+ */
 llvm::Value* SystemCodegen::adBinaryOp(const eshkol_operations_t* op, const char* func_name) {
     if (op->call_op.num_vars != 3) return tagged_.packNull();
     if (!codegen_ast_callback_) return tagged_.packNull();
@@ -1786,6 +1887,11 @@ llvm::Value* SystemCodegen::adBinaryOp(const eshkol_operations_t* op, const char
     return callPtrRuntime(ctx_, f, {tape, left, right});
 }
 
+/**
+ * @brief Shared codegen for reverse-mode AD tape unary node builders
+ *        (`(tape node)` shape). Delegates to the all-pointer C runtime
+ *        function named @p func_name via callPtrRuntime().
+ */
 llvm::Value* SystemCodegen::adUnaryOp(const eshkol_operations_t* op, const char* func_name) {
     if (op->call_op.num_vars != 2) return tagged_.packNull();
     if (!codegen_ast_callback_) return tagged_.packNull();

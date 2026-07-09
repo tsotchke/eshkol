@@ -22,6 +22,10 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct the string/IO codegen helper bound to a shared codegen
+ *        context and tagged-value helper.
+ */
 StringIOCodegen::StringIOCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx)
     , tagged_(tagged)
@@ -29,6 +33,19 @@ StringIOCodegen::StringIOCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
     eshkol_debug("StringIOCodegen initialized");
 }
 
+/**
+ * @brief Coerce an LLVM value to a raw (untagged) i64.
+ *
+ * Handles three cases: values already of type i64 are returned unchanged;
+ * narrower integer types are sign-extended; and Eshkol tagged-value structs
+ * are unpacked at runtime by branching on the type tag so that a DOUBLE
+ * tagged value (as produced by, e.g., FFI calls returning i32, see #145) is
+ * converted via FPToSI instead of having its bit pattern read verbatim.
+ *
+ * @param val  Value to coerce (raw integer or tagged_value struct).
+ * @param name Name prefix used for generated basic blocks/values.
+ * @return An i64 SSA value, or nullptr if val is null.
+ */
 llvm::Value* StringIOCodegen::ensureRawInt64(llvm::Value* val, const std::string& name) {
     if (!val) return nullptr;
 
@@ -108,6 +125,11 @@ llvm::Value* StringIOCodegen::ensureRawInt64(llvm::Value* val, const std::string
     return tagged_.unpackInt64(val);
 }
 
+/**
+ * @brief Intern a C string as a global constant and return an opaque pointer
+ *        to it (no Eshkol heap header), suitable for passing to printf-style
+ *        runtime calls.
+ */
 llvm::Value* StringIOCodegen::createString(const char* str) {
     if (!str) return nullptr;
 
@@ -121,6 +143,13 @@ llvm::Value* StringIOCodegen::createString(const char* str) {
     );
 }
 
+/**
+ * @brief Intern a C string as a global with an Eshkol heap header
+ *        ([header][data] layout) so it can be treated as a HEAP_PTR value.
+ * @param str     Null-terminated string contents.
+ * @param subtype Heap subtype tag to store in the header (e.g. HEAP_SUBTYPE_STRING).
+ * @return Pointer to the string data (header lives at ptr - 8).
+ */
 llvm::Value* StringIOCodegen::createStringWithHeader(const char* str, uint8_t subtype) {
     if (!str) return nullptr;
 
@@ -130,6 +159,10 @@ llvm::Value* StringIOCodegen::createStringWithHeader(const char* str, uint8_t su
     return ctx_.internStringWithHeader(str, subtype);
 }
 
+/**
+ * @brief Intern a C string with a heap header and pack it into a tagged
+ *        HEAP_PTR value ready to be used as an Eshkol runtime value.
+ */
 llvm::Value* StringIOCodegen::packString(const char* str) {
     // Use createStringWithHeader to ensure proper header for HEAP_PTR
     llvm::Value* str_ptr = createStringWithHeader(str, HEAP_SUBTYPE_STRING);
@@ -138,6 +171,10 @@ llvm::Value* StringIOCodegen::packString(const char* str) {
     return tagged_.packPtr(str_ptr, ESHKOL_VALUE_HEAP_PTR);
 }
 
+/**
+ * @brief Get (declaring and caching if needed) the C library `printf`
+ *        function used to implement display/write output.
+ */
 llvm::Function* StringIOCodegen::getPrintf() {
     if (printf_func_) return printf_func_;
 
@@ -169,6 +206,13 @@ static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx);
 static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx);
 
+/**
+ * @brief Codegen for R7RS `(newline)` / `(newline port)`.
+ *
+ * Writes a single newline character to the given port (or stdout if no port
+ * argument is supplied) via `fputc`.
+ * @return Packed null tagged value (the R7RS unspecified result).
+ */
 llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
     // (newline) or (newline port) — R7RS: optional port argument
     llvm::Value* file_ptr;
@@ -205,6 +249,12 @@ llvm::Value* StringIOCodegen::newline(const eshkol_operations_t* op) {
 // These implementations remain in llvm_codegen.cpp until those modules are extracted.
 // The functions below provide stubs that warn when called.
 
+/**
+ * @brief Codegen for R7RS `(string-length s)`.
+ *
+ * Calls the `eshkol_utf8_strlen` runtime helper to count Unicode codepoints
+ * (not bytes) and packs the result as an exact integer.
+ */
 llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringLength - callbacks not set");
@@ -238,6 +288,13 @@ llvm::Value* StringIOCodegen::stringLength(const eshkol_operations_t* op) {
     return tagged_.packInt64(len, true);
 }
 
+/**
+ * @brief Codegen for `(string-byte-length s)`.
+ *
+ * Reads the byte count directly from the string's heap header via
+ * `eshkol_string_byte_length` (no UTF-8 decoding), unlike `string-length`
+ * which counts codepoints.
+ */
 llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringByteLength - callbacks not set");
@@ -273,6 +330,13 @@ llvm::Value* StringIOCodegen::stringByteLength(const eshkol_operations_t* op) {
     return tagged_.packInt64(len, true);
 }
 
+/**
+ * @brief Codegen for R7RS `(string-ref s k)`.
+ *
+ * Emits a runtime bounds check against the UTF-8 codepoint count (raising an
+ * `eshkol_raise` exception on out-of-range index), then fetches the
+ * codepoint at index `k` via `eshkol_utf8_ref` and packs it as a CHAR value.
+ */
 llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringRef - callbacks not set");
@@ -369,6 +433,14 @@ llvm::Value* StringIOCodegen::stringRef(const eshkol_operations_t* op) {
     return tagged_.packChar(codepoint);
 }
 
+/**
+ * @brief Codegen for R7RS `(string-append s1 s2 ...)`.
+ *
+ * Computes each argument's header-based byte length (not a NUL-terminated
+ * strlen, so embedded NUL bytes are preserved), allocates a single new
+ * string with the summed length, memcpy's each argument into place, and
+ * appends an explicit NUL terminator for C-string interop.
+ */
 llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringAppend - callbacks not set");
@@ -450,6 +522,13 @@ llvm::Value* StringIOCodegen::stringAppend(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(new_str);
 }
 
+/**
+ * @brief Codegen for R7RS `(substring string start [end])`.
+ *
+ * Accepts both the 2-argument form (end defaults to the string length) and
+ * the 3-argument form; validates argument count and delegates the actual
+ * slicing to substringImpl().
+ */
 llvm::Value* StringIOCodegen::substring(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::substring - callbacks not set");
@@ -637,6 +716,13 @@ llvm::Value* StringIOCodegen::stringCopy(const eshkol_operations_t* op) {
     return substringImpl(str_ptr, start, end);
 }
 
+/**
+ * @brief Codegen for R7RS string comparison predicates
+ *        (`string=?`/`string<?`/`string>?`/`string<=?`/`string>=?`).
+ *
+ * Calls libc `strcmp` and maps the sign of the result to the requested
+ * comparison via @p cmp_type (one of "eq"/"lt"/"gt"/"le"/"ge").
+ */
 llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringCompare - callbacks not set");
@@ -684,6 +770,11 @@ llvm::Value* StringIOCodegen::stringCompare(const eshkol_operations_t* op, const
     return tagged_.packBool(result);
 }
 
+/**
+ * @brief Codegen for R7RS case-insensitive string comparison predicates
+ *        (`string-ci=?` etc.), analogous to stringCompare() but using
+ *        `strcasecmp`.
+ */
 llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringCiCompare - callbacks not set");
@@ -729,6 +820,14 @@ llvm::Value* StringIOCodegen::stringCiCompare(const eshkol_operations_t* op, con
     return tagged_.packBool(result);
 }
 
+/**
+ * @brief Codegen for R7RS `(string->number string [radix])`.
+ *
+ * Delegates to the `eshkol_string_to_number_tagged` (1-arg) or
+ * `eshkol_string_to_number_radix_tagged` (2-arg) runtime helpers, which parse
+ * int64/bignum/double/rational forms and `#`-radix prefixes and write the
+ * result into a stack-allocated tagged value that is then loaded and returned.
+ */
 llvm::Value* StringIOCodegen::stringToNumber(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringToNumber - callbacks not set");
@@ -789,6 +888,15 @@ namespace {
     };
 }
 
+/**
+ * @brief Codegen for R7RS `(number->string num [radix])`.
+ *
+ * The 2-arg form calls `eshkol_number_to_string_radix_raw` directly on the
+ * unpacked int64 value. The 1-arg form formats the number in-line via
+ * snprintf into a header-allocated buffer, then rewrites the header's size
+ * field to the actual formatted length (the buffer is over-allocated so it
+ * fits any number).
+ */
 llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::numberToString - callbacks not set");
@@ -999,6 +1107,12 @@ llvm::Value* StringIOCodegen::numberToString(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(buf);
 }
 
+/**
+ * @brief Codegen for R7RS `(make-string k [char])`.
+ *
+ * Allocates a header-tagged string buffer of length k, fills it with
+ * `char` (default space) via memset, and NUL-terminates it.
+ */
 llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::makeString - callbacks not set");
@@ -1057,6 +1171,12 @@ llvm::Value* StringIOCodegen::makeString(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(buf);
 }
 
+/**
+ * @brief Codegen for R7RS `(string-set! s k char)`.
+ *
+ * Stores the character byte directly at offset k in the mutable string
+ * buffer (no bounds check here) and returns the (unspecified) string.
+ */
 llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringSet - callbacks not set");
@@ -1103,6 +1223,12 @@ llvm::Value* StringIOCodegen::stringSet(const eshkol_operations_t* op) {
     return str_arg;
 }
 
+/**
+ * @brief Codegen for R7RS `(string-fill! s char)`.
+ *
+ * Fills the entire mutable string buffer (length from strlen) with the
+ * given character via memset.
+ */
 llvm::Value* StringIOCodegen::stringFill(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringFill - callbacks not set");
@@ -1143,6 +1269,16 @@ llvm::Value* StringIOCodegen::stringFill(const eshkol_operations_t* op) {
     return str_arg;
 }
 
+/**
+ * @brief Codegen for `(string-split string delimiter)`, where delimiter may
+ *        be either a char or a string.
+ *
+ * Emits a hand-built LLVM IR loop that scans for occurrences of the
+ * delimiter (via strncmp at each candidate position), conses each segment
+ * found onto a result list, and finally reverses that list (via
+ * `eshkol_list_reverse_tagged`) so segments come out in left-to-right order.
+ * A char delimiter is first materialized as a temporary 2-byte C string.
+ */
 llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !cons_create_callback_) {
         eshkol_warn("StringIOCodegen::stringSplit - callbacks not set");
@@ -1369,6 +1505,10 @@ llvm::Value* StringIOCodegen::stringSplit(const eshkol_operations_t* op) {
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rev_out_ptr);
 }
 
+/**
+ * @brief Codegen for `(string-contains? s substr)`: calls libc `strstr` and
+ *        packs whether a non-null match pointer was returned.
+ */
 llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringContains - callbacks not set");
@@ -1402,6 +1542,11 @@ llvm::Value* StringIOCodegen::stringContains(const eshkol_operations_t* op) {
     return tagged_.packBool(found);
 }
 
+/**
+ * @brief Codegen for `(string-index s substr)`: like stringContains() but
+ *        returns the byte offset of the match (via pointer subtraction), or
+ *        -1 if not found.
+ */
 llvm::Value* StringIOCodegen::stringIndex(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringIndex - callbacks not set");
@@ -1442,6 +1587,12 @@ llvm::Value* StringIOCodegen::stringIndex(const eshkol_operations_t* op) {
     return tagged_.packInt64(final_index, true);
 }
 
+/**
+ * @brief Codegen for R7RS `(string-upcase s)`.
+ *
+ * Allocates a new header-tagged string of the same byte length and copies
+ * each byte through `toupper` (emitted as an inline byte loop).
+ */
 llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringUpcase - callbacks not set");
@@ -1539,6 +1690,10 @@ llvm::Value* StringIOCodegen::stringUpcase(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(new_str);
 }
 
+/**
+ * @brief Codegen for R7RS `(string-downcase s)`, mirroring stringUpcase()
+ *        but converting 'A'-'Z' bytes to lowercase via an inline byte loop.
+ */
 llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::stringDowncase - callbacks not set");
@@ -1633,6 +1788,13 @@ llvm::Value* StringIOCodegen::stringDowncase(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(new_str);
 }
 
+/**
+ * @brief Codegen for R7RS `(string->list s)`.
+ *
+ * Emits an LLVM IR loop walking the string backwards from its last byte,
+ * consing each byte (packed as a CHAR) onto the result so the final list
+ * comes out in forward order without a separate reverse pass.
+ */
 llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !cons_create_callback_) {
         eshkol_warn("StringIOCodegen::stringToList - callbacks not set");
@@ -1714,6 +1876,14 @@ llvm::Value* StringIOCodegen::stringToList(const eshkol_operations_t* op) {
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), list_ptr);
 }
 
+/**
+ * @brief Codegen for R7RS `(list->string chars)`.
+ *
+ * Emits an LLVM IR loop that first walks the list to count its length (by
+ * following cons cell cdrs at offset 16), allocates a header-tagged string
+ * buffer of that length, then walks the list a second time storing each
+ * char byte into the buffer.
+ */
 llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::listToString - callbacks not set");
@@ -1845,6 +2015,17 @@ llvm::Value* StringIOCodegen::listToString(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(str_buf);
 }
 
+/**
+ * @brief Codegen for R7RS `(display obj [port])`.
+ *
+ * When the argument is a variable bound to a preserved homoiconic
+ * S-expression (looked up via a `<name>_sexpr` global, scoped to the
+ * enclosing function first), displays that S-expression instead of the
+ * evaluated value so lambdas/procedures print their source form; otherwise
+ * falls back to evaluating the typed AST and calling the unified C
+ * `display_value_func_` (or `eshkol_display_value_to_port` when a port
+ * argument is given).
+ */
 llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::display - callbacks not set");
@@ -1981,7 +2162,7 @@ llvm::Value* StringIOCodegen::display(const eshkol_operations_t* op) {
 
 // === File I/O Operations ===
 
-// Helper to get or declare fopen
+/** @brief Get (declaring if needed) `void eshkol_display_value_to_port(tagged_value*, FILE*)`. */
 static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction("eshkol_display_value_to_port")) return existing;
     auto* ft = llvm::FunctionType::get(ctx.builder().getVoidTy(),
@@ -1989,6 +2170,7 @@ static llvm::Function* getOrDeclareDisplayToPort(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "eshkol_display_value_to_port", ctx.module());
 }
 
+/** @brief Get (declaring if needed) the C library `FILE* fopen(const char*, const char*)`. */
 static llvm::Function* getOrDeclareFopen(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction(runtime::fopen_symbol)) return existing;
     auto* ft = llvm::FunctionType::get(ctx.ptrType(),
@@ -2091,6 +2273,7 @@ static llvm::Value* getStdout(CodegenContext& ctx) {
     return ctx.builder().CreateCall(callee, {});
 }
 
+/** @brief Get (declaring if needed) the runtime accessor returning the stdout `FILE*` stream. */
 static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction(runtime::stdout_stream_symbol)) {
         return existing;
@@ -2104,6 +2287,7 @@ static llvm::Function* getOrDeclareStdoutStream(CodegenContext& ctx) {
     );
 }
 
+/** @brief Get (declaring if needed) the runtime accessor returning the stdin `FILE*` stream. */
 static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx) {
     if (auto* existing = ctx.module().getFunction(runtime::stdin_stream_symbol)) {
         return existing;
@@ -2117,6 +2301,14 @@ static llvm::Function* getOrDeclareStdinStream(CodegenContext& ctx) {
     );
 }
 
+/**
+ * @brief Build a tagged port value from a `FILE*`, or `#f` if the pointer is
+ *        null (i.e. the underlying `fopen` call failed).
+ * @param file_ptr  Result of an `fopen`-family call.
+ * @param port_type Tagged-value type byte to stamp on success (encodes
+ *                   input/output/binary port kind).
+ * @param name      Prefix used for generated basic block/value names.
+ */
 static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
                                          TaggedValueCodegen& tagged,
                                          llvm::Value* file_ptr,
@@ -2163,6 +2355,10 @@ static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
     return result;
 }
 
+/**
+ * @brief Codegen for R7RS `(open-input-file filename)`: calls `fopen` in
+ *        "r" mode and packs the result as an input file port (or #f on failure).
+ */
 llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::openInputFile - callbacks not set");
@@ -2204,10 +2400,16 @@ llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
     return openOutputFileImpl(op, "w", "open-output-file");
 }
 
+/** @brief Codegen for `(open-output-file-append filename)`: opens in "a" (append) mode. */
 llvm::Value* StringIOCodegen::openOutputFileAppend(const eshkol_operations_t* op) {
     return openOutputFileImpl(op, "a", "open-output-file-append");
 }
 
+/**
+ * @brief Shared implementation for open-output-file and
+ *        open-output-file-append: validates arity, calls `fopen` with the
+ *        given @p mode_str, and packs the result as an output file port.
+ */
 llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
                                                   const char* mode_str,
                                                   const char* scheme_name) {
@@ -2243,6 +2445,14 @@ llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
         ESHKOL_VALUE_HEAP_PTR | 0x40, "open_output_file");
 }
 
+/**
+ * @brief Codegen for R7RS `(read-line [port])`.
+ *
+ * Reads a line via `fgets` into a function-entry-hoisted scratch buffer,
+ * strips a trailing newline if present, and copies the result into a
+ * freshly right-sized header-tagged string. Returns the eof-object
+ * (type byte 0xFF) if `fgets` hits EOF immediately.
+ */
 llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::readLine - callbacks not set");
@@ -2399,6 +2609,13 @@ llvm::Value* StringIOCodegen::readLine(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for R7RS `(read-string k [port])`.
+ *
+ * Allocates a k+1 byte header-tagged buffer, reads up to k bytes via
+ * `fread`, NUL-terminates and truncates the header's recorded size to the
+ * actual bytes read, and returns the eof-object if zero bytes were read.
+ */
 llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::readString - callbacks not set");
@@ -2519,6 +2736,7 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
     return phi;
 }
 
+/** @brief Codegen for R7RS `(close-port port)`: calls libc `fclose` on the port's `FILE*`. */
 llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::closePort - callbacks not set");
@@ -2550,6 +2768,7 @@ llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
     return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
 }
 
+/** @brief Codegen for R7RS `(eof-object? obj)`: tests whether the tagged value's type byte is 0xFF. */
 llvm::Value* StringIOCodegen::eofObject(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::eofObject - callbacks not set");
@@ -2577,6 +2796,7 @@ llvm::Value* StringIOCodegen::eofObject(const eshkol_operations_t* op) {
     return tagged_.packBool(is_eof);
 }
 
+/** @brief Codegen for R7RS `(write-string s [port])`: calls `eshkol_fputs` on the string pointer. */
 llvm::Value* StringIOCodegen::writeString(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::writeString - callbacks not set");
@@ -2623,9 +2843,11 @@ llvm::Value* StringIOCodegen::writeString(const eshkol_operations_t* op) {
     return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
 }
 
+/**
+ * @brief Codegen for `(write-line str [port])`: writes the string followed
+ *        by a newline (unspecified return value).
+ */
 llvm::Value* StringIOCodegen::writeLine(const eshkol_operations_t* op) {
-    // (write-line str [port]) -> unspecified
-    // Writes string followed by newline
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::writeLine - callbacks not set");
         return tagged_.packNull();
@@ -2679,8 +2901,8 @@ llvm::Value* StringIOCodegen::writeLine(const eshkol_operations_t* op) {
     return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
 }
 
+/** @brief Codegen for `(write-char char [port])`: writes one char via `fputc` (unspecified return value). */
 llvm::Value* StringIOCodegen::writeChar(const eshkol_operations_t* op) {
-    // (write-char char [port]) -> unspecified
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::writeChar - callbacks not set");
         return tagged_.packNull();
@@ -2739,8 +2961,8 @@ llvm::Value* StringIOCodegen::writeChar(const eshkol_operations_t* op) {
     return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
 }
 
+/** @brief Codegen for `(flush-output-port port)`: calls libc `fflush` on the port's `FILE*` (unspecified return value). */
 llvm::Value* StringIOCodegen::flushOutputPort(const eshkol_operations_t* op) {
-    // (flush-output-port port) -> unspecified
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::flushOutputPort - callbacks not set");
         return tagged_.packNull();
@@ -2774,6 +2996,7 @@ llvm::Value* StringIOCodegen::flushOutputPort(const eshkol_operations_t* op) {
 
 // === Character Operations ===
 
+/** @brief Codegen for R7RS `(char->integer c)`: unpacks the char's codepoint and repacks it as an exact integer. */
 llvm::Value* StringIOCodegen::charToInteger(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::charToInteger - callbacks not set");
@@ -2793,6 +3016,7 @@ llvm::Value* StringIOCodegen::charToInteger(const eshkol_operations_t* op) {
     return tagged_.packInt64(char_val, true);
 }
 
+/** @brief Codegen for R7RS `(integer->char n)`: packs the raw integer as a CHAR tagged value. */
 llvm::Value* StringIOCodegen::integerToChar(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_) {
         eshkol_warn("StringIOCodegen::integerToChar - callbacks not set");
@@ -2816,6 +3040,11 @@ llvm::Value* StringIOCodegen::integerToChar(const eshkol_operations_t* op) {
     return tagged_.packChar(int_val);
 }
 
+/**
+ * @brief Codegen for R7RS character comparison predicates
+ *        (`char=?`/`char<?`/`char>?`/`char<=?`/`char>=?`), comparing raw
+ *        codepoint values per @p cmp_type ("eq"/"lt"/"gt"/"le"/"ge").
+ */
 llvm::Value* StringIOCodegen::charCompare(const eshkol_operations_t* op, const std::string& cmp_type) {
     if (!codegen_ast_callback_) {
         eshkol_warn("StringIOCodegen::charCompare - callbacks not set");
@@ -2971,6 +3200,13 @@ static llvm::Value* buildReadCharCommon(CodegenContext& ctx, TaggedValueCodegen&
     return phi;
 }
 
+/**
+ * @brief Codegen for R7RS `(read-char [port])`.
+ *
+ * Validates that an explicit port argument actually carries the input or
+ * output port flag (falling back to stdin otherwise), then delegates to
+ * buildReadCharCommon() with `peek=false`.
+ */
 llvm::Value* StringIOCodegen::readChar(const eshkol_operations_t* op) {
     // (read-char) or (read-char port)
     if (op->call_op.num_vars > 1) {
@@ -3004,6 +3240,11 @@ llvm::Value* StringIOCodegen::readChar(const eshkol_operations_t* op) {
     return buildReadCharCommon(ctx_, tagged_, file_ptr, false);
 }
 
+/**
+ * @brief Codegen for R7RS `(peek-char [port])`: like readChar() but
+ *        delegates to buildReadCharCommon() with `peek=true` so the read
+ *        byte is pushed back via `ungetc`.
+ */
 llvm::Value* StringIOCodegen::peekChar(const eshkol_operations_t* op) {
     // (peek-char) or (peek-char port)
     if (op->call_op.num_vars > 1) {
@@ -3037,6 +3278,11 @@ llvm::Value* StringIOCodegen::peekChar(const eshkol_operations_t* op) {
     return buildReadCharCommon(ctx_, tagged_, file_ptr, true);
 }
 
+/**
+ * @brief Codegen for R7RS `(char-ready? [port])`. Simplified stub that
+ *        always returns #t; a proper non-blocking check would use
+ *        select()/poll().
+ */
 llvm::Value* StringIOCodegen::charReady(const eshkol_operations_t* op) {
     // (char-ready?) or (char-ready? port)
     // For simplicity, always return #t (character I/O is always ready on file ports)
@@ -3049,6 +3295,10 @@ llvm::Value* StringIOCodegen::charReady(const eshkol_operations_t* op) {
 // Binary I/O Operations (R7RS §6.13.3)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Codegen for R7RS `(open-binary-input-file filename)`: opens via
+ *        `fopen` in "rb" mode and packs as a binary input port.
+ */
 llvm::Value* StringIOCodegen::openBinaryInputFile(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::openBinaryInputFile - callbacks not set");
@@ -3080,6 +3330,10 @@ llvm::Value* StringIOCodegen::openBinaryInputFile(const eshkol_operations_t* op)
         "open_binary_input_file");
 }
 
+/**
+ * @brief Codegen for R7RS `(open-binary-output-file filename)`: opens via
+ *        `fopen` in "wb" mode and packs as a binary output port.
+ */
 llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::openBinaryOutputFile - callbacks not set");
@@ -3111,6 +3365,10 @@ llvm::Value* StringIOCodegen::openBinaryOutputFile(const eshkol_operations_t* op
         "open_binary_output_file");
 }
 
+/**
+ * @brief Codegen for R7RS `(read-u8 [port])`: reads one byte via `fgetc` and
+ *        returns it as an exact integer, or the eof-object at EOF.
+ */
 llvm::Value* StringIOCodegen::readU8(const eshkol_operations_t* op) {
     // (read-u8) or (read-u8 port)
     if (op->call_op.num_vars > 1) {
@@ -3180,6 +3438,10 @@ llvm::Value* StringIOCodegen::readU8(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for R7RS `(peek-u8 [port])`: like readU8() but pushes the
+ *        byte back with `ungetc` so it is not consumed.
+ */
 llvm::Value* StringIOCodegen::peekU8(const eshkol_operations_t* op) {
     // (peek-u8) or (peek-u8 port) — R7RS: read byte without consuming
     if (op->call_op.num_vars > 1) {
@@ -3251,6 +3513,9 @@ llvm::Value* StringIOCodegen::peekU8(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for R7RS `(write-u8 byte [port])`: writes one byte via `fputc`.
+ */
 llvm::Value* StringIOCodegen::writeU8(const eshkol_operations_t* op) {
     // (write-u8 byte) or (write-u8 byte port)
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
@@ -3291,6 +3556,11 @@ llvm::Value* StringIOCodegen::writeU8(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/**
+ * @brief Codegen for R7RS `(read-bytevector k [port])`: reads up to k bytes
+ *        via `fread` into a freshly allocated bytevector, or returns the
+ *        eof-object if nothing was read.
+ */
 llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
     // (read-bytevector k) or (read-bytevector k port)
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
@@ -3397,6 +3667,10 @@ llvm::Value* StringIOCodegen::readBytevector(const eshkol_operations_t* op) {
     return phi;
 }
 
+/**
+ * @brief Codegen for R7RS `(write-bytevector bv [port [start [end]]])`:
+ *        writes the (optionally sliced) bytevector contents via `fwrite`.
+ */
 llvm::Value* StringIOCodegen::writeBytevector(const eshkol_operations_t* op) {
     // (write-bytevector bv) or (write-bytevector bv port) or (write-bytevector bv port start end)
     if (op->call_op.num_vars < 1 || op->call_op.num_vars > 4) {

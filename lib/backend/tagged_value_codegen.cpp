@@ -14,6 +14,7 @@
 
 namespace eshkol {
 
+/** @brief Construct the tagged-value pack/unpack codegen helper bound to the shared codegen context. */
 TaggedValueCodegen::TaggedValueCodegen(CodegenContext& ctx)
     : ctx_(ctx) {
 }
@@ -51,6 +52,10 @@ llvm::Value* TaggedValueCodegen::buildTaggedValue(uint8_t type, uint8_t flags, l
     return v;
 }
 
+/**
+ * @brief Like buildTaggedValue(), but with runtime (non-constant) type and
+ *        flags values — used when the type/flags byte is itself computed in IR.
+ */
 llvm::Value* TaggedValueCodegen::buildTaggedValueDyn(llvm::Value* type_val, llvm::Value* flags_val, llvm::Value* data_i64) {
     auto& B = ctx_.builder();
     llvm::Value* v = llvm::UndefValue::get(ctx_.taggedValueType());
@@ -69,6 +74,10 @@ llvm::Value* TaggedValueCodegen::packInt64(llvm::Value* int64_val, bool is_exact
     return buildTaggedValue(ESHKOL_VALUE_INT64, flags, int64_val);
 }
 
+/**
+ * @brief Pack a value (i64, pointer, or narrower integer) as a tagged value
+ *        with an explicit @p type and @p flags rather than the default INT64.
+ */
 llvm::Value* TaggedValueCodegen::packInt64WithType(
     llvm::Value* int64_val,
     eshkol_value_type_t type,
@@ -89,11 +98,13 @@ llvm::Value* TaggedValueCodegen::packInt64WithType(
     return buildTaggedValue(type, flags, val_as_i64);
 }
 
+/** @brief Pack an i1 boolean as a BOOL tagged value. */
 llvm::Value* TaggedValueCodegen::packBool(llvm::Value* bool_val) {
     llvm::Value* int64_val = ctx_.builder().CreateZExt(bool_val, ctx_.int64Type());
     return buildTaggedValue(ESHKOL_VALUE_BOOL, 0, int64_val);
 }
 
+/** @brief Like packInt64WithType(), but with both type and flags as runtime (non-constant) values. */
 llvm::Value* TaggedValueCodegen::packInt64WithTypeAndFlags(
     llvm::Value* int64_val,
     llvm::Value* type_val,
@@ -101,11 +112,20 @@ llvm::Value* TaggedValueCodegen::packInt64WithTypeAndFlags(
     return buildTaggedValueDyn(type_val, flags_val, int64_val);
 }
 
+/** @brief Pack a double as a DOUBLE tagged value (bitcast into the i64 data slot, INEXACT flag set). */
 llvm::Value* TaggedValueCodegen::packDouble(llvm::Value* double_val) {
     llvm::Value* double_as_int64 = ctx_.builder().CreateBitCast(double_val, ctx_.int64Type());
     return buildTaggedValue(ESHKOL_VALUE_DOUBLE, ESHKOL_VALUE_INEXACT_FLAG, double_as_int64);
 }
 
+/**
+ * @brief Normalize any LLVM value (already-tagged struct, double, i64, i1,
+ *        or pointer) into a full tagged_value struct.
+ *
+ * Used before storing an argument into a tagged-value ABI slot: storing a
+ * raw scalar directly would leave the type/flags bytes uninitialized.
+ * Returns a null tagged value for unrecognized raw types or a null input.
+ */
 llvm::Value* TaggedValueCodegen::ensureTagged(llvm::Value* val) {
     if (!val) {
         return buildTaggedValue(ESHKOL_VALUE_NULL, 0,
@@ -128,6 +148,7 @@ llvm::Value* TaggedValueCodegen::ensureTagged(llvm::Value* val) {
         llvm::ConstantInt::get(ctx_.int64Type(), 0));
 }
 
+/** @brief Pack a pointer (or i64 already holding a pointer bit-pattern) as a tagged value of the given @p type/@p flags. */
 llvm::Value* TaggedValueCodegen::packPtr(
     llvm::Value* ptr_val,
     eshkol_value_type_t type,
@@ -146,6 +167,7 @@ llvm::Value* TaggedValueCodegen::packPtr(
     return buildTaggedValue(type, flags, ptr_as_int64);
 }
 
+/** @brief Like packPtr(), but with both type and flags as runtime (non-constant) values. */
 llvm::Value* TaggedValueCodegen::packPtrWithFlags(
     llvm::Value* ptr_val,
     llvm::Value* type_val,
@@ -177,6 +199,7 @@ llvm::Value* TaggedValueCodegen::packHeapPtr(llvm::Value* ptr_val, uint8_t flags
     return packPtr(ptr_val, ESHKOL_VALUE_HEAP_PTR, flags);
 }
 
+/** @brief Pack a pointer using the consolidated CALLABLE type (subtype—closure, lambda-sexpr, ad-node—lives in the object header). */
 llvm::Value* TaggedValueCodegen::packCallable(llvm::Value* ptr_val, uint8_t flags) {
     // Pack pointer using consolidated CALLABLE type.
     // The subtype (closure, lambda-sexpr, ad-node) is in the object header.
@@ -184,6 +207,7 @@ llvm::Value* TaggedValueCodegen::packCallable(llvm::Value* ptr_val, uint8_t flag
     return packPtr(ptr_val, ESHKOL_VALUE_CALLABLE, flags);
 }
 
+/** @brief Build the NULL tagged value (via an entry alloca + field stores, then a load). */
 llvm::Value* TaggedValueCodegen::packNull() {
     llvm::Value* tagged_val_ptr = createEntryAlloca("tagged_null");
 
@@ -210,6 +234,13 @@ llvm::Value* TaggedValueCodegen::packNull() {
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), tagged_val_ptr);
 }
 
+/**
+ * @brief Pack a codepoint value as a CHAR tagged value.
+ *
+ * Accepts the codepoint as i64, a narrower integer, or an already-tagged
+ * value (unpacked first); falls back to a pointer-to-int cast with a
+ * warning for any other type.
+ */
 llvm::Value* TaggedValueCodegen::packChar(llvm::Value* char_val) {
     llvm::Value* tagged_val_ptr = createEntryAlloca("char_tagged");
 
@@ -272,10 +303,15 @@ llvm::Value* TaggedValueCodegen::getType(llvm::Value* tagged_val) {
     return ctx_.builder().CreateExtractValue(tagged_val, {0});
 }
 
+/** @brief Extract the flags byte (field 1) from a tagged value struct. */
 llvm::Value* TaggedValueCodegen::getFlags(llvm::Value* tagged_val) {
     return ctx_.builder().CreateExtractValue(tagged_val, {1});
 }
 
+/**
+ * @brief Extract the raw i64 data field from a tagged value, or coerce a
+ *        raw (untagged) LLVM value of any supported type to i64.
+ */
 llvm::Value* TaggedValueCodegen::unpackInt64(llvm::Value* tagged_val) {
     if (tagged_val->getType() != ctx_.taggedValueType()) {
         // Raw value — convert to i64 directly
@@ -291,6 +327,10 @@ llvm::Value* TaggedValueCodegen::unpackInt64(llvm::Value* tagged_val) {
     return ctx_.builder().CreateExtractValue(tagged_val, {4});
 }
 
+/**
+ * @brief Extract a double from a tagged value (bitcasting the i64 data
+ *        field) or coerce a raw double/integer/null value to double.
+ */
 llvm::Value* TaggedValueCodegen::unpackDouble(llvm::Value* tagged_val) {
     if (!tagged_val) {
         return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
@@ -312,11 +352,13 @@ llvm::Value* TaggedValueCodegen::unpackDouble(llvm::Value* tagged_val) {
     return ctx_.builder().CreateBitCast(data_i64, ctx_.doubleType());
 }
 
+/** @brief Extract the data field of a tagged value as an LLVM pointer. */
 llvm::Value* TaggedValueCodegen::unpackPtr(llvm::Value* tagged_val) {
     llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
     return ctx_.builder().CreateIntToPtr(data_i64, ctx_.ptrType());
 }
 
+/** @brief Extract the data field of a tagged value and truncate it to i1. */
 llvm::Value* TaggedValueCodegen::unpackBool(llvm::Value* tagged_val) {
     llvm::Value* data_i64 = ctx_.builder().CreateExtractValue(tagged_val, {4});
     return ctx_.builder().CreateTrunc(data_i64, ctx_.builder().getInt1Ty(), "bool_val");
@@ -360,6 +402,7 @@ llvm::Value* TaggedValueCodegen::safeExtractInt64(llvm::Value* val) {
     return llvm::ConstantInt::get(ctx_.int64Type(), 0);
 }
 
+/** @brief Compile-time (non-IR) check: does @p val have the tagged_value LLVM struct type? */
 bool TaggedValueCodegen::isTaggedValue(llvm::Value* val) const {
     return val && val->getType() == ctx_.taggedValueType();
 }
@@ -394,6 +437,12 @@ llvm::Value* TaggedValueCodegen::isNull(llvm::Value* tagged_val) {
         base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_NULL));
 }
 
+/**
+ * @brief Emit an i1 IR check for whether @p tagged_val is a cons cell:
+ *        HEAP_PTR type whose object header subtype equals HEAP_SUBTYPE_CONS.
+ *        Uses branching control flow so the header is only read when the
+ *        value is actually a HEAP_PTR.
+ */
 llvm::Value* TaggedValueCodegen::isCons(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: Check HEAP_PTR type and HEAP_SUBTYPE_CONS subtype
     // Cons cells are HEAP_PTR with header subtype == HEAP_SUBTYPE_CONS (0)
@@ -428,6 +477,7 @@ llvm::Value* TaggedValueCodegen::isCons(llvm::Value* tagged_val) {
     return result;
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val is a string: HEAP_PTR with header subtype HEAP_SUBTYPE_STRING (see isCons()). */
 llvm::Value* TaggedValueCodegen::isString(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: Check HEAP_PTR type and HEAP_SUBTYPE_STRING subtype
     // Strings are HEAP_PTR with header subtype == HEAP_SUBTYPE_STRING (1)
@@ -462,6 +512,7 @@ llvm::Value* TaggedValueCodegen::isString(llvm::Value* tagged_val) {
     return result;
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val is a vector: HEAP_PTR with header subtype HEAP_SUBTYPE_VECTOR (see isCons()). */
 llvm::Value* TaggedValueCodegen::isVector(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION: Check HEAP_PTR type and HEAP_SUBTYPE_VECTOR subtype
     // Vectors are HEAP_PTR with header subtype == HEAP_SUBTYPE_VECTOR (2)
@@ -495,6 +546,7 @@ llvm::Value* TaggedValueCodegen::isVector(llvm::Value* tagged_val) {
     return result;
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val is a tensor: HEAP_PTR with header subtype HEAP_SUBTYPE_TENSOR (see isCons()). */
 llvm::Value* TaggedValueCodegen::isTensor(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION: Check HEAP_PTR type and HEAP_SUBTYPE_TENSOR subtype
     // Tensors are HEAP_PTR with header subtype == HEAP_SUBTYPE_TENSOR (3)
@@ -528,6 +580,12 @@ llvm::Value* TaggedValueCodegen::isTensor(llvm::Value* tagged_val) {
     return result;
 }
 
+/**
+ * @brief Emit an i1 IR check for whether @p tagged_val is a closure:
+ *        CALLABLE type whose object header subtype equals
+ *        CALLABLE_SUBTYPE_CLOSURE. Uses branching control flow so the
+ *        header is only read when the value is actually CALLABLE.
+ */
 llvm::Value* TaggedValueCodegen::isClosure(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: Check CALLABLE type and CALLABLE_SUBTYPE_CLOSURE subtype
     // Closures are CALLABLE with header subtype == CALLABLE_SUBTYPE_CLOSURE (0)
@@ -562,6 +620,7 @@ llvm::Value* TaggedValueCodegen::isClosure(llvm::Value* tagged_val) {
     return result;
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val is a preserved lambda S-expression: CALLABLE with header subtype CALLABLE_SUBTYPE_LAMBDA_SEXPR (see isClosure()). */
 llvm::Value* TaggedValueCodegen::isLambdaSexpr(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: Check CALLABLE type and CALLABLE_SUBTYPE_LAMBDA_SEXPR subtype
     // Lambda s-exprs are CALLABLE with header subtype == CALLABLE_SUBTYPE_LAMBDA_SEXPR (1)
@@ -596,6 +655,7 @@ llvm::Value* TaggedValueCodegen::isLambdaSexpr(llvm::Value* tagged_val) {
     return result;
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val's type tag is the consolidated HEAP_PTR type (any heap data object). */
 llvm::Value* TaggedValueCodegen::isHeapPtr(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: All heap data objects use HEAP_PTR type (8)
     // Subtypes (cons, string, vector, tensor, hash, exception) are in the object header
@@ -604,6 +664,7 @@ llvm::Value* TaggedValueCodegen::isHeapPtr(llvm::Value* tagged_val) {
         type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
 }
 
+/** @brief Emit an i1 IR check for whether @p tagged_val's type tag is the consolidated CALLABLE type (any callable object). */
 llvm::Value* TaggedValueCodegen::isCallable(llvm::Value* tagged_val) {
     // M1 CONSOLIDATION FIX: All callable objects use CALLABLE type (9)
     // Subtypes (closure, lambda_sexpr, ad_node) are in the object header
@@ -612,6 +673,7 @@ llvm::Value* TaggedValueCodegen::isCallable(llvm::Value* tagged_val) {
         type_tag, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
 }
 
+/** @brief Emit an i1 IR check for `(exact? and integer-typed)`: base type (via getBaseType()) equals INT64. */
 llvm::Value* TaggedValueCodegen::isInt64(llvm::Value* tagged_val) {
     llvm::Value* type_tag = getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
@@ -621,6 +683,7 @@ llvm::Value* TaggedValueCodegen::isInt64(llvm::Value* tagged_val) {
         base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
 }
 
+/** @brief Emit an i1 IR check: base type (via getBaseType()) equals DOUBLE. */
 llvm::Value* TaggedValueCodegen::isDouble(llvm::Value* tagged_val) {
     llvm::Value* type_tag = getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
@@ -630,6 +693,7 @@ llvm::Value* TaggedValueCodegen::isDouble(llvm::Value* tagged_val) {
         base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
 }
 
+/** @brief Emit an i1 IR check: base type is INT64 or DOUBLE. */
 llvm::Value* TaggedValueCodegen::isNumeric(llvm::Value* tagged_val) {
     llvm::Value* type_tag = getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
@@ -643,6 +707,7 @@ llvm::Value* TaggedValueCodegen::isNumeric(llvm::Value* tagged_val) {
     return ctx_.builder().CreateOr(is_int, is_double);
 }
 
+/** @brief Emit an i1 IR check: base type (via getBaseType()) equals BOOL. */
 llvm::Value* TaggedValueCodegen::isBool(llvm::Value* tagged_val) {
     llvm::Value* type_tag = getType(tagged_val);
     // Use getBaseType() to properly handle legacy types (>=32) and exactness flags
@@ -652,6 +717,13 @@ llvm::Value* TaggedValueCodegen::isBool(llvm::Value* tagged_val) {
         base_type, llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_BOOL));
 }
 
+/**
+ * @brief Normalize a raw type tag to its base type for comparison,
+ *        masking off exactness flag bits for immediate types (0-7) but
+ *        leaving consolidated (8-9), multimedia (16-19), and legacy (32+)
+ *        type tags unmasked (masking those would corrupt them — e.g.
+ *        legacy CONS_PTR=32 masked with 0x0F becomes 0/NULL).
+ */
 llvm::Value* TaggedValueCodegen::getBaseType(llvm::Value* type_tag) {
     // Get base type from type tag, handling legacy types correctly:
     // - Immediate types (0-7): may have exactness flags in high bits, mask with 0x0F
@@ -705,6 +777,7 @@ llvm::Value* TaggedValueCodegen::getSubtypeFromHeader(llvm::Value* ptr_val) {
     return subtype;
 }
 
+/** @brief Unpack @p tagged_val's pointer and compare its object-header subtype byte against @p expected_subtype. */
 llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
     // Extract pointer from tagged value and check subtype in header
     llvm::Value* ptr_val = unpackInt64(tagged_val);
@@ -716,6 +789,7 @@ llvm::Value* TaggedValueCodegen::checkHeapSubtype(llvm::Value* tagged_val, uint8
         "subtype_match");
 }
 
+/** @brief Same as checkHeapSubtype(), for CALLABLE-typed values (both read the header at ptr-8). */
 llvm::Value* TaggedValueCodegen::checkCallableSubtype(llvm::Value* tagged_val, uint8_t expected_subtype) {
     // Extract pointer from tagged value and check subtype in header
     // Same implementation as checkHeapSubtype - both use object header at ptr-8
