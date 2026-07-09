@@ -1,0 +1,119 @@
+;;; reader_depth_guard_test.esk — regression for the reader's
+;;; ESHKOL_READ_MAX_DEPTH (4096) recursion guard, and for two bugs found
+;;; by tests/fuzz/reader_fuzz_driver.cpp while hardening the reader:
+;;;
+;;; 1. read_vector (lib/core/runtime_reader_hosted.cpp) used to hold its
+;;;    elements in a 1024-entry array living on read_vector's own native
+;;;    stack frame. Because #( nesting recurses through
+;;;    read_datum -> read_atom -> read_vector -> read_datum once per
+;;;    level (the same shape as `(` list nesting), every level of `#(`
+;;;    nesting paid that frame — a few hundred nested `#(` was enough to
+;;;    overflow an 8 MB default stack, deep under the intentional 4096
+;;;    recursion cap. Fixed by switching to a realloc-grown heap buffer
+;;;    (mirroring read_list's Bug 2 fix) and by shrinking read_atom's own
+;;;    frame (its large string/symbol buffers used to be reserved even on
+;;;    the `#(` fast-dispatch path that never touches them).
+;;;
+;;; 2. Once the depth guard *did* fire correctly, read_vector didn't
+;;;    check for the 0xFF EOF/depth-error sentinel the way read_list
+;;;    does — it stored the sentinel as an ordinary vector element and
+;;;    kept looping, so a `#(` nest deep enough to trip the guard didn't
+;;;    report an error: it silently produced a "successful"-looking
+;;;    vector containing a poisoned EOF-shaped value, desyncing the
+;;;    stream for any subsequent read on the same port.
+;;;
+;;; Both fixes mean: reading a datum nested deeper than the 4096 cap must
+;;; come back as an eof-object (the documented "reuse EOF sentinel"
+;;; contract — see make_reader_depth_error() in
+;;; runtime_reader_hosted.cpp) rather than crashing, hanging, or handing
+;;; back a malformed "successful" structure. This test checks lists,
+;;; vectors, and mixed vector/list nesting, all comfortably over the cap,
+;;; at the process's default stack size (ESHKOL_STACK_SIZE deliberately
+;;; left unset, matching reader_long_list_test.esk's convention).
+
+(define OVER-CAP-DEPTH 8000) ; > ESHKOL_READ_MAX_DEPTH (4096)
+
+(define list-file "/tmp/eshkol_reader_depth_guard_test_list.txt")
+(define vector-file "/tmp/eshkol_reader_depth_guard_test_vector.txt")
+(define mixed-file "/tmp/eshkol_reader_depth_guard_test_mixed.txt")
+
+;; --- Writers -------------------------------------------------------------
+
+(define (write-nested-list!)
+  (let ((port (open-output-file list-file)))
+    (let open-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin (display "(" port) (open-loop (+ i 1)))))
+    (display "1" port)
+    (let close-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin (display ")" port) (close-loop (+ i 1)))))
+    (close-output-port port)))
+
+(define (write-nested-vector!)
+  (let ((port (open-output-file vector-file)))
+    (let open-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin (display "#(" port) (open-loop (+ i 1)))))
+    (display "1" port)
+    (let close-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin (display ")" port) (close-loop (+ i 1)))))
+    (close-output-port port)))
+
+(define (write-nested-mixed!)
+  (let ((port (open-output-file mixed-file)))
+    (let open-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin
+            (display (if (even? i) "#(" "(") port)
+            (open-loop (+ i 1)))))
+    (display "1" port)
+    (let close-loop ((i 0))
+      (if (< i OVER-CAP-DEPTH)
+          (begin (display ")" port) (close-loop (+ i 1)))))
+    (close-output-port port)))
+
+(write-nested-list!)
+(write-nested-vector!)
+(write-nested-mixed!)
+
+;; --- Readers (the actual regression surface) ------------------------------
+
+(define in1 (open-input-file list-file))
+(define list-result (read in1))
+(close-input-port in1)
+
+(define in2 (open-input-file vector-file))
+(define vector-result (read in2))
+(close-input-port in2)
+
+(define in3 (open-input-file mixed-file))
+(define mixed-result (read in3))
+(close-input-port in3)
+
+;; --- Verdict ---------------------------------------------------------------
+
+(define passed 0)
+(define failed 0)
+(define (check name cnd)
+  (if cnd
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(check "over-cap nested LIST returns eof-object (graceful depth error, not a crash)"
+       (eof-object? list-result))
+(check "over-cap nested VECTOR returns eof-object (graceful depth error, not a crash)"
+       (eof-object? vector-result))
+(check "over-cap MIXED vector/list nesting returns eof-object (graceful depth error, not a crash)"
+       (eof-object? mixed-result))
+
+(newline)
+(display "=== Summary ===") (newline)
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(if (= failed 0)
+    (begin (display "RESULT: OK") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))
