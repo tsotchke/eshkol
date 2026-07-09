@@ -1,0 +1,101 @@
+;;; tests/parallel/parallel_region_race_test.esk
+;;;
+;;; Concurrency × memory-region regression fixture.
+;;;
+;;; parallel-map runs its mapped function on work-stealing pool threads. When
+;;; that function body uses (with-region ...), each worker enters/exits a region
+;;; concurrently. Region entry temporarily redirects the "current allocation
+;;; arena" so body allocations land in the region's arena, then restores it and
+;;; frees the arena at exit.
+;;;
+;;; If that current-arena routing slot is a single process-global shared across
+;;; every OS thread (rather than thread-local), concurrent with-region on
+;;; workers clobber each other's routing: worker A allocates into worker B's
+;;; region arena, and B's region_pop frees it out from under A — SIGSEGV /
+;;; heap corruption / "argument is not a pair".
+;;;
+;;; This fixture stresses that path: each mapped item builds a non-trivial list
+;;; inside a per-call region and escapes it. With a thread-safe (thread-local)
+;;; region routing slot the results are deterministic and correct; the pre-fix
+;;; build crashes or returns garbage under the concurrency.
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (set! passed (+ passed 1))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Build (list 0 1 2 ... n-1)
+(define (range n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; sum 0..k-1
+(define (sum-to k)
+  (let loop ((i 0) (s 0)) (if (< i k) (loop (+ i 1) (+ s i)) s)))
+
+;; Mapped function: inside a region, build a K-element list whose elements are
+;; (x + i), then reduce it (sum) and escape the scalar. Allocation + escape both
+;; happen inside the region, on a worker thread.
+(define K 64)
+(define (work x)
+  (with-region 'r
+    (let build ((i 0) (acc '()))
+      (if (< i K)
+          (build (+ i 1) (cons (+ x i) acc))
+          ;; reduce the region-allocated list to a scalar and escape it
+          (let red ((lst acc) (s 0))
+            (if (pair? lst) (red (cdr lst) (+ s (car lst))) s))))))
+
+;; work(x) == sum_{i=0}^{K-1} (x+i) == K*x + sum(0..K-1)
+(define base (sum-to K))
+(define (expected-work x) (+ (* K x) base))
+
+(define N 4000)
+(define input (range N))
+
+;; A second, structure-escaping variant: escape an actual list out of the region
+;; on a worker, then read it back — this exercises the deep-escape promotion on
+;; worker threads too.
+(define (work-list x)
+  (with-region 'r2
+    (list x (* x 2) (* x 3))))
+
+;; ── Run it several times: races are flaky, so repeat to make a latent crash
+;;    or corruption overwhelmingly likely to surface at least once. ──
+(define (run-once trial)
+  (let ((res (parallel-map work input)))
+    ;; verify a stride through the results
+    (let vloop ((lst res) (i 0) (ok #t))
+      (if (pair? lst)
+          (vloop (cdr lst) (+ i 1)
+                 (and ok (= (car lst) (expected-work i))))
+          (check (string-append "parallel work-scalar trial "
+                                (number->string trial))
+                 #t (and ok (= i N))))))
+  (let ((res2 (parallel-map work-list (range 512))))
+    (let vloop ((lst res2) (i 0) (ok #t))
+      (if (pair? lst)
+          (vloop (cdr lst) (+ i 1)
+                 (and ok (equal? (car lst) (list i (* i 2) (* i 3)))))
+          (check (string-append "parallel work-list trial "
+                                (number->string trial))
+                 #t (and ok (= i 512)))))))
+
+(define (trials n)
+  (let loop ((t 0)) (if (< t n) (begin (run-once t) (loop (+ t 1))))))
+
+(trials 12)
+
+(display "[parallel_region_race_test] passed=")
+(display passed)
+(display " failed=")
+(display failed)
+(newline)
+(if (= failed 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline)))

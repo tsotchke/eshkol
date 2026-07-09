@@ -631,6 +631,11 @@ class EshkolRepl {
                 region_create: (_name, _size_hint) => 1,
                 region_push:   () => {},
                 region_pop:    () => {},
+                // with-region hijack (thread-safe region scope): JS has no region
+                // system, so decline the hijack. enter returns 0 (no displaced arena to
+                // restore); leave is a no-op for a declined enter.
+                eshkol_region_enter: (_region) => 0,
+                eshkol_region_leave: (_saved) => {},
                 // region_escape / write-barrier: the CALLER passes an
                 // uninitialized `out` slot and reads it back after the call —
                 // the runtime fn is the SOLE writer of `out`. A no-op would
