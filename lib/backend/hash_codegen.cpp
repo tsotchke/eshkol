@@ -17,6 +17,18 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct a HashCodegen, wiring in shared codegen infrastructure.
+ *
+ * Declares the hash-table runtime function prototypes into the LLVM module
+ * immediately, via initRuntimeFunctions().
+ *
+ * @param ctx Shared codegen context (LLVM context/module/builder, common types).
+ * @param tagged Codegen helper for packing/unpacking tagged Scheme values.
+ * @param mem Codegen helper for arena/memory allocation operations.
+ * @param func_table Shared name->llvm::Function* table used to register the
+ *        declared hash-table runtime functions for lookup elsewhere in codegen.
+ */
 HashCodegen::HashCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem,
                          std::unordered_map<std::string, llvm::Function*>& func_table)
     : ctx_(ctx), tagged_(tagged), mem_(mem), function_table_(func_table),
@@ -30,12 +42,26 @@ HashCodegen::HashCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, Memory
     initRuntimeFunctions();
 }
 
+/**
+ * @brief Install the callbacks used to recursively codegen argument AST nodes.
+ *
+ * @param ast_cb Callback invoked to generate code for an untyped AST node.
+ * @param typed_cb Callback invoked to generate code for a typed AST node.
+ * @param ctx Opaque context pointer passed through to both callbacks.
+ */
 void HashCodegen::setCodegenCallbacks(CodegenASTCallback ast_cb, CodegenTypedASTCallback typed_cb, void* ctx) {
     codegen_ast_cb_ = ast_cb;
     codegen_typed_ast_cb_ = typed_cb;
     callback_context_ = ctx;
 }
 
+/**
+ * @brief Generate code for an AST node via the configured AST callback.
+ *
+ * @param ast Opaque pointer to the AST node to generate code for.
+ * @return The generated LLVM value, or nullptr if no callback is configured
+ *         or the callback itself fails.
+ */
 llvm::Value* HashCodegen::codegenAST(const void* ast) {
     if (!codegen_ast_cb_ || !callback_context_) {
         eshkol_error("HashCodegen: No AST callback configured");
@@ -44,6 +70,16 @@ llvm::Value* HashCodegen::codegenAST(const void* ast) {
     return codegen_ast_cb_(ast, callback_context_);
 }
 
+/**
+ * @brief Declare the external hash-table runtime C functions in the module.
+ *
+ * Creates LLVM function declarations (external linkage) for
+ * arena_hash_table_create, hash_table_set, hash_table_get,
+ * hash_table_has_key, hash_table_remove, hash_table_keys, hash_table_values,
+ * hash_table_count, and hash_table_clear, caching each llvm::Function* in
+ * the corresponding member field and registering it in the shared function
+ * table.
+ */
 void HashCodegen::initRuntimeFunctions() {
     auto& context = ctx_.context();
     auto& module = ctx_.module();
@@ -131,6 +167,18 @@ void HashCodegen::initRuntimeFunctions() {
     eshkol_debug("HashCodegen: Initialized runtime function declarations");
 }
 
+/**
+ * @brief Coerce a raw LLVM value into the tagged-value representation.
+ *
+ * If @p val is already a tagged_value struct it is returned unchanged;
+ * otherwise it is packed based on its LLVM type (i64 as an exact integer,
+ * double, i1 as a boolean, pointer as a consolidated HEAP_PTR, or any other
+ * integer/float type after widening to i64/double respectively).
+ *
+ * @param val LLVM value to coerce, either already tagged or a raw scalar/pointer.
+ * @param name Debug name used only in the warning logged for unhandled types.
+ * @return The tagged-value representation of @p val.
+ */
 llvm::Value* HashCodegen::ensureTaggedValue(llvm::Value* val, const std::string& name) {
     auto& builder = ctx_.builder();
     auto& context = ctx_.context();
@@ -177,6 +225,17 @@ llvm::Value* HashCodegen::ensureTaggedValue(llvm::Value* val, const std::string&
     return val;
 }
 
+/**
+ * @brief Materialize a tagged value on the stack and return a pointer to it.
+ *
+ * Ensures @p tagged_val is in tagged-value form (see ensureTaggedValue()),
+ * allocates stack space for it, stores it, and returns the alloca — used to
+ * pass key/value arguments by pointer to the hash-table runtime functions.
+ *
+ * @param tagged_val Value to store, tagged or raw.
+ * @param name Base name used for the generated alloca instruction.
+ * @return Pointer (alloca) to the stored tagged value.
+ */
 llvm::Value* HashCodegen::extractTaggedValuePtr(llvm::Value* tagged_val, const std::string& name) {
     auto& builder = ctx_.builder();
     auto& context = ctx_.context();
