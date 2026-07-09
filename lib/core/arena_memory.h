@@ -364,6 +364,19 @@ void region_push(eshkol_region_t* region);
 void region_pop(void);
 eshkol_region_t* region_current(void);
 
+// Thread-safe region allocation-scope routing (with-region codegen calls these
+// around the body). eshkol_region_enter redirects the shared current-arena slot
+// to the region's arena ONLY in single-threaded, non-parallel context (returns
+// the displaced arena, or an opaque sentinel when it declines); eshkol_region_leave
+// restores it. The parallel-scope guards suppress that hijack and pin the shared
+// slot to the thread-safe process arena while a work-stealing construct
+// (parallel-map/fold/execute/filter/for-each, async futures) may run on worker
+// threads. See runtime_regions.cpp for the full rationale.
+arena_t* eshkol_region_enter(eshkol_region_t* region);
+void eshkol_region_leave(arena_t* saved);
+void eshkol_parallel_scope_begin(void);
+void eshkol_parallel_scope_end(void);
+
 // Region allocation - allocates in the current region
 void* region_allocate(size_t size);
 void* region_allocate_aligned(size_t size, size_t alignment);

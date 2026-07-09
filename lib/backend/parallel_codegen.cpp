@@ -59,6 +59,22 @@
 // Worker function type
 typedef void* (*parallel_worker_fn)(void*);
 
+// RAII guard opening a parallel scope for the duration of a work-stealing
+// construct (see eshkol_parallel_scope_begin/end in runtime_regions.cpp). While
+// open, with-region on any thread stops hijacking the process-shared
+// current-arena slot and that slot is pinned to the thread-safe process arena,
+// so concurrent workers running with-region bodies can never race on it or
+// allocate into a region arena that another thread is about to free. Exception-
+// and early-return-safe.
+namespace {
+struct ParallelArenaScope {
+    ParallelArenaScope()  { eshkol_parallel_scope_begin(); }
+    ~ParallelArenaScope() { eshkol_parallel_scope_end(); }
+    ParallelArenaScope(const ParallelArenaScope&) = delete;
+    ParallelArenaScope& operator=(const ParallelArenaScope&) = delete;
+};
+} // namespace
+
 // Function pointers for LLVM-generated workers (set by __eshkol_register_parallel_workers)
 static parallel_worker_fn g_parallel_map_worker = nullptr;
 static parallel_worker_fn g_parallel_fold_worker = nullptr;
@@ -289,8 +305,14 @@ extern "C" uint8_t eshkol_lazy_future_submit_async(
         static_cast<uint64_t>(closure_flags),
         reinterpret_cast<uint64_t>(slot),
     };
+    // Open a parallel scope for the lifetime of this async future (closed in
+    // eshkol_lazy_future_join_async). While it is outstanding the shared arena
+    // is pinned to the thread-safe root so the async worker — and any with-region
+    // in its thunk — never races the spawning thread on the current-arena slot.
+    eshkol_parallel_scope_begin();
+
     eshkol_future_t* fut = thread_pool_submit(pool, g_parallel_execute_worker, task);
-    if (!fut) { delete slot; delete task; return 0; }
+    if (!fut) { eshkol_parallel_scope_end(); delete slot; delete task; return 0; }
 
     lf->pool_future = fut;
     lf->async_result_slot = slot;
@@ -330,6 +352,9 @@ extern "C" void eshkol_lazy_future_join_async(void* lf_void) {
     lf->pool_future = nullptr;
     lf->async_task = nullptr;
     lf->async_result_slot = nullptr;
+
+    // Close the parallel scope opened at submit (balances scope_begin above).
+    eshkol_parallel_scope_end();
 }
 
 // ============================================================================
@@ -448,6 +473,10 @@ void eshkol_parallel_map(
     eshkol_tagged_value_t* out_result)
 {
     eshkol_debug("parallel-map: fn.type=%d, list.type=%d", fn.type, list.type);
+
+    // Suppress region-arena hijack + pin the shared arena to the thread-safe root
+    // for the whole construct, so worker bodies using with-region are race-free.
+    ParallelArenaScope _parallel_scope;
 
     // Handle empty list
     if (list.type == ESHKOL_VALUE_NULL) {
@@ -717,6 +746,9 @@ void eshkol_parallel_filter(
 {
     eshkol_debug("parallel-filter: pred.type=%d, list.type=%d", pred.type, list.type);
 
+    // See eshkol_parallel_map: race-free with-region for worker predicate bodies.
+    ParallelArenaScope _parallel_scope;
+
     if (list.type == ESHKOL_VALUE_NULL) {
         *out_result = list; return;
     }
@@ -850,6 +882,9 @@ void eshkol_parallel_execute(
     eshkol_tagged_value_t* out_result)
 {
     eshkol_debug("parallel-execute: num_thunks=%lld", (long long)num_thunks);
+
+    // See eshkol_parallel_map: race-free with-region for worker thunk bodies.
+    ParallelArenaScope _parallel_scope;
 
     eshkol_tagged_value_t null_val = {};
     null_val.type = ESHKOL_VALUE_NULL;
