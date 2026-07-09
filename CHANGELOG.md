@@ -7,8 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.2-evolve] - 2026-07-09
+
+An evolve point release over v1.3.1-evolve: a resident-memory correctness fix
+that unblocks forever-flat long-running loops that mutate persistent logic and
+workspace state, thread-safe region scoping under parallelism, completion of
+the automatic-differentiation input2 gradient path, an API-reference generator,
+the Binary Lambda Calculus universal machine, and triage of three deferred
+latent bugs. All release gates from v1.3.1-evolve remain green, plus a new
+poison-hardened region-evacuator coverage gate.
+
 ### Added
 
+- **`eshkol-doc` — API reference generator**: harvests Doxygen `/** @brief */`
+  comments from `inc/` and `lib/` and generates `docs/api/` (Markdown pages
+  plus an HTML index). First deliverable of the developer-experience tooling
+  track. (#213)
+- **Automatic-differentiation `input2` gradient plumbing**: `conv2d`,
+  `batchnorm`, `layernorm`, and `attention` now propagate gradients to their
+  second operand (kernel / gamma / K / V), completing the AD coverage matrix
+  for these operators and hardening the finite-difference differential oracle.
+  (#212)
 - **`core.blc` — Binary Lambda Calculus**: a pure-Eshkol module implementing
   John Tromp's Binary Lambda Calculus, showcasing the language's
   lambda-calculus foundations. De Bruijn-indexed terms are represented
@@ -32,6 +51,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Tromp-style ASCII lambda diagram (abstractions as horizontal bars, variables
   as vertical lines, applications as horizontal links). Ground-truth `U` bits
   cross-checked against Tromp's De Bruijn term.
+
+### Fixed
+
+- **Region escape evacuator now covers logic and workspace subtypes
+  (ESH-0214d).** The deep transitive escape evacuator (ESH-0214c) only
+  deep-walked `CONS`/`VECTOR`/`HASH`/`TENSOR`/`EXCEPTION`/`CLOSURE`; the logic
+  and workspace subtypes it mutates into persistent state — `SUBSTITUTION`,
+  `FACT`, `KNOWLEDGE_BASE`, `FACTOR_GRAPH`, `WORKSPACE` — fell through to a
+  shallow leaf copy that left their interior pointers dangling into the popped
+  region arena (observed as `car`/`cdr` corruption in a resident tick loop).
+  The evacuator now deep-walks these subtypes; records gain an explicit
+  `RECORD -> VECTOR` mapping; and `arena_destroy` is poisoned under
+  `ESHKOL_ARENA_POISON` so region use-after-free crashes loudly instead of
+  passing by luck. New gate `region_evac_subtype_coverage_test` runs flat at
+  ~110MB over 1,000,000 iterations under poison. (#226)
+- **Thread-safe region scope stack (parallel-map + `with-region`).**
+  `parallel-map`/future callbacks that opened a `with-region` raced on the
+  shared current-arena slot and could crash under concurrency; the region
+  hijack moved into the runtime with a parallel-scope guard, and new
+  `eshkol_region_enter`/`eshkol_region_leave` runtime functions carry matching
+  WebAssembly stubs so the lite build's import surface stays complete. (#217)
+- **Deferred latent bugs triaged**: ESH-0223 (named-let stack overflow at high
+  iteration counts), ESH-0227 (apply-loop SIGBUS), and ESH-0228 (`sleep-ms`
+  argument type check). (#215)
+
+### Changed
+
+- **CI skips the build matrix for documentation-only changes.** A
+  `paths-ignore` filter on the `push` and `pull_request` triggers means changes
+  touching only `docs/`, Markdown, `notes/`, `press/`, or `LICENSE` no longer
+  spin up the full compile/test/WebAssembly/sanitizer matrix. Website rebuilds
+  are unaffected — they run through the separate Pages deploy on site source,
+  compiler code, or the site-rendered documents.
 
 ## [1.3.1-evolve] - 2026-07-09
 

@@ -1,3 +1,53 @@
+# Eshkol v1.3.2-evolve — Release Notes
+
+**Release Date**: July 9, 2026
+
+Eshkol v1.3.2-evolve is an evolve point release over v1.3.1-evolve. It closes
+the last resident-memory correctness gap for long-running loops, makes region
+scoping safe under parallelism, completes the automatic-differentiation
+`input2` gradient path, and adds developer tooling and Binary Lambda Calculus
+depth. Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this page is
+the user-facing summary.
+
+**Release gates**: builds on the v1.3.1-evolve gates with a new poison-hardened
+region-evacuator coverage gate
+(`tests/memory/region_evac_subtype_coverage_test.sh`) that promotes and reads
+back logic/workspace state over 1,000,000 region-wrapped mutations under
+`ESHKOL_ARENA_POISON=1` at flat RSS.
+
+## Highlights
+
+### Resident-memory correctness
+
+- **Forever-flat loops that mutate persistent logic/workspace state.** The
+  region escape evacuator now deep-walks the `SUBSTITUTION`, `FACT`,
+  `KNOWLEDGE_BASE`, `FACTOR_GRAPH`, and `WORKSPACE` subtypes (ESH-0214d). A
+  resident tick loop can wrap its body in `(with-region ...)` to reclaim
+  per-iteration transient garbage while its escaping knowledge-base/workspace
+  state is promoted intact — previously those subtypes were shallow-copied and
+  dangled into the freed arena. (#226)
+- **Region scoping is thread-safe.** `parallel-map` combined with `with-region`
+  no longer races on the shared current-arena slot. (#217)
+
+### Automatic differentiation
+
+- **`input2` gradients complete for `conv2d`/`batchnorm`/`layernorm`/
+  `attention`** — the second operand (kernel / gamma / K / V) now receives
+  gradients. (#212)
+
+### Tooling and language
+
+- **`eshkol-doc`** generates an API reference from Doxygen comments. (#213)
+- **Binary Lambda Calculus universal machine**: `(blc-U)` decodes and runs
+  Tromp's 232-bit self-interpreter; BLC8 byte I/O and ASCII lambda diagrams
+  round out `core.blc`. (#218)
+
+### Robustness
+
+- Three deferred latent bugs triaged: ESH-0223, ESH-0227, ESH-0228. (#215)
+
+---
+
 # Eshkol v1.3.1-evolve — Release Notes
 
 **Release Date**: July 9, 2026
