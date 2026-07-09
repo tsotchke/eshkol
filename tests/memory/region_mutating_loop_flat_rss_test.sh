@@ -82,10 +82,12 @@ echo "  ceiling=${CEILING_MB}MB  time-mode=${TIME_MODE}"
 echo "=========================================================="
 echo
 
+: "${WORK:?mktemp work dir must be set}"
 BIN="$WORK/region_mut_rss_bin"
 COMPILE_LOG="$WORK/compile.log"
 RUN_OUT="$WORK/run.out"
 TIME_LOG="$WORK/time.log"
+: "${COMPILE_LOG:?}" "${RUN_OUT:?}" "${TIME_LOG:?}"
 
 ( cd "$WORK" && "$ESHKOL_RUN" "$SRC" -o "$BIN" ) > "$COMPILE_LOG" 2>&1
 COMPILE_RC=$?

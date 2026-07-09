@@ -49,6 +49,15 @@
    "task_id": "v1.3.1-docs-pass",
    "reason": "complete_language_specification.html is a pandoc-generated site artifact (built from docs/COMPLETE_LANGUAGE_SPECIFICATION.md by scripts/build-site-content.sh); it is a cohesive registry of the whole language spec kept as one page for reader compatibility. inc/eshkol/eshkol.h is the single umbrella public-API facade header by design; it crossed the size threshold only because the v1.3.1 pass added Doxygen doc-comments to every public symbol (comment-only growth, code unchanged).",
    "mitigation": "The HTML is regenerated from its markdown source module on every site build, so any future split happens at the docs/ source boundary, not the generated artifact. For eshkol.h, real code growth (not comments) would be addressed by extracting subsystem headers behind the existing facade (module boundaries already exist under inc/eshkol/{core,backend,types}/); tracked with the v1.8 modular-boundaries plan."
+  },
+  {
+   "path_patterns": [
+    "lib/backend/system_codegen.cpp"
+   ],
+   "status": "accepted",
+   "task_id": "post-v1.3.1-hardening",
+   "reason": "system_codegen.cpp is the cohesive registry of system/OS/FFI builtin codegen (file/process/terminal/HTTP/websocket/tree-sitter/etc.), kept as one facade so the builtin-dispatch table stays co-located. It crossed the 2000-line threshold by 6 lines solely due to the v1.3.1 Doxygen documentation pass (comment-only growth), not new logic.",
+   "mitigation": "Any real code growth would be split by extracting per-domain builtin groups (fs/process/net/terminal) behind the existing dispatch facade into focused modules; tracked with the v1.8 modular-boundaries plan. Comment-driven growth needs no split."
   }
  ]
 }
