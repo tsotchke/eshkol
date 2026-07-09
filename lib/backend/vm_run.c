@@ -1,3 +1,16 @@
+/**
+ * @brief Main bytecode interpreter loop: executes @p vm->code starting at
+ *        @p vm->pc until OP_HALT, an error, or (on GCC/Clang) via
+ *        computed-goto threaded dispatch — each opcode handler ends by
+ *        jumping directly to the next handler through a label-address
+ *        table, avoiding switch-statement bounds checks/indirect-jump
+ *        overhead. Falls back to a plain `switch` dispatch loop on other
+ *        compilers. Implements the full instruction set (stack/arithmetic/
+ *        comparison ops, locals/upvalues, closures/calls/tail-calls,
+ *        control flow, pairs/vectors/strings, native-call dispatch to the
+ *        vm_*_dispatch() runtime modules, exception handling, and
+ *        continuations) directly inline in this function body.
+ */
 void vm_run(VM* vm) {
 #if defined(__GNUC__) || defined(__clang__)
 /* =========================================================================
@@ -1151,6 +1164,9 @@ vm_exit:
  * Test Programs
  ******************************************************************************/
 
+/** @brief Mnemonic names for the first 38 base opcodes, indexed by opcode
+ *         value, used by the test-program bytecode disassembler/printer
+ *         below (extended opcodes beyond OP_NATIVE_CALL are not covered). */
 static const char* opnames[] = {
     "NOP","CONST","NIL","TRUE","FALSE","POP","DUP",
     "ADD","SUB","MUL","DIV","MOD","NEG","ABS",
@@ -1162,11 +1178,16 @@ static const char* opnames[] = {
     "PRINT","HALT","NATIVE"
 };
 
+/** @brief Append one bytecode instruction (@p op, @p operand) to @p vm's
+ *         fixed-size (4096-instruction) test-program code buffer. */
 static void emit(VM* vm, uint8_t op, int32_t operand) {
     if (vm->code_len >= 4096) return;
     vm->code[vm->code_len++] = (Instr){op, operand};
 }
 
+/** @brief Allocate and vm_init() a fresh VM instance with a 4096-instruction
+ *         code buffer, for use by hand-assembled test programs (see
+ *         vm_tests.c). */
 VM* vm_create(void) {
     VM* vm = (VM*)calloc(1, sizeof(VM));
     if (!vm) return NULL;
@@ -1175,6 +1196,9 @@ VM* vm_create(void) {
     if (!vm->code) { free(vm); return NULL; }
     return vm;
 }
+/** @brief Release all resources owned by @p vm (open regex handles,
+ *         dlopen'd libraries, the heap's arena, and the code buffer) and
+ *         free @p vm itself. */
 void vm_free(VM* vm) {
     vm_regex_free_all(vm);
     vm_dlopen_close_all(vm);

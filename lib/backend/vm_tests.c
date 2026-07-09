@@ -1,3 +1,5 @@
+/** @brief Bytecode-level self-test: hand-assembles `(+ 3 5)` and verifies
+ *         the VM prints 8. */
 static void test_arithmetic(void) {
     printf("  test_arithmetic: ");
     VM* vmp = vm_create(); VM* vm = vmp;
@@ -16,6 +18,8 @@ static void test_arithmetic(void) {
     printf("%s\n", ok ? "PASS" : "FAIL");
 }
 
+/** @brief Bytecode-level self-test: hand-assembles `<`/`>`/`=` comparisons
+ *         and verifies the VM prints the expected booleans. */
 static void test_comparison(void) {
     printf("  test_comparison: ");
     VM* vmp = vm_create(); VM* vm = vmp;
@@ -45,6 +49,8 @@ static void test_comparison(void) {
     printf("%s\n", ok ? "PASS" : "FAIL");
 }
 
+/** @brief Bytecode-level self-test: hand-assembles `(cons 1 2)` then
+ *         `car`/`cdr` and verifies the VM prints 1 and 2. */
 static void test_pairs(void) {
     printf("  test_pairs: ");
     VM* vmp = vm_create(); VM* vm = vmp;
@@ -72,6 +78,9 @@ static void test_pairs(void) {
     printf("%s\n", ok ? "PASS" : "FAIL");
 }
 
+/** @brief Bytecode-level self-test: hand-assembles `(cons 1 (cons 2 (cons
+ *         3 '())))` (with CONS's car=TOS/cdr=SOS argument order worked out
+ *         in the inline commentary) and verifies the VM produces a pair. */
 static void test_list(void) {
     printf("  test_list: ");
     VM* vmp = vm_create(); VM* vm = vmp;
@@ -162,6 +171,9 @@ static void test_list(void) {
     printf("%s\n", ok ? "PASS" : "FAIL");
 }
 
+/** @brief Bytecode-level self-test: hand-assembles a recursive
+ *         `factorial` closure (non-tail OP_CALL) and verifies
+ *         factorial(10) == 3628800. */
 static void test_factorial(void) {
     printf("  test_factorial: ");
     VM* vmp = vm_create(); VM* vm = vmp;
@@ -244,6 +256,10 @@ static void test_factorial(void) {
            ok ? "PASS" : "FAIL");
 }
 
+/** @brief Bytecode-level self-test: hand-assembles a tail-recursive
+ *         accumulator-style `fact-iter` using OP_TAIL_CALL (no stack
+ *         growth per recursive call) and verifies fact-iter(10,1) ==
+ *         3628800. */
 static void test_tail_factorial(void) {
     printf("  test_tail_factorial: ");
     VM* vm = vm_create();
@@ -295,6 +311,8 @@ static void test_tail_factorial(void) {
     vm_free(vm);
 }
 
+/** @brief Bytecode-level self-test: hand-assembles a doubly-recursive
+ *         `fib` closure and verifies fib(10) == 55. */
 static void test_fibonacci(void) {
     printf("  test_fibonacci: ");
     VM* vm = vm_create();
@@ -347,6 +365,9 @@ static void test_fibonacci(void) {
     vm_free(vm);
 }
 
+/** @brief Bytecode-level self-test: hand-assembles `(list 1 2 3)` via
+ *         nested CONS, then walks it with car/cdr and verifies it prints
+ *         1, 2, 3. */
 static void test_list_build(void) {
     printf("  test_list_build: ");
     VM* vm = vm_create();
@@ -389,6 +410,9 @@ static void test_list_build(void) {
     vm_free(vm);
 }
 
+/** @brief Bytecode-level self-test: hand-assembles a recursive `map` and
+ *         a `double` function closure and verifies `(map double '(1 2
+ *         3))` == (2 4 6). */
 static void test_map(void) {
     printf("  test_map: ");
     VM* vm = vm_create();
@@ -537,6 +561,9 @@ static void test_map(void) {
     vm_free(vm);
 }
 
+/** @brief Bytecode-level self-test: hand-assembles a `make-adder` /
+ *         `add5` closure pair exercising upvalue capture and verifies
+ *         `(add5 10)` == 15. */
 static void test_closures(void) {
     printf("  test_closures: ");
     VM* vm = vm_create();
@@ -627,7 +654,11 @@ static void compile_and_run(const char* source);
 
 static int source_test_count = 0, source_test_pass = 0;
 
-/* Smoke test — verifies the program runs without crashing */
+/** @brief Smoke test: compile and run @p source through the full
+ *         compile_and_run() pipeline, just verifying it doesn't crash
+ *         (disassembly output suppressed via ESHKOL_VM_NO_DISASM). Always
+ *         counted as a pass — for source that reaching the end without
+ *         crashing is the only assertion. */
 static void source_test(const char* name, const char* source) {
     source_test_count++;
     printf("  %s: ", name);
@@ -643,8 +674,13 @@ static void source_test(const char* name, const char* source) {
     printf("PASS\n");
 }
 
-/* Verified test — captures stdout and compares against expected string.
- * Suppresses disassembly via ESHKOL_VM_NO_DISASM, strips trailing newline. */
+/**
+ * @brief Verified test: compile and run @p source with stdout redirected
+ *        to a temp file (POSIX only — falls back to a smoke test
+ *        elsewhere), then compares the captured output (trailing
+ *        newline/CR stripped) against @p expected. Prints PASS/FAIL and
+ *        updates source_test_count/source_test_pass.
+ */
 static void source_test_expect(const char* name, const char* source, const char* expected) {
     source_test_count++;
     printf("  %-30s ", name);
@@ -693,6 +729,14 @@ static void source_test_expect(const char* name, const char* source, const char*
 #endif
 }
 
+/**
+ * @brief Run the full source-level regression suite: a large sequence of
+ *        source_test()/source_test_expect() calls covering strings,
+ *        numeric towers (rationals/complex), tensors, logic/knowledge-base
+ *        primitives, workspaces/factor graphs, lazy evaluation, and
+ *        recursive data structures, printing a pass/total summary.
+ * @return The number of failing tests (0 = all passed).
+ */
 static int run_source_tests(void) {
     printf("\n=== Source-Level Tests ===\n\n");
 

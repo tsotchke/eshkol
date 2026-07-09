@@ -330,16 +330,26 @@ enum {
  * Utility Functions
  ******************************************************************************/
 
+/** @brief Saturating sigmoid: clamps to exactly 0.0/1.0 outside +/-20 so the
+ *         simulated-transformer gates agree bit-for-bit with the matrix
+ *         forward pass (see SCALE comment above). */
 static float sigmoidf(float x) {
     if (x > 20.0f) return 1.0f;
     if (x < -20.0f) return 0.0f;
     return 1.0f / (1.0f + expf(-x));
 }
 
+/** @brief Soft equality gate implemented as the difference of two
+ *         saturating sigmoids: ~1.0 when x == k, ~0.0 otherwise (used to
+ *         simulate one-hot opcode/operand dispatch as a differentiable
+ *         weight computation). */
 static float indicator(float x, float k) {
     return sigmoidf(SCALE * (x - k + 0.5f)) - sigmoidf(SCALE * (x - k - 0.5f));
 }
 
+/** @brief Encode one program instruction as a Layer-0 embedding vector: a
+ *         position key (linear + Gaussian-decay term for the attention
+ *         softmax) plus the opcode/operand as value fields. */
 static void embed_instruction(const Instr* instr, int position, float out[D]) {
     memset(out, 0, D * sizeof(float));
     out[0]  = (float)position;                        /* key[0] = position */
@@ -393,6 +403,9 @@ static int g_wind_depth = 0;
 static VmRegionStack g_vm_regions;
 static int g_vm_regions_initialized = 0;
 
+/** @brief Lazily initialize and return the process-global arena region
+ *         stack used by the runtime helper libraries (complex, bignum,
+ *         etc.) linked into this interpreter. */
 static VmRegionStack* vm_get_regions(void) {
     if (!g_vm_regions_initialized) {
         vm_region_stack_init(&g_vm_regions);
@@ -407,12 +420,24 @@ static VmRegionStack* vm_get_regions(void) {
 
 typedef struct { float s[D]; } State;
 
+/** @brief Zero-initialize a reference-interpreter State, setting the
+ *         output-value slot to "none" (-1) and the current-closure slot to
+ *         its sentinel "no closure" value. */
 static void state_init(State* st) {
     memset(st, 0, sizeof(State));
     st->s[S_OUTPUT] = -1.0f;
     st->s[S_CUR_CLOSURE] = -100.0f;
 }
 
+/**
+ * @brief Ground-truth reference interpreter: executes one VM instruction
+ *        step as a plain C switch over the opcode, updating @p next from
+ *        @p cur (stack registers, memory, AD tape state, arena, etc.).
+ *
+ * This is the "correct by construction" implementation that the simulated
+ * transformer (execute via layerN_ffn()) and the matrix forward pass
+ * (forward_with_weights()) are both verified against.
+ */
 static void execute_step(const State* cur, const Instr* prog, int n_instr, State* next) {
     memcpy(next, cur, sizeof(State));
     next->s[S_OUTPUT] = -1.0f;
@@ -1032,6 +1057,18 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
  * When AD_IS_BACKWARD is set, this function processes the node at AD_CURSOR,
  * propagates gradients to parent nodes, and decrements the cursor.
  * When cursor goes below 0, the backward pass is complete. */
+/**
+ * @brief Process one reverse-mode AD tape node per VM cycle when a backward
+ *        pass is active (S_AD_IS_BACKWARD set): applies the gradient
+ *        propagation rule for the node's recorded op (ADD/SUB/MUL/DIV/POW,
+ *        or the generic dL = grad*saved rule for unary ops) to its parent
+ *        node(s), accumulating into their AD_F_GRAD fields, then decrements
+ *        the tape cursor. Products use the polarization identity
+ *        (POLARIZATION_PRODUCT) rather than direct multiplication so the
+ *        reference interpreter stays bit-identical to the matrix forward
+ *        path's SQUARE-activation Layer 2. No-op when the cursor underflows
+ *        past 0 (backward pass complete) or backward mode isn't active.
+ */
 static void ad_backward_step(float* s) {
     if (s[S_AD_IS_BACKWARD] < 0.5f) return;
 
@@ -1143,6 +1180,9 @@ static int g_trace_program_seq = -1;        /* per-test counter; disambiguates d
  * emit float bit pattern via %.9g (sufficient for IEEE 754 single precision).
  * Special-cases NaN/+inf/-inf as strings since JSON does not allow them as
  * bare tokens — paper claim is bitwise agreement, so the trace must round-trip. */
+/** @brief Print a float to a JSONL trace file as a bit-identical %.9g
+ *         number, with NaN/+-Infinity emitted as JSON strings since bare
+ *         non-finite tokens aren't valid JSON. */
 static void trace_emit_num(FILE* fp, float v) {
     if (v != v) { fputs("\"NaN\"", fp); return; }
     if (v >  3.4e38f) { fputs("\"Infinity\"", fp); return; }
@@ -1152,6 +1192,14 @@ static void trace_emit_num(FILE* fp, float v) {
 
 /* is_native_override: pass >=0 to record the IS_NATIVE flag observed BEFORE
  * exec_loop_postprocess cleared it. Pass -1 to read s[S_IS_NATIVE] directly. */
+/**
+ * @brief Emit one JSONL trace record for the paper's fieldwise VM/transformer
+ *        agreement comparison (program/pc/sp/tos/sos/output/opcode/
+ *        is_native/registers/memory/tape/flags), if @p fp is non-null and a
+ *        trace program name is set. @p is_native_override lets the caller
+ *        record the IS_NATIVE flag observed before exec_loop_postprocess()
+ *        clears it (pass -1 to read it directly from state).
+ */
 static void emit_trace_line(FILE* fp, int step, const float* s,
                             const Instr* prog, int n_instr,
                             int is_native_override) {
@@ -1193,6 +1241,14 @@ static void emit_trace_line(FILE* fp, int step, const float* s,
             has_out ? "true" : "false");
 }
 
+/**
+ * @brief Run a program to completion (or a step cap) on the ground-truth
+ *        reference interpreter (execute_step() / ad_backward_step()),
+ *        resetting all global VM state (frames, heap, exception handlers,
+ *        arena) first. Collects up to @p max_out output values and, if
+ *        g_trace_vm_fp is set, emits a JSONL trace line per step.
+ * @return The number of outputs produced.
+ */
 static int run_reference(const Instr* prog, int n_instr, float* outputs, int max_out) {
     /* Double-buffer instead of 8192-entry trace (saves ~1.15 MB stack) */
     State cur, nxt;
@@ -1233,6 +1289,12 @@ static int run_reference(const Instr* prog, int n_instr, float* outputs, int max
  * 2. Simulated Transformer (C functions, verified correct)
  ******************************************************************************/
 
+/**
+ * @brief Simulated Layer 0 (instruction fetch): a Gaussian-peaked softmax
+ *        attention over the @p np position embeddings @p pe, scored so the
+ *        weight is sharply peaked at position == current PC (x[S_PC]),
+ *        yielding the fetched opcode/operand as a weighted sum.
+ */
 static void layer0_attention(const float x[D], const float pe[][D], int np, float out[D]) {
     memset(out, 0, D * sizeof(float));
     float T = SCALE;
@@ -1249,6 +1311,9 @@ static void layer0_attention(const float x[D], const float pe[][D], int np, floa
     out[S_OPCODE] = v0; out[S_OPERAND] = v1;
 }
 
+/** @brief Simulated Layer 1 (preprocessing gated FFN): resolves addresses,
+ *         evaluates comparisons, and loads the AD cursor ahead of opcode
+ *         dispatch. */
 static void layer1_ffn(const float x[D], float out[D]) {
     memset(out, 0, D*sizeof(float));
     /* Original: TOS * SOS via SQUARE trick */
@@ -1263,6 +1328,9 @@ static void layer1_ffn(const float x[D], float out[D]) {
     out[S_AD_PROD_GRAD_SV] = 0.5f*(g+sv)*(g+sv) - 0.5f*g*g - 0.5f*sv*sv; /* g * saved (ALL unary) */
 }
 
+/** @brief Simulated Layer 2 (product precompute, SQUARE activation):
+ *         computes TOS*SOS and AD forward/backward product terms via the
+ *         polarization identity, plus AD tape parent loads. */
 static void layer2_ffn(const float x[D], float out[D]) {
     memset(out, 0, D*sizeof(float));
     /* GET_LOCAL address resolution: indicator(OPERAND==a) * mem[a] → LOADVAL */
@@ -1379,6 +1447,11 @@ static void layer2_ffn(const float x[D], float out[D]) {
     }
 }
 
+/** @brief Simulated Layer 3 (execution gated FFN): the main opcode
+ *         dispatch layer, computing each opcode's effect (stack ops, arena
+ *         ops, AD forward/backward rules) as a sum of indicator-gated
+ *         weight contributions. Mirrors execute_step()'s switch, but as a
+ *         differentiable weight computation instead of a C branch. */
 static void layer3_ffn(const float x[D], float out[D]) {
     memset(out, 0, D*sizeof(float));
     float op=x[S_OPCODE], oper=x[S_OPERAND], tos=x[S_TOS], sos=x[S_SOS];
@@ -2066,6 +2139,9 @@ static void layer3_ffn(const float x[D], float out[D]) {
  * then decrement AD_CURSOR. */
 /* NOTE: layer4 takes original_state to distinguish "backward was already active"
  * from "backward was just started this cycle by layer3". */
+/** @brief Simulated Layer 4 (tape write + parent load, gated FFN): records
+ *         new AD tape node fields and heap/arena cons-cell writes
+ *         (pair/vector/vec-elem/closure kinds) produced by Layer 3. */
 static void layer4_ffn(float x[D], float out[D]) {
     memset(out, 0, D * sizeof(float));
 
@@ -2233,6 +2309,10 @@ static void layer4_ffn(float x[D], float out[D]) {
  *
  * After computing LEFT/RIGHT_GRAD_NEW, writes them to parent tape nodes. */
 /* Layer 5 simulated: split into dispatch and write-back for the two-pass scheme. */
+/** @brief Simulated Layer 5, pass 1 (backward-only gated FFN): during an
+ *         active AD backward pass, dispatches on the current tape node's op
+ *         type to compute the raw gradient contributions to propagate to
+ *         its parent nodes. */
 static void layer5_dispatch(float x[D], float out[D]) {
     memset(out, 0, D * sizeof(float));
     float bw = x[S_AD_IS_BACKWARD];
@@ -2271,6 +2351,10 @@ static void layer5_dispatch(float x[D], float out[D]) {
             out[S_AD_LEFT_GRAD_NEW] += indicator(cur_op, unary_ops[u]) * gsv;
     }
 }
+/** @brief Simulated Layer 5, pass 2 (backward-only gated FFN): writes the
+ *         gradient contributions computed by layer5_dispatch() back into
+ *         the parent tape nodes' AD_F_GRAD fields and advances the AD
+ *         cursor. */
 static void layer5_writeback(float x[D], float out[D]) {
     memset(out, 0, D * sizeof(float));
     float bw = x[S_AD_IS_BACKWARD];
@@ -2288,6 +2372,9 @@ static void layer5_writeback(float x[D], float out[D]) {
 }
 /* layer5_ffn for the weight-matrix path calls apply_ffn_layer(w,5,x) twice.
  * The simulated path calls layer5_dispatch then layer5_writeback instead. */
+/** @brief Unused placeholder for a combined Layer 5 FFN; the simulated
+ *         execution path calls layer5_dispatch() and layer5_writeback()
+ *         separately instead. */
 static void layer5_ffn(float x[D], float out[D]) {
     /* Not used directly — sim path calls dispatch+writeback separately */
     (void)x; (void)out;
@@ -2295,6 +2382,12 @@ static void layer5_ffn(float x[D], float out[D]) {
 
 /* Post-process: handle IS_NATIVE, IS_CALL, IS_RET flags.
  * The transformer set flags and PC++. The exec loop performs the actual operations. */
+/**
+ * @brief Post-process a state vector after one execute_step()/simulated
+ *        layer pass: handles opcodes flagged IS_NATIVE (DIV, MOD, and other
+ *        ops that don't fit the pure gated-FFN weight computation and are
+ *        instead finished here in plain C), then clears IS_NATIVE.
+ */
 static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
     /* IS_NATIVE: DIV, MOD, etc. */
     if (x[S_IS_NATIVE] > 0.5f) {
@@ -2901,6 +2994,15 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
     }
 }
 
+/**
+ * @brief Run a program to completion (or a step cap) on the simulated
+ *        transformer (layer0_attention() through layer5_writeback(), plus
+ *        exec_loop_postprocess()), verifying the same behaviour as
+ *        run_reference() but via the gated-FFN weight-computation form.
+ *        Collects up to @p max_out output values and, if g_trace_sim_fp is
+ *        set, emits a JSONL trace line per step.
+ * @return The number of outputs produced.
+ */
 static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max_out) {
     /* pe is zero-initialised so out-of-range positions (PC ≥ n_instr) attend
      * to an all-zero embedding (opcode = OP_NOP), avoiding garbage attention
@@ -2994,8 +3096,15 @@ typedef struct {
 
 #define W(mat, r, c, cols) ((mat)[(r) * (cols) + (c)])
 
-/* Add a gated neuron pair for opcode dispatch.
- * Implements: indicator(opcode==op_id) * alive * linear_combination → out_dim */
+/**
+ * @brief Add a gated neuron pair for opcode dispatch to weight layer @p L
+ *        starting at hidden-unit index @p n.
+ *
+ * Implements indicator(opcode==op_id) * alive * linear_combination ->
+ * out_dim, encoded as two sigmoid-gated FFN neurons (a "+coeff"/"-coeff"
+ * pair) whose difference reproduces the indicator() gate.
+ * @return The next free hidden-unit index (n + 2).
+ */
 static int add_gated_pair(InterpreterWeights* w, int L, int n,
                            int op_id,
                            int ud1, float us1, int ud2, float us2,
@@ -3019,7 +3128,10 @@ static int add_gated_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Opcode plus one bounded integer state dimension. */
+/** @brief Like add_gated_pair(), but the gate additionally dispatches on
+ *         one bounded integer state dimension equalling @p index (opcode
+ *         and index are packed into a single scaled target so one gate
+ *         pair covers both conditions). */
 static int add_gated_opcode_index(InterpreterWeights* w, int L, int n,
                                   int op_id, int index_dim, int index,
                                   int ud1, float us1, int ud2, float us2,
@@ -3045,7 +3157,9 @@ static int add_gated_opcode_index(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Opcode plus two bounded integer state dimensions. */
+/** @brief Like add_gated_opcode_index(), but the gate dispatches on the
+ *         opcode plus two bounded integer state dimensions, packed into one
+ *         scaled target. */
 static int add_gated_opcode_two_indices(InterpreterWeights* w, int L, int n,
                                         int op_id,
                                         int index_dim1, int index1,
@@ -3076,7 +3190,9 @@ static int add_gated_opcode_two_indices(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Gated pair for AD opcodes — same as add_gated_pair but also gates on NOT backward */
+/** @brief Same as add_gated_pair(), but additionally suppresses the gate
+ *         while an AD backward pass is active (S_AD_IS_BACKWARD), for
+ *         opcodes whose forward-only semantics must not fire mid-backward. */
 static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
                               int op_id,
                               int ud1, float us1, int ud2, float us2,
@@ -3101,8 +3217,9 @@ static int add_gated_pair_ad(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Gated pair for AD opcodes that also dispatch on a bounded stack index
- * (TOS/SOS == slot). Used for forward tape random-access reads and AD_GRAD. */
+/** @brief Same as add_gated_pair_ad(), but the gate also dispatches on a
+ *         bounded stack index (TOS/SOS == @p slot). Used for forward tape
+ *         random-access reads and AD_GRAD. */
 static int add_gated_pair_ad_index(InterpreterWeights* w, int L, int n,
                                    int op_id, int index_dim, int slot,
                                    int ud1, float us1, int ud2, float us2,
@@ -3129,8 +3246,11 @@ static int add_gated_pair_ad_index(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* One-sided value gate controlled by a precomputed binary flag.
- * gate ≈ flag && (value_sign * value_dim > threshold). */
+/** @brief Add a single one-sided value gate controlled by a precomputed
+ *         binary flag: gate ~= flag && (value_sign * value_dim >
+ *         threshold).
+ * @return The next free hidden-unit index (n + 1).
+ */
 static int add_flagged_value_halfspace(InterpreterWeights* w, int L, int n,
                                        int flag_dim, int value_dim,
                                        float value_sign, float threshold,
@@ -3152,8 +3272,11 @@ static int add_flagged_value_halfspace(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
-/* Single saturated gate for a precomputed binary flag. Unlike opcode
- * difference pairs, this does not add far-opcode cancellation residue. */
+/** @brief Add a single saturated gate for a precomputed binary flag.
+ *         Unlike the opcode-difference pair helpers, this does not add
+ *         far-opcode cancellation residue.
+ * @return The next free hidden-unit index (n + 1).
+ */
 static int add_flagged_linear(InterpreterWeights* w, int L, int n,
                               int flag_dim,
                               int ud1, float us1, int ud2, float us2,
@@ -3172,7 +3295,10 @@ static int add_flagged_linear(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
-/* Unconditional (always-on) neuron */
+/** @brief Add a single always-on (unconditional) hidden neuron, gated only
+ *         by "not halted".
+ * @return The next free hidden-unit index (n + 1).
+ */
 static int add_unconditional(InterpreterWeights* w, int L, int n,
                               int ud1, float us1, float ubias,
                               int out_dim, float coeff) {
@@ -3185,7 +3311,10 @@ static int add_unconditional(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
-/* Precompute indicator(state_dim == target_value) into out_dim. */
+/** @brief Add two hidden neurons that jointly compute
+ *         indicator(state_dim == target_value) into @p out_dim.
+ * @return The next free hidden-unit index (n + 2).
+ */
 static int add_indicator_precompute(InterpreterWeights* w, int L, int n,
                                     int state_dim, float target_value,
                                     int out_dim) {
@@ -3202,9 +3331,13 @@ static int add_indicator_precompute(InterpreterWeights* w, int L, int n,
     return n + 1;
 }
 
-/* Opcode+operand gated pair for fixed small-immediate opcodes such as POPN.
- * The gate is indicator(opcode + 100*operand == op_id + 100*operand_id),
- * which is collision-free for this ISA's opcode and small operand ranges. */
+/**
+ * @brief Add a gated pair for fixed small-immediate opcodes such as POPN.
+ *        The gate is indicator(opcode + 100*operand == op_id +
+ *        100*operand_id), collision-free for this ISA's opcode and small
+ *        operand ranges.
+ * @return The next free hidden-unit index (n + 2).
+ */
 static int add_gated_pair_op_operand(InterpreterWeights* w, int L, int n,
                                      int op_id, int operand_id,
                                      int ud1, float us1, int ud2, float us2,
@@ -3231,10 +3364,13 @@ static int add_gated_pair_op_operand(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Gate on arena operation flag AND arena target cell.
- * When flag_dim is 1, the pair difference is indicator(A_TARGET == cell);
- * when flag_dim is 0, the large negative flag bias keeps both neurons closed
- * for all bounded arena targets. */
+/**
+ * @brief Add a gated pair conditioned on an arena operation flag AND the
+ *        arena target cell. When @p flag_dim is 1, the pair difference is
+ *        indicator(A_TARGET == cell); when 0, the large negative flag bias
+ *        keeps both neurons closed for all bounded arena targets.
+ * @return The next free hidden-unit index (n + 2).
+ */
 static int add_arena_target_pair(InterpreterWeights* w, int L, int n,
                                  int flag_dim, int cell,
                                  int ud1, float us1, int ud2, float us2,
@@ -3258,7 +3394,12 @@ static int add_arena_target_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Gate on vector-create flag AND (arena vector base + offset == cell). */
+/** @brief Add a gated pair conditioned on a vector-create flag AND (arena
+ *         vector base + @p offset == @p cell); returns @p n unchanged (no
+ *         neurons added) if the implied base target falls outside
+ *         [0, ARENA_CELLS).
+ * @return The next free hidden-unit index (n + 2, or n if out of range).
+ */
 static int add_arena_vec_offset_pair(InterpreterWeights* w, int L, int n,
                                      int flag_dim, int cell, int offset,
                                      int ud1, float us1, int ud2, float us2,
@@ -3284,7 +3425,9 @@ static int add_arena_vec_offset_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Same as add_arena_vec_offset_pair, but the base dimension is selectable. */
+/** @brief Same as add_arena_vec_offset_pair(), but the base state dimension
+ *         is selectable via @p base_dim rather than fixed to
+ *         S_ARENA_VEC_BASE. */
 static int add_arena_base_offset_pair(InterpreterWeights* w, int L, int n,
                                       int base_dim, int flag_dim, int cell, int offset,
                                       int ud1, float us1, int ud2, float us2,
@@ -3310,9 +3453,12 @@ static int add_arena_base_offset_pair(InterpreterWeights* w, int L, int n,
     return n + 2;
 }
 
-/* Base+offset arena gate with a sentinel marker. Used by INVOKE_CC restore so
- * it can reuse existing arena transient lanes without colliding with vector
- * creation or PACK_REST writes. */
+/**
+ * @brief Same as add_arena_base_offset_pair(), plus an additional sentinel
+ *        marker condition. Used by INVOKE_CC restore so it can reuse
+ *        existing arena transient lanes without colliding with vector
+ *        creation or PACK_REST writes.
+ */
 static int add_arena_marked_base_offset_pair(InterpreterWeights* w, int L, int n,
                                              int base_dim, int flag_dim,
                                              int marker_dim, float marker_value,
@@ -3344,6 +3490,8 @@ static int add_arena_marked_base_offset_pair(InterpreterWeights* w, int L, int n
     return n + 2;
 }
 
+/** @brief Add weights that shift the type-tag stack (TYPE_TOS/SOS/R2/R3)
+ *         down by one on @p op_id, pushing @p pushed_type onto TYPE_TOS. */
 static int add_type_push(InterpreterWeights* w, int L, int n,
                          int op_id, float pushed_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -3357,6 +3505,11 @@ static int add_type_push(InterpreterWeights* w, int L, int n,
     return n;
 }
 
+/** @brief Add weights for the fixed-@p count case of the vector-create
+ *         opcode (op 39): writes the new arena vector's length/next-cell
+ *         bookkeeping and copies up to ARENA_MAX_INLINE_VECTOR popped
+ *         stack values (and their type tags) into the vector's inline
+ *         element slots. */
 static int add_vec_create_case(InterpreterWeights* w, int L, int n, int count) {
     int elem_dims[4] = { S_ARENA_VEC_E0, S_ARENA_VEC_E1, S_ARENA_VEC_E2, S_ARENA_VEC_E3 };
     int elem_type_dims[4] = { S_ARENA_VEC_T0, S_ARENA_VEC_T1, S_ARENA_VEC_T2, S_ARENA_VEC_T3 };
@@ -3378,6 +3531,9 @@ static int add_vec_create_case(InterpreterWeights* w, int L, int n, int count) {
     return n;
 }
 
+/** @brief Add weights that shift the type-tag stack up by one on @p op_id
+ *         (pop TYPE_TOS, backfilling from SOS/R2/R3 and defaulting R3 to
+ *         TYPE_NUMBER). */
 static int add_type_pop(InterpreterWeights* w, int L, int n, int op_id) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_SOS,1,S_TYPE_TOS,-1,-1,0,-1,0,
                        0, S_TYPE_TOS, 1.0f);
@@ -3390,6 +3546,8 @@ static int add_type_pop(InterpreterWeights* w, int L, int n, int op_id) {
     return n;
 }
 
+/** @brief Add weights that duplicate TYPE_TOS's tag down the type-tag stack
+ *         on @p op_id (mirrors a DUP opcode's effect on the value stack). */
 static int add_type_dup(InterpreterWeights* w, int L, int n, int op_id) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,1,S_TYPE_SOS,-1,-1,0,-1,0,
                        0, S_TYPE_SOS, 1.0f);
@@ -3409,6 +3567,9 @@ static int add_type_swap(InterpreterWeights* w, int L, int n, int op_id) {
     return n;
 }
 
+/** @brief Add weights for a binary-operator opcode's effect on the
+ *         type-tag stack: replaces TYPE_TOS with @p result_type and shifts
+ *         the rest of the tag stack up by one (consuming SOS's operand). */
 static int add_type_binary_result(InterpreterWeights* w, int L, int n,
                                   int op_id, float result_type) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
@@ -3422,6 +3583,9 @@ static int add_type_binary_result(InterpreterWeights* w, int L, int n,
     return n;
 }
 
+/** @brief Add weights that pop two type tags off the tag stack on @p op_id
+ *         (backfilling TOS/SOS from R2/R3, defaulting R2/R3 to
+ *         TYPE_NUMBER). */
 static int add_type_pop2(InterpreterWeights* w, int L, int n, int op_id) {
     n = add_gated_pair(w, L, n, op_id, S_TYPE_R2,1,S_TYPE_TOS,-1,-1,0,-1,0,
                        0, S_TYPE_TOS, 1.0f);
@@ -3434,12 +3598,27 @@ static int add_type_pop2(InterpreterWeights* w, int L, int n, int op_id) {
     return n;
 }
 
+/** @brief Add weights that set TYPE_TOS to @p result_type on @p op_id (a
+ *         unary operator's effect on the type-tag stack), leaving the rest
+ *         of the tag stack unchanged. */
 static int add_type_unary_result(InterpreterWeights* w, int L, int n,
                                  int op_id, float result_type) {
     return add_gated_pair(w, L, n, op_id, S_TYPE_TOS,-1,-1,0,-1,0,-1,0,
                           result_type, S_TYPE_TOS, 1.0f);
 }
 
+/**
+ * @brief Build the full explicit weight matrices (Q/K/V/O attention
+ *        projections and FFN up/gate/down matrices for all N_LAYERS) that
+ *        encode the entire Eshkol VM ISA as a transformer forward pass.
+ *
+ * Zero-initializes @p w, then wires Layer 0's attention for instruction
+ * fetch and populates each subsequent layer's gated FFN neurons — via the
+ * add_gated_*/add_arena_*/add_type_* helper family above — with one gated
+ * neuron pair per opcode (and AD/arena/type-tag bookkeeping op) so that the
+ * resulting matrix forward pass (forward_with_weights()) reproduces
+ * execute_step()'s semantics bit-for-bit.
+ */
 static void generate_weights(InterpreterWeights* w) {
     memset(w, 0, sizeof(InterpreterWeights));
 
@@ -5272,6 +5451,8 @@ static void generate_weights(InterpreterWeights* w) {
  * Matrix-based forward pass
  ******************************************************************************/
 
+/** @brief Row-major matrix-vector product out = x^T @ W (@p x is length
+ *         @p rows, @p W is @p rows x @p cols, @p out is length @p cols). */
 static void matvec_t(const float* x, const float* W, float* out, int rows, int cols) {
     memset(out, 0, cols * sizeof(float));
     for (int i = 0; i < rows; i++)
@@ -5279,8 +5460,13 @@ static void matvec_t(const float* x, const float* W, float* out, int rows, int c
             out[j] += x[i] * W[i * cols + j];
 }
 
-/* Apply a single FFN layer via actual weight matrices (W @ x + b).
- * Supports type 0 (noop), 1 (SQUARE), 2 (gated sigmoid). */
+/**
+ * @brief Apply layer @p L's feed-forward network to @p x in place, via the
+ *        actual weight matrices (W @ x + b), matching @p w->ff_type[L]:
+ *        0 = no-op, 1 = standard up/down projection with SQUARE activation,
+ *        2 = gated (sigmoid gate * up projection) then down projection.
+ *        Adds the FFN output as a residual onto @p x.
+ */
 static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
     float fo[D]; memset(fo, 0, sizeof(fo));
     if (w->ff_type[L] == 1) {
@@ -5303,16 +5489,12 @@ static void apply_ffn_layer(const InterpreterWeights* w, int L, float x[D]) {
     for (int i = 0; i < D; i++) x[i] += fo[i];
 }
 
-/* Backward: L1→L4→L2→L5→L5 entirely through weight matrices. Zero C code.
- *
- * L1: cursor load (tape[cursor] → AD_CUR_*)
- * L4: parent load (tape[CUR_LEFT/RIGHT] → AD_LEFT/RIGHT_VALUE)
- * L2: SQUARE products (grad*right, grad*left, grad*saved via polarization identity)
- * L5 pass 1: gradient rule dispatch (indicator on CUR_OP → LEFT/RIGHT_GRAD_NEW)
- * L5 pass 2: gradient write-back (indicator on CUR_LEFT/RIGHT → parent tape nodes)
- *            + cursor decrement + completion check + transient clear
- *
- * Layer 3 is NEVER invoked during backward. */
+/**
+ * @brief Run one AD backward step entirely through weight matrices:
+ *        L1 (cursor load) -> L4 (parent load) -> L2 (SQUARE products via
+ *        polarization identity) -> L5 (gradient dispatch) -> L5 (gradient
+ *        write-back). Layer 3 is never invoked during backward.
+ */
 static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
     apply_ffn_layer(w, 1, x);  /* cursor load */
     apply_ffn_layer(w, 4, x);  /* parent load */
@@ -5321,6 +5503,14 @@ static void backward_with_weights(const InterpreterWeights* w, float x[D]) {
     apply_ffn_layer(w, 5, x);  /* pass 2: gradient write-back */
 }
 
+/**
+ * @brief Run one forward VM step entirely through the matrix-based
+ *        transformer weights (@p w): for each non-backward layer, applies
+ *        Layer 0's Q/K/V/O attention over the instruction-position
+ *        embeddings @p pe (instruction fetch) followed by apply_ffn_layer(),
+ *        writing the resulting state to @p next. Layer 5 (backward-only) is
+ *        skipped.
+ */
 static void forward_with_weights(const InterpreterWeights* w,
                                   const float state[D],
                                   const float pe[][D], int np,
@@ -5362,6 +5552,16 @@ static void forward_with_weights(const InterpreterWeights* w,
     memcpy(next, x, sizeof(float)*D);
 }
 
+/**
+ * @brief Run a program to completion (or a step cap) on the matrix-based
+ *        transformer forward pass (forward_with_weights() /
+ *        backward_with_weights()), the third of the three execution modes
+ *        verified against run_reference(). Collects up to @p max_out
+ *        output values and, if g_trace_tf_fp is set, emits a JSONL trace
+ *        line per step (capped at g_last_ref_steps to avoid phantom steps
+ *        past the reference VM's halt).
+ * @return The number of outputs produced.
+ */
 static int run_with_weights(const InterpreterWeights* w,
                              const Instr* prog, int n_instr,
                              float* outputs, int max_out) {
@@ -5436,6 +5636,9 @@ static int run_with_weights(const InterpreterWeights* w,
  * Binary Weight Export (for qLLM loading)
  ******************************************************************************/
 
+/** @brief Write the generated interpreter weights to @p path in the "QLMW"
+ *         binary format (magic, version, architecture dims, then the raw
+ *         InterpreterWeights struct) for consumption by the qLLM loader. */
 static void export_weights_binary(const InterpreterWeights* w, const char* path) {
     FILE* f = fopen(path, "wb");
     if (!f) { printf("ERROR: cannot open %s\n", path); return; }
@@ -5461,6 +5664,12 @@ static void export_weights_binary(const InterpreterWeights* w, const char* path)
 static int n_pass = 0, n_fail = 0;
 static InterpreterWeights* g_weights = NULL;
 
+/**
+ * @brief Run one test program on all three execution modes (reference,
+ *        simulated, matrix), compare their output slots against each other
+ *        and against @p expected, and update the global pass/fail counters
+ *        (n_pass/n_fail), printing a diagnostic on mismatch.
+ */
 static void test(const char* name, const Instr* prog, int n, float expected) {
     float r[64], s[64], m[64];
     g_trace_program_name = name;
@@ -5522,6 +5731,7 @@ typedef struct {
     float dff_gate_b[N_LAYERS][FFN_DIM];
 } WeightGrads;
 
+/** @brief Zero-initialize a WeightGrads accumulator. */
 static void zero_grads(WeightGrads* g) {
     memset(g, 0, sizeof(WeightGrads));
 }
@@ -5544,9 +5754,12 @@ typedef struct {
     float ff_up[N_LAYERS][FFN_DIM];    /* type2: matvec+bias (pre-product)       */
 } FwdCache;
 
-/* Backprop through one matvec_t: out[j] = sum_i x[i]*W[i*cols+j].
- *   dW[i*cols+j] += x[i]*dout[j];  dx[i] += sum_j dout[j]*W[i*cols+j]
- * dx may be NULL (e.g. when the input is a constant such as pe). */
+/**
+ * @brief Backprop through one matvec_t() call: out[j] = sum_i
+ *        x[i]*W[i*cols+j]. Accumulates dW[i*cols+j] += x[i]*dout[j] and (if
+ *        @p dx is non-null) dx[i] += sum_j dout[j]*W[i*cols+j]. @p dx may be
+ *        NULL when the input is a constant (e.g. the position embeddings).
+ */
 static void matvec_backward(const float* x, const float* W, const float* dout,
                             float* dW, float* dx, int rows, int cols) {
     for (int i = 0; i < rows; i++) {
@@ -5563,9 +5776,17 @@ static void matvec_backward(const float* x, const float* W, const float* dout,
     }
 }
 
-/* Re-run forward_with_weights caching intermediates, then backprop.
- * dL_dnext is the upstream gradient on `next`; grads accumulate into g and the
- * gradient w.r.t. the input state is written to dL_dstate. */
+/**
+ * @brief Re-run forward_with_weights() while caching per-layer
+ *        intermediates (attention scores/Q/K/V, FFN gate/up/pre-activation
+ *        values), then backpropagate the upstream gradient @p dL_dnext
+ *        (grad on `next`) through each layer's FFN and, for Layer 0, its
+ *        attention block — analytically re-deriving the loss gradient
+ *        w.r.t. every trainable weight matrix without touching
+ *        forward_with_weights()/apply_ffn_layer()/generate_weights().
+ *        Accumulates gradients into @p g and, if @p dL_dstate is non-null,
+ *        writes the gradient w.r.t. the input state there.
+ */
 static void backward_through_weights(const InterpreterWeights* w,
                                      const float state[D],
                                      const float pe[][D], int np,
@@ -5753,6 +5974,9 @@ static void backward_through_weights(const InterpreterWeights* w,
     if (dL_dstate) memcpy(dL_dstate, dx, sizeof(float)*D);
 }
 
+/** @brief Apply one SGD step to every trainable weight matrix/bias in @p w:
+ *         w -= lr * g, for the given learning rate @p lr and accumulated
+ *         gradients @p g. */
 static void apply_weight_gradient_step(InterpreterWeights* w,
                                        const WeightGrads* g, float lr) {
     for (int L = 0; L < N_LAYERS; L++) {
@@ -5776,16 +6000,18 @@ static void apply_weight_gradient_step(InterpreterWeights* w,
     }
 }
 
-/* Double-precision reference forward — a faithful, higher-precision mirror of
- * forward_with_weights (same arithmetic, same order). Used ONLY by the gradient
- * check's finite-difference loss: a single weight perturbation of ~1e-3 routed
- * through the SQUARE FFN nonlinearity changes `next` by an amount near the
- * float32 round-off floor, so a float32 central difference is itself unreliable
- * for the small-gradient attention parameters (verified: float32 FD disagrees
- * with both the analytic gradient AND a double FD by ~13%, while the double FD
- * matches the analytic gradient to 6 digits). Evaluating the FD loss in double
- * makes the check a meaningful test of the backprop math rather than a test of
- * float32 round-off. This does NOT modify the artifact's float forward. */
+/**
+ * @brief Double-precision reference forward pass — a faithful,
+ *        higher-precision mirror of forward_with_weights() (same
+ *        arithmetic, same order) plus a squared-error loss against
+ *        @p target. Used ONLY by the gradient check's finite-difference
+ *        loss, since a float32 central difference is unreliable for
+ *        small-gradient attention parameters (verified: float32 FD
+ *        disagrees with both the analytic gradient and a double FD by
+ *        ~13%, while the double FD matches the analytic gradient to 6
+ *        digits). Does not modify the artifact's float32 forward pass.
+ * @return The squared-error loss 0.5*sum((x_i - target_i)^2).
+ */
 static double forward_loss_double(const InterpreterWeights* w,
                                   const float state[D], const float pe[][D],
                                   int np, const double target[D]) {
@@ -5840,6 +6066,9 @@ static double forward_loss_double(const InterpreterWeights* w,
 /* Tiny deterministic LCG so the demo is reproducible. */
 static unsigned long g_si_rng = 0;
 static float g_si_scale = 0.1f;
+/** @brief Deterministic LCG PRNG (seeded via g_si_rng), returning a value
+ *         uniform in [-g_si_scale, g_si_scale] for reproducible weight
+ *         initialization in the self-improvement demo. */
 static float si_randf(void) { /* uniform in [-g_si_scale, g_si_scale] */
     g_si_rng = g_si_rng*6364136223846793005UL + 1442695040888963407UL;
     unsigned int v = (unsigned int)(g_si_rng >> 33);
@@ -5860,24 +6089,31 @@ typedef struct {
     int   all_pass;
 } GCheckCtx;
 
-/* float32 loss via the artifact's actual forward (for display) */
+/** @brief float32 squared-error loss via the artifact's actual forward pass
+ *         (forward_with_weights()), used for display only. */
 static double gcheck_loss_f(GCheckCtx* gc) {
     forward_with_weights(gc->w, gc->state, gc->pe, gc->np, gc->next);
     double L = 0.0;
     for (int i = 0; i < D; i++) { double d = (double)gc->next[i] - gc->target[i]; L += 0.5*d*d; }
     return L;
 }
-/* double-precision reference loss (for the PASS/FAIL verdict) */
+/** @brief Double-precision reference loss (forward_loss_double()); this is
+ *         the value that actually drives the gradient check's PASS/FAIL
+ *         verdict. */
 static double gcheck_loss_d(GCheckCtx* gc) {
     return forward_loss_double(gc->w, gc->state, gc->pe, gc->np, gc->targetd);
 }
 
-/* Gradient-check one weight kind. `warr`/`garr` are the weight/gradient arrays
- * of length `n`. We pick the `nsample` indices with the LARGEST analytic
- * gradient magnitude (where central finite differences in float32 carry real
- * signal) and compare analytic vs FD there. Tolerance combines a relative test
- * with an absolute floor matched to the float32 FD noise level so that an exact
- * gradient is not failed by FD round-off. */
+/**
+ * @brief Finite-difference gradient check for one weight array kind. Picks
+ *        the @p nsample indices (up to 8) in @p warr/@p garr (of length
+ *        @p n) with the largest analytic gradient magnitude — where central
+ *        finite differences in float32 carry real signal — and compares
+ *        the analytic gradient against both a float32 FD (display only)
+ *        and the double-precision reference FD (drives PASS/FAIL, via
+ *        gcheck_loss_f()/gcheck_loss_d()). Updates gc->max_rel and
+ *        gc->all_pass, and prints one diagnostic line per sampled index.
+ */
 static void gcheck_kind(GCheckCtx* gc, const char* kind,
                         float* warr, const float* garr, int n, int nsample) {
     /* find top-|grad| indices via simple selection */
@@ -5917,6 +6153,15 @@ static void gcheck_kind(GCheckCtx* gc, const char* kind,
     }
 }
 
+/**
+ * @brief Self-improvement demo: initializes fresh randomized interpreter
+ *        weights (scaled per-matrix so the stacked SQUARE FFN layers stay
+ *        numerically bounded), verifies the analytic backprop
+ *        (backward_through_weights()) against a finite-difference gradient
+ *        check (gcheck_kind()) on a sample program, then runs gradient
+ *        descent (apply_weight_gradient_step()) to demonstrate the program
+ *        weights can be trained to reduce loss on the target output.
+ */
 static void self_improve_demo(void) {
     printf("=== Self-improvement loop (gradient descent on program weights) ===\n\n");
 
@@ -6045,6 +6290,17 @@ static void self_improve_demo(void) {
     free(w);
 }
 
+/**
+ * @brief Entry point for the Eshkol VM weight compiler artifact.
+ *
+ * Supports `--self-improve` (runs self_improve_demo() and exits) and the
+ * paper-artifact trace flags `--trace-vm`/`--trace-transformer`/
+ * `--trace-simulated PATH` (opens JSONL trace files consumed by
+ * scripts/paper/compare_traces.py). Otherwise generates the interpreter
+ * weights (generate_weights()), runs the built-in test suite comparing the
+ * reference/simulated/matrix execution modes (test()), and optionally
+ * exports the weights to ESHKOL_WEIGHTS_OUT via export_weights_binary().
+ */
 int main(int argc, char** argv) {
     printf("=== Eshkol VM Weight Compiler ===\n\n");
 

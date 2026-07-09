@@ -7,6 +7,7 @@
               (val).as.ptr, (vm)->heap.next_free), \
       (vm)->error = 1, (HeapObject*)NULL))
 
+/** @brief Allocate a cons pair of two raw int64 values (as INT_VALs). */
 static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) {
@@ -19,6 +20,7 @@ static Value vm_int_pair(VM* vm, int64_t car, int64_t cdr) {
     return PAIR_VAL(ptr);
 }
 
+/** @brief Allocate a cons pair from two already-tagged Values. */
 static Value vm_cons_value(VM* vm, Value car, Value cdr) {
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) {
@@ -31,6 +33,7 @@ static Value vm_cons_value(VM* vm, Value car, Value cdr) {
     return PAIR_VAL(ptr);
 }
 
+/** @brief Copy a C string (or explicit-length buffer) into a new heap VmString Value. */
 static Value vm_string_value(VM* vm, const char* data, int64_t len) {
     if (!data) return NIL_VAL;
     if (len < 0) len = (int64_t)strlen(data);
@@ -46,10 +49,13 @@ static Value vm_string_value(VM* vm, const char* data, int64_t len) {
     return (Value){.type = VAL_STRING, .as.ptr = ptr};
 }
 
+/** @brief Build a `(key . value)` pair for use as one entry of an association list. */
 static Value vm_alist_entry(VM* vm, const char* key, Value value) {
     return vm_cons_value(vm, vm_string_value(vm, key, -1), value);
 }
 
+/** @brief Extract a process id from a process handle Value, which may be a raw
+ *         number or a `(pid . fd)` pair as used by PTY-backed subprocesses. */
 static int64_t vm_process_pid_from_value(VM* vm, Value value) {
     if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
         HeapObject* obj = vm->heap.objects[value.as.ptr];
@@ -59,6 +65,9 @@ static int64_t vm_process_pid_from_value(VM* vm, Value value) {
     return (int64_t)as_number(value);
 }
 
+/** @brief Extract a file descriptor from a process handle Value: prefers the
+ *         `(pid . fd)` pair form, otherwise looks up the fd by pid in the
+ *         VM's tracked PTY handle table, falling back to the raw number. */
 static int vm_process_fd_from_value(VM* vm, Value value) {
     if (value.type == VAL_PAIR && is_valid_heap_ptr(vm, value.as.ptr)) {
         HeapObject* obj = vm->heap.objects[value.as.ptr];
@@ -74,6 +83,9 @@ static int vm_process_fd_from_value(VM* vm, Value value) {
     return (int)pid_or_fd;
 }
 
+/** @brief Record (or update) the fd associated with a spawned PTY process's pid
+ *         in the VM's fixed-size pty_handles table, so it can later be resolved
+ *         back to a file descriptor by vm_process_fd_from_value(). */
 static void vm_process_track_pty(VM* vm, int64_t pid, int fd) {
     if (!vm || pid <= 0 || fd < 0) return;
     for (int i = 0; i < vm->n_pty_handles; i++) {
@@ -89,6 +101,8 @@ static void vm_process_track_pty(VM* vm, int64_t pid, int fd) {
     }
 }
 
+/** @brief Remove a pid's entry from the PTY handle table (swap-with-last), optionally
+ *         closing its fd first. No-op on POSIX-less builds beyond bookkeeping. */
 static void vm_process_forget_pty(VM* vm, int64_t pid, int close_fd) {
     if (!vm || pid <= 0) return;
     for (int i = 0; i < vm->n_pty_handles; i++) {
@@ -105,6 +119,8 @@ static void vm_process_forget_pty(VM* vm, int64_t pid, int close_fd) {
     }
 }
 
+/** @brief Safely unwrap a VAL_STRING Value to its underlying VmString*, or NULL
+ *         if the value isn't a valid heap-backed string. */
 static VmString* vm_value_as_string(VM* vm, Value value) {
     if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
         return NULL;
@@ -114,6 +130,10 @@ static VmString* vm_value_as_string(VM* vm, Value value) {
     return (VmString*)obj->opaque.ptr;
 }
 
+/** @brief Safely unwrap a VAL_PORT Value to its underlying VmPort*, resolving the
+ *         well-known stdin/stdout/stderr opaque pointers to the live singleton
+ *         port objects (re-initializing them if needed). Returns NULL on any
+ *         type/heap mismatch. */
 static VmPort* vm_value_as_port(VM* vm, Value value) {
     if (!vm || value.type != VAL_PORT || !is_valid_heap_ptr(vm, value.as.ptr))
         return NULL;
@@ -132,6 +152,8 @@ static VmPort* vm_value_as_port(VM* vm, Value value) {
     return port;
 }
 
+/** @brief Safely unwrap a VAL_BYTEVECTOR Value to its underlying VmBytevector*,
+ *         or NULL if the value isn't a valid heap-backed bytevector. */
 static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
     if (!vm || value.type != VAL_BYTEVECTOR || !is_valid_heap_ptr(vm, value.as.ptr))
         return NULL;
@@ -150,12 +172,15 @@ typedef int (*VmSqliteChangesFn)(int64_t);
 static volatile sig_atomic_t vm_last_signal = 0;
 static volatile sig_atomic_t vm_signal_count = 0;
 
+/** @brief POSIX signal handler: async-signal-safe — just latches the signal
+ *         number and bumps a counter for later polling by VM opcodes. */
 static void vm_signal_handler(int sig) {
     vm_last_signal = sig;
     vm_signal_count++;
 }
 #endif
 
+/** @brief True if stdout is attached to a terminal (always false on WASM/Windows). */
 static int vm_term_stdout_is_tty(void) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     return isatty(STDOUT_FILENO);
@@ -164,6 +189,7 @@ static int vm_term_stdout_is_tty(void) {
 #endif
 }
 
+/** @brief True if stdin is attached to a terminal (always false on WASM/Windows). */
 static int vm_term_stdin_is_tty(void) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     return isatty(STDIN_FILENO);
@@ -172,6 +198,8 @@ static int vm_term_stdin_is_tty(void) {
 #endif
 }
 
+/** @brief Write a raw string straight to stdout, but only if stdout is a tty
+ *         (used for control/escape sequences that would corrupt piped output). */
 static void vm_term_write_tty(const char* s) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (s && vm_term_stdout_is_tty()) {
@@ -183,6 +211,8 @@ static void vm_term_write_tty(const char* s) {
 #endif
 }
 
+/** @brief printf-style two-int formatted write to stdout, gated on tty detection
+ *         like vm_term_write_tty(). */
 static void vm_term_printf_tty(const char* fmt, int a, int b) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (fmt && vm_term_stdout_is_tty()) {
@@ -194,6 +224,9 @@ static void vm_term_printf_tty(const char* fmt, int a, int b) {
 #endif
 }
 
+/** @brief Write `data` to the system clipboard via the OSC52 terminal escape
+ *         sequence, base64-encoding it inline through a local encode table.
+ *         No-op if stdout isn't a tty. */
 static void vm_term_write_osc52_tty(const char* data, size_t len) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     static const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -216,6 +249,9 @@ static void vm_term_write_osc52_tty(const char* data, size_t len) {
 #endif
 }
 
+/** @brief Parse an xterm SGR mouse escape sequence (`\033[<btn;x;y;M|m`) from
+ *         `buf` into a Scheme list `(button x y modifiers phase)`, or #f if no
+ *         such sequence is found. */
 static Value vm_term_mouse_event_value(VM* vm, const char* buf) {
     const char* start = buf ? strstr(buf, "\033[<") : NULL;
     int raw = 0, x = 0, y = 0;
@@ -237,6 +273,10 @@ static Value vm_term_mouse_event_value(VM* vm, const char* buf) {
     return result;
 }
 
+/** @brief Detect terminal capabilities from environment variables (TERM,
+ *         COLORTERM, TERM_PROGRAM, locale) and tty status, returning an
+ *         association list of color depth, unicode support, and tty flags
+ *         for use by Scheme-level terminal-capability queries. */
 static Value vm_term_detect_capabilities(VM* vm) {
     const char* term = getenv("TERM");
     const char* colorterm = getenv("COLORTERM");
@@ -270,6 +310,9 @@ static Value vm_term_detect_capabilities(VM* vm) {
     return alist;
 }
 
+/** @brief Stat `path` and report existence, modification time (nanoseconds),
+ *         and size — used to detect file-watch changes by comparing snapshots
+ *         over time. All output params are zeroed first; no-op on WASM. */
 static void vm_file_watch_signature(const char* path, int* exists, int64_t* mtime_ns, int64_t* size) {
     if (exists) *exists = 0;
     if (mtime_ns) *mtime_ns = 0;
@@ -298,6 +341,10 @@ static void vm_file_watch_signature(const char* path, int* exists, int64_t* mtim
 #endif
 }
 
+/** @brief Allocate a free slot in the VM's fixed-size fs_watchers table and
+ *         record `path`'s initial existence/mtime/size signature so future
+ *         polls can detect changes. Returns the slot index, or -1 if no
+ *         slot is free or the path is invalid. */
 static int vm_file_watch_start(VM* vm, const char* path, int recursive) {
     if (!vm || !path || !*path) return -1;
     int slot = -1;
@@ -322,6 +369,10 @@ static int vm_file_watch_start(VM* vm, const char* path, int recursive) {
     return slot;
 }
 
+/** @brief Resolve an executable name to its full path: on Windows via
+ *         SearchPathA, on POSIX by checking for a literal slash (direct
+ *         access() check) or scanning $PATH for an executable match.
+ *         Returns #f if not found (and always #f on WASM). */
 static Value vm_executable_path_value(VM* vm, const char* name) {
     if (!vm || !name || !*name) return BOOL_VAL(0);
 #if defined(ESHKOL_VM_WASM)
@@ -360,6 +411,8 @@ static Value vm_executable_path_value(VM* vm, const char* name) {
 #endif
 }
 
+/** @brief Portable monotonic clock in milliseconds (CLOCK_MONOTONIC on POSIX,
+ *         GetTickCount64 on Windows, always 0 on WASM). */
 static int64_t vm_monotonic_time_ms(void) {
 #if defined(ESHKOL_VM_WASM)
     return 0;
@@ -377,6 +430,8 @@ static int64_t vm_monotonic_time_ms(void) {
 #endif
 }
 
+/** @brief Return the platform temp directory: GetTempPathA on Windows (falling
+ *         back to %TEMP%), or the first of $TMPDIR/$TMP/$TEMP/"/tmp" on POSIX. */
 static const char* vm_temp_directory_path(void) {
 #if defined(_WIN32)
     static char buf[MAX_PATH];
@@ -397,6 +452,10 @@ static const char* vm_temp_directory_path(void) {
 #endif
 }
 
+/** @brief Register a new sleep-inhibitor handle in the VM's fixed-size table
+ *         and, on Windows, call SetThreadExecutionState to actually prevent
+ *         system/display sleep. Returns a positive handle, or 0 if the table
+ *         is full. */
 static int64_t vm_prevent_sleep_start(VM* vm) {
     if (!vm) return 0;
     int slot = -1;
@@ -417,6 +476,9 @@ static int64_t vm_prevent_sleep_start(VM* vm) {
     return handle;
 }
 
+/** @brief Release a sleep-inhibitor handle previously returned by
+ *         vm_prevent_sleep_start(); on Windows, restores normal sleep once no
+ *         inhibitors remain active. Returns 1 if the handle was found. */
 static int vm_prevent_sleep_stop(VM* vm, int64_t handle) {
     if (!vm || handle <= 0) return 0;
     for (int i = 1; i < (int)(sizeof(vm->sleep_inhibitors) / sizeof(vm->sleep_inhibitors[0])); i++) {
@@ -434,6 +496,10 @@ static int vm_prevent_sleep_stop(VM* vm, int64_t handle) {
     return 0;
 }
 
+/** @brief Return the byte length of the ANSI/C1 escape sequence starting at
+ *         `s[pos]` (CSI, OSC, DCS/APC/PM/SOS, or a 2-3 byte ESC-prefixed
+ *         sequence), or 0 if `s[pos]` doesn't begin an escape sequence.
+ *         Used to skip over escapes when measuring or stripping display text. */
 static int vm_ansi_escape_len(const char* s, int len, int pos) {
     if (!s || pos < 0 || pos >= len) return 0;
     unsigned char c = (unsigned char)s[pos];
@@ -482,6 +548,8 @@ static int vm_ansi_escape_len(const char* s, int len, int pos) {
     return 2;
 }
 
+/** @brief True if Unicode codepoint `cp` renders as double-width in a terminal
+ *         (CJK ideographs, Hangul, fullwidth forms, most emoji, etc). */
 static int vm_display_is_wide_char(uint32_t cp) {
     if (cp >= 0x4E00 && cp <= 0x9FFF) return 1;
     if (cp >= 0x3400 && cp <= 0x4DBF) return 1;
@@ -499,6 +567,8 @@ static int vm_display_is_wide_char(uint32_t cp) {
     return 0;
 }
 
+/** @brief True if Unicode codepoint `cp` is zero-width for display purposes
+ *         (combining marks, variation selectors, joiners/format chars). */
 static int vm_display_is_zero_width(uint32_t cp) {
     if (cp >= 0x0300 && cp <= 0x036F) return 1;
     if (cp >= 0x1AB0 && cp <= 0x1AFF) return 1;
@@ -512,6 +582,10 @@ static int vm_display_is_zero_width(uint32_t cp) {
     return 0;
 }
 
+/** @brief Compute the terminal display width (in columns) of a UTF-8 byte
+ *         buffer, decoding codepoints and skipping ANSI escapes, zero-width
+ *         combining marks (counted as 0), and counting wide CJK/emoji
+ *         codepoints as 2 columns. */
 static int64_t vm_string_display_width_bytes(const char* data, int len) {
     if (!data || len <= 0) return 0;
     int64_t width = 0;
@@ -531,6 +605,9 @@ static int64_t vm_string_display_width_bytes(const char* data, int len) {
     return width;
 }
 
+/** @brief Find the byte length of the longest prefix of a UTF-8 buffer whose
+ *         display width (per vm_string_display_width_bytes rules) does not
+ *         exceed `max_cols`. Used to truncate strings at a column budget. */
 static int vm_display_prefix_byte_len(const char* data, int len, int64_t max_cols) {
     if (!data || len <= 0 || max_cols < 0) return 0;
     int64_t width = 0;
@@ -556,6 +633,7 @@ static int vm_display_prefix_byte_len(const char* data, int len, int64_t max_col
     return end;
 }
 
+/** @brief Return a copy of `input` with all ANSI/C1 escape sequences removed. */
 static Value vm_ansi_strip_value(VM* vm, VmString* input) {
     if (!vm || !input || !input->data) return BOOL_VAL(0);
     int len = input->byte_len;
@@ -578,6 +656,10 @@ static Value vm_ansi_strip_value(VM* vm, VmString* input) {
     return result;
 }
 
+/** @brief Truncate `input` to at most `max_cols` display columns, appending
+ *         `suffix` (e.g. an ellipsis) when truncation occurs. If `suffix`
+ *         alone is wider than `max_cols`, only a prefix of the suffix is used.
+ *         Returns `input` unchanged if it already fits. */
 static Value vm_string_truncate_display_value(VM* vm,
                                               VmString* input,
                                               int64_t max_cols,
@@ -614,12 +696,16 @@ static Value vm_string_truncate_display_value(VM* vm,
     return result;
 }
 
+/** @brief True if `c` is an RFC 3986 URL-unreserved character (alnum, `-_.~`)
+ *         that does not need percent-encoding. */
 static int vm_url_is_unreserved(unsigned char c) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
            (c >= '0' && c <= '9') || c == '-' || c == '_' ||
            c == '.' || c == '~';
 }
 
+/** @brief Decode a single hex digit character to its 0-15 value, or -1 if not
+ *         a hex digit. */
 static int vm_url_hex_value(unsigned char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -627,6 +713,8 @@ static int vm_url_hex_value(unsigned char c) {
     return -1;
 }
 
+/** @brief Percent-encode `input` per RFC 3986 (unreserved chars pass through
+ *         literally, everything else becomes `%XX`). */
 static Value vm_url_encode_value(VM* vm, VmString* input) {
     if (!vm || !input || !input->data) return BOOL_VAL(0);
     static const char hex[] = "0123456789ABCDEF";
@@ -650,6 +738,7 @@ static Value vm_url_encode_value(VM* vm, VmString* input) {
     return result;
 }
 
+/** @brief Percent-decode `input` (`%XX` sequences and `+` as space, form-encoding style). */
 static Value vm_url_decode_value(VM* vm, VmString* input) {
     if (!vm || !input || !input->data) return BOOL_VAL(0);
     char* out = (char*)malloc((size_t)input->byte_len + 1);
@@ -674,6 +763,8 @@ static Value vm_url_decode_value(VM* vm, VmString* input) {
     return result;
 }
 
+/** @brief Scan forward from `p` for the first URL authority-terminating
+ *         character (`/`, `?`, or `#`), returning `end` if none is found. */
 static const char* vm_find_url_sep(const char* p, const char* end) {
     while (p < end) {
         if (*p == '/' || *p == '?' || *p == '#') return p;
@@ -682,10 +773,16 @@ static const char* vm_find_url_sep(const char* p, const char* end) {
     return end;
 }
 
+/** @brief Compare a length-delimited byte span `p[0..len)` against a C string
+ *         for exact equality. */
 static int vm_span_eq_cstr(const char* p, int len, const char* s) {
     return p && s && len == (int)strlen(s) && memcmp(p, s, (size_t)len) == 0;
 }
 
+/** @brief Parse a `scheme://host[:port][/path][?query][#fragment]` URL into
+ *         an association list of its components. Applies default ports for
+ *         http/https when none is given. Returns #f for malformed input
+ *         (missing scheme separator or empty authority/host). */
 static Value vm_url_parse_value(VM* vm, VmString* input) {
     if (!vm || !input || !input->data || input->byte_len <= 0) return BOOL_VAL(0);
     const char* begin = input->data;
@@ -775,6 +872,9 @@ static Value vm_url_parse_value(VM* vm, VmString* input) {
     return result;
 }
 
+/** @brief Extract a raw byte pointer and length from a Value that is either a
+ *         string or a bytevector, for use by encoding/hashing routines that
+ *         operate on either representation uniformly. Returns 0 if neither. */
 static int vm_bytes_from_value(VM* vm, Value value, const unsigned char** data, int64_t* len) {
     VmString* s = vm_value_as_string(vm, value);
     if (s && s->data) {
@@ -791,6 +891,8 @@ static int vm_bytes_from_value(VM* vm, Value value, const unsigned char** data, 
     return 0;
 }
 
+/** @brief Base64url-encode (RFC 4648 sec 5, unpadded) the bytes of a string
+ *         or bytevector Value. */
 static Value vm_base64url_encode_value(VM* vm, Value input) {
     static const char table[] =
         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
@@ -826,6 +928,8 @@ static Value vm_base64url_encode_value(VM* vm, Value input) {
     return result;
 }
 
+/** @brief Decode a single base64url alphabet character to its 0-63 value, or
+ *         -1 if not part of the alphabet. */
 static int vm_base64url_value(unsigned char c) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
@@ -835,6 +939,8 @@ static int vm_base64url_value(unsigned char c) {
     return -1;
 }
 
+/** @brief Base64url-decode (RFC 4648 sec 5, tolerating trailing `=` padding)
+ *         the bytes of a string or bytevector Value into a new string. */
 static Value vm_base64url_decode_value(VM* vm, Value input) {
     const unsigned char* data = NULL;
     int64_t len = 0;
@@ -866,6 +972,9 @@ static Value vm_base64url_decode_value(VM* vm, Value input) {
     return result;
 }
 
+/** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
+ *         and falling back to a seeded rand() stream (not cryptographically
+ *         strong) if the device is unavailable or on other platforms. */
 static int vm_random_bytes(unsigned char* out, size_t len) {
     if (!out) return 0;
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
@@ -886,6 +995,8 @@ static int vm_random_bytes(unsigned char* out, size_t len) {
     return 1;
 }
 
+/** @brief Generate a random RFC 4122 version-4 UUID string, using
+ *         vm_random_bytes() and setting the version/variant bits per spec. */
 static Value vm_uuid_v4_value(VM* vm) {
     unsigned char bytes[16];
     if (!vm_random_bytes(bytes, sizeof(bytes))) return BOOL_VAL(0);
@@ -901,6 +1012,9 @@ static Value vm_uuid_v4_value(VM* vm) {
     return vm_string_value(vm, buf, 36);
 }
 
+/** @brief Compare two string/bytevector Values for equality in constant time
+ *         (branchless OR-accumulated XOR over the full max length), to avoid
+ *         timing side channels when comparing secrets like tokens or MACs. */
 static Value vm_constant_time_equal_value(VM* vm, Value a_val, Value b_val) {
     const unsigned char* a = NULL;
     const unsigned char* b = NULL;
@@ -926,10 +1040,14 @@ typedef struct {
     size_t buf_len;
 } VmSha256;
 
+/** @brief Right-rotate a 32-bit word by `n` bits (SHA-256 primitive). */
 static uint32_t vm_sha256_rotr(uint32_t x, int n) {
     return (x >> n) | (x << (32 - n));
 }
 
+/** @brief Process one 64-byte block through the SHA-256 compression function,
+ *         updating `ctx->h` in place (standard FIPS 180-4 message schedule
+ *         and 64-round compression loop). */
 static void vm_sha256_transform(VmSha256* ctx, const unsigned char block[64]) {
     static const uint32_t k[64] = {
         0x428a2f98U,0x71374491U,0xb5c0fbcfU,0xe9b5dba5U,0x3956c25bU,0x59f111f1U,0x923f82a4U,0xab1c5ed5U,
@@ -969,6 +1087,7 @@ static void vm_sha256_transform(VmSha256* ctx, const unsigned char block[64]) {
     ctx->h[4] += e; ctx->h[5] += f; ctx->h[6] += g; ctx->h[7] += h;
 }
 
+/** @brief Initialize a SHA-256 context with the standard FIPS 180-4 initial hash values. */
 static void vm_sha256_init(VmSha256* ctx) {
     static const uint32_t init[8] = {
         0x6a09e667U,0xbb67ae85U,0x3c6ef372U,0xa54ff53aU,
@@ -979,6 +1098,8 @@ static void vm_sha256_init(VmSha256* ctx) {
     ctx->buf_len = 0;
 }
 
+/** @brief Feed `len` bytes of `data` into a SHA-256 context, buffering
+ *         partial blocks and transforming complete 64-byte blocks as they fill. */
 static void vm_sha256_update(VmSha256* ctx, const unsigned char* data, size_t len) {
     ctx->bit_len += (uint64_t)len * 8U;
     while (len > 0) {
@@ -995,6 +1116,9 @@ static void vm_sha256_update(VmSha256* ctx, const unsigned char* data, size_t le
     }
 }
 
+/** @brief Apply SHA-256 padding (0x80, zero bytes, 64-bit big-endian bit
+ *         length) to the context's final partial block and write the 32-byte
+ *         digest to `out`. */
 static void vm_sha256_final(VmSha256* ctx, unsigned char out[32]) {
     ctx->buf[ctx->buf_len++] = 0x80;
     if (ctx->buf_len > 56) {
@@ -1015,6 +1139,9 @@ static void vm_sha256_final(VmSha256* ctx, unsigned char out[32]) {
     }
 }
 
+/** @brief Stream-hash a file's contents with SHA-256 and return the digest as
+ *         a lowercase hex string. Returns #f if the file can't be opened or
+ *         a read error occurs. */
 static Value vm_sha256_file_value(VM* vm, VmString* path) {
     if (!vm || !path || !path->data) return BOOL_VAL(0);
     FILE* f = fopen(path->data, "rb");
@@ -1041,6 +1168,10 @@ static Value vm_sha256_file_value(VM* vm, VmString* path) {
     return vm_string_value(vm, out, 64);
 }
 
+/** @brief Compile an extended POSIX regex and store it in a free slot of the
+ *         VM's regex_handles table. Returns the slot index (usable as an
+ *         opaque handle Value) or -1 on failure/no free slot; always -1 on
+ *         WASM/Windows where POSIX regex.h isn't available. */
 static int vm_regex_compile_handle(VM* vm, VmString* pattern) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm || !pattern || !pattern->data) return -1;
@@ -1065,6 +1196,8 @@ static int vm_regex_compile_handle(VM* vm, VmString* pattern) {
 #endif
 }
 
+/** @brief Resolve a regex handle Value back to its compiled regex_t*, or NULL
+ *         if the handle is out of range or not active. */
 static void* vm_regex_get(VM* vm, Value handle_val) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm) return NULL;
@@ -1079,6 +1212,7 @@ static void* vm_regex_get(VM* vm, Value handle_val) {
 #endif
 }
 
+/** @brief Free the compiled regex behind a handle Value and clear its slot. */
 static int vm_regex_free_handle(VM* vm, Value handle_val) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm) return 0;
@@ -1099,6 +1233,7 @@ static int vm_regex_free_handle(VM* vm, Value handle_val) {
 #endif
 }
 
+/** @brief Free every still-active compiled regex owned by this VM (called on VM teardown). */
 static void vm_regex_free_all(VM* vm) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm) return;
@@ -1116,6 +1251,9 @@ static void vm_regex_free_all(VM* vm) {
 #endif
 }
 
+/** @brief Run a compiled regex against `subject`. If `boolean_only`, returns
+ *         #t/#f for whether it matched; otherwise returns the matched
+ *         substring, or #f if there's no match. */
 static Value vm_regex_match_value(VM* vm, void* re_ptr, VmString* subject, int boolean_only) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     regex_t* re = (regex_t*)re_ptr;
@@ -1131,6 +1269,9 @@ static Value vm_regex_match_value(VM* vm, void* re_ptr, VmString* subject, int b
 #endif
 }
 
+/** @brief Run a compiled regex against `subject` and return an association
+ *         list with the full match ("full"), its start/end byte offsets, and
+ *         the list of capture group strings ("groups"), or #f on no match. */
 static Value vm_regex_match_groups_value(VM* vm, void* re_ptr, VmString* subject) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     regex_t* re = (regex_t*)re_ptr;
@@ -1162,6 +1303,9 @@ static Value vm_regex_match_groups_value(VM* vm, void* re_ptr, VmString* subject
 #endif
 }
 
+/** @brief Split `subject` into a list of substrings at each successive match
+ *         of the compiled regex (up to 1024 splits), similar to Perl/JS
+ *         string.split(regex). */
 static Value vm_regex_split_value(VM* vm, void* re_ptr, VmString* subject) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     regex_t* re = (regex_t*)re_ptr;
@@ -1195,10 +1339,12 @@ static Value vm_regex_split_value(VM* vm, void* re_ptr, VmString* subject) {
 #endif
 }
 
+/** @brief Gregorian leap-year test. */
 static int vm_time_is_leap_year(int year) {
     return (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
 }
 
+/** @brief Number of days in a given month/year (accounting for leap years). */
 static int vm_time_days_in_month(int year, int month) {
     static const int days[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
     if (month < 1 || month > 12) return 0;
@@ -1206,6 +1352,8 @@ static int vm_time_days_in_month(int year, int month) {
     return days[month - 1];
 }
 
+/** @brief Portable replacement for timegm(): convert a UTC broken-down date/time
+ *         to Unix seconds without depending on a non-standard libc function. */
 static int64_t vm_timegm_portable(int year, int month, int day,
                                   int hour, int minute, int second) {
     static const int days_before_month[] = {
@@ -1226,6 +1374,8 @@ static int64_t vm_timegm_portable(int year, int month, int day,
            (int64_t)minute * 60LL + (int64_t)second;
 }
 
+/** @brief Portable wall-clock time in nanoseconds since the Unix epoch
+ *         (FILETIME on Windows, clock_gettime/gettimeofday on POSIX, 0 on WASM). */
 static int64_t vm_current_time_ns_now(void) {
 #if defined(ESHKOL_VM_WASM)
     return 0;
@@ -1246,6 +1396,9 @@ static int64_t vm_current_time_ns_now(void) {
 #endif
 }
 
+/** @brief Format a nanosecond (or, if the magnitude implies it, millisecond)
+ *         epoch timestamp Value as an ISO-8601 UTC string with millisecond
+ *         precision, e.g. "2026-07-08T12:00:00.000Z". */
 static Value vm_format_iso8601_value(VM* vm, Value ns_val) {
     int64_t ns;
     if (ns_val.type == VAL_INT) {
@@ -1283,6 +1436,9 @@ static Value vm_format_iso8601_value(VM* vm, Value ns_val) {
     return vm_string_value(vm, buf, n);
 }
 
+/** @brief Parse an ISO-8601 date-time string (with optional fractional
+ *         seconds and 'Z' or `+HH:MM`/`-HH:MM` timezone offset) into a
+ *         nanosecond epoch timestamp Value, or #f if malformed or out of range. */
 static Value vm_parse_iso8601_value(VM* vm, VmString* str) {
     (void)vm;
     if (!str || !str->data) return BOOL_VAL(0);
@@ -1336,6 +1492,8 @@ static Value vm_parse_iso8601_value(VM* vm, VmString* str) {
     return INT_VAL(secs * 1000000000LL + (int64_t)ms * 1000000LL);
 }
 
+/** @brief Format an elapsed-time duration as a short human-readable relative
+ *         string ("5s ago", "3m ago", "2h ago", "1d ago"). */
 static Value vm_format_relative_value(VM* vm, int64_t seconds_ago) {
     if (seconds_ago < 0) seconds_ago = 0;
     char buf[32];
@@ -1350,6 +1508,8 @@ static Value vm_format_relative_value(VM* vm, int64_t seconds_ago) {
     return vm_string_value(vm, buf, -1);
 }
 
+/** @brief Compute the local timezone's current UTC offset in seconds by
+ *         comparing localtime() and gmtime() of "now" (0 on WASM). */
 static int64_t vm_local_timezone_offset_seconds(void) {
 #if defined(ESHKOL_VM_WASM)
     return 0;
@@ -1373,6 +1533,9 @@ typedef struct {
     int len;
 } VmLineSlice;
 
+/** @brief Split a string into newline-delimited line slices (borrowed
+ *         pointers into `s`'s data, no copying), up to `cap` lines. Returns
+ *         the line count, or -1 if the line count would exceed `cap`. */
 static int vm_split_lines(VmString* s, VmLineSlice* out, int cap) {
     if (!s || !s->data || cap <= 0) return -1;
     if (s->byte_len == 0) return 0;
@@ -1390,10 +1553,13 @@ static int vm_split_lines(VmString* s, VmLineSlice* out, int cap) {
     return count;
 }
 
+/** @brief Byte-for-byte equality of two line slices. */
 static int vm_line_equal(VmLineSlice a, VmLineSlice b) {
     return a.len == b.len && memcmp(a.data, b.data, (size_t)a.len) == 0;
 }
 
+/** @brief Build a new string consisting of `prefix` followed by `line`'s text
+ *         (used to render diff output lines with a leading `+`/`-`/` `). */
 static Value vm_prefixed_line_value(VM* vm, char prefix, VmLineSlice line) {
     char* buf = (char*)malloc((size_t)line.len + 2);
     if (!buf) return BOOL_VAL(0);
@@ -1405,6 +1571,12 @@ static Value vm_prefixed_line_value(VM* vm, char prefix, VmLineSlice line) {
     return v;
 }
 
+/** @brief Compute a line-based diff between `old_s` and `new_s` using classic
+ *         dynamic-programming LCS (longest common subsequence) over up to
+ *         MAX_LINES=256 lines each, returning a list of prefixed lines
+ *         (`+`/`-`/` ` per vm_prefixed_line_value) reconstructed by
+ *         backtracking through the DP table. Returns #f if either input
+ *         exceeds the line cap. */
 static Value vm_diff_lines_value(VM* vm, VmString* old_s, VmString* new_s) {
     enum { MAX_LINES = 256 };
     VmLineSlice old_lines[MAX_LINES];
@@ -1449,10 +1621,16 @@ static Value vm_diff_lines_value(VM* vm, VmString* old_s, VmString* new_s) {
     return rev;
 }
 
+/** @brief Case-insensitive single-character equality. */
 static int vm_fuzzy_char_equal(char a, char b) {
     return tolower((unsigned char)a) == tolower((unsigned char)b);
 }
 
+/** @brief Fuzzy-match `pattern` as a subsequence of `candidate` (fzf-style),
+ *         scoring consecutive matches and matches at word boundaries (after
+ *         `-`/`_`/space/`/` or at a lower-to-upper camelCase transition)
+ *         higher, and penalizing gaps between matched characters. Returns
+ *         a non-negative score, or -1 if `pattern` isn't a subsequence. */
 static int vm_fuzzy_score(const char* pattern, const char* candidate) {
     if (!pattern || !candidate) return -1;
     if (!*pattern) return 0;
@@ -1479,12 +1657,17 @@ typedef struct {
     Value candidate;
 } VmFuzzyResult;
 
+/** @brief qsort comparator for VmFuzzyResult, sorting by descending score. */
 static int vm_fuzzy_result_cmp(const void* a, const void* b) {
     const VmFuzzyResult* ra = (const VmFuzzyResult*)a;
     const VmFuzzyResult* rb = (const VmFuzzyResult*)b;
     return rb->score - ra->score;
 }
 
+/** @brief Fuzzy-match `pattern` against a list of string `candidates` (up to
+ *         1024), scoring each with vm_fuzzy_score(), sorting by descending
+ *         score, and returning the top `max_results` as a list of
+ *         `(score . candidate)` pairs. `key_fn` is currently unused. */
 static Value vm_fuzzy_match_value(VM* vm, VmString* pattern, Value candidates, Value key_fn, int max_results) {
     (void)key_fn;
     if (!vm || !pattern || !pattern->data || max_results <= 0) return NIL_VAL;
@@ -1522,6 +1705,8 @@ typedef struct {
     char build[128];
 } VmSemver;
 
+/** @brief Parse a run of decimal digits at `*p` into `*out`, advancing `*p`.
+ *         Returns 0 (no advance) if there's no leading digit. */
 static int vm_parse_uint_component(const char** p, int* out) {
     if (!p || !*p || !isdigit((unsigned char)**p)) return 0;
     int value = 0;
@@ -1533,6 +1718,8 @@ static int vm_parse_uint_component(const char** p, int* out) {
     return 1;
 }
 
+/** @brief Parse a semantic version string ("vMAJOR.MINOR.PATCH[-prerelease][+build]")
+ *         into a VmSemver struct. Returns 0 on any malformed input. */
 static int vm_semver_parse_cstr(const char* s, VmSemver* out) {
     if (!s || !out) return 0;
     memset(out, 0, sizeof(*out));
@@ -1562,6 +1749,8 @@ static int vm_semver_parse_cstr(const char* s, VmSemver* out) {
     return *p == '\0';
 }
 
+/** @brief True if a dot-separated prerelease identifier span is all digits
+ *         (numeric identifiers sort before alphanumeric ones in semver). */
 static int vm_semver_identifier_numeric(const char* s, int len) {
     if (len <= 0) return 0;
     for (int i = 0; i < len; i++)
@@ -1569,6 +1758,11 @@ static int vm_semver_identifier_numeric(const char* s, int len) {
     return 1;
 }
 
+/** @brief Compare two semver prerelease strings per the SemVer 2.0 precedence
+ *         rules: dot-separated identifiers compared left to right, numeric
+ *         identifiers compared numerically and sorting before alphanumeric
+ *         ones, a shorter identifier list with equal leading fields sorts
+ *         lower, and no prerelease (empty string) outranks any prerelease. */
 static int vm_semver_compare_prerelease(const char* a, const char* b) {
     if (!a[0] && !b[0]) return 0;
     if (!a[0]) return 1;
@@ -1606,6 +1800,8 @@ static int vm_semver_compare_prerelease(const char* a, const char* b) {
     return 0;
 }
 
+/** @brief Full semver comparison: major, then minor, then patch, then prerelease
+ *         precedence. Returns -1/0/1. */
 static int vm_semver_compare_structs(const VmSemver* a, const VmSemver* b) {
     if (a->major != b->major) return a->major < b->major ? -1 : 1;
     if (a->minor != b->minor) return a->minor < b->minor ? -1 : 1;
@@ -1613,6 +1809,8 @@ static int vm_semver_compare_structs(const VmSemver* a, const VmSemver* b) {
     return vm_semver_compare_prerelease(a->prerelease, b->prerelease);
 }
 
+/** @brief Parse a semver string and return it as an association list of
+ *         major/minor/patch/prerelease/build fields, or #f if malformed. */
 static Value vm_semver_parse_value(VM* vm, VmString* s) {
     VmSemver v;
     if (!s || !s->data || !vm_semver_parse_cstr(s->data, &v)) return BOOL_VAL(0);
@@ -1625,6 +1823,8 @@ static Value vm_semver_parse_value(VM* vm, VmString* s) {
     return result;
 }
 
+/** @brief Parse and compare two semver strings, returning -1/0/1 (or #f if
+ *         either fails to parse). */
 static Value vm_semver_compare_value(VM* vm, VmString* a_s, VmString* b_s) {
     (void)vm;
     VmSemver a, b;
@@ -1637,6 +1837,10 @@ static Value vm_semver_compare_value(VM* vm, VmString* a_s, VmString* b_s) {
     return INT_VAL(0);
 }
 
+/** @brief Test whether `version` satisfies a single npm-style semver range
+ *         expression: comparison operators (`=`,`>`,`>=`,`<`,`<=`), caret
+ *         ranges (`^x.y.z` — compatible within the same major version), or
+ *         tilde ranges (`~x.y.z` — compatible within the same minor version). */
 static int vm_semver_satisfies_range(const VmSemver* version, const char* range) {
     while (*range && isspace((unsigned char)*range)) range++;
     char op[3] = "";
@@ -1679,6 +1883,8 @@ static int vm_semver_satisfies_range(const VmSemver* version, const char* range)
     return 0;
 }
 
+/** @brief Parse `version_s` and test it against range expression `range_s`,
+ *         returning #t/#f (or #f if `version_s` fails to parse). */
 static Value vm_semver_satisfies_value(VM* vm, VmString* version_s, VmString* range_s) {
     (void)vm;
     VmSemver version;
@@ -1687,6 +1893,9 @@ static Value vm_semver_satisfies_value(VM* vm, VmString* version_s, VmString* ra
     return BOOL_VAL(vm_semver_satisfies_range(&version, range_s->data));
 }
 
+/** @brief Allocate a free slot in the VM's line_readers table for buffered
+ *         async line-at-a-time reading of file descriptor `fd`. Returns the
+ *         slot index (handle), or -1 if no slot is free. */
 static int vm_line_reader_start(VM* vm, int fd) {
     if (!vm || fd < 0) return -1;
     for (int i = 1; i < (int)(sizeof(vm->line_readers) / sizeof(vm->line_readers[0])); i++) {
@@ -1699,6 +1908,11 @@ static int vm_line_reader_start(VM* vm, int fd) {
     return -1;
 }
 
+/** @brief Non-blocking poll of a line reader: returns the next complete line
+ *         already buffered, otherwise attempts a non-blocking read() to pull
+ *         in more data and re-checks for a newline; if the internal buffer
+ *         fills without a newline, flushes it as a line anyway. Returns #f
+ *         if no line is available yet. */
 static Value vm_line_reader_poll_value(VM* vm, int handle) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     if (!vm || handle <= 0 ||
@@ -1759,12 +1973,15 @@ static Value vm_line_reader_poll_value(VM* vm, int handle) {
 
 static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth);
 
+/** @brief True if `handle` refers to an active LRU cache in the VM's table. */
 static int vm_lru_cache_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->lru_caches) / sizeof(vm->lru_caches[0])) &&
            vm->lru_caches[handle].active;
 }
 
+/** @brief Linear-search a cache's entries for one matching `key` (deep
+ *         equality). Returns the entry index, or -1 if not found. */
 static int vm_lru_find_entry(VM* vm, int handle, Value key) {
     if (!vm_lru_cache_valid(vm, handle)) return -1;
     for (int i = 0; i < (int)(sizeof(vm->lru_caches[handle].entries) /
@@ -1776,6 +1993,8 @@ static int vm_lru_find_entry(VM* vm, int handle, Value key) {
     return -1;
 }
 
+/** @brief Find a free entry slot in the cache, or if full, evict and return
+ *         the slot with the oldest (smallest) access tick — the LRU victim. */
 static int vm_lru_alloc_entry(VM* vm, int handle) {
     if (!vm_lru_cache_valid(vm, handle)) return -1;
     for (int i = 0; i < vm->lru_caches[handle].max_size; i++) {
@@ -1793,6 +2012,9 @@ static int vm_lru_alloc_entry(VM* vm, int handle) {
     return victim;
 }
 
+/** @brief Allocate a new LRU cache (capacity clamped to [1,64]) in a free
+ *         slot of the VM's lru_caches table. Returns the handle, or -1 if
+ *         no slot is free. */
 static int vm_lru_create(VM* vm, int max_size) {
     if (!vm) return -1;
     if (max_size < 1) max_size = 1;
@@ -1808,6 +2030,8 @@ static int vm_lru_create(VM* vm, int max_size) {
     return -1;
 }
 
+/** @brief Look up `key` in the cache, bumping its access tick (marking it
+ *         most-recently-used) on a hit. Returns #f on a miss. */
 static Value vm_lru_get_value(VM* vm, int handle, Value key) {
     int idx = vm_lru_find_entry(vm, handle, key);
     if (idx < 0) return BOOL_VAL(0);
@@ -1815,6 +2039,9 @@ static Value vm_lru_get_value(VM* vm, int handle, Value key) {
     return vm->lru_caches[handle].entries[idx].value;
 }
 
+/** @brief Insert or update `key`→`value` in the cache, evicting the LRU
+ *         entry if the cache is full and `key` is new. Returns 1 on success,
+ *         0 if the handle is invalid. */
 static int vm_lru_set_value(VM* vm, int handle, Value key, Value value) {
     if (!vm_lru_cache_valid(vm, handle)) return 0;
     int idx = vm_lru_find_entry(vm, handle, key);
@@ -1831,12 +2058,15 @@ static int vm_lru_set_value(VM* vm, int handle, Value key, Value value) {
     return 1;
 }
 
+/** @brief True if `handle` refers to an active event emitter in the VM's table. */
 static int vm_event_emitter_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->event_emitters) / sizeof(vm->event_emitters[0])) &&
            vm->event_emitters[handle].active;
 }
 
+/** @brief Allocate a new event emitter in a free slot of the VM's
+ *         event_emitters table. Returns the handle, or -1 if none free. */
 static int vm_event_emitter_create(VM* vm) {
     if (!vm) return -1;
     for (int i = 1; i < (int)(sizeof(vm->event_emitters) / sizeof(vm->event_emitters[0])); i++) {
@@ -1848,6 +2078,10 @@ static int vm_event_emitter_create(VM* vm) {
     return -1;
 }
 
+/** @brief Register `handler` (a closure) as a listener for `event` on the
+ *         given emitter, optionally auto-removing after the first invocation
+ *         (`once`). Returns 1 on success, 0 if the handle/handler is invalid
+ *         or the listener table is full. */
 static int vm_event_listener_add(VM* vm, int handle, Value event, Value handler, int once) {
     if (!vm_event_emitter_valid(vm, handle) || handler.type != VAL_CLOSURE)
         return 0;
@@ -1863,6 +2097,8 @@ static int vm_event_listener_add(VM* vm, int handle, Value event, Value handler,
     return 0;
 }
 
+/** @brief Remove all listeners on `handle` that match both `event` and
+ *         `handler` (deep equality). Returns the number removed. */
 static int vm_event_listener_remove(VM* vm, int handle, Value event, Value handler) {
     if (!vm_event_emitter_valid(vm, handle)) return 0;
     int removed = 0;
@@ -1879,6 +2115,8 @@ static int vm_event_listener_remove(VM* vm, int handle, Value event, Value handl
     return removed;
 }
 
+/** @brief Copy up to `max_args` elements of a Scheme list into a flat C
+ *         array, for passing as native call arguments. Returns the count copied. */
 static int vm_event_args_from_list(VM* vm, Value args_list, Value* args, int max_args) {
     int argc = 0;
     Value cur = args_list;
@@ -1891,6 +2129,10 @@ static int vm_event_args_from_list(VM* vm, Value args_list, Value* args, int max
     return argc;
 }
 
+/** @brief Synchronously invoke every listener registered for `event` on
+ *         `handle`, passing `args_list`'s elements as call arguments, and
+ *         removing any that were registered with `once`. Returns the number
+ *         of listeners invoked, or -1 for an invalid handle. */
 static int vm_event_emit(VM* vm, int handle, Value event, Value args_list) {
     if (!vm_event_emitter_valid(vm, handle)) return -1;
     Value args[16];
@@ -1914,12 +2156,15 @@ static int vm_event_emit(VM* vm, int handle, Value event, Value args_list) {
     return invoked;
 }
 
+/** @brief True if `handle` refers to an active bounded channel in the VM's table. */
 static int vm_channel_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->channels) / sizeof(vm->channels[0])) &&
            vm->channels[handle].active;
 }
 
+/** @brief Allocate a new fixed-capacity ring-buffer channel (capacity clamped
+ *         to [1,64]) in a free slot of the VM's channels table. */
 static int vm_channel_create(VM* vm, int capacity) {
     if (!vm) return -1;
     if (capacity < 1) capacity = 1;
@@ -1934,6 +2179,8 @@ static int vm_channel_create(VM* vm, int capacity) {
     return -1;
 }
 
+/** @brief Non-blocking send: push `value` onto the channel's ring buffer.
+ *         Returns 0 (without blocking) if the channel is closed or full. */
 static int vm_channel_send_value(VM* vm, int handle, Value value) {
     if (!vm_channel_valid(vm, handle) || vm->channels[handle].closed)
         return 0;
@@ -1946,6 +2193,8 @@ static int vm_channel_send_value(VM* vm, int handle, Value value) {
     return 1;
 }
 
+/** @brief Non-blocking receive: pop the oldest value from the channel's ring
+ *         buffer. Returns #f if empty. */
 static Value vm_channel_receive_value(VM* vm, int handle) {
     if (!vm_channel_valid(vm, handle) || vm->channels[handle].count <= 0)
         return BOOL_VAL(0);
@@ -1957,12 +2206,15 @@ static Value vm_channel_receive_value(VM* vm, int handle) {
     return value;
 }
 
+/** @brief True if `handle` refers to an active mutex in the VM's table. */
 static int vm_mutex_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->mutexes) / sizeof(vm->mutexes[0])) &&
            vm->mutexes[handle].active;
 }
 
+/** @brief Allocate a new cooperative (non-OS-level) recursive mutex in a free
+ *         slot of the VM's mutexes table. Returns the handle, or -1 if none free. */
 static int vm_mutex_create(VM* vm) {
     if (!vm) return -1;
     for (int i = 1; i < (int)(sizeof(vm->mutexes) / sizeof(vm->mutexes[0])); i++) {
@@ -1974,6 +2226,8 @@ static int vm_mutex_create(VM* vm) {
     return -1;
 }
 
+/** @brief Acquire the (cooperative, recursion-counted) mutex; always succeeds
+ *         immediately since this VM is single-threaded per call. */
 static int vm_mutex_lock_handle(VM* vm, int handle) {
     if (!vm_mutex_valid(vm, handle)) return 0;
     vm->mutexes[handle].locked = 1;
@@ -1981,6 +2235,8 @@ static int vm_mutex_lock_handle(VM* vm, int handle) {
     return 1;
 }
 
+/** @brief Release one recursive acquisition of the mutex; clears the locked
+ *         flag once the recursion count reaches zero. Returns 0 if not held. */
 static int vm_mutex_unlock_handle(VM* vm, int handle) {
     if (!vm_mutex_valid(vm, handle) || vm->mutexes[handle].recursion <= 0)
         return 0;
@@ -1990,12 +2246,15 @@ static int vm_mutex_unlock_handle(VM* vm, int handle) {
     return 1;
 }
 
+/** @brief True if `handle` refers to an active condition variable in the VM's table. */
 static int vm_condvar_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->condvars) / sizeof(vm->condvars[0])) &&
            vm->condvars[handle].active;
 }
 
+/** @brief Allocate a new condition variable in a free slot of the VM's
+ *         condvars table. Returns the handle, or -1 if none free. */
 static int vm_condvar_create(VM* vm) {
     if (!vm) return -1;
     for (int i = 1; i < (int)(sizeof(vm->condvars) / sizeof(vm->condvars[0])); i++) {
@@ -2007,12 +2266,17 @@ static int vm_condvar_create(VM* vm) {
     return -1;
 }
 
+/** @brief True if `handle` refers to an allocated timer in the VM's table. */
 static int vm_timer_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->timers) / sizeof(vm->timers[0])) &&
            vm->timers[handle].allocated;
 }
 
+/** @brief Register a one-shot or repeating timer that invokes `callback`
+ *         after `delay_ms` (polled cooperatively by vm_timers_poll_due(),
+ *         not driven by OS timer interrupts). Returns the handle, or -1 on
+ *         invalid args / no free slot. */
 static int vm_timer_create(VM* vm, int64_t delay_ms, Value callback, int repeating) {
     if (!vm || callback.type != VAL_CLOSURE) return -1;
     if (delay_ms < 0) delay_ms = 0;
@@ -2031,12 +2295,17 @@ static int vm_timer_create(VM* vm, int64_t delay_ms, Value callback, int repeati
     return -1;
 }
 
+/** @brief Cancel and free a timer's slot. */
 static int vm_timer_cancel(VM* vm, int handle) {
     if (!vm_timer_valid(vm, handle)) return 0;
     memset(&vm->timers[handle], 0, sizeof(vm->timers[handle]));
     return 1;
 }
 
+/** @brief Scan all active timers and synchronously invoke the callback of
+ *         any whose due time has passed, rescheduling repeating timers or
+ *         deactivating one-shot ones. Re-entrancy-guarded via
+ *         `vm->polling_timers` since callbacks may themselves trigger polling. */
 static void vm_timers_poll_due(VM* vm) {
     if (!vm || vm->polling_timers) return;
     vm->polling_timers = 1;
@@ -2060,6 +2329,9 @@ static void vm_timers_poll_due(VM* vm) {
     vm->polling_timers = 0;
 }
 
+/** @brief Register a zero-argument closure to run on VM exit (like C's
+ *         atexit()). Returns 0 if the handler table is full or `thunk` isn't
+ *         a closure. */
 static int vm_exit_handler_add(VM* vm, Value thunk) {
     if (!vm || thunk.type != VAL_CLOSURE ||
         vm->n_exit_handlers >= (int)(sizeof(vm->exit_handlers) / sizeof(vm->exit_handlers[0])))
@@ -2068,6 +2340,8 @@ static int vm_exit_handler_add(VM* vm, Value thunk) {
     return 1;
 }
 
+/** @brief Run all registered exit handlers in LIFO order, exactly once (guarded
+ *         by `exit_handlers_drained`). */
 static void vm_run_exit_handlers(VM* vm) {
     if (!vm || vm->exit_handlers_drained) return;
     vm->exit_handlers_drained = 1;
@@ -2078,6 +2352,9 @@ static void vm_run_exit_handlers(VM* vm) {
     vm->n_exit_handlers = 0;
 }
 
+/** @brief Look up a symbol by name in the running process's dynamic symbol
+ *         table (dlsym RTLD_DEFAULT, or a cached self-handle if RTLD_DEFAULT
+ *         isn't available). Always NULL on Windows/WASM. */
 static void* vm_runtime_symbol(const char* name) {
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
     if (!name) return NULL;
@@ -2094,19 +2371,24 @@ static void* vm_runtime_symbol(const char* name) {
 #endif
 }
 
+/** @brief Resolve the optional `eshkol_sqlite_exec` runtime hook, if the host
+ *         binary links a SQLite bridge. */
 static VmSqliteExecFn vm_sqlite_exec_symbol(void) {
     return (VmSqliteExecFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_exec");
 }
 
+/** @brief Resolve the optional `eshkol_sqlite_last_insert_rowid` runtime hook. */
 static VmSqliteLastInsertIdFn vm_sqlite_last_insert_id_symbol(void) {
     return (VmSqliteLastInsertIdFn)(uintptr_t)
         vm_runtime_symbol("eshkol_sqlite_last_insert_rowid");
 }
 
+/** @brief Resolve the optional `eshkol_sqlite_changes` runtime hook. */
 static VmSqliteChangesFn vm_sqlite_changes_symbol(void) {
     return (VmSqliteChangesFn)(uintptr_t)vm_runtime_symbol("eshkol_sqlite_changes");
 }
 
+/** @brief True if `handle` refers to an active, non-NULL loaded dynamic library handle. */
 static int vm_dlopen_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->dynamic_libraries) / sizeof(vm->dynamic_libraries[0])) &&
@@ -2114,6 +2396,9 @@ static int vm_dlopen_valid(VM* vm, int handle) {
            vm->dynamic_libraries[handle].handle;
 }
 
+/** @brief Store a native dlopen() handle in a free slot of the VM's
+ *         dynamic_libraries table, returning its VM-level handle index. If
+ *         the table is full, closes `handle` immediately and returns -1. */
 static int vm_dlopen_store(VM* vm, void* handle) {
     if (!vm || !handle) return -1;
     for (int i = 1; i < (int)(sizeof(vm->dynamic_libraries) /
@@ -2129,6 +2414,8 @@ static int vm_dlopen_store(VM* vm, void* handle) {
     return -1;
 }
 
+/** @brief dlclose() every still-active dynamic library owned by this VM
+ *         (called on VM teardown). */
 static void vm_dlopen_close_all(VM* vm) {
     if (!vm) return;
 #if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
@@ -2144,6 +2431,9 @@ static void vm_dlopen_close_all(VM* vm) {
 #endif
 }
 
+/** @brief Append `len` bytes of `s` to the fixed-capacity buffer `out` at
+ *         `*pos`, NUL-terminating, and advance `*pos`. Returns 0 (no write)
+ *         if it would overflow `cap`. */
 static int vm_format_append(char* out, size_t cap, size_t* pos, const char* s, size_t len) {
     if (!out || !pos || !s) return 0;
     if (*pos + len >= cap) return 0;
@@ -2153,10 +2443,14 @@ static int vm_format_append(char* out, size_t cap, size_t* pos, const char* s, s
     return 1;
 }
 
+/** @brief vm_format_append() convenience wrapper for a NUL-terminated C string. */
 static int vm_format_append_cstr(char* out, size_t cap, size_t* pos, const char* s) {
     return vm_format_append(out, cap, pos, s ? s : "", s ? strlen(s) : 0);
 }
 
+/** @brief Format a single Value according to a `~`-format directive character
+ *         (`d` decimal, `x` hex, `f` float, `s` write-style quoted string,
+ *         `a`/default display-style) and append the result to `out`. */
 static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
                                   Value value, char directive) {
     char buf[128];
@@ -2205,6 +2499,8 @@ static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
     }
 }
 
+/** @brief Pop the next argument off a Scheme argument list, advancing `*args`
+ *         to its tail. Returns 0 if the list is exhausted or malformed. */
 static int vm_format_next_arg(VM* vm, Value* args, Value* out) {
     if (!vm || !args || !out || args->type != VAL_PAIR || !is_valid_heap_ptr(vm, args->as.ptr))
         return 0;
@@ -2215,6 +2511,11 @@ static int vm_format_next_arg(VM* vm, Value* args, Value* out) {
     return 1;
 }
 
+/** @brief Common Lisp/Scheme `format`-style directive interpreter: expands
+ *         `~a`/`~s`/`~d`/`~x`/`~f` placeholders in `fmt` by consuming
+ *         successive values from `args`, `~%` as a newline, and `~~` as a
+ *         literal tilde, into a 16KB-capped output buffer. Returns #f on
+ *         malformed format strings or buffer overflow. */
 static Value vm_format_list_value(VM* vm, VmString* fmt, Value args) {
     if (!fmt || !fmt->data) return BOOL_VAL(0);
     char out[16384];
@@ -2250,12 +2551,16 @@ static Value vm_format_list_value(VM* vm, VmString* fmt, Value args) {
     return vm_string_value(vm, out, (int64_t)pos);
 }
 
+/** @brief True if `handle` refers to an active Yoga-style flexbox layout node. */
 static int vm_yoga_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])) &&
            vm->yoga_nodes[handle].active;
 }
 
+/** @brief Allocate a new flexbox layout node in a free slot of the VM's
+ *         yoga_nodes table, with default flex-shrink 1.0. Returns the
+ *         handle, or -1 if none free. */
 static int vm_yoga_alloc(VM* vm) {
     for (int i = 1; i < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])); i++) {
         if (!vm->yoga_nodes[i].active) {
@@ -2270,11 +2575,18 @@ static int vm_yoga_alloc(VM* vm) {
     return -1;
 }
 
+/** @brief Compare a VmString against a C string literal for exact equality. */
 static int vm_yoga_string_eq(VmString* s, const char* lit) {
     return s && s->data && lit && s->byte_len == (int64_t)strlen(lit) &&
            memcmp(s->data, lit, (size_t)s->byte_len) == 0;
 }
 
+/** @brief Recursively compute a simplified single-axis flexbox layout for a
+ *         node and its children: positions the node at (`left`,`top`) within
+ *         `width`x`height` (respecting margin/padding), distributes fixed
+ *         and flex-grow children along the main axis (row or column per
+ *         `flex_direction`) with `gap` spacing, and stretches children along
+ *         the cross axis when unspecified, recursing into each child. */
 static void vm_yoga_layout_node(VM* vm, int handle,
                                 double left, double top,
                                 double width, double height) {
@@ -2336,12 +2648,16 @@ static void vm_yoga_layout_node(VM* vm, int handle,
     }
 }
 
+/** @brief True if `handle` refers to an active listening HTTP server socket. */
 static int vm_http_server_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->http_servers) / sizeof(vm->http_servers[0])) &&
            vm->http_servers[handle].active;
 }
 
+/** @brief Register a listening socket fd as an HTTP server in a free slot of
+ *         the VM's http_servers table (client_fd starts unset). Returns the
+ *         handle, or -1 if none free. */
 static int vm_http_server_store(VM* vm, int listen_fd, int port) {
     for (int i = 1; i < (int)(sizeof(vm->http_servers) / sizeof(vm->http_servers[0])); i++) {
         if (!vm->http_servers[i].active) {
@@ -2355,6 +2671,9 @@ static int vm_http_server_store(VM* vm, int listen_fd, int port) {
     return -1;
 }
 
+/** @brief Parse a minimal `http://host[:port][/path]` URL into separate host,
+ *         port (default 80), and path (default "/") buffers. Returns 0 on
+ *         any malformed input or buffer-capacity overflow. */
 static int vm_http_parse_url(VmString* url, char* host, size_t host_cap,
                              int* port, char* path, size_t path_cap) {
     if (!url || !url->data || !host || !port || !path || host_cap == 0 || path_cap == 0)
@@ -2393,6 +2712,10 @@ static int vm_http_parse_url(VmString* url, char* host, size_t host_cap,
     return 1;
 }
 
+/** @brief Resolve `host`/`port` via getaddrinfo and open a blocking TCP
+ *         connection with a send/receive timeout, trying each resolved
+ *         address in turn. Returns the connected fd, or -1 on failure
+ *         (always -1 on WASM/Windows). */
 static int vm_http_connect(const char* host, int port, int timeout_ms) {
 #if !defined(ESHKOL_VM_WASM) && !defined(_WIN32)
     char port_buf[16];
@@ -2424,6 +2747,8 @@ static int vm_http_connect(const char* host, int port, int timeout_ms) {
 #endif
 }
 
+/** @brief Build a `(status headers body)` list Value representing a parsed
+ *         HTTP response. Returns #f if either string allocation fails. */
 static Value vm_http_response_value(VM* vm, int status,
                                     const char* headers, int64_t headers_len,
                                     const char* body, int64_t body_len) {
@@ -2438,6 +2763,8 @@ static Value vm_http_response_value(VM* vm, int status,
     return result;
 }
 
+/** @brief Parse a `ws://host[:port][/path]` URL by rewriting it to an
+ *         equivalent `http://` URL and delegating to vm_http_parse_url(). */
 static int vm_ws_parse_url(VmString* url, char* host, size_t host_cap,
                            int* port, char* path, size_t path_cap) {
     if (!url || !url->data) return 0;
@@ -2458,6 +2785,7 @@ static int vm_ws_parse_url(VmString* url, char* host, size_t host_cap,
     return vm_http_parse_url(&tmp, host, host_cap, port, path, path_cap);
 }
 
+/** @brief True if `handle` refers to an active, not-yet-closed WebSocket client. */
 static int vm_ws_valid(VM* vm, int handle) {
     return vm && handle > 0 &&
            handle < (int)(sizeof(vm->websocket_clients) / sizeof(vm->websocket_clients[0])) &&
@@ -2465,6 +2793,9 @@ static int vm_ws_valid(VM* vm, int handle) {
            !vm->websocket_clients[handle].closed;
 }
 
+/** @brief Register a connected socket fd as a WebSocket client in a free slot
+ *         of the VM's websocket_clients table. Returns the handle, or -1 if
+ *         none free. */
 static int vm_ws_store(VM* vm, int fd) {
     for (int i = 1; i < (int)(sizeof(vm->websocket_clients) / sizeof(vm->websocket_clients[0])); i++) {
         if (!vm->websocket_clients[i].active) {
@@ -2477,6 +2808,8 @@ static int vm_ws_store(VM* vm, int fd) {
     return -1;
 }
 
+/** @brief Loop send() until all `len` bytes are written to `fd`. Returns 0 on
+ *         any send failure. */
 static int vm_ws_send_all(int fd, const void* data, size_t len) {
     const char* p = (const char*)data;
     size_t sent_total = 0;
@@ -2488,6 +2821,9 @@ static int vm_ws_send_all(int fd, const void* data, size_t len) {
     return 1;
 }
 
+/** @brief Encode and send one RFC 6455 WebSocket frame (FIN bit set, given
+ *         opcode, RFC-mandated masked payload length encoding with a
+ *         zero mask key) followed by the payload. */
 static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
     unsigned char header[14];
     int hlen = 0;
@@ -2510,6 +2846,8 @@ static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
            (len == 0 || vm_ws_send_all(fd, data, len));
 }
 
+/** @brief True if `language` is one of the names recognized by the built-in
+ *         line-heuristic "tree-sitter-lite" source parser. */
 static int vm_ts_language_supported(const char* language) {
     static const char* names[] = {
         "javascript", "js", "typescript", "ts", "python", "py", "rust", "rs",
@@ -2523,6 +2861,9 @@ static int vm_ts_language_supported(const char* language) {
     return 0;
 }
 
+/** @brief Return the conventional root-node type name for a language's
+ *         syntax tree ("module", "program", "translation_unit", or the
+ *         generic "source_file" fallback). */
 static const char* vm_ts_root_type(const char* language) {
     if (!language) return "source_file";
     if (strcmp(language, "python") == 0 || strcmp(language, "py") == 0)
@@ -2536,11 +2877,13 @@ static const char* vm_ts_root_type(const char* language) {
     return "source_file";
 }
 
+/** @brief True if the length-delimited span `s[0..len)` starts with `prefix`. */
 static int vm_ts_starts_with(const char* s, int64_t len, const char* prefix) {
     size_t n = prefix ? strlen(prefix) : 0;
     return s && prefix && len >= (int64_t)n && memcmp(s, prefix, n) == 0;
 }
 
+/** @brief True if the length-delimited span `s[0..len)` contains `needle` as a substring. */
 static int vm_ts_contains(const char* s, int64_t len, const char* needle) {
     size_t n = needle ? strlen(needle) : 0;
     if (!s || !needle || n == 0 || len < (int64_t)n) return 0;
@@ -2550,6 +2893,12 @@ static int vm_ts_contains(const char* s, int64_t len, const char* needle) {
     return 0;
 }
 
+/** @brief Line-heuristic syntax classifier used by the lightweight built-in
+ *         "tree-sitter-lite" parser: after trimming leading whitespace,
+ *         recognizes common per-language top-level constructs (function/class
+ *         definitions, import statements, `#include`, Scheme `(define ...)`)
+ *         by simple prefix/substring matching. Returns a node-type string, or
+ *         the generic "line" fallback, or NULL for a blank line. */
 static const char* vm_ts_classify_line(const char* language, const char* line, int64_t len) {
     while (len > 0 && isspace((unsigned char)*line)) {
         line++;
@@ -2588,6 +2937,10 @@ static const char* vm_ts_classify_line(const char* language, const char* line, i
     return "line";
 }
 
+/** @brief Allocate a new syntax-tree node (byte range `[start,end)`, `type`
+ *         tag) as a child of `parent` within `tree`, in a free slot of the
+ *         VM's ts_nodes table (slots 0-15 reserved). Returns the handle, or
+ *         -1 if none free. */
 static int vm_ts_alloc_node(VM* vm, int tree, int parent, int64_t start,
                             int64_t end, const char* type) {
     if (!vm || !type) return -1;
@@ -2605,6 +2958,7 @@ static int vm_ts_alloc_node(VM* vm, int tree, int parent, int64_t start,
     return -1;
 }
 
+/** @brief Reverse a proper Scheme list, allocating a fresh chain of cons cells. */
 static Value vm_reverse_list(VM* vm, Value list) {
     Value out = NIL_VAL;
     Value cur = list;
@@ -2617,6 +2971,10 @@ static Value vm_reverse_list(VM* vm, Value list) {
     return out;
 }
 
+/** @brief For the root node of a "tree-sitter-lite" tree, split the source
+ *         into lines and lazily materialize one child node per non-blank
+ *         line (classified via vm_ts_classify_line()), returning them as a
+ *         list. Non-root nodes currently have no children (returns '()). */
 static Value vm_ts_node_children_value(VM* vm, int node_handle) {
     if (!vm || node_handle <= 0 ||
         node_handle >= (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) ||
@@ -2653,6 +3011,8 @@ static Value vm_ts_node_children_value(VM* vm, int node_handle) {
     return vm_reverse_list(vm, result);
 }
 
+/** @brief Extract a tree-sitter-style `@capture-name` from a query pattern
+ *         string into `out`, defaulting to "match" if no `@name` is present. */
 static void vm_ts_capture_name(const char* pattern, char* out, size_t out_cap) {
     if (!out || out_cap == 0) return;
     snprintf(out, out_cap, "match");
@@ -2668,6 +3028,12 @@ static void vm_ts_capture_name(const char* pattern, char* out, size_t out_cap) {
     out[n] = '\0';
 }
 
+/** @brief Heuristically test whether a simplified query `pattern` matches a
+ *         classified line: matches on node-type keywords
+ *         (function/definition/class/import) requiring `type` to contain the
+ *         same keyword, an "identifier" pattern requiring an alphabetic/`_`
+ *         character in the text, or otherwise a plain substring match of
+ *         `pattern` against the line text. */
 static int vm_ts_query_matches_text(const char* pattern, const char* type,
                                     const char* text, int64_t text_len) {
     if (!pattern || !*pattern) return 1;
@@ -2687,6 +3053,8 @@ static int vm_ts_query_matches_text(const char* pattern, const char* type,
     return vm_ts_contains(text, text_len, pattern);
 }
 
+/** @brief Build an association list describing one query match: capture
+ *         name, node type, byte start/end, and matched text. */
 static Value vm_ts_match_value(VM* vm, const char* capture, const char* type,
                                int64_t start, int64_t end, const char* text,
                                int64_t text_len) {
@@ -2699,6 +3067,8 @@ static Value vm_ts_match_value(VM* vm, const char* capture, const char* type,
     return match;
 }
 
+/** @brief Look up `key` (by deep equality) in an association-list-shaped
+ *         Value, writing its value into `*out`. Returns 1 on a hit. */
 static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     Value cur = obj;
     while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
@@ -2718,6 +3088,8 @@ static int vm_json_alist_ref(VM* vm, Value obj, Value key, Value* out) {
     return 0;
 }
 
+/** @brief Look up the element at `index` in a proper list Value, writing it
+ *         into `*out`. Returns 1 on a hit. */
 static int vm_json_list_ref(VM* vm, Value obj, int index, Value* out) {
     if (index < 0) return 0;
     Value cur = obj;
@@ -2735,6 +3107,9 @@ static int vm_json_list_ref(VM* vm, Value obj, int index, Value* out) {
     return 0;
 }
 
+/** @brief Walk a JSON-like Value (nested alists/lists/vectors) along a `path`
+ *         list of keys/indices, returning the nested value found, or
+ *         `default_value` if any step of the path doesn't resolve. */
 static Value vm_json_get_in_value(VM* vm, Value obj, Value path, Value default_value) {
     Value current = obj;
     Value cur_path = path;
@@ -2767,11 +3142,15 @@ static Value vm_json_get_in_value(VM* vm, Value obj, Value path, Value default_v
     return current;
 }
 
+/** @brief True if `key` is present as a key in association-list `alist`. */
 static int vm_json_key_in_alist(VM* vm, Value alist, Value key) {
     Value ignored = NIL_VAL;
     return vm_json_alist_ref(vm, alist, key, &ignored);
 }
 
+/** @brief Shallow-merge two association lists: entries of `a` whose key
+ *         appears in `b` are dropped, then all of `b`'s entries are
+ *         appended, so `b` wins on key conflicts (up to 128 total entries). */
 static Value vm_json_merge_value(VM* vm, Value a, Value b) {
     Value entries[128];
     int n = 0;
@@ -2809,6 +3188,8 @@ typedef struct {
     int ok;
 } VmJsonBuffer;
 
+/** @brief Append a NUL-terminated string to a fixed-capacity VmJsonBuffer,
+ *         marking `out->ok = 0` on overflow instead of writing past the end. */
 static void vm_json_append(VmJsonBuffer* out, const char* s) {
     if (!out || !out->ok || !s) return;
     size_t len = strlen(s);
@@ -2821,6 +3202,7 @@ static void vm_json_append(VmJsonBuffer* out, const char* s) {
     out->data[out->pos] = '\0';
 }
 
+/** @brief Append one character to a VmJsonBuffer, marking `out->ok = 0` on overflow. */
 static void vm_json_append_char(VmJsonBuffer* out, char c) {
     if (!out || !out->ok || out->pos + 1 >= out->cap) {
         if (out) out->ok = 0;
@@ -2830,6 +3212,7 @@ static void vm_json_append_char(VmJsonBuffer* out, char c) {
     out->data[out->pos] = '\0';
 }
 
+/** @brief Emit `level * indent` space characters for pretty-printed JSON indentation. */
 static void vm_json_indent(VmJsonBuffer* out, int level, int indent) {
     for (int i = 0; i < level * indent; i++)
         vm_json_append_char(out, ' ');
@@ -2837,6 +3220,9 @@ static void vm_json_indent(VmJsonBuffer* out, int level, int indent) {
 
 static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int level, int indent);
 
+/** @brief Heuristic for JSON serialization: a non-empty proper list whose
+ *         every element is a `(string-key . value)` pair is treated as a
+ *         JSON object; otherwise (or if empty) it's serialized as an array. */
 static int vm_json_list_is_object(VM* vm, Value list) {
     int saw = 0;
     Value cur = list;
@@ -2854,6 +3240,9 @@ static int vm_json_list_is_object(VM* vm, Value list) {
     return saw && cur.type == VAL_NIL;
 }
 
+/** @brief Write a Scheme string Value as a JSON string literal, escaping
+ *         `"`, `\`, and control characters (`\n`/`\r`/`\t` as short escapes,
+ *         other control chars as `\u00XX`). */
 static void vm_json_write_string(VM* vm, VmJsonBuffer* out, Value value) {
     VmString* s = vm_value_as_string(vm, value);
     vm_json_append_char(out, '"');
@@ -2881,6 +3270,9 @@ static void vm_json_write_string(VM* vm, VmJsonBuffer* out, Value value) {
     vm_json_append_char(out, '"');
 }
 
+/** @brief Serialize a Scheme list as a JSON array, recursing into
+ *         vm_json_write_value() for each element and applying pretty-print
+ *         indentation when `indent > 0`. */
 static void vm_json_write_array(VM* vm, VmJsonBuffer* out, Value list, int level, int indent) {
     vm_json_append_char(out, '[');
     Value cur = list;
@@ -2904,6 +3296,9 @@ static void vm_json_write_array(VM* vm, VmJsonBuffer* out, Value list, int level
     vm_json_append_char(out, ']');
 }
 
+/** @brief Serialize an association list as a JSON object, writing each
+ *         `(string-key . value)` pair as `"key": value`, with pretty-print
+ *         indentation when `indent > 0`. */
 static void vm_json_write_object(VM* vm, VmJsonBuffer* out, Value alist, int level, int indent) {
     vm_json_append_char(out, '{');
     Value cur = alist;
@@ -2935,6 +3330,10 @@ static void vm_json_write_object(VM* vm, VmJsonBuffer* out, Value alist, int lev
     vm_json_append_char(out, '}');
 }
 
+/** @brief Central JSON serialization dispatcher: maps nil→null, booleans,
+ *         integers, floats (%.17g round-trip precision), strings (escaped),
+ *         lists (object or array per vm_json_list_is_object()), and vectors
+ *         (always arrays) to their JSON text form; anything else becomes "null". */
 static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int level, int indent) {
     char num[64];
     switch (value.type) {
@@ -2989,6 +3388,9 @@ static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int leve
     }
 }
 
+/** @brief Serialize `value` to a JSON string (indent clamped to [0,8] spaces
+ *         per level; 0 means compact single-line output), into a 16KB-capped
+ *         buffer. Returns #f on overflow. */
 static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
     char buf[16384];
     VmJsonBuffer out = {buf, sizeof(buf), 0, 1};
@@ -3000,10 +3402,14 @@ static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
     return vm_string_value(vm, out.data, (int64_t)out.pos);
 }
 
+/** @brief Resolve a named optional compression runtime hook (e.g. a
+ *         gzip/zlib bridge), if the host binary links one. */
 static VmCompressionFn vm_compression_symbol(const char* name) {
     return (VmCompressionFn)(uintptr_t)vm_runtime_symbol(name);
 }
 
+/** @brief True if the optional `eshkol_compression_available` runtime hook is
+ *         linked and reports support. */
 static int vm_compression_available(void) {
     typedef int32_t (*VmCompressionAvailableFn)(void);
     VmCompressionAvailableFn fn =
@@ -3012,6 +3418,8 @@ static int vm_compression_available(void) {
     return fn && fn();
 }
 
+/** @brief Extract a raw byte pointer/length (bounded to int32_t) from a
+ *         string or bytevector Value for passing to a compression FFI hook. */
 static int vm_compression_input(VM* vm, Value value, const char** data, int32_t* len) {
     VmString* s = vm_value_as_string(vm, value);
     if (s && s->data && s->byte_len >= 0 && s->byte_len <= INT32_MAX) {
@@ -3028,6 +3436,11 @@ static int vm_compression_input(VM* vm, Value value, const char** data, int32_t*
     return 0;
 }
 
+/** @brief Invoke an optional compression/decompression runtime hook `fn` on
+ *         `input`'s bytes into a heap output buffer, sized heuristically
+ *         (larger for `inflate_like` since decompressed size is unknown) and
+ *         retried once at 8MB if the call signals insufficient space.
+ *         Returns #f if compression support isn't linked or the call fails. */
 static Value vm_compression_call(VM* vm, Value input,
                                  VmCompressionFn fn,
                                  int inflate_like) {
@@ -3074,6 +3487,7 @@ static Value vm_compression_call(VM* vm, Value input,
     return (Value){.type = VAL_BYTEVECTOR, .as.ptr = ptr};
 }
 
+/** @brief Byte-level suffix test: does `s` end with `suffix`. */
 static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
     if (!s || !suffix || !s->data || !suffix->data) return 0;
     if (suffix->byte_len > s->byte_len) return 0;
@@ -3082,6 +3496,9 @@ static int vm_string_ends_with_bytes(VmString* s, VmString* suffix) {
                   (size_t)suffix->byte_len) == 0;
 }
 
+/** @brief Find the character index of the first occurrence of `sub` in `s`
+ *         at or after character index `start_idx`, decoding UTF-8 as it
+ *         scans. Returns #f if not found (or if `start_idx` is out of range). */
 static Value vm_string_index_of_value(VmString* s, VmString* sub, int64_t start_idx) {
     if (!s || !sub || !s->data || !sub->data) return BOOL_VAL(0);
     if (start_idx < 0) start_idx = 0;
@@ -3102,6 +3519,9 @@ static Value vm_string_index_of_value(VmString* s, VmString* sub, int64_t start_
     return BOOL_VAL(0);
 }
 
+/** @brief Pad `s` to `width` characters (clamped to 1M) by inserting the
+ *         codepoint `cp` (default space if invalid) on the left or right per
+ *         `left`. Returns `s` unchanged if it's already at least `width` chars. */
 static Value vm_string_pad_value(VM* vm, VmString* s, int64_t width, int cp, int left) {
     if (!vm || !s || !s->data) return BOOL_VAL(0);
     if (width <= s->char_len) return vm_string_value(vm, s->data, s->byte_len);
@@ -3136,6 +3556,9 @@ static Value vm_string_pad_value(VM* vm, VmString* s, int64_t width, int cp, int
 }
 
 #if defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+/** @brief Windows-only: append one argument to a CreateProcess command line
+ *         buffer, quoting it and escaping embedded backslashes/quotes per
+ *         the MSVCRT argv-parsing convention. Returns 0 on buffer overflow. */
 static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, const char* arg) {
     if (!out || !pos || !arg) return 0;
 
@@ -3185,6 +3608,8 @@ static int vm_win_append_process_arg(char* out, size_t out_size, size_t* pos, co
     return 1;
 }
 
+/** @brief Windows-only: build a full space-separated, quoted CreateProcess
+ *         command line string from an argv array. */
 static int vm_win_build_process_command_line(char* out, size_t out_size, char** argv, int argc) {
     if (!out || out_size == 0 || !argv || argc <= 0) return 0;
     size_t pos = 0;
@@ -3196,6 +3621,12 @@ static int vm_win_build_process_command_line(char* out, size_t out_size, char** 
 }
 #endif
 
+/** @brief Structural (deep) equality of two Values, recursing into pairs
+ *         (with depth cap 128 against cycles/deep structures), comparing
+ *         string contents byte-for-byte, treating int/float as
+ *         numerically comparable, and unwrapping HEAP_FACT wrappers so a
+ *         fact and its underlying value compare equal. Non-pair/string heap
+ *         objects fall back to pointer identity. */
 static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
     if (depth > 128) return 0;
     if (a.type != b.type) {
@@ -3241,6 +3672,9 @@ static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
 }
 
 #ifndef ESHKOL_VM_WASM
+/** @brief Safety guard for recursive directory deletion: resolves `path` to
+ *         its canonical form and rejects it if it matches a hardcoded list
+ *         of critical system directories (`/`, `/usr`, `/etc`, `/Users`, etc). */
 static int vm_directory_delete_forbidden_root(const char* path) {
     if (!path || !*path) return 1;
 
@@ -3260,6 +3694,10 @@ static int vm_directory_delete_forbidden_root(const char* path) {
     return 0;
 }
 
+/** @brief POSIX recursive rm -rf: for a directory, recurses into every
+ *         non-`.`/`..` entry (via lstat, so symlinks aren't followed into)
+ *         then rmdir()s it; for anything else, unlink()s it directly.
+ *         Depth-capped at 128 to guard against symlink cycles. */
 static int vm_directory_delete_recursive_posix(const char* path, int depth) {
     if (!path || depth > 128) return 0;
 
@@ -3295,6 +3733,8 @@ static int vm_directory_delete_recursive_posix(const char* path, int depth) {
 }
 #endif
 
+/** @brief True if `c` is a path separator for the target platform (`/` or
+ *         `\` on Windows, `/` only elsewhere). */
 static int vm_path_is_separator(char c) {
 #ifdef _WIN32
     return c == '/' || c == '\\';
@@ -3303,6 +3743,7 @@ static int vm_path_is_separator(char c) {
 #endif
 }
 
+/** @brief The platform's canonical path separator character. */
 static char vm_path_separator(void) {
 #ifdef _WIN32
     return '\\';
@@ -3311,6 +3752,7 @@ static char vm_path_separator(void) {
 #endif
 }
 
+/** @brief Find the last path-separator character in `path`, or NULL if none. */
 static const char* vm_path_last_separator(const char* path) {
     const char* last = NULL;
     if (!path) return NULL;
@@ -3320,6 +3762,8 @@ static const char* vm_path_last_separator(const char* path) {
     return last;
 }
 
+/** @brief True if `path` is absolute in the platform's native sense (leading
+ *         `/` on POSIX; drive-letter `C:\` or UNC `\\` prefix on Windows). */
 static int vm_path_is_absolute_native(const char* path) {
     if (!path || path[0] == '\0') return 0;
 #ifdef _WIN32
@@ -3334,6 +3778,13 @@ static int vm_path_is_absolute_native(const char* path) {
 #endif
 }
 
+/** @brief Read a byte range `[offset, offset+len)` of a file into a new
+ *         bytevector via a memory-mapped read (mmap on POSIX,
+ *         CreateFileMapping/MapViewOfFile on Windows, aligning the mapping to
+ *         the platform's allocation granularity), avoiding a full-file
+ *         buffered read for large files. `len < 0` means "to end of file".
+ *         Returns NULL on any I/O error, out-of-range offset, or on WASM
+ *         (unsupported). */
 static VmBytevector* vm_file_mmap_copy_to_bytevector(VM* vm,
                                                      const char* path,
                                                      int64_t offset,
@@ -3451,6 +3902,8 @@ static VmBytevector* vm_file_mmap_copy_to_bytevector(VM* vm,
 #endif
 }
 
+/** @brief Bounds-checked strcpy: copies `src` into `dst` only if it
+ *         (including NUL) fits within `dst_len`. Returns 0 on overflow. */
 static int vm_path_copy_cstr(char* dst, size_t dst_len, const char* src) {
     if (!dst || dst_len == 0 || !src) return 0;
     size_t len = strlen(src);
@@ -3459,6 +3912,12 @@ static int vm_path_copy_cstr(char* dst, size_t dst_len, const char* src) {
     return 1;
 }
 
+/** @brief Normalize a filesystem path: splits on separators, resolves `.`
+ *         and `..` components (dropping a preceding segment for each `..`),
+ *         preserves platform-specific absolute-path prefixes (drive letters
+ *         and UNC `\\` prefixes on Windows, leading `/` on POSIX), and
+ *         rejoins with the platform separator. Falls back to "." for an
+ *         empty result. Returns 0 on any buffer-capacity overflow. */
 static int vm_path_normalize_cstr(const char* input, char* result, size_t result_len) {
     if (!input || !result || result_len == 0) return 0;
 
@@ -3541,6 +4000,8 @@ static int vm_path_normalize_cstr(const char* input, char* result, size_t result
     return 1;
 }
 
+/** @brief Split `path` in place (via strtok, destroying separators) into up
+ *         to `max_parts` non-empty component pointers. Returns the count. */
 static int vm_path_split_mut(char* path, char** parts, int max_parts) {
     int nparts = 0;
 #ifdef _WIN32
@@ -3559,6 +4020,11 @@ static int vm_path_split_mut(char* path, char** parts, int max_parts) {
     return nparts;
 }
 
+/** @brief Compute the relative path from `from` to `to`: normalizes both,
+ *         falls back to `to`'s absolute form if their absoluteness or
+ *         (on Windows) drive/UNC-server differ, otherwise finds the longest
+ *         common path-component prefix and emits one `..` per remaining
+ *         `from` component followed by `to`'s remaining components. */
 static int vm_path_relative_cstr(const char* from, const char* to, char* result, size_t result_len) {
     if (!from || !to || !result || result_len == 0) return 0;
 
@@ -3642,6 +4108,9 @@ static int vm_path_relative_cstr(const char* from, const char* to, char* result,
     return 1;
 }
 
+/** @brief Extract the underlying datum from a knowledge-base fact Value: for
+ *         a HEAP_FACT wrapper, unwraps to its stored car; for a plain cons,
+ *         returns it as-is. Returns 0 for anything else. */
 static int vm_kb_extract_fact_datum(VM* vm, Value fact_val, Value* out) {
     if (!out) return 0;
     if (fact_val.type == VAL_PAIR && is_valid_heap_ptr(vm, fact_val.as.ptr)) {
@@ -3658,6 +4127,7 @@ static int vm_kb_extract_fact_datum(VM* vm, Value fact_val, Value* out) {
     return 0;
 }
 
+/** @brief Extract the datum Value stored in an internal VmFact struct, if present. */
 static int vm_kb_stored_fact_datum(VM* vm, VmFact* fact, Value* out) {
     if (!fact || !fact->has_datum || !out) return 0;
     if (!is_valid_heap_ptr(vm, fact->datum_ptr)) return 0;
@@ -3665,6 +4135,8 @@ static int vm_kb_stored_fact_datum(VM* vm, VmFact* fact, Value* out) {
     return 1;
 }
 
+/** @brief True if a fact's datum is a `(predicate . args)` pair whose car
+ *         deep-equals `predicate`. */
 static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
     Value datum;
     if (!vm_kb_stored_fact_datum(vm, fact, &datum)) return 0;
@@ -3674,6 +4146,8 @@ static int vm_kb_fact_predicate_matches(VM* vm, VmFact* fact, Value predicate) {
     return vm_values_equal_deep(vm, obj->cons.car, predicate, 0);
 }
 
+/** @brief True if `value` is a string starting with `?`, the knowledge-base
+ *         query pattern convention for an unbound logic variable. */
 static int vm_kb_pattern_is_logic_var(VM* vm, Value value) {
     if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
         return 0;
@@ -3683,6 +4157,11 @@ static int vm_kb_pattern_is_logic_var(VM* vm, Value value) {
     return s && s->byte_len > 0 && s->data && s->data[0] == '?';
 }
 
+/** @brief Test whether a query `pattern` list matches a stored `fact` list
+ *         element-by-element, treating `?`-prefixed pattern elements
+ *         (vm_kb_pattern_is_logic_var) as wildcards that match anything,
+ *         and requiring exact deep-equality elsewhere. Falls back to plain
+ *         deep equality for non-list patterns/facts. */
 static int vm_kb_datums_match(VM* vm, Value pattern, Value fact) {
     if (pattern.type == VAL_NIL) return 1;
 
@@ -3712,6 +4191,12 @@ static int vm_kb_datums_match(VM* vm, Value pattern, Value fact) {
     return vm_values_equal_deep(vm, pattern, fact, 0);
 }
 
+/** @brief Query the terminal for the cursor's current row/column via the
+ *         DSR (`\033[6n`) escape sequence: temporarily switches stdin to raw
+ *         non-blocking mode, writes the query, polls (100ms timeout) for the
+ *         `\033[row;colR` reply, and restores the terminal mode. Returns 0
+ *         (with row/col left at 0) if stdin/stdout aren't ttys, the terminal
+ *         doesn't respond, or on WASM/Windows. */
 static int vm_query_terminal_cursor(int* row, int* col) {
     if (row) *row = 0;
     if (col) *col = 0;
@@ -3755,6 +4240,8 @@ static int vm_query_terminal_cursor(int* row, int* col) {
 #endif
 }
 
+/** @brief Safely unwrap a VAL_AD_TAPE Value to its underlying AdTape*, or
+ *         NULL if the value isn't a valid heap-backed AD tape. */
 static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
     if (tape_val.type != VAL_AD_TAPE) return NULL;
     if (!is_heap_type(vm, tape_val, HEAP_AD_TAPE)) return NULL;
@@ -3811,6 +4298,9 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
 
 static uint64_t vm_qrng_state = 0;
 
+/** @brief xorshift64* PRNG step, lazily self-seeding on first call from a
+ *         mix of a stack address and platform-specific entropy (tick count/
+ *         QueryPerformanceCounter on Windows, gettimeofday+pid elsewhere). */
 static uint64_t vm_qrng_next_u64(void) {
     if (vm_qrng_state == 0) {
         uint64_t seed = 0x9e3779b97f4a7c15ULL ^ (uint64_t)(uintptr_t)&vm_qrng_state;
@@ -3839,6 +4329,7 @@ static uint64_t vm_qrng_next_u64(void) {
     return x * 0x2545f4914f6cdd1dULL;
 }
 
+/** @brief Convert one xorshift64* draw into a double uniformly distributed in [0,1). */
 static double vm_qrng_double(void) {
     return (double)(vm_qrng_next_u64() >> 11) * (1.0 / 9007199254740992.0);
 }
@@ -3873,17 +4364,21 @@ static eshkol_vm_host_native_fn g_host_natives[VM_HOST_NATIVE_MAX];
 static char g_host_native_names[VM_HOST_NATIVE_MAX][VM_HOST_NATIVE_NAME_MAX];
 static int g_host_native_count = 0;
 
+/** @brief True if `name` is non-NULL, non-empty, and fits within the fixed
+ *         VM_HOST_NATIVE_NAME_MAX buffer. */
 static int vm_host_native_name_is_valid(const char* name) {
     if (!name) return 0;
     size_t name_len = strlen(name);
     return name_len > 0 && name_len < VM_HOST_NATIVE_NAME_MAX;
 }
 
+/** @brief Tombstone a host-native registry slot (clear function pointer and name). */
 static void vm_host_native_clear_slot(int slot) {
     g_host_natives[slot] = NULL;
     g_host_native_names[slot][0] = '\0';
 }
 
+/** @brief Populate a host-native registry slot with a function pointer and its name. */
 static void vm_host_native_copy_slot(int slot,
                                      const char* name,
                                      eshkol_vm_host_native_fn fn) {
@@ -3892,6 +4387,12 @@ static void vm_host_native_copy_slot(int slot,
     memcpy(g_host_native_names[slot], name, name_len + 1);
 }
 
+/** @brief Replace the entire host-native function registry with `entries`
+ *         (rejecting the call on any duplicate name, NULL fn, or invalid
+ *         name, or if `count` exceeds VM_HOST_NATIVE_MAX). Used by embedders
+ *         to expose custom native functions to Eshkol bytecode via fids
+ *         >= ESHKOL_VM_HOST_NATIVE_BASE. Returns 0 on success, -1 on
+ *         validation failure (leaving the existing registry untouched). */
 int eshkol_vm_install_host_natives(const EshkolVmHostNative* entries, int count) {
     if (count < 0 || count > VM_HOST_NATIVE_MAX) return -1;
     if (count > 0 && !entries) return -1;
@@ -3913,6 +4414,7 @@ int eshkol_vm_install_host_natives(const EshkolVmHostNative* entries, int count)
     return 0;
 }
 
+/** @brief Remove all registered host-native functions. */
 void eshkol_vm_clear_host_natives(void) {
     for (int i = 0; i < VM_HOST_NATIVE_MAX; i++) {
         vm_host_native_clear_slot(i);
@@ -3920,14 +4422,21 @@ void eshkol_vm_clear_host_natives(void) {
     g_host_native_count = 0;
 }
 
+/** @brief Maximum number of host-native functions that can be registered at once. */
 int eshkol_vm_host_native_capacity(void) {
     return VM_HOST_NATIVE_MAX;
 }
 
+/** @brief Current number of registered host-native functions (including any tombstoned slots below it). */
 int eshkol_vm_host_native_count(void) {
     return g_host_native_count;
 }
 
+/** @brief Register a single named host-native function, reusing a
+ *         tombstoned slot if available to preserve dense/stable slot
+ *         indices (bytecode fids encode the slot directly). Returns the
+ *         assigned slot index, or -1 on a duplicate name, invalid name, or
+ *         if the registry is full. */
 int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn) {
     if (!fn || !vm_host_native_name_is_valid(name)) return -1;
     /* Tombstone-aware lookup: a tombstoned slot has fn == NULL and an empty
@@ -3950,6 +4459,8 @@ int eshkol_vm_register_host_native(const char* name, eshkol_vm_host_native_fn fn
     return slot;
 }
 
+/** @brief Tombstone a previously-registered host-native slot. Returns 0 on
+ *         success, -1 if the slot is out of range or already empty. */
 int eshkol_vm_unregister_host_native(int slot) {
     if (slot < 0 || slot >= g_host_native_count) return -1;
     if (g_host_natives[slot] == NULL) return -1;
@@ -3957,6 +4468,9 @@ int eshkol_vm_unregister_host_native(int slot) {
     return 0;
 }
 
+/** @brief Host-native FFI helper: pop the top VM stack value and coerce it to
+ *         an int64 (accepting VAL_INT, VAL_FLOAT truncation, or VAL_BOOL as
+ *         0/1). Returns -1 on a VM error or unsupported type. */
 int eshkol_vm_host_pop_int64(VM* vm, int64_t* out) {
     if (!vm || !out) return -1;
     Value v = vm_pop(vm);
@@ -3967,6 +4481,8 @@ int eshkol_vm_host_pop_int64(VM* vm, int64_t* out) {
     return -1;
 }
 
+/** @brief Host-native FFI helper: push an int64 onto the VM stack as an
+ *         INT_VAL. Returns -1 if the push failed to grow the stack by exactly one. */
 int eshkol_vm_host_push_int64(VM* vm, int64_t value) {
     if (!vm) return -1;
     int32_t before = vm->sp;
@@ -3974,6 +4490,9 @@ int eshkol_vm_host_push_int64(VM* vm, int64_t value) {
     return (!vm->error && vm->sp == before + 1) ? 0 : -1;
 }
 
+/** @brief Host-native FFI helper: pop the top VM stack value and coerce it to
+ *         a double (accepting VAL_FLOAT, VAL_INT, or VAL_BOOL as 0.0/1.0).
+ *         Returns -1 on a VM error or unsupported type. */
 int eshkol_vm_host_pop_double(VM* vm, double* out) {
     if (!vm || !out) return -1;
     Value v = vm_pop(vm);
@@ -3984,6 +4503,7 @@ int eshkol_vm_host_pop_double(VM* vm, double* out) {
     return -1;
 }
 
+/** @brief Host-native FFI helper: push a double onto the VM stack as a FLOAT_VAL. */
 int eshkol_vm_host_push_double(VM* vm, double value) {
     if (!vm) return -1;
     int32_t before = vm->sp;
@@ -3991,6 +4511,11 @@ int eshkol_vm_host_push_double(VM* vm, double value) {
     return (!vm->error && vm->sp == before + 1) ? 0 : -1;
 }
 
+/** @brief Peek into a closure's bytecode to find the native function id (fid)
+ *         it's a thin wrapper around, by scanning its first few instructions
+ *         for an OP_NATIVE_CALL before an OP_RETURN. Used to recognize
+ *         first-class references to builtins (e.g. for AD dual-number
+ *         dispatch). Returns -1 if `fn` isn't such a wrapper closure. */
 static int vm_closure_native_id(VM* vm, Value fn) {
     if (!vm || fn.type != VAL_CLOSURE || fn.as.ptr < 0 || fn.as.ptr >= vm->heap.capacity) return -1;
     HeapObject* cl = vm->heap.objects[fn.as.ptr];
@@ -4006,6 +4531,25 @@ static int vm_closure_native_id(VM* vm, Value fn) {
     return -1;
 }
 
+/**
+ * @brief Central native-function dispatcher for the bytecode VM: given a
+ *        native function id (fid) popped from an OP_NATIVE_CALL instruction,
+ *        pops its arguments off the VM stack, performs the operation, and
+ *        pushes the result. This single function is the implementation of
+ *        essentially the entire R7RS-plus-extensions builtin surface — math,
+ *        predicates, pairs/lists, strings, vectors, bytevectors, I/O, ports,
+ *        hash tables, records, continuations/dynamic-wind, exceptions,
+ *        parameters, promises, tensors/AD, complex/rational/bignum numerics,
+ *        processes, sockets, regex, JSON, and every helper documented above
+ *        in this file — organized as one giant `switch (fid)` over numbered
+ *        ranges (see the banner comments before each range for their
+ *        purpose). fids >= ESHKOL_VM_HOST_NATIVE_BASE are instead routed to
+ *        embedder-registered host-native functions (see
+ *        eshkol_vm_register_host_native()). Desktop-only fids are rejected
+ *        under ESHKOL_VM_NATIVE_POLICY_HOST_ONLY. Also drains any due
+ *        timers on every call via vm_timers_poll_due(). Errors are reported
+ *        via `vm->error = 1` rather than by return value.
+ */
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {

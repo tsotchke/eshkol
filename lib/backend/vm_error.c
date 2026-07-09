@@ -32,6 +32,8 @@ typedef struct VmCons {
 
 /* ── Helpers ── */
 
+/** @brief Allocate an arena-backed cons cell (@p car, @p cdr) for building
+ *         the irritants list. */
 static VmCons* vm_err_cons(VmRegionStack* rs, void* car, void* cdr) {
     VmCons* c = (VmCons*)vm_alloc_object(rs, VM_SUBTYPE_CONS, sizeof(VmCons));
     if (!c) return NULL;
@@ -40,7 +42,8 @@ static VmCons* vm_err_cons(VmRegionStack* rs, void* car, void* cdr) {
     return c;
 }
 
-/* Build a cons list from an array of values (in order) */
+/** @brief Build a proper cons list, in order, from the @p n values in
+ *         @p items. */
 static void* vm_err_list_from_array(VmRegionStack* rs, void** items, int n) {
     void* list = NULL;
     for (int i = n - 1; i >= 0; i--) {
@@ -51,7 +54,10 @@ static void* vm_err_list_from_array(VmRegionStack* rs, void** items, int n) {
 
 /* ── Public API ── */
 
-/* 710: error(type, message, irritants...) → allocate error object */
+/** @brief Native call 710: `(error type message irritant...)` — allocate
+ *         and populate an R7RS error object, truncating @p message/@p type
+ *         if they exceed the fixed-size fields, defaulting @p type to
+ *         "error" when null. */
 VmError* vm_error_make(VmRegionStack* rs, const char* type, const char* message,
                        void** irritants, int n_irritants) {
     VmError* e = (VmError*)vm_alloc_object(rs, VM_SUBTYPE_ERROR, sizeof(VmError));
@@ -82,24 +88,25 @@ VmError* vm_error_make(VmRegionStack* rs, const char* type, const char* message,
     return e;
 }
 
-/* 711: error-object? */
+/** @brief Native call 711: `(error-object? obj)` — check the heap object
+ *         header subtype. */
 int vm_error_is_error(void* obj) {
     if (!obj) return 0;
     VmObjectHeader* hdr = (VmObjectHeader*)((uint8_t*)obj - sizeof(VmObjectHeader));
     return hdr->subtype == VM_SUBTYPE_ERROR;
 }
 
-/* 712: error-object-message → returns pointer to message string */
+/** @brief Native call 712: `(error-object-message e)`. */
 const char* vm_error_message(const VmError* e) {
     return e ? e->message : "";
 }
 
-/* 713: error-object-irritants → returns irritant cons list */
+/** @brief Native call 713: `(error-object-irritants e)`. */
 void* vm_error_irritants(const VmError* e) {
     return e ? e->irritants : NULL;
 }
 
-/* 714: error-object-type → returns type symbol string */
+/** @brief Native call 714: `(error-object-type e)`. */
 const char* vm_error_type(const VmError* e) {
     return e ? e->type : "";
 }
@@ -108,6 +115,9 @@ const char* vm_error_type(const VmError* e) {
  * Dispatch
  ******************************************************************************/
 
+/** @brief Native-call dispatcher for the error-object primitives (IDs
+ *         710-714): routes to vm_error_make()/vm_error_is_error()/
+ *         vm_error_message()/vm_error_irritants()/vm_error_type(). */
 void* vm_error_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
     switch (id) {
     case 710: {
@@ -136,6 +146,9 @@ void* vm_error_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
 
 #include <assert.h>
 
+/** @brief Standalone self-test (built when VM_ERROR_TEST is defined):
+ *         exercises error creation, accessors, irritant list walking, type
+ *         defaulting, and message truncation. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

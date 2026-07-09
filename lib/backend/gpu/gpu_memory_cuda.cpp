@@ -72,6 +72,10 @@ static constexpr uint32_t CUDA_FLAG_WRAPPED_HOST = 1u << 0;
 static constexpr uint32_t CUDA_FLAG_COPY_BACK = 1u << 1;
 static constexpr uint32_t CUDA_FLAG_HOST_REGISTERED = 1u << 2;
 
+/** @brief Initialize CUDA: verify at least one device is present, select
+ *         device 0, and create the shared stream and cuBLAS handle used by
+ *         all subsequent CUDA operations. Returns 0 on success, -1 on any
+ *         failure (cleaning up any partially-created resources). */
 static int cuda_init(void) {
     int device_count = 0;
     cudaError_t err = cudaGetDeviceCount(&device_count);
@@ -94,6 +98,7 @@ static int cuda_init(void) {
     return 0;
 }
 
+/** @brief Destroy the shared cuBLAS handle and CUDA stream, if created. */
 static void cuda_shutdown(void) {
     if (g_cublas_handle) {
         cublasDestroy(g_cublas_handle);
@@ -105,6 +110,10 @@ static void cuda_shutdown(void) {
     }
 }
 
+/** @brief Allocate a CUDA buffer of `size_bytes` per `mem_type`: unified
+ *         (cudaMallocManaged, host_ptr==device_ptr), device-only
+ *         (cudaMalloc, no host_ptr), or host-pinned (cudaMallocHost, no
+ *         device_ptr); any other type defaults to unified memory. */
 static int cuda_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuffer* out) {
     cudaError_t err;
     void* ptr = nullptr;
@@ -148,6 +157,11 @@ static int cuda_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuf
     return 0;
 }
 
+/** @brief Free a CUDA buffer, first flushing a pending copy-back to the
+ *         original host pointer (CUDA_FLAG_COPY_BACK case from
+ *         cuda_wrap_host's fallback path) if one is pending, then releasing
+ *         the underlying CUDA allocation appropriate to its memory type
+ *         (unregistering a wrapped-pinned host pointer rather than freeing it). */
 static void cuda_free(EshkolGPUBuffer* buffer) {
     if ((buffer->flags & CUDA_FLAG_COPY_BACK) && buffer->backend_data &&
         buffer->host_ptr && buffer->host_ptr != buffer->backend_data) {
@@ -172,6 +186,12 @@ static void cuda_free(EshkolGPUBuffer* buffer) {
     }
 }
 
+/** @brief Synchronize a CUDA buffer per `direction`: for unified memory,
+ *         waits on the stream and, if wrapping an external host pointer
+ *         with pending copy-back, mirrors data to/from that pointer; for a
+ *         registered-pinned wrap, just waits on the stream; for
+ *         host-pinned buffers with a separate device pointer, issues an
+ *         async memcpy in the requested direction and waits. */
 static int cuda_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     if (buffer->mem_type == ESHKOL_MEM_UNIFIED) {
         cudaStreamSynchronize(g_cuda_stream);
@@ -213,6 +233,9 @@ static int cuda_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     return 0;
 }
 
+/** @brief Double-precision matmul via cuBLAS DGEMM, exploiting the
+ *         column-major/row-major duality (computing C^T = B*A in cuBLAS
+ *         terms yields row-major C = A*B without an explicit transpose). */
 static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
     const double alpha = 1.0;
@@ -233,6 +256,7 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
     return (status == CUBLAS_STATUS_SUCCESS) ? 0 : -1;
 }
 
+/** @brief Single-precision matmul via cuBLAS SGEMM, same column/row-major trick as cuda_matmul_f64. */
 static int cuda_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
     const float alpha = 1.0f;
@@ -366,6 +390,13 @@ static int cuda_batch_matmul_f16_from_f64(const double* a, const double* b, doub
     return rc;
 }
 
+/** @brief Wrap an existing host pointer for zero-copy GPU access: tries
+ *         `cudaHostRegister` (page-locking it in place and mapping a device
+ *         pointer to it); if that fails (e.g. the memory isn't
+ *         page-alignable, such as stack or arbitrary heap allocations),
+ *         falls back to allocating separate unified memory, copying the
+ *         data in, and marking it for copy-back to the original pointer on
+ *         sync/free. */
 static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out) {
     cudaError_t err = cudaHostRegister(host_ptr, size_bytes, cudaHostRegisterMapped);
     if (err == cudaSuccess) {
@@ -405,6 +436,8 @@ static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* ou
 static bool g_gpu_verbose = false;
 static bool g_gpu_verbose_checked = false;
 
+/** @brief True if `ESHKOL_GPU_VERBOSE` is set in the environment (checked
+ *         once and cached), enabling GPU_LOG diagnostic output. */
 static bool gpu_verbose(void) {
     if (!g_gpu_verbose_checked) {
         g_gpu_verbose = (getenv("ESHKOL_GPU_VERBOSE") != nullptr);
@@ -421,6 +454,10 @@ static bool gpu_verbose(void) {
 
 extern "C" {
 
+/** @brief Thread-safe, idempotent GPU init (double-checked locking):
+ *         applies an optional `ESHKOL_GPU_THRESHOLD` env override, then
+ *         attempts CUDA initialization. Returns 1 if a GPU backend is
+ *         active, 0 if only CPU is available (still a "successful" init). */
 int eshkol_gpu_init(void) {
     if (g_gpu_initialized.load(std::memory_order_acquire)) {
         return (g_active_backend != ESHKOL_GPU_NONE) ? 1 : 0;
@@ -452,6 +489,8 @@ int eshkol_gpu_init(void) {
     return 0;
 }
 
+/** @brief Thread-safe GPU shutdown: tears down the active backend (if CUDA)
+ *         and resets init state so a later eshkol_gpu_init() can re-run. */
 void eshkol_gpu_shutdown(void) {
     std::lock_guard<std::mutex> lock(g_gpu_init_mutex);
 
@@ -465,10 +504,12 @@ void eshkol_gpu_shutdown(void) {
     g_gpu_initialized.store(false, std::memory_order_release);
 }
 
+/** @brief The currently active GPU backend (ESHKOL_GPU_NONE if not initialized or no GPU found). */
 EshkolGPUBackend eshkol_gpu_get_backend(void) {
     return g_active_backend;
 }
 
+/** @brief Human-readable name for a GPU backend enum value. */
 const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
     switch (backend) {
         case ESHKOL_GPU_NONE: return "CPU (no GPU)";
@@ -479,19 +520,27 @@ const char* eshkol_gpu_backend_name(EshkolGPUBackend backend) {
     return "Unknown";
 }
 
+/** @brief True if `backend` is the currently active backend (this build
+ *         supports only a single active backend at a time, so this is
+ *         equivalent to `backend == eshkol_gpu_get_backend()`). */
 int eshkol_gpu_backend_available(EshkolGPUBackend backend) {
     return (g_active_backend == backend) ? 1 : 0;
 }
 
+/** @brief True if the active backend is CUDA (which supports f64 on all modern GPUs). */
 int eshkol_gpu_supports_f64(void) {
     // CUDA supports f64 on all modern GPUs
     return (g_active_backend == ESHKOL_GPU_CUDA) ? 1 : 0;
 }
 
+/** @brief Alias for eshkol_gpu_supports_f64(). */
 int eshkol_gpu_has_fp64(void) {
     return eshkol_gpu_supports_f64();
 }
 
+/** @brief Allocate a GPU (or, absent a GPU, plain host) buffer of
+ *         `size_bytes`, dispatching to cuda_alloc() when CUDA is active or
+ *         falling back to malloc() otherwise. */
 int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuffer* out_buffer) {
     if (!out_buffer || size_bytes == 0) return -1;
 
@@ -513,12 +562,18 @@ int eshkol_gpu_alloc(size_t size_bytes, EshkolMemoryType mem_type, EshkolGPUBuff
     return 0;
 }
 
+/** @brief Allocate a GPU buffer with `size_bytes` rounded up to a multiple
+ *         of `alignment` (must be a power of two), then delegates to
+ *         eshkol_gpu_alloc(). */
 int eshkol_gpu_alloc_aligned(size_t size_bytes, size_t alignment,
                               EshkolMemoryType mem_type, EshkolGPUBuffer* out_buffer) {
     size_t aligned_size = (size_bytes + alignment - 1) & ~(alignment - 1);
     return eshkol_gpu_alloc(aligned_size, mem_type, out_buffer);
 }
 
+/** @brief Free a GPU (or host) buffer: dispatches to cuda_free() for CUDA
+ *         buffers, otherwise frees the host pointer directly unless it was
+ *         a non-owning wrap (flag bit 1). Zeroes the descriptor either way. */
 void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
     if (!buffer) return;
 
@@ -536,6 +591,9 @@ void eshkol_gpu_free(EshkolGPUBuffer* buffer) {
     memset(buffer, 0, sizeof(EshkolGPUBuffer));
 }
 
+/** @brief Wrap an existing host pointer as a GPU-accessible buffer:
+ *         dispatches to cuda_wrap_host() for CUDA, or on CPU just wraps the
+ *         pointer directly with device_ptr aliasing host_ptr. */
 int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out_buffer) {
     if (!host_ptr || !out_buffer || size_bytes == 0) return -1;
 
@@ -557,6 +615,8 @@ int eshkol_gpu_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* out
     return 0;
 }
 
+/** @brief Synchronize a buffer's host/device data per `direction`;
+ *         dispatches to cuda_sync() for CUDA buffers, no-op otherwise. */
 int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     if (!buffer) return -1;
 
@@ -569,11 +629,16 @@ int eshkol_gpu_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     return 0;
 }
 
+/** @brief Async sync variant: `stream` is currently unused (all ops share
+ *         the global CUDA stream), so this just delegates to eshkol_gpu_sync(). */
 int eshkol_gpu_sync_async(EshkolGPUBuffer* buffer, EshkolSyncDirection direction, void* stream) {
     (void)stream;
     return eshkol_gpu_sync(buffer, direction);
 }
 
+/** @brief Block until all outstanding work on the shared CUDA stream
+ *         completes (no-op if CUDA isn't the active backend). `buffer` is
+ *         unused — this waits on the global stream, not per-buffer. */
 void eshkol_gpu_wait(EshkolGPUBuffer* buffer) {
     (void)buffer;
 #if ESHKOL_GPU_CUDA_AVAILABLE
@@ -583,6 +648,9 @@ void eshkol_gpu_wait(EshkolGPUBuffer* buffer) {
 #endif
 }
 
+/** @brief Double-precision matmul: dispatches to cuda_matmul_f64() on CUDA
+ *         (cuBLAS DGEMM), else falls back to the CPU BLAS/SIMD
+ *         eshkol_matmul_f64(). Logs the chosen path when GPU_LOG is verbose. */
 int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
     if (!A || !B || !C) return -1;
@@ -606,6 +674,8 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
     return 0;
 }
 
+/** @brief Single-precision matmul: dispatches to cuda_matmul_f32() on CUDA
+ *         (cuBLAS SGEMM), else falls back to a naive CPU scalar triple loop. */
 int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                            uint64_t M, uint64_t K, uint64_t N) {
     if (!A || !B || !C) return -1;
@@ -636,18 +706,28 @@ int eshkol_gpu_matmul_f32(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
     }
 }
 
+/** @brief Set the minimum-element GPU dispatch threshold. */
 void eshkol_gpu_set_threshold(size_t threshold) {
     g_gpu_threshold = threshold;
 }
 
+/** @brief Get the current GPU dispatch element-count threshold. */
 size_t eshkol_gpu_get_threshold(void) {
     return g_gpu_threshold;
 }
 
+/** @brief True if a GPU backend is active and `num_elements` meets the dispatch threshold. */
 int eshkol_gpu_should_use(size_t num_elements) {
     return (g_active_backend != ESHKOL_GPU_NONE && num_elements >= g_gpu_threshold) ? 1 : 0;
 }
 
+/** @brief Runtime matmul entry point used by generated code: lazily
+ *         initializes the GPU on first call, routes f16/bf16-dtype operands
+ *         through the tensor-core GemmEx fast path regardless of size
+ *         (bypassing the element threshold), and otherwise wraps the host
+ *         buffers and dispatches through eshkol_gpu_matmul_f64() when the
+ *         threshold is met, falling back to CPU BLAS/SIMD f64 matmul on any
+ *         failure or when GPU isn't warranted. */
 void eshkol_matmul_dispatch(const double* A, const double* B, double* C,
                              uint64_t M, uint64_t K, uint64_t N, int32_t dtype) {
     size_t num_elements = M * N;
@@ -718,6 +798,10 @@ void eshkol_batch_matmul_dispatch(const double* a, const double* b, double* c,
     eshkol_batch_matmul_f64(a, b, c, batch, M, K, N);
 }
 
+/** @brief Elementwise unary/binary op: launches the CUDA elementwise kernel
+ *         when both operand buffers have device pointers, falling back to a
+ *         CPU scalar loop over `n` elements if the kernel launch fails or
+ *         no GPU is active. */
 int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
                                 EshkolGPUBuffer* out, uint64_t n,
                                 EshkolElementwiseOp op) {
@@ -763,6 +847,9 @@ int eshkol_gpu_elementwise_f64(EshkolGPUBuffer* a, EshkolGPUBuffer* b,
     return 0;
 }
 
+/** @brief Full reduction to a scalar: launches the CUDA reduce kernel when
+ *         device pointers are available, falling back to a CPU scalar loop
+ *         (sum/mean/prod/min/max) if the kernel launch fails or no GPU is active. */
 int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                            uint64_t n, EshkolReduceOp op) {
     if (!in || !out || n == 0) return -1;
@@ -806,6 +893,10 @@ int eshkol_gpu_reduce_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief Axis reduction: launches the CUDA axis-reduce kernel when device
+ *         pointers are available, falling back to a CPU implementation
+ *         (computing inner/outer strides around `axis`) if the kernel
+ *         launch fails or no GPU is active. */
 int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                                 uint64_t rank, const uint64_t* shape,
                                 uint64_t axis, EshkolReduceOp op) {
@@ -866,6 +957,9 @@ int eshkol_gpu_reduce_axis_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief 2-D transpose: launches the CUDA transpose kernel when device
+ *         pointers are available, falling back to a CPU nested loop if the
+ *         kernel launch fails or no GPU is active. */
 int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t rows, uint64_t cols) {
     if (!in || !out || rows == 0 || cols == 0) return -1;
@@ -896,6 +990,11 @@ int eshkol_gpu_transpose_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief Numerically-stable softmax over `num_slices` slices of length
+ *         `slice_len`: launches the CUDA softmax kernel when device
+ *         pointers are available, falling back to a CPU implementation
+ *         (max-subtraction then normalized exp) if the kernel launch fails
+ *         or no GPU is active. */
 int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                             uint64_t num_slices, uint64_t slice_len) {
     if (!in || !out || num_slices == 0 || slice_len == 0) return -1;
@@ -931,6 +1030,10 @@ int eshkol_gpu_softmax_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
     return 0;
 }
 
+/** @brief Layer-normalize over `num_slices` slices of length `slice_len`:
+ *         launches the CUDA normalize kernel when device pointers are
+ *         available, falling back to a CPU implementation (mean/variance
+ *         then scale+shift) if the kernel launch fails or no GPU is active. */
 int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
                               uint64_t num_slices, uint64_t slice_len,
                               double gamma, double beta, double epsilon) {
@@ -984,6 +1087,10 @@ extern int cuda_layernorm_backward_f64(
     const double*, const double*, const double*, const double*, const double*,
     double*, int, int, cudaStream_t);
 
+/** @brief Conv2D input-gradient backward pass on CUDA (dispatches to
+ *         cuda_conv2d_backward_input_f64() in gpu_cuda_kernels.cu). Requires
+ *         CUDA to be the active backend and all buffers to have device
+ *         pointers; returns -1 otherwise (no CPU fallback here). */
 int eshkol_gpu_conv2d_backward_input_f64(
     EshkolGPUBuffer* grad_out, EshkolGPUBuffer* kernel_weights,
     EshkolGPUBuffer* grad_input,
@@ -1004,6 +1111,9 @@ int eshkol_gpu_conv2d_backward_input_f64(
         g_cuda_stream);
 }
 
+/** @brief Conv2D kernel-gradient backward pass on CUDA (dispatches to
+ *         cuda_conv2d_backward_kernel_f64()). Requires CUDA active and all
+ *         buffers device-resident; returns -1 otherwise. */
 int eshkol_gpu_conv2d_backward_kernel_f64(
     EshkolGPUBuffer* grad_out, EshkolGPUBuffer* saved_input,
     EshkolGPUBuffer* grad_kernel,
@@ -1024,6 +1134,10 @@ int eshkol_gpu_conv2d_backward_kernel_f64(
         g_cuda_stream);
 }
 
+/** @brief Batch-normalization backward pass on CUDA (dispatches to
+ *         cuda_batchnorm_backward_f64()), producing grad_input, grad_gamma,
+ *         and grad_beta. Requires CUDA active and all buffers
+ *         device-resident; returns -1 otherwise. */
 int eshkol_gpu_batchnorm_backward_f64(
     EshkolGPUBuffer* grad_out,
     EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,
@@ -1050,6 +1164,9 @@ int eshkol_gpu_batchnorm_backward_f64(
         g_cuda_stream);
 }
 
+/** @brief Layer-normalization backward pass on CUDA (dispatches to
+ *         cuda_layernorm_backward_f64()), producing grad_input. Requires
+ *         CUDA active and all buffers device-resident; returns -1 otherwise. */
 int eshkol_gpu_layernorm_backward_f64(
     EshkolGPUBuffer* grad_out,
     EshkolGPUBuffer* saved_input, EshkolGPUBuffer* saved_mean,

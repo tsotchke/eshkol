@@ -16,6 +16,7 @@
 
 static ReplSession* g_session = NULL;
 
+/** @brief WASM-exported: lazily create the persistent global REPL session. */
 EMSCRIPTEN_KEEPALIVE
 void repl_init(void) {
     if (!g_session) {
@@ -23,6 +24,8 @@ void repl_init(void) {
     }
 }
 
+/** @brief WASM-exported: destroy and recreate the global REPL session,
+ *         discarding all prior definitions. */
 EMSCRIPTEN_KEEPALIVE
 void repl_reset(void) {
     if (g_session) {
@@ -32,6 +35,12 @@ void repl_reset(void) {
     repl_init();
 }
 
+/** @brief WASM-exported: evaluate @p source in the persistent global REPL
+ *         session (initializing it on first use), printing output via the
+ *         session's own output plumbing.
+ * @return Always an empty string on success, or an error message if VM
+ *         initialization failed.
+ */
 EMSCRIPTEN_KEEPALIVE
 const char* repl_eval(const char* source) {
     if (!g_session) repl_init();

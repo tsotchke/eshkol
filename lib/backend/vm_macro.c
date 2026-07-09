@@ -60,6 +60,8 @@ static MacroNode* macro_node_new(MacroNodeType type) {
     return n;
 }
 
+/** @brief Append @p child to @p parent's children array, growing it
+ *         (doubling, minimum 4) via realloc. */
 static void macro_node_add_child(MacroNode* parent, MacroNode* child) {
     if (!parent || !child) return;
     if (parent->n_children >= parent->_cap) {
@@ -72,6 +74,8 @@ static void macro_node_add_child(MacroNode* parent, MacroNode* child) {
     parent->children[parent->n_children++] = child;
 }
 
+/** @brief Recursively deep-copy a MacroNode tree (used when instantiating
+ *         a template so each expansion gets independent nodes). */
 static MacroNode* macro_node_deep_copy(const MacroNode* src) {
     if (!src) return NULL;
     MacroNode* dst = macro_node_new(src->type);
@@ -84,6 +88,7 @@ static MacroNode* macro_node_deep_copy(const MacroNode* src) {
     return dst;
 }
 
+/** @brief Recursively free a MacroNode tree and its children array. */
 static void macro_node_free(MacroNode* n) {
     if (!n) return;
     for (int i = 0; i < n->n_children; i++) {
@@ -144,10 +149,14 @@ typedef struct {
     int          n_bindings;
 } MacroBindings;
 
+/** @brief Reset a MacroBindings set to empty. */
 static void macro_bindings_init(MacroBindings* b) {
     b->n_bindings = 0;
 }
 
+/** @brief Free the per-binding ellipsis item arrays (but not the
+ *         MacroNodes they point to, which are owned by the input AST) and
+ *         reset @p b to empty. */
 static void macro_bindings_cleanup(MacroBindings* b) {
     for (int i = 0; i < b->n_bindings; i++) {
         if (b->bindings[i].is_ellipsis) {
@@ -158,6 +167,10 @@ static void macro_bindings_cleanup(MacroBindings* b) {
     b->n_bindings = 0;
 }
 
+/** @brief Record a single (non-ellipsis) pattern-variable binding
+ *         (@p name -> @p value).
+ * @return 1 on success, 0 if MAX_BINDINGS is exceeded.
+ */
 static int macro_bindings_add(MacroBindings* b, const char* name, MacroNode* value) {
     if (b->n_bindings >= MAX_BINDINGS) return 0;
     MacroBinding* bind = &b->bindings[b->n_bindings];
@@ -172,6 +185,11 @@ static int macro_bindings_add(MacroBindings* b, const char* name, MacroNode* val
     return 1;
 }
 
+/** @brief Record an ellipsis (`...`) pattern-variable binding: copies
+ *         @p items (length @p count) into a fresh owned array associated
+ *         with @p name.
+ * @return 1 on success, 0 if MAX_BINDINGS is exceeded or allocation fails.
+ */
 static int macro_bindings_add_ellipsis(MacroBindings* b, const char* name,
                                        MacroNode** items, int count) {
     if (b->n_bindings >= MAX_BINDINGS) return 0;
@@ -192,6 +210,8 @@ static int macro_bindings_add_ellipsis(MacroBindings* b, const char* name,
     return 1;
 }
 
+/** @brief Linear-scan lookup of a pattern variable's binding by name;
+ *         NULL if unbound. */
 static MacroBinding* macro_bindings_lookup(const MacroBindings* b, const char* name) {
     for (int i = 0; i < b->n_bindings; i++) {
         if (strcmp(b->bindings[i].name, name) == 0) {
@@ -231,14 +251,17 @@ static VmMacro g_macros[MAX_MACROS];
 static int     g_n_macros = 0;
 static int     g_gensym_counter = 0;
 
-/* Generate a fresh symbol name for hygienic macro expansion */
+/** @brief Generate a fresh, globally-unique symbol name (`_prefix_N` or
+ *         `_g_N` if @p prefix is null) for hygienic macro expansion. */
 static const char* vm_macro_gensym(const char* prefix) {
     static char buf[128];
     snprintf(buf, sizeof(buf), "_%s_%d", prefix ? prefix : "g", g_gensym_counter++);
     return buf;
 }
 
-/* Register a macro definition */
+/** @brief Register a macro definition (name, literal identifiers, and
+ *         syntax-rules pattern/template pairs) in the global macro
+ *         registry, so later vm_macro_expand() calls can find it. */
 static int vm_macro_register(const char* name,
                              char literals[][64], int n_literals,
                              MacroRule* rules, int n_rules) {
@@ -265,7 +288,8 @@ static int vm_macro_register(const char* name,
     return 1;
 }
 
-/* Look up a macro by name */
+/** @brief Linear-scan lookup of a registered macro by name; NULL if not
+ *         found. */
 static VmMacro* vm_macro_lookup(const char* name) {
     if (!name) return NULL;
     for (int i = 0; i < g_n_macros; i++) {
@@ -276,7 +300,8 @@ static VmMacro* vm_macro_lookup(const char* name) {
     return NULL;
 }
 
-/* Reset macro registry (for testing) */
+/** @brief Free every registered macro's rule ASTs and reset the global
+ *         macro registry and gensym counter (used between test runs). */
 static void vm_macro_reset(void) {
     for (int i = 0; i < g_n_macros; i++) {
         VmMacro* m = &g_macros[i];
@@ -298,6 +323,9 @@ static void vm_macro_reset(void) {
  * Ellipsis (...) after a pattern collects zero-or-more repetitions.
  ******************************************************************************/
 
+/** @brief Whether @p name is one of a syntax-rules form's declared
+ *         literal identifiers (which must match exactly rather than bind
+ *         as a pattern variable). */
 static int is_literal(const char* name, char literals[][64], int n_literals) {
     for (int i = 0; i < n_literals; i++) {
         if (strcmp(name, literals[i]) == 0) return 1;
@@ -305,14 +333,27 @@ static int is_literal(const char* name, char literals[][64], int n_literals) {
     return 0;
 }
 
+/** @brief Whether @p n is the literal `...` ellipsis symbol. */
 static int is_ellipsis(const MacroNode* n) {
     return n && n->type == N_SYMBOL && strcmp(n->symbol, "...") == 0;
 }
 
+/** @brief Whether @p name is the `_` wildcard pattern identifier. */
 static int is_underscore(const char* name) {
     return strcmp(name, "_") == 0;
 }
 
+/**
+ * @brief Match @p input against a syntax-rules @p pattern, recording
+ *        pattern-variable bindings into @p bindings. Handles symbol
+ *        patterns (underscore wildcard, literal keywords requiring exact
+ *        match, or a variable binding to the whole matched subtree),
+ *        atom patterns (numbers/strings/booleans compared by value), and
+ *        list patterns (element-wise, with an ellipsis-suffixed
+ *        sub-pattern greedily consuming zero or more input elements and
+ *        recording each captured variable as an ellipsis binding).
+ * @return 1 if the whole pattern matches, 0 otherwise.
+ */
 static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
                           MacroBindings* bindings,
                           char literals[][64], int n_literals) {
@@ -465,6 +506,13 @@ static int vm_macro_match(const MacroNode* pattern, const MacroNode* input,
  * in the bound list.
  ******************************************************************************/
 
+/**
+ * @brief Walk a syntax-rules template AST, replacing pattern-variable
+ *        symbols with their matched @p bindings. An ellipsis in the
+ *        template expands the preceding sub-template once per element in
+ *        the corresponding ellipsis binding's captured list.
+ * @return A newly-allocated instantiated AST tree.
+ */
 static MacroNode* vm_macro_instantiate(const MacroNode* tmpl,
                                        const MacroBindings* bindings) {
     if (!tmpl) return NULL;
@@ -557,8 +605,13 @@ static MacroNode* vm_macro_instantiate(const MacroNode* tmpl,
  * Top-Level Macro Expansion
  ******************************************************************************/
 
-/* Expand a single node. If it's a macro call, try each rule until one matches.
- * Returns expanded node (newly allocated), or deep copy of input if not a macro. */
+/** @brief Expand a single node one level: if it's a call to a registered
+ *         macro, try each rule's pattern in order (vm_macro_match()) and
+ *         instantiate the first matching rule's template
+ *         (vm_macro_instantiate()).
+ * @return The expanded node (newly allocated), or a deep copy of @p node
+ *         if it isn't a macro call or no rule matched.
+ */
 static MacroNode* vm_macro_expand_once(const MacroNode* node) {
     if (!node) return NULL;
 
@@ -596,8 +649,11 @@ static MacroNode* vm_macro_expand_once(const MacroNode* node) {
     return macro_node_deep_copy(node);
 }
 
-/* Fully expand a node: expand, then recursively expand children.
- * Repeat until no more expansions occur (fixed point). */
+/** @brief Fully expand a node to a fixed point: repeatedly
+ *         vm_macro_expand_once() the top-level form until it stops
+ *         changing, then recursively expand its children the same way.
+ *         This is the compiler's entry point, called on every top-level
+ *         form before code generation. */
 static MacroNode* vm_macro_expand(const MacroNode* node) {
     if (!node) return NULL;
 
@@ -663,6 +719,11 @@ static MacroNode* vm_macro_expand(const MacroNode* node) {
  *       ...))
  ******************************************************************************/
 
+/**
+ * @brief Parse a `(define-syntax name (syntax-rules (literal ...) (pattern
+ *        template) ...))` form and vm_macro_register() it.
+ * @return 1 on success, 0 if @p form doesn't match the expected shape.
+ */
 static int vm_macro_define_syntax(const MacroNode* form) {
     if (!form || form->type != N_LIST || form->n_children < 3) return 0;
     if (form->children[0]->type != N_SYMBOL ||
@@ -708,6 +769,8 @@ static int vm_macro_define_syntax(const MacroNode* form) {
  * Utility: print AST (for debugging)
  ******************************************************************************/
 
+/** @brief Recursively print a MacroNode tree as S-expression text, for
+ *         debugging. */
 static void macro_node_print(const MacroNode* n, int depth) {
     if (!n) { printf("NULL"); return; }
     switch (n->type) {
@@ -746,20 +809,25 @@ static void macro_node_print(const MacroNode* n, int depth) {
 
 /* ── Helper: build AST nodes quickly ── */
 
+/** @brief Self-test shorthand for macro_make_symbol(). */
 static MacroNode* sym(const char* s) { return macro_make_symbol(s); }
+/** @brief Self-test shorthand for macro_make_number(). */
 static MacroNode* num(double v)      { return macro_make_number(v); }
 
+/** @brief Self-test helper: build a 1-element list node. */
 static MacroNode* list1(MacroNode* a) {
     MacroNode* l = macro_make_list();
     macro_node_add_child(l, a);
     return l;
 }
+/** @brief Self-test helper: build a 2-element list node. */
 static MacroNode* list2(MacroNode* a, MacroNode* b) {
     MacroNode* l = macro_make_list();
     macro_node_add_child(l, a);
     macro_node_add_child(l, b);
     return l;
 }
+/** @brief Self-test helper: build a 3-element list node. */
 static MacroNode* list3(MacroNode* a, MacroNode* b, MacroNode* c) {
     MacroNode* l = macro_make_list();
     macro_node_add_child(l, a);
@@ -767,6 +835,7 @@ static MacroNode* list3(MacroNode* a, MacroNode* b, MacroNode* c) {
     macro_node_add_child(l, c);
     return l;
 }
+/** @brief Self-test helper: build a 4-element list node. */
 static MacroNode* list4(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d) {
     MacroNode* l = macro_make_list();
     macro_node_add_child(l, a);
@@ -775,6 +844,7 @@ static MacroNode* list4(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d) 
     macro_node_add_child(l, d);
     return l;
 }
+/** @brief Self-test helper: build a 5-element list node. */
 static MacroNode* list5(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d, MacroNode* e) {
     MacroNode* l = macro_make_list();
     macro_node_add_child(l, a);
@@ -787,6 +857,8 @@ static MacroNode* list5(MacroNode* a, MacroNode* b, MacroNode* c, MacroNode* d, 
 
 /* ── Tests ── */
 
+/** @brief Self-test: vm_macro_gensym() produces unique, counter-suffixed
+ *         names, including for a NULL base name. */
 static void test_gensym(void) {
     printf("  test_gensym... ");
     g_gensym_counter = 0;
@@ -799,6 +871,8 @@ static void test_gensym(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: macro_node_deep_copy() produces an independent,
+ *         structurally-equal tree. */
 static void test_node_deep_copy(void) {
     printf("  test_node_deep_copy... ");
     MacroNode* orig = list3(sym("define"), sym("x"), num(42));
@@ -818,6 +892,8 @@ static void test_node_deep_copy(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_macro_match() binds pattern variables for a basic
+ *         non-ellipsis pattern. */
 static void test_simple_pattern_match(void) {
     printf("  test_simple_pattern_match... ");
     /* Pattern: (_ x y)   Input: (my-macro 10 20) */
@@ -848,6 +924,8 @@ static void test_simple_pattern_match(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: literal keyword identifiers require an exact match
+ *         rather than binding as a pattern variable. */
 static void test_literal_match(void) {
     printf("  test_literal_match... ");
     /* Pattern: (_ else x)  with "else" as literal */
@@ -873,6 +951,8 @@ static void test_literal_match(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: an ellipsis pattern captures multiple input elements
+ *         as an ellipsis binding. */
 static void test_ellipsis_match(void) {
     printf("  test_ellipsis_match... ");
     /* Pattern: (_ x ...)   Input: (my-macro 1 2 3) */
@@ -900,6 +980,8 @@ static void test_ellipsis_match(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: an ellipsis pattern matches zero repetitions
+ *         correctly. */
 static void test_ellipsis_empty(void) {
     printf("  test_ellipsis_empty... ");
     /* Pattern: (_ x ...)   Input: (my-macro)  → x binds to empty list */
@@ -924,6 +1006,8 @@ static void test_ellipsis_empty(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: template instantiation substitutes bound pattern
+ *         variables. */
 static void test_simple_instantiation(void) {
     printf("  test_simple_instantiation... ");
     /* Template: (+ x y), bindings: x=10, y=20  → (+ 10 20) */
@@ -956,6 +1040,8 @@ static void test_simple_instantiation(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: template instantiation expands an ellipsis-bound
+ *         variable into repeated output. */
 static void test_ellipsis_instantiation(void) {
     printf("  test_ellipsis_instantiation... ");
     /* Template: (begin x ...)
@@ -989,6 +1075,8 @@ static void test_ellipsis_instantiation(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: end-to-end vm_macro_expand() on a registered
+ *         define-syntax macro. */
 static void test_full_macro_expansion(void) {
     printf("  test_full_macro_expansion... ");
     vm_macro_reset();
@@ -1023,6 +1111,8 @@ static void test_full_macro_expansion(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: a macro with multiple syntax-rules clauses tries
+ *         them in order and uses the first match. */
 static void test_multi_rule_macro(void) {
     printf("  test_multi_rule_macro... ");
     vm_macro_reset();
@@ -1072,6 +1162,8 @@ static void test_multi_rule_macro(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: parsing a `define-syntax`/`syntax-rules` form
+ *         registers the macro correctly. */
 static void test_define_syntax_parsing(void) {
     printf("  test_define_syntax_parsing... ");
     vm_macro_reset();
@@ -1115,6 +1207,8 @@ static void test_define_syntax_parsing(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: a macro expansion that itself contains a macro call
+ *         is recursively re-expanded. */
 static void test_recursive_expansion(void) {
     printf("  test_recursive_expansion... ");
     vm_macro_reset();
@@ -1161,6 +1255,8 @@ static void test_recursive_expansion(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: a form whose head isn't a registered macro passes
+ *         through vm_macro_expand() unchanged. */
 static void test_non_macro_passthrough(void) {
     printf("  test_non_macro_passthrough... ");
     vm_macro_reset();
@@ -1177,6 +1273,8 @@ static void test_non_macro_passthrough(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: a pattern with the wrong number of (non-ellipsis)
+ *         elements fails to match. */
 static void test_length_mismatch(void) {
     printf("  test_length_mismatch... ");
     /* Pattern: (_ x y)   Input: (foo 1)  — should not match (too few args) */
@@ -1196,6 +1294,8 @@ static void test_length_mismatch(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: an ellipsis pattern followed by fixed trailing
+ *         elements matches correctly. */
 static void test_ellipsis_with_suffix(void) {
     printf("  test_ellipsis_with_suffix... ");
     /* Pattern: (_ x ... y)   Input: (foo 1 2 3 last) */
@@ -1230,6 +1330,11 @@ static void test_ellipsis_with_suffix(void) {
     printf("OK\n");
 }
 
+/** @brief Standalone self-test (built when VM_MACRO_TEST is defined): runs
+ *         all test_* functions above, covering gensym, node copying,
+ *         pattern matching (literals/ellipsis/length mismatches), template
+ *         instantiation, and full macro expansion (including recursive
+ *         and multi-rule cases). */
 int main(void) {
     printf("vm_macro self-test\n");
     printf("==================\n");

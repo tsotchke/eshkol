@@ -33,6 +33,7 @@ typedef struct {
 
 /* ── Allocation ── */
 
+/** @brief Allocate a bytevector of @p len bytes (data uninitialized). */
 static VmBytevector* vm_bv_alloc(VmRegionStack* rs, int len) {
     VmBytevector* bv = (VmBytevector*)vm_alloc_object(rs, VM_SUBTYPE_BYTEVEC,
                                                        sizeof(VmBytevector));
@@ -45,7 +46,7 @@ static VmBytevector* vm_bv_alloc(VmRegionStack* rs, int len) {
 
 /* ── Public API ── */
 
-/* 680: make-bytevector(n, fill) */
+/** @brief Native call 680: `(make-bytevector n [fill])`. */
 VmBytevector* vm_bv_make(VmRegionStack* rs, int n, int fill) {
     VmBytevector* bv = vm_bv_alloc(rs, n);
     if (!bv) return NULL;
@@ -53,12 +54,13 @@ VmBytevector* vm_bv_make(VmRegionStack* rs, int n, int fill) {
     return bv;
 }
 
-/* 681: bytevector-length */
+/** @brief Native call 681: `(bytevector-length bv)`. */
 int vm_bv_length(const VmBytevector* bv) {
     return bv ? bv->len : 0;
 }
 
-/* 682: bytevector-u8-ref */
+/** @brief Native call 682: `(bytevector-u8-ref bv k)`, erroring (and
+ *         returning -1) if @p k is out of range. */
 int vm_bv_u8_ref(const VmBytevector* bv, int k) {
     if (!bv || k < 0 || k >= bv->len) {
         fprintf(stderr, "ERROR: bytevector-u8-ref index %d out of range [0,%d)\n",
@@ -68,7 +70,8 @@ int vm_bv_u8_ref(const VmBytevector* bv, int k) {
     return bv->data[k];
 }
 
-/* 683: bytevector-u8-set! */
+/** @brief Native call 683: `(bytevector-u8-set! bv k byte)`, erroring if
+ *         @p k is out of range. */
 void vm_bv_u8_set(VmBytevector* bv, int k, int byte) {
     if (!bv || k < 0 || k >= bv->len) {
         fprintf(stderr, "ERROR: bytevector-u8-set! index %d out of range [0,%d)\n",
@@ -78,7 +81,9 @@ void vm_bv_u8_set(VmBytevector* bv, int k, int byte) {
     bv->data[k] = (uint8_t)(byte & 0xFF);
 }
 
-/* 684: bytevector-copy(bv, [start], [end]) */
+/** @brief Native call 684: `(bytevector-copy bv [start [end]])` — copy the
+ *         [start,end) sub-range (clamped to bounds) into a new
+ *         bytevector. */
 VmBytevector* vm_bv_copy(VmRegionStack* rs, const VmBytevector* bv, int start, int end) {
     if (!bv) return NULL;
     if (start < 0) start = 0;
@@ -91,7 +96,10 @@ VmBytevector* vm_bv_copy(VmRegionStack* rs, const VmBytevector* bv, int start, i
     return out;
 }
 
-/* 685: bytevector-copy!(to, at, from, start, end) */
+/** @brief Native call 685: `(bytevector-copy! to at from [start [end]])` —
+ *         copy @p from's [start,end) range into @p to starting at @p at
+ *         (via memmove, so overlapping same-bytevector copies are safe);
+ *         errors on destination overflow. */
 void vm_bv_copy_to(VmBytevector* to, int at, const VmBytevector* from, int start, int end) {
     if (!to || !from) return;
     if (start < 0) start = 0;
@@ -106,7 +114,7 @@ void vm_bv_copy_to(VmBytevector* to, int at, const VmBytevector* from, int start
     memmove(to->data + at, from->data + start, (size_t)n);
 }
 
-/* 686: bytevector-append(bv1, bv2) */
+/** @brief Native call 686: `(bytevector-append bv1 bv2)`. */
 VmBytevector* vm_bv_append(VmRegionStack* rs, const VmBytevector* a, const VmBytevector* b) {
     int alen = a ? a->len : 0;
     int blen = b ? b->len : 0;
@@ -117,14 +125,16 @@ VmBytevector* vm_bv_append(VmRegionStack* rs, const VmBytevector* a, const VmByt
     return out;
 }
 
-/* 687: bytevector? */
+/** @brief Native call 687: `(bytevector? obj)` — check the heap object
+ *         header subtype. */
 int vm_bv_is_bytevector(void* obj) {
     if (!obj) return 0;
     VmObjectHeader* hdr = (VmObjectHeader*)((uint8_t*)obj - sizeof(VmObjectHeader));
     return hdr->subtype == VM_SUBTYPE_BYTEVEC;
 }
 
-/* 688: bytevector (literal constructor from list of bytes) */
+/** @brief Native call 688: `(bytevector byte...)` literal constructor from
+ *         an array of @p n byte values. */
 VmBytevector* vm_bv_from_bytes(VmRegionStack* rs, const int* bytes, int n) {
     VmBytevector* bv = vm_bv_alloc(rs, n);
     if (!bv) return NULL;
@@ -133,7 +143,13 @@ VmBytevector* vm_bv_from_bytes(VmRegionStack* rs, const int* bytes, int n) {
     return bv;
 }
 
-/* 689: utf8->string(bv, start, end) — interpret bytes as UTF-8, create string */
+/**
+ * @brief Native call 689: `(utf8->string bv [start [end]])` — interpret
+ *        the [start,end) byte range as UTF-8 and build a new string,
+ *        counting UTF-8 lead bytes (non-continuation bytes) to derive the
+ *        character length when the fuller VmString layout (with
+ *        byte_len/char_len) is available.
+ */
 VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int start, int end) {
     if (!bv) return NULL;
     if (start < 0) start = 0;
@@ -166,7 +182,9 @@ VmString* vm_bv_utf8_to_string(VmRegionStack* rs, const VmBytevector* bv, int st
     return s;
 }
 
-/* 690: string->utf8(str, start, end) — encode string as UTF-8 bytevector */
+/** @brief Native call 690: `(string->utf8 str [start [end]])` — encode the
+ *         string's [start,end) range (already stored as UTF-8 bytes
+ *         internally) as a new bytevector. */
 VmBytevector* vm_bv_string_to_utf8(VmRegionStack* rs, const VmString* s, int start, int end) {
     if (!s) return NULL;
     if (start < 0) start = 0;
@@ -188,6 +206,8 @@ VmBytevector* vm_bv_string_to_utf8(VmRegionStack* rs, const VmString* s, int sta
  * Dispatch
  ******************************************************************************/
 
+/** @brief Native-call dispatcher for the bytevector primitives (IDs
+ *         680-699). */
 void* vm_bv_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
     switch (id) {
     case 680: return vm_bv_make(rs, nargs >= 1 ? (int)(intptr_t)args[0] : 0,
@@ -226,6 +246,9 @@ void* vm_bv_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
 
 #include <assert.h>
 
+/** @brief Standalone self-test (built when VM_BYTEVECTOR_TEST is defined):
+ *         exercises make/fill, u8-ref/set!, copy, copy!, append,
+ *         from-bytes, and the utf8<->string round-trip. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

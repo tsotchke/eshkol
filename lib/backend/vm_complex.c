@@ -16,6 +16,7 @@
 
 /* ── Allocation ── */
 
+/** @brief Allocate a complex number with the given rectangular components. */
 static VmComplex* vm_complex_new(VmRegionStack* rs, double real, double imag) {
     VmComplex* z = (VmComplex*)vm_alloc(rs, sizeof(VmComplex));
     if (!z) return NULL;
@@ -26,17 +27,18 @@ static VmComplex* vm_complex_new(VmRegionStack* rs, double real, double imag) {
 
 /* ── Core Operations ── */
 
-/* 300: make-rectangular */
+/** @brief Native call 300: `(make-rectangular real imag)`. */
 static VmComplex* vm_make_rectangular(VmRegionStack* rs, double real, double imag) {
     return vm_complex_new(rs, real, imag);
 }
 
-/* 301: make-polar */
+/** @brief Native call 301: `(make-polar mag angle)`. */
 static VmComplex* vm_make_polar(VmRegionStack* rs, double mag, double angle) {
     return vm_complex_new(rs, mag * cos(angle), mag * sin(angle));
 }
 
-/* 304: magnitude — Smith's formula for overflow safety */
+/** @brief Native call 304: `(magnitude z)`, via Smith's formula (scaling
+ *         by the larger component) to avoid intermediate overflow. */
 static double vm_complex_magnitude(const VmComplex* z) {
     double a = fabs(z->real), b = fabs(z->imag);
     if (a == 0 && b == 0) return 0.0;
@@ -49,40 +51,44 @@ static double vm_complex_magnitude(const VmComplex* z) {
     }
 }
 
-/* 305: angle */
+/** @brief Native call 305: `(angle z)`. */
 static double vm_complex_angle(const VmComplex* z) {
     return atan2(z->imag, z->real);
 }
 
-/* 306: conjugate */
+/** @brief Native call 306: `(conjugate z)`. */
 static VmComplex* vm_complex_conjugate(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_new(rs, z->real, -z->imag);
 }
 
-/* 307: add */
+/** @brief Native call 307: complex addition. */
 static VmComplex* vm_complex_add(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
     return vm_complex_new(rs, a->real + b->real, a->imag + b->imag);
 }
 
-/* 308: sub */
+/** @brief Native call 308: complex subtraction. */
 static VmComplex* vm_complex_sub(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
     return vm_complex_new(rs, a->real - b->real, a->imag - b->imag);
 }
 
-/* 309: mul */
+/** @brief Native call 309: complex multiplication. */
 static VmComplex* vm_complex_mul(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
     return vm_complex_new(rs,
         a->real * b->real - a->imag * b->imag,
         a->real * b->imag + a->imag * b->real);
 }
 
-/* 310: div — Smith's formula for overflow safety
+/**
+ * @brief Native call 310: complex division, via Smith's formula for
+ *        overflow safety.
+ *
  * If |c| >= |d|: r = d/c, denom = c + d*r
  *   real = (a + b*r) / denom
  *   imag = (b - a*r) / denom
  * Else: r = c/d, denom = d + c*r
  *   real = (b + a*r) / denom
- *   imag = (-a + b*r) / denom  (note sign!) */
+ *   imag = (-a + b*r) / denom  (note sign!)
+ */
 static VmComplex* vm_complex_div(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
     double c = b->real, d = b->imag;
     if (fabs(c) >= fabs(d)) {
@@ -100,7 +106,9 @@ static VmComplex* vm_complex_div(VmRegionStack* rs, const VmComplex* a, const Vm
     }
 }
 
-/* 311: sqrt */
+/** @brief Native call 311: principal complex square root, via the
+ *         magnitude-based half-angle formula (sign of imag chosen to match
+ *         @p z's imaginary sign). */
 static VmComplex* vm_complex_sqrt(VmRegionStack* rs, const VmComplex* z) {
     double r = vm_complex_magnitude(z);
     double real = sqrt((r + z->real) / 2.0);
@@ -109,32 +117,36 @@ static VmComplex* vm_complex_sqrt(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_new(rs, real, imag);
 }
 
-/* 312: exp — e^(a+bi) = e^a * (cos(b) + i*sin(b)) */
+/** @brief Native call 312: complex exponential, e^(a+bi) = e^a * (cos(b) +
+ *         i*sin(b)). */
 static VmComplex* vm_complex_exp(VmRegionStack* rs, const VmComplex* z) {
     double ea = exp(z->real);
     return vm_complex_new(rs, ea * cos(z->imag), ea * sin(z->imag));
 }
 
-/* 313: log — log(z) = (log|z|, angle(z)) */
+/** @brief Native call 313: principal complex natural log, (log|z|,
+ *         angle(z)). */
 static VmComplex* vm_complex_log(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_new(rs, log(vm_complex_magnitude(z)), vm_complex_angle(z));
 }
 
-/* 314: sin — sin(a+bi) = sin(a)*cosh(b) + i*cos(a)*sinh(b) */
+/** @brief Native call 314: complex sin, sin(a+bi) = sin(a)*cosh(b) +
+ *         i*cos(a)*sinh(b). */
 static VmComplex* vm_complex_sin(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_new(rs,
         sin(z->real) * cosh(z->imag),
         cos(z->real) * sinh(z->imag));
 }
 
-/* 315: cos — cos(a+bi) = cos(a)*cosh(b) - i*sin(a)*sinh(b) */
+/** @brief Native call 315: complex cos, cos(a+bi) = cos(a)*cosh(b) -
+ *         i*sin(a)*sinh(b). */
 static VmComplex* vm_complex_cos(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_new(rs,
         cos(z->real) * cosh(z->imag),
         -sin(z->real) * sinh(z->imag));
 }
 
-/* 316: tan — sin(z)/cos(z) */
+/** @brief Native call 316: complex tan, computed as sin(z)/cos(z). */
 static VmComplex* vm_complex_tan(VmRegionStack* rs, const VmComplex* z) {
     VmComplex* s = vm_complex_sin(rs, z);
     VmComplex* c = vm_complex_cos(rs, z);
@@ -142,7 +154,7 @@ static VmComplex* vm_complex_tan(VmRegionStack* rs, const VmComplex* z) {
     return vm_complex_div(rs, s, c);
 }
 
-/* 318: expt — a^b = exp(b * log(a)) */
+/** @brief Native call 318: complex exponentiation, a^b = exp(b * log(a)). */
 static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const VmComplex* b) {
     VmComplex* log_a = vm_complex_log(rs, a);
     if (!log_a) return NULL;
@@ -156,6 +168,10 @@ static VmComplex* vm_complex_expt(VmRegionStack* rs, const VmComplex* a, const V
 #ifdef VM_COMPLEX_TEST
 #include <assert.h>
 
+/** @brief Standalone self-test (built when VM_COMPLEX_TEST is defined):
+ *         exercises rectangular/polar construction, magnitude/angle,
+ *         arithmetic, sqrt, exp/log (including Euler's identity), and
+ *         trig functions against known values. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

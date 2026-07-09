@@ -122,6 +122,8 @@ thread_local bool tls_is_worker_thread = false;
 thread_local eshkol_thread_pool_t* tls_worker_pool = nullptr;
 
 /* Exported for arena_is_worker_thread() weak symbol linkage */
+/** @brief Whether the calling thread is a thread-pool worker thread.
+ *         Exported (weak-symbol linkage) for arena_is_worker_thread(). */
 extern "C" int eshkol_thread_pool_is_worker(void) {
     return tls_is_worker_thread ? 1 : 0;
 }
@@ -129,10 +131,14 @@ thread_local size_t tls_arena_size = 0;
 thread_local size_t tls_worker_id = SIZE_MAX;
 thread_local size_t tls_epoch_slot = SIZE_MAX;
 
+/** @brief Whether the current thread is one of @p pool's own worker
+ *         threads (as opposed to an external submitter thread). */
 static bool thread_pool_called_from_owner_worker(const eshkol_thread_pool_t* pool) {
     return tls_worker_pool == pool && tls_worker_id < pool->num_threads;
 }
 
+/** @brief Lock-free update of @p pool's peak_queue_depth metric to
+ *         max(peak_queue_depth, depth). */
 static void thread_pool_note_queue_depth(eshkol_thread_pool_t* pool, size_t depth) {
     size_t peak = pool->peak_queue_depth.load(std::memory_order_relaxed);
     while (depth > peak &&
@@ -141,10 +147,15 @@ static void thread_pool_note_queue_depth(eshkol_thread_pool_t* pool, size_t dept
     }
 }
 
+/** @brief Whether the legacy shared queue is at capacity. Caller must hold
+ *         @p pool->queue_mutex. */
 static bool thread_pool_legacy_queue_full_locked(const eshkol_thread_pool_t* pool) {
     return pool->max_queue_size > 0 && pool->legacy_queue.size() >= pool->max_queue_size;
 }
 
+/** @brief Pop one externally-submitted task from the legacy shared queue,
+ *         or nullptr if empty or the pool is paused. Used by work-stealing
+ *         workers to also drain tasks submitted by non-worker threads. */
 static eshkol_task* thread_pool_try_pop_external_task(eshkol_thread_pool_t* pool) {
     std::lock_guard<std::mutex> lock(pool->queue_mutex);
     if (pool->paused.load(std::memory_order_relaxed) || pool->legacy_queue.empty()) {
@@ -156,6 +167,10 @@ static eshkol_task* thread_pool_try_pop_external_task(eshkol_thread_pool_t* pool
     return task;
 }
 
+/** @brief Lazily create (if needed) and return this thread's thread-local
+ *         arena, sized from tls_arena_size (or a 1 MiB default). Created
+ *         via arena_create_thread_local() so get_global_arena() resolves
+ *         to it from worker threads. */
 arena_t* get_thread_local_arena(void) {
     if (!tls_arena) {
         // Use reasonable default size
@@ -172,6 +187,8 @@ arena_t* get_thread_local_arena(void) {
     return tls_arena;
 }
 
+/** @brief Return the calling thread's thread-local arena, or nullptr if
+ *         the calling thread is not a thread-pool worker. */
 arena_t* thread_pool_get_thread_arena(void) {
     if (!tls_is_worker_thread) {
         return nullptr;
@@ -179,6 +196,8 @@ arena_t* thread_pool_get_thread_arena(void) {
     return get_thread_local_arena();
 }
 
+/** @brief Reset the calling thread's thread-local arena (bulk-free without
+ *         destroying it), if one exists. */
 void thread_pool_reset_thread_arena(void) {
     if (tls_arena) {
         arena_reset(tls_arena);
@@ -189,6 +208,18 @@ void thread_pool_reset_thread_arena(void) {
 // Work-Stealing Worker Implementation
 // ============================================================================
 
+/**
+ * @brief Main loop for a work-stealing worker thread: registers the
+ *        worker's thread-local state (arena, epoch slot), then repeatedly
+ *        pops from its own Chase-Lev deque (LIFO, best cache locality),
+ *        falling back to randomly stealing from another worker's deque and
+ *        then to the legacy shared queue, executing whatever task is found
+ *        (catching exceptions, updating metrics, completing its future).
+ *        Backs off via CPU pause/yield/short sleep when idle, and
+ *        periodically advances the epoch and reclaims retired deque
+ *        buffers. Runs until @p pool->stop is set, then tears down its
+ *        thread-local runtime state.
+ */
 static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     tls_is_worker_thread = true;
     tls_worker_pool = pool;
@@ -372,6 +403,14 @@ static void work_stealing_worker_func(eshkol_thread_pool_t* pool, size_t worker_
 // Legacy Queue Worker Implementation (for compatibility)
 // ============================================================================
 
+/**
+ * @brief Main loop for a legacy (queue-mode) worker thread: registers the
+ *        worker's thread-local state, then blocks on the shared legacy
+ *        queue's condition variable, popping and executing one task at a
+ *        time (same exception handling, metrics, and future-completion
+ *        behaviour as work_stealing_worker_func()) until @p pool->stop is
+ *        set and the queue has drained.
+ */
 static void legacy_worker_func(eshkol_thread_pool_t* pool, size_t worker_id) {
     tls_is_worker_thread = true;
     tls_worker_pool = pool;
@@ -478,6 +517,9 @@ struct eshkol_worker_start_args {
     bool work_stealing;
 };
 
+/** @brief Default pthread worker stack size: 16 MiB, overridable via the
+ *         ESHKOL_WORKER_STACK_BYTES env var, clamped up to
+ *         PTHREAD_STACK_MIN when defined. */
 static size_t thread_pool_default_worker_stack_size(void) {
     size_t stack_size = 16 * 1024 * 1024;
     const char* env = std::getenv("ESHKOL_WORKER_STACK_BYTES");
@@ -498,6 +540,10 @@ static size_t thread_pool_default_worker_stack_size(void) {
     return stack_size;
 }
 
+/** @brief pthread trampoline: unpacks @p arg into an
+ *         eshkol_worker_start_args (taking ownership), then dispatches to
+ *         work_stealing_worker_func() or legacy_worker_func() as
+ *         configured. */
 static void* thread_pool_worker_entry(void* arg) {
     std::unique_ptr<eshkol_worker_start_args> start(
         static_cast<eshkol_worker_start_args*>(arg));
@@ -510,6 +556,14 @@ static void* thread_pool_worker_entry(void* arg) {
 }
 #endif
 
+/**
+ * @brief Spawn one worker thread for @p pool running
+ *        work_stealing_worker_func() or legacy_worker_func() per
+ *        @p work_stealing. On pthread platforms, sets an explicit stack
+ *        size (thread_pool_default_worker_stack_size()) via
+ *        thread_pool_worker_entry(); otherwise uses std::thread directly.
+ * @return true on success, false if thread creation failed.
+ */
 static bool thread_pool_start_worker(
     eshkol_thread_pool_t* pool,
     size_t worker_id,
@@ -560,6 +614,16 @@ static bool thread_pool_start_worker(
 // Thread Pool Lifecycle
 // ============================================================================
 
+/**
+ * @brief Create and start a new thread pool per @p config (worker count,
+ *        per-thread arena size, queue capacity, metrics, name), defaulting
+ *        num_threads to hardware_concurrency() and thread_arena_size to
+ *        1 MiB when zero. Work-stealing mode is used unless the
+ *        ESHKOL_DISABLE_WORK_STEALING env var is set to a non-"0" value,
+ *        in which case per-worker Chase-Lev deques and an EpochManager are
+ *        allocated and the legacy shared queue is used only as a fallback
+ *        submission path. Spawns all worker threads before returning.
+ */
 eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* config) {
     auto pool = new eshkol_thread_pool_t();
 
@@ -635,11 +699,19 @@ eshkol_thread_pool_t* thread_pool_create(const eshkol_thread_pool_config_t* conf
     return pool;
 }
 
+/** @brief Create a thread pool using ESHKOL_THREAD_POOL_DEFAULT_CONFIG. */
 eshkol_thread_pool_t* thread_pool_create_default(void) {
     eshkol_thread_pool_config_t config = ESHKOL_THREAD_POOL_DEFAULT_CONFIG;
     return thread_pool_create(&config);
 }
 
+/**
+ * @brief Shut down and free a thread pool: signals stop (unparking any
+ *        paused/waiting workers), joins every worker thread, drains and
+ *        discards remaining queued/deque tasks (marking their futures
+ *        completed so waiters don't block forever), optionally prints
+ *        final metrics, then deletes @p pool. No-op if @p pool is null.
+ */
 void thread_pool_destroy(eshkol_thread_pool_t* pool) {
     if (!pool) return;
 
@@ -711,6 +783,9 @@ static std::mutex g_global_pool_mutex;
 static eshkol_thread_pool_t* g_global_pool = nullptr;
 static bool g_global_pool_atexit_registered = false;
 
+/** @brief Get (lazily creating on first call) the process-wide default
+ *         thread pool singleton, registering thread_pool_global_shutdown()
+ *         via atexit() the first time it's created. */
 eshkol_thread_pool_t* thread_pool_global(void) {
     std::lock_guard<std::mutex> lock(g_global_pool_mutex);
     if (!g_global_pool) {
@@ -723,6 +798,8 @@ eshkol_thread_pool_t* thread_pool_global(void) {
     return g_global_pool;
 }
 
+/** @brief Destroy the process-wide global thread pool singleton, if one
+ *         exists (registered as an atexit() handler by thread_pool_global()). */
 void thread_pool_global_shutdown(void) {
     std::lock_guard<std::mutex> lock(g_global_pool_mutex);
     if (g_global_pool) {
@@ -735,6 +812,14 @@ void thread_pool_global_shutdown(void) {
 // Task Submission
 // ============================================================================
 
+/**
+ * @brief Submit a task (@p fn, @p arg) to @p pool and return a future for
+ *        its result. In work-stealing mode, pushes to the calling worker's
+ *        own deque when submitted from within the pool (thread_pool_called_
+ *        from_owner_worker()), otherwise routes through the legacy shared
+ *        queue for cross-thread submission. Returns nullptr if @p pool is
+ *        null or already stopping.
+ */
 eshkol_future_t* thread_pool_submit(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn fn,
@@ -799,6 +884,14 @@ eshkol_future_t* thread_pool_submit(
     return future;
 }
 
+/**
+ * @brief Submit @p count tasks (@p fns/@p args) to @p pool in one call,
+ *        writing one future per task into @p futures. Same routing rules
+ *        as thread_pool_submit() (owner-worker local deque vs. shared
+ *        queue); stops early (returning fewer than @p count) if the legacy
+ *        queue's capacity is reached.
+ * @return The number of tasks actually submitted.
+ */
 size_t thread_pool_submit_batch(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn* fns,
@@ -898,6 +991,8 @@ size_t thread_pool_submit_batch(
     return submitted;
 }
 
+/** @brief Submit a fire-and-forget task (no future is created or returned)
+ *         to @p pool. Returns false if @p pool is null or stopping. */
 bool thread_pool_submit_detached(
     eshkol_thread_pool_t* pool,
     eshkol_task_fn fn,
@@ -951,6 +1046,8 @@ bool thread_pool_submit_detached(
 // Future Operations
 // ============================================================================
 
+/** @brief Block until @p future's task completes and return its result
+ *         (nullptr if @p future is null). */
 void* future_get(eshkol_future_t* future) {
     if (!future) return nullptr;
 
@@ -959,6 +1056,8 @@ void* future_get(eshkol_future_t* future) {
     return future->result;
 }
 
+/** @brief Wait up to @p timeout_ms milliseconds for @p future to complete.
+ * @return true if it completed (or already had), false on timeout. */
 bool future_wait(eshkol_future_t* future, uint64_t timeout_ms) {
     if (!future) return false;
 
@@ -970,6 +1069,7 @@ bool future_wait(eshkol_future_t* future, uint64_t timeout_ms) {
         [future]() { return future->completed; });
 }
 
+/** @brief Non-blocking check of whether @p future's task has completed. */
 bool future_is_ready(const eshkol_future_t* future) {
     if (!future) return false;
     auto* f = const_cast<eshkol_future_t*>(future);
@@ -977,6 +1077,9 @@ bool future_is_ready(const eshkol_future_t* future) {
     return f->completed;
 }
 
+/** @brief Release (delete) @p future, guarding against double-release via
+ *         the released flag. No-op if @p future is null or already
+ *         released. */
 void future_release(eshkol_future_t* future) {
     if (!future) return;
 
@@ -989,6 +1092,12 @@ void future_release(eshkol_future_t* future) {
     delete future;
 }
 
+/**
+ * @brief Poll @p futures (length @p count) until the first one becomes
+ *        ready or @p timeout_ms elapses, sleeping 1ms between poll passes.
+ * @return The index of the first ready future, or -1 on timeout / no
+ *         futures.
+ */
 int future_wait_any(eshkol_future_t** futures, size_t count, uint64_t timeout_ms) {
     if (!futures || count == 0) return -1;
 
@@ -1007,6 +1116,12 @@ int future_wait_any(eshkol_future_t** futures, size_t count, uint64_t timeout_ms
     return -1;
 }
 
+/**
+ * @brief Wait for every future in @p futures (length @p count) to
+ *        complete, within a shared overall deadline of @p timeout_ms.
+ * @return true if all completed in time, false if the deadline was
+ *         reached first.
+ */
 bool future_wait_all(eshkol_future_t** futures, size_t count, uint64_t timeout_ms) {
     if (!futures || count == 0) return true;
 
@@ -1060,6 +1175,9 @@ struct eshkol_lazy_future {
     void* async_task;           // llvm_parallel_execute_task* — owned, freed in join
 };
 
+/** @brief Allocate a new, unforced lazy future wrapping thunk
+ *         (@p thunk_ptr, @p thunk_type, @p thunk_flags), for use by
+ *         LLVM-generated code implementing Eshkol's `delay`/`force`. */
 extern "C" eshkol_lazy_future* eshkol_lazy_future_create_ptr(
     uint64_t thunk_ptr, uint8_t thunk_type, uint8_t thunk_flags)
 {
@@ -1083,34 +1201,44 @@ extern "C" uint8_t eshkol_lazy_future_is_async(eshkol_lazy_future* lf) {
     return (lf && lf->pool_future) ? 1 : 0;
 }
 
+/** @brief Whether @p lf's value has already been forced (computed). A null
+ *         future is treated as ready. */
 extern "C" uint8_t eshkol_lazy_future_is_ready(eshkol_lazy_future* lf) {
     return lf ? lf->forced : 1;
 }
 
+/** @brief Get @p lf's wrapped thunk pointer (0 if @p lf is null). */
 extern "C" uint64_t eshkol_lazy_future_get_thunk_ptr(eshkol_lazy_future* lf) {
     return lf ? lf->thunk_ptr : 0;
 }
 
+/** @brief Get @p lf's wrapped thunk's tagged-value type tag. */
 extern "C" uint8_t eshkol_lazy_future_get_thunk_type(eshkol_lazy_future* lf) {
     return lf ? lf->thunk_type : ESHKOL_VALUE_NULL;
 }
 
+/** @brief Get @p lf's wrapped thunk's tagged-value flags byte. */
 extern "C" uint8_t eshkol_lazy_future_get_thunk_flags(eshkol_lazy_future* lf) {
     return lf ? lf->thunk_flags : 0;
 }
 
+/** @brief Get @p lf's forced result pointer (0 if not yet forced). */
 extern "C" uint64_t eshkol_lazy_future_get_result_ptr(eshkol_lazy_future* lf) {
     return (lf && lf->forced) ? lf->result_ptr : 0;
 }
 
+/** @brief Get @p lf's forced result's tagged-value type tag. */
 extern "C" uint8_t eshkol_lazy_future_get_result_type(eshkol_lazy_future* lf) {
     return (lf && lf->forced) ? lf->result_type : ESHKOL_VALUE_NULL;
 }
 
+/** @brief Get @p lf's forced result's tagged-value flags byte. */
 extern "C" uint8_t eshkol_lazy_future_get_result_flags(eshkol_lazy_future* lf) {
     return (lf && lf->forced) ? lf->result_flags : 0;
 }
 
+/** @brief Store the forced result into @p lf and mark it ready. No-op if
+ *         @p lf is null. */
 extern "C" void eshkol_lazy_future_set_result_ptr(
     eshkol_lazy_future* lf, uint64_t result_ptr, uint8_t result_type, uint8_t result_flags)
 {
@@ -1126,6 +1254,9 @@ extern "C" void eshkol_lazy_future_set_result_ptr(
 // Thread Pool Metrics
 // ============================================================================
 
+/** @brief Snapshot @p pool's current metrics (counts, timings, pending
+ *         task count summed across deques + legacy queue, and computed
+ *         averages) into @p metrics. No-op if either pointer is null. */
 void thread_pool_get_metrics(
     const eshkol_thread_pool_t* pool,
     eshkol_thread_pool_metrics_t* metrics)
@@ -1167,6 +1298,7 @@ void thread_pool_get_metrics(
     }
 }
 
+/** @brief Zero all of @p pool's cumulative metric counters. */
 void thread_pool_reset_metrics(eshkol_thread_pool_t* pool) {
     if (!pool) return;
 
@@ -1180,6 +1312,9 @@ void thread_pool_reset_metrics(eshkol_thread_pool_t* pool) {
     pool->local_executions.store(0);
 }
 
+/** @brief Log a human-readable summary of @p pool's current metrics (mode,
+ *         thread/task counts, work-stealing steal ratio or peak queue
+ *         depth, average task/wait times) via eshkol_info(). */
 void thread_pool_print_metrics(const eshkol_thread_pool_t* pool) {
     if (!pool) return;
 
@@ -1219,21 +1354,28 @@ void thread_pool_print_metrics(const eshkol_thread_pool_t* pool) {
 // Thread Pool Control
 // ============================================================================
 
+/** @brief Number of worker threads in @p pool (0 if null). */
 size_t thread_pool_num_threads(const eshkol_thread_pool_t* pool) {
     return pool ? pool->num_threads : 0;
 }
 
+/** @brief Pause @p pool: workers finish their current task, then block
+ *         until thread_pool_resume() is called. */
 void thread_pool_pause(eshkol_thread_pool_t* pool) {
     if (!pool) return;
     pool->paused.store(true);
 }
 
+/** @brief Resume a paused @p pool, waking all blocked workers. */
 void thread_pool_resume(eshkol_thread_pool_t* pool) {
     if (!pool) return;
     pool->paused.store(false);
     pool->pause_cv.notify_all();
 }
 
+/** @brief Block the calling thread until @p pool has no pending tasks
+ *         (queues/deques empty) and no active workers, polling every
+ *         10ms. */
 void thread_pool_wait_idle(eshkol_thread_pool_t* pool) {
     if (!pool) return;
 
@@ -1269,9 +1411,13 @@ void thread_pool_wait_idle(eshkol_thread_pool_t* pool) {
 
 namespace eshkol {
 
+/** @brief Construct a ThreadPool wrapping a newly-created default-config
+ *         C pool, owned by this object. */
 ThreadPool::ThreadPool()
     : pool_(thread_pool_create_default()), owns_pool_(true) {}
 
+/** @brief Construct a ThreadPool with @p num_threads workers (default
+ *         config otherwise), owned by this object. */
 ThreadPool::ThreadPool(size_t num_threads)
     : owns_pool_(true)
 {
@@ -1280,15 +1426,19 @@ ThreadPool::ThreadPool(size_t num_threads)
     pool_ = thread_pool_create(&config);
 }
 
+/** @brief Construct a ThreadPool from an explicit @p config, owned by this
+ *         object. */
 ThreadPool::ThreadPool(const eshkol_thread_pool_config_t& config)
     : pool_(thread_pool_create(&config)), owns_pool_(true) {}
 
+/** @brief Destroy the underlying C pool if this wrapper owns it. */
 ThreadPool::~ThreadPool() {
     if (owns_pool_ && pool_) {
         thread_pool_destroy(pool_);
     }
 }
 
+/** @brief Move-construct, transferring pool ownership from @p other. */
 ThreadPool::ThreadPool(ThreadPool&& other) noexcept
     : pool_(other.pool_), owns_pool_(other.owns_pool_)
 {
@@ -1296,6 +1446,8 @@ ThreadPool::ThreadPool(ThreadPool&& other) noexcept
     other.owns_pool_ = false;
 }
 
+/** @brief Move-assign: destroys any owned pool held by this object, then
+ *         transfers pool ownership from @p other. */
 ThreadPool& ThreadPool::operator=(ThreadPool&& other) noexcept {
     if (this != &other) {
         if (owns_pool_ && pool_) {
@@ -1309,32 +1461,39 @@ ThreadPool& ThreadPool::operator=(ThreadPool&& other) noexcept {
     return *this;
 }
 
+/** @brief See thread_pool_pause(). */
 void ThreadPool::pause() {
     thread_pool_pause(pool_);
 }
 
+/** @brief See thread_pool_resume(). */
 void ThreadPool::resume() {
     thread_pool_resume(pool_);
 }
 
+/** @brief See thread_pool_wait_idle(). */
 void ThreadPool::waitIdle() {
     thread_pool_wait_idle(pool_);
 }
 
+/** @brief See thread_pool_get_metrics(). */
 eshkol_thread_pool_metrics_t ThreadPool::getMetrics() const {
     eshkol_thread_pool_metrics_t metrics{};
     thread_pool_get_metrics(pool_, &metrics);
     return metrics;
 }
 
+/** @brief See thread_pool_reset_metrics(). */
 void ThreadPool::resetMetrics() {
     thread_pool_reset_metrics(pool_);
 }
 
+/** @brief See thread_pool_print_metrics(). */
 void ThreadPool::printMetrics() const {
     thread_pool_print_metrics(pool_);
 }
 
+/** @brief See thread_pool_num_threads(). */
 size_t ThreadPool::numThreads() const {
     return thread_pool_num_threads(pool_);
 }
@@ -1343,6 +1502,10 @@ size_t ThreadPool::numThreads() const {
 static std::once_flag g_cpp_global_pool_flag;
 static ThreadPool* g_cpp_global_pool = nullptr;
 
+/** @brief Get the process-wide C++ ThreadPool singleton, lazily
+ *         constructed on first call and backed by the same underlying C
+ *         pool as thread_pool_global() (non-owning — the C pool's own
+ *         atexit handler destroys it, not this wrapper). */
 ThreadPool& ThreadPool::global() {
     std::call_once(g_cpp_global_pool_flag, []() {
         auto* c_pool = thread_pool_global();

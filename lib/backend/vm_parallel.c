@@ -84,6 +84,13 @@ void eshkol_vm_parallel_shutdown_global(void);
  * Worker Thread
  ******************************************************************************/
 
+/**
+ * @brief Worker thread main loop: repeatedly dequeues a task under
+ *        @p pool->mutex (blocking on work_avail when empty, exiting when
+ *        shutdown is signalled with an empty queue), executes it outside
+ *        the lock, and broadcasts all_done once active_tasks drops to 0
+ *        with an empty queue.
+ */
 static void* vm_pool_worker(void* arg) {
     VmThreadPool* pool = (VmThreadPool*)arg;
 
@@ -131,7 +138,13 @@ static void* vm_pool_worker(void* arg) {
  * Pool Lifecycle
  ******************************************************************************/
 
-/* 620: vm_pool_init — create thread pool with n_threads workers */
+/**
+ * @brief Native call 620: create a thread pool with @p n_threads workers
+ *        (auto-detecting and clamping to [1,64] CPUs if <= 0), each with
+ *        its own arena; spawns all worker threads before returning,
+ *        rolling back and returning NULL on any allocation/pthread
+ *        failure.
+ */
 static VmThreadPool* vm_pool_init(int n_threads) {
     if (n_threads <= 0) {
         /* Auto-detect: number of CPUs, clamped to [1, 64] */
@@ -227,7 +240,9 @@ static VmThreadPool* vm_pool_init(int n_threads) {
     return pool;
 }
 
-/* 621: vm_pool_shutdown — signal shutdown, join all workers, free resources */
+/** @brief Native call 621: signal shutdown, join every worker thread, and
+ *         free @p pool's resources (arenas, thread array, sync
+ *         primitives). Clears the global pool pointer if @p pool is it. */
 static void vm_pool_shutdown(VmThreadPool* pool) {
     if (!pool) return;
 
@@ -258,6 +273,10 @@ static void vm_pool_shutdown(VmThreadPool* pool) {
     free(pool);
 }
 
+/** @brief Get (lazily vm_pool_init()-ing on first call, auto-sized) the
+ *         process-wide default thread pool, registering
+ *         eshkol_vm_parallel_shutdown_global() via atexit() the first
+ *         time it's created. */
 static VmThreadPool* vm_parallel_ensure_pool(void) {
     pthread_mutex_lock(&g_pool_init_mutex);
     if (!g_pool) {
@@ -272,9 +291,16 @@ static VmThreadPool* vm_parallel_ensure_pool(void) {
     return pool;
 }
 
-/* 621b: eshkol_vm_parallel_shutdown_global — idempotent; safe to call even if
- * no pool was ever created (g_pool is NULL) and safe to call more than once
- * (the second call finds g_pool already NULL and is a no-op). */
+/**
+ * @brief Native call 621b: shut down and free the global thread pool, if
+ *        one exists. Idempotent — safe to call even if no pool was ever
+ *        created (g_pool is NULL) and safe to call more than once (a
+ *        second call finds g_pool already NULL and is a no-op). Exported
+ *        (not static) so lib/core/runtime_lifecycle_hosted.cpp can also
+ *        call it directly from eshkol_runtime_shutdown(), in addition to
+ *        the atexit() fallback registration in
+ *        vm_parallel_ensure_pool().
+ */
 void eshkol_vm_parallel_shutdown_global(void) {
     pthread_mutex_lock(&g_pool_init_mutex);
     VmThreadPool* pool = g_pool;
@@ -283,7 +309,10 @@ void eshkol_vm_parallel_shutdown_global(void) {
     if (pool) vm_pool_shutdown(pool);
 }
 
-/* 622: vm_pool_submit — enqueue a task, returns 0 on success */
+/** @brief Native call 622: enqueue a task (@p fn, @p arg, @p result) onto
+ *         @p pool's circular queue, waking one worker.
+ * @return 0 on success, -1 if @p pool/@p fn is null or the queue is full.
+ */
 static int vm_pool_submit(VmThreadPool* pool, void (*fn)(void* arg, void* result),
                           void* arg, void* result) {
     if (!pool || !fn) return -1;
@@ -308,7 +337,8 @@ static int vm_pool_submit(VmThreadPool* pool, void (*fn)(void* arg, void* result
     return 0;
 }
 
-/* 623: vm_pool_wait_all — block until all submitted tasks complete */
+/** @brief Native call 623: block the calling thread until @p pool's queue
+ *         is empty and no tasks are actively running. */
 static void vm_pool_wait_all(VmThreadPool* pool) {
     if (!pool) return;
 
@@ -319,12 +349,13 @@ static void vm_pool_wait_all(VmThreadPool* pool) {
     pthread_mutex_unlock(&pool->mutex);
 }
 
-/* 624: vm_pool_thread_count — return number of worker threads */
+/** @brief Native call 624: number of worker threads in @p pool. */
 static int vm_pool_thread_count(const VmThreadPool* pool) {
     return pool ? pool->n_threads : 0;
 }
 
-/* 625: vm_pool_pending_count — return number of pending tasks */
+/** @brief Native call 625: number of tasks currently queued (not yet
+ *         dequeued by a worker) in @p pool. */
 static int vm_pool_pending_count(VmThreadPool* pool) {
     if (!pool) return 0;
     pthread_mutex_lock(&pool->mutex);
@@ -356,6 +387,9 @@ typedef struct VmWorkerContext {
 
 static pthread_mutex_t g_heap_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+/** @brief Whether Value @p v's type carries a heap-object index that must
+ *         be tracked/cloned when copying a value graph across VM
+ *         instances (see vm_clone_value_graph()). */
 static int vm_value_has_heap_index(Value v) {
     switch ((int)v.type) {
         case VAL_PAIR:
@@ -388,6 +422,9 @@ static int vm_value_has_heap_index(Value v) {
     }
 }
 
+/** @brief Deep-copy a bignum's struct and limb array into @p rs (a
+ *         different arena than @p src's origin — used to clone bignum
+ *         heap objects into a worker's isolated arena). */
 static VmBignum* vm_bignum_clone_to(VmRegionStack* rs, const VmBignum* src) {
     if (!src) return NULL;
     VmBignum* dst = (VmBignum*)vm_alloc(rs, sizeof(VmBignum));
@@ -406,6 +443,20 @@ static VmBignum* vm_bignum_clone_to(VmRegionStack* rs, const VmBignum* src) {
 static int vm_clone_value_graph(VM* worker, VM* main_vm, Value v,
                                 int32_t base_next, int depth);
 
+/**
+ * @brief Clone the heap object at index @p idx from @p main_vm's heap into
+ *        @p worker's isolated heap at the same index, recursing into
+ *        every reachable child object (cons car/cdr, closure upvalues,
+ *        vector elements) via vm_clone_value_graph(); leaf opaque payload
+ *        types (string/complex/rational/bignum/dual/tensor/bytevector/
+ *        hyper-dual) get a deep field-by-field copy, everything else is
+ *        shallow-copied by struct assignment. Idempotent per index
+ *        (already-cloned objects are skipped) and depth-limited to 256 to
+ *        guard against cycles. Only indices below @p base_next (the main
+ *        heap's size snapshot at worker-launch time) are cloned.
+ * @return 1 on success, 0 on out-of-range index, missing source, or
+ *         allocation failure.
+ */
 static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
                               int32_t base_next, int depth) {
     if (idx < 0 || idx >= base_next || depth > 256) return 0;
@@ -519,12 +570,20 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
     }
 }
 
+/** @brief Clone the transitive heap-object closure reachable from Value
+ *         @p v (a no-op if @p v doesn't carry a heap index) into @p
+ *         worker's isolated heap; see vm_clone_object_at(). */
 static int vm_clone_value_graph(VM* worker, VM* main_vm, Value v,
                                 int32_t base_next, int depth) {
     if (!vm_value_has_heap_index(v)) return 1;
     return vm_clone_object_at(worker, main_vm, v.as.ptr, base_next, depth);
 }
 
+/** @brief Whether native call ID @p fid is safe to execute from a worker
+ *         thread (pure/read-only operations — arithmetic, comparisons,
+ *         string/vector/list ops, complex/rational/dual/bignum arithmetic,
+ *         etc. — excluding anything that mutates shared VM/process state
+ *         such as I/O, ports, or process control). */
 static int vm_native_is_worker_safe(int fid) {
     if ((fid >= 20 && fid <= 38) || (fid >= 40 && fid <= 51) || fid == 55 ||
         (fid >= 71 && fid <= 73) || (fid >= 137 && fid <= 139) ||
@@ -538,6 +597,12 @@ static int vm_native_is_worker_safe(int fid) {
     return 0;
 }
 
+/** @brief Whether a single bytecode instruction is safe to execute in an
+ *         isolated worker VM: a fixed allow-list of pure stack/arithmetic/
+ *         control-flow/collection opcodes, plus OP_NATIVE_CALL delegated
+ *         to vm_native_is_worker_safe(). Notably excludes OP_SET_UPVALUE,
+ *         OP_CALL/OP_TAIL_CALL, and OP_PRINT (mutation, unbounded
+ *         recursion, and I/O respectively). */
 static int vm_opcode_is_worker_safe(Instr instr) {
     switch (instr.op) {
         case OP_NOP:
@@ -594,6 +659,14 @@ static int vm_opcode_is_worker_safe(Instr instr) {
     }
 }
 
+/**
+ * @brief Whether @p closure's entire reachable bytecode (traversed via an
+ *        explicit work-stack DFS over jump/branch targets and fallthrough
+ *        edges, starting at its func_pc) consists only of
+ *        vm_opcode_is_worker_safe() instructions — i.e. whether the
+ *        closure can safely run in an isolated worker VM without touching
+ *        mutable shared state.
+ */
 static int vm_closure_is_worker_safe(VM* vm, Value closure) {
     if (closure.type != VAL_CLOSURE || closure.as.ptr < 0 ||
         closure.as.ptr >= vm->heap.next_free) {
@@ -658,6 +731,19 @@ static int vm_publish_value_locked(VM* main_vm, VM* worker, Value in,
                                    int32_t base_next, int32_t* remap,
                                    int remap_len, Value* out, int depth);
 
+/**
+ * @brief Deep-copy a worker-local heap object (index @p in.as.ptr, which
+ *        must be a new allocation made during worker execution, i.e.
+ *        >= @p base_next) into @p main_vm's heap under g_heap_mutex,
+ *        recursing into children the same way vm_clone_object_at() does
+ *        but in the opposite direction (worker -> main). @p remap is a
+ *        (worker_idx - base_next) -> main_idx memo table (length
+ *        @p remap_len) so repeated references to the same worker object
+ *        are only published once; indices below @p base_next are assumed
+ *        already shared with the main heap and passed through unchanged.
+ * @return 1 on success (with *@p out set to the published Value), 0 on
+ *         out-of-range index, missing source, or allocation failure.
+ */
 static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
                                     int32_t base_next, int32_t* remap,
                                     int remap_len, Value* out, int depth) {
@@ -793,6 +879,9 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
     }
 }
 
+/** @brief Publish a worker-computed Value @p in back into @p main_vm's
+ *         heap (a no-op passthrough for non-heap-indexed values); see
+ *         vm_publish_object_locked(). */
 static int vm_publish_value_locked(VM* main_vm, VM* worker, Value in,
                                    int32_t base_next, int32_t* remap,
                                    int remap_len, Value* out, int depth) {
@@ -804,6 +893,19 @@ static int vm_publish_value_locked(VM* main_vm, VM* worker, Value in,
                                     remap, remap_len, out, depth);
 }
 
+/**
+ * @brief Call a closure in an isolated worker VM: spins up a fresh VM,
+ *        shares @p main_vm's code/constants, clones the closure's
+ *        transitively-reachable heap objects (vm_clone_value_graph()) plus
+ *        the call arguments into the worker's private heap/arena, runs it
+ *        via vm_call_closure_from_native(), and — under g_heap_mutex —
+ *        publishes the result back into @p main_vm's heap
+ *        (vm_publish_value_locked()). Used for closures that pass
+ *        vm_closure_is_worker_safe() so they can execute concurrently
+ *        with the main VM and other workers.
+ * @return 1 on success (with *@p out set), 0 on any allocation/cloning
+ *         failure.
+ */
 static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
                                                 Value* args, int argc,
                                                 Value* out) {
@@ -859,9 +961,13 @@ static int vm_call_closure_from_native_isolated(VM* main_vm, Value closure,
     return ok;
 }
 
-/* Execute a closure call in a worker context.
- * The closure's bytecode address and captured values are in the closure struct.
- * Returns the result as a Value. */
+/**
+ * @brief Call @p closure with @p args from a pool worker thread: if the
+ *        closure's bytecode passes vm_closure_is_worker_safe(), runs it in
+ *        an isolated worker VM (vm_call_closure_from_native_isolated())
+ *        for true concurrency; otherwise falls back to calling it directly
+ *        on @p main_vm under g_heap_mutex (serialized).
+ */
 static Value vm_worker_call_closure(VmWorkerContext* wctx, VM* main_vm,
                                     Value closure, Value* args, int nargs) {
     (void)wctx;
@@ -891,6 +997,8 @@ typedef struct {
     Value   output;
 } VmParMapTask;
 
+/** @brief Thread-pool task function for parallel-map: applies the task's
+ *         closure to its single input element and stores the result. */
 static void vm_parmap_task_fn(void* arg, void* result) {
     VmParMapTask* task = (VmParMapTask*)arg;
     (void)result;
@@ -904,6 +1012,9 @@ typedef struct {
     Value   output;
 } VmParThunkTask;
 
+/** @brief Thread-pool task function for parallel thunk execution (futures/
+ *         parallel-execute): calls the task's zero-argument closure and
+ *         stores the result. */
 static void vm_parthunk_task_fn(void* arg, void* result) {
     VmParThunkTask* task = (VmParThunkTask*)arg;
     (void)result;
@@ -924,6 +1035,9 @@ typedef struct {
     pthread_cond_t  done;
 } VmFuture;
 
+/** @brief Allocate a not-yet-ready future wrapping @p thunk_or_value
+ *         (either a closure to be run asynchronously, or an already-known
+ *         value). */
 static VmFuture* vm_future_create(VM* vm, Value thunk_or_value) {
     VmFuture* fut = (VmFuture*)vm_alloc(&vm->heap.regions, sizeof(VmFuture));
     if (!fut) return NULL;
@@ -940,6 +1054,8 @@ static VmFuture* vm_future_create(VM* vm, Value thunk_or_value) {
     return fut;
 }
 
+/** @brief Store @p result into @p fut, mark it ready, and wake any
+ *         threads blocked in vm_future_force(). */
 static void vm_future_mark_ready(VmFuture* fut, Value result) {
     pthread_mutex_lock(&fut->mutex);
     fut->result = result;
@@ -948,6 +1064,9 @@ static void vm_future_mark_ready(VmFuture* fut, Value result) {
     pthread_mutex_unlock(&fut->mutex);
 }
 
+/** @brief Thread-pool task function for futures: if the future wraps a
+ *         closure, calls it (via vm_worker_call_closure()); otherwise uses
+ *         the already-known value directly; then marks the future ready. */
 static void vm_future_task_fn(void* arg, void* result_slot) {
     (void)result_slot;
     VmFuture* fut = (VmFuture*)arg;
@@ -960,6 +1079,8 @@ static void vm_future_task_fn(void* arg, void* result_slot) {
     vm_future_mark_ready(fut, result);
 }
 
+/** @brief Non-blocking check of whether @p fut has been resolved (a null
+ *         future is treated as ready). */
 static int vm_future_is_ready(VmFuture* fut) {
     if (!fut) return 1;
     pthread_mutex_lock(&fut->mutex);
@@ -968,6 +1089,8 @@ static int vm_future_is_ready(VmFuture* fut) {
     return ready;
 }
 
+/** @brief Block until @p fut is ready and return its result (NIL for a
+ *         null future). */
 static Value vm_future_force(VmFuture* fut) {
     if (!fut) return NIL_VAL;
     pthread_mutex_lock(&fut->mutex);
@@ -988,14 +1111,13 @@ typedef int64_t (*VmMapFn)(int64_t element, void* closure_data);
 typedef int     (*VmFilterFn)(int64_t element, void* closure_data);
 typedef int64_t (*VmReduceFn)(int64_t accumulator, int64_t element, void* closure_data);
 
-/* 626: parallel-map — apply fn to each element, produce output array.
- * Currently sequential; API is parallel-ready.
- *
- * items:    input array of tagged values
- * n_items:  number of elements
- * fn:       mapping function
- * closure:  opaque closure data passed to fn
- * results:  output array (caller-allocated, same length)
+/**
+ * @brief Native call 626: sequential reference implementation of
+ *        parallel-map — apply @p fn to each of @p n_items elements,
+ *        writing to caller-allocated @p results (same length). See
+ *        vm_parallel_map_threaded() for the actual thread-pool-backed
+ *        version; this one exists as a parallel-ready API even though its
+ *        body is a plain loop.
  */
 static void vm_parallel_map(const int64_t* items, int n_items,
                             VmMapFn fn, void* closure, int64_t* results) {
@@ -1005,8 +1127,10 @@ static void vm_parallel_map(const int64_t* items, int n_items,
     }
 }
 
-/* 627: parallel-filter — keep elements where predicate returns true.
- * Returns count of elements kept. Results written to `results`.
+/** @brief Native call 627: sequential reference implementation of
+ *         parallel-filter — keep elements where @p pred returns true,
+ *         writing them (compacted) to @p results.
+ * @return The number of elements kept.
  */
 static int vm_parallel_filter(const int64_t* items, int n_items,
                               VmFilterFn pred, void* closure, int64_t* results) {
@@ -1020,7 +1144,9 @@ static int vm_parallel_filter(const int64_t* items, int n_items,
     return out;
 }
 
-/* 628: parallel-for-each — apply fn for side effects, no output */
+/** @brief Native call 628: sequential reference implementation of
+ *         parallel-for-each — call @p fn on each element for side effects
+ *         only, discarding its return value. */
 static void vm_parallel_for_each(const int64_t* items, int n_items,
                                  VmMapFn fn, void* closure) {
     if (!items || !fn || n_items <= 0) return;
@@ -1029,10 +1155,8 @@ static void vm_parallel_for_each(const int64_t* items, int n_items,
     }
 }
 
-/* 629: parallel-reduce — left fold with associative fn.
- * init:  initial accumulator value
- * fn:    (accumulator, element) -> new_accumulator
- */
+/** @brief Native call 629: sequential left fold, acc = fn(acc, element)
+ *         over all items, starting from @p init. */
 static int64_t vm_parallel_reduce(const int64_t* items, int n_items,
                                   int64_t init, VmReduceFn fn, void* closure) {
     if (!items || !fn || n_items <= 0) return init;
@@ -1060,6 +1184,9 @@ typedef struct {
     void*          closure;
 } VmMapChunk;
 
+/** @brief Thread-pool task function: apply a VmMapChunk's fn to its
+ *         [start,end) slice, writing results in place into the shared
+ *         @c dst array (safe since chunks never overlap). */
 static void vm_map_chunk_worker(void* arg, void* result) {
     (void)result;
     VmMapChunk* chunk = (VmMapChunk*)arg;
@@ -1068,7 +1195,14 @@ static void vm_map_chunk_worker(void* arg, void* result) {
     }
 }
 
-/* 630: parallel-map with thread pool (real parallelism) */
+/**
+ * @brief Native call 630: thread-pool-backed parallel-map — splits
+ *        @p items into pool->n_threads roughly-equal chunks, submits one
+ *        vm_map_chunk_worker() task per chunk, and waits for all to
+ *        complete. Falls back to the sequential vm_parallel_map() for
+ *        null/invalid input, no pool, or too few items (< 4 per worker)
+ *        to justify chunking overhead.
+ */
 static void vm_parallel_map_threaded(VmThreadPool* pool,
                                      const int64_t* items, int n_items,
                                      VmMapFn fn, void* closure,
@@ -1122,6 +1256,10 @@ typedef struct {
     int            out_count;   /* written by worker */
 } VmFilterChunk;
 
+/** @brief Thread-pool task function: apply a VmFilterChunk's predicate to
+ *         its [start,end) slice, compacting matches into the chunk's own
+ *         thread-local @c dst buffer (avoids write contention on a shared
+ *         output array) and recording the kept count in @c out_count. */
 static void vm_filter_chunk_worker(void* arg, void* result) {
     (void)result;
     VmFilterChunk* chunk = (VmFilterChunk*)arg;
@@ -1134,7 +1272,16 @@ static void vm_filter_chunk_worker(void* arg, void* result) {
     chunk->out_count = out;
 }
 
-/* 631: parallel-filter with thread pool */
+/**
+ * @brief Native call 631: thread-pool-backed parallel-filter — splits
+ *        @p items into per-worker chunks each with its own scratch output
+ *        buffer (to avoid contention), runs vm_filter_chunk_worker() on
+ *        each, then merges the per-chunk survivors into @p results in
+ *        original order. Falls back to the sequential
+ *        vm_parallel_filter() for null/invalid input, no pool, too few
+ *        items, or an allocation failure.
+ * @return The total number of elements kept.
+ */
 static int vm_parallel_filter_threaded(VmThreadPool* pool,
                                        const int64_t* items, int n_items,
                                        VmFilterFn pred, void* closure,
@@ -1235,29 +1382,33 @@ typedef struct {
     int output;
 } TestPair;
 
+/** @brief Self-test task fixture: squares a TestPair's input. */
 static void test_square_task(void* arg, void* result) {
     TestPair* pair = (TestPair*)arg;
     pair->output = pair->input * pair->input;
     (void)result;
 }
 
+/** @brief Self-test task fixture: increments a TestPair's input. */
 static void test_add_one_task(void* arg, void* result) {
     TestPair* pair = (TestPair*)arg;
     pair->output = pair->input + 1;
     (void)result;
 }
 
-/* For parallel-map test */
+/** @brief Self-test VmMapFn fixture for parallel-map tests: squares. */
 static int64_t square_fn(int64_t x, void* closure) {
     (void)closure;
     return x * x;
 }
 
+/** @brief Self-test VmFilterFn fixture for parallel-filter tests. */
 static int is_even_fn(int64_t x, void* closure) {
     (void)closure;
     return (x % 2) == 0;
 }
 
+/** @brief Self-test VmReduceFn fixture for parallel-reduce tests. */
 static int64_t sum_fn(int64_t acc, int64_t elem, void* closure) {
     (void)closure;
     return acc + elem;
@@ -1265,6 +1416,7 @@ static int64_t sum_fn(int64_t acc, int64_t elem, void* closure) {
 
 /* ── Tests ── */
 
+/** @brief Self-test: pool init/shutdown lifecycle. */
 static void test_pool_lifecycle(void) {
     printf("  test_pool_lifecycle... ");
     VmThreadPool* pool = vm_pool_init(4);
@@ -1276,6 +1428,7 @@ static void test_pool_lifecycle(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: submit a task and wait for it via vm_pool_wait_all(). */
 static void test_submit_and_wait(void) {
     printf("  test_submit_and_wait... ");
     VmThreadPool* pool = vm_pool_init(2);
@@ -1298,6 +1451,8 @@ static void test_submit_and_wait(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: submit a large batch of tasks to exercise the queue
+ *         and worker dispatch under load. */
 static void test_many_tasks(void) {
     printf("  test_many_tasks... ");
     VmThreadPool* pool = vm_pool_init(4);
@@ -1321,6 +1476,8 @@ static void test_many_tasks(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_parallel_map() sequential reference
+ *         implementation. */
 static void test_parallel_map_sequential(void) {
     printf("  test_parallel_map_sequential... ");
     int64_t items[] = {1, 2, 3, 4, 5};
@@ -1334,6 +1491,8 @@ static void test_parallel_map_sequential(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_parallel_filter() sequential reference
+ *         implementation. */
 static void test_parallel_filter_sequential(void) {
     printf("  test_parallel_filter_sequential... ");
     int64_t items[] = {1, 2, 3, 4, 5, 6, 7, 8};
@@ -1347,6 +1506,8 @@ static void test_parallel_filter_sequential(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_parallel_reduce() sequential reference
+ *         implementation. */
 static void test_parallel_reduce_sequential(void) {
     printf("  test_parallel_reduce_sequential... ");
     int64_t items[] = {1, 2, 3, 4, 5};
@@ -1355,6 +1516,8 @@ static void test_parallel_reduce_sequential(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_parallel_map_threaded() against a large enough
+ *         input to trigger the chunked thread-pool path. */
 static void test_parallel_map_threaded(void) {
     printf("  test_parallel_map_threaded... ");
     VmThreadPool* pool = vm_pool_init(4);
@@ -1378,6 +1541,8 @@ static void test_parallel_map_threaded(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_parallel_filter_threaded() against a large enough
+ *         input to trigger the chunked thread-pool path. */
 static void test_parallel_filter_threaded(void) {
     printf("  test_parallel_filter_threaded... ");
     VmThreadPool* pool = vm_pool_init(4);
@@ -1402,6 +1567,7 @@ static void test_parallel_filter_threaded(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: edge-case behaviour on zero-length inputs. */
 static void test_empty_inputs(void) {
     printf("  test_empty_inputs... ");
     int64_t results[1] = {0};
@@ -1414,6 +1580,7 @@ static void test_empty_inputs(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: edge-case behaviour on a single-element input. */
 static void test_single_element(void) {
     printf("  test_single_element... ");
     int64_t items[] = {7};
@@ -1429,6 +1596,7 @@ static void test_single_element(void) {
     printf("OK\n");
 }
 
+/** @brief Self-test: vm_pool_init(0) auto-detects a positive thread count. */
 static void test_pool_auto_detect(void) {
     printf("  test_pool_auto_detect... ");
     VmThreadPool* pool = vm_pool_init(0); /* 0 = auto-detect */
@@ -1438,6 +1606,10 @@ static void test_pool_auto_detect(void) {
     vm_pool_shutdown(pool);
 }
 
+/** @brief Standalone self-test (built when VM_PARALLEL_TEST is defined):
+ *         runs all test_* functions above, covering pool lifecycle,
+ *         task submission, and the sequential/threaded parallel
+ *         primitives. */
 int main(void) {
     printf("vm_parallel self-test\n");
     printf("=====================\n");

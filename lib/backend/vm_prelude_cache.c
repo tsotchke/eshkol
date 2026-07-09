@@ -22,6 +22,14 @@
 #define ESHKOL_VM_NO_DISASM 1
 #include "eshkol_vm.c"
 
+/**
+ * @brief Generator entry point (built only with -DGENERATE_PRELUDE_CACHE):
+ *        compiles the canonical Eshkol prelude source
+ *        (ESHKOL_VM_PRELUDE_SOURCE) into bytecode, then prints it as
+ *        vm_prelude_cache.h C array literals (opcodes, operands, constant
+ *        pool, local names) to stdout for the REPL to load precompiled at
+ *        startup instead of recompiling the prelude every time.
+ */
 int main(void) {
     FuncChunk chunk; chunk_init_arrays(&chunk);
     emit_builtin_preamble(&chunk);

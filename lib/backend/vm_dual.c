@@ -17,6 +17,8 @@
 
 /* ── Allocation ── */
 
+/** @brief Allocate a dual number with the given primal and tangent
+ *         components. */
 static VmDual* vm_dual_new(VmRegionStack* rs, double primal, double tangent) {
     VmDual* d = (VmDual*)vm_alloc_object(rs, VM_SUBTYPE_DUAL, sizeof(VmDual));
     if (!d) return NULL;
@@ -27,39 +29,41 @@ static VmDual* vm_dual_new(VmRegionStack* rs, double primal, double tangent) {
 
 /* ── Core Operations ── */
 
-/* 370: make-dual */
+/** @brief Native call 370: `(make-dual primal tangent)`. */
 VmDual* vm_dual_make(VmRegionStack* rs, double primal, double tangent) {
     return vm_dual_new(rs, primal, tangent);
 }
 
-/* 371: dual-primal — extract primal component */
+/** @brief Native call 371: extract @p d's primal (value) component. */
 double vm_dual_primal(const VmDual* d) {
     return d->primal;
 }
 
-/* 372: dual-tangent — extract tangent (derivative) component */
+/** @brief Native call 372: extract @p d's tangent (derivative) component. */
 double vm_dual_tangent(const VmDual* d) {
     return d->tangent;
 }
 
-/* 373: dual-add — (a + a'e) + (b + b'e) = (a+b) + (a'+b')e */
+/** @brief Native call 373: dual addition, (a+a'e)+(b+b'e) = (a+b)+(a'+b')e. */
 VmDual* vm_dual_add(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     return vm_dual_new(rs, a->primal + b->primal, a->tangent + b->tangent);
 }
 
-/* 374: dual-sub — (a + a'e) - (b + b'e) = (a-b) + (a'-b')e */
+/** @brief Native call 374: dual subtraction, (a+a'e)-(b+b'e) = (a-b)+(a'-b')e. */
 VmDual* vm_dual_sub(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     return vm_dual_new(rs, a->primal - b->primal, a->tangent - b->tangent);
 }
 
-/* 375: dual-mul — (a + a'e)(b + b'e) = ab + (a'b + ab')e */
+/** @brief Native call 375: dual multiplication (product rule), (a+a'e)(b+b'e)
+ *         = ab + (a'b+ab')e. */
 VmDual* vm_dual_mul(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     return vm_dual_new(rs,
         a->primal * b->primal,
         a->tangent * b->primal + a->primal * b->tangent);
 }
 
-/* 376: dual-div — (a + a'e)/(b + b'e) = a/b + (a'b - ab')/(b^2) e */
+/** @brief Native call 376: dual division (quotient rule), (a+a'e)/(b+b'e) =
+ *         a/b + (a'b-ab')/b^2 e. */
 VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     double b2 = b->primal * b->primal;
     return vm_dual_new(rs,
@@ -67,46 +71,52 @@ VmDual* vm_dual_div(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
         (a->tangent * b->primal - a->primal * b->tangent) / b2);
 }
 
-/* 377: dual-sin — sin(a + a'e) = sin(a) + a'*cos(a)*e */
+/** @brief Native call 377: dual sin, sin(a+a'e) = sin(a) + a'*cos(a)*e. */
 VmDual* vm_dual_sin(VmRegionStack* rs, const VmDual* a) {
     double s = sin(a->primal);
     double c = cos(a->primal);
     return vm_dual_new(rs, s, a->tangent * c);
 }
 
-/* 378: dual-cos — cos(a + a'e) = cos(a) - a'*sin(a)*e */
+/** @brief Native call 378: dual cos, cos(a+a'e) = cos(a) - a'*sin(a)*e. */
 VmDual* vm_dual_cos(VmRegionStack* rs, const VmDual* a) {
     double c = cos(a->primal);
     double s = sin(a->primal);
     return vm_dual_new(rs, c, -a->tangent * s);
 }
 
-/* 379: dual-exp — exp(a + a'e) = exp(a) + a'*exp(a)*e */
+/** @brief Native call 379: dual exp, exp(a+a'e) = exp(a) + a'*exp(a)*e. */
 VmDual* vm_dual_exp(VmRegionStack* rs, const VmDual* a) {
     double ea = exp(a->primal);
     return vm_dual_new(rs, ea, a->tangent * ea);
 }
 
-/* 380: dual-log — log(a + a'e) = log(a) + (a'/a)*e */
+/** @brief Native call 380: dual log, log(a+a'e) = log(a) + (a'/a)*e. */
 VmDual* vm_dual_log(VmRegionStack* rs, const VmDual* a) {
     return vm_dual_new(rs, log(a->primal), a->tangent / a->primal);
 }
 
-/* 381: dual-sqrt — sqrt(a + a'e) = sqrt(a) + a'/(2*sqrt(a))*e */
+/** @brief Native call 381: dual sqrt, sqrt(a+a'e) = sqrt(a) +
+ *         a'/(2*sqrt(a))*e. */
 VmDual* vm_dual_sqrt(VmRegionStack* rs, const VmDual* a) {
     double sa = sqrt(a->primal);
     return vm_dual_new(rs, sa, a->tangent / (2.0 * sa));
 }
 
-/* 382: dual-pow — (a + a'e)^n = a^n + n*a^(n-1)*a'*e
- * n is a constant (not a dual). For dual exponent, use exp(n*log(a)). */
+/**
+ * @brief Native call 382: dual power with constant exponent @p n,
+ *        (a+a'e)^n = a^n + n*a^(n-1)*a'*e. @p n must be a plain constant,
+ *        not itself a dual number; for a dual exponent use exp(n*log(a))
+ *        instead.
+ */
 VmDual* vm_dual_pow(VmRegionStack* rs, const VmDual* a, double n) {
     double p = pow(a->primal, n);
     double dp = n * pow(a->primal, n - 1.0) * a->tangent;
     return vm_dual_new(rs, p, dp);
 }
 
-/* 383: dual-abs — |a + a'e| = |a| + a'*sign(a)*e */
+/** @brief Native call 383: dual absolute value, |a+a'e| = |a| +
+ *         a'*sign(a)*e. */
 VmDual* vm_dual_abs(VmRegionStack* rs, const VmDual* a) {
     double sign;
     if (a->primal > 0.0) sign = 1.0;
@@ -115,12 +125,13 @@ VmDual* vm_dual_abs(VmRegionStack* rs, const VmDual* a) {
     return vm_dual_new(rs, fabs(a->primal), a->tangent * sign);
 }
 
-/* 384: dual-neg — -(a + a'e) = -a + (-a')e */
+/** @brief Native call 384: dual negation, -(a+a'e) = -a + (-a')e. */
 VmDual* vm_dual_neg(VmRegionStack* rs, const VmDual* a) {
     return vm_dual_new(rs, -a->primal, -a->tangent);
 }
 
-/* 385: dual-relu — relu(a + a'e) = max(0,a) + (a>0 ? a' : 0)*e */
+/** @brief Native call 385: dual ReLU, relu(a+a'e) = max(0,a) + (a>0 ? a' :
+ *         0)*e. */
 VmDual* vm_dual_relu(VmRegionStack* rs, const VmDual* a) {
     if (a->primal > 0.0)
         return vm_dual_new(rs, a->primal, a->tangent);
@@ -128,24 +139,28 @@ VmDual* vm_dual_relu(VmRegionStack* rs, const VmDual* a) {
         return vm_dual_new(rs, 0.0, 0.0);
 }
 
-/* 386: dual-sigmoid — sigma(a + a'e) = sigma(a) + a'*sigma(a)*(1-sigma(a))*e */
+/** @brief Native call 386: dual sigmoid, sigma(a+a'e) = sigma(a) +
+ *         a'*sigma(a)*(1-sigma(a))*e. */
 VmDual* vm_dual_sigmoid(VmRegionStack* rs, const VmDual* a) {
     double sig = 1.0 / (1.0 + exp(-a->primal));
     return vm_dual_new(rs, sig, a->tangent * sig * (1.0 - sig));
 }
 
-/* 387: dual-tanh — tanh(a + a'e) = tanh(a) + a'*(1 - tanh(a)^2)*e */
+/** @brief Native call 387: dual tanh, tanh(a+a'e) = tanh(a) + a'*(1 -
+ *         tanh(a)^2)*e. */
 VmDual* vm_dual_tanh(VmRegionStack* rs, const VmDual* a) {
     double th = tanh(a->primal);
     return vm_dual_new(rs, th, a->tangent * (1.0 - th * th));
 }
 
-/* 388: dual-from-double — promote a scalar to a dual with zero tangent */
+/** @brief Native call 388: promote a plain scalar @p x to a dual constant
+ *         (zero tangent). */
 VmDual* vm_dual_from_double(VmRegionStack* rs, double x) {
     return vm_dual_new(rs, x, 0.0);
 }
 
-/* 389: dual-scale — scalar * dual: c*(a + a'e) = c*a + c*a'*e */
+/** @brief Native call 389: scale dual @p a by scalar @p c, c*(a+a'e) =
+ *         c*a + c*a'*e. */
 VmDual* vm_dual_scale(VmRegionStack* rs, double c, const VmDual* a) {
     return vm_dual_new(rs, c * a->primal, c * a->tangent);
 }
@@ -212,10 +227,16 @@ void* vm_dual_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
 
 #define DUAL_EPS 1e-12
 
+/** @brief Approximate equality check used by the self-test assertions
+ *         below. */
 static int dual_near(double a, double b) {
     return fabs(a - b) < DUAL_EPS;
 }
 
+/** @brief Standalone self-test (built when VM_DUAL_TEST is defined):
+ *         verifies forward-mode derivatives of each dual operation
+ *         (including chain rule and quotient rule compositions) against
+ *         known analytic values. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);
