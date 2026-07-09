@@ -1893,10 +1893,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* Type predicates that need VM opcodes (not closures — these check types at opcode level) */
     if (is_sym(head, "integer?") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return; }
 
-    /* abs and modulo are opcodes, not native calls — keep as special cases */
+    /* abs and modulo are opcodes, not native calls — keep as special cases.
+     * NOTE: remainder must NOT map to OP_MOD. OP_MOD implements R7RS `modulo`
+     * (floor semantics, sign of divisor); `remainder` needs truncating
+     * semantics (sign of dividend). It resolves through the native table
+     * (id 37) like `quotient` (id 38), which computes ia%ib correctly. */
     if (is_sym(head, "abs") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_ABS, 0); return; }
     if (is_sym(head, "modulo") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_MOD, 0); return; }
-    if (is_sym(head, "remainder") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_MOD, 0); return; }
 
     /* All other builtins (sin, cos, sqrt, even?, odd?, floor, ceiling, round, expt, min, max,
      * positive?, negative?, number->string, string-append, string=?, newline, length, etc.)

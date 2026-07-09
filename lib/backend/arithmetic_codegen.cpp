@@ -1851,7 +1851,12 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
  *
  * Dispatches to the bignum runtime (op code 4) when either operand is a
  * bignum; otherwise unpacks int64 operands, raises a divide-by-zero
- * exception on a zero divisor, and computes the result via LLVM's `srem`.
+ * exception on a zero divisor, and computes the result via LLVM's `srem`
+ * followed by a floor-mod sign correction (R7RS `modulo`: the result has the
+ * same sign as the divisor, unlike C's truncating `srem`).
+ *
+ * NOTE: the live `modulo` builtin is lowered by codegenModulo() in
+ * llvm_codegen.cpp; this method mirrors that semantics for any future caller.
  *
  * @param left Tagged dividend.
  * @param right Tagged divisor.
@@ -1891,9 +1896,17 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     raiseDivideByZeroException();
     ctx_.builder().CreateUnreachable();
 
-    // Safe path - perform modulo
+    // Safe path - perform modulo (floor semantics: sign of divisor).
     ctx_.builder().SetInsertPoint(safe_bb);
-    llvm::Value* int_result = ctx_.builder().CreateSRem(left_int, right_int, "mod_result");
+    llvm::Value* srem = ctx_.builder().CreateSRem(left_int, right_int, "mod_srem");
+    llvm::Value* zero_v = llvm::ConstantInt::get(ctx_.int64Type(), 0);
+    llvm::Value* rem_neg = ctx_.builder().CreateICmpSLT(srem, zero_v, "mod_rem_neg");
+    llvm::Value* div_neg = ctx_.builder().CreateICmpSLT(right_int, zero_v, "mod_div_neg");
+    llvm::Value* signs_differ = ctx_.builder().CreateXor(rem_neg, div_neg, "mod_signs_differ");
+    llvm::Value* rem_nonzero = ctx_.builder().CreateICmpNE(srem, zero_v, "mod_rem_nonzero");
+    llvm::Value* need_adjust = ctx_.builder().CreateAnd(signs_differ, rem_nonzero, "mod_need_adjust");
+    llvm::Value* adjusted = ctx_.builder().CreateAdd(srem, right_int, "mod_adjusted");
+    llvm::Value* int_result = ctx_.builder().CreateSelect(need_adjust, adjusted, srem, "mod_result");
     llvm::Value* int_tagged = tagged_.packInt64(int_result, true);
     ctx_.builder().CreateBr(merge);
     llvm::BasicBlock* int_exit = ctx_.builder().GetInsertBlock();

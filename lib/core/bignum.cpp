@@ -982,9 +982,21 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
             }
             break;
         }
-        case 4: r = eshkol_bignum_mod(arena, a, b); break;
+        case 4: {
+            /* modulo: R7RS floor-mod — result has the SAME SIGN AS THE DIVISOR.
+             * eshkol_bignum_mod yields the truncating remainder (sign of the
+             * dividend), so when that remainder is nonzero and its sign differs
+             * from the divisor's, add the divisor to fold it into the divisor's
+             * sign — matching the int64 fast path in codegenModulo(). */
+            eshkol_bignum_t* m = eshkol_bignum_mod(arena, a, b);
+            if (m && !eshkol_bignum_is_zero(m) && m->sign != b->sign) {
+                m = eshkol_bignum_add(arena, m, b);
+            }
+            r = m;
+            break;
+        }
         case 5: r = eshkol_bignum_div(arena, a, b); break;  /* quotient = truncated div */
-        case 6: r = eshkol_bignum_mod(arena, a, b); break;  /* remainder = mod */
+        case 6: r = eshkol_bignum_mod(arena, a, b); break;  /* remainder = trunc rem (sign of dividend) */
         default: { *result = eshkol_make_int64(0, true); return; }
     }
 
