@@ -3614,7 +3614,7 @@ static int add_type_unary_result(InterpreterWeights* w, int L, int n,
  *
  * Zero-initializes @p w, then wires Layer 0's attention for instruction
  * fetch and populates each subsequent layer's gated FFN neurons — via the
- * add_gated_*/add_arena_*/add_type_* helper family above — with one gated
+ * add_gated_, add_arena_, and add_type_ helper families above — with one gated
  * neuron pair per opcode (and AD/arena/type-tag bookkeeping op) so that the
  * resulting matrix forward pass (forward_with_weights()) reproduces
  * execute_step()'s semantics bit-for-bit.

@@ -621,7 +621,7 @@ static void compile_expr(FuncChunk* c, Node* node, int tail) {
  *
  * Handles macro expansion, literals (number/string/bool/vector), variable
  * references (local/upvalue/global), special forms (define, set!, if,
- * cond, case, when/unless, and/or, let/let*/letrec(-star), do, begin,
+ * cond, case, when/unless, and/or, let, let-star, letrec(-star), do, begin,
  * lambda, named-let, quote/quasiquote), function application (with tail
  * calls when @p tail is set), and the built-in primitive operators
  * (arithmetic, comparisons, cons/car/cdr, vector/string ops, call/cc,
