@@ -23418,6 +23418,19 @@ private:
                     if (call_name == func_name) {
                         count++;
                     }
+                    // ESH-0227: (apply f ...) with f == func_name is also a
+                    // self-recursive call (routed through apply). Count it so a
+                    // define whose ONLY recursion is apply-based is not
+                    // mis-classified as non-recursive (total==0 short-circuit),
+                    // which would leave TCO disabled and the apply loop
+                    // overflowing the stack.
+                    if (call_name == "apply" && op->call_op.num_vars >= 1) {
+                        const eshkol_ast_t* applied = &op->call_op.variables[0];
+                        if (applied->type == ESHKOL_VAR && applied->variable.id &&
+                            func_name == applied->variable.id) {
+                            count++;
+                        }
+                    }
                     // Recurse into arguments
                     for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                         count += countAllRecursiveCalls(&op->call_op.variables[i], func_name);
@@ -23524,6 +23537,21 @@ private:
                         // Check if this call is in tail position
                         bool in_tail = isInTailPosition(ast, body);
                         if (in_tail) {
+                            tail_calls.push_back(op);
+                        }
+                    }
+                    // ESH-0227: (apply f ...) with f == func_name in tail
+                    // position is a tail self-call routed through apply. Record
+                    // it so isSelfTailRecursive's all-in-tail equality holds for
+                    // apply-based loops (this vector is used only for its size;
+                    // codegenApply performs the actual back-edge rewrite). A
+                    // non-tail apply-self-call is deliberately NOT recorded, so
+                    // it makes the counts differ and correctly disables TCO.
+                    if (call_name == "apply" && op->call_op.num_vars >= 1) {
+                        const eshkol_ast_t* applied = &op->call_op.variables[0];
+                        if (applied->type == ESHKOL_VAR && applied->variable.id &&
+                            func_name == std::string(applied->variable.id) &&
+                            isInTailPosition(ast, body)) {
                             tail_calls.push_back(op);
                         }
                     }
@@ -24366,15 +24394,41 @@ private:
             return nullptr;  // TCO not active, caller should use normal call
         }
 
+        // Gather the argument AST nodes from the direct self-call operands and
+        // emit the shared loop back-edge. Extracted into emitTCOBackEdge so the
+        // apply-in-tail-position path (ESH-0227) can reuse the identical
+        // arg-eval/store/branch sequence with argument nodes it recovered from
+        // a statically-spelled `(apply f ... (list ...))`.
+        std::vector<const eshkol_ast_t*> arg_nodes;
+        arg_nodes.reserve(call_op->call_op.num_vars);
+        for (uint64_t i = 0; i < call_op->call_op.num_vars; i++) {
+            arg_nodes.push_back(&call_op->call_op.variables[i]);
+        }
+        return emitTCOBackEdge(arg_nodes, tco_ctx);
+    }
+
+    // Shared core of a TCO loop back-edge: evaluate `arg_nodes` (with TCO
+    // suppressed during the evaluation, since arguments are never in tail
+    // position), store the resulting values into the loop's parameter allocas,
+    // and branch to the loop header. Returns a null sentinel (the block is
+    // terminated by the branch and the caller never observes a real value), or
+    // nullptr if TCO is inactive or the argument count does not match the
+    // loop's arity, in which case the caller must fall back to a normal call.
+    Value* emitTCOBackEdge(const std::vector<const eshkol_ast_t*>& arg_nodes,
+                           eshkol::BindingCodegen::TailCallContext& tco_ctx) {
+        if (!tco_ctx.enabled || !tco_ctx.loop_header) {
+            return nullptr;
+        }
+
         // Check arity matches
-        if (call_op->call_op.num_vars != tco_ctx.param_allocas.size()) {
+        if (arg_nodes.size() != tco_ctx.param_allocas.size()) {
             eshkol_warn_at(
                 g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                 current_source_line, current_source_column,
                 g_source_text.empty() ? nullptr : g_source_text.c_str(),
-                "TCO: arity mismatch in tail call to %s (expected %zu, got %llu)",
+                "TCO: arity mismatch in tail call to %s (expected %zu, got %zu)",
                 tco_ctx.func_name.c_str(), tco_ctx.param_allocas.size(),
-                (unsigned long long)call_op->call_op.num_vars);
+                arg_nodes.size());
             return nullptr;
         }
 
@@ -24404,10 +24458,10 @@ private:
 
         // Evaluate all arguments first (to temporaries)
         std::vector<Value*> new_values;
-        for (uint64_t i = 0; i < call_op->call_op.num_vars; i++) {
-            Value* arg = codegenAST(&call_op->call_op.variables[i]);
+        for (size_t i = 0; i < arg_nodes.size(); i++) {
+            Value* arg = codegenAST(arg_nodes[i]);
             if (!arg) {
-                eshkol_error("TCO: Failed to evaluate argument %llu", (unsigned long long)i);
+                eshkol_error("TCO: Failed to evaluate argument %zu", i);
                 tco_ctx.enabled = saved_enabled;
                 tco_ctx.loop_header = saved_header;
                 return nullptr;
@@ -34181,7 +34235,74 @@ private:
     // (apply fn args-list) - calls fn with arguments from args-list
     // REFACTORED: Delegates to CallApplyCodegen module
     Value* codegenApply(const eshkol_operations_t* op) {
+        // ESH-0227: proper tail call through `apply`. `(apply f a1 ... aM
+        // (list b1 ... bK))`, where `f` names the enclosing function's active
+        // TCO loop and the total spelled-out argument count (M + K) matches the
+        // loop's arity, is a legitimate R7RS tail call. Lower it to the very
+        // same loop back-edge a direct `(f a1 ... aM b1 ... bK)` self-call
+        // gets, instead of a genuine (stack-growing) call — otherwise using
+        // `apply` as a loop's back-edge overflows the native stack (one frame
+        // per iteration) regardless of the target's body.
+        //
+        // Only fires when every argument is statically spelled: any leading
+        // apply operands plus a final `(list ...)` literal tail. A
+        // dynamically-shaped final list (or a non-list last operand) falls
+        // through to the normal, correctly non-tail apply path below. The
+        // whole-function tail analysis (allSelfCallsInTailPosition, ESH-0227)
+        // guarantees TCO is only enabled here when this apply-self-call is
+        // genuinely in tail position, so emitting the branch is sound.
+        if (Value* tco_result = tryApplyTailCall(op)) {
+            return tco_result;
+        }
         return call_apply_->apply(op);
+    }
+
+    // Recognize and lower a statically-spelled apply-self-call in tail position
+    // to a TCO loop back-edge (ESH-0227). Returns nullptr (no interception) for
+    // anything that is not provably `(apply <this-loop> leading... (list ...))`
+    // with a total argument count equal to the loop's arity, so the caller
+    // falls back to the ordinary apply lowering.
+    Value* tryApplyTailCall(const eshkol_operations_t* op) {
+        if (!binding_) return nullptr;
+        // (apply proc last) needs at least the procedure + one final list.
+        if (op->call_op.num_vars < 2) return nullptr;
+
+        // First operand must be a bare variable naming the active TCO loop.
+        const eshkol_ast_t* proc = &op->call_op.variables[0];
+        if (proc->type != ESHKOL_VAR || !proc->variable.id) return nullptr;
+        if (!binding_->isTCOActive(proc->variable.id)) return nullptr;
+
+        // Final operand must be a `(list ...)` literal so every element is a
+        // compile-time-known argument node (no runtime list walking).
+        const eshkol_ast_t* last = &op->call_op.variables[op->call_op.num_vars - 1];
+        if (last->type != ESHKOL_OP || last->operation.op != ESHKOL_CALL_OP) {
+            return nullptr;
+        }
+        const eshkol_operations_t& list_call = last->operation;
+        if (!list_call.call_op.func ||
+            list_call.call_op.func->type != ESHKOL_VAR ||
+            !list_call.call_op.func->variable.id ||
+            std::string(list_call.call_op.func->variable.id) != "list") {
+            return nullptr;
+        }
+
+        // Assemble the full argument list: leading apply operands (between the
+        // procedure and the final list), then the list literal's elements.
+        std::vector<const eshkol_ast_t*> arg_nodes;
+        for (uint64_t i = 1; i + 1 < op->call_op.num_vars; i++) {
+            arg_nodes.push_back(&op->call_op.variables[i]);
+        }
+        for (uint64_t i = 0; i < list_call.call_op.num_vars; i++) {
+            arg_nodes.push_back(&list_call.call_op.variables[i]);
+        }
+
+        auto& tco_ctx = binding_->getTCOContext();
+        if (arg_nodes.size() != tco_ctx.param_allocas.size()) {
+            // Arity does not match the loop — not a valid loop back-edge; let
+            // the normal apply path handle it (and report any real error).
+            return nullptr;
+        }
+        return emitTCOBackEdge(arg_nodes, tco_ctx);
     }
 
     /* Bug P (2026-04-23): apply on a cross-file user-defined function

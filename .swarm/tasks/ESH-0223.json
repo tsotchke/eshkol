@@ -1,7 +1,7 @@
 {
   "id": "ESH-0223",
   "title": "named-let TCO loop overflows the native stack around n~300-500k even with NO guard/call-cc/dynamic-alloca construct in the body",
-  "status": "open",
+  "status": "fixed",
   "priority": "high",
   "workstream": "language/tco",
   "goal": "Discovered while reproducing ESH-0222 (tail calls through guard). A completely plain named-let tail loop — `(define (f) (let loop ((n 0)) (if (>= n N) n (loop (+ n 1)))))` — SIGSEGVs/SIGBUSes with the 'stack overflow' diagnostic somewhere between N=300,000 and N=500,000 on unmodified master (verified both before and independent of the ESH-0222 guard fix; a top-level `(define (f n) (if (>= n N) n (f (+ n 1))))` with the identical arithmetic does NOT crash at N=1,000,000+). This means named-let TCO is NOT actually flat today for any sufficiently long-running loop, regardless of guard usage.",

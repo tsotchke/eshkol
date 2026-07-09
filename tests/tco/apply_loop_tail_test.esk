@@ -1,0 +1,87 @@
+;;; Proper tail calls through `apply` (ESH-0227)
+;;;
+;;; Bug: `(apply f (list ...))` used as a loop's back-edge was compiled to a
+;;; genuine (non-tail) LLVM call regardless of whether `f` named the enclosing
+;;; function's active TCO loop. `call_apply_codegen` never consulted the TCO
+;;; context, so an apply-based loop grew the native call stack by one frame per
+;;; iteration and overflowed (SIGBUS/"stack overflow") a few hundred thousand
+;;; iterations in — while the equivalent direct `(f arg ...)` self-call looped
+;;; flat. For the named-let form it was worse than slow: apply could not even
+;;; resolve the local `loop` binding, warned "apply: Unknown function: loop",
+;;; and returned '() (a silent wrong result).
+;;;
+;;; Fix (ESH-0227):
+;;;   - lib/backend/tail_call_codegen.cpp allSelfCallsInTailPosition and
+;;;     lib/backend/llvm_codegen.cpp countAllRecursiveCalls/findTailCalls now
+;;;     recognize `(apply f ...)` (f a bare variable naming this function) as a
+;;;     self-recursive call, so TCO is enabled iff every apply-self-call is in
+;;;     tail position (a non-tail one correctly disables the transform).
+;;;   - lib/backend/llvm_codegen.cpp codegenApply intercepts a statically
+;;;     spelled `(apply f leading... (list ...))` whose total argument count
+;;;     matches the loop arity and emits the same loop back-edge a direct
+;;;     self-call gets (shared emitTCOBackEdge helper).
+;;;
+;;; Each loop below runs to 10,000,000 iterations — large enough that a real
+;;; per-iteration stack frame reliably SIGSEGVs/SIGBUSes well before the end.
+;;; Printing the expected value instead of crashing proves O(1)-stack TCO for
+;;; the apply back-edge.
+
+(define N 10000000)
+
+;; ================================================================
+;; Test 1: named-let loop whose back-edge is `(apply loop (list ...))`
+;; (was: "apply: Unknown function: loop" + wrong result '())
+;; ================================================================
+(display "Test 1 (named-let apply back-edge): ")
+(let ((r (let loop ((n 0))
+           (if (>= n N) n (apply loop (list (+ n 1)))))))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 2: top-level define whose only recursion is via `apply`
+;; (was: SIGBUS stack overflow around n~300k-1M)
+;; ================================================================
+(define (count-via-apply n)
+  (if (>= n N) n (apply count-via-apply (list (+ n 1)))))
+
+(display "Test 2 (define apply-only recursion): ")
+(let ((r (count-via-apply 0)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 3: arity-2 apply loop — list literal supplies both arguments
+;; ================================================================
+(define (count2 a b)
+  (if (>= a N) b (apply count2 (list (+ a 1) (+ b 1)))))
+
+(display "Test 3 (arity-2 apply loop): ")
+(let ((r (count2 0 0)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 4: leading spelled arg + a `(list ...)` tail — (apply f x (list y))
+;; exercises the leading-operand path of the apply back-edge.
+;; ================================================================
+(define (count-lead a b)
+  (if (>= a N) b (apply count-lead (+ a 1) (list (+ b 1)))))
+
+(display "Test 4 (leading arg + list-literal apply): ")
+(let ((r (count-lead 0 0)))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; ================================================================
+;; Test 5: SOUNDNESS — a NON-tail apply-self-call must NOT be turned into a
+;; loop back-edge. This is genuine recursion (bounded n=200) and must return
+;; the correct sum; a miscompiled branch here would produce a wrong result or
+;; a verifier failure at compile time.
+;; ================================================================
+(define (sum-nontail n)
+  (if (<= n 0) 0 (+ n (apply sum-nontail (list (- n 1))))))
+
+(display "Test 5 (non-tail apply stays a real call): ")
+(if (= (sum-nontail 200) 20100) (display "PASS") (display "FAIL"))
+(newline)

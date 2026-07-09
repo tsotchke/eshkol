@@ -1,0 +1,44 @@
+;;; Plain named-let TCO loop sustains a very long run (ESH-0223 regression)
+;;;
+;;; ESH-0223 reported that a completely plain named-let tail loop —
+;;;   (let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))
+;;; with zero guard/call-cc/dynamic-alloca in the body — SIGSEGVed/SIGBUSed
+;;; with the "stack overflow" diagnostic somewhere between N=300,000 and
+;;; N=500,000, while the equivalent top-level define looped flat past 1e6.
+;;; That meant named-let (one of the two idiomatic Scheme tail-loop forms) had
+;;; a hard few-hundred-thousand-iteration ceiling with no diagnostic pointing
+;;; at the real cause.
+;;;
+;;; Re-tested on current master (post the define-loop TCO + per-iteration arena
+;;; reclamation ESH-0214b/#192, the iterative reader #191, and deep
+;;; region-escape #210): the named-let form now runs flat with O(1) stack and
+;;; bounded RSS well past the reported failure window — verified here to
+;;; 10,000,000 iterations, and manually to 1e7 under a 512 KB stack ulimit
+;;; (~28 MB RSS, <1 s). ESH-0223 no longer reproduces; this test locks that in.
+;;;
+;;; 10^7 iterations is far beyond where a real per-iteration stack frame would
+;;; overflow, so a plain PASS here is proof of tail-call elimination for the
+;;; bare named-let loop shape ESH-0223 named.
+
+(define N 10000000)
+
+;; ================================================================
+;; The exact ESH-0223 repro shape, wrapped as a function.
+;; ================================================================
+(define (count-to n)
+  (let loop ((i 0))
+    (if (>= i n) i (loop (+ i 1)))))
+
+(display "Test 1 (plain named-let, 1e7 iters): ")
+(if (= (count-to N) N) (display "PASS") (display "FAIL"))
+(newline)
+
+;; ================================================================
+;; Two-accumulator variant — carries a second loop-var across the same
+;; iteration count so an accumulated result (not just a counter) is checked.
+;; ================================================================
+(display "Test 2 (named-let with accumulator, 1e7 iters): ")
+(let ((r (let loop ((i 0) (acc 0))
+           (if (>= i N) acc (loop (+ i 1) (+ acc 1))))))
+  (if (= r N) (display "PASS") (display "FAIL")))
+(newline)

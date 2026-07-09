@@ -1,7 +1,7 @@
 {
   "id": "ESH-0227",
   "title": "`(apply loop lst)` is never tail-call-optimized — call_apply_codegen never consults TailCallContext",
-  "status": "open",
+  "status": "fixed",
   "priority": "medium",
   "workstream": "language/tco",
   "owner": null,

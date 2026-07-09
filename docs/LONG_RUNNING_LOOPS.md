@@ -97,15 +97,15 @@ Verified flat at 1,000,000 ticks (top-level `define` form): ~45MB RSS,
 ~22MB peak footprint, well under half a second. See
 `tests/tco/guard_loop_tail_test.esk`.
 
-**Caveat — named-let specifically:** a separate, pre-existing bug
-(ESH-0223, discovered while verifying this fix) means named-let tail loops
-overflow the stack somewhere around 300-500k iterations **regardless of
-whether `guard` is involved at all** — even `(let loop ((n 0)) (if (>= n N)
-n (loop (+ n 1))))` with zero `guard` usage hits it. If you need a loop
-that runs well past that count, prefer a **top-level `define`** (as in the
-canonical pattern above) until ESH-0223 is resolved; `define`-based
-tail-recursive loops are independently verified flat past 10^8 iterations
-(`tests/stress/rec_tco_1e8.esk`).
+**Named-let (ESH-0223, fixed):** a plain named-let tail loop —
+`(let loop ((n 0)) (if (>= n N) n (loop (+ n 1))))` — used to overflow the
+stack around 300-500k iterations regardless of `guard`. That no longer
+reproduces on current master: named-let now runs flat with O(1) stack (~28MB
+RSS, <1s at N=1e7 under a 512KB stack ulimit), matching the top-level-define
+guarantee. Both forms are fine for long-running loops; `define`-based loops
+remain independently verified flat past 10^8 iterations
+(`tests/stress/rec_tco_1e8.esk`) and named-let is locked by
+`tests/tco/named_let_long_loop_test.esk`.
 
 Either way, **the flat-outside-guard pattern at the top of this document
 remains the recommended default** regardless of which bug is or isn't
@@ -126,8 +126,7 @@ In order of preference:
    (the pattern ESH-0222 fixes) — use this when the error boundary
    genuinely needs to wrap the recursive step itself (e.g. different
    recovery logic depending on *where* in the tick the error occurred).
-   Prefer a top-level `define` over a named-let per the ESH-0223 caveat
-   above.
+   Named-let and top-level `define` are both flat here (ESH-0223 fixed).
 
 **Threading state without consing:** prefer a single accumulator value, or
 a small `define-record-type` instance passed by reference, over
@@ -146,27 +145,33 @@ the most robust choice even after that feature lands.
 
 ## Q3: Is `(apply loop lst)` a proper tail call?
 
-**No.** `call_apply_codegen.cpp` never consults the tail-call-optimization
-context (`isTCOActive`/`TailCallContext`) — every `apply` call, self-recursive
-or not, compiles to a genuine (non-tail) LLVM `call`. Using `apply` for a
-loop's back-edge will grow the native call stack by one frame per
-iteration no matter what the target function's body looks like. This is a
-distinct, currently-unfixed gap (tracked separately; not part of
-ESH-0222), not a special case of the guard bug — it reproduces identically
-with or without `guard` in the loop body.
+**Yes, when the argument list is statically spelled** (ESH-0227, fixed).
+`(apply loop leading... (list a b ...))`, where `loop` names the enclosing
+function's active TCO loop and the total spelled-out argument count matches the
+loop's arity, now lowers to the very same O(1)-stack loop back-edge a direct
+`(loop a b ...)` self-call gets — `codegenApply` consults the TCO context and
+emits the branch, and the whole-function tail analysis recognizes
+apply-self-calls (so a *non-tail* apply-self-call still correctly disables the
+transform). This holds identically with or without `guard` in the loop body.
 
-**Do not use `(apply loop next-args)` as a long-running loop's back-edge.**
-Call the loop function directly with its arguments spelled out
-(`(loop (+ tick 1) new-state)`), which does participate in TCO. If the
-argument list's arity is only known at runtime, thread a single record or
-vector instead of relying on `apply` to spread a list.
+**Two cases are still ordinary (non-tail) `apply` calls, by design:**
 
-(A prior attempt to work around ESH-0222 by moving the recursive call
-outside `guard` via `(apply loop (list ...))` ballooned RSS from 0.6GB to
-3GB in about a minute and crashed — consistent with this: every iteration
-made a real, non-tail `apply` call, and the per-iteration `(list ...)`
-allocation was never reclaimed because the surrounding recursion was never
-flat to begin with.)
+1. A **dynamically-shaped final list** — `(apply loop some-list-variable)`
+   where the argument list is not a literal `(list ...)`. Its length (and hence
+   whether it matches the loop arity) is not known at compile time, so it is
+   left as a normal call. Prefer spelling the arguments — `(apply loop (list
+   (+ tick 1) new-state))` or, better, a direct `(loop (+ tick 1) new-state)`.
+2. A **non-tail** apply-self-call (e.g. `(+ 1 (apply loop ...))`) — never a
+   tail call in any language, and it correctly disables the loop transform for
+   the whole function.
+
+For a runtime-arity call, thread a single record or vector rather than relying
+on `apply` to spread a list.
+
+(A prior attempt to work around ESH-0222 by moving the recursive call outside
+`guard` via `(apply loop (list ...))` ballooned RSS from 0.6GB to 3GB in about
+a minute and crashed. With ESH-0227 that exact statically-spelled shape is now
+a flat back-edge; the pathology it described applied to the pre-fix compiler.)
 
 ## Q4: Is there a stack-size stopgap?
 
@@ -186,8 +191,11 @@ indefinitely; use the canonical pattern above instead.
 - `tests/tco/guard_loop_tail_test.esk` — the regression test for this
   document's shapes.
 - `.swarm/tasks/ESH-0222.json` — the guard-tail-position fix.
-- `.swarm/tasks/ESH-0223.json` — the separate, still-open named-let stack
-  bug referenced in the caveat above.
+- `tests/tco/named_let_long_loop_test.esk` — ESH-0223 (named-let long-loop)
+  regression; `tests/tco/apply_loop_tail_test.esk` — ESH-0227 (apply
+  back-edge) regression.
+- `.swarm/tasks/ESH-0223.json`, `.swarm/tasks/ESH-0227.json` — the named-let
+  stack and apply-back-edge tickets referenced above (both fixed).
 - `docs/KNOWN_ISSUES.md` — "Arena memory (OALR) instead of garbage
   collection": Eshkol has no tracing/stop-the-world collector, so a
   long-running loop's memory behavior is governed entirely by arena
