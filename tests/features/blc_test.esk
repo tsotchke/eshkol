@@ -1,0 +1,160 @@
+;; Binary Lambda Calculus (core.blc) test suite.
+;;
+;; Verifies, against John Tromp's primary source
+;;   (https://tromp.github.io/cl/Binary_lambda_calculus.html):
+;;   1. Exact bit encodings of I, K and the pairing term.
+;;   2. encode/decode round-trips.
+;;   3. Normal-order (leftmost-outermost) evaluation, including that a
+;;      divergent-but-discarded argument does NOT cause non-termination
+;;      (which it would under applicative/eager order).
+;;   4. Robustness: truncated/invalid bit strings signal errors, never
+;;      crash or hang.
+;;
+;; Self-asserting: prints PASS/FAIL per case and a summary, exits 1 on any
+;; failure.
+
+(require core.blc)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(define (check-equal name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")") (newline))))
+
+;; Did (thunk) raise an error?  Returns #t if it did.
+(define (raised? thunk)
+  (guard (exn (#t #t))
+    (thunk)
+    #f))
+
+;; The pairing term  λλλ.((1 3) 2).
+(define blc-pair
+  (blc-lam (blc-lam (blc-lam
+    (blc-app (blc-app (blc-var 1) (blc-var 3)) (blc-var 2))))))
+
+;; ============================================================================
+;; 1. Exact encodings (ground truth from Tromp)
+;; ============================================================================
+(display "=== 1. Exact encodings ===") (newline)
+
+(check-equal "encode I = 0010"                (blc-encode blc-I)   "0010")
+(check-equal "encode K = 0000110"             (blc-encode blc-K)   "0000110")
+(check-equal "encode pairing = 0000000101101110110"
+             (blc-encode blc-pair) "0000000101101110110")
+(check-equal "encode S = 00000001011110100111010"
+             (blc-encode blc-S)   "00000001011110100111010")
+;; The predefined bit strings agree with the encoder.
+(check-equal "blc-I-bits matches encoder" blc-I-bits (blc-encode blc-I))
+(check-equal "blc-K-bits matches encoder" blc-K-bits (blc-encode blc-K))
+(check-equal "blc-S-bits matches encoder" blc-S-bits (blc-encode blc-S))
+
+;; ============================================================================
+;; 2. Round-trips:  decode . encode = identity (structurally)
+;; ============================================================================
+(display "=== 2. Round-trips ===") (newline)
+
+(define (roundtrip name t)
+  (check-equal (string-append "roundtrip " name) t (blc-decode (blc-encode t))))
+
+(roundtrip "I" blc-I)
+(roundtrip "K" blc-K)
+(roundtrip "S" blc-S)
+(roundtrip "pairing" blc-pair)
+(roundtrip "var 5" (blc-var 5))
+(roundtrip "app I K" (blc-app blc-I blc-K))
+(roundtrip "lam(app (var 1)(var 2))"
+           (blc-lam (blc-app (blc-var 1) (blc-var 2))))
+(roundtrip "nested app ((K I) S)"
+           (blc-app (blc-app blc-K blc-I) blc-S))
+;; Trailing bits are ignored (terms are self-delimiting): "0010" is I,
+;; and "0010" + junk still decodes to I.
+(check-equal "decode ignores trailing bits"
+             blc-I (blc-decode (string-append blc-I-bits "1101")))
+
+;; ============================================================================
+;; 3. Evaluation (normal-order, structural normal-form comparison)
+;; ============================================================================
+(display "=== 3. Evaluation ===") (newline)
+
+;; I X = X
+(check-equal "I K = K" blc-K (blc-eval (blc-app blc-I blc-K)))
+;; K X Y = X
+(check-equal "K I S = I"
+             blc-I (blc-eval (blc-app (blc-app blc-K blc-I) blc-S)))
+;; S K K = I  (as normal forms): S K K applied to anything acts as identity.
+(check-equal "S K K I = I"
+             (blc-eval blc-I)
+             (blc-eval (blc-app (blc-app (blc-app blc-S blc-K) blc-K) blc-I)))
+(check-equal "S K K K = K"
+             (blc-eval blc-K)
+             (blc-eval (blc-app (blc-app (blc-app blc-S blc-K) blc-K) blc-K)))
+;; blc-apply agrees with (blc-eval (app ...))
+(check-equal "blc-apply I K = K" blc-K (blc-apply blc-I blc-K))
+
+;; Normal-order proof: K I Omega = I. The divergent Omega is DISCARDED by K
+;; and never reduced. Eager/applicative order would loop forever here; a
+;; normal-order reducer reaches I.
+(check-equal "K I Omega = I  (divergent arg discarded, normal-order)"
+             blc-I
+             (blc-eval (blc-app (blc-app blc-K blc-I) blc-omega)))
+
+;; Church booleans select correctly: true X Y = X, false X Y = Y.
+(check-equal "true K I = K"
+             blc-K (blc-eval (blc-app (blc-app blc-true blc-K) blc-I)))
+(check-equal "false K I = I"
+             blc-I (blc-eval (blc-app (blc-app blc-false blc-K) blc-I)))
+
+;; Omega alone has no normal form: blc-eval must signal the step-cap error,
+;; not hang. (raised? drives it and confirms an error was signalled.)
+(check "Omega has no normal form -> step-cap error signalled"
+       (raised? (lambda () (blc-eval blc-omega))))
+
+;; ============================================================================
+;; 4. Robustness: truncated / invalid input signals errors (no crash/hang)
+;; ============================================================================
+(display "=== 4. Robustness ===") (newline)
+
+(check "decode \"\"  signals error"   (raised? (lambda () (blc-decode ""))))
+(check "decode \"1\" signals error"   (raised? (lambda () (blc-decode "1"))))
+(check "decode \"0\" signals error"   (raised? (lambda () (blc-decode "0"))))
+(check "decode \"00\" (missing body) signals error"
+       (raised? (lambda () (blc-decode "00"))))
+(check "decode \"01\" (missing operands) signals error"
+       (raised? (lambda () (blc-decode "01"))))
+(check "decode \"0101\" (missing 2nd operand) signals error"
+       (raised? (lambda () (blc-decode "0101"))))
+(check "decode \"0x\" (invalid char) signals error"
+       (raised? (lambda () (blc-decode "0x"))))
+;; And a valid truncation boundary: "0010" is fine (I), "001" is truncated.
+(check "decode \"001\" (truncated var body) signals error"
+       (raised? (lambda () (blc-decode "001"))))
+(check-equal "decode \"0010\" = I  (valid, for contrast)"
+             blc-I (blc-decode "0010"))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+(newline)
+(display "==== SUMMARY ====") (newline)
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+(if (> tests-failed 0)
+    (begin (display "RESULT: FAIL") (newline) (exit 1))
+    (begin (display "RESULT: PASS") (newline)))

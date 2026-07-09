@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet since [1.3.1-evolve].
+### Added
+
+- **`core.blc` — Binary Lambda Calculus**: a pure-Eshkol module implementing
+  John Tromp's Binary Lambda Calculus, showcasing the language's
+  lambda-calculus foundations. De Bruijn-indexed terms are represented
+  homoiconically as s-expressions (`(var i)`, `(lam B)`, `(app M N)`);
+  `blc-encode`/`blc-decode` convert to and from Tromp's self-delimiting bit
+  encoding, and `blc-eval` reduces to beta normal form using **normal-order
+  (leftmost-outermost)** reduction with correct De Bruijn shift/substitution
+  and a divergence step-cap. Loaded on demand via `(require core.blc)`. The
+  reference encodings are reproduced exactly (`I` = `0010`, `K` = `0000110`,
+  pairing `λλλ.132` = `0000000101101110110`). See
+  `docs/guide/BINARY_LAMBDA_CALCULUS.md`.
 
 ## [1.3.1-evolve] - 2026-07-09
 
