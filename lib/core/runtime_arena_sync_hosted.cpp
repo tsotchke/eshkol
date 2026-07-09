@@ -22,6 +22,15 @@ pthread_mutex_t g_hash_table_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 }
 
+/**
+ * @brief Allocate and initialise a platform mutex for a thread-safe arena.
+ *
+ * On Windows, heap-allocates a std::mutex. Elsewhere, heap-allocates and
+ * pthread_mutex_init()s a pthread_mutex_t, freeing it again if init fails.
+ *
+ * @return Opaque mutex handle (to be passed to the other eshkol_arena_mutex_*
+ *         functions), or NULL on allocation/initialisation failure.
+ */
 void* eshkol_arena_mutex_create(void) {
 #ifdef _WIN32
     return new (std::nothrow) std::mutex();
@@ -38,6 +47,11 @@ void* eshkol_arena_mutex_create(void) {
 #endif
 }
 
+/**
+ * @brief Destroy and free a mutex previously created by eshkol_arena_mutex_create().
+ *
+ * No-op if `mutex` is NULL.
+ */
 void eshkol_arena_mutex_destroy(void* mutex) {
     if (!mutex) {
         return;
@@ -50,6 +64,9 @@ void eshkol_arena_mutex_destroy(void* mutex) {
 #endif
 }
 
+/**
+ * @brief Lock a mutex previously created by eshkol_arena_mutex_create(). No-op if `mutex` is NULL.
+ */
 void eshkol_arena_mutex_lock(void* mutex) {
     if (!mutex) {
         return;
@@ -61,6 +78,9 @@ void eshkol_arena_mutex_lock(void* mutex) {
 #endif
 }
 
+/**
+ * @brief Unlock a mutex previously created by eshkol_arena_mutex_create(). No-op if `mutex` is NULL.
+ */
 void eshkol_arena_mutex_unlock(void* mutex) {
     if (!mutex) {
         return;
@@ -72,6 +92,14 @@ void eshkol_arena_mutex_unlock(void* mutex) {
 #endif
 }
 
+/**
+ * @brief Run `init` exactly once for the lifetime of the process, across all callers/threads.
+ *
+ * Backed by std::call_once (Windows) or pthread_once (elsewhere) with a
+ * function-local static once-control object.
+ *
+ * @param init  Zero-argument function to invoke exactly once.
+ */
 void eshkol_arena_global_once(void (*init)(void)) {
 #ifdef _WIN32
     static std::once_flag once;
@@ -82,6 +110,7 @@ void eshkol_arena_global_once(void (*init)(void)) {
 #endif
 }
 
+/** @brief Lock the process-wide global hash-table mutex. */
 void eshkol_hash_table_lock(void) {
 #ifdef _WIN32
     g_hash_table_mutex.lock();
@@ -90,6 +119,7 @@ void eshkol_hash_table_lock(void) {
 #endif
 }
 
+/** @brief Unlock the process-wide global hash-table mutex. */
 void eshkol_hash_table_unlock(void) {
 #ifdef _WIN32
     g_hash_table_mutex.unlock();

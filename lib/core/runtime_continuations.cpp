@@ -16,6 +16,21 @@
 // Global dynamic-wind handler stack
 eshkol_dynamic_wind_entry_t* g_dynamic_wind_stack = nullptr;
 
+/**
+ * @brief Allocate and initialize the state captured by a `call/cc` invocation.
+ *
+ * Allocates an eshkol_continuation_state_t in the given arena, records the
+ * caller-supplied setjmp buffer pointer to jump back to when the
+ * continuation is invoked, zero-initializes the carried value to null, and
+ * snapshots the current top of the global dynamic-wind stack
+ * (g_dynamic_wind_stack) as `wind_mark` so eshkol_unwind_dynamic_wind can
+ * later run the correct `after` thunks if the continuation escapes its
+ * dynamic extent. The returned state is arena-owned.
+ *
+ * @param arena_void   Arena to allocate from, passed as void* across the ABI.
+ * @param jmp_buf_ptr  Pointer to the jmp_buf to longjmp back into on invocation.
+ * @return             Newly allocated continuation state, or nullptr on failure.
+ */
 extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* arena_void, void* jmp_buf_ptr) {
     arena_t* arena = (arena_t*)arena_void;
     eshkol_continuation_state_t* state = (eshkol_continuation_state_t*)arena_allocate_aligned(arena, sizeof(eshkol_continuation_state_t), 8);
@@ -30,6 +45,23 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     return state;
 }
 
+/**
+ * @brief Wrap a continuation state in a callable closure object.
+ *
+ * Builds a 1-arity, 1-capture closure (via arena_allocate_closure_with_header)
+ * named "<continuation>" whose single capture slot stores `state_ptr` (the
+ * eshkol_continuation_state_t from eshkol_make_continuation_state) as a
+ * HEAP_PTR-tagged value, then overwrites the allocated object's header
+ * subtype from the default closure subtype to CALLABLE_SUBTYPE_CONTINUATION
+ * so generated call sites and introspection code can distinguish a
+ * continuation from an ordinary closure. The closure's `func_ptr` is left 0
+ * — invoking a continuation is handled specially by the codegen'd call path,
+ * not through this func_ptr. Returned value is arena-owned.
+ *
+ * @param arena_void  Arena to allocate from, passed as void* across the ABI.
+ * @param state_ptr   Continuation state to capture (see eshkol_make_continuation_state).
+ * @return            The continuation closure as an opaque void*, or nullptr on failure.
+ */
 extern "C" void* eshkol_make_continuation_closure(void* arena_void, void* state_ptr) {
     arena_t* arena = (arena_t*)arena_void;
 

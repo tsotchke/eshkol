@@ -27,6 +27,19 @@ std::atomic<eshkol_shutdown_reason_t> g_shutdown_reason{ESHKOL_SHUTDOWN_NONE};
 
 namespace eshkol::runtime_hosted {
 
+/**
+ * @brief Stop and join every runtime-owned worker-thread pool during shutdown.
+ *
+ * Currently calls thread_pool_global_shutdown() (idempotent — safe even if
+ * the pool was never created, and safe to call more than once). Deliberately
+ * does NOT touch the bytecode VM's separate parallel-map pool
+ * (eshkol_vm_parallel_shutdown_global in lib/backend/vm_parallel.c); see the
+ * inline comment in the body for why pulling that in here would force-link
+ * VM/GPU dependencies into every AOT binary. Called from
+ * eshkol_runtime_shutdown() before shutdown hooks run and before signal
+ * handlers are restored, so no Eshkol worker thread can race a teardown step
+ * that frees shared arena-backed state.
+ */
 void shutdown_all_thread_pools() {
     // thread_pool_global_shutdown() is idempotent — safe to call even if the
     // global pool was never created (no-op), and safe to call more than once
@@ -56,6 +69,19 @@ void shutdown_all_thread_pools() {
 
 extern "C" {
 
+/**
+ * @brief Request a graceful runtime interrupt/shutdown from any thread.
+ *
+ * Sets the global interrupt flag, records `reason` and transitions
+ * g_runtime_state to ESHKOL_RUNTIME_SHUTTING_DOWN (both via
+ * release-ordered atomics), and mirrors the reason/state into the
+ * signal-safe shadow variables so a subsequent signal handler observes a
+ * consistent view. Does not itself perform teardown — code polling
+ * g_eshkol_interrupt_flag / eshkol_runtime_get_shutdown_reason is expected
+ * to unwind and call eshkol_runtime_shutdown().
+ *
+ * @param reason  Shutdown reason to record.
+ */
 void eshkol_runtime_request_interrupt(eshkol_shutdown_reason_t reason) {
     g_eshkol_interrupt_flag = 1;
     g_shutdown_reason.store(reason, std::memory_order_release);
@@ -65,6 +91,14 @@ void eshkol_runtime_request_interrupt(eshkol_shutdown_reason_t reason) {
     eshkol::runtime_hosted::set_signal_runtime_state(ESHKOL_RUNTIME_SHUTTING_DOWN);
 }
 
+/**
+ * @brief Clear a previously requested interrupt without changing runtime state.
+ *
+ * Resets g_eshkol_interrupt_flag and the shutdown reason (both the atomic
+ * and the signal-safe shadow) back to "none". Does not touch
+ * g_runtime_state, so this only cancels the interrupt signal itself, not
+ * an in-progress shutdown state transition.
+ */
 void eshkol_runtime_clear_interrupt(void) {
     g_eshkol_interrupt_flag = 0;
     g_shutdown_reason.store(ESHKOL_SHUTDOWN_NONE, std::memory_order_release);
@@ -72,10 +106,26 @@ void eshkol_runtime_clear_interrupt(void) {
     eshkol::runtime_hosted::set_signal_shutdown_reason(ESHKOL_SHUTDOWN_NONE);
 }
 
+/** @brief Return the most recently recorded shutdown reason (acquire-ordered load). */
 eshkol_shutdown_reason_t eshkol_runtime_get_shutdown_reason(void) {
     return g_shutdown_reason.load(std::memory_order_acquire);
 }
 
+/**
+ * @brief One-time initialization of the hosted Eshkol runtime.
+ *
+ * Atomically transitions g_runtime_state from ESHKOL_RUNTIME_INITIALIZING to
+ * ESHKOL_RUNTIME_RUNNING; if the state is already RUNNING this is a no-op
+ * success (idempotent), and any other unexpected state is logged and
+ * rejected. On the successful path: makes stdout unbuffered (Bug AA — so
+ * `(display ...)` output is never lost to buffering if a later form
+ * crashes), reads resource limits from the environment and starts the
+ * execution-time-limit timer if `ESHKOL_TIMEOUT_MS` is set, and installs
+ * runtime signal handlers.
+ *
+ * @return  0 on success (including "already running"), -1 if called from an
+ *          unexpected runtime state.
+ */
 int eshkol_runtime_init(void) {
     eshkol_runtime_state_t expected = ESHKOL_RUNTIME_INITIALIZING;
     if (!g_runtime_state.compare_exchange_strong(expected, ESHKOL_RUNTIME_RUNNING)) {
@@ -106,6 +156,23 @@ int eshkol_runtime_init(void) {
     return 0;
 }
 
+/**
+ * @brief Tear down the hosted Eshkol runtime, once, in a fixed safe order.
+ *
+ * Atomically transitions g_runtime_state from RUNNING to SHUTTING_DOWN;
+ * returns immediately (no-op) if shutdown/termination is already underway
+ * or complete, so this is safe to call from multiple shutdown paths. On the
+ * first call: records the shutdown reason (atomic + signal-safe shadow),
+ * sets the interrupt flag, logs the reason, waits (up to 5s) for in-flight
+ * operations to drain, then — in this order — stops every runtime worker
+ * pool (shutdown_all_thread_pools, ESH-0216: must happen before anything
+ * that can free shared arena state, to avoid a racing worker touching freed
+ * memory), runs registered shutdown hooks, stops the execution timer, and
+ * restores the original signal handlers. Finally marks the runtime
+ * TERMINATED (atomic + shadow).
+ *
+ * @param reason  Reason for the shutdown, recorded for later inspection.
+ */
 void eshkol_runtime_shutdown(eshkol_shutdown_reason_t reason) {
     eshkol_runtime_state_t expected = ESHKOL_RUNTIME_RUNNING;
     if (!g_runtime_state.compare_exchange_strong(expected, ESHKOL_RUNTIME_SHUTTING_DOWN)) {
@@ -164,6 +231,7 @@ void eshkol_runtime_shutdown(eshkol_shutdown_reason_t reason) {
     eshkol_info("Shutdown complete");
 }
 
+/** @brief Return the current runtime lifecycle state (acquire-ordered load). */
 eshkol_runtime_state_t eshkol_runtime_get_state(void) {
     return g_runtime_state.load(std::memory_order_acquire);
 }

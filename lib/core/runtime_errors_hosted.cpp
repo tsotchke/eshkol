@@ -48,12 +48,32 @@ static ESHKOL_TLS uint32_t g_error_loc_column = 0;
 
 extern "C" {
 
+/**
+ * @brief Record the source location to prefix onto the next formatted error
+ * message on this thread.
+ *
+ * Called by codegen immediately before raising a type error, so
+ * eshkol_format_error_location_prefix() can render a "file:line:col: "
+ * prefix. Stores the raw `file` pointer (not a copy) — codegen is expected
+ * to pass a static string literal that lives for the program's lifetime.
+ * Thread-local, so concurrent workers do not clobber one another's location.
+ *
+ * @param file    Source file name (borrowed pointer; must outlive this call).
+ * @param line    Source line number (1-based).
+ * @param column  Source column number (1-based), or 0 if unknown.
+ */
 void eshkol_set_error_location(const char* file, uint32_t line, uint32_t column) {
     g_error_loc_file = file;
     g_error_loc_line = line;
     g_error_loc_column = column;
 }
 
+/**
+ * @brief Clear the current thread's recorded error source location.
+ *
+ * After this call, eshkol_format_error_location_prefix() will render an
+ * empty prefix until eshkol_set_error_location() is called again.
+ */
 void eshkol_clear_error_location(void) {
     g_error_loc_file = nullptr;
     g_error_loc_line = 0;
@@ -79,6 +99,22 @@ static size_t eshkol_format_error_location_prefix(char* buf, size_t buflen) {
     return (size_t)n < buflen ? (size_t)n : buflen - 1;
 }
 
+/**
+ * @brief Format and report a fatal runtime error, then raise an exception or
+ * terminate the process.
+ *
+ * Formats `fmt`/`...` (printf-style) into a fixed 512-byte buffer, prints it
+ * to stderr, and builds an eshkol_exception_t of `type` via
+ * eshkol_make_exception(). If exception construction succeeds, raises it via
+ * eshkol_raise() (which may perform a non-local jump / longjmp-style unwind
+ * to a handler and not return); if it returns anyway, or if the exception
+ * could not be constructed, the process is terminated with std::exit(1) so
+ * a fatal condition can never fall through to continued execution.
+ *
+ * @param type  Exception category to raise.
+ * @param fmt   printf-style format string for the error message.
+ * @param ...   Format arguments.
+ */
 void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     char buf[512];
     va_list args;
@@ -97,6 +133,19 @@ void eshkol_runtime_fatal(eshkol_exception_type_t type, const char* fmt, ...) {
     std::exit(1);
 }
 
+/**
+ * @brief Report and raise a type error naming only the expected type (no
+ * observed-value type available at the call site).
+ *
+ * Logs via eshkol_error() and then always raises/terminates via
+ * eshkol_runtime_fatal() (ESHKOL_EXCEPTION_TYPE_ERROR) — this function never
+ * returns to its caller under normal fatal-error semantics.
+ *
+ * @param proc_name      Name of the procedure/operation that detected the
+ *                       error; "<unknown>" is substituted if NULL.
+ * @param expected_type  Human-readable name of the expected type;
+ *                       "<type>" is substituted if NULL.
+ */
 void eshkol_type_error(const char* proc_name, const char* expected_type) {
     eshkol_error("Type error in %s: expected %s",
                  proc_name ? proc_name : "<unknown>",
@@ -108,6 +157,23 @@ void eshkol_type_error(const char* proc_name, const char* expected_type) {
                          expected_type ? expected_type : "<type>");
 }
 
+/**
+ * @brief Report and raise a type error naming both the expected type and the
+ * actual observed type.
+ *
+ * Prefixes the message with the current "file:line:col: " location (see
+ * eshkol_set_error_location() / eshkol_format_error_location_prefix()) when
+ * one has been set, logs via eshkol_error(), and always raises/terminates
+ * via eshkol_runtime_fatal() (ESHKOL_EXCEPTION_TYPE_ERROR) — never returns
+ * to its caller under normal fatal-error semantics.
+ *
+ * @param proc_name      Name of the procedure/operation that detected the
+ *                       error; "<unknown>" is substituted if NULL.
+ * @param expected_type  Human-readable name of the expected type;
+ *                       "<type>" is substituted if NULL.
+ * @param actual_type    Human-readable name of the value's actual type;
+ *                       "<unknown>" is substituted if NULL.
+ */
 void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                   const char* actual_type) {
     char prefix[320];

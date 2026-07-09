@@ -26,11 +26,25 @@ ad_tape_t* __current_ad_tape = nullptr;
 // module can see AD mode set by another module in REPL/JIT workflows.
 bool __ad_mode_active = false;
 
+/**
+ * @brief Debug helper that logs the current global AD-mode flag to stderr.
+ *
+ * Intended for troubleshooting AD activation issues; has no effect on
+ * program behavior beyond the diagnostic print.
+ *
+ * @param context Label identifying the call site, printed alongside the flag.
+ */
 void debug_print_ad_mode(const char* context) {
     std::fprintf(stderr, "[AD_MODE_DEBUG] %s: __ad_mode_active = %s\n",
                  context, __ad_mode_active ? "TRUE" : "FALSE");
 }
 
+/**
+ * @brief Debug helper that logs a labeled pointer value to stderr.
+ *
+ * @param context Label identifying the call site.
+ * @param ptr     Pointer to print (address and hex value).
+ */
 void debug_print_ptr(const char* context, void* ptr) {
     std::fprintf(stderr, "[PTR_DEBUG] %s: ptr = %p (0x%llx)\n",
                  context, ptr, (unsigned long long)(uintptr_t)ptr);
@@ -143,6 +157,16 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     return result;
 }
 
+/**
+ * @brief Allocates and zero-initializes a single forward-mode dual number.
+ *
+ * A dual number carries a value and its derivative (tangent) for forward-mode
+ * automatic differentiation. The result is allocated from `arena` and
+ * initialized to value = 0.0, derivative = 0.0.
+ *
+ * @param arena Arena to allocate from; must be non-null.
+ * @return      Newly allocated dual number, or nullptr on failure/null arena.
+ */
 eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate dual number: null arena");
@@ -160,6 +184,16 @@ eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena) {
     return dual;
 }
 
+/**
+ * @brief Allocates and zero-initializes a contiguous array of dual numbers.
+ *
+ * Used for forward-mode AD over batches/vectors: each element is initialized
+ * to value = 0.0, derivative = 0.0.
+ *
+ * @param arena Arena to allocate from; must be non-null.
+ * @param count Number of dual numbers to allocate; must be non-zero.
+ * @return      Pointer to the first element of the array, or nullptr on failure.
+ */
 eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
     if (!arena || count == 0) {
         eshkol_error("Invalid parameters for batch dual number allocation");
@@ -180,6 +214,19 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
     return duals;
 }
 
+/**
+ * @brief Allocates and default-initializes a single reverse-mode AD tape node.
+ *
+ * The node is allocated from `arena` as a plain (headerless) ad_node_t and
+ * reset to an AD_NODE_CONSTANT with value/gradient 0.0, no parent/extra
+ * inputs, and no saved-tensor/shape data. Unlike
+ * arena_allocate_ad_node_with_header(), this allocation carries no
+ * eshkol_object_header_t, so it is not usable directly as a heap-tagged
+ * callable value.
+ *
+ * @param arena Arena to allocate from; must be non-null.
+ * @return      Newly initialized node, or nullptr on failure.
+ */
 ad_node_t* arena_allocate_ad_node(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate AD node: null arena");
@@ -210,6 +257,20 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena) {
     return node;
 }
 
+/**
+ * @brief Allocates a reverse-mode AD tape node prefixed with an object header.
+ *
+ * Reserves space for an eshkol_object_header_t immediately followed by the
+ * ad_node_t payload (8-byte aligned total size), tags the header's subtype
+ * as CALLABLE_SUBTYPE_AD_NODE, and default-initializes the node fields
+ * (type = AD_NODE_CONSTANT, value/gradient = 0.0, no inputs/tensors/shape).
+ * The returned pointer addresses the payload, not the header. This is the
+ * form needed wherever an AD node must also be a tagged/callable heap value
+ * (e.g. the tape entries created by eshkol_ad_mixed_record()).
+ *
+ * @param arena Arena to allocate from; must be non-null.
+ * @return      Pointer to the node payload (past the header), or nullptr on failure.
+ */
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate AD node with header: null arena");
@@ -252,6 +313,16 @@ ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena) {
     return node;
 }
 
+/**
+ * @brief Allocates and default-initializes a contiguous array of headerless AD nodes.
+ *
+ * Each element is reset to AD_NODE_CONSTANT with value/gradient 0.0 and no
+ * inputs/tensors/shape, mirroring arena_allocate_ad_node() but for a batch.
+ *
+ * @param arena Arena to allocate from; must be non-null.
+ * @param count Number of nodes to allocate; must be non-zero.
+ * @return      Pointer to the first element of the array, or nullptr on failure.
+ */
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
     if (!arena || count == 0) {
         eshkol_error("Invalid parameters for batch AD node allocation");
@@ -285,6 +356,18 @@ ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count) {
     return nodes;
 }
 
+/**
+ * @brief Allocates and initializes an empty reverse-mode AD tape.
+ *
+ * Allocates the ad_tape_t header plus a nodes array sized to
+ * `initial_capacity` (0 is treated as 64) from `arena`. The tape starts
+ * with zero recorded nodes and no variable list; nodes are appended later
+ * via arena_tape_add_node() as operations are recorded.
+ *
+ * @param arena             Arena to allocate from; must be non-null.
+ * @param initial_capacity  Initial nodes-array capacity; 0 is treated as 64.
+ * @return                  Newly allocated empty tape, or nullptr on failure.
+ */
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     if (!arena) {
         eshkol_error("Cannot allocate tape: null arena");
@@ -319,6 +402,20 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     return tape;
 }
 
+/**
+ * @brief Appends a node to the tape's evaluation-order node list.
+ *
+ * Records `node` as the next entry in `tape`, growing the backing array
+ * (doubling capacity, minimum 128) from the shared REPL arena
+ * (__repl_shared_arena) when the tape is full. If the tape is full and no
+ * arena is available, or growth fails, the append is silently dropped after
+ * logging an error. Nodes must be added in the order they should be visited
+ * during the reverse (backward) pass, since the tape is walked in this
+ * recorded order to propagate gradients.
+ *
+ * @param tape Tape to append to; no-op (with error log) if null.
+ * @param node Node to append; no-op (with error log) if null.
+ */
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     if (!tape || !node) {
         eshkol_error("Cannot add node to tape: null parameter");
@@ -354,6 +451,16 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     tape->nodes[tape->num_nodes++] = node;
 }
 
+/**
+ * @brief Clears a tape's recorded nodes and zeroes their accumulated gradients.
+ *
+ * Resets every currently-recorded node's `gradient` field to 0.0 and sets
+ * the tape's node count back to zero, so the same arena-backed nodes array
+ * can be reused for a fresh forward/backward pass without freeing memory.
+ * Does not touch node values, types, or parent links.
+ *
+ * @param tape Tape to reset; no-op (with error log) if null.
+ */
 void arena_tape_reset(ad_tape_t* tape) {
     if (!tape) {
         eshkol_error("Cannot reset tape: null parameter");
@@ -371,6 +478,15 @@ void arena_tape_reset(ad_tape_t* tape) {
     tape->num_nodes = 0;
 }
 
+/**
+ * @brief Fetches the node recorded at a given position on the tape.
+ *
+ * @param tape  Tape to read from; must be non-null.
+ * @param index Zero-based position in evaluation order; must be less than
+ *              the tape's current node count.
+ * @return      The node at `index`, or nullptr if `tape` is null or `index`
+ *              is out of bounds (both cases log an error).
+ */
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index) {
     if (!tape) {
         eshkol_error("Cannot get node from null tape");
@@ -385,6 +501,12 @@ ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index) {
     return tape->nodes[index];
 }
 
+/**
+ * @brief Returns the number of nodes currently recorded on the tape.
+ *
+ * @param tape Tape to query; must be non-null.
+ * @return     Current node count, or 0 if `tape` is null (logs an error).
+ */
 size_t arena_tape_get_node_count(const ad_tape_t* tape) {
     if (!tape) {
         eshkol_error("Cannot get node count from null tape");

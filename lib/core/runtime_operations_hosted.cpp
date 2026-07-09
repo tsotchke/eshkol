@@ -35,6 +35,17 @@ std::atomic<uint32_t> g_next_operation_id{1};
 
 extern "C" {
 
+/**
+ * @brief Record the start of an in-flight runtime operation, for graceful shutdown draining.
+ *
+ * Thread-safe: takes g_operations_mutex while appending to the shared
+ * operation list. Assigns a fresh monotonically increasing id (starting at
+ * 1) and timestamps the start time for later duration logging in
+ * eshkol_runtime_end_operation().
+ *
+ * @param name  Optional human-readable operation name for logging; "(unnamed)" if NULL.
+ * @return      The new operation's id (always non-zero).
+ */
 uint32_t eshkol_runtime_begin_operation(const char* name) {
     std::lock_guard<std::mutex> lock(g_operations_mutex);
 
@@ -50,6 +61,17 @@ uint32_t eshkol_runtime_begin_operation(const char* name) {
     return id;
 }
 
+/**
+ * @brief Mark a previously begun operation as complete, logging its duration.
+ *
+ * Thread-safe: takes g_operations_mutex while erasing the matching entry
+ * from the shared operation list, then notifies all waiters on
+ * g_operations_cv (unblocking any eshkol_runtime_drain_operations() call
+ * that is waiting for the in-flight set to become empty). No-op if
+ * `operation_id` is 0 or not found (e.g. already ended).
+ *
+ * @param operation_id  Id previously returned by eshkol_runtime_begin_operation().
+ */
 void eshkol_runtime_end_operation(uint32_t operation_id) {
     if (operation_id == 0) {
         return;
@@ -73,6 +95,17 @@ void eshkol_runtime_end_operation(uint32_t operation_id) {
     g_operations_cv.notify_all();
 }
 
+/**
+ * @brief Wait until all in-flight operations have ended, for graceful shutdown.
+ *
+ * `timeout_ms == 0` polls the current state without blocking. `timeout_ms <
+ * 0` blocks indefinitely on g_operations_cv until the in-flight set is
+ * empty. `timeout_ms > 0` blocks up to that many milliseconds.
+ *
+ * @param timeout_ms  Milliseconds to wait (0 = poll only, negative = wait forever).
+ * @return            True if the in-flight operation set was (or became) empty
+ *                     before the timeout elapsed; false on timeout.
+ */
 bool eshkol_runtime_drain_operations(int timeout_ms) {
     std::unique_lock<std::mutex> lock(g_operations_mutex);
 
@@ -95,6 +128,7 @@ bool eshkol_runtime_drain_operations(int timeout_ms) {
     });
 }
 
+/** @brief Return the current number of in-flight (begun but not yet ended) operations. */
 uint32_t eshkol_runtime_get_operation_count(void) {
     std::lock_guard<std::mutex> lock(g_operations_mutex);
     return static_cast<uint32_t>(g_in_flight_operations.size());

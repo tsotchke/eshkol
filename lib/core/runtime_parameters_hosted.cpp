@@ -29,6 +29,21 @@ typedef struct {
     int capacity;
 } eshkol_param_t;
 
+/**
+ * @brief Create an R7RS parameter object seeded with `default_val` (`make-parameter` support).
+ *
+ * The `eshkol_param_t` control block is arena-allocated (freed only when the
+ * arena is reset/destroyed), while its value stack — the dynamic binding
+ * stack `parameterize` pushes/pops through — is a separately malloc'd array
+ * that can grow independently via realloc. If the initial stack allocation
+ * fails, the parameter is still returned but left in an empty state
+ * (`top = -1`, `capacity = 0`) so later ref/push calls fail safely instead of
+ * dereferencing null.
+ *
+ * @param arena        Arena to allocate the parameter control block from.
+ * @param default_val  Initial (bottom-of-stack) value for the parameter.
+ * @return              Opaque parameter handle, or null if the arena allocation fails.
+ */
 void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     eshkol_param_t* param = (eshkol_param_t*)arena_allocate_with_header(
         arena, sizeof(eshkol_param_t), HEAP_SUBTYPE_PARAMETER, 0);
@@ -51,6 +66,18 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     return (void*)param;
 }
 
+/**
+ * @brief Push a new dynamic binding onto a parameter's value stack (entering a
+ * `parameterize` body).
+ *
+ * Doubles the malloc'd stack capacity via realloc when full. If the realloc
+ * fails, the new binding is silently dropped (a warning is logged) and the
+ * previous top-of-stack value remains active, rather than corrupting the
+ * existing binding or crashing.
+ *
+ * @param param_ptr  Parameter handle from eshkol_make_parameter (no-op if null).
+ * @param val        Value to bind for the dynamic extent being entered.
+ */
 void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
@@ -74,6 +101,13 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     param->stack[param->top] = val;
 }
 
+/**
+ * @brief Pop the most recent dynamic binding off a parameter's value stack
+ * (leaving a `parameterize` body), restoring the previous value.
+ *
+ * The bottom-most (index 0, the constructor default) binding is never popped.
+ * @param param_ptr  Parameter handle from eshkol_make_parameter (no-op if null).
+ */
 void eshkol_parameter_pop(void* param_ptr) {
     if (!param_ptr) return;
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
@@ -83,6 +117,16 @@ void eshkol_parameter_pop(void* param_ptr) {
     }
 }
 
+/**
+ * @brief Read the current (top-of-stack) value bound to a parameter.
+ *
+ * Returns a zeroed ESHKOL_VALUE_NULL tagged value if the handle is null or the
+ * parameter's stack is empty/unallocated (e.g. the initial malloc failed),
+ * rather than dereferencing invalid memory.
+ *
+ * @param param_ptr  Parameter handle from eshkol_make_parameter.
+ * @return           The currently bound value.
+ */
 eshkol_tagged_value_t eshkol_parameter_ref(void* param_ptr) {
     if (!param_ptr) {
         eshkol_tagged_value_t null_val;
@@ -106,16 +150,19 @@ eshkol_tagged_value_t eshkol_parameter_ref(void* param_ptr) {
     return param->stack[param->top];
 }
 
+/** @brief Pointer-argument wrapper around eshkol_make_parameter for ABI sites that pass tagged values by pointer; returns null if `default_val` is null. */
 void* eshkol_make_parameter_ptr(void* arena, const eshkol_tagged_value_t* default_val) {
     if (!default_val) return nullptr;
     return eshkol_make_parameter(arena, *default_val);
 }
 
+/** @brief Pointer-argument wrapper around eshkol_parameter_push; no-op if `val` is null. */
 void eshkol_parameter_push_ptr(void* param, const eshkol_tagged_value_t* val) {
     if (!val) return;
     eshkol_parameter_push(param, *val);
 }
 
+/** @brief Pointer-argument wrapper around eshkol_parameter_ref; writes the current value through `result` (no-op if `result` is null). */
 void eshkol_parameter_ref_ptr(void* param, eshkol_tagged_value_t* result) {
     if (!result) return;
     *result = eshkol_parameter_ref(param);

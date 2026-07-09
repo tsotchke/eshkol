@@ -101,6 +101,21 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
     return nullptr;  /* not reached (type error raises) */
 }
 
+/**
+ * @brief Allocate an empty tensor object (header only, no dimensions/elements).
+ *
+ * Allocates `sizeof(eshkol_tensor_t)` bytes plus a header, 64-byte aligned,
+ * tags the header with HEAP_SUBTYPE_TENSOR, and initializes the tensor to
+ * the zero/empty state: no dimensions array, no elements array,
+ * `num_dimensions = 0`, `total_elements = 0`, and dtype defaulted to
+ * ESHKOL_TENSOR_DTYPE_F64. Callers that need a populated tensor should use
+ * arena_allocate_tensor_full instead, which calls this and then allocates
+ * the dimensions/elements storage. The tensor is arena-owned and lives
+ * until the arena is freed/reset.
+ *
+ * @param arena  Arena to allocate from (must not be null).
+ * @return       Newly allocated empty tensor, or nullptr on failure.
+ */
 eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena) {
     if (!arena) {
         eshkol_error("Invalid arena for tensor allocation");
@@ -134,6 +149,27 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena) {
     return tensor;
 }
 
+/**
+ * @brief Allocate a fully-populated tensor: header, dimensions array, and elements array.
+ *
+ * Calls arena_allocate_tensor_with_header for the tensor struct itself, then
+ * (if `num_dims > 0`) allocates a 64-byte-aligned `uint64_t[num_dims]`
+ * dimensions array, and (if `total_elements > 0`) allocates a 64-byte-aligned
+ * `int64_t[total_elements]` elements array zero-initialized via memset
+ * (elements store IEEE-754 double bit patterns, per eshkol_tensor_t's
+ * layout note — a zeroed element therefore represents 0.0). Both allocation
+ * sizes are overflow-checked before allocating. On success, sets
+ * `tensor->num_dimensions` and `tensor->total_elements` to the requested
+ * values. Everything allocated is arena-owned and lives until the arena is
+ * freed/reset; a failure partway through leaves the already-allocated
+ * pieces arena-owned garbage (not individually freed) since the arena
+ * doesn't support partial frees.
+ *
+ * @param arena           Arena to allocate from (must not be null).
+ * @param num_dims        Number of dimensions (rank); 0 allocates no dimensions array.
+ * @param total_elements  Total element count (product of dimensions); 0 allocates no elements array.
+ * @return                Newly allocated, populated tensor, or nullptr on failure.
+ */
 eshkol_tensor_t* arena_allocate_tensor_full(
     arena_t* arena, uint64_t num_dims, uint64_t total_elements) {
     if (!arena) {

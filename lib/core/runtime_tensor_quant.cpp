@@ -106,6 +106,7 @@ void eshkol_dequant_q4_0(const uint8_t* blocks, int64_t* out, int64_t n) {
 int64_t eshkol_q8_0_buffer_bytes(int64_t n) {
     return n <= 0 ? 0 : ((n + 31) / 32) * 34;
 }
+/** @brief Byte size of a GGUF q4_0-quantized buffer holding `n` weights (18 bytes per 32-weight block). */
 int64_t eshkol_q4_0_buffer_bytes(int64_t n) {
     return n <= 0 ? 0 : ((n + 31) / 32) * 18;
 }

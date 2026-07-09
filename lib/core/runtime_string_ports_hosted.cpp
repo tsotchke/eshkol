@@ -26,6 +26,22 @@ static struct {
 
 static int num_string_output_ports = 0;
 
+/**
+ * @brief Open a read-only string port over `str` (R7RS `open-input-string` support).
+ *
+ * On Windows, copies the bytes into a tmpfile() (rewound after the write) since
+ * fmemopen is unavailable there. Elsewhere, the string is first copied into a
+ * NUL-terminated arena buffer (so the FILE-backed port has a stable, arena-owned
+ * backing store for its lifetime) and opened read-only via fmemopen. A
+ * zero-length string is special-cased to a fresh empty tmpfile() so reads hit
+ * EOF immediately, on every platform, without depending on fmemopen accepting a
+ * zero-size buffer.
+ *
+ * @param arena_void  Arena used to copy `str` (POSIX path only; ignored on Windows).
+ * @param str         Source bytes to back the port (need not be NUL-terminated).
+ * @param len         Number of bytes in `str`.
+ * @return            A FILE* usable with ordinary stdio calls, or null on failure.
+ */
 extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int64_t len) {
     if (len == 0) {
         // tmpfile() is portable and returns EOF immediately on first read.
@@ -53,6 +69,20 @@ extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int
 #endif
 }
 
+/**
+ * @brief Open a growable in-memory output port (R7RS `open-output-string` support).
+ *
+ * Reserves a slot in the fixed-size `string_output_ports` table (capped at
+ * MAX_STRING_OUTPUT_PORTS) so `eshkol_get_output_string` can later recover the
+ * written bytes by matching on the FILE* pointer. On POSIX, backed by
+ * open_memstream, which owns and grows `string_output_ports[idx].buf`/`.size`
+ * as data is written. On Windows (no open_memstream), backed by a tmpfile()
+ * instead; the writable buffer is read back on demand in
+ * `eshkol_get_output_string`.
+ *
+ * @return  A FILE* to write through, or null if the port table is full or the
+ *          underlying stream could not be opened.
+ */
 extern "C" void* eshkol_open_output_string(void) {
     if (num_string_output_ports >= MAX_STRING_OUTPUT_PORTS) return nullptr;
     int idx = num_string_output_ports++;
@@ -68,6 +98,23 @@ extern "C" void* eshkol_open_output_string(void) {
     return fp;
 }
 
+/**
+ * @brief Snapshot the bytes written so far to an output-string port as an
+ * arena-allocated Eshkol string (R7RS `get-output-string` support).
+ *
+ * Flushes `fp` first. On POSIX, looks up the matching entry in
+ * `string_output_ports` and copies its open_memstream buffer/size into a new
+ * HEAP_SUBTYPE_STRING-tagged arena allocation. On Windows, since the port is a
+ * plain tmpfile(), the current file position is saved, the file is measured by
+ * seeking to the end, its full contents are read back into the arena copy, and
+ * the original position is restored so subsequent writes continue where they
+ * left off. If `fp` is not a tracked output-string port, returns an empty
+ * arena-allocated string rather than failing.
+ *
+ * @param arena_void  Arena to allocate the resulting string from.
+ * @param fp_void     The FILE* previously returned by eshkol_open_output_string.
+ * @return            A NUL-terminated, arena-owned copy of the bytes written so far.
+ */
 extern "C" void* eshkol_get_output_string(void* arena_void, void* fp_void) {
     auto* arena = static_cast<arena_t*>(arena_void);
     FILE* fp = static_cast<FILE*>(fp_void);

@@ -34,6 +34,16 @@ int64_t eshkol_string_byte_length(const char* s) {
     return (int64_t)std::strlen(s);
 }
 
+/**
+ * @brief Count the number of UTF-8 codepoints (characters) in an Eshkol string.
+ *
+ * Scans the byte range reported by eshkol_string_byte_length and counts every
+ * byte that is not a UTF-8 continuation byte (top two bits != 10), i.e. every
+ * lead byte of a codepoint.
+ *
+ * @param s  Eshkol/C string (may be null, which yields 0).
+ * @return   Number of codepoints.
+ */
 int64_t eshkol_utf8_strlen(const char* s) {
     if (!s) return 0;
     const int64_t byte_len = eshkol_string_byte_length(s);
@@ -44,6 +54,17 @@ int64_t eshkol_utf8_strlen(const char* s) {
     return count;
 }
 
+/**
+ * @brief Decode one UTF-8 codepoint starting at `*s`, advancing `*s` past it.
+ *
+ * Handles 1-4 byte sequences per the standard UTF-8 lead-byte patterns
+ * (0xxxxxxx, 110xxxxx, 1110xxxx, 11110xxx). Malformed lead bytes decode to the
+ * replacement codepoint U+FFFD and advance by one byte so callers make
+ * forward progress on invalid input.
+ *
+ * @param s  In/out cursor into a UTF-8 byte sequence; advanced past the decoded codepoint.
+ * @return   The decoded Unicode codepoint.
+ */
 static int64_t decode_utf8_codepoint(const char** s) {
     const unsigned char* p = (const unsigned char*)*s;
     int64_t cp;
@@ -67,6 +88,17 @@ static int64_t decode_utf8_codepoint(const char** s) {
     return cp;
 }
 
+/**
+ * @brief Return the codepoint at UTF-8 character index `k` in string `s` (`string-ref` support).
+ *
+ * Walks byte-by-byte counting codepoint (lead-byte) boundaries until the k-th
+ * one is reached, then decodes it. Runs in O(byte length), not O(1), since
+ * UTF-8 codepoints are variable-width.
+ *
+ * @param s  Eshkol/C string (must be non-null).
+ * @param k  Zero-based codepoint index.
+ * @return   The codepoint at index k, or -1 if `s` is null, `k` is negative, or `k` is out of range.
+ */
 int64_t eshkol_utf8_ref(const char* s, int64_t k) {
     if (!s || k < 0) return -1;
     const int64_t byte_len = eshkol_string_byte_length(s);
@@ -81,6 +113,22 @@ int64_t eshkol_utf8_ref(const char* s, int64_t k) {
     return decode_utf8_codepoint(&p);
 }
 
+/**
+ * @brief Extract the UTF-8 substring spanning codepoint indices [start, end) (`substring` support).
+ *
+ * Walks `s` codepoint-by-codepoint (via the local advance_one_codepoint
+ * lambda, which mirrors decode_utf8_codepoint's lead-byte width logic without
+ * decoding values) to find the byte offsets corresponding to `start` and
+ * `end`, then copies that byte range into a new arena-allocated,
+ * NUL-terminated HEAP_SUBTYPE_STRING buffer via
+ * arena_allocate_string_with_header.
+ *
+ * @param s      Source Eshkol/C string.
+ * @param start  Start codepoint index (inclusive).
+ * @param end    End codepoint index (exclusive); must be >= start.
+ * @param arena  Arena to allocate the result string from.
+ * @return       A new arena-owned string, or null if `s`/`arena` is null or the range is invalid.
+ */
 char* eshkol_utf8_substring(const char* s, int64_t start, int64_t end, void* arena) {
     if (!s || !arena || start < 0 || end < start) return nullptr;
 

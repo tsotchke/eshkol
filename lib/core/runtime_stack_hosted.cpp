@@ -14,6 +14,16 @@
 #include <sys/resource.h>
 #endif
 
+/**
+ * @brief Raise the process's stack rlimit for hosted (non-Windows) builds.
+ *
+ * No-op on Windows (thread stacks are sized at creation time instead). On
+ * other platforms, reads a target size from the ESHKOL_STACK_SIZE
+ * environment variable (falling back to a 512MB default when unset, too
+ * small to parse, or below 1MB), then raises RLIMIT_STACK's soft limit to
+ * that target via getrlimit()/setrlimit(), clamped to the hard limit if one
+ * is set. Only ever increases the current soft limit; never lowers it.
+ */
 extern "C" void eshkol_init_stack_size(void) {
 #ifdef _WIN32
     // Windows thread stack sizing is handled at link/thread creation time.

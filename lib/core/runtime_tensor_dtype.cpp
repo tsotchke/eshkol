@@ -108,6 +108,21 @@ double f64_to_bf16_to_f64(double x) {
     return static_cast<double>(f);
 }
 
+/**
+ * @brief Reduces a double through the numeric precision implied by a tensor dtype code.
+ *
+ * Storage always stays f64 (per this file's dtype convention); this applies
+ * the precision loss a given logical dtype would incur: F32 round-trips
+ * through `float`; F16/BF16 round-trip through their respective binary
+ * formats (round-to-nearest-even) via f64_to_f16_to_f64() /
+ * f64_to_bf16_to_f64(); I8 rounds to the nearest integer, clamps to
+ * [-128, 127], and maps NaN to 0; F64 (and any unrecognized code) passes the
+ * value through unchanged.
+ *
+ * @param v     Value to reduce.
+ * @param dtype Target dtype code (eshkol_tensor_dtype_t).
+ * @return      `v` reduced through the target dtype's precision, still stored as double.
+ */
 double reduce_precision(double v, uint64_t dtype) {
     switch (dtype) {
         case ESHKOL_TENSOR_DTYPE_F32:
@@ -129,6 +144,13 @@ double reduce_precision(double v, uint64_t dtype) {
     }
 }
 
+/**
+ * @brief Maps a tensor dtype code to its canonical lowercase name string.
+ *
+ * @param dtype Dtype code (eshkol_tensor_dtype_t).
+ * @return      Static string naming the dtype ("f32", "f16", "bf16", "i8", or
+ *              "f64" for ESHKOL_TENSOR_DTYPE_F64 and any unrecognized code).
+ */
 const char* dtype_name(uint64_t dtype) {
     switch (dtype) {
         case ESHKOL_TENSOR_DTYPE_F32:  return "f32";

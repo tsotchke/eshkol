@@ -175,6 +175,17 @@ extern "C" void eshkol_exception_add_irritant_ptr(eshkol_exception_t* exc,
 // string via `(raise "x")`), so it checks the heap subtype, not just the
 // pointer tag.
 
+/**
+ * @brief R7RS `error-object?` predicate for a raised tagged value.
+ *
+ * Returns true only for a HEAP_PTR tagged value whose heap object header
+ * subtype is HEAP_SUBTYPE_EXCEPTION (i.e. the value produced by `(error ...)`
+ * or `eshkol_make_exception[_with_header]`). Any other tagged value —
+ * including a bare string raised via `(raise "x")` — returns false.
+ *
+ * @param obj  Tagged value to test (may be NULL).
+ * @return     Non-zero if obj is an error-object, 0 otherwise.
+ */
 extern "C" int eshkol_error_object_p(const eshkol_tagged_value_t* obj) {
     if (!obj) return 0;
     if (obj->type != ESHKOL_VALUE_HEAP_PTR) return 0;
@@ -183,6 +194,18 @@ extern "C" int eshkol_error_object_p(const eshkol_tagged_value_t* obj) {
     return ESHKOL_GET_SUBTYPE(ptr) == HEAP_SUBTYPE_EXCEPTION ? 1 : 0;
 }
 
+/**
+ * @brief R7RS `error-object-message` accessor.
+ *
+ * If obj is an error-object (per eshkol_error_object_p), copies its message
+ * string into a freshly arena-allocated, header-tagged string and writes a
+ * HEAP_PTR tagged value referencing it to *out. Otherwise (or if no arena is
+ * available) writes a null tagged value to *out. The returned string is
+ * arena-owned and lives as long as the underlying arena.
+ *
+ * @param obj  Tagged value previously bound by `guard`/`with-exception-handler`.
+ * @param out  Destination tagged value (always written).
+ */
 extern "C" void eshkol_error_object_message(const eshkol_tagged_value_t* obj,
                                             eshkol_tagged_value_t* out) {
     out->type = ESHKOL_VALUE_NULL;
@@ -203,6 +226,19 @@ extern "C" void eshkol_error_object_message(const eshkol_tagged_value_t* obj,
     out->data.ptr_val = (uint64_t)buf;
 }
 
+/**
+ * @brief R7RS `error-object-irritants` accessor.
+ *
+ * If obj is an error-object, builds a fresh arena-allocated list of its
+ * irritant tagged values (cons cells with header, HEAP_SUBTYPE_CONS) and
+ * writes a HEAP_PTR tagged value for the list head to *out. The list is
+ * built right-to-left so the original argument order of `(error msg
+ * irritant...)` is preserved. Writes a null tagged value to *out if obj is
+ * not an error-object or no arena is available.
+ *
+ * @param obj  Tagged value previously bound by `guard`/`with-exception-handler`.
+ * @param out  Destination tagged value (always written).
+ */
 extern "C" void eshkol_error_object_irritants(const eshkol_tagged_value_t* obj,
                                               eshkol_tagged_value_t* out) {
     out->type = ESHKOL_VALUE_NULL;
@@ -409,11 +445,37 @@ struct ScanResult {
     size_t      files_scanned = 0;
 };
 
+/**
+ * @brief Test whether `s` contains the literal `word` starting exactly at `pos`.
+ *
+ * Plain substring-equality check (no word-boundary test); used to identify
+ * the head symbol of an s-expression once `pos` has been positioned just
+ * past `(` and any whitespace.
+ *
+ * @param s     String to search.
+ * @param pos   Offset into s to compare from.
+ * @param word  Literal to compare against.
+ * @return      True if s[pos, pos+word.size()) equals word.
+ */
 bool starts_word(const std::string& s, size_t pos, const std::string& word) {
     if (pos + word.size() > s.size()) return false;
     return s.compare(pos, word.size(), word) == 0;
 }
 
+/**
+ * @brief Test whether `name` occurs as a whole identifier at `pos` in `haystack`.
+ *
+ * Requires an exact substring match at pos AND a word boundary on both
+ * sides, where the Eshkol identifier character set is alnum plus
+ * `- _ ! ? * + / < > = .`; anything else (or start/end of string) counts
+ * as a boundary. Prevents e.g. searching for "foo" from matching inside
+ * "foo-bar" or "my-foo".
+ *
+ * @param haystack  Text to search.
+ * @param pos       Candidate start offset of the match.
+ * @param name      Identifier to match.
+ * @return          True if name occurs as a complete identifier at pos.
+ */
 bool name_at(const std::string& haystack, size_t pos, const std::string& name) {
     if (pos + name.size() > haystack.size()) return false;
     if (haystack.compare(pos, name.size(), name) != 0) return false;
@@ -431,6 +493,18 @@ bool name_at(const std::string& haystack, size_t pos, const std::string& name) {
     return true;
 }
 
+/**
+ * @brief Decide whether a directory should be skipped by the provider-file scan.
+ *
+ * Excludes hidden directories (leading `.`), common build-output directories
+ * (`build`, `build-*`, `build_*`, `cmake-build*`), and vendor/generated
+ * directories (`CMakeFiles`, `_deps`, `node_modules`, `deps`, `dist`,
+ * `artifacts`, `Testing`) so the scan stays fast and only visits real
+ * project source.
+ *
+ * @param dirname  Directory basename (not full path).
+ * @return         True if this directory should not be descended into.
+ */
 bool is_generated_scan_dir(const std::string& dirname) {
     if (dirname.empty() || dirname[0] == '.') return true;
     if (dirname == "build" || dirname.rfind("build-", 0) == 0 ||
@@ -444,6 +518,22 @@ bool is_generated_scan_dir(const std::string& dirname) {
            dirname == "Testing";
 }
 
+/**
+ * @brief Score how strongly a file's text suggests it defines/provides `name`.
+ *
+ * Scans every whole-identifier occurrence of `name` in `text` and classifies
+ * its syntactic context by looking back to the nearest `(` and the head
+ * symbol that follows it: `(provide ... name ...)` scores highest
+ * (kScoreProvide, returned immediately since nothing can beat it),
+ * `(define name ...)` / `(define (name ...) ...)` score kScoreDefineHead /
+ * kScoreDefineParen, and any other occurrence scores the weak
+ * kScoreWeakMention. Returns the best score found across the whole text, or
+ * 0 if `name` never occurs.
+ *
+ * @param text  File contents to scan (may be a partial read, see kMaxFileBytes).
+ * @param name  Identifier to search for.
+ * @return      Best match score in [0, kScoreProvide].
+ */
 int score_file_text(const std::string& text, const std::string& name) {
     int best = 0;
     size_t pos = 0;
@@ -490,6 +580,22 @@ int score_file_text(const std::string& text, const std::string& name) {
     return best;
 }
 
+/**
+ * @brief Recursively scan `dir` for the `.esk` file that best matches `name`.
+ *
+ * Depth-first walk bounded by kMaxDepth and kMaxFilesScanned; skips
+ * directories flagged by is_generated_scan_dir. For each `.esk` file, reads
+ * up to kMaxFileBytes and scores it via score_file_text, updating `out` when
+ * a strictly better match is found. Stops scanning entirely as soon as a
+ * kScoreProvide match is found (nothing can beat it). All scan state
+ * (best path/score, files scanned so far) accumulates in `out` across the
+ * recursive calls.
+ *
+ * @param dir    Directory to scan (recursively).
+ * @param name   Identifier being searched for.
+ * @param depth  Current recursion depth (0 at the initial call).
+ * @param out    Accumulated scan state, updated in place.
+ */
 void scan_dir(const std::filesystem::path& dir, const std::string& name,
               int depth, ScanResult& out) {
     if (depth > kMaxDepth || out.files_scanned >= kMaxFilesScanned) return;
@@ -536,6 +642,19 @@ void scan_dir(const std::filesystem::path& dir, const std::string& name,
 }
 }  // anonymous namespace
 
+/**
+ * @brief Implementation of the forward-reference provider-file hint search.
+ *
+ * See the full contract in the comment above this function's forward
+ * declaration near the top of the file. Briefly: scans CWD, then
+ * `$ESHKOL_PROJECT_ROOT` if the CWD scan didn't find a `(provide name)`
+ * match, via scan_dir/score_file_text, and returns the best-scoring file's
+ * path as a malloc'd string (caller must free), or NULL if nothing scored
+ * above 0.
+ *
+ * @param name  Identifier to search for.
+ * @return      Malloc'd path string (caller-owned), or NULL if not found.
+ */
 static char* eshkol_find_provider_file(const char* name) {
     if (!name || !name[0]) return nullptr;
     std::string sname(name);

@@ -52,6 +52,21 @@ static ESHKOL_TLS uint32_t g_frame_stack_overflowed = 0;
 
 extern "C" {
 
+/**
+ * @brief Push a frame onto the current thread's Eshkol-level call stack.
+ *
+ * Codegen emits a call to this at every Eshkol function entry so
+ * eshkol_frame_print_trace can later reconstruct a source-level backtrace.
+ * `function_name` and `source_file` are expected to be static/global string
+ * literals emitted by codegen, so no copy is taken. Once the stack has grown
+ * past ESHKOL_FRAME_STACK_MAX entries, further pushes are dropped and the
+ * thread-local overflow flag is set instead of writing out of bounds.
+ *
+ * @param function_name  Name of the function being entered (falls back to "<anonymous>" if null).
+ * @param source_file    Source file of the call site (may be null).
+ * @param source_line    Source line of the call site.
+ * @param source_column  Source column of the call site (0 if unknown/unused).
+ */
 void eshkol_frame_push(const char* function_name,
                        const char* source_file,
                        uint32_t source_line,
@@ -67,6 +82,14 @@ void eshkol_frame_push(const char* function_name,
     f->source_column = source_column;
 }
 
+/**
+ * @brief Pop the most recently pushed frame from the current thread's call stack.
+ *
+ * Codegen emits a call to this at every Eshkol function exit, mirroring
+ * eshkol_frame_push. If the stack is already empty but the overflow marker is
+ * set (meaning pushes beyond the cap were dropped), clears that marker instead
+ * of underflowing the depth counter.
+ */
 void eshkol_frame_pop(void) {
     if (g_frame_stack_depth > 0) {
         g_frame_stack_depth--;
@@ -77,6 +100,7 @@ void eshkol_frame_pop(void) {
     }
 }
 
+/** @brief Return the current thread's Eshkol call-stack depth (number of active frames). */
 uint32_t eshkol_frame_stack_depth(void) {
     return g_frame_stack_depth;
 }
