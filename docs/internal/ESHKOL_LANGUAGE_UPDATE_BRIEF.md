@@ -58,7 +58,7 @@ no documented way to get an f32/f16 tensor.
 ## 2. CRITICAL — GPU in the compiled/AOT path, and explicit GPU ops
 
 **Problem A:** `gpu-matmul`, `gpu-elementwise`, `gpu-softmax`, `gpu-reduce`,
-`gpu-transpose` are documented in `ESHKOL_QUICK_REFERENCE.md` but are **"Unknown
+`gpu-transpose` are documented in `docs/ESHKOL_QUICK_REFERENCE.md` but are **"Unknown
 function"** in the LLVM-compiled path *and* the VM path on v1.2.3. They appear to
 exist only as internal `vm_gpu_dispatch` ops, not as callable builtins.
 

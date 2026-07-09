@@ -174,9 +174,9 @@ Eshkol v1.1 ships with over 555 built-in functions spanning arithmetic, math, st
 
 **Lists:** `cons`, `car`, `cdr`, `list`, `append`, `reverse`, `length`, `map`, `filter`, `fold`, `member`, `assoc`, + 30 compound accessors (`caar`, `cadr`, `caddr`, ...)
 
-**Strings:** `string-append`, `substring`, `string-length`, `string->list`, `number->string`, `string->number`, `string-for-each`, `string-map`, `string-fill!`
+**Strings:** `string-append`, `substring` (2-arg `(substring s start)` or 3-arg `(substring s start end)`), `string-length`, `string-byte-length` (UTF-8 byte count, vs. `string-length`'s codepoint count), `string->list`, `number->string`, `string->number`, `string-for-each`, `string-map`, `string-fill!`
 
-**Vectors:** `vector`, `make-vector`, `vector-ref`, `vector-set!`, `vector-length`, `vector-for-each`, `vector-map`
+**Vectors:** `vector`, `make-vector`, `vector-ref`, `vector-set!`, `vector-length`, `vector-for-each`, `vector-map` (multi-vector: `(vector-map f v1 v2 ...)`), `vector-copy` (`(vector-copy v)`/`(vector-copy v start)`/`(vector-copy v start end)`, also accepts `#(...)` tensor literals), `vector-copy!`
 
 **I/O:** `display`, `newline`, `printf`, `open-input-file`, `open-output-file`, `read-line`, `write-string`, `read-char`, `peek-char`, `close-port`
 
@@ -273,6 +273,57 @@ Built-in operators for physics and engineering:
 
 ;; Directional derivative: D_u f
 (directional-derivative f (vector 3.0 4.0) (vector 1.0 0.0))  ;; -> 6.0
+```
+
+### Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)
+
+Everything above differentiates once (or, with nesting, a small fixed number
+of times). The Taylor-tower engine computes **every** derivative up to an
+arbitrary order `k` in a single pass, exactly where the arithmetic allows
+it. See the [Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md)
+for the full walkthrough of all 13 phases (P0-P12: no-heap monomorphization,
+multivariate mixed partials, reverse-over-Taylor, exact bignum/rational
+coefficients, tensor towers, validated Taylor models, sparse tensors,
+differentiable control flow, checkpointed reverse-mode, and tower-based
+numerics).
+
+```scheme
+;; The k-th derivative of f at x, for any order k -- no require needed
+(derivative-n (lambda (y) (* y y y)) 3.0 1)   ;; -> 27 (f'(x) = 3x^2 at x=3)
+
+;; All K+1 Taylor coefficients c[0..K] where c[n] = f^(n)(x)/n!
+(taylor (lambda (x) (exp x)) 0.5 4)
+;; -> (1.64872 1.64872 0.824361 0.274787 0.0686967)
+```
+
+Coefficients come back **exact** (arbitrary-precision integer/rational, not
+`double`) when `x` is exact and `f` only uses exact-preserving arithmetic
+(`+ - * /`, non-negative-integer `expt`) -- most autodiff systems only ever
+produce floating-point derivatives.
+
+Beyond order and exactness, `core.ad.guw` recovers arbitrary-order mixed
+partial derivatives of a multivariate function:
+
+```scheme
+(require core.ad.guw)
+(define (f xs) (* (vref xs 0) (* (vref xs 1) (vref xs 1))))  ;; f(x,y) = x*y^2
+
+;; d^3f/dx dy^2 at (2.0, 3.0) -- idxs is a multi-index with repetition
+(mixed-partial f (vector 2.0 3.0) (list 0 1 1))  ;; -> 2.0
+
+;; The full order->=3 symmetric derivative tensor, as (multi-index . value) pairs
+(gradient-n f (vector 2.0 3.0) 3)
+```
+
+And `core.ad.taylor_models` gives **validated** AD -- a Taylor polynomial
+paired with a rigorous interval-remainder bound, so `tm-range`/`tm-eval`
+return a provable enclosure rather than a point estimate:
+
+```scheme
+(require core.ad.taylor_models)
+(define tm (taylor-model (lambda (x) (sin x)) 0.0 0.1 4))
+(tm-range tm)      ;; -> a (lo . hi) pair guaranteed to contain sin over [-0.1, 0.1]
+(tm-eval tm 0.05)  ;; -> a (lo . hi) pair guaranteed to contain sin(0.05)
 ```
 
 ---
@@ -512,6 +563,15 @@ Eshkol implements first-class continuations (`call/cc`), dynamic wind guards, an
 ;; Raise errors
 (raise "division by zero")
 (raise (list 'error 'file-not-found "/tmp/missing.txt"))
+
+;; R7RS error objects: (error message irritant ...) plus the condition
+;; accessors error-object?/error-object-message/error-object-irritants
+(guard (e (#t (list (error-object-message e) (error-object-irritants e))))
+  (error "boom" 1 2))
+;; -> ("boom" (1 2))
+
+(guard (e (#t (error-object? e))) (error "x"))    ;; -> #t
+(guard (e (#t (error-object? e))) (raise "plain")) ;; -> #f: a raised non-error value
 ```
 
 ---
@@ -856,6 +916,10 @@ eshkol-run program.esk --wasm -o program.wasm
 ;; Fold: reduce to single value
 (fold + 0 (list 1 2 3 4 5))    ;; -> 15
 (fold * 1 (list 1 2 3 4 5))    ;; -> 120
+
+;; Apply: call a function on an argument list, with optional leading args
+(apply + '(1 2 3))             ;; -> 6
+(apply + 1 2 '(3 4 5))         ;; -> 15 (leading args are consed onto the list)
 ```
 
 ### Closures
@@ -914,6 +978,43 @@ eshkol-run program.esk --wasm -o program.wasm
 ;; Partial application
 (define add5 (partial2 + 5))
 (add5 10)              ;; -> 15
+```
+
+---
+
+## Macros and Quoting
+
+### Quote and Quasiquote
+
+```scheme
+'(1 2 3)                   ;; quote: data, not evaluated -> (1 2 3)
+(quote (1 2 3))             ;; long form, same thing
+
+`(1 ,(+ 1 1) 3)              ;; quasiquote + unquote -> (1 2 3)
+`(1 ,@(list 2 3) 4)          ;; unquote-splicing -> (1 2 3 4)
+
+;; Quasiquoted vector literals work the same way
+`#(1 ,(+ 1 1) 3)              ;; -> #(1 2 3)
+`#(1 ,@(list 2 3) 4)          ;; -> #(1 2 3 4)
+```
+
+### Hygienic Macros (`syntax-rules`)
+
+```scheme
+;; A simple macro
+(define-syntax my-when
+  (syntax-rules ()
+    ((_ test body ...) (if test (begin body ...) #f))))
+
+(my-when (> 3 2) (display "yes") (newline))  ;; -> prints "yes"
+
+;; Ellipsis patterns can nest: a pattern variable bound at ellipsis depth N
+;; is followed by N ellipses in the template to flatten one level per ellipsis
+(define-syntax my-flatten
+  (syntax-rules ()
+    ((_ (a ...) ...) (list a ... ...))))
+
+(my-flatten (1 2) (3 4 5))    ;; -> (1 2 3 4 5)
 ```
 
 ---

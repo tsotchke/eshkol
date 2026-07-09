@@ -235,13 +235,15 @@ v2.0 ─────────────────────────
                                                        └ Formal verification (requires dep types)
 ```
 
-**Arbitrary-order AD (Taylor-tower) track:** The Taylor-tower campaign is
-threaded through the existing version themes as enabling substrate, not
-as a separate release ladder. P1 lands in v1.3.1, P2/P3 in v1.3.2,
-P4/P6/P11 in the v1.4 infrastructure track alongside networking,
-P5/P7/P9 in v1.5 intelligence, P10 bridges v1.5 to v1.7, P12 supports
-v1.6 reasoning, and P8 feeds v2.0 formal verification of AD. See
-[`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md).
+**Arbitrary-order AD (Taylor-tower) track — SHIPPED ahead of schedule:** the
+campaign was originally planned to be threaded through the version themes
+above as enabling substrate spread from v1.3.1 through v2.0 (P1 in v1.3.1,
+P2/P3 in v1.3.2, P4/P6/P11 in v1.4, P5/P7/P9 in v1.5, P10 bridging v1.5-v1.7,
+P12 in v1.6, P8 in v2.0). Instead, **all 13 phases (P0-P12) shipped complete
+in v1.3.0-evolve** — see [CHANGELOG.md](CHANGELOG.md) and
+[`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md) for the as-shipped detail. The
+version rows below still show the original staging plan for historical
+context; treat the AD line item in each as already delivered.
 
 ---
 
@@ -308,9 +310,10 @@ v1.6 reasoning, and P8 feeds v2.0 formal verification of AD. See
 
 ---
 
-## v1.3-evolve (June 2026) - PLANNED
+## v1.3.0-evolve (July 2026) - SHIPPED
 
-**Focus:** Make the language a joy to use day-to-day.
+**Focus:** Make the language a joy to use day-to-day — and it grew into
+much more: a full arbitrary-order automatic-differentiation system.
 
 - [~] Full R7RS library system: `define-library` exports work end-to-end;
       `(rename (m) (a b))` import works.  `(prefix (m) p-)` currently
@@ -335,10 +338,48 @@ v1.6 reasoning, and P8 feeds v2.0 formal verification of AD. See
       (input2). Conv2d / batchnorm / layernorm / attention forward
       sites still leave `input2` null in their tape nodes and are
       tracked separately.
-- [ ] Arbitrary-order AD Taylor-tower v1.3 track: P1 runtime
-      `derivative^n` in v1.3.1 closes ESH-0118; P2 compile-time-K
-      monomorphization and P3 JET8 subsumption land in v1.3.2, gated by
-      `ad-depth` and `mono-equiv`.
+- [x] **Arbitrary-order AD Taylor-tower campaign — fully delivered, all 13
+      phases (P0-P12), well ahead of the original P1-only-in-v1.3 plan
+      below**: runtime tower + `taylor`/`derivative-n` (P1); no-heap
+      compile-time-K monomorphization (P2); JET8-subsumption analysis (P3);
+      GUW arbitrary-order multivariate mixed partials, `mixed-partial`/
+      `gradient-n` (P4); reverse-over-Taylor (P5); exact bignum/rational
+      coefficient towers (P6); tensor-valued towers through
+      `matmul`/`conv2d` (P7); validated Taylor models with interval-remainder
+      bounds, `taylor-model` (P8); differentiable control flow (P9);
+      checkpointed high-order reverse-mode (P10); tower-based user numerics,
+      `taylor-ode-solve`/`taylor-root` (P11); sparse high-order tensors,
+      `sparse-hessian` (P12). See [CHANGELOG.md](CHANGELOG.md), the
+      [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md),
+      and `docs/AD_CAMPAIGN.md`. This closes ESH-0118 and supersedes the
+      P1-v1.3.1 / P2-P3-v1.3.2 staging plan below — P4 through P12, originally
+      spread across v1.4 through v2.0 in the Architecture Dependency Chain,
+      shipped complete in this release instead.
+- [x] **Full R7RS conformance on the portable corpus**: a new
+      reference-Scheme differential oracle (P7a) reached 34/34 (100%) AGREE
+      vs. chibi-scheme 0.12.0 on its 34-program corpus, fixing `apply` with
+      leading arguments, multi-vector `vector-map`, quasiquoted vectors,
+      `cond`/`case` `=>`, allocating `vector-copy` (incl. `#(...)` literals),
+      the `error-object` family, `write` escaping, nested `syntax-rules`
+      ellipsis, and 2-arg `substring` along the way.
+- [x] **Robustness hardening**: proper mutual-tail-call TCO (AArch64),
+      named-let TCO in every tail position (incl. through `guard`), the
+      closure-capture ceiling raised 16→64, automatic per-iteration arena
+      reclamation for bounded-RSS long-running loops, a shutdown-teardown
+      race fix, a deep-recursion `SIGILL`-with-no-diagnostic fix, and
+      transitive-dependency AOT/JIT cache invalidation.
+- [x] **Permanent adversarial-testing infrastructure**: differential
+      harness+fuzzer (P1), feature-pair edge matrix (P2), AD
+      finite-difference oracle (P3), stress harness (P4), VM parity ratchet
+      (P5), six depth-parametric sweep families (P6), and external oracles —
+      reference-Scheme differential, sanitizer fuzzing, metamorphic-law
+      checking (P7) — all wired into the ICC readiness oracle. See
+      `docs/TESTING.md`.
+
+Original v1.3.1/v1.3.2 staging plan for reference (superseded — all landed
+in v1.3.0-evolve): P1 runtime `derivative^n` closes ESH-0118; P2
+compile-time-K monomorphization and P3 JET8 subsumption gated by `ad-depth`
+and `mono-equiv`.
 
 ---
 
@@ -464,9 +505,11 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 ### Formal Verification
 - [ ] Integration with proof assistants (Lean) for certified compilation
 - [ ] Quantitative type theory for unified linear/quantum resource tracking
-- [ ] Formal verification of automatic differentiation via Taylor
-      models (P8), gated by `ad-validated-bounds` for sound enclosures
-      and tightening with order.
+- [ ] Lean-certified formal verification of the validated-AD Taylor models
+      (P8) already shipped in v1.3.0-evolve (`taylor-model`, `tm-range`,
+      `tm-eval`) — proving the interval-remainder enclosures sound and
+      order-tightening, beyond the current dense-sampling remainder
+      estimate.
 
 ---
 
@@ -476,19 +519,21 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 |---------|------|-------|-----------------|
 | **v1.1.13** | Apr 2026 | Accelerate | Windows ARM64, 16-lane release matrix, VM closure fixes, mobile site |
 | **v1.2** | May 2026 | Scale | Model serialization, Python bindings, image I/O |
-| **v1.3** | Jun 2026 | Evolve | R7RS libraries, string interpolation, PGO; arbitrary-order AD P1–P3 (closes ESH-0118) |
-| **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types; AD substrate P4/P6/P11 (GUW multivariate, exact-coefficient, user numerics) |
-| **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU; high-order AD P5/P7/P9/P10 (reverse-over-Taylor, tensor towers, differentiable control flow) |
-| **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs; sparse high-order AD tensors (P12) |
+| **v1.3.0-evolve** | Jul 2026 | Evolve | **SHIPPED.** R7RS libraries, string interpolation; arbitrary-order AD **P0–P12 complete** (Taylor towers, exact coefficients, GUW multivariate, reverse-over-Taylor, tensor towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead of the original P1-only plan); full R7RS conformance (34/34 vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent adversarial-testing infrastructure |
+| **v1.4** | Jul 2026 | Connection | Networking, TLS, event loop, linear resource types *(AD substrate P4/P6/P11 already delivered in v1.3.0-evolve, ahead of schedule)* |
+| **v1.5** | Aug 2026 | Intelligence | Symbol embeddings, differentiable logic, LSTM/GRU *(high-order AD P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of schedule)* |
+| **v1.6** | Sep 2026 | Reasoning | Backward chaining, constraint solving, knowledge graphs *(sparse high-order AD tensors P12 already delivered in v1.3.0-evolve, ahead of schedule)* |
 | **v1.7** | Oct 2026 | Synthesis | Neural-guided search, program synthesis, GNN |
 | **v1.8** | Nov 2026 | Platform | Windowing, audio, Vulkan, embedded targets |
 | **v1.9** | Dec 2026 | Types | Dependent types, effects, algebraic effects, session types |
-| **v2.0** | Q1 2027 | Starlight | Quantum types, VQE/QAOA, formal verification; validated AD via Taylor models (P8) |
+| **v2.0** | Q1 2027 | Starlight | Quantum types, VQE/QAOA, formal verification; Lean-certified proofs for the validated-AD Taylor models (P8, already shipped in v1.3.0-evolve) |
 
-> **Arbitrary-order AD (Taylor-tower) track** threads phases P0–P12 through the
-> version themes above as an enabling substrate — see
-> [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md) for the full phase → version →
-> ICC-gate map. Each phase is gated by an `ad-*` ICC oracle criterion.
+> **Arbitrary-order AD (Taylor-tower) track — SHIPPED.** Phases P0–P12 were
+> originally planned to thread through the version themes above as enabling
+> substrate; instead all 13 phases landed complete in v1.3.0-evolve. See
+> [`docs/AD_CAMPAIGN.md`](docs/AD_CAMPAIGN.md) for the as-planned phase →
+> version → ICC-gate map and [CHANGELOG.md](CHANGELOG.md) for the as-shipped
+> detail. Each phase was gated by an `ad-*` ICC oracle criterion.
 
 ---
 
@@ -506,6 +551,10 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - [x] Reverse Mode - Complete
 - [x] Nested Gradients - Complete (32-level tape stack)
 - [x] Vector Calculus - Complete (8 operators)
+- [x] Arbitrary-Order Taylor Towers (v1.3.0-evolve) - Complete (P0-P12: exact
+      coefficients, GUW multivariate, reverse-over-Taylor, tensor towers,
+      validated Taylor models, sparse tensors, differentiable control flow,
+      checkpointed reverse, tower-based numerics)
 
 ### Memory Management
 - [x] Arena Allocation - Complete
@@ -553,8 +602,8 @@ Leverages OALR linear types (no-cloning theorem) and AD (variational circuits).
 - [x] Mobile-responsive website + browser REPL error display - Complete
 
 ### Planned (v1.2+)
-- [ ] Model Serialization + Python Bindings — v1.2
-- [ ] R7RS Library System + String Interpolation — v1.3
+- [x] Model Serialization + Python Bindings — v1.2 (shipped)
+- [x] R7RS Library System + String Interpolation + arbitrary-order AD — v1.3.0-evolve (shipped)
 - [ ] Networking + Linear Resource Types — v1.4
 - [ ] Neuro-Symbolic Bridge — v1.5
 - [ ] Backward Chaining + Knowledge Graphs — v1.6

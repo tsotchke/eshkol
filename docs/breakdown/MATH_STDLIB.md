@@ -1041,7 +1041,7 @@ quantum properties are not required.
 | Built-in numeric types            | `docs/breakdown/EXACT_ARITHMETIC.md`           |
 | Compiler numeric codegen          | `lib/backend/llvm_codegen.cpp` (ArithmeticCodegen) |
 | BLAS/AMX tensor acceleration      | `lib/backend/blas_backend.cpp`                |
-| Language reference                | `ESHKOL_V1_LANGUAGE_REFERENCE.md`             |
+| Language reference                | `docs/reference/language/INDEX.md`             |
 
 **External references:**
 

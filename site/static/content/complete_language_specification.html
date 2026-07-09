@@ -1,0 +1,3765 @@
+<h1 id="eshkol-language---complete-technical-specification">Eshkol
+Language - Complete Technical Specification</h1>
+<p><strong>Version:</strong> v1.3.0-evolve <strong>Generated:</strong>
+2026-05-20 <strong>Status:</strong> Comprehensive implementation
+documentation from source code</p>
+<hr />
+<h2 id="table-of-contents">Table of Contents</h2>
+<ol type="1">
+<li><a href="#1-language-overview">Language Overview</a></li>
+<li><a href="#2-data-types">Data Types</a></li>
+<li><a href="#3-syntax-and-special-forms">Syntax and Special
+Forms</a></li>
+<li><a href="#4-built-in-operators-and-functions">Built-in Operators and
+Functions</a></li>
+<li><a href="#5-standard-library">Standard Library</a></li>
+<li><a href="#6-memory-management-system">Memory Management
+System</a></li>
+<li><a href="#7-type-system">Type System</a></li>
+<li><a href="#8-automatic-differentiation">Automatic
+Differentiation</a></li>
+<li><a href="#9-module-system">Module System</a></li>
+<li><a href="#10-compilation-model">Compilation Model</a></li>
+<li><a href="#11-repl-and-jit">REPL and JIT</a></li>
+<li><a href="#12-advanced-features">Advanced Features</a></li>
+<li><a href="#13-runtime-architecture">Runtime Architecture</a></li>
+<li><a href="#14-exact-arithmetic-specification">Exact Arithmetic
+Specification</a></li>
+<li><a href="#15-complex-number-type">Complex Number Type</a></li>
+<li><a href="#16-continuation-semantics">Continuation Semantics</a></li>
+<li><a href="#17-consciousness-engine-specification">Consciousness
+Engine Specification</a></li>
+<li><a href="#18-parallel-execution-model">Parallel Execution
+Model</a></li>
+<li><a href="#19-gpu-dispatch-specification">GPU Dispatch
+Specification</a></li>
+<li><a href="#20-signal-processing-operations">Signal Processing
+Operations</a></li>
+<li><a href="#21-quantum-rng">Quantum RNG</a></li>
+<li><a href="#22-complete-operator-and-function-reference">Complete
+Operator and Function Reference</a></li>
+<li><a href="#23-complete-language-capabilities-summary">Complete
+Language Capabilities Summary</a></li>
+<li><a href="#24-compiler-capabilities">Compiler Capabilities</a></li>
+<li><a href="#25-implementation-details">Implementation Details</a></li>
+<li><a href="#26-version-information">Version Information</a></li>
+<li><a href="#27-file-organization">File Organization</a></li>
+</ol>
+<hr />
+<h2 id="language-overview">1. Language Overview</h2>
+<h3 id="what-is-eshkol">1.1 What is Eshkol?</h3>
+<p>Eshkol is a <strong>Scheme dialect</strong> with extensions for
+scientific computing, automatic differentiation, and neural network
+development. It combines:</p>
+<ul>
+<li><strong>Scheme R7RS compatibility</strong> (subset)</li>
+<li><strong>Automatic Differentiation</strong> (forward-mode and
+reverse-mode)</li>
+<li><strong>HoTT-inspired Type System</strong> (Homotopy Type
+Theory)</li>
+<li><strong>Arena Memory Management</strong> (OALR - Ownership-Aware
+Lexical Regions)</li>
+<li><strong>LLVM Backend</strong> for native code generation</li>
+<li><strong>JIT REPL</strong> for interactive development</li>
+<li><strong>Quantum-inspired RNG</strong> for high-quality
+randomness</li>
+</ul>
+<h3 id="core-philosophy">1.2 Core Philosophy</h3>
+<ol type="1">
+<li><strong>Code as Data</strong> (Homoiconicity) - Lambdas can be
+displayed as their source S-expressions</li>
+<li><strong>Gradual Typing</strong> - Optional type annotations with
+inference</li>
+<li><strong>Memory Safety</strong> - Arena allocation with ownership
+tracking</li>
+<li><strong>Performance</strong> - Native compilation via LLVM</li>
+<li><strong>Scientific Computing</strong> - First-class support for
+tensors and automatic differentiation</li>
+</ol>
+<hr />
+<h2 id="data-types">2. Data Types</h2>
+<h3 id="immediate-value-types">2.1 Immediate Value Types</h3>
+<p>These types store data directly in the
+<code>eshkol_tagged_value_t</code> struct (no heap allocation):</p>
+<h4 id="null-empty-list">2.1.1 <code>NULL</code> (Empty List)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_NULL</code> (0)</li>
+<li><strong>Syntax:</strong> <code>'()</code> or <code>()</code></li>
+<li><strong>Description:</strong> Represents the empty list / nil
+value</li>
+<li><strong>Example:</strong> <code>(null? '())</code> =&gt;
+<code>#t</code></li>
+</ul>
+<h4 id="int64-exact-integer">2.1.2 <code>INT64</code> (Exact
+Integer)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_INT64</code> (1)</li>
+<li><strong>Syntax:</strong> <code>42</code>, <code>-17</code>,
+<code>0</code></li>
+<li><strong>Range:</strong> -2^63 to 2^63-1</li>
+<li><strong>Exactness:</strong> Exact numbers (preserves exactness in
+Scheme numeric tower)</li>
+<li><strong>Example:</strong> <code>(+ 5 10)</code> =&gt;
+<code>15</code></li>
+</ul>
+<h4 id="double-inexact-real">2.1.3 <code>DOUBLE</code> (Inexact
+Real)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_DOUBLE</code> (2)</li>
+<li><strong>Syntax:</strong> <code>3.14</code>, <code>1.0</code>,
+<code>2.5e-10</code></li>
+<li><strong>Precision:</strong> IEEE 754 double-precision (64-bit)</li>
+<li><strong>Exactness:</strong> Inexact numbers</li>
+<li><strong>Scientific Notation:</strong> Supports <code>e</code> or
+<code>E</code> notation</li>
+<li><strong>Example:</strong> <code>(+ 1.5 2.5)</code> =&gt;
+<code>4.0</code></li>
+</ul>
+<h4 id="bool-boolean">2.1.4 <code>BOOL</code> (Boolean)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_BOOL</code> (3)</li>
+<li><strong>Syntax:</strong> <code>#t</code> (true), <code>#f</code>
+(false)</li>
+<li><strong>Truthiness:</strong> Only <code>#f</code> is false; all
+other values are truthy</li>
+<li><strong>Example:</strong> <code>(if #t 1 2)</code> =&gt;
+<code>1</code></li>
+</ul>
+<h4 id="char-character">2.1.5 <code>CHAR</code> (Character)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_CHAR</code> (4)</li>
+<li><strong>Syntax:</strong> <code>#\a</code>, <code>#\space</code>,
+<code>#\newline</code>, <code>#\tab</code>, <code>#\xHHHH</code></li>
+<li><strong>Encoding:</strong> Unicode codepoint (stored as int64)</li>
+<li><strong>Named Characters:</strong> <code>#\space</code>,
+<code>#\newline</code>, <code>#\tab</code>, <code>#\return</code></li>
+<li><strong>Example:</strong> <code>(char-&gt;integer #\A)</code> =&gt;
+<code>65</code></li>
+</ul>
+<h4 id="symbol-interned-symbol">2.1.6 <code>SYMBOL</code> (Interned
+Symbol)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_SYMBOL</code> (5)</li>
+<li><strong>Syntax:</strong> <code>'foo</code>,
+<code>'hello-world</code>, <code>'+</code></li>
+<li><strong>Description:</strong> Interned string used for
+identifiers</li>
+<li><strong>Comparison:</strong> Uses pointer equality (fast)</li>
+<li><strong>Example:</strong> <code>(symbol? 'x)</code> =&gt;
+<code>#t</code></li>
+</ul>
+<h4 id="dual_number-forward-mode-ad">2.1.7 <code>DUAL_NUMBER</code>
+(Forward-mode AD)</h4>
+<ul>
+<li><strong>Type Tag:</strong> <code>ESHKOL_VALUE_DUAL_NUMBER</code>
+(6)</li>
+<li><strong>Structure:</strong>
+<code>{ double value; double derivative; }</code></li>
+<li><strong>Size:</strong> 16 bytes</li>
+<li><strong>Usage:</strong> Internal representation for forward-mode
+automatic differentiation</li>
+<li><strong>Example:</strong> Used internally by <code>derivative</code>
+operator</li>
+</ul>
+<h3 id="heap-pointer-types-consolidated">2.2 Heap Pointer Types
+(Consolidated)</h3>
+<p>These types use the consolidated <code>HEAP_PTR</code> (8) or
+<code>CALLABLE</code> (9) tags with subtype information in object
+headers.</p>
+<h4 id="heap_ptr---consolidated-heap-objects-type-8">2.2.1
+<code>HEAP_PTR</code> - Consolidated Heap Objects (Type 8)</h4>
+<p>All heap-allocated data structures share type tag 8 with subtype
+stored in 8-byte header:</p>
+<p><strong>Header Structure</strong>
+(<code>eshkol_object_header_t</code>):</p>
+<pre class="c"><code>struct {
+    uint8_t  subtype;      // Distinguishes cons, string, vector, etc.
+    uint8_t  flags;        // GC marks, linear status, etc.
+    uint16_t ref_count;    // Reference count (0 = not ref-counted)
+    uint32_t size;         // Object size in bytes
+}</code></pre>
+<p><strong>Subtypes:</strong> - <code>HEAP_SUBTYPE_CONS</code> (0) -
+Cons cell / pair - <code>HEAP_SUBTYPE_STRING</code> (1) - UTF-8 string -
+<code>HEAP_SUBTYPE_VECTOR</code> (2) - Heterogeneous vector -
+<code>HEAP_SUBTYPE_TENSOR</code> (3) - N-dimensional numeric tensor -
+<code>HEAP_SUBTYPE_MULTI_VALUE</code> (4) - Multiple return values
+container - <code>HEAP_SUBTYPE_HASH</code> (5) - Hash table -
+<code>HEAP_SUBTYPE_EXCEPTION</code> (6) - Exception object -
+<code>HEAP_SUBTYPE_RECORD</code> (7) - User-defined record -
+<code>HEAP_SUBTYPE_BYTEVECTOR</code> (8) - Raw byte vector (R7RS) -
+<code>HEAP_SUBTYPE_PORT</code> (9) - I/O port -
+<code>HEAP_SUBTYPE_SYMBOL</code> (10) - Interned symbol -
+<code>HEAP_SUBTYPE_BIGNUM</code> (11) - Arbitrary-precision integer
+(R7RS exact) - <code>HEAP_SUBTYPE_SUBSTITUTION</code> (12) - Logic
+variable bindings - <code>HEAP_SUBTYPE_FACT</code> (13) - Knowledge base
+fact - <code>HEAP_SUBTYPE_KNOWLEDGE_BASE</code> (15) - Knowledge base
+container - <code>HEAP_SUBTYPE_FACTOR_GRAPH</code> (16) - Active
+inference factor graph - <code>HEAP_SUBTYPE_WORKSPACE</code> (17) -
+Global workspace - <code>HEAP_SUBTYPE_PROMISE</code> (18) - Lazy/future
+promise - <code>HEAP_SUBTYPE_RATIONAL</code> (19) - Exact rational
+number</p>
+<h5 id="cons-pairlist-node">CONS (Pair/List Node)</h5>
+<ul>
+<li><strong>Subtype:</strong> <code>HEAP_SUBTYPE_CONS</code> (0)</li>
+<li><strong>Structure:</strong> <code>arena_tagged_cons_cell_t</code>
+(32 bytes)
+<ul>
+<li><code>car</code>: Complete <code>eshkol_tagged_value_t</code> (16
+bytes)</li>
+<li><code>cdr</code>: Complete <code>eshkol_tagged_value_t</code> (16
+bytes)</li>
+</ul></li>
+<li><strong>Syntax:</strong> <code>(cons 1 2)</code>,
+<code>'(1 2 3)</code></li>
+<li><strong>Operations:</strong> <code>cons</code>, <code>car</code>,
+<code>cdr</code>, <code>set-car!</code>, <code>set-cdr!</code></li>
+<li><strong>Features:</strong>
+<ul>
+<li>Mixed-type lists (can hold any combination of types)</li>
+<li>Proper and improper lists supported</li>
+<li>Dotted pairs: <code>(1 . 2)</code></li>
+</ul></li>
+<li><strong>Example:</strong> <code>(cons 1 (cons 2 '()))</code> =&gt;
+<code>(1 2)</code></li>
+</ul>
+<h5 id="string">STRING</h5>
+<ul>
+<li><strong>Subtype:</strong> <code>HEAP_SUBTYPE_STRING</code> (1)</li>
+<li><strong>Encoding:</strong> UTF-8 with null terminator</li>
+<li><strong>Syntax:</strong> <code>"hello"</code>,
+<code>"multi\nline"</code></li>
+<li><strong>Escape Sequences:</strong> <code>\n</code>, <code>\t</code>,
+<code>\r</code>, <code>\\</code>, <code>\"</code></li>
+<li><strong>Operations:</strong> <code>string-length</code>,
+<code>string-ref</code>, <code>string-set!</code>,
+<code>string-append</code>, <code>substring</code></li>
+<li><strong>Example:</strong>
+<code>(string-append "hello" " " "world")</code> =&gt;
+<code>"hello world"</code></li>
+</ul>
+<h5 id="vector">VECTOR</h5>
+<ul>
+<li><strong>Subtype:</strong> <code>HEAP_SUBTYPE_VECTOR</code> (2)</li>
+<li><strong>Structure:</strong>
+<ul>
+<li>Offset 0: <code>int64_t length</code> (8 bytes)</li>
+<li>Offset 8: Array of <code>eshkol_tagged_value_t</code> elements (16
+bytes each)</li>
+</ul></li>
+<li><strong>Syntax:</strong> <code>#(1 2 3)</code>,
+<code>(vector 1 2 3)</code>, <code>(make-vector 5 0)</code></li>
+<li><strong>Features:</strong>
+<ul>
+<li>Heterogeneous (can hold any type mix)</li>
+<li>O(1) random access</li>
+<li>Mutable with <code>vector-set!</code></li>
+</ul></li>
+<li><strong>Operations:</strong> <code>vector</code>,
+<code>make-vector</code>, <code>vector-length</code>,
+<code>vector-ref</code>, <code>vector-set!</code></li>
+<li><strong>Example:</strong> <code>(vector-ref #(10 20 30) 1)</code>
+=&gt; <code>20</code></li>
+</ul>
+<h5 id="tensor">TENSOR</h5>
+<ul>
+<li><p><strong>Subtype:</strong> <code>HEAP_SUBTYPE_TENSOR</code>
+(3)</p></li>
+<li><p><strong>Structure:</strong> <code>eshkol_tensor_t</code> (32
+bytes)</p>
+<pre class="c"><code>struct {
+    uint64_t* dimensions;      // Dimension sizes array
+    uint64_t  num_dimensions;  // Rank (number of dimensions)
+    int64_t*  elements;        // Element data (doubles as int64 bits)
+    uint64_t  total_elements;  // Product of all dimensions
+}</code></pre></li>
+<li><p><strong>Syntax:</strong></p>
+<ul>
+<li>1D: <code>#(1.0 2.0 3.0)</code> or
+<code>(vector 1.0 2.0 3.0)</code></li>
+<li>Matrix: <code>(matrix 2 3 1.0 2.0 3.0 4.0 5.0 6.0)</code></li>
+<li>Generic: <code>(tensor dims... elements...)</code></li>
+</ul></li>
+<li><p><strong>Features:</strong></p>
+<ul>
+<li>Homogeneous numeric storage (doubles stored as int64 bit
+patterns)</li>
+<li>N-dimensional (vectors, matrices, 3D+ arrays)</li>
+<li>Efficient element-wise operations</li>
+<li>Support for autodiff</li>
+</ul></li>
+<li><p><strong>Operations:</strong> <code>tensor</code>,
+<code>matrix</code>, <code>vector</code>, <code>vref</code>,
+<code>tensor-get</code>, <code>tensor-set</code>,
+<code>tensor-add</code>, <code>tensor-mul</code>,
+<code>tensor-dot</code>, <code>matmul</code>, <code>transpose</code>,
+<code>reshape</code></p></li>
+<li><p><strong>Example:</strong> <code>(matmul W1 W2)</code> multiplies
+two matrices</p></li>
+</ul>
+<h5 id="hash_table">HASH_TABLE</h5>
+<ul>
+<li><p><strong>Subtype:</strong> <code>HEAP_SUBTYPE_HASH</code>
+(5)</p></li>
+<li><p><strong>Structure:</strong> <code>eshkol_hash_table_t</code></p>
+<pre class="c"><code>struct {
+    size_t capacity;                // Bucket count
+    size_t size;                    // Entry count
+    size_t tombstones;              // Deleted entries
+    eshkol_tagged_value_t* keys;    // Key array
+    eshkol_tagged_value_t* values;  // Value array
+    uint8_t* status;                // Entry status (empty/occupied/deleted)
+}</code></pre></li>
+<li><p><strong>Implementation:</strong> Open addressing with linear
+probing</p></li>
+<li><p><strong>Load Factor:</strong> 0.75 (rehashes when
+exceeded)</p></li>
+<li><p><strong>Initial Capacity:</strong> 16 buckets</p></li>
+<li><p><strong>Syntax:</strong> <code>(make-hash-table)</code>,
+<code>(hash key1 val1 key2 val2 ...)</code></p></li>
+<li><p><strong>Operations:</strong> <code>hash-set!</code>,
+<code>hash-ref</code>, <code>hash-has-key?</code>,
+<code>hash-remove!</code>, <code>hash-keys</code>,
+<code>hash-values</code>, <code>hash-count</code>,
+<code>hash-clear!</code></p></li>
+<li><p><strong>SRFI-125 aliases (also wired at
+<code>lib/backend/llvm_codegen.cpp:12694-12704</code>):</strong>
+<code>hash-table-ref</code>, <code>hash-table-ref/default</code>,
+<code>hash-table-set!</code>, <code>hash-table-contains?</code>,
+<code>hash-table-exists?</code>, <code>hash-table-delete!</code>,
+<code>hash-table-keys</code>, <code>hash-table-values</code>,
+<code>hash-table-size</code>, <code>hash-table-clear!</code>. The
+<code>hash-table-*</code> and <code>hash-*</code> names are
+interchangeable; tutorial 16 uses the SRFI-125 form.</p></li>
+<li><p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define h (hash &#39;a 1 &#39;b 2))
+(hash-ref h &#39;a)         ; =&gt; 1
+(hash-table-ref h &#39;a)   ; =&gt; 1 (SRFI-125 alias)</code></pre></li>
+</ul>
+<h5 id="exception">EXCEPTION</h5>
+<ul>
+<li><p><strong>Subtype:</strong> <code>HEAP_SUBTYPE_EXCEPTION</code>
+(6)</p></li>
+<li><p><strong>Structure:</strong> <code>eshkol_exception_t</code></p>
+<pre class="c"><code>struct {
+    eshkol_exception_type_t type;   // Exception type code
+    char* message;                   // Error message
+    eshkol_tagged_value_t* irritants; // Irritant values
+    uint32_t num_irritants;
+    uint32_t line;                   // Source location
+    uint32_t column;
+    char* filename;
+}</code></pre></li>
+<li><p><strong>Types:</strong></p>
+<ul>
+<li><code>ESHKOL_EXCEPTION_ERROR</code> - Generic error</li>
+<li><code>ESHKOL_EXCEPTION_TYPE_ERROR</code> - Type mismatch</li>
+<li><code>ESHKOL_EXCEPTION_FILE_ERROR</code> - File operation
+failed</li>
+<li><code>ESHKOL_EXCEPTION_READ_ERROR</code> - Read/parse error</li>
+<li><code>ESHKOL_EXCEPTION_SYNTAX_ERROR</code> - Syntax error</li>
+<li><code>ESHKOL_EXCEPTION_RANGE_ERROR</code> - Index out of bounds</li>
+<li><code>ESHKOL_EXCEPTION_ARITY_ERROR</code> - Wrong argument
+count</li>
+<li><code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code> - Division by zero</li>
+<li><code>ESHKOL_EXCEPTION_USER_DEFINED</code> - User-defined
+exception</li>
+</ul></li>
+<li><p><strong>Operations:</strong> <code>guard</code>,
+<code>raise</code></p></li>
+<li><p><strong>Example:</strong></p>
+<pre class="scheme"><code>(guard (e ((error? e) (display &quot;Caught error&quot;)))
+  (error &quot;Something went wrong&quot;))</code></pre></li>
+</ul>
+<h4 id="callable---consolidated-callable-objects-type-9">2.2.2
+<code>CALLABLE</code> - Consolidated Callable Objects (Type 9)</h4>
+<p>All callable objects share type tag 9 with subtype in header:</p>
+<p><strong>Subtypes:</strong> - <code>CALLABLE_SUBTYPE_CLOSURE</code>
+(0) - Compiled closure with environment -
+<code>CALLABLE_SUBTYPE_LAMBDA_SEXPR</code> (1) - Lambda as data
+(homoiconic) - <code>CALLABLE_SUBTYPE_AD_NODE</code> (2) - Autodiff
+computation node - <code>CALLABLE_SUBTYPE_PRIMITIVE</code> (3) -
+Built-in primitive - <code>CALLABLE_SUBTYPE_CONTINUATION</code> (4) -
+First-class continuation</p>
+<h5 id="closure">CLOSURE</h5>
+<ul>
+<li><p><strong>Subtype:</strong> <code>CALLABLE_SUBTYPE_CLOSURE</code>
+(0)</p></li>
+<li><p><strong>Structure:</strong> <code>eshkol_closure_t</code></p>
+<pre class="c"><code>struct {
+    uint64_t func_ptr;              // Pointer to lambda function
+    eshkol_closure_env_t* env;      // Captured environment
+    uint64_t sexpr_ptr;             // S-expression for display
+    uint8_t return_type;            // Return type category
+    uint8_t input_arity;            // Expected argument count
+    uint8_t flags;                  // Variadic flag, etc.
+    uint8_t reserved;
+    uint32_t hott_type_id;          // HoTT type ID
+}</code></pre></li>
+<li><p><strong>Environment Structure:</strong>
+<code>eshkol_closure_env_t</code></p>
+<pre class="c"><code>struct {
+    size_t num_captures;            // Packed: captures | (fixed_params &lt;&lt; 16) | (is_variadic &lt;&lt; 63)
+    eshkol_tagged_value_t captures[]; // Flexible array of captured values
+}</code></pre></li>
+<li><p><strong>Features:</strong></p>
+<ul>
+<li>Lexical scoping with variable capture</li>
+<li>First-class functions</li>
+<li>Homoiconic display (shows lambda source)</li>
+<li>Variadic support</li>
+</ul></li>
+<li><p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (make-adder n)
+  (lambda (x) (+ x n)))  ; Captures n
+((make-adder 5) 10)  ; =&gt; 15</code></pre></li>
+</ul>
+<h5 id="ad_node-computational-graph-node">AD_NODE (Computational Graph
+Node)</h5>
+<ul>
+<li><p><strong>Subtype:</strong> <code>CALLABLE_SUBTYPE_AD_NODE</code>
+(2)</p></li>
+<li><p><strong>Structure:</strong> <code>ad_node_t</code></p>
+<pre class="c"><code>struct {
+    ad_node_type_t type;   // Operation type (ADD, MUL, SIN, etc.)
+    double value;          // Forward pass result
+    double gradient;       // Backward pass gradient
+    ad_node* input1;       // First parent node
+    ad_node* input2;       // Second parent node
+    size_t id;             // Node ID for topological sort
+}</code></pre></li>
+<li><p><strong>Node Types:</strong></p>
+<ul>
+<li><code>AD_NODE_CONSTANT</code> - Leaf node (constant value)</li>
+<li><code>AD_NODE_VARIABLE</code> - Input variable</li>
+<li><code>AD_NODE_ADD</code>, <code>AD_NODE_SUB</code>,
+<code>AD_NODE_MUL</code>, <code>AD_NODE_DIV</code></li>
+<li><code>AD_NODE_SIN</code>, <code>AD_NODE_COS</code>,
+<code>AD_NODE_EXP</code>, <code>AD_NODE_LOG</code></li>
+<li><code>AD_NODE_POW</code>, <code>AD_NODE_NEG</code></li>
+</ul></li>
+<li><p><strong>Usage:</strong> Internal representation for reverse-mode
+automatic differentiation</p></li>
+<li><p><strong>Associated Structure:</strong> <code>ad_tape_t</code> for
+recording computation graphs</p></li>
+</ul>
+<h3 id="legacy-pointer-types-backward-compatibility">2.3 Legacy Pointer
+Types (Backward Compatibility)</h3>
+<p>These types (32+) are deprecated but maintained for display system
+compatibility:</p>
+<ul>
+<li><code>ESHKOL_VALUE_CONS_PTR</code> (32) - Use <code>HEAP_PTR</code>
++ <code>HEAP_SUBTYPE_CONS</code></li>
+<li><code>ESHKOL_VALUE_STRING_PTR</code> (33) - Use
+<code>HEAP_PTR</code> + <code>HEAP_SUBTYPE_STRING</code></li>
+<li><code>ESHKOL_VALUE_VECTOR_PTR</code> (34) - Use
+<code>HEAP_PTR</code> + <code>HEAP_SUBTYPE_VECTOR</code></li>
+<li><code>ESHKOL_VALUE_TENSOR_PTR</code> (35) - Use
+<code>HEAP_PTR</code> + <code>HEAP_SUBTYPE_TENSOR</code></li>
+<li><code>ESHKOL_VALUE_HASH_PTR</code> (36) - Use <code>HEAP_PTR</code>
++ <code>HEAP_SUBTYPE_HASH</code></li>
+<li><code>ESHKOL_VALUE_CLOSURE_PTR</code> (38) - Use
+<code>CALLABLE</code> + <code>CALLABLE_SUBTYPE_CLOSURE</code></li>
+<li><code>ESHKOL_VALUE_LAMBDA_SEXPR</code> (39) - Use
+<code>CALLABLE</code> + <code>CALLABLE_SUBTYPE_LAMBDA_SEXPR</code></li>
+<li><code>ESHKOL_VALUE_AD_NODE_PTR</code> (40) - Use
+<code>CALLABLE</code> + <code>CALLABLE_SUBTYPE_AD_NODE</code></li>
+</ul>
+<h3 id="future-multimedia-types-reserved">2.4 Future Multimedia Types
+(Reserved)</h3>
+<p>These types (16-19) are reserved for future multimedia
+extensions:</p>
+<h4 id="handle-type-16">HANDLE (Type 16)</h4>
+<ul>
+<li>Managed resource handles (windows, contexts, devices)</li>
+<li>Subtypes include: window, GL context, audio device, MIDI port,
+camera, socket, etc.</li>
+</ul>
+<h4 id="buffer-type-17">BUFFER (Type 17)</h4>
+<ul>
+<li>Typed data buffers for zero-copy transfer</li>
+<li>Subtypes include: raw bytes, image pixels, audio samples, GPU
+buffers</li>
+</ul>
+<h4 id="stream-type-18">STREAM (Type 18)</h4>
+<ul>
+<li>Lazy data streams</li>
+<li>Subtypes include: byte stream, audio, video, MIDI, network,
+transform pipeline</li>
+</ul>
+<h4 id="event-type-19">EVENT (Type 19)</h4>
+<ul>
+<li>Real-time event handling</li>
+<li>Subtypes include: input, window, audio, MIDI, timer, network,
+custom</li>
+</ul>
+<h3 id="tagged-value-runtime-representation">2.5 Tagged Value Runtime
+Representation</h3>
+<p>All values at runtime are represented as
+<code>eshkol_tagged_value_t</code> (16 bytes):</p>
+<pre class="c"><code>struct eshkol_tagged_value {
+    uint8_t type;        // Value type tag (0-255)
+    uint8_t flags;       // Exactness, special flags
+    uint16_t reserved;   // Future use
+    union {
+        int64_t int_val;     // Integer, bool, char, symbol, pointers
+        double double_val;   // Floating-point values
+        uint64_t ptr_val;    // Heap pointers
+        uint64_t raw_val;    // Raw manipulation
+    } data;
+}</code></pre>
+<hr />
+<h2 id="syntax-and-special-forms">3. Syntax and Special Forms</h2>
+<h3 id="comments">3.1 Comments</h3>
+<pre class="scheme"><code>; Line comment - from semicolon to end of line
+;; Convention: double semicolon for important comments
+;;; Convention: triple semicolon for section headers</code></pre>
+<h3 id="literals">3.2 Literals</h3>
+<h4 id="numeric-literals">Numeric Literals</h4>
+<ul>
+<li><strong>Integer:</strong> <code>42</code>, <code>-17</code>,
+<code>0</code>, <code>+99</code></li>
+<li><strong>Floating-point:</strong> <code>3.14</code>,
+<code>1.0</code>, <code>-2.5</code></li>
+<li><strong>Scientific notation:</strong> <code>1.5e10</code>,
+<code>2.3E-5</code>, <code>1e4</code></li>
+</ul>
+<h4 id="string-literals">String Literals</h4>
+<ul>
+<li><strong>Basic:</strong> <code>"hello world"</code></li>
+<li><strong>Escape sequences:</strong>
+<ul>
+<li><code>\n</code> - newline</li>
+<li><code>\t</code> - tab</li>
+<li><code>\r</code> - carriage return</li>
+<li><code>\\</code> - backslash</li>
+<li><code>\"</code> - double quote</li>
+</ul></li>
+</ul>
+<h4 id="character-literals">Character Literals</h4>
+<ul>
+<li><strong>Simple:</strong> <code>#\a</code>, <code>#\Z</code>,
+<code>#\0</code></li>
+<li><strong>Named:</strong> <code>#\space</code>,
+<code>#\newline</code>, <code>#\tab</code>, <code>#\return</code></li>
+<li><strong>Unicode:</strong> <code>#\xHHHH</code> (hexadecimal
+codepoint)</li>
+</ul>
+<h4 id="boolean-literals">Boolean Literals</h4>
+<ul>
+<li><strong>True:</strong> <code>#t</code></li>
+<li><strong>False:</strong> <code>#f</code></li>
+</ul>
+<h4 id="list-literals">List Literals</h4>
+<ul>
+<li><strong>Quoted list:</strong> <code>'(1 2 3)</code></li>
+<li><strong>Empty list:</strong> <code>'()</code> or
+<code>()</code></li>
+<li><strong>Dotted pair:</strong> <code>'(1 . 2)</code></li>
+<li><strong>Quote shorthand:</strong> <code>'x</code> equivalent to
+<code>(quote x)</code></li>
+</ul>
+<h4 id="vector-literals">Vector Literals</h4>
+<ul>
+<li><strong>Vector syntax:</strong> <code>#(1 2 3)</code></li>
+<li><strong>Mixed types:</strong> <code>#(1 "two" #t)</code></li>
+</ul>
+<h3 id="variable-definition-and-binding">3.3 Variable Definition and
+Binding</h3>
+<h4 id="define---variable-definition">3.3.1 <code>define</code> -
+Variable Definition</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(define name value)                    ; Variable
+(define (name param...) body...)       ; Function
+(define (name param... . rest) body)   ; Variadic function</code></pre>
+<p><strong>Type Annotations:</strong></p>
+<pre class="scheme"><code>(define (f (x : int) (y : real)) : real body)  ; Typed parameters and return
+(define (g x y) : int body)                     ; Return type only</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(define x 42)
+(define (square n) (* n n))
+(define (variadic-sum . args) (fold + 0 args))</code></pre>
+<h4 id="lambda---anonymous-functions">3.3.2 <code>lambda</code> -
+Anonymous Functions</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(lambda (params...) body...)           ; Regular
+(lambda (params... . rest) body)       ; Variadic
+(lambda args body)                     ; All args as list
+(lambda ((x : int) (y : real)) body)   ; Typed parameters
+(lambda (params) : type body)          ; Return type annotation</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(lambda (x) (* x x))
+(lambda (x y) (+ x y))
+(lambda args (fold + 0 args))</code></pre>
+<p><strong>Features:</strong> - Lexical scoping - Automatic closure
+creation for captured variables - Homoiconic (can be displayed as
+source) - First-class (can be passed, returned, stored)</p>
+<h4 id="let---local-bindings-parallel">3.3.3 <code>let</code> - Local
+Bindings (Parallel)</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(let ((var1 val1) (var2 val2) ...) body...)
+(let name ((var init) ...) body...)  ; Named let (loop construct)</code></pre>
+<p><strong>Semantics:</strong> Bindings evaluated in parallel (cannot
+reference each other)</p>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(let ((x 5) (y 10))
+  (+ x y))  ; =&gt; 15
+
+; Named let for looping
+(let loop ((n 10) (acc 0))
+  (if (= n 0)
+      acc
+      (loop (- n 1) (+ acc n))))  ; =&gt; 55</code></pre>
+<h4 id="let---sequential-bindings">3.3.4 <code>let*</code> - Sequential
+Bindings</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(let* ((var1 val1) (var2 val2) ...) body...)</code></pre>
+<p><strong>Semantics:</strong> Bindings evaluated left-to-right (later
+bindings can reference earlier ones)</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(let* ((x 5)
+       (y (+ x 1)))  ; y can use x
+  (+ x y))  ; =&gt; 11</code></pre>
+<h4 id="letrec---recursive-bindings">3.3.5 <code>letrec</code> -
+Recursive Bindings</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(letrec ((var1 val1) (var2 val2) ...) body...)</code></pre>
+<p><strong>Semantics:</strong> All bindings visible to all values
+(supports mutual recursion)</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(letrec ((even? (lambda (n)
+                  (if (= n 0) #t (odd? (- n 1)))))
+         (odd? (lambda (n)
+                 (if (= n 0) #f (even? (- n 1))))))
+  (even? 42))  ; =&gt; #t</code></pre>
+<h4 id="set---mutation">3.3.6 <code>set!</code> - Mutation</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(set! variable new-value)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define x 10)
+(set! x 20)
+x  ; =&gt; 20</code></pre>
+<h3 id="control-flow">3.4 Control Flow</h3>
+<h4 id="if---conditional">3.4.1 <code>if</code> - Conditional</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(if condition then-expr else-expr)
+(if condition then-expr)  ; else defaults to unspecified</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(if (&gt; x 0) &quot;positive&quot; &quot;non-positive&quot;)
+(if (null? lst) (display &quot;empty&quot;))</code></pre>
+<h4 id="cond---multi-way-conditional">3.4.2 <code>cond</code> -
+Multi-way Conditional</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(cond (test1 expr1...)
+      (test2 expr2...)
+      ...
+      (else exprN...))</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(cond ((&lt; x 0) &quot;negative&quot;)
+      ((= x 0) &quot;zero&quot;)
+      ((&gt; x 0) &quot;positive&quot;))</code></pre>
+<h4 id="case---switch-on-value">3.4.3 <code>case</code> - Switch on
+Value</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(case key
+  ((datum1 datum2 ...) expr1...)
+  ((datum3) expr2...)
+  (else exprN...))</code></pre>
+<p><strong>Comparison:</strong> Uses <code>eqv?</code> semantics</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(case (+ 1 1)
+  ((1) &quot;one&quot;)
+  ((2) &quot;two&quot;)
+  (else &quot;other&quot;))  ; =&gt; &quot;two&quot;</code></pre>
+<h4 id="match---pattern-matching">3.4.4 <code>match</code> - Pattern
+Matching</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(match expr
+  (pattern1 body1...)
+  (pattern2 body2...)
+  (_ default-body...))</code></pre>
+<p><strong>Patterns:</strong> - <strong>Literal:</strong>
+<code>42</code>, <code>"hello"</code>, <code>#t</code> -
+<strong>Variable:</strong> <code>x</code>, <code>y</code> (binds the
+value) - <strong>Wildcard:</strong> <code>_</code> (matches anything,
+doesn’t bind) - <strong>Cons:</strong>
+<code>(cons car-pat cdr-pat)</code> - <strong>List:</strong>
+<code>(list pat1 pat2 ...)</code> - <strong>Predicate:</strong>
+<code>(? pred-expr)</code> - <strong>Or:</strong>
+<code>(or pat1 pat2 ...)</code></p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(match (list 1 2)
+  ((list x y) (+ x y))  ; =&gt; 3
+  (_ 0))</code></pre>
+<h4 id="do---iteration-construct">3.4.5 <code>do</code> - Iteration
+Construct</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(do ((var1 init1 step1)
+     (var2 init2 step2)
+     ...)
+    ((test) result...)
+  body...)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(do ((i 0 (+ i 1))
+     (sum 0 (+ sum i)))
+    ((= i 10) sum))  ; =&gt; 45</code></pre>
+<h4 id="when-unless---one-armed-conditionals">3.4.6 <code>when</code> /
+<code>unless</code> - One-Armed Conditionals</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(when test expr...)    ; Execute if test is true
+(unless test expr...)  ; Execute if test is false</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(when (&gt; x 0) (display &quot;positive&quot;))
+(unless (null? lst) (display &quot;not empty&quot;))</code></pre>
+<h4 id="and-or---short-circuit-logic">3.4.7 <code>and</code> /
+<code>or</code> - Short-Circuit Logic</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(and expr1 expr2 ...)  ; Returns first false or last value
+(or expr1 expr2 ...)   ; Returns first true or last value</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(and #t #t)      ; =&gt; #t
+(and #t #f #t)   ; =&gt; #f (short-circuits)
+(or #f #f #t)    ; =&gt; #t
+(or 1 2 3)       ; =&gt; 1 (first truthy)</code></pre>
+<h4 id="begin---sequencing">3.4.8 <code>begin</code> - Sequencing</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(begin expr1 expr2 ... exprN)</code></pre>
+<p><strong>Returns:</strong> Value of last expression</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(begin
+  (display &quot;Hello&quot;)
+  (newline)
+  42)  ; =&gt; 42</code></pre>
+<h3 id="quotation-and-homoiconicity">3.5 Quotation and
+Homoiconicity</h3>
+<h4 id="quote---literal-data">3.5.1 <code>quote</code> - Literal
+Data</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(quote datum)
+&#39;datum  ; Shorthand</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>&#39;(1 2 3)  ; =&gt; (1 2 3) as data, not function call
+&#39;x        ; =&gt; x as symbol</code></pre>
+<h4 id="quasiquote---template-with-unquotes">3.5.2
+<code>quasiquote</code> - Template with Unquotes</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(quasiquote template)
+`template  ; Shorthand</code></pre>
+<p><strong>Unquote operators:</strong> - <code>,expr</code> - Evaluate
+and substitute - <code>,@expr</code> - Evaluate and splice into list</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define x 5)
+`(1 2 ,x 4)    ; =&gt; (1 2 5 4)
+`(1 ,@(list 2 3) 4)  ; =&gt; (1 2 3 4)</code></pre>
+<h3 id="type-annotations">3.6 Type Annotations</h3>
+<h4 id="type-annotation-syntax">3.6.1 Type Annotation Syntax</h4>
+<pre class="scheme"><code>(: name type)  ; Standalone type declaration</code></pre>
+<h4 id="inline-parameter-types">3.6.2 Inline Parameter Types</h4>
+<pre class="scheme"><code>(define (f (x : int) (y : float)) body)
+(lambda ((x : int)) body)</code></pre>
+<h4 id="return-type-annotations">3.6.3 Return Type Annotations</h4>
+<pre class="scheme"><code>(define (f x y) : int body)
+(lambda (x) : real body)</code></pre>
+<h4 id="type-expressions">3.6.4 Type Expressions</h4>
+<p><strong>Primitive Types:</strong> - <code>integer</code>,
+<code>int</code>, <code>int64</code> - <code>real</code>,
+<code>float</code>, <code>double</code>, <code>float64</code> -
+<code>boolean</code>, <code>bool</code> - <code>string</code>,
+<code>str</code> - <code>char</code>, <code>character</code> -
+<code>symbol</code> - <code>null</code>, <code>nil</code> -
+<code>any</code> (top type) - <code>nothing</code>, <code>never</code>
+(bottom type)</p>
+<p><strong>Compound Types:</strong> - <code>(list element-type)</code> -
+Homogeneous list - <code>(vector element-type)</code> - Homogeneous
+vector - <code>(tensor element-type)</code> - Homogeneous tensor -
+<code>(pair left-type right-type)</code> - Pair type -
+<code>(-&gt; param-types... return-type)</code> - Function type -
+<code>(* type1 type2)</code> - Product type -
+<code>(+ type1 type2)</code> - Sum type</p>
+<p><strong>Polymorphic Types:</strong> -
+<code>(forall (a b ...) type-expr)</code> - Universal quantification</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (map : (forall (a b) (-&gt; (-&gt; a b) (list a) (list b)))
+         f lst) ...)</code></pre>
+<h4 id="define-type---type-aliases">3.6.5 <code>define-type</code> -
+Type Aliases</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(define-type Name type-expr)
+(define-type (Name params...) type-expr)  ; Parameterized</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(define-type Point (pair real real))
+(define-type (Maybe a) (+ a null))
+(define-type (List a) (list a))</code></pre>
+<h3 id="module-system">3.7 Module System</h3>
+<h4 id="require---import-modules">3.7.1 <code>require</code> - Import
+Modules</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(require module.name ...)</code></pre>
+<p><strong>Module Resolution:</strong> 1. Current directory 2.
+<code>lib/</code> directory 3. <code>$ESHKOL_PATH</code> directories 4.
+System library paths</p>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(require stdlib)
+(require core.functional.compose)
+(require core.list.higher_order)</code></pre>
+<h4 id="b-load---load-file-r7rs">3.7.1b <code>load</code> - Load File
+(R7RS)</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(load &quot;path/to/file.esk&quot;)</code></pre>
+<p>Alias for <code>require</code> with automatic path conversion.
+Slashes are converted to dots, and <code>.esk</code> suffix is stripped:
+- <code>(load "core/list/transform.esk")</code> →
+<code>(require core.list.transform)</code></p>
+<h4 id="provide---export-symbols">3.7.2 <code>provide</code> - Export
+Symbols</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(provide name1 name2 ...)</code></pre>
+<p><strong>Semantics:</strong> Declares which symbols are public (all
+others are private)</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(provide add-squared multiply-squared)
+(define (helper x) (* x 2))  ; Private
+(define (add-squared x y) (+ (* x x) (* y y)))  ; Public</code></pre>
+<h4 id="import---legacy-file-import">3.7.3 <code>import</code> - Legacy
+File Import</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(import &quot;path/to/file.esk&quot;)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(import &quot;lib/utils.esk&quot;)</code></pre>
+<h3 id="exception-handling">3.8 Exception Handling</h3>
+<h4 id="guard---exception-handler">3.8.1 <code>guard</code> - Exception
+Handler</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(guard (var
+        (test1 handler1...)
+        (test2 handler2...)
+        (else default...))
+  body...)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(guard (e
+        ((error? e) (display &quot;Error occurred&quot;))
+        (else (display &quot;Unknown exception&quot;)))
+  (/ 1 0))  ; Division by zero</code></pre>
+<h4 id="raise---raise-exception">3.8.2 <code>raise</code> - Raise
+Exception</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(raise exception-object)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(raise (error &quot;Something went wrong&quot;))</code></pre>
+<h3 id="multiple-return-values">3.9 Multiple Return Values</h3>
+<h4 id="values---return-multiple-values">3.9.1 <code>values</code> -
+Return Multiple Values</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(values expr1 expr2 ...)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(values 1 2 3)  ; Returns 3 values</code></pre>
+<h4 id="call-with-values---consume-multiple-values">3.9.2
+<code>call-with-values</code> - Consume Multiple Values</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(call-with-values producer consumer)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(call-with-values
+  (lambda () (values 1 2))
+  +)  ; =&gt; 3</code></pre>
+<h4 id="let-values---bind-multiple-values">3.9.3 <code>let-values</code>
+- Bind Multiple Values</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(let-values (((var1 var2 ...) producer1)
+             ((var3 var4 ...) producer2)
+             ...)
+  body...)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(let-values (((x y) (values 1 2)))
+  (+ x y))  ; =&gt; 3</code></pre>
+<h4 id="let-values---sequential-multiple-value-bindings">3.9.4
+<code>let*-values</code> - Sequential Multiple Value Bindings</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(let*-values (((vars...) producer) ...)
+  body...)</code></pre>
+<h3 id="macros">3.10 Macros</h3>
+<h4 id="define-syntax---hygienic-macros">3.10.1
+<code>define-syntax</code> - Hygienic Macros</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(define-syntax name
+  (syntax-rules (literal1 literal2 ...)
+    ((pattern1) template1)
+    ((pattern2) template2)
+    ...))</code></pre>
+<p><strong>Pattern Elements:</strong> - Literals - Must match exactly -
+Pattern variables - Capture values - <code>...</code> - Ellipsis for
+repetition - Nested lists</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define-syntax when
+  (syntax-rules ()
+    ((when test expr ...)
+     (if test (begin expr ...)))))</code></pre>
+<h3 id="external-ffi">3.11 External FFI</h3>
+<h4 id="extern---declare-external-function">3.11.1 <code>extern</code> -
+Declare External Function</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(extern return-type function-name param-type...)
+(extern return-type function-name :real c-function-name param-type...)</code></pre>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(extern void printf char* ...)
+(extern int strcmp char* char*)</code></pre>
+<h4 id="extern-var---declare-external-variable">3.11.2
+<code>extern-var</code> - Declare External Variable</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(extern-var type variable-name)</code></pre>
+<hr />
+<h2 id="built-in-operators-and-functions">4. Built-in Operators and
+Functions</h2>
+<h3 id="arithmetic-operators">4.1 Arithmetic Operators</h3>
+<p>All arithmetic operators are polymorphic (work on integers, floats,
+dual numbers, AD nodes, and tensors).</p>
+<h4 id="addition">4.1.1 <code>+</code> - Addition</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(+ num)           ; Unary plus (identity)
+(+ num1 num2 ...) ; Variadic addition</code></pre>
+<p><strong>Type Promotion:</strong> - <code>int + int</code> =&gt;
+<code>int</code> - <code>int + float</code> =&gt; <code>float</code> -
+<code>float + float</code> =&gt; <code>float</code></p>
+<p><strong>Tensor Support:</strong> Element-wise for vectors/tensors</p>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(+ 1 2)        ; =&gt; 3
+(+ 1.5 2.5)    ; =&gt; 4.0
+(+ 1 2 3 4 5)  ; =&gt; 15</code></pre>
+<h4 id="subtractionnegation">4.1.2 <code>-</code> -
+Subtraction/Negation</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(- num)           ; Negation
+(- num1 num2 ...) ; Subtraction (left-associative)</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(- 5)      ; =&gt; -5
+(- 10 3)   ; =&gt; 7
+(- 10 3 2) ; =&gt; 5</code></pre>
+<h4 id="multiplication">4.1.3 <code>*</code> - Multiplication</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(* num1 num2 ...) ; Variadic multiplication</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(* 3 4)     ; =&gt; 12
+(* 2 3 4)   ; =&gt; 24</code></pre>
+<h4 id="division">4.1.4 <code>/</code> - Division</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(/ num1 num2 ...) ; Left-associative division</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(/ 10 2)    ; =&gt; 5
+(/ 20 2 2)  ; =&gt; 5</code></pre>
+<h4 id="quotient---integer-division">4.1.5 <code>quotient</code> -
+Integer Division</h4>
+<p><strong>Signature:</strong> <code>(quotient n1 n2)</code></p>
+<p><strong>Returns:</strong> Truncated quotient</p>
+<p><strong>Example:</strong> <code>(quotient 10 3)</code> =&gt;
+<code>3</code></p>
+<h4 id="remainder---integer-remainder">4.1.6 <code>remainder</code> -
+Integer Remainder</h4>
+<p><strong>Signature:</strong> <code>(remainder n1 n2)</code></p>
+<p><strong>Returns:</strong> Remainder (Scheme semantics)</p>
+<p><strong>Example:</strong> <code>(remainder 10 3)</code> =&gt;
+<code>1</code></p>
+<h4 id="modulo---modulo-operation">4.1.7 <code>modulo</code> - Modulo
+Operation</h4>
+<p><strong>Signature:</strong> <code>(modulo n1 n2)</code></p>
+<p><strong>Example:</strong> <code>(modulo -10 3)</code> =&gt;
+<code>2</code></p>
+<h4 id="abs---absolute-value">4.1.8 <code>abs</code> - Absolute
+Value</h4>
+<p><strong>Signature:</strong> <code>(abs num)</code></p>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(abs -5)   ; =&gt; 5
+(abs 3.14) ; =&gt; 3.14</code></pre>
+<h4 id="expt-pow---exponentiation">4.1.9 <code>expt</code> /
+<code>pow</code> - Exponentiation</h4>
+<p><strong>Signature:</strong> <code>(expt base exponent)</code></p>
+<p><strong>Example:</strong> <code>(expt 2 10)</code> =&gt;
+<code>1024</code></p>
+<h4 id="min-max---minimummaximum">4.1.10 <code>min</code> /
+<code>max</code> - Minimum/Maximum</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(min num1 num2 ...)
+(max num1 num2 ...)</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(min 3 1 4 1 5)  ; =&gt; 1
+(max 3 1 4 1 5)  ; =&gt; 5</code></pre>
+<h3 id="math-functions">4.2 Math Functions</h3>
+<p>All math functions support dual numbers and AD nodes for automatic
+differentiation.</p>
+<h4 id="trigonometric-functions">Trigonometric Functions</h4>
+<ul>
+<li><code>(sin x)</code> - Sine (radians)</li>
+<li><code>(cos x)</code> - Cosine (radians)</li>
+<li><code>(tan x)</code> - Tangent (radians)</li>
+<li><code>(asin x)</code> - Arc sine (returns radians)</li>
+<li><code>(acos x)</code> - Arc cosine (returns radians)</li>
+<li><code>(atan x)</code> - Arc tangent (returns radians)</li>
+</ul>
+<h4 id="hyperbolic-functions">Hyperbolic Functions</h4>
+<ul>
+<li><code>(sinh x)</code> - Hyperbolic sine</li>
+<li><code>(cosh x)</code> - Hyperbolic cosine</li>
+<li><code>(tanh x)</code> - Hyperbolic tangent</li>
+</ul>
+<h4 id="exponential-and-logarithmic">Exponential and Logarithmic</h4>
+<ul>
+<li><code>(exp x)</code> - e^x</li>
+<li><code>(log x)</code> - Natural logarithm (base e)</li>
+<li><code>(sqrt x)</code> - Square root</li>
+</ul>
+<h4 id="rounding-functions">Rounding Functions</h4>
+<ul>
+<li><code>(floor x)</code> - Round down to integer</li>
+<li><code>(ceiling x)</code> - Round up to integer</li>
+<li><code>(truncate x)</code> - Round toward zero</li>
+<li><code>(round x)</code> - Round to nearest integer</li>
+</ul>
+<h3 id="comparison-operators">4.3 Comparison Operators</h3>
+<p>All comparison operators return booleans and support numeric type
+promotion.</p>
+<h4 id="numeric-equality">4.3.1 Numeric Equality</h4>
+<ul>
+<li><code>(= n1 n2 ...)</code> - Numeric equality (exact or
+approximate)</li>
+</ul>
+<h4 id="ordering">4.3.2 Ordering</h4>
+<ul>
+<li><code>(&lt; n1 n2 ...)</code> - Less than (monotonically
+increasing)</li>
+<li><code>(&gt; n1 n2 ...)</code> - Greater than (monotonically
+decreasing)</li>
+<li><code>(&lt;= n1 n2 ...)</code> - Less than or equal</li>
+<li><code>(&gt;= n1 n2 ...)</code> - Greater than or equal</li>
+</ul>
+<h4 id="numeric-predicates">4.3.3 Numeric Predicates</h4>
+<ul>
+<li><code>(zero? n)</code> - Test if n is zero</li>
+<li><code>(positive? n)</code> - Test if n &gt; 0</li>
+<li><code>(negative? n)</code> - Test if n &lt; 0</li>
+<li><code>(odd? n)</code> - Test if integer is odd</li>
+<li><code>(even? n)</code> - Test if integer is even</li>
+<li><code>(exact? n)</code> - Test if number is exact</li>
+<li><code>(inexact? n)</code> - Test if number is inexact</li>
+</ul>
+<h3 id="equality-predicates">4.4 Equality Predicates</h3>
+<h4 id="eq---pointer-equality">4.4.1 <code>eq?</code> - Pointer
+Equality</h4>
+<p><strong>Signature:</strong> <code>(eq? obj1 obj2)</code></p>
+<p><strong>Semantics:</strong> Compares pointer addresses (fastest)</p>
+<p><strong>Use for:</strong> Symbols, booleans, <code>'()</code></p>
+<h4 id="eqv---value-equality">4.4.2 <code>eqv?</code> - Value
+Equality</h4>
+<p><strong>Signature:</strong> <code>(eqv? obj1 obj2)</code></p>
+<p><strong>Semantics:</strong> Compares values for numbers/chars,
+pointers for others</p>
+<p><strong>Use for:</strong> Numbers, characters, symbols</p>
+<h4 id="equal---structural-equality">4.4.3 <code>equal?</code> -
+Structural Equality</h4>
+<p><strong>Signature:</strong> <code>(equal? obj1 obj2)</code></p>
+<p><strong>Semantics:</strong> Deep recursive comparison</p>
+<p><strong>Use for:</strong> Lists, strings, compound structures</p>
+<p><strong>Implementation:</strong> Uses
+<code>eshkol_deep_equal()</code> C runtime function</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(equal? &#39;(1 2 3) &#39;(1 2 3))  ; =&gt; #t (different pointers, same structure)</code></pre>
+<h3 id="pair-and-list-operations">4.5 Pair and List Operations</h3>
+<h4 id="core-pair-operations">4.5.1 Core Pair Operations</h4>
+<ul>
+<li><code>(cons car cdr)</code> - Create pair</li>
+<li><code>(car pair)</code> - Get first element</li>
+<li><code>(cdr pair)</code> - Get second element / rest of list</li>
+<li><code>(set-car! pair value)</code> - Mutate first element</li>
+<li><code>(set-cdr! pair value)</code> - Mutate second element /
+tail</li>
+</ul>
+<h4 id="list-construction">4.5.2 List Construction</h4>
+<ul>
+<li><code>(list elem...)</code> - Create list from elements</li>
+<li><code>(list* elem... tail)</code> - Create list with custom
+tail</li>
+<li><code>(make-list n fill)</code> - Create n-element list with fill
+value</li>
+</ul>
+<h4 id="list-accessors">4.5.3 List Accessors</h4>
+<p><strong>Compound car/cdr (up to 4 levels):</strong> - 2-level:
+<code>caar</code>, <code>cadr</code>, <code>cdar</code>,
+<code>cddr</code> - 3-level: <code>caaar</code>, <code>caadr</code>,
+<code>cadar</code>, <code>caddr</code>, <code>cdaar</code>,
+<code>cdadr</code>, <code>cddar</code>, <code>cdddr</code> - 4-level:
+<code>caaaar</code> through <code>cddddr</code> (16 combinations)</p>
+<p><strong>Positional accessors:</strong> - <code>(first lst)</code>
+through <code>(tenth lst)</code></p>
+<h4 id="list-predicates">4.5.4 List Predicates</h4>
+<ul>
+<li><code>(null? obj)</code> - Test if empty list</li>
+<li><code>(pair? obj)</code> - Test if cons cell</li>
+<li><code>(list? obj)</code> - Test if proper list</li>
+</ul>
+<h4 id="list-queries">4.5.5 List Queries</h4>
+<ul>
+<li><code>(length lst)</code> - Count elements</li>
+<li><code>(list-ref lst n)</code> - Get nth element (0-indexed)</li>
+<li><code>(list-tail lst n)</code> - Get sublist from position n</li>
+</ul>
+<h4 id="list-transformations">4.5.6 List Transformations</h4>
+<ul>
+<li><code>(append lst...)</code> - Concatenate lists</li>
+<li><code>(reverse lst)</code> - Reverse list</li>
+<li><code>(take lst n)</code> - First n elements</li>
+<li><code>(drop lst n)</code> - Skip first n elements</li>
+</ul>
+<h4 id="list-search">4.5.7 List Search</h4>
+<ul>
+<li><code>(member x lst)</code> - Find element with <code>equal?</code>,
+return sublist or <code>#f</code></li>
+<li><code>(memq x lst)</code> - Find with <code>eq?</code></li>
+<li><code>(memv x lst)</code> - Find with <code>eqv?</code></li>
+<li><code>(assoc key alist)</code> - Find key in association list with
+<code>equal?</code></li>
+<li><code>(assq key alist)</code> - Find with <code>eq?</code></li>
+<li><code>(assv key alist)</code> - Find with <code>eqv?</code></li>
+</ul>
+<h3 id="higher-order-functions">4.6 Higher-Order Functions</h3>
+<h4 id="map---apply-to-each-element">4.6.1 <code>map</code> - Apply to
+Each Element</h4>
+<p><strong>Signatures:</strong></p>
+<pre class="scheme"><code>(map proc list)              ; Single list
+(map proc list1 list2 ...)   ; Multiple lists (parallel)</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(map square &#39;(1 2 3))  ; =&gt; (1 4 9)
+(map + &#39;(1 2) &#39;(10 20))  ; =&gt; (11 22)</code></pre>
+<h4 id="filter---select-elements">4.6.2 <code>filter</code> - Select
+Elements</h4>
+<p><strong>Signature:</strong> <code>(filter predicate list)</code></p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(filter even? &#39;(1 2 3 4 5))  ; =&gt; (2 4)</code></pre>
+<h4 id="fold-foldl---left-fold">4.6.3 <code>fold</code> /
+<code>foldl</code> - Left Fold</h4>
+<p><strong>Signature:</strong> <code>(fold proc init list)</code></p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(fold + 0 &#39;(1 2 3 4))  ; =&gt; 10
+(fold cons &#39;() &#39;(1 2 3))  ; =&gt; (3 2 1)</code></pre>
+<h4 id="fold-right-foldr---right-fold">4.6.4 <code>fold-right</code> /
+<code>foldr</code> - Right Fold</h4>
+<p><strong>Signature:</strong>
+<code>(fold-right proc init list)</code></p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(fold-right cons &#39;() &#39;(1 2 3))  ; =&gt; (1 2 3)</code></pre>
+<h4 id="for-each---side-effects">4.6.5 <code>for-each</code> - Side
+Effects</h4>
+<p><strong>Signature:</strong> <code>(for-each proc list)</code></p>
+<p><strong>Returns:</strong> Unspecified</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(for-each display &#39;(1 2 3))  ; Prints: 123</code></pre>
+<h4 id="apply---apply-function-to-list">4.6.6 <code>apply</code> - Apply
+Function to List</h4>
+<p><strong>Signature:</strong> <code>(apply proc arg... list)</code></p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(apply + &#39;(1 2 3))  ; =&gt; 6
+(apply + 1 2 &#39;(3 4))  ; =&gt; 10</code></pre>
+<h3 id="string-operations">4.7 String Operations</h3>
+<h4 id="string-construction">4.7.1 String Construction</h4>
+<ul>
+<li><code>(string char...)</code> - Build string from characters</li>
+<li><code>(make-string k char)</code> - String of k copies of char</li>
+<li><code>(string-append str...)</code> - Concatenate strings</li>
+</ul>
+<h4 id="string-access">4.7.2 String Access</h4>
+<ul>
+<li><code>(string-length str)</code> - Character count</li>
+<li><code>(string-ref str k)</code> - Get character at index k</li>
+<li><code>(string-set! str k char)</code> - Set character at index
+k</li>
+<li><code>(substring str start end)</code> - Extract substring</li>
+</ul>
+<h4 id="string-predicates">4.7.3 String Predicates</h4>
+<ul>
+<li><code>(string? obj)</code> - Test if string</li>
+<li><code>(string=? str1 str2)</code> - String equality</li>
+<li><code>(string&lt;? str1 str2)</code> - Lexicographic less than</li>
+<li><code>(string&gt;? str1 str2)</code> - Lexicographic greater
+than</li>
+<li><code>(string&lt;=? str1 str2)</code> - Less than or equal</li>
+<li><code>(string&gt;=? str1 str2)</code> - Greater than or equal</li>
+</ul>
+<h4 id="string-utilities-from-stdlib">4.7.4 String Utilities (from
+stdlib)</h4>
+<ul>
+<li><code>(string-join lst delim)</code> - Join list with delimiter</li>
+<li><code>(string-split str delim)</code> - Split by delimiter</li>
+<li><code>(string-trim str)</code> - Remove leading/trailing
+whitespace</li>
+<li><code>(string-upcase str)</code> - Convert to uppercase</li>
+<li><code>(string-downcase str)</code> - Convert to lowercase</li>
+<li><code>(string-replace str old new)</code> - Replace all
+occurrences</li>
+<li><code>(string-reverse str)</code> - Reverse string</li>
+<li><code>(string-contains? str substr)</code> - Test for substring</li>
+<li><code>(string-starts-with? str prefix)</code> - Test for prefix</li>
+<li><code>(string-ends-with? str suffix)</code> - Test for suffix</li>
+<li><code>(string-index str substr)</code> - Find first occurrence
+index</li>
+<li><code>(string-count str substr)</code> - Count occurrences</li>
+</ul>
+<h4 id="conversions">4.7.5 Conversions</h4>
+<ul>
+<li><code>(string-&gt;number str)</code> - Parse number from string</li>
+<li><code>(number-&gt;string num)</code> - Convert number to string</li>
+<li><code>(string-&gt;list str)</code> - Convert to character list</li>
+<li><code>(list-&gt;string chars)</code> - Build from character
+list</li>
+</ul>
+<h3 id="character-operations">4.8 Character Operations</h3>
+<ul>
+<li><code>(char? obj)</code> - Test if character</li>
+<li><code>(char-&gt;integer char)</code> - Get Unicode codepoint</li>
+<li><code>(integer-&gt;char n)</code> - Create character from
+codepoint</li>
+<li><code>(char=? c1 c2)</code> - Character equality</li>
+<li><code>(char&lt;? c1 c2)</code> - Character less than</li>
+<li><code>(char&gt;? c1 c2)</code> - Character greater than</li>
+</ul>
+<h3 id="vector-operations">4.9 Vector Operations</h3>
+<h4 id="vector-construction">4.9.1 Vector Construction</h4>
+<ul>
+<li><code>(vector elem...)</code> - Create from elements</li>
+<li><code>(make-vector k fill)</code> - Create k-element vector with
+fill value</li>
+</ul>
+<h4 id="vector-access">4.9.2 Vector Access</h4>
+<ul>
+<li><code>(vector-length vec)</code> - Element count</li>
+<li><code>(vector-ref vec k)</code> - Get element at index k</li>
+<li><code>(vector-set! vec k val)</code> - Set element at index k</li>
+</ul>
+<h4 id="vector-conversions">4.9.3 Vector Conversions</h4>
+<ul>
+<li><code>(vector-&gt;list vec)</code> - Convert to list</li>
+<li><code>(list-&gt;vector lst)</code> - Convert from list</li>
+</ul>
+<h3 id="tensor-operations">4.10 Tensor Operations</h3>
+<h4 id="tensor-creation">4.10.1 Tensor Creation</h4>
+<ul>
+<li><code>(vector elem...)</code> - 1D tensor</li>
+<li><code>(matrix rows cols elem...)</code> - 2D tensor</li>
+<li><code>(tensor dim... elem...)</code> - N-D tensor</li>
+<li><code>#(elem...)</code> - Vector literal syntax</li>
+</ul>
+<h4 id="tensor-access">4.10.2 Tensor Access</h4>
+<ul>
+<li><code>(vref tensor idx)</code> - 1D access (vector reference)</li>
+<li><code>(tensor-get tensor idx...)</code> - N-D access</li>
+<li><code>(tensor-set tensor val idx...)</code> - N-D mutation</li>
+</ul>
+<h4 id="tensor-arithmetic">4.10.3 Tensor Arithmetic</h4>
+<ul>
+<li><code>(tensor-add t1 t2)</code> - Element-wise addition</li>
+<li><code>(tensor-sub t1 t2)</code> - Element-wise subtraction</li>
+<li><code>(tensor-mul t1 t2)</code> - Element-wise multiplication</li>
+<li><code>(tensor-div t1 t2)</code> - Element-wise division</li>
+<li><code>(tensor-dot t1 t2)</code> - Dot product / matrix multiply</li>
+<li><code>(matmul m1 m2)</code> - Matrix multiplication (alias for
+tensor-dot)</li>
+</ul>
+<h4 id="tensor-reductions">4.10.4 Tensor Reductions</h4>
+<ul>
+<li><code>(tensor-sum tensor)</code> - Sum all elements</li>
+<li><code>(tensor-mean tensor)</code> - Mean of all elements</li>
+<li><code>(tensor-reduce-all tensor func init)</code> - Custom
+reduction</li>
+</ul>
+<h4 id="tensor-transformations">4.10.5 Tensor Transformations</h4>
+<ul>
+<li><code>(transpose tensor)</code> - Transpose (swap dimensions)</li>
+<li><code>(reshape tensor dims)</code> - Change shape (shares data)</li>
+<li><code>(tensor-shape tensor)</code> - Get dimension list</li>
+<li><code>(tensor-apply tensor func)</code> - Apply function
+element-wise</li>
+</ul>
+<h4 id="tensor-generators">4.10.6 Tensor Generators</h4>
+<ul>
+<li><code>(zeros dim...)</code> - Zero-filled tensor</li>
+<li><code>(ones dim...)</code> - One-filled tensor</li>
+<li><code>(eye n)</code> - Identity matrix</li>
+<li><code>(arange start end [step])</code> - Range tensor</li>
+<li><code>(linspace start end num)</code> - Evenly spaced values</li>
+</ul>
+<h3 id="hash-table-operations">4.11 Hash Table Operations</h3>
+<h4 id="hash-table-construction">4.11.1 Hash Table Construction</h4>
+<ul>
+<li><code>(make-hash-table)</code> - Create empty hash table</li>
+<li><code>(hash key1 val1 key2 val2 ...)</code> - Create from key-value
+pairs</li>
+</ul>
+<h4 id="hash-table-access">4.11.2 Hash Table Access</h4>
+<ul>
+<li><code>(hash-ref table key [default])</code> - Get value by key</li>
+<li><code>(hash-set! table key value)</code> - Set key-value pair</li>
+<li><code>(hash-has-key? table key)</code> - Check if key exists</li>
+<li><code>(hash-remove! table key)</code> - Remove key</li>
+</ul>
+<h4 id="hash-table-queries">4.11.3 Hash Table Queries</h4>
+<ul>
+<li><code>(hash-keys table)</code> - Get all keys as list</li>
+<li><code>(hash-values table)</code> - Get all values as list</li>
+<li><code>(hash-count table)</code> - Count of entries</li>
+<li><code>(hash-clear! table)</code> - Remove all entries</li>
+</ul>
+<h4 id="hash-table-predicates">4.11.4 Hash Table Predicates</h4>
+<ul>
+<li><code>(hash-table? obj)</code> - Test if hash table</li>
+</ul>
+<h3 id="type-predicates">4.12 Type Predicates</h3>
+<h4 id="basic-type-tests">4.12.1 Basic Type Tests</h4>
+<ul>
+<li><code>(null? obj)</code> - Test if empty list</li>
+<li><code>(boolean? obj)</code> - Test if boolean</li>
+<li><code>(char? obj)</code> - Test if character</li>
+<li><code>(string? obj)</code> - Test if string</li>
+<li><code>(symbol? obj)</code> - Test if symbol</li>
+<li><code>(number? obj)</code> - Test if number</li>
+<li><code>(integer? obj)</code> - Test if integer</li>
+<li><code>(real? obj)</code> - Test if real number</li>
+<li><code>(pair? obj)</code> - Test if cons cell</li>
+<li><code>(list? obj)</code> - Test if proper list</li>
+<li><code>(vector? obj)</code> - Test if vector</li>
+<li><code>(procedure? obj)</code> - Test if callable</li>
+<li><code>(hash-table? obj)</code> - Test if hash table</li>
+<li><code>(tensor? obj)</code> - Test if tensor</li>
+</ul>
+<h4 id="port-predicates">4.12.2 Port Predicates</h4>
+<ul>
+<li><code>(input-port? obj)</code> - Test if input port</li>
+<li><code>(output-port? obj)</code> - Test if output port</li>
+<li><code>(port? obj)</code> - Test if any port</li>
+<li><code>(eof-object? obj)</code> - Test if EOF object</li>
+</ul>
+<h3 id="io-operations">4.13 I/O Operations</h3>
+<h4 id="output">4.13.1 Output</h4>
+<ul>
+<li><code>(display obj [port])</code> - Write object without quotes</li>
+<li><code>(write obj [port])</code> - Write object with quotes (Scheme
+write semantics)</li>
+<li><code>(newline [port])</code> - Write newline</li>
+<li><code>(write-char char [port])</code> - Write single character</li>
+<li><code>(write-string str [port])</code> - Write string to port</li>
+<li><code>(write-line str [port])</code> - Write string with
+newline</li>
+</ul>
+<h4 id="input">4.13.2 Input</h4>
+<ul>
+<li><code>(read [port])</code> - Read S-expression</li>
+<li><code>(read-line [port])</code> - Read line as string</li>
+<li><code>(read-char [port])</code> - Read single character</li>
+<li><code>(peek-char [port])</code> - Peek at next character without
+consuming</li>
+</ul>
+<h4 id="ports">4.13.3 Ports</h4>
+<ul>
+<li><code>(open-input-file filename)</code> - Open file for reading</li>
+<li><code>(open-output-file filename)</code> - Open file for
+writing</li>
+<li><code>(close-port port)</code> - Close port</li>
+<li><code>(flush-output-port port)</code> - Flush output buffer</li>
+<li><code>(current-input-port)</code> - Get stdin</li>
+<li><code>(current-output-port)</code> - Get stdout</li>
+</ul>
+<h4 id="file-operations">4.13.4 File Operations</h4>
+<ul>
+<li><code>(read-file filename)</code> - Read entire file as string</li>
+<li><code>(write-file filename content)</code> - Write string to
+file</li>
+<li><code>(append-file filename content)</code> - Append to file</li>
+<li><code>(file-exists? filename)</code> - Test if file exists</li>
+<li><code>(file-readable? filename)</code> - Test if readable</li>
+<li><code>(file-writable? filename)</code> - Test if writable</li>
+<li><code>(file-delete filename)</code> - Delete file</li>
+<li><code>(file-rename old new)</code> - Rename/move file</li>
+<li><code>(file-size filename)</code> - Get file size in bytes</li>
+</ul>
+<h4 id="directory-operations">4.13.5 Directory Operations</h4>
+<ul>
+<li><code>(directory-exists? path)</code> - Test if directory
+exists</li>
+<li><code>(make-directory path)</code> - Create directory</li>
+<li><code>(delete-directory path)</code> - Delete directory</li>
+<li><code>(directory-list path)</code> - List directory contents</li>
+<li><code>(current-directory)</code> - Get current working
+directory</li>
+<li><code>(set-current-directory! path)</code> - Change working
+directory</li>
+</ul>
+<h3 id="system-operations">4.14 System Operations</h3>
+<h4 id="environment-variables">4.14.1 Environment Variables</h4>
+<ul>
+<li><code>(getenv name)</code> - Get environment variable</li>
+<li><code>(setenv name value)</code> - Set environment variable</li>
+<li><code>(unsetenv name)</code> - Unset environment variable</li>
+</ul>
+<h4 id="system-calls">4.14.2 System Calls</h4>
+<ul>
+<li><code>(system command)</code> - Execute shell command</li>
+<li><code>(exit [code])</code> - Exit program with code</li>
+<li><code>(sleep seconds)</code> - Sleep for duration</li>
+<li><code>(current-seconds)</code> - Get Unix timestamp</li>
+<li><code>(command-line)</code> - Get command-line arguments as
+list</li>
+</ul>
+<h3 id="type-conversions">4.15 Type Conversions</h3>
+<ul>
+<li><code>(exact-&gt;inexact num)</code> - Convert to inexact</li>
+<li><code>(inexact-&gt;exact num)</code> - Convert to exact</li>
+<li><code>(string-&gt;symbol str)</code> - Create symbol from
+string</li>
+<li><code>(symbol-&gt;string sym)</code> - Get symbol name as
+string</li>
+</ul>
+<hr />
+<h2 id="standard-library">5. Standard Library</h2>
+<p>The standard library is organized into modules under
+<code>lib/</code>:</p>
+<p><strong>v1.1 stdlib directories:</strong> - <code>lib/core/</code> —
+Core language functions (operators, lists, strings, I/O, etc.) -
+<code>lib/math/</code> — Mathematical functions (constants, special
+functions, ODE solvers) - <code>lib/signal/</code> — Signal processing
+(FFT, filters, window functions) - <code>lib/ml/</code> — Machine
+learning (optimization algorithms, activations, normalization) -
+<code>lib/random/</code> — Random number generation (PRNG, quantum,
+distributions) - <code>lib/web/</code> — Web platform (WASM support) -
+<code>lib/tensor/</code> — Tensor utilities (shape manipulation,
+stacking)</p>
+<p>The core modules are under <code>lib/core/</code>:</p>
+<h3 id="core.functional">5.1 core.functional</h3>
+<h4 id="compose.esk">5.1.1 compose.esk</h4>
+<ul>
+<li><code>(compose f g)</code> - Function composition:
+<code>(lambda (x) (f (g x)))</code></li>
+<li><code>(compose3 f g h)</code> - Three-function composition</li>
+<li><code>(identity x)</code> - Identity function</li>
+<li><code>(constantly x)</code> - Function that always returns x</li>
+</ul>
+<h4 id="curry.esk">5.1.2 curry.esk</h4>
+<ul>
+<li><code>(curry2 f)</code> - Curry 2-argument function</li>
+<li><code>(curry3 f)</code> - Curry 3-argument function</li>
+<li><code>(uncurry2 f)</code> - Uncurry curried function</li>
+<li><code>(partial f arg...)</code> - Partial application</li>
+<li><code>(partial1 f x)</code> - Partial (unary thunk)</li>
+<li><code>(partial2 f x)</code> - Partial (returns unary function)</li>
+<li><code>(partial3 f x)</code> - Partial (returns binary function)</li>
+</ul>
+<h4 id="flip.esk">5.1.3 flip.esk</h4>
+<ul>
+<li><code>(flip f)</code> - Swap arguments of binary function</li>
+</ul>
+<h3 id="core.list">5.2 core.list</h3>
+<h4 id="compound.esk">5.2.1 compound.esk</h4>
+<p>All compound car/cdr operations (caar through cddddr)</p>
+<h4 id="generate.esk">5.2.2 generate.esk</h4>
+<ul>
+<li><code>(iota n)</code> - Generate list [0, 1, …, n-1]</li>
+<li><code>(iota-from n start)</code> - Generate n numbers from
+start</li>
+<li><code>(iota-step n start step)</code> - Generate with custom
+step</li>
+<li><code>(repeat n x)</code> - Create list of n copies of x</li>
+<li><code>(make-list n fill)</code> - N-element list with fill</li>
+<li><code>(range start end)</code> - Generate [start, start+1, …,
+end-1]</li>
+<li><code>(zip lst1 lst2)</code> - Combine into list of pairs</li>
+</ul>
+<h4 id="higher_order.esk">5.2.3 higher_order.esk</h4>
+<ul>
+<li><code>(map1 proc lst)</code> - Map over single list</li>
+<li><code>(map2 proc lst1 lst2)</code> - Map over two lists</li>
+<li><code>(map3 proc lst1 lst2 lst3)</code> - Map over three lists</li>
+<li><code>(fold proc init lst)</code> - Left fold</li>
+<li><code>(fold-right proc init lst)</code> - Right fold</li>
+<li><code>(for-each proc lst)</code> - For side effects</li>
+<li><code>(any pred lst)</code> - True if any element satisfies
+pred</li>
+<li><code>(every pred lst)</code> - True if all elements satisfy
+pred</li>
+</ul>
+<h4 id="query.esk">5.2.4 query.esk</h4>
+<ul>
+<li><code>(length lst)</code> - List length</li>
+<li><code>(count-if pred lst)</code> - Count elements satisfying
+predicate</li>
+<li><code>(find pred lst)</code> - First element satisfying predicate or
+#f</li>
+</ul>
+<h4 id="search.esk">5.2.5 search.esk</h4>
+<ul>
+<li><code>(member x lst)</code> - Find with equal?</li>
+<li><code>(member? x lst)</code> - Test membership (returns
+boolean)</li>
+<li><code>(memq x lst)</code> - Find with eq?</li>
+<li><code>(memv x lst)</code> - Find with eqv?</li>
+<li><code>(assoc key alist)</code> - Association list lookup</li>
+<li><code>(assq key alist)</code> - With eq?</li>
+<li><code>(assv key alist)</code> - With eqv?</li>
+<li><code>(list-ref lst n)</code> - Nth element</li>
+<li><code>(list-tail lst n)</code> - Sublist from position n</li>
+</ul>
+<h4 id="sort.esk">5.2.6 sort.esk</h4>
+<ul>
+<li><code>(sort lst less?)</code> - Sort using merge sort algorithm</li>
+</ul>
+<h4 id="transform.esk">5.2.7 transform.esk</h4>
+<ul>
+<li><code>(take lst n)</code> - First n elements</li>
+<li><code>(drop lst n)</code> - Skip first n elements</li>
+<li><code>(append lst...)</code> - Concatenate</li>
+<li><code>(reverse lst)</code> - Reverse</li>
+<li><code>(filter pred lst)</code> - Select elements</li>
+<li><code>(unzip pairs)</code> - Split list of pairs into two lists</li>
+<li><code>(partition pred lst)</code> - Split into (passing,
+failing)</li>
+</ul>
+<h4 id="convert.esk">5.2.8 convert.esk</h4>
+<ul>
+<li><code>(list-&gt;vector lst)</code> - Convert to vector</li>
+<li><code>(vector-&gt;list vec)</code> - Convert to list</li>
+</ul>
+<h3 id="core.logic">5.3 core.logic</h3>
+<h4 id="boolean.esk">5.3.1 boolean.esk</h4>
+<ul>
+<li><code>(negate pred)</code> - Negate predicate function</li>
+<li><code>(all? pred lst)</code> - All elements satisfy</li>
+<li><code>(none? pred lst)</code> - No elements satisfy</li>
+</ul>
+<h4 id="predicates.esk">5.3.2 predicates.esk</h4>
+<ul>
+<li><code>(is-zero? x)</code> - Wrapper for zero?</li>
+<li><code>(is-positive? x)</code> - Wrapper for positive?</li>
+<li><code>(is-negative? x)</code> - Wrapper for negative?</li>
+<li><code>(is-even? x)</code> - Wrapper for even?</li>
+<li><code>(is-odd? x)</code> - Wrapper for odd?</li>
+</ul>
+<h4 id="types.esk">5.3.3 types.esk</h4>
+<ul>
+<li><code>(is-null? x)</code> - Wrapper for null?</li>
+<li><code>(is-pair? x)</code> - Wrapper for pair?</li>
+</ul>
+<h3 id="core.operators">5.4 core.operators</h3>
+<h4 id="arithmetic.esk">5.4.1 arithmetic.esk</h4>
+<p>First-class wrappers for operators: - <code>(add x y)</code> -
+Wrapper for + - <code>(sub x y)</code> - Wrapper for - -
+<code>(mul x y)</code> - Wrapper for * - <code>(div x y)</code> -
+Wrapper for /</p>
+<h4 id="compare.esk">5.4.2 compare.esk</h4>
+<ul>
+<li><code>(lt x y)</code> - Wrapper for &lt;</li>
+<li><code>(gt x y)</code> - Wrapper for &gt;</li>
+<li><code>(le x y)</code> - Wrapper for &lt;=</li>
+<li><code>(ge x y)</code> - Wrapper for &gt;=</li>
+<li><code>(eq x y)</code> - Wrapper for =</li>
+</ul>
+<h3 id="core.strings">5.5 core.strings</h3>
+<p>Extended string utilities (see §4.7.4 for complete list)</p>
+<h3 id="core.io">5.6 core.io</h3>
+<ul>
+<li><code>(print x)</code> - Wrapper for display (for higher-order
+use)</li>
+<li><code>(println x)</code> - Display with newline</li>
+</ul>
+<h3 id="core.json">5.7 core.json</h3>
+<p>JSON parsing and serialization: - <code>(json-parse str)</code> -
+Parse JSON string to hash tables/lists -
+<code>(json-stringify val)</code> - Convert to JSON string -
+<code>(json-get obj key [default])</code> - Get field from object -
+<code>(json-array-ref arr idx)</code> - Get array element -
+<code>(hash-table-&gt;alist ht)</code> - Convert to association list -
+<code>(alist-&gt;hash-table alist)</code> - Convert from association
+list - <code>(json-read-file filename)</code> - Read JSON file -
+<code>(json-write-file filename data)</code> - Write JSON file -
+<code>(alist-&gt;json alist)</code> - Convert alist to JSON string -
+<code>(alist-write-json filename alist)</code> - Write alist as JSON</p>
+<p><strong>JSON Mapping:</strong> - JSON object → hash-table - JSON
+array → list - JSON string → string - JSON number → integer or real -
+JSON true → #t - JSON false → #f - JSON null → ’()</p>
+<h3 id="core.data">5.8 core.data</h3>
+<h4 id="base64.esk">5.8.1 base64.esk</h4>
+<ul>
+<li><code>(base64-encode bytes)</code> - Encode byte list to base64
+string</li>
+<li><code>(base64-decode str)</code> - Decode base64 string to byte
+list</li>
+<li><code>(base64-encode-string str)</code> - Encode string to
+base64</li>
+<li><code>(base64-decode-string str)</code> - Decode base64 to
+string</li>
+<li><code>(string-&gt;bytes str)</code> - Convert string to byte
+list</li>
+<li><code>(bytes-&gt;string bytes)</code> - Convert byte list to
+string</li>
+</ul>
+<h4 id="csv.esk">5.8.2 csv.esk</h4>
+<ul>
+<li><code>(csv-parse str)</code> - Parse CSV string to list of rows</li>
+<li><code>(csv-parse-file filename)</code> - Read and parse CSV
+file</li>
+<li><code>(csv-stringify rows)</code> - Convert rows to CSV string</li>
+<li><code>(csv-write-file filename rows)</code> - Write rows to CSV
+file</li>
+<li><code>(csv-parse-line line)</code> - Parse single CSV line</li>
+<li><code>(csv-stringify-row row)</code> - Convert row to CSV
+string</li>
+</ul>
+<h3 id="core.control">5.9 core.control</h3>
+<h4 id="trampoline.esk">5.9.1 trampoline.esk</h4>
+<ul>
+<li><code>(trampoline thunk)</code> - Evaluate thunks in constant stack
+space</li>
+<li><code>(bounce thunk)</code> - Create continuation thunk</li>
+<li><code>(done value)</code> - Signal completion</li>
+</ul>
+<h3 id="math.esk---advanced-mathematics">5.10 math.esk - Advanced
+Mathematics</h3>
+<h4 id="constants">5.10.1 Constants</h4>
+<ul>
+<li><code>pi</code> - π (3.141592653589793)</li>
+<li><code>e</code> - Euler’s number (2.718281828459045)</li>
+<li><code>epsilon</code> - Machine epsilon (1e-15)</li>
+</ul>
+<h4 id="linear-algebra">5.10.2 Linear Algebra</h4>
+<ul>
+<li><code>(mat-ref M cols row col)</code> - Get matrix element</li>
+<li><code>(tensor-copy T)</code> - Create mutable copy</li>
+<li><code>(mat-vec-mul A x rows cols)</code> - Matrix-vector
+multiplication</li>
+<li><code>(dot u v)</code> - Dot product of vectors</li>
+<li><code>(cross u v)</code> - Cross product (3D only)</li>
+<li><code>(normalize v)</code> - Unit vector in same direction</li>
+</ul>
+<h4 id="matrix-operations">5.10.3 Matrix Operations</h4>
+<ul>
+<li><code>(det M n)</code> - Determinant (LU decomposition with partial
+pivoting)</li>
+<li><code>(inv M n)</code> - Matrix inverse (Gauss-Jordan
+elimination)</li>
+<li><code>(solve A b n)</code> - Solve linear system Ax = b</li>
+</ul>
+<h4 id="eigenvalues">5.10.4 Eigenvalues</h4>
+<ul>
+<li><code>(power-iteration A n max-iters tolerance)</code> - Dominant
+eigenvalue estimation</li>
+</ul>
+<h4 id="numerical-integration">5.10.5 Numerical Integration</h4>
+<ul>
+<li><code>(integrate f a b n)</code> - Numerical integration (Simpson’s
+rule)</li>
+</ul>
+<h4 id="root-finding">5.10.6 Root Finding</h4>
+<ul>
+<li><code>(newton f df x0 tolerance max-iters)</code> - Newton-Raphson
+method</li>
+</ul>
+<h4 id="statistics">5.10.7 Statistics</h4>
+<ul>
+<li><code>(variance v)</code> - Variance of vector</li>
+<li><code>(std v)</code> - Standard deviation</li>
+<li><code>(covariance u v)</code> - Covariance of two vectors</li>
+</ul>
+<hr />
+<h2 id="memory-management-system">6. Memory Management System</h2>
+<h3 id="arena-memory-management">6.1 Arena Memory Management</h3>
+<h4 id="core-concepts">6.1.1 Core Concepts</h4>
+<ul>
+<li><strong>Arena Allocation:</strong> Bump-pointer allocation in large
+blocks</li>
+<li><strong>Scope-based Cleanup:</strong> Memory freed when scope
+exits</li>
+<li><strong>No Garbage Collection:</strong> Deterministic, predictable
+performance</li>
+<li><strong>Cache-Friendly:</strong> Linear allocation pattern</li>
+</ul>
+<h4 id="arena-structure">6.1.2 Arena Structure</h4>
+<pre class="c"><code>struct arena {
+    arena_block_t* current_block;   // Current allocation block
+    arena_scope_t* current_scope;   // Current scope
+    size_t default_block_size;      // Default size for new blocks
+    size_t total_allocated;         // Total memory allocated
+    size_t alignment;               // Memory alignment
+}</code></pre>
+<h4 id="global-arena">6.1.3 Global Arena</h4>
+<ul>
+<li><strong>Variable:</strong> <code>__global_arena</code></li>
+<li><strong>Default Block Size:</strong> 64KB</li>
+<li><strong>Usage:</strong> Default allocation target outside
+regions</li>
+</ul>
+<h3 id="oalr-ownership-aware-lexical-regions">6.2 OALR (Ownership-Aware
+Lexical Regions)</h3>
+<h4 id="with-region---lexical-memory-regions">6.2.1
+<code>with-region</code> - Lexical Memory Regions</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(with-region body...)
+(with-region &#39;name body...)
+(with-region (&#39;name size-hint) body...)</code></pre>
+<p><strong>Semantics:</strong> - Creates a dedicated arena for the body
+- Memory freed when region exits - Supports nesting (stack of
+regions)</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(with-region &#39;temp
+  (define data (iota 1000))
+  (process data))
+; data&#39;s memory freed here</code></pre>
+<h4 id="owned---mark-ownership">6.2.2 <code>owned</code> - Mark
+Ownership</h4>
+<p><strong>Syntax:</strong> <code>(owned expr)</code></p>
+<p><strong>Semantics:</strong> Value must be consumed before scope
+exit</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define resource (owned (allocate-something)))
+(use-and-consume resource)  ; Must use exactly once</code></pre>
+<h4 id="move---transfer-ownership">6.2.3 <code>move</code> - Transfer
+Ownership</h4>
+<p><strong>Syntax:</strong> <code>(move variable)</code></p>
+<p><strong>Semantics:</strong> Transfers ownership, marks original as
+moved</p>
+<p><strong>Compile-Time Checks:</strong> - Cannot use after move -
+Cannot move while borrowed</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define x (owned (list 1 2 3)))
+(define y (move x))
+; x is now invalid, y owns the list</code></pre>
+<h4 id="borrow---temporary-access">6.2.4 <code>borrow</code> - Temporary
+Access</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(borrow value body...)</code></pre>
+<p><strong>Semantics:</strong> Temporary read-only access during
+body</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define x (owned (list 1 2 3)))
+(borrow x
+  (display x)  ; Can read but not move
+  (length x))
+; x still owned after borrow</code></pre>
+<h4 id="shared---reference-counting">6.2.5 <code>shared</code> -
+Reference Counting</h4>
+<p><strong>Syntax:</strong> <code>(shared expr)</code></p>
+<p><strong>Semantics:</strong> Create reference-counted value</p>
+<p><strong>Structure:</strong> Prepends
+<code>eshkol_shared_header_t</code> (24 bytes):</p>
+<pre class="c"><code>struct {
+    void (*destructor)(void*);  // Custom cleanup
+    uint32_t ref_count;         // Strong references
+    uint32_t weak_count;        // Weak references
+    uint8_t flags;
+    uint8_t value_type;
+}</code></pre>
+<p><strong>Operations:</strong> - <code>shared_retain(ptr)</code> -
+Increment ref count - <code>shared_release(ptr)</code> - Decrement ref
+count (frees at 0)</p>
+<h4 id="weak-ref---weak-references">6.2.6 <code>weak-ref</code> - Weak
+References</h4>
+<p><strong>Syntax:</strong> <code>(weak-ref shared-value)</code></p>
+<p><strong>Semantics:</strong> Reference that doesn’t prevent
+deallocation</p>
+<p><strong>Operations:</strong> - <code>weak_ref_create(ptr)</code> -
+Create weak ref - <code>weak_ref_upgrade(weak)</code> - Try to get
+strong ref (NULL if freed) - <code>weak_ref_is_alive(weak)</code> -
+Check if target exists</p>
+<h3 id="memory-statistics">6.3 Memory Statistics</h3>
+<p>Runtime functions for memory tracking: -
+<code>arena_get_used_memory(arena)</code> - Bytes used -
+<code>arena_get_total_memory(arena)</code> - Total allocated -
+<code>arena_get_block_count(arena)</code> - Number of blocks -
+<code>region_get_used_memory(region)</code> - Region bytes used -
+<code>region_get_total_memory(region)</code> - Region total -
+<code>region_get_depth()</code> - Current region nesting depth</p>
+<hr />
+<h2 id="type-system">7. Type System</h2>
+<h3 id="hott-homotopy-type-theory-foundation">7.1 HoTT (Homotopy Type
+Theory) Foundation</h3>
+<p>Eshkol implements a gradual type system inspired by Homotopy Type
+Theory with:</p>
+<ul>
+<li><strong>Universe Levels:</strong> Type₀, Type₁, Type₂, Typeω</li>
+<li><strong>Subtype Hierarchy:</strong> Transitive subtyping with
+caching</li>
+<li><strong>Type Inference:</strong> Bidirectional type checking</li>
+<li><strong>Runtime Types:</strong> Type information preserved in tagged
+values</li>
+</ul>
+<h3 id="universe-hierarchy">7.2 Universe Hierarchy</h3>
+<h4 id="universe-levels">Universe Levels</h4>
+<ul>
+<li><strong>U0 (Type₀):</strong> Ground types (integers, floats,
+strings, chars, booleans)</li>
+<li><strong>U1 (Type₁):</strong> Type constructors (List, Vector, -&gt;,
+Pair, Tensor)</li>
+<li><strong>U2 (Type₂):</strong> Propositions (Eq, &lt;:, Bounded,
+Linear) - erased at runtime</li>
+<li><strong>UOmega (Typeω):</strong> Universe polymorphic</li>
+</ul>
+<h3 id="type-hierarchy">7.3 Type Hierarchy</h3>
+<pre><code>Value (root)
+├── Number
+│   ├── Integer
+│   │   ├── Int64
+│   │   └── Natural
+│   ├── Real
+│   │   ├── Float64
+│   │   └── Float32
+│   └── Complex
+│       ├── Complex64
+│       └── Complex128
+├── Text
+│   ├── String
+│   └── Char
+├── Boolean
+├── Null
+└── Symbol</code></pre>
+<h3 id="type-constructors">7.4 Type Constructors</h3>
+<h4 id="parameterized-types">Parameterized Types</h4>
+<ul>
+<li><code>List&lt;A&gt;</code> - Homogeneous list</li>
+<li><code>Vector&lt;A&gt;</code> - Homogeneous vector<br />
+</li>
+<li><code>Tensor&lt;A&gt;</code> - Homogeneous tensor</li>
+<li><code>Pair&lt;A,B&gt;</code> - Typed pair</li>
+<li><code>Function&lt;A,B&gt;</code> or <code>A -&gt; B</code> -
+Function type</li>
+<li><code>HashTable&lt;K,V&gt;</code> - Typed hash table</li>
+</ul>
+<h4 id="type-families-u1">Type Families (U1)</h4>
+<ul>
+<li><code>List</code> - List type constructor</li>
+<li><code>Vector</code> - Vector type constructor</li>
+<li><code>Pair</code> - Pair type constructor</li>
+<li><code>-&gt;</code> - Function type constructor</li>
+<li><code>Tensor</code> - Tensor type constructor</li>
+<li><code>Closure</code> - Closure type</li>
+<li><code>DualNumber&lt;T&gt;</code> - Dual number for AD</li>
+<li><code>ADNode&lt;T&gt;</code> - AD computation node</li>
+<li><code>Handle&lt;K&gt;</code> - Resource handle</li>
+<li><code>Buffer&lt;A,n&gt;</code> - Typed buffer with size</li>
+<li><code>Stream&lt;A&gt;</code> - Data stream</li>
+</ul>
+<h3 id="type-flags">7.5 Type Flags</h3>
+<ul>
+<li><code>TYPE_FLAG_EXACT</code> - Scheme exactness (integers)</li>
+<li><code>TYPE_FLAG_LINEAR</code> - Must use exactly once (quantum
+no-cloning)</li>
+<li><code>TYPE_FLAG_PROOF</code> - Compile-time only (erased at
+runtime)</li>
+<li><code>TYPE_FLAG_ABSTRACT</code> - Cannot instantiate directly</li>
+</ul>
+<h3 id="type-checking">7.6 Type Checking</h3>
+<h4 id="bidirectional-type-checking">7.6.1 Bidirectional Type
+Checking</h4>
+<p>The type checker operates in two complementary modes:</p>
+<p><strong>Synthesis Mode (⇒):</strong> Infer type from expression
+structure (bottom-up)</p>
+<pre><code>Γ ⊢ e ⇒ τ</code></pre>
+<p><strong>Checking Mode (⇐):</strong> Verify expression has expected
+type (top-down)</p>
+<pre><code>Γ ⊢ e ⇐ τ</code></pre>
+<h4 id="synthesis-rules">7.6.2 Synthesis Rules</h4>
+<pre><code>                                    x:A ∈ Γ
+─────────────── (Syn-Int)      ────────────── (Syn-Var)
+Γ ⊢ n ⇒ Integer                Γ ⊢ x ⇒ A
+
+Γ ⊢ f ⇒ (→ A₁...Aₙ R)    Γ ⊢ aᵢ ⇐ Aᵢ  (for each i)
+──────────────────────────────────────────────────────── (Syn-App)
+                    Γ ⊢ (f a₁...aₙ) ⇒ R</code></pre>
+<h4 id="checking-rules">7.6.3 Checking Rules</h4>
+<pre><code>    Γ, x:A ⊢ e ⇐ B
+──────────────────────── (Chk-Lambda)
+Γ ⊢ (lambda (x) e) ⇐ (→ A B)
+
+    Γ ⊢ e ⇒ A      A ~ B
+─────────────────────────── (Chk-Subsumption)
+        Γ ⊢ e ⇐ B</code></pre>
+<p>The subsumption rule uses the <strong>consistency relation</strong>
+<code>~</code> from gradual typing: <code>τ ~ σ</code> iff
+<code>τ = ?</code> or <code>σ = ?</code> or <code>τ</code> structurally
+matches <code>σ</code>. This allows typed and untyped code to
+interoperate.</p>
+<h4 id="subtyping">7.6.4 Subtyping</h4>
+<p>Transitive subtype relations with caching: - Int64 &lt;: Integer
+&lt;: Number &lt;: Value - Float64 &lt;: Real &lt;: Number &lt;: Value -
+BigInt &lt;: Integer &lt;: Number &lt;: Value - Complex &lt;: Number
+&lt;: Value - String &lt;: Text &lt;: Value</p>
+<p>Type promotion for arithmetic (R7RS semantics): - exact + exact =&gt;
+exact (Int64 + Int64 =&gt; Int64) - exact + inexact =&gt; inexact (Int64
++ Float64 =&gt; Float64) - bignum + int64 =&gt; bignum (wider exact
+type) - any + complex =&gt; complex</p>
+<h4 id="dependent-function-types-π-types">7.6.5 Dependent Function Types
+(Π-Types)</h4>
+<pre><code>Γ ⊢ A : Uᵢ      Γ, x:A ⊢ B : Uⱼ
+─────────────────────────────────── (Π-formation)
+     Γ ⊢ Π(x:A).B : U_max(i,j)
+
+     Γ, x:A ⊢ b : B
+──────────────────────── (Π-introduction)
+ Γ ⊢ λx.b : Π(x:A).B
+
+Γ ⊢ f : Π(x:A).B      Γ ⊢ a : A
+────────────────────────────────── (Π-elimination)
+        Γ ⊢ f(a) : B[a/x]</code></pre>
+<p>When B does not depend on x, Π(x:A).B reduces to the ordinary
+function type A → B.</p>
+<h4 id="dependent-pair-types-σ-types">7.6.6 Dependent Pair Types
+(Σ-Types)</h4>
+<pre><code>Γ ⊢ A : Uᵢ      Γ, x:A ⊢ B : Uⱼ
+─────────────────────────────────── (Σ-formation)
+     Γ ⊢ Σ(x:A).B : U_max(i,j)
+
+Γ ⊢ a : A      Γ ⊢ b : B[a/x]
+────────────────────────────────── (Σ-introduction)
+   Γ ⊢ (a, b) : Σ(x:A).B
+
+     Γ ⊢ p : Σ(x:A).B
+────────────────────────── (Σ-elim)
+ Γ ⊢ π₁(p) : A    Γ ⊢ π₂(p) : B[π₁(p)/x]</code></pre>
+<h4 id="identitypath-types">7.6.7 Identity/Path Types</h4>
+<pre><code>Γ ⊢ A : Uᵢ    Γ ⊢ a : A    Γ ⊢ b : A
+──────────────────────────────────────── (Id-formation)
+        Γ ⊢ Id_A(a, b) : Uᵢ
+
+      Γ ⊢ a : A
+─────────────────── (reflexivity)
+Γ ⊢ refl_a : Id_A(a, a)</code></pre>
+<p>Path types (identity proofs) exist at the U₂ proposition level and
+are <strong>erased at runtime</strong> — they guide type checking and
+optimization with zero runtime overhead.</p>
+<h3 id="dependent-types">7.7 Dependent Types</h3>
+<h4 id="compile-time-values">7.7.1 Compile-Time Values</h4>
+<p>The dependent type layer tracks values known at compile time for
+dimension verification:</p>
+<pre class="cpp"><code>class CTValue {
+    Kind: Nat | Bool | Expr | Unknown
+
+    // Evaluation
+    tryEvalNat() -&gt; Optional&lt;uint64_t&gt;
+    tryEvalFloat() -&gt; Optional&lt;double&gt;
+    tryEvalBool() -&gt; Optional&lt;bool&gt;
+
+    // Arithmetic
+    add(other) -&gt; CTValue
+    mul(other) -&gt; CTValue
+}</code></pre>
+<h4 id="dependent-type-expressions">7.7.2 Dependent Type
+Expressions</h4>
+<pre class="cpp"><code>class DependentType {
+    TypeId base;
+    vector&lt;TypeId&gt; type_indices;    // Type parameters
+    vector&lt;CTValue&gt; value_indices;  // Dimension parameters
+}</code></pre>
+<p><strong>Examples:</strong> - <code>Vector&lt;Float64, 100&gt;</code>
+- 100-element float vector - <code>Matrix&lt;Int64, 3, 4&gt;</code> -
+3×4 integer matrix - <code>Buffer&lt;Float64, n&gt;</code> - Buffer with
+symbolic dimension</p>
+<h4 id="dimension-checking">7.7.3 Dimension Checking</h4>
+<p>Static verification of array bounds and dimension compatibility: -
+Index bounds checking - Matrix multiplication dimension matching - Dot
+product dimension equality</p>
+<h3 id="linear-types-phase-6">7.8 Linear Types (Phase 6)</h3>
+<h4 id="linear-type-constraints">7.8.1 Linear Type Constraints</h4>
+<p>Values with <code>TYPE_FLAG_LINEAR</code> must be used exactly once:
+- Quantum states (no-cloning theorem) - File handles (must close) -
+Network connections</p>
+<h4 id="borrow-checking">7.8.2 Borrow Checking</h4>
+<p><strong>States:</strong> - <code>Owned</code> - Value is owned, can
+be moved or borrowed - <code>Moved</code> - Value has been moved, cannot
+use - <code>BorrowedShared</code> - Immutably borrowed (multiple
+readers) - <code>BorrowedMut</code> - Mutably borrowed (exclusive
+access) - <code>Dropped</code> - Explicitly dropped</p>
+<p><strong>Rules:</strong> 1. Can move only once 2. Cannot move while
+borrowed 3. Mutable borrows are exclusive 4. Shared borrows allow
+multiple readers 5. Borrows must not outlive borrowed value</p>
+<hr />
+<h2 id="automatic-differentiation">8. Automatic Differentiation</h2>
+<p>Eshkol provides first-class automatic differentiation for scientific
+computing and machine learning.</p>
+<h3 id="forward-mode-ad-dual-numbers">8.1 Forward-Mode AD (Dual
+Numbers)</h3>
+<h4 id="dual-number-structure">8.1.1 Dual Number Structure</h4>
+<pre class="c"><code>struct eshkol_dual_number {
+    double value;       // f(x)
+    double derivative;  // f&#39;(x)
+}</code></pre>
+<h4 id="dual-arithmetic-rules">8.1.2 Dual Arithmetic Rules</h4>
+<ul>
+<li><code>(a, a') + (b, b')</code> = <code>(a+b, a'+b')</code></li>
+<li><code>(a, a') - (b, b')</code> = <code>(a-b, a'-b')</code></li>
+<li><code>(a, a') * (b, b')</code> =
+<code>(a*b, a*b' + a'*b)</code></li>
+<li><code>(a, a') / (b, b')</code> =
+<code>(a/b, (a'*b - a*b')/b²)</code></li>
+</ul>
+<h4 id="derivative---compute-derivative">8.1.3 <code>derivative</code> -
+Compute Derivative</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(derivative function point)       ; Evaluate at point
+(derivative function)             ; Return derivative function</code></pre>
+<p><strong>Examples:</strong></p>
+<pre class="scheme"><code>(derivative (lambda (x) (* x x)) 5.0)  ; =&gt; 10.0 (2x at x=5)
+
+(define df (derivative (lambda (x) (sin x))))
+(df 0.0)  ; =&gt; 1.0 (cos(0))</code></pre>
+<p><strong>Implementation:</strong> Forward-mode AD with dual
+numbers</p>
+<h3 id="reverse-mode-ad-computational-graphs">8.2 Reverse-Mode AD
+(Computational Graphs)</h3>
+<h4 id="ad-tape-structure">8.2.1 AD Tape Structure</h4>
+<pre class="c"><code>struct ad_tape {
+    ad_node_t** nodes;         // Array of nodes in eval order
+    size_t num_nodes;          // Current node count
+    size_t capacity;           // Allocated capacity
+    ad_node_t** variables;     // Input variable nodes
+    size_t num_variables;      // Number of inputs
+}</code></pre>
+<h4 id="tape-stack-for-nested-gradients">8.2.2 Tape Stack (for nested
+gradients)</h4>
+<ul>
+<li><strong>Global:</strong> <code>__ad_tape_stack[32]</code> - Stack of
+tapes</li>
+<li><strong>Depth:</strong> <code>__ad_tape_depth</code> - Current
+nesting level</li>
+<li><strong>Max Nesting:</strong> 32 levels</li>
+</ul>
+<h4 id="gradient---compute-gradient">8.2.3 <code>gradient</code> -
+Compute Gradient</h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(gradient function point)         ; Scalar field: ℝⁿ → ℝ
+(gradient function)               ; Return gradient function</code></pre>
+<p><strong>Returns:</strong> Vector of partial derivatives</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (f v)
+  (+ (* (vref v 0) (vref v 0))    ; x²
+     (* (vref v 1) (vref v 1))))  ; + y²
+
+(gradient f (vector 3.0 4.0))  ; =&gt; #(6.0 8.0)  [∂f/∂x, ∂f/∂y]</code></pre>
+<p><strong>Implementation:</strong> 1. Forward pass: Record computation
+graph on tape 2. Backward pass: Backpropagate gradients from output to
+inputs</p>
+<h3 id="vector-calculus-operations">8.3 Vector Calculus Operations</h3>
+<h4 id="jacobian---jacobian-matrix">8.3.1 <code>jacobian</code> -
+Jacobian Matrix</h4>
+<p><strong>Syntax:</strong> <code>(jacobian function point)</code></p>
+<p><strong>Domain:</strong> Vector function ℝⁿ → ℝᵐ</p>
+<p><strong>Returns:</strong> m×n matrix of partial derivatives</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (polar-to-cartesian v)
+  (vector (* (vref v 0) (cos (vref v 1)))
+          (* (vref v 0) (sin (vref v 1)))))
+
+(jacobian polar-to-cartesian (vector 1.0 0.0))
+; =&gt; Jacobian at (r=1, θ=0)</code></pre>
+<h4 id="hessian---hessian-matrix">8.3.2 <code>hessian</code> - Hessian
+Matrix</h4>
+<p><strong>Syntax:</strong> <code>(hessian function point)</code></p>
+<p><strong>Domain:</strong> Scalar field ℝⁿ → ℝ</p>
+<p><strong>Returns:</strong> n×n matrix of second partial
+derivatives</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (f v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))
+
+(hessian f (vector 1.0 1.0))
+; =&gt; #((2 0) (0 2))  [constant Hessian for quadratic]</code></pre>
+<h4 id="divergence---vector-field-divergence">8.3.3
+<code>divergence</code> - Vector Field Divergence</h4>
+<p><strong>Syntax:</strong> <code>(divergence function point)</code></p>
+<p><strong>Domain:</strong> Vector field ℝⁿ → ℝⁿ</p>
+<p><strong>Returns:</strong> Scalar (trace of Jacobian)</p>
+<p><strong>Formula:</strong> ∇·F = ∂F₁/∂x₁ + ∂F₂/∂x₂ + … + ∂Fₙ/∂xₙ</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (radial v)
+  (vector (vref v 0) (vref v 1)))  ; F(x,y) = (x, y)
+
+(divergence radial (vector 1.0 1.0))  ; =&gt; 2.0</code></pre>
+<h4 id="curl---vector-field-curl">8.3.4 <code>curl</code> - Vector Field
+Curl</h4>
+<p><strong>Syntax:</strong> <code>(curl function point)</code></p>
+<p><strong>Domain:</strong> 3D vector field ℝ³ → ℝ³</p>
+<p><strong>Returns:</strong> 3D vector</p>
+<p><strong>Formula:</strong> ∇×F = (∂F₃/∂y - ∂F₂/∂z, ∂F₁/∂z - ∂F₃/∂x,
+∂F₂/∂x - ∂F₁/∂y)</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (rotating v)
+  (vector (- 0.0 (vref v 1))   ; -y
+          (vref v 0)             ; x
+          0.0))                  ; 0
+
+(curl rotating (vector 1.0 1.0 0.0))  ; =&gt; #(0 0 2)</code></pre>
+<h4 id="laplacian---scalar-field-laplacian">8.3.5 <code>laplacian</code>
+- Scalar Field Laplacian</h4>
+<p><strong>Syntax:</strong> <code>(laplacian function point)</code></p>
+<p><strong>Domain:</strong> Scalar field ℝⁿ → ℝ</p>
+<p><strong>Returns:</strong> Scalar (trace of Hessian)</p>
+<p><strong>Formula:</strong> ∇²f = ∂²f/∂x₁² + ∂²f/∂x₂² + … +
+∂²f/∂xₙ²</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (harmonic v)
+  (+ (* (vref v 0) (vref v 0))
+     (* (vref v 1) (vref v 1))))  ; x² + y²
+
+(laplacian harmonic (vector 1.0 1.0))  ; =&gt; 4.0</code></pre>
+<h4 id="directional-derivative---directional-derivative">8.3.6
+<code>directional-derivative</code> - Directional Derivative</h4>
+<p><strong>Syntax:</strong>
+<code>(directional-derivative function point direction)</code></p>
+<p><strong>Formula:</strong> D_v f(p) = ∇f(p) · v</p>
+<p><strong>Example:</strong></p>
+<pre class="scheme"><code>(define (f v) (+ (* (vref v 0) (vref v 0))
+                 (* (vref v 1) (vref v 1))))
+(define point (vector 1.0 1.0))
+(define direction (vector 1.0 0.0))  ; x-direction
+
+(directional-derivative f point direction)</code></pre>
+<h3 id="ad-mode-tracking">8.4 AD Mode Tracking</h3>
+<h4 id="global-state">Global State</h4>
+<ul>
+<li><code>__ad_mode_active</code> - Boolean flag indicating AD
+context</li>
+<li><code>__current_ad_tape</code> - Current tape for graph
+recording</li>
+</ul>
+<h4 id="nested-gradients">Nested Gradients</h4>
+<p>Supports arbitrary nesting depth via tape stack:</p>
+<pre class="scheme"><code>(gradient 
+  (lambda (x)
+    (gradient 
+      (lambda (y) (* x y y))
+      (vector 1.0)))
+  (vector 2.0))
+; Computes ∂/∂x[∂/∂y(xy²)]</code></pre>
+<hr />
+<h2 id="module-system-1">9. Module System</h2>
+<h3 id="module-resolution">9.1 Module Resolution</h3>
+<h4 id="search-order">Search Order:</h4>
+<ol type="1">
+<li>Current directory (relative to source file)</li>
+<li><code>lib/</code> directory</li>
+<li><code>$ESHKOL_PATH</code> environment variable
+(colon-separated)</li>
+<li>System library paths</li>
+</ol>
+<h4 id="path-conversion">Path Conversion:</h4>
+<ul>
+<li>Module name <code>core.functional.compose</code></li>
+<li>Becomes file path <code>lib/core/functional/compose.esk</code></li>
+</ul>
+<h3 id="symbol-visibility">9.2 Symbol Visibility</h3>
+<h4 id="private-symbols">Private Symbols</h4>
+<p>Symbols not in <code>provide</code> are renamed with module
+prefix:</p>
+<pre><code>Module: test.utils
+Private symbol: helper
+Mangled name: __test_utils__helper</code></pre>
+<h4 id="public-symbols">Public Symbols</h4>
+<p>Symbols in <code>provide</code> keep their original names and are
+visible to importers.</p>
+<h3 id="dependency-management">9.3 Dependency Management</h3>
+<h4 id="circular-dependency-detection">Circular Dependency
+Detection</h4>
+<ul>
+<li>Uses DFS coloring (UNVISITED, VISITING, VISITED)</li>
+<li>Reports complete cycle path on error</li>
+</ul>
+<h4 id="topological-sorting">Topological Sorting</h4>
+<p>Modules loaded in dependency order (dependencies before
+dependents)</p>
+<h3 id="pre-compiled-modules">9.4 Pre-compiled Modules</h3>
+<p>Modules can be pre-compiled to <code>.o</code> files for faster
+loading: - <code>stdlib.o</code> - Pre-compiled standard library -
+Linked at final executable creation - <code>require</code> statements
+recognize pre-compiled modules</p>
+<hr />
+<h2 id="compilation-model">10. Compilation Model</h2>
+<h3 id="compilation-pipeline">10.1 Compilation Pipeline</h3>
+<pre><code>Source (.esk) → Parser → AST → Macro Expansion → Type Checking → 
+LLVM IR → Object File (.o) → Executable</code></pre>
+<h3 id="parser">10.2 Parser</h3>
+<h4 id="tokenization">10.2.1 Tokenization</h4>
+<p><strong>Token Types:</strong> - <code>TOKEN_LPAREN</code>,
+<code>TOKEN_RPAREN</code> - Parentheses - <code>TOKEN_QUOTE</code> -
+<code>'</code> - <code>TOKEN_BACKQUOTE</code> - <code>`</code> -
+<code>TOKEN_COMMA</code> - <code>,</code> - <code>TOKEN_COMMA_AT</code>
+- <code>,@</code> - <code>TOKEN_SYMBOL</code> - Identifiers -
+<code>TOKEN_STRING</code> - String literals - <code>TOKEN_NUMBER</code>
+- Numeric literals - <code>TOKEN_BOOLEAN</code> - <code>#t</code> /
+<code>#f</code> - <code>TOKEN_CHAR</code> - Character literals -
+<code>TOKEN_VECTOR_START</code> - <code>#(</code> -
+<code>TOKEN_COLON</code> - <code>:</code> (type annotations) -
+<code>TOKEN_ARROW</code> - <code>-&gt;</code> (function types)</p>
+<h4 id="ast-structure">10.2.2 AST Structure</h4>
+<pre class="c"><code>struct eshkol_ast {
+    eshkol_type_t type;     // AST node type
+    union {
+        int64_t int64_val;
+        double double_val;
+        struct { char* ptr; uint64_t size; } str_val;
+        struct { char* id; ... } variable;
+        struct { ... } eshkol_func;
+        struct { car; cdr; } cons_cell;
+        eshkol_operations_t operation;
+    };
+    uint32_t inferred_hott_type;  // Type checker result
+    uint32_t line;                // Source location
+    uint32_t column;
+}</code></pre>
+<h3 id="llvm-backend">10.3 LLVM Backend</h3>
+<h4 id="code-generation-architecture">10.3.1 Code Generation
+Architecture</h4>
+<p><strong>Modular Design:</strong> - <code>CodegenContext</code> -
+Shared state and infrastructure - <code>TypeSystem</code> - LLVM type
+management - <code>TaggedValueCodegen</code> - Pack/unpack tagged values
+- <code>ArithmeticCodegen</code> - Polymorphic arithmetic -
+<code>AutodiffCodegen</code> - AD operators -
+<code>BindingCodegen</code> - Variable definitions -
+<code>CollectionCodegen</code> - Lists and vectors -
+<code>ControlFlowCodegen</code> - Conditionals and loops -
+<code>FunctionCodegen</code> - Lambdas and closures -
+<code>TensorCodegen</code> - Tensor operations -
+<code>HashCodegen</code> - Hash tables - <code>StringIOCodegen</code> -
+Strings and I/O - <code>SystemCodegen</code> - System operations -
+<code>HomoiconicCodegen</code> - Quote and S-expressions -
+<code>TailCallCodegen</code> - Tail call optimization</p>
+<h4 id="closure-compilation">10.3.2 Closure Compilation</h4>
+<p><strong>Steps:</strong> 1. Analyze for captured variables (static AST
+analysis) 2. Generate lambda function with captures as parameters 3.
+Allocate closure struct with environment 4. Store captures in
+environment 5. Register S-expression for homoiconic display</p>
+<p><strong>Calling Convention:</strong></p>
+<pre class="c"><code>eshkol_tagged_value func(param1, param2, ..., capture1, capture2, ...)</code></pre>
+<h3 id="optimization-strategies">10.4 Optimization Strategies</h3>
+<h4 id="tail-call-optimization">Tail Call Optimization</h4>
+<ul>
+<li>Direct tail calls marked with <code>musttail</code> attribute</li>
+<li>Self-recursive functions transformed to loops</li>
+<li>Trampoline for closure tail calls</li>
+</ul>
+<h4 id="inline-caching">Inline Caching</h4>
+<ul>
+<li>Function table for fast symbol lookup</li>
+<li>Type specialization for hot paths</li>
+<li>Interned strings for fast equality</li>
+</ul>
+<hr />
+<h2 id="repl-and-jit">11. REPL and JIT</h2>
+<h3 id="interactive-repl">11.1 Interactive REPL</h3>
+<h4 id="features">11.1.1 Features</h4>
+<ul>
+<li><strong>JIT Compilation:</strong> Instant execution via LLVM ORC
+JIT</li>
+<li><strong>Persistent State:</strong> Variables and functions persist
+across evaluations</li>
+<li><strong>Tab Completion:</strong> Context-aware completion for
+builtins and user symbols</li>
+<li><strong>History:</strong> Command history with readline support</li>
+<li><strong>Multi-line Input:</strong> Auto-continuation for incomplete
+expressions</li>
+<li><strong>Colored Output:</strong> Syntax highlighting for
+results</li>
+</ul>
+<h4 id="repl-commands">11.1.2 REPL Commands</h4>
+<ul>
+<li><code>:help</code>, <code>:h</code> - Show help</li>
+<li><code>:quit</code>, <code>:q</code> - Exit REPL</li>
+<li><code>:clear</code> - Clear screen</li>
+<li><code>:env</code>, <code>:e</code> - Show defined symbols</li>
+<li><code>:type &lt;expr&gt;</code> - Show type of expression</li>
+<li><code>:doc &lt;name&gt;</code> - Show function documentation</li>
+<li><code>:ast &lt;expr&gt;</code> - Show AST structure</li>
+<li><code>:time &lt;expr&gt;</code> - Time execution</li>
+<li><code>:load &lt;file&gt;</code> - Load and execute file</li>
+<li><code>:reload</code> - Reload last file</li>
+<li><code>:stdlib</code> - Load standard library</li>
+<li><code>:examples</code> - Show example expressions</li>
+<li><code>:version</code>, <code>:v</code> - Show version</li>
+</ul>
+<h3 id="jit-architecture">11.2 JIT Architecture</h3>
+<h4 id="llvm-orc-jit">11.2.1 LLVM ORC JIT</h4>
+<ul>
+<li><strong>Engine:</strong> LLJIT (LLVM On-Request Compilation)</li>
+<li><strong>Threading:</strong> Single-threaded compilation</li>
+<li><strong>Symbol Resolution:</strong> Dynamic library search for
+runtime functions</li>
+</ul>
+<h4 id="shared-arena">11.2.2 Shared Arena</h4>
+<ul>
+<li><strong>Global:</strong> <code>__repl_shared_arena</code></li>
+<li><strong>Persistence:</strong> Single arena shared across all
+evaluations</li>
+<li><strong>Purpose:</strong> Data from one evaluation accessible in
+later ones</li>
+</ul>
+<h4 id="symbol-persistence">11.2.3 Symbol Persistence</h4>
+<ul>
+<li>Function names registered in global REPL context</li>
+<li>Previous definitions injectable as external declarations</li>
+<li>Cross-evaluation function calls supported</li>
+</ul>
+<hr />
+<h2 id="advanced-features">12. Advanced Features</h2>
+<h3 id="closures">12.1 Closures</h3>
+<h4 id="lexical-scoping">12.1.1 Lexical Scoping</h4>
+<p>Variables captured from enclosing scopes:</p>
+<pre class="scheme"><code>(define (make-adder n)
+  (lambda (x) (+ x n)))  ; Captures n
+
+(define add5 (make-adder 5))
+(add5 10)  ; =&gt; 15</code></pre>
+<h4 id="variadic-functions">12.1.2 Variadic Functions</h4>
+<p><strong>Fixed + Rest Parameters:</strong></p>
+<pre class="scheme"><code>(define (f x y . rest)
+  (cons x (cons y rest)))
+
+(f 1 2 3 4)  ; =&gt; (1 2 3 4)</code></pre>
+<p><strong>All Parameters as List:</strong></p>
+<pre class="scheme"><code>(lambda args (fold + 0 args))</code></pre>
+<h4 id="closure-environment-encoding">12.1.3 Closure Environment
+Encoding</h4>
+<pre class="c"><code>num_captures field encodes:
+- Bits 0-15:  actual capture count
+- Bits 16-31: fixed parameter count
+- Bit 63:     is_variadic flag</code></pre>
+<h3 id="homoiconicity-code-as-data">12.2 Homoiconicity (Code as
+Data)</h3>
+<h4 id="lambda-registry">12.2.1 Lambda Registry</h4>
+<p>Runtime table mapping function pointers to S-expressions:</p>
+<pre class="c"><code>struct eshkol_lambda_entry {
+    uint64_t func_ptr;   // Function pointer
+    uint64_t sexpr_ptr;  // Pointer to S-expression cons cell
+    const char* name;    // Function name (optional)
+}</code></pre>
+<h4 id="s-expression-storage">12.2.2 S-Expression Storage</h4>
+<p>Each lambda stores its source as a cons-cell chain:</p>
+<pre class="scheme"><code>(define square (lambda (x) (* x x)))
+(display square)  ; =&gt; (lambda (x) (* x x))</code></pre>
+<h4 id="quote-implementation">12.2.3 Quote Implementation</h4>
+<p>Compile-time AST converted to runtime cons cells:</p>
+<pre class="scheme"><code>&#39;(1 2 (+ 3 4))  ; Stored as cons cells, not evaluated</code></pre>
+<h3 id="pattern-matching">12.3 Pattern Matching</h3>
+<h4 id="pattern-types">Pattern Types</h4>
+<ul>
+<li><code>PATTERN_LITERAL</code> - Match exact value</li>
+<li><code>PATTERN_VARIABLE</code> - Bind to variable</li>
+<li><code>PATTERN_WILDCARD</code> - Match anything (no binding)</li>
+<li><code>PATTERN_CONS</code> - Match pair structure</li>
+<li><code>PATTERN_LIST</code> - Match list of patterns</li>
+<li><code>PATTERN_PREDICATE</code> - Match if predicate returns
+true</li>
+<li><code>PATTERN_OR</code> - Match any of several patterns</li>
+</ul>
+<h4 id="match-compilation">Match Compilation</h4>
+<p>Patterns compiled to decision trees with binding extraction.</p>
+<h3 id="tail-call-optimization-1">12.4 Tail Call Optimization</h3>
+<h4 id="direct-tail-calls">12.4.1 Direct Tail Calls</h4>
+<p>Functions in tail position marked with LLVM <code>musttail</code>
+attribute:</p>
+<pre class="scheme"><code>(define (sum-to n acc)
+  (if (= n 0)
+      acc
+      (sum-to (- n 1) (+ acc n))))  ; Tail call optimized</code></pre>
+<h4 id="named-let-loops">12.4.2 Named Let Loops</h4>
+<p>Transformed to iteration:</p>
+<pre class="scheme"><code>(let loop ((n 10) (acc 0))
+  (if (= n 0)
+      acc
+      (loop (- n 1) (+ acc n))))
+; Compiles to while loop, not recursion</code></pre>
+<h4 id="trampoline">12.4.3 Trampoline</h4>
+<p>For closures with captures, use bounce/trampoline:</p>
+<pre class="scheme"><code>(define (t-fact n acc)
+  (if (= n 0)
+      acc
+      (lambda () (t-fact (- n 1) (* acc n)))))
+
+(trampoline (lambda () (t-fact 1000 1)))  ; Constant stack</code></pre>
+<h3 id="internal-defines">12.5 Internal Defines</h3>
+<p>Function bodies can contain internal definitions, which are
+automatically transformed to <code>letrec</code>:</p>
+<pre class="scheme"><code>(define (outer x)
+  (define (helper y) (+ y 1))
+  (define z 10)
+  (+ x (helper z)))
+
+; Transformed to:
+(define (outer x)
+  (letrec ((helper (lambda (y) (+ y 1)))
+           (z 10))
+    (+ x (helper z))))</code></pre>
+<hr />
+<h2 id="runtime-architecture">13. Runtime Architecture</h2>
+<h3 id="tagged-value-system">13.1 Tagged Value System</h3>
+<h4 id="runtime-representation">13.1.1 Runtime Representation</h4>
+<p>Every value at runtime is a 16-byte
+<code>eshkol_tagged_value_t</code>: - Offset 0:
+<code>uint8_t type</code> - Type tag (0-255) - Offset 1:
+<code>uint8_t flags</code> - Exactness, special flags - Offset 2:
+<code>uint16_t reserved</code> - Offset 4: <code>uint32_t padding</code>
+- Alignment - Offset 8: <code>union data</code> - int64/double/ptr (8
+bytes)</p>
+<h4 id="type-tag-encoding">13.1.2 Type Tag Encoding</h4>
+<p><strong>Immediate Types (0-7):</strong> Data stored directly - 0:
+NULL - 1: INT64 - 2: DOUBLE - 3: BOOL - 4: CHAR - 5: SYMBOL - 6:
+DUAL_NUMBER - 7: COMPLEX</p>
+<p><strong>Consolidated Types (8-10):</strong> Subtype in header - 8:
+HEAP_PTR (cons, string, vector, tensor, hash, exception, bignum,
+rational, etc.) - 9: CALLABLE (closure, lambda-sexpr, ad-node,
+continuation) - 10: LOGIC_VAR (consciousness engine logic variables)</p>
+<p><strong>Multimedia Types (16-19):</strong> Reserved for future - 16:
+HANDLE - 17: BUFFER - 18: STREAM - 19: EVENT</p>
+<p><strong>Legacy Types (32+):</strong> Backward compatibility - 32:
+CONS_PTR (deprecated) - 33: STRING_PTR (deprecated) - 34-40: Other
+legacy pointer types</p>
+<h3 id="object-header-system">13.2 Object Header System</h3>
+<p>All heap objects have an 8-byte header prepended:</p>
+<pre class="c"><code>struct eshkol_object_header {
+    uint8_t  subtype;      // Type within HEAP_PTR/CALLABLE
+    uint8_t  flags;        // GC marks, linear status
+    uint16_t ref_count;    // Reference count
+    uint32_t size;         // Object size
+}</code></pre>
+<p><strong>Flags:</strong> - <code>ESHKOL_OBJ_FLAG_MARKED</code> (0x01)
+- GC mark bit - <code>ESHKOL_OBJ_FLAG_LINEAR</code> (0x02) - Linear type
+- <code>ESHKOL_OBJ_FLAG_BORROWED</code> (0x04) - Currently borrowed -
+<code>ESHKOL_OBJ_FLAG_CONSUMED</code> (0x08) - Linear value consumed -
+<code>ESHKOL_OBJ_FLAG_SHARED</code> (0x10) - Reference-counted -
+<code>ESHKOL_OBJ_FLAG_WEAK</code> (0x20) - Weak reference -
+<code>ESHKOL_OBJ_FLAG_PINNED</code> (0x40) - Pinned (no relocation) -
+<code>ESHKOL_OBJ_FLAG_EXTERNAL</code> (0x80) - External resource</p>
+<p><strong>Header Access Macros:</strong></p>
+<pre class="c"><code>ESHKOL_GET_HEADER(data_ptr)     // Get header from data
+ESHKOL_GET_SUBTYPE(data_ptr)    // Get subtype byte
+ESHKOL_GET_FLAGS(data_ptr)      // Get flags byte
+ESHKOL_HAS_FLAG(data_ptr, flag) // Check specific flag</code></pre>
+<h3 id="cons-cell-implementation">13.3 Cons Cell Implementation</h3>
+<h4 id="tagged-cons-cell-structure">13.3.1 Tagged Cons Cell
+Structure</h4>
+<pre class="c"><code>struct arena_tagged_cons_cell {
+    eshkol_tagged_value_t car;  // 16 bytes - Complete tagged value
+    eshkol_tagged_value_t cdr;  // 16 bytes - Complete tagged value
+}  // Total: 32 bytes (cache-aligned)</code></pre>
+<h4 id="mixed-type-list-support">13.3.2 Mixed-Type List Support</h4>
+<p>Each cons cell element stores complete type information, enabling: -
+<code>(1 "two" #t)</code> - Integer, string, boolean -
+<code>((lambda (x) x) 42 (list 1 2))</code> - Function, number, list -
+Full type preservation through list operations</p>
+<h3 id="display-system">13.4 Display System</h3>
+<h4 id="unified-display">13.4.1 Unified Display</h4>
+<p>Single <code>eshkol_display_value()</code> function handles all
+types: - Immediate values: Direct display - Cons cells: Recursive list
+display with dotted pair support - Vectors: <code>#(...)</code> notation
+- Tensors: Nested parentheses for N-D structure - Strings: With or
+without quotes (display vs write) - Lambdas: Show source S-expression
+via registry lookup - Closures: Show embedded S-expression - Hash
+tables: <code>#&lt;hash:N&gt;</code> format</p>
+<h4 id="display-options">13.4.2 Display Options</h4>
+<pre class="c"><code>struct eshkol_display_opts {
+    int max_depth;         // Recursion limit
+    uint8_t quote_strings; // Display vs write semantics
+    uint8_t show_types;    // Debug: show type tags
+    void* output;          // Output stream
+}</code></pre>
+<hr />
+<h2 id="exact-arithmetic-specification">14. Exact Arithmetic
+Specification</h2>
+<p>Eshkol implements the R7RS numeric tower (R7RS 6.2) with exact
+arithmetic support extending beyond the fixed-width <code>INT64</code>
+representation. This section specifies the representation, promotion
+rules, and semantic invariants for exact arithmetic.</p>
+<h3 id="bignum-representation">14.1 Bignum Representation</h3>
+<h4 id="storage-layout">14.1.1 Storage Layout</h4>
+<p>Bignums are heap-allocated, sign-magnitude integers with arbitrary
+precision.</p>
+<p><strong>Runtime Structure:</strong></p>
+<pre class="c"><code>struct eshkol_bignum {
+    int sign;           // +1 or -1 (0 represented as +1 with zero limbs)
+    uint32_t num_limbs; // Number of 64-bit limbs
+    uint64_t limbs[];   // Flexible array, least-significant limb first
+}</code></pre>
+<p><strong>Type Identification:</strong> - <strong>Type tag:</strong>
+<code>ESHKOL_VALUE_HEAP_PTR</code> (8) - <strong>Heap subtype:</strong>
+<code>HEAP_SUBTYPE_BIGNUM</code> (11) - <strong>Predicate:</strong>
+<code>eshkol_is_bignum_tagged(tagged_value)</code> – inspects type tag
+and heap header subtype</p>
+<h4 id="runtime-dispatch">14.1.2 Runtime Dispatch</h4>
+<p>All bignum arithmetic is dispatched through a single polymorphic
+entry point:</p>
+<pre class="c"><code>eshkol_tagged_value_t eshkol_bignum_binary_tagged(
+    eshkol_tagged_value_t lhs,
+    eshkol_tagged_value_t rhs,
+    int op_code
+);</code></pre>
+<p><strong>Operation codes:</strong> 0=add, 1=sub, 2=mul, 3=div,
+4=quotient, 5=remainder, 6=modulo, 7=neg (unary, rhs ignored).</p>
+<p><strong>Codegen helpers:</strong>
+<code>emitBignumBinaryCall(lhs, rhs, op_code)</code> and
+<code>emitBignumCompareCall(lhs, rhs, op_code)</code> generate the
+appropriate LLVM <code>CallInst</code>.</p>
+<h4 id="promotion-int64-to-bignum">14.1.3 Promotion: INT64 to
+Bignum</h4>
+<p>Checked arithmetic uses LLVM overflow intrinsics: -
+<code>llvm.sadd.with.overflow.i64</code> – addition -
+<code>llvm.ssub.with.overflow.i64</code> – subtraction -
+<code>llvm.smul.with.overflow.i64</code> – multiplication</p>
+<p><strong>Invariant:</strong> If the overflow flag is set, the
+operation is re-dispatched to <code>eshkol_bignum_binary_tagged</code>
+with both operands promoted. Promotion from <code>INT64</code> to bignum
+is performed by <code>eshkol_bignum_from_int64(int64_t)</code>.</p>
+<h4 id="demotion-bignum-to-int64">14.1.4 Demotion: Bignum to INT64</h4>
+<p>After any bignum operation, if the result magnitude fits within
+<code>[-2^63, 2^63 - 1]</code>, the result is demoted to
+<code>INT64</code>. This preserves the invariant that small exact
+integers are always stored in the immediate <code>INT64</code>
+representation for performance.</p>
+<p><strong>Invariant:</strong>
+<code>forall v : bignum, |v| &lt;= 2^63 - 1 =&gt; demote(v) : INT64</code>.</p>
+<h3 id="rational-representation">14.2 Rational Representation</h3>
+<h4 id="storage-layout-1">14.2.1 Storage Layout</h4>
+<p>Rationals are heap-allocated pairs of bignums representing p/q in
+canonical form.</p>
+<p><strong>Runtime Structure:</strong></p>
+<pre class="c"><code>struct eshkol_rational {
+    eshkol_bignum* numerator;
+    eshkol_bignum* denominator;
+}</code></pre>
+<p><strong>Type Identification:</strong> - <strong>Type tag:</strong>
+<code>ESHKOL_VALUE_HEAP_PTR</code> (8) - <strong>Heap subtype:</strong>
+<code>HEAP_SUBTYPE_RATIONAL</code> (19)</p>
+<h4 id="canonical-form">14.2.2 Canonical Form</h4>
+<p><strong>Invariants:</strong> 1.
+<code>gcd(|numerator|, denominator) = 1</code> – GCD-reduced 2.
+<code>denominator &gt; 0</code> – positive denominator (sign carried by
+numerator) 3. <code>0/1</code> is the canonical representation of
+rational zero 4. If <code>denominator = 1</code>, the value MAY be
+demoted to bignum or INT64</p>
+<h4 id="comparison">14.2.3 Comparison</h4>
+<pre class="c"><code>int eshkol_rational_compare_tagged_ptr(
+    eshkol_tagged_value_t lhs,
+    eshkol_tagged_value_t rhs
+);</code></pre>
+<p>Returns -1, 0, or +1. Cross-compares a/b vs c/d as <code>a*d</code>
+vs <code>c*b</code> (exact, no floating-point).</p>
+<h3 id="numeric-tower">14.3 Numeric Tower</h3>
+<h4 id="promotion-lattice">14.3.1 Promotion Lattice</h4>
+<p>The formal promotion order for exact/inexact coercion:</p>
+<pre><code>INT64 &lt; BIGNUM &lt; RATIONAL &lt; DOUBLE &lt; COMPLEX
+  |        |         |          |         |
+exact    exact     exact    inexact   inexact</code></pre>
+<p><strong>Rules (per R7RS 6.2.3):</strong> 1. Arithmetic on two exact
+values produces an exact result when mathematically defined. 2.
+Arithmetic involving at least one inexact operand produces an inexact
+result. 3. <code>exact-&gt;inexact</code> converts to the nearest IEEE
+754 double. Precision loss is possible for bignums with magnitude &gt;
+2^53. 4. <code>inexact-&gt;exact</code> converts a double to the nearest
+rational representation via continued fraction expansion.</p>
+<h4 id="mixed-exactness-dispatch">14.3.2 Mixed-Exactness Dispatch</h4>
+<p>When a binary arithmetic operation receives one exact and one inexact
+operand: 1. The exact operand is converted to inexact (double) via
+<code>extractAsDouble</code>. 2. The operation proceeds in double
+arithmetic. 3. The result is tagged as inexact
+(<code>ESHKOL_VALUE_DOUBLE</code>).</p>
+<p><strong>Exception:</strong> Division of two exact integers where the
+result is not an integer produces a rational (exact), not a double.</p>
+<h3 id="overflow-handling">14.4 Overflow Handling</h3>
+<h4 id="compile-time-strategy">14.4.1 Compile-Time Strategy</h4>
+<p>The LLVM backend emits checked arithmetic for all <code>INT64</code>
+operations:</p>
+<pre class="llvm"><code>%result = call {i64, i1} @llvm.sadd.with.overflow.i64(i64 %a, i64 %b)
+%value = extractvalue {i64, i1} %result, 0
+%overflow = extractvalue {i64, i1} %result, 1
+br i1 %overflow, label %bignum_path, label %int64_path</code></pre>
+<p><strong>Bignum path:</strong> Both operands are promoted to bignum
+via <code>eshkol_bignum_from_int64</code>, and the operation is
+re-executed via <code>eshkol_bignum_binary_tagged</code>.</p>
+<h4 id="exponentiation">14.4.2 Exponentiation</h4>
+<p><code>(expt base exp)</code> where both operands are exact
+non-negative integers dispatches to
+<code>eshkol_bignum_pow_tagged</code>, which implements repeated
+squaring in O(log n) multiplications. If either operand is inexact, the
+operation falls through to <code>pow(double, double)</code>.</p>
+<h4 id="edge-cases">14.4.3 Edge Cases</h4>
+<ul>
+<li><code>(expt 0 0)</code> returns <code>1</code> (R7RS 6.2.6).</li>
+<li><code>(/ 1 0)</code> raises
+<code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>.</li>
+<li><code>(quotient x 0)</code> and <code>(remainder x 0)</code> raise
+<code>ESHKOL_EXCEPTION_DIVIDE_BY_ZERO</code>.</li>
+<li>Bignum operations that produce a result fitting INT64 always
+demote.</li>
+</ul>
+<hr />
+<h2 id="complex-number-type">15. Complex Number Type</h2>
+<p>Eshkol provides complex numbers as a first-class numeric type,
+following R7RS 6.2.5.</p>
+<h3 id="representation">15.1 Representation</h3>
+<h4 id="storage-layout-2">15.1.1 Storage Layout</h4>
+<p>Complex numbers are heap-allocated structs containing two IEEE 754
+double-precision components.</p>
+<pre class="c"><code>struct eshkol_complex {
+    double real;    // Real part
+    double imag;    // Imaginary part
+}</code></pre>
+<p><strong>Type Identification:</strong> - <strong>Type tag:</strong>
+<code>ESHKOL_VALUE_COMPLEX</code> (7) - <strong>Heap subtype:</strong>
+Not used; complex has a dedicated type tag distinct from
+<code>HEAP_PTR</code>.</p>
+<p><strong>Invariant:</strong> Complex values are always inexact. There
+is no exact complex representation.</p>
+<h4 id="constructors">15.1.2 Constructors</h4>
+<ul>
+<li><code>(make-rectangular re im)</code> – Cartesian form. Returns a
+complex with <code>real = re</code>, <code>imag = im</code>.</li>
+<li><code>(make-polar mag ang)</code> – Polar form. Returns a complex
+with <code>real = mag * cos(ang)</code>,
+<code>imag = mag * sin(ang)</code>.</li>
+</ul>
+<p><strong>Predicate:</strong> <code>(complex? v)</code> returns
+<code>#t</code> for complex values, and also for all real numbers (per
+R7RS: every real is a complex with zero imaginary part).</p>
+<h3 id="arithmetic">15.2 Arithmetic</h3>
+<h4 id="standard-operations">15.2.1 Standard Operations</h4>
+<p>For <code>z1 = a + bi</code> and <code>z2 = c + di</code>:</p>
+<ul>
+<li><strong>Addition:</strong>
+<code>z1 + z2 = (a+c) + (b+d)i</code></li>
+<li><strong>Subtraction:</strong>
+<code>z1 - z2 = (a-c) + (b-d)i</code></li>
+<li><strong>Multiplication:</strong>
+<code>z1 * z2 = (ac - bd) + (ad + bc)i</code></li>
+</ul>
+<h4 id="division-smiths-formula">15.2.2 Division (Smith’s Formula)</h4>
+<p>Complex division uses Smith’s algorithm for overflow safety, avoiding
+intermediate products that may exceed double range:</p>
+<p><strong>Case 1:</strong> <code>|d| &gt;= |c|</code>:</p>
+<pre><code>r = c / d
+denom = c * r + d
+result_real = (a * r + b) / denom
+result_imag = (b * r - a) / denom</code></pre>
+<p><strong>Case 2:</strong> <code>|c| &gt; |d|</code>:</p>
+<pre><code>r = d / c
+denom = d * r + c
+result_real = (a + b * r) / denom
+result_imag = (b - a * r) / denom</code></pre>
+<p><strong>Invariant:</strong> Smith’s formula avoids overflow when
+<code>|c|</code> or <code>|d|</code> is near <code>DBL_MAX</code>, which
+would cause naive <code>c*c + d*d</code> to overflow.</p>
+<h3 id="functions">15.3 Functions</h3>
+<h4 id="magnitude-and-angle">15.3.1 Magnitude and Angle</h4>
+<ul>
+<li><code>(magnitude z)</code> – Computed via <code>hypot(re, im)</code>
+for numerical stability (avoids overflow in
+<code>sqrt(re^2 + im^2)</code>).</li>
+<li><code>(angle z)</code> – Computed via <code>atan2(im, re)</code>.
+Returns a value in <code>(-pi, pi]</code>.</li>
+</ul>
+<h4 id="component-access">15.3.2 Component Access</h4>
+<ul>
+<li><code>(real-part z)</code> – Returns the real component as a
+double.</li>
+<li><code>(imag-part z)</code> – Returns the imaginary component as a
+double.</li>
+</ul>
+<h4 id="promotion-from-real">15.3.3 Promotion from Real</h4>
+<p>When a real number is used in a context requiring a complex (e.g.,
+arithmetic with a complex operand), it is promoted to complex with
+<code>imag = 0.0</code>. The <code>convertToComplex</code> codegen path
+handles INT64, DOUBLE, and HEAP_PTR (bignum) inputs, converting bignums
+via <code>eshkol_bignum_to_double</code> before constructing the
+complex.</p>
+<hr />
+<h2 id="continuation-semantics">16. Continuation Semantics</h2>
+<p>Eshkol implements first-class continuations and dynamic extent
+management per R7RS 6.10-6.11.</p>
+<h3 id="call-with-current-continuation">16.1
+<code>call-with-current-continuation</code></h3>
+<h4 id="capture-mechanism">16.1.1 Capture Mechanism</h4>
+<p><code>(call-with-current-continuation proc)</code> (abbreviated
+<code>call/cc</code>) captures the current continuation as a first-class
+callable object.</p>
+<p><strong>Implementation:</strong> Single-shot capture via
+<code>setjmp</code>/<code>longjmp</code>.</p>
+<p><strong>Type Identification:</strong> - <strong>Type tag:</strong>
+<code>ESHKOL_VALUE_CALLABLE</code> (9) - <strong>Callable
+subtype:</strong> <code>CALLABLE_SUBTYPE_CONTINUATION</code> (4)</p>
+<h4 id="invocation-semantics">16.1.2 Invocation Semantics</h4>
+<p>Invoking a captured continuation <code>k</code> with value
+<code>v</code>: 1. Abandons the current continuation. 2. Restores the
+captured continuation’s dynamic extent. 3. Returns <code>v</code> as the
+result of the original <code>call/cc</code> expression.</p>
+<p><strong>Constraint:</strong> Continuations in Eshkol are single-shot;
+invoking a continuation more than once results in undefined behavior.
+This is a deliberate implementation restriction for performance (full
+<code>setjmp</code>/<code>longjmp</code> restores stack state, which is
+invalidated after first use).</p>
+<h4 id="interaction-with-dynamic-wind">16.1.3 Interaction with Dynamic
+Wind</h4>
+<p>When a continuation is invoked, <code>dynamic-wind</code>
+before/after thunks along the path from the current dynamic extent to
+the captured extent are called in the correct order (see 16.2).</p>
+<h3 id="dynamic-wind">16.2 <code>dynamic-wind</code></h3>
+<h4 id="contract">16.2.1 Contract</h4>
+<pre class="scheme"><code>(dynamic-wind before thunk after)</code></pre>
+<p><strong>Semantics:</strong> 1. <code>before</code> is called (with
+zero arguments) upon entry to the dynamic extent of <code>thunk</code>.
+2. <code>thunk</code> is called (with zero arguments); its result is the
+result of the <code>dynamic-wind</code> expression. 3.
+<code>after</code> is called (with zero arguments) upon exit from the
+dynamic extent, whether by normal return or continuation invocation.</p>
+<p><strong>Invariant:</strong> For any dynamic-wind frame,
+<code>before</code> and <code>after</code> are called in matched pairs.
+If the extent is exited N times (via continuations), <code>after</code>
+is called N times.</p>
+<h4 id="continuation-interaction">16.2.2 Continuation Interaction</h4>
+<p>When a continuation crosses dynamic-wind boundaries:</p>
+<ol type="1">
+<li><strong>Unwinding:</strong> <code>after</code> thunks are called in
+reverse order (innermost first) for each dynamic-wind frame being
+exited.</li>
+<li><strong>Rewinding:</strong> <code>before</code> thunks are called in
+forward order (outermost first) for each dynamic-wind frame being
+entered.</li>
+</ol>
+<p><strong>Compliance:</strong> R7RS 6.10. The implementation maintains
+a linked list of active dynamic-wind frames on the C stack, traversed
+during continuation invocation.</p>
+<h3 id="guard-raise">16.3 <code>guard</code> / <code>raise</code></h3>
+<h4 id="exception-handling-1">16.3.1 Exception Handling</h4>
+<pre class="scheme"><code>(guard (var
+        (test1 handler1 ...)
+        (test2 handler2 ...)
+        (else  default ...))
+  body ...)</code></pre>
+<p><strong>Semantics (R7RS 6.11):</strong> 1. A continuation is captured
+at the <code>guard</code> form. 2. <code>body</code> is evaluated. 3. If
+<code>(raise obj)</code> is called during evaluation of
+<code>body</code>, execution transfers to the <code>guard</code>
+handler. 4. <code>var</code> is bound to <code>obj</code>. 5. Cond
+clauses <code>(test handler ...)</code> are evaluated in the dynamic
+environment of the <code>guard</code> form (not the <code>raise</code>
+site). 6. If a test succeeds, its handler expressions are evaluated and
+the result is returned from the <code>guard</code> form. 7. If no test
+succeeds and there is no <code>else</code> clause, the exception is
+re-raised to the next enclosing handler.</p>
+<h4 id="raise-semantics">16.3.2 <code>raise</code> Semantics</h4>
+<p><code>(raise obj)</code> invokes the innermost exception handler
+established by <code>guard</code>. If no handler is active, the program
+terminates with an unhandled exception diagnostic.</p>
+<p><code>(raise-continuable obj)</code> is not currently supported; all
+raises are non-continuable.</p>
+<h4 id="implementation">16.3.3 Implementation</h4>
+<p>Exception handling uses the C
+<code>setjmp</code>/<code>longjmp</code> mechanism: - <code>guard</code>
+calls <code>setjmp</code> to establish a return point. -
+<code>raise</code> calls <code>longjmp</code> to transfer control. - A
+global <code>g_current_exception</code> pointer holds the raised object.
+- Handler stack is maintained for nested <code>guard</code> forms.</p>
+<hr />
+<h2 id="consciousness-engine-specification">17. Consciousness Engine
+Specification</h2>
+<p>The consciousness engine provides logic programming, probabilistic
+inference, and global workspace theory primitives. These facilities are
+exposed as first-class Eshkol values with dedicated type tags and heap
+subtypes.</p>
+<h3 id="type-tags-and-heap-subtypes">17.1 Type Tags and Heap
+Subtypes</h3>
+<h4 id="logic-variable">17.1.1 Logic Variable</h4>
+<ul>
+<li><strong>Type tag:</strong> <code>ESHKOL_VALUE_LOGIC_VAR</code>
+(10)</li>
+<li><strong>Syntax:</strong> <code>?x</code>, <code>?name</code> – the
+<code>?</code> prefix denotes a logic variable (R7RS compatible;
+<code>?</code> is a valid identifier start character)</li>
+<li><strong>AST node:</strong> <code>ESHKOL_LOGIC_VAR_OP</code></li>
+<li><strong>Predicate:</strong> <code>(logic-var? v)</code> returns
+<code>#t</code> iff <code>v</code> has type tag 10</li>
+</ul>
+<h4 id="substitution">17.1.2 Substitution</h4>
+<ul>
+<li><strong>Heap subtype:</strong>
+<code>HEAP_SUBTYPE_SUBSTITUTION</code> (12)</li>
+<li><strong>Description:</strong> Triangular substitution map from logic
+variables to terms</li>
+<li><strong>Constructor:</strong> <code>(make-substitution)</code> –
+returns an empty substitution</li>
+<li><strong>Predicate:</strong> <code>(substitution? v)</code></li>
+</ul>
+<h4 id="fact">17.1.3 Fact</h4>
+<ul>
+<li><strong>Heap subtype:</strong> <code>HEAP_SUBTYPE_FACT</code>
+(13)</li>
+<li><strong>Description:</strong> A ground or partially-ground term
+stored in a knowledge base</li>
+<li><strong>Constructor:</strong> <code>(make-fact term)</code> – wraps
+a term as a fact</li>
+<li><strong>Predicate:</strong> <code>(fact? v)</code></li>
+</ul>
+<h4 id="knowledge-base">17.1.4 Knowledge Base</h4>
+<ul>
+<li><strong>Heap subtype:</strong>
+<code>HEAP_SUBTYPE_KNOWLEDGE_BASE</code> (15)</li>
+<li><strong>Description:</strong> Collection of facts supporting
+assertion and query</li>
+<li><strong>Constructor:</strong> <code>(make-kb)</code> – returns an
+empty knowledge base</li>
+<li><strong>Mutation:</strong> <code>(kb-assert! kb fact)</code> – adds
+a fact</li>
+<li><strong>Query:</strong> <code>(kb-query kb pattern)</code> – returns
+list of substitutions matching pattern</li>
+<li><strong>Predicate:</strong> <code>(kb? v)</code></li>
+</ul>
+<h4 id="factor-graph">17.1.5 Factor Graph</h4>
+<ul>
+<li><strong>Heap subtype:</strong>
+<code>HEAP_SUBTYPE_FACTOR_GRAPH</code> (16)</li>
+<li><strong>Description:</strong> Bipartite probabilistic graphical
+model for active inference</li>
+<li><strong>Constructor:</strong>
+<code>(make-factor-graph n-vars dims-tensor)</code> – creates a factor
+graph with <code>n-vars</code> variable nodes; <code>dims-tensor</code>
+is a tensor of per-variable state counts (e.g., <code>#(2 3)</code> for
+a 2-state and a 3-state variable)</li>
+<li><strong>Predicate:</strong> <code>(factor-graph? v)</code></li>
+</ul>
+<h4 id="workspace">17.1.6 Workspace</h4>
+<ul>
+<li><strong>Heap subtype:</strong> <code>HEAP_SUBTYPE_WORKSPACE</code>
+(17)</li>
+<li><strong>Description:</strong> Global workspace for competitive
+module activation</li>
+<li><strong>Constructor:</strong>
+<code>(make-workspace content-dim max-modules)</code> – creates a
+workspace with content tensors of <code>content-dim</code> dimensions
+and capacity for <code>max-modules</code> module slots</li>
+<li><strong>Predicate:</strong> <code>(workspace? v)</code></li>
+</ul>
+<h3 id="unification-algorithm">17.2 Unification Algorithm</h3>
+<h4 id="core-algorithm">17.2.1 Core Algorithm</h4>
+<p><code>(unify t1 t2 subst)</code> attempts to find a substitution
+extending <code>subst</code> that makes <code>t1</code> and
+<code>t2</code> identical.</p>
+<p><strong>Algorithm (Martelli-Montanari with occurs check):</strong> 1.
+Walk <code>t1</code> and <code>t2</code> through the substitution
+(resolve variable bindings). 2. If both are identical atoms, return
+<code>subst</code> unchanged. 3. If <code>t1</code> is a logic variable,
+check occurs (t1 must not appear in t2). If clear, extend
+<code>subst</code> with <code>t1 -&gt; t2</code>. 4. If <code>t2</code>
+is a logic variable, symmetric to case 3. 5. If both are pairs (cons
+cells), recursively unify <code>car</code> parts, then <code>cdr</code>
+parts with the intermediate substitution. 6. Otherwise, unification
+fails; return <code>#f</code>.</p>
+<p><strong>Invariant:</strong> Occurs check prevents circular
+substitutions. <code>(unify ?x (list ?x) subst)</code> fails.</p>
+<h4 id="substitution-walking">17.2.2 Substitution Walking</h4>
+<p><code>(walk var subst)</code> follows the substitution chain: if
+<code>var</code> is bound to another variable in <code>subst</code>,
+recursively walk that variable. Returns the fully dereferenced
+value.</p>
+<p><strong>Invariant:</strong> Substitutions are triangular (no direct
+cycles by construction with occurs check). Walking always
+terminates.</p>
+<h3 id="active-inference">17.3 Active Inference</h3>
+<h4 id="factor-graph-structure">17.3.1 Factor Graph Structure</h4>
+<p>A factor graph is a bipartite graph <code>G = (V, F, E)</code> where:
+- <code>V</code> is the set of variable nodes (random variables with
+discrete state spaces) - <code>F</code> is the set of factor nodes
+(local functions/constraints) - <code>E</code> connects each factor to
+the variables in its scope</p>
+<p>Each variable node <code>v_i</code> has <code>n_states</code>
+possible values. Each factor node <code>f_j</code> stores a conditional
+probability table (CPT) as a flat <code>double</code> array of size
+<code>product(n_states for each variable in scope)</code>.</p>
+<h4 id="sum-product-belief-propagation">17.3.2 Sum-Product Belief
+Propagation</h4>
+<p><code>(fg-infer! fg n-iterations)</code> runs loopy belief
+propagation for <code>n-iterations</code> rounds.</p>
+<p><strong>Message updates:</strong></p>
+<p>Factor-to-variable message:</p>
+<pre><code>mu_{f-&gt;v}(x_v) = sum_{x_{ne(f)\v}} [ f(x_{ne(f)}) * prod_{v&#39; in ne(f)\v} nu_{v&#39;-&gt;f}(x_{v&#39;}) ]</code></pre>
+<p>Variable-to-factor message:</p>
+<pre><code>nu_{v-&gt;f}(x_v) = prod_{f&#39; in ne(v)\f} mu_{f&#39;-&gt;v}(x_v)</code></pre>
+<p><strong>Beliefs (marginals):</strong></p>
+<pre><code>b(x_v) = (1/Z) * prod_{f in ne(v)} mu_{f-&gt;v}(x_v)</code></pre>
+<p>where <code>Z</code> is a normalization constant ensuring
+<code>sum_x b(x) = 1</code>.</p>
+<h4 id="cpt-mutation">17.3.3 CPT Mutation</h4>
+<p><code>(fg-update-cpt! fg factor-index new-cpt)</code> replaces the
+CPT of factor <code>factor-index</code> with <code>new-cpt</code> (a
+tensor of doubles) and resets all messages in the graph. Subsequent
+calls to <code>fg-infer!</code> will reconverge beliefs under the new
+parameters.</p>
+<p><strong>Use case:</strong> Enables learning by iteratively updating
+CPTs based on observed data.</p>
+<h4 id="free-energy">17.3.4 Free Energy</h4>
+<p><code>(free-energy fg observations)</code> computes the variational
+free energy:</p>
+<pre><code>F = E_q[log q(s)] - E_q[log p(o, s)]
+  = - sum_i sum_s q(s_i) * log p(o | s_i) + sum_i sum_s q(s_i) * log q(s_i)</code></pre>
+<p>where <code>q(s_i) = b(x_i)</code> are the current beliefs, and
+observations is a tensor of <code>#(var_index observed_state)</code>
+pairs.</p>
+<p><strong>Note:</strong> Observations are provided as
+<code>#(var_index observed_state)</code> pairs, NOT full state
+vectors.</p>
+<h4 id="expected-free-energy">17.3.5 Expected Free Energy</h4>
+<p><code>(expected-free-energy fg action-var action-state)</code>
+computes:</p>
+<pre><code>G = E_q[ log q(s&#39;) - log p(o&#39;, s&#39;) ]</code></pre>
+<p>where <code>action-var</code> is the variable index and
+<code>action-state</code> is the discrete state being evaluated. This
+quantity guides action selection in active inference: the action
+minimizing expected free energy is preferred.</p>
+<h3 id="global-workspace">17.4 Global Workspace</h3>
+<h4 id="architecture">17.4.1 Architecture</h4>
+<p>The global workspace implements a simplified Global Workspace Theory
+(GWT) model: - <strong>Modules:</strong> Each module registers an
+activation function (a closure returning a content tensor). -
+<strong>Competition:</strong> Modules compete for workspace access via
+activation strength. - <strong>Broadcast:</strong> The winning module’s
+content is broadcast to all modules.</p>
+<h4 id="registration">17.4.2 Registration</h4>
+<p><code>(ws-register! ws name activation-fn)</code> registers a closure
+<code>activation-fn</code> with the given string <code>name</code>. The
+closure must accept one argument (the current broadcast content tensor)
+and return <code>(cons salience proposal-tensor)</code> where
+<code>salience</code> is a real number indicating activation strength
+and <code>proposal-tensor</code> is the content to broadcast if this
+module wins.</p>
+<h4 id="step-execution">17.4.3 Step Execution</h4>
+<p><code>(ws-step! ws)</code> executes one competition cycle:</p>
+<ol type="1">
+<li>Call each registered module’s activation function with the current
+broadcast content.</li>
+<li>Extract activation strengths (first element of each returned
+tensor).</li>
+<li>Apply softmax:
+<code>sigma(z_i) = exp(z_i) / sum_j exp(z_j)</code>.</li>
+<li>Select the module with highest softmax probability as the
+winner.</li>
+<li>Broadcast the winner’s content tensor to the workspace state.</li>
+<li>Return the winning module’s index.</li>
+</ol>
+<p><strong>Implementation:</strong> LLVM codegen generates a loop
+calling <code>codegenClosureCall</code> for each module. C runtime
+helpers <code>eshkol_ws_make_content_tensor</code> and
+<code>eshkol_ws_step_finalize</code> handle tensor wrapping and softmax
+computation respectively.</p>
+<h4 id="builtins-summary">17.4.4 Builtins Summary</h4>
+<p>The consciousness engine exposes 22 builtins:</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Category</th>
+<th>Builtins</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unification</td>
+<td><code>unify</code>, <code>walk</code>,
+<code>make-substitution</code></td>
+</tr>
+<tr>
+<td>Facts/KB</td>
+<td><code>make-fact</code>, <code>make-kb</code>,
+<code>kb-assert!</code>, <code>kb-query</code></td>
+</tr>
+<tr>
+<td>Predicates</td>
+<td><code>logic-var?</code>, <code>substitution?</code>,
+<code>kb?</code>, <code>fact?</code>, <code>factor-graph?</code>,
+<code>workspace?</code></td>
+</tr>
+<tr>
+<td>Factor Graphs</td>
+<td><code>make-factor-graph</code>, <code>fg-add-factor!</code>,
+<code>fg-infer!</code>, <code>fg-update-cpt!</code></td>
+</tr>
+<tr>
+<td>Free Energy</td>
+<td><code>free-energy</code>, <code>expected-free-energy</code></td>
+</tr>
+<tr>
+<td>Workspace</td>
+<td><code>make-workspace</code>, <code>ws-register!</code>,
+<code>ws-step!</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="parallel-execution-model">18. Parallel Execution Model</h2>
+<p>Eshkol provides deterministic parallel execution primitives with
+memory safety guarantees.</p>
+<h3 id="thread-pool">18.1 Thread Pool</h3>
+<h4 id="architecture-1">18.1.1 Architecture</h4>
+<p>The thread pool uses a work-stealing scheduler:</p>
+<ul>
+<li><strong>Worker count:</strong>
+<code>std::thread::hardware_concurrency()</code> by default, capped at a
+compile-time maximum. Overridable via <code>ESHKOL_NUM_THREADS</code>
+environment variable.</li>
+<li><strong>Work-stealing deque:</strong> Each worker maintains a local
+double-ended queue. Workers pop from their own deque’s bottom (LIFO for
+locality); idle workers steal from other workers’ tops (FIFO for load
+balance).</li>
+<li><strong>Task granularity:</strong> A minimum chunk size prevents
+scheduling overhead from dominating small workloads. For
+<code>parallel-map</code>, the chunk size is
+<code>max(1, n / (4 * num_workers))</code>.</li>
+</ul>
+<h4 id="compilation">18.1.2 Compilation</h4>
+<p>Worker functions (the parallel task bodies) are compiled with
+<code>LinkOnceODRLinkage</code> to permit multiple compilation units
+(e.g., stdlib + user code) to define the same worker template without
+duplicate symbol errors at link time.</p>
+<h3 id="memory-safety">18.2 Memory Safety</h3>
+<h4 id="per-thread-arenas">18.2.1 Per-Thread Arenas</h4>
+<p>Each worker thread allocates from a thread-local arena region via
+<code>thread_local</code> storage. This eliminates contention on the
+global arena allocator.</p>
+<p><strong>Invariant:</strong> No two threads share a mutable arena
+region. Results are communicated via the task’s return value (a tagged
+value), not through shared mutable state.</p>
+<h4 id="no-shared-mutable-state">18.2.2 No Shared Mutable State</h4>
+<p>User-level parallel primitives (<code>parallel-map</code>,
+<code>parallel-for-each</code>, <code>future</code>) enforce the
+constraint that the parallel closure captures values by copy (tagged
+value semantics – 16 bytes per capture). Mutations to captured variables
+within a parallel task are local to that task and do not propagate
+back.</p>
+<p><strong>Invariant:</strong> Parallel execution is observationally
+equivalent to sequential execution for pure functions. Side effects
+within parallel tasks are unordered.</p>
+<h3 id="future-semantics">18.3 Future Semantics</h3>
+<h4 id="future">18.3.1 <code>future</code></h4>
+<pre class="scheme"><code>(future thunk)</code></pre>
+<p>Evaluates <code>thunk</code> (a zero-argument closure) eagerly in the
+thread pool. Returns a future object immediately.</p>
+<p><strong>Type:</strong> Future objects are opaque heap-allocated
+values. The internal structure contains a mutex, condition variable,
+result slot, and completion flag.</p>
+<h4 id="force">18.3.2 <code>force</code></h4>
+<pre class="scheme"><code>(force f)</code></pre>
+<p>Blocks the calling thread until the future <code>f</code> has
+completed, then returns its result value. If <code>f</code> has already
+completed, returns immediately.</p>
+<p><strong>Invariant:</strong> <code>force</code> is idempotent.
+Multiple calls to <code>(force f)</code> return the same value.</p>
+<h4 id="future-ready">18.3.3 <code>future-ready?</code></h4>
+<pre class="scheme"><code>(future-ready? f)</code></pre>
+<p>Non-blocking predicate. Returns <code>#t</code> if the future has
+completed, <code>#f</code> otherwise. Does not synchronize or block.</p>
+<hr />
+<h2 id="gpu-dispatch-specification">19. GPU Dispatch Specification</h2>
+<p>Eshkol implements transparent GPU offloading for tensor operations
+with an automatic cost-model-based dispatch strategy.</p>
+<h3 id="cost-model">19.1 Cost Model</h3>
+<h4 id="dispatch-thresholds">19.1.1 Dispatch Thresholds</h4>
+<p>Tensor operations are dispatched to one of three backends based on
+problem size:</p>
+<table>
+<thead>
+<tr>
+<th>Backend</th>
+<th>Minimum Elements</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>SIMD (scalar)</td>
+<td>1</td>
+<td>Default path for small tensors</td>
+</tr>
+<tr>
+<td>cBLAS / Accelerate</td>
+<td>64</td>
+<td>BLAS library for medium tensors</td>
+</tr>
+<tr>
+<td>GPU (Metal/CUDA)</td>
+<td>100,000</td>
+<td>GPU offloading for large tensors</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Decision function:</strong> For a given operation with input
+size <code>n</code>: 1. If <code>n &lt; 64</code>: SIMD scalar path. 2.
+If <code>64 &lt;= n &lt; threshold_gpu</code>: cBLAS/Accelerate library.
+3. If <code>n &gt;= threshold_gpu</code>: GPU path (if available;
+fallback to cBLAS otherwise).</p>
+<p>The GPU threshold <code>threshold_gpu</code> is calibrated
+per-platform at build time.</p>
+<h4 id="peak-gflops-calibration">19.1.2 Peak GFLOPS Calibration</h4>
+<p>Cost model parameters, measured empirically:</p>
+<ul>
+<li><code>blas_peak_gflops = 1100</code> – Apple AMX via Accelerate
+framework (measured on Apple Silicon).</li>
+<li><code>gpu_peak_gflops = 200</code> – Metal compute with SF64
+software float64 emulation.</li>
+</ul>
+<p><strong>Dispatch rule for matmul:</strong> Estimated time =
+<code>2 * m * n * k / (peak_gflops * 1e9)</code>. The backend with
+lowest estimated time is selected.</p>
+<p><strong>Invariant:</strong> The dispatch order is SIMD, then cBLAS,
+then GPU. GPU is only selected when it is estimated to genuinely
+outperform the CPU path. The old default values (150/2000) incorrectly
+favored GPU; the corrected values reflect measured AMX throughput.</p>
+<h3 id="metal-backend">19.2 Metal Backend</h3>
+<h4 id="software-float64-sf64">19.2.1 Software Float64 (SF64)</h4>
+<p>Metal GPU shaders do not natively support <code>float64</code>
+(double precision). Eshkol implements software float64 emulation via
+<code>metal_softfloat.h</code>:</p>
+<ul>
+<li>Each <code>double</code> is represented as a pair of
+<code>uint32_t</code> values (high and low words).</li>
+<li>Arithmetic operations (add, sub, mul, div, fma) are implemented in
+software using integer ALU operations.</li>
+<li>Rounding follows IEEE 754 round-to-nearest-even. Rounding bit mask:
+<code>0x3FF</code> (10 bits).</li>
+</ul>
+<h4 id="shader-kernels">19.2.2 Shader Kernels</h4>
+<p>Metal compute kernels are embedded at build time as string constants.
+Supported operations:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Kernel</th>
+<th>Complexity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Elementwise (add, sub, mul, div)</td>
+<td><code>elementwise_kernel</code></td>
+<td>O(n)</td>
+</tr>
+<tr>
+<td>Reduce (sum, min, max)</td>
+<td><code>reduce_kernel</code></td>
+<td>O(n) with parallel reduction</td>
+</tr>
+<tr>
+<td>Matrix multiply</td>
+<td><code>matmul_kernel</code></td>
+<td>O(m<em>n</em>k) tiled</td>
+</tr>
+<tr>
+<td>Transpose</td>
+<td><code>transpose_kernel</code></td>
+<td>O(m*n)</td>
+</tr>
+<tr>
+<td>Softmax</td>
+<td><code>softmax_kernel</code></td>
+<td>O(n) two-pass (max + exp-sum)</td>
+</tr>
+<tr>
+<td>Normalize</td>
+<td><code>normalize_kernel</code></td>
+<td>O(n)</td>
+</tr>
+</tbody>
+</table>
+<h4 id="memory-management">19.2.3 Memory Management</h4>
+<p>GPU memory is managed through <code>GpuMemory</code> (Objective-C++
+on macOS): - <code>gpu_alloc(size)</code> – allocates a
+<code>MTLBuffer</code> in shared memory mode. -
+<code>gpu_free(ptr)</code> – releases the Metal buffer. -
+<code>gpu_copy_to_device(host_ptr, size)</code> – creates a buffer and
+copies host data. -
+<code>gpu_copy_from_device(device_ptr, host_ptr, size)</code> – reads
+back results.</p>
+<p><strong>Invariant:</strong> All GPU buffers use
+<code>MTLResourceStorageModeShared</code> for zero-copy access on
+unified memory architectures (Apple Silicon).</p>
+<h3 id="cuda-backend">19.3 CUDA Backend</h3>
+<h4 id="native-float64">19.3.1 Native Float64</h4>
+<p>CUDA devices with compute capability &gt;= 1.3 support native
+<code>float64</code> arithmetic. No software emulation is required.</p>
+<h4 id="cublas-integration">19.3.2 cuBLAS Integration</h4>
+<p>Matrix multiplication dispatches to <code>cublasDgemm</code> for GEMM
+operations when CUDA is available and the tensor size exceeds the GPU
+threshold.</p>
+<h4 id="kernel-launch-configuration">19.3.3 Kernel Launch
+Configuration</h4>
+<p>Custom CUDA kernels use: - <strong>Block size:</strong> 256 threads
+per block. - <strong>Grid size:</strong> <code>ceil(n / 256)</code>
+blocks. - <strong>Shared memory:</strong> Tiled matmul uses
+<code>256 * sizeof(double)</code> bytes of shared memory per block.</p>
+<p><strong>Stub:</strong> On platforms without CUDA (e.g., macOS),
+<code>gpu_memory_stub.cpp</code> provides no-op implementations that
+always return failure, causing the cost model to fall back to CPU
+paths.</p>
+<hr />
+<h2 id="signal-processing-operations">20. Signal Processing
+Operations</h2>
+<p>Eshkol provides signal processing primitives as a standard library
+module (<code>signal.*</code>).</p>
+<h3 id="fft-fast-fourier-transform">20.1 FFT (Fast Fourier
+Transform)</h3>
+<h4 id="algorithm">20.1.1 Algorithm</h4>
+<p>Cooley-Tukey radix-2 decimation-in-time (DIT) FFT:</p>
+<ol type="1">
+<li><strong>Bit-reversal permutation:</strong> Reorder input elements by
+bit-reversing their indices.</li>
+<li><strong>Butterfly computation:</strong> For each stage
+<code>s</code> from 1 to <code>log2(N)</code>:
+<ul>
+<li><p>Stride = <code>2^s</code></p></li>
+<li><p>Twiddle factor: <code>W_N^k = exp(-2*pi*i*k/N)</code> for forward
+transform</p></li>
+<li><p>For each butterfly pair <code>(j, j + stride/2)</code>:</p>
+<pre><code>t = W * x[j + stride/2]
+x[j + stride/2] = x[j] - t
+x[j] = x[j] + t</code></pre></li>
+</ul></li>
+</ol>
+<p><strong>Complexity:</strong> O(N log N) for N-point transform.</p>
+<p><strong>Constraint:</strong> Input length <code>N</code> must be a
+power of 2. Non-power-of-2 inputs should be zero-padded by the
+caller.</p>
+<h4 id="interface">20.1.2 Interface</h4>
+<pre class="scheme"><code>(fft signal)          ; Forward FFT, returns complex tensor
+(ifft spectrum)       ; Inverse FFT, returns complex tensor</code></pre>
+<p>The result is a tensor of complex numbers (pairs of doubles: real and
+imaginary parts interleaved).</p>
+<h3 id="window-functions">20.2 Window Functions</h3>
+<h4 id="supported-windows">20.2.1 Supported Windows</h4>
+<p>All window functions map sample index <code>n</code> in
+<code>[0, N-1]</code> to a multiplicative weight:</p>
+<p><strong>Hamming:</strong></p>
+<pre><code>w(n) = 0.54 - 0.46 * cos(2*pi*n / (N-1))</code></pre>
+<p><strong>Hann:</strong></p>
+<pre><code>w(n) = 0.5 * (1 - cos(2*pi*n / (N-1)))</code></pre>
+<p><strong>Blackman (3-term):</strong></p>
+<pre><code>w(n) = 0.42 - 0.5 * cos(2*pi*n / (N-1)) + 0.08 * cos(4*pi*n / (N-1))</code></pre>
+<p><strong>Kaiser (parameterized):</strong></p>
+<pre><code>w(n) = I_0(beta * sqrt(1 - ((2n/(N-1)) - 1)^2)) / I_0(beta)</code></pre>
+<p>where <code>I_0</code> is the zeroth-order modified Bessel function
+of the first kind, and <code>beta</code> controls the trade-off between
+main-lobe width and side-lobe attenuation.</p>
+<h4 id="interface-1">20.2.2 Interface</h4>
+<pre class="scheme"><code>(hamming-window n)          ; Returns N-element tensor
+(hann-window n)             ; Returns N-element tensor
+(blackman-window n)         ; Returns N-element tensor
+(kaiser-window n beta)      ; Returns N-element tensor
+(apply-window signal window) ; Element-wise multiplication</code></pre>
+<h3 id="filter-design">20.3 Filter Design</h3>
+<h4 id="butterworth-filter">20.3.1 Butterworth Filter</h4>
+<p>Analog Butterworth prototype poles lie on the unit circle in the
+s-plane at angles:</p>
+<pre><code>theta_k = pi * (2k + 1) / (2n)    for k = 0, 1, ..., n-1</code></pre>
+<p>where <code>n</code> is the filter order. The poles are:</p>
+<pre><code>s_k = -sin(theta_k) + j*cos(theta_k)</code></pre>
+<h4 id="bilinear-transform">20.3.2 Bilinear Transform</h4>
+<p>The analog prototype is converted to a digital (z-plane) filter via
+the bilinear transform:</p>
+<pre><code>s = (2/T) * (z - 1) / (z + 1)</code></pre>
+<p>where <code>T</code> is the sampling period. Frequency pre-warping is
+applied:</p>
+<pre><code>omega_a = (2/T) * tan(omega_d * T / 2)</code></pre>
+<p>to ensure the digital cutoff frequency matches the desired
+specification.</p>
+<h4 id="cascaded-second-order-sections-sos">20.3.3 Cascaded Second-Order
+Sections (SOS)</h4>
+<p>For numerical stability, high-order IIR filters are decomposed into
+cascaded biquad (second-order) sections:</p>
+<pre><code>H(z) = prod_k [ (b0_k + b1_k*z^-1 + b2_k*z^-2) / (1 + a1_k*z^-1 + a2_k*z^-2) ]</code></pre>
+<p>Each section is implemented as a Direct Form II transposed structure
+to minimize coefficient sensitivity.</p>
+<h4 id="interface-2">20.3.4 Interface</h4>
+<pre class="scheme"><code>(butterworth-lowpass order cutoff-freq sample-rate)  ; Returns filter coefficients
+(butterworth-highpass order cutoff-freq sample-rate)
+(apply-filter coefficients signal)                   ; Apply IIR filter to signal</code></pre>
+<h3 id="convolution">20.4 Convolution</h3>
+<h4 id="direct-convolution">20.4.1 Direct Convolution</h4>
+<p>For short filters (length <code>m</code>), direct convolution
+computes:</p>
+<pre><code>y(n) = sum_{k=0}^{m-1} h(k) * x(n - k)</code></pre>
+<p><strong>Complexity:</strong> O(n * m) where <code>n</code> is the
+signal length and <code>m</code> is the filter length.</p>
+<h4 id="fft-based-convolution">20.4.2 FFT-Based Convolution</h4>
+<p>For long filters, the overlap-save method is used:</p>
+<ol type="1">
+<li>Zero-pad filter to length <code>N = n + m - 1</code> (rounded up to
+next power of 2).</li>
+<li>Compute <code>H = FFT(h_padded)</code>.</li>
+<li>Compute <code>X = FFT(x_padded)</code>.</li>
+<li>Compute <code>Y = H * X</code> (element-wise complex
+multiplication).</li>
+<li>Compute <code>y = IFFT(Y)</code>.</li>
+</ol>
+<p><strong>Complexity:</strong> O(N log N) where <code>N</code> is the
+padded length.</p>
+<h4 id="automatic-selection">20.4.3 Automatic Selection</h4>
+<p>The convolution function automatically selects between direct and
+FFT-based methods:</p>
+<pre class="scheme"><code>(convolve signal filter)  ; Automatic method selection</code></pre>
+<p><strong>Heuristic:</strong> If <code>m &gt; 64</code> or
+<code>n * m &gt; 4 * (n + m) * log2(n + m)</code>, FFT-based convolution
+is used. Otherwise, direct convolution is preferred.</p>
+<hr />
+<h2 id="quantum-rng">21. Quantum RNG</h2>
+<h3 id="quantum-inspired-random-number-generator">21.1 Quantum-Inspired
+Random Number Generator</h3>
+<h4 id="core-principles">21.1.1 Core Principles</h4>
+<ul>
+<li><strong>Quantum Circuit Simulation:</strong> 8-qubit quantum
+state</li>
+<li><strong>Hadamard Gates:</strong> Create superposition</li>
+<li><strong>Phase Gates:</strong> Quantum entanglement</li>
+<li><strong>Measurement Collapse:</strong> Extract classical
+randomness</li>
+<li><strong>Entropy Pooling:</strong> 16-element entropy pool</li>
+<li><strong>Runtime Entropy:</strong> Continuous entropy injection</li>
+</ul>
+<h4 id="api-functions">21.1.2 API Functions</h4>
+<p><strong>Initialization:</strong></p>
+<pre class="c"><code>qrng_error qrng_init(qrng_ctx **ctx, const uint8_t *seed, size_t seed_len)</code></pre>
+<p><strong>Random Generation:</strong></p>
+<pre class="c"><code>uint64_t qrng_uint64(qrng_ctx *ctx)           // Random 64-bit integer
+double qrng_double(qrng_ctx *ctx)             // Random [0,1)
+int32_t qrng_range32(qrng_ctx *ctx, min, max) // Random in range
+qrng_error qrng_bytes(qrng_ctx *ctx, uint8_t *out, size_t len)</code></pre>
+<p><strong>Quantum Operations:</strong></p>
+<pre class="c"><code>qrng_error qrng_entangle_states(ctx, state1, state2, len)  // Create entanglement
+qrng_error qrng_measure_state(ctx, state, len)             // Collapse superposition</code></pre>
+<h4 id="eshkol-wrapper-functions">21.1.3 Eshkol Wrapper Functions</h4>
+<pre class="c"><code>eshkol_qrng_init()           // Initialize global context
+eshkol_qrng_double()         // Get random [0,1)
+eshkol_qrng_uint64()         // Get random uint64
+eshkol_qrng_range(min, max)  // Get random in range
+eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes</code></pre>
+<hr />
+<h2 id="complete-operator-and-function-reference">22. Complete Operator
+and Function Reference</h2>
+<h3 id="all-special-forms-38-total">22.1 All Special Forms (38
+Total)</h3>
+<ol type="1">
+<li><code>define</code> - Variable/function definition</li>
+<li><code>lambda</code> - Anonymous function</li>
+<li><code>if</code> - Conditional</li>
+<li><code>cond</code> - Multi-way conditional</li>
+<li><code>case</code> - Switch on value</li>
+<li><code>match</code> - Pattern matching</li>
+<li><code>let</code> - Local bindings (parallel)</li>
+<li><code>let*</code> - Sequential bindings</li>
+<li><code>letrec</code> - Recursive bindings</li>
+<li><code>let-values</code> - Multiple value bindings</li>
+<li><code>let*-values</code> - Sequential multiple value bindings</li>
+<li><code>do</code> - Iteration construct</li>
+<li><code>begin</code> - Sequencing</li>
+<li><code>and</code> - Short-circuit logical AND</li>
+<li><code>or</code> - Short-circuit logical OR</li>
+<li><code>when</code> - One-armed if (true case)</li>
+<li><code>unless</code> - One-armed if (false case)</li>
+<li><code>quote</code> - Literal data</li>
+<li><code>quasiquote</code> - Template with unquotes</li>
+<li><code>unquote</code> - Escape from quasiquote</li>
+<li><code>unquote-splicing</code> - Splice into quasiquote</li>
+<li><code>set!</code> - Mutation</li>
+<li><code>define-type</code> - Type alias</li>
+<li><code>define-syntax</code> - Macro definition</li>
+<li><code>import</code> - File import (legacy)</li>
+<li><code>require</code> - Module import</li>
+<li><code>provide</code> - Symbol export</li>
+<li><code>extern</code> - External function declaration</li>
+<li><code>extern-var</code> - External variable declaration</li>
+<li><code>with-region</code> - Memory region</li>
+<li><code>owned</code> - Ownership marker</li>
+<li><code>move</code> - Transfer ownership</li>
+<li><code>borrow</code> - Temporary access</li>
+<li><code>shared</code> - Reference counting</li>
+<li><code>weak-ref</code> - Weak reference</li>
+<li><code>guard</code> - Exception handler</li>
+<li><code>raise</code> - Raise exception</li>
+<li><code>values</code> - Multiple return values</li>
+<li><code>call-with-values</code> - Consume multiple values</li>
+</ol>
+<h3 id="all-arithmeticmath-functions-50">22.2 All Arithmetic/Math
+Functions (50+)</h3>
+<p><strong>Arithmetic:</strong> <code>+</code>, <code>-</code>,
+<code>*</code>, <code>/</code>, <code>quotient</code>,
+<code>remainder</code>, <code>modulo</code>, <code>abs</code>,
+<code>min</code>, <code>max</code>, <code>expt</code></p>
+<p><strong>Trigonometric:</strong> <code>sin</code>, <code>cos</code>,
+<code>tan</code>, <code>asin</code>, <code>acos</code>,
+<code>atan</code></p>
+<p><strong>Hyperbolic:</strong> <code>sinh</code>, <code>cosh</code>,
+<code>tanh</code></p>
+<p><strong>Exponential/Logarithmic:</strong> <code>exp</code>,
+<code>log</code>, <code>sqrt</code></p>
+<p><strong>Rounding:</strong> <code>floor</code>, <code>ceiling</code>,
+<code>truncate</code>, <code>round</code></p>
+<p><strong>Comparison:</strong> <code>=</code>, <code>&lt;</code>,
+<code>&gt;</code>, <code>&lt;=</code>, <code>&gt;=</code></p>
+<p><strong>Numeric Predicates:</strong> <code>zero?</code>,
+<code>positive?</code>, <code>negative?</code>, <code>odd?</code>,
+<code>even?</code>, <code>exact?</code>, <code>inexact?</code></p>
+<h3 id="all-list-functions-60">22.3 All List Functions (60+)</h3>
+<p><strong>Core:</strong> <code>cons</code>, <code>car</code>,
+<code>cdr</code>, <code>set-car!</code>, <code>set-cdr!</code>,
+<code>list</code>, <code>list*</code>, <code>make-list</code></p>
+<p><strong>Compound Accessors:</strong> <code>caar</code>,
+<code>cadr</code>, <code>cdar</code>, <code>cddr</code>,
+<code>caaar</code> through <code>cddddr</code>, <code>first</code>
+through <code>tenth</code></p>
+<p><strong>Predicates:</strong> <code>null?</code>, <code>pair?</code>,
+<code>list?</code></p>
+<p><strong>Queries:</strong> <code>length</code>, <code>list-ref</code>,
+<code>list-tail</code>, <code>count-if</code>, <code>find</code></p>
+<p><strong>Transformations:</strong> <code>append</code>,
+<code>reverse</code>, <code>take</code>, <code>drop</code>,
+<code>filter</code>, <code>unzip</code>, <code>partition</code></p>
+<p><strong>Search:</strong> <code>member</code>, <code>member?</code>,
+<code>memq</code>, <code>memv</code>, <code>assoc</code>,
+<code>assq</code>, <code>assv</code></p>
+<p><strong>Higher-Order:</strong> <code>map</code>, <code>map1</code>,
+<code>map2</code>, <code>map3</code>, <code>fold</code>,
+<code>fold-right</code>, <code>for-each</code>, <code>any</code>,
+<code>every</code>, <code>apply</code></p>
+<p><strong>Generation:</strong> <code>iota</code>,
+<code>iota-from</code>, <code>iota-step</code>, <code>repeat</code>,
+<code>range</code>, <code>zip</code></p>
+<p><strong>Sorting:</strong> <code>sort</code></p>
+<p><strong>Conversion:</strong> <code>list-&gt;vector</code>,
+<code>vector-&gt;list</code>, <code>string-&gt;list</code>,
+<code>list-&gt;string</code></p>
+<h3 id="all-string-functions-30">22.4 All String Functions (30+)</h3>
+<p><strong>Construction:</strong> <code>string</code>,
+<code>make-string</code>, <code>string-append</code>,
+<code>substring</code></p>
+<p><strong>Access:</strong> <code>string-length</code>,
+<code>string-ref</code>, <code>string-set!</code></p>
+<p><strong>Comparison:</strong> <code>string=?</code>,
+<code>string&lt;?</code>, <code>string&gt;?</code>,
+<code>string&lt;=?</code>, <code>string&gt;=?</code></p>
+<p><strong>Utilities:</strong> <code>string-join</code>,
+<code>string-split</code>, <code>string-trim</code>,
+<code>string-upcase</code>, <code>string-downcase</code>,
+<code>string-replace</code>, <code>string-reverse</code>,
+<code>string-copy</code>, <code>string-repeat</code>,
+<code>string-starts-with?</code>, <code>string-ends-with?</code>,
+<code>string-contains?</code>, <code>string-index</code>,
+<code>string-count</code></p>
+<p><strong>Conversions:</strong> <code>string-&gt;number</code>,
+<code>number-&gt;string</code>, <code>string-&gt;symbol</code>,
+<code>symbol-&gt;string</code>, <code>string-&gt;list</code>,
+<code>list-&gt;string</code></p>
+<h3 id="all-tensor-operations-25">22.5 All Tensor Operations (25+)</h3>
+<p><strong>Creation:</strong> <code>vector</code>, <code>matrix</code>,
+<code>tensor</code>, <code>make-vector</code>, <code>zeros</code>,
+<code>ones</code>, <code>eye</code>, <code>arange</code>,
+<code>linspace</code></p>
+<p><strong>Access:</strong> <code>vref</code>, <code>tensor-get</code>,
+<code>tensor-set</code>, <code>vector-ref</code>,
+<code>vector-set!</code>, <code>vector-length</code></p>
+<p><strong>Arithmetic:</strong> <code>tensor-add</code>,
+<code>tensor-sub</code>, <code>tensor-mul</code>,
+<code>tensor-div</code>, <code>tensor-dot</code>,
+<code>matmul</code></p>
+<p><strong>Transformations:</strong> <code>transpose</code>,
+<code>reshape</code>, <code>tensor-apply</code></p>
+<p><strong>Reductions:</strong> <code>tensor-sum</code>,
+<code>tensor-mean</code>, <code>tensor-reduce-all</code></p>
+<p><strong>Queries:</strong> <code>tensor-shape</code>,
+<code>tensor-rank</code>, <code>tensor-size</code></p>
+<h3 id="all-hash-table-operations-10">22.6 All Hash Table Operations
+(10+)</h3>
+<p><code>make-hash-table</code>, <code>hash</code>,
+<code>hash-ref</code>, <code>hash-set!</code>,
+<code>hash-has-key?</code>, <code>hash-remove!</code>,
+<code>hash-keys</code>, <code>hash-values</code>,
+<code>hash-count</code>, <code>hash-clear!</code>,
+<code>hash-table?</code>. SRFI-125 aliases also accepted
+(interchangeable with the non-prefixed names above):
+<code>hash-table-ref</code>, <code>hash-table-ref/default</code>,
+<code>hash-table-set!</code>, <code>hash-table-contains?</code>,
+<code>hash-table-exists?</code>, <code>hash-table-delete!</code>,
+<code>hash-table-keys</code>, <code>hash-table-values</code>,
+<code>hash-table-size</code>, <code>hash-table-clear!</code>.</p>
+<h3 id="all-autodiff-operators-8">22.7 All Autodiff Operators (8)</h3>
+<p><strong>Univariate:</strong> <code>derivative</code></p>
+<p><strong>Multivariate:</strong> <code>gradient</code>,
+<code>jacobian</code>, <code>hessian</code></p>
+<p><strong>Vector Calculus:</strong> <code>divergence</code>,
+<code>curl</code>, <code>laplacian</code>,
+<code>directional-derivative</code></p>
+<h3 id="all-type-predicates-20">22.8 All Type Predicates (20+)</h3>
+<p><code>null?</code>, <code>boolean?</code>, <code>char?</code>,
+<code>string?</code>, <code>symbol?</code>, <code>number?</code>,
+<code>integer?</code>, <code>real?</code>, <code>complex?</code>,
+<code>pair?</code>, <code>list?</code>, <code>vector?</code>,
+<code>procedure?</code>, <code>hash-table?</code>, <code>tensor?</code>,
+<code>input-port?</code>, <code>output-port?</code>, <code>port?</code>,
+<code>eof-object?</code></p>
+<h3 id="all-equalitycomparison-3">22.9 All Equality/Comparison (3)</h3>
+<p><code>eq?</code>, <code>eqv?</code>, <code>equal?</code></p>
+<h3 id="all-io-functions-20">22.10 All I/O Functions (20+)</h3>
+<p><strong>Output:</strong> <code>display</code>, <code>write</code>,
+<code>newline</code>, <code>write-char</code>,
+<code>write-string</code>, <code>write-line</code>,
+<code>flush-output-port</code></p>
+<p><strong>Input:</strong> <code>read</code>, <code>read-line</code>,
+<code>read-char</code>, <code>peek-char</code></p>
+<p><strong>Ports:</strong> <code>open-input-file</code>,
+<code>open-output-file</code>, <code>close-port</code>,
+<code>current-input-port</code>, <code>current-output-port</code></p>
+<p><strong>Files:</strong> <code>read-file</code>,
+<code>write-file</code>, <code>append-file</code>,
+<code>file-exists?</code>, <code>file-readable?</code>,
+<code>file-writable?</code>, <code>file-delete</code>,
+<code>file-rename</code>, <code>file-size</code></p>
+<p><strong>Directories:</strong> <code>directory-exists?</code>,
+<code>make-directory</code>, <code>delete-directory</code>,
+<code>directory-list</code>, <code>current-directory</code>,
+<code>set-current-directory!</code></p>
+<h3 id="all-system-functions-5">22.11 All System Functions (5+)</h3>
+<p><code>getenv</code>, <code>setenv</code>, <code>unsetenv</code>,
+<code>system</code>, <code>exit</code>, <code>sleep</code>,
+<code>current-seconds</code>, <code>command-line</code></p>
+<h3 id="all-functional-programming-10">22.12 All Functional Programming
+(10+)</h3>
+<p><code>compose</code>, <code>compose3</code>, <code>curry2</code>,
+<code>curry3</code>, <code>uncurry2</code>, <code>partial</code>,
+<code>partial1</code>, <code>partial2</code>, <code>partial3</code>,
+<code>flip</code>, <code>identity</code>, <code>constantly</code>,
+<code>negate</code></p>
+<h3 id="all-json-operations-10">22.13 All JSON Operations (10)</h3>
+<p><code>json-parse</code>, <code>json-stringify</code>,
+<code>json-get</code>, <code>json-array-ref</code>,
+<code>hash-table-&gt;alist</code>, <code>alist-&gt;hash-table</code>,
+<code>json-read-file</code>, <code>json-write-file</code>,
+<code>alist-&gt;json</code>, <code>alist-write-json</code></p>
+<h3 id="all-csv-operations-6">22.14 All CSV Operations (6)</h3>
+<p><code>csv-parse</code>, <code>csv-parse-file</code>,
+<code>csv-stringify</code>, <code>csv-write-file</code>,
+<code>csv-parse-line</code>, <code>csv-stringify-row</code></p>
+<h3 id="all-base64-operations-6">22.15 All Base64 Operations (6)</h3>
+<p><code>base64-encode</code>, <code>base64-decode</code>,
+<code>base64-encode-string</code>, <code>base64-decode-string</code>,
+<code>string-&gt;bytes</code>, <code>bytes-&gt;string</code></p>
+<h3 id="all-conversion-functions-12">22.16 All Conversion Functions
+(12)</h3>
+<p><code>exact-&gt;inexact</code>, <code>inexact-&gt;exact</code>,
+<code>string-&gt;number</code>, <code>number-&gt;string</code>,
+<code>string-&gt;symbol</code>, <code>symbol-&gt;string</code>,
+<code>char-&gt;integer</code>, <code>integer-&gt;char</code>,
+<code>list-&gt;vector</code>, <code>vector-&gt;list</code>,
+<code>string-&gt;list</code>, <code>list-&gt;string</code></p>
+<hr />
+<h2 id="complete-language-capabilities-summary">23. Complete Language
+Capabilities Summary</h2>
+<h3 id="total-language-elements">Total Language Elements:</h3>
+<ul>
+<li><strong>Special Forms:</strong> 39</li>
+<li><strong>Built-in Operators:</strong> 15 (arithmetic/logical)</li>
+<li><strong>Math Functions:</strong> 20</li>
+<li><strong>List Functions:</strong> 60+</li>
+<li><strong>String Functions:</strong> 30+</li>
+<li><strong>Tensor Operations:</strong> 25+</li>
+<li><strong>Hash Table Operations:</strong> 10</li>
+<li><strong>Autodiff Operators:</strong> 8</li>
+<li><strong>I/O Functions:</strong> 20+</li>
+<li><strong>System Functions:</strong> 8</li>
+<li><strong>Type Predicates:</strong> 20+</li>
+<li><strong>Equality/Comparison:</strong> 9</li>
+<li><strong>Functional Programming:</strong> 15</li>
+<li><strong>JSON Operations:</strong> 10</li>
+<li><strong>CSV Operations:</strong> 6</li>
+<li><strong>Base64 Operations:</strong> 6</li>
+<li><strong>Memory Management:</strong> 6</li>
+<li><strong>REPL Commands:</strong> 14</li>
+</ul>
+<h3 id="grand-total-300-language-features"><strong>GRAND TOTAL: 300+
+Language Features</strong></h3>
+<hr />
+<h2 id="compiler-capabilities">24. Compiler Capabilities</h2>
+<h3 id="supported-optimizations">24.1 Supported Optimizations</h3>
+<ol type="1">
+<li><strong>Tail Call Elimination</strong> - Self-recursive functions →
+loops</li>
+<li><strong>Closure Optimization</strong> - Static capture analysis</li>
+<li><strong>Inline Expansion</strong> - Small functions inlined</li>
+<li><strong>Type Specialization</strong> - Monomorphic fast paths</li>
+<li><strong>Constant Folding</strong> - Compile-time evaluation</li>
+<li><strong>Dead Code Elimination</strong> - LLVM optimization
+passes</li>
+</ol>
+<h3 id="compilation-modes">24.2 Compilation Modes</h3>
+<h4 id="standard-compilation">Standard Compilation</h4>
+<pre class="bash"><code>eshkol-run input.esk -o output</code></pre>
+<h4 id="library-compilation">Library Compilation</h4>
+<pre class="bash"><code>eshkol-run --shared-lib input.esk -o library.o</code></pre>
+<h4 id="ir-dump">IR Dump</h4>
+<pre class="bash"><code>eshkol-run --dump-ir input.esk  # Produces input.ll</code></pre>
+<h4 id="ast-dump">AST Dump</h4>
+<pre class="bash"><code>eshkol-run --dump-ast input.esk  # Produces input.ast</code></pre>
+<h3 id="linking">24.3 Linking</h3>
+<p><strong>Auto-linking stdlib:</strong> If source requires stdlib,
+<code>stdlib.o</code> is automatically linked.</p>
+<p><strong>Manual linking:</strong></p>
+<pre class="bash"><code>eshkol-run input.esk stdlib.o utils.o -o output</code></pre>
+<hr />
+<h2 id="implementation-details">25. Implementation Details</h2>
+<h3 id="numeric-tower-promotion">25.1 Numeric Tower Promotion</h3>
+<p><strong>Rules:</strong> - <code>int + int</code> → <code>int</code> -
+<code>int + float</code> → <code>float</code> -
+<code>float + float</code> → <code>float</code> - Operations preserve
+exactness when possible</p>
+<h3 id="function-calling-convention">25.2 Function Calling
+Convention</h3>
+<p><strong>Standard Functions:</strong></p>
+<pre class="c"><code>eshkol_tagged_value_t func(eshkol_tagged_value_t arg1, ...)</code></pre>
+<p><strong>Closures:</strong></p>
+<pre class="c"><code>eshkol_tagged_value_t func(args..., captures...)</code></pre>
+<p><strong>Variadic Functions:</strong> - Fixed parameters first - Rest
+parameter as tagged cons list</p>
+<h3 id="exception-handling-mechanism">25.3 Exception Handling
+Mechanism</h3>
+<p><strong>Implementation:</strong> - C
+<code>setjmp</code>/<code>longjmp</code> for non-local exits - Exception
+handler stack - Global <code>g_current_exception</code> pointer -
+Automatic handler cleanup</p>
+<h3 id="module-name-mangling">25.4 Module Name Mangling</h3>
+<p><strong>Private Symbols:</strong> - Module: <code>foo.bar.baz</code>
+- Symbol: <code>helper</code> - Mangled:
+<code>__foo_bar_baz__helper</code></p>
+<p><strong>Public Symbols:</strong> Keep original name (exported via
+<code>provide</code>)</p>
+<hr />
+<h2 id="version-information">26. Version Information</h2>
+<p><strong>Current Version:</strong> v1.3.0-evolve</p>
+<p><strong>Version History:</strong> - v1.2.0-scale - Production
+readiness: model serialization, stable C ABI + Python bindings,
+per-thread arenas, 512 MB main-thread stack on Darwin, image I/O,
+plotting stdlib, actionable error messages with file:line:col + caret,
+JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for
+stdlib redefines, –wasm self-contained emit, AD scalar derivative on
+inline lambdas, value-typed-capture LLVM verification, variadic-info
+hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane,
+7 hardening fixes (subprocess injection, FFI AST injection, integer
+overflows, path traversal, ReDoS). - v1.1.13-accelerate - Windows ARM64
+native support, 16-lane release matrix, two VM closure bug fixes
+(named-let nested closure PC + native 252 upvalue relay), Windows setjmp
+hardening for x64 and ARM64, mobile-responsive website, REPL error
+display - v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS
+2022/ClangCL, ARM64 ABI fix, clean URL routing - v1.1.11-accelerate -
+Exact arithmetic, continuations, consciousness engine, parallelism, GPU
+dispatch, signal processing - v1.0.0-foundation - Initial stable release
+- Core Scheme compatibility - Automatic differentiation system - HoTT
+type system foundation - Arena memory management - Module system - REPL
+with JIT</p>
+<hr />
+<h2 id="file-organization">27. File Organization</h2>
+<h3 id="source-code-structure">Source Code Structure</h3>
+<pre><code>inc/eshkol/              # Public headers
+  eshkol.h               # Main API header
+  llvm_backend.h         # LLVM backend API
+  logger.h               # Logging utilities
+  backend/               # Backend codegen headers
+  frontend/              # Frontend headers
+  types/                 # Type system headers
+
+lib/                     # Implementation
+  core/                  # Core runtime
+  frontend/              # Parser
+  backend/               # LLVM codegen
+  types/                 # Type checker
+  repl/                  # REPL/JIT
+  quantum/               # Quantum RNG
+  *.esk                  # Standard library modules
+
+exe/                     # Executables
+  eshkol-run.cpp         # Compiler
+  eshkol-repl.cpp        # REPL
+
+tests/                   # Test suites
+  autodiff/              # AD tests
+  lists/                 # List operation tests
+  features/              # Language feature tests
+  ml/                    # Machine learning tests
+  neural/                # Neural network tests
+  types/                 # Type system tests</code></pre>
+<hr />
+<h2 id="bytecode-vm-and-eskb-format">28. Bytecode VM and ESKB
+Format</h2>
+<p>Eshkol provides a dual backend architecture: the primary LLVM
+compilation path and a complementary bytecode VM for the
+qLLM/transformer weight pipeline and portable execution.</p>
+<h3 id="bytecode-emission">28.1 Bytecode Emission</h3>
+<p><strong>Syntax:</strong>
+<code>eshkol-run input.esk -B output.eskb</code></p>
+<p>The <code>-B</code> flag compiles source to ESKB (Eshkol Serialized
+Key Bytecode) binary format alongside normal LLVM compilation. The ESKB
+file can be executed by the standalone VM or loaded by the weight matrix
+transformer.</p>
+<h3 id="eskb-binary-format">28.2 ESKB Binary Format</h3>
+<p>Section-based container with: - <strong>Header</strong>: Magic
+(<code>ESKB</code>), version, flags, CRC32 checksum - <strong>CONST
+section</strong>: Constant pool (NIL, INT64, F64, BOOL, STRING) with
+LEB128 encoding - <strong>CODE section</strong>: Instruction stream
+(opcode + signed LEB128 operand per instruction) - <strong>META
+section</strong>: Optional debug metadata (source file path)</p>
+<h3 id="vm-architecture">28.3 VM Architecture</h3>
+<p>63-opcode register+stack interpreter (<code>eshkol_vm.c</code>): -
+<strong>Value representation</strong>: Tagged values {type, union{int64,
+double, bool, heap_ptr}} - <strong>Memory</strong>: Arena-based (OALR
+regions), heap object table - <strong>Closures</strong>: Heap-allocated
+with upvalue capture and mutation - <strong>Continuations</strong>:
+call/cc with stack snapshot, dynamic-wind support - <strong>Native
+calls</strong>: 250+ runtime functions covering math, strings, I/O,
+complex, rational, bignum, dual numbers, AD tape, tensors, logic,
+inference, workspace, hash tables, bytevectors, parameters, errors</p>
+<h3 id="weight-matrix-transformer">28.4 Weight Matrix Transformer</h3>
+<p>Programs encoded as neural network weights
+(<code>weight_matrices.c</code>): - Architecture: d_model=256, 6 layers,
+FFN_DIM=2304, 12.22M parameters - 82 canonical opcodes in weights;
+<code>OP_NATIVE_CALL</code> remains the external dispatch boundary -
+3-way verification: reference interpreter = simulated transformer =
+matrix-based forward pass - Exports QLMW binary format for qLLM
+loading</p>
+<h3 id="parameterize-r7rs">28.6 <code>parameterize</code> (R7RS)</h3>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(parameterize ((param value) ...)
+  body ...)</code></pre>
+<p>Dynamic binding of parameter objects. Parameters created with
+<code>make-parameter</code> are thread-local and restored on scope
+exit.</p>
+<pre class="scheme"><code>(define my-param (make-parameter 10))
+(parameterize ((my-param 42))
+  (display (my-param)))  ; =&gt; 42
+(display (my-param))     ; =&gt; 10</code></pre>
+<hr />
+<h2 id="conclusion">Conclusion</h2>
+<p>This document provides a <strong>complete</strong> specification of
+the Eshkol programming language version v1.3.0-evolve, documenting
+<strong>every</strong> feature, function, operator, and capability found
+in the implementation.</p>
+<p><strong>Total Coverage:</strong> - All 101 special forms and parser
+operations - All 555+ LLVM-compiled built-in functions - 250+ VM native
+call IDs - 63-opcode bytecode VM with ESKB binary format - Complete type
+system (15+ types with 18+ heap subtypes) - Full memory management
+system (OALR arenas) - Entire standard library (40 modules) - Complete
+autodiff system (forward, reverse, symbolic, 73 AD node types) - Dual
+backend architecture (LLVM + bytecode VM) - Weight matrix transformer
+(3-way verified) - Module system with <code>require</code>,
+<code>provide</code>, <code>load</code> - REPL JIT with precompiled
+stdlib - Quantum RNG (8-qubit circuit simulation) - GPU dispatch (Metal
+SF64 + CUDA, forward and backward) - Compilation pipeline (LLVM 21
+required) - Runtime architecture - Exact arithmetic (bignum, rational,
+numeric tower) - Complex number type with overflow-safe division -
+First-class continuations, dynamic-wind, and exception handling -
+Consciousness engine (logic programming, active inference, global
+workspace) - Parallel execution model (thread pool, futures, memory
+safety) - GPU dispatch (Metal SF64, CUDA, cost model) - Signal
+processing (FFT, windows, filters, convolution)</p>

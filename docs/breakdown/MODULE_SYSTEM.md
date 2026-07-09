@@ -447,7 +447,7 @@ This guarantees that every definition appears in `result` before any use of it, 
 ## 12. See Also
 
 - `docs/breakdown/README.md` — Project-wide architecture overview
-- `ESHKOL_V1_LANGUAGE_REFERENCE.md` — Language-level `require`/`provide` syntax
+- `docs/reference/language/modules.md` — Language-level `require`/`provide` syntax
 - `docs/ESHKOL_V1_ARCHITECTURE.md` — Compiler pipeline overview
 - `lib/backend/llvm_codegen.cpp` — Symbol linkage and code generation
 - `lib/backend/binding_codegen.cpp` — Global variable definition and linkage

@@ -773,7 +773,7 @@ cost — the window vector is created once and reused via `apply-window`.
 - `lib/signal/fft.esk` — FFT/IFFT source
 - `lib/signal/filters.esk` — Window functions, convolution, FIR/IIR, Butterworth source
 - `docs/breakdown/README.md` — Module breakdown index
-- `ESHKOL_V1_LANGUAGE_REFERENCE.md` — Complex number primitives (`make-rectangular`,
+- `docs/reference/language/INDEX.md` — Complex number primitives (`make-rectangular`,
   `real-part`, `imag-part`, `magnitude`, `angle`)
 - `lib/math/constants.esk` — Mathematical constants used across stdlib
 - `benchmarks/matmul_bench.esk` — Example of tensor/vector operations at scale

@@ -713,10 +713,13 @@ float64, used when GPU genuinely outperforms - <strong>CUDA
 <h3 id="explicit-gpu-operations">Explicit GPU Operations</h3>
 <pre class="scheme"><code>;; Force GPU execution for specific operations
 (gpu-matmul A B)                    ;; GPU matrix multiply
-(gpu-elementwise * A B)             ;; Element-wise on GPU
-(gpu-reduce + M)                    ;; Reduction on GPU
+(gpu-elementwise * A B)             ;; Element-wise GPU op: + - * /
+(gpu-reduce + M)                    ;; Full-tensor GPU reduction: + mean max min
 (gpu-softmax v)                     ;; Softmax on GPU
 (gpu-transpose M)                   ;; Transpose on GPU</code></pre>
+<p>Explicit GPU operations are aliases over the tensor runtime dispatch
+path. They return the same shapes as the corresponding tensor operations
+and fall back to CPU when the selected GPU backend is unavailable.</p>
 <h3 id="metal-backend-macos">Metal Backend (macOS)</h3>
 <p>The Metal backend uses simulated float64 via double-single arithmetic
 with correctly rounded intermediate results. Key implementation
@@ -1602,6 +1605,6 @@ integration</label></li>
 <p>MIT License - Copyright (C) tsotchke</p>
 <hr />
 <p align="center">
-<strong>Eshkol v1.3.0-evolve</strong>: Where functional programming meets
-scientific computing, GPU acceleration, and machine consciousness.
+<strong>Eshkol v1.3.0-evolve</strong>: Where functional programming
+meets scientific computing, GPU acceleration, and machine consciousness.
 </p>

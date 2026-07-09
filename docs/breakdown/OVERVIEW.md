@@ -400,7 +400,7 @@ overflows in arena/KB-persistence/image-IO, path traversal + TOCTOU,
 Windows-subprocess buffer overflow, error-propagation patterns
 (36 silent-swallow sites), ReDoS protection, SQL-injection guards,
 URL validation. See [SECURITY.md](../../SECURITY.md) and
-[HARDENING.md](../../HARDENING.md).
+[HARDENING.md](../HARDENING.md).
 
 ---
 

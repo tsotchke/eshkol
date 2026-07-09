@@ -53,7 +53,7 @@ Each item below cites the file or measurement that grounds the claim.
   nested gradients. Eight vector-calculus operators — `derivative`, `gradient`,
   `jacobian`, `hessian`, `divergence`, `curl`, `laplacian`,
   `directional-derivative` — are language primitives. See *lib/backend/autodiff_codegen.cpp*
-  (9,205 lines) and *DESIGN.md §Automatic Differentiation*.
+  (9,205 lines) and *docs/DESIGN.md §Automatic Differentiation*.
 
 - **Full R7RS numeric tower.** int64, arbitrary-precision bignum (with automatic
   overflow promotion and demotion), exact rational with GCD reduction, IEEE 754 double,
@@ -93,7 +93,7 @@ Each item below cites the file or measurement that grounds the claim.
   argv arrays (*lib/agent/c/agent_subprocess.c*; the `popen("sh -c …")` path was
   removed in v1.2 to eliminate shell-metacharacter exposure), kqueue/inotify
   filesystem watching (*lib/agent/c/agent_watch.c*). Path-traversal, TOCTOU, and
-  Windows command-line buffer issues are addressed in *HARDENING.md §`#192`/`#193`*.
+  Windows command-line buffer issues are addressed in *docs/HARDENING.md §`#192`/`#193`*.
 
 - **Hardened release pipeline.** Fourteen audit blockers closed in v1.2-scale,
   seven critical/high security fixes (shell-injection, Python-FFI AST-injection,
@@ -102,7 +102,7 @@ Each item below cites the file or measurement that grounds the claim.
   suite reports 37 of 37 sub-suites and 528 of 528 self-reported tests passing
   (*RELEASE_NOTES.md §v1.2.1 Noesis M0 Closeout Addendum*). ASan + UBSan clean on
   196 checks / 9 suites; TSan clean on the seven parallel-execution suites
-  (*HARDENING.md §`#178`, `#180`*).
+  (*docs/HARDENING.md §`#178`, `#180`*).
 
 ---
 
@@ -165,8 +165,8 @@ edge-and-security suite at *tests/v1_2_edge_cases/* regression-covers each
 fix. The master test runner reports 37 of 37 sub-suites and 528 of 528
 self-reported tests passing; ASan and UBSan are clean across 196 checks
 in 9 suites; TSan is clean across the parallel-execution surface
-(*HARDENING.md §`#178`, `#180`*). Two back-to-back release builds produce
-byte-identical `build/stdlib.bc` and `build/eshkol-run` (*HARDENING.md
+(*docs/HARDENING.md §`#178`, `#180`*). Two back-to-back release builds produce
+byte-identical `build/stdlib.bc` and `build/eshkol-run` (*docs/HARDENING.md
 §`#184`*).
 
 ---
@@ -201,7 +201,7 @@ Platform divergence is treated as a bug.
 
 The compiler itself is bit-reproducible at link time: two back-to-back
 release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
-(*HARDENING.md §`#184`*).
+(*docs/HARDENING.md §`#184`*).
 
 ---
 

@@ -39,7 +39,15 @@
 (case expr
   ((val1) result1)
   ((val2 val3) result2)
-  (else default))</code></pre>
+  (else default))
+
+;; R7RS &quot;=&gt;&quot; arrow clauses: apply the receiver to the test/key value
+(cond ((assv 1 (list (cons 1 10))) =&gt; cdr)   ;; -&gt; 10
+      (else 0))
+(case 5
+  ((1 2 3) =&gt; (lambda (x) (* x 100)))
+  ((4 5 6) =&gt; (lambda (x) (* x 10)))          ;; -&gt; 50
+  (else 0))</code></pre>
 <h2 id="lists">Lists</h2>
 <pre class="scheme"><code>(list 1 2 3)              ;; create list
 (cons 1 (list 2 3))       ;; prepend
@@ -56,6 +64,14 @@
 (assoc key alist)         ;; lookup in assoc list
 (take lst n)              ;; first n elements
 (drop lst n)              ;; skip first n elements</code></pre>
+<h2 id="strings">Strings</h2>
+<pre class="scheme"><code>(string-length s)               ;; codepoint count
+(string-byte-length s)          ;; byte count (differs from string-length on multibyte UTF-8)
+(substring s start)              ;; from start to end of string (2-arg R7RS form)
+(substring s start end)          ;; from start to end (exclusive)
+(string-append s1 s2 ...)        ;; concatenate
+(string-&gt;number &quot;999999999999999999999&quot;)  ;; -&gt; bignum
+(number-&gt;string n)</code></pre>
 <h2 id="higher-order-functions">Higher-Order Functions</h2>
 <pre class="scheme"><code>(map f lst)               ;; apply f to each element
 (filter pred lst)         ;; select matching elements
@@ -69,13 +85,22 @@
 (string-for-each f str)   ;; iterate chars
 (string-map f str)        ;; map over chars
 (vector-for-each f vec)   ;; iterate vector elements
-(vector-map f vec)        ;; map over vector elements</code></pre>
+(vector-map f vec)        ;; map over vector elements
+(vector-map f vec1 vec2 ...)  ;; map over N vectors in lockstep (R7RS 6.9), stops at shortest
+
+;; apply: leading fixed args before the final list argument
+(apply + &#39;(1 2 3))              ;; -&gt; 6
+(apply + 1 2 &#39;(3 4 5))          ;; -&gt; 15 (leading args consed onto the list)</code></pre>
 <h2 id="vectors-tensors">Vectors &amp; Tensors</h2>
 <pre class="scheme"><code>(vector 1 2 3)            ;; create vector (heterogeneous, 16-byte tagged)
 (vref v i)                ;; get element
 (vector-set! v i x)       ;; set element
 (make-vector n val)       ;; n copies of val
 (vector-length v)         ;; length
+(vector-copy v)           ;; fresh shallow copy
+(vector-copy v start)     ;; fresh copy from start to end
+(vector-copy v start end) ;; fresh copy of [start,end); works on #(...) literals too
+(vector-copy! to at from) ;; in-place copy into to, starting at index at
 
 ;; Tensor creation (homogeneous doubles, 8-byte)
 #(1.0 2.0 3.0)            ;; tensor literal
@@ -222,10 +247,14 @@ Handling</h2>
 
 ;; Explicit GPU operations
 (gpu-matmul A B)               ;; force GPU matrix multiply
-(gpu-elementwise f A B)        ;; element-wise operation on GPU
-(gpu-reduce f M)               ;; GPU reduction
+(gpu-elementwise * A B)        ;; binary element-wise GPU op: + - * /
+(gpu-reduce + M)               ;; full-tensor GPU reduction: + mean max min
 (gpu-softmax v)                ;; softmax on GPU
 (gpu-transpose M)              ;; GPU transpose
+
+;; Explicit GPU forms use the same tensor result shapes as matmul,
+;; tensor-add/sub/mul/div, tensor-sum/mean/max/min, softmax, and transpose.
+;; They fall back to CPU when the selected backend is unavailable or too small.
 
 ;; Backends: SIMD | Apple Accelerate AMX (~1.1 TFLOPS)
 ;;           | Metal (macOS, sf64) | CUDA (Linux, native f64)</code></pre>

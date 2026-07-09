@@ -18,7 +18,7 @@
 
 ## Current Release
 
-**Current Release:** v1.2.1-scale (2026-05-20). See [`../../RELEASE_NOTES.md`](../../RELEASE_NOTES.md) for the closeout and [`../../RELEASE_READINESS_REPORT.md`](../../RELEASE_READINESS_REPORT.md) for the v1.2 acceptance evidence (37-suite aggregate gate, 87 passing edge / security tests, zero outstanding audit blockers).
+**Current Release:** v1.2.1-scale (2026-05-20). See [`../../RELEASE_NOTES.md`](../../RELEASE_NOTES.md) for the closeout and [`docs/internal/RELEASE_READINESS_REPORT.md`](../internal/RELEASE_READINESS_REPORT.md) for the v1.2 acceptance evidence (37-suite aggregate gate, 87 passing edge / security tests, zero outstanding audit blockers).
 
 The remainder of this document is organised as: (1) a recap of features delivered across the four shipped lines (`v1.0-foundation`, `v1.1-accelerate`, `v1.2-scale`, `v1.2.1-scale`); (2) the forward roadmap for `v1.3-evolve` and beyond; and (3) long-term vision items that remain research-scope.
 

@@ -578,6 +578,15 @@ x  ; => 20
       ((> x 0) "positive"))
 ```
 
+**R7RS `=>` arrow clause** (`(test => receiver)`): if `test` evaluates to a
+true value, that value (evaluated exactly once) is passed to the unary
+procedure `receiver`, whose result becomes the value of the `cond`:
+```scheme
+(cond ((assv 1 (list (cons 1 10))) => cdr)
+      (else 0))
+; => 10  (assv returns (1 . 10); cdr of that is 10)
+```
+
 #### 3.4.3 `case` - Switch on Value
 **Syntax:**
 ```scheme
@@ -595,6 +604,16 @@ x  ; => 20
   ((1) "one")
   ((2) "two")
   (else "other"))  ; => "two"
+```
+
+**R7RS `=>` arrow clause**, same semantics as `cond`'s: the matched key is
+passed to a unary receiver procedure:
+```scheme
+(case 5
+  ((1 2 3) => (lambda (x) (* x 100)))
+  ((4 5 6) => (lambda (x) (* x 10)))
+  (else 0))
+; => 50
 ```
 
 #### 3.4.4 `match` - Pattern Matching
@@ -714,6 +733,13 @@ x  ; => 20
 (define x 5)
 `(1 2 ,x 4)    ; => (1 2 5 4)
 `(1 ,@(list 2 3) 4)  ; => (1 2 3 4)
+```
+
+**Quasiquoted vector literals** (v1.3.0-evolve): `unquote`/`unquote-splicing`
+also work inside a `#(...)` vector literal under quasiquote:
+```scheme
+`#(1 ,(+ 1 1) 3)        ; => #(1 2 3)
+`#(1 ,@(list 2 3) 4)    ; => #(1 2 3 4)
 ```
 
 ### 3.6 Type Annotations
@@ -866,6 +892,24 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
 (raise (error "Something went wrong"))
 ```
 
+#### 3.8.3 `error` and the R7RS Condition-Object Family
+**Syntax:**
+```scheme
+(error message irritant ...)     ; raise an R7RS error object
+(error-object? obj)               ; #t iff obj was raised via (error ...)
+(error-object-message e)          ; the message string
+(error-object-irritants e)        ; the irritants, as a list
+```
+
+**Example:**
+```scheme
+(guard (e (#t (list (error-object-message e) (error-object-irritants e))))
+  (error "boom" 1 2))
+; => ("boom" (1 2))
+
+(guard (e (#t (error-object? e))) (raise "plain-string"))  ; => #f
+```
+
 ### 3.9 Multiple Return Values
 
 #### 3.9.1 `values` - Return Multiple Values
@@ -938,6 +982,18 @@ Alias for `require` with automatic path conversion. Slashes are converted to dot
   (syntax-rules ()
     ((when test expr ...)
      (if test (begin expr ...)))))
+```
+
+**Nested ellipsis** (v1.3.0-evolve): a pattern variable bound at ellipsis
+depth N is followed by N ellipses in the template to flatten one level per
+extra ellipsis. Pattern matching tracks ellipsis depth explicitly, so
+`(x ... ...)`-style templates over a list-of-lists now expand correctly:
+```scheme
+(define-syntax my-flatten
+  (syntax-rules ()
+    ((_ (a ...) ...) (list a ... ...))))
+
+(my-flatten (1 2) (3 4 5))  ; => (1 2 3 4 5)
 ```
 
 ### 3.11 External FFI
@@ -1268,10 +1324,14 @@ All comparison operators return booleans and support numeric type promotion.
 - `(string-append str...)` - Concatenate strings
 
 #### 4.7.2 String Access
-- `(string-length str)` - Character count
+- `(string-length str)` - Codepoint (character) count
+- `(string-byte-length str)` - UTF-8 byte count (v1.3.0-evolve; differs from
+  `string-length` for any multibyte-UTF-8 string)
 - `(string-ref str k)` - Get character at index k
 - `(string-set! str k char)` - Set character at index k
-- `(substring str start end)` - Extract substring
+- `(substring str start end)` - Extract substring `[start, end)`
+- `(substring str start)` - Extract from `start` to the end of the string
+  (2-argument form, equivalent to `(substring str start (string-length str))`)
 
 #### 4.7.3 String Predicates
 - `(string? obj)` - Test if string
@@ -1320,10 +1380,21 @@ All comparison operators return booleans and support numeric type promotion.
 - `(vector-length vec)` - Element count
 - `(vector-ref vec k)` - Get element at index k
 - `(vector-set! vec k val)` - Set element at index k
+- `(vector-copy vec)` / `(vector-copy vec start)` / `(vector-copy vec start end)` -
+  Fresh (shallow) copy of `vec`, or of the `[start,end)` slice. Also accepts
+  a tensor-backed `#(...)` vector literal, not just `(vector ...)`-allocated
+  vectors (v1.3.0-evolve).
+- `(vector-copy! to at from)` / `(vector-copy! to at from start end)` -
+  In-place copy into `to` starting at index `at`
 
 #### 4.9.3 Vector Conversions
 - `(vector->list vec)` - Convert to list
 - `(list->vector lst)` - Convert from list
+
+#### 4.9.4 Vector Iteration
+- `(vector-map proc vec1 vec2 ...)` - Apply `proc` element-wise across one
+  or more vectors in lockstep (R7RS 6.9), stopping at the shortest vector
+- `(vector-for-each proc vec1 vec2 ...)` - Same iteration, for side effects
 
 ### 4.10 Tensor Operations
 
@@ -2266,6 +2337,116 @@ Supports arbitrary nesting depth via tape stack:
   (vector 2.0))
 ; Computes ∂/∂x[∂/∂y(xy²)]
 ```
+
+### 8.5 Arbitrary-Order AD: Taylor Towers (v1.3.0-evolve)
+
+A second, orthogonal AD engine computes every derivative up to an arbitrary
+order `k` in a single pass. Full detail: the
+[Automatic Differentiation guide](guide/AUTOMATIC_DIFFERENTIATION.md) and
+`docs/design/AD_TAYLOR_TOWER.md`.
+
+#### 8.5.1 `taylor` / `derivative-n` — Core Tower Builtins
+
+**Syntax:**
+```scheme
+(taylor function point k)          ; List of k+1 Taylor coefficients c[0..k]
+(derivative-n function point k)    ; Scalar: the k-th derivative f^(k)(point)
+```
+
+Coefficient `c[n] = f^(n)(point)/n!`. Stored on a new heap subtype
+(`HEAP_SUBTYPE_TAYLOR`). When `point` is exact (integer/rational) and
+`function` uses only exact-preserving arithmetic (`+ - * /`, non-negative
+integer `expt`), the coefficients are returned as exact bignum/rational
+values instead of `double` (automatic demotion to `double` on overflow or on
+the first transcendental call). When `k` is a compile-time literal, the
+tower may be compiled with zero heap allocation (compile-time-K
+monomorphization).
+
+**Example:**
+```scheme
+(taylor (lambda (x) (exp x)) 0.5 4)
+; => (1.64872 1.64872 0.824361 0.274787 0.0686967)
+
+(derivative-n (lambda (y) (* y y y)) 3.0 1)  ; => 27  (f'(x) = 3x^2 at x=3)
+```
+
+#### 8.5.2 `core.ad.guw` — Arbitrary-Order Multivariate Mixed Partials
+
+**Syntax:**
+```scheme
+(require core.ad.guw)
+(taylor-propagate function point direction k)  ; Taylor coeffs of g(t) = f(point + t*direction)
+(mixed-partial function point multi-index)     ; scalar D^beta f(point)
+(gradient-n function point order)              ; order>=3 symmetric derivative tensor
+```
+
+`multi-index` is a list of variable indices with repetition, e.g. `(0 0 1)`
+denotes `d^3f/dx0^2 dx1`. Implemented via Griewank-Utke-Walther (GUW)
+directional propagation of univariate towers along principal-lattice
+direction vectors. `order` <= 2 continues to use the existing
+`gradient`/`hessian` jet path.
+
+#### 8.5.3 `core.ad.taylor_models` — Validated AD
+
+**Syntax:**
+```scheme
+(require core.ad.taylor_models)
+(taylor-model function center radius k)  ; polynomial + interval remainder
+(tm-range tm)                            ; guaranteed range enclosure (lo . hi)
+(tm-eval tm x)                           ; guaranteed point enclosure (lo . hi)
+(tm-add tm1 tm2) (tm-mul tm1 tm2)        ; Makino-Berz Taylor-model arithmetic
+(tm-order tm) (tm-coeffs tm) (tm-center tm) (tm-radius tm) (tm-remainder tm) (tm-domain tm)
+```
+
+Pairs a Taylor polynomial with a rigorous interval-remainder bound so
+`tm-range`/`tm-eval` are provable enclosures, not point estimates.
+
+#### 8.5.4 `core.ad.sparse_guw` — Sparse High-Order Tensors
+
+**Syntax:**
+```scheme
+(require core.ad.sparse_guw)
+(sparse-hessian function point)                        ; auto-probed sparsity structure
+(sparse-hessian-pat function point pattern)            ; explicit hyperedge pattern
+(sparse-hessian-ref sp i j) (sparse-hessian-nonzeros sp)
+(sparse-hessian-row-ptr sp) (sparse-hessian-col-idx sp) (sparse-hessian-values sp)
+(sparse-hessian-colors sp) (sparse-hessian-directions sp) (sparse-hessian-dense? sp)
+(sparse-mixed-partials function point order pattern)   ; order>=3 sparse recovery
+(sparse-mixed-partials-ref sp multi-index) (sparse-mixed-partials-entries sp)
+```
+
+Recovers a sparse Hessian/mixed-partial tensor via greedy distance-2
+(star) graph coloring plus one reverse-over-Taylor Hessian-vector product
+per color, so cost scales with variable-interaction bandwidth rather than
+dimension. `sparse-mixed-partials` is order->=3 only.
+
+#### 8.5.5 `core.ad.taylor_numerics` — Tower-Based User Numerics
+
+**Syntax:**
+```scheme
+(require core.ad.taylor_numerics)
+(taylor-eval coefficients dt)                    ; Horner-evaluate a taylor coefficient list at offset dt
+(taylor-ode-solve function y0 t0 t1 k n)         ; order-k, n-step fixed-step scalar IVP solver
+(taylor-root function x0 k)                      ; Householder root refinement (k=1 Newton, k=2 Halley)
+(taylor-inverse-series function x0 k)            ; Taylor series of f^-1 via Lagrange inversion
+```
+
+All arguments are positional (no keyword-arg formals).
+
+#### 8.5.6 `core.ad.tensor_tower` and `core.ad.checkpoint`
+
+`core.ad.tensor_tower` generalizes a tower to a "tower of tensors" (one
+Cauchy-convolution series per tensor element, sharing a single shape), so
+high-order AD composes with `matmul`/`conv2d`/`sigmoid`/`tanh` unchanged.
+`core.ad.checkpoint` demonstrates checkpointed (Griewank/binomial
+sqrt(N)-schedule) high-order reverse-mode differentiation, holding at most
+one block's tape live at a time instead of the whole chain.
+
+Differentiable control flow (`if`/`cond`/`case`/named-let/recursion/
+`map`/`fold` over Taylor-tower values) and reverse-over-Taylor (a `gradient`
+that differentiates through an inner `derivative-n`/`taylor` call) require
+no separate API — they are properties of the core tower engine and the
+reverse-mode tape described in 8.2.
 
 ---
 
@@ -3636,10 +3817,10 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 ### 22.4 All String Functions (30+)
 
 **Construction:**
-`string`, `make-string`, `string-append`, `substring`
+`string`, `make-string`, `string-append`, `substring` (2-arg `(substring s start)` or 3-arg `(substring s start end)`)
 
 **Access:**
-`string-length`, `string-ref`, `string-set!`
+`string-length`, `string-byte-length` (UTF-8 byte count), `string-ref`, `string-set!`
 
 **Comparison:**
 `string=?`, `string<?`, `string>?`, `string<=?`, `string>=?`
@@ -3656,7 +3837,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 `vector`, `matrix`, `tensor`, `make-vector`, `zeros`, `ones`, `eye`, `arange`, `linspace`
 
 **Access:**
-`vref`, `tensor-get`, `tensor-set`, `vector-ref`, `vector-set!`, `vector-length`
+`vref`, `tensor-get`, `tensor-set`, `vector-ref`, `vector-set!`, `vector-length`, `vector-copy`, `vector-copy!`, `vector-map` (multi-vector), `vector-for-each` (multi-vector)
 
 **Arithmetic:**
 `tensor-add`, `tensor-sub`, `tensor-mul`, `tensor-div`, `tensor-dot`, `matmul`
@@ -3674,7 +3855,7 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 
 `make-hash-table`, `hash`, `hash-ref`, `hash-set!`, `hash-has-key?`, `hash-remove!`, `hash-keys`, `hash-values`, `hash-count`, `hash-clear!`, `hash-table?`. SRFI-125 aliases also accepted (interchangeable with the non-prefixed names above): `hash-table-ref`, `hash-table-ref/default`, `hash-table-set!`, `hash-table-contains?`, `hash-table-exists?`, `hash-table-delete!`, `hash-table-keys`, `hash-table-values`, `hash-table-size`, `hash-table-clear!`.
 
-### 22.7 All Autodiff Operators (8)
+### 22.7 All Autodiff Operators
 
 **Univariate:**
 `derivative`
@@ -3685,9 +3866,17 @@ eshkol_qrng_bytes(buf, len)  // Fill buffer with random bytes
 **Vector Calculus:**
 `divergence`, `curl`, `laplacian`, `directional-derivative`
 
+**Arbitrary-Order Taylor Towers (v1.3.0-evolve, see 8.5):**
+`taylor`, `derivative-n` (core, no `require` needed); `taylor-propagate`,
+`mixed-partial`, `gradient-n` (`core.ad.guw`); `taylor-model`, `tm-range`,
+`tm-eval`, `tm-add`, `tm-mul` and accessors (`core.ad.taylor_models`);
+`sparse-hessian`, `sparse-hessian-pat`, `sparse-mixed-partials` and
+accessors (`core.ad.sparse_guw`); `taylor-ode-solve`, `taylor-root`,
+`taylor-inverse-series` (`core.ad.taylor_numerics`)
+
 ### 22.8 All Type Predicates (20+)
 
-`null?`, `boolean?`, `char?`, `string?`, `symbol?`, `number?`, `integer?`, `real?`, `complex?`, `pair?`, `list?`, `vector?`, `procedure?`, `hash-table?`, `tensor?`, `input-port?`, `output-port?`, `port?`, `eof-object?`
+`null?`, `boolean?`, `char?`, `string?`, `symbol?`, `number?`, `integer?`, `real?`, `complex?`, `pair?`, `list?`, `vector?`, `procedure?`, `hash-table?`, `tensor?`, `input-port?`, `output-port?`, `port?`, `eof-object?`, `error-object?` (R7RS condition-object predicate, see 3.8.3)
 
 ### 22.9 All Equality/Comparison (3)
 
@@ -3857,6 +4046,16 @@ Keep original name (exported via `provide`)
 **Current Version:** v1.3.0-evolve
 
 **Version History:**
+- v1.3.0-evolve - Arbitrary-order automatic differentiation (Taylor towers,
+  phases P0-P12: exact bignum/rational coefficients, no-heap
+  monomorphization, GUW multivariate mixed partials, reverse-over-Taylor,
+  tensor towers, validated Taylor models, sparse high-order tensors,
+  differentiable control flow, checkpointed reverse-mode, tower-based
+  numerics), full R7RS conformance on the portable differential corpus
+  (34/34 vs. chibi-scheme), closure/TCO/memory robustness hardening
+  (mutual tail calls, named-let TCO in every position, 16->64 capture
+  ceiling, bounded-RSS long-running loops), and a permanent multi-pillar
+  adversarial-testing infrastructure. See [CHANGELOG.md](../CHANGELOG.md).
 - v1.2.0-scale - Production readiness: model serialization, stable C ABI + Python bindings, per-thread arenas, 512 MB main-thread stack on Darwin, image I/O, plotting stdlib, actionable error messages with file:line:col + caret, JSON Schema validator (Draft 7 subset), R7RS-compliant scoping for stdlib redefines, --wasm self-contained emit, AD scalar derivative on inline lambdas, value-typed-capture LLVM verification, variadic-info hygiene on user redefines, 62-test edge-case suite + ASan/UBSan CI lane, 7 hardening fixes (subprocess injection, FFI AST injection, integer overflows, path traversal, ReDoS).
 - v1.1.13-accelerate - Windows ARM64 native support, 16-lane release matrix, two VM closure bug fixes (named-let nested closure PC + native 252 upvalue relay), Windows setjmp hardening for x64 and ARM64, mobile-responsive website, REPL error display
 - v1.1.12-accelerate - LLVM 21 toolchain unification, Windows VS 2022/ClangCL, ARM64 ABI fix, clean URL routing

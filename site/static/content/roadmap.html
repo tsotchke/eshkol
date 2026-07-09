@@ -384,6 +384,17 @@ v2.0 ─────────────────────────
                                                        ├ Quantum gates + measurement
                                                        ├ Hybrid VQE/QAOA (requires AD + quantum)
                                                        └ Formal verification (requires dep types)</code></pre>
+<p><strong>Arbitrary-order AD (Taylor-tower) track — SHIPPED ahead of
+schedule:</strong> the campaign was originally planned to be threaded
+through the version themes above as enabling substrate spread from
+v1.3.1 through v2.0 (P1 in v1.3.1, P2/P3 in v1.3.2, P4/P6/P11 in v1.4,
+P5/P7/P9 in v1.5, P10 bridging v1.5-v1.7, P12 in v1.6, P8 in v2.0).
+Instead, <strong>all 13 phases (P0-P12) shipped complete in
+v1.3.0-evolve</strong> — see <a href="CHANGELOG.md">CHANGELOG.md</a> and
+<a href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a> for
+the as-shipped detail. The version rows below still show the original
+staging plan for historical context; treat the AD line item in each as
+already delivered.</p>
 <hr />
 <h2 id="v1.2-scale-may-2026---shipped">v1.2-scale (May 2026) -
 SHIPPED</h2>
@@ -460,10 +471,11 @@ fixes (HIGH), 36 silent-swallow sites surfaced (HIGH), ReDoS protection
 + SQL-injection guards + URL validator (MEDIUM).</label></li>
 </ul>
 <hr />
-<h2 id="v1.3-evolve-june-2026---planned">v1.3-evolve (June 2026) -
-PLANNED</h2>
-<p><strong>Focus:</strong> Make the language a joy to use
-day-to-day.</p>
+<h2 id="v1.3.0-evolve-july-2026---shipped">v1.3.0-evolve (July 2026) -
+SHIPPED</h2>
+<p><strong>Focus:</strong> Make the language a joy to use day-to-day —
+and it grew into much more: a full arbitrary-order
+automatic-differentiation system.</p>
 <ul>
 <li>[~] Full R7RS library system: <code>define-library</code> exports
 work end-to-end; <code>(rename (m) (a b))</code> import works.
@@ -496,7 +508,56 @@ plumbing for <code>tensor-matmul</code> — verified by
 (input2). Conv2d / batchnorm / layernorm / attention forward sites still
 leave <code>input2</code> null in their tape nodes and are tracked
 separately.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Arbitrary-order
+AD Taylor-tower campaign — fully delivered, all 13 phases (P0-P12), well
+ahead of the original P1-only-in-v1.3 plan below</strong>: runtime tower
++ <code>taylor</code>/<code>derivative-n</code> (P1); no-heap
+compile-time-K monomorphization (P2); JET8-subsumption analysis (P3);
+GUW arbitrary-order multivariate mixed partials,
+<code>mixed-partial</code>/ <code>gradient-n</code> (P4);
+reverse-over-Taylor (P5); exact bignum/rational coefficient towers (P6);
+tensor-valued towers through <code>matmul</code>/<code>conv2d</code>
+(P7); validated Taylor models with interval-remainder bounds,
+<code>taylor-model</code> (P8); differentiable control flow (P9);
+checkpointed high-order reverse-mode (P10); tower-based user numerics,
+<code>taylor-ode-solve</code>/<code>taylor-root</code> (P11); sparse
+high-order tensors, <code>sparse-hessian</code> (P12). See <a
+href="CHANGELOG.md">CHANGELOG.md</a>, the <a
+href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+guide</a>, and <code>docs/AD_CAMPAIGN.md</code>. This closes ESH-0118
+and supersedes the P1-v1.3.1 / P2-P3-v1.3.2 staging plan below — P4
+through P12, originally spread across v1.4 through v2.0 in the
+Architecture Dependency Chain, shipped complete in this release
+instead.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Full R7RS
+conformance on the portable corpus</strong>: a new reference-Scheme
+differential oracle (P7a) reached 34/34 (100%) AGREE vs. chibi-scheme
+0.12.0 on its 34-program corpus, fixing <code>apply</code> with leading
+arguments, multi-vector <code>vector-map</code>, quasiquoted vectors,
+<code>cond</code>/<code>case</code> <code>=&gt;</code>, allocating
+<code>vector-copy</code> (incl. <code>#(...)</code> literals), the
+<code>error-object</code> family, <code>write</code> escaping, nested
+<code>syntax-rules</code> ellipsis, and 2-arg <code>substring</code>
+along the way.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Robustness
+hardening</strong>: proper mutual-tail-call TCO (AArch64), named-let TCO
+in every tail position (incl. through <code>guard</code>), the
+closure-capture ceiling raised 16→64, automatic per-iteration arena
+reclamation for bounded-RSS long-running loops, a shutdown-teardown race
+fix, a deep-recursion <code>SIGILL</code>-with-no-diagnostic fix, and
+transitive-dependency AOT/JIT cache invalidation.</label></li>
+<li><label><input type="checkbox" checked="" /><strong>Permanent
+adversarial-testing infrastructure</strong>: differential harness+fuzzer
+(P1), feature-pair edge matrix (P2), AD finite-difference oracle (P3),
+stress harness (P4), VM parity ratchet (P5), six depth-parametric sweep
+families (P6), and external oracles — reference-Scheme differential,
+sanitizer fuzzing, metamorphic-law checking (P7) — all wired into the
+ICC readiness oracle. See <code>docs/TESTING.md</code>.</label></li>
 </ul>
+<p>Original v1.3.1/v1.3.2 staging plan for reference (superseded — all
+landed in v1.3.0-evolve): P1 runtime <code>derivative^n</code> closes
+ESH-0118; P2 compile-time-K monomorphization and P3 JET8 subsumption
+gated by <code>ad-depth</code> and <code>mono-equiv</code>.</p>
 <hr />
 <h2 id="v1.4-connection-july-2026---planned">v1.4-connection (July 2026)
 - PLANNED</h2>
@@ -518,6 +579,10 @@ TLS)</label></li>
 tracking</label></li>
 <li><label><input type="checkbox" />Borrow pattern for temporary
 resource access</label></li>
+<li><label><input type="checkbox" />AD infrastructure track alongside
+networking: P4 GUW multivariate towers, P6 exact-coefficient towers, and
+P11 tower-based user numerics, gated by <code>ad-exact</code> and
+<code>ad-numerics</code>.</label></li>
 </ul>
 <hr />
 <h2 id="v1.5-intelligence-august-2026---planned">v1.5-intelligence
@@ -540,6 +605,15 @@ recurrent neural architectures)</label></li>
 (neural query mechanism over symbolic facts)</label></li>
 <li><label><input type="checkbox" />Gradient estimators for discrete
 operations (Gumbel-Softmax, straight-through)</label></li>
+<li><label><input type="checkbox" />High-order AD for neuro-symbolic ML:
+P5 reverse-over-Taylor, P7 tensor-valued towers, and P9 differentiable
+control flow provide the substrate for differentiable logic and
+recurrent/neural workloads, gated by <code>ad-reverse-highorder</code>,
+<code>ad-tensor-highorder</code>, and
+<code>ad-control-flow</code>.</label></li>
+<li><label><input type="checkbox" />Checkpointed high-order reverse
+begins here as P10, with the memory-scaling work continuing into v1.7
+synthesis.</label></li>
 </ul>
 <hr />
 <h2 id="v1.6-reasoning-september-2026---planned">v1.6-reasoning
@@ -556,6 +630,10 @@ constraints, SAT solver integration)</label></li>
 store with SPO/POS/OSP indexing)</label></li>
 <li><label><input type="checkbox" />Knowledge graph embeddings
 (entity-relation-entity triples as learnable vectors)</label></li>
+<li><label><input type="checkbox" />Sparse high-order AD tensors (P12)
+for knowledge-graph and relational workloads, gated by
+<code>ad-sparse</code> against dense recovery on tractable
+cases.</label></li>
 </ul>
 <hr />
 <h2 id="v1.7-synthesis-october-2026---planned">v1.7-synthesis (October
@@ -664,6 +742,11 @@ simulator</label></li>
 (Lean) for certified compilation</label></li>
 <li><label><input type="checkbox" />Quantitative type theory for unified
 linear/quantum resource tracking</label></li>
+<li><label><input type="checkbox" />Lean-certified formal verification
+of the validated-AD Taylor models (P8) already shipped in v1.3.0-evolve
+(<code>taylor-model</code>, <code>tm-range</code>, <code>tm-eval</code>)
+— proving the interval-remainder enclosures sound and order-tightening,
+beyond the current dense-sampling remainder estimate.</label></li>
 </ul>
 <hr />
 <h2 id="release-timeline">Release Timeline</h2>
@@ -697,28 +780,40 @@ site</td>
 <td>Model serialization, Python bindings, image I/O</td>
 </tr>
 <tr>
-<td><strong>v1.3</strong></td>
-<td>Jun 2026</td>
+<td><strong>v1.3.0-evolve</strong></td>
+<td>Jul 2026</td>
 <td>Evolve</td>
-<td>R7RS libraries, string interpolation, PGO</td>
+<td><strong>SHIPPED.</strong> R7RS libraries, string interpolation;
+arbitrary-order AD <strong>P0–P12 complete</strong> (Taylor towers,
+exact coefficients, GUW multivariate, reverse-over-Taylor, tensor
+towers, Taylor models, sparse tensors — closes ESH-0118, delivered ahead
+of the original P1-only plan); full R7RS conformance (34/34
+vs. chibi-scheme); TCO/closure/memory robustness hardening; permanent
+adversarial-testing infrastructure</td>
 </tr>
 <tr>
 <td><strong>v1.4</strong></td>
 <td>Jul 2026</td>
 <td>Connection</td>
-<td>Networking, TLS, event loop, linear resource types</td>
+<td>Networking, TLS, event loop, linear resource types <em>(AD substrate
+P4/P6/P11 already delivered in v1.3.0-evolve, ahead of
+schedule)</em></td>
 </tr>
 <tr>
 <td><strong>v1.5</strong></td>
 <td>Aug 2026</td>
 <td>Intelligence</td>
-<td>Symbol embeddings, differentiable logic, LSTM/GRU</td>
+<td>Symbol embeddings, differentiable logic, LSTM/GRU <em>(high-order AD
+P5/P7/P9/P10 already delivered in v1.3.0-evolve, ahead of
+schedule)</em></td>
 </tr>
 <tr>
 <td><strong>v1.6</strong></td>
 <td>Sep 2026</td>
 <td>Reasoning</td>
-<td>Backward chaining, constraint solving, knowledge graphs</td>
+<td>Backward chaining, constraint solving, knowledge graphs <em>(sparse
+high-order AD tensors P12 already delivered in v1.3.0-evolve, ahead of
+schedule)</em></td>
 </tr>
 <tr>
 <td><strong>v1.7</strong></td>
@@ -742,10 +837,22 @@ site</td>
 <td><strong>v2.0</strong></td>
 <td>Q1 2027</td>
 <td>Starlight</td>
-<td>Quantum types, VQE/QAOA, formal verification</td>
+<td>Quantum types, VQE/QAOA, formal verification; Lean-certified proofs
+for the validated-AD Taylor models (P8, already shipped in
+v1.3.0-evolve)</td>
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Arbitrary-order AD (Taylor-tower) track — SHIPPED.</strong>
+Phases P0–P12 were originally planned to thread through the version
+themes above as enabling substrate; instead all 13 phases landed
+complete in v1.3.0-evolve. See <a
+href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a> for the
+as-planned phase → version → ICC-gate map and <a
+href="CHANGELOG.md">CHANGELOG.md</a> for the as-shipped detail. Each
+phase was gated by an <code>ad-*</code> ICC oracle criterion.</p>
+</blockquote>
 <hr />
 <h2 id="component-status">Component Status</h2>
 <h3 id="core-compiler">Core Compiler</h3>
@@ -771,6 +878,11 @@ Complete</label></li>
 Complete (32-level tape stack)</label></li>
 <li><label><input type="checkbox" checked="" />Vector Calculus -
 Complete (8 operators)</label></li>
+<li><label><input type="checkbox" checked="" />Arbitrary-Order Taylor
+Towers (v1.3.0-evolve) - Complete (P0-P12: exact coefficients, GUW
+multivariate, reverse-over-Taylor, tensor towers, validated Taylor
+models, sparse tensors, differentiable control flow, checkpointed
+reverse, tower-based numerics)</label></li>
 </ul>
 <h3 id="memory-management">Memory Management</h3>
 <ul class="task-list">
@@ -861,10 +973,11 @@ Complete</label></li>
 </ul>
 <h3 id="planned-v1.2">Planned (v1.2+)</h3>
 <ul class="task-list">
-<li><label><input type="checkbox" />Model Serialization + Python
-Bindings — v1.2</label></li>
-<li><label><input type="checkbox" />R7RS Library System + String
-Interpolation — v1.3</label></li>
+<li><label><input type="checkbox" checked="" />Model Serialization +
+Python Bindings — v1.2 (shipped)</label></li>
+<li><label><input type="checkbox" checked="" />R7RS Library System +
+String Interpolation + arbitrary-order AD — v1.3.0-evolve
+(shipped)</label></li>
 <li><label><input type="checkbox" />Networking + Linear Resource Types —
 v1.4</label></li>
 <li><label><input type="checkbox" />Neuro-Symbolic Bridge —
@@ -919,7 +1032,15 @@ Build integrations - Share use cases</p>
 <p>See <a href="CONTRIBUTING.md">CONTRIBUTING.md</a> for detailed
 contribution guidelines.</p>
 <hr />
-<p><em>Last Updated: April 2026</em></p>
+<p><em>Last Updated: July 2026</em></p>
+<p><em>The arbitrary-order automatic-differentiation (Taylor-tower)
+campaign — phases P0–P12, spanning core high-order AD, exact-coefficient
+and tensor-valued towers, GUW multivariate recovery, differentiable
+control flow, and validated Taylor models — is threaded through the
+version themes above rather than run as a separate release ladder. It is
+the differentiable-programming substrate for the neuro-symbolic
+(v1.5–v1.7) and quantum/formal-verification (v2.0) arc. See <a
+href="docs/AD_CAMPAIGN.md"><code>docs/AD_CAMPAIGN.md</code></a>.</em></p>
 <p><em>Eshkol v1.1-accelerate is complete with 47/47 roadmap items
 delivered plus the v1.1.12 and v1.1.13 additions (production VM, web
 platform, browser AD, Windows ARM64, mobile site). The roadmap

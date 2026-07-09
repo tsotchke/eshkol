@@ -1,5 +1,5 @@
-<h1 id="eshkol-v1.3.0-evolve-feature-matrix">Eshkol v1.3.0-evolve Feature
-Matrix</h1>
+<h1 id="eshkol-v1.3.0-evolve-feature-matrix">Eshkol v1.3.0-evolve
+Feature Matrix</h1>
 <p><strong>Status Key</strong>: ✅ Production | 🚧 In Progress | 📋
 Planned | ❌ Not Planned</p>
 <p>This matrix documents all implemented and planned features for the
@@ -564,15 +564,18 @@ tests).</p>
 </tr>
 <tr>
 <td>Nested gradients</td>
-<td>✅</td>
+<td>✅ / ⚠️</td>
 <td>Reverse</td>
-<td>Arbitrary depth</td>
+<td>Exact via nested scalar <code>derivative</code>; vector
+gradient-of-gradient returns zeros (ESH-0096)</td>
 </tr>
 <tr>
 <td>Double backward</td>
-<td>✅</td>
+<td>✅ / ⚠️</td>
 <td>Reverse</td>
-<td>Second derivatives</td>
+<td>Second derivatives via nested scalar <code>derivative</code>;
+<code>hessian</code> works on vector points (crashes on tensor points,
+ESH-0095)</td>
 </tr>
 <tr>
 <td>Jacobian matrices</td>
