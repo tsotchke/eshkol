@@ -260,6 +260,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["define_loop_flat_rss_aot"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESH-0214b v1.3.1: AOT guard-wrapped define loop stays under the 200MB flat-RSS ceiling'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["define_library_import_works"]
           event_values: ["PASS"]
         severity: high

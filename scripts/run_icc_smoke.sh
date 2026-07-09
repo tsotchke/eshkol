@@ -366,6 +366,14 @@ probe string_edge_ops_r7rs 'string-map returns a string; string->number honors r
      rm -f "$bin";
      exit 0'
 
+probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps RSS flat (v1.3.1 gate)' \
+    'cd "$REPO_ROOT";
+     ## v1.3.1 fix: per-iteration arena scope reclamation for self-tail
+     ## define loops with catch-all guard. Broken behavior is ~2.6GB peak
+     ## RSS at 1e6 allocating iterations; fixed is ~26MB. The gate fails
+     ## above a 200MB ceiling.
+     bash tests/memory/define_loop_flat_rss_aot_test.sh'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"

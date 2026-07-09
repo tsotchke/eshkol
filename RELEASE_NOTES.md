@@ -1,12 +1,66 @@
-# Eshkol v1.3.0-evolve — Release Notes
+# Eshkol v1.3.1-evolve — Release Notes
+
+**Release Date**: July 9, 2026
+
+Eshkol v1.3.1-evolve is a resident-robustness point release over
+v1.3.0-evolve: two fixes aimed squarely at long-running/daemon processes and
+large-persisted-state workloads, plus a comprehensive documentation pass.
+Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this page is the
+user-facing summary.
+
+**Release gates**: builds on the v1.3.0-evolve release gates (see below) with
+a new AOT flat-RSS regression gate
+(`tests/memory/define_loop_flat_rss_aot_test.sh`) that compiles the
+guard-wrapped self-tail-recursive `define`-loop shape ahead-of-time and fails
+if peak RSS exceeds a generous flat threshold, so the ESH-0214b fix cannot
+silently regress.
+
+## Highlights
+
+### Resident-robustness fixes
+
+- **Long persisted-state files now read safely.** The reader's list parser
+  (`read_list`) was rewritten from per-element native recursion to an
+  iterative loop, so reading a long flat list — e.g. a 46K-entry persisted
+  state file — no longer overflows the native stack. Verified: the pre-fix
+  reader crashed (SIGBUS) at 20M elements; post-fix, the same input reads
+  cleanly. (#191)
+- **`define`-loop daemons now hold flat memory.** Automatic per-iteration
+  arena-scope reclamation — previously limited to named-let loops — now also
+  covers self-tail-recursive top-level `define` loops, and the escape
+  analysis that gates it accepts a catch-all `guard` clause instead of
+  rejecting any guarded body outright. This is exactly the shape of a
+  production daemon/resident loop: a top-level `define` loop wrapped in an
+  error boundary. Verified in AOT mode: a 1,000,000-iteration allocating
+  guard-wrapped `define` loop holds peak RSS at 27MB with the fix on, versus
+  2608MB with the fix off. (#192)
+
+### Comprehensive documentation pass
+
+- Doxygen doc-comments added across all 64 public headers (`inc/eshkol/**`)
+  and most implementation files (`lib/**`).
+- A new navigable documentation index (`docs/README.md`); orphaned
+  (unindexed) docs reduced from 73 to 3.
+- Press materials and website content updated to reflect the shipped v1.3
+  state; roadmap views aligned with what has actually shipped.
+
+### Known issues
+
+See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and the CHANGELOG's Known
+Issues section for the current, itemized list (none block ordinary use).
+
+---
+
+## Previous Releases
+
+### Eshkol v1.3.0-evolve — Arbitrary-Order Automatic Differentiation
 
 **Release Date**: July 7, 2026
 
 Eshkol v1.3.0-evolve is the "evolve" release: arbitrary-order automatic
 differentiation, full R7RS conformance on the portable differential
 corpus, and a hardening pass across closures, tail calls, and long-running
-processes. Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this
-page is the user-facing summary.
+processes.
 
 **Release gates** (all green on the release SHA): ICC readiness oracle
 `v1.3-evolve` ready (100/100, trace-verified); CI 14/14 lanes including
@@ -14,9 +68,9 @@ windows-arm64 lite/CUDA/XLA; SICP full-book gate 88/88 probes across all 5
 chapters under both `-r` and AOT; reference-Scheme differential oracle 34/34
 AGREE vs. chibi-scheme.
 
-## Highlights
+#### Highlights
 
-### Automatic differentiation, best-in-class and beyond
+##### Automatic differentiation, best-in-class and beyond
 
 Eshkol's AD system already did exact forward-mode, reverse-mode, and
 symbolic differentiation. v1.3.0-evolve adds a second axis on top: **order**.
@@ -57,7 +111,7 @@ arbitrary order `k` in a single pass:
 See the [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
 for worked examples and the full API reference.
 
-### Full R7RS conformance on the portable corpus
+##### Full R7RS conformance on the portable corpus
 
 A new reference-Scheme differential oracle diffs Eshkol's behavior against
 chibi-scheme 0.12.0 across a 34-program portable R7RS corpus (numeric, list,
@@ -72,7 +126,7 @@ family, R7RS string-escaping in `write`, nested ellipsis (`x ... ...`) in
 `syntax-rules`, and the 2-argument form of `substring`. See the
 [CHANGELOG](CHANGELOG.md#fixed--r7rs-conformance) for the itemized list.
 
-### Robustness: closures, tail calls, and long-running processes
+##### Robustness: closures, tail calls, and long-running processes
 
 A cluster of fixes targets programs that run for a long time or recurse
 deeply — the kind of bug that only shows up in production, not in a quick
@@ -96,7 +150,7 @@ test:
 See [CHANGELOG.md](CHANGELOG.md#fixed--compiler--runtime-robustness) for the
 full list with root causes.
 
-### Also in this release
+##### Also in this release
 
 - A new build integration surface: `--emit-depfile` plus a canonical
   `cmake/EshkolCompile.cmake` for consumers embedding the Eshkol compiler in
@@ -109,14 +163,10 @@ full list with root causes.
   classes of bug keep getting caught going forward. See
   [docs/TESTING.md](docs/TESTING.md).
 
-### Known issues
+##### Known issues
 
 See [docs/KNOWN_ISSUES.md](docs/KNOWN_ISSUES.md) and the CHANGELOG's Known
 Issues section for the current, itemized list (none block ordinary use).
-
----
-
-## Previous Releases
 
 ### Eshkol v1.2.3-scale — Platform Artifact Closeout
 

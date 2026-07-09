@@ -7,7 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-No changes yet since [1.3.0-evolve].
+No changes yet since [1.3.1-evolve].
+
+## [1.3.1-evolve] - 2026-07-09
+
+A resident-robustness point release over v1.3.0-evolve: two fixes that
+matter specifically for long-running/daemon and large-persisted-state
+workloads, plus a comprehensive documentation pass.
+
+### Fixed
+
+- **Iterative `read_list`** (#191): the reader's list-parsing path was
+  rewritten from per-element native recursion to an iterative loop, so
+  reading long flat lists — e.g. a 46K-entry persisted-state file — no
+  longer overflows the native stack. Verified: the pre-fix reader SIGBUS'd
+  at 20M elements; post-fix, the same input reads cleanly.
+- **ESH-0214b per-iteration arena scope for `define` loops + catch-all
+  guard** (#192): automatic per-iteration arena-scope reclamation, previously
+  named-let-only, now also applies to self-tail-recursive top-level `define`
+  loops, and the escape analysis that gates it no longer rejects a guard body
+  outright — it accepts a catch-all guard clause (`#t`/`else`) whose body is
+  itself escape-free. This enables flat-memory resident/daemon workloads
+  built on the `define`-loop-plus-guard idiom. Verified in AOT mode: a
+  1,000,000-iteration allocating guard-wrapped `define` loop holds peak RSS
+  at 27MB with the fix on, versus 2608MB with the fix off.
+
+### Documentation
+
+- Added Doxygen doc-comments across all 64 public headers (`inc/eshkol/**`)
+  and most implementation files (`lib/**`).
+- Added a navigable documentation index (`docs/README.md`); reduced orphaned
+  (unindexed) docs from 73 to 3.
+- Updated press materials and website content to reflect the shipped v1.3
+  state.
+- Aligned roadmap views with what has actually shipped.
 
 ## [1.3.0-evolve] - 2026-07-07
 
