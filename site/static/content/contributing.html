@@ -34,13 +34,13 @@ Tools)</a></li>
 </ul></li>
 <li><a href="#project-structure">Project Structure</a></li>
 <li><a href="#communication">Communication</a></li>
-<li><a href="#priority-areas-for-contribution-v13">Priority Areas for
-Contribution (v1.3+)</a>
+<li><a href="#priority-areas-for-contribution-v14">Priority Areas for
+Contribution (v1.4+)</a>
 <ul>
-<li><a href="#immediate-priorities-v13-evolve---june-2026">Immediate
-Priorities (v1.3-evolve - June 2026)</a></li>
-<li><a href="#near-term-v15-intelligence---q3-2026">Near-Term
-(v1.5-intelligence - Q3 2026)</a></li>
+<li><a href="#immediate-priorities-v14-connection---july-2026">Immediate
+Priorities (v1.4-connection - July 2026)</a></li>
+<li><a href="#near-term-v15-intelligence---august-2026">Near-Term
+(v1.5-intelligence - August 2026)</a></li>
 <li><a href="#ongoing">Ongoing</a></li>
 </ul></li>
 <li><a href="#recognition">Recognition</a></li>
@@ -292,41 +292,40 @@ and community discussions.</li>
 <li><strong>Pull Requests</strong>: For code contributions and code
 reviews.</li>
 </ul>
-<h2 id="priority-areas-for-contribution-v1.3">Priority Areas for
-Contribution (v1.3+)</h2>
-<p>v1.0-foundation, v1.1-accelerate, and v1.2.0-scale are
-<strong>complete</strong>. We welcome contributions for upcoming
-releases:</p>
-<h3 id="immediate-priorities-v1.3-evolve---june-2026">Immediate
-Priorities (v1.3-evolve - June 2026)</h3>
+<h2 id="priority-areas-for-contribution-v1.4">Priority Areas for
+Contribution (v1.4+)</h2>
+<p>v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve
+(arbitrary-order AD, full R7RS conformance, closure/TCO/memory
+hardening) are <strong>complete</strong>, and v1.3.1 has landed further
+robustness for long-running, resident programs plus comprehensive C-API
+documentation. We welcome contributions for upcoming releases:</p>
+<h3 id="immediate-priorities-v1.4-connection---july-2026">Immediate
+Priorities (v1.4-connection - July 2026)</h3>
 <ol type="1">
-<li><strong>R7RS Library System</strong>: <code>define-library</code> /
-<code>import</code> with renaming, prefixing, <code>only</code>,
-<code>except</code></li>
-<li><strong>String Interpolation</strong>: <code>~{expr}</code> syntax
-in strings</li>
-<li><strong>Named Keyword Arguments</strong>:
-<code>(f #:key value)</code> call syntax</li>
-<li><strong>Destructuring Let</strong>:
-<code>(let-match ((cons a b) lst) ...)</code></li>
-<li><strong>Profile-Guided &amp; Whole-Program Optimization</strong>:
-PGO + LTO wired through the build</li>
+<li><strong>TCP/UDP Sockets</strong>: Linear resource types with
+guaranteed close</li>
+<li><strong>TLS/SSL</strong>: Via system libraries</li>
+<li><strong>Non-Blocking I/O</strong>: Event loop (epoll/kqueue)</li>
+<li><strong>HTTP Client</strong>: Built on sockets + TLS</li>
+<li><strong>Linear Types for Handles</strong>:
+<code>open -&gt; borrowed -&gt; closed</code> with compile-time
+tracking</li>
 <li><strong>Debugger</strong>: REPL step-through with breakpoints +
 variable inspection</li>
 <li><strong>Documentation Generator</strong>: <code>eshkol-doc</code>
 from docstrings</li>
 </ol>
-<h3 id="near-term-v1.5-intelligence---q3-2026">Near-Term
-(v1.5-intelligence - Q3 2026)</h3>
+<h3 id="near-term-v1.5-intelligence---august-2026">Near-Term
+(v1.5-intelligence - August 2026)</h3>
 <ol type="1">
 <li><strong>Neural-Symbolic Search</strong>: Differentiable logic
 programs (building on v1.1 consciousness engine)</li>
+<li><strong>Symbol Embeddings &amp; Soft Unification</strong>:
+Differentiable similarity over the knowledge base</li>
+<li><strong>LSTM/GRU Cells</strong>: Standard recurrent neural
+architectures</li>
 <li><strong>Multi-GPU Support</strong>: Distribute work across multiple
 GPUs</li>
-<li><strong>Profile-Guided Optimization</strong>: Runtime profile-based
-optimization</li>
-<li><strong>Full R7RS Library System</strong>:
-<code>define-library</code> / <code>import</code> with renaming</li>
 </ol>
 <h3 id="ongoing">Ongoing</h3>
 <ol type="1">

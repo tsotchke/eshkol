@@ -23,9 +23,9 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
     - [Testing](#testing)
   - [Project Structure](#project-structure)
   - [Communication](#communication)
-  - [Priority Areas for Contribution (v1.3+)](#priority-areas-for-contribution-v13)
-    - [Immediate Priorities (v1.3-evolve - June 2026)](#immediate-priorities-v13-evolve---june-2026)
-    - [Near-Term (v1.5-intelligence - Q3 2026)](#near-term-v15-intelligence---q3-2026)
+  - [Priority Areas for Contribution (v1.4+)](#priority-areas-for-contribution-v14)
+    - [Immediate Priorities (v1.4-connection - July 2026)](#immediate-priorities-v14-connection---july-2026)
+    - [Near-Term (v1.5-intelligence - August 2026)](#near-term-v15-intelligence---august-2026)
     - [Ongoing](#ongoing)
   - [Recognition](#recognition)
 
@@ -280,24 +280,27 @@ eshkol/
 - **GitHub Discussions**: For general questions, ideas, and community discussions.
 - **Pull Requests**: For code contributions and code reviews.
 
-## Priority Areas for Contribution (v1.3+)
+## Priority Areas for Contribution (v1.4+)
 
-v1.0-foundation, v1.1-accelerate, and v1.2.0-scale are **complete**. We welcome contributions for upcoming releases:
+v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve (arbitrary-order
+AD, full R7RS conformance, closure/TCO/memory hardening) are **complete**, and
+v1.3.1 has landed further robustness for long-running, resident programs plus
+comprehensive C-API documentation. We welcome contributions for upcoming releases:
 
-### Immediate Priorities (v1.3-evolve - June 2026)
-1. **R7RS Library System**: `define-library` / `import` with renaming, prefixing, `only`, `except`
-2. **String Interpolation**: `~{expr}` syntax in strings
-3. **Named Keyword Arguments**: `(f #:key value)` call syntax
-4. **Destructuring Let**: `(let-match ((cons a b) lst) ...)`
-5. **Profile-Guided & Whole-Program Optimization**: PGO + LTO wired through the build
+### Immediate Priorities (v1.4-connection - July 2026)
+1. **TCP/UDP Sockets**: Linear resource types with guaranteed close
+2. **TLS/SSL**: Via system libraries
+3. **Non-Blocking I/O**: Event loop (epoll/kqueue)
+4. **HTTP Client**: Built on sockets + TLS
+5. **Linear Types for Handles**: `open -> borrowed -> closed` with compile-time tracking
 6. **Debugger**: REPL step-through with breakpoints + variable inspection
 7. **Documentation Generator**: `eshkol-doc` from docstrings
 
-### Near-Term (v1.5-intelligence - Q3 2026)
+### Near-Term (v1.5-intelligence - August 2026)
 1. **Neural-Symbolic Search**: Differentiable logic programs (building on v1.1 consciousness engine)
-2. **Multi-GPU Support**: Distribute work across multiple GPUs
-3. **Profile-Guided Optimization**: Runtime profile-based optimization
-4. **Full R7RS Library System**: `define-library` / `import` with renaming
+2. **Symbol Embeddings & Soft Unification**: Differentiable similarity over the knowledge base
+3. **LSTM/GRU Cells**: Standard recurrent neural architectures
+4. **Multi-GPU Support**: Distribute work across multiple GPUs
 
 ### Ongoing
 1. **Documentation**: Tutorials, examples, case studies
