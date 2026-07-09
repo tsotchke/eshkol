@@ -73,32 +73,29 @@ jobs:
           fetch-depth: 0
 
       - name: Check site source artifact pairing
-        if: github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
 
-          before="${{ github.event.before }}"
-          after="${{ github.sha }}"
-          changed="$RUNNER_TEMP/changed-files.txt"
+          # State-based pairing check (not a push-delta check). The old
+          # before..after diff missed pushes whose queued run was superseded
+          # by a newer push in the "pages" concurrency group — a stale
+          # eshkol-site.wasm then deployed silently (v1.3.1 site regression).
+          # Instead, require that the last commit touching the compiled site
+          # WASM is not an ancestor of (strictly older than) the last commit
+          # touching site/src: whenever site/src advances, the checked-in
+          # artifact must advance with (or after) it.
+          src_head="$(git rev-list -1 HEAD -- site/src)"
+          wasm_head="$(git rev-list -1 HEAD -- site/static/eshkol-site.wasm)"
 
-          if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
-            echo "No stable before SHA for this push; skipping pairing check."
+          if [[ -z "$src_head" || -z "$wasm_head" ]]; then
+            echo "site/src or eshkol-site.wasm has no history; skipping pairing check."
             exit 0
           fi
 
-          if ! git cat-file -e "$before^{commit}" 2>/dev/null; then
-            echo "Before SHA $before is not available locally; skipping pairing check."
-            exit 0
-          fi
-
-          git diff --name-only "$before" "$after" > "$changed"
-
-          if grep -Eq '^site/src/' "$changed" &&
-             ! grep -qx 'site/static/eshkol-site.wasm' "$changed"; then
-            echo "::error file=site/static/eshkol-site.wasm::site/src changed without a regenerated site/static/eshkol-site.wasm in the same push."
-            echo "Changed files were:"
-            cat "$changed"
+          if [[ "$src_head" != "$wasm_head" ]] &&
+             git merge-base --is-ancestor "$wasm_head" "$src_head"; then
+            echo "::error file=site/static/eshkol-site.wasm::site/static/eshkol-site.wasm is older than the latest site/src change ($src_head). Regenerate it with scripts/build-site.sh and commit it."
             exit 1
           fi
 
