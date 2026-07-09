@@ -3,8 +3,24 @@ name: CI
 on:
   push:
     branches: [master, develop, 'feat/**']
+    # Docs/markdown-only changes cannot affect the build or tests, so they must
+    # not spin up the full compile/test/wasm/asan matrix. Research ADRs and
+    # documentation live under docs/ and **/*.md; skip CI when a change touches
+    # only those. A change that also touches code still runs the full matrix.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'notes/**'
+      - 'press/**'
+      - 'LICENSE'
   pull_request:
     branches: [master]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'notes/**'
+      - 'press/**'
+      - 'LICENSE'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
