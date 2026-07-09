@@ -142,6 +142,18 @@ enum DualJetSlot : unsigned {
 //
 // This mirrors map_codegen.cpp's isTcoLoopAlloca (bug-RR) — same
 // value-vs-pointer capture-convention mismatch, different codegen path.
+/**
+ * @brief True if `v` is a named-let/TCO loop-variable alloca (name ends in "_tco").
+ *
+ * Distinguishes a TCO loop-carried parameter's alloca — which codegenLambda
+ * captures BY VALUE — from an ordinary mutable-variable alloca, whose address
+ * would otherwise be packed as a pointer-marker and misread as a raw double
+ * by the callee's single-load capture convention (mirrors map_codegen.cpp's
+ * isTcoLoopAlloca, bug-RR).
+ *
+ * @param v candidate captured storage value.
+ * @return true iff `v` is an AllocaInst whose name ends with "_tco".
+ */
 bool isTcoLoopAlloca(llvm::Value* v) {
     auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v);
     if (!a) return false;
@@ -255,6 +267,18 @@ inline llvm::Value* dualUnaryChain(CodegenContext& ctx, llvm::Value* dual,
 // boundary, so a gradient/derivative reached through a called function
 // clobbered the outer perturbation. Slot: level 0 -> e1, level 1 -> e2.
 
+/**
+ * @brief Seed a fresh single-level forward-mode dual number {primal, tangent}.
+ *
+ * Builds the 8-field jet with only field 0 (primal) and field 1 (e1 tangent)
+ * populated; all other slots (e2, e1e2, and the full ep-derivative 4-jet) are
+ * explicitly zeroed so second derivatives and reverse-seed dependence start
+ * from a known-zero state rather than uninitialised memory.
+ *
+ * @param primal function value at the seed point.
+ * @param tangent seed derivative (usually 1.0).
+ * @return the constructed dual-number LLVM struct value, or nullptr if either input is null.
+ */
 llvm::Value* AutodiffCodegen::createDualNumber(llvm::Value* primal, llvm::Value* tangent) {
     if (!primal || !tangent) return nullptr;
     // {primal, tangent(e1), 0(e2), 0(e1e2)} — single-level seed.  The e2/e1e2
@@ -277,12 +301,14 @@ llvm::Value* AutodiffCodegen::createDualNumber(llvm::Value* primal, llvm::Value*
 // Compile-time lexical depth could not see across the call boundary; a runtime
 // push/pop around the call is, by construction, invariant under TCO re-entry.
 
+/** @brief Load the runtime forward-mode perturbation-level counter (`__ad_pert_level`), or 0 if the global is absent. */
 llvm::Value* AutodiffCodegen::adPertLevelLoad() {
     llvm::GlobalVariable* g = ctx_.adPertLevel();
     if (!g) return llvm::ConstantInt::get(ctx_.int64Type(), 0);
     return ctx_.builder().CreateLoad(ctx_.int64Type(), g, "pert_level");
 }
 
+/** @brief Store a new value into the runtime forward-mode perturbation-level counter global. */
 void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
     llvm::GlobalVariable* g = ctx_.adPertLevel();
     if (!g) return;
@@ -293,6 +319,16 @@ void AutodiffCodegen::adPertLevelStore(llvm::Value* level) {
 // active-depth counter and records the current tower order, so that reverse-tape
 // AD nodes reaching arithmetic inside the tower body (the lambda, compiled
 // separately) are frozen to dual-towers rather than swallowed by the tape.
+/**
+ * @brief Enter a Taylor-tower differentiation context (ESH-0190/P5).
+ *
+ * Increments the active-tower-depth counter and records the current tower
+ * order, so reverse-tape AD nodes reaching arithmetic inside the tower body
+ * are frozen to dual-towers (via towerLiftOperand) instead of being recorded
+ * on the tape.
+ *
+ * @param order_i32 the tower order (as i32) to record as the active order.
+ */
 void AutodiffCodegen::towerCtxPush(llvm::Value* order_i32) {
     auto& b = ctx_.builder();
     llvm::GlobalVariable* ga = ctx_.adTowerActive();
@@ -310,6 +346,12 @@ void AutodiffCodegen::towerCtxPush(llvm::Value* order_i32) {
 // ESH-0190 (P5): leave a Taylor-tower differentiation context (decrement depth).
 // The order global is left as-is: a foreign-tag constant tower zero-extends, so
 // a stale innermost order is harmless while depth > 0, and unread at depth 0.
+/**
+ * @brief Leave a Taylor-tower differentiation context, decrementing the active-depth counter.
+ *
+ * Clamps the depth at 0 defensively; the order global is left stale (harmless
+ * while depth > 0, unread at depth 0).
+ */
 void AutodiffCodegen::towerCtxPop() {
     auto& b = ctx_.builder();
     llvm::GlobalVariable* ga = ctx_.adTowerActive();
@@ -324,6 +366,7 @@ void AutodiffCodegen::towerCtxPop() {
 
 // === ESH-0186: runtime Taylor-tower kernel declarations (lib/core/runtime_taylor.c) ===
 namespace {
+/** @brief Get or declare `eshkol_taylor_seed_tagged` (arena*, point tagged*, order i32, out tagged*) -> void, the runtime Taylor-tower seeding kernel. */
 llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_seed_tagged")) return f;
     // void eshkol_taylor_seed_tagged(arena*, const tagged* point, i32 order, tagged* out)
@@ -333,6 +376,7 @@ llvm::Function* getTaylorSeedFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_seed_tagged", &ctx.module());
 }
+/** @brief Get or declare `eshkol_taylor_extract` (tower tagged*, n i32) -> double, extracting a bare k-th derivative as a double from a Taylor tower. */
 llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_extract")) return f;
     // double eshkol_taylor_extract(const tagged* tower, i32 n)
@@ -346,6 +390,7 @@ llvm::Function* getTaylorExtractFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract", &ctx.module());
 }
+/** @brief Get or declare `eshkol_taylor_extract_tagged` (arena*, tower tagged*, n i32, out tagged*) -> void; exactness-preserving extraction (ESH-0191/P6) that returns f^(n) as an exact tagged value instead of forcing a double. */
 llvm::Function* getTaylorExtractTaggedFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tagged")) return f;
     // void eshkol_taylor_extract_tagged(arena*, const tagged* tower, i32 n, tagged* out)
@@ -359,6 +404,7 @@ llvm::Function* getTaylorExtractTaggedFunc(CodegenContext& ctx) {
                                   "eshkol_taylor_extract_tagged", &ctx.module());
 }
 // ESH-0190 (P5): reverse-over-Taylor extraction / lift helpers.
+/** @brief Get or declare `eshkol_taylor_has_tangent` (tower tagged*) -> i32, testing whether a Taylor tower carries a reverse-seed tangent (ESH-0190/P5). */
 llvm::Function* getTaylorHasTangentFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_has_tangent")) return f;
     // i32 eshkol_taylor_has_tangent(const tagged* tower)
@@ -366,6 +412,7 @@ llvm::Function* getTaylorHasTangentFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_has_tangent", &ctx.module());
 }
+/** @brief Get or declare `eshkol_taylor_extract_tangent` (tower tagged*, n i32) -> double, extracting the seed-tangent of the k-th coefficient (ESH-0190/P5 reverse-over-Taylor). */
 llvm::Function* getTaylorExtractTangentFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_extract_tangent")) return f;
     // double eshkol_taylor_extract_tangent(const tagged* tower, i32 n)
@@ -374,6 +421,7 @@ llvm::Function* getTaylorExtractTangentFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_extract_tangent", &ctx.module());
 }
+/** @brief Get or declare `eshkol_taylor_lift_ad_node` (arena*, node void*, order i32, out tagged*) -> void, lifting a reverse-tape AD node into a dual-tower constant. */
 llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_lift_ad_node")) return f;
     // void eshkol_taylor_lift_ad_node(arena*, void* node, i32 order, tagged* out)
@@ -383,6 +431,7 @@ llvm::Function* getTaylorLiftAdNodeFunc(CodegenContext& ctx) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                   "eshkol_taylor_lift_ad_node", &ctx.module());
 }
+/** @brief Get or declare `eshkol_taylor_coeffs_list` (arena*, tower tagged*, k i32, out tagged*) -> void, extracting the first K+1 Taylor coefficients as a Scheme list. */
 llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
     if (auto* f = ctx.module().getFunction("eshkol_taylor_coeffs_list")) return f;
     // void eshkol_taylor_coeffs_list(arena*, const tagged* tower, i32 k, tagged* out)
@@ -394,6 +443,21 @@ llvm::Function* getTaylorCoeffsFunc(CodegenContext& ctx) {
 }
 } // namespace
 
+/**
+ * @brief Seed a fresh forward-mode perturbation on `point_tagged` and push the runtime nesting level.
+ *
+ * In Taylor-tower mode (adTowerMode_ != NONE), seeds a heap tower of the
+ * requested order via eshkol_taylor_seed_tagged and pushes the tower
+ * differentiation context (towerCtxPush) instead of using the jet path.
+ * Otherwise, increments the runtime perturbation-level counter and inserts a
+ * unit tangent into the level-appropriate slot of the 8-jet (level 0 -> e1,
+ * level 1 -> e2, level >= 2 -> ep), preserving any perturbation the incoming
+ * point already carries so outer nesting survives.
+ *
+ * @param point_tagged the evaluation point as a tagged value (may already be a dual/tower).
+ * @param out_level if non-null, receives the pre-push perturbation level (to restore later via popAndExtractForward).
+ * @return the seeded point as a tagged dual number or tower, ready to pass into the differentiated closure.
+ */
 llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
                                                  llvm::Value** out_level) {
     auto& b = ctx_.builder();
@@ -465,6 +529,23 @@ llvm::Value* AutodiffCodegen::seedForwardAndPush(llvm::Value* point_tagged,
     return packDualToTagged(seeded);
 }
 
+/**
+ * @brief Pop the runtime perturbation level and extract this level's derivative from a forward-mode result.
+ *
+ * Restores the outer perturbation level. In Taylor-tower mode, pops the tower
+ * context and extracts either the k-th derivative (DERIV_N, threading any
+ * reverse-seed tangent back onto the tape via eshkol_ad_mixed_record) or the
+ * full coefficient list (COEFFS). Otherwise extracts from the 8-jet: detects
+ * a Scheme-vector result (R -> R^n derivative, differentiating each element)
+ * versus a scalar result, and — for the scalar case — reads the coefficient
+ * for THIS level's perturbation slot (e1 at depth 0, recording an exact local
+ * linearization on the outer reverse tape when one is live; a dual slice
+ * carrying the remaining perturbations when nested).
+ *
+ * @param result_tagged the differentiated closure's raw tagged return value.
+ * @param level the perturbation level saved by seedForwardAndPush, to restore.
+ * @return the extracted derivative (or vector of derivatives), tagged.
+ */
 llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
                                                    llvm::Value* level) {
     auto& b = ctx_.builder();
@@ -791,6 +872,17 @@ llvm::Value* AutodiffCodegen::popAndExtractForward(llvm::Value* result_tagged,
 // gradient seed then propagates through the tower recurrences and is read back
 // at popAndExtractForward via eshkol_ad_mixed_record. No-op unless a tower pass
 // is live AND the operand is a reverse-tape AD node.
+/**
+ * @brief Freeze a reverse-tape AD node into a dual-tower constant while a Taylor-tower differentiation is active (ESH-0190/P5).
+ *
+ * No-op unless the tower-active depth counter is > 0 AND the operand is a
+ * CALLABLE tagged value that is actually an AD-node (subtype-checked before
+ * dereferencing). When both hold, calls eshkol_taylor_lift_ad_node so the
+ * tower kernel's recurrences (not the reverse tape) consume the operand.
+ *
+ * @param operand_tagged candidate operand tagged value.
+ * @return the operand unchanged, or the lifted dual-tower tagged value.
+ */
 llvm::Value* AutodiffCodegen::towerLiftOperand(llvm::Value* operand_tagged) {
     if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
         return operand_tagged;
@@ -840,6 +932,21 @@ llvm::Value* AutodiffCodegen::towerLiftOperand(llvm::Value* operand_tagged) {
     return b.CreateLoad(ctx_.taggedValueType(), slot, "twrlift_result");
 }
 
+/**
+ * @brief Freeze a reverse-tape AD node into a forward-mode dual jet while a forward derivative/gradient pass is live (ESH-0093).
+ *
+ * First delegates to towerLiftOperand (Taylor-tower mode takes priority).
+ * Otherwise, gated on the runtime perturbation level being > 0 and the
+ * operand being an AD-node CALLABLE: lifts it to value 4-jet
+ * {node->value,0,0,0} with ep-derivative 4-jet {seed_flag,0,0,0}, where
+ * seed_flag is 1.0 iff this node is the active reverse-mode seed
+ * (eshkol_ad_seed_flag). The ep slot is an independent jet dimension so the
+ * dependency survives arbitrary forward nesting depth (ESH-0117), unlike the
+ * historical e2-slot hack it replaced.
+ *
+ * @param operand_tagged candidate operand tagged value.
+ * @return the operand unchanged, or a lifted dual-number tagged value.
+ */
 llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagged) {
     if (!operand_tagged || operand_tagged->getType() != ctx_.taggedValueType())
         return operand_tagged;
@@ -902,6 +1009,7 @@ llvm::Value* AutodiffCodegen::maybeJetLiftTapeOperand(llvm::Value* operand_tagge
     return phi;
 }
 
+/** @brief Extract field 0 (primal value) of a dual-number struct via a temporary alloca + StructGEP load. */
 llvm::Value* AutodiffCodegen::getDualPrimal(llvm::Value* dual) {
     if (!dual) return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
 
@@ -914,6 +1022,7 @@ llvm::Value* AutodiffCodegen::getDualPrimal(llvm::Value* dual) {
     return ctx_.builder().CreateLoad(ctx_.doubleType(), primal_ptr);
 }
 
+/** @brief Extract field 1 (e1 tangent) of a dual-number struct via a temporary alloca + StructGEP load. */
 llvm::Value* AutodiffCodegen::getDualTangent(llvm::Value* dual) {
     if (!dual) return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
 
@@ -926,6 +1035,16 @@ llvm::Value* AutodiffCodegen::getDualTangent(llvm::Value* dual) {
     return ctx_.builder().CreateLoad(ctx_.doubleType(), tangent_ptr);
 }
 
+/**
+ * @brief Heap-allocate an 8-field dual number in the global arena and pack it as a DUAL_NUMBER tagged value.
+ *
+ * Allocates 64 bytes (eight doubles: value 4-jet + ep-derivative 4-jet,
+ * ESH-0117), stores the dual struct, and packs the resulting pointer with
+ * type tag ESHKOL_VALUE_DUAL_NUMBER.
+ *
+ * @param dual the dual-number LLVM struct value to store.
+ * @return a tagged pointer value, or a packed null if the global arena / allocator is unavailable.
+ */
 llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -957,6 +1076,17 @@ llvm::Value* AutodiffCodegen::packDualToTagged(llvm::Value* dual) {
     return tagged_.packPtr(dual_ptr, ESHKOL_VALUE_DUAL_NUMBER);
 }
 
+/**
+ * @brief Unpack a DUAL_NUMBER tagged value's pointer and load the dual struct — the hot straight-line path.
+ *
+ * Must not introduce basic blocks (callers on this path have already branched
+ * on `arg_is_dual` and may set up their own PHIs assuming the builder stays
+ * in the same block). Use safeUnpackDualFromTagged when the tagged value may
+ * not actually be a dual.
+ *
+ * @param tagged_val a tagged value already known to carry the DUAL_NUMBER tag.
+ * @return the loaded dual-number struct value.
+ */
 llvm::Value* AutodiffCodegen::unpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -985,6 +1115,19 @@ llvm::Value* AutodiffCodegen::unpackDualFromTagged(llvm::Value* tagged_val) {
 // non-dual (constant function, predicate-driven branch with literal
 // branches, etc.).  Without this, dereferencing a scalar's data field
 // as a heap pointer crashes.
+/**
+ * @brief Unpack a tagged value as a dual number, synthesizing {primal, 0, 0, 0} (all-zero jet) when it is not one.
+ *
+ * Required for derivative()/gradient() results: the differentiated lambda
+ * body may return a non-dual (constant function, literal branch, etc.), and
+ * dereferencing a scalar's data field as a heap pointer would otherwise
+ * crash. Branches at runtime on the base type tag; the scalar path converts
+ * an int64/bool/char data field via SIToFP or bitcasts a double, per
+ * base_type.
+ *
+ * @param tagged_val a tagged value that may or may not carry the DUAL_NUMBER tag.
+ * @return the dual struct (loaded, or synthesized with only the primal field set).
+ */
 llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -1035,6 +1178,7 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
 // rule for v = f0 + f1 e1 + f2 e2 + f3 e1e2.
 
 // (a + b): componentwise over all 8 jet components (value 4-jet + ep-deriv).
+/** @brief Dual addition (a + b): componentwise FAdd over all 8 jet fields (value 4-jet + ep-derivative 4-jet). */
 llvm::Value* AutodiffCodegen::dualAdd(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
@@ -1045,6 +1189,7 @@ llvm::Value* AutodiffCodegen::dualAdd(llvm::Value* dual_a, llvm::Value* dual_b) 
 }
 
 // (a - b): componentwise over all 8 jet components.
+/** @brief Dual subtraction (a - b): componentwise FSub over all 8 jet fields. */
 llvm::Value* AutodiffCodegen::dualSub(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
@@ -1059,6 +1204,16 @@ llvm::Value* AutodiffCodegen::dualSub(llvm::Value* dual_a, llvm::Value* dual_b) 
 //   r1 = a1 b0 + a0 b1
 //   r2 = a2 b0 + a0 b2
 //   r3 = a3 b0 + a1 b2 + a2 b1 + a0 b3
+/**
+ * @brief Dual multiplication (a * b): bilinear product rule over the value 4-jet, plus the ESH-0117 ep-derivative chain rule d/dep(a*b) = a'⊗b + a⊗b'.
+ *
+ * Uses jet4Mul to compute the exact bilinear product (keeping the mixed
+ * e1e2 cross term) for both the value 4-jet and the ep-derivative 4-jet.
+ *
+ * @param dual_a left operand jet.
+ * @param dual_b right operand jet.
+ * @return the product jet, or nullptr if either operand is null.
+ */
 llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& b = ctx_.builder();
@@ -1084,6 +1239,13 @@ llvm::Value* AutodiffCodegen::dualMul(llvm::Value* dual_a, llvm::Value* dual_b) 
 
 // (a / b) = a * (1/b). Reciprocal is the unary jet of g(x)=1/x with
 //   g(b0)=1/b0, g'=-1/b0^2, g''=2/b0^3 — exact second order.
+/**
+ * @brief Dual division (a / b) computed as a * (1/b), where the reciprocal is the exact unary jet of g(x)=1/x (g'=-1/x^2, g''=2/x^3, g'''=-6/x^4).
+ *
+ * @param dual_a numerator jet.
+ * @param dual_b denominator jet.
+ * @return the quotient jet, or nullptr if either operand is null.
+ */
 llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
     auto& bld = ctx_.builder();
@@ -1105,6 +1267,15 @@ llvm::Value* AutodiffCodegen::dualDiv(llvm::Value* dual_a, llvm::Value* dual_b) 
 // These implement chain rule for various math functions
 
 // Helper: Get or declare math function
+/**
+ * @brief Get or declare an external libm scalar math function by name (double args/return; pow/atan2 take two doubles).
+ *
+ * Checks the shared function_table_ first, then the module, before declaring
+ * a new external `double name(double[, double])` and registering it.
+ *
+ * @param name libm function name (e.g. "sin", "pow").
+ * @return the declared/found LLVM function.
+ */
 llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
     // Check function table first
     if (function_table_) {
@@ -1143,6 +1314,7 @@ llvm::Function* AutodiffCodegen::getMathFunc(const std::string& name) {
 // to dualUnaryChain which propagates both perturbation slots + the mixed
 // second-order term exactly. (a = primal = field 0.)
 
+/** @brief Dual sin: g=sin, g'=cos, g''=-sin, g'''=-cos, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualSin(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1156,6 +1328,7 @@ llvm::Value* AutodiffCodegen::dualSin(llvm::Value* dual) {
                           ctx_.builder().CreateFNeg(ca));
 }
 
+/** @brief Dual cos: g=cos, g'=-sin, g''=-cos, g'''=sin, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualCos(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1169,6 +1342,7 @@ llvm::Value* AutodiffCodegen::dualCos(llvm::Value* dual) {
                           ctx_.builder().CreateFNeg(ca), sa);
 }
 
+/** @brief Dual exp: g=g'=g''=g'''=exp(a), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualExp(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1179,6 +1353,7 @@ llvm::Value* AutodiffCodegen::dualExp(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, ea, ea, ea, ea);
 }
 
+/** @brief Dual natural log: g=log(a), g'=1/a, g''=-1/a^2, g'''=2/a^3, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualLog(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1195,6 +1370,7 @@ llvm::Value* AutodiffCodegen::dualLog(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, la, fpa, fppa, fpppa);
 }
 
+/** @brief Dual tan: g=tan(a), g'=sec^2(a)=1+tan^2(a), g''=2 tan(a) sec^2(a), propagated via dualUnaryChain (no third-derivative term supplied). */
 llvm::Value* AutodiffCodegen::dualTan(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1210,6 +1386,7 @@ llvm::Value* AutodiffCodegen::dualTan(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, ta, sec2, fppa);
 }
 
+/** @brief Dual sqrt: g=sqrt(a), g'=1/(2 sqrt(a)), g''=-1/(4 a sqrt(a)), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualSqrt(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1233,6 +1410,21 @@ llvm::Value* AutodiffCodegen::dualSqrt(llvm::Value* dual) {
 // valid for negative base. For a non-constant (dual) exponent we compose
 // exp(b*log(a)) over the 4-component jets (exact for a>0; matches the prior
 // behaviour, which already required log(a)).
+/**
+ * @brief Dual power (a^b), dispatching per-component between an exact constant-exponent jet and a general dual-exponent jet.
+ *
+ * For a runtime-detected constant exponent (e1/e2/e1e2 slots of the exponent
+ * all zero — the common (pow x n) case) computes the unary jet of
+ * g(x)=x^b directly (g'=b x^{b-1}, g''=b(b-1) x^{b-2}, g'''=b(b-1)(b-2) x^{b-3}),
+ * exact and valid for negative base. For a genuinely dual exponent, composes
+ * exp(b*log(a)) over the 4-component jets (valid for a>0), then patches the
+ * primal back to pow(a,b) for negative-base parity. A runtime select blends
+ * the two per jet component according to the constant-exponent test.
+ *
+ * @param dual_base base jet.
+ * @param dual_exp exponent jet.
+ * @return the power jet, or nullptr if either operand is null.
+ */
 llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_exp) {
     if (!dual_base || !dual_exp) return nullptr;
     auto& bld = ctx_.builder();
@@ -1281,6 +1473,7 @@ llvm::Value* AutodiffCodegen::dualPow(llvm::Value* dual_base, llvm::Value* dual_
     return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
+/** @brief Dual asin: g=asin(a), g'=1/sqrt(1-a^2), g''=a/(1-a^2)^{3/2}, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAsin(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1297,6 +1490,7 @@ llvm::Value* AutodiffCodegen::dualAsin(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual acos: g=acos(a), g'=-1/sqrt(1-a^2), g''=-a/(1-a^2)^{3/2}, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAcos(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1313,6 +1507,7 @@ llvm::Value* AutodiffCodegen::dualAcos(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual atan: g=atan(a), g'=1/(1+a^2), g''=-2a/(1+a^2)^2, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAtan(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1329,6 +1524,7 @@ llvm::Value* AutodiffCodegen::dualAtan(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual abs: g=|a|, g'=sign(a) (0 at a=0), g''=0, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAbs(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1343,6 +1539,7 @@ llvm::Value* AutodiffCodegen::dualAbs(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, abs_a, sign, zero);
 }
 
+/** @brief Dual negation (-a): componentwise FNeg over all 8 jet fields. */
 llvm::Value* AutodiffCodegen::dualNeg(llvm::Value* dual) {
     if (!dual) return nullptr;
     auto& b = ctx_.builder();
@@ -1351,6 +1548,7 @@ llvm::Value* AutodiffCodegen::dualNeg(llvm::Value* dual) {
     return makeDual8(ctx_, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
 }
 
+/** @brief Dual sinh: g=sinh(a), g'=cosh(a), g''=sinh(a), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualSinh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1363,6 +1561,7 @@ llvm::Value* AutodiffCodegen::dualSinh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, sa, ca, sa);
 }
 
+/** @brief Dual cosh: g=cosh(a), g'=sinh(a), g''=cosh(a), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualCosh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1375,6 +1574,7 @@ llvm::Value* AutodiffCodegen::dualCosh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, ca, sa, ca);
 }
 
+/** @brief Dual tanh: g=tanh(a), g'=1-tanh^2(a) (sech^2), g''=-2 tanh(a) sech^2(a), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualTanh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1389,6 +1589,7 @@ llvm::Value* AutodiffCodegen::dualTanh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, ta, sech2, fppa);
 }
 
+/** @brief Dual asinh: g=asinh(a), g'=1/sqrt(a^2+1), g''=-a/(a^2+1)^{3/2}, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAsinh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1405,6 +1606,7 @@ llvm::Value* AutodiffCodegen::dualAsinh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual acosh: g=acosh(a), g'=1/sqrt(a^2-1), g''=-a/(a^2-1)^{3/2}, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAcosh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1421,6 +1623,7 @@ llvm::Value* AutodiffCodegen::dualAcosh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual atanh: g=atanh(a), g'=1/(1-a^2), g''=2a/(1-a^2)^2, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualAtanh(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1436,6 +1639,7 @@ llvm::Value* AutodiffCodegen::dualAtanh(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual log10: g=log10(a), g'=1/(a ln10), g''=-1/(a^2 ln10), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualLog10(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1451,6 +1655,7 @@ llvm::Value* AutodiffCodegen::dualLog10(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual log2: g=log2(a), g'=1/(a ln2), g''=-1/(a^2 ln2), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualLog2(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1466,6 +1671,7 @@ llvm::Value* AutodiffCodegen::dualLog2(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual exp2: g=2^a, g'=2^a ln2, g''=2^a ln2^2, propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualExp2(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1479,6 +1685,7 @@ llvm::Value* AutodiffCodegen::dualExp2(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, va, fpa, fppa);
 }
 
+/** @brief Dual cbrt: g=a^{1/3}, g'=1/(3 a^{2/3}), g''=-2/(9 a^{5/3}), propagated via dualUnaryChain. */
 llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -1499,6 +1706,7 @@ llvm::Value* AutodiffCodegen::dualCbrt(llvm::Value* dual) {
 }
 
 // Helper to get arena pointer from global
+/** @brief Load the current value of the `__global_arena` global, or nullptr if the global does not exist. */
 llvm::Value* AutodiffCodegen::getArenaPtr() {
     llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
     if (!arena_global) return nullptr;
@@ -1506,6 +1714,17 @@ llvm::Value* AutodiffCodegen::getArenaPtr() {
 }
 
 // Create AD node for a constant value (gradient = 0)
+/**
+ * @brief Allocate a reverse-mode AD tape node of type AD_NODE_CONSTANT (gradient fixed at 0).
+ *
+ * Converts an integer value to double if needed, allocates the node via the
+ * arena's AD-node-with-header allocator, zero-initializes its gradient and
+ * input pointers, assigns it a fresh node id, and — if a current AD tape is
+ * live — appends it to the tape.
+ *
+ * @param value the constant's value (double, or integer to be converted).
+ * @return pointer to the newly allocated AD node, or nullptr on failure.
+ */
 llvm::Value* AutodiffCodegen::createADConstant(llvm::Value* value) {
     if (!value) return nullptr;
 
@@ -1562,6 +1781,19 @@ llvm::Value* AutodiffCodegen::createADConstant(llvm::Value* value) {
 }
 
 // Record binary operation node (add, sub, mul, div) in computational graph
+/**
+ * @brief Record a binary AD-tape operation node (add/sub/mul/div/pow/max/min/atan2, ...) computing and storing its forward value.
+ *
+ * Loads the input nodes' values, dispatches on `op_type` to compute the
+ * forward result (via LLVM FP ops or libm calls), allocates a new AD node
+ * storing the op type, result value, zeroed gradient, both input pointers,
+ * and a fresh node id, then appends it to the current AD tape if one is live.
+ *
+ * @param op_type AD_NODE_* opcode identifying the binary operation.
+ * @param left_node pointer to the left operand's AD node.
+ * @param right_node pointer to the right operand's AD node.
+ * @return pointer to the newly allocated AD node, or nullptr on unknown op_type or null inputs.
+ */
 llvm::Value* AutodiffCodegen::recordADNodeBinary(uint32_t op_type, llvm::Value* left_node, llvm::Value* right_node) {
     if (!left_node || !right_node) return nullptr;
 
@@ -1667,6 +1899,21 @@ llvm::Value* AutodiffCodegen::recordADNodeBinary(uint32_t op_type, llvm::Value* 
     return node_ptr;
 }
 
+/**
+ * @brief Record a unary AD-tape operation node (sin/cos/exp/log/activations/etc.) computing and storing its forward value.
+ *
+ * Loads the input node's value, dispatches on `op_type` across scalar math
+ * (sin, cos, exp, log, sqrt, abs, neg, tan, inverse trig/hyperbolic, log2/
+ * log10/exp2/cbrt) and neural activations (relu, sigmoid, tanh, gelu,
+ * leaky-relu, silu, elu/celu, selu, mish, hardswish, hardsigmoid, softplus,
+ * square), allocates a new AD node with the computed value and a single
+ * input pointer, and appends it to the current AD tape (guarded by a runtime
+ * null check on the tape pointer) if one is live.
+ *
+ * @param op_type AD_NODE_* opcode identifying the unary operation.
+ * @param input_node pointer to the operand's AD node.
+ * @return pointer to the newly allocated AD node, or nullptr on unknown op_type or a null input.
+ */
 llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* input_node) {
     if (!input_node) return nullptr;
 
@@ -2063,6 +2310,27 @@ llvm::Value* AutodiffCodegen::recordADNodeUnary(uint32_t op_type, llvm::Value* i
 
 // === Tensor AD Node Recording ===
 
+/**
+ * @brief Allocate and record a tensor-valued AD-tape node, populating all extended fields (tensor value/gradient, up to 4 inputs, saved tensors, shape/ndim, params).
+ *
+ * Unlike recordADNodeBinary/Unary, this does not compute a forward scalar
+ * value (field 1 stays 0.0; the tensor result lives in field 6); callers pass
+ * the already-computed tensor result and any saved intermediates needed by
+ * the backward pass. Appends the node to the current AD tape (behind a
+ * runtime null check) if one is live.
+ *
+ * @param op_type AD_NODE_* opcode identifying the tensor operation.
+ * @param input1 first input AD node (or nullptr).
+ * @param input2 second input AD node (or nullptr).
+ * @param input3 third input AD node (or nullptr).
+ * @param input4 fourth input AD node (or nullptr).
+ * @param tensor_result the computed tensor result value.
+ * @param saved_tensors pointer to any tensors the backward pass needs saved.
+ * @param num_saved count of saved tensors.
+ * @param shape the result tensor's shape.
+ * @param ndim the result tensor's rank.
+ * @return pointer to the newly allocated AD node, or nullptr on allocation failure.
+ */
 llvm::Value* AutodiffCodegen::recordADNodeTensor(
     uint32_t op_type,
     llvm::Value* input1, llvm::Value* input2,
@@ -2182,6 +2450,13 @@ llvm::Value* AutodiffCodegen::recordADNodeTensor(
 
 // === Tensor Gradient Accumulation ===
 
+/**
+ * @brief Accumulate a tensor-valued gradient into an AD node via the runtime helper `eshkol_accumulate_tensor_grad`, guarded by a null check on the node pointer.
+ *
+ * @param node_ptr target AD node (tensor-valued).
+ * @param grad_tensor gradient tensor to add.
+ * @param num_elements element count of the gradient tensor.
+ */
 void AutodiffCodegen::accumulateTensorGradient(
     llvm::Value* node_ptr, llvm::Value* grad_tensor, llvm::Value* num_elements)
 {
@@ -2218,6 +2493,18 @@ void AutodiffCodegen::accumulateTensorGradient(
     ctx_.builder().SetInsertPoint(skip_block);
 }
 
+/**
+ * @brief Allocate a reverse-mode AD tape node of type AD_NODE_VARIABLE (an independent variable, gradient computed during backward pass).
+ *
+ * Converts an integer value to double if needed, allocates the node,
+ * zero-initializes its gradient and input pointers (variables have no
+ * inputs), and assigns it a fresh node id. Unlike operation nodes, variables
+ * are NOT added to the tape (they are tracked separately).
+ *
+ * @param value the variable's initial value (double, or integer to be converted).
+ * @param var_index index of this variable among the differentiated function's parameters (unused by the body but retained for the interface).
+ * @return pointer to the newly allocated AD node, or nullptr on failure.
+ */
 llvm::Value* AutodiffCodegen::createADVariable(llvm::Value* value, size_t var_index) {
     if (!value) return nullptr;
 
@@ -2265,6 +2552,7 @@ llvm::Value* AutodiffCodegen::createADVariable(llvm::Value* value, size_t var_in
     return node_ptr;
 }
 
+/** @brief Load an AD node's input1 pointer field (struct field 3). */
 llvm::Value* AutodiffCodegen::loadNodeInput1(llvm::Value* node_ptr) {
     if (!node_ptr) return nullptr;
     llvm::StructType* ad_type = ctx_.adNodeType();
@@ -2272,6 +2560,7 @@ llvm::Value* AutodiffCodegen::loadNodeInput1(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), input1_ptr);
 }
 
+/** @brief Load an AD node's input2 pointer field (struct field 4). */
 llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
     if (!node_ptr) return nullptr;
     llvm::StructType* ad_type = ctx_.adNodeType();
@@ -2279,6 +2568,22 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), input2_ptr);
 }
 
+/**
+ * @brief Codegen the higher-order form `(derivative f)` (no evaluation point): synthesize and return a closure computing f' at a runtime-supplied point.
+ *
+ * Resolves `f` to an LLVM function (or, when it is a runtime function
+ * parameter/captured closure, builds a small wrapper that dispatches through
+ * closure_call_callback_). Emits a fresh `derivative_<name>_<n>` function
+ * whose body seeds a single-level dual {x, 1, 0, 0}, calls the original
+ * function with it, extracts the tangent (getDualTangent) as the derivative
+ * value, and returns it packed as a tagged double. Threads through the
+ * original function's captures (looked up via the symbol tables / REPL
+ * registries) into a freshly-allocated closure wrapping the derivative
+ * function, so the returned closure captures the same environment as `f`.
+ *
+ * @param op the derivative operation AST node (function only, point == null).
+ * @return a CALLABLE tagged value wrapping the derivative closure, or nullptr on resolution failure.
+ */
 llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* op) {
     using namespace llvm;
 
@@ -2599,6 +2904,26 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
 }
 
 
+/**
+ * @brief Codegen `(derivative f x)`: compute f'(x) via forward-mode (dual-number) AD, or delegate to derivativeHigherOrder when no point is given.
+ *
+ * Evaluates the point (preserving any outer perturbation it may already
+ * carry — e.g. when this derivative is lexically nested inside another), and
+ * — in Taylor-tower mode — preserves exact integer points instead of forcing
+ * them to double. Seeds a fresh perturbation for this nesting level and
+ * pushes the runtime perturbation-level counter (seedForwardAndPush).
+ * Resolves the function to differentiate — as a compiled lambda, or (via
+ * runtime dispatch through closure_call_callback_) as a function parameter,
+ * captured closure, local/global variable, or REPL-registered symbol —
+ * rebuilding capture arguments with the same value-vs-pointer capture-
+ * convention handling used elsewhere (including the isTcoLoopAlloca guard for
+ * TCO loop-carried captures). Calls the resolved function with the seeded
+ * dual argument and extracts this level's derivative component via
+ * popAndExtractForward, which also pops the perturbation level.
+ *
+ * @param op the derivative operation AST node (function and point).
+ * @return the derivative result as a tagged value (scalar, dual slice, or vector), or nullptr on failure.
+ */
 llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->derivative_op.function) {
@@ -2973,6 +3298,19 @@ llvm::Value* AutodiffCodegen::codegenDerivativeMonolith(const eshkol_operations_
 //   - captures present  -> trust the arity table (which excludes captures), and
 //                          fall back to the leading non-capture count if the
 //                          table missed.
+/**
+ * @brief Resolve the true count of differentiable value parameters of an AD
+ *        function, reconciling the arity table against the concrete LLVM signature.
+ *
+ * Captures are appended last (name prefixed "captured_"). With no captures the
+ * full LLVM parameter count is the value arity; with captures the table_arity
+ * (which excludes captures) is authoritative, falling back to the leading
+ * non-capture parameter count only when the table is empty.
+ *
+ * @param func_ptr concrete LLVM function (returns table_arity unchanged if null).
+ * @param table_arity arity from the AD arity table (excludes captures).
+ * @return the number of leading differentiable value parameters.
+ */
 static uint64_t adResolveValueArity(llvm::Function* func_ptr, uint64_t table_arity) {
     if (!func_ptr) return table_arity;
     uint64_t leading_non_capture = 0;
@@ -2996,6 +3334,16 @@ static uint64_t adResolveValueArity(llvm::Function* func_ptr, uint64_t table_ari
 // Deliberately EXCLUDES scalar activations/elementwise math (relu/sigmoid/gelu/
 // exp/log/…): those have exact forward-mode duals and frequently appear inside
 // nested gradients, so they must keep the forward path.
+/**
+ * @brief Is `cname` a TENSOR-VALUED builtin — one whose computation flows through a tensor, so a scalar forward-mode dual cannot carry its perturbation (only the reverse-mode tape can)?
+ *
+ * Deliberately excludes scalar elementwise activations/math (relu, sigmoid,
+ * gelu, exp, log, ...), which have exact forward-mode duals and must keep the
+ * forward path even when nested inside a gradient.
+ *
+ * @param cname candidate builtin name (may be null).
+ * @return true iff the name matches a known tensor-valued builtin (tensor-*, gpu-*, matmul, conv*d, softmax, norm/pooling/attention/embedding ops, tensor loss functions, etc).
+ */
 static bool adIsTensorValuedBuiltin(const char* cname) {
     if (!cname) return false;
     std::string n(cname);
@@ -3018,6 +3366,18 @@ static bool adIsTensorValuedBuiltin(const char* cname) {
 // recursion; `default: return false` keeps unhandled ops on the forward path
 // (correct for scalar code, and the reverse path is only required for genuine
 // tensor pipelines).
+/**
+ * @brief Recursively scan a SOURCE AST subtree for any use of a tensor operation (ESHKOL_TENSOR_OP or a call to a tensor-valued builtin).
+ *
+ * Scanned on the AST rather than the emitted IR so it is not confused by
+ * tensor allocations an inline nested gradient's own machinery may emit.
+ * Mirrors astSetsVar's recursion structure; unhandled op kinds default to
+ * false (correct for scalar code — the reverse path is only required for
+ * genuine tensor pipelines).
+ *
+ * @param ast the AST node (or cons-cell) to scan.
+ * @return true iff the subtree reaches a tensor operation.
+ */
 static bool adAstUsesTensorOps(const eshkol_ast_t* ast) {
     if (!ast) return false;
     if (ast->type == ESHKOL_CONS) {
@@ -3067,6 +3427,18 @@ static bool adAstUsesTensorOps(const eshkol_ast_t* ast) {
 // IR contains tensor runtime calls iff it genuinely flows values through tensors
 // (it has no INLINE nested-gradient machinery to contaminate the scan — that
 // only happens for inline-lambda bodies, which take the AST path above).
+/**
+ * @brief IR-level check: does a compiled function's body call any function whose name contains "tensor"?
+ *
+ * Used only when the differentiated function is referenced by name (so its
+ * source AST is unreachable from the gradient/derivative op); a named,
+ * single-level function's emitted IR contains tensor runtime calls iff it
+ * genuinely flows values through tensors, since it has no inline nested-
+ * gradient machinery to contaminate the scan.
+ *
+ * @param func_ptr the compiled LLVM function to scan (must be a definition, not a declaration).
+ * @return true iff some called function's name contains "tensor".
+ */
 static bool adFunctionUsesTensors(llvm::Function* func_ptr) {
     if (!func_ptr || func_ptr->isDeclaration()) return false;
     for (auto& bb : *func_ptr) {
@@ -3083,6 +3455,25 @@ static bool adFunctionUsesTensors(llvm::Function* func_ptr) {
 
 
 
+/**
+ * @brief Build a runtime closure implementing the higher-order form `(gradient f)`.
+ *
+ * Emits a new variadic wrapper function `gradient_ho_N` that, when later called
+ * as `(grad-f x y z ...)`, unpacks its cons-list of arguments into an arena
+ * vector and computes each partial derivative by numerical central
+ * differencing: `(f(x+h) - f(x-h)) / 2h` with `h = 1e-8`, one call pair per
+ * dimension. Dimension counts 1..8 are handled via unrolled switch cases
+ * (`MAX_GRADIENT_ARGS`); any larger arity falls through to a default case that
+ * zero-fills the result rather than emitting per-dimension code. The result is
+ * packed as a 1-D tensor. TCO context is saved/disabled while building the
+ * wrapper body since it has its own internal loops, and restored afterward.
+ * The returned value is a CALLABLE closure over the original function.
+ *
+ * @param op The `gradient` AST operation node, used only for
+ *           `op->gradient_op.function` (the function being differentiated).
+ * @return A tagged CALLABLE closure value wrapping the generated gradient
+ *         function, or nullptr if the target function could not be resolved.
+ */
 llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op) {
     using namespace llvm;
 
@@ -3428,6 +3819,41 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
 }
 
 
+/**
+ * @brief Compute (or build a closure for) the gradient of a function at a point.
+ *
+ * Dispatches on whether `op->gradient_op.point` is present: with no point this
+ * is the higher-order form and delegates to gradientHigherOrder(). With a
+ * point, this is by far the largest dispatcher in this file, covering several
+ * strategies chosen by how the function value and the input point resolve:
+ *
+ *  - Runtime function parameters (an unresolved VAR naming a closure held in
+ *    an Argument/GlobalVariable/AllocaInst/LoadInst) are handled via a unified
+ *    resolution path that normalizes cons-list points to Scheme vectors, then
+ *    picks scalar vs. vector/tensor handling.
+ *  - Scalar inputs use the exact forward-mode 4-jet fast path (the same
+ *    machinery as derivative()) since for a single variable the gradient IS
+ *    the derivative — this avoids reverse-mode tape overhead and the
+ *    degree/value-ratio reconstruction the general path needs.
+ *  - Scheme-vector inputs use forward-mode AD with dual numbers, looping over
+ *    each dimension and seeding/popping a forward AD context per component
+ *    (also participates in nested forward-mode gradient contexts, ESH-0093/96).
+ *  - Tensor inputs (or vector inputs not otherwise handled) fall back to
+ *    reverse-mode AD: for each dimension i, a fresh 1024-slot tape is
+ *    allocated, n AD variable nodes are created from the input, the function
+ *    is called to build a computational graph, backpropagate() runs from the
+ *    output node, and the gradient of variable i is read off and stored into
+ *    the result vector, then the tape is reset for the next dimension.
+ *  - When nested inside another AD pass, the result may itself be recorded as
+ *    an AD expression node on the outer tape rather than a plain double, so
+ *    gradients-of-gradients compose correctly.
+ *
+ * @param op The `gradient` AST operation node (`op->gradient_op.function` and
+ *           `op->gradient_op.point`).
+ * @return Tagged tensor/vector value holding the gradient components, a
+ *         tagged AD-node value if nested inside an outer AD pass, or nullptr
+ *         on failure (unresolved function, evaluation failure, etc).
+ */
 llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->gradient_op.function) {
@@ -5718,6 +6144,41 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Compute the Jacobian matrix of a vector-valued function at a point,
+ *        via reverse-mode AD.
+ *
+ * Resolves the target function (compile-time Function*, or a runtime closure
+ * loaded from the symbol tables / REPL cross-module registry), then evaluates
+ * the input point and normalizes it to tensor form (converting a Scheme
+ * vector input by copying its tagged elements into a fresh tensor). The
+ * function is called once with the raw (non-AD) point to determine the
+ * output dimension m, validating that the output is a tensor, Scheme vector,
+ * AD tensor, or CALLABLE (erroring otherwise). A `[m, n]` tensor is then
+ * allocated for the Jacobian.
+ *
+ * For each output row i (0..m-1): a fresh AD tape (`jac_tape`, tracked via a
+ * dedicated global pointer rather than the class's `current_tape_ptr_`, since
+ * that member is compile-time C++ state and would be corrupted by a runtime
+ * LLVM Value*) gets n freshly-initialized AD variable nodes wrapping the
+ * input components, an AD tensor is built from them, and the function is
+ * called with AD mode enabled to build the computational graph. The i-th
+ * output component is extracted (handling both Scheme-vector and tensor
+ * output layouts) and runtime-checked to see whether it is actually an AD
+ * node (vs. a constant double, e.g. for a constant-output component) via a
+ * heap-pointer/IEEE754-exponent heuristic. For each input j (0..n-1),
+ * backpropagate() runs from that output node (skipped, defaulting to 0, if
+ * the output element is not an AD node) and the gradient at variable j is
+ * read off into `J[i, j] = ∂F_i/∂x_j`. The 2-D Jacobian tensor is returned
+ * directly (bit-pattern-adjusted from double to the int64 tensor element
+ * encoding).
+ *
+ * @param op The `jacobian` AST operation node (`op->jacobian_op.function` and
+ *           `op->jacobian_op.point`).
+ * @return Tagged 2-D tensor value (m x n Jacobian), or nullptr on failure
+ *         (unresolved function, invalid point, or invalid/unrecognized output
+ *         type from the function).
+ */
 llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->jacobian_op.function || !op->jacobian_op.point) {
@@ -6461,6 +6922,31 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Entry point for the `derivative` operator: `(derivative f)` or
+ *        `(derivative f x)`.
+ *
+ * With no point, delegates to the higher-order derivativeHigherOrder().
+ * Otherwise first checks (via detectPureDerivChain()) whether this is part of
+ * a nested `derivative` chain of depth >= 3 that is pure repeated univariate
+ * differentiation threading a single variable — the 2-level forward-mode jet
+ * used by the default path only supports up to a 2nd derivative and silently
+ * returns 0 beyond that, so such chains are instead routed through the
+ * arbitrary-order Taylor tower (derivative-n semantics): first attempting the
+ * no-heap compile-time monomorphized path (tryMonomorphizedTaylor()), falling
+ * back to the runtime heap tower (taylorApiCore()) with `order` fixed to the
+ * chain depth.
+ *
+ * For the ordinary (depth <= 2) case, delegates to codegenDerivativeMonolith()
+ * (the pre-extraction implementation kept for its handling of `f` being a
+ * runtime function parameter / closure, which this file's newer split-out
+ * fast path — see the disabled derivativeStaticOnly() below — does not cover).
+ *
+ * @param op The `derivative` AST operation node (`op->derivative_op.function`
+ *           and `op->derivative_op.point`).
+ * @return Tagged derivative value (or AD node / Taylor result), or nullptr /
+ *         packed null on failure.
+ */
 llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
     using namespace llvm;
 
@@ -6603,13 +7089,19 @@ private:
 
     llvm::IRBuilder<>& b() { return ctx_.builder(); }
     llvm::Type* dty() { return ctx_.doubleType(); }
+    /** @brief Build an f64 SSA constant `v` (an unrolled tower coefficient literal). */
     llvm::Value* cst(double v) { return llvm::ConstantFP::get(dty(), v); }
     V zeros() { return V(n_, cst(0.0)); }
 
+    /** @brief Emit `llvm.fma.f64(a, bb, c)` — used for the ascending-j Cauchy-product
+     *  reductions in the recurrence emitters so the unrolled IR matches
+     *  runtime_taylor.c's kernels bit-for-bit. */
     llvm::Value* fma3(llvm::Value* a, llvm::Value* bb, llvm::Value* c) {
         llvm::Function* f = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::fma, {dty()});
         return b().CreateCall(f, {a, bb, c});
     }
+    /** @brief Call (declaring if needed) a unary double libm function `name(x)`,
+     *  e.g. "exp"/"log"/"sin"/"cos"/"fabs". */
     llvm::Value* libm1(const char* name, llvm::Value* x) {
         llvm::Function* f = ctx_.module().getFunction(name);
         if (!f) {
@@ -6618,6 +7110,8 @@ private:
         }
         return b().CreateCall(f, {x});
     }
+    /** @brief Call (declaring if needed) a binary double libm function `name(x, y)`,
+     *  e.g. "pow". */
     llvm::Value* libm2(const char* name, llvm::Value* x, llvm::Value* y) {
         llvm::Function* f = ctx_.module().getFunction(name);
         if (!f) {
@@ -6678,6 +7172,18 @@ private:
         }
         return s;
     }
+    /**
+     * @brief Jointly compute the Taylor-coefficient series for sin(u) and cos(u).
+     *
+     * Coupled recurrence (sin and cos derivatives feed each other), computed
+     * together in one pass mirroring runtime_taylor.c's tr_sin_cos kernel;
+     * matchExpr()'s `sin`/`cos`/`tan` cases each call this and pick the needed
+     * output(s) (tan = so/co).
+     *
+     * @param u Input series (Taylor coefficients of the argument).
+     * @param so Output: sin(u) series, sized/filled in place.
+     * @param co Output: cos(u) series, sized/filled in place.
+     */
     void e_sincos(const V& u, V& so, V& co) {
         so.assign(n_, nullptr); co.assign(n_, nullptr);
         so[0] = libm1("sin", u[0]);
@@ -6736,7 +7242,9 @@ private:
         return e_div(sh, ch);
     }
 
-    // A constant scalar exponent (literal only), for pow/expt.
+    /** @brief Match a compile-time-literal (int or double) scalar exponent for
+     *  pow/expt; returns false (leaving *out untouched) for anything else so the
+     *  caller bails to the runtime fallback. */
     bool constScalar(const eshkol_ast* e, double* out) {
         if (!e) return false;
         if (e->type == ESHKOL_INT64)  { *out = (double)e->int64_val; return true; }
@@ -6838,7 +7346,42 @@ private:
 
 }  // anonymous namespace
 
-// See header. Returns the packed result on a successful match, else nullptr.
+/**
+ * @brief Attempt no-heap, compile-time-K monomorphization of a Taylor tower
+ *        (ESH-0187): emit the whole order-K expansion as unrolled, branch-free
+ *        straight-line SSA instead of the generic heap-tower runtime path.
+ *
+ * Only applies when `function_ast` is a single-parameter inline lambda (or a
+ * VAR naming a single-arg top-level define) whose body is a pure arithmetic
+ * expression tree built entirely from the primitives whitelisted in
+ * taylor_recurrences.def (the single source of truth shared with the runtime
+ * kernel in runtime_taylor.c). `point_ast` must reduce, via
+ * `eshkol_taylor_c0`, to a compile-time-provably-inexact (raw double) x0 —
+ * anything that might be exact at runtime (boxed int64/rational/bignum) bails
+ * to preserve R7RS exactness contagion (design section 9). TaylorMonoEmitter
+ * walks the body (matchExpr()), transliterating each recognized operation
+ * (add/sub/mul/div/pow/exp/log/sin/cos/tan/sqrt/abs/sinh/cosh/tanh) into the
+ * matching Cauchy-product / FMA recurrence, operation-for-operation identical
+ * to the runtime tr_* kernels, so mono(K) == runtime(K) bit-for-bit. Returns
+ * nullptr (falling back to the unchanged runtime/heap path via
+ * taylorApiCore()) if K is out of range, the body doesn't match the
+ * whitelist, or the point isn't a plain double.
+ *
+ * For `TowerMode::DERIV_N`, the result is `K! * c[K]` (the K-th derivative at
+ * x0). For `TowerMode::COEFFS`, the K+1 SSA coefficients are packed into a
+ * freshly-consed Scheme list `c[0]..c[K]` — the only heap allocation is that
+ * returned list, since the tower's working storage stays entirely in SSA.
+ *
+ * @param function_ast The single-parameter lambda or named-define AST being
+ *        differentiated/expanded.
+ * @param point_ast The evaluation point AST (must reduce to a literal double).
+ * @param K The (already compile-time-known) Taylor order.
+ * @param mode Whether to return the K-th derivative value or the full
+ *        coefficient list.
+ * @return The packed derivative double, the packed coefficient list, or
+ *         nullptr if monomorphization does not apply (caller should fall back
+ *         to taylorApiCore()).
+ */
 llvm::Value* AutodiffCodegen::tryMonomorphizedTaylor(const eshkol_ast* function_ast,
                                                      const eshkol_ast* point_ast,
                                                      int K, TowerMode mode) {
@@ -6942,6 +7485,30 @@ llvm::Value* AutodiffCodegen::tryMonomorphizedTaylor(const eshkol_ast* function_
 }
 
 
+/**
+ * @brief Shared runtime (heap-tower) implementation of `derivative-n` /
+ *        `taylor`, used when tryMonomorphizedTaylor() does not apply.
+ *
+ * Builds a synthetic `ESHKOL_DERIVATIVE_N_OP` operation aliasing
+ * `function_ast`/`point_ast` onto `taylor_op.function`/`.point` (which
+ * overlaps `derivative_op.function`/`.point` field-for-field, so
+ * codegenDerivativeMonolith() reads them unchanged via that alias), then
+ * temporarily re-points the AD tower mode/order (`adTowerMode_`,
+ * `adTowerOrder_`) so the monolith's seedForwardAndPush()/
+ * popAndExtractForward() seed a heap Taylor tower of order `order_i32`
+ * (fresh perturbation epoch) instead of the ordinary order-<=2 jet, and
+ * extract from the returned tower. Tower mode/order are saved and restored
+ * around the call so this is safe to nest.
+ *
+ * @param function_ast The function AST being differentiated/expanded.
+ * @param point_ast The evaluation point AST.
+ * @param order_i32 The Taylor order K as an LLVM i32 value (may be a runtime
+ *        value, not necessarily a compile-time literal).
+ * @param mode Whether to extract the K-th derivative or the full coefficient
+ *        list from the tower.
+ * @return The tagged result from the monolith, or a packed null if the
+ *         monolith itself returned nullptr.
+ */
 llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
                                             const eshkol_ast* point_ast,
                                             llvm::Value* order_i32, TowerMode mode) {
@@ -6958,6 +7525,19 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
     return r ? r : tagged_.packNull();
 }
 
+/**
+ * @brief Coerce a Taylor/derivative-n `order` argument value to i32.
+ *
+ * Handles a tagged_value (unpacks the int64 payload), a double (truncates via
+ * `CreateFPToSI`), or an integer of another width (sign-extending/truncating
+ * `CreateIntCast`) -- whichever representation `order` already arrived in
+ * from `codegen_ast_callback_`.
+ *
+ * @param ctx Codegen context (for the IR builder and int32 type).
+ * @param tagged Tagged-value helper used to unpack a tagged_value order.
+ * @param order The raw order value in whatever type it was evaluated as.
+ * @return The order as an i32 LLVM value, or nullptr if `order` is null.
+ */
 static llvm::Value* coerceOrderToI32(CodegenContext& ctx, TaggedValueCodegen& tagged,
                                      llvm::Value* order) {
     if (!order) return nullptr;
@@ -6967,6 +7547,19 @@ static llvm::Value* coerceOrderToI32(CodegenContext& ctx, TaggedValueCodegen& ta
     return order;
 }
 
+/**
+ * @brief Codegen for `(derivative-n f x k)`: the k-th derivative of `f` at `x`.
+ *
+ * If `k` is a literal integer, first attempts tryMonomorphizedTaylor() for a
+ * no-heap unrolled expansion; otherwise (or if monomorphization declines)
+ * evaluates `k` at runtime, coerces it to i32 via coerceOrderToI32(), and
+ * delegates to taylorApiCore() with `TowerMode::DERIV_N`.
+ *
+ * @param op The `derivative-n` AST operation node (`op->taylor_op.function`,
+ *           `.point`, and `.order`).
+ * @return Tagged k-th-derivative value, or a packed null on missing operands
+ *         or evaluation failure.
+ */
 llvm::Value* AutodiffCodegen::derivativeN(const eshkol_operations_t* op) {
     if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
         eshkol_error("derivative-n requires (derivative-n f x k)");
@@ -6988,6 +7581,19 @@ llvm::Value* AutodiffCodegen::derivativeN(const eshkol_operations_t* op) {
     return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::DERIV_N);
 }
 
+/**
+ * @brief Codegen for `(taylor f x k)`: the order-k Taylor coefficient list of
+ *        `f` around `x`.
+ *
+ * Mirrors derivativeN(): attempts tryMonomorphizedTaylor() for a literal `k`,
+ * else evaluates `k` at runtime and delegates to taylorApiCore() with
+ * `TowerMode::COEFFS` to build the `[c0, c1, ..., ck]` coefficient list.
+ *
+ * @param op The `taylor` AST operation node (`op->taylor_op.function`,
+ *           `.point`, and `.order`).
+ * @return Tagged Scheme list of Taylor coefficients, or a packed null on
+ *         missing operands or evaluation failure.
+ */
 llvm::Value* AutodiffCodegen::taylorSeries(const eshkol_operations_t* op) {
     if (!op->taylor_op.function || !op->taylor_op.point || !op->taylor_op.order) {
         eshkol_error("taylor requires (taylor f x k)");
@@ -7007,8 +7613,28 @@ llvm::Value* AutodiffCodegen::taylorSeries(const eshkol_operations_t* op) {
     return taylorApiCore(op->taylor_op.function, op->taylor_op.point, order, TowerMode::COEFFS);
 }
 
-// See header. Walks a nested `derivative` chain; returns total depth if it is
-// pure repeated univariate differentiation threading one variable, else 0.
+/**
+ * @brief Detect whether `op` is the outermost link of a pure, repeated
+ *        univariate `derivative` chain (ESH-0118), e.g.
+ *        `(derivative (lambda (x) (derivative (lambda (x) (f x)) x)) x0)`.
+ *
+ * Walks inward through nested `derivative` operations as long as each level
+ * is a single-parameter lambda whose body is itself a `derivative` threading
+ * that same parameter as its point. Stops (successfully) either at a lambda
+ * whose body is NOT a further nested `derivative` (the base function), or at
+ * a `derivative` applied directly to a named function VAR. Returns 0 (not a
+ * pure chain) if any level fails to thread the parameter through unchanged —
+ * the caller then leaves the whole expression on the ordinary 2-level jet
+ * path, which is safe (if imprecise) for anything this doesn't recognize.
+ *
+ * @param op The outermost `derivative` operation node to inspect.
+ * @param innermost_func Output: set to the base function AST (a lambda or a
+ *        named-function VAR) at the bottom of the chain, if a chain is found.
+ * @param outer_point Output: set to `op`'s own evaluation point (the point at
+ *        which the whole nested expression is ultimately differentiated).
+ * @return The chain depth (number of nested `derivative` levels, >= 1) if this
+ *         is a pure chain, or 0 if it is not (or `op` is not a derivative op).
+ */
 int AutodiffCodegen::detectPureDerivChain(const eshkol_operations_t* op,
                                           const eshkol_ast** innermost_func,
                                           const eshkol_ast** outer_point) {
@@ -7071,6 +7697,23 @@ inline llvm::Value* derivative_static_path_unused() { (void)k_derivative_static_
 }
 
 #if 0
+/**
+ * @brief Disabled (`#if 0`) static-function-only forward-mode derivative path,
+ *        retained for reference / a future v1.3 re-extraction.
+ *
+ * Predates the current derivative() -> codegenDerivativeMonolith() delegation.
+ * Only handles `f` resolving to a concrete compile-time `Function*` (a
+ * directly-named top-level define); it seeds a forward-mode dual number
+ * (value `x`, tangent 1.0), calls the function, and extracts the tangent
+ * component of the dual-number result as the derivative. It has no handling
+ * for `f` being a runtime closure/function parameter — that gap was bug AD-1,
+ * which is why derivative() now delegates to codegenDerivativeMonolith()
+ * instead of this function. Not compiled (see the surrounding `#if 0`).
+ *
+ * @param op The `derivative` AST operation node (`op->derivative_op.function`
+ *           and `op->derivative_op.point`).
+ * @return Tagged derivative value, or nullptr/packed null on failure.
+ */
 llvm::Value* AutodiffCodegen::derivativeStaticOnly(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->derivative_op.function) {
@@ -7303,6 +7946,18 @@ llvm::Value* AutodiffCodegen::derivativeStaticOnly(const eshkol_operations_t* op
 }
 #endif // disabled static-only derivative path — see AD-1 note above
 
+/**
+ * @brief Emit IR that computes the Hessian (matrix of second partial derivatives) of a scalar field.
+ *
+ * Forms the Hessian column-by-column by finite-differencing the gradient: it
+ * takes the base gradient at the point, perturbs input dimension j by a small
+ * epsilon, recomputes the gradient on a fresh tape, and sets
+ * H[i,j] = (grad_perturbed[i] - grad_base[i]) / epsilon. Handles direct
+ * llvm::Function callees and closure/REPL fallbacks for the function argument.
+ *
+ * @param op ESHKOL_HESSIAN_OP with hessian_op.function (scalar f) and hessian_op.point.
+ * @return Tagged value wrapping an n-by-n tensor pointer (HEAP_PTR), or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->hessian_op.function || !op->hessian_op.point) {
@@ -8272,6 +8927,15 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Allocate an arena-backed 1-D tensor of the given runtime length, zero-filled.
+ *
+ * Emits an OALR-compliant (arena, no malloc) tensor with num_dimensions = 1,
+ * total_elements = dimension, and a runtime loop that stores 0.0 into every element.
+ *
+ * @param dimension Runtime i64 giving the vector length.
+ * @return The tensor structure pointer as an i64 (not tagged).
+ */
 llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
     using namespace llvm;
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -8333,11 +8997,18 @@ llvm::Value* AutodiffCodegen::createNullVectorTensor(llvm::Value* dimension) {
 }
 
 
-// Helper: Extract J[row,col] from Jacobian's nested list structure
-// Jacobian tensor elements are int64 list pointers (rows), not doubles!
-// Extract element from N-dimensional tensor at given indices
-// For 2D (Jacobian): indices = [row_idx, col_idx]
-// For ND: computes linear index using row-major ordering
+/**
+ * @brief Extract a single scalar element from an N-dimensional tensor by index vector.
+ *
+ * Reads the tensor's dimension array to compute a row-major linear index
+ * (idx[0] times stride0 plus ... plus idx[n-1]), loads the element as an int64
+ * bit pattern, and bit-casts it to a double. For 2-D tensors (Jacobian, Hessian)
+ * pass indices = [row, col].
+ *
+ * @param tensor_ptr Pointer to the tensor structure.
+ * @param indices One index per tensor dimension.
+ * @return The addressed element as a double value.
+ */
 llvm::Value* AutodiffCodegen::extractTensorElement(llvm::Value* tensor_ptr, std::vector<llvm::Value*> indices) {
     using namespace llvm;
     // Get tensor dimensions
@@ -8379,7 +9050,17 @@ llvm::Value* AutodiffCodegen::extractTensorElement(llvm::Value* tensor_ptr, std:
     return elem_double;
 }
 
-// Convenience wrapper for 2D tensors (Jacobian, Hessian)
+/**
+ * @brief Convenience wrapper: extract element [row, col] from a 2-D tensor (Jacobian/Hessian).
+ *
+ * Delegates to extractTensorElement with the two indices.
+ *
+ * @param jacobian_ptr Pointer to the 2-D tensor structure.
+ * @param row_idx Row index.
+ * @param col_idx Column index.
+ * @param n Matrix dimension (unused; kept for call-site clarity).
+ * @return The addressed element as a double value.
+ */
 llvm::Value* AutodiffCodegen::extractJacobianElement(llvm::Value* jacobian_ptr, llvm::Value* row_idx, llvm::Value* col_idx, llvm::Value* n) {
     using namespace llvm;
     // Use the general N-dimensional extractor with 2 indices
@@ -8387,6 +9068,16 @@ llvm::Value* AutodiffCodegen::extractJacobianElement(llvm::Value* jacobian_ptr, 
 }
 
 
+/**
+ * @brief Emit IR that computes the divergence of a vector field F: R^n -> R^n.
+ *
+ * The divergence is the trace of the Jacobian, so this builds the Jacobian via
+ * jacobian(), validates it is a tensor type, then sums the diagonal entries
+ * J[0,0] + J[1,1] + ... + J[n-1,n-1]. Invalid Jacobian types yield 0.0.
+ *
+ * @param op ESHKOL_DIVERGENCE_OP with divergence_op.function and divergence_op.point.
+ * @return Tagged double holding the scalar divergence, or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::divergence(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->divergence_op.function || !op->divergence_op.point) {
@@ -8498,6 +9189,19 @@ llvm::Value* AutodiffCodegen::divergence(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Emit IR that computes the curl of a 3-D vector field (curl = nabla x F).
+ *
+ * Evaluates the input point (accepting Scheme vector or tensor forms), extracts
+ * the dimension n, and requires n >= 2 (classic curl is 3-D; for n != 3 this
+ * yields the generalized exterior-derivative 2-form). It builds the Jacobian and
+ * combines its off-diagonal partials into the curl vector, e.g. in 3-D
+ * (dFz/dy - dFy/dz, dFx/dz - dFz/dx, dFy/dx - dFx/dy). Dimensions below 2 or an
+ * invalid Jacobian return a null vector.
+ *
+ * @param op ESHKOL_CURL_OP with curl_op.function and curl_op.point.
+ * @return Tagged tensor pointer (HEAP_PTR) holding the curl vector, or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->curl_op.function || !op->curl_op.point) {
@@ -8754,6 +9458,18 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Emit IR that computes the Laplacian of a scalar field f: R^n -> R.
+ *
+ * The Laplacian is the trace of the Hessian, so this builds the Hessian via
+ * hessian() and sums its diagonal second derivatives
+ * H[0,0] + H[1,1] + ... + H[n-1,n-1]. For a 1-D (scalar-input) field the Hessian
+ * comes back as a plain double f''(x), which is used directly; genuinely
+ * non-numeric results fall back to 0.0.
+ *
+ * @param op ESHKOL_LAPLACIAN_OP with laplacian_op.function and laplacian_op.point.
+ * @return Tagged double holding the scalar Laplacian, or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::laplacian(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->laplacian_op.function || !op->laplacian_op.point) {
@@ -8881,6 +9597,17 @@ llvm::Value* AutodiffCodegen::laplacian(const eshkol_operations_t* op) {
 }
 
 
+/**
+ * @brief Emit IR that computes the directional derivative D_v f = grad(f) . v.
+ *
+ * Computes the gradient of f at the point, evaluates the direction vector v
+ * (converting a (list ...) direction to a Scheme vector, and normalizing Scheme
+ * vectors / tensors to a common tensor form), and returns the dot product of the
+ * gradient with the direction.
+ *
+ * @param op ESHKOL_DIRECTIONAL_DERIV_OP with directional_deriv_op.function, .point and .direction.
+ * @return Tagged double holding the directional derivative, or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* op) {
     using namespace llvm;
     if (!op->directional_deriv_op.function || !op->directional_deriv_op.point ||
@@ -9329,6 +10056,21 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
     return capture_args;
 }
 
+/**
+ * @brief Append closure-capture arguments to a gradient/AD call so the callee gets its free variables.
+ *
+ * When the target lambda's LLVM signature has more parameters than the caller
+ * has supplied, the surplus are captured free variables. For each one this
+ * resolves the capture name (from the REPL capture registry or the mangled
+ * argument name), then looks up its storage using capture-key (global then
+ * local) followed by raw-name (local-first so a named-let carry pointer wins
+ * over a shadowed global), and pushes the storage pointer onto call_args (or a
+ * null pointer with a warning if unresolved).
+ *
+ * @param func_ptr The callee lambda whose captures must be supplied.
+ * @param call_args In/out argument list, extended in place with capture pointers.
+ * @param context_label Label used in diagnostic messages.
+ */
 void AutodiffCodegen::resolveGradientCaptures(
     llvm::Function* func_ptr,
     std::vector<llvm::Value*>& call_args,
@@ -9470,6 +10212,12 @@ void AutodiffCodegen::resolveGradientCaptures(
     }
 }
 
+/**
+ * @brief Allocate a fresh reverse-mode AD tape in the current arena.
+ *
+ * @return Pointer to the new tape, or a null pointer if the arena or tape
+ *         allocator is unavailable.
+ */
 llvm::Value* AutodiffCodegen::createTape() {
     llvm::Value* arena_ptr = getArenaPtr();
     if (!arena_ptr) return llvm::ConstantPointerNull::get(ctx_.ptrType());
@@ -9480,6 +10228,18 @@ llvm::Value* AutodiffCodegen::createTape() {
     return ctx_.builder().CreateCall(alloc_tape, {arena_ptr});
 }
 
+/**
+ * @brief Emit the reverse-mode backward pass over a recorded AD tape.
+ *
+ * Seeds the output node's gradient to 1.0 (and, for tensor outputs, an all-ones
+ * tensor gradient via the runtime), then walks the tape's nodes in reverse
+ * recording order (which is topological for a forward-built graph), calling
+ * propagateGradient on each non-null node to distribute gradients to its inputs
+ * by the chain rule. Null tape or output pointers are guarded at runtime.
+ *
+ * @param tape The AD tape recorded during the forward pass.
+ * @param output_node The node whose gradient is seeded to 1.0 (the loss/output).
+ */
 void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node) {
     // CRITICAL: Add runtime null checks for placeholder functions
     llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
@@ -9602,6 +10362,19 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     eshkol_debug("Completed backward pass through computational graph");
 }
 
+/**
+ * @brief Apply the local chain rule for one AD node, pushing gradient into its inputs.
+ *
+ * Loads the node's accumulated gradient and operation type. Nodes carrying a
+ * tensor gradient take a fast path that calls the C runtime tensor backward
+ * dispatcher; scalar nodes branch on op type and accumulate the appropriate
+ * partial-derivative-weighted gradient into input1 and input2 (e.g. add passes
+ * the gradient through unchanged; mul weights each input by the other's value;
+ * sin/cos/... apply their derivative). Leaf nodes (constant, variable) have no
+ * inputs and are skipped. Called once per node by backpropagate.
+ *
+ * @param node_ptr The AD node currently being processed in the backward pass.
+ */
 void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     if (!node_ptr) return;
 
@@ -11173,6 +11946,16 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
 // These functions enable arbitrary-depth nested gradient computations
 // by saving/restoring the tape context on a stack.
 
+/**
+ * @brief Push the current AD tape onto the tape stack and activate a new tape (nested gradients).
+ *
+ * Saves the current tape into stack[depth], increments the depth counter (aborting
+ * the program if depth would reach MAX_TAPE_DEPTH), installs new_tape as the
+ * current tape, and marks AD mode active. Paired with popTapeContext to support
+ * arbitrary-depth nested differentiation.
+ *
+ * @param new_tape The tape to make current for the inner gradient (no-op if null).
+ */
 void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
     if (!new_tape) return;
 
@@ -11254,6 +12037,14 @@ void AutodiffCodegen::pushTapeContext(llvm::Value* new_tape) {
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int1Type(), 1), ad_mode_active);
 }
 
+/**
+ * @brief Pop the AD tape stack, restoring the enclosing tape (nested gradients).
+ *
+ * Decrements the depth counter, restores the tape saved at stack[new_depth] as
+ * the current tape, and keeps AD mode active only while depth remains greater
+ * than zero (i.e. deactivates it when leaving the outermost gradient). Paired
+ * with pushTapeContext.
+ */
 void AutodiffCodegen::popTapeContext() {
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
@@ -11288,6 +12079,15 @@ void AutodiffCodegen::popTapeContext() {
     ctx_.builder().CreateStore(still_active, ad_mode_active);
 }
 
+/**
+ * @brief Return the enclosing (parent) AD tape for a nested gradient, or null if not nested.
+ *
+ * When the tape depth is greater than zero this returns stack[depth-1] (the tape
+ * of the outer differentiation), otherwise a null pointer. Used to record
+ * operations on the outer tape for double-backward.
+ *
+ * @return Pointer to the outer tape, or a null pointer when at the top level.
+ */
 llvm::Value* AutodiffCodegen::getOuterTape() {
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     llvm::GlobalVariable* ad_tape_stack = ctx_.adTapeStack();
@@ -11332,6 +12132,7 @@ llvm::Value* AutodiffCodegen::getOuterTape() {
     return result;
 }
 
+/** @brief Return an i1 that is true when the AD tape depth is greater than zero (inside a nested gradient). */
 llvm::Value* AutodiffCodegen::isNested() {
     llvm::GlobalVariable* ad_tape_depth = ctx_.adTapeDepth();
     if (!ad_tape_depth) {
@@ -11345,6 +12146,18 @@ llvm::Value* AutodiffCodegen::isNested() {
 // ===== TAPE-SPECIFIC AD NODE OPERATIONS =====
 // Used for double backward - record operations on outer tape
 
+/**
+ * @brief Allocate an AD constant/leaf node holding a value and append it to a specific tape.
+ *
+ * Creates a node of type constant (0) with the given value (converted to double
+ * if integral), zero-initialized gradient, null inputs and a fresh node id, then
+ * registers it on tape_ptr. Used when recording operations on the outer tape for
+ * double-backward.
+ *
+ * @param tape_ptr The tape to record the node on.
+ * @param value The primal value to store.
+ * @return The new node pointer, or nullptr on error.
+ */
 llvm::Value* AutodiffCodegen::createADConstantOnTape(llvm::Value* tape_ptr, llvm::Value* value) {
     if (!tape_ptr || !value) return nullptr;
 
@@ -11396,6 +12209,20 @@ llvm::Value* AutodiffCodegen::createADConstantOnTape(llvm::Value* tape_ptr, llvm
     return node_ptr;
 }
 
+/**
+ * @brief Record a binary AD operation node on a specific tape (double-backward support).
+ *
+ * Reads the primal values of the two input nodes, computes the forward result for
+ * op_type (add, sub, mul, div, pow, max, min, atan2), then allocates a new node
+ * of that type storing the result, zero gradient, links to both input nodes and a
+ * fresh id, and appends it to tape_ptr.
+ *
+ * @param tape_ptr The tape to record the node on.
+ * @param op_type The binary AD op code (2 add, 3 sub, 4 mul, 5 div, 10 pow, 44 max, 45 min, plus atan2).
+ * @param left_node First operand node.
+ * @param right_node Second operand node.
+ * @return The new node pointer, or nullptr on unknown op or error.
+ */
 llvm::Value* AutodiffCodegen::recordADNodeBinaryOnTape(llvm::Value* tape_ptr, uint32_t op_type,
                                                         llvm::Value* left_node, llvm::Value* right_node) {
     if (!tape_ptr || !left_node || !right_node) return nullptr;
@@ -11500,6 +12327,7 @@ llvm::Value* AutodiffCodegen::recordADNodeBinaryOnTape(llvm::Value* tape_ptr, ui
 // ===== AD NODE HELPERS =====
 // Access fields of AD nodes
 
+/** @brief Load the primal value (field 1) of an AD node as a double; nullptr if node_ptr is null. */
 llvm::Value* AutodiffCodegen::loadNodeValue(llvm::Value* node_ptr) {
     if (!node_ptr) return nullptr;
     llvm::StructType* ad_type = ctx_.adNodeType();
@@ -11507,6 +12335,7 @@ llvm::Value* AutodiffCodegen::loadNodeValue(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.doubleType(), value_ptr);
 }
 
+/** @brief Load the accumulated gradient (field 2) of an AD node as a double; nullptr if node_ptr is null. */
 llvm::Value* AutodiffCodegen::loadNodeGradient(llvm::Value* node_ptr) {
     if (!node_ptr) return nullptr;
     llvm::StructType* ad_type = ctx_.adNodeType();
@@ -11514,6 +12343,7 @@ llvm::Value* AutodiffCodegen::loadNodeGradient(llvm::Value* node_ptr) {
     return ctx_.builder().CreateLoad(ctx_.doubleType(), grad_ptr);
 }
 
+/** @brief Overwrite an AD node's gradient field (field 2) with the given value; no-op on null args. */
 void AutodiffCodegen::storeNodeGradient(llvm::Value* node_ptr, llvm::Value* gradient) {
     if (!node_ptr || !gradient) return;
     llvm::StructType* ad_type = ctx_.adNodeType();
@@ -11521,6 +12351,16 @@ void AutodiffCodegen::storeNodeGradient(llvm::Value* node_ptr, llvm::Value* grad
     ctx_.builder().CreateStore(gradient, grad_ptr);
 }
 
+/**
+ * @brief Add a gradient contribution into an AD node's gradient field (chain-rule accumulation).
+ *
+ * Emits a runtime null check on node_ptr (leaf inputs may be null) and, when
+ * non-null, performs grad = grad + gradient_to_add. This is the accumulation
+ * primitive used by propagateGradient during the backward pass.
+ *
+ * @param node_ptr The input node whose gradient is being accumulated (may be null at runtime).
+ * @param gradient_to_add The gradient contribution to add.
+ */
 void AutodiffCodegen::accumulateGradient(llvm::Value* node_ptr, llvm::Value* gradient_to_add) {
     if (!node_ptr || !gradient_to_add) return;  // Compile-time check
 
@@ -11557,8 +12397,12 @@ void AutodiffCodegen::accumulateGradient(llvm::Value* node_ptr, llvm::Value* gra
 // ===== ML ACTIVATION FUNCTION DUAL NUMBER OPERATIONS =====
 // These implement chain rule for ML activation functions
 
-// ReLU: relu(a, a') = (max(0, a), a > 0 ? a' : 0)
-// Derivative: d/dx[relu(f(x))] = f'(x) if f(x) > 0, else 0
+/**
+ * @brief Forward-mode dual ReLU: value max(0, a), tangent a' when a > 0 else 0.
+ *
+ * @param dual Input dual number (primal a, tangent a').
+ * @return New dual number carrying relu(a) and its subgradient-scaled tangent.
+ */
 llvm::Value* AutodiffCodegen::dualRelu(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -11577,8 +12421,16 @@ llvm::Value* AutodiffCodegen::dualRelu(llvm::Value* dual) {
     return createDualNumber(value, deriv);
 }
 
-// Sigmoid: σ(a, a') = (σ(a), a' * σ(a) * (1 - σ(a)))
-// Chain rule: d/dx[σ(f(x))] = σ(f(x)) * (1 - σ(f(x))) * f'(x)
+/**
+ * @brief Forward-mode dual sigmoid s(a) = 1 / (1 + exp(-a)).
+ *
+ * Computes the primal s(a), first derivative s(1-s) and second derivative
+ * s(1-s)(1-2s), then applies them via dualUnaryChain so higher-order tangents
+ * (double-forward) propagate correctly.
+ *
+ * @param dual Input dual number.
+ * @return New dual number for the sigmoid activation.
+ */
 llvm::Value* AutodiffCodegen::dualSigmoid(llvm::Value* dual) {
     if (!dual) return nullptr;
     llvm::Value* a = dualField(ctx_, dual, 0);
@@ -11598,7 +12450,16 @@ llvm::Value* AutodiffCodegen::dualSigmoid(llvm::Value* dual) {
     return dualUnaryChain(ctx_, dual, sigma_a, fpa, fppa);
 }
 
-// GELU: Gaussian Error Linear Unit using the tanh approximation used by tensorGelu.
+/**
+ * @brief Forward-mode dual GELU using the tanh approximation (matching tensorGelu).
+ *
+ * Primal is 0.5 * a * (1 + tanh(u)) with u = sqrt(2/pi) * (a + 0.044715 * a^3);
+ * the tangent multiplies a' by the exact derivative of that expression
+ * (via sech^2(u) times u').
+ *
+ * @param dual Input dual number.
+ * @return New dual number for the GELU activation.
+ */
 llvm::Value* AutodiffCodegen::dualGelu(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -11644,8 +12505,13 @@ llvm::Value* AutodiffCodegen::dualGelu(llvm::Value* dual) {
     return createDualNumber(value, deriv);
 }
 
-// Leaky ReLU: leaky_relu(a, a') = (a > 0 ? a : α*a, a > 0 ? a' : α*a')
-// Derivative: d/dx[leaky_relu(f(x))] = f'(x) if f(x) > 0, else α * f'(x)
+/**
+ * @brief Forward-mode dual Leaky ReLU: value a when a > 0 else alpha*a; tangent a' or alpha*a'.
+ *
+ * @param dual Input dual number.
+ * @param alpha Negative-slope coefficient applied when a <= 0.
+ * @return New dual number for the leaky-ReLU activation.
+ */
 llvm::Value* AutodiffCodegen::dualLeakyRelu(llvm::Value* dual, double alpha) {
     if (!dual) return nullptr;
 
@@ -11667,8 +12533,15 @@ llvm::Value* AutodiffCodegen::dualLeakyRelu(llvm::Value* dual, double alpha) {
     return createDualNumber(value, deriv);
 }
 
-// SiLU (Swish): silu(a) = a * σ(a)
-// d/dx[x * σ(x)] = σ(x) + x * σ(x) * (1 - σ(x)) = σ(x) * (1 + x * (1 - σ(x)))
+/**
+ * @brief Forward-mode dual SiLU/Swish: value a * s(a) with s the sigmoid.
+ *
+ * Tangent is a' * s(a) * (1 + a * (1 - s(a))), the chain-rule derivative of
+ * a * s(a).
+ *
+ * @param dual Input dual number.
+ * @return New dual number for the SiLU activation.
+ */
 llvm::Value* AutodiffCodegen::dualSilu(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -11699,7 +12572,12 @@ llvm::Value* AutodiffCodegen::dualSilu(llvm::Value* dual) {
     return createDualNumber(value, deriv);
 }
 
-// Square: square(a, a') = (a², 2 * a * a')
+/**
+ * @brief Forward-mode dual square: value a^2, tangent 2 * a * a'.
+ *
+ * @param dual Input dual number.
+ * @return New dual number for the square operation.
+ */
 llvm::Value* AutodiffCodegen::dualSquare(llvm::Value* dual) {
     if (!dual) return nullptr;
 
@@ -11718,8 +12596,16 @@ llvm::Value* AutodiffCodegen::dualSquare(llvm::Value* dual) {
     return createDualNumber(value, deriv);
 }
 
-// Max: max(a, b, a', b') = (max(a, b), a > b ? a' : b')
-// Subgradient selection: when a == b, we arbitrarily choose a'
+/**
+ * @brief Forward-mode dual max: value max(a, b); tangent a' when a > b else b'.
+ *
+ * At the non-differentiable tie a == b the b' branch is taken (the select uses a
+ * strict a > b comparison), an arbitrary but consistent subgradient choice.
+ *
+ * @param dual_a First input dual number.
+ * @param dual_b Second input dual number.
+ * @return New dual number for the max operation.
+ */
 llvm::Value* AutodiffCodegen::dualMax(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
 
@@ -11738,8 +12624,16 @@ llvm::Value* AutodiffCodegen::dualMax(llvm::Value* dual_a, llvm::Value* dual_b) 
     return createDualNumber(value, deriv);
 }
 
-// Min: min(a, b, a', b') = (min(a, b), a < b ? a' : b')
-// Subgradient selection: when a == b, we arbitrarily choose a'
+/**
+ * @brief Forward-mode dual min: value min(a, b); tangent a' when a < b else b'.
+ *
+ * At the non-differentiable tie a == b the b' branch is taken (the select uses a
+ * strict a < b comparison), an arbitrary but consistent subgradient choice.
+ *
+ * @param dual_a First input dual number.
+ * @param dual_b Second input dual number.
+ * @return New dual number for the min operation.
+ */
 llvm::Value* AutodiffCodegen::dualMin(llvm::Value* dual_a, llvm::Value* dual_b) {
     if (!dual_a || !dual_b) return nullptr;
 

@@ -20,6 +20,14 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct a CollectionCodegen bound to the shared codegen helpers.
+ *
+ * @param ctx Shared codegen context (IR builder, module, LLVM type accessors).
+ * @param tagged Tagged-value pack/unpack helper for boxing/unboxing Scheme values.
+ * @param mem Memory/arena allocation helper used for heap-allocating cons
+ *        cells, vectors, and tensors.
+ */
 CollectionCodegen::CollectionCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
     , tagged_(tagged)
@@ -27,6 +35,21 @@ CollectionCodegen::CollectionCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
     eshkol_debug("CollectionCodegen initialized");
 }
 
+/**
+ * @brief Heap-allocate a cons cell and store the given car/cdr tagged values into it.
+ *
+ * Uses the arena-based tagged-cons allocator (which prepends an
+ * eshkol_object_header_t with subtype HEAP_SUBTYPE_CONS), then stores each
+ * component via arena_tagged_cons_set_tagged_value() through temporary
+ * entry-block allocas holding pointers to the car/cdr tagged values (the
+ * setter takes values by reference). Falls back to a packed null tagged
+ * value if the arena, allocator, or setter function is unavailable.
+ *
+ * @param car_val Tagged value to store as the car.
+ * @param cdr_val Tagged value to store as the cdr.
+ * @return Tagged value (HEAP_PTR) pointing at the new cons cell, or a tagged
+ *         null on allocation/setup failure.
+ */
 llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value* cdr_val) {
     // Use arena-based tagged cons cell allocation WITH object header (consolidated type format).
     // This allocator prepends an eshkol_object_header_t with subtype HEAP_SUBTYPE_CONS.
@@ -91,6 +114,19 @@ llvm::Value* CollectionCodegen::allocConsCell(llvm::Value* car_val, llvm::Value*
 //
 // These implementations remain in llvm_codegen.cpp until those modules are extracted.
 
+/**
+ * @brief Emit IR for `(cons car cdr)`.
+ *
+ * Codegens both argument expressions via the typed-AST callback, converts
+ * them to tagged values, and allocates a new cons cell holding them via
+ * allocConsCell().
+ *
+ * @param op AST operation node; must have exactly 2 call arguments (car, cdr).
+ * @return Tagged cons-cell pointer, or a tagged null / nullptr on error
+ *         (nullptr signals a hard codegen failure such as a missing/failed
+ *         argument or wrong arity; a tagged null return means the codegen
+ *         callbacks were never wired up).
+ */
 llvm::Value* CollectionCodegen::cons(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::cons - callbacks not set");
@@ -118,6 +154,30 @@ llvm::Value* CollectionCodegen::cons(const eshkol_operations_t* op) {
     return allocConsCell(car_tagged, cdr_tagged);
 }
 
+/**
+ * @brief Emit IR for `(car pair)`.
+ *
+ * Generates the argument, normalizes raw scalar inputs into tagged-value
+ * form, then dispatches at runtime on the operand's shape:
+ *  - HEAP_PTR whose header subtype is HEAP_SUBTYPE_VECTOR or
+ *    HEAP_SUBTYPE_TENSOR: returns element 0 (tensor elements are decoded via
+ *    the AD-aware int64/double/AD-node discrimination used elsewhere for
+ *    tensor reads).
+ *  - HEAP_PTR / legacy CONS_PTR whose header subtype is HEAP_SUBTYPE_CONS:
+ *    loads the car directly from the cons cell (car lives at struct offset 0).
+ *  - Any other HEAP_PTR subtype, or a non-pointer/non-HEAP_PTR type: raises
+ *    "car: argument is not a pair" via eshkol_raise_not_pair and marks the
+ *    path unreachable, guarding against dereferencing non-pair values (the
+ *    historical source of SIGSEGVs on inputs like `#t` or `42`).
+ *
+ * A legacy per-subtype dispatch block (car_legacy_dead) is retained after
+ * the direct-load path but is unreachable in the current control flow; kept
+ * only so other codegen passes that may still reference its blocks by name
+ * continue to compile.
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged value: the car of the pair (or element 0 of a vector/tensor).
+ */
 llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::car - callbacks not set");
@@ -659,6 +719,26 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
     return result_phi;
 }
 
+/**
+ * @brief Emit IR for `(cdr pair)`.
+ *
+ * Mirrors car()'s dispatch and safety guards:
+ *  - HEAP_PTR with header subtype HEAP_SUBTYPE_VECTOR: allocates and returns
+ *    a *new* vector containing elements 1..n-1 (Scheme vectors are copied,
+ *    not viewed, since there is no separate "vector cdr" representation).
+ *  - HEAP_PTR with header subtype HEAP_SUBTYPE_TENSOR: allocates and returns
+ *    a new rank-1 tensor with elements 1..n-1, copied via an explicit loop.
+ *  - HEAP_PTR / legacy CONS_PTR with header subtype HEAP_SUBTYPE_CONS:
+ *    dispatches on the cdr's own tagged type (double/cons/null/string/lambda
+ *    S-expr/closure/bool/char/hash/int64) via arena_tagged_cons_get_* calls
+ *    and repacks accordingly.
+ *  - Any other subtype, or a non-HEAP_PTR operand: raises
+ *    "cdr: argument is not a pair" via eshkol_raise_not_pair.
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged value: the cdr of the pair (or a fresh vector/tensor
+ *         holding all but the first element, for vector/tensor operands).
+ */
 llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::cdr - callbacks not set");
@@ -1155,6 +1235,19 @@ llvm::Value* CollectionCodegen::cdr(const eshkol_operations_t* op) {
     return result_phi;
 }
 
+/**
+ * @brief Emit IR for `(list elem1 elem2 ...)`.
+ *
+ * Evaluates every argument expression left-to-right first (so side effects
+ * happen in Scheme's left-to-right evaluation order), then builds the cons
+ * chain right-to-left from the already-evaluated tagged values via
+ * allocConsCell(), terminating in a tagged null.
+ *
+ * @param op AST operation node; call arguments are the list elements
+ *        (zero arguments yields the empty list).
+ * @return Tagged pointer to the head of the newly built list (tagged null
+ *         if there are no elements).
+ */
 llvm::Value* CollectionCodegen::list(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::list - callbacks not set");
@@ -1200,11 +1293,32 @@ llvm::Value* CollectionCodegen::list(const eshkol_operations_t* op) {
     return result;
 }
 
+/**
+ * @brief Placeholder for `(list* elem1 elem2 ... tail)`.
+ *
+ * Not yet implemented in this module: logs a warning and always returns a
+ * tagged null. The real `list*` codegen currently lives elsewhere (see the
+ * file header note about complex collection ops remaining in
+ * llvm_codegen.cpp pending extraction).
+ *
+ * @param op AST operation node (unused).
+ * @return Tagged null.
+ */
 llvm::Value* CollectionCodegen::listStar(const eshkol_operations_t* op) {
     eshkol_warn("CollectionCodegen::listStar called - using fallback");
     return tagged_.packNull();
 }
 
+/**
+ * @brief Emit IR for `(null? val)`.
+ *
+ * True if the tagged value's base type is ESHKOL_VALUE_NULL, OR its base
+ * type is HEAP_PTR and its payload pointer is exactly 0 (the empty-list
+ * representation for cons-typed values).
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged boolean.
+ */
 llvm::Value* CollectionCodegen::isNull(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::isNull - callbacks not set");
@@ -1248,6 +1362,18 @@ llvm::Value* CollectionCodegen::isNull(const eshkol_operations_t* op) {
     return tagged_.packBool(result);
 }
 
+/**
+ * @brief Emit IR for `(pair? val)`.
+ *
+ * True only if the tagged value's base type is HEAP_PTR, its payload
+ * pointer is non-null, AND the heap object header's subtype is
+ * HEAP_SUBTYPE_CONS. The subtype-header load is gated behind a branch on
+ * "is a valid non-null HEAP_PTR" so non-pointer operands (e.g. integers)
+ * never have their payload dereferenced.
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged boolean.
+ */
 llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::isPair - callbacks not set");
@@ -1308,6 +1434,17 @@ llvm::Value* CollectionCodegen::isPair(const eshkol_operations_t* op) {
     return tagged_.packBool(result);
 }
 
+/**
+ * @brief Emit IR for `(make-vector length [fill])`.
+ *
+ * Allocates a Scheme vector from the arena with an object header
+ * (HEAP_SUBTYPE_VECTOR), stores the length in the first 8 bytes, then emits
+ * a loop that stores `fill` (default: tagged integer 0) into every element
+ * slot after that.
+ *
+ * @param op AST operation node; call arguments are (length) or (length, fill).
+ * @return Tagged HEAP_PTR to the new vector.
+ */
 llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::makeVector - callbacks not set");
@@ -1384,6 +1521,17 @@ llvm::Value* CollectionCodegen::makeVector(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(vec_ptr);
 }
 
+/**
+ * @brief Emit IR for `(vector elem1 elem2 ...)`.
+ *
+ * Allocates a Scheme vector sized to the call's argument count, stores the
+ * length in the first 8 bytes, then codegens each argument expression in
+ * order and stores its tagged value directly into the corresponding
+ * element slot.
+ *
+ * @param op AST operation node; call arguments are the vector's elements.
+ * @return Tagged HEAP_PTR to the new vector.
+ */
 llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::vector - callbacks not set");
@@ -1422,6 +1570,19 @@ llvm::Value* CollectionCodegen::vector(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(vec_ptr);
 }
 
+/**
+ * @brief Emit IR for `(vector-length v)`.
+ *
+ * Since both Scheme vectors and tensors are packed as HEAP_PTR, the object
+ * header's subtype byte (at ptr-8) is checked at runtime to pick the
+ * correct length field: a tensor's `total_elements` (struct field 3) versus
+ * a Scheme vector's length word at offset 0. Also accepts a raw (untagged)
+ * i64 pointer operand, treated as a tensor.
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged int64 length, or nullptr if the argument has an
+ *         unsupported representation.
+ */
 llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::vectorLength - callbacks not set");
@@ -1499,6 +1660,28 @@ llvm::Value* CollectionCodegen::vectorLength(const eshkol_operations_t* op) {
     return tagged_.packInt64(length, true);
 }
 
+/**
+ * @brief Emit IR for `(vector-ref v idx)`.
+ *
+ * Dispatches on the operand's heap-object header subtype to distinguish
+ * Scheme vectors (HEAP_SUBTYPE_VECTOR) from tensors (HEAP_SUBTYPE_TENSOR),
+ * since both share the HEAP_PTR base type:
+ *  - Tensor, 1-D (ndim <= 1): bounds-checks `idx` against total_elements,
+ *    loads the raw int64 element bit-pattern, and — if AD is active or the
+ *    bit-pattern isn't a valid IEEE-754 double exponent — repacks it as an
+ *    AD-node CALLABLE pointer; otherwise reinterprets it as a double.
+ *  - Tensor, N-D (ndim > 1): bounds-checks `idx` against `dims[0]` (row
+ *    count) and returns a *view* — a freshly allocated rank-1 tensor struct
+ *    whose elements pointer aliases the row starting at `idx * dims[1]` in
+ *    the source tensor's element buffer (no element data is copied).
+ *  - Scheme vector: bounds-checks `idx` against the length word at offset 0
+ *    and loads the 16-byte tagged value at `elements[idx]`.
+ * Out-of-bounds indices raise an ESHKOL_EXCEPTION_ERROR "index out of
+ * bounds" exception via eshkol_raise / eshkol_make_exception_with_header.
+ *
+ * @param op AST operation node; call arguments are (vector, index).
+ * @return Tagged value: the element (or row-slice tensor, for N-D tensors).
+ */
 llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_) {
         eshkol_warn("CollectionCodegen::vectorRef - callbacks not set");
@@ -1820,6 +2003,25 @@ llvm::Value* CollectionCodegen::vectorRef(const eshkol_operations_t* op) {
     return final_result;
 }
 
+/**
+ * @brief Emit IR for `(vector-set! v idx val)`.
+ *
+ * Distinguishes a tensor operand (HEAP_SUBTYPE_TENSOR, elements stored as
+ * raw 8-byte double bit-patterns in a separate elements buffer) from a
+ * Scheme vector operand (HEAP_SUBTYPE_VECTOR, elements stored inline as
+ * 16-byte tagged values) via the object header subtype, since both share
+ * the HEAP_PTR base type. Each path bounds-checks `idx` against the
+ * relevant length (tensor's total_elements, or the vector's length word)
+ * and raises an ESHKOL_EXCEPTION_ERROR on failure; then:
+ *  - Tensor path: unpacks `val` as a double and stores its bit pattern into
+ *    `elements[idx]` (8 bytes).
+ *  - Vector path: stores the full 16-byte tagged value into `elements[idx]`.
+ *
+ * @param op AST operation node; call arguments are (vector, index, value).
+ * @return The (unchanged) tagged vector/tensor operand, matching R7RS
+ *         `vector-set!`'s unspecified-but-conventionally-returns-target
+ *         behavior in this codegen.
+ */
 llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::vectorSet - callbacks not set");
@@ -1956,6 +2158,20 @@ llvm::Value* CollectionCodegen::vectorSet(const eshkol_operations_t* op) {
     return vec_arg;
 }
 
+/**
+ * @brief Emit IR for the mutating `(vector-copy! to at from [start [end]])`.
+ *
+ * Copies `count = (end - start)` tagged-value elements (16 bytes each) from
+ * `from[start:end)` into `to[at:at+count)` using `llvm.memmove` (safe for
+ * overlapping source/destination ranges, e.g. copying within the same
+ * vector). `start` defaults to 0 and `end` defaults to `from`'s length.
+ * Note: unlike vectorRef/vectorSet/vectorCopyNew, this path does not
+ * dispatch on the tensor vs. Scheme-vector header subtype — it assumes both
+ * operands are Scheme vectors with the [length][tagged elements...] layout.
+ *
+ * @param op AST operation node; call arguments are (to, at, from[, start[, end]]).
+ * @return Tagged null (the operation's result is not otherwise used).
+ */
 llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::vectorCopy - callbacks not set");
@@ -2041,6 +2257,26 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/**
+ * @brief Emit IR for the allocating `(vector-copy v [start [end]])`.
+ *
+ * Dispatches on the source object's header subtype (HEAP_SUBTYPE_TENSOR vs.
+ * HEAP_SUBTYPE_VECTOR — `#(...)` literals lower to tensors, while
+ * vectors built via `vector`/`make-vector` use the inline tagged-slot
+ * layout) to read the correct length and element stride, then bounds-checks
+ * `0 <= start <= end <= length` (raising on failure) before allocating a
+ * *fresh* object of the same representation as the source and `memcpy`-ing
+ * the `[start, end)` slice into it:
+ *  - Tensor path: allocates a new rank-1 tensor and copies `count` raw
+ *    8-byte elements.
+ *  - Vector path: allocates a new vector (storing its length) and copies
+ *    `count` 16-byte tagged elements.
+ *
+ * `start` defaults to 0 and `end` defaults to the source length.
+ *
+ * @param op AST operation node; call arguments are (v[, start[, end]]).
+ * @return Tagged HEAP_PTR to the newly allocated vector or tensor.
+ */
 llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::vectorCopyNew - callbacks not set");
@@ -2245,6 +2481,19 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
     return final_result;
 }
 
+/**
+ * @brief Emit IR for `(vector-append v1 v2 ...)`.
+ *
+ * With zero arguments, returns a freshly allocated empty vector. Otherwise
+ * codegens each argument, reads its length word (assumes the
+ * [length][tagged elements...] Scheme-vector layout for every operand — no
+ * tensor-subtype dispatch here), sums the lengths, allocates a new vector
+ * of the total size, and `memcpy`s each source's 16-byte-per-element
+ * region into the appropriate offset of the destination in argument order.
+ *
+ * @param op AST operation node; call arguments are the vectors to concatenate.
+ * @return Tagged HEAP_PTR to the newly allocated, concatenated vector.
+ */
 llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::vectorAppend - callbacks not set");
@@ -2318,6 +2567,16 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(new_vec);
 }
 
+/**
+ * @brief Emit IR for `(vector-fill! v val)`.
+ *
+ * Reads the vector's length word, then emits a loop that stores `val`
+ * (a tagged value) into every element slot. Assumes the Scheme-vector
+ * [length][tagged elements...] layout (no tensor-subtype dispatch).
+ *
+ * @param op AST operation node; call arguments are (v, val).
+ * @return Tagged null.
+ */
 llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_ || !codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("CollectionCodegen::vectorFill - callbacks not set");
@@ -2374,6 +2633,22 @@ llvm::Value* CollectionCodegen::vectorFill(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/**
+ * @brief Emit IR for `(vector->list v [start [end]])`.
+ *
+ * Dispatches on the source's header subtype (tensor vs. Scheme vector) to
+ * pick the correct length and element base, then builds the resulting list
+ * by walking `[start, end)` from `end-1` down to `start`, consing each
+ * element onto the accumulator (so the list ends up in the same order as
+ * the vector). Tensor elements are decoded via the same
+ * int64-bit-pattern/AD-node-pointer/double discrimination used in
+ * vectorRef's 1-D tensor path; vector elements are loaded directly as
+ * 16-byte tagged values. `start` defaults to 0 and `end` defaults to the
+ * source length.
+ *
+ * @param op AST operation node; call arguments are (v[, start[, end]]).
+ * @return Tagged pointer to the head of the newly built list.
+ */
 llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::vectorToList - callbacks not set");
@@ -2536,6 +2811,20 @@ llvm::Value* CollectionCodegen::vectorToList(const eshkol_operations_t* op) {
     return list_acc;
 }
 
+/**
+ * @brief Emit IR for `(list->vector lst)`.
+ *
+ * Two-pass codegen: first walks the list via its cdr chain to count its
+ * length, raising via eshkol_raise_improper_list if a non-NULL, non-HEAP_PTR
+ * tail is encountered (an improper list, e.g. `(1 2 . 3)`) rather than
+ * silently dereferencing the tail as a cons pointer. Then allocates a
+ * Scheme vector of that length and walks the list a second time, storing
+ * each cons cell's car (loaded directly from cell offset 0) into the
+ * corresponding vector element slot.
+ *
+ * @param op AST operation node; must have exactly 1 call argument.
+ * @return Tagged HEAP_PTR to the newly allocated vector.
+ */
 llvm::Value* CollectionCodegen::listToVector(const eshkol_operations_t* op) {
     if (!codegen_ast_callback_) {
         eshkol_warn("CollectionCodegen::listToVector - callbacks not set");

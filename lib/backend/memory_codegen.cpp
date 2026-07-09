@@ -12,6 +12,12 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct a MemoryCodegen and declare all arena runtime functions in the given module.
+ *
+ * @param mod LLVM module to declare the arena/runtime functions in.
+ * @param ts Type system providing pointer/size/void/int LLVM type helpers.
+ */
 MemoryCodegen::MemoryCodegen(llvm::Module& mod, TypeSystem& ts)
     : module(mod), types(ts) {
     createCoreArenaFunctions();
@@ -24,10 +30,19 @@ MemoryCodegen::MemoryCodegen(llvm::Module& mod, TypeSystem& ts)
     createTypedAllocatorFunctions();  // NEW: Consolidated type allocators
 }
 
+/** @brief Declare an external-linkage LLVM function with the given name and type in the module. */
 llvm::Function* MemoryCodegen::createFunc(const char* name, llvm::FunctionType* ft) {
     return llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, &module);
 }
 
+/**
+ * @brief Declare the core arena lifecycle and allocation runtime functions.
+ *
+ * Declares `arena_create`, `get_global_arena` (the shared thread-safe global
+ * arena used by standalone programs for concurrent allocation), `arena_destroy`,
+ * `arena_allocate`, `arena_allocate_with_header`, and the nested-scope helpers
+ * `arena_push_scope`/`arena_pop_scope`.
+ */
 void MemoryCodegen::createCoreArenaFunctions() {
     auto ptr = types.getPtrType();
     auto szTy = types.getSizeType();  // i32 on wasm32, i64 on native
@@ -66,6 +81,11 @@ void MemoryCodegen::createCoreArenaFunctions() {
         llvm::FunctionType::get(voidTy, {ptr}, false));
 }
 
+/**
+ * @brief Declare the legacy (header-less) cons-cell allocation runtime functions.
+ *
+ * Declares `arena_allocate_cons_cell` and `arena_allocate_tagged_cons_cell`.
+ */
 void MemoryCodegen::createConsCellFunctions() {
     auto ptr = types.getPtrType();
 
@@ -78,6 +98,12 @@ void MemoryCodegen::createConsCellFunctions() {
         llvm::FunctionType::get(ptr, {ptr}, false));
 }
 
+/**
+ * @brief Declare the legacy (header-less) closure allocation runtime function.
+ *
+ * Declares `arena_allocate_closure`, taking the arena, function pointer,
+ * capture count, s-expression pointer, return-type-info pointer, and name.
+ */
 void MemoryCodegen::createClosureFunctions() {
     auto ptr = types.getPtrType();
     auto iptrTy = types.getIntPtrType();  // Pointer-width integer (i32 on wasm32)
@@ -88,6 +114,13 @@ void MemoryCodegen::createClosureFunctions() {
         llvm::FunctionType::get(ptr, {ptr, iptrTy, szTy, iptrTy, iptrTy, ptr}, false));
 }
 
+/**
+ * @brief Declare the tagged cons-cell field accessor (getter) runtime functions.
+ *
+ * Declares getters for a tagged cons cell's car/cdr slot: raw int64 data,
+ * double data, pointer data, the slot's type tag, its flags byte, and the
+ * fully packed tagged_value.
+ */
 void MemoryCodegen::createTaggedConsGetters() {
     auto ptr = types.getPtrType();
     auto i64 = types.getInt64Type();  // Data values in cons cells are i64
@@ -121,6 +154,13 @@ void MemoryCodegen::createTaggedConsGetters() {
         llvm::FunctionType::get(taggedValueTy, {ptr, i1}, false));
 }
 
+/**
+ * @brief Declare the tagged cons-cell field mutator (setter) runtime functions.
+ *
+ * Declares setters for a tagged cons cell's car/cdr slot: int64 value+type,
+ * double value+type, pointer value+type, clearing to null, and writing a
+ * fully packed tagged_value by pointer.
+ */
 void MemoryCodegen::createTaggedConsSetters() {
     auto ptr = types.getPtrType();
     auto i64 = types.getInt64Type();  // Data values in cons cells are i64
@@ -151,6 +191,12 @@ void MemoryCodegen::createTaggedConsSetters() {
         llvm::FunctionType::get(voidTy, {ptr, i1, ptr}, false));
 }
 
+/**
+ * @brief Declare the reverse-mode automatic-differentiation tape runtime functions.
+ *
+ * Declares `arena_allocate_tape`, `arena_tape_add_node`, `arena_tape_reset`,
+ * `arena_tape_get_node`, and `arena_tape_get_node_count`.
+ */
 void MemoryCodegen::createTapeFunctions() {
     auto ptr = types.getPtrType();
     auto szTy = types.getSizeType();
@@ -177,6 +223,11 @@ void MemoryCodegen::createTapeFunctions() {
         llvm::FunctionType::get(szTy, {ptr}, false));
 }
 
+/**
+ * @brief Declare the legacy (header-less) AD-node allocation runtime function.
+ *
+ * Declares `arena_allocate_ad_node`.
+ */
 void MemoryCodegen::createAdNodeFunctions() {
     auto ptr = types.getPtrType();
 
@@ -185,6 +236,15 @@ void MemoryCodegen::createAdNodeFunctions() {
         llvm::FunctionType::get(ptr, {ptr}, false));
 }
 
+/**
+ * @brief Declare the typed allocators that prepend an eshkol_object_header_t.
+ *
+ * Declares the consolidated-type-system allocators for cons cells, strings,
+ * vectors, symbols, closures, AD nodes, hash tables, tensors (both the
+ * bare-struct and the "full" struct+dims+elements variants), and exceptions —
+ * each returning a pointer to the payload immediately following its header
+ * (header lives at a fixed negative offset from the returned pointer).
+ */
 void MemoryCodegen::createTypedAllocatorFunctions() {
     // ═══════════════════════════════════════════════════════════════════════
     // TYPED ALLOCATORS WITH OBJECT HEADERS

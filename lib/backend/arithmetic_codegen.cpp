@@ -33,6 +33,13 @@
 namespace eshkol {
 
 // Helper: Get arena pointer from __global_arena global variable
+/**
+ * @brief Loads the current arena pointer from the `__global_arena` module global.
+ *
+ * @param ctx Codegen context providing the IR builder and module.
+ * @return The loaded `arena_t*` value, or nullptr if `__global_arena` has not
+ *         been declared in the module.
+ */
 static llvm::Value* getArenaPtr(CodegenContext& ctx) {
     llvm::GlobalVariable* arena_global = ctx.module().getNamedGlobal("__global_arena");
     if (!arena_global) return nullptr;
@@ -40,6 +47,12 @@ static llvm::Value* getArenaPtr(CodegenContext& ctx) {
 }
 
 // Helper: Get or declare eshkol_bignum_from_overflow(arena, a, b, op)
+/**
+ * @brief Gets or declares the `eshkol_bignum_from_overflow(arena, a, b, op)` runtime function.
+ *
+ * @param ctx Codegen context providing the module to declare into.
+ * @return The declared/found LLVM function, returning `eshkol_bignum_t*`.
+ */
 static llvm::Function* getBignumFromOverflowFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_bignum_from_overflow");
     if (!func) {
@@ -59,6 +72,22 @@ static llvm::Function* getBignumFromOverflowFunc(CodegenContext& ctx) {
 
 // Helper: Emit bignum promotion for integer overflow
 // Calls eshkol_bignum_from_overflow(arena, left, right, op) and packs as HEAP_PTR
+/**
+ * @brief Promotes an overflowed int64 add/sub/mul to an exact bignum result.
+ *
+ * Calls the `eshkol_bignum_from_overflow` runtime helper with the two int64
+ * operands and the op code (0=add, 1=sub, 2=mul), and packs the resulting
+ * `eshkol_bignum_t*` as a tagged HEAP_PTR value. If the arena pointer is not
+ * available, falls back to double-precision arithmetic (with precision loss)
+ * instead of bignum promotion.
+ *
+ * @param ctx Codegen context.
+ * @param tagged Tagged-value codegen helper used to pack the result.
+ * @param left_int Raw int64 left operand (already unpacked).
+ * @param right_int Raw int64 right operand (already unpacked).
+ * @param op_code Operation code: 0=add, 1=sub, 2=mul.
+ * @return Tagged value holding either the bignum (HEAP_PTR) or double result.
+ */
 static llvm::Value* emitBignumPromotion(CodegenContext& ctx, TaggedValueCodegen& tagged,
                                          llvm::Value* left_int, llvm::Value* right_int,
                                          int op_code) {
@@ -86,6 +115,15 @@ static llvm::Value* emitBignumPromotion(CodegenContext& ctx, TaggedValueCodegen&
     return tagged.packPtr(bignum_ptr, ESHKOL_VALUE_HEAP_PTR);
 }
 
+/**
+ * @brief Constructs the arithmetic codegen facade over its collaborating codegen modules.
+ *
+ * @param ctx Shared codegen context (IR builder, module, type helpers).
+ * @param tagged Tagged-value pack/unpack helper.
+ * @param tensor Vector/tensor codegen helper used for elementwise arithmetic.
+ * @param autodiff Forward- and reverse-mode automatic differentiation codegen helper.
+ * @param complex Complex-number codegen helper.
+ */
 ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
                                      TensorCodegen& tensor, AutodiffCodegen& autodiff,
                                      ComplexCodegen& complex)
@@ -99,6 +137,20 @@ ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
 
 // === Helper Functions ===
 
+/**
+ * @brief Coerces a tagged operand to a dual-number value for forward-mode AD arithmetic.
+ *
+ * If the operand is already a dual number, unpacks and returns it as-is.
+ * Otherwise converts the operand's primal value to double (handling the
+ * INT64/DOUBLE cases directly, and bignum HEAP_PTR operands via a lossy
+ * `eshkol_bignum_to_double` runtime call) and wraps it in a new dual number
+ * with a zero tangent.
+ *
+ * @param operand Tagged Scheme value to coerce.
+ * @param is_dual i1 predicate: true if `operand` is already a dual number.
+ * @param is_double i1 predicate: true if `operand`'s base type is DOUBLE.
+ * @return An `eshkol_dual_number_t` aggregate value (primal, tangent, ...).
+ */
 llvm::Value* ArithmeticCodegen::convertToDual(llvm::Value* operand, llvm::Value* is_dual,
                                                llvm::Value* is_double) {
     // Create blocks for branching
@@ -167,6 +219,21 @@ llvm::Value* ArithmeticCodegen::convertToDual(llvm::Value* operand, llvm::Value*
     return phi;
 }
 
+/**
+ * @brief Coerces a tagged operand to a reverse-mode AD node pointer.
+ *
+ * If the operand is already an AD node (CALLABLE with AD_NODE subtype),
+ * unpacks and returns its pointer. Otherwise extracts the operand's numeric
+ * value as a double (via extractAsDouble, which handles DOUBLE, INT64,
+ * bignum, and AD-node primal extraction) and creates a new constant AD node
+ * wrapping that value.
+ *
+ * @param operand Tagged Scheme value to coerce.
+ * @param is_ad i1 predicate: true if `operand` is already an AD node.
+ * @param base_type Base type tag of `operand` (unused in the current
+ *        implementation; kept for symmetry with sibling conversion helpers).
+ * @return Pointer to the resulting `eshkol_ad_node_t`.
+ */
 llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Value* is_ad,
                                                  llvm::Value* base_type) {
     // Create blocks for branching
@@ -201,6 +268,17 @@ llvm::Value* ArithmeticCodegen::convertToADNode(llvm::Value* operand, llvm::Valu
     return phi;
 }
 
+/**
+ * @brief Checks whether a tagged operand is a reverse-mode AD node.
+ *
+ * Safely tests for CALLABLE base type before checking the AD_NODE callable
+ * subtype, avoiding a dereference of non-pointer tagged values (DOUBLE,
+ * INT64, etc.) that would otherwise be misread as callable headers.
+ *
+ * @param operand Tagged Scheme value to test.
+ * @param base_type Base type tag of `operand`.
+ * @return i1: true if `operand` is CALLABLE with subtype CALLABLE_SUBTYPE_AD_NODE.
+ */
 llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base_type) {
     // Safely check if operand is an AD node (CALLABLE with CALLABLE_SUBTYPE_AD_NODE).
     // Uses branching to avoid dereferencing non-pointer values like DOUBLE/INT64.
@@ -236,6 +314,26 @@ llvm::Value* ArithmeticCodegen::isADNode(llvm::Value* operand, llvm::Value* base
 
 // === Central AD Dispatch Handlers ===
 
+/**
+ * @brief Central dispatch wrapper for binary arithmetic ops that may involve reverse-mode AD nodes.
+ *
+ * If either operand is CALLABLE with the AD_NODE subtype, both operands are
+ * coerced to AD nodes (via convertToADNode) and the operation is recorded on
+ * the reverse-mode tape as a new binary AD node (autodiff_.recordADNodeBinary).
+ * Otherwise, control falls through to the caller-supplied `regular_fn` lambda,
+ * which implements the full int/double/bignum/rational/complex/dual/tensor
+ * dispatch for the concrete operation. The two paths are merged with a PHI
+ * node so callers get a single tagged-value result regardless of path.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param ad_op_type AD node opcode to record (e.g. AD_NODE_ADD) when either
+ *        operand is an AD node.
+ * @param regular_fn Lambda implementing the non-AD numeric-tower dispatch;
+ *        invoked (and may itself create/merge basic blocks) when neither
+ *        operand is an AD node.
+ * @return Tagged value: the packed AD node, or `regular_fn`'s result.
+ */
 llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     llvm::Value* left, llvm::Value* right,
     int ad_op_type,
@@ -315,6 +413,20 @@ llvm::Value* ArithmeticCodegen::withADBinaryDispatch(
     return phi;
 }
 
+/**
+ * @brief Central dispatch wrapper for unary arithmetic ops that may involve reverse-mode AD nodes.
+ *
+ * Mirrors withADBinaryDispatch for a single operand: if the operand is a
+ * CALLABLE AD node, records a unary op on the reverse-mode tape
+ * (autodiff_.recordADNodeUnary); otherwise falls through to the
+ * caller-supplied `regular_fn` implementing the non-AD numeric dispatch.
+ *
+ * @param operand Tagged operand.
+ * @param ad_op_type AD node opcode to record (e.g. AD_NODE_NEG) when the
+ *        operand is an AD node.
+ * @param regular_fn Lambda implementing the non-AD dispatch.
+ * @return Tagged value: the packed AD node, or `regular_fn`'s result.
+ */
 llvm::Value* ArithmeticCodegen::withADUnaryDispatch(
     llvm::Value* operand,
     int ad_op_type,
@@ -368,6 +480,19 @@ llvm::Value* ArithmeticCodegen::withADUnaryDispatch(
 
 // === Complex Number Promotion Helper ===
 
+/**
+ * @brief Coerces a tagged operand to a complex-number struct value.
+ *
+ * If already complex, unpacks and returns the `{double, double}` struct.
+ * Otherwise promotes the real/int/bignum operand to `complex(value, 0.0)`,
+ * converting bignum HEAP_PTR operands via a lossy `eshkol_bignum_to_double`
+ * runtime call.
+ *
+ * @param operand Tagged Scheme value to coerce.
+ * @param is_complex i1 predicate: true if `operand` is already complex.
+ * @param base_type Base type tag of `operand`.
+ * @return Complex-number aggregate value `{re, im}`.
+ */
 llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Value* is_complex,
                                                    llvm::Value* base_type) {
     // If already complex, unpack and return the struct {double, double}.
@@ -441,6 +566,12 @@ llvm::Value* ArithmeticCodegen::convertToComplex(llvm::Value* operand, llvm::Val
 // === Bignum Runtime Dispatch ===
 
 // Declare eshkol_is_bignum_tagged(const tagged_value_t*) -> bool
+/**
+ * @brief Gets or declares `eshkol_is_bignum_tagged(const tagged_value_t*) -> bool`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function.
+ */
 static llvm::Function* getIsBignumTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_is_bignum_tagged");
     if (!func) {
@@ -453,6 +584,12 @@ static llvm::Function* getIsBignumTaggedFunc(CodegenContext& ctx) {
 }
 
 // Declare eshkol_bignum_binary_tagged(arena, left*, right*, op, result*)
+/**
+ * @brief Gets or declares `eshkol_bignum_binary_tagged(arena, left*, right*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getBignumBinaryTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_bignum_binary_tagged");
     if (!func) {
@@ -467,6 +604,12 @@ static llvm::Function* getBignumBinaryTaggedFunc(CodegenContext& ctx) {
 }
 
 // Declare eshkol_bignum_compare_tagged(left*, right*, op, result*)
+/**
+ * @brief Gets or declares `eshkol_bignum_compare_tagged(left*, right*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getBignumCompareTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_bignum_compare_tagged");
     if (!func) {
@@ -481,6 +624,17 @@ static llvm::Function* getBignumCompareTaggedFunc(CodegenContext& ctx) {
 
 // === Bignum Codegen Helpers ===
 
+/**
+ * @brief Emits a runtime check for whether either operand is a bignum.
+ *
+ * Stores both operands to entry-block allocas (to avoid re-allocating stack
+ * space on every loop iteration when codegen'd inside a hot loop, which would
+ * defeat tail-call optimization) and calls `eshkol_is_bignum_tagged` on each.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return i1: true if either operand is a bignum.
+ */
 llvm::Value* ArithmeticCodegen::emitIsBignumCheck(llvm::Value* left, llvm::Value* right) {
     // Alloca in entry block to avoid stack growth in loops (critical for TCO)
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
@@ -495,6 +649,18 @@ llvm::Value* ArithmeticCodegen::emitIsBignumCheck(llvm::Value* left, llvm::Value
     return ctx_.builder().CreateOr(l_is, r_is, "any_bn");
 }
 
+/**
+ * @brief Emits a call to the bignum binary-op runtime dispatcher and loads its result.
+ *
+ * Stores both operands (and a result slot) to entry-block allocas, then
+ * calls `eshkol_bignum_binary_tagged(arena, left*, right*, op, result*)` and
+ * loads the tagged result back out.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_code Bignum binary op code (0=add, 1=sub, 2=mul, 3=div, ...).
+ * @return Tagged value holding the bignum operation's result.
+ */
 llvm::Value* ArithmeticCodegen::emitBignumBinaryCall(llvm::Value* left, llvm::Value* right, int op_code) {
     // Alloca in entry block to avoid stack growth in loops (critical for TCO)
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
@@ -513,6 +679,14 @@ llvm::Value* ArithmeticCodegen::emitBignumBinaryCall(llvm::Value* left, llvm::Va
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "bn_result");
 }
 
+/**
+ * @brief Emits a call to the bignum comparison runtime dispatcher and loads its result.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_code Comparison op code (0=lt, 1=gt, 2=eq, 3=le, 4=ge).
+ * @return Tagged boolean result of the comparison.
+ */
 llvm::Value* ArithmeticCodegen::emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code) {
     // Alloca in entry block to avoid stack growth in loops (critical for TCO)
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
@@ -537,6 +711,15 @@ llvm::Value* ArithmeticCodegen::emitBignumCompareCall(llvm::Value* left, llvm::V
 // vector/tensor heap path (which would misread its storage).
 
 // int eshkol_is_taylor_tagged(const tagged_value_t*)
+/**
+ * @brief Gets or declares `eshkol_is_taylor_tagged(const tagged_value_t*) -> i32`.
+ *
+ * A Taylor tower is a HEAP_PTR with subtype HEAP_SUBTYPE_TAYLOR and must be
+ * intercepted before the generic vector/tensor heap path.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function.
+ */
 static llvm::Function* getIsTaylorTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_is_taylor_tagged");
     if (!func) {
@@ -549,6 +732,12 @@ static llvm::Function* getIsTaylorTaggedFunc(CodegenContext& ctx) {
 }
 
 // void eshkol_taylor_binary_tagged(arena, left*, right*, i32 op, result*)
+/**
+ * @brief Gets or declares `eshkol_taylor_binary_tagged(arena, left*, right*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getTaylorBinaryTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_taylor_binary_tagged");
     if (!func) {
@@ -563,6 +752,12 @@ static llvm::Function* getTaylorBinaryTaggedFunc(CodegenContext& ctx) {
 }
 
 // void eshkol_taylor_unary_tagged(arena, in*, i32 op, result*)
+/**
+ * @brief Gets or declares `eshkol_taylor_unary_tagged(arena, in*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_taylor_unary_tagged");
     if (!func) {
@@ -575,6 +770,13 @@ static llvm::Function* getTaylorUnaryTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+/**
+ * @brief Emits a runtime check for whether either operand is a Taylor tower.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return i1: true if either operand is a Taylor tower.
+ */
 llvm::Value* ArithmeticCodegen::emitIsTaylorCheck(llvm::Value* left, llvm::Value* right) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -589,6 +791,12 @@ llvm::Value* ArithmeticCodegen::emitIsTaylorCheck(llvm::Value* left, llvm::Value
     return ctx_.builder().CreateICmpNE(any, llvm::ConstantInt::get(ctx_.int32Type(), 0), "any_twr");
 }
 
+/**
+ * @brief Emits a runtime check for whether a single operand is a Taylor tower.
+ *
+ * @param v Tagged operand to test.
+ * @return i1: true if `v` is a Taylor tower.
+ */
 llvm::Value* ArithmeticCodegen::emitIsTaylorSingle(llvm::Value* v) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -598,6 +806,14 @@ llvm::Value* ArithmeticCodegen::emitIsTaylorSingle(llvm::Value* v) {
     return ctx_.builder().CreateICmpNE(is_t, llvm::ConstantInt::get(ctx_.int32Type(), 0), "is_twr1b");
 }
 
+/**
+ * @brief Emits a call to the Taylor-tower binary-op runtime dispatcher and loads its result.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_code Taylor binary op code (0=add, 1=sub, 2=mul, 3=div, 4=pow, ...).
+ * @return Tagged value holding the Taylor-tower operation's result.
+ */
 llvm::Value* ArithmeticCodegen::emitTaylorBinaryCall(llvm::Value* left, llvm::Value* right, int op_code) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -612,6 +828,13 @@ llvm::Value* ArithmeticCodegen::emitTaylorBinaryCall(llvm::Value* left, llvm::Va
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), res, "twr_binres");
 }
 
+/**
+ * @brief Emits a call to the Taylor-tower unary-op runtime dispatcher and loads its result.
+ *
+ * @param in Tagged operand.
+ * @param op_code Taylor unary op code.
+ * @return Tagged value holding the Taylor-tower operation's result.
+ */
 llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -627,6 +850,12 @@ llvm::Value* ArithmeticCodegen::emitTaylorUnaryCall(llvm::Value* in, int op_code
 // === Rational Codegen Helpers ===
 
 // Declare eshkol_is_rational_tagged_ptr(val*) -> i32
+/**
+ * @brief Gets or declares `eshkol_is_rational_tagged_ptr(val*) -> i32`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function.
+ */
 static llvm::Function* getIsRationalTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_is_rational_tagged_ptr");
     if (!func) {
@@ -640,6 +869,12 @@ static llvm::Function* getIsRationalTaggedFunc(CodegenContext& ctx) {
 }
 
 // Declare eshkol_rational_binary_tagged_ptr(arena, a*, b*, op, result*)
+/**
+ * @brief Gets or declares `eshkol_rational_binary_tagged_ptr(arena, a*, b*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getRationalBinaryTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_rational_binary_tagged_ptr");
     if (!func) {
@@ -654,6 +889,12 @@ static llvm::Function* getRationalBinaryTaggedFunc(CodegenContext& ctx) {
 }
 
 // Declare eshkol_rational_create(arena, num, denom) -> void*
+/**
+ * @brief Gets or declares `eshkol_rational_create(arena, num, denom) -> void*`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function, constructing a new rational.
+ */
 static llvm::Function* getRationalCreateFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_rational_create");
     if (!func) {
@@ -666,6 +907,13 @@ static llvm::Function* getRationalCreateFunc(CodegenContext& ctx) {
     return func;
 }
 
+/**
+ * @brief Emits a runtime check for whether either operand is a rational number.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return i1: true if either operand is a rational.
+ */
 llvm::Value* ArithmeticCodegen::emitIsRationalCheck(llvm::Value* left, llvm::Value* right) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -682,6 +930,12 @@ llvm::Value* ArithmeticCodegen::emitIsRationalCheck(llvm::Value* left, llvm::Val
 }
 
 // Declare eshkol_rational_compare_tagged_ptr(arena, a*, b*, op, result*)
+/**
+ * @brief Gets or declares `eshkol_rational_compare_tagged_ptr(arena, a*, b*, op, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
 static llvm::Function* getRationalCompareTaggedFunc(CodegenContext& ctx) {
     llvm::Function* func = ctx.module().getFunction("eshkol_rational_compare_tagged_ptr");
     if (!func) {
@@ -695,6 +949,14 @@ static llvm::Function* getRationalCompareTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+/**
+ * @brief Emits a call to the rational comparison runtime dispatcher and loads its result.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_code Comparison op code.
+ * @return Tagged boolean result of the comparison.
+ */
 llvm::Value* ArithmeticCodegen::emitRationalCompareCall(llvm::Value* left, llvm::Value* right, int op_code) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -712,6 +974,14 @@ llvm::Value* ArithmeticCodegen::emitRationalCompareCall(llvm::Value* left, llvm:
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "ratcmp_result");
 }
 
+/**
+ * @brief Emits a call to the rational binary-op runtime dispatcher and loads its result.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_code Rational binary op code (0=add, 1=sub, 2=mul, 3=div, ...).
+ * @return Tagged value holding the rational operation's result.
+ */
 llvm::Value* ArithmeticCodegen::emitRationalBinaryCall(llvm::Value* left, llvm::Value* right, int op_code) {
     llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
     llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
@@ -731,6 +1001,21 @@ llvm::Value* ArithmeticCodegen::emitRationalBinaryCall(llvm::Value* left, llvm::
 
 // === Polymorphic Addition ===
 
+/**
+ * @brief Polymorphic Scheme `+`: numeric-tower dispatch for addition.
+ *
+ * Dispatches (in priority order) through: reverse-mode AD node recording
+ * (via withADBinaryDispatch), Taylor-tower addition, bignum addition,
+ * rational addition, elementwise vector/tensor addition, forward-mode dual
+ * addition, complex addition, double addition, and finally int64 addition
+ * with `sadd.with.overflow` overflow detection that promotes to an exact
+ * bignum on overflow. Reverse-tape operands are first frozen to jets via
+ * `maybeJetLiftTapeOperand` when a forward-mode derivative is live (ESH-0093).
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return Tagged value holding the sum, in the most specific applicable type.
+ */
 llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in add (left=%p, right=%p)", (void*)left, (void*)right);
@@ -918,6 +1203,17 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
 // === Polymorphic Subtraction ===
 
+/**
+ * @brief Polymorphic Scheme `-`: numeric-tower dispatch for subtraction.
+ *
+ * Mirrors add() with the corresponding subtraction runtime/instruction at
+ * each numeric-tower stage (Taylor, bignum, rational, tensor, dual, complex,
+ * double, int64-with-overflow-promotion-to-bignum via `ssub.with.overflow`).
+ *
+ * @param left Left tagged operand (minuend).
+ * @param right Right tagged operand (subtrahend).
+ * @return Tagged value holding the difference.
+ */
 llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in sub (left=%p, right=%p)", (void*)left, (void*)right);
@@ -1105,6 +1401,17 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
 // === Polymorphic Multiplication ===
 
+/**
+ * @brief Polymorphic Scheme `*`: numeric-tower dispatch for multiplication.
+ *
+ * Mirrors add() with the corresponding multiplication runtime/instruction at
+ * each numeric-tower stage (Taylor, bignum, rational, tensor, dual, complex,
+ * double, int64-with-overflow-promotion-to-bignum via `smul.with.overflow`).
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return Tagged value holding the product.
+ */
 llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in mul (left=%p, right=%p)", (void*)left, (void*)right);
@@ -1292,6 +1599,21 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
 // === Polymorphic Division ===
 
+/**
+ * @brief Polymorphic Scheme `/`: numeric-tower dispatch for division.
+ *
+ * Mirrors add() through the Taylor/bignum/rational/tensor/dual/complex
+ * stages (complex division uses Smith's formula for overflow safety), then
+ * for doubles emits an IEEE-754 `fdiv` (division by zero yields +/-inf/NaN
+ * per R7RS, no exception). For int64 operands, raises a divide-by-zero
+ * exception on a zero divisor, guards the INT64_MIN/-1 UB case, and produces
+ * an exact int64 result when the division is even or an exact rational (via
+ * `eshkol_rational_create`) otherwise -- preserving R7RS exactness.
+ *
+ * @param left Left tagged operand (dividend).
+ * @param right Right tagged operand (divisor).
+ * @return Tagged value holding the quotient (int64, rational, or double).
+ */
 llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in div (left=%p, right=%p)", (void*)left, (void*)right);
@@ -1524,6 +1846,17 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
 // === Other Operations (mod, neg, abs, type coercion) ===
 
+/**
+ * @brief Polymorphic Scheme `modulo` operation.
+ *
+ * Dispatches to the bignum runtime (op code 4) when either operand is a
+ * bignum; otherwise unpacks int64 operands, raises a divide-by-zero
+ * exception on a zero divisor, and computes the result via LLVM's `srem`.
+ *
+ * @param left Tagged dividend.
+ * @param right Tagged divisor.
+ * @return Tagged int64 (or bignum) result.
+ */
 llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     // R7RS modulo: result has same sign as divisor
     llvm::Function* func = ctx_.builder().GetInsertBlock()->getParent();
@@ -1574,6 +1907,17 @@ llvm::Value* ArithmeticCodegen::mod(llvm::Value* left, llvm::Value* right) {
     return phi;
 }
 
+/**
+ * @brief Polymorphic Scheme unary negation.
+ *
+ * Dispatches through withADUnaryDispatch for reverse-mode AD nodes, then
+ * (freezing reverse-tape operands to jets per ESH-0093) handles bignum
+ * negation via the runtime dispatcher (op 7), complex negation, double
+ * negation (`fneg`), and int64 negation.
+ *
+ * @param operand Tagged operand to negate.
+ * @return Tagged value holding the negation.
+ */
 llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
     // ESH-0093: see add() — freeze reverse-tape operands to jets inside
     // forward-mode AD.
@@ -1648,6 +1992,20 @@ llvm::Value* ArithmeticCodegen::neg(llvm::Value* operand) {
     });
 }
 
+/**
+ * @brief Polymorphic Scheme `abs`.
+ *
+ * Dispatches through withADUnaryDispatch for AD nodes. For bignum operands,
+ * compares against zero via the runtime and negates if negative. For
+ * doubles, selects between the value and its negation based on sign. For
+ * int64 operands, handles the INT64_MIN edge case (whose negation overflows
+ * int64) by promoting to bignum and negating via `eshkol_bignum_from_int64`
+ * / `eshkol_bignum_neg`; all other int64 values are negated in place when
+ * negative.
+ *
+ * @param operand Tagged operand.
+ * @return Tagged value holding the absolute value.
+ */
 llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
     // ESH-0093: see add() — freeze reverse-tape operands to jets inside
     // forward-mode AD.
@@ -1768,18 +2126,47 @@ llvm::Value* ArithmeticCodegen::abs(llvm::Value* operand) {
     });
 }
 
+/**
+ * @brief Converts a tagged int64 value to a tagged double via `sitofp`.
+ *
+ * @param int_tagged Tagged value known to hold an int64.
+ * @return Tagged double value.
+ */
 llvm::Value* ArithmeticCodegen::intToDouble(llvm::Value* int_tagged) {
     llvm::Value* int_val = tagged_.unpackInt64(int_tagged);
     llvm::Value* dbl_val = ctx_.builder().CreateSIToFP(int_val, ctx_.doubleType(), "int_to_double");
     return tagged_.packDouble(dbl_val);
 }
 
+/**
+ * @brief Converts a tagged double value to a tagged int64 via `fptosi`.
+ *
+ * @param double_tagged Tagged value known to hold a double.
+ * @return Tagged int64 value.
+ */
 llvm::Value* ArithmeticCodegen::doubleToInt(llvm::Value* double_tagged) {
     llvm::Value* dbl_val = tagged_.unpackDouble(double_tagged);
     llvm::Value* int_val = ctx_.builder().CreateFPToSI(dbl_val, ctx_.int64Type(), "double_to_int");
     return tagged_.packInt64(int_val, true);
 }
 
+/**
+ * @brief Extracts the numeric value of any tagged operand as a raw LLVM double.
+ *
+ * Handles (in dispatch order): raw (untagged) double/int64 LLVM values passed
+ * through unchanged/converted; then, for tagged values, a multi-way dispatch
+ * on base type: CALLABLE AD nodes (loads the primal from field 1 of the AD
+ * node struct), DUAL_NUMBER (loads the primal from field 0, dropping the
+ * derivative), DOUBLE (direct unpack), HEAP_PTR (dispatches further on the
+ * heap subtype header: rational via `eshkol_rational_to_double`, Taylor
+ * tower via `eshkol_taylor_c0` (its primal coefficient), bignum via
+ * `eshkol_bignum_to_double`, or 0.0 for any other non-numeric heap object to
+ * avoid a crash), and INT64 (`sitofp`).
+ *
+ * @param tagged_val Tagged Scheme value (or raw double/int64 LLVM value).
+ * @return Raw double LLVM value representing the operand's numeric value, or
+ *         nullptr if `tagged_val` is null.
+ */
 llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
     if (!tagged_val) {
         eshkol_error("arithmetic: null operand in extractAsDouble");
@@ -1956,6 +2343,24 @@ llvm::Value* ArithmeticCodegen::extractAsDouble(llvm::Value* tagged_val) {
 // R7RS: Numeric comparison operators (= < > <= >=) only work on numbers.
 // Non-numeric operands should signal an error.
 
+/**
+ * @brief Polymorphic Scheme numeric comparison (`=`, `<`, `>`, `<=`, `>=`).
+ *
+ * Both operands must be numbers (ints, doubles, bignums, rationals, Taylor
+ * towers, dual numbers, AD-node CALLABLEs) or characters (accepted by
+ * codepoint for stdlib compatibility); otherwise raises a type error via
+ * emitOperandTypeError naming the offending non-numeric operand. Numeric
+ * operands are dispatched in priority order: bignum runtime comparison,
+ * rational runtime comparison (checked before double since rationals are
+ * HEAP_PTR), then double comparison (covers double/AD/dual/Taylor operands,
+ * all reduced to primal doubles via extractAsDouble) via LLVM `fcmp`, and
+ * finally int64 comparison via `icmp`.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param operation Comparison kind: one of "lt", "gt", "eq", "le", "ge".
+ * @return Tagged boolean result of the comparison.
+ */
 llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
                                          const std::string& operation) {
     if (!left || !right) {
@@ -2200,6 +2605,23 @@ llvm::Value* ArithmeticCodegen::compare(llvm::Value* left, llvm::Value* right,
 
 // === Power Function ===
 
+/**
+ * @brief Polymorphic Scheme `expt`/power operation.
+ *
+ * Dispatches through withADBinaryDispatch for reverse-mode AD nodes (after
+ * freezing reverse-tape operands to jets per ESH-0093), then intercepts
+ * Taylor-tower operands, then dual-number operands (via `autodiff_.dualPow`).
+ * When both the base and exponent are exact (int64 or bignum base, int64
+ * exponent), routes to `eshkol_bignum_pow_tagged`, which preserves R7RS
+ * exactness for both non-negative exponents (exact integer result) and
+ * negative exponents (exact rational result), falling back to an inexact
+ * double only on overflow. Otherwise computes a standard double `pow`.
+ *
+ * @param base Tagged base operand.
+ * @param exponent Tagged exponent operand.
+ * @return Tagged value holding the result (exact int/bignum/rational, or
+ *         inexact double).
+ */
 llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
     if (!base || !exponent) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
@@ -2327,6 +2749,22 @@ llvm::Value* ArithmeticCodegen::pow(llvm::Value* base, llvm::Value* exponent) {
 
 // === Min/Max Functions ===
 
+/**
+ * @brief Polymorphic Scheme `min`.
+ *
+ * Dispatches through withADBinaryDispatch for AD nodes. If either operand is
+ * a forward-mode dual number, converts both to duals and selects the one
+ * with the lesser primal (propagating derivatives, since a scalar leaking
+ * out would break downstream AD code expecting a dual struct). Otherwise
+ * uses an exact bignum comparison (op 0 = lt) when either operand is a
+ * bignum, else compares extracted doubles, and returns whichever original
+ * tagged operand (left or right) was selected -- the value itself is never
+ * recomputed, only picked.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return Whichever of `left`/`right` (or its dual-promoted form) is smaller.
+ */
 llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in min (left=%p, right=%p)", (void*)left, (void*)right);
@@ -2420,6 +2858,18 @@ llvm::Value* ArithmeticCodegen::min(llvm::Value* left, llvm::Value* right) {
     });
 }
 
+/**
+ * @brief Polymorphic Scheme `max`.
+ *
+ * Mirrors min() (see its documentation for rationale): dual-number
+ * propagation, exact bignum comparison (op 1 = gt) when applicable, else
+ * comparison of extracted doubles, selecting whichever tagged operand is
+ * larger.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return Whichever of `left`/`right` (or its dual-promoted form) is larger.
+ */
 llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
     if (!left || !right) {
         eshkol_error("arithmetic: null operand in max (left=%p, right=%p)", (void*)left, (void*)right);
@@ -2508,6 +2958,23 @@ llvm::Value* ArithmeticCodegen::max(llvm::Value* left, llvm::Value* right) {
 
 // === Remainder Function ===
 
+/**
+ * @brief Polymorphic Scheme `remainder` (truncated remainder, sign of dividend).
+ *
+ * If either operand is a forward-mode dual number, computes the primal via
+ * `frem` and propagates the dividend's tangent (truncated remainder is
+ * piecewise-linear with slope 1 in the dividend between discontinuities,
+ * matching modulo/fmod's derivative shape); the 2nd-order dual slots are
+ * zeroed. Otherwise dispatches to the bignum runtime (op 6) when either
+ * operand is a bignum, else computes `srem` for int64 operands (guarding the
+ * INT64_MIN/-1 undefined-behavior case by sanitizing the divisor to 1) or
+ * calls the C `remainder` function for doubles, and raises a divide-by-zero
+ * exception on a zero int64 divisor.
+ *
+ * @param dividend Tagged dividend.
+ * @param divisor Tagged divisor.
+ * @return Tagged remainder result (dual, bignum, int64, or double).
+ */
 llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* divisor) {
     if (!dividend || !divisor) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
@@ -2660,6 +3127,23 @@ llvm::Value* ArithmeticCodegen::remainder(llvm::Value* dividend, llvm::Value* di
 
 // === Quotient Function ===
 
+/**
+ * @brief Polymorphic Scheme `quotient` (truncated division).
+ *
+ * If either operand is a forward-mode dual number, computes the truncated
+ * primal quotient via `fdiv` + `trunc` with a zero tangent (truncation is
+ * piecewise-constant, so its derivative is zero almost everywhere).
+ * Otherwise dispatches to the bignum runtime (op 5) when either operand is a
+ * bignum, else computes `sdiv` for int64 operands (guarding the
+ * INT64_MIN/-1 undefined-behavior case and raising a divide-by-zero
+ * exception on a zero divisor) or, for doubles, divides and truncates then
+ * clamps the result to the representable int64 range before `fptosi` (to
+ * avoid undefined behavior on out-of-range conversion).
+ *
+ * @param dividend Tagged dividend.
+ * @param divisor Tagged divisor.
+ * @return Tagged int64 quotient (dual, bignum, or plain int64).
+ */
 llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* divisor) {
     if (!dividend || !divisor) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
@@ -2827,6 +3311,17 @@ llvm::Value* ArithmeticCodegen::quotient(llvm::Value* dividend, llvm::Value* div
 
 // === Unary Math Functions ===
 
+/**
+ * @brief Emits a call to a unary libm math function (e.g. sin, cos, sqrt, exp).
+ *
+ * Extracts the operand as a double (via extractAsDouble, so any numeric
+ * tagged type is accepted), declares the named external function on demand
+ * with signature `double(double)`, calls it, and packs the double result.
+ *
+ * @param operand Tagged operand.
+ * @param func_name Name of the libm function to call (e.g. "sin").
+ * @return Tagged double result of the math function.
+ */
 llvm::Value* ArithmeticCodegen::mathFunc(llvm::Value* operand, const std::string& func_name) {
     if (!operand) {
         return tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
@@ -2852,6 +3347,15 @@ llvm::Value* ArithmeticCodegen::mathFunc(llvm::Value* operand, const std::string
 
 // === Exception Helpers ===
 
+/**
+ * @brief Raises a non-recoverable "division by zero" Scheme exception.
+ *
+ * Constructs an exception object via `eshkol_make_exception_with_header`
+ * with type ESHKOL_EXCEPTION_DIVIDE_BY_ZERO and a fixed message, then raises
+ * it via `eshkol_raise`. Does not emit an `unreachable` terminator itself --
+ * callers are responsible for terminating the block (e.g. with
+ * CreateUnreachable) since `eshkol_raise` is marked `doesNotReturn`.
+ */
 void ArithmeticCodegen::raiseDivideByZeroException() {
     // Get or declare eshkol_make_exception_with_header
     llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
@@ -2890,6 +3394,15 @@ void ArithmeticCodegen::raiseDivideByZeroException() {
     ctx_.builder().CreateCall(raise_func, {exc});
 }
 
+/**
+ * @brief Raises a non-recoverable generic error exception and terminates the block.
+ *
+ * Constructs an exception object via `eshkol_make_exception_with_header`
+ * with type ESHKOL_EXCEPTION_ERROR and the given message, raises it via
+ * `eshkol_raise`, and emits an `unreachable` terminator.
+ *
+ * @param message Error message to embed in the exception (as a global string).
+ */
 void ArithmeticCodegen::emitOverflowError(const char* message) {
     llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
     if (!make_exc_func) {
@@ -2921,6 +3434,20 @@ void ArithmeticCodegen::emitOverflowError(const char* message) {
     ctx_.builder().CreateUnreachable();
 }
 
+/**
+ * @brief Guards that both HEAP_PTR operands of an arithmetic op are vectors or tensors.
+ *
+ * For each operand: if its base type is HEAP_PTR, its subtype must be VECTOR
+ * or TENSOR; anything else (string, cons, symbol, etc.) raises a type error
+ * via emitOperandTypeError naming the offending operand and the operator.
+ * This prevents downstream vector/tensor codegen from misinterpreting an
+ * arbitrary heap object's layout and segfaulting. Non-heap operands (int,
+ * double, etc.) always pass.
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @param op_name Operator name (e.g. "+") used in the error message.
+ */
 void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
                                                   llvm::Value* right,
                                                   const char* op_name) {
@@ -2970,6 +3497,22 @@ void ArithmeticCodegen::guardHeapOperandsNumeric(llvm::Value* left,
     ctx_.builder().SetInsertPoint(ok_blk);
 }
 
+/**
+ * @brief Raises a "Type error in <proc>: expected <type>, got <actual>" exception.
+ *
+ * Records the current source location (via emitSetErrorLocation) so the
+ * runtime formatter can prefix the message with "file:line:col:", then calls
+ * `eshkol_type_error_with_operand(proc_name, expected_type, &offending)`.
+ * The offending operand is stored to an alloca and passed by pointer,
+ * because a 16-byte tagged-value struct passed by value arrives zeroed
+ * across the LLVM-IR to C ABI boundary; a raw (non-tagged) LLVM value is
+ * first packed as an int64 tagged value.
+ *
+ * @param proc_name Name of the procedure/operator reporting the error.
+ * @param expected_type Human-readable description of the expected type.
+ * @param offending The operand whose type did not match; may be a tagged
+ *        value or a raw LLVM value (in which case it is packed as int64).
+ */
 void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
                                              const char* expected_type,
                                              llvm::Value* offending) {
@@ -3002,6 +3545,14 @@ void ArithmeticCodegen::emitOperandTypeError(const char* proc_name,
     b.CreateCall(fn, {proc, exp, slot});
 }
 
+/**
+ * @brief Propagates the current codegen source location to the runtime error reporter.
+ *
+ * Calls `eshkol_set_error_location(file, line, column)` with the codegen
+ * context's current source position, so a subsequently raised exception can
+ * be prefixed with "file:line:col:". No-op if no source line is currently
+ * known (line == 0), leaving any prior location in place.
+ */
 void ArithmeticCodegen::emitSetErrorLocation() {
     uint32_t line = ctx_.currentSourceLine();
     if (line == 0) {
@@ -3031,6 +3582,17 @@ void ArithmeticCodegen::emitSetErrorLocation() {
         llvm::ConstantInt::get(ctx_.int32Type(), column)});
 }
 
+/**
+ * @brief Raises a non-recoverable type-error exception with a source-location-prefixed message.
+ *
+ * Prefixes `message` with "file:line[:col]: " (baked in at codegen time from
+ * the context's current source position, when known), constructs an
+ * exception object via `eshkol_make_exception_with_header` with type
+ * ESHKOL_EXCEPTION_TYPE_ERROR, raises it via `eshkol_raise`, and emits an
+ * `unreachable` terminator.
+ *
+ * @param message Error message describing the type mismatch.
+ */
 void ArithmeticCodegen::emitTypeError(const char* message) {
     llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
     if (!make_exc_func) {

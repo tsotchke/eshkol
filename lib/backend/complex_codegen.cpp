@@ -29,6 +29,15 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct a ComplexCodegen bound to the shared codegen helpers.
+ *
+ * @param ctx Shared codegen context (IR builder, module, LLVM type accessors).
+ * @param tagged Tagged-value pack/unpack helper used to box complex numbers
+ *        as ESHKOL_VALUE_COMPLEX tagged values.
+ * @param mem Memory/arena allocation helper used for heap-allocating complex
+ *        number structs.
+ */
 ComplexCodegen::ComplexCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx), tagged_(tagged), mem_(mem) {}
 
@@ -36,6 +45,18 @@ ComplexCodegen::ComplexCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, 
 // COMPLEX NUMBER CREATION AND ACCESS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Build an in-register complex number struct from its components.
+ *
+ * Allocates a temporary `{double, double}` slot at the entry block of the
+ * current function (for consistent, optimizer-friendly codegen regardless of
+ * where this call happens), stores the real and imaginary components into
+ * it, then loads and returns the aggregate value.
+ *
+ * @param real Real part (LLVM double value).
+ * @param imag Imaginary part (LLVM double value).
+ * @return LLVM aggregate value of the complex-number struct type.
+ */
 llvm::Value* ComplexCodegen::createComplex(llvm::Value* real, llvm::Value* imag) {
     // Allocate complex struct on stack at function entry for optimal codegen
     llvm::IRBuilderBase::InsertPoint saved_ip = ctx_.builder().saveIP();
@@ -61,11 +82,13 @@ llvm::Value* ComplexCodegen::createComplex(llvm::Value* real, llvm::Value* imag)
     return ctx_.builder().CreateLoad(ctx_.complexNumberType(), complex_ptr, "complex");
 }
 
+/** @brief Extract the real component (field 0) from an in-register complex struct value. */
 llvm::Value* ComplexCodegen::getComplexReal(llvm::Value* complex) {
     // Extract real part from complex struct (field 0)
     return ctx_.builder().CreateExtractValue(complex, {TypeSystem::COMPLEX_REAL_IDX}, "real");
 }
 
+/** @brief Extract the imaginary component (field 1) from an in-register complex struct value. */
 llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
     // Extract imaginary part from complex struct (field 1)
     return ctx_.builder().CreateExtractValue(complex, {TypeSystem::COMPLEX_IMAG_IDX}, "imag");
@@ -75,6 +98,21 @@ llvm::Value* ComplexCodegen::getComplexImag(llvm::Value* complex) {
 // TAGGED VALUE CONVERSION
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Heap-allocate a complex number and pack it into a tagged value.
+ *
+ * Loads the global arena pointer (declaring it as an external global if not
+ * already present in the module), allocates 16 bytes from it, and emits a
+ * null-check on the allocation: on failure it prints an error and calls
+ * `exit(1)`; on success it stores the complex struct to the new heap slot
+ * and packs the resulting pointer as a tagged value with the
+ * ESHKOL_VALUE_COMPLEX type tag.
+ *
+ * @param complex In-register complex-number struct value (real, imag).
+ * @return Tagged value (eshkol_tagged_value_t-equivalent LLVM value) whose
+ *         payload is a pointer to the heap-allocated complex struct, tagged
+ *         as ESHKOL_VALUE_COMPLEX.
+ */
 llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     // Get global arena for heap allocation
     llvm::GlobalVariable* arena_global = ctx_.module().getNamedGlobal("__global_arena");
@@ -127,6 +165,13 @@ llvm::Value* ComplexCodegen::packComplexToTagged(llvm::Value* complex) {
     return tagged_.packPtr(complex_heap_ptr, ESHKOL_VALUE_COMPLEX);
 }
 
+/**
+ * @brief Unbox a tagged value back into an in-register complex-number struct.
+ *
+ * @param tagged_val Tagged value previously produced by packComplexToTagged(),
+ *        whose payload is a pointer to a heap-allocated complex struct.
+ * @return In-register complex-number struct value loaded from the pointer.
+ */
 llvm::Value* ComplexCodegen::unpackComplexFromTagged(llvm::Value* tagged_val) {
     // Extract pointer from tagged value
     llvm::Value* ptr = tagged_.unpackPtr(tagged_val);
@@ -139,6 +184,13 @@ llvm::Value* ComplexCodegen::unpackComplexFromTagged(llvm::Value* tagged_val) {
 // COMPLEX ARITHMETIC OPERATIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Emit IR for complex addition: (a+bi) + (c+di) = (a+c) + (b+d)i.
+ *
+ * @param z1 Left operand complex-number struct value.
+ * @param z2 Right operand complex-number struct value.
+ * @return Newly built complex-number struct value holding the sum.
+ */
 llvm::Value* ComplexCodegen::complexAdd(llvm::Value* z1, llvm::Value* z2) {
     // (a+bi) + (c+di) = (a+c) + (b+d)i
     llvm::Value* a = getComplexReal(z1);
@@ -152,6 +204,13 @@ llvm::Value* ComplexCodegen::complexAdd(llvm::Value* z1, llvm::Value* z2) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for complex subtraction: (a+bi) - (c+di) = (a-c) + (b-d)i.
+ *
+ * @param z1 Left operand (minuend) complex-number struct value.
+ * @param z2 Right operand (subtrahend) complex-number struct value.
+ * @return Newly built complex-number struct value holding the difference.
+ */
 llvm::Value* ComplexCodegen::complexSub(llvm::Value* z1, llvm::Value* z2) {
     // (a+bi) - (c+di) = (a-c) + (b-d)i
     llvm::Value* a = getComplexReal(z1);
@@ -165,6 +224,13 @@ llvm::Value* ComplexCodegen::complexSub(llvm::Value* z1, llvm::Value* z2) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i.
+ *
+ * @param z1 Left operand complex-number struct value.
+ * @param z2 Right operand complex-number struct value.
+ * @return Newly built complex-number struct value holding the product.
+ */
 llvm::Value* ComplexCodegen::complexMul(llvm::Value* z1, llvm::Value* z2) {
     // (a+bi)(c+di) = (ac-bd) + (ad+bc)i
     llvm::Value* a = getComplexReal(z1);
@@ -185,6 +251,20 @@ llvm::Value* ComplexCodegen::complexMul(llvm::Value* z1, llvm::Value* z2) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for complex division using Smith's overflow-safe formula.
+ *
+ * Branches at runtime on whether |d| <= |c| (comparing the imaginary and
+ * real parts of the divisor): the smaller-magnitude component is scaled by
+ * the ratio of the other, avoiding intermediate overflow that the naive
+ * `(ac+bd)/(c²+d²)` formula can suffer for large operands. Both branches
+ * converge in a merge block via PHI nodes for the resulting real/imaginary
+ * parts.
+ *
+ * @param z1 Dividend complex-number struct value (a+bi).
+ * @param z2 Divisor complex-number struct value (c+di).
+ * @return Newly built complex-number struct value holding the quotient.
+ */
 llvm::Value* ComplexCodegen::complexDiv(llvm::Value* z1, llvm::Value* z2) {
     // Smith's formula: overflow-safe complex division
     // If |d| <= |c|: r = d/c, denom = c + d*r
@@ -251,6 +331,12 @@ llvm::Value* ComplexCodegen::complexDiv(llvm::Value* z1, llvm::Value* z2) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for complex negation: -(a+bi) = -a - bi.
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding the negation.
+ */
 llvm::Value* ComplexCodegen::complexNeg(llvm::Value* z) {
     // -(a+bi) = -a - bi
     llvm::Value* a = getComplexReal(z);
@@ -262,6 +348,12 @@ llvm::Value* ComplexCodegen::complexNeg(llvm::Value* z) {
     return createComplex(neg_a, neg_b);
 }
 
+/**
+ * @brief Emit IR for complex conjugation: conj(a+bi) = a - bi.
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding the conjugate.
+ */
 llvm::Value* ComplexCodegen::complexConj(llvm::Value* z) {
     // conj(a+bi) = a - bi
     llvm::Value* a = getComplexReal(z);
@@ -276,6 +368,16 @@ llvm::Value* ComplexCodegen::complexConj(llvm::Value* z) {
 // COMPLEX MATHEMATICAL FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Emit IR for the overflow-safe magnitude |a+bi| = sqrt(a² + b²).
+ *
+ * Uses the scaled form `max(|a|,|b|) * sqrt((a/max)² + (b/max)²)` to avoid
+ * overflow when a or b are near DBL_MAX, with a select guarding the case
+ * where both components are zero (to avoid a 0/0 division).
+ *
+ * @param z Operand complex-number struct value.
+ * @return Double value: the magnitude of z.
+ */
 llvm::Value* ComplexCodegen::complexMagnitude(llvm::Value* z) {
     // Overflow-safe magnitude: max(|a|,|b|) * sqrt((a/max)² + (b/max)²)
     // Prevents overflow when a or b are near DBL_MAX (~1e308)
@@ -309,6 +411,12 @@ llvm::Value* ComplexCodegen::complexMagnitude(llvm::Value* z) {
         llvm::ConstantFP::get(ctx_.doubleType(), 0.0), scaled_mag, "magnitude");
 }
 
+/**
+ * @brief Emit IR for the complex argument/angle: arg(a+bi) = atan2(b, a).
+ *
+ * @param z Operand complex-number struct value.
+ * @return Double value: the angle of z in radians.
+ */
 llvm::Value* ComplexCodegen::complexAngle(llvm::Value* z) {
     // arg(a+bi) = atan2(b, a)
     llvm::Value* a = getComplexReal(z);
@@ -318,6 +426,12 @@ llvm::Value* ComplexCodegen::complexAngle(llvm::Value* z) {
     return ctx_.builder().CreateCall(atan2_fn, {b, a}, "angle");
 }
 
+/**
+ * @brief Emit IR for the complex exponential: exp(a+bi) = exp(a)(cos(b) + i*sin(b)).
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding exp(z).
+ */
 llvm::Value* ComplexCodegen::complexExp(llvm::Value* z) {
     // exp(a+bi) = exp(a)(cos(b) + i*sin(b))
     llvm::Value* a = getComplexReal(z);
@@ -337,6 +451,12 @@ llvm::Value* ComplexCodegen::complexExp(llvm::Value* z) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for the complex natural logarithm: log(z) = log|z| + i*arg(z).
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding log(z).
+ */
 llvm::Value* ComplexCodegen::complexLog(llvm::Value* z) {
     // log(z) = log|z| + i*arg(z)
     llvm::Value* mag = complexMagnitude(z);
@@ -348,6 +468,13 @@ llvm::Value* ComplexCodegen::complexLog(llvm::Value* z) {
     return createComplex(real, ang);
 }
 
+/**
+ * @brief Emit IR for the principal complex square root, via polar form:
+ * sqrt(z) = sqrt(|z|) * (cos(arg(z)/2) + i*sin(arg(z)/2)).
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding sqrt(z).
+ */
 llvm::Value* ComplexCodegen::complexSqrt(llvm::Value* z) {
     // sqrt(z) = sqrt(|z|) * (cos(arg(z)/2) + i*sin(arg(z)/2))
     llvm::Value* mag = complexMagnitude(z);
@@ -370,6 +497,15 @@ llvm::Value* ComplexCodegen::complexSqrt(llvm::Value* z) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for the complex sine: sin(a+bi) = sin(a)cosh(b) + i*cos(a)sinh(b).
+ *
+ * cosh(b) and sinh(b) are computed from exp(b) and exp(-b) since LLVM has no
+ * direct hyperbolic-trig intrinsics.
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding sin(z).
+ */
 llvm::Value* ComplexCodegen::complexSin(llvm::Value* z) {
     // sin(a+bi) = sin(a)cosh(b) + i*cos(a)sinh(b)
     // Using: cosh(x) = (exp(x) + exp(-x))/2, sinh(x) = (exp(x) - exp(-x))/2
@@ -402,6 +538,15 @@ llvm::Value* ComplexCodegen::complexSin(llvm::Value* z) {
     return createComplex(real, imag);
 }
 
+/**
+ * @brief Emit IR for the complex cosine: cos(a+bi) = cos(a)cosh(b) - i*sin(a)sinh(b).
+ *
+ * cosh(b) and sinh(b) are computed from exp(b) and exp(-b) since LLVM has no
+ * direct hyperbolic-trig intrinsics.
+ *
+ * @param z Operand complex-number struct value.
+ * @return Newly built complex-number struct value holding cos(z).
+ */
 llvm::Value* ComplexCodegen::complexCos(llvm::Value* z) {
     // cos(a+bi) = cos(a)cosh(b) - i*sin(a)sinh(b)
     llvm::Value* a = getComplexReal(z);
@@ -436,6 +581,14 @@ llvm::Value* ComplexCodegen::complexCos(llvm::Value* z) {
 // POLAR FORM CONVERSION
 // ═══════════════════════════════════════════════════════════════════════════
 
+/**
+ * @brief Emit IR to build a complex number from polar form:
+ * r * e^(i*theta) = r*cos(theta) + i*r*sin(theta).
+ *
+ * @param magnitude Radius r (double value).
+ * @param angle Angle theta in radians (double value).
+ * @return Newly built complex-number struct value.
+ */
 llvm::Value* ComplexCodegen::makeFromPolar(llvm::Value* magnitude, llvm::Value* angle) {
     // r * e^(i*theta) = r*cos(theta) + i*r*sin(theta)
     llvm::Function* sin_fn = getSinIntrinsic();
@@ -454,31 +607,44 @@ llvm::Value* ComplexCodegen::makeFromPolar(llvm::Value* magnitude, llvm::Value* 
 // INTRINSIC HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** @brief Get (or declare) the LLVM `sqrt` double-precision intrinsic for the current module. */
 llvm::Function* ComplexCodegen::getSqrtIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sqrt, {ctx_.doubleType()});
 }
 
+/** @brief Get (or declare) the LLVM `sin` double-precision intrinsic for the current module. */
 llvm::Function* ComplexCodegen::getSinIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::sin, {ctx_.doubleType()});
 }
 
+/** @brief Get (or declare) the LLVM `cos` double-precision intrinsic for the current module. */
 llvm::Function* ComplexCodegen::getCosIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::cos, {ctx_.doubleType()});
 }
 
+/** @brief Get (or declare) the LLVM `exp` double-precision intrinsic for the current module. */
 llvm::Function* ComplexCodegen::getExpIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::exp, {ctx_.doubleType()});
 }
 
+/** @brief Get (or declare) the LLVM `log` double-precision intrinsic for the current module. */
 llvm::Function* ComplexCodegen::getLogIntrinsic() {
     return ESHKOL_GET_INTRINSIC(&ctx_.module(),
         llvm::Intrinsic::log, {ctx_.doubleType()});
 }
 
+/**
+ * @brief Get (or declare) the C library `atan2(double, double)` function.
+ *
+ * atan2 has no direct LLVM intrinsic, so this declares (or reuses) an
+ * external function reference to the libc `atan2` symbol.
+ *
+ * @return LLVM function value for `double atan2(double, double)`.
+ */
 llvm::Function* ComplexCodegen::getAtan2Intrinsic() {
     // atan2 is not an LLVM intrinsic, we need to call the C library function
     llvm::FunctionType* atan2_type = llvm::FunctionType::get(

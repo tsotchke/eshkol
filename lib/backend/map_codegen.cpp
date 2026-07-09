@@ -19,6 +19,18 @@ using namespace llvm;
 
 namespace eshkol {
 
+/**
+ * @brief Test whether a value is a named-let / TCO loop-variable alloca.
+ *
+ * Returns true when @p v is an AllocaInst whose name ends in the "_tco"
+ * suffix used for named-let / tail-call-optimized loop variables. codegenLambda
+ * captures such allocas BY VALUE (its is_let_alloca gate excludes the "_tco"
+ * suffix), so map's capture setup must load the value rather than pack the
+ * alloca address — see bug-RR.
+ *
+ * @param v Candidate LLVM value (may be null or a non-alloca).
+ * @return true if @p v is an alloca whose name ends in "_tco", false otherwise.
+ */
 // True if `v` is a named-let / TCO loop-variable alloca (named "<name>_tco").
 // codegenLambda captures such allocas BY VALUE (its is_let_alloca gate excludes
 // the "_tco" suffix), so map's capture setup must load the value rather than
@@ -30,9 +42,25 @@ static bool isTcoLoopAlloca(Value* v) {
     return name.size() >= 4 && name.compare(name.size() - 4, 4, "_tco") == 0;
 }
 
+/**
+ * @brief Construct a MapCodegen bound to the shared codegen context and tagged-value helper.
+ *
+ * @param ctx Shared LLVM codegen context (IR builder, module, common types).
+ * @param tagged Tagged-value pack/unpack helper (packNull, packHeapPtr, packInt64, etc.).
+ */
 MapCodegen::MapCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged)
     : ctx_(ctx), tagged_(tagged) {}
 
+/**
+ * @brief Fetch the runtime function used to read a cons cell's car/cdr pointer.
+ *
+ * Delegates to the host-supplied get_cons_get_ptr_callback_ (set via
+ * setGetConsGetPtrCallback), since MapCodegen does not own cons-cell layout
+ * knowledge directly.
+ *
+ * @return The LLVM Function for the cons "get pointer" accessor, or nullptr
+ *         if no callback has been registered.
+ */
 Function* MapCodegen::getConsGetPtrFunc() {
     if (get_cons_get_ptr_callback_) {
         return get_cons_get_ptr_callback_(callback_context_);
@@ -40,6 +68,15 @@ Function* MapCodegen::getConsGetPtrFunc() {
     return nullptr;
 }
 
+/**
+ * @brief Fetch the runtime function used to write a cons cell's car/cdr pointer.
+ *
+ * Delegates to the host-supplied get_cons_set_ptr_callback_ (set via
+ * setGetConsSetPtrCallback).
+ *
+ * @return The LLVM Function for the cons "set pointer" accessor, or nullptr
+ *         if no callback has been registered.
+ */
 Function* MapCodegen::getConsSetPtrFunc() {
     if (get_cons_set_ptr_callback_) {
         return get_cons_set_ptr_callback_(callback_context_);
@@ -47,6 +84,34 @@ Function* MapCodegen::getConsSetPtrFunc() {
     return nullptr;
 }
 
+/**
+ * @brief Top-level codegen entry point for `(map proc list1 list2 ...)`.
+ *
+ * Resolves the procedure operand to a callable form and dispatches to the
+ * appropriate lowering strategy, in priority order:
+ *  1. If the procedure variable is statically known (via global_symbol_table_
+ *     and nested_function_captures_) to hold a closure with captures, load
+ *     the closure value and delegate to mapWithClosure().
+ *  2. Otherwise try resolve_lambda_callback_ to obtain a direct llvm::Function*
+ *     for the procedure (builtin/known-arity fast path).
+ *  3. If that fails and the procedure operand is itself a function parameter,
+ *     a nested call expression, or an arbitrary variable, evaluate it as an
+ *     AST expression and treat the result as a runtime closure via
+ *     mapWithClosure().
+ *  4. If a concrete llvm::Function* was resolved: for exactly one list
+ *     argument, evaluate it and call mapSingleList(); for two or more list
+ *     arguments, evaluate each and call mapMultiList().
+ *
+ * Function-context push/pop callbacks (push_function_context_ /
+ * pop_function_context_), when set, bracket the whole call to isolate
+ * codegen state for nested map invocations.
+ *
+ * @param op The `map` call's AST operation node; variables[0] is the
+ *           procedure operand and variables[1..] are the list operands.
+ * @return Tagged-value result list (a proper Scheme list), or nullptr on
+ *         codegen failure (e.g. too few arguments, unresolved procedure,
+ *         missing required callback).
+ */
 Value* MapCodegen::map(const eshkol_operations_t* op) {
     if (op->call_op.num_vars < 2) {
         eshkol_warn("map requires at least 2 arguments: procedure and list");
@@ -245,6 +310,34 @@ Value* MapCodegen::map(const eshkol_operations_t* op) {
     return result;
 }
 
+/**
+ * @brief Generate a single-list map loop that applies a runtime closure to each element.
+ *
+ * Used when the mapped procedure is not a statically-resolvable
+ * llvm::Function* but a runtime closure value (tagged CLOSURE_PTR) — e.g. a
+ * function parameter, the result of `(compose f g)`, or a variable bound to
+ * a closure produced at runtime by another call.
+ *
+ * Emits a manual linked-list walk: three int64 allocas track the growing
+ * result list's head/tail cons-cell addresses and the current input cons
+ * cell, with loop_condition/loop_body/loop_exit basic blocks. Each iteration
+ * extracts car via extract_car_callback_, invokes the closure via
+ * closure_call_callback_, allocates a new cons cell for the mapped value via
+ * create_cons_callback_, and appends it to the result list by either setting
+ * the head (first element) or patching the previous tail's cdr slot in place
+ * (raw GEP at byte offset 16, past the 16-byte tagged_value car) with a
+ * HEAP_PTR-tagged value. The input cursor advances by loading the cdr's
+ * tagged_value and unpacking its pointer payload.
+ *
+ * On empty input, result_head stays 0; the exit block selects packNull()
+ * instead of packHeapPtr(IntToPtr(0)) to avoid producing a "zombie null"
+ * tagged value (see Bug R note in mapSingleList/mapMultiList).
+ *
+ * @param closure_val Tagged closure value (CLOSURE_PTR) to invoke per element.
+ * @param list Input list, either a tagged_value or a raw int64 cons-cell pointer.
+ * @return Tagged-value result list, or nullptr/packNull() on missing
+ *         arguments, unexpected list type, or a missing required callback.
+ */
 Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
     if (!closure_val || !list) return nullptr;
 
@@ -379,6 +472,44 @@ Value* MapCodegen::mapWithClosure(Value* closure_val, Value* list) {
     return ctx_.builder().CreateSelect(is_empty, null_val, list_val);
 }
 
+/**
+ * @brief Append captured-variable arguments to a mapped lambda's call-argument list.
+ *
+ * Lambdas passed to map/for-each/filter may close over outer variables;
+ * those captures are compiled as extra trailing parameters on proc_func
+ * (named "captured_<var>"), and this function resolves each one to an
+ * llvm::Value and pushes it onto @p args in parameter order, so the
+ * generated call site supplies the full argument list.
+ *
+ * For each capture parameter beyond @p first_capture_idx, the storage is
+ * looked up by the key "<lambda_name>_capture_<var>" (first in
+ * global_symbol_table_, then symbol_table_), falling back to a plain
+ * lookup of the bare variable name in symbol_table_ if the keyed lookup
+ * misses. Once storage is found, one of several capture ABIs is applied:
+ *  - TCO loop-variable allocas (name suffix "_tco", per isTcoLoopAlloca):
+ *    loaded and copied into a fresh entry-block alloca, since codegenLambda
+ *    captures these by value rather than by address (bug-RR).
+ *  - AllocaInst / GlobalVariable / other non-Argument pointer storage:
+ *    the storage address is pointer-to-int'd, packed as a boxed tagged
+ *    int64, and stored into a fresh entry-block alloca whose address is
+ *    passed — giving the callee a pointer it can dereference for
+ *    mutable/by-reference capture semantics.
+ *  - Non-pointer llvm::Argument storage: copied into a fresh temp alloca
+ *    so it can be passed uniformly by address.
+ *  - Anything else: passed through unchanged.
+ * If no storage can be found at all, a null pointer constant is pushed and
+ * a warning is logged (capture silently becomes unavailable to the callee).
+ *
+ * @param proc_func The lambda/procedure function whose trailing parameters
+ *                  (beyond the mapped element(s)) are captured variables.
+ * @param func_name The lambda's LLVM symbol name, used to derive the
+ *                  "<lambda>_capture_<var>" lookup key.
+ * @param first_capture_idx Index of the first capture parameter in
+ *                  proc_func's parameter list (i.e. how many leading
+ *                  parameters are the mapped element(s)/indirect-call slot).
+ * @param args [in,out] Call-argument vector being assembled; captured
+ *                  values are appended in parameter order.
+ */
 void MapCodegen::loadCapturedValues(
     Function* proc_func,
     const std::string& func_name,
@@ -539,6 +670,37 @@ void MapCodegen::loadCapturedValues(
     }
 }
 
+/**
+ * @brief Generate a single-list `(map proc list)` loop for a statically-resolved procedure.
+ *
+ * Walks the input cons-cell chain with a manual loop (loop_condition/
+ * loop_body/loop_exit basic blocks) using int64 allocas for the growing
+ * result list's head/tail pointers and the current input cursor. Per
+ * iteration: extracts car via extract_car_callback_, builds the call
+ * argument list (prefixing the indirect-call function argument if
+ * func_name starts with "indirect_call_", then the car, then any captured
+ * variables via loadCapturedValues()), and calls proc_func directly —
+ * unless func_name carries a REPL hot-reload `__rv<N>` version suffix, in
+ * which case the call is redirected through a `__repl_fwd_<name>` global
+ * function-pointer slot so the loop always invokes the latest redefinition
+ * (per R7RS 4.1.4 free-reference semantics in the REPL).
+ *
+ * The call's result is boxed into a new cons cell via create_cons_callback_
+ * and appended to the result list — either as the new head, or by patching
+ * the previous tail's cdr through cons_set_ptr — while the input cursor
+ * advances by calling cons_get_ptr for the cdr.
+ *
+ * On empty input the result_head alloca is still 0; the exit block selects
+ * packNull() instead of packHeapPtr(IntToPtr(0)) (Bug R, 2026-04-23) so the
+ * returned tagged value's type tag doesn't disagree with its NULL data,
+ * which would otherwise crash downstream type predicates on a NULL-8 read.
+ *
+ * @param proc_func The resolved procedure to apply to each element.
+ * @param list Input list, either a tagged_value or a raw int64 cons-cell pointer.
+ * @return Tagged-value result list, or nullptr/packNull() on missing
+ *         arguments, unexpected list type, or a missing required callback
+ *         (cons_get_ptr/cons_set_ptr/create_cons_callback_/extract_car_callback_).
+ */
 Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
     if (!proc_func || !list) return nullptr;
 
@@ -725,6 +887,37 @@ Value* MapCodegen::mapSingleList(Function* proc_func, Value* list) {
     return ctx_.builder().CreateSelect(is_empty, null_val, list_val);
 }
 
+/**
+ * @brief Generate a multi-list `(map proc list1 list2 ...)` loop for a statically-resolved procedure.
+ *
+ * Like mapSingleList() but walks N input lists in lockstep: one int64
+ * current-pointer alloca per list, and a loop condition that AND-reduces
+ * "not null" across all of them so iteration stops as soon as the shortest
+ * input list is exhausted (R7RS map semantics for unequal-length lists).
+ *
+ * Per iteration: extracts car from every list via extract_car_callback_ (in
+ * list order) to build the base call arguments, appends any captured
+ * variables via loadCapturedValues() (using lists.size() as the first
+ * capture index, since that many leading parameters are the mapped
+ * elements), and calls proc_func directly — unless func_name carries a
+ * REPL hot-reload `__rv<N>` suffix, in which case the call is redirected
+ * through a `__repl_fwd_<name>` global function-pointer slot (see
+ * mapSingleList for the rationale). The call result is boxed into a new
+ * cons cell via create_cons_callback_ and appended to the result list
+ * (new head, or patched onto the previous tail via cons_set_ptr), and every
+ * list's current pointer is then advanced via cons_get_ptr.
+ *
+ * On empty/exhausted input the result_head alloca is still 0; the exit
+ * block selects packNull() instead of packHeapPtr(IntToPtr(0)) — the same
+ * zombie-null fix as mapSingleList (Bug R, 2026-04-23).
+ *
+ * @param proc_func The resolved procedure to apply across corresponding elements.
+ * @param lists Input lists (each a tagged_value or raw int64 cons-cell
+ *              pointer); iteration length is the shortest list's length.
+ * @return Tagged-value result list, or nullptr/packNull() on missing
+ *         arguments, unexpected list type, or a missing required callback
+ *         (cons_get_ptr/cons_set_ptr/create_cons_callback_/extract_car_callback_).
+ */
 Value* MapCodegen::mapMultiList(Function* proc_func, const std::vector<Value*>& lists) {
     if (!proc_func || lists.empty()) return nullptr;
 

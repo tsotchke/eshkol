@@ -17,6 +17,14 @@ using namespace llvm;
 
 namespace eshkol {
 
+/**
+ * @brief Construct a HomoiconicCodegen with references to shared codegen helpers.
+ *
+ * @param ctx Shared codegen context (LLVM context/module/builder, common types).
+ * @param tagged Codegen helper for packing/unpacking tagged Scheme values.
+ * @param collection Codegen helper for allocating cons cells/lists.
+ * @param string_io Codegen helper for creating heap string objects.
+ */
 HomoiconicCodegen::HomoiconicCodegen(CodegenContext& ctx,
                                       TaggedValueCodegen& tagged,
                                       CollectionCodegen& collection,
@@ -25,20 +33,49 @@ HomoiconicCodegen::HomoiconicCodegen(CodegenContext& ctx,
 
 // === Helper Methods ===
 
+/** @brief Return a tagged value representing the empty list/null. */
 Value* HomoiconicCodegen::packNull() {
     return tagged_.packNull();
 }
 
+/**
+ * @brief Pack a raw pointer as a tagged value of a given Scheme value type.
+ *
+ * @param ptr Raw LLVM pointer value to wrap.
+ * @param type Tagged-value type tag to assign to the pointer.
+ * @return Tagged value wrapping @p ptr as @p type.
+ */
 Value* HomoiconicCodegen::packPtr(Value* ptr, eshkol_value_type_t type) {
     return tagged_.packPtr(ptr, type);
 }
 
+/**
+ * @brief Allocate a cons cell from two already-tagged values.
+ *
+ * @param car Tagged value to store as the cons cell's car.
+ * @param cdr Tagged value to store as the cons cell's cdr.
+ * @return LLVM value for the newly allocated cons cell.
+ */
 Value* HomoiconicCodegen::consFromTagged(Value* car, Value* cdr) {
     return collection_.allocConsCell(car, cdr);
 }
 
 // === Quote Operations ===
 
+/**
+ * @brief Translate an AST node into its quoted (code-as-data) tagged value.
+ *
+ * Implements the leaf cases of `quote`: integers, doubles, and booleans are
+ * packed directly as tagged values; variables, string literals, and
+ * characters are converted to heap-allocated strings (symbols are
+ * represented as strings, e.g. #\space is emitted as the string "#\\space");
+ * operation nodes are delegated to quoteOperation(); ESHKOL_NULL and
+ * zero-valued ESHKOL_UINT64 nodes become the empty list. Any other/
+ * unrecognized node type also yields null.
+ *
+ * @param ast AST node to quote; nullptr is treated as the empty list.
+ * @return Tagged value representing the quoted form of @p ast.
+ */
 Value* HomoiconicCodegen::quoteAST(const eshkol_ast_t* ast) {
     if (!ast) return packNull();
 
@@ -108,6 +145,20 @@ Value* HomoiconicCodegen::quoteAST(const eshkol_ast_t* ast) {
     }
 }
 
+/**
+ * @brief Translate an operation AST node into its quoted S-expression form.
+ *
+ * Handles ESHKOL_CALL_OP (via quoteList()), ESHKOL_LAMBDA_OP (via
+ * lambdaToSExpr()), ESHKOL_IF_OP, ESHKOL_AND_OP/ESHKOL_OR_OP/
+ * ESHKOL_SEQUENCE_OP (via quoteNaryOp()), ESHKOL_COND_OP, the let family
+ * (let, let-star, letrec, letrec-star), and ESHKOL_DEFINE_OP (both variable- and
+ * function-defining forms), reconstructing each as a properly-tagged list
+ * of symbols and quoted sub-expressions. Unhandled operation kinds quote to
+ * null.
+ *
+ * @param op Operation node to quote.
+ * @return Tagged value representing the quoted S-expression for @p op.
+ */
 Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
     if (!op) return packNull();
 
@@ -368,6 +419,18 @@ Value* HomoiconicCodegen::quoteOperation(const eshkol_operations_t* op) {
     }
 }
 
+/**
+ * @brief Build a quoted `(op_name arg1 arg2 ...)` list from an argument array.
+ *
+ * Used to quote variadic forms such as `and`, `or`, and `begin`. Conses the
+ * arguments (each quoted via quoteAST()) from right to left, then prepends
+ * the operator symbol.
+ *
+ * @param op_name Textual name of the operator symbol to prepend (e.g. "and").
+ * @param args Array of argument AST nodes.
+ * @param num_args Number of entries in @p args.
+ * @return Tagged value for the resulting quoted list.
+ */
 Value* HomoiconicCodegen::quoteNaryOp(const char* op_name,
                                        const eshkol_ast_t* args,
                                        uint64_t num_args) {
@@ -390,6 +453,18 @@ Value* HomoiconicCodegen::quoteNaryOp(const char* op_name,
         ESHKOL_VALUE_HEAP_PTR);
 }
 
+/**
+ * @brief Build the quoted list representation of a call expression.
+ *
+ * Conses the (quoted) call arguments from right to left, then prepends the
+ * operator symbol — unless the call is to "list" (used internally to
+ * represent already-quoted data), in which case the operator is omitted and
+ * only the argument list is returned.
+ *
+ * @param op Operation node; must have op->op == ESHKOL_CALL_OP.
+ * @return Raw i64 pointer to the resulting cons chain (0 for the empty
+ *         list or a non-call/null input), not a tagged value.
+ */
 Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
     if (!op || op->op != ESHKOL_CALL_OP) {
         return ConstantInt::get(ctx_.int64Type(), 0);
@@ -454,6 +529,17 @@ Value* HomoiconicCodegen::quoteList(const eshkol_operations_t* op) {
 
 // === Lambda S-Expression ===
 
+/**
+ * @brief Build a quoted list of parameter-name symbols for a lambda/define.
+ *
+ * Skips any parameter entries that are not ESHKOL_VAR nodes with a
+ * non-null id.
+ *
+ * @param params Array of parameter AST nodes.
+ * @param num_params Number of entries in @p params.
+ * @return Raw i64 pointer to the resulting cons chain (0 for an empty
+ *         list), not a tagged value.
+ */
 Value* HomoiconicCodegen::buildParameterList(const eshkol_ast_t* params,
                                               uint64_t num_params) {
     if (num_params == 0) {
@@ -487,6 +573,18 @@ Value* HomoiconicCodegen::buildParameterList(const eshkol_ast_t* params,
     return result;
 }
 
+/**
+ * @brief Build the quoted `(lambda (params...) body)` S-expression for a lambda or function definition.
+ *
+ * Accepts either an ESHKOL_LAMBDA_OP node or an ESHKOL_DEFINE_OP node whose
+ * is_function flag is set, extracting the parameter list and body from the
+ * appropriate union member in each case.
+ *
+ * @param op Lambda or function-defining operation node.
+ * @return Raw pointer to the resulting cons chain representing
+ *         `(lambda (params) body)`, or 0 on error (null or non-lambda/
+ *         non-function @p op).
+ */
 Value* HomoiconicCodegen::lambdaToSExpr(const eshkol_operations_t* op) {
     if (!op) {
         eshkol_error("lambdaToSExpr: null operation");
@@ -564,6 +662,13 @@ Value* HomoiconicCodegen::lambdaToSExpr(const eshkol_operations_t* op) {
     return result;
 }
 
+/**
+ * @brief Build the quoted `(primitive name)` S-expression identifying a builtin operator.
+ *
+ * @param name Name of the builtin/primitive operator.
+ * @return Raw i64 pointer to the resulting cons chain (not a tagged value),
+ *         suitable for use as a sexpr_ptr field.
+ */
 Value* HomoiconicCodegen::builtinToSExpr(const std::string& name) {
     // Create S-expression: (primitive name)
     // This allows builtin operators to display their identity

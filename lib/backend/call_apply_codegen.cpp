@@ -23,6 +23,13 @@ using namespace llvm;
 
 namespace eshkol {
 
+/**
+ * @brief Construct a CallApplyCodegen bound to the shared codegen context.
+ *
+ * @param ctx Shared LLVM codegen context (module, builder, type helpers).
+ * @param tagged Tagged-value packing/unpacking helper used throughout apply/call codegen.
+ * @param arith Arithmetic codegen helper used by applyReduction() for add/sub/mul/div/min/max folds.
+ */
 CallApplyCodegen::CallApplyCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged,
                                    ArithmeticCodegen& arith)
     : ctx_(ctx)
@@ -33,6 +40,16 @@ CallApplyCodegen::CallApplyCodegen(CodegenContext& ctx, TaggedValueCodegen& tagg
 
 // === Internal Helpers ===
 
+/**
+ * @brief Extract the car of a cons cell as a tagged value, via the injected callback.
+ *
+ * Delegates to extract_cons_car_callback_, which the owning codegen wires up
+ * to its cons-cell accessor logic.
+ *
+ * @param cons_ptr LLVM pointer value to a cons cell.
+ * @return Tagged value of the cons cell's car, or a tagged null if the
+ *         callback has not been set.
+ */
 Value* CallApplyCodegen::extractConsCarAsTaggedValue(Value* cons_ptr) {
     if (!extract_cons_car_callback_) {
         eshkol_error("extractConsCarAsTaggedValue callback not set");
@@ -41,6 +58,16 @@ Value* CallApplyCodegen::extractConsCarAsTaggedValue(Value* cons_ptr) {
     return extract_cons_car_callback_(cons_ptr, callback_context_);
 }
 
+/**
+ * @brief Fetch the runtime helper function for reading a cons cell's car/cdr by pointer.
+ *
+ * Delegates to get_cons_accessor_callback_. The returned function has
+ * signature roughly `(ptr cons, i1 is_cdr) -> i64`, used throughout this
+ * file to walk list arguments during apply/list extraction loops.
+ *
+ * @return The LLVM Function* for the cons accessor, or nullptr if the
+ *         callback has not been set.
+ */
 Function* CallApplyCodegen::getTaggedConsGetPtrFunc() {
     if (!get_cons_accessor_callback_) {
         eshkol_error("getTaggedConsGetPtrFunc callback not set");
@@ -51,6 +78,41 @@ Function* CallApplyCodegen::getTaggedConsGetPtrFunc() {
 
 // === Apply Operations ===
 
+/**
+ * @brief Generate code for `(apply proc arg1 ... argN final-list)`.
+ *
+ * Implements R7RS `apply` semantics: the last operand is a list, and any
+ * intermediate operands (arg1..argN) are prepended onto it (in reverse, via
+ * create_cons_callback_) to build the single effective argument list that
+ * every downstream path operates on. The target procedure is then dispatched
+ * in priority order:
+ *  1. Variadic-reduction builtins (`+ - * /`, `min`, `max`) via applyReduction().
+ *  2. `list` (returns the argument list itself) and `cons` via applyCons().
+ *  3. Tensor/vector-creation builtins (`rand`, `zeros`, `reshape`, etc.) by
+ *     extracting up to MAX_APPLY_ARGS elements from the list into a stack
+ *     array (via a generated extraction loop) and calling
+ *     apply_builtin_callback_ with the materialized args + count.
+ *  4. A named module Function (direct user function) via applyUserFunction().
+ *  5. A `<name>_func` symbol-table alias for a capture-free function via applyUserFunction().
+ *  6. A closure or captured-procedure variable: non-Function values are
+ *     re-evaluated through codegen_ast_callback_ (so captures/allocas/globals
+ *     resolve uniformly) and called via applyClosure(); Function* values with
+ *     captures are loaded from their GlobalVariable/AllocaInst storage first.
+ *  7. A cross-file/forward `function_table_` entry (e.g. `(load ...)` in REPL).
+ *  8. A first-class wrapper for inline comparison/predicate builtins (`=`,
+ *     `<`, `eq?`, etc.) via get_builtin_predicate_callback_.
+ *  9. A REPL forward-reference indirect call via apply_forward_ref_callback_.
+ *
+ * If the first argument is a literal lambda or any other expression that
+ * evaluates to a function/closure, it is codegen'd and dispatched through
+ * applyClosure().
+ *
+ * @param op `apply` call operation AST node (variables[0] = procedure,
+ *           variables[1..] = leading args + final list).
+ * @return Tagged result of the call, or a tagged null / nullptr on error
+ *         (too few arguments, unresolvable procedure, or a required
+ *         callback not being set).
+ */
 Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     if (op->call_op.num_vars < 2) {
         eshkol_warn("apply requires at least 2 arguments: function and argument list");
@@ -373,6 +435,20 @@ Value* CallApplyCodegen::apply(const eshkol_operations_t* op) {
     return tagged_.packNull();
 }
 
+/**
+ * @brief Generate code for `(apply cons list_int)`: build a pair from the first two list elements.
+ *
+ * Emits a small CFG that: returns a tagged null if @p list_int is the empty
+ * list; otherwise extracts the first element and its tail, returns a tagged
+ * null if the tail is also empty; otherwise extracts the second element and
+ * builds a new cons cell (via create_cons_callback_) from the first two
+ * elements, packing the resulting heap pointer as a tagged value. All three
+ * outcomes are merged through a PHI node.
+ *
+ * @param list_int Raw (untagged) i64 pointer to the head cons cell of the argument list.
+ * @return Tagged cons-cell value (or tagged null on a too-short list),
+ *         produced via a PHINode merging the error/success paths.
+ */
 Value* CallApplyCodegen::applyCons(Value* list_int) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -442,6 +518,24 @@ Value* CallApplyCodegen::applyCons(Value* list_int) {
     return phi;
 }
 
+/**
+ * @brief Generate code for `(apply <op> list_int)` where `<op>` is a variadic fold (+, -, *, /, min, max).
+ *
+ * Emits a runtime loop over the argument list rather than unrolling per
+ * arity: if the list is empty, returns the identity element for `+`/`-`
+ * (tagged 0) or `*`/`/`  (tagged 1) — `min`/`max` have no identity, so an
+ * empty list emits a type-error call via arith_.emitTypeError() (which is
+ * itself unreachable-terminated). Otherwise the first element seeds an
+ * accumulator alloca, and a generated loop walks the remaining cons cells,
+ * folding each element into the accumulator via the corresponding
+ * ArithmeticCodegen binary op (arith_.add/sub/mul/div/min/max, which handle
+ * int/double/bignum promotion). The final accumulator (or the identity, for
+ * the empty-list case) is returned through a PHI node.
+ *
+ * @param op Operator name: one of "+", "-", "*", "/", "min", "max".
+ * @param list_int Raw (untagged) i64 pointer to the head cons cell of the argument list.
+ * @return Tagged fold result, merged via PHINode across the empty/non-empty paths.
+ */
 Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -542,6 +636,31 @@ Value* CallApplyCodegen::applyReduction(const std::string& op, Value* list_int) 
     return result;
 }
 
+/**
+ * @brief Generate code for `(apply f list_int)` where `f` is a known, direct (non-closure) LLVM function.
+ *
+ * Special-cases builtin-arithmetic wrapper functions (named
+ * `builtin_+_2arg`-style, created when e.g. `(define my-add +)` aliases a
+ * builtin) by redirecting to applyArithmetic() so all list elements are
+ * folded rather than just the fixed 2-arg signature. Otherwise looks up
+ * @p func's variadic info in variadic_function_info_ (trying both the
+ * mangled REPL name and, if that misses, the name with any `__rv<N>`
+ * hot-reload suffix stripped) to determine the fixed parameter count and
+ * whether a rest-arg parameter is expected.
+ *
+ * Extracts exactly `fixed_params` (or `func->arg_size()` if non-variadic)
+ * elements from the list via a generated per-argument extraction loop,
+ * defaulting to a tagged null for any position past the end of a
+ * shorter-than-expected list (merged via PHI nodes for both the arg value
+ * and the list cursor). For variadic functions, the remaining (unconsumed)
+ * list tail is packed as a HEAP_PTR tagged value and appended as the final
+ * "rest" argument. Emits the direct call with the assembled argument list.
+ *
+ * @param func LLVM function to call.
+ * @param list_int Raw (untagged) i64 pointer to the head cons cell of the argument list.
+ * @return The call's tagged result, or a tagged null if the cons accessor
+ *         callback is unavailable.
+ */
 Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     std::string func_name = func->getName().str();
 
@@ -654,6 +773,43 @@ Value* CallApplyCodegen::applyUserFunction(Function* func, Value* list_int) {
     return ctx_.builder().CreateCall(func, args);
 }
 
+/**
+ * @brief Generate code for `(apply proc list_int)` where `proc` is a tagged closure/function value
+ *        whose arity is not known at compile time.
+ *
+ * First extracts up to MAX_APPLY_ARGS elements from @p list_int into an
+ * entry-block array via a generated extraction loop, counting them as it
+ * goes. Then branches on the tagged type of @p func_value:
+ *  - CALLABLE (closure) path: unpacks the closure pointer, loads its
+ *    function pointer and environment pointer. If get_builtin_arithmetic_callback_
+ *    is available, first checks whether the wrapped function pointer is one
+ *    of the builtin `+ - * /` implementations and, if so, redirects to
+ *    applyArithmetic() (so variadic arithmetic wrapped in a closure still
+ *    folds all list elements correctly) instead of falling through to the
+ *    fixed-arity dispatch below. Otherwise loads the capture count (clamped
+ *    to MAX_APPLY_CAPTURES) and computes a dispatch index encoding both
+ *    (extracted arg count, capture count); a generated switch with one case
+ *    per (arg_count, capture_count) pair builds the call's argument list
+ *    (tagged args from the array, followed by *pointers* to each capture
+ *    slot — matching the closure calling convention where capture
+ *    parameters are passed by pointer) and calls the function pointer with
+ *    a synthesized FunctionType for that exact signature.
+ *  - Direct path (function pointer without a captured environment):
+ *    similarly checks for wrapped builtin arithmetic first, then dispatches
+ *    via a switch solely on argument count, calling with just the tagged
+ *    argument values (no capture pointers).
+ *
+ * All paths (arithmetic shortcuts, per-arity closure cases, per-arity
+ * direct cases, and the two switches' default cases returning tagged null)
+ * are merged through a single PHI node.
+ *
+ * @param func_value Tagged closure or direct-function value to call.
+ * @param list_int Raw (untagged) i64 pointer to the head cons cell of the argument list.
+ * @return The call's tagged result, merged via PHINode across every
+ *         dispatch path; a tagged null if the cons accessor callback is
+ *         unavailable or the arity/capture combination falls outside the
+ *         supported dispatch table.
+ */
 Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     Function* cons_get_ptr = getTaggedConsGetPtrFunc();
@@ -1016,6 +1172,27 @@ Value* CallApplyCodegen::applyClosure(Value* func_value, Value* list_int) {
     return result_phi;
 }
 
+/**
+ * @brief Call a tagged closure value with a fixed, pre-evaluated argument list.
+ *
+ * Simplified counterpart to applyClosure() for call sites where the
+ * argument count is already known at compile time (not extracted from a
+ * runtime list). Unpacks the closure pointer, loads the function pointer
+ * (offset 0) and capture count (offset 8), then branches at runtime on
+ * whether there are captures:
+ *  - No captures: calls the function pointer directly with @p args, using a
+ *    synthesized FunctionType matching `args.size()` tagged_value parameters.
+ *  - Has captures: loads only the first capture slot (offset 16) and
+ *    prepends it to @p args, then calls with that extended argument list.
+ *    This only correctly handles the 1-capture case; closures with more
+ *    than one capture would need a fuller dispatch (as applyClosure() does)
+ *    but this path does not implement one.
+ *
+ * @param closure Tagged closure value to call.
+ * @param args Pre-evaluated tagged argument values (not including captures).
+ * @return The call's tagged result merged via PHINode across the
+ *         no-captures/has-captures paths, or a tagged null if @p closure is null.
+ */
 Value* CallApplyCodegen::closureCall(Value* closure, const std::vector<Value*>& args) {
     // Direct closure call: extract function pointer, load captures, call with captures + args.
     // This mirrors the closure call convention in codegenClosureCall but uses
