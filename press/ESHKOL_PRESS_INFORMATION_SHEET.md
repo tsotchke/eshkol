@@ -1,7 +1,9 @@
-# Eshkol v1.2.1-scale — Press Information Sheet
+# Eshkol v1.3.1 — Press Information Sheet
 
-For trade-press and academic readers preparing coverage of the v1.2 release line
-and the SDNC paper artefact it carries.
+For trade-press and academic readers preparing coverage of the v1.3 release
+line — arbitrary-order automatic differentiation, full R7RS conformance,
+and resident/daemon-workload robustness — and the SDNC paper artefact it
+carries.
 
 ---
 
@@ -10,9 +12,9 @@ and the SDNC paper artefact it carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.2.1-scale (Noesis-M0 closeout) |
-| Base release | 1 May 2026 |
-| Closeout | 20 May 2026 |
+| Version | v1.3.1 |
+| Builds on | v1.3.0-evolve (7 July 2026) |
+| Release date | 8 July 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -31,6 +33,14 @@ specification rather than fit by gradient descent. The reproducibility
 artefact, including the weight tensor, traces, and a three-way agreement
 report, ships in the same repository as the compiler that hosts it, and
 regenerates in one command on a developer laptop.
+
+The host language has moved in this release line too: v1.3.0-evolve gave
+Eshkol's automatic differentiation a second axis, arbitrary order, with
+exact bignum/rational derivatives and full R7RS conformance on a portable
+differential corpus; v1.3.1 adds the robustness — flat memory in long-running
+loops, a reader that doesn't overflow the stack on large persisted state —
+that makes an Eshkol program safe to run unattended as a daemon, plus a
+comprehensive documentation pass across the public embedding API.
 
 ---
 
@@ -67,17 +77,23 @@ companion repository is `noesis`. The artefact directory is
 ### Identity
 
 Eshkol is an R7RS-compatible Scheme dialect. The implementation passes
-roughly 232 of 244 R7RS-small procedures, includes hygienic `syntax-rules`
-macros, first-class single-shot continuations (`call/cc`, `dynamic-wind`,
-`guard`/`raise`, `delay`/`force`), bytevectors, records via
+roughly 232 of 244 R7RS-small procedures (~95%), includes hygienic
+`syntax-rules` macros, first-class single-shot continuations (`call/cc`,
+`dynamic-wind`, `guard`/`raise`, `delay`/`force`), bytevectors, records via
 `define-record-type`, and `eval` with all three R7RS environment
-constructors (*docs/breakdown/OVERVIEW.md §Eshkol vs. Scheme*).
+constructors (*docs/breakdown/OVERVIEW.md §Eshkol vs. Scheme*). A separate,
+newer measure — a reference-Scheme differential oracle that diffs Eshkol
+against chibi-scheme 0.12.0 on a 34-program portable corpus — reports
+34 of 34 AGREE (100%), up from 27/34 at the start of the v1.3.0-evolve cycle.
 
 The parser handles ninety-four operation types over an S-expression syntax
 with line/column tracking and an R7RS-compliant internal-defines transform
 to `letrec*`. The macro expander supports ellipsis patterns, nested
-patterns, and hygienic renaming. See *lib/frontend/parser.cpp* (8,354 lines)
-and *lib/frontend/macro_expander.cpp* (861 lines).
+patterns, and hygienic renaming. As of v1.3.1, the S-expression reader
+(`read_list`) is iterative rather than per-element recursive, so reading
+back a very large persisted list no longer risks a native-stack overflow.
+See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
+*lib/core/runtime_reader_hosted.cpp*.
 
 ### Implementation
 
@@ -85,7 +101,9 @@ and *lib/frontend/macro_expander.cpp* (861 lines).
 |:---|---:|:---|
 | Main LLVM codegen | 33,962 | *lib/backend/llvm_codegen.cpp* |
 | Total LLVM backend (main + ~30 modules) | ≈85,500 | *lib/backend/* |
-| Autodiff codegen | 9,205 | *lib/backend/autodiff_codegen.cpp* |
+| Autodiff codegen (order ≤ 2) | 9,205 | *lib/backend/autodiff_codegen.cpp* |
+| Taylor-tower runtime (arbitrary order) | ≈1,460 | *lib/core/runtime_taylor.c*, *lib/core/taylor_recurrences.def* |
+| Taylor-tower stdlib modules (GUW, tensor towers, models, checkpointing, numerics, sparse) | ≈2,270 | *lib/core/ad/{guw,tensor_tower,taylor_models,checkpoint,taylor_numerics,sparse_guw,interval}.esk* |
 | Backward-mode kernels | 1,321 | *lib/backend/tensor_backward.cpp* |
 | String / I/O / JSON / CSV | 3,293 | *lib/backend/string_io_codegen.cpp* |
 | Work-stealing parallel codegen | 2,601 | *lib/backend/parallel_llvm_codegen.cpp* |
@@ -95,6 +113,7 @@ and *lib/frontend/macro_expander.cpp* (861 lines).
 | Macro expander | 861 | *lib/frontend/macro_expander.cpp* |
 | Type checker | 1,999 | *lib/types/type_checker.cpp* |
 | Arena memory | 6,186 | *lib/core/arena_memory.cpp* |
+| S-expression reader (iterative as of v1.3.1) | 555 | *lib/core/runtime_reader_hosted.cpp* |
 | Logic engine | 805 | *lib/core/logic.cpp* |
 | Active-inference engine | 912 | *lib/core/inference.cpp* |
 | Global workspace | 308 | *lib/core/workspace.cpp* |
@@ -102,9 +121,11 @@ and *lib/frontend/macro_expander.cpp* (861 lines).
 | Bytecode VM + runtime libs | ≈41,000 | *lib/backend/eshkol_vm.c* and runtime |
 
 Total compiler infrastructure is approximately 232,000 lines of C17 and C++20
-across more than 130 files. The standard library, written in pure Eshkol,
-adds roughly 4,400 lines across thirty-five auto-loaded modules (the broader stdlib tree under `lib/`, including opt-in modules like `core.merkle` / `core.threads` / `core.testing`, totals ~10,200 lines across 57 modules)
-(*docs/DESIGN.md §Implementation Scale*).
+across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1
+adds roughly 12,600 lines of Doxygen-format documentation across 116 files —
+50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
+previously-undocumented implementation files under `lib/` (≈7,478 lines) —
+comments only, no behaviour change.
 
 ### Target backend
 
@@ -119,9 +140,8 @@ Targets currently supported:
 - WebAssembly, via `eshkol-run --wasm` (self-contained module, does not fall
   through to a native link step)
 
-The release pipeline produces sixteen build artefacts per tag (six Windows,
-six Linux, four macOS) across lite, XLA, and CUDA variants
-(*RELEASE_NOTES.md §v1.2.1-scale*).
+CI is green across all 14 lanes, including windows-arm64 (lite, XLA, and
+CUDA variants) (*README.md §Platform*).
 
 ### Positioning
 
@@ -136,10 +156,14 @@ The language occupies a region not covered by the established alternatives.
 - **Compared with AD-first systems** (Julia + Zygote, Python + JAX or PyTorch):
   Eshkol's AD is integrated into the compiler at the IR level rather than
   obtained through tracing, source-to-source rewriting, or operator
-  overloading. The host runtime has no garbage collector; allocation is
-  bounded by the arena reset boundary, which makes Eshkol viable in
-  contexts (real-time control loops, embedded inference) where Python or
-  Julia's GC pauses are disqualifying.
+  overloading, and — since v1.3.0-evolve — computes exact derivatives at any
+  order via Taylor towers, which JAX's `jax.experimental.jet` approaches only
+  numerically. The host runtime has no garbage collector; allocation is
+  bounded by the arena reset boundary, and as of v1.3.1 self-tail-recursive
+  loops reclaim their arena scope automatically per iteration, which makes
+  Eshkol viable in contexts (real-time control loops, embedded inference,
+  long-running daemons) where Python or Julia's GC pauses, or unbounded
+  process RSS growth, are disqualifying.
 
 Each comparison is grounded in *docs/breakdown/OVERVIEW.md §Comparison with
 other languages*; the document explicitly enumerates where Eshkol gives less
@@ -158,13 +182,12 @@ consists of:
 - An 8-byte object header prepended to every heap object
   `{subtype:u8, flags:u8, ref_count:u16, size:u32}`. The header is at
   offset −8 from the data pointer returned by allocators.
-- Nineteen heap-subtype slots assigned through v1.2 (slot 14 is
-  reserved for the v1.3 `RULE`) and five callable subtypes as of
-  v1.2.1, which enables consolidating eight historical pointer types
-  into two supertypes (`HEAP_PTR`, `CALLABLE`) and freeing tag space
-  for the v1.1 neuro-symbolic types (substitution, fact, knowledge
-  base, factor graph, workspace, promise, continuation) plus the v1.2
-  exact-numeric types (bignum, rational).
+- Twenty-four heap-subtype slots assigned through v1.3.1 (slot 14 remains
+  reserved for a future `RULE` backward-chaining type; slot 23 is
+  `HEAP_SUBTYPE_TAYLOR`, added in v1.3.0-evolve for the arbitrary-order
+  Taylor-tower AD engine) and five callable subtypes, consolidating eight
+  historical pointer types into two supertypes (`HEAP_PTR`, `CALLABLE`).
+  See *inc/eshkol/eshkol.h §heap subtypes*.
 - 16-byte tagged values laid out `{type:u8, flags:u8, reserved:u16,
   padding:u32, data:u64}`. When the compiler can prove the type at
   compile time it emits untagged LLVM IR, eliminating the tagging
@@ -176,6 +199,15 @@ consists of:
 - Per-thread arenas (1 MB, lazily allocated through `thread_local`) for
   parallel workers; the global arena is used only to construct result
   lists after parallel tasks have completed (*docs/breakdown/PARALLEL_COMPUTING.md §2.1*).
+- **Per-iteration arena-scope reclamation for self-tail-recursive loops**
+  (new coverage in v1.3.1). A conservative static escape analysis
+  (`namedLetIterScopeSafe`) proves a loop body's arena allocations don't
+  escape across the tail-call back-edge; when it does, the loop's arena
+  scope is reclaimed every iteration with zero source annotation. v1.3.0-evolve
+  covered named-let loops; v1.3.1 extends the same analysis to self-tail-recursive
+  `define` loops and accepts a catch-all guard clause in the loop body. Verified
+  on a 1,000,000-iteration loop: RSS goes from 1,369 MB (unbounded growth) to
+  224 MB (flat). See *lib/backend/llvm_codegen.cpp*.
 - Optional linear types via `(owned ...)`, `(borrow value body)`, and
   `(shared ...)`; the third activates reference counting against the
   header's 16-bit `ref_count` field (*README.md §Memory architecture*).
@@ -203,17 +235,19 @@ byte on each tagged value.
   division.
 
 R7RS semantics hold for mixed arithmetic: exact + exact = exact, exact + inexact
-= inexact. The thirty-five-gap bignum audit closed in v1.1 covers `number->string`,
-`string->number`, complex/rational/bignum conversions in autodiff, and
-exact comparison through `=`, `<`, `<=`. See *docs/DESIGN.md §Exact arithmetic* and
+= inexact. As of v1.3.0-evolve, exactness propagates through arbitrary-order
+differentiation as well: `derivative-n`/`taylor` return exact bignum/rational
+coefficients when the seed point is exact and the function only uses
+exact-preserving operators, demoting to `double` on overflow or at the first
+transcendental call. See *docs/DESIGN.md §Exact arithmetic* and
 *lib/backend/arithmetic_codegen.cpp*.
 
 ---
 
 ## Automatic differentiation
 
-Three modes, all integrated into the compiler and exposed as language
-primitives rather than library calls.
+Two orthogonal axes: **mode** (symbolic, forward, reverse) and, since
+v1.3.0-evolve, **order** (arbitrary, via Taylor towers).
 
 **Symbolic mode.** AST rewriting at compile time using twelve differentiation
 rules. Zero runtime overhead when the function is syntactically known.
@@ -232,7 +266,41 @@ gradient, and meta-learning constructions. See
 *lib/backend/autodiff_codegen.cpp* (9,205 lines) and
 *lib/backend/tensor_backward.cpp* (1,321 lines).
 
-Eight vector-calculus operators are language primitives:
+**Arbitrary-order mode (Taylor towers, new in v1.3.0-evolve).** A closed-recurrence
+engine (`lib/core/taylor_recurrences.def`, `lib/core/runtime_taylor.c`)
+computes every derivative up to an arbitrary order `k` in one pass: `k+1`
+coefficients and O(k²) work, versus the 2^k blow-up of nested dual numbers.
+Delivered across thirteen gated phases, P0 through P12 (see
+*docs/design/AD_TAYLOR_TOWER.md* and *docs/AD_CAMPAIGN.md*):
+
+- `(taylor f x k)` / `(derivative-n f x k)` — the coefficient series or the
+  scalar `k`-th derivative, for any `k`.
+- Exact bignum/rational coefficients when the seed point is exact and the
+  function uses only exact-preserving arithmetic (verified with 68
+  exact-coefficient checks); automatic demotion to `double` on overflow or
+  the first transcendental call.
+- `taylor-model` / `tm-range` / `tm-eval` — a Taylor polynomial paired with
+  a rigorous interval-remainder bound, for a provable range/value enclosure.
+- `mixed-partial` / `gradient-n` — arbitrary-order mixed partials via a
+  Griewank-Utke-Walther (GUW) directional-propagation layer.
+- `sparse-hessian` / `sparse-mixed-partials` — sparse high-order recovery
+  via greedy star-coloring graph recovery.
+- `checkpointed-gradient` — a Griewank/binomial √N checkpoint schedule for
+  high-order reverse-mode AD, holding at most one block's tape live at a
+  time (measured peak-node ratio ≈1.8 at N=200 vs. ≈4.0 dense).
+- `taylor-ode-solve`, `taylor-root`, `taylor-inverse-series` — numerical
+  methods built directly on the tower (fixed-step order-`k` IVP solving,
+  Householder-family root refinement, Lagrange-inversion series reversion).
+- Towers are tensor-valued (`core.ad.tensor_tower`) and compose with
+  `matmul`/`conv2d`/activations; they work correctly through
+  `if`/`cond`/named-let/recursion and `map`/`fold`.
+- Perturbation confusion is handled structurally: every differentiation
+  context carries its own epoch tag in the tower's header.
+- Zero heap allocation on the common path: when the order `k` is a
+  compile-time literal, the whole tower unrolls into stack-allocated,
+  branch-free SSA IR.
+
+Eight vector-calculus operators (order ≤ 2) are language primitives:
 
 ```
 derivative              (lambda (x) ...) -> R -> R
@@ -253,7 +321,13 @@ arguments (*docs/breakdown/OVERVIEW.md §Automatic differentiation*).
 A note on costs as currently measured: forward mode incurs roughly a 2–3×
 slowdown, reverse mode 3–5× with O(n) memory, symbolic mode zero runtime
 overhead because the rewrite is at compile time (*README.md §Autodiff
-overhead*).
+overhead*). The Taylor-tower engine is O(k²) in the requested order `k` and
+zero-heap when `k` is a compile-time literal.
+
+See the [Automatic Differentiation guide](../docs/guide/AUTOMATIC_DIFFERENTIATION.md)
+for a worked, example-verified walkthrough of all thirteen phases, and
+[`docs/reference/ad/INDEX.md`](../docs/reference/ad/INDEX.md) for the API
+reference.
 
 ---
 
@@ -369,8 +443,8 @@ The scheduler is a per-worker Chase-Lev work-stealing deque
 epoch-based reclamation, three-stage idle backoff (spin / yield / sleep),
 and hardware-aware sizing (`std::thread::hardware_concurrency()`,
 override via `ESHKOL_NUM_THREADS`). See
-*inc/eshkol/backend/work_stealing_deque.h* (667 lines) and
-*lib/backend/thread_pool.cpp* (1,350 lines).
+*inc/eshkol/backend/work_stealing_deque.h* (documented in v1.3.1) and
+*lib/backend/thread_pool.cpp*.
 
 Primitives: `parallel-map`, `parallel-fold`, `parallel-filter`,
 `parallel-for-each`, `future`, `force`, `future-ready?`.
@@ -387,14 +461,17 @@ root-cause fix is recorded in project memory as the parallel-map
 flags-byte fix: worker tagged-value flags were hardcoded to zero, which
 mis-dispatched into the bignum path; packing `{type, flags}` into
 `item_type:i64` with the default flipped on restored real parallelism
-across both AOT and JIT paths).
+across both AOT and JIT paths). Shutdown safety was hardened in
+v1.3.0-evolve: `eshkol_runtime_shutdown()` now stops and joins the global
+parallel thread pool before running shutdown hooks, closing a use-after-free
+race that could `SIGSEGV` after a graceful `SIGTERM` was already logged.
 
 ---
 
 ## GPU acceleration
 
-Adaptive dispatch through *lib/backend/blas_backend.cpp* (1,253 lines).
-Calibration constants (measured on Apple Silicon):
+Adaptive dispatch through *lib/backend/blas_backend.cpp*. Calibration
+constants (measured on Apple Silicon):
 
 | Backend | Peak | Overhead | Dispatch range |
 |:---|---:|---:|:---|
@@ -405,9 +482,8 @@ Calibration constants (measured on Apple Silicon):
 SF64 (Software Float64) emulates double precision using double-double
 arithmetic — two 32-bit mantissas combined for an effective precision of
 roughly 100 bits — because Metal GPUs lack native float64. Implementation:
-*lib/backend/gpu/metal_softfloat.h* (4,076 lines) and
-*lib/backend/gpu/gpu_memory.mm* (3,786 lines). CUDA dispatches through
-cuBLAS on NVIDIA.
+*lib/backend/gpu/metal_softfloat.h* and *lib/backend/gpu/gpu_memory.mm*.
+CUDA dispatches through cuBLAS on NVIDIA.
 
 The cost model selects the backend per operation. The defaults are
 empirically calibrated and configurable through `ESHKOL_GPU_PRECISION`,
@@ -417,9 +493,9 @@ empirically calibrated and configurable through `ESHKOL_GPU_PRECISION`,
 
 ## Tensor and ML framework
 
-Compiler-level tensor operations span thirteen domain-specific codegen
-modules totalling roughly 20,500 lines, plus the dispatcher in
-*lib/backend/tensor_codegen.cpp* (1,540 lines). Coverage:
+Compiler-level tensor operations span more than a dozen domain-specific
+codegen modules plus the dispatcher in *lib/backend/tensor_codegen.cpp*.
+Coverage:
 
 - 16 activations (relu, relu6, sigmoid, tanh, gelu, swish, mish,
   softmax, log-softmax, softplus, softsign, leaky-relu, prelu, elu,
@@ -443,11 +519,13 @@ modules totalling roughly 20,500 lines, plus the dispatcher in
   dataloader-length, dataloader-has-next?, train-test-split)
 
 All ML builtins integrate with reverse-mode AD: calling `gradient` on any
-composition produces an exact gradient. Matmul is correctly wired through
-the Wengert tape; the v1.3 carry-forward note in *RELEASE_NOTES.md* records
-that the backward kernels for conv2d, batchnorm, layernorm, attention, and
-multi-head-attention exist but their forward implementations need a
-multi-channel / per-feature rewrite for `input2` plumbing.
+composition produces an exact gradient, and — since v1.3.0-evolve —
+tensor-valued Taylor towers (`core.ad.tensor_tower`) extend arbitrary-order
+differentiation through `matmul`/`conv2d`/activations as well. The conv2d
+backward pass uses stride-based scatter/gather indexing that doesn't map
+cleanly to GEMM, and LayerNorm/BatchNorm backward are inherently sequential
+reductions; see *docs/KNOWN_ISSUES.md* for the current, itemized state of
+these ML-kernel performance characteristics.
 
 ---
 
@@ -474,7 +552,9 @@ C and exposed to Eshkol through tagged-value calling conventions.
 AOT linking is automatic: `ESHKOL_HOST_AGENT_FFI_LINK_ARGS` in the build
 config is consulted, and the AST is scanned pre-process for require
 declarations so AOT binaries link the HTTP, SQLite, and subprocess
-backends without the user having to specify library flags.
+backends without the user having to specify library flags. v1.3.1 adds
+Doxygen documentation across every agent-FFI implementation file in
+*lib/agent/c/*.
 
 ---
 
@@ -483,15 +563,15 @@ backends without the user having to specify library flags.
 - **eshkol-run** — production AOT compiler with executable, object file
   (`-c -o`), shared library (`--shared-lib`), and WebAssembly (`--wasm`)
   output modes; supports JIT execution (`-r`).
-- **eshkol-repl** — interactive REPL via LLVM OrcJIT (2,062 lines). Preloads
-  237 stdlib functions and 305 globals from precompiled `.o` and `.bc`
-  metadata. The `--machine` mode emits `EREPL READY` / `DONE` / `FAIL`
-  framing on stderr for warm-worker IPC, with ≈5× speed-up versus cold
-  `eshkol-run -r` and marginal per-form cost ≈ 0.
-- **eshkol-pkg** — package manager (721 lines). TOML manifests, git-based
+- **eshkol-repl** — interactive REPL via LLVM OrcJIT, documented as part of
+  the v1.3.1 implementation doc-comment pass. Preloads stdlib functions and
+  globals from precompiled `.o` and `.bc` metadata. The `--machine` mode
+  emits `EREPL READY` / `DONE` / `FAIL` framing on stderr for warm-worker
+  IPC.
+- **eshkol-pkg** — package manager. TOML manifests, git-based
   registry, recursive submodule discovery. Commands: `init`, `build`,
   `run`, `add`, `clean`.
-- **eshkol-lsp** — Language Server Protocol (1,018 lines). Completions,
+- **eshkol-lsp** — Language Server Protocol. Completions,
   hover, go-to-definition, diagnostics, formatting.
 - **VS Code extension** — syntax highlighting, LSP integration, build tasks.
   Source: *tools/vscode-eshkol/*.
@@ -499,79 +579,96 @@ backends without the user having to specify library flags.
   pytest-format smoke harness under `.icc/`; native Eshkol-aware (accepts
   Eshkol VM step / halt records as `eshkol_vm_step` / `eshkol_vm_halt`
   events; recognises `runtime_event` compact dict form and explicit
-  `kind` JSON records).
+  `kind` JSON records). ICC readiness oracle reports 100/100, trace-verified,
+  on the v1.3.0-evolve release SHA.
 
 ---
 
-## Hardening posture
+## Documentation
 
-v1.2-scale closes fourteen audit blockers and seven critical/high security
-fixes. The list, with severities preserved from *docs/HARDENING.md*:
+v1.3.1's principal addition, alongside the memory/reader robustness fixes,
+is documentation coverage:
 
-| Severity | Item | Resolution |
-|:---|:---|:---|
-| CRITICAL | Shell-string injection in `agent_subprocess.c` | Switched to `posix_spawn` with argv arrays; `popen("sh -c …")` removed (`#190`). |
-| CRITICAL | Python FFI derivative-method AST injection | Canonicalise through the parser rather than string-substituting into source (`#191`). |
-| HIGH | Integer overflow on arena `data_size` | Capped at `SIZE_MAX − header − 8` and `UINT32_MAX` (`#192`). |
-| HIGH | Integer overflow on KB-load arity | Arity ≤ 4096 with explicit multiplication bound (`#192`). |
-| HIGH | String length bomb in `kb_persistence.cpp` | 16 MiB cap on serialised strings, symbols, bignums (`#192`). |
-| HIGH | Dimension overflow in `image_io.c` | w, h ≤ 65535; channels ≤ 16; explicit product bounds (`#192`). |
-| HIGH | Path-traversal in `system_builtins.c` `path_normalize` | Percent-decode + component-check; rejects ≥ PATH_MAX (`#193`). |
-| HIGH | TOCTOU on `stat → open` in `file_copy` | `O_NOFOLLOW` + `O_CLOEXEC` on both fds (`#193`). |
-| HIGH | Windows subprocess cmdline buffer | Heap-allocate sized exactly; reject ≥ 32,768-char cmdlines (`#193`). |
-| HIGH | 36 silent-swallow error sites | Each now surfaces the error or is documented as intentional (`#181`/`#194`). |
-| MEDIUM | ReDoS in `agent_regex.c` | 10M-step match limit and 100K depth limit via global match context (`#195`). |
-| MEDIUM | SQL injection on `sqlite.esk` | `sqlite-exec-safe` blocks `;`, `--`, `/*`; bind-* for user input (`#195`). |
-| MEDIUM | URL/header CRLF injection in `agent/http.esk` | `http-safe-string?` check on URL and every header (`#195`). |
+- **Public C-API headers.** Doxygen-format documentation across 50 of the
+  64 public headers under `inc/eshkol/` — backend codegen, runtime core,
+  the type system, the XLA backend, subprocess/macro-expander/qLLM-bridge
+  surfaces, the thread pool and work-stealing deque, the logger, model I/O,
+  platform runtime, and runtime exports — across six commits, roughly
+  4,650 lines of new documentation.
+- **Implementation doc-comments.** 56 previously-undocumented implementation
+  files under `lib/` — agent FFI, the type checker, the parser, the REPL,
+  core non-runtime modules, the quantum RNG, FFI bridges — across three
+  commits, roughly 7,478 lines.
+- **Navigable reference index.** A per-subsystem documentation index at
+  [`docs/reference/language/`](../docs/reference/language/INDEX.md),
+  [`ad/`](../docs/reference/ad/INDEX.md),
+  [`runtime/`](../docs/reference/runtime/INDEX.md),
+  [`tensors/`](../docs/reference/tensors/INDEX.md),
+  [`stdlib/`](../docs/reference/stdlib/INDEX.md), and
+  [`agent/`](../docs/reference/agent/INDEX.md), each an example-verified
+  index into the corresponding function and syntax reference, linked from
+  *README.md §Documentation*.
 
-Sanitizer infrastructure (ASan, UBSan, TSan, MSan, LSan) is wired through
-`scripts/build-sanitizer.sh` (`#188`).
+Combined, this is 116 files and roughly 12,600 lines of new documentation —
+comments and reference pages only, no behaviour change.
 
-**v1.2.1-scale closeout audits, dated 2026-04-19.**
+---
 
-- *Memory safety*: ASan + UBSan clean. 196 checks across 9 suites
-  (`bug_regression_test`, `agent_ffi_jit_test`, `first_class_builtins_test`,
-  `collections_test`, `boundary_values_test`, `image_io_test`,
-  `hash_table_test`, `binary_io_test`, `data_encoding_test`), zero reports.
-- *Concurrency*: TSan clean. Zero races across `bug_regression_test`,
-  `parallel-execute`, `parallel-filter`, `parallel-fold`,
-  `parallel-for-each`, `futures`, `parallel_ad_worker_init_test`.
-- *Determinism*: byte-identical `build/stdlib.bc` and `build/eshkol-run`
-  across two back-to-back release builds.
+## Hardening and robustness posture
 
-**Test surface.** Eighty-seven edge-case and security regression tests at
-*tests/v1_2_edge_cases/* cover symbol consistency under gensym, AD tape
-state across worker threads, parser line tracking, stdlib symbol
-resolution, JSON Schema validator, bounded HTTP-server smoke, shell-style
-compile-time diagnostics, REPL protocol checks. The master suite reports
-37 of 37 sub-suites and 528 of 528 self-reported tests passing
-(*scripts/run_all_tests.sh*; *RELEASE_NOTES.md §v1.2.1 Noesis M0
-Closeout Addendum*). The bytecode-VM C-API suite passes 81 of 81; CTest
-passes 15 of 15; stress tests pass 3 of 3 on the final release-gate build.
+**v1.3.1 (this release).** Two fixes close the remaining gap between
+"correct" and "safe to run unattended":
 
-The Noesis aggregate smoke (`tests/smoke/all.esk`) exits
-`NOESIS_ALL_RC=0`.
+- **Flat memory in long-running loops** (ESH-0214b): per-iteration
+  arena-scope reclamation, previously limited to named-let TCO loops,
+  now also covers self-tail-recursive `define` loops, including a
+  catch-all guard body in the loop. Verified on a 1,000,000-iteration
+  loop: RSS 1,369 MB (unbounded growth) → 224 MB (flat).
+- **Iterative S-expression reader** (ESH-0191): `read_list` no longer
+  recurses one native stack frame per list element. Verified: the prior
+  implementation crashed with SIGBUS reading a 20-million-element list;
+  the rewritten reader completes cleanly at the same size.
+
+**v1.3.0-evolve release gates** (green on the release SHA, and the base
+this release builds on): ICC readiness oracle 100/100, trace-verified;
+CI 14/14 lanes including windows-arm64 lite/CUDA/XLA; SICP full-book gate
+88/88 probes across all five chapters under both `-r` and AOT
+(`scripts/run_sicp_smoke.sh`); reference-Scheme differential oracle 34/34
+AGREE vs. chibi-scheme 0.12.0 on the P7a portable corpus
+(`scripts/run_reference_differential.sh`).
+
+**Permanent adversarial-testing infrastructure**, shipped in v1.3.0-evolve
+and wired into the ICC release oracle rather than run once and discarded:
+a multi-path differential harness with a seeded fuzzer, a feature-pair
+edge matrix, an AD finite-difference oracle, a stress harness with
+RSS/time budgets, a VM-parity ratchet, depth-parametric sweeps, and the
+external reference-Scheme differential oracle. See *docs/TESTING.md*.
+
+**v1.2-line hardening** (carried forward, unchanged in this release):
+fourteen audit blockers and seven critical/high security fixes closed
+(subprocess shell-injection, Python-FFI AST-injection, integer-overflow
+guards on arena/KB/image, path-traversal, TOCTOU, ReDoS, SQL-injection
+guards, URL/header CRLF injection). See *docs/HARDENING.md* for the
+itemized table with severities and resolutions.
 
 ---
 
 ## Web platform
 
 Eshkol compiles to WebAssembly via `eshkol-run --wasm`, producing a
-self-contained module that does not fall through to a native link step
-(corrected in v1.2-scale per *RELEASE_NOTES.md §Build, Link, and Platform*).
+self-contained module that does not fall through to a native link step.
 
-The project website at https://eshkol.ai is itself an Eshkol program:
-roughly 1,500 lines of Eshkol code compiled to a ~502 KB WebAssembly
-binary, served by GitHub Pages. The site embeds a browser REPL where
-forward-mode automatic differentiation (`(derivative (lambda (x) (* x x)) 3.0)`
-returning 6.0) runs through the bytecode-VM dual-number propagation path
-without native code. There are 73 DOM, Canvas, Event, Fetch, and
-LocalStorage bindings exposed through an integer-handle system. The
+The project website at https://eshkol.ai is itself an Eshkol program,
+compiled to WebAssembly and served by GitHub Pages. The site embeds a
+browser REPL where forward-mode automatic differentiation
+(`(derivative (lambda (x) (* x x)) 3.0)` returning 6.0) runs through the
+bytecode-VM dual-number propagation path without native code. The
 interactive textbook has every example runnable in-browser.
 
-The browser REPL uses the bytecode VM rather than LLVM JIT: 64 opcodes,
-250+ native call IDs, ESKB binary format with LEB128 encoding and CRC32
-checksums (*docs/DESIGN.md §Dual backend architecture*).
+The browser REPL uses the bytecode VM rather than LLVM JIT: an
+opcode-dispatch register-plus-stack interpreter with 250+ native call IDs,
+ESKB binary format with LEB128 encoding and CRC32 checksums
+(*docs/DESIGN.md §Dual backend architecture*).
 
 ---
 
@@ -582,31 +679,37 @@ independent value representations:
 
 - **LLVM native** (primary). 16-byte tagged values, ~30 codegen modules,
   ~85,500 lines, the default for `eshkol-run`.
-- **Bytecode VM** (*lib/backend/eshkol_vm.c*, 1,473 lines). 64 opcodes,
-  250+ native call IDs, ESKB binary format (section-based, LEB128, CRC32).
-  Invoked via `eshkol-run input.esk -B output.eskb`. Coverage: arithmetic,
-  closures, continuations, exception handling, tensors, complex / rational
-  / bignum, logic / inference / workspace, hash tables, bytevectors,
-  parameters, I/O.
+- **Bytecode VM** (*lib/backend/eshkol_vm.c*). A register-plus-stack
+  interpreter with 250+ native call IDs, ESKB binary file format
+  (section-based, LEB128, CRC32). Invoked via `eshkol-run input.esk -B
+  output.eskb`. Coverage: arithmetic, closures, continuations, exception
+  handling, tensors, complex / rational / bignum, logic / inference /
+  workspace, hash tables, bytevectors, parameters, I/O.
 
 The weight-matrix transformer (*lib/backend/weight_matrices.c*, ~6,800
 lines) is a third execution surface that exists for the SDNC paper and
 the qLLM/transformer weight-loading pipeline. The strict-artefact contract
-is 126 of 126 inline and 123 of 123 traced programs verified three ways
-(reference interpreter = simulated transformer = matrix-based forward pass).
-Exports use the QLMW binary format for qLLM consumption.
+is 123 of 123 traced programs verified three ways (reference interpreter =
+simulated transformer = matrix-based forward pass). Exports use the QLMW
+binary format for qLLM consumption.
 
 ---
 
 ## Standard library
 
-Roughly 4,400 lines across thirty-five auto-loaded modules, compiled to `build/stdlib.o` via
-`--shared-lib`. Namespaces:
+Auto-loaded stdlib modules compiled to `build/stdlib.o` via `--shared-lib`.
+Namespaces:
 
 - `core.functional.*` — composition, currying, combinators
 - `core.list.*` — higher-order list functions
 - `core.data.*` — JSON, CSV, Base64
 - `core.strings.*` — thirty-plus string utilities
+- `core.ad.*` — Taylor-tower AD stdlib layer added in v1.3.0-evolve: `guw`
+  (multivariate mixed partials), `tensor_tower` (tensor-valued towers),
+  `taylor_models` (validated enclosures), `checkpoint` (checkpointed
+  reverse-over-Taylor), `taylor_numerics` (ODE/root/series-inversion
+  solvers), `sparse_guw` (sparse Hessian recovery), `interval` (interval
+  arithmetic support)
 - `math.*` — special functions (Bessel, Gamma, Beta), ODE solvers
   (Euler, RK4), root finding, statistics
 - `signal.*` — Cooley-Tukey radix-2 DIT FFT, IFFT, Hamming / Hann /
@@ -616,7 +719,7 @@ Roughly 4,400 lines across thirty-five auto-loaded modules, compiled to `build/s
   schedulers
 - `random.*` — PRNG with explicit seeding (`seed-prng!`), per-stream
   isolation, quantum-inspired RNG
-- `web.*` — WASM / DOM API (73 bindings), HTTP fetch
+- `web.*` — WASM / DOM API, HTTP fetch
 - `tensor.*` — shape manipulation, stacking, broadcasting helpers
 
 The stdlib uses `LinkOnceODR` linkage so user redefinitions cleanly
@@ -634,9 +737,8 @@ link errors.
 - **Build prerequisites**: CMake 3.14+, LLVM 21, a C17 + C++20 compiler
   (GCC 11+, Clang 14+), Ninja recommended.
 - **Build**: `cmake -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build`.
-- **Homebrew tap**: the v1.2.1-scale tap formula carries the computed
-  release SHA-256 after tagging (*RELEASE_NOTES.md §v1.2.1 Noesis M0
-  Closeout Addendum*).
+- **Homebrew tap**: `brew tap tsotchke/eshkol && brew install eshkol`; the
+  tap formula carries the computed release SHA-256 after tagging.
 
 ---
 
@@ -646,7 +748,7 @@ link errors.
 @software{eshkol2026,
   title    = {Eshkol: A Programming Language for Mathematical Computing},
   author   = {tsotchke},
-  version  = {1.2.1-scale},
+  version  = {1.3.1},
   year     = {2026},
   url      = {https://github.com/tsotchke/eshkol}
 }
