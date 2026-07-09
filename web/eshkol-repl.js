@@ -626,11 +626,37 @@ class EshkolRepl {
                 eshkol_lazy_future_set_result_ptr: () => {},
 
                 // OALR regions — degrade to no-op (WASM has no region
-                // system; the heap allocator handles everything).
+                // system; the heap allocator handles everything so nothing is
+                // ever freed out from under an escaping value).
                 region_create: (_name, _size_hint) => 1,
                 region_push:   () => {},
                 region_pop:    () => {},
-                region_escape_tagged_value_into: (_dst, _src) => {},
+                // region_escape / write-barrier: the CALLER passes an
+                // uninitialized `out` slot and reads it back after the call —
+                // the runtime fn is the SOLE writer of `out`. A no-op would
+                // leave `out` as garbage and drop the value in the browser. With
+                // no region system to escape from, the correct degradation is a
+                // shallow byte copy of the 16-byte tagged value from the source
+                // slot into `out` (no deep promotion needed — nothing is freed).
+                region_escape_tagged_value_into: (out, val) => {
+                    if (!this.memory || !out || !val) return;
+                    const o = Number(out), v = Number(val);
+                    new Uint8Array(this.memory.buffer).copyWithin(o, v, v + 16);
+                },
+                // eshkol_region_write_barrier_into(out, dst, value): promote
+                // `value` when stored into a longer-lived `dst` (vector-set! /
+                // set-car! / hash-table-set! / global set!). Same out-slot ABI
+                // as above — shallow-copy value -> out (dst is only a
+                // region-ownership probe, irrelevant with no regions).
+                eshkol_region_write_barrier_into: (out, _dst, value) => {
+                    if (!this.memory || !out || !value) return;
+                    const o = Number(out), v = Number(value);
+                    new Uint8Array(this.memory.buffer).copyWithin(o, v, v + 16);
+                },
+                // Range form (vector-copy!): the copied slots are already
+                // populated by the preceding memmove, and there is no region to
+                // promote out of, so this is a genuine no-op.
+                eshkol_region_write_barrier_range: () => {},
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,

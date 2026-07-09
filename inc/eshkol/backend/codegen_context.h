@@ -193,6 +193,28 @@ public:
     /** Get the lambda name a function returns (or empty string) */
     std::string getFunctionReturnsLambda(const std::string& funcName) const;
 
+    // === Region Write Barrier (ESH-0214c) ===
+
+    /**
+     * Emit a region write barrier for a value about to be stored into a
+     * longer-lived destination (vector-set!/set-car!/set-cdr!/hash-table-set!/
+     * global set!). Returns the (possibly deep-promoted) tagged value to store.
+     *
+     * The value is spilled to an entry-block alloca and routed through the
+     * runtime helper eshkol_region_write_barrier_into, whose fast path (no
+     * active region) is a single thread-local load + branch. If a region is
+     * active and @p tagged_value points into a region strictly inner than the
+     * one owning @p dst_ptr, its reachable in-region subgraph is evacuated into
+     * the surviving arena so it does not dangle after region_pop.
+     *
+     * @param dst_ptr      Address of the container/slot being written (used only
+     *                     to locate the destination's owning region).
+     * @param tagged_value The value being stored (must be taggedValueType()).
+     * @return             The value to store (barriered when necessary).
+     */
+    llvm::Value* emitRegionWriteBarrier(llvm::Value* dst_ptr,
+                                        llvm::Value* tagged_value);
+
     // === Global Variables (Arena, AD State) ===
 
     /** Get/set the global arena variable */
