@@ -57,7 +57,19 @@
          blc-I blc-K blc-S
          blc-I-bits blc-K-bits blc-S-bits
          blc-true blc-false blc-omega
-         blc-max-steps)
+         blc-max-steps
+         ;; Scott-list encoding of bit streams (booleans + pairing)
+         blc-pair blc-nil blc-cons
+         blc-list-of-bits blc-encode-input
+         blc-list-null? blc-list-cons? blc-list-head blc-list-tail
+         ;; Self-interpreter / universal machine U (232 bits, Tromp)
+         blc-U-bits blc-U
+         ;; BLC8 byte I/O
+         blc-byte->term blc-bytes->term
+         blc-term->byte blc-term->bytes
+         blc-string->term blc-term->string
+         ;; Tromp-style lambda diagrams
+         blc-diagram)
 
 ;; ============================================================================
 ;; Term constructors, predicates, accessors
@@ -317,3 +329,309 @@
 (define blc-I-bits "0010")
 (define blc-K-bits "0000110")
 (define blc-S-bits "00000001011110100111010")
+
+;; ============================================================================
+;; Scott-list encoding of bit streams  (booleans + pairing)
+;; ============================================================================
+;;
+;; Tromp's I/O convention (https://tromp.github.io/cl/Binary_lambda_calculus.html):
+;;   bit 0  ->  True  = λx.λy.x   (= blc-true)
+;;   bit 1  ->  False = λx.λy.y   (= blc-false)
+;; and a bit/byte stream is a Scott list built from the pairing combinator
+;;   pair = λh.λt.λf. f h t     ("λλλ.((1 3) 2)" in De Bruijn)
+;; so a cons cell is the VALUE  ⟨h,t⟩ = λf. f h t.  A finite (delimited)
+;; stream is terminated by Nil; this module uses Nil = False.
+
+;; The pairing COMBINATOR, encoded exactly as "0000000101101110110".
+(define blc-pair
+  (blc-lam (blc-lam (blc-lam
+    (blc-app (blc-app (blc-var 1) (blc-var 3)) (blc-var 2))))))
+
+;; List terminator (Nil) for finite, delimited streams.
+(define blc-nil blc-false)
+
+;; A cons VALUE ⟨h,t⟩ = λf. f h t.  h and t are closed terms (booleans or
+;; sub-lists), so no shifting is required.
+(define (blc-cons h t)
+  (blc-lam (blc-app (blc-app (blc-var 1) h) t)))
+
+;; Recognisers / accessors for cons VALUES produced by blc-cons.
+(define (blc-list-null? t) (equal? t blc-nil))
+(define (blc-list-cons? t)
+  (and (blc-lam? t)
+       (let ((b (blc-lam-body t)))
+         (and (blc-app? b)
+              (blc-app? (blc-app-fun b))
+              (equal? (blc-app-fun (blc-app-fun b)) (blc-var 1))))))
+(define (blc-list-head t) (blc-app-arg (blc-app-fun (blc-lam-body t))))
+(define (blc-list-tail t) (blc-app-arg (blc-lam-body t)))
+
+;; #\0 -> blc-true, #\1 -> blc-false.
+(define (blc-bit-char->bool c)
+  (cond ((char=? c #\0) blc-true)
+        ((char=? c #\1) blc-false)
+        (else (error "blc: bit character must be 0 or 1" c))))
+
+;; 0 -> blc-true, 1 -> blc-false.
+(define (blc-bit-num->bool n)
+  (cond ((= n 0) blc-true)
+        ((= n 1) blc-false)
+        (else (error "blc: bit value must be 0 or 1" n))))
+
+;; A boolean term back to a bit (0/1).
+(define (blc-bool->bit t)
+  (cond ((equal? t blc-true) 0)
+        ((equal? t blc-false) 1)
+        (else (error "blc: term is not a BLC boolean (True/False)" t))))
+
+;; Bit STRING (of #\0/#\1) -> Scott list of booleans terminated by `tail`.
+(define (blc-list-of-bits bits tail)
+  (let ((len (string-length bits)))
+    (let loop ((i 0))
+      (if (>= i len)
+          tail
+          (blc-cons (blc-bit-char->bool (string-ref bits i)) (loop (+ i 1)))))))
+
+;; Build the argument that the universal machine U consumes: the (self-
+;; delimiting) program encoding followed by the input bits, as one Nil-
+;; terminated Scott list.  U parses the program off the front and runs it
+;; on the remaining list.
+(define (blc-encode-input program-bits input-bits)
+  (blc-list-of-bits (string-append program-bits input-bits) blc-nil))
+
+;; ============================================================================
+;; Self-interpreter / universal machine U  (232 bits, John Tromp)
+;; ============================================================================
+;;
+;; U is Tromp's 232-bit (29-byte) self-interpreter.  Applied to a Scott list
+;; that begins with the BLC encoding of a closed program M (self-delimiting)
+;; followed by input bits, U reduces to  M applied to the remaining list:
+;;
+;;   (blc-eval (blc-app (blc-U) (blc-encode-input (blc-encode M) input)))
+;;     =  M  (list of `input` bits)
+;;
+;; De Bruijn form (Tromp, verified to encode to blc-U-bits below):
+;;   (λ 1 1) (λλλ 1 (λλλλ 3 (λ 5 (3 (λ 2 (3 (λλ 3 (λ 1 2 3)))
+;;             (4 (λ 4 (λ 3 1 (2 1)))))) (1 (2 (λ 1 2))
+;;             (λ 4 (λ 4 (λ 2 (1 4))) 5)))) (3 3) 2) (λ 1 ((λ 1 1) (λ 1 1)))
+;;
+;; Source: John Tromp, "Binary Lambda Calculus and Combinatory Logic",
+;;   https://tromp.github.io/cl/Binary_lambda_calculus.html
+;; The 232 bits below encode exactly that term (cross-checked: our own
+;; blc-encode of the De Bruijn term reproduces this string bit-for-bit).
+(define blc-U-bits
+  (string-append
+    "01010001101000000001010110000000000111100001011111100111"
+    "10000101110011110000001111000010110110111001111100001111"
+    "10000101111010011101001011001110000110110000101111100001"
+    "1111000011100110111101111100111101110110000110010001101000011010"))
+
+;; The decoded U term.
+(define (blc-U) (blc-decode blc-U-bits))
+
+;; ============================================================================
+;; BLC8 byte I/O
+;; ============================================================================
+;;
+;; BLC8 works on byte streams.  A byte is a delimited list of its 8 bits in
+;; BIG-ENDIAN order (most significant bit first); a byte string is a list of
+;; such byte-lists.  Both levels use the same boolean/pairing/Nil encoding as
+;; above.
+
+;; Integer byte b (0..255) -> Nil-terminated list of 8 booleans, MSB first.
+(define (blc-byte->term b)
+  (let loop ((k 7))
+    (if (< k 0)
+        blc-nil
+        (blc-cons (blc-bit-num->bool (modulo (quotient b (expt 2 k)) 2))
+                  (loop (- k 1))))))
+
+;; List of integer bytes -> BLC8 term (list of byte-lists).
+(define (blc-bytes->term bytes)
+  (if (null? bytes)
+      blc-nil
+      (blc-cons (blc-byte->term (car bytes))
+                (blc-bytes->term (cdr bytes)))))
+
+;; A single byte-list term -> integer byte (reads exactly 8 bits, MSB first).
+(define (blc-term->byte t)
+  (let loop ((k 8) (node t) (acc 0))
+    (if (= k 0)
+        acc
+        (if (blc-list-cons? node)
+            (loop (- k 1)
+                  (blc-list-tail node)
+                  (+ (* acc 2) (blc-bool->bit (blc-list-head node))))
+            (error "blc-term->byte: byte has fewer than 8 bits")))))
+
+;; BLC8 term (list of byte-lists) -> list of integer bytes.
+(define (blc-term->bytes t)
+  (if (blc-list-null? t)
+      '()
+      (cons (blc-term->byte (blc-list-head t))
+            (blc-term->bytes (blc-list-tail t)))))
+
+;; Convenience: Scheme string <-> BLC8 term (each character is one byte).
+(define (blc-string->bytes s)
+  (let ((len (string-length s)))
+    (let loop ((i 0))
+      (if (>= i len)
+          '()
+          (cons (char->integer (string-ref s i)) (loop (+ i 1)))))))
+
+(define (blc-string->term s)
+  (blc-bytes->term (blc-string->bytes s)))
+
+(define (blc-bytes->string bytes)
+  (if (null? bytes)
+      ""
+      (string-append (string (integer->char (car bytes)))
+                     (blc-bytes->string (cdr bytes)))))
+
+(define (blc-term->string t)
+  (blc-bytes->string (blc-term->bytes t)))
+
+;; ============================================================================
+;; Tromp-style lambda diagrams  (ASCII)
+;; ============================================================================
+;;
+;; Renders a term as a Tromp lambda diagram (https://tromp.github.io/cl/
+;; diagrams.html): abstractions are horizontal lines, a variable is a
+;; vertical line rising to the bar of the lambda that binds it, and an
+;; application is a horizontal link joining the leftmost variables of its
+;; two subterms.  Variables are spaced 4 columns apart, so a term with V
+;; variable occurrences is 4*V-1 columns wide.
+;;
+;; Internally a sub-diagram is a "block" = (list ROWS FREE LEFTVAR):
+;;   ROWS    : list of rows, each a list of characters (all the same length)
+;;   FREE    : list of (COL . INDEX) — the free De Bruijn lines still open at
+;;             the TOP of the block, at column COL with current index INDEX
+;;   LEFTVAR : column of the block's leftmost variable (application anchor)
+
+(define (blc-diag-rows blk)    (car blk))
+(define (blc-diag-free blk)    (cadr blk))
+(define (blc-diag-leftvar blk) (caddr blk))
+
+;; n copies of x.
+(define (blc-diag-repeat n x)
+  (if (<= n 0) '() (cons x (blc-diag-repeat (- n 1) x))))
+
+;; Functional set of position k (0-based) in a list to v.
+(define (blc-diag-set lst k v)
+  (if (= k 0)
+      (cons v (cdr lst))
+      (cons (car lst) (blc-diag-set (cdr lst) (- k 1) v))))
+
+;; Set positions lo..hi (inclusive) of a row to ch.
+(define (blc-diag-fill row i lo hi ch)
+  (cond
+    ((null? row) '())
+    ((and (>= i lo) (<= i hi)) (cons ch (blc-diag-fill (cdr row) (+ i 1) lo hi ch)))
+    (else (cons (car row) (blc-diag-fill (cdr row) (+ i 1) lo hi ch)))))
+
+;; Put a #\| crossing in a lambda bar wherever a free line with INDEX>1 passes
+;; through (INDEX=1 lines are captured by this lambda: the bar covers them).
+(define (blc-diag-bar row free)
+  (if (null? free)
+      row
+      (let ((col (caar free)) (idx (cdar free)))
+        (if (> idx 1)
+            (blc-diag-bar (blc-diag-set row col #\|) (cdr free))
+            (blc-diag-bar row (cdr free))))))
+
+;; Free lines after passing under one lambda: drop the captured (INDEX=1)
+;; lines, decrement the rest.
+(define (blc-diag-dec-free free)
+  (cond
+    ((null? free) '())
+    ((> (cdar free) 1)
+     (cons (cons (caar free) (- (cdar free) 1)) (blc-diag-dec-free (cdr free))))
+    (else (blc-diag-dec-free (cdr free)))))
+
+;; Shift every free line's column by off (for the right operand of an app).
+(define (blc-diag-offset-free free off)
+  (if (null? free)
+      '()
+      (cons (cons (+ (caar free) off) (cdar free))
+            (blc-diag-offset-free (cdr free) off))))
+
+(define (blc-diag-last lst)
+  (if (null? (cdr lst)) (car lst) (blc-diag-last (cdr lst))))
+
+;; A "continuation" row: keep vertical lines going down, blank elsewhere.
+(define (blc-diag-vline row)
+  (if (null? row)
+      '()
+      (cons (if (char=? (car row) #\|) #\| #\space) (blc-diag-vline (cdr row)))))
+
+;; Pad a block at the BOTTOM to height h (extending its variable lines down).
+(define (blc-diag-pad blk h)
+  (let* ((rows (blc-diag-rows blk))
+         (cur (length rows)))
+    (if (>= cur h)
+        blk
+        (let ((tailrows (blc-diag-repeat (- h cur) (blc-diag-vline (blc-diag-last rows)))))
+          (list (append rows tailrows) (blc-diag-free blk) (blc-diag-leftvar blk))))))
+
+;; Concatenate two equal-height row lists with a 1-space gap between them.
+(define (blc-diag-zip a b)
+  (if (null? a)
+      '()
+      (cons (append (car a) (cons #\space (car b)))
+            (blc-diag-zip (cdr a) (cdr b)))))
+
+(define (blc-diag-draw t)
+  (cond
+    ((blc-var? t)
+     (list (list (list #\space #\| #\space))     ; one row: " | "
+           (list (cons 1 (blc-var-index t)))      ; free: col 1, this index
+           1))                                    ; leftvar
+    ((blc-lam? t)
+     (let* ((b (blc-diag-draw (blc-lam-body t)))
+            (rows (blc-diag-rows b))
+            (free (blc-diag-free b))
+            (w (length (car rows)))
+            (bar (blc-diag-bar (blc-diag-repeat w #\-) free)))
+       (list (cons bar rows)
+             (blc-diag-dec-free free)
+             (blc-diag-leftvar b))))
+    ((blc-app? t)
+     (let* ((m (blc-diag-draw (blc-app-fun t)))
+            (n (blc-diag-draw (blc-app-arg t)))
+            (h (max (length (blc-diag-rows m)) (length (blc-diag-rows n))))
+            (mp (blc-diag-pad m h))
+            (np (blc-diag-pad n h))
+            (mrows (blc-diag-rows mp))
+            (nrows (blc-diag-rows np))
+            (mw (length (car mrows)))
+            (noff (+ mw 1))
+            (width (+ noff (length (car nrows))))
+            (wl (blc-diag-leftvar mp))
+            (wr (+ noff (blc-diag-leftvar np)))
+            (blank (blc-diag-repeat width #\space))
+            (link (blc-diag-set (blc-diag-fill blank 0 wl wr #\-) wl #\|)))
+       (list (append (blc-diag-zip mrows nrows) (list link))
+             (append (blc-diag-free mp) (blc-diag-offset-free (blc-diag-free np) noff))
+             wl)))
+    (else (error "blc-diagram: invalid term" t))))
+
+;; Drop trailing spaces from a character row.
+(define (blc-diag-rstrip row)
+  (reverse (blc-diag-drop-spaces (reverse row))))
+(define (blc-diag-drop-spaces row)
+  (if (and (pair? row) (char=? (car row) #\space))
+      (blc-diag-drop-spaces (cdr row))
+      row))
+
+;; Join rows (rstripped) with newlines into the final string.
+(define (blc-diag-join rows)
+  (cond
+    ((null? rows) "")
+    ((null? (cdr rows)) (list->string (blc-diag-rstrip (car rows))))
+    (else (string-append (list->string (blc-diag-rstrip (car rows)))
+                         "\n"
+                         (blc-diag-join (cdr rows))))))
+
+;; Render a term as a Tromp-style ASCII lambda diagram.
+(define (blc-diagram t)
+  (blc-diag-join (blc-diag-rows (blc-diag-draw t))))
