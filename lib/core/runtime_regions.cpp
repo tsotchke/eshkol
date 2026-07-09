@@ -12,6 +12,9 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/logger.h"
+#include "../../inc/eshkol/core/logic.h"       // eshkol_substitution_t / _fact_t / _knowledge_base_t
+#include "../../inc/eshkol/core/inference.h"   // eshkol_factor_graph_t / _factor_t
+#include "../../inc/eshkol/core/workspace.h"   // eshkol_workspace_t / _workspace_module_t
 
 #include <cstring>
 #include <cstdlib>
@@ -812,6 +815,14 @@ enum EvacKind : uint8_t {
     EVAC_TENSOR,      // eshkol_tensor_t: dimensions + elements raw buffers
     EVAC_EXCEPTION,   // eshkol_exception_t: message/filename/irritants
     EVAC_CLOSURE,     // eshkol_closure_t: captured environment
+    // ESH-0214d: neuro-symbolic / workspace subtypes that carry interior
+    // tagged values and/or raw arena buffers (previously dropped to EVAC_LEAF,
+    // which silently left those interior pointers aimed into the dying region).
+    EVAC_SUBSTITUTION,   // eshkol_substitution_t: inline terms[] tagged values
+    EVAC_FACT,           // eshkol_fact_t: inline args[] tagged values (+ predicate str)
+    EVAC_KNOWLEDGE_BASE, // eshkol_knowledge_base_t: facts[] raw array of fact ptrs
+    EVAC_FACTOR_GRAPH,   // eshkol_factor_graph_t: nested raw numeric buffers
+    EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -861,19 +872,39 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
     switch (sub) {
         case HEAP_SUBTYPE_CONS:        return EVAC_CONS;
         case HEAP_SUBTYPE_VECTOR:      return EVAC_VECTOR;   // records are vectors too
+        case HEAP_SUBTYPE_RECORD:      return EVAC_VECTOR;   // records allocate as vectors;
+                                                             // belt-and-suspenders so a future
+                                                             // record allocator stamping subtype 7
+                                                             // cannot silently regress to leaf.
         case HEAP_SUBTYPE_MULTI_VALUE: return EVAC_MULTIVALUE;
         case HEAP_SUBTYPE_HASH:        return EVAC_HASH;
         case HEAP_SUBTYPE_TENSOR:      return EVAC_TENSOR;
         case HEAP_SUBTYPE_EXCEPTION:   return EVAC_EXCEPTION;
+        // ESH-0214d: neuro-symbolic / workspace subtypes now deep-walked. Each
+        // carries interior tagged values and/or raw arena buffers that a shallow
+        // leaf copy left dangling into the popped region arena.
+        case HEAP_SUBTYPE_SUBSTITUTION:   return EVAC_SUBSTITUTION;
+        case HEAP_SUBTYPE_FACT:           return EVAC_FACT;
+        case HEAP_SUBTYPE_KNOWLEDGE_BASE: return EVAC_KNOWLEDGE_BASE;
+        case HEAP_SUBTYPE_FACTOR_GRAPH:   return EVAC_FACTOR_GRAPH;
+        case HEAP_SUBTYPE_WORKSPACE:      return EVAC_WORKSPACE;
         // STRING / SYMBOL / BIGNUM / RATIONAL / BYTEVECTOR: self-contained
         // payloads -> a contiguous leaf copy fully preserves them.
         //
-        // SUBSTITUTION / FACT / KNOWLEDGE_BASE / FACTOR_GRAPH / WORKSPACE /
-        // PROMISE / DNC / SDNC / TAYLOR(rational-coeff): may carry interior
-        // tagged values, but (a) they are exceedingly rare to escape a region by
-        // mutation and (b) their internal layouts are not traversed here. They
-        // fall through to a shallow leaf copy — a documented limitation, not a
-        // regression (this matches the pre-ESH-0214c behavior for every subtype).
+        // Deliberately kept EVAC_LEAF (no interior region pointers, or their
+        // interior graph is not confidently/safely traversable here, AND they
+        // are not observed to escape a region by mutation):
+        //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
+        //   PRNG      - self-contained state words, no interior pointers.
+        //   PROMISE   - thunk/closure + memoized value; the closure/value escape
+        //               through their own tagged slots via the normal barrier when
+        //               forced, and a delayed promise almost never escapes a region.
+        //   DNC/SDNC  - large differentiable weight/program buffers; escaping a
+        //               region by mutation is not a supported pattern.
+        //   TAYLOR    - truncated-Taylor tower; rational-coeff interior not traversed.
+        // A guarded assert below (region_evacuate leaf handler) fires under a debug
+        // build if any such subtype is actually seen escaping, so a real escape is
+        // discovered instead of silently corrupting.
         default:                       return EVAC_LEAF;
     }
 }
@@ -927,6 +958,28 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
     st.copies++;
 
     EvacKind k = evac_kind_for(v, old_data);
+#ifndef NDEBUG
+    // ESH-0214d: a subtype that carries interior region pointers must NOT be
+    // leaf-copied. These are the ones we deliberately left leaf but expect to
+    // never actually escape a region by mutation; warn loudly if one does, so a
+    // real escape is discovered instead of silently corrupting interior state.
+    if (k == EVAC_LEAF) {
+        const auto* dh = (const eshkol_object_header_t*)
+            ((const uint8_t*)new_data - sizeof(eshkol_object_header_t));
+        switch (dh->subtype) {
+            case HEAP_SUBTYPE_PROMISE:
+            case HEAP_SUBTYPE_DNC:
+            case HEAP_SUBTYPE_SDNC:
+            case HEAP_SUBTYPE_TAYLOR:
+                eshkol_warn("region evacuate: subtype %u escaped a region as a "
+                            "SHALLOW leaf copy (ESH-0214d watchlist); interior "
+                            "pointers may dangle -- deep coverage needed.",
+                            (unsigned)dh->subtype);
+                break;
+            default: break;
+        }
+    }
+#endif
     if (k != EVAC_LEAF) st.worklist.push_back({new_data, k});
     return new_data;
 }
@@ -948,6 +1001,22 @@ static eshkol_tagged_value_t evac_value(EvacState& st, eshkol_tagged_value_t v) 
     void* np = evac_object(st, p, v);
     v.data.ptr_val = (uint64_t)(uintptr_t)np;
     return v;
+}
+
+// Evacuate a header-prefixed object referenced only by a RAW data pointer (no
+// enclosing tagged value), e.g. the fact pointers held in a knowledge base's
+// facts[] array. Synthesizes a plain HEAP_PTR tagged value so evac_object can
+// classify it by its object header and drive the normal deep walk (forwarding,
+// cycles, shared structure all preserved). Objects already at/outside the
+// boundary are returned unchanged.
+static void* evac_object_ptr(EvacState& st, void* data_ptr) {
+    if (!data_ptr) return data_ptr;
+    if (region_index_owning(data_ptr) <= st.boundary_idx) return data_ptr;
+    eshkol_tagged_value_t synth;
+    std::memset(&synth, 0, sizeof(synth));
+    synth.type = ESHKOL_VALUE_HEAP_PTR;
+    synth.data.ptr_val = (uint64_t)(uintptr_t)data_ptr;
+    return evac_object(st, data_ptr, synth);
 }
 
 // Drive the deep evacuation of @p val into @p target, copying everything
@@ -1110,6 +1179,146 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 }
                 if (c->name && region_index_owning(c->name) > st.boundary_idx)
                     c->name = (const char*)evac_raw(st, c->name, std::strlen(c->name) + 1);
+                break;
+            }
+            case EVAC_SUBSTITUTION: {
+                // Layout [hdr][struct][var_ids u64[cap]][terms tagged[cap]] — all
+                // inline (already copied contiguously). var_ids are plain ints;
+                // only the bound terms carry heap pointers. Unused capacity slots
+                // beyond num_bindings are uninitialized and must not be walked.
+                auto* s = (eshkol_substitution_t*)nd;
+                eshkol_tagged_value_t* terms = SUBST_TERMS(s);
+                for (uint32_t i = 0; i < s->num_bindings; ++i)
+                    terms[i] = evac_value(st, terms[i]);
+                break;
+            }
+            case EVAC_FACT: {
+                // Layout [hdr][struct][args tagged[arity]] — args inline.
+                auto* f = (eshkol_fact_t*)nd;
+                eshkol_tagged_value_t* args = FACT_ARGS(f);
+                for (uint32_t i = 0; i < f->arity; ++i)
+                    args[i] = evac_value(st, args[i]);
+                // predicate is normally a pointer into the immortal interned
+                // predicate pool (static storage -> region_index_owning == -1 ->
+                // left in place, preserving pointer-equality matching). Only a
+                // non-interned predicate string allocated inside the dying region
+                // is copied (defensive; unify() has a string-compare fallback).
+                if (f->predicate) {
+                    void* pred = (void*)(uintptr_t)f->predicate;
+                    if (region_index_owning(pred) > st.boundary_idx)
+                        f->predicate = (uint64_t)(uintptr_t)evac_raw(
+                            st, pred, std::strlen((const char*)pred) + 1);
+                }
+                break;
+            }
+            case EVAC_KNOWLEDGE_BASE: {
+                // Layout [hdr][struct]; facts[] is a separate raw arena array of
+                // FACT data pointers (capacity slots, num_facts used).
+                auto* kb = (eshkol_knowledge_base_t*)nd;
+                if (kb->facts && region_index_owning(kb->facts) > st.boundary_idx)
+                    kb->facts = (eshkol_fact_t**)evac_raw(
+                        st, kb->facts, (size_t)kb->capacity * sizeof(eshkol_fact_t*));
+                if (kb->facts) {
+                    for (uint32_t i = 0; i < kb->num_facts; ++i)
+                        kb->facts[i] = (eshkol_fact_t*)evac_object_ptr(st, kb->facts[i]);
+                }
+                break;
+            }
+            case EVAC_WORKSPACE: {
+                // Layout [hdr][struct][modules module_t[max_modules]] — modules
+                // inline (already copied). content is a separate raw double buffer;
+                // each used module carries an arena name string + process_fn closure.
+                auto* ws = (eshkol_workspace_t*)nd;
+                if (ws->content && region_index_owning(ws->content) > st.boundary_idx)
+                    ws->content = (double*)evac_raw(
+                        st, ws->content, (size_t)ws->dim * sizeof(double));
+                eshkol_workspace_module_t* mods = WS_MODULES(ws);
+                for (uint32_t i = 0; i < ws->num_modules; ++i) {
+                    if (mods[i].name &&
+                        region_index_owning(mods[i].name) > st.boundary_idx)
+                        mods[i].name = (char*)evac_raw(
+                            st, mods[i].name, std::strlen(mods[i].name) + 1);
+                    mods[i].process_fn = evac_value(st, mods[i].process_fn);
+                }
+                break;
+            }
+            case EVAC_FACTOR_GRAPH: {
+                // A factor graph carries NO interior tagged values — only nested
+                // raw numeric buffers (arrays and arrays-of-arrays). Sizes are
+                // reconstructed from the graph's own counts, mirroring the
+                // allocation layout in inference.cpp.
+                auto* fg = (eshkol_factor_graph_t*)nd;
+                const uint32_t nvars = fg->num_vars;
+                if (fg->var_dims && region_index_owning(fg->var_dims) > st.boundary_idx)
+                    fg->var_dims = (uint32_t*)evac_raw(
+                        st, fg->var_dims, (size_t)nvars * sizeof(uint32_t));
+                if (fg->beliefs && region_index_owning(fg->beliefs) > st.boundary_idx)
+                    fg->beliefs = (double**)evac_raw(
+                        st, fg->beliefs, (size_t)nvars * sizeof(double*));
+                if (fg->beliefs && fg->var_dims) {
+                    for (uint32_t i = 0; i < nvars; ++i) {
+                        if (fg->beliefs[i] &&
+                            region_index_owning(fg->beliefs[i]) > st.boundary_idx)
+                            fg->beliefs[i] = (double*)evac_raw(
+                                st, fg->beliefs[i], (size_t)fg->var_dims[i] * sizeof(double));
+                    }
+                }
+                if (fg->observed && region_index_owning(fg->observed) > st.boundary_idx)
+                    fg->observed = (bool*)evac_raw(
+                        st, fg->observed, (size_t)nvars * sizeof(bool));
+                // factors[] holds max_factors ptrs (num_factors used). Each factor
+                // is a HEADERLESS raw buffer [eshkol_factor_t][var_indices...] with
+                // interior cpt/dims raw buffers.
+                if (fg->factors && region_index_owning(fg->factors) > st.boundary_idx)
+                    fg->factors = (eshkol_factor_t**)evac_raw(
+                        st, fg->factors, (size_t)fg->max_factors * sizeof(eshkol_factor_t*));
+                if (fg->factors) {
+                    for (uint32_t fi = 0; fi < fg->num_factors; ++fi) {
+                        eshkol_factor_t* f = fg->factors[fi];
+                        if (!f) continue;
+                        if (region_index_owning(f) > st.boundary_idx) {
+                            const size_t fsz = sizeof(eshkol_factor_t) +
+                                               (size_t)f->num_vars * sizeof(uint32_t);
+                            f = (eshkol_factor_t*)evac_raw(st, f, fsz);
+                            fg->factors[fi] = f;
+                        }
+                        if (f->cpt && region_index_owning(f->cpt) > st.boundary_idx)
+                            f->cpt = (double*)evac_raw(
+                                st, f->cpt, (size_t)f->cpt_size * sizeof(double));
+                        if (f->dims && region_index_owning(f->dims) > st.boundary_idx)
+                            f->dims = (uint32_t*)evac_raw(
+                                st, f->dims, (size_t)f->num_vars * sizeof(uint32_t));
+                    }
+                }
+                // msg_fv / msg_vf: parallel arrays of total_messages double* (NULL
+                // until eshkol_fg_infer allocates them). Edge k -> var_dims[var]
+                // doubles, where the (factor, var-slot) -> edge order mirrors
+                // ensure_messages() in inference.cpp (intentional coupling).
+                auto evac_msg_array = [&](double**& arr) {
+                    if (!arr) return;
+                    if (region_index_owning(arr) > st.boundary_idx)
+                        arr = (double**)evac_raw(
+                            st, arr, (size_t)fg->total_messages * sizeof(double*));
+                    uint32_t k = 0;
+                    for (uint32_t fi = 0;
+                         fi < fg->num_factors && k < fg->total_messages; ++fi) {
+                        eshkol_factor_t* f = fg->factors ? fg->factors[fi] : nullptr;
+                        if (!f) continue;
+                        const uint32_t* vidx = FACTOR_VAR_INDICES(f);
+                        for (uint32_t vi = 0;
+                             vi < f->num_vars && k < fg->total_messages; ++vi, ++k) {
+                            const uint32_t var_id = vidx[vi];
+                            const uint32_t dim =
+                                (fg->var_dims && var_id < nvars) ? fg->var_dims[var_id] : 0;
+                            if (arr[k] && dim &&
+                                region_index_owning(arr[k]) > st.boundary_idx)
+                                arr[k] = (double*)evac_raw(
+                                    st, arr[k], (size_t)dim * sizeof(double));
+                        }
+                    }
+                };
+                evac_msg_array(fg->msg_fv);
+                evac_msg_array(fg->msg_vf);
                 break;
             }
             case EVAC_LEAF:

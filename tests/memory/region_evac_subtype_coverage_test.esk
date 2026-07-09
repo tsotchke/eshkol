@@ -1,0 +1,134 @@
+;;; tests/memory/region_evac_subtype_coverage_test.esk — ESH-0214d region
+;;; evacuator subtype-coverage correctness fixture, gated by
+;;; region_evac_subtype_coverage_test.sh (runs this AOT under
+;;; ESHKOL_ARENA_POISON=1 with a flat-RSS ceiling).
+;;;
+;;; ESH-0214c (PR #210) made with-region escape promotion DEEP for CONS /
+;;; VECTOR / MULTI_VALUE / HASH / TENSOR / EXCEPTION / CLOSURE, but the
+;;; evacuator's type dispatch dropped the neuro-symbolic / workspace subtypes
+;;; (SUBSTITUTION / FACT / KNOWLEDGE_BASE / FACTOR_GRAPH / WORKSPACE) to a
+;;; SHALLOW leaf byte-copy. Those subtypes carry interior tagged values and/or
+;;; raw arena buffers (fact args, KB fact arrays, workspace content + per-module
+;;; process_fn closures, factor-graph numeric buffers). A shallow copy left
+;;; those interior pointers aimed into the per-iteration region arena; after
+;;; region_pop that memory is freed (and, under ESHKOL_ARENA_POISON, filled
+;;; with 0xCB), so the promoted object dangled.
+;;;
+;;; Two phases:
+;;;   PHASE 1 (flat-RSS, ~1,000,000 iterations): each iteration allocates heavy
+;;;   transient garbage inside a per-iteration (with-region ...) (dead at region
+;;;   exit -> reclaimed by region_pop -> flat RSS) and promotes ONE small fresh
+;;;   FACT (interior tagged-value args) into a rotating outer slot via the
+;;;   region write barrier. This exercises FACT interior-pointer evacuation a
+;;;   million times while keeping the promoted (never-freed global-arena)
+;;;   footprint tiny, so RSS stays flat.
+;;;
+;;;   PHASE 2 (bounded, heavy subtypes): a few thousand iterations that promote
+;;;   the LARGE subtypes — WORKSPACE (with a registered closure module),
+;;;   KNOWLEDGE_BASE (with a fact), FACTOR_GRAPH (with a factor), plus a RECORD
+;;;   and a CONS list — out of a per-iteration region, then reads/EXERCISES
+;;;   their interiors (ws-step! invokes the promoted module closure; kb-query
+;;;   and fg-infer! walk promoted interior buffers). Bounded count keeps the
+;;;   global-arena promotion footprint small.
+;;;
+;;; Under poison a missed interior pointer crashes at an obvious 0xCB.. address
+;;; instead of silently reading stale data. PASS is printed only if every read
+;;; is intact and the flat-RSS phase completed all iterations.
+
+(define-record-type point (make-point x y) point? (x point-x) (y point-y))
+
+;; ─────────────────────────── PHASE 1: flat-RSS FACT loop ───────────────────
+(define total-passes 1000000)
+(define slots 8)
+(define fact-slots (make-vector slots 0))
+
+(define (tick i)
+  (guard (e (#t (begin (display "GUARD-CAUGHT-P1 at ") (display i) (newline) i)))
+    (if (>= i total-passes)
+        i
+        (begin
+          (with-region 'tick
+            ;; heavy transient garbage: dead at region exit, reclaimed by region_pop
+            (let ((scratch (make-list 40 i)))
+              ;; small fresh FACT promoted into a rotating outer slot; its
+              ;; interior args must be evacuated out of the dying region.
+              (vector-set! fact-slots (modulo i slots)
+                           (make-fact 'p i (length scratch)))))
+          (tick (+ i 1))))))
+
+(define result (tick 0))
+
+;; read-back: every slot holds the fact from the last iteration that wrote it.
+;; last i writing slot s = largest i < total-passes with (modulo i slots) = s.
+(define (verify-facts s ok)
+  (if (>= s slots)
+      ok
+      (let* ((fct (vector-ref fact-slots s))
+             (last-i (+ s (* (quotient (- total-passes 1 s) slots) slots)))
+             ;; unify the promoted fact against its expected ground form; a
+             ;; success (substitution) proves predicate + both interior args
+             ;; survived promotion intact.
+             (u (unify fct (make-fact 'p last-i 40) (make-substitution))))
+        (verify-facts (+ s 1) (and ok (fact? fct) (substitution? u))))))
+
+(define facts-ok (verify-facts 0 #t))
+
+;; ───────────────────── PHASE 2: bounded heavy-subtype variant ───────────────
+(define heavy-passes 5000)
+(define heavy (make-vector 5 0))
+
+(define (heavy-tick i)
+  (guard (e (#t (begin (display "GUARD-CAUGHT-P2 at ") (display i) (newline) i)))
+    (if (>= i heavy-passes)
+        i
+        (begin
+          (with-region 'heavy
+            (let ((scratch (make-list 20 i)))
+              ;; WORKSPACE: content buffer + module name + process_fn closure.
+              (let ((ws (make-workspace 4 2)))
+                (ws-register! ws "m" (lambda (c) (cons 1.0 c)))
+                (vector-set! heavy 0 ws))
+              ;; KNOWLEDGE_BASE: facts[] raw array + FACT with interior args.
+              (let ((kb (make-kb)))
+                (kb-assert! kb (make-fact 'r i (+ i 1)))
+                (vector-set! heavy 1 kb))
+              ;; FACTOR_GRAPH: nested raw numeric buffers (var_dims/beliefs/factors).
+              (let ((fg (make-factor-graph 3 #(2 2 2))))
+                (fg-add-factor! fg #(0 1) #(0.1 0.2 0.3 0.4))
+                (vector-set! heavy 2 fg))
+              ;; RECORD (allocates as VECTOR) + CONS list control.
+              (vector-set! heavy 3 (make-point i (* i 2)))
+              (vector-set! heavy 4 (list i (car scratch) (length scratch)))))
+          (heavy-tick (+ i 1))))))
+
+(define heavy-result (heavy-tick 0))
+(define heavy-last (- heavy-passes 1))
+
+;; Exercise promoted interiors.
+(ws-step! (vector-ref heavy 0))                  ; invokes promoted module closure
+(define ws-ok (workspace? (vector-ref heavy 0)))
+(define kb-q (kb-query (vector-ref heavy 1) (make-fact 'r heavy-last (+ heavy-last 1))))
+(define kb-ok (pair? kb-q))                      ; walks promoted facts[] + args
+(fg-infer! (vector-ref heavy 2) 3)               ; walks promoted factor buffers
+(define fg-ok (factor-graph? (vector-ref heavy 2)))
+(define pt (vector-ref heavy 3))
+(define rec-ok (and (point? pt) (= (point-x pt) heavy-last) (= (point-y pt) (* heavy-last 2))))
+(define lst (vector-ref heavy 4))
+(define lst-ok (and (= (car lst) heavy-last) (= (cadr lst) heavy-last) (= (caddr lst) 20)))
+
+(display "[region_evac_subtype_coverage_test] p1=")
+(display result) (display "/") (display total-passes)
+(display " p2=") (display heavy-result) (display "/") (display heavy-passes)
+(newline)
+(display "  facts=") (display facts-ok)
+(display " ws=")   (display ws-ok)
+(display " kb=")   (display kb-ok)
+(display " fg=")   (display fg-ok)
+(display " rec=")  (display rec-ok)
+(display " lst=")  (display lst-ok)
+(newline)
+
+(if (and (= result total-passes) (= heavy-result heavy-passes)
+         facts-ok ws-ok kb-ok fg-ok rec-ok lst-ok)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline) (exit 1)))
