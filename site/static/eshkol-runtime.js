@@ -640,12 +640,32 @@ class EshkolRuntime {
                 eshkol_lazy_future_set_result_ptr: () => {},
 
                 // OALR regions — JIT path uses these.  In WASM we don't
-                // have a region system; degrade to no-op (region_create
-                // returns a fake handle, push/pop/escape are no-ops).
+                // have a region system; degrade (region_create returns a fake
+                // handle, push/pop are no-ops). But escape / write-barrier
+                // receive an UNINITIALIZED `out` slot that the caller reads back
+                // — the runtime fn is the SOLE writer of `out`, so a no-op would
+                // drop the value. With nothing ever freed, the correct
+                // degradation is a shallow 16-byte tagged-value copy src -> out.
                 region_create: (_name, _size_hint) => 1,
                 region_push:   () => {},
                 region_pop:    () => {},
-                region_escape_tagged_value_into: (_dst, _src) => {},
+                region_escape_tagged_value_into: (out, val) => {
+                    const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
+                    if (!buf || !out || !val) return;
+                    const o = Number(out), v = Number(val);
+                    new Uint8Array(buf).copyWithin(o, v, v + 16);
+                },
+                // eshkol_region_write_barrier_into(out, dst, value): shallow-copy
+                // value -> out (dst is only a region-ownership probe).
+                eshkol_region_write_barrier_into: (out, _dst, value) => {
+                    const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
+                    if (!buf || !out || !value) return;
+                    const o = Number(out), v = Number(value);
+                    new Uint8Array(buf).copyWithin(o, v, v + 16);
+                },
+                // Range form (vector-copy!): slots already populated by the
+                // preceding memmove; nothing to promote -> genuine no-op.
+                eshkol_region_write_barrier_range: () => {},
 
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
