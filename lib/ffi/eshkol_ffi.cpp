@@ -39,6 +39,8 @@ extern "C" void eshkol_get_raised_value(eshkol_tagged_value_t* out);
 /* ── Thread-local error message ── */
 static thread_local char g_ffi_error[4096] = {0};
 
+/** @brief Formats a printf-style message into the thread-local FFI error
+ *  buffer (g_ffi_error), truncating to fit if necessary. */
 static void ffi_set_error(const char* fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -56,6 +58,8 @@ struct eshkol_ffi_context {
 
 /* ── Convert between FFI and runtime value types ── */
 /* These are layout-compatible (both 16 bytes, same field order). */
+/** @brief Reinterprets a runtime tagged value as the public FFI value type
+ *  (same 16-byte layout, byte-for-byte copy). */
 static inline eshkol_ffi_value_t to_ffi(eshkol_tagged_value_t v) {
     eshkol_ffi_value_t result;
     static_assert(sizeof(result) == sizeof(v), "FFI and tagged value must be same size");
@@ -63,6 +67,8 @@ static inline eshkol_ffi_value_t to_ffi(eshkol_tagged_value_t v) {
     return result;
 }
 
+/** @brief Reinterprets a public FFI value as the runtime tagged value type
+ *  (same 16-byte layout, byte-for-byte copy). */
 static inline eshkol_tagged_value_t from_ffi(eshkol_ffi_value_t v) {
     eshkol_tagged_value_t result;
     memcpy(&result, &v, sizeof(v));

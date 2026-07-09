@@ -43,6 +43,8 @@ static uint64_t measure_state(qrng_ctx *ctx, double quantum_state, uint64_t last
 static void quantum_step(qrng_ctx *ctx);
 
 #ifdef _WIN32
+/** @brief Windows implementation of gettimeofday(): converts the current
+ *  FILETIME to a Unix-epoch struct timeval (seconds + microseconds). */
 static int qrng_gettimeofday(struct timeval *tv) {
     FILETIME file_time;
     ULARGE_INTEGER ticks;
@@ -59,6 +61,7 @@ static int qrng_gettimeofday(struct timeval *tv) {
 
 #define qrng_getpid _getpid
 #else
+/** @brief POSIX passthrough to the system gettimeofday(). */
 static int qrng_gettimeofday(struct timeval *tv) {
     return gettimeofday(tv, NULL);
 }
@@ -66,7 +69,9 @@ static int qrng_gettimeofday(struct timeval *tv) {
 #define qrng_getpid getpid
 #endif
 
-// Enhanced quantum noise function with multiple transformations
+/** @brief Chaotic noise transform: runs x through trigonometric mixing,
+ *  a Heisenberg-style combination, and a square-root "tunneling" step to
+ *  produce a pseudo-random value normalized to [0, 1). */
 static inline double quantum_noise(double x) {
     volatile double noise = x;
     
@@ -88,7 +93,8 @@ static inline double quantum_noise(double x) {
     return noise;
 }
 
-// Enhanced splitmix64 with better avalanche
+/** @brief SplitMix64-style 64-bit hash: xor-shift/multiply rounds (with an
+ *  extra constant folded in) that scramble x into a well-avalanched value. */
 static inline uint64_t splitmix64(uint64_t x) {
     x ^= x >> 30;
     x *= 0xbf58476d1ce4e5b9ULL;
@@ -100,7 +106,8 @@ static inline uint64_t splitmix64(uint64_t x) {
     return x;
 }
 
-// Enhanced Hadamard mixing function
+/** @brief Additional avalanche-mixing pass on top of splitmix64(), folding
+ *  in the Pauli/fine-structure constants for deeper bit diffusion. */
 static inline uint64_t hadamard_mix(uint64_t x) {
     x = splitmix64(x);
     x ^= QRNG_PAULI_X * (x >> 12);
@@ -113,7 +120,9 @@ static inline uint64_t hadamard_mix(uint64_t x) {
     return x;
 }
 
-// Enhanced system entropy collection
+/** @brief Gathers a one-time seed of system-level entropy (wall clock,
+ *  process id, CPU clock ticks, a stack address, and — on x86 — the RDTSC
+ *  cycle counter), XORed together into a single 64-bit value. */
 static uint64_t get_system_entropy(void) {
     struct timeval tv;
     qrng_gettimeofday(&tv);
@@ -134,7 +143,9 @@ static uint64_t get_system_entropy(void) {
     return entropy;
 }
 
-// Enhanced runtime entropy collection
+/** @brief Derives fresh per-call entropy from the current wall-clock time
+ *  mixed with the context's stored system entropy, unique id, and counter,
+ *  scrambled through hadamard_mix(). */
 static uint64_t get_runtime_entropy(qrng_ctx *ctx) {
     struct timeval tv;
     qrng_gettimeofday(&tv);
@@ -148,7 +159,9 @@ static uint64_t get_runtime_entropy(qrng_ctx *ctx) {
     return runtime;
 }
 
-// Enhanced Hadamard gate with improved quantum properties
+/** @brief Simulates a Hadamard-gate-like transform on x: converts it to a
+ *  normalized double, runs it through quantum_noise() to build a
+ *  superposition value, applies a phase rotation, and remixes the result. */
 static inline uint64_t hadamard_gate(uint64_t x) {
     volatile double state = (double)x / UINT64_MAX;
     state = quantum_noise(state);
@@ -167,7 +180,9 @@ static inline uint64_t hadamard_gate(uint64_t x) {
     return superposition;
 }
 
-// Enhanced phase gate with improved entropy
+/** @brief Simulates a phase-gate transform: derives a phase-dependent
+ *  mixing value from angle via quantum_noise() and several avalanche
+ *  rounds, then XORs it onto x. */
 static inline uint64_t phase_gate(uint64_t x, uint64_t angle) {
     volatile double phase = (double)angle / UINT64_MAX;
     phase = quantum_noise(phase);
@@ -184,7 +199,9 @@ static inline uint64_t phase_gate(uint64_t x, uint64_t angle) {
     return x ^ mixed;
 }
 
-// Enhanced measurement function with improved entropy collection
+/** @brief Simulates a quantum measurement: collapses quantum_state (combined
+ *  with fresh runtime entropy) into a 64-bit value, updating ctx's entropy
+ *  pool and pool mixer as a side effect, and returns the mixed result. */
 static uint64_t measure_state(qrng_ctx *ctx, double quantum_state, uint64_t last) {
     // Update runtime entropy
     ctx->runtime_entropy = get_runtime_entropy(ctx);
@@ -217,7 +234,11 @@ static uint64_t measure_state(qrng_ctx *ctx, double quantum_state, uint64_t last
     return result;
 }
 
-// Core state management and output generation
+/** @brief Advances the generator's internal quantum state by
+ *  QRNG_MIXING_ROUNDS rounds of qubit updates (Hadamard gate, noise
+ *  injection, measurement, and entanglement between adjacent qubits), then
+ *  refills ctx->buffer with fresh 64-bit words and resets buffer_pos.
+ *  Called by qrng_bytes() whenever the output buffer is exhausted. */
 static void quantum_step(qrng_ctx *ctx) {
     if (!ctx) return;
     
