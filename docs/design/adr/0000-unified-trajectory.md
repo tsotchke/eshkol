@@ -34,8 +34,8 @@ the live tree, together with a resident-mind red-team that ran the proposals
 against a live resident substrate and returned concrete failure modes. The panel
 reached consensus on eight of nine cluster dispositions and on the near-term AD
 plan; it split on exactly one question — the automatic-differentiation end-state —
-which is surfaced below as a decision that requires a maintainer, not one this
-document silently makes.
+which was surfaced as a maintainer decision and resolved 2026-07-09 in favor of the
+dense resident tape (#214) as the spine (Section 5).
 
 The unifying principles this trajectory enforces:
 
@@ -63,7 +63,7 @@ implementation scheduled to the far horizon).
 | ADR | Cluster | Verdict | One-line rationale | Lands in |
 |---|---|---|---|---|
 | 0001 | OALR / concurrent resident | ACCEPT-WITH-REVISIONS | Strongest-grounded ADR; the memctx/region/residence split kills the decisive `__global_arena` race; but the header ABI break and resident forever-flat presuppose the type system (0004) and must be split so each half fails alone. | v1.3.2 (Phase A), v1.4.1 (B-D), v1.5.1 + v1.8.0 (E) |
-| 0002 | AD (dense staged kernel #214 + typed static schedule #216) | ACCEPT (near-term reconciled); END-STATE SPLIT | Both are one architecture at two altitudes, 90% convergent; adopt #214 as the spine and graft four artifacts from #216 for the near term. The v1.9/v2.0 endpoint is the one open decision (Section 5). | v1.3.2 (Phase A), v1.5.0, v1.6.0-v1.6.1, v1.7.0, v2.0 |
+| 0002 | AD (dense staged kernel #214 + typed static schedule #216) | ACCEPT (near-term reconciled); END-STATE RESOLVED (#214 spine) | Both are one architecture at two altitudes, 90% convergent; adopt #214 as the spine and graft four artifacts from #216 for the near term. The v1.9/v2.0 endpoint is resolved (Section 5): dense resident tape (#214) as spine, typed static reverse (#216) as v2.0 north-star. | v1.3.2 (Phase A), v1.5.0, v1.6.0-v1.6.1, v1.7.0, v2.0 |
 | 0003 | codegen / VM parity | ACCEPT-WITH-REVISIONS (as data, not architecture) | Not an ADR but a falsifiable VM/LLVM divergence matrix; keep it as the standing parity gate for 0006 + 0002; do not fund it as independent codegen work. | gate threaded across v1.4.0, v1.6.x, v1.9.0 |
 | 0004 | one quantitative dependent type system | ACCEPT-WITH-REVISIONS | "One checker, not seven" is the right long-run architecture; the revision is scope realism — the v1.3.2 semantic spine is the single largest work item and must be decomposed and co-sequenced with 0006 and 0008. | v1.3.3 (spine), v1.4.0, v1.7.0, v1.9.0, v2.0 |
 | 0005 | lambda foundations to programs-as-weights | DEFER (architecture now, implementation late) | Clearest treatment of "programs to weights" with the correct category discipline; but entirely downstream — needs the staged AD kernel, resident sessions, and canonical LCIR that do not yet exist. | v1.7.0, v1.8.0, v1.8.1, v1.9.2 |
@@ -519,10 +519,10 @@ is the gate, not the label.
   - **0004 v2.0** — `QRegion` / `Qubit` / `QReg`, gate transitions, Lean kernel
     export, mechanized core metatheory.
   - **0007 Phase 4** — application / kernel IR PGO; training-grade qualification.
-  - **0002 END-STATE** — *see Section 5: this is the one open decision.* The near
-    term (dense per-node tape, strict-or-error, staged value_and_grad, no FD) is
-    settled; the v2.0 endpoint (resident dense mutable tape vs typed static reverse
-    schedule) requires a maintainer decision before this stage is planned in detail.
+  - **0002 END-STATE** — *see Section 5 (resolved 2026-07-09).* The endpoint is the
+    resident dense mutable tape (Position A / #214) as the spine; the typed static
+    reverse schedule (#216) is the v2.0 north-star optimization for static-shape
+    straight-line kernels, pursued after the resident-tape spine ships a training win.
 - Depends on: all prior; specifically Stage 12 (IncrementalizePass +
   language-complete types), Stage 8 (staged kernel), Stage 11 (WPO).
 - Gate: the numeric-AD and DBSP-composition oracles both pass across
@@ -533,11 +533,15 @@ is the gate, not the label.
 
 ---
 
-## 5. THE ONE OPEN DECISION — AD END-STATE (requires a maintainer decision)
+## 5. AD END-STATE — DECISION (resolved 2026-07-09)
 
 **The judge panel split on exactly one question: the automatic-differentiation
-end-state at v1.9/v2.0. This document does not resolve it. It requires a maintainer
-decision.**
+end-state at v1.9/v2.0. That question is now resolved. The maintainer decision,
+recorded 2026-07-09, is to adopt Position A — the dense resident tape (direction of
+#214) as the spine, grafting the four Position B (#216) artifacts named below.
+Position B's typed static reverse schedule is retained as the v2.0 north-star
+optimization, not as the transitional form. The record of both positions is kept
+below for provenance.**
 
 The two AD cluster proposals are not two architectures; they are two descriptions
 of one architecture at different altitudes, and they agree on the entire near term.
@@ -607,10 +611,13 @@ The decision is therefore not "which is right" but "which transitional form does
 the codebase carry from Stage 8 to v2.0": a resident mutable tape that is later
 replaced, or a typed schedule that is compiled from the start.
 
-**This decision must be made by a maintainer before v2.0 (Stage 14b) is planned in
-detail. It does not affect Stages 1 through 12 and must not block them.** The
-recommendation above is the panel's majority view, recorded as a recommendation and
-not as a resolution.
+**RESOLVED (2026-07-09):** the maintainer has adopted Position A (the dense resident
+tape, direction of #214) as the spine, with the four Position B grafts scheduled into
+Stages 7-8. Position B's typed static reverse schedule remains the v2.0 north-star
+optimization for static-shape straight-line kernels (the Enzyme-style emitted reverse
+both positions target), pursued only after the resident-tape spine ships a training
+win. This resolution does not change Stages 1 through 12; it fixes which transitional
+form the codebase carries from Stage 8 to v2.0 (a resident mutable tape).
 
 ---
 
