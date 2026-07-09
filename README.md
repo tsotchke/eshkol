@@ -12,6 +12,8 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 
 📣 **v1.3.0-evolve released** — see [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 
+**[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
+
 <br>
 
 <img alt="Eshkol" src="./site/static/img/eshkol-logo-light-transparent.png" width="320">
