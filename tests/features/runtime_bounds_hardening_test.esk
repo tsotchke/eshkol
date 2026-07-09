@@ -1,0 +1,66 @@
+;;; runtime_bounds_hardening_test.esk
+;;;
+;;; Regression tests for the runtime bounds/overflow hardening audit.
+;;;
+;;; Each of the following operations previously performed an unchecked memory
+;;; access reachable straight from Scheme, confirmed under AddressSanitizer:
+;;;
+;;;   - (string-set! s k c)   raw byte WRITE at offset k, no bounds check
+;;;                           -> ASAN BUS/SEGV on WRITE (out-of-bounds heap write)
+;;;   - (tensor-ref t k)      flat element READ at index k, no bounds check
+;;;                           -> ASAN SEGV on READ
+;;;   - (tensor-get t k)      single-index READ, linear offset unchecked
+;;;                           -> ASAN SEGV on READ
+;;;   - (make-string -1 c)    negative length -> memset with ~2^64 size (hang/OOM)
+;;;   - (make-vector -1 x)    negative length -> ~2^63 out-of-bounds stores (hang/OOM)
+;;;
+;;; They now raise a catchable condition instead of corrupting memory. This
+;;; test asserts the error IS raised for out-of-range arguments and that valid
+;;; in-range arguments still behave exactly as before. It requires no
+;;; sanitizer to run.
+
+(require stdlib)
+
+;; Assert that evaluating `thunk` raises a condition (rather than crashing or
+;; silently succeeding).
+(define (expect-raise name thunk)
+  (let ((r (guard (e (#t 'raised)) (thunk) 'no-raise)))
+    (if (eq? r 'raised)
+        (begin (display "PASS: ") (display name) (newline))
+        (begin (display "FAIL: ") (display name) (display " (expected raise)") (newline)))))
+
+;; Assert an ordinary (non-erroring) result is unchanged.
+(define (expect-equal name actual expected)
+  (if (equal? actual expected)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (write expected)
+             (display " actual=") (write actual) (newline))))
+
+;; ---- out-of-bounds / out-of-range arguments must raise, not crash ----
+(expect-raise "string-set! huge index raises"
+  (lambda () (string-set! (make-string 4 #\a) 900000000000 #\z)))
+(expect-raise "string-set! negative index raises"
+  (lambda () (string-set! (make-string 4 #\a) -5 #\z)))
+(expect-raise "tensor-ref huge index raises"
+  (lambda () (tensor-ref (arange 3) 900000000000)))
+(expect-raise "tensor-ref negative index raises"
+  (lambda () (tensor-ref (arange 3) -1)))
+(expect-raise "tensor-get huge index raises"
+  (lambda () (tensor-get (arange 3) 900000000000)))
+(expect-raise "make-string negative length raises"
+  (lambda () (make-string -1 #\a)))
+(expect-raise "make-vector negative length raises"
+  (lambda () (make-vector -1 0)))
+
+;; ---- valid in-range arguments must still work unchanged ----
+(let ((s (make-string 4 #\a)))
+  (string-set! s 2 #\z)
+  (expect-equal "string-set! valid index unchanged" (string-ref s 2) #\z))
+(expect-equal "tensor-ref valid index unchanged" (tensor-ref (arange 3) 2) 2.0)
+(expect-equal "tensor-get valid index unchanged" (tensor-get (arange 3) 1) 1.0)
+(expect-equal "make-vector valid length unchanged" (vector-length (make-vector 3 0)) 3)
+(expect-equal "make-string valid length unchanged" (string-length (make-string 5 #\x)) 5)
+
+(display "runtime bounds hardening test complete")
+(newline)

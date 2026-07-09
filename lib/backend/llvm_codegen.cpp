@@ -26992,6 +26992,34 @@ private:
         return builder->CreatePtrToInt(typed_tensor_ptr, int64_type);
     }
     
+    // Emit an out-of-bounds raise for the vref/tensor-ref access paths and
+    // terminate the current block with `unreachable`. The caller is expected to
+    // have positioned the builder in a dedicated failure block. Mirrors the
+    // eshkol_raise / eshkol_make_exception_with_header idiom used by the
+    // collection and string bounds-check paths.
+    void emitVrefBoundsRaise(const char* message) {
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+        Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", module.get());
+        }
+        Value* msg = builder->CreateGlobalString(message);
+        Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        Value* exc = builder->CreateCall(make_exc_func, {exc_type, msg});
+        builder->CreateCall(raise_func, {exc});
+        builder->CreateUnreachable();
+    }
+
     Value* codegenTensorVectorRef(const eshkol_operations_t* op) {
         // vref: (vref tensor index) - shorthand for (tensor-get tensor index)
         // Simplified 1D tensor access for numerical arrays
@@ -27141,6 +27169,23 @@ private:
         // Get index as int64
         Value* scheme_index_int = safeExtractInt64(index);
 
+        // Bounds check: 0 <= idx < length.  The Scheme-vector length word lives
+        // at offset 0; without this guard (tensor-ref (vector ...) idx) with an
+        // out-of-range idx was an out-of-bounds heap READ (ASAN: SEGV).
+        {
+            Value* svec_len = builder->CreateLoad(int64_type, scheme_vec_ptr);
+            Value* svec_neg = builder->CreateICmpSLT(scheme_index_int,
+                ConstantInt::get(int64_type, 0));
+            Value* svec_big = builder->CreateICmpSGE(scheme_index_int, svec_len);
+            Value* svec_bad = builder->CreateOr(svec_neg, svec_big);
+            BasicBlock* svec_ok = BasicBlock::Create(*context, "vref_svec_bounds_ok", current_func);
+            BasicBlock* svec_fail = BasicBlock::Create(*context, "vref_svec_bounds_fail", current_func);
+            builder->CreateCondBr(svec_bad, svec_fail, svec_ok);
+            builder->SetInsertPoint(svec_fail);
+            emitVrefBoundsRaise("tensor-ref: index out of bounds");
+            builder->SetInsertPoint(svec_ok);
+        }
+
         // Get pointer to elements (after length field - 8 bytes offset)
         Value* scheme_elem_base = builder->CreateGEP(int8_type, scheme_vec_ptr,
             ConstantInt::get(int64_type, 8));
@@ -27162,12 +27207,33 @@ private:
         // Use class member tensor_type (shared by all tensor operations)
         
         Value* vector_ptr = builder->CreateIntToPtr(vector_ptr_int, builder->getPtrTy());
-        
+
         // Get elements array
         Value* elements_field = builder->CreateStructGEP(tensor_type, vector_ptr, 2);
         Value* elements_ptr = builder->CreateLoad(PointerType::getUnqual(*context), elements_field);
         Value* typed_elements_ptr = builder->CreatePointerCast(elements_ptr, builder->getPtrTy());
-        
+
+        // Bounds check: 0 <= idx < total_elements.  This 2-arg tensor-ref/vref
+        // path indexed the flat element buffer with no guard, so a negative or
+        // out-of-range index (e.g. (tensor-ref t 900000000000)) was an
+        // out-of-bounds heap READ (ASAN: SEGV on READ). Field 3 is
+        // total_elements. Mirrors the guard the collection vector-ref path and
+        // tensor-set! already enforce.
+        {
+            Value* total_field = builder->CreateStructGEP(tensor_type, vector_ptr, 3);
+            Value* total_elems = builder->CreateLoad(int64_type, total_field);
+            Value* tref_neg = builder->CreateICmpSLT(index_int,
+                ConstantInt::get(int64_type, 0));
+            Value* tref_big = builder->CreateICmpSGE(index_int, total_elems);
+            Value* tref_bad = builder->CreateOr(tref_neg, tref_big);
+            BasicBlock* tref_ok = BasicBlock::Create(*context, "vref_tensor_bounds_ok", current_func);
+            BasicBlock* tref_fail = BasicBlock::Create(*context, "vref_tensor_bounds_fail", current_func);
+            builder->CreateCondBr(tref_bad, tref_fail, tref_ok);
+            builder->SetInsertPoint(tref_fail);
+            emitVrefBoundsRaise("tensor-ref: index out of bounds");
+            builder->SetInsertPoint(tref_ok);
+        }
+
         // Load element as int64 (could be double bitcasted OR AD node pointer)
         Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, index_int);
         Value* elem_as_int64 = builder->CreateLoad(int64_type, elem_ptr);

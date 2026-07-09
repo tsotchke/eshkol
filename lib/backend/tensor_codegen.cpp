@@ -654,6 +654,51 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
         num_indices_val = llvm::ConstantInt::get(ctx_.int64Type(), num_indices);
     }
 
+    // ===== BOUNDS CHECK: linear_offset in [0, total_elements) =====
+    // The single-index (num_indices == 1) path routes through
+    // eshkol_tensor_linear_from_index_arg, which trusts the caller and does
+    // NOT bounds-check the resulting offset. Without this guard a negative or
+    // out-of-range scalar/list index (e.g. (tensor-get t 900000000000)) walked
+    // straight into an out-of-bounds load below (ASAN: SEGV on READ). An
+    // unsigned compare catches both negatives (wrap to huge) and overshoot,
+    // and — since any valid slice start is < total_elements — it is safe for
+    // the partial-index slice path too. Mirrors the guard tensor-set! already
+    // performs on its own linear index.
+    {
+        llvm::Value* oob = ctx_.builder().CreateICmpUGE(linear_offset, total_elements);
+        llvm::Function* cur_fn = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* tget_bounds_ok = llvm::BasicBlock::Create(ctx_.context(), "tget_bounds_ok", cur_fn);
+        llvm::BasicBlock* tget_bounds_err = llvm::BasicBlock::Create(ctx_.context(), "tget_bounds_err", cur_fn);
+        ctx_.builder().CreateCondBr(oob, tget_bounds_err, tget_bounds_ok);
+
+        ctx_.builder().SetInsertPoint(tget_bounds_err);
+        {
+            llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+            if (!raise_func) {
+                llvm::FunctionType* raise_type = llvm::FunctionType::get(
+                    ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+                raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                    "eshkol_raise", &ctx_.module());
+                raise_func->setDoesNotReturn();
+            }
+            llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+            if (!make_exc_func) {
+                llvm::FunctionType* make_type = llvm::FunctionType::get(ctx_.ptrType(),
+                    {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+                make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                    "eshkol_make_exception_with_header", &ctx_.module());
+            }
+            llvm::Value* msg = ctx_.builder().CreateGlobalString(
+                "tensor-get: index out of bounds");
+            llvm::Value* exc_type = llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+            llvm::Value* exc = ctx_.builder().CreateCall(make_exc_func, {exc_type, msg});
+            ctx_.builder().CreateCall(raise_func, {exc});
+            ctx_.builder().CreateUnreachable();
+        }
+
+        ctx_.builder().SetInsertPoint(tget_bounds_ok);
+    }
+
     // ===== PHASE 2: Decide scalar vs slice =====
     llvm::Value* is_full_index = ctx_.builder().CreateICmpEQ(num_indices_val, ndim);
 
