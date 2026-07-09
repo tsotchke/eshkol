@@ -43,6 +43,8 @@ typedef struct {
 
 /* ── Internal helpers ── */
 
+/** @brief Clamp an arbitrary dtype tag to a known VM_TENSOR_DTYPE_*
+ *         value, defaulting to F64 for anything unrecognized. */
 static int vm_tensor_normalize_dtype(int dtype) {
     switch (dtype) {
         case VM_TENSOR_DTYPE_F64:
@@ -56,6 +58,8 @@ static int vm_tensor_normalize_dtype(int dtype) {
     }
 }
 
+/** @brief Human-readable name ("f64"/"f32"/"f16"/"bf16"/"i8") for a dtype
+ *         tag. */
 static const char* vm_tensor_dtype_name(int dtype) {
     switch (vm_tensor_normalize_dtype(dtype)) {
         case VM_TENSOR_DTYPE_F32:  return "f32";
@@ -67,6 +71,9 @@ static const char* vm_tensor_dtype_name(int dtype) {
     }
 }
 
+/** @brief Parse a dtype name (optionally prefixed with `'`/`:`/`#` as in
+ *         Scheme symbol/keyword syntax) back to its VM_TENSOR_DTYPE_*
+ *         tag, defaulting to F64 if unrecognized. */
 static int vm_tensor_dtype_from_name(const char* name) {
     if (!name) return VM_TENSOR_DTYPE_F64;
     while (*name == '\'' || *name == ':' || *name == '#') name++;
@@ -77,6 +84,9 @@ static int vm_tensor_dtype_from_name(const char* name) {
     return VM_TENSOR_DTYPE_F64;
 }
 
+/** @brief Result dtype for a binary op between two tensors, per the
+ *         precision hierarchy f64 > f32 > bf16 > f16 > i8 (wider/more
+ *         precise type wins; null operands are treated as f64). */
 static int vm_tensor_promote_dtype(const VmTensor* a, const VmTensor* b) {
     int ad = a ? vm_tensor_normalize_dtype(a->dtype) : VM_TENSOR_DTYPE_F64;
     int bd = b ? vm_tensor_normalize_dtype(b->dtype) : VM_TENSOR_DTYPE_F64;
@@ -88,6 +98,9 @@ static int vm_tensor_promote_dtype(const VmTensor* a, const VmTensor* b) {
     return VM_TENSOR_DTYPE_I8;
 }
 
+/** @brief Convert an IEEE-754 float32 to its IEEE-754 binary16 (half
+ *         precision) bit pattern, with round-to-nearest and
+ *         subnormal/overflow handling. */
 static uint16_t vm_tensor_float_to_half_bits(float value) {
     union { float f; uint32_t u; } in;
     in.f = value;
@@ -106,6 +119,8 @@ static uint16_t vm_tensor_float_to_half_bits(float value) {
     return (uint16_t)(sign | ((uint32_t)exp << 10) | ((mant + 0x1000u) >> 13));
 }
 
+/** @brief Convert an IEEE-754 binary16 bit pattern back to a float32
+ *         (handling subnormals, zero, and infinity/NaN). */
 static float vm_tensor_half_bits_to_float(uint16_t bits) {
     uint32_t sign = ((uint32_t)bits & 0x8000u) << 16;
     uint32_t exp = ((uint32_t)bits >> 10) & 0x1fu;
@@ -135,6 +150,10 @@ static float vm_tensor_half_bits_to_float(uint16_t bits) {
     return result.f;
 }
 
+/** @brief Round-trip @p value through the storage precision implied by
+ *         @p dtype (float32, float16, bfloat16, or int8 clamped to
+ *         [-128,127]), while the tensor itself always stays
+ *         double-backed. F64 is a no-op passthrough. */
 static double vm_tensor_quantize_value(double value, int dtype) {
     switch (vm_tensor_normalize_dtype(dtype)) {
         case VM_TENSOR_DTYPE_F32:
@@ -157,7 +176,10 @@ static double vm_tensor_quantize_value(double value, int dtype) {
     }
 }
 
-/* Compute row-major strides from shape. Returns total element count. */
+/** @brief Compute row-major strides from @p shape into @p strides.
+ * @return The total element count, 0 on a non-positive dimension, or -1
+ *         on overflow.
+ */
 static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64_t* strides) {
     if (n_dims <= 0) return 0;
     strides[n_dims - 1] = 1;
@@ -176,7 +198,8 @@ static int64_t vm_tensor_compute_strides(const int64_t* shape, int n_dims, int64
     return total;
 }
 
-/* Convert multi-dimensional indices to flat offset using strides. */
+/** @brief Convert multi-dimensional @p indices to a flat data offset using
+ *         @p t's strides. */
 static int64_t vm_tensor_flat_offset(const VmTensor* t, const int64_t* indices, int n_indices) {
     int64_t off = 0;
     for (int i = 0; i < n_indices && i < t->n_dims; i++) {
@@ -185,7 +208,8 @@ static int64_t vm_tensor_flat_offset(const VmTensor* t, const int64_t* indices, 
     return off;
 }
 
-/* Convert flat index to multi-dimensional indices for a given shape. */
+/** @brief Convert a flat index to multi-dimensional indices for @p shape
+ *         (row-major unravel), writing them to @p out. */
 static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, int64_t* out) {
     for (int i = n_dims - 1; i >= 0; i--) {
         out[i] = flat % shape[i];
@@ -195,7 +219,8 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
 
 /* ── Allocation ── */
 
-/* 410: Create a new zero-initialized tensor with given shape. */
+/** @brief Native call 410: allocate a new zero-initialized (f64) tensor
+ *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     if (n_dims <= 0 || n_dims > VM_TENSOR_MAX_DIMS) return NULL;
 
@@ -217,7 +242,8 @@ static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_di
     return t;
 }
 
-/* 411: Create a tensor filled with a constant value. */
+/** @brief Native call 411: allocate a tensor of @p shape filled with
+ *         @p fill_val. */
 static VmTensor* vm_tensor_fill(VmRegionStack* rs, const int64_t* shape, int n_dims, double fill_val) {
     VmTensor* t = vm_tensor_new(rs, shape, n_dims);
     if (!t) return NULL;
@@ -227,7 +253,8 @@ static VmTensor* vm_tensor_fill(VmRegionStack* rs, const int64_t* shape, int n_d
     return t;
 }
 
-/* 412: Create a tensor from existing data (copies data into arena). */
+/** @brief Native call 412: allocate a tensor of @p shape, copying
+ *         @p data's contents into the arena. */
 static VmTensor* vm_tensor_from_data(VmRegionStack* rs, const double* data,
                                      const int64_t* shape, int n_dims) {
     if (!data) return NULL;
@@ -239,7 +266,8 @@ static VmTensor* vm_tensor_from_data(VmRegionStack* rs, const double* data,
 
 /* ── Element Access ── */
 
-/* 413: Read element by multi-dimensional indices. */
+/** @brief Native call 413: `(tensor-ref t indices...)` — read an element
+ *         by multi-dimensional indices (0.0 if out of range). */
 static double vm_tensor_ref(const VmTensor* t, const int64_t* indices, int n_indices) {
     if (!t || !t->data || n_indices != t->n_dims) return 0.0;
     int64_t off = vm_tensor_flat_offset(t, indices, n_indices);
@@ -247,7 +275,8 @@ static double vm_tensor_ref(const VmTensor* t, const int64_t* indices, int n_ind
     return t->data[off];
 }
 
-/* 414: Write element by multi-dimensional indices. */
+/** @brief Native call 414: `(tensor-set! t indices... val)` — write an
+ *         element by multi-dimensional indices (no-op if out of range). */
 static void vm_tensor_set(VmTensor* t, const int64_t* indices, int n_indices, double val) {
     if (!t || !t->data || n_indices != t->n_dims) return;
     int64_t off = vm_tensor_flat_offset(t, indices, n_indices);
@@ -257,8 +286,10 @@ static void vm_tensor_set(VmTensor* t, const int64_t* indices, int n_indices, do
 
 /* ── Views (shared data, no copy) ── */
 
-/* 415: Reshape — creates a view with new shape over the same data.
- * Total element count must match. Strides are recomputed as contiguous. */
+/** @brief Native call 415: `(tensor-reshape t new-shape)` — create a view
+ *         with a new shape over the same underlying data (total element
+ *         count must match); strides are recomputed as contiguous
+ *         row-major. */
 static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
                                    const int64_t* new_shape, int new_dims) {
     if (!t || new_dims <= 0 || new_dims > VM_TENSOR_MAX_DIMS) return NULL;
@@ -285,7 +316,8 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     return v;
 }
 
-/* 416: Transpose — swap dimensions 0 and 1 (2D view). */
+/** @brief Native call 416: `(tensor-transpose t)` — view swapping
+ *         dimensions 0 and 1 (shares data via swapped strides). */
 static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     if (!t || t->n_dims < 2) return NULL;
 
@@ -310,7 +342,8 @@ static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     return v;
 }
 
-/* 417: Flatten — 1D view of all elements. */
+/** @brief Native call 417: `(tensor-flatten t)` — 1D view of all elements
+ *         (via vm_tensor_reshape() to shape [total]). */
 static VmTensor* vm_tensor_flatten(VmRegionStack* rs, const VmTensor* t) {
     if (!t) return NULL;
     int64_t flat_shape[1] = { t->total };
@@ -319,17 +352,18 @@ static VmTensor* vm_tensor_flatten(VmRegionStack* rs, const VmTensor* t) {
 
 /* ── Creation Helpers ── */
 
-/* 418: Zero tensor. */
+/** @brief Native call 418: `(tensor-zeros shape)`. */
 static VmTensor* vm_tensor_zeros(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     return vm_tensor_new(rs, shape, n_dims);
 }
 
-/* 419: Ones tensor. */
+/** @brief Native call 419: `(tensor-ones shape)`. */
 static VmTensor* vm_tensor_ones(VmRegionStack* rs, const int64_t* shape, int n_dims) {
     return vm_tensor_fill(rs, shape, n_dims, 1.0);
 }
 
-/* 420: Arange — 1D tensor [start, start+step, start+2*step, ...) up to but not including stop. */
+/** @brief Native call 420: `(tensor-arange start stop step)` — 1D tensor
+ *         [start, start+step, ..., stop). */
 static VmTensor* vm_tensor_arange(VmRegionStack* rs, double start, double stop, double step) {
     if (step == 0.0) return NULL;
     if ((step > 0 && start >= stop) || (step < 0 && start <= stop)) return NULL;
@@ -347,7 +381,9 @@ static VmTensor* vm_tensor_arange(VmRegionStack* rs, double start, double stop, 
     return t;
 }
 
-/* 421: Deep copy — allocates new data and copies contents. */
+/** @brief Native call 421: `(tensor-copy t)` — deep copy with freshly
+ *         allocated, contiguous data (element-wise, unraveling indices,
+ *         for a non-contiguous source such as a transposed view). */
 static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     if (!t) return NULL;
 
@@ -391,7 +427,8 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     return c;
 }
 
-/* 422: Linspace — 1D tensor of n evenly spaced values from start to stop (inclusive). */
+/** @brief Native call 422: `(tensor-linspace start stop n)` — 1D tensor of
+ *         @p n evenly spaced values from @p start to @p stop (inclusive). */
 static VmTensor* vm_tensor_linspace(VmRegionStack* rs, double start, double stop, int64_t n) {
     if (n <= 0) return NULL;
 
@@ -410,7 +447,7 @@ static VmTensor* vm_tensor_linspace(VmRegionStack* rs, double start, double stop
     return t;
 }
 
-/* 423: Identity matrix — 2D tensor of shape [n, n]. */
+/** @brief Native call 423: `(tensor-eye n)` — n x n identity matrix. */
 static VmTensor* vm_tensor_eye(VmRegionStack* rs, int64_t n) {
     if (n <= 0) return NULL;
     int64_t shape[2] = { n, n };
@@ -422,13 +459,15 @@ static VmTensor* vm_tensor_eye(VmRegionStack* rs, int64_t n) {
     return t;
 }
 
-/* 424: Scalar tensor — 0D-like 1x1 wrapper, stored as 1D shape=[1]. */
+/** @brief Native call 424: wrap a scalar as a 0D-like 1-element tensor
+ *         (shape [1]). */
 static VmTensor* vm_tensor_scalar(VmRegionStack* rs, double val) {
     int64_t shape[1] = { 1 };
     return vm_tensor_fill(rs, shape, 1, val);
 }
 
-/* 425: tensor-shape — returns shape as a new 1D tensor. */
+/** @brief Native call 425: `(tensor-shape t)` — return @p t's shape as a
+ *         new 1D tensor. */
 static VmTensor* vm_tensor_get_shape(VmRegionStack* rs, const VmTensor* t) {
     if (!t) return NULL;
     int64_t shape[1] = { t->n_dims };
@@ -440,18 +479,19 @@ static VmTensor* vm_tensor_get_shape(VmRegionStack* rs, const VmTensor* t) {
     return s;
 }
 
-/* 426: tensor-size — total number of elements. */
+/** @brief Native call 426: `(tensor-size t)` — total element count. */
 static int64_t vm_tensor_size(const VmTensor* t) {
     return t ? t->total : 0;
 }
 
-/* 427: tensor-ndim — number of dimensions. */
+/** @brief Native call 427: `(tensor-ndim t)` — number of dimensions. */
 static int vm_tensor_ndim(const VmTensor* t) {
     return t ? t->n_dims : 0;
 }
 
-/* 428: Slice along axis 0 — returns a view of t[index, ...].
- * Result has n_dims - 1 dimensions. */
+/** @brief Native call 428: `(tensor-slice t index)` — view of
+ *         t[index, ...] along axis 0 (result has n_dims - 1 dimensions,
+ *         sharing data). */
 static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t index) {
     if (!t || t->n_dims < 2) return NULL;
     if (index < 0 || index >= t->shape[0]) return NULL;
@@ -472,6 +512,9 @@ static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t i
     return v;
 }
 
+/** @brief Cast @p src to a new tensor of dtype @p dtype, quantizing each
+ *         element via vm_tensor_quantize_value() (element-wise, unraveling
+ *         indices, for a non-contiguous source). */
 static VmTensor* vm_tensor_cast_dtype(VmRegionStack* rs, const VmTensor* src, int dtype) {
     if (!src) return NULL;
     VmTensor* out = vm_tensor_new(rs, src->shape, src->n_dims);
@@ -506,6 +549,9 @@ static VmTensor* vm_tensor_cast_dtype(VmRegionStack* rs, const VmTensor* src, in
 #ifdef VM_TENSOR_TEST
 #include <assert.h>
 
+/** @brief Standalone self-test (built when VM_TENSOR_TEST is defined):
+ *         exercises creation helpers, element access, views
+ *         (reshape/transpose/flatten/slice), copy, and dtype casting. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

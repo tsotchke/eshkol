@@ -1,6 +1,11 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+/** @brief Emit bytecode that constructs a quoted-symbol value: packs
+ *         @p symbol's bytes into 8-byte constant chunks and passes them to
+ *         native call 100 (symbol construction). Shared by compile_quote()
+ *         and compile_quasiquote() paths that need to quote a bare
+ *         symbol. */
 static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
     int len = symbol ? (int)strlen(symbol) : 0;
     int n_packs = (len + 7) / 8;
@@ -14,6 +19,14 @@ static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
     chunk_emit(c, OP_NATIVE_CALL, 100);
 }
 
+/**
+ * @brief Compile a `(quasiquote node)` template: `(unquote x)` compiles
+ *        @c x normally; atoms compile as literal constants (numbers,
+ *        quoted symbols via compile_symbol_literal(), strings, booleans);
+ *        lists are rebuilt right-to-left via OP_CONS, splicing
+ *        `(unquote-splicing x)` elements in via a native "append" call
+ *        (native id 73) instead of consing.
+ */
 static void compile_quasiquote(FuncChunk* c, Node* node) {
     if (!node) { chunk_emit(c, OP_NIL, 0); return; }
 
@@ -75,6 +88,9 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
  * because it's transient per-compilation, not persistent state */
 static int compile_depth = 0;
 
+/** @brief Recursion-depth-guarded wrapper around compile_expr_impl():
+ *         bumps/checks compile_depth (erroring past 1000 nested
+ *         expressions) around the actual compilation call. */
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth++;
     if (compile_depth > 1000) { fprintf(stderr, "ERROR: expression nesting too deep (>1000)\n"); compile_depth--; return; }
@@ -82,6 +98,10 @@ static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth--;
 }
 
+/** @brief Map a call head symbol (`+`/`add`/`tensor-add`/etc. and its
+ *         sub/mul/div counterparts) to the corresponding GPU-dispatchable
+ *         element-wise tensor-op native call ID, or -1 if @p fn isn't one
+ *         of the recognized aliases. */
 static int gpu_elementwise_native_id(Node* fn) {
     if (is_sym(fn, "+") || is_sym(fn, "add") || is_sym(fn, "add2") || is_sym(fn, "tensor-add")) return 441;
     if (is_sym(fn, "-") || is_sym(fn, "sub") || is_sym(fn, "sub2") || is_sym(fn, "tensor-sub")) return 442;
@@ -90,6 +110,10 @@ static int gpu_elementwise_native_id(Node* fn) {
     return -1;
 }
 
+/** @brief Map a call head symbol (`+`/`sum`/`tensor-sum`/etc. and its
+ *         mean/max/min counterparts) to the corresponding GPU-dispatchable
+ *         tensor-reduce native call ID, or -1 if @p fn isn't one of the
+ *         recognized aliases. */
 static int gpu_reduce_native_id(Node* fn) {
     if (is_sym(fn, "+") || is_sym(fn, "sum") || is_sym(fn, "tensor-sum") || is_sym(fn, "_tensor-reduce-sum")) return 457;
     if (is_sym(fn, "mean") || is_sym(fn, "tensor-mean") || is_sym(fn, "_tensor-reduce-mean")) return 458;
@@ -101,6 +125,12 @@ static int gpu_reduce_native_id(Node* fn) {
 
 /* ═══ Extracted compilation sub-functions ═══ */
 
+/** @brief Compile a `(cond clause...)` special form: chains
+ *         JUMP_IF_FALSE tests through each `(test body...)` clause
+ *         (with `else` always taken) to the matching consequent, whose
+ *         last body expression is compiled in tail position when @p tail
+ *         is set. Non-last body expressions are compiled and popped
+ *         (implicit begin). */
 static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -133,6 +163,11 @@ static void compile_form_cond(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile a `(case key-expr ((datum...) body...)... [(else
+ *         body...)])` special form: evaluates the key once, then for each
+ *         clause tests it (via OP_EQ against each quoted datum) and
+ *         branches to the matching clause's body, with `else` always
+ *         taken as a fallback. */
 static void compile_form_case(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -188,6 +223,14 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile a `(require module.name)` form: resolves the dotted
+ *        module name to a `lib/module/name.esk` source path, and if not
+ *        already loaded (tracked in the compiler context to avoid
+ *        double-loading) and not the always-available `stdlib` prelude,
+ *        reads and compiles that file's top-level forms inline (no-op
+ *        under WASM, which has no filesystem access).
+ */
 static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -257,6 +300,18 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile a `(define-record-type name (constructor field...) pred?
+ *        (field accessor [mutator])...)` special form. Records are
+ *        represented as tagged vectors (element 0 = the type name string,
+ *        packed the same way compile_symbol_literal() does; elements
+ *        1..N = field values). Compiles a small standalone closure for
+ *        the constructor, the predicate (currently a simplified `vector?`
+ *        check rather than a full type-tag comparison), and each field's
+ *        accessor/mutator, inlining each closure's bytecode into @p c's
+ *        chunk (remapping its local constant-pool indices and internal
+ *        jump targets) and binding it as a local.
+ */
 static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -416,6 +471,10 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
     return;
 }
 
+/** @brief Compile a `(parameterize ((param value)...) body...)` special
+ *         form: pushes each parameter binding (native call 702), compiles
+ *         the body, then pops all bindings in reverse order (native call
+ *         703) for correct unwinding. */
 static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -451,6 +510,13 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile a `(let-values (((formals) producer)...) body...)`
+ *        special form: for each binding, evaluates the producer and binds
+ *        its (single, since this VM's values aren't unpacked here) result
+ *        to the first formal, with any remaining formals bound to nil;
+ *        compiles the body, then pops all bound locals.
+ */
 static void compile_form_let_values(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -494,6 +560,14 @@ static void compile_form_let_values(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile a `(with-exception-handler handler thunk)` special form:
+ *        PUSH_HANDLER around a call to the 0-arg @p thunk, POP_HANDLER on
+ *        normal exit; on exception, calls @p handler with the exception
+ *        (read from the VM's current_exn register via OP_GET_EXN) as a
+ *        regular (never tail) call, so the handler keeps its own frame
+ *        for upvalue access (e.g. a captured call/cc continuation).
+ */
 static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -521,6 +595,16 @@ static void compile_form_with_exception_handler(FuncChunk* c, Node* node, int ta
     return;
 }
 
+/**
+ * @brief Compile an R7RS `(guard (var clause...) body...)` special form.
+ *        The handler is compiled as its own closure taking the exception
+ *        value as its sole parameter (own frame, so let/define/nested
+ *        exprs inside it get self-consistent local slot numbering); see
+ *        the detailed PUSH_HANDLER/POP_HANDLER bytecode layout comment
+ *        below. Clauses are tried like `cond`, with a bare `(var ...)`
+ *        (no clauses) falling back to compiling just the guard's own tail
+ *        expression.
+ */
 static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -649,6 +733,12 @@ static void compile_form_guard(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile `(dynamic-wind before thunk after)`: calls @p before,
+ *         pushes @p after onto the VM's wind stack (OP_WIND_PUSH) so
+ *         non-local exits (continuations, exceptions) still run it, calls
+ *         @p thunk, pops the wind entry (OP_WIND_POP), then calls @p after
+ *         on the normal-exit path too — leaving @p thunk's result as TOS
+ *         after @p after's own (discarded) result is popped. */
 static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -677,6 +767,11 @@ static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile `(delay expr)` (and `make-promise`-style forces): builds
+ *         a zero-argument thunk closure computing @p expr, inlines its
+ *         bytecode into @p c, and packages it as a 2-element promise
+ *         vector `#(#f thunk)` (forced-flag, thunk-or-value), matching
+ *         the layout `force` expects. */
 static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -709,6 +804,11 @@ static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile a `(let ((var val)...) body...)` special form:
+ *        evaluates each binding's value in the outer scope, boxing it in
+ *        a 1-element vector (needs_boxing()) when it's both `set!`-mutated
+ *        and captured by a nested lambda, then compiles the body with
+ *        those locals in scope. */
 static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -757,6 +857,11 @@ static void compile_form_let(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile `(let* ((var val)...) body...)`: unlike compile_form_let(),
+ *         each binding's value expression is compiled with the
+ *         previously-bound locals already in scope (sequential, not
+ *         parallel, binding). No mutable-capture boxing (unlike plain
+ *         `let`). */
 static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -782,6 +887,17 @@ static void compile_form_let_star(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile `(letrec ((var val)...) body...)`: pushes NIL
+ *        placeholders and registers all binding names as locals first (so
+ *        mutually-recursive references resolve), then compiles and
+ *        SET_LOCALs each initializer, then — critically — converts each
+ *        newly-bound closure's upvalues from captured-by-value to open
+ *        (by-reference, via native call 131 open_upvalues) so its
+ *        GET_UPVALUE reads see the other letrec bindings' final values
+ *        rather than the placeholder NILs captured at closure-creation
+ *        time.
+ */
 static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -839,6 +955,11 @@ static void compile_form_letrec(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Compile `(letrec* ((var val)...) body...)`: like
+ *         compile_form_letrec() (NIL placeholders + SET_LOCAL
+ *         initializers) but without the open-upvalue patching step —
+ *         letrec*'s sequential (rather than "all closures see final
+ *         values") semantics don't need it. */
 static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -874,6 +995,16 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile a top-level or internal `(define name value)` or
+ *        `(define (name params... [. rest]) body...)` form. The simple
+ *        variable case just compiles the value and binds it as a new
+ *        local. The function case reserves the function's local slot
+ *        first (so recursive calls can capture it as an upvalue),
+ *        compiles the body into a separate FuncChunk (handling a dotted
+ *        rest parameter via OP_PACK_REST), then inlines that chunk's code
+ *        into @p c and emits an OP_CLOSURE over it.
+ */
 static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1024,6 +1155,17 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     }
 }
 
+/**
+ * @brief Compile `(set! name value)`: for an unboxed local, a direct
+ *        OP_SET_LOCAL; for a boxed local (mutated + captured — see
+ *        needs_boxing()), a VEC_SET into its 1-element box vector. When
+ *        @p name isn't a local in the current scope, walks the enclosing
+ *        FuncChunk chain to find it, threading upvalue registrations
+ *        through every intermediate scope (mirroring how a read reference
+ *        would resolve it) and emitting OP_SET_UPVALUE or a boxed VEC_SET
+ *        through the upvalue. Warns to stderr if the name can't be
+ *        resolved anywhere. Always pushes NIL as the (unspecified) result.
+ */
 static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1116,6 +1258,19 @@ static void compile_form_set_bang(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile `(do ((var init [step])...) (test result...) body...)`.
+ *        Initializes loop variables, then loops: evaluate the exit test;
+ *        if true, evaluate the result expressions (last one in tail
+ *        position) and exit; if false, run the body, evaluate all step
+ *        expressions before storing any of them (so each step can
+ *        reference the pre-step values of the others — parallel update),
+ *        then loop back. Note: the function briefly emits a first,
+ *        differently-structured attempt at this loop (see the inline
+ *        commentary explaining the JUMP_IF_FALSE polarity confusion) before
+ *        resetting `c->code_len` back to loop_top and re-emitting the
+ *        correct version — the first attempt's bytecode is discarded.
+ */
 static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1232,6 +1387,15 @@ static void compile_form_do(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile `(lambda rest-symbol body...)` (the fully-variadic form,
+ *        a bare symbol instead of a parameter list): all call arguments
+ *        are packed into a single list bound to that symbol (OP_PACK_REST
+ *        0 at entry), then compiles the body into a separate FuncChunk,
+ *        inlines it into @p c (remapping constant-pool indices, internal
+ *        jump targets, and nested closures' PC constants), and emits the
+ *        upvalue-capturing OP_CLOSURE.
+ */
 static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1288,6 +1452,18 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Compile `(lambda (params... [. rest]) body...)`, the standard
+ *        fixed/dotted-parameter-list form (compile_form_lambda() handles
+ *        the fully-variadic bare-symbol form). Compiles the body into a
+ *        separate FuncChunk, packing any dotted rest parameter via
+ *        OP_PACK_REST, inlines it into @p c the same way
+ *        compile_form_lambda() does, and — for closures defined at the
+ *        top level with locally-captured (is_local) upvalues — additionally
+ *        converts each such upvalue to an open (by-reference) slot via
+ *        native call 151/252 so later `set!`s on the captured variable are
+ *        visible to the closure.
+ */
 static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1395,6 +1571,26 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/**
+ * @brief Core expression compiler: dispatches on Node @p node's type/head
+ *        symbol and emits the corresponding bytecode into chunk @p c.
+ *
+ * Handles macro expansion (checked first), literals (number/string/bool),
+ * variable references (resolving local slots, walking the enclosing
+ * FuncChunk chain to build Lox-style upvalue-capture relay chains for
+ * outer-scope variables, unboxing `set!`-mutated+captured locals/upvalues
+ * read through their 1-element box vector, and the special guard
+ * exception-variable slot -99 -> OP_GET_EXN), function application (with
+ * tail calls when @p tail is set), and the built-in primitive operators
+ * (arithmetic, comparisons, cons/car/cdr, vector/string ops, call/cc,
+ * etc.). Most substantial special forms (cond/case/let family/define/
+ * set!/do/lambda/guard/dynamic-wind/delay/parameterize/let-values/
+ * with-exception-handler/define-record-type/require) are delegated to the
+ * dedicated compile_form_*() functions above; `if` and the arithmetic/
+ * comparison primitives remain compiled inline here.
+ * @p tail indicates whether @p node is in tail position, enabling
+ * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
+ */
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (!node) return;
 

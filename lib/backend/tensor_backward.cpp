@@ -39,12 +39,14 @@ static bool safe_mul(int64_t a, int64_t b, int64_t* result) {
     return true;
 }
 
+/** @brief Overflow-checked three-operand product; see safe_mul(). */
 static bool safe_mul3(int64_t a, int64_t b, int64_t c, int64_t* result) {
     int64_t ab;
     if (!safe_mul(a, b, &ab)) return false;
     return safe_mul(ab, c, result);
 }
 
+/** @brief Overflow-checked four-operand product; see safe_mul(). */
 static bool safe_mul4(int64_t a, int64_t b, int64_t c, int64_t d, int64_t* result) {
     int64_t abc;
     if (!safe_mul3(a, b, c, &abc)) return false;
@@ -66,10 +68,14 @@ static arena_t* backward_scope_begin() {
     return arena;
 }
 
+/** @brief Pop the arena scope opened by backward_scope_begin(), bulk-freeing
+ *         the backward pass's temporary gradient buffers. */
 static void backward_scope_end(arena_t* arena) {
     if (arena) arena_pop_scope(arena);
 }
 
+/** @brief Zero-initialized allocation of @p size bytes from @p arena; returns
+ *         nullptr if the arena is absent or the size is zero. */
 static void* arena_calloc(arena_t* arena, size_t size) {
     if (!arena || size == 0) return nullptr;
     return arena_allocate_zeroed(arena, size);
@@ -89,6 +95,8 @@ extern "C" bridge_backward_fn_t get_tensor_backward_fn(int node_type);
 
 /* ===== Structural Operations ===== */
 
+/** @brief Backward pass for tensor transpose: transposes grad_out back into
+ *         grad_in's (cols, rows) layout. */
 extern "C" void eshkol_backward_transpose(
     const double* grad_out, double* grad_in,
     int64_t rows, int64_t cols)
@@ -104,6 +112,8 @@ extern "C" void eshkol_backward_transpose(
     }
 }
 
+/** @brief Backward pass for tensor reshape: the gradient is a plain copy
+ *         since reshape only changes the logical view, not the data. */
 extern "C" void eshkol_backward_reshape(
     const double* grad_out, double* grad_in,
     int64_t total_elements)
@@ -113,6 +123,8 @@ extern "C" void eshkol_backward_reshape(
     memcpy(grad_in, grad_out, (size_t)total_elements * sizeof(double));
 }
 
+/** @brief Backward pass for additive positional encoding: gradient passes
+ *         through unchanged (out = in + PE, a constant offset). */
 extern "C" void eshkol_backward_positional_encoding(
     const double* grad_out, double* grad_in,
     int64_t total_elements)
@@ -124,6 +136,8 @@ extern "C" void eshkol_backward_positional_encoding(
 
 /* ===== Reduction Operations ===== */
 
+/** @brief Backward pass for tensor sum reduction: broadcasts the scalar
+ *         upstream gradient to every element of grad_in. */
 extern "C" void eshkol_backward_sum(
     double grad_out_scalar, double* grad_in,
     int64_t total_elements)
@@ -135,6 +149,8 @@ extern "C" void eshkol_backward_sum(
     }
 }
 
+/** @brief Backward pass for tensor mean reduction: distributes the scalar
+ *         upstream gradient evenly (scaled by 1/N) to every input element. */
 extern "C" void eshkol_backward_mean(
     double grad_out_scalar, double* grad_in,
     int64_t total_elements)
@@ -149,6 +165,10 @@ extern "C" void eshkol_backward_mean(
 
 /* ===== Pooling Operations ===== */
 
+/** @brief Backward pass for 2D max pooling: scatters each output gradient to
+ *         the single input position (recorded in @p max_indices during the
+ *         forward pass) that produced the max in its window; all other
+ *         input positions receive zero gradient. */
 extern "C" void eshkol_backward_maxpool2d(
     const double* grad_out, double* grad_in,
     const int64_t* max_indices,
@@ -178,6 +198,9 @@ extern "C" void eshkol_backward_maxpool2d(
     }
 }
 
+/** @brief Backward pass for 2D average pooling: distributes each output
+ *         gradient uniformly (scaled by 1/kernel_size) across every input
+ *         position that contributed to its pooling window. */
 extern "C" void eshkol_backward_avgpool2d(
     const double* grad_out, double* grad_in,
     int64_t in_h, int64_t in_w,
@@ -218,6 +241,13 @@ extern "C" void eshkol_backward_avgpool2d(
 
 /* ===== Convolution ===== */
 
+/** @brief Backward pass for 2D convolution: computes grad_input (full
+ *         correlation of grad_out with the kernel) and grad_kernel
+ *         (correlation of the saved input with grad_out). Dispatches to GPU
+ *         when the op is large enough (eshkol_gpu_should_use()), falling
+ *         back to CPU on GPU failure; the CPU path parallelizes over the
+ *         batch dimension with OpenMP, using per-thread kernel-gradient
+ *         buffers that are reduced at the end to avoid write contention. */
 extern "C" void eshkol_backward_conv2d(
     const double* grad_out,
     const double* saved_input, const double* saved_kernel,
@@ -389,6 +419,12 @@ extern "C" void eshkol_backward_conv2d(
 
 /* ===== Normalization ===== */
 
+/** @brief Backward pass for batch normalization: computes grad_gamma and
+ *         grad_beta by reducing over the batch dimension per feature, then
+ *         computes grad_input using the standard batchnorm backward formula
+ *         (scaled by gamma/std, corrected by the per-feature gradient and
+ *         gradient-times-normalized-input sums). Parallelized across
+ *         features with OpenMP. */
 extern "C" void eshkol_backward_batchnorm(
     const double* grad_out,
     const double* saved_input, const double* saved_mean,
@@ -442,6 +478,10 @@ extern "C" void eshkol_backward_batchnorm(
     }
 }
 
+/** @brief Backward pass for layer normalization: computes grad_gamma and
+ *         grad_beta by reducing over samples per feature, then computes
+ *         grad_input per-sample using the standard layernorm backward
+ *         formula. Parallelized across samples with OpenMP. */
 extern "C" void eshkol_backward_layernorm(
     const double* grad_out,
     const double* saved_input, const double* saved_mean,
@@ -504,6 +544,9 @@ extern "C" void eshkol_matmul_backward_f64(
     const double*, const double*, const double*,
     double*, double*, uint64_t, uint64_t, uint64_t);
 
+/** @brief Backward pass for matrix multiplication (out = A @ B): thin
+ *         wrapper that forwards to the dispatched eshkol_matmul_backward_f64()
+ *         (BLAS/GPU/SIMD) to compute grad_A and grad_B. */
 extern "C" void eshkol_backward_matmul(
     const double* grad_out,
     const double* saved_A, const double* saved_B,
@@ -517,6 +560,11 @@ extern "C" void eshkol_backward_matmul(
 
 /* ===== Attention ===== */
 
+/** @brief Backward pass for single-head scaled dot-product attention
+ *         (scores = Q@K^T*scale, attn = softmax(scores), out = attn@V).
+ *         Computes grad_V (attn^T @ grad_out), grad_Q/grad_K via a softmax
+ *         backward through the attention weights, using BLAS (cblas_dgemm)
+ *         when ESHKOL_BLAS_ENABLED, else naive triple loops. */
 extern "C" void eshkol_backward_attention(
     const double* grad_out,
     const double* saved_Q, const double* saved_K, const double* saved_V,
@@ -624,6 +672,15 @@ extern "C" void eshkol_backward_attention(
 
 }
 
+/** @brief Backward pass for multi-head attention. Backprops grad_out through
+ *         the output projection W_O to get d_concat, then for each head
+ *         slices out its portion, re-derives that head's projected Q/K/V
+ *         from the saved pre-projection tensors and per-head weight slices,
+ *         calls eshkol_backward_attention() for that head, and accumulates
+ *         the resulting per-head gradients into grad_Q/K/V and the
+ *         grad_W{Q,K,V} projection-weight gradients (grad_WO accumulation
+ *         is not yet implemented here — see inline TODO). Uses BLAS
+ *         (cblas_dgemm) when ESHKOL_BLAS_ENABLED, else naive loops. */
 extern "C" void eshkol_backward_multihead_attention(
     const double* grad_out,
     const double* saved_Q, const double* saved_K, const double* saved_V,
@@ -869,6 +926,9 @@ extern "C" void eshkol_backward_multihead_attention(
 
 /* ===== Embedding ===== */
 
+/** @brief Backward pass for embedding lookup: scatter-adds each row of
+ *         grad_out into the weight-gradient row indicated by the
+ *         corresponding saved index (out-of-range indices are skipped). */
 extern "C" void eshkol_backward_embedding(
     const double* grad_out,
     const int64_t* saved_indices,
@@ -893,6 +953,10 @@ extern "C" void eshkol_backward_embedding(
 
 /* ===== Tensor Gradient Seeding ===== */
 
+/** @brief Seed the gradient of a tensor-valued AD node with all-ones
+ *         (dL/dL = 1 for every output element), allocating tensor_gradient
+ *         from the global arena on first use. No-op if the node isn't a
+ *         tensor node or its shape/total-element count is invalid. */
 extern "C" void eshkol_seed_tensor_gradient(void* ad_node_ptr) {
     if (!ad_node_ptr) return;
 
@@ -924,9 +988,8 @@ extern "C" void eshkol_seed_tensor_gradient(void* ad_node_ptr) {
 
 /* ===== Tensor Backward Dispatcher ===== */
 
-/*
- * Helper: compute total elements from shape array.
- */
+/** @brief Compute the overflow-checked product of a shape array's
+ *         dimensions; returns 0 on invalid input or overflow. */
 static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
     if (ndim > 0 && !shape) return 0;
     int64_t total = 1;
@@ -936,6 +999,17 @@ static int64_t compute_total_elements(const int64_t* shape, size_t ndim) {
     return total;
 }
 
+/** @brief Central reverse-mode AD dispatcher for tensor operation nodes:
+ *         switches on @p ad_node_ptr's node type (conv2d, pooling, norm
+ *         layers, matmul, transpose, reshape, reductions, attention,
+ *         embedding, and qLLM-bridge tensor ops), reconstructs the needed
+ *         shapes/params from the node, invokes the matching
+ *         eshkol_backward_* function (or the bridge dispatch table for
+ *         AD_NODE_TENSOR_* ops), and accumulates the resulting input
+ *         gradients via eshkol_accumulate_tensor_grad(). All temporary
+ *         gradient buffers are allocated from an arena scope that is popped
+ *         before returning; node types without a backward implementation
+ *         silently drop the gradient. */
 extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     if (!ad_node_ptr) return;
 
@@ -1299,6 +1373,9 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
 
 /* ===== Tensor Gradient Accumulation ===== */
 
+/** @brief Element-wise accumulate @p grad into an AD node's tensor_gradient
+ *         buffer (allocating and zero-filling it from the global arena on
+ *         first use). */
 extern "C" void eshkol_accumulate_tensor_grad(
     void* ad_node_ptr, const double* grad, int64_t num_elements)
 {

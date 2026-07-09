@@ -29,7 +29,9 @@ typedef struct {
 
 /* ── Public API ── */
 
-/* 700: make-parameter(default, [converter]) */
+/** @brief Native call 700: `(make-parameter default [converter])` —
+ *         allocate a dynamic parameter object with its save/restore stack
+ *         pre-sized to PARAM_INITIAL_STACK. */
 VmParameter* vm_param_make(VmRegionStack* rs, void* default_val, void* converter) {
     VmParameter* p = (VmParameter*)vm_alloc_object(rs, VM_SUBTYPE_PARAMETER,
                                                     sizeof(VmParameter));
@@ -43,15 +45,18 @@ VmParameter* vm_param_make(VmRegionStack* rs, void* default_val, void* converter
     return p;
 }
 
-/* 701: parameter-ref(param) → current value */
+/** @brief Native call 701: current value of parameter @p p. */
 void* vm_param_ref(const VmParameter* p) {
     return p ? p->current_value : NULL;
 }
 
-/* 702: parameterize-push(param, new-value) → save current, set new
- * If a converter is set, the new value would be passed through it.
- * Since we don't have VM-level closure calls here, the converter
- * is expected to be applied by the VM before calling push. */
+/**
+ * @brief Native call 702: `parameterize` entry — push @p p's current value
+ *        onto its save stack (growing it if full) and set @p new_value as
+ *        the current value. If @p p has a converter, the VM is expected to
+ *        apply it to @p new_value before calling this (this module has no
+ *        VM-level closure-call capability).
+ */
 void vm_param_push(VmRegionStack* rs, VmParameter* p, void* new_value) {
     if (!p) return;
 
@@ -73,7 +78,8 @@ void vm_param_push(VmRegionStack* rs, VmParameter* p, void* new_value) {
     p->current_value = new_value;
 }
 
-/* 703: parameterize-pop(param) → restore saved value */
+/** @brief Native call 703: `parameterize` exit — restore @p p's value from
+ *         the top of its save stack (error if the stack is empty). */
 void vm_param_pop(VmParameter* p) {
     if (!p || p->stack_depth <= 0) {
         fprintf(stderr, "ERROR: parameterize-pop on empty stack\n");
@@ -82,7 +88,8 @@ void vm_param_pop(VmParameter* p) {
     p->current_value = p->save_stack[--p->stack_depth];
 }
 
-/* 704: parameter? → type check */
+/** @brief Native call 704: `(parameter? obj)` — check the heap object
+ *         header subtype. */
 int vm_param_is_parameter(void* obj) {
     if (!obj) return 0;
     VmObjectHeader* hdr = (VmObjectHeader*)((uint8_t*)obj - sizeof(VmObjectHeader));
@@ -93,6 +100,8 @@ int vm_param_is_parameter(void* obj) {
  * Dispatch
  ******************************************************************************/
 
+/** @brief Native-call dispatcher for the dynamic-parameter primitives (IDs
+ *         700-704). */
 void* vm_param_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
     switch (id) {
     case 700: return vm_param_make(rs, nargs >= 1 ? args[0] : NULL,
@@ -115,6 +124,10 @@ void* vm_param_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
 
 #include <assert.h>
 
+/** @brief Standalone self-test (built when VM_PARAMETER_TEST is defined):
+ *         exercises make/ref/push/pop, nested and multi-parameter
+ *         independence, save-stack growth beyond the initial capacity, and
+ *         the parameter? type check. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

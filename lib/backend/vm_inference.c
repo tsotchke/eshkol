@@ -30,7 +30,9 @@
 
 static const double LOG_ZERO = -1e30; /* Approximate -infinity */
 
-/* log-sum-exp of two values: log(exp(a) + exp(b)) */
+/** @brief Numerically-stable log(exp(a) + exp(b)), treating either
+ *         near-LOG_ZERO operand as -infinity (returning the other value
+ *         unchanged). */
 static double logsumexp2(double a, double b) {
     if (a <= LOG_ZERO) return b;
     if (b <= LOG_ZERO) return a;
@@ -38,7 +40,8 @@ static double logsumexp2(double a, double b) {
     return m + log(1.0 + exp(-(fabs(a - b))));
 }
 
-/* log-sum-exp over array */
+/** @brief Numerically-stable log-sum-exp of @p n log-space values (max
+ *         subtraction before summing exponentials). */
 static double logsumexp(const double* arr, int n) {
     if (n == 0) return LOG_ZERO;
     double m = arr[0];
@@ -53,7 +56,8 @@ static double logsumexp(const double* arr, int n) {
     return m + log(s);
 }
 
-/* Normalize log-probability vector in-place (so exp sums to 1) */
+/** @brief Normalize a log-probability vector in place (subtract
+ *         logsumexp() so exp(arr) sums to 1). */
 static void log_normalize(double* arr, int n) {
     double z = logsumexp(arr, n);
     if (z > LOG_ZERO) {
@@ -96,7 +100,10 @@ typedef struct {
  * Construction
  * ======================================================================== */
 
-/* 520: make-factor-graph */
+/** @brief Native call 520: `(make-factor-graph num-vars var-dims)` —
+ *         allocate a factor graph with @p num_vars variables (state counts
+ *         from @p var_dims), each initialized to a uniform log-space
+ *         belief; factors and messages are added/allocated later. */
 static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
     int num_vars, const int* var_dims)
 {
@@ -140,7 +147,10 @@ static VmFactorGraph* vm_make_factor_graph(VmRegionStack* rs,
     return fg;
 }
 
-/* 521: make-factor */
+/** @brief Native call 521: `(make-factor var-indices cpt dims)` —
+ *        allocate a factor connecting the given variables, copying its
+ *        (log-space) conditional probability table @p cpt_data (size =
+ *        product of @p dims). */
 static VmFactor* vm_make_factor(VmRegionStack* rs,
     const int* var_indices, int num_vars,
     const double* cpt_data, const int* dims)
@@ -175,7 +185,10 @@ static VmFactor* vm_make_factor(VmRegionStack* rs,
     return f;
 }
 
-/* 522: fg-add-factor! */
+/** @brief Native call 522: `(fg-add-factor! fg factor)` — append @p factor
+ *         to @p fg (growing the factor array as needed) and invalidate the
+ *         cached BP message buffers so they're re-sized on next
+ *         inference. */
 static void vm_fg_add_factor(VmRegionStack* rs, VmFactorGraph* fg, VmFactor* factor) {
     if (!rs || !fg || !factor) return;
 
@@ -201,6 +214,10 @@ static void vm_fg_add_factor(VmRegionStack* rs, VmFactorGraph* fg, VmFactor* fac
  * Message allocation for BP
  * ======================================================================== */
 
+/** @brief Lazily allocate (or no-op if already allocated) @p fg's
+ *         factor-to-variable and variable-to-factor message buffers, one
+ *         pair per (factor, connected-variable) edge, each initialized to
+ *         a uniform log-space distribution. */
 static int allocate_messages(VmRegionStack* rs, VmFactorGraph* fg) {
     if (fg->msg_fv && fg->msg_vf) return 1; /* already allocated */
 
@@ -237,7 +254,9 @@ static int allocate_messages(VmRegionStack* rs, VmFactorGraph* fg) {
     return 1;
 }
 
-/* Get flat message index for factor fi, local variable position vi */
+/** @brief Compute the flat index into fg->msg_fv/msg_vf for factor @p fi's
+ *         @p vi'th connected variable (messages are stored densely, one
+ *         slot per factor-variable edge in factor order). */
 static int get_msg_idx(const VmFactorGraph* fg, int fi, int vi) {
     int idx = 0;
     for (int i = 0; i < fi; i++) idx += fg->factors[i]->num_vars;
@@ -248,10 +267,12 @@ static int get_msg_idx(const VmFactorGraph* fg, int fi, int vi) {
  * Belief Propagation — Sum-Product in Log-Space
  * ======================================================================== */
 
-/*
- * Factor-to-variable message:
- * msg_{f->v}(x_v) = sum_{x_\v} [ f(x) * prod_{u in ne(f)\v} msg_{u->f}(x_u) ]
- * In log-space: log-sum-exp over configs of non-target variables.
+/**
+ * @brief Compute the factor-to-variable belief-propagation message
+ *        msg_{f->v}(x_v) = sum_{x_\v} [ f(x) * prod_{u in ne(f)\v}
+ *        msg_{u->f}(x_u) ], in log-space via log-sum-exp over every CPT
+ *        configuration of the factor's non-target variables, into
+ *        @p out_msg (log_normalize()d before returning).
  */
 static void compute_f2v_message(const VmFactorGraph* fg, int fi, int target_vi,
     double* out_msg)
@@ -296,10 +317,12 @@ static void compute_f2v_message(const VmFactorGraph* fg, int fi, int target_vi,
     log_normalize(out_msg, target_dim);
 }
 
-/*
- * Variable-to-factor message:
- * msg_{v->f}(x_v) = prod_{g in ne(v)\f} msg_{g->v}(x_v)
- * In log-space: sum of all incoming f->v messages except from target factor.
+/**
+ * @brief Compute the variable-to-factor belief-propagation message
+ *        msg_{v->f}(x_v) = prod_{g in ne(v)\f} msg_{g->v}(x_v), in
+ *        log-space via summing all incoming factor-to-variable messages
+ *        except from the target factor, into @p out_msg
+ *        (log_normalize()d before returning).
  */
 static void compute_v2f_message(const VmFactorGraph* fg, int target_fi, int target_vi,
     double* out_msg)
@@ -328,9 +351,17 @@ static void compute_v2f_message(const VmFactorGraph* fg, int target_fi, int targ
     log_normalize(out_msg, dim);
 }
 
-/*
- * 523: fg-infer! — Loopy Belief Propagation
- * Returns 1 if converged, 0 otherwise.
+/**
+ * @brief Native call 523: `(fg-infer! fg max-iterations tolerance)` — run
+ *        loopy belief propagation: each iteration updates every
+ *        variable-to-factor message (compute_v2f_message()), then every
+ *        factor-to-variable message (compute_f2v_message()), then
+ *        recomputes each non-observed variable's belief as the
+ *        (log_normalize()d) sum of its incoming factor messages. Stops
+ *        early once the largest message change (max_delta) drops below
+ *        @p tolerance.
+ * @return 1 if convergence was reached within @p max_iterations, 0
+ *         otherwise (including on invalid input or allocation failure).
  */
 static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
     int max_iterations, double tolerance)
@@ -422,10 +453,14 @@ static int vm_fg_infer(VmRegionStack* rs, VmFactorGraph* fg,
  *   = -H(q) - E_q[ln p(o,s)]
  * ======================================================================== */
 
-/*
- * 524: free-energy
- * observations: pairs of (var_index, observed_state) as flat double array.
- * num_obs: number of observation pairs (array has 2*num_obs elements).
+/**
+ * @brief Native call 524: `(free-energy fg observations)` — compute the
+ *        variational free energy F = -H(q) - E_q[ln p(o,s)]: the mean-field
+ *        entropy of the current beliefs minus the expected log-joint
+ *        (summed per-factor expectation over all CPT configurations, plus
+ *        a per-observation belief term for any clamped (var_index,
+ *        observed_state) pairs in @p observations, a flat array of
+ *        2*@p num_obs doubles).
  */
 static double vm_free_energy(const VmFactorGraph* fg,
     const double* observations, int num_obs)
@@ -496,11 +531,15 @@ static double vm_free_energy(const VmFactorGraph* fg,
  *       = pragmatic value + epistemic value
  * ======================================================================== */
 
-/*
- * 525: expected-free-energy
- * Evaluates how good a particular action is by decomposing into:
- *   pragmatic: how well action achieves goals (-E_q[ln p(o|a)])
- *   epistemic: how much action reduces uncertainty (mutual information)
+/**
+ * @brief Native call 525: `(expected-free-energy fg action-var
+ *        action-state)` — active-inference action-selection score,
+ *        G(a) = -E_q[ln p(o|a)] + E_q[ln q(s|a)] (pragmatic value: how well
+ *        the action achieves goals, plus epistemic value: how much it
+ *        reduces uncertainty), computed over every CPT configuration of
+ *        every factor connected to @p action_var that's consistent with
+ *        @p action_state, weighted by the current beliefs of the other
+ *        variables in each such factor.
  */
 static double vm_expected_free_energy(VmRegionStack* rs,
     const VmFactorGraph* fg, int action_var, int action_state)
@@ -567,7 +606,10 @@ static double vm_expected_free_energy(VmRegionStack* rs,
  * CPT Update (for learning)
  * ======================================================================== */
 
-/* 526: fg-update-cpt! — replace a factor's CPT and reset messages */
+/** @brief Native call 526: `(fg-update-cpt! fg factor-idx new-cpt)` —
+ *         overwrite factor @p factor_idx's conditional probability table
+ *         (size must match) and invalidate the cached BP messages to force
+ *         reconvergence on the next fg-infer!. */
 static int vm_fg_update_cpt(VmFactorGraph* fg, int factor_idx,
     const double* new_cpt, int cpt_size)
 {
@@ -588,6 +630,9 @@ static int vm_fg_update_cpt(VmFactorGraph* fg, int factor_idx,
 #ifdef VM_INFERENCE_TEST
 #include <assert.h>
 
+/** @brief Self-test helper: assert every variable's exponentiated beliefs
+ *         sum to 1 within @p tol, hard-exiting(1) on failure so it's
+ *         detected even under -DNDEBUG (where assert() is compiled out). */
 static void check_beliefs_sum_to_one(const VmFactorGraph* fg, double tol) {
     for (int v = 0; v < fg->num_vars; v++) {
         double sum = 0.0;
@@ -601,6 +646,10 @@ static void check_beliefs_sum_to_one(const VmFactorGraph* fg, double tol) {
     }
 }
 
+/** @brief Standalone self-test (built when VM_INFERENCE_TEST is defined):
+ *         exercises factor graph construction, belief propagation
+ *         convergence and belief normalization, free energy, expected free
+ *         energy, and CPT updates. */
 int main(void) {
     VmRegionStack rs;
     vm_region_stack_init(&rs);

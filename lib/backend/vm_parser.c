@@ -50,6 +50,7 @@ static CompilerContext g_compiler_ctx = {0};
 #define src_ptr   g_compiler_ctx.src_ptr
 #define g_trace_on g_compiler_ctx.trace_on
 
+/** @brief Advance src_ptr past whitespace and `;`-to-end-of-line comments. */
 static void skip_ws(void) {
     while (*src_ptr) {
         if (isspace(*src_ptr)) { src_ptr++; continue; }
@@ -58,12 +59,15 @@ static void skip_ws(void) {
     }
 }
 
+/** @brief Allocate and zero-initialize a new AST Node of type @p t. */
 static Node* make_node(NodeType t) {
     Node* n = (Node*)calloc(1, sizeof(Node));
     if (!n) { fprintf(stderr, "ERROR: allocation failed in make_node\n"); return NULL; }
     n->type = t;
     return n;
 }
+/** @brief Append child @p c to parent Node @p p's children array, growing
+ *         it via realloc. */
 static void add_child(Node* p, Node* c) {
     if (!p || !c) return;
     Node** nc = (Node**)realloc(p->children, (p->n_children+1)*sizeof(Node*));
@@ -75,6 +79,9 @@ static void add_child(Node* p, Node* c) {
 static void free_node(Node* n);
 static Node* parse_sexp(void);
 
+/** @brief Append one character to a growable char buffer (*@p buf,
+ *         *@p len, *@p cap), doubling capacity via realloc when nearly
+ *         full. */
 static int append_char_buf(char** buf, int* len, int* cap, char ch) {
     if (!buf || !*buf || !len || !cap) return -1;
     if (*len >= *cap - 2) {
@@ -88,6 +95,8 @@ static int append_char_buf(char** buf, int* len, int* cap, char ch) {
     return 0;
 }
 
+/** @brief Build an N_SYMBOL leaf node from @p text (truncated to 127
+ *         chars). */
 static Node* make_symbol_node(const char* text) {
     Node* n = make_node(N_SYMBOL);
     if (!n) return NULL;
@@ -96,6 +105,8 @@ static Node* make_symbol_node(const char* text) {
     return n;
 }
 
+/** @brief Build an N_STRING leaf node from @p text (truncated to 127
+ *         chars). */
 static Node* make_string_node(const char* text) {
     Node* n = make_node(N_STRING);
     if (!n) return NULL;
@@ -104,6 +115,8 @@ static Node* make_string_node(const char* text) {
     return n;
 }
 
+/** @brief Build an N_LIST call-form node `(name)` with head symbol
+ *         @p name, ready for arguments to be add_child()-ed. */
 static Node* make_call_node(const char* name) {
     Node* call = make_node(N_LIST);
     if (!call) return NULL;
@@ -113,6 +126,13 @@ static Node* make_call_node(const char* name) {
     return call;
 }
 
+/**
+ * @brief Parse exactly one S-expression from a standalone @p source string
+ *        (used for `~a{expr}`-style string-interpolation expressions),
+ *        temporarily swapping in @p source as the parse cursor and
+ *        restoring the caller's src_ptr afterward. Errors (and returns
+ *        NULL) if @p source is empty or contains more than one expression.
+ */
 static Node* parse_sexp_from_string(const char* source) {
     const char* saved_src = src_ptr;
     src_ptr = source ? source : "";
@@ -133,6 +153,9 @@ static Node* parse_sexp_from_string(const char* source) {
     return expr;
 }
 
+/** @brief Append @p part to a growable Node* array (*@p parts, *@p n_parts,
+ *         *@p cap_parts), used to accumulate the literal/interpolated
+ *         pieces of a string-interpolation literal. */
 static int add_part(Node*** parts, int* n_parts, int* cap_parts, Node* part) {
     if (!parts || !n_parts || !cap_parts || !part) return -1;
     if (*n_parts >= *cap_parts) {
@@ -146,6 +169,8 @@ static int add_part(Node*** parts, int* n_parts, int* cap_parts, Node* part) {
     return 0;
 }
 
+/** @brief Wrap an interpolated @p expr as `(format "~a" expr)`, so its
+ *         display representation can be spliced into a string literal. */
 static Node* make_format_display_node(Node* expr) {
     Node* call = make_call_node("format");
     if (!call) return NULL;
@@ -154,6 +179,9 @@ static Node* make_format_display_node(Node* expr) {
     return call;
 }
 
+/** @brief Combine the @p n_parts interpolation pieces into a single
+ *         expression: the empty string for zero parts, the lone part
+ *         unwrapped for one, or `(string-append part...)` for multiple. */
 static Node* make_string_append_node(Node** parts, int n_parts) {
     if (n_parts <= 0) return make_string_node("");
     if (n_parts == 1) return parts[0];
@@ -164,6 +192,17 @@ static Node* make_string_append_node(Node** parts, int n_parts) {
     return call;
 }
 
+/**
+ * @brief Parse a `"..."` string literal (after the opening quote),
+ *        handling backslash escapes (\\n \\t \\\\ \\") and Eshkol's
+ *        `~{expr}` string-interpolation syntax (with `~~{` as an escaped
+ *        literal `~{`). Non-interpolated literals compile to a single
+ *        N_STRING node; interpolated ones are split into literal-text and
+ *        `(format "~a" expr)` parts and combined via
+ *        make_string_append_node().
+ * @return The resulting string (or string-append) expression node, or NULL
+ *         on allocation failure or an unterminated interpolation.
+ */
 static Node* parse_string_literal(void) {
     src_ptr++; /* skip opening quote */
 
@@ -306,6 +345,9 @@ static Node* parse_string_literal(void) {
     return result;
 }
 
+/** @brief Parse a parenthesized list body (after the opening `(` has been
+ *         consumed) into an N_LIST node, reading sub-expressions until `)`
+ *         or end of input. */
 static Node* parse_list(void) {
     Node* list = make_node(N_LIST);
     if (!list) return NULL;
@@ -314,6 +356,16 @@ static Node* parse_list(void) {
     return list;
 }
 
+/**
+ * @brief Recursive-descent S-expression reader: parses one datum from the
+ *        compiler context's src_ptr cursor — lists, quote/quasiquote/
+ *        unquote(-splicing) sugar, string literals (via
+ *        parse_string_literal(), including ~{...} interpolation), #t/#f,
+ *        character literals, vector literals #(...), R7RS special floats
+ *        (+nan.0/+inf.0/-inf.0), numbers (including rational literals like
+ *        1/3 and scientific notation), and symbols.
+ * @return The parsed Node, or NULL at end of input / on a bare `)`.
+ */
 static Node* parse_sexp(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
@@ -464,6 +516,7 @@ static Node* parse_sexp(void) {
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 
+/** @brief Recursively free an AST Node and all its children. */
 static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i++) free_node(n->children[i]); free(n->children); free(n); }
 
 /*******************************************************************************
@@ -520,7 +573,12 @@ typedef struct FuncChunk {
     int stack_depth;  /* compile-time stack depth (values above fp) */
 } FuncChunk;
 
-/* Initialize a FuncChunk's dynamic arrays (for stack-allocated chunks) */
+/** @brief Zero-initialize a stack-allocated FuncChunk and allocate its
+ *         dynamic code/constants/locals/entries arrays at their initial
+ *         capacities (CHUNK_INIT_*). On partial allocation failure, frees
+ *         whatever succeeded and returns -1.
+ * @return 0 on success, -1 on allocation failure.
+ */
 static int chunk_init_arrays(FuncChunk* c) {
     memset(c, 0, sizeof(FuncChunk));
     c->code_cap = CHUNK_INIT_CODE;
@@ -540,7 +598,9 @@ static int chunk_init_arrays(FuncChunk* c) {
     return 0;
 }
 
-/* Free a FuncChunk's dynamic arrays (for stack-allocated chunks) */
+/** @brief Free a FuncChunk's dynamic arrays and every strdup'd name they
+ *         hold (locals, entries, upvalues), for a stack-allocated
+ *         FuncChunk previously set up by chunk_init_arrays(). */
 static void chunk_free_arrays(FuncChunk* c) {
     if (!c) return;
     for (int i = 0; i < c->n_locals; i++) free(c->locals[i].name);
@@ -550,8 +610,11 @@ static void chunk_free_arrays(FuncChunk* c) {
     c->code = NULL; c->constants = NULL; c->locals = NULL; c->entries = NULL;
 }
 
+/** @brief Check whether Node @p n is a symbol equal to string @p s. */
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
 
+/** @brief Grow chunk @p c's code array (doubling) until it can hold
+ *         @p needed more instructions. */
 static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
     while (c->code_len + needed > c->code_cap) {
         int new_cap = c->code_cap * 2;
@@ -562,21 +625,30 @@ static void chunk_ensure_code_cap(FuncChunk* c, int needed) {
     }
 }
 
+/** @brief Append one bytecode instruction (@p op, @p operand) to chunk
+ *         @p c, growing the code array as needed. */
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
     chunk_ensure_code_cap(c, 1);
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
-/* Copy an instruction directly (used when inlining function code) */
+/** @brief Copy an already-constructed instruction @p fi directly into
+ *         chunk @p c (used when inlining another function's compiled
+ *         code). */
 static void chunk_emit_instr(FuncChunk* c, Instr fi) {
     chunk_ensure_code_cap(c, 1);
     c->code[c->code_len++] = fi;
 }
 
 
+/**
+ * @brief Append a value to chunk @p c's constant pool. Deliberately does
+ *        not deduplicate: function PC placeholders get patched in place
+ *        after creation, which would corrupt any literal constant that
+ *        happened to match the placeholder's value.
+ * @return The new constant's index, or -1 if reallocation fails.
+ */
 static int chunk_add_const(FuncChunk* c, Value v) {
-    /* No deduplication — function PC placeholders get patched after creation,
-     * which would corrupt literal constants that matched the placeholder value. */
     if (c->n_constants >= c->const_cap) {
         int new_cap = c->const_cap * 2;
         Value* new_consts = (Value*)realloc(c->constants, new_cap * sizeof(Value));
@@ -588,16 +660,25 @@ static int chunk_add_const(FuncChunk* c, Value v) {
     return c->n_constants++;
 }
 
+/** @brief Emit an OP_NOP placeholder instruction to be patch()ed once its
+ *         real target is known.
+ * @return The code index of the placeholder slot.
+ */
 static int placeholder(FuncChunk* c) {
     int slot = c->code_len;
     chunk_emit(c, OP_NOP, 0);
     return slot;
 }
 
+/** @brief Overwrite the instruction at @p slot with (@p op, @p target). */
 static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
     c->code[slot] = (Instr){op, target};
 }
 
+/** @brief Look up a local variable by name in the innermost-to-outermost
+ *         scope of chunk @p c.
+ * @return The local's stack slot, or -1 if not found in this chunk.
+ */
 static int resolve_local(FuncChunk* c, const char* name) {
     for (int i = c->n_locals - 1; i >= 0; i--) {
         if (strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
@@ -605,6 +686,11 @@ static int resolve_local(FuncChunk* c, const char* name) {
     return -1;
 }
 
+/** @brief Register a new local variable named @p name (strdup'd) in chunk
+ *         @p c at the current scope depth, growing the locals array as
+ *         needed.
+ * @return The assigned slot index, or -1 on allocation failure.
+ */
 static int add_local(FuncChunk* c, const char* name) {
     if (c->n_locals >= c->local_cap) {
         int new_cap = c->local_cap * 2;
@@ -622,6 +708,14 @@ static int add_local(FuncChunk* c, const char* name) {
     return slot;
 }
 
+/**
+ * @brief Register a compiled function's metadata (name, param/local/upvalue
+ *        counts, and its [code_offset, code_offset+code_len) span within
+ *        the chunk's shared code array) in @p c's entry table, growing it
+ *        as needed. Validates argument ranges (0-255 params/upvalues,
+ *        non-empty name, valid offset/length) before recording.
+ * @return 0 on success, -1 on invalid arguments or allocation failure.
+ */
 static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
                            int n_locals, int n_upvalues, int code_offset,
                            int code_len) {
@@ -656,7 +750,8 @@ static int chunk_add_entry(FuncChunk* c, const char* name, int n_params,
 
 static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
-/* Scan an AST node for set! references to a named variable */
+/** @brief Scan an AST subtree for a `(set! name ...)` reference to
+ *         @p name. */
 static int scan_for_set(Node* node, const char* name) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
@@ -673,9 +768,13 @@ static int scan_for_set(Node* node, const char* name) {
     return 0;
 }
 
-/* Scan for FREE references to a variable name inside lambda bodies.
- * A reference is free if the variable is not rebound as a lambda parameter
- * or let binding at an inner scope. */
+/**
+ * @brief Scan for free references to @p name inside nested lambda (and
+ *        `define`-as-implicit-lambda) bodies — a reference is free (a
+ *        capture) if @p name is not rebound as a parameter or let binding
+ *        at an inner scope. @p in_lambda tracks whether the current
+ *        recursion is inside a lambda body.
+ */
 static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     if (!node) return 0;
     if (node->type == N_SYMBOL && in_lambda && strcmp(node->symbol, name) == 0)
@@ -730,7 +829,10 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
-/* Check if a let-bound variable needs heap boxing (captured + mutated) */
+/** @brief Check whether a let-bound variable @p name needs heap boxing:
+ *         true only if it is both `set!`-mutated (scan_for_set()) and
+ *         captured by a nested lambda (scan_for_capture()) somewhere across
+ *         @p body_nodes. */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     int has_set = 0, has_capture = 0;
     for (int i = 0; i < n_bodies; i++) {
@@ -740,7 +842,10 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     return has_set && has_capture;
 }
 
-/* Compile a quoted datum into cons cells, symbols as strings, etc. */
+/** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
+ *         constants, symbols as packed 8-byte constant chunks passed to
+ *         native call 100 (symbol construction), and lists as a chain of
+ *         OP_CONS built from an OP_NIL base (right to left). */
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {

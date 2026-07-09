@@ -25,6 +25,10 @@
 
 namespace eshkol {
 
+/**
+ * @brief Construct the tail-call codegen helper bound to the shared codegen
+ *        context, tagged-value helper, and memory codegen helper.
+ */
 TailCallCodegen::TailCallCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem)
     : ctx_(ctx)
     , tagged_(tagged)
@@ -36,6 +40,14 @@ TailCallCodegen::TailCallCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged
 // These functions determine if an expression is in tail position,
 // which is required for safe tail call optimization.
 
+/**
+ * @brief Determine whether an AST node is in tail position relative to its
+ *        parent expression.
+ *
+ * A node with no parent is treated as the top-level body expression and is
+ * always in tail position; otherwise the parent must be an operation node
+ * whose tail-context rules are delegated to isOperationInTailPosition().
+ */
 bool TailCallCodegen::isTailPosition(const eshkol_ast_t* ast, const eshkol_ast_t* parent) const {
     if (!ast) return false;
 
@@ -55,6 +67,12 @@ bool TailCallCodegen::isTailPosition(const eshkol_ast_t* ast, const eshkol_ast_t
     return false;
 }
 
+/**
+ * @brief Check whether operation @p op is a direct sub-expression of
+ *        @p parent that sits in tail position, per each parent op kind
+ *        (if-branches, let/letrec body, lambda body, last sequence
+ *        expression). Other parent op kinds never create a tail context.
+ */
 bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
                                                  const eshkol_operations_t* parent) const {
     if (!parent) return true;
@@ -101,6 +119,11 @@ bool TailCallCodegen::isOperationInTailPosition(const eshkol_operations_t* op,
 // === Tail Call Marking ===
 // These functions mark LLVM call instructions for tail call optimization.
 
+/**
+ * @brief Set LLVM's tail-call flag on an existing call instruction when it
+ *        is known to sit in tail position, so LLVM may reuse the caller's
+ *        stack frame. No-op (returns @p call unchanged) otherwise.
+ */
 llvm::CallInst* TailCallCodegen::markTailCall(llvm::CallInst* call, bool in_tail_position) {
     if (!call) return nullptr;
 
@@ -114,6 +137,10 @@ llvm::CallInst* TailCallCodegen::markTailCall(llvm::CallInst* call, bool in_tail
     return call;
 }
 
+/**
+ * @brief Emit a call to @p func with the given arguments and immediately
+ *        mark it as a tail call.
+ */
 llvm::Value* TailCallCodegen::createTailCall(llvm::Function* func,
                                               const std::vector<llvm::Value*>& args) {
     llvm::CallInst* call = ctx_.builder().CreateCall(func, args);
@@ -125,6 +152,11 @@ llvm::Value* TailCallCodegen::createTailCall(llvm::Function* func,
 // The trampoline enables bounded-stack deep recursion by using a loop
 // instead of stack frames for continuation calls.
 
+/**
+ * @brief Test whether a tagged trampoline value is a "bounce" (i.e. carries
+ *        BOUNCE_TAG in its top byte), meaning the trampoline loop should
+ *        invoke another thunk rather than treating the value as final.
+ */
 llvm::Value* TailCallCodegen::isBounce(llvm::Value* value) {
     // Check if value has the bounce tag
     // First, extract the int64 data from the tagged value
@@ -137,6 +169,10 @@ llvm::Value* TailCallCodegen::isBounce(llvm::Value* value) {
     );
 }
 
+/**
+ * @brief Recover the thunk pointer packed inside a bounce value by masking
+ *        off the tag byte and converting the remaining bits to a pointer.
+ */
 llvm::Value* TailCallCodegen::extractBounceThunk(llvm::Value* bounce) {
     // Extract the thunk pointer by clearing the tag bits
     // First, extract the int64 data from the tagged value
@@ -146,6 +182,15 @@ llvm::Value* TailCallCodegen::extractBounceThunk(llvm::Value* bounce) {
     return ctx_.builder().CreateIntToPtr(thunk_int, ctx_.ptrType());
 }
 
+/**
+ * @brief Lazily generate the shared `eshkol_trampoline` LLVM function that
+ *        drives bounded-stack recursion: it repeatedly invokes a thunk in a
+ *        loop, unwrapping bounce values via isBounce()/extractBounceThunk(),
+ *        until a non-bounce result is produced. Idempotent — subsequent
+ *        calls are a no-op once the function has been created. Saves and
+ *        restores the IR builder's insert point so it can be called from
+ *        any codegen context.
+ */
 void TailCallCodegen::generateTrampolineRuntime() {
     if (trampoline_func_) return;  // Already generated
 
@@ -498,6 +543,13 @@ static bool allSelfCallsInTailPosition(const eshkol_ast_t* expr,
     }
 }
 
+/**
+ * @brief Check whether every self-recursive call to @p func_name inside a
+ *        lambda's body occurs in tail position, using
+ *        allSelfCallsInTailPosition() with the body itself treated as being
+ *        in tail position. Returns false for non-lambda operations or a
+ *        missing body.
+ */
 bool TailCallCodegen::isTailRecursive(const eshkol_operations_t* lambda_op,
                                        const std::string& func_name) const {
     if (!lambda_op || lambda_op->op != ESHKOL_LAMBDA_OP) return false;
@@ -508,6 +560,11 @@ bool TailCallCodegen::isTailRecursive(const eshkol_operations_t* lambda_op,
     return allSelfCallsInTailPosition(lambda_op->lambda_op.body, func_name, true);
 }
 
+/**
+ * @brief Public wrapper around allSelfCallsInTailPosition() that treats
+ *        @p body as the top-level (tail-position) expression for
+ *        self-calls to @p func_name.
+ */
 bool TailCallCodegen::areAllSelfCallsInTailPosition(const eshkol_ast_t* body,
                                                      const std::string& func_name) const {
     if (!body) return true;
@@ -604,6 +661,11 @@ llvm::Function* TailCallCodegen::transformToIterative(
     return func;
 }
 
+/**
+ * @brief Check whether @p expr is the final expression of an
+ *        ESHKOL_SEQUENCE_OP @p parent (and therefore inherits the
+ *        sequence's own tail-position status).
+ */
 bool TailCallCodegen::isLastInSequence(const eshkol_ast_t* expr,
                                         const eshkol_operations_t* parent) const {
     if (!parent || parent->op != ESHKOL_SEQUENCE_OP) {
@@ -619,6 +681,11 @@ bool TailCallCodegen::isLastInSequence(const eshkol_ast_t* expr,
     return &parent->sequence_op.expressions[last_idx] == expr;
 }
 
+/**
+ * @brief Check whether a direct (non-trampolined) tail call from @p caller
+ *        to @p callee is safe, i.e. both functions share the same calling
+ *        convention and return type.
+ */
 bool TailCallCodegen::canUseDirectTCO(llvm::Function* caller, llvm::Function* callee) const {
     if (!caller || !callee) return false;
 
@@ -627,6 +694,14 @@ bool TailCallCodegen::canUseDirectTCO(llvm::Function* caller, llvm::Function* ca
            caller->getReturnType() == callee->getReturnType();
 }
 
+/**
+ * @brief Emit the loop-back sequence for a self-call inside a function
+ *        previously converted by transformToIterative(): store the new
+ *        argument values into the mutable parameter allocas and branch back
+ *        to the loop header, instead of performing a real recursive call.
+ *        Requires an active iterative transform (see transformToIterative());
+ *        logs an error and does nothing otherwise.
+ */
 void TailCallCodegen::emitIterativeSelfCall(const std::vector<llvm::Value*>& new_args) {
     if (!iterative_info_.active) {
         eshkol_error("emitIterativeSelfCall called without active iterative transform");

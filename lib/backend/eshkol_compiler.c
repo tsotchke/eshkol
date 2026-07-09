@@ -112,6 +112,7 @@ typedef struct MacroNode {
 static const char* src_ptr = NULL;
 static int g_trace_on = 0;  /* global, set by --trace flag */
 
+/** @brief Advance src_ptr past whitespace and `;`-to-end-of-line comments. */
 static void skip_ws(void) {
     while (*src_ptr) {
         if (isspace(*src_ptr)) { src_ptr++; continue; }
@@ -120,12 +121,15 @@ static void skip_ws(void) {
     }
 }
 
+/** @brief Allocate and zero-initialize a new AST Node of type @p t. */
 static Node* make_node(NodeType t) {
     Node* n = (Node*)calloc(1, sizeof(Node));
     if (!n) { fprintf(stderr, "ERROR: allocation failed in make_node\n"); return NULL; }
     n->type = t;
     return n;
 }
+/** @brief Append child @p c to parent Node @p p's children array, growing
+ *         it via realloc. */
 static void add_child(Node* p, Node* c) {
     if (!p || !c) return;
     Node** nc = (Node**)realloc(p->children, (p->n_children+1)*sizeof(Node*));
@@ -136,6 +140,9 @@ static void add_child(Node* p, Node* c) {
 
 static void free_node(Node* n);
 static Node* parse_sexp(void);
+/** @brief Parse a parenthesized list body (after the opening `(` has been
+ *         consumed) into an N_LIST node, reading sub-expressions until `)`
+ *         or end of input. */
 static Node* parse_list(void) {
     Node* list = make_node(N_LIST);
     if (!list) return NULL;
@@ -144,6 +151,14 @@ static Node* parse_list(void) {
     return list;
 }
 
+/**
+ * @brief Recursive-descent S-expression reader: parses one datum from the
+ *        global src_ptr cursor — lists, quote/quasiquote/unquote(-splicing)
+ *        sugar, string literals (with \\n \\t \\\\ \\" escapes), #t/#f,
+ *        character literals (#\\a, #\\space, #\\newline, #\\tab, #\\nul),
+ *        vector literals #(...), numbers, and symbols.
+ * @return The parsed Node, or NULL at end of input / on a bare `)`.
+ */
 static Node* parse_sexp(void) {
     skip_ws();
     if (!*src_ptr) return NULL;
@@ -271,6 +286,7 @@ static Node* parse_sexp(void) {
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 
+/** @brief Recursively free an AST Node and all its children. */
 static void free_node(Node* n) { if (!n) return; for (int i=0;i<n->n_children;i++) free_node(n->children[i]); free(n->children); free(n); }
 
 /*******************************************************************************
@@ -315,13 +331,22 @@ typedef struct FuncChunk {
     int stack_depth;  /* compile-time stack depth (values above fp) */
 } FuncChunk;
 
+/** @brief Check whether Node @p n is a symbol equal to string @p s. */
 static int is_sym(Node* n, const char* s) { return n && n->type == N_SYMBOL && strcmp(n->symbol, s) == 0; }
 
+/** @brief Append one bytecode instruction (@p op, @p operand) to chunk
+ *         @p c, erroring if MAX_CODE is exceeded. */
 static void chunk_emit(FuncChunk* c, uint8_t op, int32_t operand) {
     if (c->code_len >= MAX_CODE) { fprintf(stderr, "ERROR: bytecode overflow (MAX_CODE=%d)\n", MAX_CODE); return; }
     c->code[c->code_len++] = (Instr){op, operand};
 }
 
+/** @brief Append a value to chunk @p c's constant pool. Deliberately does
+ *         not deduplicate: function PC placeholders get patched in place
+ *         after creation, which would corrupt any literal constant that
+ *         happened to match the placeholder's value.
+ * @return The new constant's index, or -1 if MAX_CONSTS is exceeded.
+ */
 static int chunk_add_const(FuncChunk* c, Value v) {
     /* No deduplication — function PC placeholders get patched after creation,
      * which would corrupt literal constants that matched the placeholder value. */
@@ -330,16 +355,26 @@ static int chunk_add_const(FuncChunk* c, Value v) {
     return c->n_constants++;
 }
 
+/** @brief Emit an OP_NOP placeholder instruction (e.g. for a forward jump
+ *         target to be patch()ed once its destination is known).
+ * @return The code index of the placeholder slot.
+ */
 static int placeholder(FuncChunk* c) {
     int slot = c->code_len;
     chunk_emit(c, OP_NOP, 0);
     return slot;
 }
 
+/** @brief Overwrite the instruction at @p slot (previously emitted by
+ *         placeholder() or otherwise) with (@p op, @p target). */
 static void patch(FuncChunk* c, int slot, uint8_t op, int32_t target) {
     c->code[slot] = (Instr){op, target};
 }
 
+/** @brief Look up a local variable by name in the innermost-to-outermost
+ *         scope of chunk @p c.
+ * @return The local's stack slot, or -1 if not found in this chunk.
+ */
 static int resolve_local(FuncChunk* c, const char* name) {
     for (int i = c->n_locals - 1; i >= 0; i--) {
         if (strcmp(c->locals[i].name, name) == 0) return c->locals[i].slot;
@@ -347,6 +382,10 @@ static int resolve_local(FuncChunk* c, const char* name) {
     return -1;
 }
 
+/** @brief Register a new local variable named @p name in chunk @p c at the
+ *         current scope depth.
+ * @return The assigned slot index, or -1 if MAX_LOCALS is exceeded.
+ */
 static int add_local(FuncChunk* c, const char* name) {
     if (c->n_locals >= MAX_LOCALS) { fprintf(stderr, "ERROR: local variable overflow (MAX_LOCALS=%d)\n", MAX_LOCALS); return -1; }
     int slot = c->n_locals;
@@ -360,7 +399,8 @@ static int add_local(FuncChunk* c, const char* name) {
 
 static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
-/* Scan an AST node for set! references to a named variable */
+/** @brief Scan an AST subtree for a `(set! name ...)` reference to
+ *         @p name. */
 static int scan_for_set(Node* node, const char* name) {
     if (!node) return 0;
     if (node->type == N_LIST && node->n_children >= 3) {
@@ -377,9 +417,11 @@ static int scan_for_set(Node* node, const char* name) {
     return 0;
 }
 
-/* Scan for FREE references to a variable name inside lambda bodies.
- * A reference is free if the variable is not rebound as a lambda parameter
- * or let binding at an inner scope. */
+/** @brief Scan for free references to @p name inside nested lambda bodies —
+ *         a reference is free (a capture) if @p name is not rebound as a
+ *         lambda parameter or let binding at an inner scope.
+ *         @p in_lambda tracks whether the current recursion is inside a
+ *         lambda body. */
 static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     if (!node) return 0;
     if (node->type == N_SYMBOL && in_lambda && strcmp(node->symbol, name) == 0)
@@ -423,7 +465,10 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     return 0;
 }
 
-/* Check if a let-bound variable needs heap boxing (captured + mutated) */
+/** @brief Check whether a let-bound variable @p name needs heap boxing:
+ *         true only if it is both `set!`-mutated (scan_for_set()) and
+ *         captured by a nested lambda (scan_for_capture()) somewhere across
+ *         @p body_nodes. */
 static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     int has_set = 0, has_capture = 0;
     for (int i = 0; i < n_bodies; i++) {
@@ -433,7 +478,10 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
     return has_set && has_capture;
 }
 
-/* Compile a quoted datum into cons cells, symbols as strings, etc. */
+/** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
+ *         constants, symbols as packed 8-byte constant chunks passed to
+ *         native call 100 (symbol construction), and lists as a chain of
+ *         OP_CONS built from an OP_NIL base (right to left). */
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
@@ -482,6 +530,13 @@ static void compile_quote(FuncChunk* c, Node* datum) {
 
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 
+/**
+ * @brief Compile a `(quasiquote node)` template: `(unquote x)` compiles
+ *        @c x normally; atoms compile like compile_quote(); lists are
+ *        rebuilt right-to-left via OP_CONS, splicing `(unquote-splicing x)`
+ *        elements in via a native "append" call (native id 73) instead of
+ *        consing.
+ */
 static void compile_quasiquote(FuncChunk* c, Node* node) {
     if (!node) { chunk_emit(c, OP_NIL, 0); return; }
 
@@ -550,6 +605,9 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
 
 static int compile_depth = 0;
 
+/** @brief Recursion-depth-guarded wrapper around compile_expr_impl():
+ *         bumps/checks compile_depth (erroring past 1000 nested
+ *         expressions) around the actual compilation call. */
 static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth++;
     if (compile_depth > 1000) { fprintf(stderr, "ERROR: expression nesting too deep (>1000)\n"); compile_depth--; return; }
@@ -557,6 +615,20 @@ static void compile_expr(FuncChunk* c, Node* node, int tail) {
     compile_depth--;
 }
 
+/**
+ * @brief Core expression compiler: dispatches on Node @p node's type/head
+ *        symbol and emits the corresponding bytecode into chunk @p c.
+ *
+ * Handles macro expansion, literals (number/string/bool/vector), variable
+ * references (local/upvalue/global), special forms (define, set!, if,
+ * cond, case, when/unless, and/or, let, let-star, letrec(-star), do, begin,
+ * lambda, named-let, quote/quasiquote), function application (with tail
+ * calls when @p tail is set), and the built-in primitive operators
+ * (arithmetic, comparisons, cons/car/cdr, vector/string ops, call/cc,
+ * exception handling, dynamic-wind, etc.) of this compiler's 38-opcode
+ * ISA. @p tail indicates whether @p node is in tail position, enabling
+ * OP_TAIL_CALL instead of OP_CALL for the final call in a function body.
+ */
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (!node) return;
 
@@ -3412,6 +3484,12 @@ typedef struct HeapObjectTag HeapObject;
 /* mode: 0=display (human-readable), 1=write (machine-readable with quotes/escapes) */
 static void print_value(Value v, HeapObject* heap, int depth, int mode);
 
+/**
+ * @brief Recursively print a runtime Value (bounded to @p depth <= 50 to
+ *        avoid infinite recursion on circular structures — prints "..."
+ *        past that). @p mode 0 = display (raw, human-readable strings), 1
+ *        = write (quoted/escaped strings, machine-readable).
+ */
 static void print_value(Value v, HeapObject* heap, int depth, int mode) {
     if (depth > 50) { printf("..."); return; }
     switch (v.type) {
@@ -3469,7 +3547,15 @@ static void print_value(Value v, HeapObject* heap, int depth, int mode) {
     }
 }
 
-/* ── Peephole Optimization ── */
+/**
+ * @brief Run a fixed-point pass of local bytecode peephole optimizations
+ *        over chunk @p c: eliminates `CONST 0 + ADD` and `CONST 1 + MUL`
+ *        identities, `NOT + NOT` / `NEG + NEG` double-negation pairs, and
+ *        `DUP + POP` pairs, replacing eliminated instructions with OP_NOP
+ *        in place (never compacted, since compaction would require fixing
+ *        up jump targets — the VM treats NOP as near-zero cost). Prints a
+ *        summary of eliminated instruction count.
+ */
 static void peephole_optimize(FuncChunk* c) {
     int changed = 1;
     while (changed) {
@@ -3537,6 +3623,16 @@ static void peephole_optimize(FuncChunk* c) {
      * requires fixing all jump targets. The VM handles NOPs at near-zero cost. */
 }
 
+/**
+ * @brief Execute a compiled FuncChunk on this file's dedicated stack-based
+ *        VM (a simplified companion to the LLVM backend's VM, sharing the
+ *        38-opcode ISA declared at the top of this file). Allocates the
+ *        value stack, heap, and call frames on the heap (too large for the
+ *        C stack), then runs the main fetch-decode-execute loop until
+ *        OP_HALT, dispatching each opcode (arithmetic, stack/local/upvalue
+ *        ops, control flow, closures, call/cc continuations, exception
+ *        handling, dynamic-wind, pairs/vectors/strings/hash tables).
+ */
 static void execute_chunk(FuncChunk* chunk) {
     /* Allocate VM on heap (too large for stack) */
     Value* stack = (Value*)calloc(STACK_SIZE, sizeof(Value));
@@ -5664,9 +5760,12 @@ static const BuiltinDef BUILTINS[] = {
     {NULL, 0, 0}  /* sentinel */
 };
 
-/* Emit preamble: define all builtins as first-class closures.
- * Each builtin becomes a closure that calls NATIVE_CALL with the right ID.
- * This makes builtins passable as arguments: (map even? lst) just works. */
+/**
+ * @brief Emit the preamble that defines every entry in the BUILTINS table
+ *        as a first-class closure local (a small JUMP-over-body/GET_LOCAL.../
+ *        NATIVE_CALL/RETURN/CLOSURE sequence per builtin), so builtins can
+ *        be passed as ordinary values/arguments (e.g. `(map even? lst)`).
+ */
 static void emit_builtin_preamble(FuncChunk* c) {
     for (int b = 0; BUILTINS[b].name; b++) {
         const BuiltinDef* def = &BUILTINS[b];
@@ -5696,6 +5795,16 @@ static void emit_builtin_preamble(FuncChunk* c) {
 static const char* g_eskb_output_path = NULL;
 static const char* g_source_file_path = NULL;
 
+/**
+ * @brief Top-level driver: builds the main FuncChunk by emitting the
+ *        builtin preamble (emit_builtin_preamble()), compiling a
+ *        Scheme-level prelude (map/filter/fold-left/fold-right/for-each/
+ *        any/every/find/take/drop/etc., implemented in terms of the
+ *        builtin closures), then parsing and compiling @p source itself.
+ *        Runs peephole_optimize() on the result and either executes it
+ *        (execute_chunk()) or writes it to g_eskb_output_path in ESKB
+ *        binary format, depending on the flags set by main().
+ */
 static void compile_and_run(const char* source) {
     FuncChunk main_chunk = {0};
 
@@ -5956,6 +6065,12 @@ static void compile_and_run(const char* source) {
     execute_chunk(&main_chunk);
 }
 
+/**
+ * @brief CLI entry point: parses `--emit-eskb PATH` (write compiled
+ *        bytecode to an .eskb binary instead of / in addition to running
+ *        it) and `--trace` flags, locates the input source file argument,
+ *        reads it, and calls compile_and_run().
+ */
 int main(int argc, char** argv) {
     printf("=== Eshkol Compiler (targeting 38-opcode VM) ===\n\n");
 

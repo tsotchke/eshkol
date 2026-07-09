@@ -15,6 +15,8 @@
 static const unsigned char VM_MODEL_MAGIC[4] = {'E', 'S', 'K', 'M'};
 static const unsigned int VM_MODEL_VERSION = 1u;
 
+/** @brief Standard CRC-32 (IEEE 802.3 polynomial) update: hashes @p len
+ *         bytes of @p data starting from running checksum @p crc. */
 static unsigned int vm_model_crc32_update(unsigned int crc, const unsigned char* data, size_t len) {
     crc = ~crc;
     for (size_t i = 0; i < len; i++) {
@@ -33,6 +35,9 @@ typedef struct {
     int ok;
 } VmModelWriter;
 
+/** @brief Write @p size raw bytes to @p writer's file, optionally folding
+ *         them into the running CRC (@p include_crc); marks the writer
+ *         failed (writer->ok = 0) on a short write. */
 static int vm_model_write_bytes(VmModelWriter* writer, const void* data, size_t size, int include_crc) {
     if (!writer || !writer->file || !writer->ok) return 0;
     if (size > 0 && fwrite(data, 1, size, writer->file) != size) {
@@ -45,10 +50,12 @@ static int vm_model_write_bytes(VmModelWriter* writer, const void* data, size_t 
     return 1;
 }
 
+/** @brief Write a single byte via vm_model_write_bytes(). */
 static int vm_model_write_u8(VmModelWriter* writer, unsigned char value, int include_crc) {
     return vm_model_write_bytes(writer, &value, 1, include_crc);
 }
 
+/** @brief Write a little-endian 32-bit value via vm_model_write_bytes(). */
 static int vm_model_write_u32(VmModelWriter* writer, unsigned int value, int include_crc) {
     unsigned char bytes[4];
     bytes[0] = (unsigned char)(value & 0xFFu);
@@ -58,6 +65,7 @@ static int vm_model_write_u32(VmModelWriter* writer, unsigned int value, int inc
     return vm_model_write_bytes(writer, bytes, sizeof(bytes), include_crc);
 }
 
+/** @brief Write a little-endian 64-bit value via vm_model_write_bytes(). */
 static int vm_model_write_u64(VmModelWriter* writer, uint64_t value, int include_crc) {
     unsigned char bytes[8];
     bytes[0] = (unsigned char)(value & 0xFFu);
@@ -71,6 +79,8 @@ static int vm_model_write_u64(VmModelWriter* writer, uint64_t value, int include
     return vm_model_write_bytes(writer, bytes, sizeof(bytes), include_crc);
 }
 
+/** @brief Read a little-endian 32-bit value from @p data at *@p offset
+ *         (bounds-checked against @p size), advancing *@p offset by 4. */
 static int vm_model_read_u32(const unsigned char* data, size_t size, size_t* offset, unsigned int* out) {
     if (!offset || !out || *offset + 4 > size) return 0;
     *out = (unsigned int)data[*offset] |
@@ -81,6 +91,8 @@ static int vm_model_read_u32(const unsigned char* data, size_t size, size_t* off
     return 1;
 }
 
+/** @brief Read a little-endian 64-bit value from @p data at *@p offset
+ *         (bounds-checked against @p size), advancing *@p offset by 8. */
 static int vm_model_read_u64(const unsigned char* data, size_t size, size_t* offset, uint64_t* out) {
     if (!offset || !out || *offset + 8 > size) return 0;
     *out = (uint64_t)data[*offset] |
@@ -95,6 +107,8 @@ static int vm_model_read_u64(const unsigned char* data, size_t size, size_t* off
     return 1;
 }
 
+/** @brief Read a single byte from @p data at *@p offset (bounds-checked
+ *         against @p size), advancing *@p offset by 1. */
 static int vm_model_read_u8(const unsigned char* data, size_t size, size_t* offset, unsigned char* out) {
     if (!offset || !out || *offset + 1 > size) return 0;
     *out = data[*offset];
@@ -102,6 +116,9 @@ static int vm_model_read_u8(const unsigned char* data, size_t size, size_t* offs
     return 1;
 }
 
+/** @brief Compute the overflow-checked product of @p dims[0..ndims), i.e.
+ *         the tensor's total element count; fails if any partial product
+ *         would overflow uint64_t or the final total exceeds INT64_MAX. */
 static int vm_model_compute_total(const uint64_t* dims, unsigned int ndims, int64_t* total) {
     uint64_t value = 1;
     for (unsigned int i = 0; i < ndims; i++) {
@@ -117,6 +134,9 @@ static int vm_model_compute_total(const uint64_t* dims, unsigned int ndims, int6
     return 1;
 }
 
+/** @brief Unwrap a Scheme string Value to its raw char* data, writing the
+ *         byte length to @p len if non-null; NULL if @p value isn't a
+ *         string. */
 static const char* vm_model_string_ptr(VM* vm, Value value, int* len) {
     if (!vm || value.type != VAL_STRING || value.as.ptr < 0) return NULL;
     VmString* str = (VmString*)vm->heap.objects[value.as.ptr]->opaque.ptr;
@@ -125,11 +145,15 @@ static const char* vm_model_string_ptr(VM* vm, Value value, int* len) {
     return str->data;
 }
 
+/** @brief Unwrap a tensor Value to its VmTensor*, or NULL if @p value
+ *         isn't a tensor. */
 static VmTensor* vm_model_value_tensor(VM* vm, Value value) {
     if (!vm || value.type != VAL_TENSOR || value.as.ptr < 0) return NULL;
     return (VmTensor*)vm->heap.objects[value.as.ptr]->opaque.ptr;
 }
 
+/** @brief Allocate a heap-boxed VM string Value copying @p len bytes from
+ *         @p data, writing the resulting tagged Value to *@p out. */
 static int vm_model_make_string_value(VM* vm, const char* data, int len, Value* out) {
     if (!vm || !out || len < 0) return 0;
     char* buf = (char*)vm_alloc(&vm->heap.regions, (size_t)len + 1);
@@ -146,6 +170,13 @@ static int vm_model_make_string_value(VM* vm, const char* data, int len, Value* 
     return 1;
 }
 
+/**
+ * @brief Deserialize a tensor from the ESKM binary format: reads @p total
+ *        (= product of @p dims) little-endian 64-bit doubles starting at
+ *        *@p offset (advancing it), builds a VmTensor from them, wraps it
+ *        as a heap-boxed Value in *@p out. Bounds-checks the read against
+ *        @p size and rejects @p ndims exceeding VM_TENSOR_MAX_DIMS.
+ */
 static int vm_model_make_tensor_value(VM* vm,
                                       unsigned int ndims,
                                       const uint64_t* dims,
@@ -192,6 +223,12 @@ static int vm_model_make_tensor_value(VM* vm,
     return 1;
 }
 
+/**
+ * @brief Serialize one named tensor record to @p writer in the ESKM
+ *        format: name length + bytes, dim count + shape, a dtype byte
+ *        (always 0 = f64), then every element as its little-endian 64-bit
+ *        bit pattern.
+ */
 static int vm_model_write_tensor_record(VmModelWriter* writer,
                                         const char* name,
                                         int name_len,
@@ -212,6 +249,8 @@ static int vm_model_write_tensor_record(VmModelWriter* writer,
     return 1;
 }
 
+/** @brief Length of a proper Scheme list, or -1 if @p list is improper
+ *         (doesn't end in nil). */
 static int vm_model_list_length(Value list, VM* vm) {
     int count = 0;
     while (list.type == VAL_PAIR) {
@@ -221,6 +260,7 @@ static int vm_model_list_length(Value list, VM* vm) {
     return (list.type == VAL_NIL) ? count : -1;
 }
 
+/** @brief Reverse a proper Scheme list, allocating new cons cells. */
 static Value vm_model_reverse_list(VM* vm, Value list) {
     Value reversed = NIL_VAL;
     while (list.type == VAL_PAIR) {
@@ -235,6 +275,9 @@ static Value vm_model_reverse_list(VM* vm, Value list) {
     return reversed;
 }
 
+/** @brief Save a single tensor to @p path in the ESKM format (magic,
+ *         version, a fixed count of 1, flags, one unnamed tensor record,
+ *         then the CRC-32 footer). */
 static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_value) {
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
     VmTensor* tensor = vm_model_value_tensor(vm, tensor_value);
@@ -254,6 +297,10 @@ static int vm_model_save_tensor_file(VM* vm, Value path_value, Value tensor_valu
     return ok && writer.ok;
 }
 
+/** @brief Save a checkpoint containing multiple named tensors to @p path
+ *         in the ESKM format. @p entries_value must be a proper list of
+ *         (name . tensor) pairs; writes one tensor record per entry, then
+ *         the CRC-32 footer. */
 static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_value) {
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
     if (!path) return 0;
@@ -288,6 +335,8 @@ static int vm_model_save_model_file(VM* vm, Value path_value, Value entries_valu
     return ok && writer.ok;
 }
 
+/** @brief Read the entire contents of @p path into a freshly-malloc'd
+ *         buffer, writing the pointer and size to @p data/@p size. */
 static int vm_model_load_bytes(const char* path, unsigned char** data, size_t* size) {
     FILE* file = fopen(path, "rb");
     if (!file) return 0;
@@ -306,6 +355,16 @@ static int vm_model_load_bytes(const char* path, unsigned char** data, size_t* s
     return 1;
 }
 
+/**
+ * @brief Validate and parse an ESKM file's header: verifies the trailing
+ *        CRC-32 footer against the payload, checks the magic bytes and
+ *        format version, and reads the tensor count. On success,
+ *        @p payload_size is set to the file size minus the 4-byte CRC
+ *        footer and @p offset points just past the header (magic +
+ *        version + count + flags) ready for per-tensor record parsing.
+ * @return 1 if the file is well-formed and at the expected version, 0
+ *         otherwise (too short, bad CRC, bad magic, or wrong version).
+ */
 static int vm_model_parse_header(const unsigned char* data,
                                  size_t size,
                                  unsigned int* tensor_count,
@@ -331,6 +390,12 @@ static int vm_model_parse_header(const unsigned char* data,
     return version == VM_MODEL_VERSION;
 }
 
+/**
+ * @brief VM opcode handler (native call VM_MODEL_IO_BASE-relative):
+ *        `(tensor-load path)` — pop the path, load and parse an ESKM file
+ *        expected to contain exactly one (unnamed) tensor, and push the
+ *        reconstructed tensor Value (or NIL on any parse/format error).
+ */
 static void vm_model_tensor_load(VM* vm) {
     Value path_value = vm_pop(vm);
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
@@ -396,6 +461,12 @@ static void vm_model_tensor_load(VM* vm) {
     vm_push(vm, tensor_value);
 }
 
+/**
+ * @brief VM opcode handler: `(model-load path)` — pop the path, load and
+ *        parse an ESKM checkpoint file containing any number of named
+ *        tensors, and push a list of (name . tensor) pairs in original
+ *        order (or NIL on any parse/format error).
+ */
 static void vm_model_model_load(VM* vm) {
     Value path_value = vm_pop(vm);
     const char* path = vm_model_string_ptr(vm, path_value, NULL);
