@@ -1,0 +1,76 @@
+;; Regression test: HEAP_SUBTYPE_PARAMETER / HEAP_SUBTYPE_PRNG collision.
+;;
+;; lib/core/runtime_parameters_hosted.cpp used to locally #define
+;; HEAP_SUBTYPE_PARAMETER as 20, which numerically collided with the
+;; canonical HEAP_SUBTYPE_PRNG = 20 in inc/eshkol/eshkol.h. Both subtypes
+;; flow through the same ESHKOL_VALUE_HEAP_PTR dispatch (type predicates,
+;; display, type-error tags), so a parameter object allocated by
+;; eshkol_make_parameter was misidentified by (prng? ...) as a PRNG.
+;; HEAP_SUBTYPE_PARAMETER now has its own canonical id (24).
+;;
+;; Note on representations: source-level (make-parameter x) is rewritten by
+;; the parser into a closure over a vector cell, so in compiled programs the
+;; parameter value is CALLABLE, not a HEAP_SUBTYPE_PARAMETER object. The
+;; heap-object path (eshkol_make_parameter, reachable via eval/FFI) is
+;; covered by tests/v1_2_edge_cases/parameter_prng_collision_jit_test.esk,
+;; which is JIT-only because eval is unavailable in AOT binaries. This file
+;; checks the cross-discrimination that must hold in BOTH JIT and AOT.
+
+(require stdlib)
+
+(display "=== parameter/prng subtype discrimination (AOT-safe) ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; --- construct one of each --------------------------------------------
+(define my-param (make-parameter 42))
+(define my-prng (make-prng 7))
+
+;; --- type predicates must not cross-identify ---------------------------
+(check "prng? true for a prng object" (prng? my-prng))
+(check "prng? false for a parameter" (not (prng? my-param)))
+(check "parameter? false for a prng object" (not (parameter? my-prng)))
+(check "parameter? false for an integer" (not (parameter? 42)))
+(check "parameter? false for a string" (not (parameter? "hello")))
+(check "prng? false for a string" (not (prng? "hello")))
+(check "prng? false for an integer" (not (prng? 42)))
+
+;; --- parameter behaves as a dynamic binding -----------------------------
+(check "make-parameter default value reads back" (= (my-param) 42))
+(parameterize ((my-param 99))
+  (check "parameterize overrides value in dynamic extent" (= (my-param) 99)))
+(check "parameterize restores value on exit" (= (my-param) 42))
+
+;; --- prng still produces samples -----------------------------------------
+(define sample (prng-random my-prng))
+(check "prng-random stays in [0.0, 1.0)" (and (>= sample 0.0) (< sample 1.0)))
+
+;; --- display distinguishes them -------------------------------------------
+(define (render x)
+  (let ((p (open-output-string)))
+    (display x p)
+    (get-output-string p)))
+
+(define param-repr (render my-param))
+(define prng-repr (render my-prng))
+
+(check "parameter display is non-empty" (> (string-length param-repr) 0))
+(check "prng display is non-empty" (> (string-length prng-repr) 0))
+(check "parameter and prng render differently" (not (string=? param-repr prng-repr)))
+(check "prng display reads #<prng>" (string=? prng-repr "#<prng>"))
+(check "parameter display does not read #<prng>" (not (string=? param-repr "#<prng>")))
+(check "prng display is not the raw-subtype fallback" (not (string=? prng-repr "#<heap:20>")))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))

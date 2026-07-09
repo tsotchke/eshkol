@@ -241,6 +241,7 @@ const char* eshkol_format_value_type_tag(eshkol_tagged_value_t v) {
                 case HEAP_SUBTYPE_PROMISE:        return "promise";
                 case HEAP_SUBTYPE_RATIONAL:       return "rational";
                 case HEAP_SUBTYPE_PRNG:           return "prng";
+                case HEAP_SUBTYPE_PARAMETER:      return "parameter";
                 default:                          return "heap-object";
             }
         }

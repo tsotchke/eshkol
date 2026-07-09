@@ -1,0 +1,53 @@
+;; mode: jit
+;; Regression: HEAP_SUBTYPE_PARAMETER used to be locally #define'd as 20 in
+;; lib/core/runtime_parameters_hosted.cpp, colliding with the canonical
+;; HEAP_SUBTYPE_PRNG = 20 (inc/eshkol/eshkol.h). A heap parameter object
+;; allocated by eshkol_make_parameter therefore satisfied (prng? ...) and
+;; displayed via the raw-subtype fallback. HEAP_SUBTYPE_PARAMETER is now 24.
+;;
+;; The heap-object path is only reachable when a `make-parameter` CALL_OP
+;; bypasses the parser's closure rewrite — e.g. through (eval ...) — so this
+;; test is JIT-only (eval is unavailable in AOT binaries).
+
+(require stdlib)
+
+(display "=== parameter/prng heap-subtype collision (JIT eval path) ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Heap parameter object via the runtime allocator (eval bypasses the
+;; parser's make-parameter -> closure rewrite).
+(define heap-param (eval '(make-parameter 5)))
+(define my-prng (make-prng 42))
+
+;; --- the collision symptoms -----------------------------------------------
+(check "prng? is #f for a heap parameter object (was #t pre-fix)"
+       (not (prng? heap-param)))
+(check "parameter? is #t for a heap parameter object" (parameter? heap-param))
+(check "parameter? is #f for a prng object" (not (parameter? my-prng)))
+(check "prng? is #t for a prng object" (prng? my-prng))
+
+;; --- display discriminates --------------------------------------------------
+(define (render x)
+  (let ((p (open-output-string)))
+    (display x p)
+    (get-output-string p)))
+
+(check "heap parameter displays as #<parameter>"
+       (string=? (render heap-param) "#<parameter>"))
+(check "prng displays as #<prng>"
+       (string=? (render my-prng) "#<prng>"))
+
+(display "---") (newline)
+(display "Total: ") (display (+ pass-count fail-count))
+(display ", PASS: ") (display pass-count)
+(display ", FAIL: ") (display fail-count)
+(newline)
+(if (> fail-count 0) (exit 1))

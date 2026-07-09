@@ -516,7 +516,8 @@ typedef enum {
     HEAP_SUBTYPE_DNC             = 21,  // Differentiable external memory (NTM/DNC head)
     HEAP_SUBTYPE_SDNC            = 22,  // SDNC weight-program handle (bytecode-VM-as-transformer θ)
     HEAP_SUBTYPE_TAYLOR          = 23,  // Truncated-Taylor tower for arbitrary-order AD (ESH-0186)
-    // Reserved: 24-255 for future heap types
+    HEAP_SUBTYPE_PARAMETER       = 24,  // R7RS dynamic parameter object (make-parameter/parameterize)
+    // Reserved: 25-255 for future heap types
 } heap_subtype_t;
 
 // ───────────────────────────────────────────────────────────────────────────
