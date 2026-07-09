@@ -26,6 +26,8 @@
  * Internal Helpers
  ******************************************************************************/
 
+/** @brief Computes the total element count of a tensor from its shape
+ *  (product of all dimension sizes). */
 static size_t tensor_size(const int64_t* shape, size_t ndim) {
     size_t size = 1;
     for (size_t i = 0; i < ndim; i++) {
@@ -41,7 +43,8 @@ extern "C" {
     void* arena_allocate_zeroed(arena_t* arena, size_t size);
 }
 
-/* Allocate zero-initialized gradient tensor (arena-scoped) */
+/** @brief Allocates a zero-initialized gradient buffer of n doubles from
+ *  the global arena. */
 static double* alloc_grad(size_t n) {
     return (double*)arena_allocate_zeroed(get_global_arena(), n * sizeof(double));
 }
@@ -55,6 +58,8 @@ static double* alloc_grad(size_t n) {
  *   dL/dB = A^T @ dL/dC   →  [k,m] @ [m,n] = [k,n]
  ******************************************************************************/
 
+/** @brief Backward pass for matrix multiply: propagates dL/dC into
+ *  dL/dA = dL/dC @ B^T and dL/dB = A^T @ dL/dC (2D case). */
 extern "C" void tensor_matmul_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -112,6 +117,8 @@ extern "C" void tensor_matmul_backward(ad_node_t* node) {
  *   dL/dx[i] = y[i] * (dL/dy[i] - sum_j(dL/dy[j] * y[j]))
  ******************************************************************************/
 
+/** @brief Backward pass for softmax: for each row along the last
+ *  dimension, computes dx[i] = y[i] * (dy[i] - sum_j(dy[j] * y[j])). */
 extern "C" void tensor_softmax_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -157,6 +164,10 @@ extern "C" void tensor_softmax_backward(ad_node_t* node) {
  * Backward: complex chain rule through mean and variance
  ******************************************************************************/
 
+/** @brief Backward pass for layer normalization: for each row along the
+ *  last dimension, chains gradients back through the mean/variance
+ *  normalization to dx, and accumulates dgamma when a gamma input is
+ *  present. */
 extern "C" void tensor_layernorm_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -238,6 +249,9 @@ extern "C" void tensor_layernorm_backward(ad_node_t* node) {
  * Backward: chain rule through RMS computation
  ******************************************************************************/
 
+/** @brief Backward pass for RMS normalization: for each row along the
+ *  last dimension, chains gradients back through the RMS computation to
+ *  dx, and accumulates dgamma when a gamma input is present. */
 extern "C" void tensor_rmsnorm_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -306,6 +320,9 @@ extern "C" void tensor_rmsnorm_backward(ad_node_t* node) {
  * where a = sqrt(2/pi), b = 0.044715
  ******************************************************************************/
 
+/** @brief Backward pass for the tanh-approximation GELU activation:
+ *  applies the derivative of gelu(x) = 0.5*x*(1+tanh(a*(x+b*x^3))) to
+ *  scale the incoming gradient. */
 extern "C" void tensor_gelu_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -341,6 +358,9 @@ extern "C" void tensor_gelu_backward(ad_node_t* node) {
  * silu'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x)))
  ******************************************************************************/
 
+/** @brief Backward pass for SiLU/Swish: applies the derivative
+ *  silu'(x) = sigmoid(x) * (1 + x * (1 - sigmoid(x))) to scale the
+ *  incoming gradient. */
 extern "C" void tensor_silu_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -369,6 +389,9 @@ extern "C" void tensor_silu_backward(ad_node_t* node) {
  * dL/dlogits = softmax(logits) - target  (numerically stable)
  ******************************************************************************/
 
+/** @brief Backward pass for softmax cross-entropy loss: computes the
+ *  numerically-stable gradient dL/dlogits = softmax(logits) - targets for
+ *  each row of the batch. */
 extern "C" void tensor_cross_entropy_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
 
@@ -426,9 +449,10 @@ extern "C" void tensor_cross_entropy_backward(ad_node_t* node) {
  * magnitude.
  ******************************************************************************/
 
-/* Transpose: dL/dX[i,j] = dL/dY[j,i]. Permutation is its own inverse
- * for 2D; higher-rank transposes require the permutation vector
- * which the forward codegen should set up on the node. */
+/** @brief Backward pass for transpose: dL/dX[i,j] = dL/dY[j,i]. Permutation
+ *  is its own inverse for 2D; higher-rank transposes require the
+ *  permutation vector which the forward codegen should set up on the
+ *  node. */
 extern "C" void tensor_transpose_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* in = node->input1;
@@ -449,8 +473,9 @@ extern "C" void tensor_transpose_backward(ad_node_t* node) {
     }
 }
 
-/* Sum over all elements: forward reduces to a scalar; backward
- * broadcasts dL/dy uniformly. */
+/** @brief Backward pass for a full sum reduction: the forward pass
+ *  reduces to a scalar, so backward broadcasts the scalar dL/dy uniformly
+ *  onto every element of the input. */
 extern "C" void tensor_sum_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* in = node->input1;
@@ -462,10 +487,11 @@ extern "C" void tensor_sum_backward(ad_node_t* node) {
     for (size_t i = 0; i < n; i++) dX[i] += dy;
 }
 
-/* Broadcast-add: forward is y[i] = a + b[i] (scalar a broadcast over
- * tensor b) or y[i,j] = a[i] + b[i,j]. The conservative backward
- * splits gradient along both inputs: dL/db = dL/dy (elementwise),
- * dL/da = sum(dL/dy) across the broadcast axis. */
+/** @brief Backward pass for broadcast-add: forward is y[i] = a + b[i]
+ *  (scalar a broadcast over tensor b) or y[i,j] = a[i] + b[i,j]. Splits
+ *  the gradient along both inputs: dL/db = dL/dy (elementwise, sum-reduced
+ *  if b is smaller than the output), dL/da = sum(dL/dy) across the
+ *  broadcast axis. */
 extern "C" void tensor_broadcast_add_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* a = node->input1;
@@ -505,9 +531,10 @@ extern "C" void tensor_broadcast_add_backward(ad_node_t* node) {
     }
 }
 
-/* Broadcast-multiply: y = a * b (one broadcast). Product rule:
- * dL/da = sum(dL/dy * b), dL/db = dL/dy * a (both may need
- * broadcast reduction). Same conservative shape handling as add. */
+/** @brief Backward pass for broadcast-multiply: y = a * b (one operand may
+ *  be broadcast). Applies the product rule dL/da = sum(dL/dy * b),
+ *  dL/db = sum(dL/dy * a), with the same broadcast-reduction handling as
+ *  tensor_broadcast_add_backward(). */
 extern "C" void tensor_broadcast_mul_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* a = node->input1;
@@ -549,14 +576,14 @@ extern "C" void tensor_broadcast_mul_backward(ad_node_t* node) {
     }
 }
 
-/* Embedding lookup backward: forward is y[i,:] = W[idx[i],:].
- * Backward scatters dL/dy rows into dL/dW at idx[i]. We don't have
- * the idx vector wired through the node structure yet — until that's
- * threaded, fall back to the conservative "sum grad into row 0" so
- * the gradient signal still reaches the weight tensor non-zero and
- * subsequent training steps don't silently stall. Tracked as ESH-0230
- * (.swarm/tasks/ESH-0230.json) — implement once the forward-pass wiring
- * delivers node->input2 as the index tensor. */
+/** @brief Backward pass for embedding lookup (forward is y[i,:] =
+ *  W[idx[i],:]); properly it should scatter dL/dy rows into dL/dW at
+ *  idx[i]. We don't have the idx vector wired through the node structure
+ *  yet — until that's threaded, fall back to the conservative "sum grad
+ *  into row 0" so the gradient signal still reaches the weight tensor
+ *  non-zero and subsequent training steps don't silently stall. Tracked
+ *  as ESH-0230 (.swarm/tasks/ESH-0230.json) — implement once the
+ *  forward-pass wiring delivers node->input2 as the index tensor. */
 extern "C" void tensor_embedding_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* W = node->input1;
@@ -592,11 +619,12 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
     for (size_t i = 0; i < write && i < n_w; i++) dW[i] += dy[i];
 }
 
-/* Attention: conservative identity-like pass through for the value
- * input. Proper scaled-dot-product backward requires Q/K/V split in
- * the node — stubbed here to at least propagate a non-zero signal.
- * The exact formulation (5-step chain through softmax(QK^T/√d)V)
- * lands with the full attention codegen rewrite. */
+/** @brief Backward pass for attention: a conservative identity-like
+ *  pass-through for the value input only. Proper scaled-dot-product
+ *  backward requires the Q/K/V split in the node — stubbed here to at
+ *  least propagate a non-zero signal. The exact formulation (5-step chain
+ *  through softmax(QK^T/√d)V) lands with the full attention codegen
+ *  rewrite. */
 extern "C" void tensor_attention_backward(ad_node_t* node) {
     if (!node || !node->tensor_gradient) return;
     ad_node_t* v = node->input2 ? node->input2 : node->input1;
@@ -634,6 +662,11 @@ extern "C" void tensor_attention_backward(ad_node_t* node) {
 
 typedef void (*backward_fn_t)(ad_node_t*);
 
+/** @brief Looks up the backward-pass function for a given AD tensor node
+ *  type. Returns NULL (after a one-time stderr warning) for node types with
+ *  no registered backward, so the caller can skip gradient propagation for
+ *  genuinely non-AD node types (CONSTANT / VARIABLE) as well as any
+ *  op whose forward codegen has no matching backward implementation. */
 extern "C" backward_fn_t get_tensor_backward_fn(int node_type) {
     switch ((ad_node_type_t)node_type) {
         case AD_NODE_TENSOR_MATMUL:          return tensor_matmul_backward;
