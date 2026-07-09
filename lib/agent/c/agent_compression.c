@@ -15,6 +15,15 @@
 
 #include <zlib.h>
 
+/**
+ * @brief Compresses @p data into zlib (RFC 1950) format using the default compression level.
+ *
+ * Wraps zlib's compress2(). The compressed output is written to @p buf,
+ * whose capacity is given by @p buf_size.
+ *
+ * @return Number of compressed bytes written to @p buf, or -1 on invalid
+ *         arguments or if @p buf is too small to hold the compressed data.
+ */
 int32_t eshkol_deflate(const char* data, int32_t data_len,
                         char* buf, int32_t buf_size) {
     if (!data || !buf || data_len <= 0 || buf_size <= 0) return -1;
@@ -24,6 +33,15 @@ int32_t eshkol_deflate(const char* data, int32_t data_len,
     return r == Z_OK ? (int32_t)dest_len : -1;
 }
 
+/**
+ * @brief Decompresses a zlib (RFC 1950) buffer produced by eshkol_deflate() back into @p buf.
+ *
+ * Wraps zlib's uncompress(). @p buf_size gives the caller-supplied capacity
+ * of @p buf and is used as the initial estimate of the decompressed size.
+ *
+ * @return Number of decompressed bytes written to @p buf, or -1 on invalid
+ *         arguments or decompression failure.
+ */
 int32_t eshkol_inflate_data(const char* data, int32_t data_len,
                              char* buf, int32_t buf_size) {
     if (!data || !buf || data_len <= 0 || buf_size <= 0) return -1;
@@ -33,6 +51,17 @@ int32_t eshkol_inflate_data(const char* data, int32_t data_len,
     return r == Z_OK ? (int32_t)dest_len : -1;
 }
 
+/**
+ * @brief Compresses @p data into gzip (RFC 1952) format.
+ *
+ * Configures a zlib deflate stream with windowBits = 15+16 so the output
+ * includes a gzip header/trailer, then compresses the entire input in one
+ * Z_FINISH call.
+ *
+ * @return Number of compressed bytes written to @p buf, or -1 if
+ *         initialization fails, arguments are invalid, or @p buf is too
+ *         small to hold the full compressed stream.
+ */
 int32_t eshkol_gzip(const char* data, int32_t data_len,
                       char* buf, int32_t buf_size) {
     if (!data || !buf || data_len <= 0 || buf_size <= 0) return -1;
@@ -51,6 +80,17 @@ int32_t eshkol_gzip(const char* data, int32_t data_len,
     return result;
 }
 
+/**
+ * @brief Decompresses a gzip (RFC 1952) buffer produced by eshkol_gzip() (or any gzip stream).
+ *
+ * Configures a zlib inflate stream with windowBits = 15+16 to accept the
+ * gzip header/trailer, then decompresses the entire input in one Z_FINISH
+ * call.
+ *
+ * @return Number of decompressed bytes written to @p buf, or -1 if
+ *         initialization fails, arguments are invalid, or decompression
+ *         does not complete in a single pass.
+ */
 int32_t eshkol_gunzip(const char* data, int32_t data_len,
                         char* buf, int32_t buf_size) {
     if (!data || !buf || data_len <= 0 || buf_size <= 0) return -1;
@@ -68,18 +108,24 @@ int32_t eshkol_gunzip(const char* data, int32_t data_len,
     return result;
 }
 
+/** @brief Reports that zlib-backed compression support is compiled in. @return Always 1. */
 int32_t eshkol_compression_available(void) { return 1; }
 
 #else /* !HAS_ZLIB */
 
+/** @brief Stub used when built without HAS_ZLIB; deflate compression is unavailable. @return Always -1. */
 int32_t eshkol_deflate(const char* d, int32_t dl, char* b, int32_t bs)
     { (void)d;(void)dl;(void)b;(void)bs; return -1; }
+/** @brief Stub used when built without HAS_ZLIB; inflate decompression is unavailable. @return Always -1. */
 int32_t eshkol_inflate_data(const char* d, int32_t dl, char* b, int32_t bs)
     { (void)d;(void)dl;(void)b;(void)bs; return -1; }
+/** @brief Stub used when built without HAS_ZLIB; gzip compression is unavailable. @return Always -1. */
 int32_t eshkol_gzip(const char* d, int32_t dl, char* b, int32_t bs)
     { (void)d;(void)dl;(void)b;(void)bs; return -1; }
+/** @brief Stub used when built without HAS_ZLIB; gunzip decompression is unavailable. @return Always -1. */
 int32_t eshkol_gunzip(const char* d, int32_t dl, char* b, int32_t bs)
     { (void)d;(void)dl;(void)b;(void)bs; return -1; }
+/** @brief Reports that zlib-backed compression support is not compiled in. @return Always 0. */
 int32_t eshkol_compression_available(void) { return 0; }
 
 #endif

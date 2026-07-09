@@ -42,11 +42,29 @@
 static volatile sig_atomic_t g_last_signal = 0;
 static volatile sig_atomic_t g_signal_count = 0;
 
+/**
+ * @brief Async-signal-safe handler that records the last-received signal.
+ *
+ * Only touches sig_atomic_t flags, deferring all real work to
+ * eshkol_signal_check() polled from normal (non-signal) context.
+ *
+ * @param sig Signal number delivered by the OS.
+ */
 static void signal_handler(int sig) {
     g_last_signal = sig;
     g_signal_count++;
 }
 
+/**
+ * @brief Installs signal_handler() for @p signum via sigaction().
+ *
+ * Uses SA_RESTART so interrupted syscalls are automatically restarted.
+ * Common signal numbers: 2 = SIGINT (Ctrl-C), 15 = SIGTERM (kill),
+ * 28 = SIGWINCH (terminal resize).
+ *
+ * @param signum Signal number to install the handler for.
+ * @return 0 on success, -1 on error.
+ */
 /*
  * Install signal handler for the given signal number.
  *
@@ -66,6 +84,16 @@ int32_t eshkol_signal_handler_install(int32_t signum) {
     return sigaction(signum, &sa, NULL) == 0 ? 0 : -1;
 }
 
+/**
+ * @brief Checks and consumes the most recently received signal.
+ *
+ * Intended to be polled at safe points in the Eshkol event loop between
+ * tool calls, avoiding the need to run Eshkol closures from async-signal
+ * context. Calling this clears the flag (consume-once semantics), so a
+ * signal is only reported to one caller.
+ *
+ * @return The signal number if one was pending, or 0 if none was pending.
+ */
 /*
  * Check if a signal has been received since last check.
  *
@@ -81,6 +109,14 @@ int32_t eshkol_signal_check(void) {
     return sig;
 }
 
+/**
+ * @brief Returns the cumulative count of signals received since process start.
+ *
+ * Unlike eshkol_signal_check(), this does not reset the counter; it's meant
+ * for debugging/metrics rather than consume-once dispatch.
+ *
+ * @return Total number of signals delivered so far.
+ */
 /*
  * Get total signal count (for debugging/metrics).
  * Does not reset.
@@ -89,6 +125,12 @@ int32_t eshkol_signal_total_count(void) {
     return (int32_t)g_signal_count;
 }
 
+/**
+ * @brief Restores the default disposition (SIG_DFL) for the given signal.
+ *
+ * @param signum Signal number to reset.
+ * @return 0 on success, -1 on error.
+ */
 /*
  * Reset signal handler to default for the given signal.
  * Returns: 0 success, -1 error
@@ -101,6 +143,12 @@ int32_t eshkol_signal_handler_reset(int32_t signum) {
     return sigaction(signum, &sa, NULL) == 0 ? 0 : -1;
 }
 
+/**
+ * @brief Sets the given signal's disposition to SIG_IGN so it is ignored.
+ *
+ * @param signum Signal number to ignore.
+ * @return 0 on success, -1 on error.
+ */
 /*
  * Ignore the given signal.
  * Returns: 0 success, -1 error
@@ -129,11 +177,26 @@ int32_t eshkol_signal_ignore(int32_t signum) {
 
 static int g_atexit_registered = 0;
 
+/**
+ * @brief atexit() callback that flushes stderr and stdout on process exit.
+ *
+ * Ensures buffered error/output text isn't lost if the process terminates
+ * abruptly; Eshkol-level cleanup should instead be registered via
+ * (at-exit ...) / dynamic-wind at the top level.
+ */
 static void eshkol_atexit_handler(void) {
     fflush(stderr);
     fflush(stdout);
 }
 
+/**
+ * @brief Registers eshkol_atexit_handler() with atexit(), exactly once.
+ *
+ * Idempotent: safe to call multiple times, the handler is only registered
+ * on the first call.
+ *
+ * @return Always 0.
+ */
 /*
  * Ensure atexit flush is registered. Idempotent.
  * Returns: 0
@@ -172,6 +235,17 @@ typedef void (*eshkol_kt_visitor)(pid_t child, void* ctx);
 static void kill_tree_recursive(pid_t pid, int sig);
 
 #if defined(__linux__)
+/**
+ * @brief Invokes @p cb for every direct child process of @p pid (Linux).
+ *
+ * Reads /proc/<pid>/task/<tid>/children for each task (thread) belonging to
+ * the process, avoiding any shell or PATH lookup. This closes the popen-pgrep
+ * command-injection vector the previous shell-based implementation exposed.
+ *
+ * @param pid Parent process ID whose children are enumerated.
+ * @param cb Callback invoked once per direct child PID found.
+ * @param ctx Opaque context pointer forwarded to @p cb.
+ */
 static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
     char task_dir[64];
     snprintf(task_dir, sizeof(task_dir), "/proc/%d/task", (int)pid);
@@ -202,6 +276,17 @@ static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
     closedir(td);
 }
 #else
+/**
+ * @brief Invokes @p cb for every direct child process of @p pid (macOS/BSD).
+ *
+ * Forks and execv()s "/usr/bin/pgrep -P <pid>" directly (no shell, no PATH
+ * lookup), captures its stdout via a pipe, waits for it to exit, and parses
+ * the resulting whitespace-separated PID list.
+ *
+ * @param pid Parent process ID whose children are enumerated.
+ * @param cb Callback invoked once per direct child PID found.
+ * @param ctx Opaque context pointer forwarded to @p cb.
+ */
 static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
     int pipefd[2];
     if (pipe(pipefd) != 0) return;
@@ -255,17 +340,40 @@ static void kt_visit_children(pid_t pid, eshkol_kt_visitor cb, void* ctx) {
 }
 #endif
 
+/**
+ * @brief kt_visit_children() callback that recurses kill_tree_recursive() into a child.
+ *
+ * @param child Child PID reported by kt_visit_children().
+ * @param ctx Pointer to the `int` signal number to deliver.
+ */
 static void kt_recurse_cb(pid_t child, void* ctx) {
     int sig = *(const int*)ctx;
     kill_tree_recursive(child, sig);
 }
 
+/**
+ * @brief Recursively delivers @p sig to @p pid's entire descendant tree, then to @p pid itself.
+ *
+ * Visits children depth-first via kt_visit_children()/kt_recurse_cb() before
+ * signaling the current process, so descendants are signaled before their
+ * parent to avoid leaving orphans behind.
+ *
+ * @param pid Root process ID of the tree to signal.
+ * @param sig Signal number to deliver to every process in the tree.
+ */
 static void kill_tree_recursive(pid_t pid, int sig) {
     /* Find children first, then kill this process. */
     kt_visit_children(pid, kt_recurse_cb, &sig);
     kill(pid, sig);
 }
 
+/**
+ * @brief Signals a process and its entire descendant tree.
+ *
+ * @param pid Root process ID to kill (must be positive).
+ * @param sig Signal number to deliver (e.g. 15 = SIGTERM, 9 = SIGKILL).
+ * @return 0 on success, -1 if @p pid is not positive.
+ */
 /*
  * Kill process and all descendants.
  *

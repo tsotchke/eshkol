@@ -36,6 +36,20 @@ typedef struct {
     uint32_t reserved;
 } EshtHeader;
 
+/**
+ * @brief Writes tensor data and shape to a binary file in the ESHT v1 format.
+ *
+ * Validates that @p total matches the product of @p shape before writing the
+ * fixed EshtHeader, the shape array, and the raw float64 data in sequence.
+ *
+ * @param data Contiguous row-major float64 array of @p total elements.
+ * @param shape Array of @p ndim dimension sizes.
+ * @param ndim Number of dimensions (1-32).
+ * @param total Total element count; must equal the product of @p shape.
+ * @param path Output file path (overwritten if it exists).
+ * @return 0 on success, -1 on invalid arguments, a shape/total mismatch, or
+ *         a file I/O error.
+ */
 /*
  * Save tensor data to a binary file.
  *
@@ -82,6 +96,23 @@ fail:
     return -1;
 }
 
+/**
+ * @brief Reads a tensor previously written by eshkol_tensor_save() from a
+ * binary ESHT v1 file.
+ *
+ * Validates the file's magic/version header and each shape dimension
+ * (rejecting non-positive dimensions), then mallocs a buffer for the data
+ * and reads it in.
+ *
+ * @param path Input file path.
+ * @param data_out Receives a malloc'd float64 array; caller must free it via
+ *        eshkol_tensor_free_loaded(). Set to NULL on failure.
+ * @param shape_out Caller-allocated array of at least 32 int64_t; receives
+ *        the tensor's per-dimension sizes.
+ * @param ndim_out Receives the number of dimensions.
+ * @param total_out Receives the total element count (product of shape).
+ * @return 0 on success, -1 on invalid arguments, missing/corrupt file, or OOM.
+ */
 /*
  * Load tensor data from a binary file.
  *
@@ -141,6 +172,11 @@ fail:
     return -1;
 }
 
+/**
+ * @brief Frees a float64 buffer previously returned by eshkol_tensor_load().
+ *
+ * @param data Buffer to free (NULL is safely ignored, as with free()).
+ */
 /*
  * Free tensor data allocated by eshkol_tensor_load.
  */
@@ -148,6 +184,22 @@ void eshkol_tensor_free_loaded(double* data) {
     free(data);
 }
 
+/**
+ * @brief Reads an ESHT file's header and shape without loading its tensor data.
+ *
+ * Validates the magic/version header, then optionally reads the shape array
+ * and computes the total element count, without ever reading the (much
+ * larger) data payload.
+ *
+ * @param path Input file path.
+ * @param ndim_out Receives the number of dimensions.
+ * @param shape_out Optional caller-allocated array receiving per-dimension
+ *        sizes; pass NULL to skip reading the shape.
+ * @param total_out Optional pointer receiving the total element count
+ *        (only computed if @p shape_out is also non-NULL).
+ * @return 0 on success, -1 on invalid arguments, missing file, or a bad/
+ *         mismatched header.
+ */
 /*
  * Get tensor file metadata without loading data.
  *
