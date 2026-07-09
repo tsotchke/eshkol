@@ -54,6 +54,18 @@
 (define (finite-diff-scalar f x eps)
   (/ (- (f (+ x eps)) (f (- x eps))) (* 2.0 eps)))
 
+;; True iff at least one component of the gradient vector is non-trivial.
+;; Used to guarantee second-operand gradients are genuinely flowing, not
+;; a null-input2 zero that would spuriously "match" a zero finite diff.
+(define (vec-any-nonzero? g)
+  (let ((n (vector-length g)))
+    (letrec ((loop
+              (lambda (i)
+                (if (< i n)
+                    (if (> (abs (vector-ref g i)) 1e-9) #t (loop (+ i 1)))
+                    #f))))
+      (loop 0))))
+
 ;; conv2d: f(k) = sum(conv2d(image, reshape(k, 2, 2), stride=1)).
 ;; NON-SCALAR operand (a 2x2 kernel over a 3x3 image), checked at TIGHT
 ;; tolerance against BOTH the analytic gradient AND central finite differences.
@@ -143,7 +155,30 @@
          (and (= (vector-length g-k) 4)
               (= (vector-length g-v) 4)
               (gradient-matches-finite-diff? g-k k-loss k0 1e-4 1e-3)
-              (gradient-matches-finite-diff? g-v v-loss v0 1e-4 1e-3))))
+              (gradient-matches-finite-diff? g-v v-loss v0 1e-4 1e-3)))
+  ;; Second-operand gradients must be genuinely present — guard against a
+  ;; false "match" where a null input2 collapses BOTH the AD gradient and
+  ;; the finite difference to zero. K and V are the second/third operands
+  ;; of scaled-dot-attention; both gradients are non-trivial here.
+  (check "ad_input2_attention_k_grad_nonzero" (vec-any-nonzero? g-k))
+  (check "ad_input2_attention_v_grad_nonzero" (vec-any-nonzero? g-v)))
+
+;; Non-zero guards for the remaining second operands (conv2d kernel and
+;; normalization gamma), so a regression that silently zeroes input2 cannot
+;; slip through a finite-difference comparison that also reads zero.
+(let* ((image (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0))
+       (k0 (tensor 4 1.0 1.0 1.0 1.0))
+       (conv-loss (lambda (k) (tensor-sum (conv2d image (reshape k 2 2) 1))))
+       (g-conv (gradient conv-loss k0))
+       (x (tensor 3 1.0 2.0 4.0))
+       (weights (tensor 3 1.0 2.0 3.0))
+       (bn-loss (lambda (gamma) (tensor-sum (tensor-mul (batch-norm x gamma 0.0 0.00001) weights))))
+       (ln-loss (lambda (gamma) (tensor-sum (tensor-mul (layer-norm x gamma 0.0 0.00001) weights))))
+       (g-bn (gradient bn-loss 1.0))
+       (g-ln (gradient ln-loss 1.0)))
+  (check "ad_input2_conv2d_kernel_grad_nonzero" (vec-any-nonzero? g-conv))
+  (check "ad_input2_batchnorm_gamma_grad_nonzero" (not (approx= g-bn 0.0 1e-9)))
+  (check "ad_input2_layernorm_gamma_grad_nonzero" (not (approx= g-ln 0.0 1e-9))))
 
 (display "Results: ") (display passed) (display " passed, ")
 (display failed) (display " failed") (newline)

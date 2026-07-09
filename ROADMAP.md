@@ -333,11 +333,18 @@ much more: a full arbitrary-order automatic-differentiation system.
       system libpng/libjpeg/libwebp on Linux, GDI+ on Windows).
       Going forward the project does not vendor third-party media
       decoders.
-- [x] AD `input2` plumbing for `tensor-matmul` — verified by
-      `gradient` smoke probe: gradient flows to the kernel side
-      (input2). Conv2d / batchnorm / layernorm / attention forward
-      sites still leave `input2` null in their tape nodes and are
-      tracked separately.
+- [x] AD second-operand (`input2`) gradient plumbing for every tensor
+      op — `tensor-matmul`, `conv2d`, `batch-norm`, `layer-norm`, and
+      `scaled-dot-attention`. Each op's AD forward path unrolls into the
+      scalar reverse-mode graph (`recordADNodeBinary`), so gradients flow
+      to the second differentiable operand (matmul kernel, conv2d kernel,
+      norm gamma, attention K/V) with no monolithic tape node left with a
+      null `input2`. Verified end-to-end by the finite-difference AD oracle
+      `tests/v1_3_edge_cases/ad_input2_test.esk` and smoke probes
+      `ad_input2_conv2d_grad_works` / `ad_input2_batchnorm_grad_works` /
+      `ad_input2_layernorm_grad_works` / `ad_input2_attention_grad_works`
+      (JIT `-r` and AOT), which compare the AD gradient to central finite
+      differences at tight tolerance.
 - [x] **Arbitrary-order AD Taylor-tower campaign — fully delivered, all 13
       phases (P0-P12), well ahead of the original P1-only-in-v1.3 plan
       below**: runtime tower + `taylor`/`derivative-n` (P1); no-heap
