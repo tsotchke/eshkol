@@ -75,7 +75,7 @@
 
 ;; ───────────────────── PHASE 2: bounded heavy-subtype variant ───────────────
 (define heavy-passes 5000)
-(define heavy (make-vector 5 0))
+(define heavy (make-vector 7 0))
 
 (define (heavy-tick i)
   (guard (e (#t (begin (display "GUARD-CAUGHT-P2 at ") (display i) (newline) i)))
@@ -98,7 +98,14 @@
                 (vector-set! heavy 2 fg))
               ;; RECORD (allocates as VECTOR) + CONS list control.
               (vector-set! heavy 3 (make-point i (* i 2)))
-              (vector-set! heavy 4 (list i (car scratch) (length scratch)))))
+              (vector-set! heavy 4 (list i (car scratch) (length scratch)))
+              ;; PROMISE (ESH-0214e): a delayed promise whose thunk closure
+              ;; captures the region-allocated scratch (slot 5), and an
+              ;; already-forced promise memoizing a region list (slot 6). Both
+              ;; the thunk and the cached tagged slots live in the region and
+              ;; must be evacuated, or force after region_pop dangles.
+              (vector-set! heavy 5 (delay (length scratch)))
+              (vector-set! heavy 6 (make-promise (list i (car scratch))))))
           (heavy-tick (+ i 1))))))
 
 (define heavy-result (heavy-tick 0))
@@ -115,6 +122,12 @@
 (define rec-ok (and (point? pt) (= (point-x pt) heavy-last) (= (point-y pt) (* heavy-last 2))))
 (define lst (vector-ref heavy 4))
 (define lst-ok (and (= (car lst) heavy-last) (= (cadr lst) heavy-last) (= (caddr lst) 20)))
+;; force the escaped promises: thunk-path (length of captured region scratch)
+;; and cached-path (already-forced region list). Dangle -> crash/wrong here.
+(define prom-thunk-ok (= (force (vector-ref heavy 5)) 20))
+(define prom-cached (force (vector-ref heavy 6)))
+(define prom-ok (and prom-thunk-ok (pair? prom-cached)
+                     (= (car prom-cached) heavy-last) (= (cadr prom-cached) heavy-last)))
 
 (display "[region_evac_subtype_coverage_test] p1=")
 (display result) (display "/") (display total-passes)
@@ -126,9 +139,10 @@
 (display " fg=")   (display fg-ok)
 (display " rec=")  (display rec-ok)
 (display " lst=")  (display lst-ok)
+(display " prom=") (display prom-ok)
 (newline)
 
 (if (and (= result total-passes) (= heavy-result heavy-passes)
-         facts-ok ws-ok kb-ok fg-ok rec-ok lst-ok)
+         facts-ok ws-ok kb-ok fg-ok rec-ok lst-ok prom-ok)
     (begin (display "PASS") (newline))
     (begin (display "FAIL") (newline) (exit 1)))
