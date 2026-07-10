@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.3-evolve] - 2026-07-10
+
+An evolve point release over v1.3.2-evolve: an exact-gradient correction to
+the automatic-differentiation `input2` path that v1.3.2 had claimed complete,
+a region-escape evacuator fix that closes out the ESH-0214 series for the
+`PROMISE` heap subtype, and documentation of a subprocess race fix that
+shipped in v1.3.2 but was never written up.
+
+### Fixed
+
+- **Exact tensor AD gradients for first-class losses and vector/learnable
+  gamma; silent-zero backward paths now error instead of returning zero.**
+  This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed
+  `input2` gradient plumbing was "complete" for `conv2d`/`batchnorm`/
+  `layernorm`/`attention`. An adversarial audit found #212 was in fact a
+  no-op — its test and roadmap updates landed, but no gradient code changed.
+  The real fix is #229: (1) a loss with no compile-time `Function*` fell to
+  the forward-mode-dual closure path, which loses the tangent for tensor ops
+  and silently returns a zero gradient — added a reverse-mode tensor path in
+  the closure branch of `AutodiffCodegen::gradient`; (2) batch-norm/layer-norm
+  now wire per-feature gamma/beta as individual AD nodes instead of a single
+  scalar, so vector/learnable gamma differentiates correctly; (3) remaining
+  silent-zero backward paths for unsupported tensor ops now raise explicit
+  unsupported-op errors rather than returning zero, honoring
+  exact-AD-or-error. Finite-difference-verified exact in both literal and
+  first-class forms across matmul/conv2d/attention-K-V/vector-gamma; autodiff
+  suite 54/54, new input2 gate 24/24 under both JIT and AOT. (#229)
+- **Region escape evacuator now covers the `PROMISE` heap subtype
+  (ESH-0214e).** Adversarial-audit follow-up to ESH-0214d: `PROMISE` was left
+  `EVAC_LEAF` despite carrying interior pointers (thunk at `+8`, cached value
+  at `+24`). A `delay`/`make-promise` created inside `with-region` that
+  escaped outward dangled after `region_pop`, observed as a segfault or
+  `car: not a pair` under `ESHKOL_ARENA_POISON=1` when the promise was later
+  forced. Adds an `EVAC_PROMISE` case that evacuates both slots; extends
+  `region_evac_subtype_coverage` to exercise escape-then-force for both
+  `delay` and `make-promise`. Flat ~116MB under poison; memory suite 100%.
+  This completes the ESH-0214 region-evacuator series (ESH-0214a-e). (#230)
+- **Subprocess `process-wait` kqueue lost-wakeup race** (documentation-only
+  entry — the fix itself shipped in v1.3.2-evolve as commit `8443ddae` but was
+  never recorded here). On macOS, `qllm_process_wait` registered
+  `EVFILT_PROC`/`NOTE_EXIT` and then blocked in `kevent()`. If the child had
+  already exited before the filter was registered — routine right after
+  `process-kill`, and common under load for any short-lived child — the
+  exit notification was never delivered, so `kevent()` blocked for the full
+  timeout and reported "timed out" for a process that was already dead. This
+  was the source of intermittent failures in
+  `subprocess_shell_argv_test`'s "process-wait after process-kill exits"
+  check on the macos-arm64-lite CI lane. Fix: after registering the filter,
+  probe once with `waitpid(WNOHANG)`; if the child is already a zombie,
+  drain, reap, and report exited — any exit strictly after the probe is still
+  caught by the already-registered filter, closing the gap. The same
+  `WNOHANG` recheck was added on the timeout branch as defense in depth.
+  Verified on macOS arm64 (M2): 0/200 failures under 20-way parallel load,
+  versus a reliable reproduction (roughly 1/48) beforehand.
+
 ## [1.3.2-evolve] - 2026-07-09
 
 An evolve point release over v1.3.1-evolve: a resident-memory correctness fix
