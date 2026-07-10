@@ -7,6 +7,7 @@
  */
 
 #include <eshkol/core/rational.h>
+#include <eshkol/core/bignum.h>
 #include <eshkol/eshkol.h>
 #include <eshkol/logger.h>
 #include <cmath>
@@ -20,6 +21,63 @@ extern "C" void* arena_allocate_with_header(void* arena, uint64_t data_size,
                                              uint8_t subtype, uint8_t flags);
 extern "C" void* arena_allocate(void* arena, uint64_t size);
 extern "C" void* arena_allocate_string_with_header(void* arena, uint64_t size);
+/* Runtime thread-local (or global) arena — used by the arena-less rational
+ * comparison API for bignum cross-product scratch space. */
+extern "C" arena_t* arena_get_thread_local(void);
+
+/* ===== Bignum-path helpers =====
+ * The exact rational substrate promotes to arbitrary precision whenever the
+ * reduced numerator or denominator leaves int64 range. All bignum work goes
+ * through the public bignum API (lib/core/bignum.cpp); this file never
+ * degrades an exact rational to double. */
+
+/** True if bignum @p a equals the int64 constant @p k. */
+static inline bool bn_equals_i64(const eshkol_bignum_t* a, int64_t k) {
+    int64_t v;
+    return eshkol_bignum_fits_int64(a, &v) && v == k;
+}
+
+/** Non-negative bignum GCD of |a| and |b| (Euclid over magnitudes). */
+static eshkol_bignum_t* bn_gcd(arena_t* arena,
+                               const eshkol_bignum_t* a,
+                               const eshkol_bignum_t* b) {
+    eshkol_bignum_t* x = a->sign ? eshkol_bignum_neg(arena, a) : (eshkol_bignum_t*)a;
+    eshkol_bignum_t* y = b->sign ? eshkol_bignum_neg(arena, b) : (eshkol_bignum_t*)b;
+    while (!eshkol_bignum_is_zero(y)) {
+        eshkol_bignum_t* r = eshkol_bignum_mod(arena, x, y);
+        if (!r) break;
+        if (r->sign) r->sign = 0; /* magnitude */
+        x = y;
+        y = r;
+    }
+    if (x && x->sign) x->sign = 0;
+    return x;
+}
+
+/* Allocate a small (int64 fast-path) rational, assuming num/denom already
+ * reduced with denom > 0. */
+static void* rational_alloc_small(void* arena, int64_t num, int64_t denom) {
+    eshkol_rational_t* r = (eshkol_rational_t*)arena_allocate_with_header(
+        arena, sizeof(eshkol_rational_t), HEAP_SUBTYPE_RATIONAL, 0);
+    r->numerator = num;
+    r->denominator = denom;
+    r->is_big = 0;
+    r->reserved = 0;
+    r->big_num = nullptr;
+    r->big_den = nullptr;
+    return r;
+}
+
+/* Extract a rational operand's numerator as a bignum (promoting the small
+ * fast path). */
+static eshkol_bignum_t* rat_num_bn(arena_t* arena, const eshkol_rational_t* r) {
+    return r->is_big ? r->big_num : eshkol_bignum_from_int64(arena, r->numerator);
+}
+
+/* Extract a rational operand's denominator as a bignum. */
+static eshkol_bignum_t* rat_den_bn(arena_t* arena, const eshkol_rational_t* r) {
+    return r->is_big ? r->big_den : eshkol_bignum_from_int64(arena, r->denominator);
+}
 
 /** Euclidean greatest common divisor of two 64-bit integers (operates on absolute values). */
 static int64_t gcd(int64_t a, int64_t b) {
@@ -52,8 +110,10 @@ static inline int fits_int64(__int128_t v) {
     return v >= (__int128_t)INT64_MIN && v <= (__int128_t)INT64_MAX;
 }
 
-/* Create a rational from 128-bit intermediates.
- * Returns NULL if result doesn't fit in int64 after GCD reduction. */
+/* Create a rational from 128-bit intermediates (both operands were small).
+ * Returns a reduced int64 fast-path rational, or NULL if the reduced result
+ * exceeds int64 range — in which case the caller recomputes exactly with the
+ * bignum path (it never degrades to double). */
 static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom) {
     if (denom == 0) {
         denom = 1;
@@ -69,9 +129,51 @@ static void* rational_create_safe(void* arena, __int128_t num, __int128_t denom)
         denom /= g;
     }
     if (!fits_int64(num) || !fits_int64(denom)) {
-        return NULL; /* Signal overflow — caller falls back to double */
+        return NULL; /* Signal: caller falls back to the exact bignum path */
     }
-    return eshkol_rational_create(arena, (int64_t)num, (int64_t)denom);
+    return rational_alloc_small(arena, (int64_t)num, (int64_t)denom);
+}
+
+/** @brief Exact rational from bignum numerator/denominator (ESH-0105/ESH-0123).
+ *  Sign-canonicalizes to a positive denominator, reduces by the bignum GCD, and
+ *  demotes to the int64 fast path when the reduced pair fits. Never lossy. */
+extern "C" void* eshkol_rational_create_bn(void* arena_v,
+                                           eshkol_bignum_t* num,
+                                           eshkol_bignum_t* denom) {
+    arena_t* arena = (arena_t*)arena_v;
+    if (!num || !denom || eshkol_bignum_is_zero(denom)) {
+        eshkol_error("rational: division by zero (denominator is 0)");
+        return rational_alloc_small(arena_v, 0, 1);
+    }
+
+    /* Normalize sign so the denominator is positive. */
+    if (denom->sign) {
+        num = eshkol_bignum_neg(arena, num);
+        denom = eshkol_bignum_neg(arena, denom);
+    }
+
+    /* Reduce by GCD (skip the divide only when gcd == 1). */
+    eshkol_bignum_t* g = bn_gcd(arena, num, denom);
+    if (g && !bn_equals_i64(g, 1) && !eshkol_bignum_is_zero(g)) {
+        num = eshkol_bignum_div(arena, num, g);
+        denom = eshkol_bignum_div(arena, denom, g);
+    }
+
+    /* Prefer the int64 fast path whenever the reduced pair fits. */
+    int64_t ni, di;
+    if (eshkol_bignum_fits_int64(num, &ni) && eshkol_bignum_fits_int64(denom, &di)) {
+        return rational_alloc_small(arena_v, ni, di);
+    }
+
+    eshkol_rational_t* r = (eshkol_rational_t*)arena_allocate_with_header(
+        arena_v, sizeof(eshkol_rational_t), HEAP_SUBTYPE_RATIONAL, 0);
+    r->numerator = 0;
+    r->denominator = 1;
+    r->is_big = 1;
+    r->reserved = 0;
+    r->big_num = num;
+    r->big_den = denom;
+    return r;
 }
 
 /** @brief Create a normalized rational number in @p arena from a numerator/denominator pair.
@@ -86,20 +188,14 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
         num = 0;
     }
 
-    /* Audit C7: normalize denominator to positive without INT64_MIN overflow.
-     * Previously `if (denom < 0) { num = -num; denom = -denom; }` silently
-     * produced a NON-NORMALISED rational when either side was INT64_MIN
-     * because -INT64_MIN == INT64_MIN in two's complement. Downstream
-     * arithmetic (gcd / mul / add) then treated INT64_MIN as positive
-     * in 128-bit promotion and returned silent wrong answers. Detect
-     * the two unsafe cases and raise; legitimate rationals at INT64_MIN
-     * magnitude are rare and can be re-expressed once bignum rationals
-     * land. */
+    /* Audit C7: the INT64_MIN sign-flip (-INT64_MIN == INT64_MIN) cannot be
+     * normalised in int64. Now that the rational substrate is bignum-capable,
+     * route these rare cases through the exact bignum constructor instead of
+     * erroring. */
     if (denom == INT64_MIN || num == INT64_MIN) {
-        eshkol_error("rational: INT64_MIN numerator/denominator cannot be "
-                     "sign-normalised without overflow");
-        denom = 1;
-        num = 0;
+        eshkol_bignum_t* bn = eshkol_bignum_from_int64((arena_t*)arena, num);
+        eshkol_bignum_t* bd = eshkol_bignum_from_int64((arena_t*)arena, denom);
+        return eshkol_rational_create_bn(arena, bn, bd);
     }
     if (denom < 0) {
         num = -num;
@@ -113,57 +209,108 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
         denom /= g;
     }
 
-    /* Allocate with header: 16 bytes for {numerator, denominator} */
-    eshkol_rational_t* r = (eshkol_rational_t*)arena_allocate_with_header(
-        arena, sizeof(eshkol_rational_t), HEAP_SUBTYPE_RATIONAL, 0);
-    r->numerator = num;
-    r->denominator = denom;
-    return r;
+    return rational_alloc_small(arena, num, denom);
 }
 
-/** @brief Add two rationals, returning a reduced result (NULL on int64 overflow). */
+/* Is a rational operand a big (bignum-path) rational? */
+static inline bool rat_is_big(const void* r) {
+    return ((const eshkol_rational_t*)r)->is_big != 0;
+}
+
+/* Bignum-path add/sub/mul: exact, never lossy. sub == 0, add == 1 selector via
+ * caller. */
+static void* rat_add_sub_big(void* arena_v, const eshkol_rational_t* ra,
+                             const eshkol_rational_t* rb, bool subtract) {
+    arena_t* arena = (arena_t*)arena_v;
+    eshkol_bignum_t* an = rat_num_bn(arena, ra);
+    eshkol_bignum_t* ad = rat_den_bn(arena, ra);
+    eshkol_bignum_t* bn = rat_num_bn(arena, rb);
+    eshkol_bignum_t* bd = rat_den_bn(arena, rb);
+    eshkol_bignum_t* left = eshkol_bignum_mul(arena, an, bd);
+    eshkol_bignum_t* right = eshkol_bignum_mul(arena, bn, ad);
+    eshkol_bignum_t* num = subtract ? eshkol_bignum_sub(arena, left, right)
+                                    : eshkol_bignum_add(arena, left, right);
+    eshkol_bignum_t* den = eshkol_bignum_mul(arena, ad, bd);
+    return eshkol_rational_create_bn(arena_v, num, den);
+}
+
+static void* rat_mul_big(void* arena_v, const eshkol_rational_t* ra,
+                         const eshkol_rational_t* rb) {
+    arena_t* arena = (arena_t*)arena_v;
+    eshkol_bignum_t* num = eshkol_bignum_mul(arena, rat_num_bn(arena, ra), rat_num_bn(arena, rb));
+    eshkol_bignum_t* den = eshkol_bignum_mul(arena, rat_den_bn(arena, ra), rat_den_bn(arena, rb));
+    return eshkol_rational_create_bn(arena_v, num, den);
+}
+
+static void* rat_div_big(void* arena_v, const eshkol_rational_t* ra,
+                         const eshkol_rational_t* rb) {
+    arena_t* arena = (arena_t*)arena_v;
+    eshkol_bignum_t* num = eshkol_bignum_mul(arena, rat_num_bn(arena, ra), rat_den_bn(arena, rb));
+    eshkol_bignum_t* den = eshkol_bignum_mul(arena, rat_den_bn(arena, ra), rat_num_bn(arena, rb));
+    return eshkol_rational_create_bn(arena_v, num, den);
+}
+
+/** @brief Add two rationals, returning an exact reduced result. */
 extern "C" void* eshkol_rational_add(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
-    /* a/b + c/d = (a*d + c*b) / (b*d) — uses __int128_t to prevent overflow */
-    __int128_t num = (__int128_t)ra->numerator * rb->denominator
-                   + (__int128_t)rb->numerator * ra->denominator;
-    __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
-    return rational_create_safe(arena, num, denom);
+    if (!ra->is_big && !rb->is_big) {
+        /* a/b + c/d = (a*d + c*b) / (b*d) — __int128_t guards int64 overflow */
+        __int128_t num = (__int128_t)ra->numerator * rb->denominator
+                       + (__int128_t)rb->numerator * ra->denominator;
+        __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
+        void* r = rational_create_safe(arena, num, denom);
+        if (r) return r;
+    }
+    return rat_add_sub_big(arena, ra, rb, /*subtract=*/false);
 }
 
-/** @brief Subtract rational @p b from @p a, returning a reduced result (NULL on int64 overflow). */
+/** @brief Subtract rational @p b from @p a, returning an exact reduced result. */
 extern "C" void* eshkol_rational_sub(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
-    __int128_t num = (__int128_t)ra->numerator * rb->denominator
-                   - (__int128_t)rb->numerator * ra->denominator;
-    __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
-    return rational_create_safe(arena, num, denom);
+    if (!ra->is_big && !rb->is_big) {
+        __int128_t num = (__int128_t)ra->numerator * rb->denominator
+                       - (__int128_t)rb->numerator * ra->denominator;
+        __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
+        void* r = rational_create_safe(arena, num, denom);
+        if (r) return r;
+    }
+    return rat_add_sub_big(arena, ra, rb, /*subtract=*/true);
 }
 
-/** @brief Multiply two rationals, returning a reduced result (NULL on int64 overflow). */
+/** @brief Multiply two rationals, returning an exact reduced result. */
 extern "C" void* eshkol_rational_mul(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
-    __int128_t num = (__int128_t)ra->numerator * rb->numerator;
-    __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
-    return rational_create_safe(arena, num, denom);
+    if (!ra->is_big && !rb->is_big) {
+        __int128_t num = (__int128_t)ra->numerator * rb->numerator;
+        __int128_t denom = (__int128_t)ra->denominator * rb->denominator;
+        void* r = rational_create_safe(arena, num, denom);
+        if (r) return r;
+    }
+    return rat_mul_big(arena, ra, rb);
 }
 
-/** @brief Divide rational @p a by @p b, returning a reduced result.
- *  Raises a divide-by-zero exception if @p b is zero; returns NULL on int64 overflow. */
+/** @brief Divide rational @p a by @p b, returning an exact reduced result.
+ *  Raises a divide-by-zero exception if @p b is zero. */
 extern "C" void* eshkol_rational_div(void* arena, void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
-    if (rb->numerator == 0) {
+    bool b_zero = rb->is_big ? eshkol_bignum_is_zero(rb->big_num)
+                             : (rb->numerator == 0);
+    if (b_zero) {
         eshkol_exception_t* exc = eshkol_make_exception(ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "rational division by zero");
         eshkol_raise(exc);
         return nullptr;  // unreachable, but satisfies compiler
     }
-    __int128_t num = (__int128_t)ra->numerator * rb->denominator;
-    __int128_t denom = (__int128_t)ra->denominator * rb->numerator;
-    return rational_create_safe(arena, num, denom);
+    if (!ra->is_big && !rb->is_big) {
+        __int128_t num = (__int128_t)ra->numerator * rb->denominator;
+        __int128_t denom = (__int128_t)ra->denominator * rb->numerator;
+        void* r = rational_create_safe(arena, num, denom);
+        if (r) return r;
+    }
+    return rat_div_big(arena, ra, rb);
 }
 
 /** @brief Compare two rationals via cross-multiplication.
@@ -171,12 +318,22 @@ extern "C" void* eshkol_rational_div(void* arena, void* a, void* b) {
 extern "C" int eshkol_rational_compare(void* a, void* b) {
     eshkol_rational_t* ra = (eshkol_rational_t*)a;
     eshkol_rational_t* rb = (eshkol_rational_t*)b;
-    /* Compare a/b vs c/d → a*d vs c*b — uses __int128_t to prevent overflow */
-    __int128_t lhs = (__int128_t)ra->numerator * rb->denominator;
-    __int128_t rhs = (__int128_t)rb->numerator * ra->denominator;
-    if (lhs < rhs) return -1;
-    if (lhs > rhs) return 1;
-    return 0;
+    if (!ra->is_big && !rb->is_big) {
+        /* Compare a/b vs c/d → a*d vs c*b — __int128_t guards int64 overflow */
+        __int128_t lhs = (__int128_t)ra->numerator * rb->denominator;
+        __int128_t rhs = (__int128_t)rb->numerator * ra->denominator;
+        if (lhs < rhs) return -1;
+        if (lhs > rhs) return 1;
+        return 0;
+    }
+    /* Denominators are positive, so compare a_num*b_den vs b_num*a_den. The
+     * cross-products need bignum scratch space; use the runtime thread-local
+     * arena (this API has no arena parameter, and the temporaries are dead
+     * after the comparison). */
+    arena_t* arena = arena_get_thread_local();
+    eshkol_bignum_t* lhs = eshkol_bignum_mul(arena, rat_num_bn(arena, ra), rat_den_bn(arena, rb));
+    eshkol_bignum_t* rhs = eshkol_bignum_mul(arena, rat_num_bn(arena, rb), rat_den_bn(arena, ra));
+    return eshkol_bignum_compare(lhs, rhs);
 }
 
 /** Return the numerator of a rational. */
@@ -192,12 +349,18 @@ extern "C" int64_t eshkol_rational_denominator(void* r) {
 /** Convert a rational to its nearest double-precision floating-point value. */
 extern "C" double eshkol_rational_to_double(void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (rat->is_big) {
+        return eshkol_bignum_to_double(rat->big_num) /
+               eshkol_bignum_to_double(rat->big_den);
+    }
     return (double)rat->numerator / (double)rat->denominator;
 }
 
 /** Return non-zero if the rational represents an integer (denominator == 1). */
 extern "C" int eshkol_rational_is_integer(void* r) {
-    return ((eshkol_rational_t*)r)->denominator == 1;
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (rat->is_big) return bn_equals_i64(rat->big_den, 1);
+    return rat->denominator == 1;
 }
 
 /* Convert IEEE 754 double to exact rational (R7RS inexact->exact) */
@@ -221,6 +384,23 @@ extern "C" void* eshkol_double_to_rational(void* arena, double d) {
  * string-length sees len+1 chars after the header-aware fix. */
 extern "C" char* eshkol_rational_to_string(void* arena, void* r) {
     eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    if (rat->is_big) {
+        /* Format bignum numerator/denominator into a fresh buffer. */
+        char* num_s = eshkol_bignum_to_string((arena_t*)arena, rat->big_num);
+        if (bn_equals_i64(rat->big_den, 1)) return num_s;
+        char* den_s = eshkol_bignum_to_string((arena_t*)arena, rat->big_den);
+        size_t nlen = num_s ? strlen(num_s) : 0;
+        size_t dlen = den_s ? strlen(den_s) : 0;
+        size_t total = nlen + 1 + dlen;
+        char* buf = (char*)arena_allocate_string_with_header(arena, total);
+        if (buf) {
+            memcpy(buf, num_s, nlen);
+            buf[nlen] = '/';
+            memcpy(buf + nlen + 1, den_s, dlen);
+            buf[total] = '\0';
+        }
+        return buf;
+    }
     if (rat->denominator == 1) {
         char tmp[32];
         int len = snprintf(tmp, sizeof(tmp), "%lld", (long long)rat->numerator);
@@ -234,6 +414,104 @@ extern "C" char* eshkol_rational_to_string(void* arena, void* r) {
     char* buf = (char*)arena_allocate_string_with_header(arena, len);
     if (buf) memcpy(buf, tmp, len + 1);  /* copy including NUL */
     return buf;
+}
+
+/** @brief Write a rational's "n/d" (or bare "n" when integer) form to a FILE*.
+ *  Handles both int64 and bignum paths. Used by the display runtime. */
+extern "C" void eshkol_rational_display(void* r, void* file) {
+    eshkol_rational_t* rat = (eshkol_rational_t*)r;
+    FILE* f = (FILE*)file;
+    if (!rat || !f) return;
+    if (rat->is_big) {
+        eshkol_bignum_display(rat->big_num, f);
+        if (!bn_equals_i64(rat->big_den, 1)) {
+            fputc('/', f);
+            eshkol_bignum_display(rat->big_den, f);
+        }
+        return;
+    }
+    if (rat->denominator == 1) {
+        fprintf(f, "%lld", (long long)rat->numerator);
+    } else {
+        fprintf(f, "%lld/%lld", (long long)rat->numerator,
+                (long long)rat->denominator);
+    }
+}
+
+/** @brief Value equality on reduced rationals (int64 and bignum paths).
+ *  Both operands are in canonical reduced form, so equality is: same path and
+ *  matching fields (int64 pair, or bignum numerator+denominator). */
+extern "C" int eshkol_rational_equal(void* a, void* b) {
+    eshkol_rational_t* ra = (eshkol_rational_t*)a;
+    eshkol_rational_t* rb = (eshkol_rational_t*)b;
+    if (!ra->is_big && !rb->is_big) {
+        return ra->numerator == rb->numerator &&
+               ra->denominator == rb->denominator;
+    }
+    if (ra->is_big != rb->is_big) {
+        /* Canonical form guarantees a big rational never equals a small one
+         * (a big one does not fit int64), so the paths differing => unequal. */
+        return 0;
+    }
+    return eshkol_bignum_compare(ra->big_num, rb->big_num) == 0 &&
+           eshkol_bignum_compare(ra->big_den, rb->big_den) == 0;
+}
+
+/* Build a tagged exact integer from a bignum, demoting to INT64 when it fits. */
+static eshkol_tagged_value_t bignum_to_tagged_int(eshkol_bignum_t* b) {
+    eshkol_tagged_value_t t;
+    memset(&t, 0, sizeof(t));
+    int64_t v;
+    if (eshkol_bignum_fits_int64(b, &v)) {
+        t.type = ESHKOL_VALUE_INT64;
+        t.data.int_val = v;
+    } else {
+        t.type = ESHKOL_VALUE_HEAP_PTR;
+        t.flags = ESHKOL_VALUE_EXACT_FLAG;
+        t.data.int_val = (int64_t)(uintptr_t)b;
+    }
+    return t;
+}
+
+/** @brief R7RS numerator as a tagged value (INT64 or bignum HEAP_PTR). */
+extern "C" void eshkol_rational_numerator_tagged(
+    void* arena, const eshkol_tagged_value_t* v, eshkol_tagged_value_t* result)
+{
+    (void)arena;
+    if (v->type == ESHKOL_VALUE_HEAP_PTR && v->data.int_val) {
+        uint8_t subtype = *((uint8_t*)(uintptr_t)v->data.int_val - 8);
+        if (subtype == HEAP_SUBTYPE_RATIONAL) {
+            eshkol_rational_t* r = (eshkol_rational_t*)(uintptr_t)v->data.int_val;
+            if (r->is_big) { *result = bignum_to_tagged_int(r->big_num); return; }
+            memset(result, 0, sizeof(*result));
+            result->type = ESHKOL_VALUE_INT64;
+            result->data.int_val = r->numerator;
+            return;
+        }
+    }
+    /* int64, bignum integer, double, or non-number: numerator is the value. */
+    *result = *v;
+}
+
+/** @brief R7RS denominator as a tagged value (INT64 or bignum HEAP_PTR). */
+extern "C" void eshkol_rational_denominator_tagged(
+    void* arena, const eshkol_tagged_value_t* v, eshkol_tagged_value_t* result)
+{
+    (void)arena;
+    memset(result, 0, sizeof(*result));
+    if (v->type == ESHKOL_VALUE_HEAP_PTR && v->data.int_val) {
+        uint8_t subtype = *((uint8_t*)(uintptr_t)v->data.int_val - 8);
+        if (subtype == HEAP_SUBTYPE_RATIONAL) {
+            eshkol_rational_t* r = (eshkol_rational_t*)(uintptr_t)v->data.int_val;
+            if (r->is_big) { *result = bignum_to_tagged_int(r->big_den); return; }
+            result->type = ESHKOL_VALUE_INT64;
+            result->data.int_val = r->denominator;
+            return;
+        }
+    }
+    /* int64, bignum integer, or other: denominator is 1. */
+    result->type = ESHKOL_VALUE_INT64;
+    result->data.int_val = 1;
 }
 
 /* Helper: check if tagged value is a rational (HEAP_PTR with RATIONAL subtype) */
@@ -257,40 +535,84 @@ extern "C" void eshkol_rational_binary_tagged_ptr(
     *result = eshkol_rational_binary_tagged(arena, *a, *b, op);
 }
 
-/* Tagged value binary dispatch for rationals */
+/* Heap subtype of a HEAP_PTR tagged value (0 if not a heap pointer). */
+static inline uint8_t tagged_heap_subtype(const eshkol_tagged_value_t* v) {
+    if (v->type != ESHKOL_VALUE_HEAP_PTR || !v->data.int_val) return 0xFF;
+    return *((uint8_t*)(uintptr_t)v->data.int_val - 8);
+}
+
+/* Coerce an exact tagged operand (INT64, bignum HEAP_PTR, or rational HEAP_PTR)
+ * to a rational object pointer. Returns NULL if not an exact number. */
+static void* tagged_exact_to_rational(void* arena, const eshkol_tagged_value_t* v) {
+    if (v->type == ESHKOL_VALUE_INT64) {
+        return eshkol_rational_create(arena, v->data.int_val, 1);
+    }
+    if (v->type == ESHKOL_VALUE_HEAP_PTR && v->data.int_val) {
+        void* p = (void*)(uintptr_t)v->data.int_val;
+        uint8_t subtype = tagged_heap_subtype(v);
+        if (subtype == HEAP_SUBTYPE_RATIONAL) return p;
+        if (subtype == HEAP_SUBTYPE_BIGNUM) {
+            eshkol_bignum_t* one = eshkol_bignum_from_int64((arena_t*)arena, 1);
+            return eshkol_rational_create_bn(arena, (eshkol_bignum_t*)p, one);
+        }
+    }
+    return NULL;
+}
+
+/* Demote an exact rational-object result to a canonical tagged value:
+ *   - integer that fits int64 -> INT64
+ *   - integer too large       -> bare bignum HEAP_PTR (EXACT)
+ *   - non-integer             -> rational HEAP_PTR (EXACT) */
+static eshkol_tagged_value_t rational_result_to_tagged(void* rr) {
+    eshkol_tagged_value_t result;
+    memset(&result, 0, sizeof(result));
+    eshkol_rational_t* rat = (eshkol_rational_t*)rr;
+    if (rat->is_big) {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.flags = ESHKOL_VALUE_EXACT_FLAG;
+        result.data.int_val = bn_equals_i64(rat->big_den, 1)
+            ? (int64_t)(uintptr_t)rat->big_num   /* huge integer -> bare bignum */
+            : (int64_t)(uintptr_t)rr;             /* proper bignum rational */
+        return result;
+    }
+    if (rat->denominator == 1) {
+        result.type = ESHKOL_VALUE_INT64;
+        result.data.int_val = rat->numerator;
+    } else {
+        result.type = ESHKOL_VALUE_HEAP_PTR;
+        result.data.int_val = (int64_t)(uintptr_t)rr;
+    }
+    return result;
+}
+
+/* Extract a double from an exact-or-inexact tagged operand (int64, double,
+ * bignum, or rational). */
+static double tagged_any_to_double(const eshkol_tagged_value_t* v) {
+    if (v->type == ESHKOL_VALUE_INT64) return (double)v->data.int_val;
+    if (v->type == ESHKOL_VALUE_DOUBLE) {
+        union { int64_t i; double d; } conv; conv.i = v->data.int_val; return conv.d;
+    }
+    uint8_t subtype = tagged_heap_subtype(v);
+    if (subtype == HEAP_SUBTYPE_RATIONAL)
+        return eshkol_rational_to_double((void*)(uintptr_t)v->data.int_val);
+    if (subtype == HEAP_SUBTYPE_BIGNUM)
+        return eshkol_bignum_to_double((eshkol_bignum_t*)(uintptr_t)v->data.int_val);
+    return 0.0;
+}
+
+/* Tagged value binary dispatch for rationals. Accepts INT64, DOUBLE, bignum,
+ * and rational operands. Exact operands stay exact — bignum-capable, never
+ * lossy (ESH-0105). Only a genuine DOUBLE operand yields an inexact result. */
 extern "C" eshkol_tagged_value_t eshkol_rational_binary_tagged(
     void* arena, eshkol_tagged_value_t a, eshkol_tagged_value_t b, int op)
 {
-    int a_is_rational = eshkol_is_rational_tagged(a);
-    int b_is_rational = eshkol_is_rational_tagged(b);
-    int a_is_int = (a.type == ESHKOL_VALUE_INT64);
-    int b_is_int = (b.type == ESHKOL_VALUE_INT64);
-
     eshkol_tagged_value_t result;
     memset(&result, 0, sizeof(result));
 
-    /* If either is a double, convert to double arithmetic */
+    /* If either is inexact (double), R7RS forces an inexact result. */
     if (a.type == ESHKOL_VALUE_DOUBLE || b.type == ESHKOL_VALUE_DOUBLE) {
-        double da, db;
-        if (a_is_rational) {
-            da = eshkol_rational_to_double((void*)(uintptr_t)a.data.int_val);
-        } else if (a_is_int) {
-            da = (double)a.data.int_val;
-        } else {
-            union { int64_t i; double d; } conv;
-            conv.i = a.data.int_val;
-            da = conv.d;
-        }
-        if (b_is_rational) {
-            db = eshkol_rational_to_double((void*)(uintptr_t)b.data.int_val);
-        } else if (b_is_int) {
-            db = (double)b.data.int_val;
-        } else {
-            union { int64_t i; double d; } conv;
-            conv.i = b.data.int_val;
-            db = conv.d;
-        }
-
+        double da = tagged_any_to_double(&a);
+        double db = tagged_any_to_double(&b);
         double dr;
         switch (op) {
             case 0: dr = da + db; break;
@@ -299,7 +621,6 @@ extern "C" eshkol_tagged_value_t eshkol_rational_binary_tagged(
             case 3: dr = da / db; break;
             default: dr = 0; break;
         }
-
         result.type = ESHKOL_VALUE_DOUBLE;
         union { double d; int64_t i; } pack;
         pack.d = dr;
@@ -307,21 +628,13 @@ extern "C" eshkol_tagged_value_t eshkol_rational_binary_tagged(
         return result;
     }
 
-    /* Both are exact (int or rational) */
-    void* ra;
-    void* rb;
-
-    /* Convert int64 to rational 1-element if needed */
-    if (a_is_rational) {
-        ra = (void*)(uintptr_t)a.data.int_val;
-    } else {
-        ra = eshkol_rational_create(arena, a.data.int_val, 1);
-    }
-
-    if (b_is_rational) {
-        rb = (void*)(uintptr_t)b.data.int_val;
-    } else {
-        rb = eshkol_rational_create(arena, b.data.int_val, 1);
+    /* Both exact: promote each to a rational object (int64/bignum -> n/1). */
+    void* ra = tagged_exact_to_rational(arena, &a);
+    void* rb = tagged_exact_to_rational(arena, &b);
+    if (!ra || !rb) {
+        result.type = ESHKOL_VALUE_INT64;
+        result.data.int_val = 0;
+        return result;
     }
 
     void* rr;
@@ -332,35 +645,40 @@ extern "C" eshkol_tagged_value_t eshkol_rational_binary_tagged(
         case 3: rr = eshkol_rational_div(arena, ra, rb); break;
         default: rr = eshkol_rational_create(arena, 0, 1); break;
     }
+    return rational_result_to_tagged(rr);
+}
 
-    /* NULL means overflow — fall back to double arithmetic */
-    if (!rr) {
-        double da = eshkol_rational_to_double(ra);
-        double db = eshkol_rational_to_double(rb);
-        double dr;
-        switch (op) {
-            case 0: dr = da + db; break;
-            case 1: dr = da - db; break;
-            case 2: dr = da * db; break;
-            case 3: dr = db != 0.0 ? da / db : 0.0; break;
-            default: dr = 0; break;
-        }
-        result.type = ESHKOL_VALUE_DOUBLE;
-        union { double d; int64_t i; } pack;
-        pack.d = dr;
-        result.data.int_val = pack.i;
-        return result;
-    }
+/** @brief Build an EXACT tagged number from bignum numerator/denominator.
+ *  Reduces and demotes (bare int64/bignum when integer; rational otherwise).
+ *  Used by the bignum division dispatch so `(/ 1 (expt 10 19))` stays exact. */
+extern "C" void eshkol_rational_from_bignums_tagged(
+    void* arena, eshkol_bignum_t* num, eshkol_bignum_t* denom,
+    eshkol_tagged_value_t* result)
+{
+    void* rr = eshkol_rational_create_bn(arena, num, denom);
+    *result = rational_result_to_tagged(rr);
+}
 
-    /* If result is an integer (denom=1), return as INT64 */
-    if (eshkol_rational_is_integer(rr)) {
-        result.type = ESHKOL_VALUE_INT64;
-        result.data.int_val = eshkol_rational_numerator(rr);
-    } else {
-        result.type = ESHKOL_VALUE_HEAP_PTR;
-        result.data.int_val = (int64_t)(uintptr_t)rr;
+/* Coerce an INT64 or bignum HEAP_PTR tagged operand to a bignum. */
+static eshkol_bignum_t* make_operand_bignum(void* arena, const eshkol_tagged_value_t* v) {
+    if (v->type == ESHKOL_VALUE_INT64) {
+        return eshkol_bignum_from_int64((arena_t*)arena, v->data.int_val);
     }
-    return result;
+    if (tagged_heap_subtype(v) == HEAP_SUBTYPE_BIGNUM) {
+        return (eshkol_bignum_t*)(uintptr_t)v->data.int_val;
+    }
+    /* Fallback: coerce via double->int (should not happen for integer args). */
+    return eshkol_bignum_from_int64((arena_t*)arena, 0);
+}
+
+/** @brief (make-rational num den) on tagged operands (INT64 or bignum). */
+extern "C" void eshkol_rational_make_tagged(
+    void* arena, const eshkol_tagged_value_t* num, const eshkol_tagged_value_t* den,
+    eshkol_tagged_value_t* result)
+{
+    eshkol_bignum_t* bn = make_operand_bignum(arena, num);
+    eshkol_bignum_t* bd = make_operand_bignum(arena, den);
+    eshkol_rational_from_bignums_tagged(arena, bn, bd, result);
 }
 
 /* Pointer-based comparison dispatch for LLVM codegen.
@@ -371,33 +689,13 @@ extern "C" void eshkol_rational_compare_tagged_ptr(
     void* arena, const eshkol_tagged_value_t* a, const eshkol_tagged_value_t* b,
     int op, eshkol_tagged_value_t* result)
 {
-    int a_is_rational = eshkol_is_rational_tagged(*a);
-    int b_is_rational = eshkol_is_rational_tagged(*b);
-
     memset(result, 0, sizeof(*result));
     result->type = ESHKOL_VALUE_BOOL;
 
     /* If either is a double, convert to double comparison */
     if (a->type == ESHKOL_VALUE_DOUBLE || b->type == ESHKOL_VALUE_DOUBLE) {
-        double da, db;
-        if (a_is_rational) {
-            da = eshkol_rational_to_double((void*)(uintptr_t)a->data.int_val);
-        } else if (a->type == ESHKOL_VALUE_INT64) {
-            da = (double)a->data.int_val;
-        } else {
-            union { int64_t i; double d; } conv;
-            conv.i = a->data.int_val;
-            da = conv.d;
-        }
-        if (b_is_rational) {
-            db = eshkol_rational_to_double((void*)(uintptr_t)b->data.int_val);
-        } else if (b->type == ESHKOL_VALUE_INT64) {
-            db = (double)b->data.int_val;
-        } else {
-            union { int64_t i; double d; } conv;
-            conv.i = b->data.int_val;
-            db = conv.d;
-        }
+        double da = tagged_any_to_double(a);
+        double db = tagged_any_to_double(b);
         int cmp_result = 0;
         switch (op) {
             case 0: cmp_result = (da < db); break;
@@ -410,21 +708,10 @@ extern "C" void eshkol_rational_compare_tagged_ptr(
         return;
     }
 
-    /* Both are exact (int or rational) - promote int to rational n/1 */
-    void* ra;
-    void* rb;
-
-    if (a_is_rational) {
-        ra = (void*)(uintptr_t)a->data.int_val;
-    } else {
-        ra = eshkol_rational_create(arena, a->data.int_val, 1);
-    }
-
-    if (b_is_rational) {
-        rb = (void*)(uintptr_t)b->data.int_val;
-    } else {
-        rb = eshkol_rational_create(arena, b->data.int_val, 1);
-    }
+    /* Both exact: promote each (int64/bignum/rational) to a rational object. */
+    void* ra = tagged_exact_to_rational(arena, a);
+    void* rb = tagged_exact_to_rational(arena, b);
+    if (!ra || !rb) { result->data.int_val = 0; return; }
 
     int cmp = eshkol_rational_compare(ra, rb);
     int cmp_result = 0;

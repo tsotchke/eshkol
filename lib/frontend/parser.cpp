@@ -1319,20 +1319,60 @@ static eshkol_ast_t parse_atom(const Token& token) {
                 break;
             }
 
-            // Check if it's a rational literal (e.g., 1/3, 22/7)
+            // Check if it's a rational literal (e.g., 1/3, 22/7, and
+            // bignum-magnitude forms like 100000000000000000000/3). Each side
+            // is emitted as an int64 literal when it fits, or an
+            // ESHKOL_BIGNUM_LITERAL (string payload, constructed at codegen)
+            // when it exceeds int64 range — ESH-0123.
             if (token.value.find('/') != std::string::npos) {
                 size_t slash_pos = token.value.find('/');
                 std::string num_str = token.value.substr(0, slash_pos);
                 std::string den_str = token.value.substr(slash_pos + 1);
-                int64_t num, den;
-                try {
-                    num = std::stoll(num_str);
-                    den = std::stoll(den_str);
-                } catch (...) {
+
+                // Emit one operand node from a signed decimal-integer string.
+                // Returns false if the string is not a valid integer literal;
+                // sets *is_zero when the value is exactly 0 (int64 range only).
+                auto build_int_operand = [&](const std::string& s,
+                                             eshkol_ast_t* node,
+                                             bool* is_zero) -> bool {
+                    size_t i = 0;
+                    if (i < s.size() && (s[i] == '+' || s[i] == '-')) i++;
+                    if (i >= s.size()) return false;
+                    for (size_t j = i; j < s.size(); j++) {
+                        if (s[j] < '0' || s[j] > '9') return false;
+                    }
+                    memset(node, 0, sizeof(*node));
+                    node->line = token.line;
+                    node->column = token.column;
+                    *is_zero = false;
+                    try {
+                        int64_t v = std::stoll(s);
+                        eshkol_ast_make_int64(node, v);
+                        if (v == 0) *is_zero = true;
+                    } catch (const std::out_of_range&) {
+                        // Too large for int64 — defer to bignum construction.
+                        node->type = ESHKOL_BIGNUM_LITERAL;
+                        size_t len = s.size();
+                        char* ptr = new char[len + 1];
+                        memcpy(ptr, s.c_str(), len + 1);
+                        node->str_val.ptr = ptr;
+                        node->str_val.size = len + 1;
+                    } catch (...) {
+                        return false;
+                    }
+                    return true;
+                };
+
+                eshkol_ast_t* variables = new eshkol_ast_t[2];
+                bool num_zero = false, den_zero = false;
+                if (!build_int_operand(num_str, &variables[0], &num_zero) ||
+                    !build_int_operand(den_str, &variables[1], &den_zero)) {
+                    delete[] variables;
                     PARSE_ERROR_AT(token, "invalid rational literal: %s", token.value.c_str());
                     break;
                 }
-                if (den == 0) {
+                if (den_zero) {
+                    delete[] variables;
                     PARSE_ERROR_AT(token, "division by zero in rational literal");
                     break;
                 }
@@ -1345,9 +1385,7 @@ static eshkol_ast_t parse_atom(const Token& token) {
                 memcpy(ast.operation.call_op.func->variable.id, "make-rational", sizeof("make-rational"));
                 ast.operation.call_op.func->variable.data = nullptr;
                 ast.operation.call_op.num_vars = 2;
-                ast.operation.call_op.variables = new eshkol_ast_t[2];
-                eshkol_ast_make_int64(&ast.operation.call_op.variables[0], num);
-                eshkol_ast_make_int64(&ast.operation.call_op.variables[1], den);
+                ast.operation.call_op.variables = variables;
                 break;
             }
             // Check if it's a floating-point number (has '.' or scientific notation 'e'/'E')

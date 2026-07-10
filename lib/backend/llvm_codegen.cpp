@@ -2072,8 +2072,10 @@ public:
         function_return_types["%make-lazy-promise"] = BuiltinTypes::Value;
         function_return_types["%make-lazy-promise-force"] = BuiltinTypes::Value;
         function_return_types["rational?"] = BuiltinTypes::Boolean;
-        function_return_types["numerator"] = BuiltinTypes::Int64;
-        function_return_types["denominator"] = BuiltinTypes::Int64;
+        // numerator/denominator may return a bignum for bignum-magnitude
+        // rationals, so they are tagged Values, not raw int64.
+        function_return_types["numerator"] = BuiltinTypes::Value;
+        function_return_types["denominator"] = BuiltinTypes::Value;
         function_return_types["make-rational"] = BuiltinTypes::Value;
         function_return_types["rationalize"] = BuiltinTypes::Value;
         function_return_types["read-string"] = BuiltinTypes::String;
@@ -14765,96 +14767,64 @@ private:
             return packBoolToTaggedValue(phi);
         }
 
-        if (func_name == "numerator") {
+        // (numerator x) / (denominator x): route through the runtime so
+        // bignum-magnitude rationals report their true (possibly bignum)
+        // numerator/denominator (ESH-0105), not a truncated int64 field read.
+        if (func_name == "numerator" || func_name == "denominator") {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
-            // If INT64, numerator is the value itself
-            // If HEAP_PTR+RATIONAL, extract numerator field
-            Value* type_tag = builder->CreateExtractValue(arg, {0});
-            Value* is_int = builder->CreateICmpEQ(type_tag,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            auto* tvTy = tagged_value_type;
+            auto* ptrTy = PointerType::getUnqual(*context);
+            Value* arg_alloca = builder->CreateAlloca(tvTy, nullptr, "nd_arg");
+            Value* res_alloca = builder->CreateAlloca(tvTy, nullptr, "nd_res");
+            builder->CreateStore(arg, arg_alloca);
 
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* int_bb = BasicBlock::Create(*context, "num_int", current_func);
-            BasicBlock* rat_bb = BasicBlock::Create(*context, "num_rat", current_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "num_merge", current_func);
-
-            builder->CreateCondBr(is_int, int_bb, rat_bb);
-
-            builder->SetInsertPoint(int_bb);
-            Value* int_val = builder->CreateExtractValue(arg, {4});
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(rat_bb);
-            Value* ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
-            Value* num = builder->CreateLoad(int64_type, ptr, "numerator");
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(int64_type, 2);
-            phi->addIncoming(int_val, int_bb);
-            phi->addIncoming(num, rat_bb);
-            return packInt64ToTaggedValue(phi);
+            const char* rt_name = (func_name == "numerator")
+                ? "eshkol_rational_numerator_tagged"
+                : "eshkol_rational_denominator_tagged";
+            Function* nd_fn = module->getFunction(rt_name);
+            if (!nd_fn) {
+                FunctionType* ft = FunctionType::get(Type::getVoidTy(*context),
+                    {ptrTy, ptrTy, ptrTy}, false);
+                nd_fn = Function::Create(ft, Function::ExternalLinkage,
+                    rt_name, module.get());
+            }
+            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            builder->CreateCall(nd_fn, {arena_ptr, arg_alloca, res_alloca});
+            return builder->CreateLoad(tvTy, res_alloca,
+                func_name == "numerator" ? "numerator_result" : "denominator_result");
         }
 
-        if (func_name == "denominator") {
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
-            Value* arg = typedValueToTaggedValue(tv);
-
-            // If INT64, denominator is 1
-            // If HEAP_PTR+RATIONAL, extract denominator field
-            Value* type_tag = builder->CreateExtractValue(arg, {0});
-            Value* is_int = builder->CreateICmpEQ(type_tag,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
-
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* int_bb = BasicBlock::Create(*context, "den_int", current_func);
-            BasicBlock* rat_bb = BasicBlock::Create(*context, "den_rat", current_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "den_merge", current_func);
-
-            builder->CreateCondBr(is_int, int_bb, rat_bb);
-
-            builder->SetInsertPoint(int_bb);
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(rat_bb);
-            Value* ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
-            Value* denom_ptr = builder->CreateGEP(int8_type, ptr,
-                ConstantInt::get(int64_type, 8));
-            Value* denom = builder->CreateLoad(int64_type, denom_ptr, "denominator");
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(int64_type, 2);
-            phi->addIncoming(ConstantInt::get(int64_type, 1), int_bb);
-            phi->addIncoming(denom, rat_bb);
-            return packInt64ToTaggedValue(phi);
-        }
-
-        // (make-rational num denom) — explicit rational constructor
+        // (make-rational num denom) — explicit rational constructor.
+        // Operands are passed as tagged values (INT64 or bignum HEAP_PTR) so
+        // bignum-magnitude numerator/denominator stay exact (ESH-0123).
         if (func_name == "make-rational" || func_name == "/rational") {
             TypedValue num_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue den_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!num_tv.llvm_value || !den_tv.llvm_value) return nullptr;
-            Value* num = unpackInt64FromTaggedValue(typedValueToTaggedValue(num_tv));
-            Value* den = unpackInt64FromTaggedValue(typedValueToTaggedValue(den_tv));
+            Value* num_tagged = typedValueToTaggedValue(num_tv);
+            Value* den_tagged = typedValueToTaggedValue(den_tv);
 
-            // Call runtime: eshkol_rational_create(arena, num, denom)
-            Function* create_fn = module->getFunction("eshkol_rational_create");
-            if (!create_fn) {
-                FunctionType* ft = FunctionType::get(PointerType::getUnqual(*context),
-                    {PointerType::getUnqual(*context), int64_type, int64_type}, false);
-                create_fn = Function::Create(ft, Function::ExternalLinkage,
-                    "eshkol_rational_create", module.get());
+            auto* tvTy = tagged_value_type;
+            auto* ptrTy = PointerType::getUnqual(*context);
+            Value* num_alloca = builder->CreateAlloca(tvTy, nullptr, "mkrat_num");
+            Value* den_alloca = builder->CreateAlloca(tvTy, nullptr, "mkrat_den");
+            Value* result_alloca = builder->CreateAlloca(tvTy, nullptr, "mkrat_res");
+            builder->CreateStore(num_tagged, num_alloca);
+            builder->CreateStore(den_tagged, den_alloca);
+
+            Function* mk_fn = module->getFunction("eshkol_rational_make_tagged");
+            if (!mk_fn) {
+                FunctionType* ft = FunctionType::get(Type::getVoidTy(*context),
+                    {ptrTy, ptrTy, ptrTy, ptrTy}, false);
+                mk_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_rational_make_tagged", module.get());
             }
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            Value* rat_ptr = builder->CreateCall(create_fn, {arena_ptr, num, den});
-            return packPtrToTaggedValue(rat_ptr, ESHKOL_VALUE_HEAP_PTR);
+            Value* arena_ptr = builder->CreateLoad(ptrTy, global_arena);
+            builder->CreateCall(mk_fn, {arena_ptr, num_alloca, den_alloca, result_alloca});
+            return builder->CreateLoad(tvTy, result_alloca, "make_rational_result");
         }
 
         // (rationalize x epsilon) — R7RS: simplest rational within epsilon of x

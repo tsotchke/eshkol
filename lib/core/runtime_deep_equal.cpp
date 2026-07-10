@@ -193,10 +193,10 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
     bool is_rat1 = is_rational(type1, val1);
     bool is_rat2 = is_rational(type2, val2);
     if (is_rat1 && is_rat2) {
-        const eshkol_rational_t* r1 = (const eshkol_rational_t*)val1->data.ptr_val;
-        const eshkol_rational_t* r2 = (const eshkol_rational_t*)val2->data.ptr_val;
-        return r1->numerator == r2->numerator &&
-               r1->denominator == r2->denominator;
+        // Canonical value equality across both the int64 and bignum
+        // representations (ESH-0105/ESH-0114).
+        return eshkol_rational_equal((void*)val1->data.ptr_val,
+                                     (void*)val2->data.ptr_val) != 0;
     }
 
     // Complex numbers (ESH-0114): compare real and imaginary components by
