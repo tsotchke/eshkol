@@ -1820,6 +1820,46 @@ oracles:
         action: ./scripts/run_reference_differential.sh
 
   # ─────────────────────────────────────────────────────────────────
+  # Generative multi-oracle differential (adversarial testing pillar
+  # P7c). Where reference-diff (P7a) runs a fixed 34-program hand corpus,
+  # this GENERATES a large deterministic family of closed R7RS-small
+  # programs (scripts/gen_generative_corpus.py; pure function of
+  # seed+count) and runs each through every installed oracle —
+  # chibi-scheme (external truth), Eshkol JIT (-r), Eshkol AOT at -O0 AND
+  # -O2, and the bytecode VM — flagging any pairwise disagreement:
+  # R7RS gaps vs chibi, AOT-vs-JIT miscompiles, optimization-level
+  # divergence (-O0 vs -O2, guarding the O2-default change), silent VM
+  # miscompiles, and metamorphic property violations (the "meta" family
+  # self-checks apply-equivalence / map-ordering / commutativity /
+  # reverse-involution / length-append homomorphism / fold-equivalence,
+  # so a bug surfaces even with no reference installed). Writes
+  # kind:"generative_differential" events to
+  # scripts/icc_traces/generative_differential.jsonl.
+  #
+  # The gate event generative_differential_oracle is evaluated in
+  # regression mode against tests/generative-diff/baseline.txt: PASS iff
+  # no divergence appears that is NOT already a known/triaged entry in the
+  # baseline — i.e. it flips RED the moment a NEW miscompile is generated.
+  # The currently-exposed divergences are catalogued in
+  # docs/reports/GENERATIVE_DIFFERENTIAL_REPORT.md and enumerated in the
+  # baseline; each is an open bug for a separate fixing agent.
+  # ─────────────────────────────────────────────────────────────────
+  - name: generative-differential
+    aliases: [generative-diff, p7c-generative-diff, generative-differential-oracle]
+    requires:
+      - test_evidence: true
+        severity: high
+        label: Generative R7RS-small corpus is deterministic and regenerable
+        action: python3 scripts/gen_generative_corpus.py
+      - runtime_event:
+          event_kinds: [generative_differential]
+          event_names: ["generative_differential_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: No NEW cross-oracle divergence beyond the triaged baseline (chibi/JIT/AOT-O0/AOT-O2/VM + metamorphic)
+        action: ./scripts/run_generative_differential.sh
+
+  # ─────────────────────────────────────────────────────────────────
   # GPU execution correctness (closes the CI gap where the *-cuda lanes
   # in .github/workflows/ci.yml compile CUDA on GPU-less hosted runners
   # but never run a kernel). tests/gpu/gpu_correctness_gate.sh builds

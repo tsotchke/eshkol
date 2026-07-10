@@ -1,5 +1,13 @@
 # Reference-Implementation Differential Report (P7a)
 
+> STALE SNAPSHOT — the "27/34 AGREE" results table below is a pre-fix
+> historical snapshot. On current master the harness reports **34/34 AGREE
+> (100%)**; the 7 divergences listed here (ESH-0150..0156) and ESH-0225 are all
+> fixed (see `CHANGELOG.md`). Re-run `scripts/run_reference_differential.sh` to
+> confirm. The fixed 34-program corpus no longer exposes anything, which is why
+> the differential is now *generative* — see
+> `docs/reports/GENERATIVE_DIFFERENTIAL_REPORT.md` (pillar P7c).
+
 External R7RS ground-truth conformance oracle for Eshkol. Unlike every other
 differential harness in this repo (which diffs Eshkol against *itself* across
 its JIT/AOT axes — self-consistency only), this pillar runs the **same portable
