@@ -21,6 +21,7 @@
 
 /* Include the Eshkol AD types — eshkol.h is a C++ header, no extern "C" needed */
 #include "eshkol/eshkol.h"
+#include "eshkol/logger.h"
 
 /*******************************************************************************
  * Internal Helpers
@@ -585,38 +586,18 @@ extern "C" void tensor_broadcast_mul_backward(ad_node_t* node) {
  *  as ESH-0230 (.swarm/tasks/ESH-0230.json) — implement once the
  *  forward-pass wiring delivers node->input2 as the index tensor. */
 extern "C" void tensor_embedding_backward(ad_node_t* node) {
-    if (!node || !node->tensor_gradient) return;
-    ad_node_t* W = node->input1;
-    if (!W) return;
-    size_t n_out = tensor_size(node->shape, node->ndim);
-    size_t n_w = tensor_size(W->shape, W->ndim);
-    if (W->tensor_gradient == NULL) W->tensor_gradient = alloc_grad(n_w);
-    double* dy = (double*)node->tensor_gradient;
-    double* dW = (double*)W->tensor_gradient;
-    /* Conservative fallback — accumulate into row 0. Replace with
-     * indexed scatter once node carries the lookup-index tensor.
-     *
-     * Loud one-shot warning so training that depends on multi-row
-     * embedding gradients can't hit this silently. */
-    {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
-            fprintf(stderr,
-                "WARNING: tensor_embedding_backward is a row-0 stub — "
-                "gradients past row 0 are dropped. Tracked as ESH-0230; "
-                "full indexed scatter needs the lookup-index tensor "
-                "threaded through the AD node first. Training "
-                "with embeddings against rows other than 0 will not "
-                "converge correctly. See "
-                "lib/bridge/tensor_backward.cpp tensor_embedding_backward "
-                "and docs/breakdown/AUTODIFF.md for the tracking note.\n");
-        }
-    }
-    size_t feat_dim = (node->ndim >= 2) ? (size_t)node->shape[1]
-                                        : (n_out > 0 ? n_out : 0);
-    size_t write = feat_dim > 0 ? feat_dim : n_out;
-    for (size_t i = 0; i < write && i < n_w; i++) dW[i] += dy[i];
+    (void)node;
+    /* HARD CONSTRAINT (exact AD or an explicit error, never a silent/plausible
+     * zero): the correct backward scatters dL/dy[i,:] into dL/dW[idx[i],:], but
+     * the lookup-index tensor is not threaded through the AD node (ESH-0230). The
+     * former "accumulate into row 0" stub dropped every gradient past row 0 and
+     * mis-attributed the rest — a wrong gradient. Refuse instead of corrupting
+     * training. Wire node->input2 as the index tensor and implement the indexed
+     * scatter to restore support. */
+    eshkol_fatal("unsupported AD op: exact backward for the qLLM-bridge tensor "
+                 "embedding node is not implemented (the lookup-index tensor is "
+                 "not threaded through the AD node — ESH-0230); refusing to "
+                 "return an approximate (wrong) gradient.");
 }
 
 /** @brief Backward pass for attention: a conservative identity-like
@@ -626,34 +607,21 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
  *  through softmax(QK^T/√d)V) lands with the full attention codegen
  *  rewrite. */
 extern "C" void tensor_attention_backward(ad_node_t* node) {
-    if (!node || !node->tensor_gradient) return;
-    ad_node_t* v = node->input2 ? node->input2 : node->input1;
-    if (!v) return;
-    size_t n = tensor_size(v->shape, v->ndim);
-    size_t n_out = tensor_size(node->shape, node->ndim);
-    if (v->tensor_gradient == NULL) v->tensor_gradient = alloc_grad(n);
-    double* dV = (double*)v->tensor_gradient;
-    double* dy = (double*)node->tensor_gradient;
-    /* Conservative fallback — passes dy through to V's gradient slot
-     * only. Q and K receive no gradient; the softmax chain is skipped.
-     * Proper backward ships with the full attention codegen rewrite. */
-    {
-        static int warned = 0;
-        if (!warned) {
-            warned = 1;
-            fprintf(stderr,
-                "WARNING: tensor_attention_backward is a value-passthrough "
-                "stub — gradients flow only into V, never into Q or K, and "
-                "the softmax chain through softmax(Q K^T / sqrt(d)) V is "
-                "skipped. This is a known v1.2 limitation; full backward "
-                "ships in v1.3. Training attention layers will not "
-                "converge correctly. See "
-                "lib/bridge/tensor_backward.cpp tensor_attention_backward "
-                "and docs/breakdown/AUTODIFF.md for the tracking note.\n");
-        }
-    }
-    size_t m = n < n_out ? n : n_out;
-    for (size_t i = 0; i < m; i++) dV[i] += dy[i];
+    (void)node;
+    /* HARD CONSTRAINT (exact AD or an explicit error, never a silent/plausible
+     * zero): the qLLM-bridge attention AD node has no exact backward. The former
+     * value-passthrough stub flowed dy into V only — skipping Q, K, and the
+     * softmax(Q K^T / sqrt(d)) chain — so it returned a plausible-but-WRONG
+     * gradient. Rather than corrupt a training run, refuse the operation.
+     *
+     * NOTE: the differentiable attention path used by `(gradient …
+     * (scaled-dot-attention …))` decomposes to scalar AD nodes in
+     * tensor_transformer_codegen.cpp and does NOT reach here; this stub only
+     * fires if the bridge AD_NODE_TENSOR_ATTENTION node is ever backpropagated. */
+    eshkol_fatal("unsupported AD op: exact backward for the qLLM-bridge tensor "
+                 "attention node is not implemented; refusing to return an "
+                 "approximate (wrong) gradient. Differentiate attention through "
+                 "scaled-dot-attention instead (that path is exact).");
 }
 
 /*******************************************************************************

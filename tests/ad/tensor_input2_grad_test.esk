@@ -1,0 +1,137 @@
+;; tensor_input2_grad_test.esk -- ESH-0212: tensor-AD second-operand gradients,
+;; verified against a central finite-difference oracle in BOTH calling forms.
+;;
+;; Every operand below is checked as:
+;;   (1) a LITERAL lambda at the gradient call site,
+;;   (2) a FIRST-CLASS value bound to a variable, and
+;;   (3) a FIRST-CLASS value threaded through a higher-order wrapper.
+;;
+;; Before ESH-0212, forms (2) and (3) silently returned #(0 0 0 ...) for any
+;; tensor loss, and a VECTOR (learnable per-feature) batch-norm/layer-norm gamma
+;; returned zero even in the literal form. The finite-difference oracle is the
+;; TEST ORACLE only; the compiler's gradient path is exact reverse-mode AD.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (approx= a b tol) (< (abs (- a b)) tol))
+
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (perturb-vector v idx delta)
+  (let ((n (vector-length v))
+        (out (make-vector (vector-length v) 0.0)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (begin
+                           (vector-set! out i
+                             (if (= i idx)
+                                 (+ (vector-ref v i) delta)
+                                 (vector-ref v i)))
+                           (loop (+ i 1)))
+                         out))))
+      (loop 0))))
+
+(define (finite-diff f x idx eps)
+  (/ (- (f (perturb-vector x idx eps))
+        (f (perturb-vector x idx (- eps))))
+     (* 2.0 eps)))
+
+;; Relative-or-absolute match to a central finite difference at each component.
+(define (grad-matches-fd? g f x eps tol)
+  (let ((n (vector-length g)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (let* ((fd (finite-diff f x i eps))
+                                (gi (vector-ref g i))
+                                (scale (+ 1.0 (abs fd))))
+                           (if (approx= gi fd (* tol scale))
+                               (loop (+ i 1))
+                               (begin
+                                 (display "   mismatch @") (display i)
+                                 (display " ad=") (display gi)
+                                 (display " fd=") (display fd) (newline)
+                                 #f)))
+                         #t))))
+      (loop 0))))
+
+(define (vec-any-nonzero? g)
+  (let ((n (vector-length g)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (if (> (abs (vector-ref g i)) 1e-9) #t (loop (+ i 1)))
+                         #f))))
+      (loop 0))))
+
+;; Higher-order wrapper: forces the loss to arrive as a runtime function value.
+(define (wg f x) (gradient f x))
+
+;; Runs one operand through all three calling forms and checks each against FD.
+(define (check-operand name loss-fn x0)
+  (let* ((lit (gradient (lambda (z) (loss-fn z)) x0))
+         (bound loss-fn)
+         (var (gradient bound x0))
+         (wrp (wg loss-fn x0)))
+    (check (string-append name "_literal_matches_fd")
+           (and (vec-any-nonzero? lit) (grad-matches-fd? lit loss-fn x0 1e-4 1e-3)))
+    (check (string-append name "_variable_matches_fd")
+           (and (vec-any-nonzero? var) (grad-matches-fd? var loss-fn x0 1e-4 1e-3)))
+    (check (string-append name "_wrapper_matches_fd")
+           (and (vec-any-nonzero? wrp) (grad-matches-fd? wrp loss-fn x0 1e-4 1e-3)))
+    ;; All three forms must agree with each other.
+    (check (string-append name "_forms_agree")
+           (and (grad-matches-fd? lit (lambda (z) (loss-fn z)) x0 1e-4 1e-3)
+                (= (vector-length lit) (vector-length var))
+                (= (vector-length lit) (vector-length wrp))
+                (let ((n (vector-length lit)))
+                  (letrec ((loop (lambda (i)
+                                   (if (< i n)
+                                       (if (and (approx= (vector-ref lit i) (vector-ref var i) 1e-6)
+                                                (approx= (vector-ref lit i) (vector-ref wrp i) 1e-6))
+                                           (loop (+ i 1)) #f)
+                                       #t))))
+                    (loop 0)))))))
+
+;; ---- matmul B (second operand) --------------------------------------------
+(define A (tensor 2 2 1.0 2.0 3.0 4.0))
+(define (matmul-B-loss B) (tensor-sum (tensor-matmul A (reshape B 2 2))))
+(check-operand "matmul_B" matmul-B-loss (tensor 4 0.5 -1.0 2.0 1.5))
+
+;; ---- conv2d kernel (second operand) ---------------------------------------
+(define image (tensor 3 3 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0))
+(define (conv-k-loss k) (tensor-sum (conv2d image (reshape k 2 2) 1)))
+(check-operand "conv2d_kernel" conv-k-loss (tensor 4 1.0 2.0 3.0 4.0))
+
+;; ---- scaled-dot-attention K and V -----------------------------------------
+(define Q (tensor 2 2 1.0 0.0 0.0 1.0))
+(define Kc (tensor 4 1.0 0.0 0.0 1.0))
+(define Vc (tensor 4 1.0 2.0 3.0 4.0))
+(define (attn-K-loss k) (tensor-sum (scaled-dot-attention Q (reshape k 2 2) (reshape Vc 2 2))))
+(define (attn-V-loss v) (tensor-sum (scaled-dot-attention Q (reshape Kc 2 2) (reshape v 2 2))))
+(check-operand "attention_K" attn-K-loss (tensor 4 1.0 0.0 0.0 1.0))
+(check-operand "attention_V" attn-V-loss (tensor 4 1.0 2.0 3.0 4.0))
+
+;; ---- batch-norm / layer-norm VECTOR (per-feature) gamma -------------------
+(define xin (tensor 3 1.0 2.0 4.0))
+(define wts (tensor 3 1.0 2.0 3.0))
+;; reshape coerces the operand to a 1-D tensor so BOTH the AD point (a tensor)
+;; and the finite-difference oracle's perturbed Scheme vector feed batch-norm a
+;; genuine per-feature tensor gamma (batch-norm decodes only tensor gammas
+;; per-feature; a raw Scheme vector would be read as a scalar).
+(define (bn-gamma-loss g) (tensor-sum (tensor-mul (batch-norm xin (reshape g 3) 0.0 0.00001) wts)))
+(define (ln-gamma-loss g) (tensor-sum (tensor-mul (layer-norm xin (reshape g 3) 0.0 0.00001) wts)))
+(check-operand "batchnorm_vector_gamma" bn-gamma-loss (tensor 3 1.0 2.0 3.0))
+(check-operand "layernorm_vector_gamma" ln-gamma-loss (tensor 3 1.0 2.0 3.0))
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: tensor_input2_grad_test") (newline) (exit 0))
+    (begin (display "FAIL: tensor_input2_grad_test") (newline) (exit 1)))

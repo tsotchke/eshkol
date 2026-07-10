@@ -16,6 +16,7 @@
 
 #include <eshkol/backend/tensor_backward.h>
 #include <eshkol/eshkol.h>
+#include <eshkol/logger.h>
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
@@ -1337,31 +1338,44 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     case AD_NODE_TENSOR_RMSNORM:
     case AD_NODE_TENSOR_GELU:
     case AD_NODE_TENSOR_SILU:
-    case AD_NODE_TENSOR_CROSS_ENTROPY: {
-        /* Use the bridge dispatch table to find the right backward fn */
-        bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
-        if (fn) fn(node);
-        break;
-    }
-
-    /* Tensor bridge ops without dedicated backward (gradient passthrough) */
+    case AD_NODE_TENSOR_CROSS_ENTROPY:
+    /* Previously these fell into a "gradient passthrough" case that silently
+     * dropped the gradient even though get_tensor_backward_fn HAS a registered
+     * backward for each. Route them through the dispatch table like the ops
+     * above. attention/embedding backends now raise an explicit unsupported-op
+     * error instead of returning a plausible-but-wrong gradient (hard
+     * constraint: exact AD or an explicit error, never a silent zero). */
     case AD_NODE_TENSOR_ATTENTION:
     case AD_NODE_TENSOR_TRANSPOSE:
     case AD_NODE_TENSOR_SUM:
     case AD_NODE_TENSOR_BROADCAST_ADD:
     case AD_NODE_TENSOR_BROADCAST_MUL:
-    case AD_NODE_TENSOR_EMBEDDING:
+    case AD_NODE_TENSOR_EMBEDDING: {
+        /* Use the bridge dispatch table to find the right backward fn */
+        bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
+        if (!fn) {
+            eshkol_fatal("unsupported AD op: no backward registered for tensor "
+                         "bridge node type %d; refusing to drop the gradient "
+                         "silently", (int)node->type);
+        }
+        fn(node);
+        break;
+    }
+
     case AD_NODE_FRECHET_MEAN:
-        /* These node types don't yet have bridge backward implementations.
-         * get_tensor_backward_fn returns NULL for them, so rather than
-         * calling into a no-op, we explicitly skip. When backward functions
-         * are added to lib/bridge/tensor_backward.cpp, move these cases
-         * into the dispatch group above. */
+        /* No exact backward for the Riemannian center-of-mass node yet. Refuse
+         * rather than leave the gradient at a silent zero. */
+        eshkol_fatal("unsupported AD op: exact backward for the Frechet-mean "
+                     "tensor node is not implemented; refusing to drop the "
+                     "gradient silently.");
         break;
 
     default:
-        /* Unhandled tensor op — gradient silently dropped.
-         * Geometric/hyperbolic ops (33-40) use scalar backward in codegen. */
+        /* Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
+         * differentiated by their scalar backward emitted in codegen and
+         * legitimately reach here with nothing to do. Every TENSOR op
+         * (19-32 and the qLLM bridge ops 67-80) has an explicit case above, so
+         * a tensor-op gradient can never silently fall through this default. */
         break;
     }
 
