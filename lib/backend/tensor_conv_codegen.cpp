@@ -1205,6 +1205,65 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
     llvm::Value* beta_node = scalarToADNode(beta_source, beta, name + "_beta");
     llvm::Value* epsilon_node = scalarToADNode(epsilon_source, epsilon, name + "_epsilon");
 
+    // ESH-0212: per-feature (vector/learnable) gamma & beta support. When gamma
+    // or beta is a tensor rather than a scalar, each normalized element k must
+    // be scaled/shifted by gamma[k]/beta[k] as its OWN AD node, so reverse mode
+    // yields d loss / d gamma[k] instead of an unconditional zero. The scalar
+    // path (scalarToADNode above) covers the broadcast-scalar and scalar-AD-
+    // variable forms; this covers the tensor form, indexed along the
+    // normalization axis to match the numeric kernel's norm_param_at(gamma, k).
+    auto paramIsTensor = [&](llvm::Value* source) -> llvm::Value* {
+        if (!source || source->getType() != ctx_.taggedValueType())
+            return builder.getInt1(false);
+        llvm::Value* base_type = tagged_.getBaseType(tagged_.getType(source));
+        return builder.CreateICmpEQ(base_type,
+            llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+    };
+    llvm::Value* gamma_is_tensor = paramIsTensor(gamma_source);
+    llvm::Value* beta_is_tensor = paramIsTensor(beta_source);
+
+    // Return the effective per-element AD node for a scale/shift parameter:
+    // gamma[idx]/beta[idx] when the parameter is a tensor, else the shared
+    // scalar node. Reuses adNodeFromTensorElementBits so an element that is
+    // itself an outer AD variable (a gradient input) is wired in directly.
+    auto effectiveParamNode = [&](llvm::Value* scalar_node, llvm::Value* source,
+                                  llvm::Value* is_tensor, llvm::Value* idx,
+                                  const std::string& pname) -> llvm::Value* {
+        if (!source || source->getType() != ctx_.taggedValueType())
+            return scalar_node;
+        llvm::BasicBlock* t_bb = llvm::BasicBlock::Create(ctx_.context(), pname + "_tensor", current_func);
+        llvm::BasicBlock* s_bb = llvm::BasicBlock::Create(ctx_.context(), pname + "_scalar", current_func);
+        llvm::BasicBlock* m_bb = llvm::BasicBlock::Create(ctx_.context(), pname + "_merge", current_func);
+        builder.CreateCondBr(is_tensor, t_bb, s_bb);
+
+        builder.SetInsertPoint(t_bb);
+        llvm::Value* tptr = tagged_.unpackPtr(source);
+        llvm::Value* pelems = builder.CreateLoad(ctx_.ptrType(),
+            builder.CreateStructGEP(ctx_.tensorType(), tptr, 2));
+        llvm::Value* ptotal = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateStructGEP(ctx_.tensorType(), tptr, 3));
+        // Broadcast-safe index: a length-1 tensor behaves like a scalar, a
+        // per-feature tensor (length == axis_len) reads gamma[k] exactly.
+        llvm::Value* safe_total = builder.CreateSelect(
+            builder.CreateICmpSGT(ptotal, zero_i64), ptotal, one_i64);
+        llvm::Value* pidx = builder.CreateURem(idx, safe_total);
+        llvm::Value* pbits = builder.CreateLoad(ctx_.int64Type(),
+            builder.CreateGEP(ctx_.int64Type(), pelems, pidx));
+        llvm::Value* tnode = adNodeFromTensorElementBits(pbits, pname + "_elem");
+        llvm::BasicBlock* t_exit = builder.GetInsertBlock();
+        builder.CreateBr(m_bb);
+
+        builder.SetInsertPoint(s_bb);
+        llvm::BasicBlock* s_exit = builder.GetInsertBlock();
+        builder.CreateBr(m_bb);
+
+        builder.SetInsertPoint(m_bb);
+        llvm::PHINode* phi = builder.CreatePHI(ctx_.ptrType(), 2, pname + "_node");
+        phi->addIncoming(tnode, t_exit);
+        phi->addIncoming(scalar_node, s_exit);
+        return phi;
+    };
+
     llvm::Value* group_i_alloca = builder.CreateAlloca(ctx_.int64Type(), nullptr, (name + "_group_i").c_str());
     builder.CreateStore(zero_i64, group_i_alloca);
     llvm::BasicBlock* group_cond = llvm::BasicBlock::Create(ctx_.context(), name + "_group_cond", current_func);
@@ -1299,8 +1358,12 @@ bool TensorCodegen::emitTensorADNormalizeDispatch(llvm::Value* src_elems,
     llvm::Value* norm_elem_node = adNodeFromTensorElementBits(norm_bits, name + "_norm_elem");
     llvm::Value* norm_centered = autodiff_->recordADNodeBinary(3, norm_elem_node, mean_node);
     llvm::Value* normalized = autodiff_->recordADNodeBinary(5, norm_centered, std_node);
-    llvm::Value* scaled = autodiff_->recordADNodeBinary(4, normalized, gamma_node);
-    llvm::Value* shifted = autodiff_->recordADNodeBinary(2, scaled, beta_node);
+    llvm::Value* eff_gamma = effectiveParamNode(gamma_node, gamma_source,
+        gamma_is_tensor, norm_k, name + "_gamma_pe");
+    llvm::Value* eff_beta = effectiveParamNode(beta_node, beta_source,
+        beta_is_tensor, norm_k, name + "_beta_pe");
+    llvm::Value* scaled = autodiff_->recordADNodeBinary(4, normalized, eff_gamma);
+    llvm::Value* shifted = autodiff_->recordADNodeBinary(2, scaled, eff_beta);
     builder.CreateStore(builder.CreatePtrToInt(shifted, ctx_.int64Type()),
         builder.CreateGEP(ctx_.int64Type(), result_elems, norm_index));
     builder.CreateStore(builder.CreateAdd(norm_k, one_i64), k_alloca);
