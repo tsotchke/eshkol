@@ -1,0 +1,86 @@
+name: GPU Execution Gate
+
+# WHY THIS WORKFLOW EXISTS (read before touching runs-on below)
+#
+# The `linux-x64-cuda` / `linux-arm64-cuda` / `windows-arm64-cuda` jobs in
+# ci.yml build Eshkol with -DESHKOL_GPU_ENABLED=ON and run
+# scripts/run_gpu_tests.sh against that build. Those jobs run on
+# GitHub-hosted runners (ubuntu-22.04, ubuntu-22.04-arm, windows-11-arm),
+# and hosted runners have NO GPU. nvcc/the CUDA toolkit compiles the
+# .cu kernels fine, and vm_gpu_dispatch.h's `eshkol_gpu_init()` returns 0
+# devices, so every "GPU" tensor op in that lane silently falls through to
+# the CPU path. Those lanes are a COMPILATION gate, not an EXECUTION gate
+# — they will not catch a real bug in gpu_cuda_kernels.cu, gpu_memory_cuda.cpp,
+# or gpu_memory.mm (Metal). Ad hoc GPU execution otherwise only happened
+# on a Jetson AGX Xavier (nix/jetson/), run by hand.
+#
+# This workflow is the missing execution gate: tests/gpu/gpu_correctness_gate.sh
+# builds Eshkol with GPU acceleration ON *and* OFF, runs the same
+# differentiable workload (tests/gpu/gpu_correctness_gate.esk) through
+# both, and diffs GPU-vs-CPU numeric output within tolerance. It only
+# produces a verdict on a host with a real GPU device; everywhere else it
+# exits 0 with a SKIP message (see the script's step-1/step-4 checks), so
+# it is always safe to invoke.
+#
+# IT WILL NOT RUN ON A GITHUB-HOSTED RUNNER, BY DESIGN. `runs-on` below
+# targets a self-hosted runner carrying the `[self-hosted, gpu]` labels.
+# Until such a runner is registered against this repository, the job
+# queues and does nothing harmful — it does not fail CI, and it is not a
+# required check on any branch protection rule. Candidates for that
+# runner label: this repo's own Apple Silicon / Metal development
+# machines, or the Jetson AGX Xavier described in nix/jetson/README.md
+# (attach via `nix-shell nix/jetson/shell.nix` + the standard GitHub
+# Actions self-hosted runner agent). Do NOT repoint this at a
+# GitHub-hosted runner — that silently turns it back into a
+# compile-only gate, defeating the point of this file.
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Nightly, well off the hour to avoid the herd of on-the-hour jobs.
+    - cron: '17 9 * * *'
+  push:
+    branches: [master]
+    paths:
+      - 'lib/backend/gpu/**'
+      - 'lib/backend/vm_gpu_dispatch.h'
+      - 'tests/gpu/gpu_correctness_gate.*'
+      - '.github/workflows/gpu-execution-gate.yml'
+
+concurrency:
+  group: gpu-execution-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gpu-execution:
+    name: GPU execution correctness (real GPU, not compile-only)
+    # Requires a self-hosted runner registered with BOTH labels below.
+    # See the file-level comment for why this deliberately does not
+    # target a GitHub-hosted runner.
+    runs-on: [self-hosted, gpu]
+    # A missing self-hosted runner leaves this job queued rather than
+    # failed; cap the wait so a permanently-absent runner doesn't hang
+    # the workflow run indefinitely.
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run GPU execution correctness gate
+        shell: bash
+        env:
+          # Fresh build every run — correctness is the point, not build
+          # caching. Self-hosted runners can set REUSE_BUILDS=1 in their
+          # own environment if they persist build-gpu-gate*/ between runs.
+          GPU_GATE_TOL: '1e-4'
+        run: ./tests/gpu/gpu_correctness_gate.sh
+
+      - name: Upload gate logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-execution-gate-logs
+          path: |
+            build-gpu-gate.configure.log
+            build-gpu-gate.build.log
+            build-gpu-gate-cpuref.configure.log
+            build-gpu-gate-cpuref.build.log
+          if-no-files-found: ignore
