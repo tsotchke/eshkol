@@ -1,0 +1,448 @@
+;;; lib/core/dbsp.esk — DBSP-style incremental dataflow for Eshkol.
+;;;
+;;; A pure-Eshkol reference implementation of the DBSP calculus (Budiu,
+;;; Chajed, McSherry, Ryzhyk, Tannen, VLDB 2023), establishing the semantics
+;;; that ADR 0009 adopts for Eshkol's incremental spine. This module contains
+;;; ZERO compiler changes: it is ordinary R7RS-shaped Eshkol Scheme, loaded
+;;; on demand with `(require core.dbsp)`, in the precedent of `core.blc`.
+;;;
+;;; ============================================================================
+;;; Domains
+;;; ============================================================================
+;;;
+;;; Z-set (Z[A]): a finite integer-weighted multiset — a finite map from rows
+;;;   to EXACT integer weights (bignums included). Weight +1 inserts one
+;;;   occurrence, -1 retracts one; negative weights make retraction a group
+;;;   operation. A Z-set is always CONSOLIDATED at an operator boundary: equal
+;;;   rows (`equal?`) carry one summed weight and zero-weight rows are absent.
+;;;
+;;;   External representation (ADR 0009 §1), a pointer-free Eshkol value:
+;;;
+;;;       #(dbsp-zset-v1 ((weight row) ...))
+;;;
+;;;   Entries are ordered deterministically by the canonical `write` rendering
+;;;   of `row`, so iteration, equality, and serialization are reproducible
+;;;   across native, JIT, bytecode, and WASM. Equality of rows remains
+;;;   `equal?`; the canonical string is only an ordering/indexing aid. Two
+;;;   distinct standard Scheme values never share a `write` rendering, so the
+;;;   canonical string is a faithful key for the value domains used here
+;;;   (symbols, exact numbers, strings, chars, booleans, and lists/vectors of
+;;;   these).
+;;;
+;;; Stream: a finite sequence s : {0..n-1} -> Z[A], represented as an ordinary
+;;;   Eshkol list of Z-sets indexed by logical tick t. This is the finite
+;;;   "stream runner" of ADR 0009's v1.5.0 slice. (A standing runtime with an
+;;;   unbounded outer clock — `dbsp-circuit` / `dbsp-step!` and nested-clock
+;;;   fixed points — is a later slice; see "Deferred" at the end of this file.)
+;;;
+;;; ============================================================================
+;;; API summary (see per-section comments for contracts)
+;;; ============================================================================
+;;;
+;;; Z-set commutative-group core:
+;;;   zset-empty zset? zset-singleton zset-from-weighted zset-weight
+;;;   zset-add zset-negate zset-sub zset-scale zset-consolidate
+;;;   zset-empty? zset-positive? zset=? zset-entries zset-rows zset-size
+;;;
+;;; Z-set relational operators (linear map/filter/project/union, bilinear join):
+;;;   zset-map zset-filter zset-project zset-union zset-join
+;;;   zset-distinct zset-count zset-sum
+;;;
+;;; Streams and the DBSP stream operators (z^-1, D, I) plus lift/compose:
+;;;   stream-zero stream-delay stream-D stream-I
+;;;   stream-add stream-negate stream-lift dbsp-compose
+;;;   dbsp-delay   ; alias for stream-delay (the z^-1 operator)
+;;;
+;;; Incremental (delta -> delta) operators and the reference incrementalizer:
+;;;   dbsp-incrementalize          ; generic  Q^D = D . lift(Q) . I
+;;;   incremental-map incremental-filter incremental-project incremental-union
+;;;   incremental-join incremental-distinct
+
+;; This module uses stdlib procedures for ordering (sort, string<?) and list
+;; utilities (fold-left, filter, assoc), so it depends on the standard library.
+(require stdlib)
+
+(provide zset-empty zset? zset-singleton zset-from-weighted zset-weight
+         zset-add zset-negate zset-sub zset-scale zset-consolidate
+         zset-empty? zset-positive? zset=? zset-entries zset-rows zset-size
+         zset-map zset-filter zset-project zset-union zset-join
+         zset-distinct zset-count zset-sum
+         stream-zero stream-delay stream-D stream-I
+         stream-add stream-negate stream-lift dbsp-compose dbsp-delay
+         dbsp-incrementalize
+         incremental-map incremental-filter incremental-project
+         incremental-union incremental-join incremental-distinct)
+
+;; ============================================================================
+;; Internal helpers
+;; ============================================================================
+
+(define dbsp-zset-tag 'dbsp-zset-v1)
+
+;; Canonical string rendering of a row: a deterministic, INJECTIVE encoding
+;; used purely for ordering and grouping (observable equality remains
+;; `equal?`). Atoms are length-prefixed and every form carries a type tag and
+;; terminator, so the encoding is prefix-free: `equal?` rows render to equal
+;; strings and distinct rows render to distinct strings, regardless of content
+;; (a symbol/string containing delimiters cannot forge another value's form).
+;; This plays the reproducible-ordering role of ADR 0009's canonical
+;; S-expression rendering across native, JIT, bytecode, and WASM.
+(define (dbsp-atom tag s)
+  (string-append tag (number->string (string-length s)) ":" s))
+
+(define (dbsp-canon row)
+  (cond
+    ((symbol? row) (dbsp-atom "y" (symbol->string row)))
+    ((string? row) (dbsp-atom "s" row))
+    ((boolean? row) (if row "b1;" "b0;"))
+    ((char? row) (string-append "c" (number->string (char->integer row)) ";"))
+    ((number? row) (string-append "n" (number->string row) ";"))
+    ((null? row) "e;")
+    ((pair? row)
+     (string-append "(" (dbsp-canon (car row)) (dbsp-canon (cdr row)) ")"))
+    ((vector? row)
+     (string-append "v" (number->string (vector-length row)) "["
+                    (dbsp-canon-vec row 0 (vector-length row)) "]"))
+    (else (error "dbsp-canon: unsupported row value type" row))))
+
+(define (dbsp-canon-vec v i n)
+  (if (>= i n)
+      ""
+      (string-append (dbsp-canon (vector-ref v i))
+                     (dbsp-canon-vec v (+ i 1) n))))
+
+;; #t iff pred holds for every element of lst.
+(define (dbsp-all? pred lst)
+  (cond ((null? lst) #t)
+        ((pred (car lst)) (dbsp-all? pred (cdr lst)))
+        (else #f)))
+
+;; Consolidate a list of (weight . row) pairs into canonical entry form:
+;; a `(weight row)` list ordered by canonical row string, with equal rows
+;; summed and zero-weight rows removed.
+(define (dbsp-normalize-pairs pairs)
+  (let* ((tagged (map (lambda (wr) (cons (dbsp-canon (cdr wr)) wr)) pairs))
+         (sorted (sort tagged (lambda (a b) (string<? (car a) (car b))))))
+    (dbsp-merge-sorted sorted)))
+
+;; Merge a canonically sorted list of (canon weight . row) triples, summing
+;; adjacent equal rows and dropping zeros. Returns `(weight row)` entries.
+(define (dbsp-merge-sorted sorted)
+  (if (null? sorted)
+      '()
+      (dbsp-merge-loop (car sorted) (cdr sorted) '())))
+
+(define (dbsp-merge-loop cur rest acc)
+  (let ((c-canon (car cur))       ; cur = (canon weight . row)
+        (c-w (cadr cur))
+        (c-row (cddr cur)))
+    (if (null? rest)
+        (reverse (if (= c-w 0) acc (cons (list c-w c-row) acc)))
+        (let ((nxt (car rest)))
+          (if (string=? c-canon (car nxt))
+              (dbsp-merge-loop (cons c-canon (cons (+ c-w (cadr nxt)) c-row))
+                               (cdr rest) acc)
+              (dbsp-merge-loop nxt (cdr rest)
+                               (if (= c-w 0) acc (cons (list c-w c-row) acc))))))))
+
+;; Wrap an already-canonical entries list as a Z-set value.
+(define (dbsp-wrap entries) (vector dbsp-zset-tag entries))
+
+;; Strip an entries list to (weight . row) pairs for renormalization.
+(define (dbsp-entries->pairs entries)
+  (map (lambda (e) (cons (car e) (cadr e))) entries))
+
+;; ============================================================================
+;; Z-set commutative group
+;; ============================================================================
+
+;; Additive identity (the empty Z-set).
+(define (zset-empty) (dbsp-wrap '()))
+
+;; Recognise a Z-set value.
+(define (zset? x)
+  (and (vector? x)
+       (= (vector-length x) 2)
+       (eq? (vector-ref x 0) dbsp-zset-tag)))
+
+;; Canonically ordered `(weight row)` entries (nonzero weights only).
+(define (zset-entries zs) (vector-ref zs 1))
+
+;; One weighted row; weight 0 yields the identity.
+(define (zset-singleton row weight)
+  (if (not (integer? weight))
+      (error "zset-singleton: weight must be an exact integer" weight))
+  (if (= weight 0)
+      (zset-empty)
+      (dbsp-wrap (list (list weight row)))))
+
+;; Build from a list of `(weight row)`: validate exact integer weights,
+;; combine duplicates, remove zeros, and canonicalize.
+(define (zset-from-weighted entries)
+  (dbsp-wrap
+   (dbsp-normalize-pairs
+    (map (lambda (e)
+           (let ((w (car e)) (row (cadr e)))
+             (if (not (integer? w))
+                 (error "zset-from-weighted: weight must be an exact integer" w))
+             (cons w row)))
+         entries))))
+
+;; Consolidated weight of a row, defaulting to 0.
+(define (zset-weight zs row)
+  (let loop ((es (zset-entries zs)))
+    (cond ((null? es) 0)
+          ((equal? (cadr (car es)) row) (car (car es)))
+          (else (loop (cdr es))))))
+
+;; a + b (commutative group addition).
+(define (zset-add a b)
+  (dbsp-wrap
+   (dbsp-normalize-pairs
+    (append (dbsp-entries->pairs (zset-entries a))
+            (dbsp-entries->pairs (zset-entries b))))))
+
+;; -a (group negation): negate every weight. Order and nonzero-ness preserved.
+(define (zset-negate a)
+  (dbsp-wrap
+   (map (lambda (e) (list (- (car e)) (cadr e))) (zset-entries a))))
+
+;; a - b.
+(define (zset-sub a b) (zset-add a (zset-negate b)))
+
+;; Multiply every weight by exact integer k.
+(define (zset-scale k zs)
+  (if (not (integer? k))
+      (error "zset-scale: k must be an exact integer" k))
+  (if (= k 0)
+      (zset-empty)
+      (dbsp-wrap
+       (map (lambda (e) (list (* k (car e)) (cadr e))) (zset-entries zs)))))
+
+;; Canonical normal form. Z-sets from this module are always consolidated;
+;; this defensively renormalizes an entries list built by other means.
+(define (zset-consolidate zs)
+  (dbsp-wrap (dbsp-normalize-pairs (dbsp-entries->pairs (zset-entries zs)))))
+
+;; Algebraic predicates.
+(define (zset-empty? zs) (null? (zset-entries zs)))
+(define (zset-positive? zs)
+  (dbsp-all? (lambda (e) (> (car e) 0)) (zset-entries zs)))
+
+;; Group equality: canonical entries coincide.
+(define (zset=? a b) (equal? (zset-entries a) (zset-entries b)))
+
+;; Rows carrying nonzero weight, in canonical order.
+(define (zset-rows zs) (map cadr (zset-entries zs)))
+
+;; Number of distinct rows with nonzero weight (support size).
+(define (zset-size zs) (length (zset-entries zs)))
+
+;; ============================================================================
+;; Z-set relational operators
+;; ============================================================================
+;;
+;; map, filter, project, and union are LINEAR over Z-sets, so their own
+;; incremental form is the same operator applied to a delta (see below).
+;; join is BILINEAR and obeys the discrete product rule.
+
+;; Weight-preserving row map, consolidating collisions.
+(define (zset-map f zs)
+  (dbsp-wrap
+   (dbsp-normalize-pairs
+    (map (lambda (e) (cons (car e) (f (cadr e)))) (zset-entries zs)))))
+
+;; Projection is map plus consolidation.
+(define (zset-project f zs) (zset-map f zs))
+
+;; Weight-preserving selection. Preserves canonical order and nonzero-ness.
+(define (zset-filter pred zs)
+  (dbsp-wrap (filter (lambda (e) (pred (cadr e))) (zset-entries zs))))
+
+;; Z-set union is addition (a linear operator). Variadic; the empty union is
+;; the identity Z-set.
+(define (zset-union . zsets)
+  (fold-left zset-add (zset-empty) zsets))
+
+;; Indexed equijoin: for every pair of rows whose keys are `equal?`, emit
+;; `(emit a-row b-row)` with the product of the two weights; consolidate.
+(define (zset-join a b a-key b-key emit)
+  (dbsp-wrap
+   (dbsp-normalize-pairs
+    (dbsp-join-pairs (zset-entries a) (zset-entries b) a-key b-key emit))))
+
+(define (dbsp-join-pairs ea eb a-key b-key emit)
+  (let outer ((as ea) (acc '()))
+    (if (null? as)
+        acc
+        (let ((wa (car (car as))) (ra (cadr (car as))))
+          (let inner ((bs eb) (acc2 acc))
+            (if (null? bs)
+                (outer (cdr as) acc2)
+                (let ((wb (car (car bs))) (rb (cadr (car bs))))
+                  (if (equal? (a-key ra) (b-key rb))
+                      (inner (cdr bs)
+                             (cons (cons (* wa wb) (emit ra rb)) acc2))
+                      (inner (cdr bs) acc2)))))))))
+
+;; Set semantics from weights: each row with weight > 0 becomes weight 1;
+;; rows with weight <= 0 are dropped. This is the BATCH distinct; the
+;; boundary-maintaining incremental form is `incremental-distinct`.
+(define (zset-distinct zs)
+  (dbsp-wrap
+   (map (lambda (e) (list 1 (cadr e)))
+        (filter (lambda (e) (> (car e) 0)) (zset-entries zs)))))
+
+;; count(zs) = sum of weights (a group homomorphism into Z).
+(define (zset-count zs)
+  (fold-left (lambda (a e) (+ a (car e))) 0 (zset-entries zs)))
+
+;; sum(zs) = sum of value*weight over numeric rows.
+(define (zset-sum zs)
+  (fold-left (lambda (a e) (+ a (* (car e) (cadr e)))) 0 (zset-entries zs)))
+
+;; ============================================================================
+;; Streams and DBSP stream operators
+;; ============================================================================
+;;
+;; A stream is a finite list of Z-sets indexed by tick t. The three DBSP
+;; stream operators are:
+;;
+;;   z^-1 (delay):   (z^-1 s)[0] = 0,  (z^-1 s)[t] = s[t-1]  for t > 0
+;;   D (differentiate): D(s) = s - z^-1(s)      snapshots -> changes
+;;   I (integrate):     I(s)[t] = sum(i=0..t) s[i]   changes -> snapshots
+;;
+;; D and I are mutual inverses:  D . I = identity  and  I . D = identity.
+
+;; A zero stream of length n (n copies of the empty Z-set).
+(define (stream-zero n)
+  (if (<= n 0) '() (cons (zset-empty) (stream-zero (- n 1)))))
+
+;; Drop the final element of a non-empty list.
+(define (dbsp-drop-last s)
+  (if (null? (cdr s)) '() (cons (car s) (dbsp-drop-last (cdr s)))))
+
+;; z^-1: one-tick delay initialized to the group zero. Length preserved.
+(define (stream-delay s)
+  (if (null? s) '() (cons (zset-empty) (dbsp-drop-last s))))
+
+;; Alias exposing the operator under its DBSP name.
+(define (dbsp-delay s) (stream-delay s))
+
+;; D(s) = s - z^-1(s), pointwise.
+(define (stream-D s) (map zset-sub s (stream-delay s)))
+
+;; I(s): running prefix sum of the stream.
+(define (stream-I s)
+  (let loop ((xs s) (acc (zset-empty)) (out '()))
+    (if (null? xs)
+        (reverse out)
+        (let ((new (zset-add acc (car xs))))
+          (loop (cdr xs) new (cons new out))))))
+
+;; Pointwise stream addition (streams must have equal length).
+(define (stream-add sa sb) (map zset-add sa sb))
+
+;; Pointwise stream negation.
+(define (stream-negate s) (map zset-negate s))
+
+;; Lift a batch query Q : Z[A] -> Z[B] to a stream operator Q^, applied at
+;; every tick independently: (lift Q s)[t] = Q(s[t]).
+(define (stream-lift q s) (map q s))
+
+;; Compose two stream/delta transformers: (dbsp-compose f g) = f . g.
+;; This realizes the DBSP chain rule (Q1 . Q2)^D = Q1^D . Q2^D when f and g
+;; are the incremental forms of Q1 and Q2.
+(define (dbsp-compose f g) (lambda (x) (f (g x))))
+
+;; ============================================================================
+;; Incremental operators (delta stream -> delta stream)
+;; ============================================================================
+
+;; The reference incrementalizer: for ANY batch query Q : Z[A] -> Z[B],
+;;   Q^D = D . lift(Q) . I
+;; maps an input DELTA stream to the corresponding output DELTA stream. This
+;; is the executable specification every specialized operator below is proven
+;; equal to (batch equivalence, ADR 0009 §9).
+(define (dbsp-incrementalize q)
+  (lambda (delta-stream)
+    (stream-D (stream-lift q (stream-I delta-stream)))))
+
+;; Linear operators are their own incremental form: apply directly to the
+;; delta at each tick. Each returns a delta-stream -> delta-stream transformer.
+(define (incremental-map f)
+  (lambda (ds) (map (lambda (d) (zset-map f d)) ds)))
+
+(define (incremental-filter pred)
+  (lambda (ds) (map (lambda (d) (zset-filter pred d)) ds)))
+
+(define (incremental-project f)
+  (lambda (ds) (map (lambda (d) (zset-project f d)) ds)))
+
+;; Union of two delta streams is pointwise Z-set addition.
+(define (incremental-union dsa dsb) (map zset-add dsa dsb))
+
+;; Incremental bilinear join via the discrete product rule. Given the two
+;; input delta streams, at each tick t with prior snapshots A0, B0 and current
+;; changes dA, dB:
+;;
+;;   d(A join B) = (dA join B0) + (A0 join dB) + (dA join dB)
+;;
+;; The cross term (dA join dB) is essential: it makes a same-tick insert/delete
+;; interleaving exact and prevents spurious rows. Returns the output delta
+;; stream; integrating it equals the batch join of the integrated inputs.
+(define (incremental-join dsa dsb a-key b-key emit)
+  (let loop ((as dsa) (bs dsb)
+             (a0 (zset-empty)) (b0 (zset-empty)) (out '()))
+    (if (null? as)
+        (reverse out)
+        (let* ((da (car as)) (db (car bs))
+               (t1 (zset-join da b0 a-key b-key emit))    ; dA join B0
+               (t2 (zset-join a0 db a-key b-key emit))    ; A0 join dB
+               (t3 (zset-join da db a-key b-key emit))    ; dA join dB
+               (delta (zset-add (zset-add t1 t2) t3)))
+          (loop (cdr as) (cdr bs)
+                (zset-add a0 da) (zset-add b0 db)
+                (cons delta out))))))
+
+;; Incremental distinct. Maintains one exact count per row and emits only
+;; boundary changes: +1 on a 0->positive transition and -1 on a
+;; positive->0 transition. It never rescans the accumulated relation.
+;; Input is a delta stream over the underlying multiset counts; output is the
+;; delta stream of the set-semantics view.
+(define (incremental-distinct ds)
+  (let loop ((xs ds) (counts '()) (out '()))
+    (if (null? xs)
+        (reverse out)
+        (let ((res (dbsp-distinct-step counts (zset-entries (car xs)))))
+          (loop (cdr xs) (car res) (cons (cdr res) out))))))
+
+;; Fetch a row's running count (default 0) from an alist keyed by canonical
+;; row string.
+(define (dbsp-count-get counts key)
+  (let ((cell (assoc key counts)))
+    (if cell (cdr cell) 0)))
+
+;; Functionally set a row's count in the alist.
+(define (dbsp-count-set counts key val)
+  (cond ((null? counts) (list (cons key val)))
+        ((string=? (car (car counts)) key)
+         (cons (cons key val) (cdr counts)))
+        (else (cons (car counts) (dbsp-count-set (cdr counts) key val)))))
+
+;; Apply one delta's entries to the count state, producing
+;; (new-counts . boundary-delta-zset).
+(define (dbsp-distinct-step counts entries)
+  (let loop ((es entries) (cs counts) (out-pairs '()))
+    (if (null? es)
+        (cons cs (dbsp-wrap (dbsp-normalize-pairs out-pairs)))
+        (let* ((w (car (car es)))
+               (row (cadr (car es)))
+               (key (dbsp-canon row))
+               (old (dbsp-count-get cs key))
+               (new (+ old w))
+               (cs* (dbsp-count-set cs key new))
+               (out* (cond ((and (<= old 0) (> new 0)) (cons (cons 1 row) out-pairs))
+                           ((and (> old 0) (<= new 0)) (cons (cons -1 row) out-pairs))
+                           (else out-pairs))))
+          (loop (cdr es) cs* out*)))))
