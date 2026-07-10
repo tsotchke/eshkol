@@ -116,6 +116,30 @@ oracles:
         label: 'Generative adversarial AD oracle: a seeded, growing family of random differentiable programs (scalar + field + tensor/ML-op compositions; gradient/laplacian/hessian; scalar/vector/tensor-literal points; literal/first-class/wrapper loss forms) matches central finite differences — continuous silent-wrong-gradient tripwire, no zero-gradient-where-FD-is-nonzero'
         action: ./scripts/run_icc_smoke.sh
 
+      # Fix-campaign regression gates (2026-07-10): each guards a fixed
+      # silent-wrong-answer or scale bug so it cannot silently reopen.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["numeric_exactness_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Numeric exactness: gcd has a bignum path, bignum quotient/remainder satisfy a=q*b+r, and eqv?/equal? are value-correct on rationals/complex (ESH-0124/0125/0114)'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["closure_set_tco_loop_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Closure mutation: a closure made in a named-let/TCO loop that set!s a captured global keeps the mutation, not a snapshot (ESH-0094)'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["stdlib_sort_filter_scale_oracle"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'Stdlib scale: sort (2M) and filter (1M) are tail-recursive and match a reference sort/filter (ESH-0098/0108)'
+        action: ./scripts/run_icc_smoke.sh
+
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
   # When this oracle goes green, the agent's three blockers (HTTP,

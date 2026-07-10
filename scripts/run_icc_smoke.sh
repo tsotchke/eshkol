@@ -440,6 +440,14 @@ probe generative_differential_oracle 'generated R7RS programs agree across chibi
     'cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
         --baseline tests/generative-diff/baseline.txt --quiet'
 
+# -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
+probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/numeric/bignum_rational_exactness_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+probe closure_set_tco_loop_oracle 'closure created in a named-let/TCO loop that set!s a captured global keeps the mutation (ESH-0094)' \
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/closures/closure_set_in_tco_loop_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail-recursive and correct vs reference (ESH-0098/0108)' \
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
