@@ -146,6 +146,7 @@ static int is_truthy(Value v) {
 static double as_number(Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
+    if (v.type == VAL_CHAR) return (double)v.as.i; /* codepoint (char->integer, char comparisons) */
     return 0.0;
 }
 
@@ -515,6 +516,7 @@ static inline int is_valid_heap_ptr(VM* vm, int32_t ptr) {
 static double as_number_vm(VM* vm, Value v) {
     if (v.type == VAL_INT) return (double)v.as.i;
     if (v.type == VAL_FLOAT) return v.as.f;
+    if (v.type == VAL_CHAR) return (double)v.as.i; /* codepoint */
     if (v.type == VAL_RATIONAL && vm) {
         VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (r && r->denom != 0) return (double)r->num / (double)r->denom;
@@ -614,6 +616,15 @@ static void print_value(VM* vm, Value v) {
         case VAL_NIL:   printf("()"); break;
         case VAL_INT:   printf("%lld", (long long)v.as.i); break;
         case VAL_FLOAT: printf("%.6g", v.as.f); break;
+        case VAL_CHAR: {
+            /* `display` renders a character as its glyph (UTF-8). `write`
+             * would use #\ syntax, but this VM shares one printer for both
+             * (the write/display distinction is filed separately). */
+            char buf[4];
+            int n = vm_utf8_encode((int)v.as.i, buf);
+            if (n > 0) printf("%.*s", n, buf);
+            break;
+        }
         case VAL_BOOL:  printf("%s", v.as.b ? "#t" : "#f"); break;
         case VAL_PAIR: {
             printf("(");
@@ -670,7 +681,16 @@ static void print_value(VM* vm, Value v) {
             } else printf("<rational>");
             break;
         }
-        case VAL_BIGNUM: printf("<bignum>"); break;
+        case VAL_BIGNUM: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmBignum* b = (VmBignum*)obj->opaque.ptr;
+                char* s = bignum_to_string(&vm->heap.regions, b);
+                if (s) printf("%s", s);
+                else printf("<bignum>");
+            } else printf("<bignum>");
+            break;
+        }
         case VAL_DUAL: printf("<dual>"); break;
         case VAL_TENSOR: {
             HeapObject* obj = vm->heap.objects[v.as.ptr];

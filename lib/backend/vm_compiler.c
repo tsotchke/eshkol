@@ -1,6 +1,30 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+/**
+ * @brief Compile node->children[first..last] as a sequence of operands left
+ *        on the stack, registering each pushed result as an anonymous local
+ *        so that c->n_locals keeps tracking the true compile-time stack depth
+ *        above fp.
+ *
+ * Binding forms (let, let-star, letrec) allocate their local stack slots
+ * from c->n_locals. Inline opcode forms (arithmetic, comparisons, vector-ref)
+ * push operand values onto the stack without registering them; if a later
+ * operand is itself a binding form it would then allocate slots that alias an
+ * earlier operand still sitting on the stack, silently corrupting the result
+ * (the "sibling-let corruption" defect: (+ (let ...) (let ...)) -> wrong sum).
+ * The generic function-call path already tracks operands this way via
+ * __call_arg__ locals; this helper applies the same invariant to the inline
+ * opcode forms. The caller emits the combining opcode (which consumes the
+ * operands) and then restores c->n_locals to its saved entry value.
+ */
+static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
+    for (int i = first; i <= last; i++) {
+        compile_expr(c, node->children[i], 0);
+        add_local(c, "__operand__");
+    }
+}
+
 /** @brief Emit bytecode that constructs a quoted-symbol value: packs
  *         @p symbol's bytes into 8-byte constant chunks and passes them to
  *         native call 100 (symbol construction). Shared by compile_quote()
@@ -1610,7 +1634,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     if (node->type == N_NUMBER) {
         double v = node->numval;
-        if (v == (int64_t)v && fabs(v) < 1e15)
+        if (node->is_char) {
+            /* Character literal (#\x): push the codepoint, then tag it as a
+             * VAL_CHAR at runtime so display/char? distinguish it from an int
+             * (native 228). Using an int constant + native call keeps the ESKB
+             * constant pool format unchanged. */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
+            chunk_emit(c, OP_NATIVE_CALL, 228);
+        } else if (!node->is_inexact && v == (int64_t)v && fabs(v) < 1e15)
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
         else
             chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(v)));
@@ -1827,10 +1858,13 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                     result = 1;
                     for (int i = 1; i < node->n_children; i++) result *= node->children[i]->numval;
                     folded = 1;
-                } else if (strcmp(head->symbol, "/") == 0 && node->n_children == 3 && node->children[2]->numval != 0) {
-                    result = node->children[1]->numval / node->children[2]->numval;
-                    folded = 1;
                 }
+                /* NOTE: `/` is deliberately NOT folded here. Folding it at
+                 * compile time collapsed exact/exact division to an inexact
+                 * float ((/ 1 3) -> 0.333…), and there is no exactness flag on
+                 * N_NUMBER to tell 6 from 6.0. Leaving division to the runtime
+                 * lets it produce an exact rational (or int), or a float, based
+                 * on the actual operand types. */
                 if (folded) {
                     int ci = chunk_add_const(c, result == (int64_t)result && fabs(result) < 1e15
                         ? INT_VAL((int64_t)result) : FLOAT_VAL(result));
@@ -1841,35 +1875,64 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
     }
 
-    /* (+ a b ...), (- a b), (* a b ...), (/ a b) */
+    /* (+ a b ...), (- a b), (* a b ...), (/ a b)
+     *
+     * The reduce loops keep exactly one accumulator value on the stack while
+     * the next operand is compiled. That accumulator must be tracked as an
+     * anonymous local so a binding form in a later operand doesn't alias its
+     * slot (sibling-let corruption); see compile_operands_tracked(). */
     if (is_sym(head, "+")) {
+        int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        for (int i = 2; i < node->n_children; i++) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_ADD, 0); }
+        for (int i = 2; i < node->n_children; i++) {
+            add_local(c, "__operand__");                    /* accumulator on stack */
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_ADD, 0);
+            c->n_locals = saved;                            /* ADD collapsed acc+operand → 1 */
+        }
         return;
     }
     if (is_sym(head, "-")) {
         if (node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NEG, 0); return; }
+        int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        for (int i = 2; i < node->n_children; i++) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_SUB, 0); }
+        for (int i = 2; i < node->n_children; i++) {
+            add_local(c, "__operand__");
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_SUB, 0);
+            c->n_locals = saved;
+        }
         return;
     }
     if (is_sym(head, "*")) {
+        int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        for (int i = 2; i < node->n_children; i++) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_MUL, 0); }
+        for (int i = 2; i < node->n_children; i++) {
+            add_local(c, "__operand__");
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_MUL, 0);
+            c->n_locals = saved;
+        }
         return;
     }
     if (is_sym(head, "/")) {
+        int saved = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        for (int i = 2; i < node->n_children; i++) { compile_expr(c, node->children[i], 0); chunk_emit(c, OP_DIV, 0); }
+        for (int i = 2; i < node->n_children; i++) {
+            add_local(c, "__operand__");
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_DIV, 0);
+            c->n_locals = saved;
+        }
         return;
     }
 
     /* Comparisons — push proper booleans */
-    if (is_sym(head, "=") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_EQ, 0); return; }
-    if (is_sym(head, "<") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_LT, 0); return; }
-    if (is_sym(head, ">") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_GT, 0); return; }
-    if (is_sym(head, "<=") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_LE, 0); return; }
-    if (is_sym(head, ">=") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_GE, 0); return; }
+    if (is_sym(head, "=") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_EQ, 0); return; }
+    if (is_sym(head, "<") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_LT, 0); return; }
+    if (is_sym(head, ">") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_GT, 0); return; }
+    if (is_sym(head, "<=") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_LE, 0); return; }
+    if (is_sym(head, ">=") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_GE, 0); return; }
     if (is_sym(head, "not") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NOT, 0); return; }
     if (is_sym(head, "zero?") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0))); chunk_emit(c, OP_EQ, 0); return; }
     /* Core type predicates — always available as opcodes (not closures) */
@@ -1899,7 +1962,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * semantics (sign of dividend). It resolves through the native table
      * (id 37) like `quotient` (id 38), which computes ia%ib correctly. */
     if (is_sym(head, "abs") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_ABS, 0); return; }
-    if (is_sym(head, "modulo") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_MOD, 0); return; }
+    if (is_sym(head, "modulo") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_MOD, 0); return; }
 
     /* All other builtins (sin, cos, sqrt, even?, odd?, floor, ceiling, round, expt, min, max,
      * positive?, negative?, number->string, string-append, string=?, newline, length, etc.)
@@ -1936,20 +1999,21 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
     if (is_sym(head, "make-vector") && node->n_children >= 2) {
         /* (make-vector n) or (make-vector n fill) — emit via NATIVE or direct */
+        int s = c->n_locals;
         compile_expr(c, node->children[1], 0);
-        if (node->n_children >= 3) compile_expr(c, node->children[2], 0);
+        if (node->n_children >= 3) { add_local(c, "__operand__"); compile_expr(c, node->children[2], 0); c->n_locals = s; }
         else chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
         /* make-vector: n and fill are on stack, dispatch to runtime native */
         chunk_emit(c, OP_NATIVE_CALL, 218);
         return;
     }
-    if (is_sym(head, "vector-ref") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_VEC_REF, 0); return; }
-    if (is_sym(head, "vector-set!") && node->n_children == 4) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); compile_expr(c, node->children[3], 0); chunk_emit(c, OP_VEC_SET, 0); return; }
+    if (is_sym(head, "vector-ref") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_VEC_REF, 0); return; }
+    if (is_sym(head, "vector-set!") && node->n_children == 4) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 3); c->n_locals = s; chunk_emit(c, OP_VEC_SET, 0); return; }
     if (is_sym(head, "vector-length") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_VEC_LEN, 0); return; }
 
     /* Mutation */
-    if (is_sym(head, "set-car!") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_SET_CAR, 0); return; }
-    if (is_sym(head, "set-cdr!") && node->n_children == 3) { compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0); chunk_emit(c, OP_SET_CDR, 0); return; }
+    if (is_sym(head, "set-car!") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_SET_CAR, 0); return; }
+    if (is_sym(head, "set-cdr!") && node->n_children == 3) { int s = c->n_locals; compile_operands_tracked(c, node, 1, 2); c->n_locals = s; chunk_emit(c, OP_SET_CDR, 0); return; }
 
     /* String operations via opcodes (these ARE opcodes, not native calls) */
     if (is_sym(head, "string-length") && node->n_children == 2) {
@@ -1958,8 +2022,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
     if (is_sym(head, "string-ref") && node->n_children == 3) {
-        compile_expr(c, node->children[1], 0);
-        compile_expr(c, node->children[2], 0);
+        int s = c->n_locals;
+        compile_operands_tracked(c, node, 1, 2);
+        c->n_locals = s;
         chunk_emit(c, OP_STR_REF, 0);
         return;
     }
@@ -2229,8 +2294,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* Pair operations */
     if (is_sym(head, "cons") && node->n_children == 3) {
+        int s = c->n_locals;
         compile_expr(c, node->children[2], 0); /* cdr first (SOS) */
+        add_local(c, "__operand__");
         compile_expr(c, node->children[1], 0); /* car second (TOS) */
+        c->n_locals = s;
         chunk_emit(c, OP_CONS, 0); return;
     }
     if (is_sym(head, "car") && node->n_children == 2) { compile_expr(c, node->children[1], 0); chunk_emit(c, OP_CAR, 0); return; }
@@ -2600,7 +2668,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
 
     if (is_sym(head, "vref") && node->n_children == 3) {
-        compile_expr(c, node->children[1], 0); compile_expr(c, node->children[2], 0);
+        int s = c->n_locals;
+        compile_operands_tracked(c, node, 1, 2);
+        c->n_locals = s;
         chunk_emit(c, OP_VEC_REF, 0); return;
     }
 

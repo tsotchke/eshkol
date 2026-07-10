@@ -254,7 +254,7 @@ static const BuiltinDef BUILTINS[] = {
     /* List operations — IDs 135-141 */
     {"append", 135, 2}, {"reverse", 136, 1},
     {"member", 137, 2}, {"assoc", 138, 2}, {"memq", 139, 2},
-    {"list->vector", 139, 1}, {"vector->list", 140, 1}, {"iota", 141, 1},
+    {"list->vector", 227, 1}, {"vector->list", 140, 1}, {"iota", 141, 1},
     /* Arithmetic as first-class (2-arg) — IDs 142-145 */
     {"add2", 142, 2}, {"sub2", 143, 2}, {"mul2", 144, 2}, {"div2", 145, 2},
     /* Comparison operators as first-class — IDs 146-150 */
