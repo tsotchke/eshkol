@@ -1,0 +1,22 @@
+;; PGO training corpus — tensor / linear-algebra hot paths.
+;;
+;; Exercises tensor construction, reshape, element-wise ops, matmul and
+;; reductions — the homogeneous-double tensor codegen + BLAS/SIMD dispatch.
+
+(define A (reshape #(1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define B (reshape #(7.0 8.0 9.0 10.0 11.0 12.0) 3 2))
+
+(define (run)
+  (let loop ((k 0) (acc 0.0))
+    (if (= k 250)
+        acc
+        (let* ((C (tensor-matmul A B))
+               (D (tensor-add C C))
+               (s (tensor-sum D)))
+          (loop (+ k 1) (+ acc s))))))
+
+(display "tensor.matmul-sum=") (display (tensor-sum (tensor-matmul A B))) (newline)
+(display "tensor.mean=")       (display (tensor-mean A))                  (newline)
+(display "tensor.max=")        (display (tensor-max A))                   (newline)
+(display "tensor.add-sum=")    (display (tensor-sum (tensor-add A A)))    (newline)
+(display "tensor.run=")        (display (run))                            (newline)
