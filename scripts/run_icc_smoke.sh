@@ -447,6 +447,8 @@ probe closure_set_tco_loop_oracle 'closure created in a named-let/TCO loop that 
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/closures/closure_set_in_tco_loop_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail-recursive and correct vs reference (ESH-0098/0108)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+probe ad_forward_over_reverse_oracle 'jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)' \
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/ad/forward_over_reverse_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 
 echo
 echo "Trace written: $TRACE_FILE"
