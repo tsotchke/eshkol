@@ -5517,13 +5517,26 @@ private:
     }
     
     Value* getArenaPtr() {
-        // GLOBAL ARENA FIX: Load arena pointer from global variable
-        // This allows all functions and scopes to share the same arena
+        // OALR Phase A (ADR-0001): route the current-allocation-arena read through
+        // the eshkol_current_arena() accessor instead of loading the shared
+        // __global_arena global directly. This makes allocation routing a
+        // thread-local memory-context property: `with-region` redirects the
+        // calling thread's allocation domain rather than writing a process-shared
+        // slot. The accessor still defers to __global_arena while a work-stealing
+        // construct is active, so this is in exact agreement with the #217
+        // parallel-scope guard and with any allocation site still reading
+        // __global_arena directly (both resolve to the same arena in every
+        // context). The global_arena GlobalVariable is retained as the base /
+        // immortal current-arena slot (still written at program/library init and
+        // still read by not-yet-migrated backend modules).
         if (!global_arena) {
             eshkol_error("Global arena not initialized!");
             return nullptr;
         }
-        return builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        FunctionCallee current_arena_fn = module->getOrInsertFunction(
+            "eshkol_current_arena",
+            FunctionType::get(PointerType::getUnqual(*context), {}, false));
+        return builder->CreateCall(current_arena_fn, {}, "cur_arena");
     }
     
     // Production-grade arena scope tracking helpers
