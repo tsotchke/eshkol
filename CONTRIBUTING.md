@@ -304,7 +304,7 @@ eshkol/
 
 v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve (arbitrary-order
 AD, full R7RS conformance, closure/TCO/memory hardening) are **complete**, and
-v1.3.1 has landed further robustness for long-running, resident programs plus
+v1.3.3 has landed further robustness for long-running, resident programs plus
 comprehensive C-API documentation. We welcome contributions for upcoming releases:
 
 ### Immediate Priorities (v1.4-connection - July 2026)

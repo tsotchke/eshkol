@@ -1,3 +1,53 @@
+# Eshkol v1.3.3-evolve — Release Notes
+
+**Release Date**: July 10, 2026
+
+Eshkol v1.3.3-evolve is an evolve point release over v1.3.2-evolve. It
+corrects an overstated automatic-differentiation claim from the v1.3.2
+CHANGELOG, closes out the region-escape evacuator series for the last
+remaining heap subtype, and documents a subprocess race fix that had already
+shipped. Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this
+page is the user-facing summary.
+
+**Release gates**: builds on the v1.3.2-evolve gates; the
+`region_evac_subtype_coverage` gate now also exercises `PROMISE`
+escape-then-force, and the `input2` gradient gate (24/24, JIT+AOT) now
+verifies exact gradients rather than passing on unchanged zero-gradient
+behavior.
+
+## Highlights
+
+### Automatic differentiation — correction
+
+- **Exact tensor AD gradients for first-class losses and vector/learnable
+  gamma.** v1.3.2's CHANGELOG entry for #212 claimed the `input2` gradient
+  path was complete for `conv2d`/`batchnorm`/`layernorm`/`attention`; an
+  adversarial audit found that change was a no-op (test and roadmap updates
+  only, no gradient code). This release ships the real fix: first-class
+  losses (no compile-time `Function*`) no longer silently lose the tangent
+  through the forward-mode-dual closure path; batch-norm/layer-norm gamma/beta
+  are now differentiated per-feature rather than as one scalar; and any
+  remaining unsupported tensor-op backward path raises an explicit error
+  instead of returning a silent zero gradient. (#229)
+
+### Resident-memory correctness
+
+- **Region escape evacuator now covers `PROMISE`.** A `delay`/`make-promise`
+  created inside `with-region` that escaped the region no longer dangles
+  after the region is popped. This completes the ESH-0214 region-evacuator
+  series. (#230, ESH-0214e)
+
+### Documentation
+
+- **Subprocess `process-wait` kqueue race — documented.** The fix for a
+  lost-wakeup race in `process-wait` on macOS (a child exiting before its
+  `kevent` exit filter was registered could make `process-wait` block for the
+  full timeout and misreport a dead process as still running) shipped in
+  v1.3.2-evolve but was omitted from that release's notes. It is recorded
+  here for completeness; no v1.3.3 code change was required.
+
+---
+
 # Eshkol v1.3.2-evolve — Release Notes
 
 **Release Date**: July 9, 2026
