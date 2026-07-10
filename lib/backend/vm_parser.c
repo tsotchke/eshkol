@@ -16,6 +16,8 @@ typedef struct Node {
     char symbol[128];
     struct Node** children;
     int n_children;
+    int is_char;      /* N_NUMBER node that originated from a #\ character literal */
+    int is_inexact;   /* N_NUMBER literal written in inexact (float) syntax: 2.0, 1e3 */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
@@ -442,6 +444,7 @@ static Node* parse_sexp(void) {
             }
             Node* n = make_node(N_NUMBER); if (!n) return NULL;
             n->numval = ch;
+            n->is_char = 1;   /* preserve char-ness through to codegen */
             return n;
         }
         /* Vector literal: #(elements...) */
@@ -466,6 +469,7 @@ static Node* parse_sexp(void) {
         src_ptr += 6; /* skip +nan.0 / +inf.0 / -inf.0 */
         Node* n = make_node(N_NUMBER); if (!n) return NULL;
         n->numval = val;
+        n->is_inexact = 1;
         return n;
     }
     /* Number (including rational literals like 1/3) */
@@ -506,7 +510,13 @@ static Node* parse_sexp(void) {
             return div_node;
         }
         buf[i] = 0;
-        Node* n = make_node(N_NUMBER); if (!n) return NULL; n->numval = atof(buf); return n;
+        Node* n = make_node(N_NUMBER); if (!n) return NULL; n->numval = atof(buf);
+        /* Inexact syntax (a decimal point or exponent) must stay inexact even
+         * when the value is integral (2.0, 1e3), so downstream codegen emits a
+         * float rather than an exact int. Without this the VM collapsed 2.0 to
+         * exact 2, and (/ 7 2.0) then produced the rational 7/2 instead of 3.5. */
+        for (int k = 0; buf[k]; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { n->is_inexact = 1; break; }
+        return n;
     }
     /* Symbol */
     char buf[128]; int i = 0;

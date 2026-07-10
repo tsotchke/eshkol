@@ -18,7 +18,7 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 *	vm-supported	
 +	vm-supported	
 -	vm-supported	
-/	gap	exact rational division collapses to float (found/exact_division_lost.esk)
+/	vm-supported	exact/exact division now yields an exact rational (div2/OP_DIV dispatch to rational div; `/` no longer constant-folded to a float)
 /rational	gap	no VM name binding
 <	vm-supported	
 <=	vm-supported	
@@ -224,7 +224,7 @@ emergency-exit	gap	no VM name binding
 eof-object	gap	port/file IO surface missing in VM
 eof-object?	vm-supported	
 eq?	gap	symbol identity returns #f (found/equal_eq_structural_false.esk)
-equal?	gap	structural equality returns #f on equal lists (found/equal_eq_structural_false.esk)
+equal?	vm-supported	deep structural equality over pairs/vectors/tensors/strings/numbers (vm_deep_equal)
 eqv?	gap	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
 error	vm-supported	
 eval	gap	eval/environment reflection has no VM binding
@@ -242,7 +242,7 @@ exp	vm-supported
 exp2	gap	no VM name binding
 expected-free-energy	vm-supported	
 exponential-decay-lr	gap	ml faculty has no VM fid coverage
-expt	gap	integer expt overflows to float not bignum (found/expt_bignum_to_float.esk)
+expt	vm-supported	exact integer^nonneg-integer stays exact (int, promoting to bignum on overflow)
 eye	vm-supported	
 fabs	gap	no VM name binding
 fact?	vm-supported	
@@ -363,7 +363,7 @@ inject-left	gap	no VM name binding
 inject-right	gap	no VM name binding
 input-port-open?	gap	port/file IO surface missing in VM
 input-port?	vm-supported	
-integer->char	gap	no char type — prints integer (found/char_type_collapsed.esk)
+integer->char	vm-supported	VAL_CHAR immediate type; #\ literals and char ops carry char-ness so display renders the glyph
 integer?	vm-supported	
 interaction-environment	gap	eval/environment reflection has no VM binding
 jacobian	gap	silently wrong values (found/ad_gradient_wrong.esk)
@@ -398,7 +398,7 @@ linspace	vm-supported
 list	vm-supported	
 list*	gap	no VM name binding
 list->string	vm-supported	
-list->vector	gap	BUILTINS maps it to fid 139 which collides with memq (found/vector_constructor_empty.esk)
+list->vector	vm-supported	dedicated native fid 227 (no longer aliased to memq/139)
 list-copy	gap	no VM name binding
 list-set!	gap	no VM name binding
 list?	vm-supported	

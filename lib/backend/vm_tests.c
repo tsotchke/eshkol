@@ -809,7 +809,9 @@ static int run_source_tests(void) {
     source_test("sort-descending","(display (sort > (list 1 5 3 2 4)))");
 
     /* String operations */
-    source_test_expect("string-ref",     "(display (string-ref \"hello\" 1))",    "101");
+    /* string-ref returns a character (R7RS); display renders its glyph, not
+     * the integer code point (previously mis-tested as "101"). */
+    source_test_expect("string-ref",     "(display (string-ref \"hello\" 1))",    "e");
     source_test_expect("substring",      "(display (substring \"hello\" 1 3))",   "el");
     source_test_expect("number->string", "(display (number->string 42))",          "42");
     source_test_expect("string->number", "(display (string->number \"99\"))",      "99");

@@ -176,6 +176,14 @@ void vm_run(VM* vm) {
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 376); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 310); }
+        else if (a.type == VAL_INT && b.type == VAL_INT) {
+            /* exact/exact -> exact result (R7RS): native 334 (rational div)
+             * reduces the fraction and collapses denom==1 back to an integer,
+             * so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather than the
+             * inexact float the double path produced. */
+            if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
+            vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
+        }
         else {
         double bd = as_number(b);
         if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
@@ -507,9 +515,10 @@ void vm_run(VM* vm) {
         if (str_val.type == VAL_STRING) {
             VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
-            if (s && i >= 0 && i < s->byte_len) vm_push(vm, INT_VAL((unsigned char)s->data[i]));
-            else vm_push(vm, INT_VAL(0));
-        } else vm_push(vm, INT_VAL(0));
+            /* R7RS string-ref returns a character, not its integer code. */
+            if (s && i >= 0 && i < s->byte_len) vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
+            else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
+        } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
         DISPATCH();
     }
 
@@ -735,6 +744,14 @@ vm_exit:
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,376); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334); }
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,310); }
+            else if (a.type==VAL_INT && b.type==VAL_INT) {
+                /* exact/exact → exact result (R7RS): native 334 (rational div)
+                 * reduces the fraction and collapses denom==1 back to an
+                 * integer, so (/ 1 3) yields 1/3 and (/ 6 3) yields 2 rather
+                 * than the inexact float the double path produced. */
+                if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
+                vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334);
+            }
             else { double bd = as_number(b);
             if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
             vm_push(vm, number_val(as_number(a) / bd)); } break; }
@@ -1024,9 +1041,10 @@ vm_exit:
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
                 int i = (int)as_number(idx);
-                if (s && i >= 0 && i < s->byte_len) vm_push(vm, INT_VAL((unsigned char)s->data[i]));
-                else vm_push(vm, INT_VAL(0));
-            } else vm_push(vm, INT_VAL(0));
+                /* R7RS string-ref returns a character, not its integer code. */
+                if (s && i >= 0 && i < s->byte_len) vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
+                else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
+            } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
             break;
         }
 
