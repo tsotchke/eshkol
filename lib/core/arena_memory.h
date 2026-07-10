@@ -295,6 +295,43 @@ void arena_tape_reset(ad_tape_t* tape);
 ad_node_t* arena_tape_get_node(const ad_tape_t* tape, size_t index);
 size_t arena_tape_get_node_count(const ad_tape_t* tape);
 
+// ===== AD staged-kernel Phase A: instrumentation counters =====
+// Machine-checkable proof that a vector/tensor gradient does ONE primal
+// evaluation + ONE reverse sweep (not N of each). Only fields wired at real
+// runtime sites are present; more may be added as later phases land. See
+// docs/design/adr/0002-ad-staged-dense-kernels.md and lib/core/runtime_autodiff.cpp.
+typedef struct {
+    uint64_t primal_calls;             // user-function evaluations in a gradient
+    uint64_t reverse_passes;           // backward sweeps actually executed
+    uint64_t tape_allocations;         // reverse-mode tapes allocated
+    uint64_t tape_nodes;               // AD nodes appended to tapes
+    uint64_t finite_difference_evals;  // finite-difference evaluations on any AD path
+} EshkolADCounters;
+
+void eshkol_ad_counters_reset(void);
+void eshkol_ad_counters_get(EshkolADCounters* out);
+// Increment hooks invoked from emitted IR at the real event sites.
+void eshkol_ad_count_primal(void);
+void eshkol_ad_count_reverse(void);
+void eshkol_ad_count_fd(void);
+// Individual readers (Scheme-builtin backends).
+uint64_t eshkol_ad_counter_primal_calls(void);
+uint64_t eshkol_ad_counter_reverse_passes(void);
+uint64_t eshkol_ad_counter_tape_allocations(void);
+uint64_t eshkol_ad_counter_tape_nodes(void);
+uint64_t eshkol_ad_counter_finite_difference_evals(void);
+
+// One-pass gradient support.
+//   arena_tape_set_variables: populate the (formerly dead) ad_tape_t::variables /
+//   num_variables so a single reverse sweep's per-input gradients can be read back
+//   without replaying the loss per component.
+void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n);
+//   eshkol_ad_mixed_record_count: monotonic count of reverse-over-forward mixed
+//   records. The one-pass gradient snapshots this around its single primal pass;
+//   a nonzero delta means an inner forward-mode derivative ran (per-component seed
+//   semantics are load-bearing) and the pass safely falls back to per-component replay.
+uint64_t eshkol_ad_mixed_record_count(void);
+
 // ===== ESH-0093: mixed-mode AD (reverse tape over inner forward derivative) =====
 // A reverse-mode gradient pass publishes its active variable node here so an
 // inner forward-mode derivative can seed it in the jet (e2) and record the

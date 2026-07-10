@@ -228,6 +228,18 @@ public:
     llvm::Value* monotonicTimeMs(const eshkol_operations_t* op);
     /** @brief (__arena-used) — bytes currently used in the global arena (ESH-0187 debug hook). */
     llvm::Value* arenaUsed(const eshkol_operations_t* op);  // ESH-0187 debug hook
+    /** @brief (ad-reset-counters!) — zero all AD instrumentation counters. */
+    llvm::Value* adResetCounters(const eshkol_operations_t* op);
+    /** @brief (ad-primal-calls) — primal (user-function) evaluations since reset. */
+    llvm::Value* adPrimalCalls(const eshkol_operations_t* op);
+    /** @brief (ad-reverse-passes) — reverse (backward) sweeps since reset. */
+    llvm::Value* adReversePasses(const eshkol_operations_t* op);
+    /** @brief (ad-tape-allocations) — reverse-mode tapes allocated since reset. */
+    llvm::Value* adTapeAllocations(const eshkol_operations_t* op);
+    /** @brief (ad-finite-difference-evals) — finite-difference evaluations since reset. */
+    llvm::Value* adFiniteDifferenceEvals(const eshkol_operations_t* op);
+    /** @brief (ad-counters) — assoc list of all AD instrumentation counters. */
+    llvm::Value* adCounters(const eshkol_operations_t* op);
     /** @brief (temp-directory) — the system temporary-files directory path. */
     llvm::Value* tempDirectory(const eshkol_operations_t* op);
     /** @brief (prevent-sleep) — inhibit system sleep/idle while running. @return Unspecified value. */
