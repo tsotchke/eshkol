@@ -1962,6 +1962,8 @@ THREE_ARG_BUILTIN(stringTruncateDisplay, "eshkol_builtin_string_truncate_display
 ONE_ARG_BUILTIN(urlEncode, "eshkol_builtin_url_encode")
 ONE_ARG_BUILTIN(urlDecode, "eshkol_builtin_url_decode")
 ONE_ARG_BUILTIN(urlParse, "eshkol_builtin_url_parse")
+ONE_ARG_BUILTIN(base64EncodeString, "eshkol_builtin_base64_encode_string")
+ONE_ARG_BUILTIN(base64DecodeString, "eshkol_builtin_base64_decode_string")
 ONE_ARG_BUILTIN(base64urlEncode, "eshkol_builtin_base64url_encode")
 ONE_ARG_BUILTIN(base64urlDecode, "eshkol_builtin_base64url_decode")
 ZERO_ARG_BUILTIN(uuidV4, "eshkol_builtin_uuid_v4")
