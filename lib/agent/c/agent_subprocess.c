@@ -1626,6 +1626,25 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
     }
     kevent(kq, evs, nev, NULL, 0, NULL);
 
+    /* Race guard: the child may have already exited between spawn/kill and
+     * the EVFILT_PROC registration above (common after process-kill, and
+     * under load for any short-lived child). On macOS a NOTE_EXIT that fired
+     * before the filter was added is never delivered, so the kevent() loop
+     * below would block until timeout and spuriously report "timed out" for a
+     * process that is already dead. Probe once with WNOHANG immediately after
+     * registration; if the child is already a zombie, drain, reap, and report
+     * exited. Any exit strictly after this probe is still caught by kevent
+     * (the filter was registered before the probe), so there is no gap. */
+    r = waitpid((pid_t)proc->pid, &status, WNOHANG);
+    if (r == proc->pid) {
+        drain_proc_pipes(proc, drain_cap);
+        proc->exited = 1;
+        if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+        close(kq);
+        return 0;
+    }
+
     struct timespec* tmo_ptr = NULL;
     struct timespec tmo;
     if (timeout_ms >= 0) {
@@ -1639,8 +1658,20 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
         int n = kevent(kq, NULL, 0, fired, 3, tmo_ptr);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
-            /* Timeout. Final drain so caller sees what the child
-             * had already written. */
+            /* Timeout (or spurious wake with nothing ready). Before declaring
+             * a timeout, re-check with WNOHANG in case a NOTE_EXIT was lost
+             * (e.g. the child exited in the narrow window around registration
+             * on a loaded machine). If it is actually dead, report exited. */
+            r = waitpid((pid_t)proc->pid, &status, WNOHANG);
+            if (r == proc->pid) {
+                drain_proc_pipes(proc, drain_cap);
+                proc->exited = 1;
+                if (WIFEXITED(status)) proc->exit_code = WEXITSTATUS(status);
+                else if (WIFSIGNALED(status)) proc->exit_code = 128 + WTERMSIG(status);
+                result = 0;
+                break;
+            }
+            /* Final drain so caller sees what the child had already written. */
             drain_proc_pipes(proc, drain_cap);
             result = 1;
             break;
