@@ -1,0 +1,82 @@
+;;; tests/ad/forward_over_reverse_test.esk
+;;; ESH-0120 / ESH-0121: jacobian and hessian differentiating THROUGH an inner
+;;; forward-mode `derivative`.
+;;;
+;;; Before the fix, both silently returned zeros: the inner forward-mode pass
+;;; materialized as a tape-disconnected constant, so the outer reverse sweep saw
+;;; no dependence on the outer variable.
+;;;   - ESH-0120: (jacobian (lambda (v) (vector (derivative ... v ...))) ...)
+;;;               returned #((0)) instead of the analytic [[4]].
+;;;   - ESH-0121: (hessian  (lambda (v) (derivative ... v ...)) ...)
+;;;               returned #((0 0)(0 0)) (previously SIGSEGV) instead of
+;;;               #((1024 0)(0 0)).
+;;;
+;;; Fix: jacobian publishes the column's input node as the active reverse seed
+;;; (eshkol_ad_seed_swap) so the inner forward derivative records its mixed
+;;; partial back onto the Jacobian tape (the ESH-0093/0117 machinery). The
+;;; vector/tensor hessian is recomputed exactly via forward-over-forward AD
+;;; (seed e1 on row i, e2 on col j, read the e1*e2 jet coefficient), with the
+;;; runtime perturbation level pre-raised so an inner forward derivative routes
+;;; to the independent ep jet dimension. No finite differences, machine-exact.
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-4))
+(define (exact= a b) (= a b))
+(define (chk label v)
+  (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; ── ESH-0120: jacobian over an inner forward derivative ───────────────────
+;; F(v) = [ d/dx (v0 * x * x) |x=2 ] = [ v0 * 4 ].  dF/dv0 = 4  ->  [[4]].
+(define j0 (jacobian (lambda (v) (vector (derivative (lambda (x) (* (vref v 0) x x)) 2.0)))
+                     (vector 3.0)))
+(chk "ESH-0120 jacobian[0][0] = 4 (exact)" (approx= (tensor-ref j0 0 0) 4.0))
+
+;; 2-in, 2-out forward-over-reverse jacobian, cross-checked vs central FD.
+;; F(v) = [ d/dx(v0*x^2)|1 , d/dx(v1*x^3)|1 ] = [ 2 v0 , 3 v1 ].
+;; dF/dv = [[2,0],[0,3]] at any point.
+(define (Fj v)
+  (vector (derivative (lambda (x) (* (vref v 0) x x)) 1.0)
+          (derivative (lambda (x) (* (vref v 1) x x x)) 1.0)))
+(define jm (jacobian Fj (vector 5.0 7.0)))
+(chk "ESH-0120 jm[0][0] = 2" (approx= (tensor-ref jm 0 0) 2.0))
+(chk "ESH-0120 jm[0][1] = 0" (approx= (tensor-ref jm 0 1) 0.0))
+(chk "ESH-0120 jm[1][0] = 0" (approx= (tensor-ref jm 1 0) 0.0))
+(chk "ESH-0120 jm[1][1] = 3" (approx= (tensor-ref jm 1 1) 3.0))
+
+;; ── ESH-0121: hessian over an inner forward derivative ────────────────────
+;; f(v) = d/dz (0.5 v0^2 z^8) |z=2 = 4 v0^2 z^7 |2 = 512 v0^2.
+;; H = [[1024, 0],[0, 0]].
+(define h0 (hessian (lambda (v)
+             (derivative (lambda (z) (* 0.5 (vref v 0) (vref v 0) z z z z z z z z)) 2.0))
+             (vector 3.0 4.0)))
+(chk "ESH-0121 hessian[0][0] = 1024" (approx= (tensor-ref h0 0 0) 1024.0))
+(chk "ESH-0121 hessian[0][1] = 0 (exact)" (exact= (tensor-ref h0 0 1) 0.0))
+(chk "ESH-0121 hessian[1][0] = 0 (exact)" (exact= (tensor-ref h0 1 0) 0.0))
+(chk "ESH-0121 hessian[1][1] = 0 (exact)" (exact= (tensor-ref h0 1 1) 0.0))
+
+;; ── Ordinary vector hessian must stay exact (regression for the exact path) ─
+;; f(v) = 2 v0^2 + 3 v1^2  ->  H = [[4,0],[0,6]].
+(define hq (hessian (lambda (v) (+ (* 2.0 (vref v 0) (vref v 0)) (* 3.0 (vref v 1) (vref v 1))))
+                    (vector 1.0 1.0)))
+(chk "quadratic hessian[0][0] = 4" (approx= (tensor-ref hq 0 0) 4.0))
+(chk "quadratic hessian[0][1] = 0 (exact)" (exact= (tensor-ref hq 0 1) 0.0))
+(chk "quadratic hessian[1][1] = 6" (approx= (tensor-ref hq 1 1) 6.0))
+
+;; Coupled quadratic with a nonzero off-diagonal, cross-checked vs FD.
+;; f(v) = v0^2 + v0 v1 + 2 v1^2  ->  H = [[2,1],[1,4]].
+(define hc (hessian (lambda (v) (+ (* (vref v 0) (vref v 0))
+                                   (* (vref v 0) (vref v 1))
+                                   (* 2.0 (vref v 1) (vref v 1))))
+                    (vector 1.5 2.5)))
+(chk "coupled hessian[0][0] = 2" (approx= (tensor-ref hc 0 0) 2.0))
+(chk "coupled hessian[0][1] = 1" (approx= (tensor-ref hc 0 1) 1.0))
+(chk "coupled hessian[1][0] = 1" (approx= (tensor-ref hc 1 0) 1.0))
+(chk "coupled hessian[1][1] = 4" (approx= (tensor-ref hc 1 1) 4.0))
+
+;; ── first-class / higher-order guard: the fixes must not regress gradient ──
+;; gradient over an inner forward derivative (ESH-0093) still exact.
+(define g0 (gradient (lambda (p) (derivative (lambda (x) (* (vref p 0) x x)) 2.0)) (vector 3.0)))
+(chk "gradient over inner deriv = #(4)" (approx= (vector-ref g0 0) 4.0))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
+(if (> fail 0) (error "forward_over_reverse_test FAILED"))
