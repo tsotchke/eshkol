@@ -1,6 +1,6 @@
 # Eshkol Language - Complete Technical Specification
 
-**Version:** v1.3.1
+**Version:** v1.3.3
 **Generated:** 2026-07-08
 **Status:** Comprehensive implementation documentation from source code
 
@@ -4043,7 +4043,7 @@ Keep original name (exported via `provide`)
 
 ## 26. Version Information
 
-**Current Version:** v1.3.1
+**Current Version:** v1.3.3
 
 **Version History:**
 - v1.3.1 - Robustness for long-running, resident programs: per-iteration
@@ -4168,7 +4168,7 @@ Dynamic binding of parameter objects. Parameters created with `make-parameter` a
 
 ## Conclusion
 
-This document provides a **complete** specification of the Eshkol programming language version v1.3.1, documenting **every** feature, function, operator, and capability found in the implementation.
+This document provides a **complete** specification of the Eshkol programming language version v1.3.3, documenting **every** feature, function, operator, and capability found in the implementation.
 
 **Total Coverage:**
 - All 101 special forms and parser operations

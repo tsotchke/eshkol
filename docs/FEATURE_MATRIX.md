@@ -1,4 +1,4 @@
-# Eshkol v1.3.1 Feature Matrix
+# Eshkol v1.3.3 Feature Matrix
 
 **Status Key**: ✅ Production | 🚧 In Progress | 📋 Planned | ❌ Not Planned
 
@@ -910,6 +910,6 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for development guidelines.
 ---
 
 **Last Updated**: 2026-07-08
-**Document Version**: 1.3.1
+**Document Version**: 1.3.3
 
 For detailed API documentation, see [API_REFERENCE.md](API_REFERENCE.md)
