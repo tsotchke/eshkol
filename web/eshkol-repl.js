@@ -274,6 +274,11 @@ class EshkolRepl {
                 arena_hash_table_create: (arena) => 0,
                 arena_hash_table_create_with_header: (arena) => 0,
                 get_global_arena: () => 0,
+                // OALR memctx accessor (ESH-0001 Phase A / #239): thread-arena
+                // accessor import from post-#239 compilers; degrades to the same
+                // fake arena as get_global_arena (no region system in the browser).
+                eshkol_current_arena: () => 0,
+                eshkol_memctx_current: () => 0,
 
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- the browser
