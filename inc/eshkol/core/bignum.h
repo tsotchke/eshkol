@@ -281,6 +281,21 @@ void eshkol_bignum_compare_tagged(
     int op, eshkol_tagged_value_t* result);
 
 /**
+ * @brief Exact GCD of two exact integers using bignum arithmetic (ESH-0124).
+ *
+ * Promotes both operands to bignum, runs the Euclidean algorithm exactly, and
+ * demotes the (non-negative) result to INT64 when it fits. Matches R7RS gcd.
+ *
+ * @param arena Arena for intermediate/result bignums.
+ * @param left  Left operand (tagged INT64 or bignum HEAP_PTR).
+ * @param right Right operand (tagged INT64 or bignum HEAP_PTR).
+ * @param[out] result Tagged result (INT64 if it fits, else bignum HEAP_PTR).
+ */
+void eshkol_gcd_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
+    eshkol_tagged_value_t* result);
+
+/**
  * @brief Test whether a tagged value currently holds a bignum.
  *
  * Checks the HEAP_PTR type tag together with the HEAP_SUBTYPE_BIGNUM object

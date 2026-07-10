@@ -1,0 +1,85 @@
+(require stdlib)
+
+; Regression tests for numeric-tower exactness bugs.
+; Emits "PASS: ..." / "FAIL: ..." lines; the numeric harness fails the
+; suite if any line begins with FAIL.
+
+(display "TEST: bignum / rational exactness") (newline)
+
+; ---------------------------------------------------------------------------
+; ESH-0124: gcd must have an exact bignum path (no lossy double/int64 collapse)
+; ---------------------------------------------------------------------------
+(display (if (= (gcd (* 3 (expt 2 61)) (* 5 (expt 2 61))) (expt 2 61))
+             "PASS" "FAIL"))
+(display ": gcd(3*2^61, 5*2^61) = 2^61") (newline)
+
+(display (if (= (gcd (expt 2 64) (expt 2 65)) (expt 2 64)) "PASS" "FAIL"))
+(display ": gcd(2^64, 2^65) = 2^64") (newline)
+
+(display (if (= (gcd (* 7 (expt 10 30)) (* 11 (expt 10 30))) (expt 10 30))
+             "PASS" "FAIL"))
+(display ": gcd(7*10^30, 11*10^30) = 10^30") (newline)
+
+; gcd is symmetric and non-negative over signs and int64 operands
+(display (if (= (gcd 48 36) 12) "PASS" "FAIL")) (display ": gcd(48, 36) = 12") (newline)
+(display (if (= (gcd -48 36) 12) "PASS" "FAIL")) (display ": gcd(-48, 36) = 12") (newline)
+(display (if (= (gcd (- (expt 2 70)) (expt 2 66)) (expt 2 66)) "PASS" "FAIL"))
+(display ": gcd(-2^70, 2^66) = 2^66") (newline)
+(display (if (= (gcd 0 (expt 10 25)) (expt 10 25)) "PASS" "FAIL"))
+(display ": gcd(0, 10^25) = 10^25") (newline)
+
+; ---------------------------------------------------------------------------
+; ESH-0125: bignum quotient/remainder must satisfy a = q*b + r exactly
+; ---------------------------------------------------------------------------
+(define a1 (expt 10 25))
+(define b1 (expt 7 25))
+(display (if (= a1 (+ (* (quotient a1 b1) b1) (remainder a1 b1))) "PASS" "FAIL"))
+(display ": 10^25 = q*7^25 + r") (newline)
+
+(define a2 (* (expt 3 40) (expt 5 7)))
+(define b2 (expt 6 20))
+(display (if (= a2 (+ (* (quotient a2 b2) b2) (remainder a2 b2))) "PASS" "FAIL"))
+(display ": 3^40*5^7 = q*6^20 + r") (newline)
+
+(define a3 (- (expt 2 130)))
+(define b3 (expt 3 50))
+(display (if (= a3 (+ (* (quotient a3 b3) b3) (remainder a3 b3))) "PASS" "FAIL"))
+(display ": -2^130 = q*3^50 + r (signed)") (newline)
+
+; remainder magnitude is strictly less than |b|
+(display (if (< (remainder a1 b1) b1) "PASS" "FAIL"))
+(display ": |remainder| < |divisor|") (newline)
+
+; exact quotient of a multiple has zero remainder
+(define k (expt 13 22))
+(display (if (and (= (quotient (* k b1) b1) k) (= (remainder (* k b1) b1) 0))
+             "PASS" "FAIL"))
+(display ": (k*b) / b = k, rem 0") (newline)
+
+; ---------------------------------------------------------------------------
+; ESH-0114: eqv?/equal? must be value-correct + reflexive on rationals/complex
+; ---------------------------------------------------------------------------
+(display (if (eqv? (/ 1 3) (/ 1 3)) "PASS" "FAIL"))
+(display ": (eqv? 1/3 1/3)") (newline)
+(display (if (equal? (/ 1 3) (/ 2 6)) "PASS" "FAIL"))
+(display ": (equal? 1/3 2/6)") (newline)
+(display (if (eqv? (/ 2 6) (/ 3 9)) "PASS" "FAIL"))
+(display ": (eqv? 2/6 3/9) both reduce to 1/3") (newline)
+(display (if (not (equal? (/ 1 3) (/ 1 4))) "PASS" "FAIL"))
+(display ": (equal? 1/3 1/4) is #f") (newline)
+(display (if (not (eqv? (/ 1 3) (/ 1 4))) "PASS" "FAIL"))
+(display ": (eqv? 1/3 1/4) is #f") (newline)
+
+; complex value equality (separately-constructed instances, distinct pointers)
+(display (if (equal? (make-rectangular 3 4) (make-rectangular 3 4)) "PASS" "FAIL"))
+(display ": (equal? 3+4i 3+4i)") (newline)
+(display (if (not (equal? (make-rectangular 3 4) (make-rectangular 3 5))) "PASS" "FAIL"))
+(display ": (equal? 3+4i 3+5i) is #f") (newline)
+
+; ---------------------------------------------------------------------------
+; Sanity: existing int64-range rationals and integers keep working
+; ---------------------------------------------------------------------------
+(display (if (= (gcd 1071 462) 21) "PASS" "FAIL")) (display ": gcd(1071, 462) = 21") (newline)
+(display (if (= (quotient 17 5) 3) "PASS" "FAIL")) (display ": quotient(17, 5) = 3") (newline)
+(display (if (= (remainder 17 5) 2) "PASS" "FAIL")) (display ": remainder(17, 5) = 2") (newline)
+(display (if (eqv? 42 42) "PASS" "FAIL")) (display ": (eqv? 42 42)") (newline)

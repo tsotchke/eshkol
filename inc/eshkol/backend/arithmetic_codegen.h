@@ -257,6 +257,16 @@ public:
     llvm::Value* emitBignumCompareCall(llvm::Value* left, llvm::Value* right, int op_code);
 
     /**
+     * Emit a call into the exact GCD runtime kernel (eshkol_gcd_tagged),
+     * which handles int64/bignum/mixed operands exactly and demotes the
+     * result to int64 when it fits (ESH-0124).
+     * @param left Left operand (tagged_value)
+     * @param right Right operand (tagged_value)
+     * @return gcd(|left|, |right|) as a tagged_value
+     */
+    llvm::Value* emitGcdTaggedCall(llvm::Value* left, llvm::Value* right);
+
+    /**
      * Check whether either operand is a bignum (arbitrary-precision integer)
      * tagged value, so arithmetic/comparison ops can be routed to the bignum
      * dispatch helpers instead of the fixed-width int/double fast path.
