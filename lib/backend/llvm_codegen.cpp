@@ -26669,19 +26669,35 @@ private:
                 continue;
             }
 
+            // ESH-0094: a capture whose outer storage is ALREADY a shared cell
+            // pointer (GlobalVariable, an enclosing loop's `_cap` Argument, a
+            // closure-env IntToPtr, or a generic tagged_value*) is pointer-passed
+            // as-is below. But if the loop body set!-mutates it — including from a
+            // closure created in the body — the loop-body closure would otherwise
+            // by-value-load the pointer-typed `_cap` Argument (codegenLambda's
+            // Argument branch) and snapshot the value, silently dropping the
+            // mutation. Record it in mutable_loop_captures_ so codegenLambda
+            // pointer-passes the `_cap` Argument instead, keeping the closure
+            // aliased to the real cell. (The AllocaInst+set! case above already
+            // arena-moves and records; these branches cover the non-alloca cells.)
+            const bool body_mutates_capture = astSetsVar(op->let_op.body, fv);
+
             // Already a pointer we can pass directly.
             if (isa<AllocaInst>(outer_val) || isa<GlobalVariable>(outer_val) ||
                 isa<IntToPtrInst>(outer_val)) {
+                if (body_mutates_capture) mutable_loop_captures_.insert(fv);
                 capture_outer_ptrs.push_back(outer_val);
                 continue;
             }
             if (isa<Argument>(outer_val) && outer_val->getType()->isPointerTy()) {
+                if (body_mutates_capture) mutable_loop_captures_.insert(fv);
                 capture_outer_ptrs.push_back(outer_val);
                 continue;
             }
             if (outer_val->getType()->isPointerTy()) {
                 // Generic pointer instruction (e.g., GEP, BitCast yielding a
                 // tagged_value*). Pass directly.
+                if (body_mutates_capture) mutable_loop_captures_.insert(fv);
                 capture_outer_ptrs.push_back(outer_val);
                 continue;
             }
