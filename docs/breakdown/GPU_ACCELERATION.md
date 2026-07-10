@@ -883,3 +883,31 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
   `eshkol_gpu_supports_f64()` returns true for CUDA (native) and false
   for "no GPU" (`gpu_memory_cuda.cpp`). The Metal backend reports
   f64 support via SF64 emulation.
+
+## 9. CI Testing: Compilation vs. Execution
+
+Two separate things are gated, and it matters which one you're looking at:
+
+- **Compilation** (`.github/workflows/ci.yml`, the `linux-x64-cuda`,
+  `linux-arm64-cuda`, and `windows-arm64-cuda` jobs): builds with
+  `-DESHKOL_GPU_ENABLED=ON` and runs `scripts/run_gpu_tests.sh` against
+  the result. These jobs run on GitHub-hosted runners, which have no
+  GPU. `nvcc` compiles `gpu_cuda_kernels.cu` and `gpu_memory_cuda.cpp`
+  fine, but at runtime `eshkol_gpu_init()` finds zero CUDA devices, so
+  `tests/gpu/*.esk` all execute their CPU fallback path. These lanes
+  prove the GPU backend *builds*; they do not exercise a single GPU
+  kernel.
+
+- **Execution** (`.github/workflows/gpu-execution-gate.yml`,
+  `tests/gpu/gpu_correctness_gate.sh`): builds Eshkol twice — once with
+  GPU acceleration on, once off — and diffs GPU-vs-CPU output on the
+  same differentiable workload within a numeric tolerance. This is the
+  gate that actually proves a Metal or CUDA kernel ran and produced a
+  correct answer. It exits 0 with a SKIP message on any host without a
+  real GPU device (which includes essentially all GitHub-hosted
+  runners), so it only ever produces a verdict where one is possible.
+  It needs a self-hosted runner carrying `[self-hosted, gpu]` labels to
+  run in CI; until one is registered it stays queued rather than
+  failing anything. It can also be run by hand on any workstation with
+  a real GPU (Metal on any Mac, CUDA with an NVIDIA driver present —
+  including the Jetson AGX Xavier setup in `nix/jetson/`).

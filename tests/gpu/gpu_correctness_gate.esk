@@ -1,0 +1,75 @@
+;; GPU correctness gate payload.
+;;
+;; Runs the same fixed, non-trivial workload through whichever binary
+;; executes this file. tests/gpu/gpu_correctness_gate.sh runs it twice —
+;; once through a GPU-enabled build with GPU dispatch forced
+;; (ESHKOL_GPU_THRESHOLD=1) and once through a GPU-disabled (CPU-only)
+;; build — and diffs the two "RESULT " lines within a numeric tolerance.
+;; That is the actual differential correctness check; this file only
+;; needs to print deterministic, GPU-dispatch-sized numeric summaries.
+;;
+;; Inputs use sin()/index-derived fractional values rather than all-ones
+;; matrices so that the matmul/reduce accumulation order actually matters
+;; numerically — an all-ones input would trivially agree between a GPU
+;; and CPU reduction even if the two accumulated in a different order.
+;;
+;; Sizes are chosen so total element products clear the VM's GPU-dispatch
+;; threshold (100,000, see lib/backend/vm_gpu_dispatch.h) without an env
+;; override, and so a 512x512 f64 matmul finishes in well under a second
+;; on both CPU and GPU paths — this is a correctness gate, not a
+;; benchmark.
+
+(define N 512)
+(define K 512)
+(define elems (* N K))
+
+;; Deterministic non-uniform fill: A[i] = sin(i * 0.001) + 1.0001,
+;; B[i] = cos(i * 0.0013) + 1.0002. Offsets keep values away from zero
+;; (avoids near-cancellation making the tolerance check noisy) while
+;; remaining irrational/non-repeating across the whole matrix.
+(define (fill-vec n scale offset fn)
+  (let loop ((i 0) (acc '()))
+    (if (= i n)
+        (list->vector (reverse acc))
+        (loop (+ i 1) (cons (+ offset (fn (* i scale))) acc)))))
+
+(define A-data (fill-vec elems 0.001 1.0001 sin))
+(define B-data (fill-vec elems 0.0013 1.0002 cos))
+
+(define A (reshape A-data N K))
+(define B (reshape B-data K N))
+
+;; `display` on a float prints with ~6 significant digits (not full
+;; round-trip precision) — that's a separate stdlib formatting
+;; characteristic, not something this gate changes. It's still enough
+;; precision to catch a real GPU-kernel bug (wrong dimensions, transposed
+;; data, NaN/garbage, wrong accumulation) while the harness's tolerance
+;; comparison (tests/gpu/gpu_correctness_gate.sh) absorbs any last-digit
+;; GPU-vs-CPU floating-point summation-order drift.
+(define (result label val)
+  (display "RESULT ") (display label) (display " ") (display val) (newline))
+
+;; --- matmul ---
+(define C (matmul A B))
+(result "matmul-checksum" (tensor-sum C))
+(result "matmul-c00" (tensor-get C 0 0))
+(result "matmul-cmid" (tensor-get C 256 256))
+(result "matmul-clast" (tensor-get C 511 511))
+
+;; --- elementwise add/mul (same shape, GPU-dispatch sized) ---
+(define S (tensor-add A B))
+(result "add-checksum" (tensor-sum S))
+
+(define P (tensor-mul A B))
+(result "mul-checksum" (tensor-sum P))
+
+;; --- transpose round-trip on the matmul output ---
+(define Ct (transpose (transpose C)))
+(result "transpose-roundtrip-c00" (tensor-get Ct 0 0))
+(result "transpose-roundtrip-clast" (tensor-get Ct 511 511))
+
+;; --- full reduce ---
+(result "reduce-sum-A" (tensor-sum A))
+(result "reduce-max-A" (tensor-max A))
+
+(display "GATE-DONE") (newline)
