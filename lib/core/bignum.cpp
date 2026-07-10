@@ -941,6 +941,27 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
 
+    /* Exact rational operands (either side) route to the bignum-capable
+     * rational dispatch so mixed rational/bignum arithmetic stays exact
+     * (ESH-0105). A rational operand reaching the bignum add/sub/mul/div path
+     * would otherwise be misread as a bignum by tagged_to_bignum(). */
+    bool left_rat = eshkol_is_rational_tagged(*left);
+    bool right_rat = eshkol_is_rational_tagged(*right);
+    if (left_rat || right_rat) {
+        if (op >= 0 && op <= 3) {
+            *result = eshkol_rational_binary_tagged(arena, *left, *right, op);
+            return;
+        }
+        if (op == 7) { /* unary neg: 0 - operand, via exact rational sub */
+            eshkol_tagged_value_t zero = eshkol_make_int64(0, true);
+            *result = eshkol_rational_binary_tagged(arena, zero, *left, 1);
+            return;
+        }
+        /* mod/quotient/remainder on a non-integer rational is undefined. */
+        *result = eshkol_make_int64(0, true);
+        return;
+    }
+
     /* op 7 = unary neg (right is ignored) */
     if (op == 7) {
         eshkol_bignum_t* a = tagged_to_bignum(arena, left);
@@ -982,17 +1003,17 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
         case 0: r = eshkol_bignum_add(arena, a, b); break;
         case 1: r = eshkol_bignum_sub(arena, a, b); break;
         case 2: r = eshkol_bignum_mul(arena, a, b); break;
-        case 3: { /* div: exact if mod==0, else inexact double */
-            eshkol_bignum_t* m = eshkol_bignum_mod(arena, a, b);
-            if (m && eshkol_bignum_is_zero(m)) {
-                r = eshkol_bignum_div(arena, a, b);
-            } else {
-                double ad = eshkol_bignum_to_double(a);
-                double bd = eshkol_bignum_to_double(b);
-                *result = eshkol_make_double(ad / bd);
+        case 3: { /* div: exact — quotient when evenly divisible, else an
+                   * EXACT rational a/b (ESH-0105: never degrade to double). */
+            if (eshkol_bignum_is_zero(b)) {
+                eshkol_exception_t* exc = eshkol_make_exception(
+                    ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "bignum division by zero");
+                eshkol_raise(exc);
+                *result = eshkol_make_int64(0, true);
                 return;
             }
-            break;
+            eshkol_rational_from_bignums_tagged(arena, a, b, result);
+            return;
         }
         case 4: {
             /* modulo: R7RS floor-mod — result has the SAME SIGN AS THE DIVISOR.
@@ -1089,6 +1110,15 @@ void eshkol_gcd_tagged(arena_t* arena,
 void eshkol_bignum_compare_tagged(
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result) {
+
+    /* Exact rational operand on either side: route to the rational comparison,
+     * which handles rational/int/bignum mixes exactly. Reuse the runtime
+     * thread-local arena for any bignum cross-product scratch. */
+    if (eshkol_is_rational_tagged(*left) || eshkol_is_rational_tagged(*right)) {
+        extern arena_t* arena_get_thread_local(void);
+        eshkol_rational_compare_tagged_ptr(arena_get_thread_local(), left, right, op, result);
+        return;
+    }
 
     bool left_is_heap = (left->type == ESHKOL_VALUE_HEAP_PTR);
     bool right_is_heap = (right->type == ESHKOL_VALUE_HEAP_PTR);

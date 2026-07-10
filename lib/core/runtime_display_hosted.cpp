@@ -344,9 +344,8 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     fprintf(get_output(opts), "#<promise>");
                     break;
                 case HEAP_SUBTYPE_RATIONAL: {
-                    eshkol_rational_t* rat = (eshkol_rational_t*)data_ptr;
-                    fprintf(get_output(opts), "%lld/%lld",
-                        (long long)rat->numerator, (long long)rat->denominator);
+                    // Handles both int64 and bignum-magnitude rationals.
+                    eshkol_rational_display(data_ptr, get_output(opts));
                     break;
                 }
                 case HEAP_SUBTYPE_PRNG:

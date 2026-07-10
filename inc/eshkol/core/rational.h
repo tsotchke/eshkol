@@ -13,20 +13,77 @@
 #define ESHKOL_CORE_RATIONAL_H
 
 #include <eshkol/eshkol.h>
+#include <eshkol/core/bignum.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Rational struct: 16 bytes, always GCD-reduced, denominator > 0 */
+/*
+ * Bignum-capable exact rational.
+ *
+ * Two representations, chosen canonically so equal values share one form:
+ *   - is_big == 0 (fast path): numerator/denominator hold the reduced int64
+ *     pair, denominator > 0. Used whenever both fit in int64.
+ *   - is_big == 1 (bignum path): big_num/big_den hold the reduced bignum
+ *     pair (big_den > 0). Used ONLY when the reduced numerator or denominator
+ *     does not fit in int64. In this case numerator/denominator are unused
+ *     (set to 0/1).
+ *
+ * Invariant (both paths): the fraction is fully GCD-reduced with a positive
+ * denominator, and the int64 fast path is preferred whenever representable —
+ * so value equality reduces to comparing (is_big, and the active fields).
+ *
+ * The numerator/denominator int64 fields remain the first two members so the
+ * common small-rational read paths keep working unchanged.
+ */
 typedef struct {
-    int64_t numerator;
-    int64_t denominator;
+    int64_t numerator;    /* fast-path numerator   (valid iff is_big == 0) */
+    int64_t denominator;  /* fast-path denominator (valid iff is_big == 0; > 0) */
+    int32_t is_big;       /* 0 = int64 fast path, 1 = bignum path */
+    int32_t reserved;
+    eshkol_bignum_t* big_num;  /* bignum numerator   (valid iff is_big == 1) */
+    eshkol_bignum_t* big_den;  /* bignum denominator (valid iff is_big == 1; > 0) */
 } eshkol_rational_t;
 
-/* Create a rational from numerator/denominator, auto-reduces via GCD */
+/* Create a rational from int64 numerator/denominator, auto-reduces via GCD.
+ * Promotes to the bignum path only for the INT64_MIN sign-flip corner. */
 void* eshkol_rational_create(void* arena, int64_t num, int64_t denom);
+
+/* Create a rational from two bignum numerator/denominator pointers.
+ * Sign-canonicalizes (positive denominator), GCD-reduces via bignum gcd,
+ * and demotes to the int64 fast path when the reduced pair fits.
+ * Never degrades to double — this is the exact bignum-rational constructor. */
+void* eshkol_rational_create_bn(void* arena, eshkol_bignum_t* num, eshkol_bignum_t* denom);
+
+/* Build an EXACT tagged number from bignum numerator/denominator: an INT64 or
+ * bare bignum when the reduced denominator is 1, otherwise a rational HEAP_PTR.
+ * Used by the bignum division dispatch to preserve exactness (ESH-0105). */
+void eshkol_rational_from_bignums_tagged(
+    void* arena, eshkol_bignum_t* num, eshkol_bignum_t* denom,
+    eshkol_tagged_value_t* result);
+
+/* (make-rational num den) with tagged operands: each of num/den may be an
+ * INT64 or a bignum HEAP_PTR (bignum-magnitude literal). Produces an exact
+ * INT64/bignum (when the reduced denominator is 1) or a rational HEAP_PTR. */
+void eshkol_rational_make_tagged(
+    void* arena, const eshkol_tagged_value_t* num, const eshkol_tagged_value_t* den,
+    eshkol_tagged_value_t* result);
+
+/* Value equality on reduced rationals (handles both int64 and bignum paths).
+ * Used by eqv?/equal? via the deep-equality runtime (ESH-0114). */
+int eshkol_rational_equal(void* a, void* b);
+
+/* Write a rational's "n/d" (or bare "n" when integer) form to a FILE*. */
+void eshkol_rational_display(void* r, void* file);
+
+/* Tagged numerator/denominator: return an exact INT64 or bignum HEAP_PTR so
+ * bignum-magnitude rationals report their true numerator/denominator. */
+void eshkol_rational_numerator_tagged(
+    void* arena, const eshkol_tagged_value_t* v, eshkol_tagged_value_t* result);
+void eshkol_rational_denominator_tagged(
+    void* arena, const eshkol_tagged_value_t* v, eshkol_tagged_value_t* result);
 
 /* Arithmetic: returns arena-allocated rational pointer */
 void* eshkol_rational_add(void* arena, void* a, void* b);

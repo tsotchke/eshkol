@@ -1,0 +1,105 @@
+(require stdlib)
+
+; Regression test for the bignum-capable exact rational type (ESH-0105 /
+; ESH-0123). Every expected value is an exact analytic oracle cross-checked
+; against Python's fractions.Fraction. Emits "PASS: ..." / "FAIL: ..." lines;
+; the numeric harness fails the suite if any line begins with FAIL.
+;
+; The HARD invariant under test: exact rational arithmetic NEVER degrades to a
+; double once a bignum magnitude appears. If a result were inexact, the exact
+; `=` / `equal?` comparisons below would fail.
+
+(display "TEST: bignum-capable exact rational type") (newline)
+
+; ---------------------------------------------------------------------------
+; ESH-0105: exact rational must survive a bignum magnitude (no double degrade)
+; ---------------------------------------------------------------------------
+
+; (/ 1 (expt 10 19)) is the exact 1/10000000000000000000 (denominator > int64).
+(define r1 (/ 1 (expt 10 19)))
+(display (if (exact? r1) "PASS" "FAIL")) (display ": (/ 1 10^19) is exact") (newline)
+(display (if (= r1 1/10000000000000000000) "PASS" "FAIL"))
+(display ": (/ 1 10^19) = literal 1/10^19") (newline)
+(display (if (= (numerator r1) 1) "PASS" "FAIL")) (display ": numerator = 1") (newline)
+(display (if (= (denominator r1) 10000000000000000000) "PASS" "FAIL"))
+(display ": denominator = 10^19") (newline)
+; Round-trip: reconstruct from its own numerator/denominator.
+(display (if (= r1 (/ (numerator r1) (denominator r1))) "PASS" "FAIL"))
+(display ": (/ 1 10^19) round-trips through numerator/denominator") (newline)
+
+; (+ (/ 1 3) (/ 1 (expt 2 62))) = 4611686018427387907/13835058055282163712
+; (denominator exceeds int64; numerator fits — a mixed small/big rational).
+(define s (+ (/ 1 3) (/ 1 (expt 2 62))))
+(display (if (exact? s) "PASS" "FAIL")) (display ": (+ 1/3 1/2^62) is exact") (newline)
+(display (if (= (numerator s) 4611686018427387907) "PASS" "FAIL"))
+(display ": numerator = 4611686018427387907 (vs Python Fraction)") (newline)
+(display (if (= (denominator s) 13835058055282163712) "PASS" "FAIL"))
+(display ": denominator = 13835058055282163712 (vs Python Fraction)") (newline)
+(display (if (= s (make-rational 4611686018427387907 13835058055282163712)) "PASS" "FAIL"))
+(display ": (+ 1/3 1/2^62) = exact reconstructed fraction") (newline)
+
+; ---------------------------------------------------------------------------
+; ESH-0123: bignum-magnitude rational literal parses, reduces, round-trips
+; ---------------------------------------------------------------------------
+(define lit 100000000000000000000/3)
+(display (if (rational? lit) "PASS" "FAIL")) (display ": literal 10^20/3 is rational") (newline)
+(display (if (= lit (/ (expt 10 20) 3)) "PASS" "FAIL"))
+(display ": literal 10^20/3 = (/ 10^20 3)") (newline)
+(display (if (= (numerator lit) 100000000000000000000) "PASS" "FAIL"))
+(display ": literal numerator = 10^20") (newline)
+(display (if (= (denominator lit) 3) "PASS" "FAIL")) (display ": literal denominator = 3") (newline)
+
+; Literal that must REDUCE: 2*10^20 / (4*10^20) = 1/2.
+(display (if (= 200000000000000000000/400000000000000000000 1/2) "PASS" "FAIL"))
+(display ": literal 2e20/4e20 reduces to 1/2") (newline)
+
+; ---------------------------------------------------------------------------
+; Mixed int64/bignum rational arithmetic stays exact
+; ---------------------------------------------------------------------------
+(display (if (= (* (/ 1 3) (expt 10 30))
+                (/ (expt 10 30) 3)) "PASS" "FAIL"))
+(display ": (* 1/3 10^30) = 10^30/3") (newline)
+(display (if (= (- (/ 1 3) (/ 1 (* 3 (expt 10 20))))
+                33333333333333333333/100000000000000000000) "PASS" "FAIL"))
+(display ": (- 1/3 1/(3*10^20)) exact (vs Python Fraction)") (newline)
+; Exact integer result demotes cleanly.
+(display (if (= (* (/ 3 (expt 10 20)) (expt 10 20)) 3) "PASS" "FAIL"))
+(display ": (* 3/10^20 10^20) = 3 (integer demotion)") (newline)
+; Big integer result (denominator 1) becomes an exact integer, not a rational.
+(display (if (= (* (/ 1 3) (* 3 (expt 10 30))) (expt 10 30)) "PASS" "FAIL"))
+(display ": (* 1/3 3*10^30) = 10^30 (big-integer demotion)") (newline)
+; Sum to a whole number.
+(display (if (= (+ (/ 1 3) (/ 2 3)) 1) "PASS" "FAIL")) (display ": 1/3 + 2/3 = 1") (newline)
+
+; ---------------------------------------------------------------------------
+; Sign canonicalization and ordering on bignum rationals
+; ---------------------------------------------------------------------------
+(display (if (= (/ 1 (- (expt 10 19))) (/ -1 (expt 10 19))) "PASS" "FAIL"))
+(display ": 1/(-10^19) canonicalizes to -1/10^19") (newline)
+(display (if (< (/ 1 (- (expt 10 19))) 0) "PASS" "FAIL"))
+(display ": -1/10^19 < 0") (newline)
+(display (if (< (/ 1 (expt 10 20)) (/ 1 (expt 10 19))) "PASS" "FAIL"))
+(display ": 1/10^20 < 1/10^19") (newline)
+(display (if (> (/ 2 (expt 10 19)) (/ 1 (expt 10 19))) "PASS" "FAIL"))
+(display ": 2/10^19 > 1/10^19") (newline)
+
+; ---------------------------------------------------------------------------
+; eqv?/equal? correct on reduced bignum rationals (value, not identity)
+; ---------------------------------------------------------------------------
+(display (if (eqv? (/ 1 (expt 10 19)) (/ 1 (expt 10 19))) "PASS" "FAIL"))
+(display ": (eqv? 1/10^19 1/10^19)") (newline)
+(display (if (equal? (/ 2 (* 2 (expt 10 19))) (/ 1 (expt 10 19))) "PASS" "FAIL"))
+(display ": (equal? 2/(2*10^19) 1/10^19) both reduce") (newline)
+(display (if (not (eqv? (/ 1 (expt 10 19)) (/ 1 (expt 10 20)))) "PASS" "FAIL"))
+(display ": (eqv? 1/10^19 1/10^20) is #f") (newline)
+; A bignum rational is never eqv? to a small one of a different value.
+(display (if (not (eqv? (/ 1 (expt 10 19)) 1/3)) "PASS" "FAIL"))
+(display ": (eqv? 1/10^19 1/3) is #f") (newline)
+
+; ---------------------------------------------------------------------------
+; exact->inexact still available (opt-in), and int64-range rationals unaffected
+; ---------------------------------------------------------------------------
+(display (if (< (abs (- (exact->inexact (/ 1 (expt 10 19))) 1e-19)) 1e-30) "PASS" "FAIL"))
+(display ": exact->inexact of 1/10^19 ~ 1e-19") (newline)
+(display (if (= (/ 1 3) (/ 2 6)) "PASS" "FAIL")) (display ": int64 rational 1/3 = 2/6") (newline)
+(display (if (= (+ (/ 1 4) (/ 1 4)) 1/2) "PASS" "FAIL")) (display ": 1/4 + 1/4 = 1/2") (newline)
