@@ -4097,6 +4097,173 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     ctx_.context(), "grad_rt_collection", current_func);
                 BasicBlock* grad_rt_done = BasicBlock::Create(
                     ctx_.context(), "grad_rt_done", current_func);
+
+                // ESH-0212 (defect 1): first-class tensor gradient. A runtime
+                // function value — one bound to a variable, passed as a
+                // parameter, or reached through a wrapper — arrives here with no
+                // compile-time Function*, so the code below differentiates it
+                // with forward-mode dual numbers. That is correct for scalar and
+                // scalar-vector points, but tensor ops do NOT carry dual numbers
+                // through their elements, so a TENSOR point silently collapsed to
+                // a zero gradient (#(0 0 0 0)). Reverse mode does carry the
+                // signal: seed each input element as an AD variable, call the
+                // closure once in AD mode, backpropagate, and read each
+                // variable's gradient — exactly what the literal-lambda path does
+                // for a statically known function, but dispatched through the
+                // runtime closure so it works for any first-class loss.
+                {
+                    auto& b = ctx_.builder();
+                    Value* rvt_base = tagged_.getBaseType(tagged_.getType(point_val));
+                    Value* rvt_is_heap = b.CreateICmpEQ(rvt_base,
+                        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_HEAP_PTR));
+                    BasicBlock* rvt_check = BasicBlock::Create(ctx_.context(), "grad_rt_rev_check", current_func);
+                    BasicBlock* rvt_reverse = BasicBlock::Create(ctx_.context(), "grad_rt_rev", current_func);
+                    BasicBlock* rvt_not_tensor = BasicBlock::Create(ctx_.context(), "grad_rt_rev_skip", current_func);
+                    b.CreateCondBr(rvt_is_heap, rvt_check, rvt_not_tensor);
+
+                    b.SetInsertPoint(rvt_check);
+                    Value* rvt_hp = tagged_.unpackPtr(point_val);
+                    Value* rvt_hdr = b.CreateGEP(ctx_.int8Type(), rvt_hp, ConstantInt::get(ctx_.int64Type(), -8));
+                    Value* rvt_sub = b.CreateLoad(ctx_.int8Type(), rvt_hdr);
+                    Value* rvt_is_tensor = b.CreateICmpEQ(rvt_sub,
+                        ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+                    b.CreateCondBr(rvt_is_tensor, rvt_reverse, rvt_not_tensor);
+
+                    // ---- reverse-mode tensor gradient ----
+                    b.SetInsertPoint(rvt_reverse);
+                    llvm::StructType* rvt_tt = ctx_.tensorType();
+                    Value* rvt_ptr = b.CreateIntToPtr(tagged_.unpackInt64(point_val), ctx_.ptrType());
+                    Value* rvt_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 0));
+                    Value* rvt_ndim = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 1));
+                    Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
+                    Value* rvt_n = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 3));
+
+                    // Fresh tape for this gradient; publish as current so
+                    // createADVariable / tensor-op recording target it.
+                    Value* rvt_tape = b.CreateCall(mem_.getArenaAllocateTape(),
+                        {arena_ptr, ConstantInt::get(ctx_.int64Type(), 1024)});
+                    Value* rvt_saved_tape = current_tape_ptr_;
+                    current_tape_ptr_ = rvt_tape;
+                    pushTapeContext(rvt_tape);
+
+                    // Per-element AD variable node pointer array.
+                    Value* rvt_nodes = b.CreateCall(arena_allocate_func,
+                        {arena_ptr, b.CreateMul(rvt_n, ConstantInt::get(ctx_.int64Type(), sizeof(void*)))});
+                    Value* rvt_nodes_t = b.CreatePointerCast(rvt_nodes, ctx_.ptrType());
+
+                    // AD-node tensor (same shape) passed to the closure.
+                    Value* rvt_ad = b.CreateCall(mem_.getArenaAllocateTensorFull(),
+                        {arena_ptr, rvt_ndim, rvt_n});
+                    Value* rvt_ad_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 0));
+                    Value* rvt_ad_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ad, 2));
+
+                    // Result tensor (same shape) that receives the gradient.
+                    Value* rvt_res = b.CreateCall(mem_.getArenaAllocateTensorFull(),
+                        {arena_ptr, rvt_ndim, rvt_n});
+                    Value* rvt_res_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 0));
+                    Value* rvt_res_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_res, 2));
+
+                    // Copy the shape into both the AD-node tensor and the result.
+                    Value* rvt_di = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_di");
+                    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_di);
+                    BasicBlock* rvt_dc = BasicBlock::Create(ctx_.context(), "rvt_dcopy_cond", current_func);
+                    BasicBlock* rvt_db = BasicBlock::Create(ctx_.context(), "rvt_dcopy_body", current_func);
+                    BasicBlock* rvt_de = BasicBlock::Create(ctx_.context(), "rvt_dcopy_end", current_func);
+                    b.CreateBr(rvt_dc);
+                    b.SetInsertPoint(rvt_dc);
+                    Value* rvt_div = b.CreateLoad(ctx_.int64Type(), rvt_di);
+                    b.CreateCondBr(b.CreateICmpULT(rvt_div, rvt_ndim), rvt_db, rvt_de);
+                    b.SetInsertPoint(rvt_db);
+                    Value* rvt_dv = b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), rvt_dims, rvt_div));
+                    b.CreateStore(rvt_dv, b.CreateGEP(ctx_.int64Type(), rvt_ad_dims, rvt_div));
+                    b.CreateStore(rvt_dv, b.CreateGEP(ctx_.int64Type(), rvt_res_dims, rvt_div));
+                    b.CreateStore(b.CreateAdd(rvt_div, ConstantInt::get(ctx_.int64Type(), 1)), rvt_di);
+                    b.CreateBr(rvt_dc);
+                    b.SetInsertPoint(rvt_de);
+
+                    // Seed each element as an AD variable node.
+                    Value* rvt_ji = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_ji");
+                    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_ji);
+                    BasicBlock* rvt_sc = BasicBlock::Create(ctx_.context(), "rvt_seed_cond", current_func);
+                    BasicBlock* rvt_sb = BasicBlock::Create(ctx_.context(), "rvt_seed_body", current_func);
+                    BasicBlock* rvt_se = BasicBlock::Create(ctx_.context(), "rvt_seed_end", current_func);
+                    b.CreateBr(rvt_sc);
+                    b.SetInsertPoint(rvt_sc);
+                    Value* rvt_jv = b.CreateLoad(ctx_.int64Type(), rvt_ji);
+                    b.CreateCondBr(b.CreateICmpULT(rvt_jv, rvt_n), rvt_sb, rvt_se);
+                    b.SetInsertPoint(rvt_sb);
+                    Value* rvt_ebits = b.CreateLoad(ctx_.int64Type(), b.CreateGEP(ctx_.int64Type(), rvt_elems, rvt_jv));
+                    Value* rvt_edbl = b.CreateBitCast(rvt_ebits, ctx_.doubleType());
+                    Value* rvt_node = createADVariable(rvt_edbl, 0);
+                    b.CreateStore(rvt_node, b.CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_jv));
+                    b.CreateStore(b.CreatePtrToInt(rvt_node, ctx_.int64Type()),
+                        b.CreateGEP(ctx_.int64Type(), rvt_ad_elems, rvt_jv));
+                    b.CreateStore(b.CreateAdd(rvt_jv, ConstantInt::get(ctx_.int64Type(), 1)), rvt_ji);
+                    b.CreateBr(rvt_sc);
+                    b.SetInsertPoint(rvt_se);
+
+                    // Call the closure in AD mode with the AD-node tensor.
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 1), ctx_.adModeActive());
+                    Value* rvt_ad_tagged = tagged_.packPtr(
+                        b.CreatePtrToInt(rvt_ad, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+                    Value* rvt_out = closure_call_callback_(closure_val,
+                        std::vector<Value*>{rvt_ad_tagged}, "autodiff", callback_context_);
+                    b.CreateStore(ConstantInt::get(ctx_.int1Type(), 0), ctx_.adModeActive());
+                    popTapeContext();
+
+                    if (!rvt_out) {
+                        eshkol_error("gradient: failed to call runtime tensor function");
+                        return nullptr;
+                    }
+
+                    // Backpropagate only when the closure returned an AD node. A
+                    // constant return means the loss ignores its input, so a zero
+                    // gradient is the correct answer (not a dropped signal).
+                    Value* rvt_ob = tagged_.getBaseType(tagged_.getType(rvt_out));
+                    Value* rvt_is_ad = b.CreateICmpEQ(rvt_ob,
+                        ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_CALLABLE));
+                    BasicBlock* rvt_bwd = BasicBlock::Create(ctx_.context(), "rvt_bwd", current_func);
+                    BasicBlock* rvt_nobwd = BasicBlock::Create(ctx_.context(), "rvt_nobwd", current_func);
+                    BasicBlock* rvt_after = BasicBlock::Create(ctx_.context(), "rvt_after_bwd", current_func);
+                    b.CreateCondBr(rvt_is_ad, rvt_bwd, rvt_nobwd);
+
+                    b.SetInsertPoint(rvt_bwd);
+                    Value* rvt_out_node = b.CreateIntToPtr(tagged_.unpackInt64(rvt_out), ctx_.ptrType());
+                    backpropagate(rvt_tape, rvt_out_node);
+                    ctx_.builder().CreateBr(rvt_after);
+
+                    ctx_.builder().SetInsertPoint(rvt_nobwd);
+                    ctx_.builder().CreateBr(rvt_after);
+
+                    ctx_.builder().SetInsertPoint(rvt_after);
+                    // Extract per-element gradients (0.0 where no backward ran).
+                    Value* rvt_gi = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "rvt_gi");
+                    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_gi);
+                    BasicBlock* rvt_gc = BasicBlock::Create(ctx_.context(), "rvt_grad_cond", current_func);
+                    BasicBlock* rvt_gb = BasicBlock::Create(ctx_.context(), "rvt_grad_body", current_func);
+                    BasicBlock* rvt_ge = BasicBlock::Create(ctx_.context(), "rvt_grad_end", current_func);
+                    ctx_.builder().CreateBr(rvt_gc);
+                    ctx_.builder().SetInsertPoint(rvt_gc);
+                    Value* rvt_gv = ctx_.builder().CreateLoad(ctx_.int64Type(), rvt_gi);
+                    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(rvt_gv, rvt_n), rvt_gb, rvt_ge);
+                    ctx_.builder().SetInsertPoint(rvt_gb);
+                    Value* rvt_gnode = ctx_.builder().CreateLoad(ctx_.ptrType(),
+                        ctx_.builder().CreateGEP(ctx_.ptrType(), rvt_nodes_t, rvt_gv));
+                    Value* rvt_g = loadNodeGradient(rvt_gnode);
+                    ctx_.builder().CreateStore(ctx_.builder().CreateBitCast(rvt_g, ctx_.int64Type()),
+                        ctx_.builder().CreateGEP(ctx_.int64Type(), rvt_res_elems, rvt_gv));
+                    ctx_.builder().CreateStore(
+                        ctx_.builder().CreateAdd(rvt_gv, ConstantInt::get(ctx_.int64Type(), 1)), rvt_gi);
+                    ctx_.builder().CreateBr(rvt_gc);
+                    ctx_.builder().SetInsertPoint(rvt_ge);
+
+                    current_tape_ptr_ = rvt_saved_tape;
+                    ctx_.builder().CreateStore(tagged_.packHeapPtr(rvt_res), rt_result_slot);
+                    ctx_.builder().CreateBr(grad_rt_done);
+
+                    ctx_.builder().SetInsertPoint(rvt_not_tensor);
+                }
+
                 ctx_.builder().CreateCondBr(rt_point_is_scalar, grad_rt_scalar_fwd, grad_rt_collection);
 
                 ctx_.builder().SetInsertPoint(grad_rt_scalar_fwd);
