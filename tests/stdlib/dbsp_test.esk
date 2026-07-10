@@ -1,0 +1,285 @@
+;;; tests/stdlib/dbsp_test.esk — acceptance gate for core.dbsp (ADR 0009).
+;;;
+;;; Self-asserting: prints PASS/FAIL per case and a summary, exits 1 on any
+;;; failure. Runs identically under JIT (-r) and AOT (compile + a.out).
+;;;
+;;; Gates (ADR 0009 "Acceptance tests", v1.5.0 slice + the join/distinct
+;;; operators requested for this stage):
+;;;   1. Z-set commutative-group laws: associativity, commutativity,
+;;;      identity, inverse (on a small corpus).
+;;;   2. D and I are mutual inverses: I(D(s)) = s and D(I(s)) = s.
+;;;   3. Linear-operator incrementality: map/filter/project over a delta equals
+;;;      the delta of the batch result (== the generic incrementalizer).
+;;;   4. Join product rule under interleaved insert+delete equals the batch
+;;;      join recomputed from scratch, with the cross term proven necessary.
+;;;   5. distinct correctness under multiplicities (boundary deltas), integrated
+;;;      against batch distinct.
+
+(require stdlib)
+(require core.dbsp)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name ok)
+  (if ok
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; Compare two streams (lists of Z-sets) tick-by-tick under group equality.
+(define (stream=? sa sb)
+  (cond ((and (null? sa) (null? sb)) #t)
+        ((or (null? sa) (null? sb)) #f)
+        ((zset=? (car sa) (car sb)) (stream=? (cdr sa) (cdr sb)))
+        (else #f)))
+
+;; ============================================================================
+;; Corpus
+;; ============================================================================
+;; Rows deliberately span symbols, exact integers, strings, and lists to
+;; exercise canonical ordering across value shapes.
+
+(define zA (zset-from-weighted (list (list 2 'x) (list 1 'y) (list -1 'x))))  ; x:1 y:1
+(define zB (zset-from-weighted (list (list 3 'y) (list 1 "s") (list -2 5))))  ; y:3 "s":1 5:-2
+(define zC (zset-from-weighted (list (list 1 (list 'k 1)) (list 4 'x))))      ; (k 1):1 x:4
+(define zD (zset-empty))
+(define corpus (list zA zB zC zD))
+
+;; every ordered pair / triple from the corpus, for the algebraic laws
+(define (each-pair f)
+  (for-each (lambda (a) (for-each (lambda (b) (f a b)) corpus)) corpus))
+(define (each-triple f)
+  (for-each (lambda (a)
+              (for-each (lambda (b)
+                          (for-each (lambda (c) (f a b c)) corpus))
+                        corpus))
+            corpus))
+
+;; ============================================================================
+;; 1. Commutative-group laws
+;; ============================================================================
+
+(define assoc-ok #t)
+(each-triple
+ (lambda (a b c)
+   (if (not (zset=? (zset-add (zset-add a b) c)
+                    (zset-add a (zset-add b c))))
+       (set! assoc-ok #f))))
+(check "group: addition associative" assoc-ok)
+
+(define comm-ok #t)
+(each-pair
+ (lambda (a b)
+   (if (not (zset=? (zset-add a b) (zset-add b a)))
+       (set! comm-ok #f))))
+(check "group: addition commutative" comm-ok)
+
+(define ident-ok #t)
+(for-each
+ (lambda (a)
+   (if (or (not (zset=? (zset-add a (zset-empty)) a))
+           (not (zset=? (zset-add (zset-empty) a) a)))
+       (set! ident-ok #f)))
+ corpus)
+(check "group: empty is additive identity" ident-ok)
+
+(define inv-ok #t)
+(for-each
+ (lambda (a)
+   (if (or (not (zset=? (zset-add a (zset-negate a)) (zset-empty)))
+           (not (zset=? (zset-sub a a) (zset-empty))))
+       (set! inv-ok #f)))
+ corpus)
+(check "group: negate is additive inverse" inv-ok)
+
+;; scale and consolidation sanity
+(check "zset-scale distributes over add"
+       (zset=? (zset-scale 3 (zset-add zA zB))
+               (zset-add (zset-scale 3 zA) (zset-scale 3 zB))))
+(check "zeros are absent after consolidation"
+       (zset=? (zset-add zA (zset-negate zA)) (zset-empty)))
+(check "zset-weight reads consolidated weight"
+       (and (= (zset-weight zA 'x) 1) (= (zset-weight zA 'z) 0)
+            (= (zset-weight zB 5) -2)))
+
+;; ============================================================================
+;; 2. D and I are mutual inverses
+;; ============================================================================
+;; A finite stream of arbitrary deltas (including retraction and cancellation).
+
+(define s1
+  (list (zset-from-weighted (list (list 1 'a) (list 2 'b)))
+        (zset-from-weighted (list (list -1 'a) (list 1 'c)))
+        (zset-empty)
+        (zset-from-weighted (list (list 3 'a) (list -2 'b)))
+        (zset-singleton 'c -1)))
+
+(define s2 (list zA zB zC zD (zset-singleton "s" 7)))
+
+(check "inverse: D(I(s1)) = s1" (stream=? (stream-D (stream-I s1)) s1))
+(check "inverse: I(D(s1)) = s1" (stream=? (stream-I (stream-D s1)) s1))
+(check "inverse: D(I(s2)) = s2" (stream=? (stream-D (stream-I s2)) s2))
+(check "inverse: I(D(s2)) = s2" (stream=? (stream-I (stream-D s2)) s2))
+
+;; z^-1 initial snapshot is the group zero
+(check "z^-1 seeds group zero at t=0"
+       (zset=? (car (stream-delay s1)) (zset-empty)))
+
+;; ============================================================================
+;; 3. Linear-operator incrementality
+;; ============================================================================
+;; For a linear op L, applying L to each delta equals the incrementalizer
+;; D . lift(L) . I, and integrating either equals the batch L over integrated
+;; input.
+
+(define ds s1)  ; treat s1 as a stream of input deltas
+
+(define (map-f row) (list 'tag row))
+(define (keep? row) (symbol? row))
+
+(define lin-map (incremental-map map-f))
+(define lin-filter (incremental-filter keep?))
+(define lin-proj (incremental-project map-f))
+
+(define inc-map (dbsp-incrementalize (lambda (z) (zset-map map-f z))))
+(define inc-filter (dbsp-incrementalize (lambda (z) (zset-filter keep? z))))
+
+(check "linear map = generic incrementalizer"
+       (stream=? (lin-map ds) (inc-map ds)))
+(check "linear filter = generic incrementalizer"
+       (stream=? (lin-filter ds) (inc-filter ds)))
+(check "project = map on deltas"
+       (stream=? (lin-proj ds) (lin-map ds)))
+
+;; batch equivalence: I(L^D(ds)) = L(I(ds)) at every tick
+(check "linear map batch-equivalent (I . L^D = L . I)"
+       (stream=? (stream-I (lin-map ds))
+                 (map (lambda (z) (zset-map map-f z)) (stream-I ds))))
+(check "linear filter batch-equivalent (I . L^D = L . I)"
+       (stream=? (stream-I (lin-filter ds))
+                 (map (lambda (z) (zset-filter keep? z)) (stream-I ds))))
+
+;; union is linear: pointwise add == incrementalized add
+(define dsb-stream
+  (list (zset-singleton 'b 1) (zset-singleton 'a 1)
+        (zset-singleton 'a -1) (zset-empty) (zset-singleton 'q 2)))
+(check "union batch-equivalent"
+       (stream=? (stream-I (incremental-union ds dsb-stream))
+                 (map zset-add (stream-I ds) (stream-I dsb-stream))))
+
+;; ============================================================================
+;; 4. Join product rule (bilinear) under interleaved insert + delete
+;; ============================================================================
+;; Left rows:  (id . name), keyed by id.  Right rows: (id . dept), keyed by id.
+;; emit joins to (name dept).
+
+(define (lkey r) (car r))
+(define (rkey r) (car r))
+(define (jemit l r) (list (cdr l) (cdr r)))
+
+;; Interleaved delta streams. Tick 3 deletes a left row and inserts a new
+;; right row in the SAME tick (dA=-a and dB=+b2), the case the cross term
+;; must handle.
+(define dLeft
+  (list (zset-singleton (cons 1 'ann) 1)                 ; +ann
+        (zset-singleton (cons 2 'bob) 1)                 ; +bob
+        (zset-from-weighted (list (list -1 (cons 1 'ann)); -ann and +cid
+                                  (list 1 (cons 3 'cid))))
+        (zset-singleton (cons 2 'bob) -1)))              ; -bob
+
+(define dRight
+  (list (zset-singleton (cons 1 'sales) 1)               ; +sales@1
+        (zset-singleton (cons 2 'eng) 1)                 ; +eng@2
+        (zset-singleton (cons 3 'ops) 1)                 ; +ops@3
+        (zset-singleton (cons 1 'sales) -1)))            ; -sales@1
+
+;; Incremental join via the product rule.
+(define j-inc (incremental-join dLeft dRight lkey rkey jemit))
+
+;; Batch join recomputed from scratch at every tick from integrated inputs.
+(define Lsnap (stream-I dLeft))
+(define Rsnap (stream-I dRight))
+(define j-batch (map (lambda (l r) (zset-join l r lkey rkey jemit)) Lsnap Rsnap))
+
+(check "join: I(incremental) = batch join at every tick"
+       (stream=? (stream-I j-inc) j-batch))
+
+;; The incremental delta itself must equal the explicit three-term rule.
+(define three-term
+  (let loop ((as dLeft) (bs dRight)
+             (a0 (zset-empty)) (b0 (zset-empty)) (out '()))
+    (if (null? as)
+        (reverse out)
+        (let* ((da (car as)) (db (car bs))
+               (delta (zset-add (zset-add (zset-join da b0 lkey rkey jemit)
+                                          (zset-join a0 db lkey rkey jemit))
+                                (zset-join da db lkey rkey jemit))))
+          (loop (cdr as) (cdr bs)
+                (zset-add a0 da) (zset-add b0 db)
+                (cons delta out))))))
+(check "join: incremental delta = explicit three-term product rule"
+       (stream=? j-inc three-term))
+
+;; Cross term necessity: a two-term rule that drops (dA join dB) must DIFFER
+;; on this schedule (proving the cross term is load-bearing, ADR 0009).
+(define two-term-wrong
+  (let loop ((as dLeft) (bs dRight)
+             (a0 (zset-empty)) (b0 (zset-empty)) (out '()))
+    (if (null? as)
+        (reverse out)
+        (let* ((da (car as)) (db (car bs))
+               (delta (zset-add (zset-join da b0 lkey rkey jemit)
+                                (zset-join a0 db lkey rkey jemit))))
+          (loop (cdr as) (cdr bs)
+                (zset-add a0 da) (zset-add b0 db)
+                (cons delta out))))))
+(check "join: dropping the cross term is observably wrong here"
+       (not (stream=? two-term-wrong three-term)))
+
+;; ============================================================================
+;; 5. distinct correctness under multiplicities
+;; ============================================================================
+;; Drive one row's count through 0->1->2->1->0, plus other rows, plus a
+;; same-tick insert/delete cancellation.
+
+(define dCounts
+  (list (zset-singleton 'p 1)                              ; p: 0->1  emit +p
+        (zset-from-weighted (list (list 1 'p) (list 1 'q))); p:1->2, q:0->1  emit +q
+        (zset-singleton 'p -1)                             ; p:2->1  no emit
+        (zset-from-weighted (list (list 1 'r) (list -1 'r))); r cancels same tick, no emit
+        (zset-from-weighted (list (list -1 'p) (list -1 'q)))));p:1->0,q:1->0 emit -p,-q
+
+(define dist-inc (incremental-distinct dCounts))
+
+;; Integrated distinct view must equal batch distinct of integrated counts.
+(define dist-batch (map zset-distinct (stream-I dCounts)))
+(check "distinct: I(incremental) = batch distinct at every tick"
+       (stream=? (stream-I dist-inc) dist-batch))
+
+;; Explicit boundary deltas: +p ; +q ; (nothing) ; (nothing) ; -p,-q
+(check "distinct: emits +1 on 0->positive (p)"
+       (zset=? (car dist-inc) (zset-singleton 'p 1)))
+(check "distinct: emits +1 on 0->positive (q), none for p:1->2"
+       (zset=? (cadr dist-inc) (zset-singleton 'q 1)))
+(check "distinct: no boundary for p:2->1"
+       (zset-empty? (caddr dist-inc)))
+(check "distinct: same-tick cancellation yields no boundary"
+       (zset-empty? (cadddr dist-inc)))
+(check "distinct: emits -1 on positive->0 (p and q)"
+       (zset=? (car (cddddr dist-inc))
+               (zset-from-weighted (list (list -1 'p) (list -1 'q)))))
+
+;; ============================================================================
+;; Summary
+;; ============================================================================
+(newline)
+(display "==== core.dbsp SUMMARY ====") (newline)
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+(if (> tests-failed 0)
+    (begin (display "RESULT: FAIL") (newline) (exit 1))
+    (begin (display "RESULT: PASS") (newline)))
