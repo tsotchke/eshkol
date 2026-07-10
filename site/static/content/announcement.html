@@ -1,22 +1,24 @@
 <h1
-id="eshkol-v1.3.1-flat-memory-for-long-running-programs-and-a-fully-documented-public-api">Eshkol
-v1.3.1 — flat memory for long-running programs, and a fully documented
-public API</h1>
-<p><strong>Eshkol v1.3.1 builds on v1.3.0-evolve’s arbitrary-order
-Taylor-tower automatic differentiation and 100% R7RS conformance with
-what a differentiable systems language needs to run unattended: flat
-memory in long-running resident/daemon workloads, and a comprehensive
-documentation pass across every public header and implementation
-module.</strong></p>
+id="eshkol-v1.3.3-evolve-exact-ad-gradients-for-first-class-losses-and-the-region-evacuator-closeout">Eshkol
+v1.3.3-evolve — exact AD gradients for first-class losses, and the
+region-evacuator closeout</h1>
+<p><strong>Eshkol v1.3.3-evolve corrects an overstated
+automatic-differentiation claim from v1.3.2-evolve with the real fix —
+exact gradients through the <code>input2</code> path for first-class
+losses and vector/learnable gamma — and completes the region-escape
+evacuator series (ESH-0214) by covering the last heap subtype,
+<code>PROMISE</code>.</strong></p>
 <p>Eshkol is Scheme (R7RS) compiled to native code via LLVM, with
 automatic differentiation as a compiler primitive rather than a library.
-Where v1.3.0-evolve took AD from “correct at first and second order” to
-“correct, exact, and validated at <em>every</em> order” and closed out a
-long list of robustness gaps found by a new permanent
-adversarial-testing program, v1.3.1 closes the remaining gap between
-“runs correctly” and “runs unattended for days”: a memory-growth class
-that survived the v1.3.0-evolve TCO-loop hardening, and a native-stack
-overflow on very large persisted data.</p>
+v1.3.2-evolve’s CHANGELOG entry for issue #212 claimed the
+<code>input2</code> gradient path — the second operand of
+<code>conv2d</code>/<code>batchnorm</code>/<code>layernorm</code>/<code>attention</code>
+(kernel / gamma / K / V) — was complete. An adversarial audit run during
+this cycle found that claim was wrong: the v1.3.2 change landed a test
+and a roadmap update, but no gradient code. v1.3.3-evolve ships the
+actual fix, corrects the record in CHANGELOG.md, and — separately —
+finishes the region-evacuator hardening that v1.3.1-evolve and
+v1.3.2-evolve had been closing out one heap subtype at a time.</p>
 <p>Full engineering detail lives in <a
 href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary is <a
 href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the complete AD
@@ -26,71 +28,117 @@ guide</a>. This document is the release announcement — quotable, and
 every claim below is grounded in shipped code and a real, run
 command.</p>
 <hr />
-<h2 id="whats-new-in-v1.3.1">What’s new in v1.3.1</h2>
-<h3 id="flat-memory-for-resident-and-daemon-workloads">Flat memory for
-resident and daemon workloads</h3>
-<p>v1.3.0-evolve already gave named-let TCO loops automatic,
-zero-annotation per-iteration arena-scope reclamation (ESH-0214). v1.3.1
-closes the remaining case in that same bug class and fixes a second,
-unrelated way a long-running process’s native stack could blow out:</p>
-<ul>
-<li><strong>Self-tail-recursive <code>define</code> loops, including a
-catch-all guard body</strong> (ESH-0214b): the escape analysis that
-makes per-iteration arena reclamation safe now also recognizes
-self-tail-recursive functions written with plain <code>define</code>
-rather than named-let, and accepts a catch-all guard body in that
-analysis rather than declining to optimize it. Verified on a
-1,000,000-iteration loop: RSS goes from 1,369 MB (unbounded growth) to
-224 MB (flat).</li>
-<li><strong>Iterative S-expression reader</strong> (ESH-0191):
-<code>read_list</code>, the core parser routine for reading persisted
-S-expression data back in, was rewritten from one native stack frame per
-list element to an iterative loop. A program that reads back a very
-large persisted data structure — a long checkpoint, a big literal table,
-a large logged fact base — no longer risks a native-stack overflow on
-load. Verified: the pre-fix reader crashed with SIGBUS at 20 million
-elements; the post-fix reader completes cleanly at the same size.</li>
-</ul>
-<p>Together, these are the difference between a program that degrades
-over a long run and one that doesn’t: an Eshkol process built as a
-resident worker or daemon — a long-lived agent loop, a persistent
-server, a checkpoint/restore pipeline — can now run with flat memory
-instead of monitoring RSS and scheduling restarts.</p>
+<h2 id="whats-new-since-v1.3.1-evolve">What’s new since
+v1.3.1-evolve</h2>
 <h3
-id="comprehensive-c-api-and-implementation-documentation">Comprehensive
-C-API and implementation documentation</h3>
-<p>Every public embedding header and every previously-undocumented
-implementation file gets Doxygen-format documentation in this release:
-50 of the 64 public headers under <code>inc/eshkol/</code> (backend
-codegen, runtime core, type system, XLA backend,
-subprocess/macro-expander/qLLM-bridge surfaces, thread pool and
-work-stealing deque, logger, model I/O, platform runtime, runtime
-exports) across six commits, plus 56 previously-undocumented
-implementation files under <code>lib/</code> (agent FFI, the type
-checker, the parser, the REPL, core non-runtime modules, the quantum
-RNG, FFI bridges) across three commits. Combined, that is 116 files and
-roughly 12,600 lines of new documentation — comments only, no behavior
-changes. Anyone embedding <code>libeshkol</code> or reading the
-compiler’s own source now has a documented contract to read instead of
-guessing from call sites.</p>
-<h3 id="a-navigable-documentation-reference-index">A navigable
-documentation reference index</h3>
-<p>A per-subsystem reference index now organizes the language surface
-for lookup rather than linear reading: <a
-href="docs/reference/language/INDEX.md"><code>docs/reference/language/</code></a>,
-<a href="docs/reference/ad/INDEX.md"><code>ad/</code></a>, <a
-href="docs/reference/runtime/INDEX.md"><code>runtime/</code></a>, <a
-href="docs/reference/tensors/INDEX.md"><code>tensors/</code></a>, <a
-href="docs/reference/stdlib/INDEX.md"><code>stdlib/</code></a>, and <a
-href="docs/reference/agent/INDEX.md"><code>agent/</code></a>, each an
-example-verified index into the corresponding function and syntax
-reference. It is linked from <a
-href="README.md#documentation">README.md</a>.</p>
+id="v1.3.3-evolve-exact-ad-gradients-and-the-region-evacuator-series-closes-out">v1.3.3-evolve:
+exact AD gradients, and the region-evacuator series closes out</h3>
+<ul>
+<li><strong>Exact tensor AD gradients for first-class losses and
+vector/learnable gamma; silent-zero backward paths now error instead of
+returning zero</strong> (#229). The real <code>input2</code> fix, in
+three parts: (1) a loss with no compile-time <code>Function*</code> — a
+first-class/higher-order loss — fell to the forward-mode-dual closure
+path, which loses the tangent for tensor ops and silently returned a
+zero gradient; a reverse-mode tensor path was added to the closure
+branch of <code>AutodiffCodegen::gradient</code> to close that. (2)
+Batch-norm/layer-norm now wire per-feature gamma/beta as individual AD
+nodes instead of a single scalar, so vector/learnable gamma
+differentiates correctly rather than only a scalar approximation. (3)
+Any remaining unsupported tensor-op backward path now raises an explicit
+unsupported-op error instead of silently returning zero, honoring
+exact-AD-or-error rather than exact-AD-or-silently-wrong.
+Finite-difference-verified exact in both literal and first-class forms
+across matmul/conv2d/attention-K-V/vector-gamma; autodiff suite 54/54,
+the <code>input2</code> gradient gate 24/24 under both JIT and AOT.</li>
+<li><strong>Region escape evacuator now covers the <code>PROMISE</code>
+heap subtype</strong> (ESH-0214e, #230). Adversarial-audit follow-up to
+ESH-0214d: <code>PROMISE</code> was left a shallow-copied leaf despite
+carrying interior pointers (a thunk and a cached value). A
+<code>delay</code>/<code>make-promise</code> created inside
+<code>with-region</code> that escaped outward dangled after
+<code>region_pop</code>, observable as a segfault or
+<code>car: not a pair</code> under <code>ESHKOL_ARENA_POISON=1</code>
+when the promise was later forced. Fixed by adding an evacuation case
+that walks both interior slots; verified flat at ~116 MB under poison
+over escape-then-force for both <code>delay</code> and
+<code>make-promise</code>. This closes out the ESH-0214 region-evacuator
+series (ESH-0214a through e) that started with
+named-let/<code>define</code>-loop arena reclamation in
+v1.3.1-evolve.</li>
+<li><strong>ICC release-oracle hardening</strong> (#232): the completion
+oracle now checks region-evacuator poison coverage and the corrected
+<code>input2</code> gradient gate, so both fixes above are load-bearing
+release gates going forward, not one-off verifications.</li>
+<li><strong>Subprocess <code>process-wait</code> kqueue lost-wakeup race
+— documented.</strong> The fix itself shipped in v1.3.2-evolve (commit
+<code>8443ddae</code>) but was never recorded in the CHANGELOG until
+now: on macOS, a child that exited before its <code>kevent</code>
+<code>EVFILT_PROC</code> filter was registered could make
+<code>process-wait</code> block for the full timeout and misreport a
+dead process as still running. The fix probes once with
+<code>waitpid(WNOHANG)</code> right after registering the filter (and
+again on the timeout branch) so an already-dead child is reaped
+immediately instead of falling through to a spurious timeout.</li>
+</ul>
+<h3
+id="v1.3.2-evolve-thread-safe-regions-deeper-evacuation-and-new-tooling">v1.3.2-evolve:
+thread-safe regions, deeper evacuation, and new tooling</h3>
+<ul>
+<li><strong>Region escape evacuator now covers logic and workspace
+subtypes</strong> (ESH-0214d, #226): <code>SUBSTITUTION</code>,
+<code>FACT</code>, <code>KNOWLEDGE_BASE</code>,
+<code>FACTOR_GRAPH</code>, and <code>WORKSPACE</code> — the state a
+resident tick loop mutates via the neuro-symbolic stack — are now
+deep-walked on region escape instead of shallow-copied, so a
+<code>with-region</code>-wrapped tick loop can reclaim transient garbage
+per iteration while its escaping knowledge-base/workspace state is
+promoted intact. <code>arena_destroy</code> is now poisoned under
+<code>ESHKOL_ARENA_POISON</code> so a region use-after-free crashes
+loudly instead of passing by luck.</li>
+<li><strong>Thread-safe region scope stack</strong> (#217):
+<code>parallel-map</code>/future callbacks that opened a
+<code>with-region</code> raced on the shared current-arena slot under
+concurrency; the region hijack moved into the runtime with a
+parallel-scope guard.</li>
+<li><strong><code>eshkol-doc</code> — API reference generator</strong>
+(#213): harvests Doxygen <code>/** @brief */</code> comments from
+<code>inc/</code> and <code>lib/</code> and generates
+<code>docs/api/</code>.</li>
+<li><strong><code>core.blc</code> — Binary Lambda Calculus, plus a
+universal machine</strong> (#218): a pure-Eshkol implementation of John
+Tromp’s Binary Lambda Calculus — De Bruijn-indexed terms,
+<code>blc-encode</code>/<code>blc-decode</code>, normal-order
+<code>blc-eval</code> — deepened with <code>(blc-U)</code>, Tromp’s
+232-bit self-interpreter, BLC8 byte I/O, and ASCII lambda diagrams.</li>
+<li><strong>Three deferred latent bugs triaged</strong>: ESH-0223
+(named-let stack overflow at high iteration counts), ESH-0227
+(apply-loop SIGBUS), ESH-0228 (<code>sleep-ms</code> argument type
+check) (#215).</li>
+</ul>
 <hr />
-<h2 id="the-foundation-this-release-runs-on-v1.3.0-evolve">The
-foundation this release runs on: v1.3.0-evolve</h2>
-<h3 id="arbitrary-order-automatic-differentiation">Arbitrary-order
-automatic differentiation</h3>
+<h2
+id="the-foundation-this-release-runs-on-v1.3.1-evolve-and-v1.3.0-evolve">The
+foundation this release runs on: v1.3.1-evolve and v1.3.0-evolve</h2>
+<h3
+id="flat-memory-for-resident-and-daemon-workloads-v1.3.1-evolve">Flat
+memory for resident and daemon workloads (v1.3.1-evolve)</h3>
+<p>The per-iteration arena-reclamation work that the region-evacuator
+series above builds on started here: self-tail-recursive
+<code>define</code> loops, including a catch-all guard body, gained the
+same automatic per-iteration arena-scope reclamation that named-let
+loops already had (ESH-0214b) — verified on a 1,000,000-iteration loop,
+RSS goes from 1,369 MB (unbounded growth) to 224 MB (flat) — and the
+S-expression reader (<code>read_list</code>) was rewritten from one
+native stack frame per list element to an iterative loop, so reading
+back a very large persisted data structure no longer risks a
+native-stack overflow (ESH-0191). v1.3.1-evolve also shipped a
+comprehensive Doxygen documentation pass across every public embedding
+header and most implementation files, plus a navigable per-subsystem
+documentation index.</p>
+<h3
+id="arbitrary-order-automatic-differentiation-v1.3.0-evolve">Arbitrary-order
+automatic differentiation (v1.3.0-evolve)</h3>
 <p>Eshkol’s forward-mode, reverse-mode, and symbolic AD were already
 exact at first and second order. v1.3.0-evolve added a second axis on
 top of that: <strong>order</strong>. A Taylor-tower engine — designed in
@@ -198,8 +246,8 @@ hygienic macros.</p>
 shutdown</h3>
 <p>A cluster of fixes from v1.3.0-evolve targets the class of bug that
 only shows up in a program that runs for a long time or recurses deeply,
-not in a quick test — the same class this release’s arena-reclamation
-and reader fixes continue to close:</p>
+not in a quick test — the same class the arena-reclamation, reader, and
+region-evacuator fixes since have continued to close:</p>
 <ul>
 <li><strong>Proper mutual tail calls</strong> (ESH-0102): a call in tail
 position to another function is emitted as an LLVM <code>musttail</code>
@@ -219,12 +267,14 @@ href="CHANGELOG.md">CHANGELOG.md</a>.</p>
 <h3 id="a-hardened-permanent-adversarial-testing-program">A hardened,
 permanent adversarial-testing program</h3>
 <p>v1.3.0-evolve shipped the testing infrastructure that found and
-closed the gaps above, wired permanently into the ICC release oracle
-rather than run once and discarded: a multi-path differential harness
-with a seeded fuzzer, a feature-pair edge matrix, an AD
-finite-difference oracle, a stress harness with RSS/time budgets, a
-VM-parity ratchet, depth-parametric sweeps, and the external
-reference-Scheme differential oracle described above. See <a
+closed the gaps above — and that this release’s adversarial audit used
+to catch the v1.3.2-evolve <code>input2</code> overstatement — wired
+permanently into the ICC release oracle rather than run once and
+discarded: a multi-path differential harness with a seeded fuzzer, a
+feature-pair edge matrix, an AD finite-difference oracle, a stress
+harness with RSS/time budgets, a VM-parity ratchet, depth-parametric
+sweeps, and the external reference-Scheme differential oracle described
+above. See <a
 href="docs/TESTING.md"><code>docs/TESTING.md</code></a>.</p>
 <hr />
 <h2 id="why-it-matters">Why it matters</h2>
@@ -234,15 +284,21 @@ the opposite bet: make the derivative operator part of the language the
 compiler already understands, so it composes with closures, recursion,
 control flow, and the numeric tower the same way <code>+</code> does —
 and, since v1.3.0-evolve, at any order, exactly, with a provable error
-bound when you need one. That is a meaningfully larger AD surface than
-what JAX or PyTorch expose to user code today, delivered from an
-ahead-of-time native compiler rather than a runtime tracer.</p>
-<p>The robustness work in this release matters for a different reason: a
-differentiable systems language is only useful if the programs built on
-it can run unattended. Proper tail calls, flat memory in long-running
-loops, a reader that doesn’t overflow the stack on large persisted
-state, and a shutdown path that doesn’t race are the difference between
-a research demo and something you can leave running as a daemon.</p>
+bound when you need one. v1.3.3-evolve’s correction matters for the same
+reason: “exact AD” is a claim that has to hold for every path through
+the compiler, including the first-class-loss path that v1.3.2-evolve
+missed, or it isn’t exact AD at all. That is a meaningfully larger AD
+surface than what JAX or PyTorch expose to user code today, delivered
+from an ahead-of-time native compiler rather than a runtime tracer.</p>
+<p>The region-evacuator work matters for a different, complementary
+reason: a differentiable systems language is only useful if the programs
+built on it can run unattended. Proper tail calls, flat memory in
+long-running loops, a reader that doesn’t overflow the stack on large
+persisted state, a shutdown path that doesn’t race, and — as of this
+release — a region evacuator that correctly promotes every heap subtype
+a program can allocate (including a <code>delay</code>d promise) across
+a <code>with-region</code> boundary are the difference between a
+research demo and something you can leave running as a daemon.</p>
 <h2 id="get-started">Get started</h2>
 <pre class="bash"><code>brew tap tsotchke/eshkol &amp;&amp; brew install eshkol</code></pre>
 <p>Or build from source (LLVM 21+, C++20, CMake 3.14+) — see <a
@@ -260,7 +316,7 @@ language/AD/runtime/tensor/stdlib/agent reference.</li>
 <li><strong><a href="docs/ESHKOL_LANGUAGE_GUIDE.md">Eshkol Language
 Guide</a></strong> — tutorial introduction to the language.</li>
 <li><strong><a href="CHANGELOG.md">CHANGELOG.md</a></strong> — itemized
-engineering detail, phase by phase.</li>
+engineering detail, release by release.</li>
 <li><strong><a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a></strong> —
 the user-facing release summary, with the full gate matrix.</li>
 </ul>
@@ -282,16 +338,18 @@ site — the overwhelmingly common case in a compiler — the entire tower
 is unrolled into stack-allocated, branch-free SSA IR at compile time. A
 runtime heap-allocated tower (<code>HEAP_SUBTYPE_TAYLOR</code>) is the
 correctness fallback for a dynamically chosen order.</p>
-<p>The per-iteration arena-reclamation fix in this release uses the same
-style of static escape analysis: a self-tail-recursive loop body
-(named-let or plain <code>define</code>) is proven safe to reclaim per
-iteration by conservatively checking that nothing escapes the loop’s
-arena scope across the back-edge — a catch-all guard clause is now
-accepted into that analysis rather than causing the optimization to bail
-out. The iterative reader fix replaces per-element native recursion in
-<code>read_list</code> with an explicit loop and heap-allocated work
-list, so the reader’s stack usage no longer scales with the length of
-the list being read.</p>
+<p>The region-evacuator series (ESH-0214a through e) uses a
+complementary style of static-plus-runtime safety: a self-tail-recursive
+loop body (named-let or plain <code>define</code>) is proven safe to
+reclaim per iteration by conservatively checking that nothing escapes
+the loop’s arena scope across the back-edge; when something
+<em>does</em> escape a <code>with-region</code> boundary — a cons cell,
+a knowledge base, a factor graph, a workspace, or, as of v1.3.3-evolve,
+a promise — the evacuator deep-walks its interior pointers and promotes
+them into the surviving arena rather than leaving them dangling.
+<code>ESHKOL_ARENA_POISON=1</code> turns any remaining gap in that
+coverage into an immediate, loud crash instead of a silent
+corruption.</p>
 <hr />
-<p><em>Eshkol v1.3.1. MIT License. <a
+<p><em>Eshkol v1.3.3-evolve. MIT License. <a
 href="https://github.com/tsotchke/eshkol">github.com/tsotchke/eshkol</a></em></p>
