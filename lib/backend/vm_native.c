@@ -4550,6 +4550,106 @@ static int vm_closure_native_id(VM* vm, Value fn) {
  *        timers on every call via vm_timers_poll_due(). Errors are reported
  *        via `vm->error = 1` rather than by return value.
  */
+/**
+ * @brief Round @p x to the nearest integer using round-half-to-even (banker's
+ *        rounding), as required by R7RS `round`. The C library `round()`
+ *        rounds halves away from zero (2.5 → 3), which silently disagreed with
+ *        the native/reference path (2.5 → 2, 3.5 → 4).
+ */
+static double vm_round_half_even(double x) {
+    double f = floor(x);
+    double diff = x - f;
+    double r;
+    if (diff < 0.5) r = f;
+    else if (diff > 0.5) r = f + 1.0;
+    else r = (fmod(f, 2.0) == 0.0) ? f : f + 1.0; /* exactly halfway: round to even */
+    /* Preserve the sign of zero so (round -0.5) yields -0.0, matching the
+     * reference path, rather than +0.0. */
+    if (r == 0.0) return copysign(0.0, x);
+    return r;
+}
+
+/**
+ * @brief Deep structural equality (`equal?` per R7RS): recurses through pairs
+ *        and vectors, compares strings by content and numbers by value.
+ *        Numbers keep exactness distinctions (an exact int is not `equal?` to
+ *        an inexact float), matching the native/reference path. The prior
+ *        implementation compared pairs and vectors by heap identity, so
+ *        freshly-built equal structures reported `#f`.
+ */
+static int vm_deep_equal(VM* vm, Value a, Value b) {
+    if (a.type != b.type) return 0;
+    switch ((int)a.type) {
+        case VAL_NIL:   return 1;
+        case VAL_BOOL:  return a.as.b == b.as.b;
+        case VAL_INT:   return a.as.i == b.as.i;
+        case VAL_CHAR:  return a.as.i == b.as.i;
+        case VAL_FLOAT: return a.as.f == b.as.f;
+        case VAL_STRING: {
+            VmString* as = vm_value_as_string(vm, a);
+            VmString* bs = vm_value_as_string(vm, b);
+            return as && bs && as->byte_len == bs->byte_len &&
+                   memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        case VAL_PAIR: {
+            /* Iterate the spine to avoid deep C recursion on long lists;
+             * recurse only into each car. */
+            while (a.type == VAL_PAIR && b.type == VAL_PAIR) {
+                HeapObject* ao = vm->heap.objects[a.as.ptr];
+                HeapObject* bo = vm->heap.objects[b.as.ptr];
+                if (!ao || !bo) return 0;
+                if (!vm_deep_equal(vm, ao->cons.car, bo->cons.car)) return 0;
+                a = ao->cons.cdr;
+                b = bo->cons.cdr;
+            }
+            return vm_deep_equal(vm, a, b); /* compare tails (incl. proper-list NIL) */
+        }
+        case VAL_VECTOR: {
+            HeapObject* ao = vm->heap.objects[a.as.ptr];
+            HeapObject* bo = vm->heap.objects[b.as.ptr];
+            VmVector* av = (ao && ao->opaque.ptr) ? (VmVector*)ao->opaque.ptr : NULL;
+            VmVector* bv = (bo && bo->opaque.ptr) ? (VmVector*)bo->opaque.ptr : NULL;
+            if (!av || !bv) return av == bv;
+            if (av->len != bv->len) return 0;
+            for (int i = 0; i < av->len; i++)
+                if (!vm_deep_equal(vm, av->items[i], bv->items[i])) return 0;
+            return 1;
+        }
+        case VAL_BIGNUM: {
+            HeapObject* ao = vm->heap.objects[a.as.ptr];
+            HeapObject* bo = vm->heap.objects[b.as.ptr];
+            VmBignum* ab = (ao && ao->opaque.ptr) ? (VmBignum*)ao->opaque.ptr : NULL;
+            VmBignum* bb = (bo && bo->opaque.ptr) ? (VmBignum*)bo->opaque.ptr : NULL;
+            return ab && bb && bignum_compare(ab, bb) == 0;
+        }
+        case VAL_RATIONAL: {
+            HeapObject* ao = vm->heap.objects[a.as.ptr];
+            HeapObject* bo = vm->heap.objects[b.as.ptr];
+            VmRational* ar = (ao && ao->opaque.ptr) ? (VmRational*)ao->opaque.ptr : NULL;
+            VmRational* br = (bo && bo->opaque.ptr) ? (VmRational*)bo->opaque.ptr : NULL;
+            return ar && br && ar->num == br->num && ar->denom == br->denom;
+        }
+        case VAL_TENSOR: {
+            /* Numeric vector literals compile to tensors in this VM, so
+             * structural tensor equality is needed for equal? on such
+             * "vectors" to match the native path. */
+            HeapObject* ao = vm->heap.objects[a.as.ptr];
+            HeapObject* bo = vm->heap.objects[b.as.ptr];
+            VmTensor* at = (ao && ao->opaque.ptr) ? (VmTensor*)ao->opaque.ptr : NULL;
+            VmTensor* bt = (bo && bo->opaque.ptr) ? (VmTensor*)bo->opaque.ptr : NULL;
+            if (!at || !bt) return at == bt;
+            if (at->n_dims != bt->n_dims || at->total != bt->total) return 0;
+            for (int i = 0; i < at->n_dims; i++)
+                if (at->shape[i] != bt->shape[i]) return 0;
+            for (int64_t i = 0; i < at->total; i++)
+                if (at->data[i] != bt->data[i]) return 0;
+            return 1;
+        }
+        default:
+            return a.as.ptr == b.as.ptr; /* eq? fallback for opaque types */
+    }
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -4578,13 +4678,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 25: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); break; }
     case 26: { Value a = vm_pop(vm); vm_push(vm, number_val(floor(as_number_vm(vm,a)))); break; }
     case 27: { Value a = vm_pop(vm); vm_push(vm, number_val(ceil(as_number_vm(vm,a)))); break; }
-    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(round(as_number_vm(vm,a)))); break; }
+    case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(vm_round_half_even(as_number_vm(vm,a)))); break; }
     case 29: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(asin(as_number_vm(vm,a)))); break; }
     case 30: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(acos(as_number_vm(vm,a)))); break; }
     case 31: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(atan(as_number_vm(vm,a)))); break; }
     case 32: { Value b = vm_pop(vm); Value a = vm_pop(vm);
-        if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); }
-        else vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
+        if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,385); break; }
+        /* Exact integer base with a non-negative integer exponent → exact
+         * result: an int64 while it fits, promoting to a bignum on overflow
+         * (matching the native path). Previously always used pow() and
+         * returned an inexact float, so (expt 2 40) printed 1.09951e+12. */
+        if ((a.type==VAL_INT || a.type==VAL_BIGNUM) && b.type==VAL_INT && b.as.i >= 0) {
+            VmRegionStack* bn_rs = &vm->heap.regions;
+            VmBignum* base_bn = (a.type==VAL_BIGNUM)
+                ? (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr
+                : bignum_from_int64(bn_rs, a.as.i);
+            VmBignum* result = base_bn ? bignum_pow(bn_rs, base_bn, (uint64_t)b.as.i) : NULL;
+            if (result) {
+                int ov = 0; int64_t iv = bignum_to_int64(result, &ov);
+                if (!ov) vm_push(vm, INT_VAL(iv));
+                else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, result);
+                break;
+            }
+        }
+        vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
     case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); } else vm_push(vm, number_val(fabs(as_number(a)))); break; }
@@ -4805,6 +4922,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 227: { /* list->vector: (list->vector lst) → #(elts...)
+                 * Native id 227: previously the name table aliased
+                 * list->vector to id 139 (memq), so it silently returned #f. */
+        Value lst = vm_pop(vm);
+        int n = 0;
+        for (Value cur = lst; cur.type == VAL_PAIR; cur = vm->heap.objects[cur.as.ptr]->cons.cdr) n++;
+        int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
+        vm->heap.objects[p]->type = HEAP_VECTOR;
+        VmVector* v = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+        if (!v) { vm->error = 1; break; }
+        v->len = n; v->cap = n;
+        v->items = n ? (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value)) : NULL;
+        if (n && !v->items) { vm->error = 1; break; }
+        int i = 0;
+        for (Value cur = lst; cur.type == VAL_PAIR; cur = vm->heap.objects[cur.as.ptr]->cons.cdr)
+            v->items[i++] = vm->heap.objects[cur.as.ptr]->cons.car;
+        vm->heap.objects[p]->opaque.ptr = v;
+        vm_push(vm, (Value){VAL_VECTOR, {.ptr = p}});
+        break;
+    }
+
+    case 228: { /* char-from-int: tag an integer codepoint as a VAL_CHAR.
+                 * Emitted by the compiler for #\x literals so display/char?
+                 * distinguish a character from its integer code point. */
+        Value a = vm_pop(vm);
+        vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)});
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Make-vector (260)
      * ══════════════════════════════════════════════════════════════════════ */
@@ -4999,7 +5145,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
         case 345: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_round(r))); }
-            else vm_push(vm, INT_VAL((int64_t)round(as_number(v)))); break; }
+            else vm_push(vm, INT_VAL((int64_t)vm_round_half_even(as_number(v)))); break; }
         case 346: { Value v = vm_pop(vm);
             if (v.type == VAL_RATIONAL) { VmRational* r = (VmRational*)vm->heap.objects[v.as.ptr]->opaque.ptr; vm_push(vm, INT_VAL(vm_rational_numerator(r))); }
             else vm_push(vm, INT_VAL((int64_t)as_number(v))); break; }
@@ -6466,7 +6612,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int32_t p = heap_alloc(&vm->heap);
                 if (p < 0) break;
                 vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = INT_VAL(cp >= 0 ? cp : 0);
+                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp >= 0 ? cp : 0};
                 vm->heap.objects[p]->cons.cdr = result;
                 result = PAIR_VAL(p);
             }
@@ -9913,32 +10059,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else if (a.type == VAL_NIL) result = 1;
         else if (a.type == VAL_BOOL) result = (a.as.b == b.as.b);
         else if (a.type == VAL_INT) result = (a.as.i == b.as.i);
+        else if (a.type == VAL_CHAR) result = (a.as.i == b.as.i);
         else if (a.type == VAL_FLOAT) result = (a.as.f == b.as.f);
         else result = (a.as.ptr == b.as.ptr);
         vm_push(vm, BOOL_VAL(result));
         break;
     }
 
-    case 134: { /* equal?: deep structural equality */
+    case 134: { /* equal?: deep structural equality (pairs, vectors, strings, numbers) */
         Value b = vm_pop(vm), a = vm_pop(vm);
-        int result = 0;
-        if (a.type != b.type) result = 0;
-        else if (a.type == VAL_NIL) result = 1;
-        else if (a.type == VAL_BOOL) result = (a.as.b == b.as.b);
-        else if (a.type == VAL_INT) result = (a.as.i == b.as.i);
-        else if (a.type == VAL_FLOAT) result = (a.as.f == b.as.f);
-        else if (a.type == VAL_STRING) {
-            VmString* as = vm_value_as_string(vm, a);
-            VmString* bs = vm_value_as_string(vm, b);
-            result = (as && bs && as->byte_len == bs->byte_len &&
-                      memcmp(as->data, bs->data, (size_t)as->byte_len) == 0);
-        }
-        else if (a.type == VAL_PAIR) {
-            /* Simple shallow equality for pairs */
-            result = (a.as.ptr == b.as.ptr);
-        }
-        else result = (a.as.ptr == b.as.ptr);
-        vm_push(vm, BOOL_VAL(result));
+        vm_push(vm, BOOL_VAL(vm_deep_equal(vm, a, b)));
         break;
     }
 
@@ -9981,7 +10111,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
         } else { vm_push(vm, number_val(as_number(a_val) * as_number(b_val))); }
         break; }
-    case 145: { /* div2 — complex-aware */
+    case 145: { /* div2 — complex- and rational-aware.
+                 * The prelude's variadic `/` folds with div2, so this is the
+                 * real path for (/ 1 3). Exact/exact division yields an exact
+                 * rational (or an integer when it divides), matching the native
+                 * path; previously it always produced an inexact float. */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         if (a_val.type == VAL_COMPLEX || b_val.type == VAL_COMPLEX) {
             VmComplex a_z = {as_number(a_val), 0}, b_z = {as_number(b_val), 0};
@@ -9992,6 +10126,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
+                   (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
+            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) { vm->error = 1; break; }
+            vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
         } else { vm_push(vm, number_val(as_number(a_val) / as_number(b_val))); }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
@@ -10055,7 +10193,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         break; }
     case 216: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* char->integer */
-    case 217: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a))); break; } /* integer->char */
+    case 217: { Value a = vm_pop(vm); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (int64_t)as_number(a)}); break; } /* integer->char */
     case 218: { /* make-vector */
         Value fill = vm_pop(vm), size_v = vm_pop(vm);
         int sz = (int)as_number(size_v);
@@ -10097,7 +10235,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 int cp = vm_string_ref(s, i);
                 int32_t p = heap_alloc(&vm->heap); if (p < 0) break;
                 vm->heap.objects[p]->type = HEAP_CONS;
-                vm->heap.objects[p]->cons.car = INT_VAL(cp);
+                vm->heap.objects[p]->cons.car = (Value){.type = VAL_CHAR, .as.i = cp};
                 vm->heap.objects[p]->cons.cdr = result;
                 result = PAIR_VAL(p);
             }
@@ -10346,8 +10484,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1682: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isspace(c))); break; }
     case 1683: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(isupper(c))); break; }
     case 1684: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, BOOL_VAL(islower(c))); break; }
-    case 1685: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, INT_VAL(toupper(c))); break; }
-    case 1686: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, INT_VAL(tolower(c))); break; }
+    case 1685: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = toupper(c)}); break; }
+    case 1686: { Value a = vm_pop(vm); int c = (int)as_number(a); vm_push(vm, (Value){.type = VAL_CHAR, .as.i = tolower(c)}); break; }
     case 1687: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) == (int)as_number(b))); break; }
     case 1688: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) < (int)as_number(b))); break; }
     case 1689: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) > (int)as_number(b))); break; }
@@ -10376,7 +10514,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * ══════════════════════════════════════════════════════════════════════ */
     case 160: { Value a = vm_pop(vm); /* symbol? — in the VM, symbols are interned strings */
         vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; }
-    case 161: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT && as_number(a) >= 0 && as_number(a) <= 0x10FFFF)); break; } /* char? */
+    case 161: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CHAR)); break; } /* char? */
     case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL)); break; } /* exact? */
     case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT)); break; } /* inexact? */
     case 164: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT && isnan(a.as.f))); break; } /* nan? */
