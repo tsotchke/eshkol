@@ -1292,6 +1292,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(region_current);
     ADD_SYMBOL(eshkol_region_enter);   // thread-safe with-region arena routing
     ADD_SYMBOL(eshkol_region_leave);
+    ADD_SYMBOL(eshkol_current_arena);  // OALR Phase A allocation accessor
+    ADD_SYMBOL(eshkol_memctx_current); // OALR Phase A thread memory context
     ADD_SYMBOL(region_allocate);
     ADD_SYMBOL(region_allocate_aligned);
     ADD_SYMBOL(region_allocate_zeroed);

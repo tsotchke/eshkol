@@ -286,6 +286,41 @@ arena_t* get_global_arena(void);
  *  that will be returned to the main thread). */
 arena_t* get_global_arena_shared(void);
 
+// ===== OALR Phase A: thread memory context (ADR-0001, migration Phase A) =====
+//
+// A per-thread memory context makes "which arena do my allocations target right
+// now" a thread-local property reached through an accessor, instead of a direct
+// read of the process-shared __global_arena global. This is the DAG root the
+// resident-concurrency line builds on. Phase A adds only the accessor and the
+// allocation-domain slot; the full ABI-v2 memctx (region_top / residence /
+// resident txn) and the 8->32B object-header change are DEFERRED to later OALR
+// phases. Nothing here changes the object-header ABI.
+#define ESHKOL_MEMORY_ABI_PHASE_A 1u
+
+typedef struct eshkol_memctx {
+    uint32_t abi_version;        // ESHKOL_MEMORY_ABI_PHASE_A
+    uint32_t flags;              // reserved (0 in Phase A)
+    uint64_t thread_id;          // owner-thread id, assigned lazily for diagnostics
+    arena_t* allocation_domain;  // current allocation arena override; NULL => global
+    void*    runtime_private;    // reserved for later phases
+} eshkol_memctx_t;
+
+/** Return the calling thread's memory context (never NULL; lazily initialized). */
+eshkol_memctx_t* eshkol_memctx_current(void);
+
+/**
+ * Return the arena the calling thread's allocations should currently target.
+ *
+ * This is the Phase-A allocation accessor: generated code and runtime helpers
+ * obtain the live arena here rather than loading __global_arena directly, so
+ * `with-region` routing is a thread-local memctx update instead of a shared
+ * write. While a work-stealing construct is active it defers to the shared
+ * thread-safe process arena, preserving the #217 parallel-scope guard semantics
+ * and keeping the accessor in agreement with any not-yet-migrated direct
+ * __global_arena read.
+ */
+arena_t* eshkol_current_arena(void);
+
 // Tape allocation and management
 ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity);
 void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node);
