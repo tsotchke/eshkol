@@ -1,0 +1,30 @@
+;; PGO training corpus — string hot paths.
+;;
+;; Exercises string-append, substring, number->string, string->number,
+;; string-length and char iteration — the string-layer codegen with its
+;; header.size bookkeeping that several past bugs touched.
+
+(define (repeat s n)
+  (let loop ((i 0) (acc ""))
+    (if (>= i n) acc (loop (+ i 1) (string-append acc s)))))
+
+(define (digits-of n)
+  (number->string n))
+
+(define (run)
+  (let loop ((k 0) (total 0))
+    (if (= k 400)
+        total
+        (let* ((s   (string-append "row-" (number->string k) "-end"))
+               (len (string-length s))
+               (mid (substring s 0 (min 3 len)))
+               (rt  (string->number (number->string k))))
+          (loop (+ k 1) (+ total len (string-length mid) rt))))))
+
+(define banner (repeat "ab" 64))
+
+(display "str.banner-len=") (display (string-length banner))          (newline)
+(display "str.upcase=")     (display (string-upcase "eshkol"))        (newline)
+(display "str.sub=")        (display (substring banner 0 8))          (newline)
+(display "str.num=")        (display (digits-of 1234567890))          (newline)
+(display "str.run=")        (display (run))                           (newline)

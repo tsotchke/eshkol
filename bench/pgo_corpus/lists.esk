@@ -1,0 +1,35 @@
+;; PGO training corpus — list / cons-cell hot paths.
+;;
+;; Exercises cons/car/cdr, map/filter/fold over the stdlib, and recursive
+;; list construction — the allocator + tagged-value cons path that almost
+;; every Eshkol program leans on.
+
+(require core.list.transform)
+(require core.list.fold)
+
+;; Build a list [1..n] without relying on iota (keep it self-contained).
+(define (range n)
+  (let loop ((i n) (acc '()))
+    (if (= i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; Manual sum fold — recursion over cons cells.
+(define (list-sum xs)
+  (if (null? xs) 0 (+ (car xs) (list-sum (cdr xs)))))
+
+(define (run)
+  (let loop ((k 0) (total 0))
+    (if (= k 300)
+        total
+        (let* ((xs    (range 100))
+               (sq    (map (lambda (x) (* x x)) xs))
+               (evens (filter (lambda (x) (= (modulo x 2) 0)) sq))
+               (s     (fold-left + 0 evens)))
+          (loop (+ k 1) (+ total s))))))
+
+(define base (range 50))
+
+(display "list.len=")     (display (length base))               (newline)
+(display "list.sum=")     (display (list-sum base))             (newline)
+(display "list.reverse=") (display (car (reverse base)))        (newline)
+(display "list.map=")     (display (list-sum (map (lambda (x) (+ x 1)) base))) (newline)
+(display "list.run=")     (display (run))                       (newline)

@@ -1,0 +1,40 @@
+;; PGO training corpus — automatic-differentiation hot paths.
+;;
+;; Exercises forward-mode derivative, reverse-mode gradient (scalar and
+;; vector), and a small gradient-descent loop — the dual-number /
+;; AD-node codegen that the v1.3 release leans on heavily.
+
+;; Scalar forward-mode derivative.
+(define f (lambda (x) (* x (* x x))))          ; x^3
+(define df (derivative f))
+
+;; Scalar reverse-mode gradient.
+(define g (lambda (x) (+ (* x (* x x)) (* 2.0 x))))  ; x^3 + 2x
+
+;; Vector gradient of a quadratic bowl: sum(x_i^2).
+(define (bowl v)
+  (+ (* (vector-ref v 0) (vector-ref v 0))
+     (* (vector-ref v 1) (vector-ref v 1))))
+
+;; Gradient-descent loop on the bowl — repeatedly calls `gradient`.
+(define (descend v0 lr iters)
+  (let loop ((v v0) (i 0))
+    (if (= i iters)
+        v
+        (let ((gr (gradient bowl v)))
+          (loop (vector (- (vector-ref v 0) (* lr (vector-ref gr 0)))
+                        (- (vector-ref v 1) (* lr (vector-ref gr 1))))
+                (+ i 1))))))
+
+(define (run)
+  (let loop ((k 0) (acc 0.0))
+    (if (= k 150)
+        acc
+        (loop (+ k 1) (+ acc (df (exact->inexact (+ k 1))))))))
+
+(define final (descend #(3.0 -4.0) 0.1 50))
+
+(display "ad.df5=")     (display (df 5.0))            (newline)
+(display "ad.grad3=")   (display (gradient g 3.0))    (newline)
+(display "ad.descent=") (display (vector-ref final 0)) (newline)
+(display "ad.run=")     (display (run))               (newline)
