@@ -223,6 +223,21 @@ return values.</li>
 <li>Keep the README and other high-level documentation up to date.</li>
 <li>Use Markdown for all documentation files.</li>
 </ul>
+<h4 id="api-reference-docsapi">API Reference (docs/api/)</h4>
+<p><code>docs/api/</code> is a generated browsable reference for the
+public C/C++ headers under <code>inc/eshkol/**/*.h</code>, harvested
+from their Doxygen <code>/** @brief ... */</code> comment blocks by
+<code>scripts/gen_api_docs.py</code>. It is not hand-edited.</p>
+<p>When you add or change a Doxygen comment on a public header symbol,
+regenerate the reference and commit the result alongside your
+change:</p>
+<pre class="sh"><code>make api-docs          # regenerate docs/api/
+make api-docs-check    # verify docs/api/ has no drift (used before a PR)</code></pre>
+<p>The generator is documentation-only — it never modifies files under
+<code>inc/</code> — and its output is deterministic (sorted, stable
+across re-runs), so a regeneration with no underlying comment changes
+produces an empty diff. It is not run automatically in CI; regenerate
+locally when you touch a header comment.</p>
 <h3 id="testing">Testing</h3>
 <p>We strive for good test coverage:</p>
 <ul>
@@ -296,7 +311,7 @@ reviews.</li>
 Contribution (v1.4+)</h2>
 <p>v1.0-foundation, v1.1-accelerate, v1.2-scale, and v1.3.0-evolve
 (arbitrary-order AD, full R7RS conformance, closure/TCO/memory
-hardening) are <strong>complete</strong>, and v1.3.1 has landed further
+hardening) are <strong>complete</strong>, and v1.3.3 has landed further
 robustness for long-running, resident programs plus comprehensive C-API
 documentation. We welcome contributions for upcoming releases:</p>
 <h3 id="immediate-priorities-v1.4-connection---july-2026">Immediate

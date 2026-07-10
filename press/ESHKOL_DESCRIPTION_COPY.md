@@ -3,10 +3,12 @@
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
 Eshkol is a compiled programming language for mathematical and cognitive computing.
-The repository ships v1.3.1 (July 2026) of the compiler — an arbitrary-order
-automatic-differentiation system, 100% conformance on a portable R7RS
-differential corpus, and hardening that makes long-running/resident programs
-safe to leave running — together with the reproducibility artefact for
+The repository ships v1.3.3-evolve (July 2026) of the compiler — an arbitrary-order
+automatic-differentiation system with exact gradients now verified through the
+tensor-op `input2` path, 100% conformance on a portable R7RS differential corpus,
+and a region-escape evacuator that makes long-running/resident programs safe to
+leave running across every heap subtype the language can allocate — together
+with the reproducibility artefact for
 *The Self-Differentiating Neural Computer: Computable Transformers via
 Analytical Weight Construction* (tsotchke, 2026), in which a six-layer
 transformer with 12.22 million analytically-constructed parameters executes
@@ -25,7 +27,10 @@ The language treats automatic differentiation, arena memory, and a neuro-symboli
 computation layer as compiler primitives rather than library add-ons. Differentiation
 is available in symbolic, forward, and reverse modes alongside eight vector-calculus
 operators — and, as of v1.3.0-evolve, at arbitrary order via a Taylor-tower engine that
-returns exact bignum/rational derivatives when the math supports it; memory is
+returns exact bignum/rational derivatives when the math supports it, with the
+reverse-mode tensor-op gradient path (`conv2d`/`batchnorm`/`layernorm`/`attention`)
+now verified exact for first-class losses and vector/learnable gamma as of
+v1.3.3-evolve; memory is
 allocated through Ownership-Aware Lexical Regions with deterministic, per-scope
 deallocation and no garbage collector; the consciousness engine exposes twenty-two
 builtins covering unification, factor-graph belief propagation, free-energy
@@ -63,6 +68,17 @@ Each item below cites the file or measurement that grounds the claim.
   recursion. See *lib/core/taylor_recurrences.def*, *lib/core/runtime_taylor.c*, and the
   [Automatic Differentiation guide](../docs/guide/AUTOMATIC_DIFFERENTIATION.md).
 
+- **Exact reverse-mode tensor-op gradients for first-class losses (v1.3.3-evolve).**
+  `gradient` on `conv2d`/`batchnorm`/`layernorm`/`attention` now propagates an exact
+  gradient to the second operand (kernel/gamma-beta/K-V) whether the loss is a
+  compile-time-known function or a first-class value with no compile-time `Function*` —
+  the latter previously fell to a forward-mode-dual closure path that silently returned
+  a zero gradient. Batch-norm/layer-norm gamma/beta are now differentiated per-feature
+  rather than as one scalar, and any remaining unsupported tensor-op backward path
+  raises an explicit error instead of a silent zero. This corrects a prior CHANGELOG
+  entry (#212) that an adversarial finite-difference audit found to be a no-op; the real
+  fix is #229, finite-difference-verified in both literal and first-class forms.
+
 - **Compiler-integrated automatic differentiation (order ≤ 2).** Three modes: symbolic AST
   rewriting at compile time using twelve differentiation rules; forward mode through
   16-byte dual numbers `{value, derivative}`; reverse mode through a computational
@@ -95,6 +111,17 @@ Each item below cites the file or measurement that grounds the claim.
   native-stack overflow (verified clean at 20 million elements, where the prior
   implementation crashed with SIGBUS). See *lib/backend/llvm_codegen.cpp* and
   *lib/core/runtime_reader_hosted.cpp*.
+
+- **Region-escape evacuator closes out across every heap subtype (ESH-0214a-e,
+  complete as of v1.3.3-evolve).** A value allocated inside `with-region` that escapes
+  the region — is returned, stored outward, or captured by a closure — is deep-walked
+  and promoted into the surviving arena instead of being left dangling after the region
+  pops. Coverage was built out subtype by subtype: cons/vector/hash/tensor/exception/
+  closure first, then the logic and global-workspace subtypes (substitution, fact,
+  knowledge base, factor graph, workspace) in v1.3.2-evolve, and `PROMISE` — a
+  `delay`/`make-promise` thunk plus its cached value — in v1.3.3-evolve, completing
+  the series. `ESHKOL_ARENA_POISON=1` poisons freed arena memory so any remaining gap
+  crashes loudly instead of corrupting silently.
 
 - **Neuro-symbolic stack as compiler primitives.** Twenty-two builtins:
   `unify`, `walk`, `make-substitution`, `make-fact`, `make-kb`, `kb-assert!`,
@@ -129,11 +156,12 @@ Each item below cites the file or measurement that grounds the claim.
   removed in v1.2 to eliminate shell-metacharacter exposure), kqueue/inotify
   filesystem watching (*lib/agent/c/agent_watch.c*).
 
-- **Comprehensively documented public API and implementation.** v1.3.1 adds
+- **Comprehensively documented public API and implementation.** v1.3.1-evolve added
   Doxygen-format documentation across 50 of the 64 public headers under
   `inc/eshkol/` (~4,650 lines) and 56 previously-undocumented implementation files
   under `lib/` (~7,478 lines) — 116 files and roughly 12,600 lines total, comments
-  only. A navigable per-subsystem reference index
+  only; v1.3.2-evolve added `eshkol-doc`, which harvests those comments automatically
+  into a generated `docs/api/` reference. A navigable per-subsystem reference index
   (*docs/reference/{language,ad,runtime,tensors,stdlib,agent}/INDEX.md*) organizes
   the language surface for lookup.
 
@@ -141,11 +169,21 @@ Each item below cites the file or measurement that grounds the claim.
   harness — differential, feature-pair edge matrix, AD finite-difference oracle,
   stress (RSS/time budgets), VM-parity ratchet, depth-parametric sweeps, and the
   external reference-Scheme differential oracle — is wired permanently into the ICC
-  release oracle rather than run once and discarded. Release gates green on the
+  release oracle rather than run once and discarded; this is the same infrastructure
+  whose adversarial audit caught the v1.3.2-evolve `input2` overstatement corrected
+  above, and the ICC oracle itself was hardened in v1.3.3-evolve to gate on that
+  correction and on region-evacuator poison coverage. Release gates green on the
   v1.3.0-evolve SHA: ICC readiness oracle 100/100 (trace-verified); CI 14/14 lanes
   including windows-arm64; SICP full-book gate 88/88 probes across all five chapters
   under both `-r` and AOT; reference-Scheme differential oracle 34/34 AGREE. See
   *docs/TESTING.md*.
+
+- **Binary Lambda Calculus (`core.blc`, v1.3.2-evolve).** A pure-Eshkol
+  implementation of John Tromp's BLC: De Bruijn-indexed terms as homoiconic
+  s-expressions, self-delimiting bit encode/decode, normal-order evaluation, a
+  decoded 232-bit universal machine, BLC8 byte I/O, and ASCII lambda diagrams.
+  Loaded on demand via `(require core.blc)`. See
+  *docs/guide/BINARY_LAMBDA_CALCULUS.md*.
 
 ---
 
@@ -244,8 +282,8 @@ release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.1 |
-| Release date | 8 July 2026 (builds on v1.3.0-evolve, 7 July 2026) |
+| Version | v1.3.3-evolve |
+| Release date | 10 July 2026 (builds on v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM 21 (version-enforced) |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |

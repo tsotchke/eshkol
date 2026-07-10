@@ -1,4 +1,4 @@
-# Eshkol v1.3.1 — Press Information Sheet
+# Eshkol v1.3.3-evolve — Press Information Sheet
 
 For trade-press and academic readers preparing coverage of the v1.3 release
 line — arbitrary-order automatic differentiation, full R7RS conformance,
@@ -12,9 +12,9 @@ carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.1 |
-| Builds on | v1.3.0-evolve (7 July 2026) |
-| Release date | 8 July 2026 |
+| Version | v1.3.3-evolve |
+| Builds on | v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Release date | 10 July 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -37,10 +37,16 @@ regenerates in one command on a developer laptop.
 The host language has moved in this release line too: v1.3.0-evolve gave
 Eshkol's automatic differentiation a second axis, arbitrary order, with
 exact bignum/rational derivatives and full R7RS conformance on a portable
-differential corpus; v1.3.1 adds the robustness — flat memory in long-running
-loops, a reader that doesn't overflow the stack on large persisted state —
-that makes an Eshkol program safe to run unattended as a daemon, plus a
-comprehensive documentation pass across the public embedding API.
+differential corpus; v1.3.1-evolve added the robustness — flat memory in
+long-running loops, a reader that doesn't overflow the stack on large
+persisted state — that makes an Eshkol program safe to run unattended as a
+daemon, plus a comprehensive documentation pass across the public embedding
+API. v1.3.2-evolve extended that memory-safety work to the logic/workspace
+heap subtypes and made region scoping thread-safe under `parallel-map`.
+v1.3.3-evolve closes out that series with the last heap subtype, `PROMISE`,
+and — separately — replaces an overstated v1.3.2-evolve automatic-differentiation
+claim with the real fix: exact gradients through the `input2` path for
+first-class losses and vector/learnable gamma.
 
 ---
 
@@ -89,7 +95,7 @@ against chibi-scheme 0.12.0 on a 34-program portable corpus — reports
 The parser handles ninety-four operation types over an S-expression syntax
 with line/column tracking and an R7RS-compliant internal-defines transform
 to `letrec*`. The macro expander supports ellipsis patterns, nested
-patterns, and hygienic renaming. As of v1.3.1, the S-expression reader
+patterns, and hygienic renaming. As of v1.3.1-evolve, the S-expression reader
 (`read_list`) is iterative rather than per-element recursive, so reading
 back a very large persisted list no longer risks a native-stack overflow.
 See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
@@ -113,7 +119,7 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 | Macro expander | 861 | *lib/frontend/macro_expander.cpp* |
 | Type checker | 1,999 | *lib/types/type_checker.cpp* |
 | Arena memory | 6,186 | *lib/core/arena_memory.cpp* |
-| S-expression reader (iterative as of v1.3.1) | 555 | *lib/core/runtime_reader_hosted.cpp* |
+| S-expression reader (iterative as of v1.3.1-evolve) | 555 | *lib/core/runtime_reader_hosted.cpp* |
 | Logic engine | 805 | *lib/core/logic.cpp* |
 | Active-inference engine | 912 | *lib/core/inference.cpp* |
 | Global workspace | 308 | *lib/core/workspace.cpp* |
@@ -121,11 +127,13 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 | Bytecode VM + runtime libs | ≈41,000 | *lib/backend/eshkol_vm.c* and runtime |
 
 Total compiler infrastructure is approximately 232,000 lines of C17 and C++20
-across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1
-adds roughly 12,600 lines of Doxygen-format documentation across 116 files —
+across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
+added roughly 12,600 lines of Doxygen-format documentation across 116 files —
 50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
 previously-undocumented implementation files under `lib/` (≈7,478 lines) —
-comments only, no behaviour change.
+comments only, no behaviour change; v1.3.2-evolve added a further
+`eshkol-doc` reference generator (`docs/api/`) that harvests those comments
+automatically.
 
 ### Target backend
 
@@ -158,12 +166,17 @@ The language occupies a region not covered by the established alternatives.
   obtained through tracing, source-to-source rewriting, or operator
   overloading, and — since v1.3.0-evolve — computes exact derivatives at any
   order via Taylor towers, which JAX's `jax.experimental.jet` approaches only
-  numerically. The host runtime has no garbage collector; allocation is
-  bounded by the arena reset boundary, and as of v1.3.1 self-tail-recursive
-  loops reclaim their arena scope automatically per iteration, which makes
-  Eshkol viable in contexts (real-time control loops, embedded inference,
-  long-running daemons) where Python or Julia's GC pauses, or unbounded
-  process RSS growth, are disqualifying.
+  numerically; as of v1.3.3-evolve those exact gradients also flow correctly
+  through the `input2` path (kernel/gamma/K/V) for first-class losses, not
+  just literal-loss compile-time-known functions. The host runtime has no
+  garbage collector; allocation is bounded by the arena reset boundary, and
+  as of v1.3.1-evolve self-tail-recursive loops reclaim their arena scope
+  automatically per iteration — a region-escape evacuator, completed in
+  v1.3.3-evolve, promotes any heap object that escapes that scope (including
+  logic/workspace state and, as of this release, a `delay`d promise) rather
+  than leaving it dangling — which makes Eshkol viable in contexts (real-time
+  control loops, embedded inference, long-running daemons) where Python or
+  Julia's GC pauses, or unbounded process RSS growth, are disqualifying.
 
 Each comparison is grounded in *docs/breakdown/OVERVIEW.md §Comparison with
 other languages*; the document explicitly enumerates where Eshkol gives less
@@ -182,11 +195,14 @@ consists of:
 - An 8-byte object header prepended to every heap object
   `{subtype:u8, flags:u8, ref_count:u16, size:u32}`. The header is at
   offset −8 from the data pointer returned by allocators.
-- Twenty-four heap-subtype slots assigned through v1.3.1 (slot 14 remains
-  reserved for a future `RULE` backward-chaining type; slot 23 is
+- Twenty-four heap-subtype slots assigned through v1.3.1-evolve (slot 14
+  remains reserved for a future `RULE` backward-chaining type; slot 23 is
   `HEAP_SUBTYPE_TAYLOR`, added in v1.3.0-evolve for the arbitrary-order
   Taylor-tower AD engine) and five callable subtypes, consolidating eight
   historical pointer types into two supertypes (`HEAP_PTR`, `CALLABLE`).
+  As of v1.3.3-evolve every subtype that carries interior pointers —
+  including `PROMISE`, the last one — is deep-walked by the region-escape
+  evacuator rather than shallow-copied on escape from a `with-region` scope.
   See *inc/eshkol/eshkol.h §heap subtypes*.
 - 16-byte tagged values laid out `{type:u8, flags:u8, reserved:u16,
   padding:u32, data:u64}`. When the compiler can prove the type at
@@ -200,14 +216,27 @@ consists of:
   parallel workers; the global arena is used only to construct result
   lists after parallel tasks have completed (*docs/breakdown/PARALLEL_COMPUTING.md §2.1*).
 - **Per-iteration arena-scope reclamation for self-tail-recursive loops**
-  (new coverage in v1.3.1). A conservative static escape analysis
+  (extended in v1.3.1-evolve). A conservative static escape analysis
   (`namedLetIterScopeSafe`) proves a loop body's arena allocations don't
   escape across the tail-call back-edge; when it does, the loop's arena
   scope is reclaimed every iteration with zero source annotation. v1.3.0-evolve
-  covered named-let loops; v1.3.1 extends the same analysis to self-tail-recursive
-  `define` loops and accepts a catch-all guard clause in the loop body. Verified
-  on a 1,000,000-iteration loop: RSS goes from 1,369 MB (unbounded growth) to
-  224 MB (flat). See *lib/backend/llvm_codegen.cpp*.
+  covered named-let loops; v1.3.1-evolve extended the same analysis to
+  self-tail-recursive `define` loops and accepts a catch-all guard clause in
+  the loop body. Verified on a 1,000,000-iteration loop: RSS goes from
+  1,369 MB (unbounded growth) to 224 MB (flat). See
+  *lib/backend/llvm_codegen.cpp*.
+- **Region-escape evacuator** (ESH-0214a through e, completed v1.3.3-evolve).
+  When a value allocated inside a `with-region` block escapes that block
+  (is returned, stored into an outer binding, or captured by a closure), a
+  companion evacuator deep-walks it and promotes its interior pointers into
+  the surviving arena before the region is popped, rather than leaving them
+  dangling. Coverage was built out subtype by subtype: `CONS`/`VECTOR`/
+  `HASH`/`TENSOR`/`EXCEPTION`/`CLOSURE` first, then the logic/workspace
+  subtypes (`SUBSTITUTION`/`FACT`/`KNOWLEDGE_BASE`/`FACTOR_GRAPH`/
+  `WORKSPACE`) in v1.3.2-evolve, and `PROMISE` in v1.3.3-evolve, which closes
+  the series. `ESHKOL_ARENA_POISON=1` poisons `arena_destroy`'d memory so any
+  remaining gap in that coverage crashes loudly instead of corrupting
+  silently. See *lib/core/arena_memory.cpp* and *lib/backend/llvm_codegen.cpp*.
 - Optional linear types via `(owned ...)`, `(borrow value body)`, and
   `(shared ...)`; the third activates reference counting against the
   header's 16-bit `ref_count` field (*README.md §Memory architecture*).
@@ -323,6 +352,22 @@ slowdown, reverse mode 3–5× with O(n) memory, symbolic mode zero runtime
 overhead because the rewrite is at compile time (*README.md §Autodiff
 overhead*). The Taylor-tower engine is O(k²) in the requested order `k` and
 zero-heap when `k` is a compile-time literal.
+
+**Reverse-mode tensor-op gradients (`input2`), corrected in v1.3.3-evolve.**
+`gradient` on `conv2d`, `batchnorm`, `layernorm`, and `attention` propagates
+an exact gradient to the second operand (kernel / gamma-beta / K-V) in both
+the literal-loss form (a compile-time-known `Function*`) and the first-class
+form (a loss value with no compile-time `Function*`, e.g. one selected or
+constructed at runtime); a v1.3.2-evolve CHANGELOG entry had claimed this
+path was already complete, but an adversarial finite-difference audit found
+the change shipped a test and a roadmap update with no gradient code behind
+it — the first-class path still silently returned a zero gradient. The
+v1.3.3-evolve fix adds a reverse-mode tensor path to the closure branch of
+`gradient`'s codegen, wires batch-norm/layer-norm gamma/beta as per-feature
+AD nodes instead of one scalar, and turns any remaining unsupported
+tensor-op backward path into an explicit compile error instead of a silent
+zero. Finite-difference-verified across matmul/conv2d/attention-K-V/
+vector-gamma in both forms.
 
 See the [Automatic Differentiation guide](../docs/guide/AUTOMATIC_DIFFERENTIATION.md)
 for a worked, example-verified walkthrough of all thirteen phases, and
@@ -443,7 +488,7 @@ The scheduler is a per-worker Chase-Lev work-stealing deque
 epoch-based reclamation, three-stage idle backoff (spin / yield / sleep),
 and hardware-aware sizing (`std::thread::hardware_concurrency()`,
 override via `ESHKOL_NUM_THREADS`). See
-*inc/eshkol/backend/work_stealing_deque.h* (documented in v1.3.1) and
+*inc/eshkol/backend/work_stealing_deque.h* (documented in v1.3.1-evolve) and
 *lib/backend/thread_pool.cpp*.
 
 Primitives: `parallel-map`, `parallel-fold`, `parallel-filter`,
@@ -552,8 +597,8 @@ C and exposed to Eshkol through tagged-value calling conventions.
 AOT linking is automatic: `ESHKOL_HOST_AGENT_FFI_LINK_ARGS` in the build
 config is consulted, and the AST is scanned pre-process for require
 declarations so AOT binaries link the HTTP, SQLite, and subprocess
-backends without the user having to specify library flags. v1.3.1 adds
-Doxygen documentation across every agent-FFI implementation file in
+backends without the user having to specify library flags. v1.3.1-evolve
+added Doxygen documentation across every agent-FFI implementation file in
 *lib/agent/c/*.
 
 ---
@@ -564,10 +609,13 @@ Doxygen documentation across every agent-FFI implementation file in
   (`-c -o`), shared library (`--shared-lib`), and WebAssembly (`--wasm`)
   output modes; supports JIT execution (`-r`).
 - **eshkol-repl** — interactive REPL via LLVM OrcJIT, documented as part of
-  the v1.3.1 implementation doc-comment pass. Preloads stdlib functions and
-  globals from precompiled `.o` and `.bc` metadata. The `--machine` mode
+  the v1.3.1-evolve implementation doc-comment pass. Preloads stdlib functions
+  and globals from precompiled `.o` and `.bc` metadata. The `--machine` mode
   emits `EREPL READY` / `DONE` / `FAIL` framing on stderr for warm-worker
   IPC.
+- **eshkol-doc** — API reference generator, added in v1.3.2-evolve. Harvests
+  Doxygen `/** @brief */` comments from `inc/` and `lib/` and generates
+  `docs/api/` (Markdown pages plus an HTML index).
 - **eshkol-pkg** — package manager. TOML manifests, git-based
   registry, recursive submodule discovery. Commands: `init`, `build`,
   `run`, `add`, `clean`.
@@ -579,15 +627,17 @@ Doxygen documentation across every agent-FFI implementation file in
   pytest-format smoke harness under `.icc/`; native Eshkol-aware (accepts
   Eshkol VM step / halt records as `eshkol_vm_step` / `eshkol_vm_halt`
   events; recognises `runtime_event` compact dict form and explicit
-  `kind` JSON records). ICC readiness oracle reports 100/100, trace-verified,
-  on the v1.3.0-evolve release SHA.
+  `kind` JSON records). Hardened in v1.3.3-evolve (#232) to also check
+  region-evacuator poison coverage and the corrected `input2` gradient
+  gate. ICC readiness oracle reports 100/100, trace-verified.
 
 ---
 
 ## Documentation
 
-v1.3.1's principal addition, alongside the memory/reader robustness fixes,
-is documentation coverage:
+v1.3.1-evolve's principal addition, alongside its memory/reader robustness
+fixes, was documentation coverage; v1.3.2-evolve turned that coverage into a
+generated, navigable artefact:
 
 - **Public C-API headers.** Doxygen-format documentation across 50 of the
   64 public headers under `inc/eshkol/` — backend codegen, runtime core,
@@ -608,16 +658,48 @@ is documentation coverage:
   [`agent/`](../docs/reference/agent/INDEX.md), each an example-verified
   index into the corresponding function and syntax reference, linked from
   *README.md §Documentation*.
+- **Generated API reference (`eshkol-doc`, v1.3.2-evolve).** The Doxygen
+  comments above are now harvested automatically into `docs/api/` rather
+  than requiring a hand-maintained index.
 
-Combined, this is 116 files and roughly 12,600 lines of new documentation —
-comments and reference pages only, no behaviour change.
+Combined, the v1.3.1-evolve pass alone is 116 files and roughly 12,600 lines
+of new documentation — comments and reference pages only, no behaviour
+change.
 
 ---
 
 ## Hardening and robustness posture
 
-**v1.3.1 (this release).** Two fixes close the remaining gap between
-"correct" and "safe to run unattended":
+**v1.3.3-evolve (current release).** Corrects an overstated AD claim and
+finishes the region-evacuator series:
+
+- **Exact `input2` gradients for first-class losses and vector/learnable
+  gamma** (#229): the real fix for a v1.3.2-evolve CHANGELOG claim that an
+  adversarial audit found to be a no-op. See *Automatic differentiation*
+  above for the full description.
+- **Region-escape evacuator covers `PROMISE`** (ESH-0214e, #230): closes
+  the ESH-0214 series (a through e). Verified flat at ~116 MB under
+  `ESHKOL_ARENA_POISON=1` over escape-then-force for both `delay` and
+  `make-promise`.
+- **ICC oracle hardening** (#232): the two fixes above are now load-bearing
+  release gates, not one-off verifications.
+
+**v1.3.2-evolve.** Deepened the memory-safety and concurrency work:
+
+- **Region-escape evacuator covers logic/workspace subtypes** (ESH-0214d,
+  #226): `SUBSTITUTION`/`FACT`/`KNOWLEDGE_BASE`/`FACTOR_GRAPH`/`WORKSPACE`
+  are deep-walked on escape instead of shallow-copied; `arena_destroy` is
+  poisoned under `ESHKOL_ARENA_POISON` so region use-after-free crashes
+  loudly.
+- **Thread-safe region scope stack** (#217): `parallel-map`/future
+  callbacks that opened a `with-region` no longer race on the shared
+  current-arena slot.
+- **Three deferred latent bugs triaged** (#215): ESH-0223 (named-let stack
+  overflow at high iteration counts), ESH-0227 (apply-loop SIGBUS),
+  ESH-0228 (`sleep-ms` argument type check).
+
+**v1.3.1-evolve.** Two fixes closed the gap between "correct" and "safe to
+run unattended" that the region-evacuator series above continues:
 
 - **Flat memory in long-running loops** (ESH-0214b): per-iteration
   arena-scope reclamation, previously limited to named-let TCO loops,
@@ -630,7 +712,7 @@ comments and reference pages only, no behaviour change.
   the rewritten reader completes cleanly at the same size.
 
 **v1.3.0-evolve release gates** (green on the release SHA, and the base
-this release builds on): ICC readiness oracle 100/100, trace-verified;
+this release line builds on): ICC readiness oracle 100/100, trace-verified;
 CI 14/14 lanes including windows-arm64 lite/CUDA/XLA; SICP full-book gate
 88/88 probes across all five chapters under both `-r` and AOT
 (`scripts/run_sicp_smoke.sh`); reference-Scheme differential oracle 34/34
@@ -642,7 +724,9 @@ and wired into the ICC release oracle rather than run once and discarded:
 a multi-path differential harness with a seeded fuzzer, a feature-pair
 edge matrix, an AD finite-difference oracle, a stress harness with
 RSS/time budgets, a VM-parity ratchet, depth-parametric sweeps, and the
-external reference-Scheme differential oracle. See *docs/TESTING.md*.
+external reference-Scheme differential oracle. This is the same
+infrastructure whose adversarial audit found the v1.3.2-evolve `input2`
+overstatement above. See *docs/TESTING.md*.
 
 **v1.2-line hardening** (carried forward, unchanged in this release):
 fourteen audit blockers and seven critical/high security fixes closed
@@ -721,6 +805,13 @@ Namespaces:
   isolation, quantum-inspired RNG
 - `web.*` — WASM / DOM API, HTTP fetch
 - `tensor.*` — shape manipulation, stacking, broadcasting helpers
+- `core.blc` — Binary Lambda Calculus, added in v1.3.2-evolve. A pure-Eshkol
+  implementation of John Tromp's BLC: De Bruijn-indexed terms as
+  homoiconic s-expressions, `blc-encode`/`blc-decode` for Tromp's
+  self-delimiting bit encoding, normal-order `blc-eval`, a decoded
+  232-bit universal machine (`blc-U`), BLC8 byte I/O, and ASCII lambda
+  diagrams. Loaded on demand via `(require core.blc)`. See
+  *docs/guide/BINARY_LAMBDA_CALCULUS.md*.
 
 The stdlib uses `LinkOnceODR` linkage so user redefinitions cleanly
 shadow stdlib functions without the historical "duplicate symbol"
@@ -748,7 +839,7 @@ link errors.
 @software{eshkol2026,
   title    = {Eshkol: A Programming Language for Mathematical Computing},
   author   = {tsotchke},
-  version  = {1.3.1},
+  version  = {1.3.3-evolve},
   year     = {2026},
   url      = {https://github.com/tsotchke/eshkol}
 }
