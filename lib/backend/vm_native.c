@@ -4650,6 +4650,111 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+ * Bignum-aware arithmetic helpers
+ *
+ * The base VM's arithmetic/comparison opcodes and native builtins coerced
+ * operands through as_number(), which returns 0.0 for a VAL_BIGNUM. Any
+ * expression whose exact result overflows int64 (e.g. (+ (expt 7 41) 13),
+ * (modulo (expt 10 26) 3)) therefore silently produced a wrong small value on
+ * the VM path while the native/JIT/AOT paths stayed correct. These helpers let
+ * the ops promote to the arena bignum runtime (vm_bignum.c) whenever a bignum
+ * operand appears or an int64 op overflows.
+ * ═══════════════════════════════════════════════════════════════════════════ */
+
+/** @brief True when either operand is a heap-boxed bignum. */
+static inline int vm_either_bignum(Value a, Value b) {
+    return a.type == VAL_BIGNUM || b.type == VAL_BIGNUM;
+}
+
+/** @brief Coerce an integer-ish Value to a VmBignum*. VAL_BIGNUM returns its
+ *         heap payload directly; VAL_INT/VAL_CHAR (and anything else, best
+ *         effort) is materialised as a fresh bignum. NULL only on alloc
+ *         failure. */
+static VmBignum* vm_coerce_bignum(VM* vm, Value v) {
+    if (v.type == VAL_BIGNUM)
+        return (VmBignum*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    int64_t iv = (v.type == VAL_INT || v.type == VAL_CHAR)
+        ? v.as.i : (int64_t)as_number(v);
+    return bignum_from_int64(&vm->heap.regions, iv);
+}
+
+/** @brief Push a bignum result, demoting it back to a fixnum (VAL_INT) when it
+ *         fits in int64 so downstream ops and eqv?/= keep matching the native
+ *         fixnum path. Sets vm->error if @p b is NULL. */
+static void vm_push_bignum_norm(VM* vm, VmBignum* b) {
+    if (!b) { vm->error = 1; return; }
+    int ov = 0;
+    int64_t iv = bignum_to_int64(b, &ov);
+    if (!ov) vm_push(vm, INT_VAL(iv));
+    else VM_PUSH_HEAP_OPAQUE(vm, HEAP_BIGNUM, VAL_BIGNUM, b);
+}
+
+/** @brief Compute (a op b) exactly in the bignum domain and push the
+ *         normalized result. @p op is one of '+','-','*','q' (quotient),
+ *         'r' (remainder), 'm' (R7RS modulo). A float operand on +,-,* falls
+ *         back to inexact float (R7RS contagion). Division by zero sets
+ *         vm->error. */
+static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
+    /* Bignum mixed with an inexact float → inexact float. */
+    if ((op == '+' || op == '-' || op == '*') &&
+        (a.type == VAL_FLOAT || b.type == VAL_FLOAT)) {
+        double x = (a.type == VAL_BIGNUM)
+            ? bignum_to_double((VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)
+            : as_number(a);
+        double y = (b.type == VAL_BIGNUM)
+            ? bignum_to_double((VmBignum*)vm->heap.objects[b.as.ptr]->opaque.ptr)
+            : as_number(b);
+        double r = (op == '+') ? x + y : (op == '-') ? x - y : x * y;
+        vm_push(vm, FLOAT_VAL(r));
+        return;
+    }
+    VmRegionStack* rs = &vm->heap.regions;
+    VmBignum* ab = vm_coerce_bignum(vm, a);
+    VmBignum* bb = vm_coerce_bignum(vm, b);
+    if (!ab || !bb) { vm->error = 1; return; }
+    VmBignum* r = NULL;
+    switch (op) {
+    case '+': r = bignum_add(rs, ab, bb); break;
+    case '-': r = bignum_sub(rs, ab, bb); break;
+    case '*': r = bignum_mul(rs, ab, bb); break;
+    case 'q': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+              r = bignum_div(rs, ab, bb); break;
+    case 'r': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+              r = bignum_mod(rs, ab, bb); break;
+    case 'm': {
+        /* R7RS modulo: result carries the sign of the divisor. bignum_mod
+         * returns the truncated remainder (sign of the dividend), so adjust
+         * by adding the divisor when the signs disagree. */
+        if (bignum_is_zero(bb)) { vm->error = 1; return; }
+        r = bignum_mod(rs, ab, bb);
+        if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
+            r = bignum_add(rs, r, bb);
+        break;
+    }
+    default: vm->error = 1; return;
+    }
+    vm_push_bignum_norm(vm, r);
+}
+
+/** @brief Three-way compare of two integer-ish values through the bignum
+ *         domain (-1/0/1). A float operand compares via double. */
+static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
+    if (a.type == VAL_FLOAT || b.type == VAL_FLOAT) {
+        double x = (a.type == VAL_BIGNUM)
+            ? bignum_to_double((VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)
+            : as_number(a);
+        double y = (b.type == VAL_BIGNUM)
+            ? bignum_to_double((VmBignum*)vm->heap.objects[b.as.ptr]->opaque.ptr)
+            : as_number(b);
+        return (x < y) ? -1 : (x > y) ? 1 : 0;
+    }
+    VmBignum* ab = vm_coerce_bignum(vm, a);
+    VmBignum* bb = vm_coerce_bignum(vm, b);
+    if (!ab || !bb) return 0;
+    return bignum_compare(ab, bb);
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -4702,20 +4807,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
         }
         vm_push(vm, FLOAT_VAL(pow(as_number(a), as_number(b)))); break; }
-    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
-    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm); double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
+    case 33: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) <= 0 ? a : b); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da<db?da:db)); break; }
+    case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
+        double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
     case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); } else vm_push(vm, number_val(fabs(as_number(a)))); break; }
     /* modulo, remainder, quotient — first-class closure versions */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){vm->error=1;break;}
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){vm->error=1;break;}
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
+        if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'q'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
         if (ib==0){vm->error=1;break;}
         vm_push(vm, INT_VAL(ia/ib)); break; }
@@ -10083,6 +10195,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'+'); }
+        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
+            int64_t r; if (__builtin_add_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'+'); else vm_push(vm, INT_VAL(r));
         } else { vm_push(vm, number_val(as_number(a_val) + as_number(b_val))); }
         break; }
     case 143: { /* sub2 — complex-aware */
@@ -10096,6 +10211,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'-'); }
+        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
+            int64_t r; if (__builtin_sub_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'-'); else vm_push(vm, INT_VAL(r));
         } else { vm_push(vm, number_val(as_number(a_val) - as_number(b_val))); }
         break; }
     case 144: { /* mul2 — complex-aware */
@@ -10109,6 +10227,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int32_t p = heap_alloc(&vm->heap); if (p < 0) { vm->error = 1; break; }
             vm->heap.objects[p]->type = HEAP_COMPLEX; vm->heap.objects[p]->opaque.ptr = r;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
+        } else if (vm_either_bignum(a_val,b_val)) { vm_bignum_arith(vm,a_val,b_val,'*'); }
+        else if (a_val.type==VAL_INT && b_val.type==VAL_INT) {
+            int64_t r; if (__builtin_mul_overflow(a_val.as.i,b_val.as.i,&r)) vm_bignum_arith(vm,a_val,b_val,'*'); else vm_push(vm, INT_VAL(r));
         } else { vm_push(vm, number_val(as_number(a_val) * as_number(b_val))); }
         break; }
     case 145: { /* div2 — complex- and rational-aware.
@@ -10133,11 +10254,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else { vm_push(vm, number_val(as_number(a_val) / as_number(b_val))); }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
-    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
-    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }  /* > */
-    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; } /* <= */
-    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; } /* >= */
-    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; } /* = */
+    case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
+    case 147: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }  /* > */
+    case 148: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; } /* <= */
+    case 149: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; } /* >= */
+    case 150: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; } vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; } /* = */
 
     /* Core operations as first-class native functions (IDs 200-226) */
     case 200: { Value a = vm_pop(vm); /* car */

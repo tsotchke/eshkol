@@ -155,6 +155,9 @@ void vm_run(VM* vm) {
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 373); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 331); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 307); }
+        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '+'); }
+        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0);
+            if (__builtin_add_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '+'); else vm_push(vm, INT_VAL(r)); }
         else { VM_AD_BINARY(vm, a_sp, b_sp, ad_add, 0); vm_push(vm, number_val(as_number(a) + as_number(b))); } DISPATCH(); }
     lbl_SUB: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
@@ -162,6 +165,9 @@ void vm_run(VM* vm) {
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 374); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 332); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 308); }
+        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '-'); }
+        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0);
+            if (__builtin_sub_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '-'); else vm_push(vm, INT_VAL(r)); }
         else { VM_AD_BINARY(vm, a_sp, b_sp, ad_sub, 0); vm_push(vm, number_val(as_number(a) - as_number(b))); } DISPATCH(); }
     lbl_MUL: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
@@ -169,6 +175,9 @@ void vm_run(VM* vm) {
         else if (a.type == VAL_DUAL || b.type == VAL_DUAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 375); }
         else if (a.type == VAL_RATIONAL || b.type == VAL_RATIONAL) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 333); }
         else if (a.type == VAL_COMPLEX || b.type == VAL_COMPLEX) { vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 309); }
+        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '*'); }
+        else if (a.type == VAL_INT && b.type == VAL_INT) { int64_t r; VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0);
+            if (__builtin_mul_overflow(a.as.i, b.as.i, &r)) vm_bignum_arith(vm, a, b, '*'); else vm_push(vm, INT_VAL(r)); }
         else { VM_AD_BINARY(vm, a_sp, b_sp, ad_mul, 0); vm_push(vm, number_val(as_number(a) * as_number(b))); } DISPATCH(); }
     lbl_DIV: { int b_sp = vm->sp - 1, a_sp = vm->sp - 2;
         Value b = vm_pop(vm), a = vm_pop(vm);
@@ -190,6 +199,12 @@ void vm_run(VM* vm) {
         VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0); vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, 'm'); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) {
+            if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
+            int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
+            vm_push(vm, INT_VAL(r)); DISPATCH();
+        }
         double bd = as_number(b);
         if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; goto vm_exit; }
         double r = fmod(as_number(a), bd);
@@ -208,11 +223,26 @@ void vm_run(VM* vm) {
 
     /* --- Comparison --- */
 
-    lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); DISPATCH(); }
-    lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); DISPATCH(); }
-    lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); DISPATCH(); }
-    lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); DISPATCH(); }
-    lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); DISPATCH(); }
+    lbl_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) == 0)); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); DISPATCH(); }
+        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) == as_number_vm(vm, b))); DISPATCH(); }
+    lbl_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <  0)); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); DISPATCH(); }
+        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <  as_number_vm(vm, b))); DISPATCH(); }
+    lbl_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >  0)); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); DISPATCH(); }
+        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >  as_number_vm(vm, b))); DISPATCH(); }
+    lbl_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) <= 0)); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); DISPATCH(); }
+        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) <= as_number_vm(vm, b))); DISPATCH(); }
+    lbl_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
+        if (vm_either_bignum(a, b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm, a, b) >= 0)); DISPATCH(); }
+        if (a.type == VAL_INT && b.type == VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); DISPATCH(); }
+        vm_push(vm, BOOL_VAL(as_number_vm(vm, a) >= as_number_vm(vm, b))); DISPATCH(); }
     lbl_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); DISPATCH(); }
 
     /* --- Variables --- */
@@ -726,18 +756,24 @@ vm_exit:
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,373); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,331); }
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,307); }
+            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'+');
+            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_add_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'+'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val(as_number(a) + as_number(b))); break; }
         case OP_SUB: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1906); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,374); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,332); }
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,308); }
+            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'-');
+            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_sub_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'-'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val(as_number(a) - as_number(b))); break; }
         case OP_MUL: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1907); }
             else if (a.type==VAL_DUAL||b.type==VAL_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,375); }
             else if (a.type==VAL_RATIONAL||b.type==VAL_RATIONAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,333); }
             else if (a.type==VAL_COMPLEX||b.type==VAL_COMPLEX) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,309); }
+            else if (vm_either_bignum(a,b)) vm_bignum_arith(vm,a,b,'*');
+            else if (a.type==VAL_INT && b.type==VAL_INT) { int64_t r; if (__builtin_mul_overflow(a.as.i,b.as.i,&r)) vm_bignum_arith(vm,a,b,'*'); else vm_push(vm, INT_VAL(r)); }
             else vm_push(vm, number_val(as_number(a) * as_number(b))); break; }
         case OP_DIV: { Value b = vm_pop(vm), a = vm_pop(vm);
             if (a.type==VAL_HYPER_DUAL||b.type==VAL_HYPER_DUAL) { vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,1908); }
@@ -757,6 +793,12 @@ vm_exit:
             vm_push(vm, number_val(as_number(a) / bd)); } break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a, b)) { vm_bignum_arith(vm, a, b, 'm'); break; }
+            if (a.type == VAL_INT && b.type == VAL_INT) {
+                if (b.as.i == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
+                int64_t r = a.as.i % b.as.i; if (r != 0 && ((r ^ b.as.i) < 0)) r += b.as.i;
+                vm_push(vm, INT_VAL(r)); break;
+            }
             double bd = as_number(b);
             if (bd == 0) { fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; break; }
             double r = fmod(as_number(a), bd);
@@ -768,11 +810,26 @@ vm_exit:
         case OP_ABS: { Value a = vm_pop(vm); vm_push(vm, number_val(fabs(as_number(a)))); break; }
 
         /* Comparison — push proper booleans */
-        case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; }
-        case OP_LT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }
-        case OP_GT: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) > as_number(b))); break; }
-        case OP_LE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; }
-        case OP_GE: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; }
+        case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) == 0)); break; }
+            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i == b.as.i)); break; }
+            vm_push(vm, BOOL_VAL(as_number(a) == as_number(b))); break; }
+        case OP_LT: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; }
+            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <  b.as.i)); break; }
+            vm_push(vm, BOOL_VAL(as_number(a) <  as_number(b))); break; }
+        case OP_GT: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >  0)); break; }
+            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >  b.as.i)); break; }
+            vm_push(vm, BOOL_VAL(as_number(a) >  as_number(b))); break; }
+        case OP_LE: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <= 0)); break; }
+            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i <= b.as.i)); break; }
+            vm_push(vm, BOOL_VAL(as_number(a) <= as_number(b))); break; }
+        case OP_GE: { Value b = vm_pop(vm), a = vm_pop(vm);
+            if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) >= 0)); break; }
+            if (a.type==VAL_INT && b.type==VAL_INT) { vm_push(vm, BOOL_VAL(a.as.i >= b.as.i)); break; }
+            vm_push(vm, BOOL_VAL(as_number(a) >= as_number(b))); break; }
         case OP_NOT: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(!is_truthy(a))); break; }
 
         /* Variables */
