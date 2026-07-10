@@ -64,13 +64,16 @@ H2 = "1e-4"
 # generator surfaces a real defect, add its id here with an ESH task so the gate
 # stays green-able while a fix agent works, and it FAILs loudly if it regresses
 # in a NEW way.
-# ESH-0235 (found by this harness): reverse-mode AD through a tensor op returns
-# a silently-WRONG all-zero gradient when the differentiation point is built
-# with the (vector ...) constructor (the identical #(...) literal / (tensor ...)
-# point is correct). The `vecpoint` family reproduces this deterministically and
-# is marked XKNOWN so the gate stays green-able while the fix is tracked; it
-# flips to PASS (and this entry should be deleted) once ESH-0235 lands.
-XKNOWN = {"vecpoint": "ESH-0235"}   # id-prefix -> "ESH-NNNN"
+# ESH-0235 (found by this harness): reverse-mode AD through a tensor op used to
+# return a silently-WRONG all-zero gradient when the differentiation point was
+# built with the (vector ...) constructor (the identical #(...) literal /
+# (tensor ...) point was correct). FIXED — a single-arg tensor-op function's
+# (vector ...) point is now converted to a 1-D tensor and reverse-seeded exactly
+# like the #(...)/(tensor ...) point, in every calling form (direct lambda,
+# first-class named loss, named indirection, higher-order wrapper). The
+# `vecpoint` family therefore drops out of XKNOWN and is a hard PASS/FAIL gate:
+# any recurrence FAILs loudly.
+XKNOWN = {}                          # id-prefix -> "ESH-NNNN"
 KNOWN_CRASHERS = {}                  # id-prefix -> "ESH-NNNN"
 
 SEEDS_SCALAR = list(range(0, 48))

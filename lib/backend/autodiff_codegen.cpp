@@ -3378,11 +3378,23 @@ static bool adIsTensorValuedBuiltin(const char* cname) {
  * @param ast the AST node (or cons-cell) to scan.
  * @return true iff the subtree reaches a tensor operation.
  */
-static bool adAstUsesTensorOps(const eshkol_ast_t* ast) {
+// ESH-0235: when `bodies` is non-null, a call to a user-defined function is
+// followed into that function's registered body AST (guarded by `visited` to
+// stop recursion and a depth cap). This lets the tensor-flow test see through a
+// layer of indirection — a differentiated wrapper `(lambda (z) (loss z))` whose
+// tensor op lives inside the named `loss` — so its (vector …) point is
+// reverse-seeded like the equivalent #(…)/(tensor …) point instead of silently
+// zeroing on the forward-mode dual path. With `bodies` null (every pre-existing
+// caller) the behaviour is exactly as before: no calls are followed.
+static bool adAstUsesTensorOps(
+        const eshkol_ast_t* ast,
+        const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
+        std::unordered_set<std::string>* visited = nullptr,
+        int depth = 0) {
     if (!ast) return false;
     if (ast->type == ESHKOL_CONS) {
-        return adAstUsesTensorOps(ast->cons_cell.car) ||
-               adAstUsesTensorOps(ast->cons_cell.cdr);
+        return adAstUsesTensorOps(ast->cons_cell.car, bodies, visited, depth) ||
+               adAstUsesTensorOps(ast->cons_cell.cdr, bodies, visited, depth);
     }
     if (ast->type != ESHKOL_OP) return false;
     const eshkol_operations_t* op = &ast->operation;
@@ -3393,29 +3405,38 @@ static bool adAstUsesTensorOps(const eshkol_ast_t* ast) {
         case ESHKOL_COND_OP: {
             const eshkol_ast_t* f = op->call_op.func;
             if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id)) return true;
-            if (f && adAstUsesTensorOps(f)) return true;
+            // Follow a call into a user-defined function's body (ESH-0235).
+            if (bodies && visited && depth < 8 && f && f->type == ESHKOL_VAR &&
+                !visited->count(f->variable.id)) {
+                auto it = bodies->find(f->variable.id);
+                if (it != bodies->end()) {
+                    visited->insert(f->variable.id);
+                    if (adAstUsesTensorOps(it->second, bodies, visited, depth + 1)) return true;
+                }
+            }
+            if (f && adAstUsesTensorOps(f, bodies, visited, depth)) return true;
             for (uint64_t i = 0; i < op->call_op.num_vars; i++)
-                if (adAstUsesTensorOps(&op->call_op.variables[i])) return true;
+                if (adAstUsesTensorOps(&op->call_op.variables[i], bodies, visited, depth)) return true;
             return false;
         }
         case ESHKOL_SEQUENCE_OP:
         case ESHKOL_AND_OP:
         case ESHKOL_OR_OP:
             for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
-                if (adAstUsesTensorOps(&op->sequence_op.expressions[i])) return true;
+                if (adAstUsesTensorOps(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
             return false;
         case ESHKOL_LET_OP:
         case ESHKOL_LET_STAR_OP:
         case ESHKOL_LETREC_OP:
         case ESHKOL_LETREC_STAR_OP: {
             for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
-                if (adAstUsesTensorOps(&op->let_op.bindings[i])) return true;
-            return adAstUsesTensorOps(op->let_op.body);
+                if (adAstUsesTensorOps(&op->let_op.bindings[i], bodies, visited, depth)) return true;
+            return adAstUsesTensorOps(op->let_op.body, bodies, visited, depth);
         }
         case ESHKOL_LAMBDA_OP:
-            return adAstUsesTensorOps(op->lambda_op.body);
+            return adAstUsesTensorOps(op->lambda_op.body, bodies, visited, depth);
         case ESHKOL_DEFINE_OP:
-            return adAstUsesTensorOps(op->define_op.value);
+            return adAstUsesTensorOps(op->define_op.value, bodies, visited, depth);
         default:
             return false;
     }
@@ -4132,12 +4153,72 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     Value* rvt_sub = b.CreateLoad(ctx_.int8Type(), rvt_hdr);
                     Value* rvt_is_tensor = b.CreateICmpEQ(rvt_sub,
                         ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
-                    b.CreateCondBr(rvt_is_tensor, rvt_reverse, rvt_not_tensor);
+                    // ESH-0235: a (vector …)-constructed point must be reverse-
+                    // seeded exactly like a #(…)/(tensor …) point. Accept the
+                    // HEAP_SUBTYPE_VECTOR subtype too and convert it to a 1-D
+                    // plain-double tensor below, so the identical tape machinery
+                    // seeds each element as an AD variable. Without this a
+                    // first-class / wrapper loss at a (vector …) point falls to
+                    // the forward-mode dual path, which drops the tangent through
+                    // a tensor op and returns a silent all-zero gradient.
+                    Value* rvt_is_vec = b.CreateICmpEQ(rvt_sub,
+                        ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
+                    Value* rvt_seedable = b.CreateOr(rvt_is_tensor, rvt_is_vec);
+                    llvm::StructType* rvt_tt = ctx_.tensorType();
+                    BasicBlock* rvt_norm_vec = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_vec", current_func);
+                    BasicBlock* rvt_norm_ten = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_ten", current_func);
+                    b.CreateCondBr(rvt_seedable, rvt_norm_ten, rvt_not_tensor);
+
+                    // Tensor point: use the tensor struct pointer directly.
+                    b.SetInsertPoint(rvt_norm_ten);
+                    Value* rvt_ten_ptr = b.CreateIntToPtr(tagged_.unpackInt64(point_val), ctx_.ptrType());
+                    b.CreateCondBr(rvt_is_vec, rvt_norm_vec, rvt_reverse);
+                    BasicBlock* rvt_norm_ten_exit = b.GetInsertBlock();
+
+                    // (vector …) point: build a 1-D plain-double tensor from the
+                    // Scheme vector [len(8)][tagged elems] layout.
+                    b.SetInsertPoint(rvt_norm_vec);
+                    Value* rvt_vsvec = tagged_.unpackPtr(point_val);
+                    Value* rvt_vn = b.CreateLoad(ctx_.int64Type(), rvt_vsvec);
+                    Value* rvt_vsrc_base = b.CreateGEP(ctx_.int8Type(), rvt_vsvec, ConstantInt::get(ctx_.int64Type(), 8));
+                    Value* rvt_vsrc = b.CreatePointerCast(rvt_vsrc_base, ctx_.ptrType());
+                    Value* rvt_vten = b.CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+                    Value* rvt_vdims = b.CreateCall(mem_.getArenaAllocate(), {arena_ptr, ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t))});
+                    Value* rvt_vdims_t = b.CreatePointerCast(rvt_vdims, ctx_.builder().getPtrTy());
+                    b.CreateStore(rvt_vn, rvt_vdims_t);
+                    b.CreateStore(rvt_vdims_t, b.CreateStructGEP(rvt_tt, rvt_vten, 0));
+                    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 1), b.CreateStructGEP(rvt_tt, rvt_vten, 1));
+                    b.CreateStore(rvt_vn, b.CreateStructGEP(rvt_tt, rvt_vten, 3));
+                    Value* rvt_vdst_raw = b.CreateCall(mem_.getArenaAllocate(),
+                        {arena_ptr, b.CreateMul(rvt_vn, ConstantInt::get(ctx_.int64Type(), sizeof(double)))});
+                    Value* rvt_vdst = b.CreatePointerCast(rvt_vdst_raw, ctx_.builder().getPtrTy());
+                    b.CreateStore(rvt_vdst, b.CreateStructGEP(rvt_tt, rvt_vten, 2));
+                    Value* rvt_vi = b.CreateAlloca(ctx_.int64Type(), nullptr, "rvt_vi");
+                    b.CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rvt_vi);
+                    BasicBlock* rvt_vcc = BasicBlock::Create(ctx_.context(), "rvt_vconv_cond", current_func);
+                    BasicBlock* rvt_vcb = BasicBlock::Create(ctx_.context(), "rvt_vconv_body", current_func);
+                    BasicBlock* rvt_vce = BasicBlock::Create(ctx_.context(), "rvt_vconv_end", current_func);
+                    b.CreateBr(rvt_vcc);
+                    b.SetInsertPoint(rvt_vcc);
+                    Value* rvt_vidx = b.CreateLoad(ctx_.int64Type(), rvt_vi);
+                    b.CreateCondBr(b.CreateICmpULT(rvt_vidx, rvt_vn), rvt_vcb, rvt_vce);
+                    b.SetInsertPoint(rvt_vcb);
+                    Value* rvt_vsrc_ptr = b.CreateGEP(ctx_.taggedValueType(), rvt_vsrc, rvt_vidx);
+                    Value* rvt_vsrc_val = b.CreateLoad(ctx_.taggedValueType(), rvt_vsrc_ptr);
+                    Value* rvt_vdbl = tagged_.unpackDouble(rvt_vsrc_val);
+                    b.CreateStore(b.CreateBitCast(rvt_vdbl, ctx_.int64Type()),
+                        b.CreateGEP(ctx_.int64Type(), rvt_vdst, rvt_vidx));
+                    b.CreateStore(b.CreateAdd(rvt_vidx, ConstantInt::get(ctx_.int64Type(), 1)), rvt_vi);
+                    b.CreateBr(rvt_vcc);
+                    b.SetInsertPoint(rvt_vce);
+                    b.CreateBr(rvt_reverse);
+                    BasicBlock* rvt_norm_vec_exit = b.GetInsertBlock();
 
                     // ---- reverse-mode tensor gradient ----
                     b.SetInsertPoint(rvt_reverse);
-                    llvm::StructType* rvt_tt = ctx_.tensorType();
-                    Value* rvt_ptr = b.CreateIntToPtr(tagged_.unpackInt64(point_val), ctx_.ptrType());
+                    PHINode* rvt_ptr = b.CreatePHI(ctx_.ptrType(), 2, "rvt_ptr");
+                    rvt_ptr->addIncoming(rvt_ten_ptr, rvt_norm_ten_exit);
+                    rvt_ptr->addIncoming(rvt_vten, rvt_norm_vec_exit);
                     Value* rvt_dims = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 0));
                     Value* rvt_ndim = b.CreateLoad(ctx_.int64Type(), b.CreateStructGEP(rvt_tt, rvt_ptr, 1));
                     Value* rvt_elems = b.CreateLoad(ctx_.ptrType(), b.CreateStructGEP(rvt_tt, rvt_ptr, 2));
@@ -4768,6 +4849,62 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Get arena for OALR-compliant tensor allocation (used throughout gradient computation)
     Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
 
+    // ESH-0235: decide, at compile time, whether a HEAP_SUBTYPE_VECTOR
+    // ((vector …)-constructed) point must be seeded on the REVERSE-mode tensor
+    // tape rather than the forward-mode dual scheme-vector path. A #(…) reader
+    // literal and a (tensor …) value both lower to a TENSOR subtype and, for a
+    // single-argument tensor-op function, take the reverse-mode `vector_input`
+    // path (which seeds every element as an AD variable). A (vector …) point is
+    // a genuine Scheme vector and would instead fall to the forward-mode dual
+    // path, where a tensor op (tensor-dot/-mul/-sum/-matmul/…) reads ONLY the
+    // primal double out of each dual-tagged element and silently drops the
+    // tangent — a WRONG all-zero gradient. So when the differentiated function
+    // flows the input through a tensor op, convert the Scheme vector to a 1-D
+    // tensor and route it through the SAME reverse-mode seeding as the
+    // #(…)/(tensor …) point. The forward-mode scheme-vector path is retained for
+    // scalar / vector-ref bodies because it (and only it) carries the outer
+    // perturbation of a NESTED gradient-of-gradient over a vector point
+    // (ESH-0096); reverse-seeding those would drop the second-order term. Tensor
+    // use is detected THROUGH one layer of named-function indirection so a
+    // wrapper (lambda (z) (loss z)) over a named tensor loss is caught too.
+    // Multi-argument (arity>1) vector points keep the forward / scheme-vector
+    // path below (the inverse tensor→svec conversion handles the multi-param
+    // case). Mirrors the arity>1 tensor→svec conversion.
+    uint64_t grad_arity_early = 0;
+    {
+        std::string key = func_ptr->getName().str();
+        auto rv = key.rfind("__rv");
+        if (rv != std::string::npos && rv + 4 < key.size() &&
+            key.find_first_not_of("0123456789", rv + 4) == std::string::npos) {
+            key.erase(rv);
+        }
+        auto ait = function_arity_table_->find(key);
+        if (ait != function_arity_table_->end()) grad_arity_early = ait->second;
+    }
+    std::unordered_set<std::string> grad_tensor_visited;
+    bool grad_fn_uses_tensors =
+        adAstUsesTensorOps(op->gradient_op.function, function_body_ast_, &grad_tensor_visited);
+    if (!grad_fn_uses_tensors && op->gradient_op.function->type == ESHKOL_VAR) {
+        const eshkol_ast_t* gbody = nullptr;
+        std::string gkey = func_ptr->getName().str();
+        auto grv = gkey.rfind("__rv");
+        if (grv != std::string::npos && grv + 4 < gkey.size() &&
+            gkey.find_first_not_of("0123456789", grv + 4) == std::string::npos) {
+            gkey.erase(grv);
+        }
+        if (function_body_ast_) {
+            auto bit = function_body_ast_->find(gkey);
+            if (bit == function_body_ast_->end())
+                bit = function_body_ast_->find(op->gradient_op.function->variable.id);
+            if (bit != function_body_ast_->end()) gbody = bit->second;
+        }
+        grad_tensor_visited.clear();
+        grad_fn_uses_tensors = gbody
+            ? adAstUsesTensorOps(gbody, function_body_ast_, &grad_tensor_visited)
+            : adFunctionUsesTensors(func_ptr);
+    }
+    bool grad_vec_point_reverse = (grad_arity_early <= 1) && grad_fn_uses_tensors;
+
     // Extract type from input (may be DOUBLE, INT64, TENSOR_PTR, or AD_NODE_PTR for nested gradients)
     Value* input_type = tagged_.getType(vector_val);
     Value* input_base_type = tagged_.getBaseType(input_type);
@@ -4797,6 +4934,8 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     BasicBlock* scalar_input = BasicBlock::Create(ctx_.context(), "grad_scalar_input", current_func);
     BasicBlock* scheme_vector_input = BasicBlock::Create(ctx_.context(), "grad_scheme_vector_input", current_func);
     BasicBlock* vector_input = BasicBlock::Create(ctx_.context(), "grad_vector_input", current_func);
+    // ESH-0235: svec→tensor bridge for a (vector …) point into the reverse path.
+    BasicBlock* grad_vec_to_tensor = BasicBlock::Create(ctx_.context(), "grad_vec_to_tensor", current_func);
     BasicBlock* grad_merge_input = BasicBlock::Create(ctx_.context(), "grad_merge_input", current_func);
     // Create grad_done early so scheme_vector_input path can branch to it
     BasicBlock* grad_done = BasicBlock::Create(ctx_.context(), "grad_done", current_func);
@@ -4877,7 +5016,13 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     BasicBlock* grad_check_cons = BasicBlock::Create(ctx_.context(), "grad_check_cons", current_func);
     BasicBlock* grad_list_to_svec = BasicBlock::Create(ctx_.context(), "grad_list_to_svec", current_func);
     BasicBlock* grad_check_tensor = BasicBlock::Create(ctx_.context(), "grad_check_tensor", current_func);
-    ctx_.builder().CreateCondBr(is_vec_subtype_grad, scheme_vector_input, grad_check_cons);
+    // ESH-0235: a single-arg tensor-op function must seed a (vector …) point on
+    // the reverse-mode tape (via svec→tensor), identical to a #(…)/(tensor …)
+    // point; otherwise the forward-mode dual path drops the tangent through the
+    // tensor op and returns a silent all-zero gradient.
+    BasicBlock* grad_vec_subtype_target =
+        grad_vec_point_reverse ? grad_vec_to_tensor : scheme_vector_input;
+    ctx_.builder().CreateCondBr(is_vec_subtype_grad, grad_vec_subtype_target, grad_check_cons);
 
     // A (list …) input is a cons cell (HEAP_SUBTYPE_CONS): convert it to a
     // Scheme vector so it goes through the same path as a (vector …) input.
@@ -5310,6 +5455,55 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(grad_done);  // Skip reverse-mode AD, go directly to done
     BasicBlock* scheme_vector_exit = ctx_.builder().GetInsertBlock();
 
+    // ESH-0235 VEC→TENSOR BRIDGE: a (vector …)-constructed point feeding a
+    // single-arg tensor-op function is converted to a 1-D tensor here and fed
+    // into the reverse-mode `vector_input` seeding via the merge PHI, so it is
+    // taped identically to a #(…)/(tensor …) point (each element becomes an AD
+    // variable). Reads the Scheme vector layout [len(8)][tagged elems] and
+    // writes a plain-double tensor [dims|ndim=1|elems|total].
+    ctx_.builder().SetInsertPoint(grad_vec_to_tensor);
+    Value* v2t_svec_ptr = tagged_.unpackPtr(vector_val);
+    Value* v2t_n = ctx_.builder().CreateLoad(ctx_.int64Type(), v2t_svec_ptr);
+    Value* v2t_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), v2t_svec_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+    Value* v2t_elems = ctx_.builder().CreatePointerCast(v2t_elems_base, ctx_.ptrType());
+
+    Value* v2t_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
+    Value* v2t_dims_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, ConstantInt::get(ctx_.int64Type(), sizeof(uint64_t))});
+    Value* v2t_typed_dims = ctx_.builder().CreatePointerCast(v2t_dims_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(v2t_n, v2t_typed_dims);
+    ctx_.builder().CreateStore(v2t_typed_dims, ctx_.builder().CreateStructGEP(ctx_.tensorType(), v2t_tensor, 0));
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), ctx_.builder().CreateStructGEP(ctx_.tensorType(), v2t_tensor, 1));
+    ctx_.builder().CreateStore(v2t_n, ctx_.builder().CreateStructGEP(ctx_.tensorType(), v2t_tensor, 3));
+
+    Value* v2t_elems_size = ctx_.builder().CreateMul(v2t_n, ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    Value* v2t_dst_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {arena_ptr, v2t_elems_size});
+    Value* v2t_dst = ctx_.builder().CreatePointerCast(v2t_dst_ptr, ctx_.builder().getPtrTy());
+    ctx_.builder().CreateStore(v2t_dst, ctx_.builder().CreateStructGEP(ctx_.tensorType(), v2t_tensor, 2));
+
+    Value* v2t_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "v2t_i");
+    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), v2t_i);
+    BasicBlock* v2t_cond = BasicBlock::Create(ctx_.context(), "v2t_cond", current_func);
+    BasicBlock* v2t_body = BasicBlock::Create(ctx_.context(), "v2t_body", current_func);
+    BasicBlock* v2t_end = BasicBlock::Create(ctx_.context(), "v2t_end", current_func);
+    ctx_.builder().CreateBr(v2t_cond);
+    ctx_.builder().SetInsertPoint(v2t_cond);
+    Value* v2t_idx = ctx_.builder().CreateLoad(ctx_.int64Type(), v2t_i);
+    ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(v2t_idx, v2t_n), v2t_body, v2t_end);
+    ctx_.builder().SetInsertPoint(v2t_body);
+    Value* v2t_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), v2t_elems, v2t_idx);
+    Value* v2t_src_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), v2t_src_ptr);
+    Value* v2t_dbl = tagged_.unpackDouble(v2t_src_val);
+    Value* v2t_bits = ctx_.builder().CreateBitCast(v2t_dbl, ctx_.int64Type());
+    Value* v2t_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), v2t_dst, v2t_idx);
+    ctx_.builder().CreateStore(v2t_bits, v2t_dst_slot);
+    ctx_.builder().CreateStore(ctx_.builder().CreateAdd(v2t_idx, ConstantInt::get(ctx_.int64Type(), 1)), v2t_i);
+    ctx_.builder().CreateBr(v2t_cond);
+    ctx_.builder().SetInsertPoint(v2t_end);
+    Value* v2t_tensor_int = ctx_.builder().CreatePtrToInt(v2t_tensor, ctx_.int64Type());
+    Value* v2t_tensor_tagged = tagged_.packPtr(v2t_tensor_int, ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(grad_merge_input);
+    BasicBlock* grad_vec_to_tensor_exit = ctx_.builder().GetInsertBlock();
+
     // VECTOR INPUT: Use original vector as-is (existing behavior - tensor format)
     ctx_.builder().SetInsertPoint(vector_input);
     ctx_.builder().CreateBr(grad_merge_input);
@@ -5318,15 +5512,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // MERGE: PHI node selects AD node promoted, scalar promoted, or original tensor
     // NOTE: Scheme vector path now uses forward-mode AD and branches directly to grad_done
     ctx_.builder().SetInsertPoint(grad_merge_input);
-    PHINode* actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 3, "gradient_input");
+    PHINode* actual_input = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4, "gradient_input");
     actual_input->addIncoming(ad_promoted_tagged, ad_node_exit);  // Nested gradient path
     actual_input->addIncoming(promoted_vector_tagged, scalar_input_exit);
     actual_input->addIncoming(vector_val, vector_input_exit);
+    actual_input->addIncoming(v2t_tensor_tagged, grad_vec_to_tensor_exit);  // ESH-0235: (vector …) point
 
-    PHINode* input_was_scalar_promoted = ctx_.builder().CreatePHI(ctx_.int1Type(), 3, "gradient_input_was_scalar");
+    PHINode* input_was_scalar_promoted = ctx_.builder().CreatePHI(ctx_.int1Type(), 4, "gradient_input_was_scalar");
     input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 1), ad_node_exit);
     input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 1), scalar_input_exit);
     input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 0), vector_input_exit);
+    input_was_scalar_promoted->addIncoming(ConstantInt::get(ctx_.int1Type(), 0), grad_vec_to_tensor_exit);
     
     // Continue with gradient computation using merged input (guaranteed to be tensor!)
     Value* vector_ptr_int = tagged_.unpackInt64(actual_input);

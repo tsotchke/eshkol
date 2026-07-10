@@ -141,9 +141,9 @@
 (define lit145 (gradient (lambda (z) (loss145 z)) (vector 1.2335 0.5795 1.6262 0.6787)))
 (define var145 (gradient loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
 (define wrp145 (wg loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
-(chk-grad "vecpoint.dot.literal" lit145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.dot.firstclass" var145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.dot.wrapper" wrp145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 "ESH-0235")
+(chk-grad "vecpoint.dot.literal" lit145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.dot.firstclass" var145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.dot.wrapper" wrp145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
 
 ;; probe vecpoint.summul
 (define Cvp2 (vector 0.5 -1.5 0.25))
@@ -151,9 +151,9 @@
 (define lit146 (gradient (lambda (z) (loss146 z)) (vector 1.0 2.0 4.0)))
 (define var146 (gradient loss146 (vector 1.0 2.0 4.0)))
 (define wrp146 (wg loss146 (vector 1.0 2.0 4.0)))
-(chk-grad "vecpoint.summul.literal" lit146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.summul.firstclass" var146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.summul.wrapper" wrp146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 "ESH-0235")
+(chk-grad "vecpoint.summul.literal" lit146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.summul.firstclass" var146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.summul.wrapper" wrp146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
 
 ;; probe vecpoint.matmul
 (define Kvp (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
@@ -161,9 +161,9 @@
 (define lit147 (gradient (lambda (z) (loss147 z)) (vector 1.0 2.0 3.0 4.0)))
 (define var147 (gradient loss147 (vector 1.0 2.0 3.0 4.0)))
 (define wrp147 (wg loss147 (vector 1.0 2.0 3.0 4.0)))
-(chk-grad "vecpoint.matmul.literal" lit147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.matmul.firstclass" var147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 "ESH-0235")
-(chk-grad "vecpoint.matmul.wrapper" wrp147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 "ESH-0235")
+(chk-grad "vecpoint.matmul.literal" lit147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.matmul.firstclass" var147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
+(chk-grad "vecpoint.matmul.wrapper" wrp147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)
