@@ -215,10 +215,18 @@ void vm_run(VM* vm) {
     lbl_NEG: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1909); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 384); }
+        else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
+        else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_neg);
+            if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
+            else vm_push(vm, INT_VAL(-a.as.i)); }
         else { VM_AD_UNARY(vm, a_sp, ad_neg); vm_push(vm, number_val(-as_number(a))); } DISPATCH(); }
     lbl_ABS: { int a_sp = vm->sp - 1; Value a = vm_pop(vm);
         if (a.type == VAL_HYPER_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 1916); }
         else if (a.type == VAL_DUAL) { vm_push(vm, a); vm_dispatch_native(vm, 383); }
+        else if (a.type == VAL_BIGNUM) { vm->ad_node_map[vm->sp] = -1; vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
+        else if (a.type == VAL_INT) { VM_AD_UNARY(vm, a_sp, ad_abs);
+            if (a.as.i == INT64_MIN) vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i)));
+            else vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); }
         else { VM_AD_UNARY(vm, a_sp, ad_abs); vm_push(vm, number_val(fabs(as_number(a)))); } DISPATCH(); }
 
     /* --- Comparison --- */
@@ -806,8 +814,16 @@ vm_exit:
             vm_push(vm, number_val(r));
             break;
         }
-        case OP_NEG: { Value a = vm_pop(vm); vm_push(vm, number_val(-as_number(a))); break; }
-        case OP_ABS: { Value a = vm_pop(vm); vm_push(vm, number_val(fabs(as_number(a)))); break; }
+        case OP_NEG: { Value a = vm_pop(vm);
+            if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
+            if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(-a.as.i)); break; }
+            if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_neg(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
+            vm_push(vm, number_val(-as_number(a))); break; }
+        case OP_ABS: { Value a = vm_pop(vm);
+            if (a.type == VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); break; }
+            if (a.type == VAL_INT && a.as.i != INT64_MIN) { vm_push(vm, INT_VAL(a.as.i < 0 ? -a.as.i : a.as.i)); break; }
+            if (a.type == VAL_INT) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, bignum_from_int64(&vm->heap.regions, a.as.i))); break; }
+            vm_push(vm, number_val(fabs(as_number(a)))); break; }
 
         /* Comparison — push proper booleans */
         case OP_EQ: { Value b = vm_pop(vm), a = vm_pop(vm);

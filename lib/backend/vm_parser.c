@@ -18,6 +18,10 @@ typedef struct Node {
     int n_children;
     int is_char;      /* N_NUMBER node that originated from a #\ character literal */
     int is_inexact;   /* N_NUMBER literal written in inexact (float) syntax: 2.0, 1e3 */
+    int is_int;       /* N_NUMBER exact integer literal that fits int64 (ival holds it) */
+    int64_t ival;     /* exact int64 value when is_int; avoids the precision loss of
+                       * routing large integer literals (up to INT64_MAX) through the
+                       * double numval field. */
 } Node;
 
 /* Hygienic macro expansion (syntax-rules).
@@ -510,12 +514,26 @@ static Node* parse_sexp(void) {
             return div_node;
         }
         buf[i] = 0;
-        Node* n = make_node(N_NUMBER); if (!n) return NULL; n->numval = atof(buf);
+        Node* n = make_node(N_NUMBER); if (!n) return NULL;
         /* Inexact syntax (a decimal point or exponent) must stay inexact even
          * when the value is integral (2.0, 1e3), so downstream codegen emits a
          * float rather than an exact int. Without this the VM collapsed 2.0 to
          * exact 2, and (/ 7 2.0) then produced the rational 7/2 instead of 3.5. */
-        for (int k = 0; buf[k]; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { n->is_inexact = 1; break; }
+        int inexact_syntax = 0;
+        for (int k = 0; buf[k]; k++) if (buf[k] == '.' || buf[k] == 'e' || buf[k] == 'E') { inexact_syntax = 1; break; }
+        if (!inexact_syntax) {
+            /* Pure integer token: preserve the exact int64 value (up to
+             * INT64_MAX) rather than round-tripping through a double, which
+             * loses precision above 2^53 and made e.g. 9223372036854775807
+             * come out inexact on the VM path. On int64 overflow fall back to
+             * the inexact double (matching the pre-existing behaviour). */
+            errno = 0;
+            char* endp = NULL;
+            long long iv = strtoll(buf, &endp, 10);
+            if (errno == 0 && endp && *endp == '\0') { n->is_int = 1; n->ival = (int64_t)iv; n->numval = (double)iv; return n; }
+        }
+        n->numval = atof(buf);
+        n->is_inexact = inexact_syntax;
         return n;
     }
     /* Symbol */
@@ -860,7 +878,9 @@ static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
     if (datum->type == N_NUMBER) {
         double v = datum->numval;
-        if (v == (int64_t)v && fabs(v) < 1e15)
+        if (datum->is_int)
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(datum->ival)));
+        else if (v == (int64_t)v && fabs(v) < 1e15)
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
         else
             chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(v)));

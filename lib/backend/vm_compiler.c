@@ -63,7 +63,8 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
 
     /* Atom: number */
     if (node->type == N_NUMBER) {
-        int ci = chunk_add_const(c, node->numval == (int64_t)node->numval ? INT_VAL((int64_t)node->numval) : FLOAT_VAL(node->numval));
+        int ci = chunk_add_const(c, node->is_int ? INT_VAL(node->ival)
+            : (node->numval == (int64_t)node->numval ? INT_VAL((int64_t)node->numval) : FLOAT_VAL(node->numval)));
         if (ci >= 0) chunk_emit(c, OP_CONST, ci);
         return;
     }
@@ -1641,7 +1642,9 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
              * constant pool format unchanged. */
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
             chunk_emit(c, OP_NATIVE_CALL, 228);
-        } else if (!node->is_inexact && v == (int64_t)v && fabs(v) < 1e15)
+        } else if (node->is_int)
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(node->ival)));
+        else if (!node->is_inexact && v == (int64_t)v && fabs(v) < 1e15)
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL((int64_t)v)));
         else
             chunk_emit(c, OP_CONST, chunk_add_const(c, FLOAT_VAL(v)));
@@ -1839,22 +1842,50 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     /* If all operands are compile-time constants, evaluate at compile time */
     if (node->type == N_LIST && node->n_children >= 3) {
         if (head->type == N_SYMBOL) {
-            int all_const = 1;
+            int all_const = 1, all_int = 1;
             for (int i = 1; i < node->n_children; i++) {
                 if (node->children[i]->type != N_NUMBER) { all_const = 0; break; }
+                if (!node->children[i]->is_int) all_int = 0;
             }
-            if (all_const) {
+            int is_add = strcmp(head->symbol, "+") == 0;
+            int is_sub = strcmp(head->symbol, "-") == 0;
+            int is_mul = strcmp(head->symbol, "*") == 0;
+            /* Exact-integer fold with overflow detection. On overflow, DON'T
+             * fold — fall through to the runtime reduce loops, whose ops now
+             * promote to bignum (folding to a double here would silently make
+             * e.g. (* 9223372036854775807 2) inexact). */
+            if (all_const && all_int && (is_add || is_sub || is_mul)) {
+                int64_t acc = is_mul ? 1 : 0;
+                int overflow = 0;
+                if (is_add) {
+                    for (int i = 1; i < node->n_children; i++)
+                        if (__builtin_add_overflow(acc, node->children[i]->ival, &acc)) { overflow = 1; break; }
+                } else if (is_sub) {
+                    acc = node->children[1]->ival;
+                    for (int i = 2; i < node->n_children; i++)
+                        if (__builtin_sub_overflow(acc, node->children[i]->ival, &acc)) { overflow = 1; break; }
+                } else { /* is_mul */
+                    for (int i = 1; i < node->n_children; i++)
+                        if (__builtin_mul_overflow(acc, node->children[i]->ival, &acc)) { overflow = 1; break; }
+                }
+                if (!overflow) {
+                    int ci = chunk_add_const(c, INT_VAL(acc));
+                    if (ci >= 0) chunk_emit(c, OP_CONST, ci);
+                    return;
+                }
+                /* overflow → leave to runtime */
+            } else if (all_const) {
                 double result = 0;
                 int folded = 0;
-                if (strcmp(head->symbol, "+") == 0) {
+                if (is_add) {
                     result = 0;
                     for (int i = 1; i < node->n_children; i++) result += node->children[i]->numval;
                     folded = 1;
-                } else if (strcmp(head->symbol, "-") == 0 && node->n_children >= 2) {
+                } else if (is_sub && node->n_children >= 2) {
                     result = node->children[1]->numval;
                     for (int i = 2; i < node->n_children; i++) result -= node->children[i]->numval;
                     folded = 1;
-                } else if (strcmp(head->symbol, "*") == 0) {
+                } else if (is_mul) {
                     result = 1;
                     for (int i = 1; i < node->n_children; i++) result *= node->children[i]->numval;
                     folded = 1;

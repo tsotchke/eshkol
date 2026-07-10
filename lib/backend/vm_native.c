@@ -4813,7 +4813,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 34: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_push(vm, vm_bignum_compare_vals(vm,a,b) >= 0 ? a : b); break; }
         double da=as_number_vm(vm,a),db=as_number_vm(vm,b); vm_push(vm, number_val(da>db?da:db)); break; }
-    case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); } else vm_push(vm, number_val(fabs(as_number(a)))); break; }
+    case 35: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,383); }
+        else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
+        else vm_push(vm, number_val(fabs(as_number(a)))); break; }
     /* modulo, remainder, quotient — first-class closure versions */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
