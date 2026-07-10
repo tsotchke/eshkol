@@ -107,6 +107,8 @@ extern void* get_global_arena(void);
 extern void* arena_allocate(void* arena, size_t size);
 extern char* arena_allocate_string_with_header(void* arena, size_t length);
 extern void* arena_allocate_cons_with_header(void* arena);
+/* Reads an Eshkol string's header size, preserving embedded NUL bytes. */
+extern int64_t eshkol_string_byte_length(const char* s);
 extern int eshkol_capability_runtime_allows(const char* capability);
 extern void eshkol_capability_runtime_deny(const char* capability);
 /* ESH-0228: raise a proper R7RS type error (formats "Type error in <proc>:
@@ -2861,17 +2863,27 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_url_parse_v(eshkol_sysbuiltin_va
     return result;
 }
 
-/** Implements `(base64url-encode data)`: encodes @p data_val using the
- *  URL-safe base64 alphabet (- and _), without padding. */
-static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbuiltin_value_t data_val) {
-    static const char table[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+static const char sys_base64_standard_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char sys_base64url_table[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/** Encode an Eshkol string with the supplied RFC 4648 alphabet.  String
+ * headers retain the true byte count, including embedded NUL bytes. */
+static eshkol_sysbuiltin_value_t sys_base64_encode_v(
+    eshkol_sysbuiltin_value_t data_val, const char table[65], int padded) {
     const char* data = sys_extract_string(data_val);
     if (!data) return sys_make_bool(0);
-    size_t len = strlen(data);
-    size_t out_len = (len / 3) * 4;
-    if (len % 3 == 1) out_len += 2;
-    else if (len % 3 == 2) out_len += 3;
+    int64_t signed_len = eshkol_string_byte_length(data);
+    if (signed_len < 0) return sys_make_bool(0);
+    size_t len = (size_t)signed_len;
+    size_t groups = len / 3;
+    size_t rem = len % 3;
+    size_t tail = rem ? (padded ? 4 : rem + 1) : 0;
+    if (groups > (SIZE_MAX - tail) / 4) return sys_make_bool(0);
+    size_t out_len = groups * 4 + tail;
+    if (out_len == SIZE_MAX) return sys_make_bool(0);
+
     char* out = (char*)malloc(out_len + 1);
     if (!out) return sys_make_bool(0);
     size_t pos = 0;
@@ -2887,10 +2899,15 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbui
     }
     if (i < len) {
         unsigned int n = (unsigned int)(unsigned char)data[i] << 16;
-        if (i + 1 < len) n |= (unsigned int)(unsigned char)data[i + 1] << 8;
+        int has_second_byte = i + 1 < len;
+        if (has_second_byte) n |= (unsigned int)(unsigned char)data[i + 1] << 8;
         out[pos++] = table[(n >> 18) & 63];
         out[pos++] = table[(n >> 12) & 63];
-        if (i + 1 < len) out[pos++] = table[(n >> 6) & 63];
+        if (has_second_byte) out[pos++] = table[(n >> 6) & 63];
+        if (padded) {
+            if (!has_second_byte) out[pos++] = '=';
+            out[pos++] = '=';
+        }
     }
     out[pos] = '\0';
     eshkol_sysbuiltin_value_t result = sys_make_string_len(out, pos);
@@ -2898,34 +2915,43 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbui
     return result;
 }
 
-/** Return the 6-bit value 0-63 of a URL-safe base64 character @p c, or -1 if
- *  it is not part of the alphabet. */
-static int sys_base64url_value(unsigned char c) {
+/** Return the 6-bit value 0-63 of a base64 character @p c, or -1 if it is
+ * not in the selected RFC 4648 alphabet. */
+static int sys_base64_value(unsigned char c, int url_safe) {
     if (c >= 'A' && c <= 'Z') return c - 'A';
     if (c >= 'a' && c <= 'z') return c - 'a' + 26;
     if (c >= '0' && c <= '9') return c - '0' + 52;
-    if (c == '-') return 62;
-    if (c == '_') return 63;
+    if (url_safe && c == '-') return 62;
+    if (url_safe && c == '_') return 63;
+    if (!url_safe && c == '+') return 62;
+    if (!url_safe && c == '/') return 63;
     return -1;
 }
 
-/** Implements `(base64url-decode data)`: decodes a URL-safe base64 string
- *  @p data_val (optional trailing '=' padding tolerated) back to its raw
- *  bytes, returning #f on invalid input. */
-static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbuiltin_value_t data_val) {
+/** Decode an RFC 4648 string using the selected alphabet.  Trailing padding
+ * is optional for compatibility with the existing Scheme helpers; padding in
+ * the middle of the input is rejected. */
+static eshkol_sysbuiltin_value_t sys_base64_decode_v(
+    eshkol_sysbuiltin_value_t data_val, int url_safe) {
     const char* data = sys_extract_string(data_val);
     if (!data) return sys_make_bool(0);
-    size_t len = strlen(data);
+    int64_t signed_len = eshkol_string_byte_length(data);
+    if (signed_len < 0) return sys_make_bool(0);
+    size_t len = (size_t)signed_len;
     while (len > 0 && data[len - 1] == '=') len--;
     if ((len % 4) == 1) return sys_make_bool(0);
-    size_t out_cap = (len * 6) / 8 + 1;
+
+    size_t full_groups = len / 4;
+    size_t tail_bytes = ((len % 4) * 6) / 8;
+    if (full_groups > (SIZE_MAX - tail_bytes - 1) / 3) return sys_make_bool(0);
+    size_t out_cap = full_groups * 3 + tail_bytes + 1;
     char* out = (char*)malloc(out_cap);
     if (!out) return sys_make_bool(0);
     uint32_t acc = 0;
     int bits = 0;
     size_t pos = 0;
     for (size_t i = 0; i < len; i++) {
-        int v = sys_base64url_value((unsigned char)data[i]);
+        int v = sys_base64_value((unsigned char)data[i], url_safe);
         if (v < 0) {
             free(out);
             return sys_make_bool(0);
@@ -2941,6 +2967,29 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbui
     eshkol_sysbuiltin_value_t result = sys_make_string_len(out, pos);
     free(out);
     return result;
+}
+
+/** Implements `(base64-encode-string data)` using RFC 4648's standard
+ * `A-Za-z0-9+/` alphabet and required `=` padding. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64_encode_string_v(eshkol_sysbuiltin_value_t data_val) {
+    return sys_base64_encode_v(data_val, sys_base64_standard_table, 1);
+}
+
+/** Implements `(base64-decode-string data)` for standard RFC 4648 base64. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64_decode_string_v(eshkol_sysbuiltin_value_t data_val) {
+    return sys_base64_decode_v(data_val, 0);
+}
+
+/** Implements `(base64url-encode data)`: RFC 4648 section 5, without
+ * padding. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_encode_v(eshkol_sysbuiltin_value_t data_val) {
+    return sys_base64_encode_v(data_val, sys_base64url_table, 0);
+}
+
+/** Implements `(base64url-decode data)`, accepting optional trailing `=`
+ * padding for compatibility. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_base64url_decode_v(eshkol_sysbuiltin_value_t data_val) {
+    return sys_base64_decode_v(data_val, 1);
 }
 
 /** Fill @p out with @p len cryptographically-random bytes from /dev/urandom,
@@ -5423,6 +5472,8 @@ void eshkol_builtin_string_truncate_display(sv_t* out, const sv_t* a, const sv_t
 void eshkol_builtin_url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_encode_v(*a); }
 void eshkol_builtin_url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_decode_v(*a); }
 void eshkol_builtin_url_parse(sv_t* out, const sv_t* a) { *out = eshkol_builtin_url_parse_v(*a); }
+void eshkol_builtin_base64_encode_string(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64_encode_string_v(*a); }
+void eshkol_builtin_base64_decode_string(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64_decode_string_v(*a); }
 void eshkol_builtin_base64url_encode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64url_encode_v(*a); }
 void eshkol_builtin_base64url_decode(sv_t* out, const sv_t* a) { *out = eshkol_builtin_base64url_decode_v(*a); }
 void eshkol_builtin_uuid_v4(sv_t* out) { *out = eshkol_builtin_uuid_v4_v(); }
