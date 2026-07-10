@@ -603,6 +603,25 @@ static llvm::Function* getBignumBinaryTaggedFunc(CodegenContext& ctx) {
     return func;
 }
 
+// Declare eshkol_gcd_tagged(arena, left*, right*, result*)
+/**
+ * @brief Gets or declares `eshkol_gcd_tagged(arena, left*, right*, result*)`.
+ *
+ * @param ctx Codegen context.
+ * @return The declared/found LLVM function (void return, writes through `result*`).
+ */
+static llvm::Function* getGcdTaggedFunc(CodegenContext& ctx) {
+    llvm::Function* func = ctx.module().getFunction("eshkol_gcd_tagged");
+    if (!func) {
+        llvm::FunctionType* fn_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(ctx.context()),
+            {ctx.ptrType(), ctx.ptrType(), ctx.ptrType(), ctx.ptrType()}, false);
+        func = llvm::Function::Create(fn_type,
+            llvm::Function::ExternalLinkage, "eshkol_gcd_tagged", &ctx.module());
+    }
+    return func;
+}
+
 // Declare eshkol_bignum_compare_tagged(left*, right*, op, result*)
 /**
  * @brief Gets or declares `eshkol_bignum_compare_tagged(left*, right*, op, result*)`.
@@ -677,6 +696,31 @@ llvm::Value* ArithmeticCodegen::emitBignumBinaryCall(llvm::Value* left, llvm::Va
         result_alloca
     });
     return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "bn_result");
+}
+
+/**
+ * @brief Emits a call to the exact GCD runtime dispatcher and loads its result.
+ *
+ * Handles int64 and bignum (and mixed) operands exactly; result is demoted to
+ * int64 when it fits, else returned as a bignum HEAP_PTR (ESH-0124).
+ *
+ * @param left Left tagged operand.
+ * @param right Right tagged operand.
+ * @return Tagged value holding gcd(|left|, |right|).
+ */
+llvm::Value* ArithmeticCodegen::emitGcdTaggedCall(llvm::Value* left, llvm::Value* right) {
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::IRBuilder<> entry_builder(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+    llvm::Value* left_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "gcd_l");
+    llvm::Value* right_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "gcd_r");
+    llvm::Value* result_alloca = entry_builder.CreateAlloca(ctx_.taggedValueType(), nullptr, "gcd_res");
+    ctx_.builder().CreateStore(left, left_alloca);
+    ctx_.builder().CreateStore(right, right_alloca);
+    llvm::Value* arena_ptr = getArenaPtr(ctx_);
+    ctx_.builder().CreateCall(getGcdTaggedFunc(ctx_), {
+        arena_ptr, left_alloca, right_alloca, result_alloca
+    });
+    return ctx_.builder().CreateLoad(ctx_.taggedValueType(), result_alloca, "gcd_result");
 }
 
 /**

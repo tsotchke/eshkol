@@ -19380,15 +19380,21 @@ private:
             BasicBlock* dual_gcd_exit = builder->GetInsertBlock();
             builder->CreateBr(gcd_outer_merge);
 
-            // Normal path: existing int fold.
+            // Normal path: exact fold via the GCD runtime kernel so bignum
+            // operands stay exact (ESH-0124). Operands that are plain int64
+            // are handled by the same kernel without bignum overhead.
             builder->SetInsertPoint(normal_gcd_bb);
-            Value* result = toAbsInt64(args[0].llvm_value);
-            for (uint64_t i = 1; i < args.size(); i++) {
-                Value* arg = toAbsInt64(args[i].llvm_value);
-                result = emitGCDPair(result, arg);
+            Value* normal_tagged = tagged_args[0];
+            for (uint64_t i = 1; i < tagged_args.size(); i++) {
+                normal_tagged = arith_->emitGcdTaggedCall(normal_tagged, tagged_args[i]);
             }
-            // Pack as int64 tagged value so the outer merge PHI has matching types.
-            Value* normal_tagged = packInt64ToTaggedValue(result, true);
+            // A single-operand gcd must return |n|; fold above leaves it as-is,
+            // so normalise the lone-operand case through the kernel with 0.
+            if (tagged_args.size() == 1) {
+                Value* zero_tagged = packInt64ToTaggedValue(
+                    ConstantInt::get(int64_type, 0), true);
+                normal_tagged = arith_->emitGcdTaggedCall(normal_tagged, zero_tagged);
+            }
             BasicBlock* normal_gcd_exit = builder->GetInsertBlock();
             builder->CreateBr(gcd_outer_merge);
 
@@ -22530,10 +22536,39 @@ private:
         Value* is_bignum1 = isHeapSubtype(arg1, HEAP_SUBTYPE_BIGNUM);
         Value* is_bignum2 = isHeapSubtype(arg2, HEAP_SUBTYPE_BIGNUM);
 
+        // Exact rationals and complex numbers (ESH-0114): eqv? must compare by
+        // value, not by heap-pointer identity. Route these operands through the
+        // deep-equality runtime, which compares reduced numerator/denominator
+        // (rationals) or real/imag components (complex).
+        Value* is_rat1 = isHeapSubtype(arg1, HEAP_SUBTYPE_RATIONAL);
+        Value* is_rat2 = isHeapSubtype(arg2, HEAP_SUBTYPE_RATIONAL);
+        Value* is_cplx1 = builder->CreateICmpEQ(base_type1, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        Value* is_cplx2 = builder->CreateICmpEQ(base_type2, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
+        Value* use_deep = builder->CreateOr(
+            builder->CreateOr(is_rat1, is_rat2),
+            builder->CreateOr(is_cplx1, is_cplx2));
+
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* deep_bb = BasicBlock::Create(*context, "eqv_deep", func);
+        BasicBlock* scalar_bb = BasicBlock::Create(*context, "eqv_scalar", func);
+        BasicBlock* outer_merge_bb = BasicBlock::Create(*context, "eqv_outer_merge", func);
+        builder->CreateCondBr(use_deep, deep_bb, scalar_bb);
+
+        // Deep path: value equality for rationals/complex via runtime helper.
+        builder->SetInsertPoint(deep_bb);
+        Value* deep_arg1 = builder->CreateAlloca(tagged_value_type, nullptr, "eqv_deep_a1");
+        Value* deep_arg2 = builder->CreateAlloca(tagged_value_type, nullptr, "eqv_deep_a2");
+        builder->CreateStore(arg1, deep_arg1);
+        builder->CreateStore(arg2, deep_arg2);
+        Value* deep_result = builder->CreateCall(eshkol_deep_equal_func, {deep_arg1, deep_arg2});
+        BasicBlock* deep_exit = builder->GetInsertBlock();
+        builder->CreateBr(outer_merge_bb);
+
+        builder->SetInsertPoint(scalar_bb);
+
         // If either operand is bignum, use bignum compare (handles bignum-bignum and bignum-int64)
         Value* either_bignum = builder->CreateOr(is_bignum1, is_bignum2);
 
-        Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* bignum_bb = BasicBlock::Create(*context, "eqv_bignum", func);
         BasicBlock* normal_bb = BasicBlock::Create(*context, "eqv_normal", func);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "eqv_merge", func);
@@ -22593,13 +22628,21 @@ private:
         builder->CreateBr(merge_bb);
         BasicBlock* normal_exit = builder->GetInsertBlock();
 
-        // Merge
+        // Merge (scalar path: bignum vs normal)
         builder->SetInsertPoint(merge_bb);
         PHINode* result = builder->CreatePHI(int1_type, 2);
         result->addIncoming(bn_eq, bignum_exit);
         result->addIncoming(normal_result, normal_exit);
+        BasicBlock* scalar_exit = builder->GetInsertBlock();
+        builder->CreateBr(outer_merge_bb);
 
-        return packBoolToTaggedValue(result);
+        // Outer merge: deep (rational/complex) path vs scalar path.
+        builder->SetInsertPoint(outer_merge_bb);
+        PHINode* outer_result = builder->CreatePHI(int1_type, 2);
+        outer_result->addIncoming(deep_result, deep_exit);
+        outer_result->addIncoming(result, scalar_exit);
+
+        return packBoolToTaggedValue(outer_result);
     }
 
     // equal? - Deep structural equality using runtime helper
