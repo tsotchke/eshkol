@@ -5,37 +5,71 @@
 
 ;;; sort: Sort a list using merge sort
 ;;; (sort '(3 1 4 1 5 9 2 6) <) => (1 1 2 3 4 5 6 9)
+;;;
+;;; ESH-0098: the original merge/len/take-n helpers built their result via
+;;; non-tail `(cons x (helper ...))` / `(+ 1 (helper ...))` recursion, so
+;;; their native call-stack depth grew with the *length of the list being
+;;; processed* rather than with the O(log n) depth of the merge-sort
+;;; recursion tree. `len` alone recursed as deep as the whole list on the
+;;; very first call, guaranteeing a blown stack well under a million
+;;; elements ("maximum recursion depth (100000) exceeded" at 500k+). Every
+;;; helper below is now an accumulator-based tail loop (the same
+;;; nested-define self-tail-call pattern used by `length`/`filter`), so
+;;; each lowers to a real loop with O(1) added native stack regardless of
+;;; list length. Only the `sort` recursion itself grows with input size,
+;;; and it halves the list at every level, so its depth is O(log n) --
+;;; about 21 frames for 2,000,000 elements. As a side effect this also
+;;; makes the sort stable: ties now keep the left half's element first
+;;; (the original was not stable -- on ties it emitted the right half's
+;;; element first).
 (define (sort lst less?)
-  ;; Merge two sorted lists
-  (define (merge l1 l2)
-    (cond ((null? l1) l2)
-          ((null? l2) l1)
-          ((less? (car l1) (car l2))
-           (cons (car l1) (merge (cdr l1) l2)))
-          (else
-           (cons (car l2) (merge l1 (cdr l2))))))
+  ;; rappend: (append (reverse rev) tail), as a single tail loop.
+  ;; Used to "un-reverse" an accumulator built up in reverse order.
+  (define (rappend rev tail)
+    (if (null? rev)
+        tail
+        (rappend (cdr rev) (cons (car rev) tail))))
 
-  ;; Get the length
-  (define (len lst)
-    (if (null? lst) 0 (+ 1 (len (cdr lst)))))
+  ;; Count list length: iterative accumulator (mirrors `length`).
+  (define (len rest n)
+    (if (null? rest)
+        n
+        (len (cdr rest) (+ n 1))))
 
-  ;; Take first n elements (local version)
-  (define (take-n n lst)
-    (if (or (<= n 0) (null? lst))
-        '()
-        (cons (car lst) (take-n (- n 1) (cdr lst)))))
+  ;; Take first n elements, preserving order: accumulate then un-reverse.
+  (define (take-n n rest acc)
+    (if (or (<= n 0) (null? rest))
+        (rappend acc '())
+        (take-n (- n 1) (cdr rest) (cons (car rest) acc))))
 
-  ;; Drop first n elements (local version)
-  (define (drop-n n lst)
-    (if (or (<= n 0) (null? lst))
-        lst
-        (drop-n (- n 1) (cdr lst))))
+  ;; Drop first n elements (already tail-recursive).
+  (define (drop-n n rest)
+    (if (or (<= n 0) (null? rest))
+        rest
+        (drop-n (- n 1) (cdr rest))))
 
-  ;; Main merge sort - split by counting, not mutating
+  ;; Merge two already-sorted lists: accumulate then un-reverse onto
+  ;; whichever input still has elements left. Stable: on ties (neither
+  ;; strictly less than the other), the left list's element is taken.
+  ;; Written with nested `if` rather than `cond`: the backend's tail-call
+  ;; optimizer only recognizes `if` in tail position, so a `cond`-based
+  ;; accumulator loop here still blows the recursion-depth guard even
+  ;; though every branch is logically a tail call.
+  (define (merge l1 l2 acc)
+    (if (null? l1)
+        (rappend acc l2)
+        (if (null? l2)
+            (rappend acc l1)
+            (if (less? (car l2) (car l1))
+                (merge l1 (cdr l2) (cons (car l2) acc))
+                (merge (cdr l1) l2 (cons (car l1) acc))))))
+
+  ;; Main merge sort - split by counting, not mutating.
   (cond ((null? lst) '())
         ((null? (cdr lst)) lst)
         (else
-         (let ((n (len lst)))
+         (let ((n (len lst 0)))
            (let ((mid (quotient n 2)))
-             (merge (sort (take-n mid lst) less?)
-                    (sort (drop-n mid lst) less?)))))))
+             (merge (sort (take-n mid lst '()) less?)
+                    (sort (drop-n mid lst) less?)
+                    '()))))))
