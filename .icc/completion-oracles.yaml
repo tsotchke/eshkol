@@ -69,6 +69,33 @@ oracles:
         label: eshkol-repl + eshkol-run -r return cleanly on a smoke input
         action: ./scripts/run_icc_smoke.sh
 
+      # -- Full-claim adversarial gates (2026-07-10 oracle hardening). --
+      # These assert the COMPLETE feature claims that an audit found the
+      # oracle was silently over-promising. The narrow ad_input2_* probes
+      # in v1.3-evolve only ever exercised the one working calling pattern
+      # (literal-lambda loss + scalar gamma); this criterion is the one
+      # that certifies input2 gradients actually work end-to-end.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["tensor_input2_grad_exact_firstclass_and_vector"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESH-0212/#229: input2 tensor gradients (matmul B, conv2d kernel, attention K/V, per-feature batch/layer-norm gamma) match central finite-difference EXACTLY across literal, first-class AND higher-order loss forms and vector gamma (JIT+AOT, 24/24) — not just the literal-scalar path'
+        action: ./scripts/run_icc_smoke.sh
+
+      # Region escape-evacuator subtype coverage, run under
+      # ESHKOL_ARENA_POISON=1 so a missed interior pointer crashes at a
+      # 0xCB.. address rather than reading stale data. Closes the blind
+      # spot where the PROMISE-corruption evacuation gap was invisible to
+      # readiness=100 because no oracle criterion referenced this gate.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["region_evac_subtype_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESH-0214d/e: region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)'
+        action: ./scripts/run_icc_smoke.sh
+
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
   # When this oracle goes green, the agent's three blockers (HTTP,
@@ -295,7 +322,7 @@ oracles:
           event_names: ["ad_input2_conv2d_grad_works"]
           event_values: ["PASS"]
         severity: high
-        label: 'gradient flows through conv2d to the kernel operand'
+        label: 'gradient flows through conv2d to the kernel operand (literal-form scalar path only; full first-class + vector coverage is tensor_input2_grad_exact_firstclass_and_vector)'
         action: ./scripts/run_icc_smoke.sh
 
       - runtime_event:
@@ -303,7 +330,7 @@ oracles:
           event_names: ["ad_input2_batchnorm_grad_works"]
           event_values: ["PASS"]
         severity: high
-        label: 'gradient flows through batch-norm to the gamma operand'
+        label: 'gradient flows through batch-norm to the gamma operand (literal-form scalar path only; full first-class + vector coverage is tensor_input2_grad_exact_firstclass_and_vector)'
         action: ./scripts/run_icc_smoke.sh
 
       - runtime_event:
@@ -311,7 +338,7 @@ oracles:
           event_names: ["ad_input2_layernorm_grad_works"]
           event_values: ["PASS"]
         severity: high
-        label: 'gradient flows through layer-norm to the gamma operand'
+        label: 'gradient flows through layer-norm to the gamma operand (literal-form scalar path only; full first-class + vector coverage is tensor_input2_grad_exact_firstclass_and_vector)'
         action: ./scripts/run_icc_smoke.sh
 
       - runtime_event:
@@ -319,7 +346,7 @@ oracles:
           event_names: ["ad_input2_attention_grad_works"]
           event_values: ["PASS"]
         severity: high
-        label: 'gradient flows through scaled-dot-attention to K/V operands'
+        label: 'gradient flows through scaled-dot-attention to K/V operands (literal-form scalar path only; full first-class + vector coverage is tensor_input2_grad_exact_firstclass_and_vector)'
         action: ./scripts/run_icc_smoke.sh
 
       # -- arbitrary-order AD Taylor-tower v1.3 track --
