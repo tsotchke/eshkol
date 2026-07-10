@@ -1,0 +1,53 @@
+(require stdlib)
+
+; Regression tests for numeric predicates over exact rationals.
+; Emits "PASS: ..." / "FAIL: ..." lines; the numeric harness fails the
+; suite if any line begins with FAIL.
+
+(display "TEST: rational numeric predicates") (newline)
+
+(define (report condition label)
+  (display (if condition "PASS" "FAIL"))
+  (display ": ")
+  (display label)
+  (newline))
+
+; The int64 fast path: a reduced numerator determines the sign because the
+; denominator is canonical and always positive.
+(define small-negative (/ -1 3))
+(define small-positive (/ 1 3))
+
+(report (negative? small-negative) "negative? -1/3 => #t")
+(report (not (positive? small-negative)) "positive? -1/3 => #f")
+(report (not (zero? small-negative)) "zero? -1/3 => #f")
+
+(report (not (negative? small-positive)) "negative? 1/3 => #f")
+(report (positive? small-positive) "positive? 1/3 => #t")
+(report (not (zero? small-positive)) "zero? 1/3 => #f")
+
+; A zero rational reduces canonically to exact integer 0, so this confirms the
+; public zero? result for 0/5 while preserving canonical representation.
+(define rational-zero (/ 0 5))
+(report (not (negative? rational-zero)) "negative? 0/5 => #f")
+(report (not (positive? rational-zero)) "positive? 0/5 => #f")
+(report (zero? rational-zero) "zero? 0/5 => #t")
+
+; The bignum path: 10^19 exceeds INT64_MAX, so each proper fraction uses the
+; bignum numerator/denominator members of eshkol_rational_t.
+(define bignum-denominator (expt 10 19))
+(define big-negative (/ -1 bignum-denominator))
+(define big-positive (/ 1 bignum-denominator))
+
+(report (negative? big-negative) "negative? -1/10^19 => #t")
+(report (not (positive? big-negative)) "positive? -1/10^19 => #f")
+(report (not (zero? big-negative)) "zero? -1/10^19 => #f")
+
+(report (not (negative? big-positive)) "negative? 1/10^19 => #f")
+(report (positive? big-positive) "positive? 1/10^19 => #t")
+(report (not (zero? big-positive)) "zero? 1/10^19 => #f")
+
+; Existing numeric representations must retain their prior behavior.
+(report (negative? -5) "negative? -5 => #t")
+(report (positive? 2.5) "positive? 2.5 => #t")
+(report (zero? 0) "zero? 0 => #t")
+(report (negative? (- (expt 2 64))) "negative? -2^64 => #t")
