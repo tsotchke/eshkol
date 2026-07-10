@@ -1,0 +1,22 @@
+# file probes checks
+ad_adv_scalar_01.esk 12 24
+ad_adv_scalar_02.esk 12 24
+ad_adv_scalar_03.esk 12 24
+ad_adv_scalar_04.esk 12 24
+ad_adv_field_01.esk 6 24
+ad_adv_field_02.esk 6 24
+ad_adv_field_03.esk 6 24
+ad_adv_field_04.esk 6 24
+ad_adv_field_05.esk 6 24
+ad_adv_field_06.esk 2 8
+ad_adv_gofg_01.esk 4 7
+ad_adv_tensor_01.esk 8 24
+ad_adv_tensor_02.esk 8 24
+ad_adv_tensor_03.esk 8 24
+ad_adv_tensor_04.esk 8 24
+ad_adv_tensor_05.esk 8 24
+ad_adv_tensor_06.esk 8 24
+ad_adv_tensor_07.esk 6 18
+ad_adv_vecpoint_01.esk 3 9
+ad_adv_htensor_01.esk 3 22
+ad_adv_htensor_02.esk 3 12

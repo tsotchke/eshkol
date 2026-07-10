@@ -96,6 +96,26 @@ oracles:
         label: 'ESH-0214d/e: region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)'
         action: ./scripts/run_icc_smoke.sh
 
+      # Generative adversarial AD-vs-finite-difference oracle. Where the
+      # tensor_input2 gate above pins a FIXED set of second-operand losses,
+      # this criterion certifies that a GENERATED family of differentiable
+      # programs — random scalar/field expression trees plus tensor/ML-op
+      # loss compositions (matmul/conv2d/attention/batch+layer-norm/softmax),
+      # differentiated to gradient, laplacian AND hessian, at scalar, vector
+      # and tensor-literal points, across literal/first-class/wrapper loss
+      # forms — matches a central finite difference. It is the continuous
+      # silent-wrong-gradient tripwire: a NEW zero-where-FD-is-nonzero (the
+      # worst AD defect class) turns readiness red instead of shipping wrong
+      # training gradients. The smoke probe runs the --quick subset (one file
+      # per family); the full JIT+AOT sweep is scripts/run_ad_adversarial.sh.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_adversarial_fd_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Generative adversarial AD oracle: a seeded, growing family of random differentiable programs (scalar + field + tensor/ML-op compositions; gradient/laplacian/hessian; scalar/vector/tensor-literal points; literal/first-class/wrapper loss forms) matches central finite differences — continuous silent-wrong-gradient tripwire, no zero-gradient-where-FD-is-nonzero'
+        action: ./scripts/run_icc_smoke.sh
+
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
   # When this oracle goes green, the agent's three blockers (HTTP,

@@ -355,6 +355,22 @@ probe tensor_input2_grad_exact_firstclass_and_vector \
      out=$(BUILD_DIR=build bash scripts/run_tensor_input2_grad_gate.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "ESH-0212 tensor-AD second-operand gate: PASS"'
 
+# Generative adversarial AD-vs-finite-difference oracle. Unlike the fixed
+# tensor_input2 gate above, this GROWS random-but-seeded differentiable programs
+# out of the AD primitives + tensor/ML ops (matmul/conv2d/attention/batch+layer-
+# norm/softmax/…) and checks every gradient, laplacian and hessian against a
+# central finite difference — scalar, field, gradient-of-gradient (ESH-0096
+# shape), tensor-literal-point higher order (ESH-0095 shape), and literal/first-
+# class/wrapper loss forms. Readiness thus CONTINUOUSLY asserts "AD matches FD
+# across a generated family," and a NEW silent-wrong gradient trips it. --quick
+# runs one file per family (JIT) for the smoke lane; the full JIT+AOT sweep is
+# scripts/run_ad_adversarial.sh.
+probe ad_adversarial_fd_oracle \
+    'generative AD-vs-finite-difference sweep (random scalar/field/tensor-ML compositions, grad+laplacian+hessian, literal/first-class/wrapper loss, tensor-literal points) matches central FD — no silent-wrong gradients' \
+    'cd "$REPO_ROOT";
+     out=$(BUILD_DIR=build bash scripts/run_ad_adversarial.sh --quick 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "ad_adversarial gate: PASS"'
+
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
     'cd "$REPO_ROOT";

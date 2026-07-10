@@ -1,0 +1,23 @@
+;; ESH-0235 (found by tests/ad_adversarial): reverse-mode AD through a tensor op
+;; returns a silently-WRONG all-zero gradient when the differentiation point is
+;; built with the (vector ...) constructor, but the CORRECT gradient when the
+;; identical point is a #(...) reader literal or a (tensor ...) value.
+;;
+;; Expected (all three): gradient of (tensor-dot z #(2 -1 0.5)) w.r.t z is
+;; #(2 -1 0.5). On master the (vector ...) point yields #(0 0 0).
+;;
+;; Reproduces identically under -r and AOT. Scalar/field AD at a (vector ...)
+;; point is unaffected; the defect is specific to the tensor-op reverse path.
+(require stdlib)
+
+(define c #(2.0 -1.0 0.5))
+(define (loss z) (tensor-dot z c))
+
+(display "point #(...)     : ")
+(display (gradient loss #(1.0 2.0 4.0))) (newline)          ;; correct: #(2 -1 0.5)
+
+(display "point (tensor ..): ")
+(display (gradient loss (tensor 3 1.0 2.0 4.0))) (newline)  ;; correct: #(2 -1 0.5)
+
+(display "point (vector ..): ")
+(display (gradient loss (vector 1.0 2.0 4.0))) (newline)    ;; BUG: #(0 0 0)
