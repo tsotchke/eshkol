@@ -823,6 +823,7 @@ enum EvacKind : uint8_t {
     EVAC_KNOWLEDGE_BASE, // eshkol_knowledge_base_t: facts[] raw array of fact ptrs
     EVAC_FACTOR_GRAPH,   // eshkol_factor_graph_t: nested raw numeric buffers
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
+    EVAC_PROMISE,        // [forced:i64][thunk:tagged @8][cached:tagged @24] (delay/force)
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -888,6 +889,7 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         case HEAP_SUBTYPE_KNOWLEDGE_BASE: return EVAC_KNOWLEDGE_BASE;
         case HEAP_SUBTYPE_FACTOR_GRAPH:   return EVAC_FACTOR_GRAPH;
         case HEAP_SUBTYPE_WORKSPACE:      return EVAC_WORKSPACE;
+        case HEAP_SUBTYPE_PROMISE:        return EVAC_PROMISE;
         // STRING / SYMBOL / BIGNUM / RATIONAL / BYTEVECTOR: self-contained
         // payloads -> a contiguous leaf copy fully preserves them.
         //
@@ -896,9 +898,6 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // are not observed to escape a region by mutation):
         //   PORT      - wraps an OS fd/FILE*; handle intentionally shared, not copied.
         //   PRNG      - self-contained state words, no interior pointers.
-        //   PROMISE   - thunk/closure + memoized value; the closure/value escape
-        //               through their own tagged slots via the normal barrier when
-        //               forced, and a delayed promise almost never escapes a region.
         //   DNC/SDNC  - large differentiable weight/program buffers; escaping a
         //               region by mutation is not a supported pattern.
         //   TAYLOR    - truncated-Taylor tower; rational-coeff interior not traversed.
@@ -967,7 +966,6 @@ static void* evac_object(EvacState& st, void* old_data, const eshkol_tagged_valu
         const auto* dh = (const eshkol_object_header_t*)
             ((const uint8_t*)new_data - sizeof(eshkol_object_header_t));
         switch (dh->subtype) {
-            case HEAP_SUBTYPE_PROMISE:
             case HEAP_SUBTYPE_DNC:
             case HEAP_SUBTYPE_SDNC:
             case HEAP_SUBTYPE_TAYLOR:
@@ -1240,6 +1238,20 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                             st, mods[i].name, std::strlen(mods[i].name) + 1);
                     mods[i].process_fn = evac_value(st, mods[i].process_fn);
                 }
+                break;
+            }
+            case EVAC_PROMISE: {
+                // [forced:i64 @0][thunk:tagged @8][cached:tagged @24] (40 bytes,
+                // llvm_codegen.cpp %make-lazy-promise / make-promise). Both the
+                // thunk closure (unforced) and the memoized cached value (forced)
+                // can be region-allocated; a promise that escapes its region via
+                // delay/force/make-promise must have both slots evacuated or they
+                // dangle into the freed arena after region_pop (ESH-0214d gap:
+                // subtype 18 was previously leaf-copied). ESH-0214e.
+                auto* thunk  = (eshkol_tagged_value_t*)((uint8_t*)nd + 8);
+                auto* cached = (eshkol_tagged_value_t*)((uint8_t*)nd + 24);
+                *thunk  = evac_value(st, *thunk);
+                *cached = evac_value(st, *cached);
                 break;
             }
             case EVAC_FACTOR_GRAPH: {
