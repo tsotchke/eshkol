@@ -1,0 +1,104 @@
+;;; tests/stress/oalr_memctx_nested_region_stress.esk
+;;;
+;;; OALR Phase A (ADR-0001) stress fixture for the thread memory-context accessor.
+;;;
+;;; This drives the exact hazard the memctx accessor is meant to make safe:
+;;; NESTED (with-region ...) bodies running on work-stealing pool threads under
+;;; parallel-map, across many workers and many iterations. With allocation
+;;; routing as a shared process-global slot, concurrent region enter/leave on
+;;; workers clobber each other (worker A allocates into worker B's region arena,
+;;; B's region_pop frees it under A -> SIGSEGV / heap corruption / wrong sums).
+;;; With eshkol_current_arena() routing through the thread-local memory context
+;;; (and #217's parallel-scope guard preserved), the results must be exact and
+;;; the run crash-free no matter how many times it is repeated.
+;;;
+;;; The mapped function nests two regions: an inner region builds and reduces a
+;;; list, an outer region builds a list of those inner scalars and reduces it.
+;;; Both allocation and escape happen on the worker, inside nested regions.
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (set! passed (+ passed 1))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (display expected)
+             (display " actual=") (display actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (range n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+(define INNER 48)
+(define OUTER 12)
+
+;; sum_{i=0}^{INNER-1} (x + i)
+(define (inner-work x)
+  (with-region 'inner
+    (let build ((i 0) (acc '()))
+      (if (< i INNER)
+          (build (+ i 1) (cons (+ x i) acc))
+          (let red ((lst acc) (s 0))
+            (if (pair? lst) (red (cdr lst) (+ s (car lst))) s))))))
+
+;; Nested regions on a worker: outer region builds a list of OUTER inner-work
+;; results (each of which itself opens an inner region), then reduces it.
+(define (work x)
+  (with-region 'outer
+    (let build ((j 0) (acc '()))
+      (if (< j OUTER)
+          (build (+ j 1) (cons (inner-work (+ x j)) acc))
+          (let red ((lst acc) (s 0))
+            (if (pair? lst) (red (cdr lst) (+ s (car lst))) s))))))
+
+;; Closed form so we can check exactly.
+;; inner-work(y) = INNER*y + T(INNER-1), where T(k)=k*(k+1)/2
+;; work(x) = sum_{j=0}^{OUTER-1} inner-work(x+j)
+(define (tri k) (quotient (* k (+ k 1)) 2))
+(define inner-base (tri (- INNER 1)))
+(define (expected-inner y) (+ (* INNER y) inner-base))
+(define (expected-work x)
+  (let loop ((j 0) (s 0))
+    (if (< j OUTER) (loop (+ j 1) (+ s (expected-inner (+ x j)))) s)))
+
+(define N 2000)
+(define input (range N))
+
+;; Structure-escaping nested variant: escape an actual list out of nested regions.
+(define (work-list x)
+  (with-region 'ol
+    (list (with-region 'il (list x (+ x 1)))
+          (* x 2)
+          (* x 3))))
+
+(define (run-once trial)
+  (let ((res (parallel-map work input)))
+    (let vloop ((lst res) (i 0) (ok #t))
+      (if (pair? lst)
+          (vloop (cdr lst) (+ i 1)
+                 (and ok (= (car lst) (expected-work i))))
+          (check (string-append "nested-region-scalar trial " (number->string trial))
+                 #t (and ok (= i N))))))
+  (let ((res2 (parallel-map work-list (range 400))))
+    (let vloop ((lst res2) (i 0) (ok #t))
+      (if (pair? lst)
+          (vloop (cdr lst) (+ i 1)
+                 (and ok (equal? (car lst)
+                                 (list (list i (+ i 1)) (* i 2) (* i 3)))))
+          (check (string-append "nested-region-list trial " (number->string trial))
+                 #t (and ok (= i 400)))))))
+
+(define (trials n)
+  (let loop ((t 0)) (if (< t n) (begin (run-once t) (loop (+ t 1))))))
+
+(trials 20)
+
+(display "[oalr_memctx_nested_region_stress] passed=")
+(display passed)
+(display " failed=")
+(display failed)
+(newline)
+(if (= failed 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline)))

@@ -38,6 +38,21 @@ ESHKOL_RUNTIME_WEAK arena_t* __global_arena = nullptr;
 static thread_local arena_t* __thread_local_arena = nullptr;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// OALR Phase A: per-thread memory context (ADR-0001).
+//
+// The memctx makes the "current allocation arena" a thread-local property reached
+// through eshkol_current_arena(), instead of a direct read of the shared
+// __global_arena global. `with-region` now updates this thread-local domain
+// (mirrored into __global_arena in the single-threaded safe case only, see
+// eshkol_region_enter) so allocation routing is thread-local. The full ABI-v2
+// memctx (region_top/residence/resident txn) and the object-header change are
+// deferred to later phases.
+static thread_local eshkol_memctx_t t_memctx = {
+    ESHKOL_MEMORY_ABI_PHASE_A, 0u, 0ull, nullptr, nullptr
+};
+static std::atomic<uint64_t> s_next_thread_id{1};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THREAD-SAFE REGION ARENA ROUTING (parallel-map/fold/execute/future × with-region)
 //
 // Generated code funnels *every* allocation through the single process-global
@@ -120,6 +135,58 @@ arena_t* get_global_arena() {
  */
 arena_t* get_global_arena_shared() {
     eshkol_arena_global_once(init_global_arena_internal);
+    return __global_arena;
+}
+
+/**
+ * @brief Return the calling thread's memory context (OALR Phase A).
+ *
+ * Never NULL. The context is a thread_local with static storage duration, so no
+ * allocation occurs; the thread_id is assigned lazily (for diagnostics) on first
+ * access. See ADR-0001 §1.
+ */
+extern "C" eshkol_memctx_t* eshkol_memctx_current(void) {
+    if (t_memctx.thread_id == 0) {
+        t_memctx.thread_id = s_next_thread_id.fetch_add(1, std::memory_order_relaxed);
+        t_memctx.abi_version = ESHKOL_MEMORY_ABI_PHASE_A;
+    }
+    return &t_memctx;
+}
+
+/**
+ * @brief Return the arena the calling thread's allocations should currently
+ *        target — the OALR Phase A allocation accessor.
+ *
+ * Generated code and runtime helpers call this instead of loading __global_arena
+ * directly, so that `with-region` can redirect allocation by updating the
+ * thread-local memory context rather than writing the shared global.
+ *
+ * Ordering / #217 preservation:
+ *   • While any work-stealing construct is active (s_parallel_depth != 0) this
+ *     returns __global_arena directly, exactly matching the parallel-scope guard
+ *     that pins the shared slot to the thread-safe process arena. This keeps the
+ *     accessor in agreement with any not-yet-migrated direct __global_arena read
+ *     and stops the spawning thread from allocating into a region arena while
+ *     workers run.
+ *   • Otherwise it returns the thread-local allocation domain (set by
+ *     eshkol_region_enter for a `with-region` body), or __global_arena when no
+ *     region is active.
+ */
+extern "C" arena_t* eshkol_current_arena(void) {
+    eshkol_arena_global_once(init_global_arena_internal);
+    if (s_parallel_depth.load(std::memory_order_acquire) != 0) {
+        return __global_arena;
+    }
+    arena_t* domain = t_memctx.allocation_domain;
+    if (domain) return domain;
+    // Outside a region the accessor must resolve to EXACTLY the arena a direct
+    // read of the codegen "current arena" slot (the __global_arena GlobalVariable)
+    // would. getArenaPtr() sites (which call this accessor) are paired with the
+    // many codegen sites that still load __global_arena inline — e.g. a loop's
+    // per-iteration arena_push_scope reads this accessor while the same loop's
+    // body allocations read __global_arena directly. Returning anything else here
+    // (e.g. a thread-local arena) would desynchronize those paired reads and
+    // defeat loop reclamation (ESH-0214b). Mirror the raw slot exactly.
     return __global_arena;
 }
 
@@ -495,6 +562,14 @@ extern "C" arena_t* eshkol_region_enter(eshkol_region_t* region) {
 
     arena_t* saved = __global_arena;
     __global_arena = region->arena;
+    // OALR Phase A: mirror the redirect into the thread-local memory context so
+    // eshkol_current_arena() (the accessor generated code now routes through)
+    // resolves body allocations to the region arena WITHOUT reading the shared
+    // slot. Kept in lockstep with the __global_arena write above (single-threaded,
+    // non-parallel — this branch is unreachable on a worker or during a parallel
+    // scope) so migrated (accessor) and not-yet-migrated (direct __global_arena)
+    // allocation sites always resolve to the same arena.
+    eshkol_memctx_current()->allocation_domain = region->arena;
     return saved;
 }
 
@@ -509,6 +584,9 @@ extern "C" arena_t* eshkol_region_enter(eshkol_region_t* region) {
 extern "C" void eshkol_region_leave(arena_t* saved) {
     if (saved == REGION_NO_HIJACK) return;
     __global_arena = saved;
+    // OALR Phase A: restore the thread-local allocation domain in lockstep with
+    // the shared slot (see eshkol_region_enter).
+    eshkol_memctx_current()->allocation_domain = saved;
 }
 
 /**
