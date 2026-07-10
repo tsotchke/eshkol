@@ -1889,6 +1889,8 @@ public:
         function_return_types["url-encode"] = BuiltinTypes::String;
         function_return_types["url-decode"] = BuiltinTypes::String;
         function_return_types["url-parse"] = BuiltinTypes::Value;
+        function_return_types["base64-encode-string"] = BuiltinTypes::String;
+        function_return_types["base64-decode-string"] = BuiltinTypes::String;
         function_return_types["base64url-encode"] = BuiltinTypes::String;
         function_return_types["base64url-decode"] = BuiltinTypes::String;
         function_return_types["uuid-v4"] = BuiltinTypes::String;
@@ -14041,6 +14043,8 @@ private:
         if (func_name == "url-encode") return system_->urlEncode(op);
         if (func_name == "url-decode") return system_->urlDecode(op);
         if (func_name == "url-parse") return system_->urlParse(op);
+        if (func_name == "base64-encode-string") return system_->base64EncodeString(op);
+        if (func_name == "base64-decode-string") return system_->base64DecodeString(op);
         if (func_name == "base64url-encode") return system_->base64urlEncode(op);
         if (func_name == "base64url-decode") return system_->base64urlDecode(op);
         if (func_name == "uuid-v4") return system_->uuidV4(op);
@@ -23185,6 +23189,7 @@ private:
             "fs-watch-native", "fs-watch-recursive", "fs-watch-poll", "fs-unwatch",
             "ansi-strip", "string-display-width", "string-truncate-display",
             "url-encode", "url-decode", "url-parse",
+            "base64-encode-string", "base64-decode-string",
             "base64url-encode", "base64url-decode", "uuid-v4",
             "constant-time-equal?", "sha256-file",
             "regex-compile", "regex-free", "regex-match", "regex-match?",

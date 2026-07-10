@@ -406,6 +406,10 @@ public:
     llvm::Value* urlDecode(const eshkol_operations_t* op);
     /** @brief (url-parse str) — parse a URL into its components (scheme, host, path, query, ...). */
     llvm::Value* urlParse(const eshkol_operations_t* op);
+    /** @brief (base64-encode-string bytes) — RFC 4648 standard base64 with padding. */
+    llvm::Value* base64EncodeString(const eshkol_operations_t* op);
+    /** @brief (base64-decode-string str) — decode RFC 4648 standard base64. */
+    llvm::Value* base64DecodeString(const eshkol_operations_t* op);
     /** @brief (base64url-encode bytes) — base64url-encode a byte string. */
     llvm::Value* base64urlEncode(const eshkol_operations_t* op);
     /** @brief (base64url-decode str) — decode a base64url-encoded string. */
