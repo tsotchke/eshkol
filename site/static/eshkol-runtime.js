@@ -284,6 +284,13 @@ class EshkolRuntime {
                 arena_create: () => 1,
                 arena_create_threadsafe: () => 1,
                 get_global_arena: () => 1,
+                // OALR memctx accessor (ESH-0001 Phase A / #239): generated code
+                // now imports the current thread-arena accessor. No region system
+                // in the browser, so it degrades to the same fake arena as
+                // get_global_arena. Without this stub, a site WASM rebuilt with a
+                // post-#239 compiler fails to instantiate (stuck at "Loading").
+                eshkol_current_arena: () => 1,
+                eshkol_memctx_current: () => 1,
                 arena_destroy: () => {},
                 arena_allocate: (arena, size) => { return rt._bump(Number(size)); },
                 arena_allocate_with_header: (arena, size) => { return rt._bump(Number(size) + 8) + 8; },
