@@ -1,0 +1,39 @@
+;; PGO training corpus — arithmetic / numeric hot paths.
+;;
+;; Exercises the integer + floating-point arithmetic codegen, recursion,
+;; tail calls, and the bignum dispatch path. Deterministic and offline:
+;; the program prints checksums so the workload driver can confirm the
+;; instrumented binary actually executed (not just linked).
+
+;; Tight integer loop — TCO + add/mul/compare dispatch.
+(define (sum-to n acc)
+  (if (= n 0) acc (sum-to (- n 1) (+ acc n))))
+
+;; Floating-point accumulation — packDouble / unpackDouble round-trips.
+(define (fsum i n acc)
+  (if (>= i n) acc (fsum (+ i 1) n (+ acc (* (exact->inexact i) 1.5)))))
+
+;; Recursive factorial — drives the bignum promotion path past 2^63.
+(define (fact n)
+  (if (<= n 1) 1 (* n (fact (- n 1)))))
+
+;; Newton's method square root — mixes div / compare on doubles.
+(define (newton-sqrt x guess iters)
+  (if (= iters 0)
+      guess
+      (newton-sqrt x (/ (+ guess (/ x guess)) 2.0) (- iters 1))))
+
+(define (run)
+  (let loop ((k 0) (checksum 0))
+    (if (= k 200)
+        checksum
+        (loop (+ k 1)
+              (+ checksum
+                 (sum-to 500 0)
+                 (modulo (* k 7) 13))))))
+
+(display "arith.sum-to=")   (display (sum-to 1000 0))            (newline)
+(display "arith.fsum=")     (display (fsum 0 2000 0.0))          (newline)
+(display "arith.fact25=")   (display (fact 25))                  (newline)
+(display "arith.sqrt2=")    (display (newton-sqrt 2.0 1.0 20))   (newline)
+(display "arith.checksum=") (display (run))                      (newline)

@@ -795,6 +795,35 @@ may not be loosened without a reviewed result artifact and rationale.
 Exit criterion: one command produces a reproducible baseline report, and
 structural failures are distinguishable from timing regressions.
 
+#### Phase 0 implementation status
+
+Landed:
+
+- The generated-code default is no longer O0 for artifacts. Paths that produce
+  a persisted artifact (`-o` AOT binary, `-c` object, `--shared-lib`) now
+  default to O2, closing the sleeper gap where a Release compiler still emitted
+  unoptimized binaries ([`exe/eshkol-run.cpp`](../../../exe/eshkol-run.cpp), the
+  post-getopt default-resolution block). Ephemeral/interactive paths (plain
+  run, `-r`, `-e`, REPL) and `-g` debug builds stay at O0 for fast turnaround,
+  because whole-module optimization folds in referenced stdlib and costs far
+  more compile time than a single ephemeral run recovers. An explicit `-O<n>`
+  always wins; performance artifacts pass `-O3` explicitly as this phase
+  requires.
+- A structural assertion pins that contract:
+  [`scripts/run_codegen_optlevel_tests.sh`](../../../scripts/run_codegen_optlevel_tests.sh)
+  parses the backend's applied-level log and fails if `-o`/`-c` stop defaulting
+  to O2, if a plain run starts optimizing, or if an explicit `-O` is ignored. It
+  is wired into `run_all_tests.sh`.
+- A first PGO training corpus of hot-path programs is checked in at
+  [`bench/pgo_corpus/`](../../../bench/pgo_corpus) (arithmetic, autodiff, lists,
+  strings, tensors) for later native/IR PGO training.
+
+Deferred to a dedicated follow-up (kept out of this change to avoid displacing
+the O0->O2 fix, per "PGO is the last multiplier, not a substitute"): the
+versioned JSON result runner with machine metadata and paired A/B comparison,
+the separate training/holdout manifests, the Layer 0 staged counters, and the
+per-CPU-class non-PGO baselines.
+
 ### Phase 1: native PGO release workflow
 
 - Target-scope instrumentation/use flags and propagate the instrumentation

@@ -3715,6 +3715,7 @@ int main(int argc, char **argv)
     uint8_t unsafe_mode = 0;
     uint8_t debug_info = 0;  // -g flag: emit DWARF debug info for lldb/gdb
     int opt_level = 0;       // -O flag: LLVM optimization level (0-3)
+    bool opt_level_explicit = false;  // true once the user passes an explicit -O
 
     std::vector<char*> source_files;
     std::vector<char*> compiled_files;
@@ -3798,6 +3799,7 @@ int main(int argc, char **argv)
                 fprintf(stderr, "Invalid optimization level: %s (must be 0-3)\n", optarg);
                 return 1;
             }
+            opt_level_explicit = true;
             break;
         case 256:
             strict_types = 1;
@@ -3894,6 +3896,32 @@ int main(int argc, char **argv)
         default:
             print_help(1);
         }
+    }
+
+    // Default optimization level for GENERATED code.
+    //
+    // A CMake Release build of the compiler does NOT imply optimized *emitted*
+    // Eshkol code: the backend optimization plane is independent of how the
+    // compiler itself was built (ADR 0007, "Generated code has an independent
+    // optimization plane"). Historically this defaulted to O0, so even
+    // `eshkol-run file.esk -o bin` produced unoptimized artifacts.
+    //
+    // Optimize the paths that PRODUCE a persisted artifact (-o AOT binary,
+    // -c object, --shared-lib), where the user is building something to keep
+    // and run repeatedly, so the "sleeper" O0 default no longer ships
+    // unoptimized binaries. Leave the ephemeral/interactive paths (plain run,
+    // -r JIT, -e eval, REPL) and debug builds (-g) at O0 for fast turnaround:
+    // for those, whole-module optimization (which folds in referenced stdlib)
+    // costs far more compile time than a single ephemeral execution saves.
+    // An explicit -O<n> always wins on every path, including -O0 to opt out
+    // and -O3 for a performance artifact.
+    //
+    // AD/gradient correctness is unaffected: the default pipeline enables no
+    // fast-math or reassociation; only inlining/DCE/vectorization change.
+    if (!opt_level_explicit) {
+        const bool builds_artifact =
+            (output != nullptr) || compile_only || shared_lib;
+        opt_level = (builds_artifact && !debug_info) ? 2 : 0;
     }
 
     {
