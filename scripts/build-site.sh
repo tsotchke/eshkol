@@ -80,25 +80,11 @@ fi
 #    invoking the host linker.  No stdlib.o is required because main.esk
 #    has no `(require ...)` and uses only `extern` declarations resolved
 #    by the JS glue (site/static/eshkol-runtime.js).
-#
-#    `--no-stdlib` is REQUIRED here, not merely an optimisation.  eshkol-run
-#    auto-injects a synthetic `(require stdlib)` into every compilation unit
-#    that does not opt out (the CLI-ergonomics default, so `eshkol-run foo.esk`
-#    finds `map`/`length`/…).  Because the WASM path is emitted as a single
-#    unlinked object with no `wasm-ld --gc-sections` pass, and because every
-#    required top-level function is registered address-taken in the module's
-#    function-reference table (elem/ref.func) — which pins it against
-#    globalDCE — that synthetic require compiles the *entire* stdlib into the
-#    module.  For this site (which calls no stdlib function, only JS-glue
-#    externs) that inflates the artifact ~26x (≈0.8MB -> ≈21MB) and blows the
-#    5 MB Pages size gate in .github/workflows/pages.yml.  Opting out restores
-#    the intended "site functions + JS-glue externs only" module; the import
-#    set is unchanged, so eshkol-runtime.js still satisfies every env import.
 # ----------------------------------------------------------------------------
 
 echo "build-site.sh: compiling $SITE_SRC -> $SITE_OUT"
 mkdir -p "$(dirname "$SITE_OUT")"
-"$ESHKOL_RUN" --wasm --no-stdlib "$SITE_SRC" -o "$SITE_OUT"
+"$ESHKOL_RUN" --wasm "$SITE_SRC" -o "$SITE_OUT"
 
 if [[ ! -s "$SITE_OUT" ]]; then
     echo "build-site.sh: $SITE_OUT was not produced" >&2
