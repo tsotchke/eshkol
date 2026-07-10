@@ -1,0 +1,200 @@
+;; tensor_grad_vector_point_test.esk -- ESH-0235: reverse-mode AD through a
+;; tensor op at a (vector …)-constructed differentiation point.
+;;
+;; Before ESH-0235, a gradient of a tensor-op loss (tensor-dot / tensor-mul+sum
+;; / tensor-matmul) evaluated at a point built with the (vector …) constructor
+;; silently returned an all-zero gradient, while the IDENTICAL point written as
+;; a #(…) reader literal or a (tensor …) value returned the correct gradient.
+;; Root cause: a (vector …) point is a genuine HEAP_SUBTYPE_VECTOR and was
+;; routed to the forward-mode dual scheme-vector path, where a tensor op reads
+;; only the primal double out of each dual-tagged element and drops the tangent.
+;; The fix routes a single-arg tensor-op function's (vector …) point through the
+;; SAME reverse-mode tensor tape as a #(…)/(tensor …) point, in every calling
+;; form: a direct lambda, a first-class named loss, a lambda that indirects
+;; through the named loss, and a higher-order wrapper.
+;;
+;; Each loss is evaluated at a (vector …) point and its AD gradient asserted to
+;; (a) be non-zero, (b) match a central finite difference to ~1e-4, and (c) be
+;; elementwise identical to the gradient at the same point written as a #(…)
+;; literal. The finite-difference oracle is the TEST ORACLE only; the compiler's
+;; gradient path is exact reverse-mode AD.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+
+(define (approx= a b tol) (< (abs (- a b)) tol))
+
+(define (check name cond)
+  (if cond
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (perturb-vector v idx delta)
+  (let ((n (vector-length v))
+        (out (make-vector (vector-length v) 0.0)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (begin
+                           (vector-set! out i
+                             (if (= i idx)
+                                 (+ (vector-ref v i) delta)
+                                 (vector-ref v i)))
+                           (loop (+ i 1)))
+                         out))))
+      (loop 0))))
+
+;; The losses flow their argument straight into a tensor op, which reads a
+;; genuine tensor (not a raw Scheme vector) — so the FD oracle reshapes each
+;; perturbed point to a 1-D tensor before evaluating, exactly as the AD path
+;; feeds the loss a tensor-seeded input.
+(define (finite-diff f x idx eps)
+  (let ((n (vector-length x)))
+    (/ (- (f (reshape (perturb-vector x idx eps) n))
+          (f (reshape (perturb-vector x idx (- eps)) n)))
+       (* 2.0 eps))))
+
+(define (grad-matches-fd? g f x eps tol)
+  (let ((n (vector-length g)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (let* ((fd (finite-diff f x i eps))
+                                (gi (vector-ref g i))
+                                (scale (+ 1.0 (abs fd))))
+                           (if (approx= gi fd (* tol scale))
+                               (loop (+ i 1))
+                               (begin
+                                 (display "   mismatch @") (display i)
+                                 (display " ad=") (display gi)
+                                 (display " fd=") (display fd) (newline)
+                                 #f)))
+                         #t))))
+      (loop 0))))
+
+(define (vec-any-nonzero? g)
+  (let ((n (vector-length g)))
+    (letrec ((loop (lambda (i)
+                     (if (< i n)
+                         (if (> (abs (vector-ref g i)) 1e-9) #t (loop (+ i 1)))
+                         #f))))
+      (loop 0))))
+
+(define (vecs-agree? a b tol)
+  (and (= (vector-length a) (vector-length b))
+       (let ((n (vector-length a)))
+         (letrec ((loop (lambda (i)
+                          (if (< i n)
+                              (if (approx= (vector-ref a i) (vector-ref b i) tol)
+                                  (loop (+ i 1)) #f)
+                              #t))))
+           (loop 0)))))
+
+;; Higher-order wrapper: forces the loss to arrive as a runtime function value.
+(define (wg f x) (gradient f x))
+
+;; Assert the (vector …) gradient in every calling form:
+;;   gd  -- direct lambda with the tensor op inline
+;;   gv  -- first-class named loss
+;;   gi  -- lambda that indirects through the named loss
+;;   gw  -- higher-order wrapper
+;; against a central finite difference AND against gl, the gradient at the same
+;; point written as a #(…) literal (which was already correct pre-fix).
+(define (assert-forms name loss gd gv gi gw gl vpt)
+  (check (string-append name "_direct_nonzero")   (vec-any-nonzero? gd))
+  (check (string-append name "_firstclass_nonzero") (vec-any-nonzero? gv))
+  (check (string-append name "_indirect_nonzero") (vec-any-nonzero? gi))
+  (check (string-append name "_wrapper_nonzero")  (vec-any-nonzero? gw))
+  (check (string-append name "_direct_matches_fd")     (grad-matches-fd? gd loss vpt 1e-4 1e-3))
+  (check (string-append name "_firstclass_matches_fd") (grad-matches-fd? gv loss vpt 1e-4 1e-3))
+  (check (string-append name "_indirect_matches_fd")   (grad-matches-fd? gi loss vpt 1e-4 1e-3))
+  (check (string-append name "_wrapper_matches_fd")    (grad-matches-fd? gw loss vpt 1e-4 1e-3))
+  ;; The defining ESH-0235 assertion: a (vector …) point gives the SAME gradient
+  ;; as the identical #(…) point in every form, not a silent zero.
+  (check (string-append name "_all_forms_equal_literal_point")
+         (and (vec-any-nonzero? gl)
+              (vecs-agree? gd gl 1e-6)
+              (vecs-agree? gv gl 1e-6)
+              (vecs-agree? gi gl 1e-6)
+              (vecs-agree? gw gl 1e-6))))
+
+;; ---- tensor-dot, several shapes -------------------------------------------
+(define c3 #(2.0 -1.0 0.5))
+(define (dot3 z) (tensor-dot z c3))
+(assert-forms "dot3" dot3
+  (gradient (lambda (z) (tensor-dot z c3)) (vector 1.0 2.0 4.0))
+  (gradient dot3 (vector 1.0 2.0 4.0))
+  (gradient (lambda (z) (dot3 z)) (vector 1.0 2.0 4.0))
+  (wg dot3 (vector 1.0 2.0 4.0))
+  (gradient dot3 #(1.0 2.0 4.0))
+  (vector 1.0 2.0 4.0))
+
+(define c4 #(2.0 -1.0 0.5 -0.75))
+(define (dot4 z) (tensor-dot z c4))
+(assert-forms "dot4" dot4
+  (gradient (lambda (z) (tensor-dot z c4)) (vector 1.2335 0.5795 1.6262 0.6787))
+  (gradient dot4 (vector 1.2335 0.5795 1.6262 0.6787))
+  (gradient (lambda (z) (dot4 z)) (vector 1.2335 0.5795 1.6262 0.6787))
+  (wg dot4 (vector 1.2335 0.5795 1.6262 0.6787))
+  (gradient dot4 #(1.2335 0.5795 1.6262 0.6787))
+  (vector 1.2335 0.5795 1.6262 0.6787))
+
+(define c5 #(0.3 -0.7 1.1 -0.2 0.9))
+(define (dot5 z) (tensor-dot z c5))
+(assert-forms "dot5" dot5
+  (gradient (lambda (z) (tensor-dot z c5)) (vector 0.5 1.5 -2.0 3.0 -1.0))
+  (gradient dot5 (vector 0.5 1.5 -2.0 3.0 -1.0))
+  (gradient (lambda (z) (dot5 z)) (vector 0.5 1.5 -2.0 3.0 -1.0))
+  (wg dot5 (vector 0.5 1.5 -2.0 3.0 -1.0))
+  (gradient dot5 #(0.5 1.5 -2.0 3.0 -1.0))
+  (vector 0.5 1.5 -2.0 3.0 -1.0))
+
+;; ---- tensor-sum(tensor-mul z c) (elementwise product then reduce) ----------
+(define m3 #(0.5 -1.5 0.25))
+(define (summul3 z) (tensor-sum (tensor-mul z m3)))
+(assert-forms "summul3" summul3
+  (gradient (lambda (z) (tensor-sum (tensor-mul z m3))) (vector 1.0 2.0 4.0))
+  (gradient summul3 (vector 1.0 2.0 4.0))
+  (gradient (lambda (z) (summul3 z)) (vector 1.0 2.0 4.0))
+  (wg summul3 (vector 1.0 2.0 4.0))
+  (gradient summul3 #(1.0 2.0 4.0))
+  (vector 1.0 2.0 4.0))
+
+(define m4 #(1.0 -2.0 0.5 3.0))
+(define (summul4 z) (tensor-sum (tensor-mul z m4)))
+(assert-forms "summul4" summul4
+  (gradient (lambda (z) (tensor-sum (tensor-mul z m4))) (vector 0.25 1.75 -0.5 2.25))
+  (gradient summul4 (vector 0.25 1.75 -0.5 2.25))
+  (gradient (lambda (z) (summul4 z)) (vector 0.25 1.75 -0.5 2.25))
+  (wg summul4 (vector 0.25 1.75 -0.5 2.25))
+  (gradient summul4 #(0.25 1.75 -0.5 2.25))
+  (vector 0.25 1.75 -0.5 2.25))
+
+;; ---- tensor-matmul then reduce, 2x2 ---------------------------------------
+(define K22 (reshape #(1.0 0.0 0.0 1.0) 2 2))
+(define (matmul22 z) (tensor-sum (tensor-matmul (reshape z 2 2) K22)))
+(assert-forms "matmul22" matmul22
+  (gradient (lambda (z) (tensor-sum (tensor-matmul (reshape z 2 2) K22))) (vector 1.0 2.0 3.0 4.0))
+  (gradient matmul22 (vector 1.0 2.0 3.0 4.0))
+  (gradient (lambda (z) (matmul22 z)) (vector 1.0 2.0 3.0 4.0))
+  (wg matmul22 (vector 1.0 2.0 3.0 4.0))
+  (gradient matmul22 #(1.0 2.0 3.0 4.0))
+  (vector 1.0 2.0 3.0 4.0))
+
+(define K22b (reshape #(0.5 -1.0 2.0 0.25) 2 2))
+(define (matmul22b z) (tensor-sum (tensor-matmul (reshape z 2 2) K22b)))
+(assert-forms "matmul22b" matmul22b
+  (gradient (lambda (z) (tensor-sum (tensor-matmul (reshape z 2 2) K22b))) (vector 0.7 -0.3 1.2 0.9))
+  (gradient matmul22b (vector 0.7 -0.3 1.2 0.9))
+  (gradient (lambda (z) (matmul22b z)) (vector 0.7 -0.3 1.2 0.9))
+  (wg matmul22b (vector 0.7 -0.3 1.2 0.9))
+  (gradient matmul22b #(0.7 -0.3 1.2 0.9))
+  (vector 0.7 -0.3 1.2 0.9))
+
+(display "Results: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (= failed 0)
+    (begin (display "PASS: tensor_grad_vector_point_test") (newline) (exit 0))
+    (begin (display "FAIL: tensor_grad_vector_point_test") (newline) (exit 1)))
