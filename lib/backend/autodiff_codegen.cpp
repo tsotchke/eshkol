@@ -3703,6 +3703,11 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
             Value* f_plus = closure_call_callback_(f_closure, plus_args, "autodiff", callback_context_);
             Value* f_minus = closure_call_callback_(f_closure, minus_args, "derivative", callback_context_);
 
+            // AD Phase A counter: this is a finite-difference evaluation (NOT
+            // exact AD). Makes hidden FD on any path machine-visible.
+            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+                "eshkol_ad_count_fd",
+                FunctionType::get(ctx_.voidType(), {}, false)), {});
             // Compute partial derivative: (f_plus - f_minus) / (2h)
             Value* f_plus_d = tagged_.unpackDouble(f_plus);
             Value* f_minus_d = tagged_.unpackDouble(f_minus);
@@ -5580,7 +5585,27 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         typed_var_nodes, i);
     Value* active_var_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()),
         active_node_slot);
-    
+
+    // AD Phase A — one-pass gradient support.
+    //   (1) Populate the tape's (formerly dead) variables list so a single
+    //       reverse sweep exposes every input's gradient for readback.
+    //   (2) Snapshot the reverse-over-forward mixed-record counter BEFORE the
+    //       primal runs. After backprop, an unchanged counter proves this pass
+    //       was pure reverse-mode, so the single sweep's gradients for ALL
+    //       components are valid and the per-component replay loop is skipped
+    //       (fast path). A changed counter means an inner forward-mode
+    //       derivative ran (per-component seed semantics are load-bearing), so
+    //       the pass safely continues the original per-component replay.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "arena_tape_set_variables",
+        FunctionType::get(ctx_.voidType(),
+            {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false)),
+        {partial_tape, typed_var_nodes, n});
+    FunctionCallee ad_mixed_count_fn = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_mixed_record_count",
+        FunctionType::get(ctx_.int64Type(), {}, false));
+    Value* mixed_before = ctx_.builder().CreateCall(ad_mixed_count_fn, {}, "mixed_before");
+
     // Step 4: Call function with variable nodes to build computational graph
     // CRITICAL: Function must operate on AD nodes, not raw doubles
     // This requires the function to use recordADNode* operations
@@ -5730,6 +5755,10 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_scalar = ctx_.builder().CreateCall(seed_swap_scalar, {active_var_node});
 
+    // AD Phase A counter: one primal (user-function) evaluation.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_primal",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* scalar_output = ctx_.builder().CreateCall(func_ptr, scalar_args);
 
     // ESH-0093: restore the previously active seed node
@@ -5952,6 +5981,10 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         FunctionType::get(ctx_.ptrType(), {ctx_.ptrType()}, false));
     Value* saved_seed_vector = ctx_.builder().CreateCall(seed_swap_vector, {active_var_node});
 
+    // AD Phase A counter: one primal (user-function) evaluation.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_primal",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
     Value* vector_output = ctx_.builder().CreateCall(func_ptr, grad_call_args);
 
     // ESH-0093: restore the previously active seed node
@@ -6013,44 +6046,77 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().CreateBr(after_backward);
     
     ctx_.builder().SetInsertPoint(after_backward);
-    
-    // Step 7: Extract gradient from active variable node (or 0 if no backward pass)
-    Value* partial_grad_ptr = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "partial_grad");
-    ctx_.builder().CreateStore(ConstantFP::get(ctx_.doubleType(), 0.0), partial_grad_ptr);
-    
-    // Only extract gradient if we had valid AD output
-    BasicBlock* extract_grad = BasicBlock::Create(ctx_.context(), "grad_extract", current_func);
-    BasicBlock* use_zero = BasicBlock::Create(ctx_.context(), "grad_use_zero", current_func);
-    BasicBlock* grad_extracted = BasicBlock::Create(ctx_.context(), "grad_extracted", current_func);
-    
-    ctx_.builder().CreateCondBr(output_is_ad_node, extract_grad, use_zero);
-    
-    ctx_.builder().SetInsertPoint(extract_grad);
-    Value* extracted_grad = loadNodeGradient(active_var_node);
-    ctx_.builder().CreateStore(extracted_grad, partial_grad_ptr);
-    ctx_.builder().CreateBr(grad_extracted);
-    
-    ctx_.builder().SetInsertPoint(use_zero);
-    ctx_.builder().CreateBr(grad_extracted);
-    
-    ctx_.builder().SetInsertPoint(grad_extracted);
-    Value* partial_grad = ctx_.builder().CreateLoad(ctx_.doubleType(), partial_grad_ptr);
-    
-    // Step 8: Store partial derivative in result vector at index i
-    // CRITICAL FIX: Tensor elements stored as int64, must bitcast double to int64
-    Value* partial_grad_as_int64 = ctx_.builder().CreateBitCast(partial_grad, ctx_.int64Type());
-    Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
+
+    // AD Phase A — ONE-PASS decision. If the mixed-record counter is unchanged
+    // across this primal+reverse pass, no inner forward-mode derivative ran, so
+    // this single reverse sweep already holds the gradient for EVERY input
+    // component. On the first iteration we then read them all and finish the loop
+    // in one shot (one primal, one backprop). Otherwise (reverse-over-forward, or
+    // a later replay iteration) we keep the exact per-component semantics.
+    Value* mixed_after = ctx_.builder().CreateCall(ad_mixed_count_fn, {}, "mixed_after");
+    Value* mixed_unchanged = ctx_.builder().CreateICmpEQ(mixed_after, mixed_before, "mixed_unchanged");
+    Value* is_first_comp = ctx_.builder().CreateICmpEQ(i, ConstantInt::get(ctx_.int64Type(), 0));
+    Value* fast_ok = ctx_.builder().CreateAnd(is_first_comp, mixed_unchanged, "grad_fast_ok");
+
+    BasicBlock* readback_all_bb = BasicBlock::Create(ctx_.context(), "grad_readback_all", current_func);
+    BasicBlock* single_read_bb  = BasicBlock::Create(ctx_.context(), "grad_single_read", current_func);
+    BasicBlock* after_read_bb   = BasicBlock::Create(ctx_.context(), "grad_after_read", current_func);
+    ctx_.builder().CreateCondBr(fast_ok, readback_all_bb, single_read_bb);
+
+    // FAST PATH: read gradients for ALL n input variables from this one sweep.
+    ctx_.builder().SetInsertPoint(readback_all_bb);
+    {
+        BasicBlock* rb_cond = BasicBlock::Create(ctx_.context(), "grad_rb_cond", current_func);
+        BasicBlock* rb_body = BasicBlock::Create(ctx_.context(), "grad_rb_body", current_func);
+        BasicBlock* rb_exit = BasicBlock::Create(ctx_.context(), "grad_rb_exit", current_func);
+        Value* rb_idx = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "grad_rb_idx");
+        ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 0), rb_idx);
+        ctx_.builder().CreateBr(rb_cond);
+
+        ctx_.builder().SetInsertPoint(rb_cond);
+        Value* rb_j = ctx_.builder().CreateLoad(ctx_.int64Type(), rb_idx);
+        Value* rb_more = ctx_.builder().CreateICmpULT(rb_j, n);
+        ctx_.builder().CreateCondBr(rb_more, rb_body, rb_exit);
+
+        ctx_.builder().SetInsertPoint(rb_body);
+        Value* rb_node_slot = ctx_.builder().CreateGEP(PointerType::getUnqual(ctx_.context()),
+            typed_var_nodes, rb_j);
+        Value* rb_node = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), rb_node_slot);
+        Value* rb_grad = ctx_.builder().CreateSelect(output_is_ad_node,
+            loadNodeGradient(rb_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+        Value* rb_grad_i64 = ctx_.builder().CreateBitCast(rb_grad, ctx_.int64Type());
+        Value* rb_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, rb_j);
+        ctx_.builder().CreateStore(rb_grad_i64, rb_res_ptr);
+        Value* rb_next = ctx_.builder().CreateAdd(rb_j, ConstantInt::get(ctx_.int64Type(), 1));
+        ctx_.builder().CreateStore(rb_next, rb_idx);
+        ctx_.builder().CreateBr(rb_cond);
+
+        ctx_.builder().SetInsertPoint(rb_exit);
+        ctx_.builder().CreateBr(after_read_bb);
+    }
+
+    // SLOW PATH: per-component replay — store only the active component (var[i]).
+    ctx_.builder().SetInsertPoint(single_read_bb);
+    Value* single_grad = ctx_.builder().CreateSelect(output_is_ad_node,
+        loadNodeGradient(active_var_node), ConstantFP::get(ctx_.doubleType(), 0.0));
+    Value* single_grad_i64 = ctx_.builder().CreateBitCast(single_grad, ctx_.int64Type());
+    Value* single_res_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(),
         typed_result_elements_ptr, i);
-    ctx_.builder().CreateStore(partial_grad_as_int64, result_elem_ptr);
-    
+    ctx_.builder().CreateStore(single_grad_i64, single_res_ptr);
+    ctx_.builder().CreateBr(after_read_bb);
+
+    ctx_.builder().SetInsertPoint(after_read_bb);
+
     // Step 9: Reset tape for next iteration (MUST call to zero gradients)
     ctx_.builder().CreateCall(mem_.getArenaTapeReset(), {partial_tape});
-    
+
     // Restore previous tape
     current_tape_ptr_ = saved_tape;
-    
-    // Increment component counter
-    Value* next_i = ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1));
+
+    // Advance: the fast path already produced every component, so jump the
+    // counter to n (loop exits); otherwise step to the next component.
+    Value* next_i = ctx_.builder().CreateSelect(fast_ok, n,
+        ctx_.builder().CreateAdd(i, ConstantInt::get(ctx_.int64Type(), 1)));
     ctx_.builder().CreateStore(next_i, component_idx);
     ctx_.builder().CreateBr(grad_loop_cond);
     
@@ -8550,7 +8616,13 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(hess_j_less_n, hess_col_body, hess_col_exit);
     
     ctx_.builder().SetInsertPoint(hess_col_body);
-    
+
+    // AD Phase A counter: the vector/tensor Hessian uses a finite-difference
+    // column sweep (∇f(v+ε·eⱼ)-∇f(v))/ε. Count each such column as an FD eval.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_fd",
+        FunctionType::get(ctx_.voidType(), {}, false)), {});
+
     // Step 1: Create perturbed vector v_j = v + ε·e_j via arena (OALR compliant - no malloc)
     Value* perturbed_vec_size = ctx_.builder().CreateMul(n,
         ConstantInt::get(ctx_.int64Type(), sizeof(double)));
@@ -10168,6 +10240,11 @@ void AutodiffCodegen::backpropagate(llvm::Value* tape, llvm::Value* output_node)
     ctx_.builder().CreateCondBr(both_valid, backward_valid, backward_skip);
 
     ctx_.builder().SetInsertPoint(backward_valid);
+
+    // AD Phase A counter: one reverse sweep is about to execute.
+    ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
+        "eshkol_ad_count_reverse",
+        llvm::FunctionType::get(ctx_.voidType(), {}, false)), {});
 
     // Initialize output gradient = 1.0 (seed for backpropagation)
     storeNodeGradient(output_node, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
