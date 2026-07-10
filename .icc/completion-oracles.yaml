@@ -1818,3 +1818,31 @@ oracles:
         severity: high
         label: Every portable program agrees with the reference R7RS Scheme on -r and AOT
         action: ./scripts/run_reference_differential.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # GPU execution correctness (closes the CI gap where the *-cuda lanes
+  # in .github/workflows/ci.yml compile CUDA on GPU-less hosted runners
+  # but never run a kernel). tests/gpu/gpu_correctness_gate.sh builds
+  # Eshkol twice — once with ESHKOL_GPU_ENABLED=ON (Metal on macOS, CUDA
+  # on Linux/Windows), once OFF — runs the identical differentiable
+  # workload (tests/gpu/gpu_correctness_gate.esk: matmul, tensor-add,
+  # tensor-mul, transpose round-trip, tensor-sum/tensor-max) through
+  # both, and diffs GPU vs CPU output within a relative tolerance. It
+  # exits 0 with a SKIP message (no trace emitted, no false PASS) on any
+  # host with no real GPU device — nearly every dev machine and every
+  # GitHub-hosted runner — so this oracle is EXPECTED to show no
+  # evidence outside a machine with a real GPU (self-hosted CI runner,
+  # a workstation/laptop with a dGPU or Apple Silicon Metal, the Jetson
+  # AGX Xavier under nix/jetson/). See docs on wiring a self-hosted
+  # GPU runner in .github/workflows/gpu-execution-gate.yml.
+  # ─────────────────────────────────────────────────────────────────
+  - name: gpu-execution
+    aliases: [gpu-execution-gate, gpu-correctness, p-gpu-execution]
+    requires:
+      - runtime_event:
+          event_kinds: [gpu_execution]
+          event_names: ["gpu_execution_gate"]
+          event_values: ["PASS"]
+        severity: medium
+        label: GPU-accelerated tensor ops (matmul, elementwise, transpose, reduce) match the CPU reference within tolerance on a real GPU device
+        action: ./tests/gpu/gpu_correctness_gate.sh
