@@ -139,6 +139,13 @@ oracles:
         severity: medium
         label: 'Stdlib scale: sort (2M) and filter (1M) are tail-recursive and match a reference sort/filter (ESH-0098/0108)'
         action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["ad_forward_over_reverse_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'AD nesting: jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)'
+        action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
