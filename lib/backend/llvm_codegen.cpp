@@ -22294,8 +22294,12 @@ private:
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* int_bb = BasicBlock::Create(*context, "numpred_int", func);
         BasicBlock* complex_check_bb = BasicBlock::Create(*context, "numpred_complex_check", func);
-        BasicBlock* bignum_check_bb = BasicBlock::Create(*context, "numpred_bignum_check", func);
+        BasicBlock* heap_check_bb = BasicBlock::Create(*context, "numpred_heap_check", func);
+        BasicBlock* heap_dispatch_bb = BasicBlock::Create(*context, "numpred_heap_dispatch", func);
         BasicBlock* bignum_bb = BasicBlock::Create(*context, "numpred_bignum", func);
+        BasicBlock* rational_check_bb = BasicBlock::Create(*context, "numpred_rational_check", func);
+        BasicBlock* rational_bb = BasicBlock::Create(*context, "numpred_rational", func);
+        BasicBlock* other_heap_bb = BasicBlock::Create(*context, "numpred_other_heap", func);
         BasicBlock* double_bb = BasicBlock::Create(*context, "numpred_double", func);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "numpred_merge", func);
 
@@ -22326,7 +22330,7 @@ private:
         builder->SetInsertPoint(complex_check_bb);
         Value* is_complex = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
         BasicBlock* complex_bb = BasicBlock::Create(*context, "numpred_complex", func);
-        builder->CreateCondBr(is_complex, complex_bb, bignum_check_bb);
+        builder->CreateCondBr(is_complex, complex_bb, heap_check_bb);
 
         // Complex path: for zero?, check both real and imag are 0.0
         // For positive?/negative?/even?/odd?, complex numbers return false
@@ -22346,21 +22350,26 @@ private:
         builder->CreateBr(merge_bb);
         BasicBlock* complex_exit = builder->GetInsertBlock();
 
-        // Check for bignum (HEAP_PTR + BIGNUM subtype)
-        builder->SetInsertPoint(bignum_check_bb);
+        // Heap values need subtype dispatch: bignums and exact rationals have
+        // distinct representations and must not fall through to false.
+        builder->SetInsertPoint(heap_check_bb);
         Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-        builder->CreateCondBr(is_heap, bignum_bb, double_bb);
+        builder->CreateCondBr(is_heap, heap_dispatch_bb, double_bb);
 
-        // Bignum path — call runtime predicates
-        builder->SetInsertPoint(bignum_bb);
+        builder->SetInsertPoint(heap_dispatch_bb);
         Value* ptr_val = unpackInt64FromTaggedValue(tagged);
-        Value* bignum_ptr = builder->CreateIntToPtr(ptr_val, PointerType::get(*context, 0));
-
-        // Check subtype is actually BIGNUM before calling runtime
+        Value* heap_ptr = builder->CreateIntToPtr(ptr_val, PointerType::get(*context, 0));
         Value* subtype = getObjectSubtype(ptr_val);
-        Value* is_bignum = builder->CreateICmpEQ(subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_BIGNUM));
+        Value* is_bignum = builder->CreateICmpEQ(
+            subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_BIGNUM));
+        builder->CreateCondBr(is_bignum, bignum_bb, rational_check_bb);
 
-        // Determine which runtime function to call
+        builder->SetInsertPoint(rational_check_bb);
+        Value* is_rational = builder->CreateICmpEQ(
+            subtype, ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
+        builder->CreateCondBr(is_rational, rational_bb, other_heap_bb);
+
+        // All bignum-backed numeric predicates share the same runtime helpers.
         std::string runtime_name;
         if (pred == "zero?") runtime_name = "eshkol_bignum_is_zero";
         else if (pred == "positive?") runtime_name = "eshkol_bignum_is_positive";
@@ -22368,13 +22377,85 @@ private:
         else if (pred == "even?") runtime_name = "eshkol_bignum_is_even";
         else runtime_name = "eshkol_bignum_is_odd";
 
-        FunctionType* pred_fn_type = FunctionType::get(int1_type, {PointerType::get(*context, 0)}, false);
+        FunctionType* pred_fn_type = FunctionType::get(
+            int1_type, {PointerType::get(*context, 0)}, false);
         FunctionCallee pred_fn = module->getOrInsertFunction(runtime_name, pred_fn_type);
-        Value* bignum_result_raw = builder->CreateCall(pred_fn, {bignum_ptr});
-        // If not actually bignum subtype, fall through to false
-        Value* bignum_result = builder->CreateAnd(is_bignum, bignum_result_raw);
+
+        // Bignum path — call runtime predicates
+        builder->SetInsertPoint(bignum_bb);
+        Value* bignum_result = builder->CreateCall(pred_fn, {heap_ptr});
         builder->CreateBr(merge_bb);
         BasicBlock* bignum_exit = builder->GetInsertBlock();
+
+        // Rational path. eshkol_rational_t is a discriminated union:
+        // small rationals use numerator (field 0); bignum rationals use
+        // big_num (field 4). Its denominator is canonical and positive, so
+        // the numerator alone determines negative?/positive?/zero?.
+        builder->SetInsertPoint(rational_bb);
+        Type* int32_ty = Type::getInt32Ty(*context);
+        StructType* rational_ty = StructType::get(*context, {
+            int64_type, int64_type, int32_ty, int32_ty,
+            PointerType::get(*context, 0), PointerType::get(*context, 0)
+        });
+        Value* rational_is_big_ptr = builder->CreateStructGEP(
+            rational_ty, heap_ptr, 2, "rational_is_big_ptr");
+        Value* rational_is_big_raw = builder->CreateLoad(
+            int32_ty, rational_is_big_ptr, "rational_is_big");
+        Value* rational_is_big = builder->CreateICmpNE(
+            rational_is_big_raw, ConstantInt::get(int32_ty, 0));
+        BasicBlock* rational_small_bb = BasicBlock::Create(*context, "numpred_rational_small", func);
+        BasicBlock* rational_big_bb = BasicBlock::Create(*context, "numpred_rational_big", func);
+        BasicBlock* rational_merge_bb = BasicBlock::Create(*context, "numpred_rational_merge", func);
+        builder->CreateCondBr(rational_is_big, rational_big_bb, rational_small_bb);
+
+        builder->SetInsertPoint(rational_small_bb);
+        Value* rational_num_ptr = builder->CreateStructGEP(
+            rational_ty, heap_ptr, 0, "rational_num_ptr");
+        Value* rational_num = builder->CreateLoad(
+            int64_type, rational_num_ptr, "rational_num");
+        Value* rational_small_result;
+        if (pred == "zero?") {
+            rational_small_result = builder->CreateICmpEQ(
+                rational_num, ConstantInt::get(int64_type, 0));
+        } else if (pred == "positive?") {
+            rational_small_result = builder->CreateICmpSGT(
+                rational_num, ConstantInt::get(int64_type, 0));
+        } else if (pred == "negative?") {
+            rational_small_result = builder->CreateICmpSLT(
+                rational_num, ConstantInt::get(int64_type, 0));
+        } else {
+            // even?/odd? apply only to integers, not proper rationals.
+            rational_small_result = ConstantInt::get(int1_type, 0);
+        }
+        builder->CreateBr(rational_merge_bb);
+        BasicBlock* rational_small_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(rational_big_bb);
+        Value* rational_big_num_ptr = builder->CreateStructGEP(
+            rational_ty, heap_ptr, 4, "rational_big_num_ptr");
+        Value* rational_big_num = builder->CreateLoad(
+            PointerType::get(*context, 0), rational_big_num_ptr, "rational_big_num");
+        Value* rational_big_result;
+        if (pred == "zero?" || pred == "positive?" || pred == "negative?") {
+            rational_big_result = builder->CreateCall(pred_fn, {rational_big_num});
+        } else {
+            rational_big_result = ConstantInt::get(int1_type, 0);
+        }
+        builder->CreateBr(rational_merge_bb);
+        BasicBlock* rational_big_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(rational_merge_bb);
+        PHINode* rational_result = builder->CreatePHI(int1_type, 2);
+        rational_result->addIncoming(rational_small_result, rational_small_exit);
+        rational_result->addIncoming(rational_big_result, rational_big_exit);
+        builder->CreateBr(merge_bb);
+        BasicBlock* rational_exit = builder->GetInsertBlock();
+
+        // Other heap values are not numbers.
+        builder->SetInsertPoint(other_heap_bb);
+        Value* other_heap_result = ConstantInt::get(int1_type, 0);
+        builder->CreateBr(merge_bb);
+        BasicBlock* other_heap_exit = builder->GetInsertBlock();
 
         // Double path — existing float behavior
         builder->SetInsertPoint(double_bb);
@@ -22401,10 +22482,12 @@ private:
 
         // Merge
         builder->SetInsertPoint(merge_bb);
-        PHINode* result = builder->CreatePHI(int1_type, 4);
+        PHINode* result = builder->CreatePHI(int1_type, 6);
         result->addIncoming(int_result, int_exit);
         result->addIncoming(complex_result, complex_exit);
         result->addIncoming(bignum_result, bignum_exit);
+        result->addIncoming(rational_result, rational_exit);
+        result->addIncoming(other_heap_result, other_heap_exit);
         result->addIncoming(dbl_result, dbl_exit);
 
         return packBoolToTaggedValue(result);
