@@ -8,6 +8,7 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/core/bignum.h"
+#include "../../inc/eshkol/core/rational.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -177,6 +178,37 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
             if (!eshkol_deep_equal(&elems1[i], &elems2[i])) return false;
         }
         return true;
+    }
+
+    // Exact rationals (ESH-0114): rationals are always stored in reduced form
+    // with a positive denominator, so value equality reduces to comparing the
+    // numerator/denominator fields. (equal? (/ 1 3) (/ 2 6)) must be #t.
+    auto is_rational = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_RATIONAL;
+        }
+        return false;
+    };
+    bool is_rat1 = is_rational(type1, val1);
+    bool is_rat2 = is_rational(type2, val2);
+    if (is_rat1 && is_rat2) {
+        const eshkol_rational_t* r1 = (const eshkol_rational_t*)val1->data.ptr_val;
+        const eshkol_rational_t* r2 = (const eshkol_rational_t*)val2->data.ptr_val;
+        return r1->numerator == r2->numerator &&
+               r1->denominator == r2->denominator;
+    }
+
+    // Complex numbers (ESH-0114): compare real and imaginary components by
+    // value. Complex tagged values are inexact (double components).
+    if (type1 == ESHKOL_VALUE_COMPLEX && type2 == ESHKOL_VALUE_COMPLEX) {
+        if (val1->data.ptr_val == val2->data.ptr_val) return true;
+        const eshkol_complex_number_t* c1 =
+            (const eshkol_complex_number_t*)val1->data.ptr_val;
+        const eshkol_complex_number_t* c2 =
+            (const eshkol_complex_number_t*)val2->data.ptr_val;
+        if (!c1 || !c2) return c1 == c2;
+        return c1->real == c2->real && c1->imag == c2->imag;
     }
 
     if (type1 != type2) return false;

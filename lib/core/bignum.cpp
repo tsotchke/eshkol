@@ -274,15 +274,27 @@ static void bignum_divmod_abs(arena_t* arena,
             if (rhat >= ((__uint128_t)1 << 64)) break;
         }
 
-        /* Multiply and subtract: un[j..j+n] -= qhat * vn_shifted */
+        /* Multiply and subtract: un[j..j+n] -= qhat * vn_shifted.
+         *
+         * The product limbs (plo, phi) must be treated as UNSIGNED 64-bit
+         * magnitudes. A previous implementation cast them via
+         * `(int64_t)(uint64_t)...`, which reinterprets any word whose bit 63
+         * is set as a negative number and corrupts the subtraction by 2^64
+         * (ESH-0125: this silently broke the Euclidean identity
+         * a = q*b + r for large operands). We keep the running borrow in a
+         * signed __int128 (always <= 0) so both the low subtraction and the
+         * high-word carry propagate with their true unsigned magnitudes. */
         __int128_t borrow_s = 0;
         for (uint32_t i = 0; i < n; i++) {
             __uint128_t prod = (__uint128_t)(uint64_t)qhat * vn_shifted[i];
-            __int128_t diff = (__int128_t)un[j + i] - (int64_t)(uint64_t)prod - borrow_s;
+            uint64_t plo = (uint64_t)prod;
+            uint64_t phi = (uint64_t)(prod >> 64);
+            __int128_t diff = (__int128_t)un[j + i] - (__int128_t)plo + borrow_s;
             un[j + i] = (uint64_t)diff;
-            borrow_s = (int64_t)(uint64_t)(prod >> 64) - (int64_t)(diff >> 64);
+            /* diff >> 64 is the (signed, <= 0) borrow out of this limb. */
+            borrow_s = (diff >> 64) - (__int128_t)phi;
         }
-        __int128_t diff_top = (__int128_t)un[j + n] - borrow_s;
+        __int128_t diff_top = (__int128_t)un[j + n] + borrow_s;
         un[j + n] = (uint64_t)diff_top;
 
         ql[j] = (uint64_t)qhat;
@@ -1008,6 +1020,57 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
         *result = eshkol_make_int64(fits, true);
     } else {
         *result = eshkol_make_ptr((uint64_t)(void*)r, ESHKOL_VALUE_HEAP_PTR);
+        result->flags = ESHKOL_VALUE_EXACT_FLAG;
+    }
+}
+
+/**
+ * @brief Exact GCD of two exact integers, using bignum arithmetic (ESH-0124).
+ *
+ * The native/LLVM `gcd` builtin previously extracted every operand to a
+ * lossy double and truncated to int64, so `(gcd (* 3 (expt 2 61))
+ * (* 5 (expt 2 61)))` collapsed to 1 and two full bignums saturated to
+ * INT64_MAX. This helper promotes both operands to bignum and runs the
+ * Euclidean algorithm exactly, then demotes back to int64 when the result
+ * fits. Both operands are treated by magnitude; the result is non-negative,
+ * matching R7RS gcd. `(gcd 0 0)` is 0.
+ *
+ * @param arena Arena for intermediate/result bignums.
+ * @param left  Left operand (tagged INT64 or bignum HEAP_PTR).
+ * @param right Right operand (tagged INT64 or bignum HEAP_PTR).
+ * @param[out] result Tagged result (INT64 if it fits, else bignum HEAP_PTR).
+ */
+void eshkol_gcd_tagged(arena_t* arena,
+    const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
+    eshkol_tagged_value_t* result) {
+
+    eshkol_bignum_t* a = tagged_to_bignum(arena, left);
+    eshkol_bignum_t* b = tagged_to_bignum(arena, right);
+    if (!a || !b) { *result = eshkol_make_int64(0, true); return; }
+
+    /* Work on non-negative magnitudes (eshkol_bignum_neg yields a fresh copy
+     * for negative inputs; positive inputs are already non-negative). */
+    eshkol_bignum_t* g_a = a->sign ? eshkol_bignum_neg(arena, a) : a;
+    eshkol_bignum_t* g_b = b->sign ? eshkol_bignum_neg(arena, b) : b;
+    if (!g_a || !g_b) { *result = eshkol_make_int64(0, true); return; }
+
+    /* Euclid: gcd(g_a, g_b) = gcd(g_b, g_a mod g_b). */
+    while (!eshkol_bignum_is_zero(g_b)) {
+        eshkol_bignum_t* rem = eshkol_bignum_mod(arena, g_a, g_b);
+        if (!rem) { g_a = g_b; break; }
+        if (rem->sign) rem->sign = 0; /* mod can be negative; take magnitude */
+        g_a = g_b;
+        g_b = rem;
+    }
+    if (g_a && g_a->sign) g_a->sign = 0;
+
+    if (!g_a) { *result = eshkol_make_int64(0, true); return; }
+
+    int64_t fits;
+    if (eshkol_bignum_fits_int64(g_a, &fits)) {
+        *result = eshkol_make_int64(fits, true);
+    } else {
+        *result = eshkol_make_ptr((uint64_t)(void*)g_a, ESHKOL_VALUE_HEAP_PTR);
         result->flags = ESHKOL_VALUE_EXACT_FLAG;
     }
 }
