@@ -1,0 +1,35 @@
+{
+  "id": "ESH-0235",
+  "title": "Silent-zero gradient: reverse-mode AD through a tensor op returns all-zeros when the evaluation point is built with the (vector ...) constructor",
+  "status": "open",
+  "priority": "high",
+  "workstream": "backend/autodiff",
+  "owner": null,
+  "preferred_backend": "claude",
+  "preferred_node": "atlas",
+  "max_cost_usd": 4.0,
+  "goal": "gradient of a tensor-op loss (tensor-dot, tensor-sum of tensor-mul, tensor-matmul, ...) returns a silently-WRONG all-zero gradient when the differentiation point is constructed by the runtime (vector ...) builtin, e.g. (gradient (lambda (z) (tensor-dot z #(2.0 -1.0 0.5))) (vector 1.0 2.0 4.0)) yields #(0 0 0). The mathematically identical point written as the reader literal #(1.0 2.0 4.0) OR as (tensor 3 1.0 2.0 4.0) yields the CORRECT gradient #(2 -1 0.5). Reproduces identically under BOTH the JIT (-r) and AOT, so it is a codegen/AD-tape defect, not a JIT-only issue. This is the worst AD defect class (silent-wrong training gradients) and is invisible to the existing tensor-AD unit tests because they always seed the gradient with a #(...) literal or a (tensor ...) point, never the (vector ...) constructor. Scalar/vector-FIELD AD (gradient/laplacian/hessian over (vref v i) arithmetic) at a (vector ...) point is UNAFFECTED — the bug is specific to the tensor-op reverse path, which apparently does not recognise a (vector ...)-constructed value as a differentiable tensor seed and so tapes nothing.",
+  "file_globs": [
+    "lib/backend/tensor_backward.cpp",
+    "lib/bridge/tensor_backward.cpp",
+    "lib/backend/tensor_codegen.cpp",
+    "lib/backend/llvm_codegen.cpp"
+  ],
+  "next_actions": [
+    "Diff how the AD entry point classifies a (vector ...)-constructed value versus a #(...) reader literal and a (tensor ...) value when it decides what to seed/tape for reverse-mode tensor gradients — the (vector ...) result is evidently not being treated as a differentiable tensor input.",
+    "Make the tensor reverse path seed a (vector ...)-constructed point the same way it seeds a (tensor ...) point (or coerce/tag it) so the gradient is taped instead of returning zeros.",
+    "Verify the fix flips tests/ad_adversarial/found/esh0235_tensor_grad_vector_ctor_point_zero.esk from all-zeros to the correct gradient under both -r and AOT."
+  ],
+  "acceptance": [
+    "(gradient (lambda (z) (tensor-dot z #(2.0 -1.0 0.5))) (vector 1.0 2.0 4.0)) returns #(2 -1 0.5) under both -r and AOT.",
+    "The vecpoint.* probes in tests/ad_adversarial/generated/ flip from XKNOWN to PASS; delete the \"vecpoint\" entry from XKNOWN in tests/ad_adversarial/gen_ad_adversarial.py so a regression FAILs loudly.",
+    "No change to the already-correct #(...) / (tensor ...) point gradients."
+  ],
+  "blocked_by": [],
+  "verification": [
+    "scripts/run_ad_adversarial.sh --regen  # vecpoint family flips XKNOWN -> PASS once fixed",
+    "build/eshkol-run -r tests/ad_adversarial/found/esh0235_tensor_grad_vector_ctor_point_zero.esk -Lbuild"
+  ],
+  "found_by": "tests/ad_adversarial generative adversarial AD-vs-finite-difference oracle",
+  "ux_payoff": "Removes a silent-wrong-gradient trap: model code that builds its parameter/input point with (vector ...) at the gradient site would train on zero gradients (no learning) with no error — the most dangerous AD failure mode."
+}
