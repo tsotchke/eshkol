@@ -1,0 +1,154 @@
+; ================================================================
+; ESH-0094: closure created in a named-let / TCO loop body that
+; set!s a captured GLOBAL (or outer) variable must mutate the REAL
+; cell, not a per-iteration by-value snapshot.
+; ================================================================
+;
+; Repro: a named-let loop whose body builds a closure that set!s a
+; global returned 0; the identical code WITHOUT the loop returned 3.
+; The loop context silently dropped the captured-variable mutation.
+;
+; Root cause (fix in lib/backend/llvm_codegen.cpp, codegenNamedLet):
+; codegenNamedLet pointer-passes each set!-mutated capture into the
+; loop function as a `<fv>_cap` pointer argument. For a captured
+; local ALLOCA it also recorded the var in `mutable_loop_captures_`,
+; which is what tells codegenLambda to pointer-pass (alias) the
+; `_cap` argument into a body closure's environment rather than
+; by-value-loading it. But when the outer storage was already a
+; shared cell POINTER — a GlobalVariable, an enclosing loop's `_cap`
+; argument, or a generic tagged_value* — that bookkeeping was
+; skipped. So the body closure by-value-loaded `_cap` (snapshotting
+; the value at closure-creation time) and its set! wrote to the
+; closure-env copy, never reaching the real cell: the mutation was
+; lost. The fix records EVERY pointer-passed set!-mutated capture in
+; `mutable_loop_captures_`, so the closure stays aliased to the real
+; cell in both the loop and non-loop paths.
+;
+; Must stay intact: named-let thread-safety (#224, per-call capture
+; pointers) and mutable-capture in named-let (#50). Section 5 guards
+; the outer-let alloca path (already correct pre-ESH-0094); Section 6
+; guards the non-loop baseline against an overly-broad fix.
+
+(require stdlib)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (test name expected actual)
+  (if (equal? expected actual)
+      (begin (set! pass-count (+ pass-count 1))
+             (display (string-append "PASS: " name "\n")))
+      (begin (set! fail-count (+ fail-count 1))
+             (display (string-append "FAIL: " name "\n"))
+             (display "  Expected: ") (display expected) (newline)
+             (display "  Actual:   ") (display actual) (newline))))
+
+(define (call-it f) (f))
+
+; ----------------------------------------------------------------
+; Section 1: the ESH-0094 repro — closure in a named-let loop set!s
+; a global. Pre-fix this returned 0; must return 3.
+; ----------------------------------------------------------------
+
+(define c1 0)
+(test "closure in named-let loop set!s global"
+      3
+      (let loop ((i 0))
+        (if (< i 3)
+            (begin (call-it (lambda () (set! c1 (+ c1 1)))) (loop (+ i 1)))
+            c1)))
+
+; ----------------------------------------------------------------
+; Section 2: multiple closures created in the loop body sharing the
+; same global cell. Each iteration adds 1 then 10 => 3 * 11 = 33.
+; ----------------------------------------------------------------
+
+(define c2 0)
+(test "multiple loop-body closures share one global cell"
+      33
+      (let loop ((i 0))
+        (if (< i 3)
+            (begin
+              (call-it (lambda () (set! c2 (+ c2 1))))
+              (call-it (lambda () (set! c2 (+ c2 10))))
+              (loop (+ i 1)))
+            c2)))
+
+; ----------------------------------------------------------------
+; Section 3: nested named-let loops; the inner-loop closure set!s a
+; global. Outer runs 2x, inner runs 3x => 6. Exercises the
+; enclosing-loop `_cap` pointer-argument capture path.
+; ----------------------------------------------------------------
+
+(define c3 0)
+(test "nested named-let loops, inner closure set!s global"
+      6
+      (begin
+        (let outer ((i 0))
+          (if (< i 2)
+              (begin
+                (let inner ((j 0))
+                  (if (< j 3)
+                      (begin (call-it (lambda () (set! c3 (+ c3 1)))) (inner (+ j 1)))
+                      #t))
+                (outer (+ i 1)))
+              #t))
+        c3))
+
+; ----------------------------------------------------------------
+; Section 4: a closure built in the loop body ESCAPES the loop; its
+; set!s to the global must still land on the real cell when invoked
+; after the loop has returned.
+; ----------------------------------------------------------------
+
+(define c4 0)
+(define c4-saved #f)
+(test "escaped loop-body closure still mutates the global"
+      3
+      (begin
+        (let loop ((i 0))
+          (if (< i 1)
+              (begin (set! c4-saved (lambda () (set! c4 (+ c4 1)))) (loop (+ i 1)))
+              #t))
+        (c4-saved) (c4-saved) (c4-saved)
+        c4))
+
+; ----------------------------------------------------------------
+; Section 5: outer LET-bound (alloca) variable set! from a closure
+; made in a named-let loop. This path (arena-move of a set!-mutated
+; alloca capture) was already correct before ESH-0094; keep it green
+; so the fix does not regress #50 / #224.
+; ----------------------------------------------------------------
+
+(test "closure in named-let loop set!s outer let-bound var"
+      3
+      (let ((x 0))
+        (let loop ((i 0))
+          (if (< i 3)
+              (begin (call-it (lambda () (set! x (+ x 1)))) (loop (+ i 1)))
+              #t))
+        x))
+
+; ----------------------------------------------------------------
+; Section 6: non-loop baseline. The identical closure/set! pattern
+; WITHOUT a loop must remain correct (guards against an overly-broad
+; fix that would break the ordinary global-capture path).
+; ----------------------------------------------------------------
+
+(define c6 0)
+(test "non-loop closure set!s global baseline unaffected"
+      3
+      (begin
+        (call-it (lambda () (set! c6 (+ c6 1))))
+        (call-it (lambda () (set! c6 (+ c6 1))))
+        (call-it (lambda () (set! c6 (+ c6 1))))
+        c6))
+
+; Summary
+(display "\n=== Results ===\n")
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+
+(if (= fail-count 0)
+    0
+    (error "closure set! in TCO loop tests failed"))
