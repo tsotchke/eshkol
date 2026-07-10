@@ -168,3 +168,9 @@ artifacts/nesting-depth/
 
 # P7a reference-differential runtime artifacts (binaries/logs, capped 1GB)
 artifacts/reference-diff/
+
+# P7c generative-differential runtime artifacts (per-oracle stdout on divergence)
+artifacts/generative-diff/
+# Generated (deterministic) corpus for the generative-differential harness —
+# regenerable via scripts/gen_generative_corpus.py; never checked in.
+tests/generative-diff/corpus/

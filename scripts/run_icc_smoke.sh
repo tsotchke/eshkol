@@ -411,6 +411,19 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
 probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
     'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
 
+# ───────────────────────────────────────────────────────────────────
+# Generative multi-oracle differential (P7c). Generates a deterministic
+# family of closed R7RS-small programs and cross-checks each across
+# chibi / Eshkol JIT / AOT-O0 / AOT-O2 / bytecode VM plus metamorphic
+# self-checks. Regression mode: passes iff no divergence appears outside
+# the triaged baseline (tests/generative-diff/baseline.txt) — a NEW
+# miscompile trips it. See docs/reports/GENERATIVE_DIFFERENTIAL_REPORT.md
+# and tests/generative-diff/README.md.
+# ───────────────────────────────────────────────────────────────────
+probe generative_differential_oracle 'generated R7RS programs agree across chibi/JIT/AOT-O0/AOT-O2/VM + metamorphic (no NEW divergence vs baseline)' \
+    'cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
+        --baseline tests/generative-diff/baseline.txt --quiet'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
