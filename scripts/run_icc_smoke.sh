@@ -327,6 +327,40 @@ probe ad_input2_attention_grad_works 'gradient flows through scaled-dot-attentio
     '"$ESHKOL_RUN" -r "$REPO_ROOT/tests/v1_3_edge_cases/ad_input2_test.esk" -L"$REPO_ROOT/build" 2>&1 |
      grep -q "PASS: ad_input2_attention_grad_works"'
 
+# ───────────────────────────────────────────────────────────────────
+# Full-claim adversarial gates (2026-07-10 oracle hardening).
+#
+# The narrow ad_input2_* probes above only exercise the ONE working
+# calling pattern (literal-lambda loss + scalar gamma). The two probes
+# below assert the FULL claims that an adversarial audit found the oracle
+# was silently over-promising:
+#
+#   * tensor_input2_grad_exact_firstclass_and_vector — the #229/ESH-0212
+#     gate: every second-operand gradient (matmul B, conv2d kernel,
+#     attention K/V, per-feature batch/layer-norm gamma) matches a central
+#     finite-difference oracle EXACTLY across literal, first-class, and
+#     higher-order loss forms AND for a vector/learnable gamma, under both
+#     the JIT and AOT (24/24). Guards the silent-zero regressions the
+#     narrow probes could not see (first-class loss → #(0 0 …), vector
+#     gamma → 0).
+#   * region_evac_subtype_coverage — the ESH-0214d/e evacuator gate, run
+#     under ESHKOL_ARENA_POISON=1 so a missed interior pointer crashes at a
+#     0xCB.. address instead of reading stale-but-valid data. Covers the
+#     logic/workspace/PROMISE subtypes whose evacuation gap was invisible
+#     to readiness=100 before this probe existed.
+# ───────────────────────────────────────────────────────────────────
+probe tensor_input2_grad_exact_firstclass_and_vector \
+    'input2 tensor gradients (matmul B / conv2d kernel / attention K,V / per-feature batch+layer-norm gamma) match central FD EXACTLY across literal, first-class AND higher-order loss forms and vector gamma (JIT+AOT, 24/24)' \
+    'cd "$REPO_ROOT";
+     out=$(BUILD_DIR=build bash scripts/run_tensor_input2_grad_gate.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "ESH-0212 tensor-AD second-operand gate: PASS"'
+
+probe region_evac_subtype_coverage \
+    'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
+    'cd "$REPO_ROOT";
+     out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR=build bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "region_evac_subtype_coverage_test.sh: PASS"'
+
 probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
     'bash "$REPO_ROOT/tests/v1_3_edge_cases/jit_cache_test.sh" "$ESHKOL_RUN"'
 
