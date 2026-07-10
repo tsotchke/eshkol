@@ -1,0 +1,150 @@
+;;; tests/stdlib/sort_filter_scale_test.esk
+;;;
+;;; Regression test for:
+;;;   ESH-0098 - stdlib `sort` (lib/core/list/sort.esk) had O(n) recursion
+;;;              depth (its `len`/`take-n`/`merge` helpers were non-tail
+;;;              recursive), crashing with "maximum recursion depth
+;;;              (100000) exceeded" on lists >= ~500k elements.
+;;;   ESH-0108 - stdlib `filter` (lib/core/list/transform.esk) was non-tail
+;;;              recursive, SIGBUS-crashing (native stack overflow) near
+;;;              10^6 elements.
+;;;
+;;; Both were rewritten as accumulator-based tail loops (the same pattern
+;;; already used by `length`/`reverse`), giving O(1) added native stack per
+;;; helper call regardless of list length; `sort`'s own recursion is now
+;;; the only part that grows with input size, and it halves the list at
+;;; every level, so its depth is O(log n) (~21 frames at 2,000,000
+;;; elements). This test pins both small-input correctness (including
+;;; stability, which the fix also restored) and large-input survival.
+
+(require stdlib)
+(require core.testing)
+
+(reset-tests!)
+
+;; ---------------------------------------------------------------------
+;; Small correctness checks
+;; ---------------------------------------------------------------------
+
+(register-test "sort: empty and singleton"
+  (lambda ()
+    (check-equal? (sort '() <) '())
+    (check-equal? (sort '(7) <) '(7))))
+
+(register-test "sort: already sorted / reverse sorted / duplicates"
+  (lambda ()
+    (check-equal? (sort '(1 2 3 4 5) <) '(1 2 3 4 5))
+    (check-equal? (sort '(5 4 3 2 1) <) '(1 2 3 4 5))
+    (check-equal? (sort '(3 1 4 1 5 9 2 6 5 3 5) <) '(1 1 2 3 3 4 5 5 5 6 9))
+    (check-equal? (sort '(2 2 2 2) <) '(2 2 2 2))))
+
+(register-test "sort: stability (ties keep left-input order)"
+  (lambda ()
+    ;; Tag each value with a marker for its original position; sort by
+    ;; value only and confirm tied values come out in original relative
+    ;; order (a stable sort must not reorder equal elements).
+    (let* ((data (list (cons 1 'a) (cons 2 'x) (cons 1 'b)
+                        (cons 2 'y) (cons 1 'c) (cons 0 'z)))
+           (sorted (sort data (lambda (p q) (< (car p) (car q)))))
+           (tags (map cdr sorted)))
+      (check-equal? tags '(z a b c x y)))))
+
+(register-test "filter: matches naive reference on small input"
+  (lambda ()
+    (define (naive-filter pred lst)
+      (if (null? lst)
+          '()
+          (if (pred (car lst))
+              (cons (car lst) (naive-filter pred (cdr lst)))
+              (naive-filter pred (cdr lst)))))
+    (let ((data (list 1 2 3 4 5 6 7 8 9 10 11 12 -1 -2 0)))
+      (check-equal? (filter even? data) (naive-filter even? data))
+      (check-equal? (filter (lambda (x) (> x 5)) data)
+                    (naive-filter (lambda (x) (> x 5)) data))
+      (check-equal? (filter (lambda (x) (< x -100)) data) '())
+      (check-equal? (filter (lambda (x) #t) data) data))))
+
+;; ---------------------------------------------------------------------
+;; Scale checks (ESH-0098 / ESH-0108 regression pins)
+;;
+;; Verification below is done with locally-defined, deliberately
+;; tail-recursive helpers rather than reusing stdlib procedures like
+;; `count-if` (still non-tail recursive) -- the point of this test is to
+;; confirm `sort`/`filter` survive at scale, so the verification path
+;; itself must not introduce a new depth-related crash.
+;; ---------------------------------------------------------------------
+
+;; (build-descending n) => (n-1 n-2 ... 1 0), built with a tail loop.
+(define (build-descending n)
+  (define (loop i acc)
+    (if (>= i n)
+        acc
+        (loop (+ i 1) (cons i acc))))
+  (loop 0 '()))
+
+(define (count-list lst)
+  (define (loop rest n)
+    (if (null? rest)
+        n
+        (loop (cdr rest) (+ n 1))))
+  (loop lst 0))
+
+(define (sum-list lst)
+  (define (loop rest acc)
+    (if (null? rest)
+        acc
+        (loop (cdr rest) (+ acc (car rest)))))
+  (loop lst 0))
+
+(define (monotonic-nondec? lst)
+  (define (loop rest)
+    (if (null? (cdr rest))
+        #t
+        (if (> (car rest) (car (cdr rest)))
+            #f
+            (loop (cdr rest)))))
+  (if (or (null? lst) (null? (cdr lst))) #t (loop lst)))
+
+(define (monotonic-nonincr? lst)
+  (define (loop rest)
+    (if (null? (cdr rest))
+        #t
+        (if (< (car rest) (car (cdr rest)))
+            #f
+            (loop (cdr rest)))))
+  (if (or (null? lst) (null? (cdr lst))) #t (loop lst)))
+
+(define (count-matching pred lst)
+  (define (loop rest n)
+    (if (null? rest)
+        n
+        (loop (cdr rest) (if (pred (car rest)) (+ n 1) n))))
+  (loop lst 0))
+
+(register-test "sort: 2,000,000 elements survive without crashing and sort correctly"
+  (lambda ()
+    (let* ((n 2000000)
+           (input (build-descending n))     ; (n-1 n-2 ... 1 0)
+           (expected-sum (sum-list input))
+           (sorted-lst (sort input <)))
+      (check-equal? (count-list sorted-lst) n)
+      (check-true (monotonic-nondec? sorted-lst))
+      ;; Same total => sorted output is (overwhelmingly likely to be) a
+      ;; genuine permutation of the input, not a truncated/corrupted list.
+      (check-equal? (sum-list sorted-lst) expected-sum)
+      (check-equal? (car sorted-lst) 0)
+      (check-equal? (car (drop sorted-lst (- n 1))) (- n 1)))))
+
+(register-test "filter: 1,000,000 elements survive without crashing and filter correctly"
+  (lambda ()
+    (let* ((n 1000000)
+           (input (build-descending n))     ; strictly descending
+           (expected-count (count-matching even? input))
+           (result (filter even? input)))
+      (check-equal? (count-list result) expected-count)
+      ;; filter preserves relative order, and a subsequence of a strictly
+      ;; descending list is itself non-increasing.
+      (check-true (monotonic-nonincr? result))
+      (check-equal? (count-matching odd? result) 0))))
+
+(run-tests)

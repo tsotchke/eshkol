@@ -49,10 +49,21 @@
   (rev-helper lst '()))
 
 ;;; filter: Return elements satisfying predicate
+;;; Iterative (properly tail-recursive) accumulator traversal, same pattern
+;;; as `length`/`reverse`: O(n) time, O(1) stack. The previous non-tail
+;;; `(cons (car lst) (filter pred (cdr lst)))` overflowed the native stack
+;;; (SIGBUS) near 10^6 elements (ESH-0108). Written with nested `if` rather
+;;; than `cond`: the backend's tail-call optimizer only recognizes `if` in
+;;; tail position, so a `cond`-based accumulator loop here still blows the
+;;; recursion-depth guard even though every branch is logically a tail call.
 (define (filter pred lst)
-  (cond ((null? lst) '())
-        ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
-        (else (filter pred (cdr lst)))))
+  (define (loop rest acc)
+    (if (null? rest)
+        (reverse acc)
+        (if (pred (car rest))
+            (loop (cdr rest) (cons (car rest) acc))
+            (loop (cdr rest) acc))))
+  (loop lst '()))
 
 ;;; unzip: Split a list of pairs into two lists
 ;;; (unzip '((a 1) (b 2) (c 3))) => ((a b c) (1 2 3))
