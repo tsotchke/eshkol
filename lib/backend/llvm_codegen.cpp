@@ -1808,6 +1808,12 @@ public:
         function_return_types["executable-path"] = BuiltinTypes::String;
         function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
         function_return_types["__arena-used"] = BuiltinTypes::Integer;
+        function_return_types["ad-reset-counters!"] = BuiltinTypes::Null;
+        function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
+        function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
+        function_return_types["ad-tape-allocations"] = BuiltinTypes::Integer;
+        function_return_types["ad-finite-difference-evals"] = BuiltinTypes::Integer;
+        function_return_types["ad-counters"] = BuiltinTypes::List;
         function_return_types["temp-directory"] = BuiltinTypes::String;
         function_return_types["prevent-sleep"] = BuiltinTypes::Integer;
         function_return_types["allow-sleep"] = BuiltinTypes::Boolean;
@@ -13939,6 +13945,12 @@ private:
         if (func_name == "executable-path") return system_->executablePath(op);
         if (func_name == "monotonic-time-ms") return system_->monotonicTimeMs(op);
         if (func_name == "__arena-used") return system_->arenaUsed(op);
+        if (func_name == "ad-reset-counters!") return system_->adResetCounters(op);
+        if (func_name == "ad-primal-calls") return system_->adPrimalCalls(op);
+        if (func_name == "ad-reverse-passes") return system_->adReversePasses(op);
+        if (func_name == "ad-tape-allocations") return system_->adTapeAllocations(op);
+        if (func_name == "ad-finite-difference-evals") return system_->adFiniteDifferenceEvals(op);
+        if (func_name == "ad-counters") return system_->adCounters(op);
         if (func_name == "temp-directory") return system_->tempDirectory(op);
         if (func_name == "prevent-sleep") return system_->preventSleep(op);
         if (func_name == "allow-sleep") return system_->allowSleep(op);

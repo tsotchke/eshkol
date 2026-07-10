@@ -26,6 +26,37 @@ ad_tape_t* __current_ad_tape = nullptr;
 // module can see AD mode set by another module in REPL/JIT workflows.
 bool __ad_mode_active = false;
 
+// ===== AD Phase A instrumentation counters =====
+// Process-global (not thread_local): AD runs on the main thread and the Scheme
+// reader builtins that expose these must observe the same object the emitted
+// increments write. Kept plain so LLVM ExternalLinkage globals link portably.
+static EshkolADCounters __eshkol_ad_counters = {0, 0, 0, 0, 0};
+
+void eshkol_ad_counters_reset(void) {
+    __eshkol_ad_counters.primal_calls = 0;
+    __eshkol_ad_counters.reverse_passes = 0;
+    __eshkol_ad_counters.tape_allocations = 0;
+    __eshkol_ad_counters.tape_nodes = 0;
+    __eshkol_ad_counters.finite_difference_evals = 0;
+}
+void eshkol_ad_counters_get(EshkolADCounters* out) {
+    if (out) *out = __eshkol_ad_counters;
+}
+void eshkol_ad_count_primal(void)  { __eshkol_ad_counters.primal_calls++; }
+void eshkol_ad_count_reverse(void) { __eshkol_ad_counters.reverse_passes++; }
+void eshkol_ad_count_fd(void)      { __eshkol_ad_counters.finite_difference_evals++; }
+uint64_t eshkol_ad_counter_primal_calls(void)  { return __eshkol_ad_counters.primal_calls; }
+uint64_t eshkol_ad_counter_reverse_passes(void){ return __eshkol_ad_counters.reverse_passes; }
+uint64_t eshkol_ad_counter_tape_allocations(void) { return __eshkol_ad_counters.tape_allocations; }
+uint64_t eshkol_ad_counter_tape_nodes(void)    { return __eshkol_ad_counters.tape_nodes; }
+uint64_t eshkol_ad_counter_finite_difference_evals(void) {
+    return __eshkol_ad_counters.finite_difference_evals;
+}
+
+// Reverse-over-forward detector for the one-pass gradient guard (see header).
+static uint64_t __eshkol_ad_mixed_record_count = 0;
+uint64_t eshkol_ad_mixed_record_count(void) { return __eshkol_ad_mixed_record_count; }
+
 /**
  * @brief Debug helper that logs the current global AD-mode flag to stderr.
  *
@@ -122,6 +153,11 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     if (!arena_v || !tape_v) return nullptr;
     ad_node_t* seed = (ad_node_t*)__ad_active_seed_node;
     if (!seed) return nullptr;
+    // A forward-mode derivative returned while a reverse seed is live: this pass
+    // is reverse-over-forward. Mark it (before the no-dependency early-out) so the
+    // one-pass gradient's snapshot delta detects it even when this component's
+    // partial happens to be zero, and falls back to per-component replay.
+    __eshkol_ad_mixed_record_count++;
     if (dseed == 0.0) return nullptr;  // no dependency on this pass's variable
 
     arena_t* arena = (arena_t*)arena_v;
@@ -399,7 +435,25 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     tape->variables = nullptr;
     tape->num_variables = 0;
 
+    __eshkol_ad_counters.tape_allocations++;
     return tape;
+}
+
+/**
+ * @brief Register a gradient pass's input variable nodes on the tape.
+ *
+ * Populates ad_tape_t::variables / num_variables (previously declared-but-dead)
+ * so a single reverse sweep can hand back every input's gradient without
+ * replaying the loss per component. `vars` is borrowed (arena-owned by the
+ * caller for the tape's lifetime); no copy is made.
+ */
+void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n) {
+    if (!tape) {
+        eshkol_error("Cannot set tape variables: null tape");
+        return;
+    }
+    tape->variables = vars;
+    tape->num_variables = n;
 }
 
 /**
@@ -449,6 +503,7 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     }
 
     tape->nodes[tape->num_nodes++] = node;
+    __eshkol_ad_counters.tape_nodes++;
 }
 
 /**

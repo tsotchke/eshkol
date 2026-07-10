@@ -1,0 +1,137 @@
+;; one_pass_gradient_test.esk — AD staged-kernel Phase A acceptance test.
+;;
+;; Proves the vector/tensor reverse-mode `gradient` is ONE-PASS: computing
+;; d(scalar-loss)/d(vector-input) does exactly ONE primal evaluation and ONE
+;; reverse sweep (not N of each), while the gradient VALUES stay exact —
+;; matching both the analytic closed form and central finite differences.
+;;
+;; Checked with the AD instrumentation counters:
+;;   primal_calls == 1, reverse_passes == 1, tape_allocations == 1,
+;;   finite_difference_evals == 0  (for N = 4 and N = 64).
+;;
+;; Correctness is verified in BOTH the literal-lambda and first-class (named,
+;; resolvable) loss forms (PR #229 made first-class work; this keeps it working).
+;;
+;; NOTE: `gradient` must see a resolvable loss (literal lambda or a named/global
+;; function) to take the instrumented reverse-mode tensor path. A loss passed as
+;; an opaque runtime *parameter* takes the already-one-pass forward path instead.
+;;
+;; See docs/design/adr/0002-ad-staged-dense-kernels.md (Phase A) and
+;; docs/design/AD_STAGED_KERNEL_HANDOFF.md.
+
+(require stdlib)
+
+(display "TEST: AD Phase A one-pass gradient") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+(define (check name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "  [PASS] ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "  [FAIL] ") (display name) (newline))))
+
+;; Relative/absolute closeness (handles values near zero).
+(define (close? a b tol)
+  (<= (abs (- a b)) (+ tol (* tol (abs b)))))
+
+;; ---- Losses (named so `gradient` resolves them onto the reverse path) ------
+;; f(w) = sum_i w_i^2  =>  grad f = 2w
+(define (sq-loss w) (tensor-sum (tensor-mul w w)))
+;; g(w) = sum_i w_i * c_i  =>  grad g = c   (non-symmetric gradient)
+(define c4 (tensor 4 2.0 3.0 4.0 5.0))
+(define (wc-loss w) (tensor-sum (tensor-mul w c4)))
+
+;; Build a length-n tensor with distinct values 1.0, 1.1, 1.2, ...
+(define (make-values n)
+  (map (lambda (i) (+ 1.0 (* 0.1 i))) (iota n)))
+(define (vals->tensor vals)
+  (vector->tensor (list->vector vals)))
+(define (make-tensor-vals n) (vals->tensor (make-values n)))
+
+;; A fresh list equal to `vals` but with element idx shifted by delta.
+(define (perturb-list vals idx delta)
+  (map (lambda (p) (if (= (car p) idx) (+ (cdr p) delta) (cdr p)))
+       (map cons (iota (length vals)) vals)))
+
+;; Central finite difference of a scalar-of-vector loss w.r.t. component idx.
+;; Perturbs a TENSOR copy (tensor ops require a tensor operand, not a raw vector).
+(define (fd-partial loss vals idx eps)
+  (/ (- (loss (vals->tensor (perturb-list vals idx eps)))
+        (loss (vals->tensor (perturb-list vals idx (- eps)))))
+     (* 2.0 eps)))
+
+;; Verify a computed gradient g against an analytic map AND central FD.
+;;   analytic: (lambda (i wi) expected-partial)
+(define (grad-matches? loss vals g analytic)
+  (let ((n (length vals)) (tol 1.0e-4) (ok #t))
+    (let loop ((i 0))
+      (if (< i n)
+          (let ((gi (vector-ref g i))
+                (a (analytic i (list-ref vals i)))
+                (fd (fd-partial loss vals i 1.0e-5)))
+            (if (and (close? gi a tol) (close? gi fd tol))
+                (loop (+ i 1))
+                (begin
+                  (display "    mismatch at i=") (display i)
+                  (display " g=") (display gi) (display " analytic=") (display a)
+                  (display " fd=") (display fd) (newline)
+                  (set! ok #f))))
+          ok))
+    ok))
+
+;; Assert the four one-pass counters after a single gradient call.
+(define (check-one-pass label)
+  (check (string-append label ": primal_calls == 1")       (= (ad-primal-calls) 1))
+  (check (string-append label ": reverse_passes == 1")     (= (ad-reverse-passes) 1))
+  (check (string-append label ": tape_allocations == 1")   (= (ad-tape-allocations) 1))
+  (check (string-append label ": finite_difference_evals == 0") (= (ad-finite-difference-evals) 0)))
+
+;; ============================================================================
+;; Literal-lambda loss form, N = 4 and N = 64.
+;; ============================================================================
+(ad-reset-counters!)
+(let ((g (gradient (lambda (w) (tensor-sum (tensor-mul w w))) (make-tensor-vals 4))))
+  (check "literal N=4: gradient exact (2w & FD)"
+         (grad-matches? sq-loss (make-values 4) g (lambda (i wi) (* 2.0 wi))))
+  (check-one-pass "literal N=4"))
+
+(ad-reset-counters!)
+(let ((g (gradient (lambda (w) (tensor-sum (tensor-mul w w))) (make-tensor-vals 64))))
+  (check "literal N=64: gradient exact (2w & FD)"
+         (grad-matches? sq-loss (make-values 64) g (lambda (i wi) (* 2.0 wi))))
+  (check-one-pass "literal N=64"))
+
+;; ============================================================================
+;; First-class (named) loss form, N = 4 and N = 64.
+;; ============================================================================
+(ad-reset-counters!)
+(let ((g (gradient sq-loss (make-tensor-vals 4))))
+  (check "first-class N=4: gradient exact (2w & FD)"
+         (grad-matches? sq-loss (make-values 4) g (lambda (i wi) (* 2.0 wi))))
+  (check-one-pass "first-class N=4"))
+
+(ad-reset-counters!)
+(let ((g (gradient sq-loss (make-tensor-vals 64))))
+  (check "first-class N=64: gradient exact (2w & FD)"
+         (grad-matches? sq-loss (make-values 64) g (lambda (i wi) (* 2.0 wi))))
+  (check-one-pass "first-class N=64"))
+
+;; ============================================================================
+;; Non-symmetric gradient: f(w) = sum(w * c), grad = c. One-pass + FD-verified.
+;; ============================================================================
+(ad-reset-counters!)
+(let ((g (gradient wc-loss (tensor 4 1.0 2.0 3.0 4.0))))
+  (check "sum(w*c): gradient == c (analytic & FD)"
+         (grad-matches? wc-loss (list 1.0 2.0 3.0 4.0) g
+                        (lambda (i wi) (list-ref (list 2.0 3.0 4.0 5.0) i))))
+  (check-one-pass "sum(w*c)"))
+
+;; ---- Summary ---------------------------------------------------------------
+(newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "one_pass_gradient_test: ALL PASS") (newline))
+    (begin (display "one_pass_gradient_test: FAIL") (newline)))

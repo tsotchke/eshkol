@@ -656,6 +656,54 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_arena_used_v(void) {
     return sys_make_int64((int64_t)arena_get_used_memory(get_global_arena()));
 }
 
+/* ===== AD Phase A instrumentation counters (runtime in lib/core/runtime_autodiff.cpp) ===== */
+extern void eshkol_ad_counters_reset(void);
+extern uint64_t eshkol_ad_counter_primal_calls(void);
+extern uint64_t eshkol_ad_counter_reverse_passes(void);
+extern uint64_t eshkol_ad_counter_tape_allocations(void);
+extern uint64_t eshkol_ad_counter_tape_nodes(void);
+extern uint64_t eshkol_ad_counter_finite_difference_evals(void);
+
+/** Implements `(ad-reset-counters!)`: zero all AD instrumentation counters. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_reset_counters_v(void) {
+    eshkol_ad_counters_reset();
+    return sys_make_null();
+}
+/** Implements `(ad-primal-calls)`: user-function evaluations counted since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_primal_calls_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_primal_calls());
+}
+/** Implements `(ad-reverse-passes)`: reverse (backward) sweeps counted since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_reverse_passes_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_reverse_passes());
+}
+/** Implements `(ad-tape-allocations)`: reverse-mode tapes allocated since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_tape_allocations_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations());
+}
+/** Implements `(ad-finite-difference-evals)`: finite-difference evaluations since reset. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_finite_difference_evals_v(void) {
+    return sys_make_int64((int64_t)eshkol_ad_counter_finite_difference_evals());
+}
+/** Implements `(ad-counters)`: an assoc list of every AD counter, e.g.
+ *  ((primal-calls . 1) (reverse-passes . 1) (tape-allocations . 1)
+ *   (tape-nodes . N) (finite-difference-evals . 0)). Built by prepending, so
+ *  entries are listed in this order. */
+static eshkol_sysbuiltin_value_t eshkol_builtin_ad_counters_v(void) {
+    eshkol_sysbuiltin_value_t result = sys_make_null();
+    result = sys_make_pair(sys_alist_entry("finite-difference-evals",
+        sys_make_int64((int64_t)eshkol_ad_counter_finite_difference_evals())), result);
+    result = sys_make_pair(sys_alist_entry("tape-nodes",
+        sys_make_int64((int64_t)eshkol_ad_counter_tape_nodes())), result);
+    result = sys_make_pair(sys_alist_entry("tape-allocations",
+        sys_make_int64((int64_t)eshkol_ad_counter_tape_allocations())), result);
+    result = sys_make_pair(sys_alist_entry("reverse-passes",
+        sys_make_int64((int64_t)eshkol_ad_counter_reverse_passes())), result);
+    result = sys_make_pair(sys_alist_entry("primal-calls",
+        sys_make_int64((int64_t)eshkol_ad_counter_primal_calls())), result);
+    return result;
+}
+
 /** Implements `(monotonic-time-ms)`: returns a monotonic clock reading in
  *  milliseconds (CLOCK_MONOTONIC / GetTickCount64), suitable for measuring
  *  elapsed intervals but not wall-clock time. */
@@ -5297,6 +5345,12 @@ void eshkol_builtin_local_timezone_offset(sv_t* out) { *out = eshkol_builtin_loc
 void eshkol_builtin_executable_exists(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_exists_v(*a); }
 void eshkol_builtin_executable_path(sv_t* out, const sv_t* a) { *out = eshkol_builtin_executable_path_v(*a); }
 void eshkol_builtin_arena_used(sv_t* out) { *out = eshkol_builtin_arena_used_v(); }
+void eshkol_builtin_ad_reset_counters(sv_t* out) { *out = eshkol_builtin_ad_reset_counters_v(); }
+void eshkol_builtin_ad_primal_calls(sv_t* out) { *out = eshkol_builtin_ad_primal_calls_v(); }
+void eshkol_builtin_ad_reverse_passes(sv_t* out) { *out = eshkol_builtin_ad_reverse_passes_v(); }
+void eshkol_builtin_ad_tape_allocations(sv_t* out) { *out = eshkol_builtin_ad_tape_allocations_v(); }
+void eshkol_builtin_ad_finite_difference_evals(sv_t* out) { *out = eshkol_builtin_ad_finite_difference_evals_v(); }
+void eshkol_builtin_ad_counters(sv_t* out) { *out = eshkol_builtin_ad_counters_v(); }
 void eshkol_builtin_monotonic_time_ms(sv_t* out) { *out = eshkol_builtin_monotonic_time_ms_v(); }
 void eshkol_builtin_temp_directory(sv_t* out) { *out = eshkol_builtin_temp_directory_v(); }
 void eshkol_builtin_prevent_sleep(sv_t* out, const sv_t* a) { *out = eshkol_builtin_prevent_sleep_v(*a); }
