@@ -119,6 +119,223 @@ llvm::Value* TensorCodegen::dualAwareScalarBinOp(llvm::Value* a_tagged, llvm::Va
     return phi;
 }
 
+// ESH-0121: dtype==DUAL predicate. See header.
+llvm::Value* TensorCodegen::isDualTensor(llvm::Value* tensor_struct_ptr) {
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* dtype_field = ctx_.builder().CreateStructGEP(tensor_type, tensor_struct_ptr, 4);
+    llvm::Value* dtype = ctx_.builder().CreateLoad(ctx_.int64Type(), dtype_field);
+    return ctx_.builder().CreateICmpEQ(dtype,
+        llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL));
+}
+
+// ESH-0121: exact forward-mode matmul over dual tensors. See header.
+llvm::Value* TensorCodegen::dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Value* b_struct_ptr) {
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::IRBuilder<>& b = ctx_.builder();
+    llvm::LLVMContext& c = ctx_.context();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+    llvm::Value* arena_ptr = b.CreateLoad(ctx_.ptrType(), ctx_.globalArena());
+
+    const uint64_t kTagBytes = 16;  // sizeof(eshkol_tagged_value)
+
+    auto loadDim = [&](llvm::Value* struct_ptr, unsigned which) -> llvm::Value* {
+        llvm::Value* dims_field = b.CreateStructGEP(tensor_type, struct_ptr, 0);
+        llvm::Value* dims_ptr = b.CreateLoad(ctx_.ptrType(), dims_field);
+        llvm::Value* slot = b.CreateGEP(ctx_.int64Type(), dims_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), which));
+        return b.CreateLoad(ctx_.int64Type(), slot);
+    };
+    auto loadNdim = [&](llvm::Value* struct_ptr) -> llvm::Value* {
+        llvm::Value* nd_field = b.CreateStructGEP(tensor_type, struct_ptr, 1);
+        return b.CreateLoad(ctx_.int64Type(), nd_field);
+    };
+
+    // --- Shape guard: require 2-D operands with A.cols == B.rows. Raise a
+    // catchable error otherwise (never a silent wrong/zero result). ---
+    llvm::Value* a_nd = loadNdim(a_struct_ptr);
+    llvm::Value* b_nd = loadNdim(b_struct_ptr);
+    llvm::Value* a_is2d = b.CreateICmpEQ(a_nd, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    llvm::Value* b_is2d = b.CreateICmpEQ(b_nd, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+    llvm::Value* both2d = b.CreateAnd(a_is2d, b_is2d);
+    llvm::Value* M = loadDim(a_struct_ptr, 0);
+    llvm::Value* K = loadDim(a_struct_ptr, 1);
+    llvm::Value* Kb = loadDim(b_struct_ptr, 0);
+    llvm::Value* N = loadDim(b_struct_ptr, 1);
+    llvm::Value* k_ok = b.CreateICmpEQ(K, Kb);
+    llvm::Value* shape_ok = b.CreateAnd(both2d, k_ok);
+
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(c, "dmm_ok", fn);
+    llvm::BasicBlock* bad_bb = llvm::BasicBlock::Create(c, "dmm_bad", fn);
+    b.CreateCondBr(shape_ok, ok_bb, bad_bb);
+
+    b.SetInsertPoint(bad_bb);
+    {
+        llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+        if (!raise_func) {
+            llvm::FunctionType* rt = llvm::FunctionType::get(b.getVoidTy(), {ctx_.ptrType()}, false);
+            raise_func = llvm::Function::Create(rt, llvm::Function::ExternalLinkage, "eshkol_raise", &ctx_.module());
+            raise_func->setDoesNotReturn();
+        }
+        llvm::Function* make_exc = ctx_.module().getFunction("eshkol_make_exception_with_header");
+        if (!make_exc) {
+            llvm::FunctionType* mt = llvm::FunctionType::get(ctx_.ptrType(), {b.getInt32Ty(), ctx_.ptrType()}, false);
+            make_exc = llvm::Function::Create(mt, llvm::Function::ExternalLinkage, "eshkol_make_exception_with_header", &ctx_.module());
+        }
+        llvm::Value* msg = b.CreateGlobalString(
+            "matmul: dual-tensor (autodiff) matmul requires 2-D operands with A.cols == B.rows");
+        llvm::Value* exc = b.CreateCall(make_exc, {llvm::ConstantInt::get(b.getInt32Ty(), 1), msg});
+        b.CreateCall(raise_func, {exc});
+        b.CreateUnreachable();
+    }
+
+    b.SetInsertPoint(ok_bb);
+
+    // --- Normalize both operands to tagged (16-byte) element arrays so the
+    // contraction loop is uniform. A plain (f64) operand is lifted to duals with
+    // zero tangent via packDouble. ---
+    auto taggedElems = [&](llvm::Value* struct_ptr) -> llvm::Value* {
+        llvm::Value* is_dual = isDualTensor(struct_ptr);
+        llvm::Value* elems_field = b.CreateStructGEP(tensor_type, struct_ptr, 2);
+        llvm::Value* raw_elems = b.CreateLoad(ctx_.ptrType(), elems_field);
+        llvm::Value* total_field = b.CreateStructGEP(tensor_type, struct_ptr, 3);
+        llvm::Value* total = b.CreateLoad(ctx_.int64Type(), total_field);
+
+        llvm::BasicBlock* use_bb = llvm::BasicBlock::Create(c, "dmm_elems_use", fn);
+        llvm::BasicBlock* conv_bb = llvm::BasicBlock::Create(c, "dmm_elems_conv", fn);
+        llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(c, "dmm_elems_merge", fn);
+        b.CreateCondBr(is_dual, use_bb, conv_bb);
+
+        // Already a tagged array.
+        b.SetInsertPoint(use_bb);
+        llvm::BasicBlock* use_exit = b.GetInsertBlock();
+        b.CreateBr(merge_bb);
+
+        // Plain f64 array -> tagged array copy.
+        b.SetInsertPoint(conv_bb);
+        llvm::Value* bytes = b.CreateMul(total, llvm::ConstantInt::get(ctx_.int64Type(), kTagBytes));
+        llvm::Value* conv = b.CreateCall(arena_alloc, {arena_ptr, bytes}, "dmm_conv_elems");
+        llvm::Value* cnt = b.CreateAlloca(ctx_.int64Type(), nullptr, "dmm_conv_i");
+        b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), cnt);
+        llvm::BasicBlock* cc = llvm::BasicBlock::Create(c, "dmm_conv_cond", fn);
+        llvm::BasicBlock* cb = llvm::BasicBlock::Create(c, "dmm_conv_body", fn);
+        llvm::BasicBlock* ce = llvm::BasicBlock::Create(c, "dmm_conv_exit", fn);
+        b.CreateBr(cc);
+        b.SetInsertPoint(cc);
+        llvm::Value* ci = b.CreateLoad(ctx_.int64Type(), cnt);
+        b.CreateCondBr(b.CreateICmpULT(ci, total), cb, ce);
+        b.SetInsertPoint(cb);
+        // Raw element is an f64 bit pattern stored as i64.
+        llvm::Value* src_slot = b.CreateGEP(ctx_.int64Type(), raw_elems, ci);
+        llvm::Value* bits = b.CreateLoad(ctx_.int64Type(), src_slot);
+        llvm::Value* dv = b.CreateBitCast(bits, ctx_.doubleType());
+        llvm::Value* dst_slot = b.CreateGEP(ctx_.taggedValueType(), conv, ci);
+        b.CreateStore(tagged_.packDouble(dv), dst_slot);
+        b.CreateStore(b.CreateAdd(ci, llvm::ConstantInt::get(ctx_.int64Type(), 1)), cnt);
+        b.CreateBr(cc);
+        b.SetInsertPoint(ce);
+        llvm::BasicBlock* conv_exit = b.GetInsertBlock();
+        b.CreateBr(merge_bb);
+
+        b.SetInsertPoint(merge_bb);
+        llvm::PHINode* elems_phi = b.CreatePHI(ctx_.ptrType(), 2, "dmm_elems");
+        elems_phi->addIncoming(raw_elems, use_exit);
+        elems_phi->addIncoming(conv, conv_exit);
+        return elems_phi;
+    };
+
+    llvm::Value* a_elems = taggedElems(a_struct_ptr);
+    llvm::Value* b_elems = taggedElems(b_struct_ptr);
+
+    // --- Allocate the output dual tensor: dims [M, N], MxN tagged elements. ---
+    llvm::Function* alloc_tensor = mem_.getArenaAllocateTensorWithHeader();
+    llvm::Value* out_ptr = b.CreateCall(alloc_tensor, {arena_ptr}, "dmm_out");
+
+    llvm::Value* out_dims = b.CreateCall(arena_alloc,
+        {arena_ptr, llvm::ConstantInt::get(ctx_.int64Type(), 2 * sizeof(int64_t))}, "dmm_dims");
+    b.CreateStore(M, out_dims);
+    b.CreateStore(N, b.CreateGEP(ctx_.int64Type(), out_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1)));
+
+    llvm::Value* MN = b.CreateMul(M, N);
+    llvm::Value* out_bytes = b.CreateMul(MN, llvm::ConstantInt::get(ctx_.int64Type(), kTagBytes));
+    llvm::Value* out_elems = b.CreateCall(arena_alloc, {arena_ptr, out_bytes}, "dmm_out_elems");
+
+    b.CreateStore(out_dims, b.CreateStructGEP(tensor_type, out_ptr, 0));
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 2), b.CreateStructGEP(tensor_type, out_ptr, 1));
+    b.CreateStore(out_elems, b.CreateStructGEP(tensor_type, out_ptr, 2));
+    b.CreateStore(MN, b.CreateStructGEP(tensor_type, out_ptr, 3));
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), TENSOR_DTYPE_DUAL),
+        b.CreateStructGEP(tensor_type, out_ptr, 4));
+
+    // --- Contraction: C[i,j] = sum_k A[i,k] * B[k,j], exact dual arithmetic. ---
+    llvm::Value* iv = b.CreateAlloca(ctx_.int64Type(), nullptr, "dmm_i");
+    llvm::Value* jv = b.CreateAlloca(ctx_.int64Type(), nullptr, "dmm_j");
+    llvm::Value* kv = b.CreateAlloca(ctx_.int64Type(), nullptr, "dmm_k");
+    llvm::Value* acc = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "dmm_acc");
+
+    llvm::BasicBlock* i_cond = llvm::BasicBlock::Create(c, "dmm_i_cond", fn);
+    llvm::BasicBlock* i_body = llvm::BasicBlock::Create(c, "dmm_i_body", fn);
+    llvm::BasicBlock* i_exit = llvm::BasicBlock::Create(c, "dmm_i_exit", fn);
+    llvm::BasicBlock* j_cond = llvm::BasicBlock::Create(c, "dmm_j_cond", fn);
+    llvm::BasicBlock* j_body = llvm::BasicBlock::Create(c, "dmm_j_body", fn);
+    llvm::BasicBlock* j_exit = llvm::BasicBlock::Create(c, "dmm_j_exit", fn);
+    llvm::BasicBlock* k_cond = llvm::BasicBlock::Create(c, "dmm_k_cond", fn);
+    llvm::BasicBlock* k_body = llvm::BasicBlock::Create(c, "dmm_k_body", fn);
+    llvm::BasicBlock* k_exit = llvm::BasicBlock::Create(c, "dmm_k_exit", fn);
+
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), iv);
+    b.CreateBr(i_cond);
+    b.SetInsertPoint(i_cond);
+    llvm::Value* i = b.CreateLoad(ctx_.int64Type(), iv);
+    b.CreateCondBr(b.CreateICmpULT(i, M), i_body, i_exit);
+
+    b.SetInsertPoint(i_body);
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), jv);
+    b.CreateBr(j_cond);
+    b.SetInsertPoint(j_cond);
+    llvm::Value* j = b.CreateLoad(ctx_.int64Type(), jv);
+    b.CreateCondBr(b.CreateICmpULT(j, N), j_body, j_exit);
+
+    b.SetInsertPoint(j_body);
+    b.CreateStore(tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), acc);
+    b.CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), kv);
+    b.CreateBr(k_cond);
+    b.SetInsertPoint(k_cond);
+    llvm::Value* k = b.CreateLoad(ctx_.int64Type(), kv);
+    b.CreateCondBr(b.CreateICmpULT(k, K), k_body, k_exit);
+
+    b.SetInsertPoint(k_body);
+    // A[i,k] at index i*K + k ; B[k,j] at index k*N + j
+    llvm::Value* a_idx = b.CreateAdd(b.CreateMul(i, K), k);
+    llvm::Value* b_idx = b.CreateAdd(b.CreateMul(k, N), j);
+    llvm::Value* a_el = b.CreateLoad(ctx_.taggedValueType(),
+        b.CreateGEP(ctx_.taggedValueType(), a_elems, a_idx));
+    llvm::Value* b_el = b.CreateLoad(ctx_.taggedValueType(),
+        b.CreateGEP(ctx_.taggedValueType(), b_elems, b_idx));
+    llvm::Value* prod = dualAwareScalarBinOp(a_el, b_el, "mul");
+    llvm::Value* cur = b.CreateLoad(ctx_.taggedValueType(), acc);
+    llvm::Value* nxt = dualAwareScalarBinOp(cur, prod, "add");
+    b.CreateStore(nxt, acc);
+    // dualAwareScalarBinOp leaves the builder at its merge block; emit the
+    // increment/back-edge there.
+    b.CreateStore(b.CreateAdd(k, llvm::ConstantInt::get(ctx_.int64Type(), 1)), kv);
+    b.CreateBr(k_cond);
+
+    b.SetInsertPoint(k_exit);
+    llvm::Value* c_idx = b.CreateAdd(b.CreateMul(i, N), j);
+    llvm::Value* c_val = b.CreateLoad(ctx_.taggedValueType(), acc);
+    b.CreateStore(c_val, b.CreateGEP(ctx_.taggedValueType(), out_elems, c_idx));
+    b.CreateStore(b.CreateAdd(j, llvm::ConstantInt::get(ctx_.int64Type(), 1)), jv);
+    b.CreateBr(j_cond);
+
+    b.SetInsertPoint(j_exit);
+    b.CreateStore(b.CreateAdd(i, llvm::ConstantInt::get(ctx_.int64Type(), 1)), iv);
+    b.CreateBr(i_cond);
+
+    b.SetInsertPoint(i_exit);
+    return out_ptr;
+}
+
 llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llvm::Value* vec2_tagged, const std::string& operation) {
     // Extract pointers from tagged values
     llvm::Value* ptr1_int = vec1_tagged;
