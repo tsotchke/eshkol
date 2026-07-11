@@ -1906,6 +1906,57 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::Value* src_total_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 3);
     llvm::Value* src_total = ctx_.builder().CreateLoad(ctx_.int64Type(), src_total_field_ptr);
 
+    // === ESH-0121: DUAL-TENSOR SUM ===
+    // A dual tensor (dtype == DUAL, from the reshape+matmul forward-over-forward
+    // Hessian path) stores 16-byte tagged DUAL_NUMBER jets, not f64 bit patterns.
+    // Reduce them with the exact dual add so the mixed e1e2 second-order term
+    // survives, instead of the reverse-mode/numeric paths which would misread the
+    // jets and silently zero the Hessian. Gated before the AD-mode branch so it
+    // applies whether or not reverse mode is active.
+    llvm::Value* dsum_result = nullptr;
+    llvm::BasicBlock* dsum_exit_block = nullptr;
+    if (autodiff_) {
+        llvm::Value* tsum_is_dual = isDualTensor(src_ptr);
+        llvm::BasicBlock* dsum_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual", current_func);
+        llvm::BasicBlock* tsum_normal_bb = llvm::BasicBlock::Create(ctx_.context(), "tsum_not_dual", current_func);
+        ctx_.builder().CreateCondBr(tsum_is_dual, dsum_bb, tsum_normal_bb);
+
+        ctx_.builder().SetInsertPoint(dsum_bb);
+        llvm::Value* dsum_acc = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "dsum_acc");
+        llvm::Value* dsum_i = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "dsum_i");
+        ctx_.builder().CreateStore(
+            tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), dsum_acc);
+        ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), dsum_i);
+        llvm::BasicBlock* dsum_cond = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_cond", current_func);
+        llvm::BasicBlock* dsum_body = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_body", current_func);
+        llvm::BasicBlock* dsum_done = llvm::BasicBlock::Create(ctx_.context(), "tsum_dual_done", current_func);
+        ctx_.builder().CreateBr(dsum_cond);
+
+        ctx_.builder().SetInsertPoint(dsum_cond);
+        llvm::Value* dsum_iv = ctx_.builder().CreateLoad(ctx_.int64Type(), dsum_i);
+        ctx_.builder().CreateCondBr(ctx_.builder().CreateICmpULT(dsum_iv, src_total), dsum_body, dsum_done);
+
+        ctx_.builder().SetInsertPoint(dsum_body);
+        llvm::Value* dsum_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+            ctx_.builder().CreateGEP(ctx_.taggedValueType(), typed_src_elements, dsum_iv));
+        llvm::Value* dsum_cur = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dsum_acc);
+        llvm::Value* dsum_next = dualAwareScalarBinOp(dsum_cur, dsum_elem, "add");
+        ctx_.builder().CreateStore(dsum_next, dsum_acc);
+        // dualAwareScalarBinOp leaves the builder at its merge block; emit the
+        // increment/back-edge there.
+        ctx_.builder().CreateStore(
+            ctx_.builder().CreateAdd(dsum_iv, llvm::ConstantInt::get(ctx_.int64Type(), 1)), dsum_i);
+        ctx_.builder().CreateBr(dsum_cond);
+
+        ctx_.builder().SetInsertPoint(dsum_done);
+        dsum_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dsum_acc);
+        ctx_.builder().CreateBr(sum_merge);
+        dsum_exit_block = ctx_.builder().GetInsertBlock();
+
+        // The standard tensor sum below emits into the non-dual branch.
+        ctx_.builder().SetInsertPoint(tsum_normal_bb);
+    }
+
     // Sum all elements - SIMD Accelerated with XLA dispatch for large tensors
     // Dispatch hierarchy: XLA (≥100K elements) → SIMD → scalar
     const unsigned SIMD_WIDTH = getSIMDWidth();
@@ -2095,6 +2146,10 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     result_phi->addIncoming(tensor_tagged_result, tensor_exit_block);
     if (ad_sum_exit_block && ad_sum_tagged_result) {
         result_phi->addIncoming(ad_sum_tagged_result, ad_sum_exit_block);
+    }
+    // ESH-0121: dual-tensor sum branch (see above).
+    if (dsum_exit_block && dsum_result) {
+        result_phi->addIncoming(dsum_result, dsum_exit_block);
     }
 
     return result_phi;

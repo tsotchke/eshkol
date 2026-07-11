@@ -27930,6 +27930,43 @@ private:
         extractTensorAndADNode(tensor_a, ptr_a, ad_node_a);
         extractTensorAndADNode(tensor_b, ptr_b, ad_node_b);
 
+        // === ESH-0121: DUAL-TENSOR MATMUL DISPATCH ===
+        // If either operand is a dual tensor (dtype == DUAL; produced by reshape
+        // of a Scheme vector of forward-mode DUAL_NUMBER jets during the Hessian's
+        // forward-over-forward sweep), the standard reverse-mode-only matmul path
+        // would flatten the jets to plain doubles and silently zero every second
+        // derivative. Route it to the exact forward-mode dual matmul instead, which
+        // carries the mixed e1e2 term through via the dual product rule.
+        BasicBlock* mm_dual_bb = nullptr;
+        BasicBlock* mm_dual_exit = nullptr;
+        BasicBlock* mm_done_bb = nullptr;
+        Value* mm_dual_result = nullptr;
+        {
+            Value* a_dtype = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, ptr_a, 4));
+            Value* b_dtype = builder->CreateLoad(int64_type,
+                builder->CreateStructGEP(tensor_type, ptr_b, 4));
+            Value* dual_code = ConstantInt::get(int64_type, eshkol::TensorCodegen::TENSOR_DTYPE_DUAL);
+            Value* a_is_dual = builder->CreateICmpEQ(a_dtype, dual_code);
+            Value* b_is_dual = builder->CreateICmpEQ(b_dtype, dual_code);
+            Value* any_dual = builder->CreateOr(a_is_dual, b_is_dual);
+
+            Function* mm_fn = builder->GetInsertBlock()->getParent();
+            mm_dual_bb = BasicBlock::Create(*context, "matmul_dual", mm_fn);
+            BasicBlock* mm_normal_bb = BasicBlock::Create(*context, "matmul_normal", mm_fn);
+            mm_done_bb = BasicBlock::Create(*context, "matmul_dual_done", mm_fn);
+            builder->CreateCondBr(any_dual, mm_dual_bb, mm_normal_bb);
+
+            builder->SetInsertPoint(mm_dual_bb);
+            Value* dual_ptr = tensor_->dualTensorMatmul(ptr_a, ptr_b);
+            mm_dual_result = packPtrToTaggedValue(dual_ptr, ESHKOL_VALUE_HEAP_PTR);
+            mm_dual_exit = builder->GetInsertBlock();
+            builder->CreateBr(mm_done_bb);
+
+            // Fall through: the entire standard matmul below emits into mm_normal_bb.
+            builder->SetInsertPoint(mm_normal_bb);
+        }
+
         // === SAFE DIMENSION EXTRACTION (PEP 465 semantics) ===
         // 1D vectors are promoted for matmul, then contracted from result:
         //   1D×1D → dot product (scalar) — handled by tensor-dot, but guard here too
@@ -28309,8 +28346,16 @@ private:
             builder->SetInsertPoint(ad_merge);
         }
 
-        // Return tagged result tensor
-        return packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
+        // Return tagged result tensor. ESH-0121: merge with the dual-matmul path.
+        Value* mm_normal_result = packPtrToTaggedValue(result_ptr, ESHKOL_VALUE_HEAP_PTR);
+        BasicBlock* mm_normal_exit = builder->GetInsertBlock();
+        builder->CreateBr(mm_done_bb);
+
+        builder->SetInsertPoint(mm_done_bb);
+        PHINode* mm_result_phi = builder->CreatePHI(tagged_value_type, 2, "matmul_result");
+        mm_result_phi->addIncoming(mm_dual_result, mm_dual_exit);
+        mm_result_phi->addIncoming(mm_normal_result, mm_normal_exit);
+        return mm_result_phi;
     }
 
 
