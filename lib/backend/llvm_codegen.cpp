@@ -152,6 +152,8 @@ void append_host_llvm_link_args(std::vector<std::string>& link_args) {
 #include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Scalar/GVN.h>
 #include <llvm/Transforms/Utils/ModuleUtils.h>
+#include <llvm/Transforms/IPO/Internalize.h>
+#include <llvm/Transforms/IPO/GlobalDCE.h>
 #include <llvm/ADT/SmallString.h>
 #include <llvm/ADT/StringMap.h>
 #include <llvm/IR/GlobalValue.h>
@@ -375,6 +377,58 @@ static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool i
         MPM.run(module, MAM);
         eshkol_info("Applied LLVM optimization passes at -O%d", g_optimization_level);
     }
+}
+
+// Dead-strip a standalone wasm module before emission.
+//
+// A wasm object emitted by eshkol-run bundles its stdlib as ordinary
+// (external-linkage) function definitions. Nothing links the object
+// afterwards — there is no wasm-ld --gc-sections pass — so on its own the
+// per-module optimizer keeps every external symbol (they might be referenced
+// by another translation unit) and the entire stdlib survives even when the
+// program uses only a handful of functions.
+//
+// For a self-contained module loaded via WebAssembly.instantiate() only the
+// declared exports (main / scheme_main / _start) can be reached from outside.
+// Internalize everything else, then run GlobalDCE: any function or global not
+// transitively reachable from an export — including unused stdlib — is removed.
+// Functions that ARE used as first-class values keep a live ptrtoint reference
+// at the use site, so they survive; only genuinely-unreachable code is dropped.
+//
+// This pairs with wasm codegen skipping the homoiconic display registry
+// (homoiconicRegistryEnabled()): without that, main() would ptrtoint every
+// top-level function and defeat the DCE below.
+static void deadStripWasmModule(llvm::Module& module) {
+    auto must_preserve = [](const llvm::GlobalValue& gv) -> bool {
+        llvm::StringRef name = gv.getName();
+        if (name == "main" || name == "scheme_main" || name == "_start") {
+            return true;
+        }
+        if (const auto* fn = llvm::dyn_cast<llvm::Function>(&gv)) {
+            if (fn->hasFnAttribute("wasm-export-name")) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::ModulePassManager MPM;
+    MPM.addPass(llvm::InternalizePass(must_preserve));
+    MPM.addPass(llvm::GlobalDCEPass());
+    MPM.run(module, MAM);
+    eshkol_info("Applied wasm dead-strip (internalize + globalDCE)");
 }
 
 #include <memory>
@@ -1513,7 +1567,24 @@ private:
     // LIBRARY MODE: When true, skip main function creation and export all symbols
     bool library_mode;
     bool freestanding_codegen_;
+    // WASM MODE: True when the module targets a standalone
+    // wasm32-unknown-unknown object. Like freestanding native, a standalone
+    // wasm module has no hosted REPL to introspect function sources, so the
+    // homoiconic display registry is skipped. Skipping it is also what lets
+    // the wasm dead-strip (internalize + globalDCE) remove unused stdlib:
+    // the registry would otherwise address-take (ptrtoint) every top-level
+    // function from main(), pinning the entire stdlib against DCE.
+    bool wasm_codegen_ = false;
     bool fatal_codegen_error_;
+
+    // The homoiconic display registry eagerly registers every top-level
+    // function (name + source S-expression + function pointer) so a hosted
+    // program can `(display <fn>)` and see its source. Standalone freestanding
+    // and wasm objects have no such host, and the eager registration both
+    // bloats the module and pins every function against dead-code elimination.
+    bool homoiconicRegistryEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
 
     // Module prefix for unique lambda naming (prevents symbol collision when linking)
     std::string module_prefix;
@@ -1539,6 +1610,7 @@ public:
                           std::string(target_triple).find("wasm32") != std::string::npos;
         library_mode = is_library_mode;
         freestanding_codegen_ = is_freestanding_codegen;
+        wasm_codegen_ = is_wasm32;
         fatal_codegen_error_ = false;
         // Create a sanitized module prefix for lambda naming
         module_prefix = module_name;
@@ -11092,11 +11164,18 @@ private:
         
         current_function = prev_function;
 
+        // Record the AST->name memoization unconditionally: it pins nothing
+        // (a plain std::map used for AD/gradient name resolution) and must be
+        // available even for targets that skip the homoiconic display registry.
+        lambda_ast_to_name[op] = std::string(func_name);  // MEMOIZATION FIX
+
         // Add named function to pending_lambda_sexprs for S-expression generation and registry.
-        // Freestanding object mode does not include the hosted homoiconic display registry.
-        if (!freestanding_codegen_) {
+        // Freestanding and standalone-wasm objects do not include the hosted
+        // homoiconic display registry: eagerly registering every function here
+        // would ptrtoint each one from main(), pinning the whole stdlib against
+        // the wasm dead-strip (internalize + globalDCE).
+        if (homoiconicRegistryEnabled()) {
             pending_lambda_sexprs.push_back({op, std::string(func_name)});
-            lambda_ast_to_name[op] = std::string(func_name);  // MEMOIZATION FIX
             eshkol_debug("Added named function %s to pending_lambda_sexprs for homoiconic display", func_name);
         }
 
@@ -26165,8 +26244,13 @@ private:
         
         // OPTION 3: Store lambda metadata for deferred S-expression generation
         // S-expressions will be generated in createMainWrapper() after all lambdas are compiled
-        // This prevents basic block corruption from generating IR during lambda compilation
-        pending_lambda_sexprs.push_back({op, lambda_name});
+        // This prevents basic block corruption from generating IR during lambda compilation.
+        // Skipped for standalone wasm objects (no hosted homoiconic registry, and
+        // the ptrtoint registration in main() would pin functions against the
+        // wasm dead-strip); the memoization map below is kept unconditionally.
+        if (!wasm_codegen_) {
+            pending_lambda_sexprs.push_back({op, lambda_name});
+        }
         lambda_ast_to_name[op] = lambda_name;  // MEMOIZATION FIX
 
         // Track last generated lambda name for codegenList to use
@@ -37947,6 +38031,13 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
                 func.addFnAttr("wasm-export-name", func.getName());
             }
         }
+
+        // Dead-strip unreachable code (chiefly unused stdlib) BEFORE optimizing.
+        // The module is emitted as a single unlinked object with no
+        // wasm-ld --gc-sections pass, so without this every external-linkage
+        // stdlib function survives. Internalize all non-exported symbols, then
+        // GlobalDCE removes whatever is unreachable from main/scheme_main/_start.
+        deadStripWasmModule(*module);
 
         // Run LLVM optimization passes before WASM codegen
         // Always optimize for WASM (even at -O0) to avoid exceeding local count limits
