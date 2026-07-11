@@ -5,18 +5,40 @@
 
 ---
 
+## Honesty notice (read this first)
+
+**By default, and always on WASM/browser builds, this is a classical software
+PRNG - not real quantum hardware, not a hardware entropy source, and not
+Bell-verified.** The "quantum circuit simulation" described below is a
+software bit-mixing routine that borrows quantum vocabulary ("Hadamard",
+"entanglement", "measurement") as naming/metaphor for its internal stages; no
+qubits, quantum circuits, or physical randomness are involved. Its seed
+material is wall-clock time, process id, `clock()`, a stack address, and (on
+x86) the `rdtsc` cycle counter - not an OS entropy pool such as
+`/dev/urandom` or `getrandom()`, despite the "system entropy pool" phrasing
+used loosely below. Given known seed material, its output is reproducible.
+
+A real, Bell-verified quantum entropy source (Moonlab's `moonlab_qrng_bytes`,
+combining hardware entropy with a verified quantum-simulation layer) is an
+opt-in build configuration; see `docs/design/MOONLAB_INTEGRATION.md`. Call
+`eshkol_qrng_source_label()` at runtime to find out which source is actually
+active in the build you are running - do not infer it from the `quantum-*`
+function names.
+
+---
+
 ## Overview
 
 Eshkol provides a dual-layer random number generation system: a standard pseudorandom number generator (PRNG) based on `drand48`, and a quantum-inspired RNG (QRNG) that simulates quantum circuit behavior on classical hardware. Both layers are exposed through a unified Eshkol API in `lib/random/random.esk`.
 
 The quantum-inspired RNG differs from standard PRNGs in several important ways:
 
-- **Quantum circuit simulation.** The QRNG maintains an 8-qubit state vector and applies Hadamard gates, phase gates, and entanglement operations to evolve the state. Each random number is produced by "measuring" the quantum state.
-- **Hardware entropy seeding.** The QRNG collects entropy from system sources (timing jitter, process ID, system entropy pool) to initialize its state, rather than relying solely on a numeric seed.
-- **Multiple mixing stages.** Output passes through Hadamard mixing, Pauli gate rotations, and splitmix64 avalanche functions. Physical constants (fine structure, Planck, Rydberg) serve as mixing constants.
-- **Non-deterministic output.** Because the QRNG incorporates runtime entropy (timing, floating-point uncertainty), identical seeds do not guarantee identical output sequences.
+- **Quantum circuit simulation (software metaphor, not real qubits).** The QRNG maintains an 8-element state array and applies XOR-mixing steps named after Hadamard gates, phase gates, and entanglement operations to evolve the state. Each random number is produced by "measuring" (collapsing) that classical state - no quantum circuit is actually simulated.
+- **Classical timing/process seeding (not a hardware entropy pool).** The QRNG seeds its state from wall-clock time, process id, `clock()`, a stack address, and (on x86) `rdtsc` - not from `/dev/urandom`, `getrandom()`, or any OS-level entropy pool.
+- **Multiple mixing stages.** Output passes through Hadamard-style mixing, Pauli-style rotations, and splitmix64 avalanche functions. Physical constants (fine structure, Planck, Rydberg) serve only as mixing multipliers, not as physics inputs.
+- **Best-effort non-repeating output.** Because the QRNG incorporates timing-based seed material, running the program twice will usually produce different sequences - but this is ordinary timing-jitter entropy, the same class of non-determinism a `srand(time(NULL))` PRNG has, not a cryptographic or physical randomness guarantee.
 
-For most applications, the standard PRNG functions are sufficient. Use the quantum functions when you need higher-quality randomness or want non-reproducible sequences.
+For most applications, the standard PRNG functions are sufficient. Use the quantum-named functions when you want a differently-seeded stream; do not rely on them for cryptographic security or for any claim of real quantum randomness unless the build is configured with Moonlab (`-DESHKOL_QUANTUM_ENABLED=ON`) and `eshkol_qrng_source_label()` confirms `"moonlab-qrng"`.
 
 ---
 

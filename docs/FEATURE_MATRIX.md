@@ -329,8 +329,8 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | File operations | ✅ | `file-delete`, `file-rename` | POSIX |
 | **Random Numbers** |
 | Pseudo-random | ✅ | `random` | drand48 |
-| Quantum random | ✅ | `quantum-random` | ANU QRNG API |
-| Integer ranges | ✅ | `quantum-random-range` | Uniform distribution |
+| Quantum random | ✅ | `quantum-random` | Classical software PRNG fallback (NOT the ANU QRNG API, NOT real quantum hardware, NOT Bell-verified). Real quantum entropy (Moonlab, Bell-verified) is opt-in via `-DESHKOL_QUANTUM_ENABLED=ON`; see `docs/design/MOONLAB_INTEGRATION.md`. Check the active source at runtime via `eshkol_qrng_source_label()`. |
+| Integer ranges | ✅ | `quantum-random-range` | Uniform distribution (same classical-fallback-by-default caveat as above) |
 
 ---
 
