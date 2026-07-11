@@ -170,6 +170,55 @@ option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
 option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libFuzzer targets: clang only)" OFF)
 option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
 
+# Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
+# the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
+# SHA (rather than the mutable v1.1.0-rc name) for reproducible builds.  At the
+# upstream repository this annotated object peels to commit 572c3940faf8e275a0e3730f2947411eefb1fa19.
+option(ESHKOL_QUANTUM_ENABLED "Enable the opt-in Moonlab quantum simulator integration" OFF)
+set(ESHKOL_MOONLAB_REPO "https://github.com/tsotchke/moonlab.git" CACHE STRING
+    "Moonlab git repository used when ESHKOL_QUANTUM_ENABLED is ON")
+set(ESHKOL_MOONLAB_LIBRARY_DIR "")
+set(ESHKOL_MOONLAB_LIBRARY_FILE "")
+
+if(ESHKOL_QUANTUM_ENABLED)
+    include(FetchContent)
+
+    # Stage 1 needs only libquantumsim.  Disable Moonlab's standalone products
+    # and optional accelerators so this opt-in dependency remains focused on
+    # the CPU state-vector/QRNG surface bound below.
+    set(QSIM_BUILD_SHARED ON CACHE BOOL "Build Moonlab as a shared library for Eshkol" FORCE)
+    set(QSIM_BUILD_STATIC OFF CACHE BOOL "Build Moonlab static library for Eshkol" FORCE)
+    set(QSIM_BUILD_TESTS OFF CACHE BOOL "Build Moonlab tests as an Eshkol dependency" FORCE)
+    set(QSIM_BUILD_EXAMPLES OFF CACHE BOOL "Build Moonlab examples as an Eshkol dependency" FORCE)
+    set(QSIM_BUILD_VISUALIZATION OFF CACHE BOOL "Build Moonlab visualization as an Eshkol dependency" FORCE)
+    set(QSIM_BUILD_BENCHMARKS OFF CACHE BOOL "Build Moonlab benchmarks as an Eshkol dependency" FORCE)
+    set(QSIM_ENABLE_OPENMP OFF CACHE BOOL "Enable Moonlab OpenMP as an Eshkol dependency" FORCE)
+    set(QSIM_ENABLE_METAL OFF CACHE BOOL "Enable Moonlab Metal as an Eshkol dependency" FORCE)
+    set(QSIM_ENABLE_TLS OFF CACHE BOOL "Enable Moonlab TLS as an Eshkol dependency" FORCE)
+    set(QSIM_ENABLE_LTO OFF CACHE BOOL "Enable Moonlab LTO as an Eshkol dependency" FORCE)
+    set(QSIM_WERROR OFF CACHE BOOL "Treat Moonlab warnings as errors as an Eshkol dependency" FORCE)
+
+    FetchContent_Declare(moonlab
+        GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
+        GIT_TAG c613234cd8498804428f3838aa46dd730b1de810
+        GIT_SHALLOW FALSE
+    )
+    FetchContent_MakeAvailable(moonlab)
+
+    # Verified against Moonlab's CMakeLists.txt at the pinned revision:
+    # add_library(quantumsim ...), producing libquantumsim.
+    if(NOT TARGET quantumsim)
+        message(FATAL_ERROR "Moonlab dependency did not define the expected quantumsim target")
+    endif()
+
+    # Moonlab's shared target uses CMake's standard output location.  The AOT
+    # linker receives this concrete path plus an rpath in the agent-FFI block.
+    set(ESHKOL_MOONLAB_LIBRARY_DIR "${moonlab_BINARY_DIR}")
+    set(ESHKOL_MOONLAB_LIBRARY_FILE
+        "${ESHKOL_MOONLAB_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}quantumsim${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    message(STATUS "Moonlab quantum integration: ENABLED (target=quantumsim)")
+endif()
+
 if(ESHKOL_BUILD_TESTS)
     enable_testing()
 endif()
@@ -1737,6 +1786,18 @@ target_include_directories(
     ${ESHKOL_BUILD_INTERFACE_INCLUDE_DIRS}
 )
 eshkol_apply_common_compile_settings(eshkol-static)
+
+if(ESHKOL_QUANTUM_ENABLED)
+    # The runtime wrapper is the one place that includes Moonlab's stable QRNG
+    # header; target usage requirements provide the verified src/ include path.
+    target_compile_definitions(eshkol-runtime-support-obj PRIVATE ESHKOL_MOONLAB_QRNG_ENABLED=1)
+    target_link_libraries(eshkol-runtime-support-obj PRIVATE quantumsim)
+
+    # Both archives carry the wrapper object.  Keep quantumsim PUBLIC so
+    # CMake consumers and the Eshkol host executables link the same target.
+    target_link_libraries(eshkol-runtime PUBLIC quantumsim)
+    target_link_libraries(eshkol-static PUBLIC quantumsim)
+endif()
 
 # Extract library directories from LDFLAGS for proper linking
 if(NOT LLVM_LIBRARY_DIRS)
