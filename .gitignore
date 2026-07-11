@@ -74,6 +74,9 @@ Testing/
 CTestTestfile.cmake
 test-results/
 coverage/
+# but the language-surface coverage manifest + gap report are durable artifacts
+!tests/coverage/
+!tests/coverage/**
 test_outputs/
 artifacts/sanitizer-fuzz/
 artifacts/*-fuzz/
