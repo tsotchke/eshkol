@@ -43,6 +43,82 @@ namespace eshkol {
 // ===== INTERNAL TENSOR ARITHMETIC IMPLEMENTATIONS =====
 
 // Scheme vector arithmetic: vectors with [length:i64][elem0:tagged][elem1:tagged]...
+// ESH-0121: forward-mode-dual-aware elementwise binary op. See header.
+llvm::Value* TensorCodegen::dualAwareScalarBinOp(llvm::Value* a_tagged, llvm::Value* b_tagged,
+                                                 const std::string& operation) {
+    // Ensure tagged form so the dual tag is inspectable.
+    if (a_tagged->getType() != ctx_.taggedValueType()) a_tagged = tagged_.packDouble(extractAsDouble(a_tagged));
+    if (b_tagged->getType() != ctx_.taggedValueType()) b_tagged = tagged_.packDouble(extractAsDouble(b_tagged));
+
+    auto numericResult = [&](llvm::Value* av, llvm::Value* bv) -> llvm::Value* {
+        if (operation == "add") return ctx_.builder().CreateFAdd(av, bv);
+        if (operation == "sub") return ctx_.builder().CreateFSub(av, bv);
+        if (operation == "mul") return ctx_.builder().CreateFMul(av, bv);
+        if (operation == "div") return ctx_.builder().CreateFDiv(av, bv);
+        if (operation == "pow") {
+            llvm::Function* pow_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::pow, {ctx_.doubleType()});
+            return ctx_.builder().CreateCall(pow_fn, {av, bv});
+        }
+        if (operation == "max") {
+            llvm::Function* max_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::maxnum, {ctx_.doubleType()});
+            return ctx_.builder().CreateCall(max_fn, {av, bv});
+        }
+        if (operation == "min") {
+            llvm::Function* min_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::minnum, {ctx_.doubleType()});
+            return ctx_.builder().CreateCall(min_fn, {av, bv});
+        }
+        return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+    };
+
+    // Without autodiff wired there are never duals in flight: plain path.
+    if (!autodiff_) {
+        return tagged_.packDouble(numericResult(extractAsDouble(a_tagged), extractAsDouble(b_tagged)));
+    }
+
+    llvm::Value* a_is_dual = ctx_.builder().CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(a_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* b_is_dual = ctx_.builder().CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(b_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::Value* any_dual = ctx_.builder().CreateOr(a_is_dual, b_is_dual);
+
+    llvm::Function* fn = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* dual_bb = llvm::BasicBlock::Create(ctx_.context(), "vbin_dual", fn);
+    llvm::BasicBlock* num_bb = llvm::BasicBlock::Create(ctx_.context(), "vbin_num", fn);
+    llvm::BasicBlock* merge_bb = llvm::BasicBlock::Create(ctx_.context(), "vbin_merge", fn);
+    ctx_.builder().CreateCondBr(any_dual, dual_bb, num_bb);
+
+    // Dual path: lift both operands and apply the exact dual rule.
+    ctx_.builder().SetInsertPoint(dual_bb);
+    llvm::Value* da = autodiff_->safeUnpackDualFromTagged(a_tagged);
+    llvm::Value* db = autodiff_->safeUnpackDualFromTagged(b_tagged);
+    llvm::Value* dr = nullptr;
+    if (operation == "add") dr = autodiff_->dualAdd(da, db);
+    else if (operation == "sub") dr = autodiff_->dualSub(da, db);
+    else if (operation == "mul") dr = autodiff_->dualMul(da, db);
+    else if (operation == "div") dr = autodiff_->dualDiv(da, db);
+    else if (operation == "pow") dr = autodiff_->dualPow(da, db);
+    else if (operation == "max") dr = autodiff_->dualMax(da, db);
+    else if (operation == "min") dr = autodiff_->dualMin(da, db);
+    else dr = autodiff_->dualMul(da, db);
+    llvm::Value* dual_tagged = autodiff_->packDualToTagged(dr);
+    llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    // Numeric path: plain doubles.
+    ctx_.builder().SetInsertPoint(num_bb);
+    llvm::Value* num_tagged = tagged_.packDouble(numericResult(extractAsDouble(a_tagged), extractAsDouble(b_tagged)));
+    llvm::BasicBlock* num_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(merge_bb);
+
+    ctx_.builder().SetInsertPoint(merge_bb);
+    llvm::PHINode* phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "vbin_result");
+    phi->addIncoming(dual_tagged, dual_exit);
+    phi->addIncoming(num_tagged, num_exit);
+    return phi;
+}
+
 llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llvm::Value* vec2_tagged, const std::string& operation) {
     // Extract pointers from tagged values
     llvm::Value* ptr1_int = vec1_tagged;
@@ -113,36 +189,11 @@ llvm::Value* TensorCodegen::schemeVectorArithmetic(llvm::Value* vec1_tagged, llv
     llvm::Value* elem1_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem1_ptr);
     llvm::Value* elem2_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem2_ptr);
 
-    // Extract doubles from tagged values
-    llvm::Value* elem1_double = tagged_.unpackDouble(elem1_tagged);
-    llvm::Value* elem2_double = tagged_.unpackDouble(elem2_tagged);
-
-    // Perform operation
-    llvm::Value* result_double = nullptr;
-    if (operation == "add") {
-        result_double = ctx_.builder().CreateFAdd(elem1_double, elem2_double);
-    } else if (operation == "sub") {
-        result_double = ctx_.builder().CreateFSub(elem1_double, elem2_double);
-    } else if (operation == "mul") {
-        result_double = ctx_.builder().CreateFMul(elem1_double, elem2_double);
-    } else if (operation == "div") {
-        result_double = ctx_.builder().CreateFDiv(elem1_double, elem2_double);
-    } else if (operation == "pow") {
-        llvm::Function* pow_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::pow, {ctx_.doubleType()});
-        result_double = ctx_.builder().CreateCall(pow_fn, {elem1_double, elem2_double});
-    } else if (operation == "max") {
-        llvm::Function* max_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::maxnum, {ctx_.doubleType()});
-        result_double = ctx_.builder().CreateCall(max_fn, {elem1_double, elem2_double});
-    } else if (operation == "min") {
-        llvm::Function* min_fn = ESHKOL_GET_INTRINSIC(&ctx_.module(), llvm::Intrinsic::minnum, {ctx_.doubleType()});
-        result_double = ctx_.builder().CreateCall(min_fn, {elem1_double, elem2_double});
-    } else {
-        // Unsupported operation — use zero as fallback (prevents nullptr crash)
-        result_double = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
-    }
-
-    // Pack result and store
-    llvm::Value* result_tagged = tagged_.packDouble(result_double);
+    // ESH-0121: dual-aware elementwise op. When the Hessian's forward-over-forward
+    // sweep feeds a Scheme vector of DUAL_NUMBER jets, this propagates the exact
+    // dual (including the mixed e1e2 second-order term) instead of dropping it to
+    // a plain double and silently zeroing the second derivative.
+    llvm::Value* result_tagged = dualAwareScalarBinOp(elem1_tagged, elem2_tagged, operation);
     ctx_.builder().CreateStore(result_tagged, result_elem_ptr);
 
     // Increment counter
