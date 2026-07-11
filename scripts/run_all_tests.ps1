@@ -8,6 +8,10 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version 3.0
 
+# AOT compilation is bounded separately from test execution.  Windows ARM64
+# linking can legitimately take longer than the Unix-hosted default.
+$script:CompileTimeoutSec = 120
+
 function Write-Section {
     param([string]$Text)
     Write-Host ""
@@ -334,6 +338,24 @@ function Show-ProcessFailureDetails {
         return
     }
 
+    $hasExitCode = $Result.PSObject.Properties.Match("ExitCode").Count -gt 0
+    $timedOut = ($Result.PSObject.Properties.Match("TimedOut").Count -gt 0) -and $Result.TimedOut
+    $showedDetailsHeader = $false
+    if ($hasExitCode -or $timedOut) {
+        Write-Host ("  {0} {1} details:" -f $TestName, $Phase) -ForegroundColor DarkGray
+        $showedDetailsHeader = $true
+        if ($timedOut) {
+            $timeoutText = ""
+            if ($Result.PSObject.Properties.Match("TimeoutSec").Count -gt 0) {
+                $timeoutText = (" after {0}s" -f $Result.TimeoutSec)
+            }
+            Write-Host ("    process timed out{0}" -f $timeoutText) -ForegroundColor Yellow
+        }
+        if ($hasExitCode) {
+            Write-Host ("    exit code: {0}" -f (Format-ExitCodeLabel $Result.ExitCode)) -ForegroundColor DarkGray
+        }
+    }
+
     $sections = @()
     if ($Result.StdErr) {
         $sections += [pscustomobject]@{
@@ -358,7 +380,9 @@ function Show-ProcessFailureDetails {
         return
     }
 
-    Write-Host ("  {0} {1} details:" -f $TestName, $Phase) -ForegroundColor DarkGray
+    if (-not $showedDetailsHeader) {
+        Write-Host ("  {0} {1} details:" -f $TestName, $Phase) -ForegroundColor DarkGray
+    }
     foreach ($section in $sections) {
         $allLines = @($section.Text -split "`r?`n")
         $lines = @($allLines | Where-Object { $_ -ne $null })
@@ -543,7 +567,8 @@ function Invoke-EshkolCompile {
         [string]$BuildDir,
         [string]$TestFile,
         [string]$OutputBase,
-        [string[]]$ExtraArgs = @()
+        [string[]]$ExtraArgs = @(),
+        [int]$TimeoutSec = $script:CompileTimeoutSec
     )
 
     $exePath = $OutputBase + ".exe"
@@ -555,11 +580,12 @@ function Invoke-EshkolCompile {
     }
     $args += @($TestFile)
 
-    $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir
+    $captured = Invoke-ProcessCapture -FilePath $EshkolRun -Arguments $args -WorkingDirectory $BuildDir -TimeoutSec $TimeoutSec
 
     [pscustomobject]@{
         ExitCode = $captured.ExitCode
         TimedOut = $captured.TimedOut
+        TimeoutSec = $TimeoutSec
         Success  = ($captured.ExitCode -eq 0 -and (Test-RegularFile -Path $exePath))
         StdOut   = $captured.StdOut
         StdErr   = $captured.StdErr
@@ -632,6 +658,12 @@ function Invoke-SimpleCompileRunSuite {
         $testName = Split-Path -Leaf $testFile
         $outputBase = New-OutputBase -TempRoot $script:TempRoot -SuiteName $SuiteName -TestName $testName
         $compile = Invoke-EshkolCompile -EshkolRun $script:EshkolRun -ProjectRoot $script:ProjectRoot -BuildDir $script:BuildDir -TestFile $testFile -OutputBase $outputBase
+        if ($compile.TimedOut) {
+            Format-TestStatus $testName ("COMPILE TIMEOUT ({0}s)" -f $compile.TimeoutSec) Yellow
+            Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
+            Add-Fail $suite "$testName (compile timeout)"
+            continue
+        }
         if (-not $compile.Success) {
             Format-TestStatus $testName "COMPILE FAIL" Red
             Show-ProcessFailureDetails -TestName $testName -Phase "compile" -Result $compile
@@ -1508,6 +1540,10 @@ switch ($Mode) {
         # Full feature/category coverage remains on the Unix matrix and local
         # Windows verifier; hosted ARM64 validates representative portable
         # surfaces so platform regressions are caught without 2-hour jobs.
+        # The ARM64 COFF link of exception-heavy AOT programs can exceed the
+        # normal 120-second compile limit.  Keep the bound, but give each
+        # Windows smoke-test compile five minutes before declaring a timeout.
+        $script:CompileTimeoutSec = 300
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Windows Feature Smoke Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "bitwise_ops_test.esk",
             "bytevector_test.esk",
