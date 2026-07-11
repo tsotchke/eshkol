@@ -1,0 +1,61 @@
+;;; tests/memory/region_evac_rational_bignum_test.esk — region evacuator
+;;; RATIONAL (bignum-path) subtype-coverage correctness fixture.
+;;;
+;;; evac_kind_for (lib/core/runtime_regions.cpp) classified HEAP_SUBTYPE_RATIONAL
+;;; as EVAC_LEAF (a shallow header+payload copy) for both representations an
+;;; eshkol_rational_t can take:
+;;;   - is_big == 0 (fast path): numerator/denominator are inline int64
+;;;     scalars -- a shallow copy is correct.
+;;;   - is_big == 1 (bignum path): big_num/big_den are RAW eshkol_bignum_t*
+;;;     pointers (used whenever the GCD-reduced numerator or denominator
+;;;     overflows int64) that are themselves independently arena-allocated,
+;;;     header-prefixed HEAP_SUBTYPE_BIGNUM objects.
+;;;
+;;; A big rational built inside a `(with-region ...)` body and promoted to an
+;;; outer container via the region write barrier (vector-set!/set-car!/etc.)
+;;; kept those two raw bignum pointers aimed into the region's arena. Once
+;;; region_pop freed that arena, any later read of the rational (arithmetic,
+;;; equal?, display, ...) dereferenced freed memory: a confirmed
+;;; AddressSanitizer heap-use-after-free in eshkol_bignum_compare (reached via
+;;; eshkol_rational_equal / eshkol_deep_equal), and — under
+;;; ESHKOL_ARENA_POISON=1 — a deterministic wrong-answer/crash reading
+;;; 0xCB-poisoned memory instead.
+;;;
+;;; This fixture builds several big (bignum-path) rationals inside per-
+;;; iteration regions, promotes each into an outer vector slot, and verifies
+;;; every promoted rational reads back exactly equal to the same value
+;;; computed directly (outside any region) after all regions have been popped.
+
+(define slots (make-vector 4 0))
+
+(define (mk-big i)
+  ;; 2^100 is far outside int64 range; dividing by 7 (coprime to 2^100) forces
+  ;; the GCD-reduced (numerator, denominator) pair onto the bignum path
+  ;; (is_big == 1), carrying two raw eshkol_bignum_t* interior pointers.
+  (/ (+ (expt 2 100) i) 7))
+
+(define (fill i)
+  (if (< i 4)
+      (begin
+        (with-region 'r
+          (vector-set! slots i (mk-big i)))
+        (fill (+ i 1)))))
+
+(fill 0)
+
+(define (check i ok)
+  (if (>= i 4)
+      ok
+      (let* ((r (vector-ref slots i))
+             (expected (mk-big i)))
+        (check (+ i 1) (and ok (equal? r expected))))))
+
+(define result (check 0 #t))
+
+(display "[region_evac_rational_bignum_test] result=")
+(display result)
+(newline)
+
+(if result
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline) (exit 1)))

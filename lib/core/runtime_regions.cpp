@@ -15,6 +15,7 @@
 #include "../../inc/eshkol/core/logic.h"       // eshkol_substitution_t / _fact_t / _knowledge_base_t
 #include "../../inc/eshkol/core/inference.h"   // eshkol_factor_graph_t / _factor_t
 #include "../../inc/eshkol/core/workspace.h"   // eshkol_workspace_t / _workspace_module_t
+#include "../../inc/eshkol/core/rational.h"    // eshkol_rational_t (bignum-backed exact rationals)
 
 #include <cstring>
 #include <cstdlib>
@@ -902,6 +903,7 @@ enum EvacKind : uint8_t {
     EVAC_FACTOR_GRAPH,   // eshkol_factor_graph_t: nested raw numeric buffers
     EVAC_WORKSPACE,      // eshkol_workspace_t: content buffer + per-module name/process_fn
     EVAC_PROMISE,        // [forced:i64][thunk:tagged @8][cached:tagged @24] (delay/force)
+    EVAC_RATIONAL,       // eshkol_rational_t: big_num/big_den raw bignum pointers (is_big==1 only)
 };
 
 using EvacFwdMap = std::unordered_map<const void*, void*>;
@@ -968,8 +970,17 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         case HEAP_SUBTYPE_FACTOR_GRAPH:   return EVAC_FACTOR_GRAPH;
         case HEAP_SUBTYPE_WORKSPACE:      return EVAC_WORKSPACE;
         case HEAP_SUBTYPE_PROMISE:        return EVAC_PROMISE;
-        // STRING / SYMBOL / BIGNUM / RATIONAL / BYTEVECTOR: self-contained
-        // payloads -> a contiguous leaf copy fully preserves them.
+        // RATIONAL: the int64 fast path (is_big == 0) is fully self-contained
+        // (numerator/denominator are inline scalars), but the bignum path
+        // (is_big == 1) carries two RAW eshkol_bignum_t* pointers (big_num /
+        // big_den) that can themselves be region-resident. A shallow leaf copy
+        // of a big rational left those two pointers aimed into the popped
+        // region arena -- the same class of gap ESH-0214d closed for the
+        // logic/workspace subtypes. Always dispatched through EVAC_RATIONAL;
+        // the is_big==0 case is a cheap no-op there (nothing to walk).
+        case HEAP_SUBTYPE_RATIONAL:       return EVAC_RATIONAL;
+        // STRING / SYMBOL / BIGNUM / BYTEVECTOR: self-contained payloads ->
+        // a contiguous leaf copy fully preserves them.
         //
         // Deliberately kept EVAC_LEAF (no interior region pointers, or their
         // interior graph is not confidently/safely traversable here, AND they
@@ -1330,6 +1341,28 @@ static eshkol_tagged_value_t region_evacuate_value(eshkol_tagged_value_t val,
                 auto* cached = (eshkol_tagged_value_t*)((uint8_t*)nd + 24);
                 *thunk  = evac_value(st, *thunk);
                 *cached = evac_value(st, *cached);
+                break;
+            }
+            case EVAC_RATIONAL: {
+                // is_big == 0 (fast path): numerator/denominator are inline
+                // int64 scalars -- already copied verbatim by the contiguous
+                // header+payload copy, nothing further to walk.
+                //
+                // is_big == 1 (bignum path): big_num/big_den are RAW
+                // eshkol_bignum_t* pointers (not tagged values -- same shape
+                // as a knowledge base's facts[] array), each an independently
+                // header-prefixed HEAP_SUBTYPE_BIGNUM object that can itself
+                // be region-resident (e.g. the result of exact arithmetic
+                // performed inside a `with-region` body). Left un-walked, a
+                // rational whose reduced numerator/denominator overflow
+                // int64 -- promoted out of its region via vector-set!/
+                // set-car!/etc. -- would carry two pointers straight into the
+                // arena region_pop is about to free.
+                auto* r = (eshkol_rational_t*)nd;
+                if (r->is_big) {
+                    if (r->big_num) r->big_num = (eshkol_bignum_t*)evac_object_ptr(st, r->big_num);
+                    if (r->big_den) r->big_den = (eshkol_bignum_t*)evac_object_ptr(st, r->big_den);
+                }
                 break;
             }
             case EVAC_FACTOR_GRAPH: {
