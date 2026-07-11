@@ -1395,18 +1395,56 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     llvm::Value* conv_dims_ptr = ctx_.builder().CreateCall(conv_arena_alloc, {conv_arena_ptr, conv_dims_size}, "conv_dims");
     ctx_.builder().CreateStore(svec_len, conv_dims_ptr);
 
-    // Allocate elements array
-    llvm::Value* conv_elems_size = ctx_.builder().CreateMul(svec_len,
-        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
-    llvm::Value* conv_elems_ptr = ctx_.builder().CreateCall(conv_arena_alloc, {conv_arena_ptr, conv_elems_size}, "conv_elems");
-
-    // Copy elements from vector (each element is 16-byte tagged value)
+    // ESH-0121: detect a Scheme vector of forward-mode DUAL_NUMBER jets (the
+    // Hessian's forward-over-forward sweep). When present, build a *dual tensor*:
+    // elements are copied verbatim as 16-byte tagged DUAL_NUMBER values and dtype
+    // is set to DUAL, so the downstream dual-aware matmul/tensor-sum paths keep
+    // the e1/e2/e1e2 second-order terms instead of flattening each jet to a plain
+    // double (which silently zeros the Hessian). The non-dual path is unchanged.
     llvm::Value* svec_data_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8));  // Skip length
+    llvm::Value* svec_typed_ptr = ctx_.builder().CreatePointerCast(svec_data_ptr, ctx_.ptrType());
+
+    // Peek element 0's tag (guarded on a non-empty vector) to decide dual vs plain.
+    llvm::Value* svec_nonempty = ctx_.builder().CreateICmpUGT(svec_len,
+        llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::BasicBlock* peek_bb = llvm::BasicBlock::Create(ctx_.context(), "reshape_peek", current_func);
+    llvm::BasicBlock* peek_skip = llvm::BasicBlock::Create(ctx_.context(), "reshape_peek_skip", current_func);
+    llvm::BasicBlock* peek_merge = llvm::BasicBlock::Create(ctx_.context(), "reshape_peek_merge", current_func);
+    ctx_.builder().CreateCondBr(svec_nonempty, peek_bb, peek_skip);
+
+    ctx_.builder().SetInsertPoint(peek_bb);
+    llvm::Value* e0_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(),
+        ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_typed_ptr,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    llvm::Value* e0_is_dual = ctx_.builder().CreateICmpEQ(
+        tagged_.getBaseType(tagged_.getType(e0_tagged)),
+        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+    llvm::BasicBlock* peek_bb_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(peek_merge);
+
+    ctx_.builder().SetInsertPoint(peek_skip);
+    llvm::BasicBlock* peek_skip_exit = ctx_.builder().GetInsertBlock();
+    ctx_.builder().CreateBr(peek_merge);
+
+    ctx_.builder().SetInsertPoint(peek_merge);
+    llvm::PHINode* is_dual_vec = ctx_.builder().CreatePHI(ctx_.int1Type(), 2, "reshape_is_dual");
+    is_dual_vec->addIncoming(e0_is_dual, peek_bb_exit);
+    is_dual_vec->addIncoming(llvm::ConstantInt::getFalse(ctx_.context()), peek_skip_exit);
+
+    // Element stride: 16 bytes (tagged jet) when dual, else 8 bytes (double).
+    llvm::Value* conv_elem_stride = ctx_.builder().CreateSelect(is_dual_vec,
+        llvm::ConstantInt::get(ctx_.int64Type(), 16),
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(double)));
+    llvm::Value* conv_elems_size = ctx_.builder().CreateMul(svec_len, conv_elem_stride);
+    llvm::Value* conv_elems_ptr = ctx_.builder().CreateCall(conv_arena_alloc, {conv_arena_ptr, conv_elems_size}, "conv_elems");
 
     // Copy loop
     llvm::BasicBlock* copy_cond = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_cond", current_func);
     llvm::BasicBlock* copy_body = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_body", current_func);
+    llvm::BasicBlock* copy_dual = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_dual", current_func);
+    llvm::BasicBlock* copy_num = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_num", current_func);
+    llvm::BasicBlock* copy_incr = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_incr", current_func);
     llvm::BasicBlock* copy_exit = llvm::BasicBlock::Create(ctx_.context(), "reshape_copy_exit", current_func);
 
     llvm::Value* copy_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "copy_i");
@@ -1421,14 +1459,24 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(copy_body);
     // Load tagged value from vector
     llvm::Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(),
-        ctx_.builder().CreatePointerCast(svec_data_ptr, ctx_.ptrType()), copy_i);
+        svec_typed_ptr, copy_i);
     llvm::Value* elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
-    llvm::Value* elem_double = extractAsDouble(elem_tagged);
+    ctx_.builder().CreateCondBr(is_dual_vec, copy_dual, copy_num);
 
-    // Store in tensor elements
+    // Dual path: store the 16-byte tagged jet verbatim (preserves e1/e2/e1e2).
+    ctx_.builder().SetInsertPoint(copy_dual);
+    llvm::Value* dual_dest_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), conv_elems_ptr, copy_i);
+    ctx_.builder().CreateStore(elem_tagged, dual_dest_ptr);
+    ctx_.builder().CreateBr(copy_incr);
+
+    // Numeric path: flatten to a plain double (unchanged legacy behavior).
+    ctx_.builder().SetInsertPoint(copy_num);
+    llvm::Value* elem_double = extractAsDouble(elem_tagged);
     llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), conv_elems_ptr, copy_i);
     ctx_.builder().CreateStore(elem_double, dest_ptr);
+    ctx_.builder().CreateBr(copy_incr);
 
+    ctx_.builder().SetInsertPoint(copy_incr);
     llvm::Value* next_copy_i = ctx_.builder().CreateAdd(copy_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(next_copy_i, copy_counter);
     ctx_.builder().CreateBr(copy_cond);
@@ -1451,6 +1499,14 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
     // Store total_elements (field 3)
     llvm::Value* conv_total_field = ctx_.builder().CreateStructGEP(tensor_type, conv_tensor_ptr, 3);
     ctx_.builder().CreateStore(svec_len, conv_total_field);
+
+    // ESH-0121: dtype (field 4) — DUAL when elements are tagged jets, else f64(0).
+    llvm::Value* conv_dtype_field = ctx_.builder().CreateStructGEP(tensor_type, conv_tensor_ptr, 4);
+    ctx_.builder().CreateStore(
+        ctx_.builder().CreateSelect(is_dual_vec,
+            llvm::ConstantInt::get(ctx_.int64Type(), TensorCodegen::TENSOR_DTYPE_DUAL),
+            llvm::ConstantInt::get(ctx_.int64Type(), 0)),
+        conv_dtype_field);
 
     ctx_.builder().CreateBr(type_merge);
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
@@ -1827,6 +1883,14 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
 
     llvm::Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 3);
     ctx_.builder().CreateStore(final_total, total_elements_field_ptr);
+
+    // ESH-0121: propagate the source dtype (field 4). reshape reuses the source
+    // elements buffer unchanged, so a DUAL source stays a dual tensor and a plain
+    // f64 source stays f64 — the dual-aware matmul/tensor-sum paths dispatch on it.
+    llvm::Value* src_dtype_field = ctx_.builder().CreateStructGEP(tensor_type, src_ptr, 4);
+    llvm::Value* src_dtype = ctx_.builder().CreateLoad(ctx_.int64Type(), src_dtype_field);
+    llvm::Value* out_dtype_field = ctx_.builder().CreateStructGEP(tensor_type, typed_new_tensor_ptr, 4);
+    ctx_.builder().CreateStore(src_dtype, out_dtype_field);
 
     // Pack as consolidated HEAP_PTR
     return tagged_.packHeapPtr(typed_new_tensor_ptr);

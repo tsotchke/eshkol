@@ -556,7 +556,14 @@ typedef enum eshkol_tensor_dtype {
     ESHKOL_TENSOR_DTYPE_F32  = 1,  // IEEE single
     ESHKOL_TENSOR_DTYPE_F16  = 2,  // IEEE half
     ESHKOL_TENSOR_DTYPE_BF16 = 3,  // bfloat16
-    ESHKOL_TENSOR_DTYPE_I8   = 4   // signed 8-bit integer
+    ESHKOL_TENSOR_DTYPE_I8   = 4,  // signed 8-bit integer
+    // ESH-0121 (matmul-reshape Hessian): sentinel marking a "dual tensor" whose
+    // `elements` array holds 16-byte tagged DUAL_NUMBER jets (not f64 bit
+    // patterns). Produced by reshape of a Scheme vector of forward-mode duals
+    // during the Hessian's forward-over-forward sweep and consumed by the
+    // dual-aware matmul/tensor-sum paths so second-order terms are not dropped.
+    // Well above the real precision codes so no numeric kernel misreads it.
+    ESHKOL_TENSOR_DTYPE_DUAL = 64  // elements are tagged DUAL_NUMBER values
 } eshkol_tensor_dtype_t;
 
 // Tensor structure for multi-dimensional arrays

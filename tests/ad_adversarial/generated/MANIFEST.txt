@@ -20,3 +20,5 @@ ad_adv_tensor_07.esk 6 18
 ad_adv_vecpoint_01.esk 3 9
 ad_adv_htensor_01.esk 3 22
 ad_adv_htensor_02.esk 3 12
+ad_adv_htensor_03.esk 1 16
+ad_adv_htensor_04.esk 1 16

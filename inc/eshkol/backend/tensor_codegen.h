@@ -49,6 +49,14 @@ public:
     TensorCodegen(CodegenContext& ctx, TaggedValueCodegen& tagged, MemoryCodegen& mem);
 
     /**
+     * ESH-0121 dual-tensor dtype sentinel. Mirrors ESHKOL_TENSOR_DTYPE_DUAL in
+     * lib/core/arena_memory.h (kept in sync; asserted at runtime nowhere, but the
+     * value 64 sits well above every real precision code). A tensor with this
+     * dtype stores 16-byte tagged DUAL_NUMBER jets in `elements`, not f64 bits.
+     */
+    static constexpr uint64_t TENSOR_DTYPE_DUAL = 64;
+
+    /**
      * Destructor - defined in .cpp where XLACodegen is complete.
      */
     ~TensorCodegen();
@@ -223,6 +231,27 @@ public:
      * @return Scalar sum
      */
     llvm::Value* tensorSum(const eshkol_operations_t* op);
+
+    /**
+     * ESH-0121 (matmul-reshape Hessian): exact matmul over dual tensors.
+     *
+     * Standard tensor-matmul flattens elements to plain doubles and (in AD mode)
+     * uses a reverse-mode-only tape, so a Hessian whose loss reshapes a vector of
+     * forward-mode DUAL_NUMBER jets into a 2-D tensor and matmuls loses the
+     * e1/e2/e1e2 slots and silently zeros every second derivative. This computes
+     * C[i,j] = sum_k A[i,k]*B[k,j] using the exact forward-mode dual product rule
+     * (dualAwareScalarBinOp), carrying the mixed second-order term through, and
+     * returns a dual tensor (dtype DUAL, tagged elements). Either operand may be a
+     * plain (f64) tensor; its elements are lifted to duals with zero tangent.
+     * Requires 2-D operands with A.cols == B.rows; otherwise raises a catchable
+     * error (never a silent zero). autodiff_ must be wired. Called from
+     * codegenMatmul's dual-tensor dispatch.
+     *
+     * @param a_struct_ptr Pointer to operand A's eshkol_tensor struct.
+     * @param b_struct_ptr Pointer to operand B's eshkol_tensor struct.
+     * @return Pointer to the result eshkol_tensor struct (dual tensor).
+     */
+    llvm::Value* dualTensorMatmul(llvm::Value* a_struct_ptr, llvm::Value* b_struct_ptr);
 
     /**
      * Mean of all elements: (tensor-mean tensor)
@@ -1289,6 +1318,14 @@ private:
      * @return The tagged result (DUAL_NUMBER if any operand was a dual, else DOUBLE).
      */
     llvm::Value* dualAwareScalarBinOp(llvm::Value* a_tagged, llvm::Value* b_tagged, const std::string& operation);
+
+    /**
+     * True (i1) if the tensor struct is a "dual tensor" (dtype ==
+     * ESHKOL_TENSOR_DTYPE_DUAL), i.e. its `elements` array holds 16-byte tagged
+     * DUAL_NUMBER jets rather than f64 bit patterns. See ESH-0121.
+     * @param tensor_struct_ptr Pointer to an eshkol_tensor struct.
+     */
+    llvm::Value* isDualTensor(llvm::Value* tensor_struct_ptr);
 
     /**
      * Tensor arithmetic for TENSOR_PTR type.
