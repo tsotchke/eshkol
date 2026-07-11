@@ -1,0 +1,362 @@
+/*******************************************************************************
+ * Moonlab Quantum State-Vector Bindings for Eshkol (Stage S1)
+ *
+ * Thin C shim over Moonlab's dense state-vector core (quantum_state_t,
+ * gate_*, quantum_measure, measurement_expectation_z).
+ *
+ * Compile with -DESHKOL_HAVE_MOONLAB and link against libquantumsim (set by
+ * CMakeLists.txt's Agent FFI block only when configured with
+ * -DESHKOL_QUANTUM_ENABLED=ON and Moonlab's FetchContent succeeded).
+ * Without -DESHKOL_HAVE_MOONLAB, every function below returns a graceful,
+ * honestly-labeled "unavailable" error (-1 / NaN) instead of crashing or
+ * silently returning a bogus value -- mirroring the existing
+ * agent_treesitter.c / agent_yoga.c degrade-gracefully convention, and
+ * keeping this file safe to compile unconditionally (so JIT weak-symbol
+ * resolution in lib/repl/repl_jit.cpp always has a real definition to bind,
+ * instead of leaving `(require agent.quantum)` a dangling reference on the
+ * default ESHKOL_QUANTUM_ENABLED=OFF build).
+ *
+ * Symbol names below are verified against Moonlab's actual headers at the
+ * pinned revision c613234cd8498804428f3838aa46dd730b1de810 (tag v1.1.0-rc):
+ *   - src/quantum/state.h        : quantum_state_create, quantum_state_destroy
+ *   - src/quantum/gates.h        : gate_hadamard, gate_pauli_x/_y/_z,
+ *                                   gate_cnot, gate_rx/_ry/_rz, quantum_measure,
+ *                                   measurement_basis_t, measurement_result_t
+ *   - src/quantum/measurement.h  : measurement_expectation_z
+ *   - src/utils/quantum_entropy.h: quantum_entropy_ctx_t,
+ *                                   quantum_entropy_ctx_create_hw/_destroy
+ *
+ * quantum_state_t is a public struct in Moonlab (state.h) but this shim
+ * follows the same discipline as the Rust binding (the model called out in
+ * docs/design/MOONLAB_INTEGRATION.md Section 1.5): treat it as opaque, never
+ * mirror its layout in Scheme. Eshkol callers only ever see a small integer
+ * handle; the actual quantum_state_t* lives in a process-local handle table
+ * here, matching the existing agent_sqlite.c / agent_regex.c pattern.
+ *
+ * Measurement entropy: quantum_measure() requires a caller-supplied
+ * quantum_entropy_ctx_t*. We use Moonlab's own hardware-backed helper
+ * (quantum_entropy_ctx_create_hw) so simulated measurement collapse is not
+ * seeded by anything Eshkol controls -- lazily created once per process and
+ * released at exit, mirroring moonlab_qrng_bytes's own "process-lifetime
+ * context freed at atexit" pattern (documented at moonlab_export.h:33-75
+ * in the pinned Moonlab revision).
+ *
+ * Copyright (c) 2026 Eshkol Project
+ ******************************************************************************/
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/*******************************************************************************
+ * CONDITIONAL COMPILATION: full Moonlab-backed implementation vs graceful stubs
+ ******************************************************************************/
+
+#ifdef ESHKOL_HAVE_MOONLAB
+
+#include "quantum/state.h"
+#include "quantum/gates.h"
+#include "quantum/measurement.h"
+#include "utils/quantum_entropy.h"
+
+/*******************************************************************************
+ * Handle Table
+ ******************************************************************************/
+
+#define MAX_QSTATE_HANDLES 256
+
+static quantum_state_t* g_qstate_handles[MAX_QSTATE_HANDLES] = {0};
+static int g_next_qstate_handle = 1;
+
+/** @brief Human-readable last-error message, mirrored via eshkol_quantum_last_error(). */
+static char g_quantum_last_error[256] = {0};
+
+static void set_last_error(const char* msg) {
+    if (!msg) { g_quantum_last_error[0] = '\0'; return; }
+    size_t len = strlen(msg);
+    size_t copy = len < sizeof(g_quantum_last_error) - 1 ? len : sizeof(g_quantum_last_error) - 1;
+    memcpy(g_quantum_last_error, msg, copy);
+    g_quantum_last_error[copy] = '\0';
+}
+
+/**
+ * @brief Allocates a slot in the global quantum-state handle table.
+ *
+ * Scans forward from the last-used index (wrapping around once) so released
+ * handles are reused rather than exhausting the table.
+ */
+static int alloc_qstate(quantum_state_t* state) {
+    for (int i = g_next_qstate_handle; i < MAX_QSTATE_HANDLES; i++) {
+        if (!g_qstate_handles[i]) { g_qstate_handles[i] = state; g_next_qstate_handle = i + 1; return i; }
+    }
+    for (int i = 1; i < g_next_qstate_handle; i++) {
+        if (!g_qstate_handles[i]) { g_qstate_handles[i] = state; g_next_qstate_handle = i + 1; return i; }
+    }
+    return -1;
+}
+
+static quantum_state_t* get_qstate(int64_t h) {
+    if (h < 1 || h >= MAX_QSTATE_HANDLES) return NULL;
+    return g_qstate_handles[h];
+}
+
+/*******************************************************************************
+ * Lazily-initialized hardware entropy context for quantum_measure()
+ ******************************************************************************/
+
+static quantum_entropy_ctx_t* g_measure_entropy = NULL;
+
+static void teardown_measure_entropy(void) {
+    if (g_measure_entropy) {
+        quantum_entropy_ctx_destroy(g_measure_entropy);
+        g_measure_entropy = NULL;
+    }
+}
+
+/** @return Non-NULL on success. Sets the shim's last-error on failure. */
+static quantum_entropy_ctx_t* ensure_measure_entropy(void) {
+    if (!g_measure_entropy) {
+        g_measure_entropy = quantum_entropy_ctx_create_hw();
+        if (g_measure_entropy) {
+            atexit(teardown_measure_entropy);
+        } else {
+            set_last_error("failed to initialize Moonlab hardware entropy context for measurement");
+        }
+    }
+    return g_measure_entropy;
+}
+
+/*******************************************************************************
+ * Lifecycle
+ ******************************************************************************/
+
+/**
+ * @brief Allocates an n-qubit state vector initialized to |0...0>.
+ * @return Handle (>= 1) on success, -1 on invalid n / OOM / handle-table full.
+ */
+int64_t eshkol_quantum_state_create(int32_t num_qubits) {
+    if (num_qubits <= 0) {
+        set_last_error("make-quantum-state: num_qubits must be positive");
+        return -1;
+    }
+    quantum_state_t* state = quantum_state_create(num_qubits);
+    if (!state) {
+        set_last_error("quantum_state_create failed (Moonlab returned NULL -- invalid qubit count or OOM)");
+        return -1;
+    }
+    int handle = alloc_qstate(state);
+    if (handle < 0) {
+        quantum_state_destroy(state);
+        set_last_error("quantum-state handle table exhausted");
+        return -1;
+    }
+    return (int64_t)handle;
+}
+
+/** @brief Destroys a state vector and frees its handle slot. Safe on an already-freed handle. */
+void eshkol_quantum_state_destroy(int64_t handle) {
+    if (handle < 1 || handle >= MAX_QSTATE_HANDLES) return;
+    quantum_state_t* state = g_qstate_handles[handle];
+    if (state) {
+        quantum_state_destroy(state);
+        g_qstate_handles[handle] = NULL;
+    }
+}
+
+/*******************************************************************************
+ * Gates -- each returns 0 on success, or the qs_error_t (always < 0) Moonlab
+ * reported, so Scheme callers can raise a specific, catchable error.
+ ******************************************************************************/
+
+int32_t eshkol_quantum_gate_hadamard(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-hadamard: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_hadamard(state, qubit);
+    if (err != QS_SUCCESS) set_last_error("gate_hadamard failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_pauli_x(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-pauli-x: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_pauli_x(state, qubit);
+    if (err != QS_SUCCESS) set_last_error("gate_pauli_x failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_pauli_y(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-pauli-y: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_pauli_y(state, qubit);
+    if (err != QS_SUCCESS) set_last_error("gate_pauli_y failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_pauli_z(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-pauli-z: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_pauli_z(state, qubit);
+    if (err != QS_SUCCESS) set_last_error("gate_pauli_z failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_cnot(int64_t handle, int32_t control, int32_t target) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-cnot: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_cnot(state, control, target);
+    if (err != QS_SUCCESS) set_last_error("gate_cnot failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_rx(int64_t handle, int32_t qubit, double theta) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-rx: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_rx(state, qubit, theta);
+    if (err != QS_SUCCESS) set_last_error("gate_rx failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_ry(int64_t handle, int32_t qubit, double theta) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-ry: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_ry(state, qubit, theta);
+    if (err != QS_SUCCESS) set_last_error("gate_ry failed");
+    return (int32_t)err;
+}
+
+int32_t eshkol_quantum_gate_rz(int64_t handle, int32_t qubit, double theta) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("apply-rz: invalid quantum-state handle"); return -1; }
+    qs_error_t err = gate_rz(state, qubit, theta);
+    if (err != QS_SUCCESS) set_last_error("gate_rz failed");
+    return (int32_t)err;
+}
+
+/*******************************************************************************
+ * Measurement
+ ******************************************************************************/
+
+/**
+ * @brief Projectively measures one qubit in the computational (Z) basis,
+ *        collapsing the state vector.
+ * @return 0 or 1 (the measurement outcome), or -1 on error (invalid handle,
+ *         invalid qubit, or entropy-context failure -- check
+ *         eshkol_quantum_last_error()).
+ */
+int32_t eshkol_quantum_measure(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) { set_last_error("measure: invalid quantum-state handle"); return -1; }
+    quantum_entropy_ctx_t* entropy = ensure_measure_entropy();
+    if (!entropy) return -1; /* set_last_error already called */
+    measurement_result_t result = quantum_measure(state, qubit, MEASURE_COMPUTATIONAL, entropy);
+    return (int32_t)result.outcome;
+}
+
+/**
+ * @brief Expectation value of the Pauli-Z observable on one qubit, <psi|Z_q|psi>.
+ * @return Value in [-1, 1], or a NaN sentinel on invalid handle (check
+ *         eshkol_quantum_last_error()).
+ */
+double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) {
+        set_last_error("expectation-z: invalid quantum-state handle");
+        /* Portable NaN sentinel without a literal 0.0/0.0 constant-fold warning. */
+        volatile double zero = 0.0;
+        return zero / zero;
+    }
+    return measurement_expectation_z(state, qubit);
+}
+
+/*******************************************************************************
+ * Diagnostics
+ ******************************************************************************/
+
+/** @return Number of qubits the handle was created with, or -1 on invalid handle. */
+int32_t eshkol_quantum_num_qubits(int64_t handle) {
+    quantum_state_t* state = get_qstate(handle);
+    if (!state) return -1;
+    return (int32_t)state->num_qubits;
+}
+
+/**
+ * @brief Copies the last shim-level error message into @p buf.
+ * @return Number of bytes written (excluding NUL), or -1 if @p buf is NULL/too small.
+ */
+int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size) {
+    if (!buf || buf_size <= 0) return -1;
+    size_t len = strlen(g_quantum_last_error);
+    size_t copy = (size_t)buf_size - 1 < len ? (size_t)buf_size - 1 : len;
+    memcpy(buf, g_quantum_last_error, copy);
+    buf[copy] = '\0';
+    return (int32_t)copy;
+}
+
+#else /* !ESHKOL_HAVE_MOONLAB */
+
+/*******************************************************************************
+ * Graceful stubs when Moonlab is not compiled in (ESHKOL_QUANTUM_ENABLED=OFF,
+ * the default). Every entry point fails honestly and explicitly -- never a
+ * silently-wrong value -- so lib/agent/quantum.esk's Scheme wrappers raise a
+ * clear "Moonlab quantum support not enabled in this build" error instead of
+ * segfaulting on a dangling weak symbol or fabricating quantum data.
+ ******************************************************************************/
+
+static const char* const kUnavailableMsg =
+    "Moonlab quantum support not enabled in this build "
+    "(reconfigure with -DESHKOL_QUANTUM_ENABLED=ON)";
+
+/** @brief Stub: Moonlab support was not compiled in, so state creation always fails. */
+int64_t eshkol_quantum_state_create(int32_t num_qubits) { (void)num_qubits; return -1; }
+/** @brief Stub: no-op since no states exist without Moonlab support. */
+void eshkol_quantum_state_destroy(int64_t handle) { (void)handle; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_num_qubits(int64_t handle) { (void)handle; return -1; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_hadamard(int64_t handle, int32_t qubit) { (void)handle; (void)qubit; return -1; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_pauli_x(int64_t handle, int32_t qubit) { (void)handle; (void)qubit; return -1; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_pauli_y(int64_t handle, int32_t qubit) { (void)handle; (void)qubit; return -1; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_pauli_z(int64_t handle, int32_t qubit) { (void)handle; (void)qubit; return -1; }
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_cnot(int64_t handle, int32_t control, int32_t target) {
+    (void)handle; (void)control; (void)target; return -1;
+}
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_rx(int64_t handle, int32_t qubit, double theta) {
+    (void)handle; (void)qubit; (void)theta; return -1;
+}
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_ry(int64_t handle, int32_t qubit, double theta) {
+    (void)handle; (void)qubit; (void)theta; return -1;
+}
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_gate_rz(int64_t handle, int32_t qubit, double theta) {
+    (void)handle; (void)qubit; (void)theta; return -1;
+}
+/** @brief Stub: always fails since no states exist without Moonlab support. */
+int32_t eshkol_quantum_measure(int64_t handle, int32_t qubit) { (void)handle; (void)qubit; return -1; }
+/** @brief Stub: always fails (NaN sentinel) since no states exist without Moonlab support. */
+double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit) {
+    (void)handle; (void)qubit;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+/**
+ * @brief Stub: copies the fixed "not enabled" message into @p buf, so callers
+ *        that always check eshkol_quantum_last_error() after a -1 get an
+ *        honest, actionable reason instead of an empty string.
+ */
+int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size) {
+    if (!buf || buf_size <= 0) return -1;
+    size_t len = strlen(kUnavailableMsg);
+    size_t copy = (size_t)buf_size - 1 < len ? (size_t)buf_size - 1 : len;
+    memcpy(buf, kUnavailableMsg, copy);
+    buf[copy] = '\0';
+    return (int32_t)copy;
+}
+
+#endif /* ESHKOL_HAVE_MOONLAB */

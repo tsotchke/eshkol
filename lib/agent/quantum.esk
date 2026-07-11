@@ -1,0 +1,165 @@
+;;
+;; quantum.esk - Moonlab quantum state-vector FFI wrapper (Stage S1)
+;; Bindings to agent_quantum.c, which links Moonlab's libquantumsim.
+;;
+;; Only usable when Eshkol is built with -DESHKOL_QUANTUM_ENABLED=ON (see
+;; docs/design/MOONLAB_INTEGRATION.md). Without that flag, agent_quantum.c is
+;; not compiled and these externs resolve to nothing -- (require agent.quantum)
+;; on such a build fails to link, the same graceful-unavailability contract
+;; agent.http uses for its libcurl-optional symbols.
+;;
+;; HONESTY NOTE: this module gives you the real thing -- Moonlab's actual
+;; state-vector simulator, gates, and measurement, Bell-verifiable via
+;; Moonlab's own bell_test_run_chsh (not bound here yet; see Stage S5 in the
+;; design doc). It is unrelated to the classical `quantum-random` builtin
+;; family (lib/quantum/quantum_rng.c) -- see Part D for wiring that builtin to
+;; Moonlab's QRNG.
+;;
+(require core.capabilities)
+
+(provide make-quantum-state
+         quantum-state-destroy!
+         quantum-state-num-qubits
+         apply-hadamard
+         apply-pauli-x
+         apply-pauli-y
+         apply-pauli-z
+         apply-cnot
+         apply-rx
+         apply-ry
+         apply-rz
+         measure
+         expectation-z
+         with-quantum-state)
+
+;; FFI declarations
+(extern i64    quantum-state-create-raw     i32           :real eshkol_quantum_state_create)
+(extern void   quantum-state-destroy-raw    i64           :real eshkol_quantum_state_destroy)
+(extern i32    quantum-num-qubits-raw       i64           :real eshkol_quantum_num_qubits)
+(extern i32    quantum-gate-hadamard-raw    i64 i32       :real eshkol_quantum_gate_hadamard)
+(extern i32    quantum-gate-pauli-x-raw     i64 i32       :real eshkol_quantum_gate_pauli_x)
+(extern i32    quantum-gate-pauli-y-raw     i64 i32       :real eshkol_quantum_gate_pauli_y)
+(extern i32    quantum-gate-pauli-z-raw     i64 i32       :real eshkol_quantum_gate_pauli_z)
+(extern i32    quantum-gate-cnot-raw        i64 i32 i32   :real eshkol_quantum_gate_cnot)
+(extern i32    quantum-gate-rx-raw          i64 i32 double :real eshkol_quantum_gate_rx)
+(extern i32    quantum-gate-ry-raw          i64 i32 double :real eshkol_quantum_gate_ry)
+(extern i32    quantum-gate-rz-raw          i64 i32 double :real eshkol_quantum_gate_rz)
+(extern i32    quantum-measure-raw          i64 i32       :real eshkol_quantum_measure)
+(extern double quantum-expectation-z-raw    i64 i32       :real eshkol_quantum_expectation_z)
+(extern i32    quantum-last-error-raw       ptr i64       :real eshkol_quantum_last_error)
+
+;; ---------------------------------------------------------------------------
+;; Internal: honest error surface. Moonlab/the shim signal failure with a
+;; negative return code; this turns that into a catchable Eshkol error
+;; carrying Moonlab's own message, rather than returning a bogus value.
+;; ---------------------------------------------------------------------------
+
+(define (quantum-last-error)
+  (let ((buf (make-string 256 #\nul)))
+    (let ((n (quantum-last-error-raw buf 256)))
+      (if (> n 0) (substring buf 0 n) "unknown Moonlab quantum error"))))
+
+(define (check-gate-result! op-name rc)
+  (if (< rc 0)
+      (error (string-append "agent.quantum: " op-name " failed: " (quantum-last-error)))
+      rc))
+
+;; ---------------------------------------------------------------------------
+;; Lifecycle
+;; ---------------------------------------------------------------------------
+
+(define (make-quantum-state n)
+  "Allocate an n-qubit state vector initialized to |0...0>.
+   Returns an opaque handle. Raises on invalid n or Moonlab allocation failure."
+  (capability-require! 'ffi 'make-quantum-state)
+  (let ((h (quantum-state-create-raw n)))
+    (if (< h 0)
+        (error (string-append "agent.quantum: make-quantum-state failed: " (quantum-last-error)))
+        h)))
+
+(define (quantum-state-destroy! st)
+  "Release a quantum state's Moonlab-side resources. Safe to call once;
+   calling twice or with an invalid handle is a documented no-op on the
+   C side, never a crash."
+  (quantum-state-destroy-raw st))
+
+(define (quantum-state-num-qubits st)
+  "Number of qubits `st` was created with."
+  (let ((n (quantum-num-qubits-raw st)))
+    (if (< n 0)
+        (error "agent.quantum: quantum-state-num-qubits: invalid quantum-state handle")
+        n)))
+
+;; ---------------------------------------------------------------------------
+;; Gates
+;; ---------------------------------------------------------------------------
+
+(define (apply-hadamard st qubit)
+  "Apply a Hadamard gate to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-hadamard" (quantum-gate-hadamard-raw st qubit))
+  st)
+
+(define (apply-pauli-x st qubit)
+  "Apply a Pauli-X (NOT) gate to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-pauli-x" (quantum-gate-pauli-x-raw st qubit))
+  st)
+
+(define (apply-pauli-y st qubit)
+  "Apply a Pauli-Y gate to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-pauli-y" (quantum-gate-pauli-y-raw st qubit))
+  st)
+
+(define (apply-pauli-z st qubit)
+  "Apply a Pauli-Z gate to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-pauli-z" (quantum-gate-pauli-z-raw st qubit))
+  st)
+
+(define (apply-cnot st control target)
+  "Apply a CNOT gate: flip `target` iff `control` is |1>. Returns `st` for chaining."
+  (check-gate-result! "apply-cnot" (quantum-gate-cnot-raw st control target))
+  st)
+
+(define (apply-rx st qubit theta)
+  "Apply an RX(theta) rotation to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-rx" (quantum-gate-rx-raw st qubit theta))
+  st)
+
+(define (apply-ry st qubit theta)
+  "Apply an RY(theta) rotation to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-ry" (quantum-gate-ry-raw st qubit theta))
+  st)
+
+(define (apply-rz st qubit theta)
+  "Apply an RZ(theta) rotation to `qubit`. Returns `st` for chaining."
+  (check-gate-result! "apply-rz" (quantum-gate-rz-raw st qubit theta))
+  st)
+
+;; ---------------------------------------------------------------------------
+;; Measurement
+;; ---------------------------------------------------------------------------
+
+(define (measure st qubit)
+  "Projectively measure `qubit` in the computational (Z) basis, collapsing
+   the state vector. Returns 0 or 1. Sampled using Moonlab's own
+   hardware-backed entropy context (quantum_entropy_ctx_create_hw), not any
+   Eshkol-controlled seed."
+  (let ((outcome (quantum-measure-raw st qubit)))
+    (if (< outcome 0)
+        (error (string-append "agent.quantum: measure failed: " (quantum-last-error)))
+        outcome)))
+
+(define (expectation-z st qubit)
+  "Expectation value <psi|Z_qubit|psi> in [-1, 1], without collapsing the state."
+  (quantum-expectation-z-raw st qubit))
+
+;; ---------------------------------------------------------------------------
+;; Convenience: auto-destroy on exit (mirrors sqlite.esk's with-db)
+;; ---------------------------------------------------------------------------
+
+(define (with-quantum-state n fn)
+  "Allocate an n-qubit state, call (fn state), destroy the state on exit
+   (including on error/non-local exit via dynamic-wind)."
+  (let ((st (make-quantum-state n)))
+    (dynamic-wind (lambda () #f)
+                  (lambda () (fn st))
+                  (lambda () (quantum-state-destroy! st)))))

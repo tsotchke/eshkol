@@ -3253,6 +3253,23 @@ if(ESHKOL_BUILD_AGENT_FFI)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_client.c)
         endif()
 
+        # Moonlab quantum state-vector core (Stage S1,
+        # docs/design/MOONLAB_INTEGRATION.md). Unlike the pkg-config-optional
+        # modules above, this file is ALWAYS compiled (like agent_treesitter.c
+        # / agent_yoga.c) so the JIT weak-symbol table in lib/repl/repl_jit.cpp
+        # always has a real definition to bind against -- there is no shared
+        # system library that could plausibly provide these `eshkol_quantum_*`
+        # symbols if we skipped compiling the file, so omitting it entirely
+        # would leave `(require agent.quantum)` a dangling reference (and
+        # break the AOT/JIT link) rather than a graceful "not enabled" error.
+        # ESHKOL_HAVE_MOONLAB (set below only when ESHKOL_QUANTUM_ENABLED=ON
+        # and Moonlab's FetchContent produced the `quantumsim` target) picks
+        # the real Moonlab-backed implementation vs. honest stubs inside the
+        # file's own #ifdef.
+        if(EXISTS "${AGENT_FFI_DIR}/agent_quantum.c")
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_quantum.c)
+        endif()
+
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
         target_include_directories(eshkol-agent-ffi PRIVATE
@@ -3313,6 +3330,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
             endif()
         endif()
 
+        # Moonlab quantum state-vector core (agent_quantum.c above). quantumsim's
+        # own PUBLIC target_include_directories already exposes Moonlab's src/
+        # headers (quantum/state.h, quantum/gates.h, ...) to anything that
+        # links this target, so no extra include-dir wiring is needed here.
+        # ESHKOL_HAVE_MOONLAB selects agent_quantum.c's real-implementation
+        # branch instead of its graceful stubs (see the comment above its
+        # add_library entry).
+        if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim)
+            target_compile_definitions(eshkol-agent-ffi PRIVATE ESHKOL_HAVE_MOONLAB=1)
+            target_link_libraries(eshkol-agent-ffi PUBLIC quantumsim)
+        endif()
+
         # Crypto: CommonCrypto on macOS, OpenSSL on Linux
         if(APPLE)
             target_link_libraries(eshkol-agent-ffi PUBLIC
@@ -3333,6 +3362,11 @@ if(ESHKOL_BUILD_AGENT_FFI)
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
         message(STATUS "  HTTP/curl: ${LIBCURL_AGENT_FOUND}")
+        if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim)
+            message(STATUS "  Quantum:   ENABLED (agent.quantum -> Moonlab quantumsim)")
+        else()
+            message(STATUS "  Quantum:   DISABLED (agent.quantum unavailable; -DESHKOL_QUANTUM_ENABLED=ON to enable)")
+        endif()
 
         # ─────────────────────────────────────────────────────────────
         # Build the link-arg string AOT-compiled user binaries need so
@@ -3405,6 +3439,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
         if(NCURSES_AGENT)
             list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${NCURSES_AGENT}")
+        endif()
+        if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim AND ESHKOL_MOONLAB_LIBRARY_FILE)
+            # Concrete path (not a generator expression - see the "Avoids
+            # generator expressions" note above), plus an rpath so the AOT
+            # binary finds Moonlab's shared library at run time without
+            # requiring the user to set LD_LIBRARY_PATH/DYLD_LIBRARY_PATH.
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${ESHKOL_MOONLAB_LIBRARY_FILE}")
+            if(APPLE)
+                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-Wl,-rpath,${ESHKOL_MOONLAB_LIBRARY_DIR}")
+            else()
+                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-Wl,-rpath,${ESHKOL_MOONLAB_LIBRARY_DIR}")
+            endif()
         endif()
         if(APPLE)
             list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
