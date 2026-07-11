@@ -82,6 +82,14 @@
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/backend/vm.h"
 
+/* quantum-random / -int / -range (vm_native.c dispatch cases 1860-1862) route
+ * through the SAME eshkol_qrng_* entry points the LLVM AOT/JIT backend uses
+ * (lib/quantum/quantum_rng_wrapper.c), rather than the VM's own separate
+ * generator, so the two backends agree on both the numbers and the entropy
+ * source. See that file's honesty notice for what source is actually active
+ * in a given build. */
+#include "../quantum/quantum_rng_wrapper.h"
+
 #ifdef ESHKOL_VM_WASM
 /* The VM networking natives reference POSIX socket and fd declarations.
  * Emscripten provides these headers in its sysroot; include them for the
