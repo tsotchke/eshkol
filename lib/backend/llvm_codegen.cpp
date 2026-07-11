@@ -3357,6 +3357,8 @@ public:
 
             pruneUnusedFreestandingDeclarations();
 
+            preserveLibraryModeDefinitions();
+
             // Coerce mismatched integer types before verification so wasm32
             // does not trip on i32 size_t / i64 byte-count mismatches in
             // generated calls or binary operators.  On native this is usually
@@ -5098,6 +5100,72 @@ private:
         if (removed_functions || removed_globals) {
             eshkol_debug("Freestanding cleanup removed %u unused functions and %u unused globals",
                          removed_functions, removed_globals);
+        }
+    }
+
+    // Library mode (--shared-lib, e.g. the precompiled stdlib.o build) gives
+    // every top-level definition LinkOnceODR linkage (publicDefinitionLinkage /
+    // sexprGlobalLinkage) so that when the SAME core.* module is compiled into
+    // more than one linked object — e.g. a user program that both transitively
+    // pulls in stdlib.o AND requires a core.* module directly — the native
+    // linker merges the duplicate weak definitions instead of erroring
+    // "duplicate symbol". Per the library-mode contract ("skip main function
+    // creation and export all symbols"), every one of those definitions is
+    // meant to be part of the compiled unit's public surface, regardless of
+    // whether anything ELSE inside this translation unit happens to call it.
+    //
+    // LinkOnceODR linkage tells LLVM's OWN module optimizer something
+    // different: "some other translation unit may already provide this
+    // definition," which licenses GlobalOpt/GlobalDCE (part of the standard
+    // -O2 pipeline run later in optimizeModule()) to delete any LinkOnceODR
+    // definition that has no in-module callers, on the theory that the
+    // program will still link against whatever other TU supplies it. For a
+    // precompiled library object there IS no other TU — stdlib.o is the one
+    // and only definition every downstream AOT program links against — so a
+    // "thin wrapper" export nothing else in stdlib.esk happens to call
+    // in-module (fold-left, foldl, foldr, atomic-write-file, csv-parse-line,
+    // string-trim, ...) was being silently optimized away before it ever
+    // reached the object file, and any external program calling it failed to
+    // link with "undefined reference to 'fold-left'" etc.
+    //
+    // Fix: add every LinkOnceODR/WeakAny-linkage *definition* to
+    // @llvm.compiler.used. That is LLVM's documented mechanism for telling
+    // the in-module optimizer "treat this as reachable" without changing the
+    // symbol's actual linkage — duplicate weak definitions across separately
+    // linked objects still merge exactly as before. Native (non-library)
+    // codegen and the --wasm path (which never sets library_mode — see
+    // eshkol_generate_llvm_ir_library() vs eshkol_generate_llvm_ir(), and
+    // deadStripWasmModule()'s Internalize+GlobalDCE) are unaffected.
+    void preserveLibraryModeDefinitions() {
+        if (!library_mode) return;
+
+        SmallVector<GlobalValue*, 64> keep_alive;
+        for (Function& fn : *module) {
+            if (fn.isDeclaration()) continue;
+            auto linkage = fn.getLinkage();
+            if (linkage == GlobalValue::LinkOnceODRLinkage ||
+                linkage == GlobalValue::LinkOnceAnyLinkage ||
+                linkage == GlobalValue::WeakAnyLinkage ||
+                linkage == GlobalValue::WeakODRLinkage) {
+                keep_alive.push_back(&fn);
+            }
+        }
+        // Only pin FUNCTIONS, not globals. The pre-#256 homoiconic display
+        // registry pinned stdlib against DCE by ptrtoint-ing every top-level
+        // FUNCTION from main() — it never address-took data globals. Force-
+        // keeping weak/linkonce GlobalVariables here (e.g. the *_sexpr display
+        // metadata) materializes data that the freestanding object is not set
+        // up to own, which corrupts memory at runtime (region-evac SIGBUS) and
+        // bloats RSS. Restoring the functions-only pin matches the old
+        // behavior and is sufficient to keep exported stdlib symbols linkable.
+
+        if (!keep_alive.empty()) {
+            appendToCompilerUsed(*module, keep_alive);
+            eshkol_debug(
+                "Library mode: marked %zu weak/linkonce definitions "
+                "compiler-used so O2 GlobalDCE cannot strip unreferenced "
+                "exports from the compiled object",
+                keep_alive.size());
         }
     }
 
