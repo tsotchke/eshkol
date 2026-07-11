@@ -1,0 +1,61 @@
+; vm_bignum_arithmetic_test.esk
+;
+; Regression coverage for a silent VM bignum-arithmetic miscompile exposed by
+; the generative multi-oracle differential harness (P7c). The bytecode VM's
+; core arithmetic/comparison opcodes and native builtins coerced operands
+; through as_number(), which returns 0.0 for a VAL_BIGNUM. Any expression whose
+; exact result overflowed int64 therefore silently produced a wrong small value
+; on the VM path (e.g. (+ (expt 7 41) 13) printed 13), while the
+; native/JIT/AOT/chibi paths stayed correct.
+;
+; Each line below prints the value the reference path produces; run under the
+; VM it must now print the SAME value.
+;
+; Expected output (one per line):
+;   44567640326363195900190045974568020
+;   999999999999999999999999999999
+;   340282366920938463463374607431768211456
+;   1
+;   -1
+;   1428571428571428571428571428571428571428
+;   1267650600228229401496703205376
+;   5
+;   #t
+;   #t
+;   #t
+;   18446744073709551614
+;   9223372036854775808
+;   2
+;   1267650600228229401496703205376
+
+; Addition/subtraction that overflow int64 -> exact bignum.
+(display (+ (expt 7 41) 13)) (newline)
+(display (- (expt 10 30) 1)) (newline)
+
+; Multiplication of two bignums.
+(display (* (expt 2 64) (expt 2 64))) (newline)
+
+; modulo/remainder/quotient over bignums, with R7RS signs (modulo carries the
+; sign of the divisor, remainder the sign of the dividend).
+(display (modulo (expt 10 26) 3)) (newline)
+(display (remainder (- (expt 10 26)) 3)) (newline)
+(display (quotient (expt 10 40) 7)) (newline)
+
+; min/max preserve the exact bignum operand.
+(display (max (expt 2 100) 5)) (newline)
+(display (min (expt 2 100) 5)) (newline)
+
+; Comparisons and equality across the bignum boundary.
+(display (< (expt 2 100) (expt 2 101))) (newline)
+(display (= (expt 2 64) (expt 2 64))) (newline)
+(display (eqv? (- (expt 7 41) (expt 7 41)) 0)) (newline)
+
+; int64-overflow literals promote to bignum instead of wrapping / going inexact.
+(display (* 9223372036854775807 2)) (newline)
+(display (+ 9223372036854775807 1)) (newline)
+
+; Negated-bignum modulo (exercises bignum-aware OP_NEG feeding OP_MOD).
+(display (modulo (- (expt 10 26)) 3)) (newline)
+
+; Bignum display round-trip.
+(display (expt 2 100)) (newline)
