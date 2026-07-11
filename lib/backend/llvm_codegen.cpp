@@ -11040,17 +11040,14 @@ private:
             return nullptr;
         }
 
-        // If block is already terminated (TCO tail call), skip return generation
+        // A tail call may have emitted its own terminator.  It still needs the
+        // common post-body bookkeeping below: library mode registers every
+        // public function for S-expression lookup, which keeps an otherwise
+        // unreferenced linkonce_odr definition in the precompiled stdlib.
         if (current_bb->getTerminator()) {
-            // Block was terminated by a tail call jump - this is expected for TCO
-            eshkol_debug("Function %s: block already terminated (TCO path)", func_name);
-            symbol_table = prev_symbols;
-            current_function = prev_function;
-            return function;
-        }
-
-        // Return the result - pack to tagged_value since functions now return tagged_value
-        if (body_result) {
+            eshkol_debug("Function %s: block already terminated by tail call", func_name);
+        } else if (body_result) {
+            // Return the result - pack to tagged_value since functions now return tagged_value
             // If body_result is already a tagged_value, return it directly
             if (body_result->getType() == tagged_value_type) {
                 // CLOSURE FIX: Check if this is a closure/lambda and register it
