@@ -1,0 +1,60 @@
+;;; Self-tail-recursion through cond/case/when/unless/and/or.
+;;;
+;;; Bug: the backend's tail-position analysis (llvm_codegen.cpp
+;;; isInTailPosition / countAllRecursiveCalls / findTailCalls, which together
+;;; drive isSelfTailRecursive and hence whether a self-recursive define is
+;;; rewritten into a flat loop back-edge) only understood `if`, `begin`, let*,
+;;; sequence and guard. A self-tail-call written with `cond`, `case`, `when`,
+;;; `unless`, or as the last operand of `and`/`or` fell through to the switch
+;;; default, so isSelfTailRecursive reported "no tail recursion" and TCO was
+;;; never enabled. Those loops compiled to genuine per-iteration recursion and
+;;; overflowed the native C stack (SIGBUS) a couple of million iterations in,
+;;; while the identical loop written with `if` looped flat. That `if` worked
+;;; and `cond` did not was the whole bug.
+;;;
+;;; An earlier attempt updated isInTailPosition and countAllRecursiveCalls but
+;;; NOT findTailCalls, so tail_calls.size() (0) still differed from the total
+;;; recursive-call count and TCO stayed disabled -- a complete no-op. This test
+;;; guards against that regression by exercising every affected form.
+;;;
+;;; Each loop runs to 2,000,000 iterations: large enough that a real
+;;; per-iteration stack frame reliably crashes long before the end. Printing
+;;; the expected value (2000000) instead of crashing proves O(1)-stack TCO.
+
+(define N 2000000)
+
+;; cond: self-call in the else clause body
+(define (f-cond i a) (cond ((>= i N) a) (else (f-cond (+ i 1) (+ a 1)))))
+(display "cond:    ")
+(let ((r (f-cond 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; case: self-call in the else clause body
+(define (f-case i a) (case (>= i N) ((#t) a) (else (f-case (+ i 1) (+ a 1)))))
+(display "case:    ")
+(let ((r (f-case 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; when: self-call as the when body (in the else branch of an if)
+(define (f-when i a) (if (>= i N) a (when #t (f-when (+ i 1) (+ a 1)))))
+(display "when:    ")
+(let ((r (f-when 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; unless: self-call as the unless body (in the else branch of an if)
+(define (f-unless i a) (if (>= i N) a (unless #f (f-unless (+ i 1) (+ a 1)))))
+(display "unless:  ")
+(let ((r (f-unless 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; or: self-call as the last operand of or
+(define (f-or i a) (or (and (>= i N) a) (f-or (+ i 1) (+ a 1))))
+(display "or:      ")
+(let ((r (f-or 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)
+
+;; and: self-call as the last operand of and (guarded so the loop terminates)
+(define (f-and i a) (if (>= i N) a (and #t (f-and (+ i 1) (+ a 1)))))
+(display "and:     ")
+(let ((r (f-and 0 0))) (if (= r N) (display "PASS") (display "FAIL")))
+(newline)

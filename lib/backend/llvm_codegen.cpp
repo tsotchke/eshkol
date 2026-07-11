@@ -23509,6 +23509,76 @@ private:
                     }
                     return false;
 
+                case ESHKOL_COND_OP:
+                    // COND_OP uses call_op: each variables[i] is a clause,
+                    // itself a CALL_OP whose func is the test (NOT tail) and
+                    // whose variables are the clause body (implicit begin).
+                    // Only the LAST body expression of each clause inherits
+                    // cond's own tail position; an `else` clause has the same
+                    // shape (func names "else"). Mirrors the tail rules in
+                    // TailCallCodegen::allSelfCallsInTailPosition (COND_OP).
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_OP ||
+                            clause->operation.op != ESHKOL_CALL_OP ||
+                            clause->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = clause->operation.call_op.num_vars - 1;
+                        if (isInTailPosition(expr,
+                                &clause->operation.call_op.variables[last])) {
+                            return true;
+                        }
+                    }
+                    return false;
+
+                case ESHKOL_CASE_OP:
+                    // CASE_OP uses call_op: func = key (NOT tail),
+                    // variables[i] = clause CONS(car=datums, cdr=body). The
+                    // body is a CALL_OP(func unused, variables=body exprs);
+                    // only its LAST expression inherits case's tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) {
+                            continue;
+                        }
+                        const eshkol_ast_t* body = clause->cons_cell.cdr;
+                        if (body->type != ESHKOL_OP ||
+                            body->operation.op != ESHKOL_CALL_OP ||
+                            body->operation.call_op.num_vars == 0) {
+                            continue;
+                        }
+                        uint64_t last = body->operation.call_op.num_vars - 1;
+                        if (isInTailPosition(expr,
+                                &body->operation.call_op.variables[last])) {
+                            return true;
+                        }
+                    }
+                    return false;
+
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    // when/unless use call_op: variables[0] = test (NOT tail),
+                    // variables[1..] = body (implicit begin). Only the LAST
+                    // body expression is in tail position.
+                    if (op->call_op.num_vars > 1) {
+                        return isInTailPosition(expr,
+                            &op->call_op.variables[op->call_op.num_vars - 1]);
+                    }
+                    return false;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    // and/or use sequence_op: every operand but the last is a
+                    // (non-tail) short-circuit test; only the LAST operand
+                    // supplies the result and inherits the form's tail position.
+                    if (op->sequence_op.num_expressions > 0) {
+                        return isInTailPosition(expr,
+                            &op->sequence_op.expressions[
+                                op->sequence_op.num_expressions - 1]);
+                    }
+                    return false;
+
                 default:
                     return false;
             }
@@ -23584,6 +23654,59 @@ private:
                     break;
 
                 case ESHKOL_SEQUENCE_OP:
+                    for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                        count += countAllRecursiveCalls(&op->sequence_op.expressions[i], func_name);
+                    }
+                    break;
+
+                case ESHKOL_COND_OP:
+                    // Each clause (CALL_OP) has func = test and variables =
+                    // body. Count self-calls in BOTH (tail and non-tail) so the
+                    // total matches findTailCalls' tail-only count only when
+                    // every self-call is genuinely in tail position.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_OP ||
+                            clause->operation.op != ESHKOL_CALL_OP) {
+                            continue;
+                        }
+                        count += countAllRecursiveCalls(clause->operation.call_op.func, func_name);
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            count += countAllRecursiveCalls(
+                                &clause->operation.call_op.variables[j], func_name);
+                        }
+                    }
+                    break;
+
+                case ESHKOL_CASE_OP:
+                    // func = key expression; each clause is CONS(car=datums,
+                    // cdr=body CALL_OP). Datums are quoted literals (no calls);
+                    // count the key and every clause body expression.
+                    count += countAllRecursiveCalls(op->call_op.func, func_name);
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
+                        const eshkol_ast_t* body = clause->cons_cell.cdr;
+                        if (body->type != ESHKOL_OP ||
+                            body->operation.op != ESHKOL_CALL_OP) continue;
+                        for (uint64_t j = 0; j < body->operation.call_op.num_vars; j++) {
+                            count += countAllRecursiveCalls(
+                                &body->operation.call_op.variables[j], func_name);
+                        }
+                    }
+                    break;
+
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    // variables[0] = test, variables[1..] = body; count all.
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        count += countAllRecursiveCalls(&op->call_op.variables[i], func_name);
+                    }
+                    break;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
+                    // sequence_op operands; count self-calls in all of them.
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         count += countAllRecursiveCalls(&op->sequence_op.expressions[i], func_name);
                     }
@@ -23717,6 +23840,59 @@ private:
                     break;
 
                 case ESHKOL_SEQUENCE_OP:
+                    for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                        findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
+                    }
+                    break;
+
+                case ESHKOL_COND_OP:
+                    // Walk into every clause's test (func) and body exprs.
+                    // isInTailPosition (now COND-aware) decides which reached
+                    // self-calls actually qualify as tail. Without this case
+                    // the switch fell to `default: break` and no self-call in a
+                    // cond was ever recorded — so isSelfTailRecursive saw
+                    // tail_calls=0 != total>0 and disabled TCO (the exact
+                    // reason the earlier cond/case attempt was a no-op: it
+                    // updated isInTailPosition + countAllRecursiveCalls but
+                    // left THIS function untouched).
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_OP ||
+                            clause->operation.op != ESHKOL_CALL_OP) {
+                            continue;
+                        }
+                        findTailCalls(clause->operation.call_op.func, body, func_name, tail_calls);
+                        for (uint64_t j = 0; j < clause->operation.call_op.num_vars; j++) {
+                            findTailCalls(&clause->operation.call_op.variables[j],
+                                          body, func_name, tail_calls);
+                        }
+                    }
+                    break;
+
+                case ESHKOL_CASE_OP:
+                    findTailCalls(op->call_op.func, body, func_name, tail_calls);
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        const eshkol_ast_t* clause = &op->call_op.variables[i];
+                        if (clause->type != ESHKOL_CONS || !clause->cons_cell.cdr) continue;
+                        const eshkol_ast_t* body_ast = clause->cons_cell.cdr;
+                        if (body_ast->type != ESHKOL_OP ||
+                            body_ast->operation.op != ESHKOL_CALL_OP) continue;
+                        for (uint64_t j = 0; j < body_ast->operation.call_op.num_vars; j++) {
+                            findTailCalls(&body_ast->operation.call_op.variables[j],
+                                          body, func_name, tail_calls);
+                        }
+                    }
+                    break;
+
+                case ESHKOL_WHEN_OP:
+                case ESHKOL_UNLESS_OP:
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        findTailCalls(&op->call_op.variables[i], body, func_name, tail_calls);
+                    }
+                    break;
+
+                case ESHKOL_AND_OP:
+                case ESHKOL_OR_OP:
                     for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
                         findTailCalls(&op->sequence_op.expressions[i], body, func_name, tail_calls);
                     }
