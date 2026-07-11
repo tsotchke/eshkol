@@ -4396,8 +4396,16 @@ int main(int argc, char **argv)
         asts.insert(asts.begin(), req_ast);
     }
 
-    // Auto-link stdlib.o if the source requires stdlib and we're not in library mode
-    if (!shared_lib && requires_stdlib(asts)) {
+    // Auto-link stdlib.o if the source requires stdlib and we're not in library mode.
+    //
+    // WASM: never auto-link the native stdlib.o. It is a wasm-incompatible
+    // native object, and treating it as "pre-compiled" turns every stdlib
+    // function into an `env.*` import that no JS glue can satisfy — the module
+    // then fails to instantiate the moment the program actually uses a stdlib
+    // function. For wasm we instead inline the stdlib source (below) and let
+    // the wasm dead-strip (internalize + globalDCE in the emit path) drop
+    // whatever the program does not reach, yielding a small self-contained module.
+    if (!shared_lib && !wasm_output && requires_stdlib(asts)) {
         // Check if stdlib.o is already in compiled_files
         bool has_stdlib = false;
         for (const auto& obj_file : compiled_files) {
@@ -4420,8 +4428,11 @@ int main(int argc, char **argv)
 
     // Detect pre-compiled libraries and discover ALL their sub-modules.
     // Every module recursively required by a pre-compiled library is also pre-compiled.
+    // Skipped for wasm: see the auto-link comment above — wasm inlines stdlib
+    // from source and dead-strips it rather than importing a native .o.
     if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
     for (const auto& obj_file : compiled_files) {
+        if (wasm_output) break;
         std::string filename = std::filesystem::path(obj_file).filename().string();
         if (filename == "stdlib.o" || filename == "libstdlib.o") {
             eshkol_info("Detected pre-compiled stdlib: %s", obj_file);
