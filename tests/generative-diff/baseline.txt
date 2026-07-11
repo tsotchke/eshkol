@@ -1,15 +1,2 @@
 # generative_differential baseline — known divergence signatures (program::kind).
 # Regenerate: scripts/run_generative_differential.py --seed 1234 --count 12 --write-baseline baseline.txt
-diff_00000::VM_SILENT_WRONG
-diff_00001::VM_SILENT_WRONG
-diff_00003::VM_SILENT_WRONG
-diff_00006::VM_SILENT_WRONG
-diff_00007::VM_SILENT_WRONG
-diff_00008::VM_SILENT_WRONG
-meta_00001::META_PROPERTY_FALSE
-meta_00001::VM_SILENT_WRONG
-meta_00003::VM_SILENT_WRONG
-meta_00007::META_PROPERTY_FALSE
-meta_00007::VM_SILENT_WRONG
-meta_00008::META_PROPERTY_FALSE
-meta_00008::VM_SILENT_WRONG
