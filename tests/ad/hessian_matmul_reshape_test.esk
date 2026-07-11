@@ -1,0 +1,94 @@
+;;; tests/ad/hessian_matmul_reshape_test.esk
+;;; ESH-0121 regression: exact Hessian of a scalar loss that RESHAPES its vector
+;;; argument into a 2-D tensor and runs tensor-matmul.
+;;;
+;;; PR #252 made the Scheme-vector tensor kernels (tensor-mul/tensor-sum/
+;;; tensor-dot) forward-mode-dual-aware, restoring the tensor-op Hessian. But a
+;;; loss that first (reshape v r c) into a 2-D tensor and then tensor-matmul was
+;;; still broken: reshape flattened each forward-mode DUAL_NUMBER jet to a plain
+;;; double and the 2-D matmul path was reverse-mode-only, so the e1/e2/e1e2 slots
+;;; were dropped and every second-order term collapsed to 0:
+;;;   (hessian (lambda (v) (tensor-sum (tensor-matmul (reshape v 2 2)
+;;;                                                   (reshape v 2 2)))) #(1 2 3 4))
+;;;     -> #((0 0 0 0)(0 0 0 0)(0 0 0 0)(0 0 0 0))   [WRONG]
+;;;
+;;; Fix: reshape of a Scheme vector of forward-mode duals now produces a *dual
+;;; tensor* (dtype DUAL, elements are tagged jets), tensor-matmul dispatches to an
+;;; exact forward-mode dual matmul (the dual product rule carries the mixed e1e2
+;;; term), and tensor-sum reduces the dual tensor with the exact dual add. Result
+;;; is the exact analytic Hessian; off-diagonals that are analytically zero stay
+;;; EXACTLY zero (no finite differences).
+(define pass 0)(define fail 0)
+(define (approx= a b) (< (abs (- a b)) 1e-3))
+(define (exact= a b) (= a b))
+(define (chk label v)
+  (display "  [")(display (if v "PASS" "FAIL"))(display "] ")(display label)(newline)
+  (if v (set! pass (+ pass 1)) (set! fail (+ fail 1))))
+
+;; ── SQUARE: loss(v) = sum( reshape(v,2,2) @ reshape(v,2,2) ) ────────────────
+;; f = v0^2 + v3^2 + v0 v1 + v0 v2 + v1 v3 + v2 v3 + 2 v1 v2
+;; analytic Hessian (constant, quadratic loss):
+;;   [[2 1 1 0]
+;;    [1 0 2 1]
+;;    [1 2 0 1]
+;;    [0 1 1 2]]
+(define (sq-loss v) (let ((m (reshape v 2 2))) (tensor-sum (tensor-matmul m m))))
+(define hs (hessian sq-loss #(1.0 2.0 3.0 4.0)))
+;; diagonal
+(chk "sq H[0][0] = 2" (approx= (tensor-ref hs 0 0) 2.0))
+(chk "sq H[1][1] = 0 (exact)" (exact= (tensor-ref hs 1 1) 0.0))
+(chk "sq H[2][2] = 0 (exact)" (exact= (tensor-ref hs 2 2) 0.0))
+(chk "sq H[3][3] = 2" (approx= (tensor-ref hs 3 3) 2.0))
+;; nonzero off-diagonals
+(chk "sq H[0][1] = 1" (approx= (tensor-ref hs 0 1) 1.0))
+(chk "sq H[0][2] = 1" (approx= (tensor-ref hs 0 2) 1.0))
+(chk "sq H[1][2] = 2" (approx= (tensor-ref hs 1 2) 2.0))
+(chk "sq H[1][3] = 1" (approx= (tensor-ref hs 1 3) 1.0))
+(chk "sq H[2][3] = 1" (approx= (tensor-ref hs 2 3) 1.0))
+;; analytically-zero off-diagonals must be EXACTLY zero
+(chk "sq H[0][3] = 0 (exact)" (exact= (tensor-ref hs 0 3) 0.0))
+(chk "sq H[3][0] = 0 (exact)" (exact= (tensor-ref hs 3 0) 0.0))
+;; symmetry
+(chk "sq H symmetric [1][0]" (approx= (tensor-ref hs 1 0) (tensor-ref hs 0 1)))
+(chk "sq H symmetric [3][1]" (approx= (tensor-ref hs 3 1) (tensor-ref hs 1 3)))
+
+;; ── RECTANGULAR / ASYMMETRIC: loss(v) = sum( reshape(v,2,3) @ reshape(v,3,2) )
+;; v has 6 components; m=[2x3], n=[3x2], product [2x2].
+;; analytic Hessian:
+;;   [[2 1 0 1 0 0]
+;;    [1 0 1 2 0 0]
+;;    [0 1 0 0 2 1]
+;;    [1 2 0 0 1 0]
+;;    [0 0 2 1 0 1]
+;;    [0 0 1 0 1 2]]
+(define (rect-loss v)
+  (let ((m (reshape v 2 3))
+        (n (reshape v 3 2)))
+    (tensor-sum (tensor-matmul m n))))
+(define hr (hessian rect-loss #(1.0 2.0 3.0 4.0 5.0 6.0)))
+(chk "rect H[0][0] = 2" (approx= (tensor-ref hr 0 0) 2.0))
+(chk "rect H[0][1] = 1" (approx= (tensor-ref hr 0 1) 1.0))
+(chk "rect H[0][3] = 1" (approx= (tensor-ref hr 0 3) 1.0))
+(chk "rect H[1][2] = 1" (approx= (tensor-ref hr 1 2) 1.0))
+(chk "rect H[1][3] = 2" (approx= (tensor-ref hr 1 3) 2.0))
+(chk "rect H[2][4] = 2" (approx= (tensor-ref hr 2 4) 2.0))
+(chk "rect H[4][5] = 1" (approx= (tensor-ref hr 4 5) 1.0))
+(chk "rect H[5][5] = 2" (approx= (tensor-ref hr 5 5) 2.0))
+;; analytically-zero entries exactly zero
+(chk "rect H[0][2] = 0 (exact)" (exact= (tensor-ref hr 0 2) 0.0))
+(chk "rect H[0][4] = 0 (exact)" (exact= (tensor-ref hr 0 4) 0.0))
+(chk "rect H[0][5] = 0 (exact)" (exact= (tensor-ref hr 0 5) 0.0))
+(chk "rect H[3][3] = 0 (exact)" (exact= (tensor-ref hr 3 3) 0.0))
+;; symmetry
+(chk "rect H symmetric [3][0]" (approx= (tensor-ref hr 3 0) (tensor-ref hr 0 3)))
+(chk "rect H symmetric [4][2]" (approx= (tensor-ref hr 4 2) (tensor-ref hr 2 4)))
+
+;; ── do-no-harm: the plain tensor-op Hessian (no reshape/matmul) still exact ──
+;; f(v) = sum(v*v) -> H = 2 I ; off-diagonals exactly zero.
+(define hq (hessian (lambda (v) (tensor-sum (tensor-mul v v))) #(1.0 2.0)))
+(chk "quad H[0][0] = 2" (approx= (tensor-ref hq 0 0) 2.0))
+(chk "quad H[1][1] = 2" (approx= (tensor-ref hq 1 1) 2.0))
+(chk "quad H[0][1] = 0 (exact)" (exact= (tensor-ref hq 0 1) 0.0))
+
+(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
+(if (> fail 0) (error "hessian_matmul_reshape_test FAILED"))

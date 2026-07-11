@@ -455,6 +455,12 @@ class Gen:
              ["0.8", "1.1"]),
             ("es", "(+ (* (exp (* 0.3 (vref v 0))) (sin (vref v 1))) "
                    "(* (vref v 0) (vref v 1)))", ["0.7", "1.2"]),
+            # ESH-0121: reshape a vector into a 2x2 tensor and tensor-matmul.
+            # reshape used to flatten the forward-mode dual jets to plain doubles
+            # and the 2-D matmul was reverse-mode-only, so this Hessian silently
+            # collapsed to all-zero. Now exact via the dual-tensor matmul path.
+            ("mmsq", "(tensor-sum (tensor-matmul (reshape v 2 2) (reshape v 2 2)))",
+             ["1.0", "2.0", "3.0", "4.0"]),
         ]
         for cid, body, comps in cases:
             n = len(comps)
