@@ -32453,15 +32453,45 @@ private:
         return packDoubleToTaggedValue(random_val);
     }
 
-    // Quantum random integer: (quantum-random-int) returns uint64
+    // Quantum random integer: (quantum-random-int bound) -> integer in [0, bound).
+    // Mirrors the VM path (vm_native.c case 1861): bound <= 1 yields 0, otherwise
+    // the unsigned remainder of a raw 64-bit draw by bound. Previously this ignored
+    // its argument and returned the raw uint64, diverging from the VM and violating
+    // the documented [0, bound) contract.
     Value* codegenQuantumRandomInt(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_warn("quantum-random-int requires exactly 1 argument (bound)");
+            return nullptr;
+        }
         Function* qrng_uint64_func = function_table["eshkol_qrng_uint64"];
         if (!qrng_uint64_func) {
             eshkol_error("eshkol_qrng_uint64 function not found");
             return nullptr;
         }
+
+        // Extract the bound as an int64 (mirrors codegenQuantumRandomRange).
+        TypedValue tv_bound = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv_bound.llvm_value) return nullptr;
+        Value* bound = tv_bound.llvm_value;
+        if (bound->getType() == tagged_value_type) {
+            Value* extracted = extractDoubleFromTagged(bound);
+            bound = builder->CreateFPToSI(extracted, int64_type);
+        } else if (bound->getType()->isDoubleTy()) {
+            bound = builder->CreateFPToSI(bound, int64_type);
+        }
+
         Value* random_val = builder->CreateCall(qrng_uint64_func, {});
-        return random_val;  // Return raw int64
+
+        // bound <= 1 -> 0; else unsigned (raw_u64 % bound). Guard the URem divisor
+        // against 0/1 with a safe bound because LLVM select does NOT short-circuit
+        // (both operands are always evaluated), so a raw URem by a zero bound would
+        // be undefined even when the select would discard it.
+        Value* one = ConstantInt::get(int64_type, 1);
+        Value* zero = ConstantInt::get(int64_type, 0);
+        Value* is_small = builder->CreateICmpSLE(bound, one);
+        Value* safe_bound = builder->CreateSelect(is_small, one, bound);
+        Value* modv = builder->CreateURem(random_val, safe_bound);
+        return builder->CreateSelect(is_small, zero, modv);  // raw int64 in [0, bound)
     }
 
     // Quantum random range: (quantum-random-range min max) returns int in [min, max]
