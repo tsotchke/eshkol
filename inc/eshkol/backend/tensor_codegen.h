@@ -1270,6 +1270,27 @@ private:
     llvm::Value* schemeVectorArithmetic(llvm::Value* vec1, llvm::Value* vec2, const std::string& operation);
 
     /**
+     * Forward-mode-dual-aware elementwise binary op on two tagged scalars.
+     *
+     * ESH-0121 (tensor-op Hessian): the vector/tensor Hessian feeds a Scheme
+     * vector whose components are forward-mode DUAL_NUMBER jets to the loss.
+     * The scalar-arithmetic path already dispatches on the dual tag, but the
+     * Scheme-vector tensor kernels (tensor-mul/tensor-sum/tensor-dot) read each
+     * element with extractAsDouble, which drops the e1/e2/e1e2 perturbation
+     * components and silently zeros every second derivative. This helper emits
+     * a runtime branch: if EITHER operand carries the DUAL_NUMBER tag it lifts
+     * both to duals and applies the exact dual rule (autodiff_->dualMul/…),
+     * repacking a DUAL_NUMBER; otherwise it takes the plain-double fast path.
+     * Requires autodiff_ to be wired; callers must guard on it.
+     *
+     * @param a_tagged First operand (tagged value).
+     * @param b_tagged Second operand (tagged value).
+     * @param operation One of "add", "sub", "mul", "div".
+     * @return The tagged result (DUAL_NUMBER if any operand was a dual, else DOUBLE).
+     */
+    llvm::Value* dualAwareScalarBinOp(llvm::Value* a_tagged, llvm::Value* b_tagged, const std::string& operation);
+
+    /**
      * Tensor arithmetic for TENSOR_PTR type.
      * Tensors use double elements in a contiguous array.
      * @param tensor1 First tensor (tagged)

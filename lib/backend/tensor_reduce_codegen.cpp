@@ -559,9 +559,12 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     llvm::BasicBlock* svec_loop_body = llvm::BasicBlock::Create(ctx_.context(), "svec_dot_body", current_func);
     llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_dot_exit", current_func);
 
-    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_dot_acc");
+    // ESH-0121: tagged accumulator so a Scheme vector of DUAL_NUMBER jets dots
+    // to a dual (preserving the mixed e1e2 second-order term) instead of being
+    // flattened to a plain double, which silently zeros the Hessian.
+    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "svec_dot_acc");
     llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_dot_i");
-    ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), svec_sum);
+    ctx_.builder().CreateStore(tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), svec_sum);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
@@ -577,26 +580,24 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     llvm::Value* svec_a_elems_typed = ctx_.builder().CreatePointerCast(svec_a_elems_base, ctx_.ptrType());
     llvm::Value* svec_a_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_a_elems_typed, svec_i);
     llvm::Value* svec_a_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_a_elem_ptr);
-    llvm::Value* svec_a_val = extractAsDouble(svec_a_elem_tagged);
 
     llvm::Value* svec_b_elems_base = ctx_.builder().CreateGEP(ctx_.int8Type(), svec_b_ptr,
         llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* svec_b_elems_typed = ctx_.builder().CreatePointerCast(svec_b_elems_base, ctx_.ptrType());
     llvm::Value* svec_b_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_b_elems_typed, svec_i);
     llvm::Value* svec_b_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_b_elem_ptr);
-    llvm::Value* svec_b_val = extractAsDouble(svec_b_elem_tagged);
 
-    // Multiply and accumulate
-    llvm::Value* svec_product = ctx_.builder().CreateFMul(svec_a_val, svec_b_val);
-    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
-    llvm::Value* svec_new_sum = ctx_.builder().CreateFAdd(svec_current_sum, svec_product);
+    // Multiply and accumulate (dual-aware).
+    llvm::Value* svec_product = dualAwareScalarBinOp(svec_a_elem_tagged, svec_b_elem_tagged, "mul");
+    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
+    llvm::Value* svec_new_sum = dualAwareScalarBinOp(svec_current_sum, svec_product, "add");
     ctx_.builder().CreateStore(svec_new_sum, svec_sum);
     llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(svec_next_i, svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
     ctx_.builder().SetInsertPoint(svec_loop_exit);
-    llvm::Value* svec_result = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
+    llvm::Value* svec_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
     // Don't branch yet - we'll branch to scalar_merge once it's created
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
 
@@ -1139,9 +1140,11 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     // Create scalar_merge block for 1D scalar results (from both Scheme vec and 1D tensor)
     llvm::BasicBlock* scalar_merge = llvm::BasicBlock::Create(ctx_.context(), "scalar_merge", current_func);
 
-    // Now add the deferred branch from svec_exit_block to scalar_merge
+    // Now add the deferred branch from svec_exit_block to scalar_merge.
+    // svec_result is already a tagged value (DUAL_NUMBER when the dot was over a
+    // Scheme vector of forward-mode duals, DOUBLE otherwise), so no repack.
     ctx_.builder().SetInsertPoint(svec_exit_block);
-    llvm::Value* svec_packed = tagged_.packDouble(svec_result);
+    llvm::Value* svec_packed = svec_result;
     ctx_.builder().CreateBr(scalar_merge);
 
     // Tensor merge for 1D scalar path - pack and branch to scalar_merge
@@ -1858,9 +1861,12 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::BasicBlock* svec_loop_body = llvm::BasicBlock::Create(ctx_.context(), "svec_sum_body", current_func);
     llvm::BasicBlock* svec_loop_exit = llvm::BasicBlock::Create(ctx_.context(), "svec_sum_exit", current_func);
 
-    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.doubleType(), nullptr, "svec_sum_acc");
+    // ESH-0121: tagged accumulator so a Scheme vector of DUAL_NUMBER jets sums
+    // to a dual (preserving the mixed e1e2 second-order term) instead of being
+    // flattened to a plain double, which silently zeros the Hessian.
+    llvm::Value* svec_sum = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr, "svec_sum_acc");
     llvm::Value* svec_counter = ctx_.builder().CreateAlloca(ctx_.int64Type(), nullptr, "svec_sum_i");
-    ctx_.builder().CreateStore(llvm::ConstantFP::get(ctx_.doubleType(), 0.0), svec_sum);
+    ctx_.builder().CreateStore(tagged_.packDouble(llvm::ConstantFP::get(ctx_.doubleType(), 0.0)), svec_sum);
     ctx_.builder().CreateStore(llvm::ConstantInt::get(ctx_.int64Type(), 0), svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
@@ -1875,17 +1881,17 @@ llvm::Value* TensorCodegen::tensorSum(const eshkol_operations_t* op) {
     llvm::Value* svec_elems_typed = ctx_.builder().CreatePointerCast(svec_elems_base, ctx_.ptrType());
     llvm::Value* svec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), svec_elems_typed, svec_i);
     llvm::Value* svec_elem_tagged = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_elem_ptr);
-    llvm::Value* svec_elem_val = extractAsDouble(svec_elem_tagged);
-    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
-    llvm::Value* svec_new_sum = ctx_.builder().CreateFAdd(svec_current_sum, svec_elem_val);
+    llvm::Value* svec_current_sum = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
+    llvm::Value* svec_new_sum = dualAwareScalarBinOp(svec_current_sum, svec_elem_tagged, "add");
     ctx_.builder().CreateStore(svec_new_sum, svec_sum);
+    // dualAwareScalarBinOp leaves the builder at its own merge block; the
+    // back-edge and increment below are correctly emitted there.
     llvm::Value* svec_next_i = ctx_.builder().CreateAdd(svec_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
     ctx_.builder().CreateStore(svec_next_i, svec_counter);
     ctx_.builder().CreateBr(svec_loop_cond);
 
     ctx_.builder().SetInsertPoint(svec_loop_exit);
-    llvm::Value* svec_result = ctx_.builder().CreateLoad(ctx_.doubleType(), svec_sum);
-    llvm::Value* svec_tagged_result = tagged_.packDouble(svec_result);
+    llvm::Value* svec_tagged_result = ctx_.builder().CreateLoad(ctx_.taggedValueType(), svec_sum);
     ctx_.builder().CreateBr(sum_merge);
     llvm::BasicBlock* svec_exit_block = ctx_.builder().GetInsertBlock();
 
