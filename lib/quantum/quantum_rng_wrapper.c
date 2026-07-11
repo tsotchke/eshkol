@@ -1,9 +1,20 @@
+/*
+ * quantum_rng_wrapper.c - Eshkol runtime entry points behind `quantum-random`.
+ *
+ * HONESTY NOTICE: this file wires the classical software PRNG in
+ * quantum_rng.c to Eshkol's `quantum-random` / `-int` / `-range` builtins.
+ * It is NOT connected to real quantum hardware and is NOT Bell-verified; see
+ * quantum_rng.h's file comment and eshkol_qrng_source_label() below. A real
+ * (Bell-verified, hardware-entropy) source is only wired up when Eshkol is
+ * built with -DESHKOL_QUANTUM_ENABLED=ON, re-pointing these entry points at
+ * Moonlab's moonlab_qrng_bytes() - see docs/design/MOONLAB_INTEGRATION.md.
+ */
 #include "quantum_rng_wrapper.h"
 #include "quantum_rng.h"
 #include <stdlib.h>
 #include <string.h>
 
-// Global quantum RNG context
+// Global classical-PRNG context (see file-level honesty notice above).
 static qrng_ctx* g_qrng_ctx = NULL;
 static int g_qrng_initialized = 0;
 
@@ -59,4 +70,18 @@ int eshkol_qrng_bytes(uint8_t* buffer, size_t len) {
 
 const char* eshkol_qrng_version(void) {
     return qrng_version();
+}
+
+const char* eshkol_qrng_source_label(void) {
+    /* Stage S1: this build compiles only the classical fallback path.
+     * ESHKOL_MOONLAB_QRNG_ENABLED (set by CMake when -DESHKOL_QUANTUM_ENABLED=ON
+     * and Moonlab links successfully) re-points this label at "moonlab-qrng"
+     * once the real routing lands - see Part D of
+     * docs/design/MOONLAB_INTEGRATION.md. Until then, tell the truth: this is
+     * the deterministic-seed classical PRNG, not real quantum entropy. */
+#if defined(ESHKOL_MOONLAB_QRNG_ENABLED)
+    return "moonlab-qrng";
+#else
+    return "classical-fallback";
+#endif
 }

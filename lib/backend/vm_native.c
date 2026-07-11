@@ -4296,11 +4296,22 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     return NULL;
 }
 
+/* HONESTY NOTICE: despite the "quantum" name of the VM dispatch cases below
+ * (1860-1862, "quantum-random"/"-int"/"-range"), vm_qrng_next_u64() is a
+ * plain classical xorshift64* PRNG - no quantum hardware or simulation is
+ * involved, and it is not Bell-verified. This is also the VM interpreter's
+ * OWN separate implementation, distinct from (and today numerically
+ * divergent from) the eshkol_qrng_* generator the LLVM AOT/JIT backend uses
+ * (lib/quantum/quantum_rng_wrapper.c) for the same builtins - see
+ * docs/design/MOONLAB_INTEGRATION.md Section 3.2 for the divergence and the
+ * planned fix (re-point both backends at the same, honestly-labeled source).
+ * Do not present this generator's output as "real quantum" randomness. */
 static uint64_t vm_qrng_state = 0;
 
 /** @brief xorshift64* PRNG step, lazily self-seeding on first call from a
  *         mix of a stack address and platform-specific entropy (tick count/
- *         QueryPerformanceCounter on Windows, gettimeofday+pid elsewhere). */
+ *         QueryPerformanceCounter on Windows, gettimeofday+pid elsewhere).
+ *         Classical PRNG only - see the honesty notice above. */
 static uint64_t vm_qrng_next_u64(void) {
     if (vm_qrng_state == 0) {
         uint64_t seed = 0x9e3779b97f4a7c15ULL ^ (uint64_t)(uintptr_t)&vm_qrng_state;
@@ -12387,7 +12398,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Quantum-inspired RNG (1860-1862)
+     * "Quantum-inspired" RNG (1860-1862) - classical PRNG, not real quantum
+     * entropy. See the honesty notice above vm_qrng_state/vm_qrng_next_u64.
      * ══════════════════════════════════════════════════════════════════════ */
     case 1860: { /* quantum-random() -> double in [0, 1) */
         vm_push(vm, FLOAT_VAL(vm_qrng_double()));
