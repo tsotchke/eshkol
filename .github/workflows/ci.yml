@@ -237,6 +237,19 @@ jobs:
           set -euxo pipefail
           python3 scripts/check_wasm_imports.py --build-dir "$BUILD_DIR"
 
+      # Guards the stdlib dead-strip on the --wasm path (issue #240 follow-up):
+      # a stdlib-using program compiled WITHOUT --no-stdlib must dead-strip the
+      # unused stdlib and stay small + instantiable, rather than pinning the
+      # whole stdlib against DCE via the homoiconic display registry.
+      - name: Check WASM stdlib dead-strip size
+        if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+        run: |
+          set -euxo pipefail
+          python3 scripts/check_wasm_size.py --build-dir "$BUILD_DIR"
+
       - name: Run Tests
         timeout-minutes: 120
         shell: bash
