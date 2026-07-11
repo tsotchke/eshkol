@@ -29,6 +29,18 @@ extern "C" {
 extern void* arena_allocate_with_header(void* arena, uint64_t data_size,
                                         uint8_t subtype, uint8_t flags);
 
+// Region write barrier (ESH-0214c, lib/core/runtime_regions.cpp): promotes a
+// tagged value's in-region subgraph out of any active region strictly inner
+// than the region owning `dst` before it is stored there. The fast path (no
+// active region) is a single thread-local load + branch, so this is safe to
+// call unconditionally on every store -- the same convention codegen uses at
+// every other mutation channel (set-car!/set-cdr!, vector-set!,
+// hash-table-set!, global set!). Immediate (non-heap) tagged values pass
+// through untouched; only HEAP_PTR/CALLABLE/port-tagged values are evacuated.
+extern void eshkol_region_write_barrier_into(eshkol_tagged_value_t* out,
+                                             const void* dst,
+                                             const eshkol_tagged_value_t* value);
+
 typedef struct {
     eshkol_tagged_value_t* stack;
     int top;
@@ -68,7 +80,18 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
 
     param->capacity = initial_capacity;
     param->top = 0;
-    param->stack[0] = default_val;
+    // The value stack is a plain malloc'd buffer that lives independently of
+    // any region arena (it is never itself region-allocated and outlives any
+    // region that may be active when the value is bound). If `default_val` is
+    // a heap/pointer-tagged value currently living inside an active region's
+    // arena, storing it here without promotion would leave a dangling pointer
+    // once that region pops. Route it through the region write barrier
+    // (ESH-0214c) so its reachable subgraph is evacuated out to the global
+    // arena first -- the same treatment every other cross-region store
+    // (global set!, vector-set!, ...) already gets. `dst` is the actual
+    // storage slot; it is never inside a region arena, so the barrier always
+    // promotes all the way out, exactly as intended.
+    eshkol_region_write_barrier_into(&param->stack[0], &param->stack[0], &default_val);
     return (void*)param;
 }
 
@@ -104,7 +127,13 @@ void eshkol_parameter_push(void* param_ptr, eshkol_tagged_value_t val) {
     }
 
     param->top++;
-    param->stack[param->top] = val;
+    // Same region write barrier treatment as the constructor default (see
+    // eshkol_make_parameter above): `val` may point into a region that is
+    // still active on entry to this `parameterize` binding but pops before
+    // the binding is popped/read again, so it must be promoted out of any
+    // active region before landing in the malloc'd (never region-owned)
+    // value stack.
+    eshkol_region_write_barrier_into(&param->stack[param->top], &param->stack[param->top], &val);
 }
 
 /**
