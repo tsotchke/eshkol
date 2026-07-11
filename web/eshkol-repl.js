@@ -279,6 +279,11 @@ class EshkolRepl {
                 // fake arena as get_global_arena (no region system in the browser).
                 eshkol_current_arena: () => 0,
                 eshkol_memctx_current: () => 0,
+                // Kept in sync with site/static/eshkol-runtime.js so either glue
+                // satisfies a WASM built with these runtime imports
+                // (architecture-model wasm-import-glue-equality invariant).
+                eshkol_init_global_arena: () => {},
+                eshkol_tagged_cons_set_tagged_value: () => {},
 
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- the browser
