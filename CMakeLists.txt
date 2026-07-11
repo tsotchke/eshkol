@@ -2471,6 +2471,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_regions_test COMMAND runtime_regions_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/parameter_region_barrier_test.cpp")
+    add_executable(parameter_region_barrier_test tests/core/parameter_region_barrier_test.cpp)
+    target_compile_features(parameter_region_barrier_test PRIVATE cxx_std_17)
+    target_include_directories(parameter_region_barrier_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(parameter_region_barrier_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(parameter_region_barrier_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(parameter_region_barrier_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME parameter_region_barrier_test COMMAND parameter_region_barrier_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_deep_equal_test.cpp")
     add_executable(runtime_deep_equal_test tests/core/runtime_deep_equal_test.cpp)
     target_compile_features(runtime_deep_equal_test PRIVATE cxx_std_17)
