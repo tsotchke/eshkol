@@ -4296,43 +4296,17 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     return NULL;
 }
 
-static uint64_t vm_qrng_state = 0;
-
-/** @brief xorshift64* PRNG step, lazily self-seeding on first call from a
- *         mix of a stack address and platform-specific entropy (tick count/
- *         QueryPerformanceCounter on Windows, gettimeofday+pid elsewhere). */
-static uint64_t vm_qrng_next_u64(void) {
-    if (vm_qrng_state == 0) {
-        uint64_t seed = 0x9e3779b97f4a7c15ULL ^ (uint64_t)(uintptr_t)&vm_qrng_state;
-#if !defined(ESHKOL_VM_WASM)
-#if defined(_WIN32)
-        seed ^= (uint64_t)GetTickCount64();
-        LARGE_INTEGER counter;
-        if (QueryPerformanceCounter(&counter)) {
-            seed ^= (uint64_t)counter.QuadPart;
-        }
-#else
-        struct timeval tv;
-        if (gettimeofday(&tv, NULL) == 0) {
-            seed ^= ((uint64_t)tv.tv_sec << 32) ^ (uint64_t)tv.tv_usec;
-        }
-        seed ^= ((uint64_t)(uint32_t)getpid() << 17);
-#endif
-#endif
-        vm_qrng_state = seed ? seed : 0x2545f4914f6cdd1dULL;
-    }
-    uint64_t x = vm_qrng_state;
-    x ^= x >> 12;
-    x ^= x << 25;
-    x ^= x >> 27;
-    vm_qrng_state = x;
-    return x * 0x2545f4914f6cdd1dULL;
-}
-
-/** @brief Convert one xorshift64* draw into a double uniformly distributed in [0,1). */
-static double vm_qrng_double(void) {
-    return (double)(vm_qrng_next_u64() >> 11) * (1.0 / 9007199254740992.0);
-}
+/* quantum-random / -int / -range (dispatch cases 1860-1862 below) used to be
+ * backed by a VM-only xorshift64* PRNG that was numerically divergent from
+ * the eshkol_qrng_* generator the LLVM AOT/JIT backend used for the same
+ * builtins (docs/design/MOONLAB_INTEGRATION.md Section 3.2 flagged this as a
+ * cross-backend honesty problem: same builtin name, different numbers,
+ * neither one real quantum entropy). Fixed by routing the VM dispatch
+ * through the SAME eshkol_qrng_uint64() / eshkol_qrng_double() entry points
+ * (lib/quantum/quantum_rng_wrapper.c, included via eshkol_vm.c) that the
+ * LLVM backend calls - see that file's honesty notice for what source is
+ * actually active (classical fallback by default and on WASM; Moonlab's
+ * Bell-verified QRNG when built with -DESHKOL_QUANTUM_ENABLED=ON). */
 
 /* Runtime host-native registry. Compile-time fids stay in the static switch
  * below; fids >= ESHKOL_VM_HOST_NATIVE_BASE are looked up here by slot index
@@ -12387,10 +12361,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Quantum-inspired RNG (1860-1862)
+     * `quantum-random` family (1860-1862). Routed through eshkol_qrng_* (see
+     * the honesty notice above this dispatch block's case labels) so the VM
+     * and LLVM AOT/JIT backends agree on both the numbers and the entropy
+     * source instead of each running its own generator.
      * ══════════════════════════════════════════════════════════════════════ */
     case 1860: { /* quantum-random() -> double in [0, 1) */
-        vm_push(vm, FLOAT_VAL(vm_qrng_double()));
+        vm_push(vm, FLOAT_VAL(eshkol_qrng_double()));
         break;
     }
     case 1861: { /* quantum-random-int(bound) -> integer in [0, bound) */
@@ -12399,7 +12376,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (bound <= 1) {
             vm_push(vm, INT_VAL(0));
         } else {
-            vm_push(vm, INT_VAL((int64_t)(vm_qrng_next_u64() % (uint64_t)bound)));
+            vm_push(vm, INT_VAL((int64_t)(eshkol_qrng_uint64() % (uint64_t)bound)));
         }
         break;
     }
@@ -12415,9 +12392,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
             int64_t ilo = min_val.as.i;
             int64_t ihi = max_val.as.i;
             uint64_t span = (uint64_t)(ihi - ilo + 1);
-            vm_push(vm, INT_VAL(ilo + (int64_t)(vm_qrng_next_u64() % span)));
+            vm_push(vm, INT_VAL(ilo + (int64_t)(eshkol_qrng_uint64() % span)));
         } else {
-            vm_push(vm, FLOAT_VAL(lo + vm_qrng_double() * (hi - lo)));
+            vm_push(vm, FLOAT_VAL(lo + eshkol_qrng_double() * (hi - lo)));
         }
         break;
     }

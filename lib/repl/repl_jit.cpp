@@ -339,6 +339,38 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     int eshkol_sqlite_changes(int64_t db_handle) ESHKOL_OPTIONAL_AGENT_FFI;
 
+    // Moonlab quantum state-vector core (agent.quantum, Stage S1). Weak like
+    // the rest of this table: only defined when the build was configured
+    // with -DESHKOL_QUANTUM_ENABLED=ON and Moonlab linked successfully
+    // (see CMakeLists.txt's Agent FFI block and
+    // docs/design/MOONLAB_INTEGRATION.md). Symbol names verified against
+    // lib/agent/c/agent_quantum.c.
+    int64_t eshkol_quantum_state_create(int32_t num_qubits) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_quantum_state_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_num_qubits(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_hadamard(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_pauli_x(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_pauli_y(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_pauli_z(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_cnot(int64_t handle, int32_t control, int32_t target)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_rx(int64_t handle, int32_t qubit, double theta)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_ry(int64_t handle, int32_t qubit, double theta)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_gate_rz(int64_t handle, int32_t qubit, double theta)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_measure(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+
     void* qllm_process_spawn(const char* command, const char* cwd_arg,
                              const char* env_arg, int64_t flags)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1010,6 +1042,21 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_last_error);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_last_insert_rowid);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_sqlite_changes);
+
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_state_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_state_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_num_qubits);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_hadamard);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_pauli_x);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_pauli_y);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_pauli_z);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_cnot);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_rx);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_ry);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_rz);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_measure);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_expectation_z);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_last_error);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_shell);

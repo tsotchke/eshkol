@@ -18,12 +18,32 @@ typedef int pid_t;
 
 /**
  * @file quantum_rng.h
- * @brief Quantum-inspired random number generator
+ * @brief Classical "quantum-inspired" pseudorandom number generator (NOT real quantum entropy)
  *
- * This library implements a high-performance random number generator that leverages
- * quantum computing principles on classical hardware. It uses quantum circuit simulation,
- * floating-point uncertainty, and quantum entanglement to achieve high-quality
- * non-deterministic random numbers.
+ * HONESTY NOTICE: despite the "quantum" vocabulary in this file's function and
+ * type names (qrng_entangle_states, qrng_measure_state, quantum_state[], ...),
+ * this is an entirely classical, deterministic software PRNG. It borrows terms
+ * like "entanglement" and "measurement" only as metaphors for its internal
+ * bit-mixing stages (splitmix64, Hadamard-style XOR mixing, physical-constant
+ * multipliers); no quantum hardware, no quantum circuit simulator, and no
+ * physical randomness are involved anywhere in this file. Its only source of
+ * non-determinism is classical: wall-clock time, process id, and a stack
+ * address, folded together in get_system_entropy() (quantum_rng.c). Given a
+ * fixed seed and fixed entropy inputs, the output stream is fully
+ * reproducible - this is an ordinary keyed pseudorandom generator, not a
+ * hardware entropy source, and it is not Bell-verified.
+ *
+ * This is the always-available, dependency-free fallback that backs Eshkol's
+ * `quantum-random` / `quantum-random-int` / `quantum-random-range` builtins
+ * when the build does not link a real quantum entropy source. When Eshkol is
+ * configured with -DESHKOL_QUANTUM_ENABLED=ON, those builtins are re-pointed
+ * at Moonlab's Bell-verified `moonlab_qrng_bytes()` (see
+ * lib/quantum/quantum_rng_wrapper.c and docs/design/MOONLAB_INTEGRATION.md);
+ * on WASM/browser builds and any build with quantum support disabled, this
+ * classical generator remains the fallback and must not be presented to users
+ * as "real quantum" randomness. See eshkol_qrng_source_label() in
+ * quantum_rng_wrapper.h for a machine-readable capability that reports which
+ * source is actually active.
  */
 
 /**
