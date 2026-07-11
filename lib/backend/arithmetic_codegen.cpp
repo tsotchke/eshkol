@@ -138,6 +138,47 @@ ArithmeticCodegen::ArithmeticCodegen(CodegenContext& ctx, TaggedValueCodegen& ta
 // === Helper Functions ===
 
 /**
+ * @brief Out-line a binary numeric-tower dispatch body into a cached noinline helper.
+ *
+ * See the header for the full ESH-0103 rationale. The helper is created once
+ * per `name`; the dispatch body is emitted into its entry block with the
+ * builder insert point saved and restored around the emission.
+ */
+llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
+    const char* name,
+    const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& emitBody) {
+    if (llvm::Function* existing = ctx_.module().getFunction(name)) {
+        return existing;  // already generated for this module
+    }
+
+    llvm::Type* tv = ctx_.taggedValueType();
+    llvm::FunctionType* fn_type = llvm::FunctionType::get(tv, {tv, tv}, false);
+    llvm::Function* fn = llvm::Function::Create(
+        fn_type, llvm::Function::InternalLinkage, name, &ctx_.module());
+    // Keep the dispatch out-of-line: if the inliner folded it back into every
+    // call site we would re-create the O(n^2) single-function blow-up.
+    fn->addFnAttr(llvm::Attribute::NoInline);
+    fn->arg_begin()[0].setName("lhs");
+    fn->arg_begin()[1].setName("rhs");
+
+    // Save the caller's insertion point so we can splice the helper body in
+    // without disturbing the function currently being generated.
+    llvm::BasicBlock* saved_block = ctx_.builder().GetInsertBlock();
+    llvm::BasicBlock::iterator saved_pt;
+    if (saved_block) saved_pt = ctx_.builder().GetInsertPoint();
+
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx_.context(), "entry", fn);
+    ctx_.builder().SetInsertPoint(entry);
+    llvm::Value* result = emitBody(fn->getArg(0), fn->getArg(1));
+    ctx_.builder().CreateRet(result);
+
+    // Restore the caller's insertion point.
+    if (saved_block) ctx_.builder().SetInsertPoint(saved_block, saved_pt);
+
+    return fn;
+}
+
+/**
  * @brief Coerces a tagged operand to a dual-number value for forward-mode AD arithmetic.
  *
  * If the operand is already a dual number, unpacks and returns it as-is.
@@ -1066,7 +1107,10 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
-
+    // ESH-0103: emit the full numeric-tower dispatch once into a cached noinline
+    // helper and call it, instead of inlining ~140 basic blocks per operator.
+    llvm::Function* outline = getOrEmitBinaryOutline("__eshkol_arith_add",
+        [this](llvm::Value* left, llvm::Value* right) -> llvm::Value* {
     // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
     // entering scalar arithmetic are frozen to jets (with the active gradient
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
@@ -1243,6 +1287,8 @@ llvm::Value* ArithmeticCodegen::add(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     });
+        });
+    return ctx_.builder().CreateCall(outline, {left, right});
 }
 
 // === Polymorphic Subtraction ===
@@ -1264,7 +1310,9 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
-
+    // ESH-0103: out-line the dispatch (see add()).
+    llvm::Function* outline = getOrEmitBinaryOutline("__eshkol_arith_sub",
+        [this](llvm::Value* left, llvm::Value* right) -> llvm::Value* {
     // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
     // entering scalar arithmetic are frozen to jets (with the active gradient
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
@@ -1441,6 +1489,8 @@ llvm::Value* ArithmeticCodegen::sub(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     });
+        });
+    return ctx_.builder().CreateCall(outline, {left, right});
 }
 
 // === Polymorphic Multiplication ===
@@ -1462,7 +1512,9 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
-
+    // ESH-0103: out-line the dispatch (see add()).
+    llvm::Function* outline = getOrEmitBinaryOutline("__eshkol_arith_mul",
+        [this](llvm::Value* left, llvm::Value* right) -> llvm::Value* {
     // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
     // entering scalar arithmetic are frozen to jets (with the active gradient
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
@@ -1639,6 +1691,8 @@ llvm::Value* ArithmeticCodegen::mul(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     });
+        });
+    return ctx_.builder().CreateCall(outline, {left, right});
 }
 
 // === Polymorphic Division ===
@@ -1664,7 +1718,9 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
         return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);
     }
 
-
+    // ESH-0103: out-line the dispatch (see add()).
+    llvm::Function* outline = getOrEmitBinaryOutline("__eshkol_arith_div",
+        [this](llvm::Value* left, llvm::Value* right) -> llvm::Value* {
     // ESH-0093: while a forward-mode derivative is live, reverse-tape AD nodes
     // entering scalar arithmetic are frozen to jets (with the active gradient
     // seed in e2) instead of being mis-recorded on the tape. No-op otherwise.
@@ -1886,6 +1942,8 @@ llvm::Value* ArithmeticCodegen::div(llvm::Value* left, llvm::Value* right) {
 
         return phi;
     });
+        });
+    return ctx_.builder().CreateCall(outline, {left, right});
 }
 
 // === Other Operations (mod, neg, abs, type coercion) ===

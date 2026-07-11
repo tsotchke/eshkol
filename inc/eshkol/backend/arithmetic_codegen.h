@@ -384,6 +384,34 @@ private:
     // === Internal Helpers ===
 
     /**
+     * ESH-0103: Out-line a binary numeric-tower dispatch body into a single
+     * module-internal, `noinline` helper function of type
+     * `tagged_value (tagged_value, tagged_value)`, generated exactly once and
+     * cached by `name`. The first call emits `emitBody(argL, argR)` into the
+     * helper's entry block (the builder insert point is saved and restored);
+     * subsequent calls reuse the existing function.
+     *
+     * This keeps each call site to a single `call` instruction, so the
+     * enclosing function's basic-block and alloca counts stay O(1) per
+     * operator instead of inlining ~140 blocks / ~35 allocas per node. That is
+     * what makes SROA's iterated dominance-frontier PHI placement linear rather
+     * than quadratic in nesting depth. The dispatch body is byte-for-byte the
+     * same as the previously-inlined version, and it references only the two
+     * operand arguments plus module globals (arena, AD tape, perturbation
+     * level) and runtime calls -- never enclosing-function SSA -- so the
+     * relocation is semantically transparent (AD forward/reverse/Taylor
+     * included).
+     *
+     * @param name Stable, unique symbol name for the cached helper.
+     * @param emitBody Emits the dispatch body given the helper's two
+     *        tagged-value arguments; must return a tagged_value.
+     * @return The cached helper function to `call`.
+     */
+    llvm::Function* getOrEmitBinaryOutline(
+        const char* name,
+        const std::function<llvm::Value*(llvm::Value*, llvm::Value*)>& emitBody);
+
+    /**
      * Convert operand to AD node (promote constants to constant AD nodes).
      * @param operand Tagged value operand
      * @param is_ad Whether operand is already an AD node

@@ -4517,6 +4517,18 @@ int main(int argc, char **argv)
         }
     }
 
+    // ESH-0103 phase timing (gated on ESHKOL_PHASE_TIME)
+    const bool esh0103_phase_time = (std::getenv("ESHKOL_PHASE_TIME") != nullptr);
+    auto esh0103_now = []() { return std::chrono::steady_clock::now(); };
+    auto esh0103_report = [&](const char* name, std::chrono::steady_clock::time_point a,
+                              std::chrono::steady_clock::time_point b) {
+        if (esh0103_phase_time) {
+            double ms = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(b - a).count();
+            fprintf(stderr, "[PHASE] %-22s %10.2f ms\n", name, ms);
+        }
+    };
+    auto esh0103_t_own0 = esh0103_now();
+
     // Run ownership analysis before code generation
     if (!asts.empty()) {
         eshkol_info("Running ownership analysis...");
@@ -4530,6 +4542,9 @@ int main(int argc, char **argv)
         }
     }
 
+    auto esh0103_t_own1 = esh0103_now();
+    esh0103_report("ownership", esh0103_t_own0, esh0103_t_own1);
+
     // Run escape analysis for allocation decisions
     if (!asts.empty()) {
         eshkol_info("Running escape analysis...");
@@ -4538,6 +4553,8 @@ int main(int argc, char **argv)
             g_escape_analyzer.printAnalysis();
         }
     }
+    auto esh0103_t_escape1 = esh0103_now();
+    esh0103_report("escape", esh0103_t_own1, esh0103_t_escape1);
 
     // Generate LLVM IR if we have ASTs and need compilation or IR output
     // Default behavior is to compile to executable unless only AST dump is requested
@@ -4596,6 +4613,7 @@ int main(int argc, char **argv)
         }
 
         // Generate LLVM IR (use library mode if --shared-lib flag is set)
+        auto esh0103_t_irgen0 = esh0103_now();
         LLVMModuleRef llvm_module;
         const bool library_codegen = shared_lib || freestanding_native_profile;
         if (library_codegen) {
@@ -4613,6 +4631,9 @@ int main(int argc, char **argv)
             );
         }
         
+        auto esh0103_t_irgen1 = esh0103_now();
+        esh0103_report("irgen", esh0103_t_irgen0, esh0103_t_irgen1);
+
         if (!llvm_module) {
             eshkol_error("Failed to generate LLVM IR");
             return 1;
@@ -4685,11 +4706,13 @@ int main(int argc, char **argv)
             }
 
             eshkol_info("Compiling to object file: %s", obj_filename.c_str());
+            auto esh0103_t_obj0 = esh0103_now();
             if (eshkol_compile_llvm_ir_to_object(llvm_module, obj_filename.c_str()) != 0) {
                 eshkol_error("Object file compilation failed");
                 eshkol_dispose_llvm_module(llvm_module);
                 return 1;
             }
+            esh0103_report("emit-object", esh0103_t_obj0, esh0103_now());
 
             // Also emit bitcode for REPL JIT loading (avoids ABI mismatch with addObjectFile)
             std::string bc_filename;
