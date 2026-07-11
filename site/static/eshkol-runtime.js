@@ -330,6 +330,13 @@ class EshkolRuntime {
 
                 // Runtime functions
                 __eshkol_register_parallel_workers: () => {},
+                // Quantum-RNG builtins degrade to Math.random in the browser
+                // (kept in sync with web/eshkol-repl.js so either glue satisfies
+                // a WASM built with the QRNG surface — architecture-model
+                // wasm-import-glue-equality invariant).
+                eshkol_qrng_double: Math.random,
+                eshkol_qrng_uint64: () => BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
+                eshkol_qrng_range: (min, max) => BigInt(Math.floor(Math.random() * Number(max - min)) + Number(min)),
                 eshkol_init_global_arena: () => {},
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
