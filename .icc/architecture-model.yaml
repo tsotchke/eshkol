@@ -1,0 +1,379 @@
+version: 1
+name: eshkol-compiler
+repo: eshkol
+description: >
+  Machine-checked architecture model of the Eshkol compiler — a compiled
+  R7RS Scheme frontend, an LLVM AOT/JIT backend, a bytecode VM, an OALR region
+  memory manager, an automatic-differentiation tower, an exact numeric tower,
+  and a WASM emission path with browser glue.  Components, dataflows,
+  capabilities, and first-class INVARIANTS that encode the incident classes the
+  adversarial campaign surfaced (VM-parity gaps, FFI/link-registration drift,
+  language-surface under-exercise, WASM import/glue drift, OALR interior-pointer
+  leaf-copy, AD finite-difference regression, TCO tail-position coverage).
+  Verified by `icc architecture-verify --repo eshkol --model
+  .icc/architecture-model.yaml`.
+
+  Ground truth: tests/coverage/language_surface.json (958 builtins with
+  per-backend membership, 116 special forms, 112 AST ops) and
+  scripts/language_coverage.py (dynamic exposure-engine coverage tracker).
+
+  FIDELITY HONESTY: ICC's C symbol index does not AST-resolve C/C++ the way it
+  resolves Python, so every invariant whose sites are .c/.cpp/.h/.js files is
+  GREP fidelity (honest regex over source text, no name resolution) even where
+  the generic checker's per-kind default label reads "ast".  Each invariant
+  below carries an explicit `fidelity:` field stating the TRUE fidelity.
+
+# --------------------------------------------------------------------------
+# COMPONENTS — module/file groups with roles
+# --------------------------------------------------------------------------
+components:
+  - id: frontend-reader
+    role: frontend
+    description: S-expression reader, parser, and macro expander (special-form dispatch).
+    modules:
+      - lib/frontend/parser.cpp
+      - lib/frontend/macro_expander.cpp
+    entry_points:
+      - {path: lib/frontend/parser.cpp}
+
+  - id: llvm-codegen
+    role: backend
+    description: >
+      LLVM AOT/JIT code generation — the func_name dispatch spine plus the
+      per-domain *_codegen.cpp family (binding, control-flow, call/apply,
+      collections, strings, hash, memory, tail-calls, system FFI).
+    modules:
+      - lib/backend/llvm_codegen.cpp
+      - lib/backend/binding_codegen.cpp
+      - lib/backend/control_flow_codegen.cpp
+      - lib/backend/call_apply_codegen.cpp
+      - lib/backend/collection_codegen.cpp
+      - lib/backend/string_io_codegen.cpp
+      - lib/backend/hash_codegen.cpp
+      - lib/backend/tail_call_codegen.cpp
+      - lib/backend/system_codegen.cpp
+    entry_points:
+      - {path: lib/backend/eshkol_compiler.c}
+
+  - id: bytecode-vm
+    role: backend
+    description: >
+      Bytecode VM — the second backend.  eshkol_vm.c holds the VM BUILTINS
+      dispatch table; the vm_*.c family implements each op domain.
+    modules:
+      - lib/backend/eshkol_vm.c
+      - lib/backend/vm_core.c
+      - lib/backend/vm_run.c
+      - lib/backend/vm_native.c
+      - lib/backend/vm_autodiff.c
+      - lib/backend/vm_tensor.c
+    entry_points:
+      - {path: lib/backend/eshkol_vm.c}
+
+  - id: oalr-memory
+    role: runtime
+    description: >
+      OALR region memory — arena allocation and region evacuation.  The
+      evacuator must deep-walk every interior-pointer heap subtype (ESH-0214d).
+    modules:
+      - lib/core/runtime_regions.cpp
+      - lib/core/arena_memory.h
+    entry_points:
+      - {path: lib/core/runtime_regions.cpp}
+
+  - id: ad-tower
+    role: backend
+    description: >
+      Automatic-differentiation tower — forward dual/jet + reverse tape codegen,
+      and the tensor AD codegen family.  The default gradient path is exact
+      (jet arithmetic), never finite differences.
+    modules:
+      - lib/backend/autodiff_codegen.cpp
+      - lib/backend/tensor_arith_codegen.cpp
+      - lib/backend/tensor_training_codegen.cpp
+    entry_points:
+      - {path: lib/backend/autodiff_codegen.cpp}
+
+  - id: numeric-tower
+    role: runtime
+    description: Exact numeric tower — bignum, rational, and arithmetic codegen dispatch.
+    modules:
+      - lib/core/bignum.cpp
+      - lib/core/rational.cpp
+      - lib/backend/arithmetic_codegen.cpp
+    entry_points:
+      - {path: lib/backend/arithmetic_codegen.cpp}
+
+  - id: exposure-engines
+    role: analysis
+    description: >
+      Adversarial exposure engines + the language-surface coverage tracker that
+      diffs what the engines exercise against language_surface.json.
+    modules:
+      - scripts/run_generative_differential.py
+      - scripts/gen_generative_corpus.py
+      - scripts/run_ad_adversarial.sh
+      - scripts/language_coverage.py
+    entry_points:
+      - {path: scripts/language_coverage.py, symbol: main}
+
+  - id: wasm-path
+    role: backend
+    description: >
+      WASM emission (--wasm in llvm_codegen.cpp) plus the browser glue that must
+      provide an env import stub for every runtime helper the WASM asks for.
+    modules:
+      - lib/backend/llvm_codegen.cpp
+      - site/static/eshkol-runtime.js
+      - web/eshkol-repl.js
+      - scripts/check_wasm_imports.py
+    entry_points:
+      - {path: scripts/check_wasm_imports.py, symbol: parse_env_imports}
+
+# --------------------------------------------------------------------------
+# DATAFLOWS — producer/consumer edges with KEY-SPACE annotations
+# --------------------------------------------------------------------------
+dataflows:
+  - id: reader_to_backends
+    producer: frontend-reader
+    consumer: llvm-codegen
+    produces: [ast, special_form_dispatch]
+    consumes: [ast]
+    key_space: {kind: builtin_name, identifier: "builtin/special-form head symbol"}
+    description: >
+      The reader lowers source to AST + a special-form/builtin head-symbol
+      space; every backend (native LLVM, VM, WASM) must dispatch the same space.
+
+  - id: codegen_to_vm
+    producer: llvm-codegen
+    consumer: bytecode-vm
+    produces: [builtin_dispatch]
+    consumes: [builtin_dispatch]
+    key_space: {kind: builtin_name, identifier: "BUILTINS[] table entry name"}
+    description: >
+      Native closure table (eshkol_compiler.c BUILTINS[]) and the VM table
+      (eshkol_vm.c BUILTINS[]) index the same builtin-name space; a name present
+      in one but absent in the other is a VM-parity gap.
+
+  - id: ad_graph
+    producer: ad-tower
+    consumer: ad-tower
+    produces: [dual_jet_tangent]
+    consumes: [dual_jet_tangent]
+    key_space: {kind: perturbation_slot, identifier: "dual/jet tangent field"}
+    description: >
+      The derivative/gradient codegen seeds and propagates exact dual/jet
+      tangents; the default path must never fall back to finite differences.
+
+  - id: exposure_trace_flow
+    producer: exposure-engines
+    consumer: exposure-engines
+    produces: [language_surface_coverage]
+    consumes: [language_surface_coverage]
+    key_space: {kind: runtime_event, identifier: language_surface_coverage}
+    description: >
+      The coverage tracker emits a language_surface_coverage runtime_event whose
+      covered_fraction feeds the readiness oracle; a fresh coverage trace is the
+      evidence that the exposure engines were run.
+
+  - id: wasm_import_glue
+    producer: wasm-path
+    consumer: wasm-path
+    produces: [env_import]
+    consumes: [env_import_stub]
+    key_space: {kind: env_import_name, identifier: "env.<runtime_helper>"}
+    description: >
+      Every runtime helper the WASM imports as env.<name> must have a matching
+      JS glue stub in BOTH glue files (site/static/eshkol-runtime.js and
+      web/eshkol-repl.js); a stub added to one but not the other is the drift
+      that took the live site down.
+
+# --------------------------------------------------------------------------
+# CAPABILITIES — feature -> entry points -> arming -> dependencies
+# --------------------------------------------------------------------------
+capabilities:
+  - id: exact_ad_default_gradient
+    feature: Exact dual/jet automatic differentiation on the default gradient path
+    entry_points:
+      - {path: lib/backend/autodiff_codegen.cpp}
+    arming:
+      kind: ast_op
+      path: lib/backend/autodiff_codegen.cpp
+      pattern: ESHKOL_DERIVATIVE_OP
+    dependencies: [ad-tower]
+    dependency_constructor: "createDualNumber|makeDual8|makeDual4|seedForwardAndPush"
+    dependency_paths: [lib/backend/autodiff_codegen.cpp]
+
+  - id: base64_ffi_builtin
+    feature: base64/base64url string FFI builtins (incident #250)
+    entry_points:
+      - {path: lib/backend/system_codegen.cpp, symbol: base64EncodeString}
+    arming:
+      kind: macro_decl
+      path: lib/backend/system_codegen.cpp
+      pattern: 'ONE_ARG_BUILTIN\(base64EncodeString'
+    dependencies: [llvm-codegen]
+    dependency_constructor: "eshkol_builtin_base64_encode_string"
+    dependency_paths: [lib/core/system_builtins.c]
+
+  - id: language_surface_exercise
+    feature: Exposure engines exercise the full language surface
+    entry_points:
+      - {path: scripts/language_coverage.py, symbol: main}
+    arming:
+      kind: runtime_event
+      path: scripts/language_coverage.py
+      pattern: language_surface_coverage
+
+# --------------------------------------------------------------------------
+# INVARIANTS — one per incident class from the adversarial campaign
+# --------------------------------------------------------------------------
+invariants:
+
+  # 1. dispatch-table-completeness (VM-parity gap), encoded as key-space-equality.
+  #    The native closure table and the VM table must index the same builtin-name
+  #    space.  Expected to FAIL: the campaign's structural VM-parity gap — native
+  #    has AOT-only builtins the VM lacks (and vice-versa for arity helpers).
+  - id: INV-dispatch-table-completeness
+    kind: key-space-equality
+    incident: vm-parity-gap
+    severity: high
+    fidelity: grep
+    description: >
+      Every builtin in the native closure table (eshkol_compiler.c BUILTINS[])
+      should have a corresponding VM dispatch entry (eshkol_vm.c BUILTINS[]).
+      Divergent names are the VM-parity gap; see language_surface.json
+      counts.builtins_in_native_closure_table vs builtins_in_vm_table.
+    sites:
+      - id: native-closure-table
+        path: lib/backend/eshkol_compiler.c
+        key_pattern: '\{\s*"([^"]+)"\s*,'
+      - id: vm-dispatch-table
+        path: lib/backend/eshkol_vm.c
+        key_pattern: '\{\s*"([^"]+)"\s*,'
+
+  # 2. ffi-registration-completeness (incident #250), encoded as dependency-presence.
+  #    A declared FFI/system builtin must have its runtime symbol DEFINED (the
+  #    link registration).  Armed by the codegen declaration; dependency is the
+  #    runtime definition site.  Expected PASS (the #250 fix is in tree).
+  - id: INV-ffi-registration-completeness
+    kind: dependency-presence
+    incident: ffi-link-registration-missing
+    severity: critical
+    fidelity: grep
+    description: >
+      Every declared FFI/system builtin (base64 family here) that the codegen
+      emits a call to must have a matching runtime symbol definition; a declared
+      builtin with no link registration is the class that broke base64-string
+      (#250) and the WASM glue.
+    capability: base64_ffi_builtin
+
+  # 3. language-surface-exercise, encoded as exercise (runtime-bound).  Binds to
+  #    the language_surface_coverage runtime_event scripts/language_coverage.py
+  #    emits.  The generic exercise kind is PRESENCE+RECENCY based: it FAILs when
+  #    other traces exist but no coverage trace is fresh (engines not run), and
+  #    PASSes when a fresh coverage trace is present.  The 9.9% covered_fraction
+  #    THRESHOLD is enforced separately by the coverage oracle criterion / an
+  #    exercise point-tracker (see PR notes) — the generic checker does not read
+  #    the fraction.  High severity because numeric/tensor_ad/control_flow/
+  #    memory_region categories are near-zero exercised today.
+  - id: INV-language-surface-exercise
+    kind: exercise
+    incident: language-surface-under-exercised
+    severity: high
+    fidelity: runtime
+    description: >
+      The exposure engines must produce a fresh language_surface_coverage
+      runtime_event (evidence the language surface is being exercised).  Bind
+      the covered_fraction threshold in the readiness oracle, not here.
+    capability: language_surface_coverage
+    window_days: 30
+    evidence:
+      trace_event_kind: runtime_event
+      trace_name_pattern: language_surface_coverage
+
+  # 4. wasm-import-glue-equality, encoded as key-space-equality.  The env-import
+  #    stub key space must be IDENTICAL across both JS glue files — any import a
+  #    WASM needs must be provided by both.  Expected to FAIL right now: a live
+  #    drift (eshkol_qrng_* present in web/ glue but not site/ glue, and
+  #    init_global_arena/tagged_cons_set present in site/ glue but not web/).
+  - id: INV-wasm-import-glue-equality
+    kind: key-space-equality
+    incident: wasm-import-glue-drift
+    severity: critical
+    fidelity: grep
+    description: >
+      The env-import stub key space (eshkol_*/region_* helpers) must be equal
+      across site/static/eshkol-runtime.js and web/eshkol-repl.js; a stub in one
+      glue file but not the other is exactly the drift that caused the live-site
+      "function import requires a callable" outage.  scripts/check_wasm_imports.py
+      is the runtime gate; this is its static twin.
+    sites:
+      - id: site-runtime-glue
+        path: site/static/eshkol-runtime.js
+        key_pattern: '(eshkol_[A-Za-z0-9_]+|region_[A-Za-z0-9_]+)\s*:'
+      - id: web-repl-glue
+        path: web/eshkol-repl.js
+        key_pattern: '(eshkol_[A-Za-z0-9_]+|region_[A-Za-z0-9_]+)\s*:'
+
+  # 5. OALR interior-pointer deep-walk (ESH-0214d), encoded as key-space-equality.
+  #    Every interior-pointer heap subtype declared in the enum must have a case
+  #    in the region evacuator; the pattern enumerates exactly the deep-walk set
+  #    (leaf subtypes like STRING/SYMBOL/BIGNUM are intentionally excluded).
+  #    Expected PASS (the ESH-0214d fix added the consciousness/logic cases).
+  - id: INV-oalr-interior-pointer-deepwalk
+    kind: key-space-equality
+    incident: region-evac-leaf-copy
+    severity: critical
+    fidelity: grep
+    description: >
+      evac_kind_for must map every interior-pointer heap subtype to a deep-walk
+      EvacKind; dropping a subtype to a shallow leaf copy leaves dangling
+      interior pointers after region evacuation (KB/FACT/SUBSTITUTION/WORKSPACE
+      were the ESH-0214d regression).  The subtype enum and the evacuator switch
+      must resolve the identical deep-walk subtype set.
+    sites:
+      - id: heap-subtype-enum
+        path: inc/eshkol/eshkol.h
+        key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
+      - id: region-evacuator-switch
+        path: lib/core/runtime_regions.cpp
+        key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
+
+  # 6. AD-exactness, encoded as dependency-presence.  The default derivative path
+  #    must construct the exact dual/jet tangent, never a finite-difference
+  #    approximation.  Armed by the derivative-op dispatch; dependency is the
+  #    dual/jet constructor set.  Expected PASS.
+  - id: INV-ad-exact-no-finite-differences
+    kind: dependency-presence
+    incident: ad-finite-difference-regression
+    severity: high
+    fidelity: grep
+    description: >
+      When the derivative/gradient codegen is armed (ESHKOL_DERIVATIVE_OP), the
+      default path must construct an exact dual/jet tangent
+      (createDualNumber/makeDual8/makeDual4/seedForwardAndPush) — a finite-
+      difference fallback would silently degrade every default gradient.
+    capability: exact_ad_default_gradient
+
+  # 7. TCO tail-position coverage, encoded as key-space-equality.  The core
+  #    tail-transparent forms (if / let* family / sequence) must each be handled
+  #    by isTailPosition; cond/case/when reach it desugared to these forms.
+  #    Expected PASS; removing a case (a TCO regression) FAILs it.
+  - id: INV-tco-tail-position-coverage
+    kind: key-space-equality
+    incident: tco-tail-position-gap
+    severity: medium
+    fidelity: grep
+    description: >
+      The tail-call analysis (TailCallCodegen::isTailPosition) must treat every
+      core tail-transparent form as tail-propagating so proper tail calls in
+      if/let/let*/letrec/letrec*/begin (and cond/case/when after desugaring) are
+      marked musttail; a dropped case reintroduces stack growth in tail loops.
+    sites:
+      - id: core-op-enum
+        path: inc/eshkol/eshkol.h
+        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|SEQUENCE)_OP)'
+      - id: tail-position-analysis
+        path: lib/backend/tail_call_codegen.cpp
+        key_pattern: '(ESHKOL_(?:IF|LET|LET_STAR|LETREC|LETREC_STAR|SEQUENCE)_OP)'
