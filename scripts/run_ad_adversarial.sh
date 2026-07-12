@@ -29,6 +29,11 @@
 #   --quick   one file per family (fast CI subset); JIT lane only
 #   --no-aot  skip the AOT lane
 #   --regen   re-run the (deterministic) generator before running
+#
+# When ESHKOL_QUANTUM_ENABLED=ON, the harness also runs the fixed
+# tests/quantum/vqe_ad_adversarial.esk probe. It compares Eshkol's custom-VJP
+# gradient of vqe-energy with central finite differences through vqe-energy;
+# ordinary default builds remain Moonlab-free and skip this opt-in probe.
 set -u
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
@@ -157,8 +162,8 @@ count_verdict() { # verdict file mode
         CRASH)  crashed+=1; pyv="FAILED"; BAD="$BAD $f:$mode=$v" ;;
         HANG)   hung+=1;    pyv="FAILED"; BAD="$BAD $f:$mode=$v" ;;
     esac
-    printf '  %-6s tests/ad_adversarial/generated/%s::%s\n' "$v" "$f" "$mode"
-    echo "$pyv tests/ad_adversarial/generated/$f::$mode"
+    printf '  %-6s %s::%s\n' "$v" "$f" "$mode"
+    echo "$pyv $f::$mode"
 }
 
 echo "Generative adversarial AD/FD oracle -> $TRACE_FILE"
@@ -179,7 +184,7 @@ for path in "$GEN_DIR"/ad_adv_*.esk; do
 
     rout=$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$path" "$LIBFLAG" 2>&1); rrc=$?
     rv=$(verdict "$rrc" "$rout" "$xc")
-    count_verdict "$rv" "$f" "r"
+    count_verdict "$rv" "tests/ad_adversarial/generated/$f" "r"
     if [ "$rv" = "FAIL" ]; then
         printf '%s\n' "$rout" | grep -E '^FAIL:' | head -6 | sed 's/^/         /'
     fi
@@ -198,9 +203,46 @@ for path in "$GEN_DIR"/ad_adv_*.esk; do
             fi
         fi
         rm -f "$bin"
-        count_verdict "$av" "$f" "aot"
+        count_verdict "$av" "tests/ad_adversarial/generated/$f" "aot"
     fi
 done
+
+# The Moonlab VQE bridge is opt-in. Keep the default adversarial sweep exactly
+# dependency-free, but make a quantum-enabled build expose the same custom-VJP
+# path to the oracle's JIT and AOT verdict machinery.
+if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" = "ON" ]; then
+    quantum_path="$REPO_ROOT/tests/quantum/vqe_ad_adversarial.esk"
+    quantum_label="tests/quantum/$(basename "$quantum_path")"
+    quantum_base="${quantum_label##*/}"
+    quantum_base="${quantum_base%.esk}"
+    echo "Running opt-in quantum VQE AD/FD probe"
+
+    qout=$(run_guarded "$JIT_TIMEOUT" "$ESHKOL_RUN" -r "$quantum_path" "$LIBFLAG" 2>&1); qrc=$?
+    qv=$(verdict "$qrc" "$qout" 0)
+    count_verdict "$qv" "$quantum_label" "r"
+    if [ "$qv" = "FAIL" ]; then
+        printf '%s\n' "$qout" | grep -E '^FAIL:' | head -6 | sed 's/^/         /'
+    fi
+
+    if [ "$DO_AOT" -eq 1 ]; then
+        qbin="${TMPDIR:-/tmp}/ad_adv_${quantum_base}.bin"; rm -f "$qbin"
+        qcout=$(run_guarded "$AOT_COMPILE_TIMEOUT" "$ESHKOL_RUN" "$quantum_path" "$LIBFLAG" -o "$qbin" 2>&1); qcrc=$?
+        if [ "$qcrc" -ne 0 ] || [ ! -x "$qbin" ] || printf '%s' "$qcout" | grep -qE \
+            "Failed to generate LLVM IR|LLVM module verification failed"; then
+            if [ "$qcrc" -eq 142 ]; then qav=HANG; else qav=CRASH; fi
+        else
+            qaout=$(run_guarded "$AOT_RUN_TIMEOUT" "$qbin" 2>&1); qarc=$?
+            qav=$(verdict "$qarc" "$qaout" 0)
+            if [ "$qav" = "FAIL" ]; then
+                printf '%s\n' "$qaout" | grep -E '^FAIL:' | head -6 | sed 's/^/         /'
+            fi
+        fi
+        rm -f "$qbin"
+        count_verdict "$qav" "$quantum_label" "aot"
+    fi
+else
+    echo "Skipping quantum VQE AD/FD probe (ESHKOL_QUANTUM_ENABLED is not ON)"
+fi
 
 echo
 echo "ad_adversarial summary: total=$total passed=$passed xknown=$xknown failed=$failed crashed=$crashed hung=$hung"

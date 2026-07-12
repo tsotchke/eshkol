@@ -5,7 +5,7 @@ description: >
   Machine-checked architecture model of the Eshkol compiler — a compiled
   R7RS Scheme frontend, an LLVM AOT/JIT backend, a bytecode VM, an OALR region
   memory manager, an automatic-differentiation tower, an exact numeric tower,
-  and a WASM emission path with browser glue.  Components, dataflows,
+  an opt-in Moonlab quantum backend, and a WASM emission path with browser glue.  Components, dataflows,
   capabilities, and first-class INVARIANTS that encode the incident classes the
   adversarial campaign surfaced (VM-parity gaps, FFI/link-registration drift,
   language-surface under-exercise, WASM import/glue drift, OALR interior-pointer
@@ -13,8 +13,8 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (958 builtins with
-  per-backend membership, 116 special forms, 112 AST ops) and
+  Ground truth: tests/coverage/language_surface.json (985 builtins including
+  22 opt-in Agent FFI quantum APIs, 116 special forms, 112 AST ops) and
   scripts/language_coverage.py (dynamic exposure-engine coverage tracker).
 
   FIDELITY HONESTY: ICC's C symbol index does not AST-resolve C/C++ the way it
@@ -103,6 +103,25 @@ components:
       - lib/backend/arithmetic_codegen.cpp
     entry_points:
       - {path: lib/backend/arithmetic_codegen.cpp}
+
+  - id: quantum-backend
+    role: backend
+    description: >
+      Opt-in Moonlab quantum integration: Agent FFI state-vector and CHSH
+      shims, VQE/custom-VJP surface, FIPS 203 ML-KEM bindings, and the core
+      QRNG wrapper. Native builds with ESHKOL_QUANTUM_ENABLED route quantum
+      entropy to Moonlab; default and browser builds retain an explicitly
+      labelled classical fallback.
+    modules:
+      - lib/agent/quantum.esk
+      - lib/agent/c/agent_quantum.c
+      - lib/agent/pqc.esk
+      - lib/agent/c/agent_pqc.c
+      - lib/quantum/quantum_rng_wrapper.c
+      - lib/quantum/quantum_rng_wrapper.h
+      - lib/repl/repl_jit.cpp
+    entry_points:
+      - {path: lib/agent/c/agent_quantum.c, symbol: eshkol_quantum_bell_chsh}
 
   - id: exposure-engines
     role: analysis
@@ -223,7 +242,20 @@ capabilities:
     arming:
       kind: runtime_event
       path: scripts/language_coverage.py
-      pattern: language_surface_coverage
+    pattern: language_surface_coverage
+
+  - id: quantum_qrng_route
+    feature: Moonlab Bell-verified QRNG route for quantum-random on opt-in native builds
+    entry_points:
+      - {path: lib/quantum/quantum_rng_wrapper.c, symbol: eshkol_qrng_uint64}
+      - {path: lib/quantum/quantum_rng_wrapper.c, symbol: eshkol_qrng_source_label}
+    arming:
+      kind: compile_definition
+      path: lib/quantum/quantum_rng_wrapper.c
+      pattern: ESHKOL_MOONLAB_QRNG_ENABLED
+    dependencies: [quantum-backend]
+    dependency_constructor: "moonlab_qrng_bytes|moonlab-qrng"
+    dependency_paths: [lib/quantum/quantum_rng_wrapper.c]
 
 # --------------------------------------------------------------------------
 # INVARIANTS — one per incident class from the adversarial campaign
@@ -268,7 +300,24 @@ invariants:
       (#250) and the WASM glue.
     capability: base64_ffi_builtin
 
-  # 3. language-surface-exercise, encoded as exercise (runtime-bound).  Binds to
+  # 3. quantum-random-routing: the opt-in source label and byte path must
+  #    agree that quantum-random reaches Moonlab's Bell-verified QRNG. The
+  #    default/WASM classical fallback is intentional and explicitly labelled;
+  #    this invariant is specifically armed by ESHKOL_MOONLAB_QRNG_ENABLED.
+  - id: INV-quantum-random-routes-to-moonlab-qrng
+    kind: dependency-presence
+    incident: quantum-entropy-placeholder
+    severity: critical
+    fidelity: grep
+    description: >
+      When the Moonlab QRNG compile definition is enabled, the core
+      quantum-random wrapper must call moonlab_qrng_bytes and report the
+      machine-readable source label moonlab-qrng. This prevents a regression
+      to an unlabeled bare PRNG while preserving the explicit
+      classical-fallback contract for default and WASM builds.
+    capability: quantum_qrng_route
+
+  # 4. language-surface-exercise, encoded as exercise (runtime-bound).  Binds to
   #    the language_surface_coverage runtime_event scripts/language_coverage.py
   #    emits.  The generic exercise kind is PRESENCE+RECENCY based: it FAILs when
   #    other traces exist but no coverage trace is fresh (engines not run), and
@@ -292,7 +341,7 @@ invariants:
       trace_event_kind: runtime_event
       trace_name_pattern: language_surface_coverage
 
-  # 4. wasm-import-glue-equality, encoded as key-space-equality.  The env-import
+  # 5. wasm-import-glue-equality, encoded as key-space-equality.  The env-import
   #    stub key space must be IDENTICAL across both JS glue files — any import a
   #    WASM needs must be provided by both.  Expected to FAIL right now: a live
   #    drift (eshkol_qrng_* present in web/ glue but not site/ glue, and
@@ -316,7 +365,7 @@ invariants:
         path: web/eshkol-repl.js
         key_pattern: '(eshkol_[A-Za-z0-9_]+|region_[A-Za-z0-9_]+)\s*:'
 
-  # 5. OALR interior-pointer deep-walk (ESH-0214d), encoded as key-space-equality.
+  # 6. OALR interior-pointer deep-walk (ESH-0214d), encoded as key-space-equality.
   #    Every interior-pointer heap subtype declared in the enum must have a case
   #    in the region evacuator; the pattern enumerates exactly the deep-walk set
   #    (leaf subtypes like STRING/SYMBOL/BIGNUM are intentionally excluded).
@@ -340,7 +389,7 @@ invariants:
         path: lib/core/runtime_regions.cpp
         key_pattern: '(HEAP_SUBTYPE_(?:CONS|VECTOR|RECORD|MULTI_VALUE|HASH|TENSOR|EXCEPTION|SUBSTITUTION|FACT|KNOWLEDGE_BASE|FACTOR_GRAPH|WORKSPACE|PROMISE|DNC|SDNC|TAYLOR))'
 
-  # 6. AD-exactness, encoded as dependency-presence.  The default derivative path
+  # 7. AD-exactness, encoded as dependency-presence.  The default derivative path
   #    must construct the exact dual/jet tangent, never a finite-difference
   #    approximation.  Armed by the derivative-op dispatch; dependency is the
   #    dual/jet constructor set.  Expected PASS.
@@ -356,7 +405,7 @@ invariants:
       difference fallback would silently degrade every default gradient.
     capability: exact_ad_default_gradient
 
-  # 7. TCO tail-position coverage, encoded as key-space-equality.  The core
+  # 8. TCO tail-position coverage, encoded as key-space-equality.  The core
   #    tail-transparent forms (if / let* family / sequence) must each be handled
   #    by isTailPosition; cond/case/when reach it desugared to these forms.
   #    Expected PASS; removing a case (a TCO regression) FAILs it.

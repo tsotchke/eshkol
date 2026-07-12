@@ -1,0 +1,51 @@
+;; Stage S5 ON-path exercise of the agent.quantum surface that is not covered
+;; by the Bell and VQE acceptance tests. Requires -DESHKOL_QUANTUM_ENABLED=ON.
+
+(require agent.quantum)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! passed (+ passed 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! failed (+ failed 1))
+             (display "FAIL: ") (display label) (newline))))
+
+;; Exercise every state-vector gate in the public surface and ensure the
+;; non-destructive observable remains a physical expectation value.
+(with-quantum-state
+ 1
+ (lambda (st)
+   (apply-hadamard st 0)
+   (apply-pauli-x st 0)
+   (apply-pauli-y st 0)
+   (apply-pauli-z st 0)
+   (apply-rx st 0 0.125)
+   (apply-ry st 0 0.25)
+   (apply-rz st 0 0.5)
+   (let ((z (expectation-z st 0)))
+     (check "single-qubit gate surface and expectation-z"
+            (and (= (quantum-state-num-qubits st) 1)
+                 (<= -1.0 z)
+                 (<= z 1.0))))))
+
+;; Construction and deterministic destruction are the public lifecycle
+;; contract for the larger molecular Hamiltonians. Exact diagonalization of
+;; these systems belongs to dedicated Moonlab VQE workloads, not this fast
+;; language-surface exposure test.
+(with-hamiltonian
+ (make-lih-hamiltonian 1.6)
+ (lambda (ham)
+   (check "LiH Hamiltonian construction" (> ham 0))))
+
+(with-hamiltonian
+ (make-h2o-hamiltonian)
+ (lambda (ham)
+   (check "H2O Hamiltonian construction" (> ham 0))))
+
+(display "quantum_surface_coverage_test: ")
+(if (= failed 0)
+    (begin (display "PASS (") (display passed) (display "/3)") (newline) (exit 0))
+    (begin (display "FAIL (") (display failed) (display " failed)") (newline) (exit 1)))
