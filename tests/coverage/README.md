@@ -9,7 +9,7 @@ generative exposure engines actually exercise, names the gap, and turns
 
 | File | Producer | What it is |
 |---|---|---|
-| `language_surface.json` | `scripts/gen_language_surface.py` | Ground-truth manifest: every builtin, special form, AST op, and prelude fn, each categorised by risk. Extracted from source — never hand-maintained. |
+| `language_surface.json` | `scripts/gen_language_surface.py` | Ground-truth manifest: every core builtin, tracked Agent FFI API, special form, AST op, and prelude fn, each categorised by risk. Extracted from source — never hand-maintained. |
 | `coverage_run.json` | `scripts/language_coverage.py` | Per-run sidecar: covered / total, covered fraction, covered + uncovered names by category. |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
 
@@ -39,6 +39,9 @@ silently drift from the compiler:
    (keyword → `eshkol_op_t`) plus the directly-dispatched forms
    (`begin`, `define-library`, `delay`, `named-let`, ...), and the
    `eshkol_op_t` enum from `inc/eshkol/eshkol.h`.
+5. **Tracked Agent FFI APIs** — the Moonlab `provide` surfaces in
+   `lib/agent/quantum.esk` and `lib/agent/pqc.esk`. These entries are marked
+   `agent_ffi`, not falsely attributed to the core VM/native builtin tables.
 
 Each builtin records which backend(s) register it (`native`, `vm`,
 `native_llvm`) so a construct that exists in only one backend is visible.
@@ -47,10 +50,12 @@ Each builtin records which backend(s) register it (`native`, `vm`,
 
 `language_coverage.py` is the "ICC tracks the language dynamically" mechanism:
 
-1. Import and run both engines in-process:
+1. Import and run both generative engines in-process, and read the quantum
+   acceptance corpus that the opt-in `quantum-macos` CI lane compiles and runs:
    `gen_generative_corpus.generate_programs()` and
    `gen_ad_adversarial.Gen().generate()` (plus their in-language preludes,
-   which are compiled and executed as part of every program).
+   which are compiled and executed as part of every program), plus every
+   `tests/quantum/*.esk` file.
 2. Scan the concatenated generated source with a small s-expression head
    collector: the symbol immediately following each `(` is an
    application/operator head, and the reader macros `'` `` ` `` `,` `,@` and
@@ -65,7 +70,8 @@ The head-collector reads the generated *source*, which for these engines is
 exactly what gets compiled and run (the generators emit closed, total programs;
 nothing is dead). This needs no compiler changes and no execution, so it runs
 in CI in milliseconds and is engine-agnostic — any new generator is measured by
-adding one `gen_<engine>_text()` accessor.
+adding one source accessor. The sidecar records `exercised_by_quantum_tests`
+separately so Moonlab-only coverage remains auditable.
 
 ### Upgrade path: true execution-time instrumentation
 
