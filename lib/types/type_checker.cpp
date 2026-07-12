@@ -3328,6 +3328,13 @@ TypeCheckResult TypeChecker::checkLinearVariable(const std::string& name) {
         if (type) {
             return TypeCheckResult::ok(*type);
         }
+        // The default-port parameters are runtime-provided procedures rather
+        // than lexical definitions.  Treat their bare references as values so
+        // parser lowering can preserve `parameterize` compatibility bindings.
+        if (name == "current-input-port" || name == "current-output-port" ||
+            name == "current-error-port") {
+            return TypeCheckResult::ok(BuiltinTypes::Value);
+        }
         return TypeCheckResult::error("Undefined variable: " + name);
     }
 

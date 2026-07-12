@@ -5,9 +5,9 @@
 ;; allocated by eshkol_make_parameter therefore satisfied (prng? ...) and
 ;; displayed via the raw-subtype fallback. HEAP_SUBTYPE_PARAMETER is now 24.
 ;;
-;; The heap-object path is only reachable when a `make-parameter` CALL_OP
-;; bypasses the parser's closure rewrite — e.g. through (eval ...) — so this
-;; test is JIT-only (eval is unavailable in AOT binaries).
+;; eval constructs the same heap-backed parameter object as source-level
+;; make-parameter. This remains JIT-only because eval is unavailable in AOT
+;; binaries.
 
 (require stdlib)
 
@@ -22,8 +22,7 @@
       (begin (set! fail-count (+ fail-count 1))
              (display "FAIL: ") (display name) (newline))))
 
-;; Heap parameter object via the runtime allocator (eval bypasses the
-;; parser's make-parameter -> closure rewrite).
+;; Heap parameter object via the runtime allocator.
 (define heap-param (eval '(make-parameter 5)))
 (define my-prng (make-prng 42))
 

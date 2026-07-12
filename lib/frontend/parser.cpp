@@ -7601,139 +7601,42 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         }
 
         // ===== R7RS WAVE 3: make-parameter =====
-        // (make-parameter init) → transforms to:
-        //   (let ((__p_cell (vector init)))
-        //     (lambda __p_args
-        //       (if (null? __p_args)
-        //         (vector-ref __p_cell 0)
-        //         (begin (vector-set! __p_cell 0 (car __p_args))
-        //                (vector-ref __p_cell 0)))))
+        // Keep this as a first-class operation until native codegen.  The old
+        // lowering made a closure over a one-cell vector, which looked
+        // callable but bypassed the real eshkol_param_t dynamic stack
+        // entirely.  codegenMakeParameter now allocates that runtime object.
         if (ast.operation.op == ESHKOL_MAKE_PARAMETER_OP) {
-            // Parse the init expression
-            token = tokenizer.nextToken();
-            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
-                PARSE_ERROR_AT(token, "make-parameter requires an initial value");
+            std::vector<eshkol_ast_t> args;
+            while (true) {
+                token = tokenizer.nextToken();
+                if (token.type == TOKEN_RPAREN) break;
+                if (token.type == TOKEN_EOF) {
+                    PARSE_ERROR_AT(token, "unexpected end of input in make-parameter");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                tokenizer.pushBack(token);
+                eshkol_ast_t arg = parse_expression(tokenizer);
+                if (arg.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                args.push_back(arg);
+            }
+
+            if (args.empty() || args.size() > 2) {
+                PARSE_ERROR_AT(token,
+                               "make-parameter requires an initial value and an optional converter");
                 ast.type = ESHKOL_INVALID;
                 return ast;
             }
-            // ESH-0094: pushBack + parse_expression handles quote/quasiquote/
-            // #(...) tokens that the manual LPAREN/atom dispatch dropped.
-            tokenizer.pushBack(token);
-            eshkol_ast_t init_expr = parse_expression(tokenizer);
-            // Consume closing paren
-            token = tokenizer.nextToken();
 
-            // AST helpers (reusing pattern from case-lambda)
-            auto mpMakeVar = [](const char* name) -> eshkol_ast_t {
-                eshkol_ast_t v = {};
-                v.type = ESHKOL_VAR;
-                size_t _len = strlen(name);
-                v.variable.id = new char[_len + 1];
-                memcpy(v.variable.id, name, _len + 1);
-                v.variable.data = nullptr;
-                return v;
-            };
-            auto mpMakeInt = [](int64_t val) -> eshkol_ast_t {
-                eshkol_ast_t lit = {};
-                eshkol_ast_make_int64(&lit, val);
-                return lit;
-            };
-            auto mpMakeCall1 = [&mpMakeVar](const char* func, eshkol_ast_t arg) -> eshkol_ast_t {
-                eshkol_ast_t call = {};
-                call.type = ESHKOL_OP;
-                call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
-                *call.operation.call_op.func = mpMakeVar(func);
-                call.operation.call_op.num_vars = 1;
-                call.operation.call_op.variables = new eshkol_ast_t[1];
-                call.operation.call_op.variables[0] = arg;
-                return call;
-            };
-            auto mpMakeCall2 = [&mpMakeVar](const char* func, eshkol_ast_t a, eshkol_ast_t b) -> eshkol_ast_t {
-                eshkol_ast_t call = {};
-                call.type = ESHKOL_OP;
-                call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
-                *call.operation.call_op.func = mpMakeVar(func);
-                call.operation.call_op.num_vars = 2;
-                call.operation.call_op.variables = new eshkol_ast_t[2];
-                call.operation.call_op.variables[0] = a;
-                call.operation.call_op.variables[1] = b;
-                return call;
-            };
-            auto mpMakeCall3 = [&mpMakeVar](const char* func, eshkol_ast_t a, eshkol_ast_t b, eshkol_ast_t c) -> eshkol_ast_t {
-                eshkol_ast_t call = {};
-                call.type = ESHKOL_OP;
-                call.operation.op = ESHKOL_CALL_OP;
-                call.operation.call_op.func = new eshkol_ast_t;
-                *call.operation.call_op.func = mpMakeVar(func);
-                call.operation.call_op.num_vars = 3;
-                call.operation.call_op.variables = new eshkol_ast_t[3];
-                call.operation.call_op.variables[0] = a;
-                call.operation.call_op.variables[1] = b;
-                call.operation.call_op.variables[2] = c;
-                return call;
-            };
-
-            // Build: (vector-ref __p_cell 0)
-            eshkol_ast_t vref = mpMakeCall2("vector-ref", mpMakeVar("__p_cell"), mpMakeInt(0));
-
-            // Build: (vector-set! __p_cell 0 (car __p_args))
-            eshkol_ast_t vset = mpMakeCall3("vector-set!", mpMakeVar("__p_cell"), mpMakeInt(0),
-                                            mpMakeCall1("car", mpMakeVar("__p_args")));
-
-            // Build: (begin (vector-set! ...) (vector-ref ...))
-            eshkol_ast_t set_body = {};
-            set_body.type = ESHKOL_OP;
-            set_body.operation.op = ESHKOL_SEQUENCE_OP;
-            set_body.operation.sequence_op.num_expressions = 2;
-            set_body.operation.sequence_op.expressions = new eshkol_ast_t[2];
-            set_body.operation.sequence_op.expressions[0] = vset;
-            set_body.operation.sequence_op.expressions[1] = vref;
-
-            // Build: (if (null? __p_args) (vector-ref __p_cell 0) (begin ...))
-            eshkol_ast_t if_ast = {};
-            if_ast.type = ESHKOL_OP;
-            if_ast.operation.op = ESHKOL_IF_OP;
-            if_ast.operation.call_op.func = nullptr;
-            if_ast.operation.call_op.num_vars = 3;
-            if_ast.operation.call_op.variables = new eshkol_ast_t[3];
-            if_ast.operation.call_op.variables[0] = mpMakeCall1("null?", mpMakeVar("__p_args"));
-            if_ast.operation.call_op.variables[1] = vref;
-            if_ast.operation.call_op.variables[2] = set_body;
-
-            // Build: (lambda __p_args (if ...))
-            eshkol_ast_t lambda_ast = {};
-            lambda_ast.type = ESHKOL_OP;
-            lambda_ast.operation.op = ESHKOL_LAMBDA_OP;
-            lambda_ast.operation.lambda_op.is_variadic = 1;
-            lambda_ast.operation.lambda_op.rest_param = new char[sizeof("__p_args")];
-            memcpy(lambda_ast.operation.lambda_op.rest_param, "__p_args", sizeof("__p_args"));
-            lambda_ast.operation.lambda_op.num_params = 0;
-            lambda_ast.operation.lambda_op.parameters = nullptr;
-            lambda_ast.operation.lambda_op.param_types = nullptr;
-            lambda_ast.operation.lambda_op.return_type = nullptr;
-            lambda_ast.operation.lambda_op.captured_vars = nullptr;
-            lambda_ast.operation.lambda_op.num_captured = 0;
-            lambda_ast.operation.lambda_op.body = new eshkol_ast_t;
-            *lambda_ast.operation.lambda_op.body = if_ast;
-
-            // Build: (let ((__p_cell (vector init))) (lambda ...))
-            eshkol_ast_t vector_call = mpMakeCall1("vector", init_expr);
-
-            ast.type = ESHKOL_OP;
-            ast.operation.op = ESHKOL_LET_OP;
-            ast.operation.let_op.num_bindings = 1;
-            ast.operation.let_op.bindings = new eshkol_ast_t[1];
-            ast.operation.let_op.binding_types = nullptr;
-            ast.operation.let_op.name = nullptr;
-            ast.operation.let_op.bindings[0].type = ESHKOL_CONS;
-            ast.operation.let_op.bindings[0].cons_cell.car = new eshkol_ast_t;
-            *ast.operation.let_op.bindings[0].cons_cell.car = mpMakeVar("__p_cell");
-            ast.operation.let_op.bindings[0].cons_cell.cdr = new eshkol_ast_t;
-            *ast.operation.let_op.bindings[0].cons_cell.cdr = vector_call;
-            ast.operation.let_op.body = new eshkol_ast_t;
-            *ast.operation.let_op.body = lambda_ast;
+            ast.operation.call_op.func = nullptr;
+            ast.operation.call_op.num_vars = args.size();
+            ast.operation.call_op.variables = new eshkol_ast_t[args.size()];
+            for (size_t i = 0; i < args.size(); ++i) {
+                ast.operation.call_op.variables[i] = args[i];
+            }
             return ast;
         }
 
@@ -7786,6 +7689,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 eshkol_ast_t val_expr = parse_expression(tokenizer);
                 // Consume closing paren
                 token = tokenizer.nextToken();
+                if (token.type != TOKEN_RPAREN) {
+                    PARSE_ERROR_AT(token, "parameterize binding must contain exactly a parameter and a value");
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
+                if (param_expr.type == ESHKOL_INVALID || val_expr.type == ESHKOL_INVALID) {
+                    ast.type = ESHKOL_INVALID;
+                    return ast;
+                }
                 params.push_back(param_expr);
                 values.push_back(val_expr);
             }
@@ -7804,9 +7716,20 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 body_exprs.push_back(expr);
             }
 
+            if (body_exprs.empty()) {
+                PARSE_ERROR_AT(token, "parameterize requires at least one body expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
             eshkol_ast_t body = transformInternalDefinesToLetrec(body_exprs);
 
-            // AST helper
+            // Lower to an explicit dynamic-wind.  The outer lets evaluate each
+            // parameter/value expression once, then apply every converter once
+            // before the wind frame is entered.  The before thunk contains only
+            // raw pushes; therefore a converter exception cannot leave a
+            // partially-installed dynamic binding.  The after thunk pops in
+            // reverse binding order on both normal and non-local exits.
             auto pmMakeVar = [](const char* name) -> eshkol_ast_t {
                 eshkol_ast_t v = {};
                 v.type = ESHKOL_VAR;
@@ -7816,111 +7739,144 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 v.variable.data = nullptr;
                 return v;
             };
-
-            // Build the transformation:
-            // Outer let: save current values by calling params with 0 args
             size_t n = params.size();
 
-            // Build sequence: set new values, evaluate body, restore old values, return result
-            // (begin (param0 val0) ... (paramN valN) (let ((__result body)) (param0 __saved0) ... __result))
-            std::vector<eshkol_ast_t> outer_body;
-
-            // Set new values: (param val) for each binding
-            for (size_t i = 0; i < n; i++) {
-                eshkol_ast_t set_call = {};
-                set_call.type = ESHKOL_OP;
-                set_call.operation.op = ESHKOL_CALL_OP;
-                set_call.operation.call_op.func = new eshkol_ast_t;
-                *set_call.operation.call_op.func = params[i];
-                set_call.operation.call_op.num_vars = 1;
-                set_call.operation.call_op.variables = new eshkol_ast_t[1];
-                set_call.operation.call_op.variables[0] = values[i];
-                outer_body.push_back(set_call);
+            if (n == 0) {
+                return body;
             }
 
-            // Inner let: capture body result
-            std::string result_name = "__pz_result";
-            eshkol_ast_t inner_let = {};
-            inner_let.type = ESHKOL_OP;
-            inner_let.operation.op = ESHKOL_LET_OP;
-            inner_let.operation.let_op.num_bindings = 1;
-            inner_let.operation.let_op.bindings = new eshkol_ast_t[1];
-            inner_let.operation.let_op.binding_types = nullptr;
-            inner_let.operation.let_op.name = nullptr;
-            inner_let.operation.let_op.bindings[0].type = ESHKOL_CONS;
-            inner_let.operation.let_op.bindings[0].cons_cell.car = new eshkol_ast_t;
-            *inner_let.operation.let_op.bindings[0].cons_cell.car = pmMakeVar("__pz_result");
-            inner_let.operation.let_op.bindings[0].cons_cell.cdr = new eshkol_ast_t;
-            *inner_let.operation.let_op.bindings[0].cons_cell.cdr = body;
+            auto pmMakeCall = [&pmMakeVar](const char* name,
+                                            const std::vector<eshkol_ast_t>& args) -> eshkol_ast_t {
+                eshkol_ast_t call = {};
+                call.type = ESHKOL_OP;
+                call.operation.op = ESHKOL_CALL_OP;
+                call.operation.call_op.func = new eshkol_ast_t;
+                *call.operation.call_op.func = pmMakeVar(name);
+                call.operation.call_op.num_vars = args.size();
+                call.operation.call_op.variables = args.empty() ? nullptr : new eshkol_ast_t[args.size()];
+                for (size_t i = 0; i < args.size(); ++i) call.operation.call_op.variables[i] = args[i];
+                return call;
+            };
+            auto pmMakeSequence = [](const std::vector<eshkol_ast_t>& expressions) -> eshkol_ast_t {
+                eshkol_ast_t seq = {};
+                seq.type = ESHKOL_OP;
+                seq.operation.op = ESHKOL_SEQUENCE_OP;
+                seq.operation.sequence_op.num_expressions = expressions.size();
+                seq.operation.sequence_op.expressions = expressions.empty() ? nullptr : new eshkol_ast_t[expressions.size()];
+                for (size_t i = 0; i < expressions.size(); ++i) seq.operation.sequence_op.expressions[i] = expressions[i];
+                return seq;
+            };
+            auto pmMakeLambda = [](eshkol_ast_t lambda_body) -> eshkol_ast_t {
+                eshkol_ast_t lambda = {};
+                lambda.type = ESHKOL_OP;
+                lambda.operation.op = ESHKOL_LAMBDA_OP;
+                lambda.operation.lambda_op.is_variadic = 0;
+                lambda.operation.lambda_op.rest_param = nullptr;
+                lambda.operation.lambda_op.num_params = 0;
+                lambda.operation.lambda_op.parameters = nullptr;
+                lambda.operation.lambda_op.param_types = nullptr;
+                lambda.operation.lambda_op.return_type = nullptr;
+                lambda.operation.lambda_op.captured_vars = nullptr;
+                lambda.operation.lambda_op.num_captured = 0;
+                lambda.operation.lambda_op.body = new eshkol_ast_t;
+                *lambda.operation.lambda_op.body = lambda_body;
+                return lambda;
+            };
+            auto pmMakeLet = [&pmMakeVar](const std::vector<std::pair<std::string, eshkol_ast_t>>& bindings,
+                                           eshkol_ast_t let_body) -> eshkol_ast_t {
+                eshkol_ast_t let = {};
+                let.type = ESHKOL_OP;
+                let.operation.op = ESHKOL_LET_OP;
+                let.operation.let_op.num_bindings = bindings.size();
+                let.operation.let_op.bindings = bindings.empty() ? nullptr : new eshkol_ast_t[bindings.size()];
+                let.operation.let_op.binding_types = nullptr;
+                let.operation.let_op.name = nullptr;
+                for (size_t i = 0; i < bindings.size(); ++i) {
+                    let.operation.let_op.bindings[i].type = ESHKOL_CONS;
+                    let.operation.let_op.bindings[i].cons_cell.car = new eshkol_ast_t;
+                    *let.operation.let_op.bindings[i].cons_cell.car = pmMakeVar(bindings[i].first.c_str());
+                    let.operation.let_op.bindings[i].cons_cell.cdr = new eshkol_ast_t;
+                    *let.operation.let_op.bindings[i].cons_cell.cdr = bindings[i].second;
+                }
+                let.operation.let_op.body = new eshkol_ast_t;
+                *let.operation.let_op.body = let_body;
+                return let;
+            };
 
-            // Inner let body: restore values, then return __pz_result
-            std::vector<eshkol_ast_t> restore_exprs;
-            for (size_t i = 0; i < n; i++) {
+            std::vector<std::pair<std::string, eshkol_ast_t>> evaluated_bindings;
+            std::vector<std::pair<std::string, eshkol_ast_t>> converted_bindings;
+            std::vector<eshkol_ast_t> push_expressions;
+            std::vector<eshkol_ast_t> pop_expressions;
+            std::vector<const char*> port_parameter_names(n, nullptr);
+
+            // current-{input,output,error}-port predate general parameter
+            // objects: their values are backed by dedicated hosted FILE*
+            // cells consulted directly by I/O codegen. Preserve that runtime
+            // contract as a compatibility binding while ordinary parameters
+            // below use the real eshkol_param_t stack.  This also keeps port
+            // rebinding unwind-safe through the same generated dynamic-wind.
+            auto pmRuntimePortParameterName = [](const eshkol_ast_t& parameter)
+                -> const char* {
+                if (parameter.type != ESHKOL_VAR || !parameter.variable.id) return nullptr;
+                const char* name = parameter.variable.id;
+                if (strcmp(name, "current-input-port") == 0 ||
+                    strcmp(name, "current-output-port") == 0 ||
+                    strcmp(name, "current-error-port") == 0) {
+                    return name;
+                }
+                return nullptr;
+            };
+
+            for (size_t i = 0; i < n; ++i) {
+                std::string param_name = "__pz_param_" + std::to_string(i);
+                std::string raw_name = "__pz_raw_" + std::to_string(i);
+                std::string value_name = "__pz_value_" + std::to_string(i);
                 std::string saved_name = "__pz_saved_" + std::to_string(i);
-                eshkol_ast_t restore_call = {};
-                restore_call.type = ESHKOL_OP;
-                restore_call.operation.op = ESHKOL_CALL_OP;
-                restore_call.operation.call_op.func = new eshkol_ast_t;
-                *restore_call.operation.call_op.func = params[i];
-                restore_call.operation.call_op.num_vars = 1;
-                restore_call.operation.call_op.variables = new eshkol_ast_t[1];
-                restore_call.operation.call_op.variables[0] = pmMakeVar(saved_name.c_str());
-                restore_exprs.push_back(restore_call);
+
+                port_parameter_names[i] = pmRuntimePortParameterName(params[i]);
+                if (port_parameter_names[i]) {
+                    // Preserve normal evaluation order: evaluate the new
+                    // value before snapshotting the cell that will be
+                    // restored after this dynamic extent.
+                    evaluated_bindings.push_back({raw_name, values[i]});
+                    evaluated_bindings.push_back({saved_name,
+                        pmMakeCall(port_parameter_names[i], {})});
+                    push_expressions.push_back(
+                        pmMakeCall(port_parameter_names[i], {pmMakeVar(raw_name.c_str())}));
+                    continue;
+                }
+
+                evaluated_bindings.push_back({param_name, params[i]});
+                evaluated_bindings.push_back({raw_name, values[i]});
+                converted_bindings.push_back({value_name,
+                    pmMakeCall("__eshkol_parameter_convert",
+                               {pmMakeVar(param_name.c_str()), pmMakeVar(raw_name.c_str())})});
+                push_expressions.push_back(
+                    pmMakeCall("__eshkol_parameter_push",
+                               {pmMakeVar(param_name.c_str()), pmMakeVar(value_name.c_str())}));
             }
-            restore_exprs.push_back(pmMakeVar("__pz_result"));
-
-            // Wrap restore sequence in a begin
-            eshkol_ast_t restore_seq = {};
-            restore_seq.type = ESHKOL_OP;
-            restore_seq.operation.op = ESHKOL_SEQUENCE_OP;
-            restore_seq.operation.sequence_op.num_expressions = restore_exprs.size();
-            restore_seq.operation.sequence_op.expressions = new eshkol_ast_t[restore_exprs.size()];
-            for (size_t i = 0; i < restore_exprs.size(); i++) {
-                restore_seq.operation.sequence_op.expressions[i] = restore_exprs[i];
-            }
-
-            inner_let.operation.let_op.body = new eshkol_ast_t;
-            *inner_let.operation.let_op.body = restore_seq;
-            outer_body.push_back(inner_let);
-
-            // Wrap set+inner_let in a begin for the outer let body
-            eshkol_ast_t outer_seq = {};
-            outer_seq.type = ESHKOL_OP;
-            outer_seq.operation.op = ESHKOL_SEQUENCE_OP;
-            outer_seq.operation.sequence_op.num_expressions = outer_body.size();
-            outer_seq.operation.sequence_op.expressions = new eshkol_ast_t[outer_body.size()];
-            for (size_t i = 0; i < outer_body.size(); i++) {
-                outer_seq.operation.sequence_op.expressions[i] = outer_body[i];
+            for (size_t i = n; i-- > 0;) {
+                if (port_parameter_names[i]) {
+                    pop_expressions.push_back(
+                        pmMakeCall(port_parameter_names[i],
+                                   {pmMakeVar(("__pz_saved_" + std::to_string(i)).c_str())}));
+                    continue;
+                }
+                pop_expressions.push_back(
+                    pmMakeCall("__eshkol_parameter_pop", {pmMakeVar(("__pz_param_" + std::to_string(i)).c_str())}));
             }
 
-            // Outer let: save current values
-            ast.type = ESHKOL_OP;
-            ast.operation.op = ESHKOL_LET_OP;
-            ast.operation.let_op.num_bindings = n;
-            ast.operation.let_op.bindings = new eshkol_ast_t[n];
-            ast.operation.let_op.binding_types = nullptr;
-            ast.operation.let_op.name = nullptr;
+            eshkol_ast_t wind = {};
+            wind.type = ESHKOL_OP;
+            wind.operation.op = ESHKOL_DYNAMIC_WIND_OP;
+            wind.operation.dynamic_wind_op.before = new eshkol_ast_t;
+            *wind.operation.dynamic_wind_op.before = pmMakeLambda(pmMakeSequence(push_expressions));
+            wind.operation.dynamic_wind_op.thunk = new eshkol_ast_t;
+            *wind.operation.dynamic_wind_op.thunk = pmMakeLambda(body);
+            wind.operation.dynamic_wind_op.after = new eshkol_ast_t;
+            *wind.operation.dynamic_wind_op.after = pmMakeLambda(pmMakeSequence(pop_expressions));
 
-            for (size_t i = 0; i < n; i++) {
-                std::string saved_name = "__pz_saved_" + std::to_string(i);
-                // Save: __pz_saved_i = (param_i)  ; call with 0 args
-                eshkol_ast_t save_call = {};
-                save_call.type = ESHKOL_OP;
-                save_call.operation.op = ESHKOL_CALL_OP;
-                save_call.operation.call_op.func = new eshkol_ast_t;
-                *save_call.operation.call_op.func = params[i];
-                save_call.operation.call_op.num_vars = 0;
-                save_call.operation.call_op.variables = nullptr;
-
-                ast.operation.let_op.bindings[i].type = ESHKOL_CONS;
-                ast.operation.let_op.bindings[i].cons_cell.car = new eshkol_ast_t;
-                *ast.operation.let_op.bindings[i].cons_cell.car = pmMakeVar(saved_name.c_str());
-                ast.operation.let_op.bindings[i].cons_cell.cdr = new eshkol_ast_t;
-                *ast.operation.let_op.bindings[i].cons_cell.cdr = save_call;
-            }
-
-            ast.operation.let_op.body = new eshkol_ast_t;
-            *ast.operation.let_op.body = outer_seq;
+            ast = pmMakeLet(evaluated_bindings, pmMakeLet(converted_bindings, wind));
             return ast;
         }
 
