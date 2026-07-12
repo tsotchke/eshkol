@@ -14403,6 +14403,13 @@ private:
         if (func_name == "quantum-random-int") return codegenQuantumRandomInt(op);
         if (func_name == "quantum-random-range") return codegenQuantumRandomRange(op);
 
+        // Moonlab VQE bridge. This is intentionally a compiler primitive:
+        // ordinary FFI values cannot preserve the AD-node pointers stored in a
+        // reverse-mode parameter tensor. The primitive dispatches to the plain
+        // Moonlab energy evaluator outside AD and records AD_NODE_CUSTOM inside
+        // a live tape, so its scalar result composes with following Eshkol ops.
+        if (func_name == "vqe-energy-primitive") return codegenVqeEnergyPrimitive(op);
+
         // Handle parallel execution primitives - DELEGATED to ParallelCodegen
         if (func_name == "parallel-map") return parallel_ ? parallel_->parallelMap(op) : unavailableParallelBuiltin(func_name);
         if (func_name == "parallel-fold") return parallel_ ? parallel_->parallelFold(op) : unavailableParallelBuiltin(func_name);
@@ -32448,6 +32455,98 @@ private:
         }
         Value* random_val = builder->CreateCall(qrng_double_func, {});
         return packDoubleToTaggedValue(random_val);
+    }
+
+    /**
+     * Lower (vqe-energy-primitive ham params) to the Moonlab energy bridge.
+     *
+     * The AD branch receives the parameter tensor produced by gradient(): its
+     * element slots hold ad_node_t* bit patterns. The C preparation helper
+     * snapshots those primal values, creates an arena-owned exact Moonlab VJP,
+     * and returns its descriptor plus the input-node array. recordADNodeCustom
+     * then appends the opaque scalar to the active Eshkol tape.
+     */
+    Value* codegenVqeEnergyPrimitive(const eshkol_operations_t* op) {
+        if (!op || op->call_op.num_vars != 2) {
+            eshkol_error("vqe-energy requires exactly a Hamiltonian and parameter vector");
+            return nullptr;
+        }
+
+        Value* ham = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        Value* params = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+        if (!ham || !params) return nullptr;
+
+        Value* handle = unpackInt64FromTaggedValue(ham);
+        Value* params_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                   "vqe_energy_params");
+        builder->CreateStore(params, params_slot);
+
+        FunctionCallee plain_energy = module->getOrInsertFunction(
+            "eshkol_vqe_energy_from_tagged",
+            FunctionType::get(double_type, {int64_type, builder->getPtrTy()}, false));
+        FunctionCallee ad_prepare = module->getOrInsertFunction(
+            "eshkol_vqe_ad_prepare",
+            FunctionType::get(builder->getPtrTy(), {int64_type, builder->getPtrTy()}, false));
+        FunctionCallee prepared_energy = module->getOrInsertFunction(
+            "eshkol_vqe_ad_prepared_energy",
+            FunctionType::get(double_type, {builder->getPtrTy()}, false));
+        FunctionCallee prepared_inputs = module->getOrInsertFunction(
+            "eshkol_vqe_ad_prepared_inputs",
+            FunctionType::get(builder->getPtrTy(), {builder->getPtrTy()}, false));
+        FunctionCallee prepared_count = module->getOrInsertFunction(
+            "eshkol_vqe_ad_prepared_input_count",
+            FunctionType::get(int64_type, {builder->getPtrTy()}, false));
+        FunctionCallee prepared_vjp = module->getOrInsertFunction(
+            "eshkol_vqe_ad_prepared_vjp",
+            FunctionType::get(builder->getPtrTy(), {builder->getPtrTy()}, false));
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* non_ad_block = BasicBlock::Create(*context, "vqe_energy_plain", current_func);
+        BasicBlock* ad_block = BasicBlock::Create(*context, "vqe_energy_ad", current_func);
+        BasicBlock* ad_ready_block = BasicBlock::Create(*context, "vqe_energy_ad_ready", current_func);
+        BasicBlock* ad_fail_block = BasicBlock::Create(*context, "vqe_energy_ad_fail", current_func);
+        BasicBlock* done_block = BasicBlock::Create(*context, "vqe_energy_done", current_func);
+
+        Value* in_ad_mode = builder->CreateLoad(int1_type, ctx_->adModeActive());
+        builder->CreateCondBr(in_ad_mode, ad_block, non_ad_block);
+
+        builder->SetInsertPoint(non_ad_block);
+        Value* plain = builder->CreateCall(plain_energy, {handle, params_slot});
+        Value* plain_tagged = packDoubleToTaggedValue(plain);
+        builder->CreateBr(done_block);
+        BasicBlock* non_ad_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(ad_block);
+        Value* prepared = builder->CreateCall(ad_prepare, {handle, params_slot});
+        Value* prep_ok = builder->CreateICmpNE(
+            prepared, ConstantPointerNull::get(builder->getPtrTy()));
+        builder->CreateCondBr(prep_ok, ad_ready_block, ad_fail_block);
+
+        builder->SetInsertPoint(ad_ready_block);
+        Value* energy = builder->CreateCall(prepared_energy, {prepared});
+        Value* inputs = builder->CreateCall(prepared_inputs, {prepared});
+        Value* count = builder->CreateCall(prepared_count, {prepared});
+        Value* vjp = builder->CreateCall(prepared_vjp, {prepared});
+        Value* custom_node = autodiff_->recordADNodeCustom(energy, inputs, count, vjp);
+        if (!custom_node) {
+            eshkol_error("vqe-energy: could not record custom AD node");
+            return nullptr;
+        }
+        Value* ad_tagged = packPtrToTaggedValue(custom_node, ESHKOL_VALUE_CALLABLE);
+        builder->CreateBr(done_block);
+        BasicBlock* ad_ready_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(ad_fail_block);
+        Value* failed_tagged = packDoubleToTaggedValue(ConstantFP::getNaN(double_type));
+        builder->CreateBr(done_block);
+        BasicBlock* ad_fail_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(done_block);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 3, "vqe_energy_result");
+        result->addIncoming(plain_tagged, non_ad_exit);
+        result->addIncoming(ad_tagged, ad_ready_exit);
+        result->addIncoming(failed_tagged, ad_fail_exit);
+        return result;
     }
 
     // Quantum random integer: (quantum-random-int bound) -> integer in [0, bound).

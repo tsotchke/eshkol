@@ -37,6 +37,7 @@
          hamiltonian-destroy!
          hamiltonian-exact-ground-energy
          vqe-optimize
+         vqe-energy
          vqe-gradient
          with-hamiltonian)
 
@@ -255,6 +256,19 @@
             (error "agent.quantum: vqe-optimize iterations must be positive")
             (check-quantum-real! "vqe-optimize"
                                  (vqe-optimize-raw ham iterations))))))
+
+(define (vqe-energy ham params)
+  "Return the exact ideal-state energy E(params) of the default one-layer
+   hardware-efficient VQE ansatz for `ham`.
+
+   This delegates to Eshkol's vqe-energy-primitive compiler builtin rather
+   than an ordinary FFI extern. In normal execution it calls Moonlab's fixed-
+   parameter energy evaluator. During reverse-mode AD the primitive receives
+   Eshkol's AD-node parameter tensor, records an AD_NODE_CUSTOM with Moonlab's
+   exact adjoint VJP, and returns an Eshkol AD scalar. Consequently it composes
+   with surrounding differentiable Scheme arithmetic without exposing Moonlab
+   internals to Scheme."
+  (vqe-energy-primitive ham params))
 
 (define (vqe-gradient ham params)
   "Return Moonlab's exact dE/dtheta vector for the default one-layer

@@ -3491,6 +3491,13 @@ static bool adAstUsesTensorOps(
         case ESHKOL_IF_OP:
         case ESHKOL_COND_OP: {
             const eshkol_ast_t* f = op->call_op.func;
+            // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
+            // produced for vector inputs. Mark it as tensor-flowing so
+            // (gradient (lambda (p) (vqe-energy ham p)) (vector ...)) takes
+            // the reverse path rather than the forward dual-vector path.
+            if (f && f->type == ESHKOL_VAR && f->variable.id &&
+                (std::strcmp(f->variable.id, "vqe-energy") == 0 ||
+                 std::strcmp(f->variable.id, "vqe-energy-primitive") == 0)) return true;
             if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id)) return true;
             // Follow a call into a user-defined function's body (ESH-0235).
             if (bodies && visited && depth < 8 && f && f->type == ESHKOL_VAR &&
