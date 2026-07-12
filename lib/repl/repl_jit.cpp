@@ -407,6 +407,21 @@ extern "C" {
     double eshkol_vqe_gradient_get(int64_t handle, int32_t index)
         ESHKOL_OPTIONAL_AGENT_FFI;
 
+    // Moonlab ML-KEM (agent.pqc, Stage S4).  Bytevectors are passed as their
+    // arena payload pointers; agent_pqc.c validates their subtype and exact
+    // FIPS 203 length before calling Moonlab.
+    int32_t eshkol_mlkem_keygen(int32_t level, void* public_key,
+                                void* secret_key) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_mlkem_encaps(int32_t level, void* ciphertext,
+                                void* shared_secret,
+                                const void* public_key) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_mlkem_decaps(int32_t level, void* shared_secret,
+                                const void* ciphertext,
+                                const void* secret_key) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_mlkem_last_error(char* buf, int64_t buf_size)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_mlkem_nist_kat(int32_t level) ESHKOL_OPTIONAL_AGENT_FFI;
+
     void* qllm_process_spawn(const char* command, const char* cwd_arg,
                              const char* env_arg, int64_t flags)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1111,6 +1126,11 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_set_parameter);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_compute);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_get);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mlkem_keygen);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mlkem_encaps);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mlkem_decaps);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mlkem_last_error);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_mlkem_nist_kat);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_shell);

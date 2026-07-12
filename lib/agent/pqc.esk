@@ -1,0 +1,141 @@
+;;
+;; pqc.esk - FIPS 203 ML-KEM bytevector bindings (Stage S4)
+;;
+;; This stays separate from agent.quantum: it shares Moonlab's opt-in link
+;; target, but it has a distinct cryptographic lifecycle and only exposes
+;; serializable R7RS bytevectors rather than quantum-state/VQE handles.
+;;
+;; Production key generation and encapsulation always use Moonlab's
+;; Bell-verified QRNG wrappers.  The deterministic Moonlab entry points are
+;; intentionally not part of this Scheme surface; agent_pqc.c uses them only
+;; in its fixed-seed NIST KAT helper exercised by the test suite.
+;;
+
+(require core.capabilities)
+
+(provide mlkem-keygen
+         mlkem-encaps
+         mlkem-decaps
+         mlkem-public-key-bytes
+         mlkem-secret-key-bytes
+         mlkem-ciphertext-bytes
+         mlkem-shared-secret-bytes)
+
+;; Eshkol bytevector pointers point to [length:i64 | bytes...].  The C shim
+;; validates the bytevector subtype and exact FIPS 203 length on every call.
+(extern i32 mlkem-keygen-raw i32 ptr ptr :real eshkol_mlkem_keygen)
+(extern i32 mlkem-encaps-raw i32 ptr ptr ptr :real eshkol_mlkem_encaps)
+(extern i32 mlkem-decaps-raw i32 ptr ptr ptr :real eshkol_mlkem_decaps)
+(extern i32 mlkem-last-error-raw ptr i64 :real eshkol_mlkem_last_error)
+
+(define mlkem-shared-secret-bytes 32)
+
+(define (mlkem-level-valid? level)
+  (or (= level 512) (= level 768) (= level 1024)))
+
+(define (mlkem-require-level! who level)
+  (if (mlkem-level-valid? level)
+      level
+      (error (string-append "agent.pqc: " who
+                            " level must be 512, 768, or 1024"))))
+
+(define (mlkem-public-key-bytes level)
+  (mlkem-require-level! "mlkem-public-key-bytes" level)
+  (cond ((= level 512) 800)
+        ((= level 768) 1184)
+        (else 1568)))
+
+(define (mlkem-secret-key-bytes level)
+  (mlkem-require-level! "mlkem-secret-key-bytes" level)
+  (cond ((= level 512) 1632)
+        ((= level 768) 2400)
+        (else 3168)))
+
+(define (mlkem-ciphertext-bytes level)
+  (mlkem-require-level! "mlkem-ciphertext-bytes" level)
+  (cond ((= level 512) 768)
+        ((= level 768) 1088)
+        (else 1568)))
+
+(define (mlkem-last-error)
+  (let ((buffer (make-string 256 #\nul)))
+    (let ((length (mlkem-last-error-raw buffer 256)))
+      (if (> length 0)
+          (substring buffer 0 length)
+          "unknown Moonlab ML-KEM error"))))
+
+(define (mlkem-check-result! operation result)
+  (if (= result 0)
+      #t
+      (error (string-append "agent.pqc: " operation " failed: "
+                            (mlkem-last-error)))))
+
+(define (mlkem-require-bytevector! operation value expected-length)
+  (if (not (bytevector? value))
+      (error (string-append "agent.pqc: " operation " requires a bytevector"))
+      (if (= (bytevector-length value) expected-length)
+          value
+          (error (string-append "agent.pqc: " operation " requires a "
+                                (number->string expected-length)
+                                "-byte bytevector")))))
+
+(define (mlkem-level-from-public-key public-key)
+  (if (not (bytevector? public-key))
+      (error "agent.pqc: mlkem-encaps requires a public-key bytevector")
+      (let ((length (bytevector-length public-key)))
+        (cond ((= length 800) 512)
+              ((= length 1184) 768)
+              ((= length 1568) 1024)
+              (else (error "agent.pqc: public key has no ML-KEM parameter-set length"))))))
+
+(define (mlkem-level-from-secret-key secret-key)
+  (if (not (bytevector? secret-key))
+      (error "agent.pqc: mlkem-decaps requires a secret-key bytevector")
+      (let ((length (bytevector-length secret-key)))
+        (cond ((= length 1632) 512)
+              ((= length 2400) 768)
+              ((= length 3168) 1024)
+              (else (error "agent.pqc: secret key has no ML-KEM parameter-set length"))))))
+
+(define (mlkem-keygen level)
+  "Generate an ML-KEM keypair with Moonlab's Bell-verified QRNG.
+   `level` is 512, 768, or 1024.  Returns #(public-key secret-key), where
+   both fields are R7RS bytevectors sized by the FIPS 203 parameter set."
+  (capability-require! 'ffi 'mlkem-keygen)
+  (mlkem-require-level! "mlkem-keygen" level)
+  (let ((public-key (make-bytevector (mlkem-public-key-bytes level) 0))
+        (secret-key (make-bytevector (mlkem-secret-key-bytes level) 0)))
+    (mlkem-check-result! "mlkem-keygen"
+                         (mlkem-keygen-raw level public-key secret-key))
+    (vector public-key secret-key)))
+
+(define (mlkem-encaps public-key)
+  "Encapsulate to `public-key` with Moonlab's Bell-verified QRNG.
+   Returns #(ciphertext shared-secret), both R7RS bytevectors.  The key's
+   parameter set is inferred from its exact FIPS 203 public-key length."
+  (capability-require! 'ffi 'mlkem-encaps)
+  (let* ((level (mlkem-level-from-public-key public-key))
+         (public-key-size (mlkem-public-key-bytes level))
+         (ciphertext (make-bytevector (mlkem-ciphertext-bytes level) 0))
+         (shared-secret (make-bytevector mlkem-shared-secret-bytes 0)))
+    (mlkem-require-bytevector! "mlkem-encaps public key" public-key public-key-size)
+    (mlkem-check-result! "mlkem-encaps"
+                         (mlkem-encaps-raw level ciphertext shared-secret public-key))
+    (vector ciphertext shared-secret)))
+
+(define (mlkem-decaps secret-key ciphertext)
+  "Recover the 32-byte shared secret for `ciphertext` using `secret-key`.
+   The parameter set is inferred from the secret-key length.  A wrong-size or
+   wrong-type input raises a catchable Eshkol error.  As required by FIPS 203,
+   a correctly sized tampered ciphertext returns an implicit-rejection secret
+   rather than exposing a validity oracle."
+  (capability-require! 'ffi 'mlkem-decaps)
+  (let* ((level (mlkem-level-from-secret-key secret-key))
+         (secret-key-size (mlkem-secret-key-bytes level))
+         (ciphertext-size (mlkem-ciphertext-bytes level))
+         (shared-secret (make-bytevector mlkem-shared-secret-bytes 0)))
+    (mlkem-require-bytevector! "mlkem-decaps secret key" secret-key secret-key-size)
+    (mlkem-require-bytevector! "mlkem-decaps ciphertext" ciphertext ciphertext-size)
+    (mlkem-check-result! "mlkem-decaps"
+                         (mlkem-decaps-raw level shared-secret ciphertext secret-key))
+    shared-secret))

@@ -1,0 +1,102 @@
+;; Stage S4 ON-path verification for agent.pqc over Moonlab ML-KEM.
+;; Run with -DESHKOL_QUANTUM_ENABLED=ON.
+
+(require agent.pqc)
+
+;; Test-only bridge to agent_pqc.c's NIST count=0 deterministic KAT.  The
+;; public Scheme API deliberately exposes only Bell-verified-QRNG keygen and
+;; encapsulation; deterministic operations are not production-safe defaults.
+(extern i32 mlkem-nist-kat-raw i32 :real eshkol_mlkem_nist_kat)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label ok)
+  (if ok
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display label) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display label) (newline))))
+
+(define (bytevector=? left right)
+  (and (= (bytevector-length left) (bytevector-length right))
+       (let loop ((index 0))
+         (if (= index (bytevector-length left))
+             #t
+             (and (= (bytevector-u8-ref left index)
+                     (bytevector-u8-ref right index))
+                  (loop (+ index 1)))))))
+
+(define (raises? thunk)
+  (let ((raised #f))
+    (guard (exception (#t (set! raised #t)))
+      (thunk))
+    raised))
+
+(define (run-level label level public-key-bytes secret-key-bytes ciphertext-bytes)
+  (let* ((keypair-a (mlkem-keygen level))
+         (public-key-a (vector-ref keypair-a 0))
+         (secret-key-a (vector-ref keypair-a 1))
+         (keypair-b (mlkem-keygen level))
+         (public-key-b (vector-ref keypair-b 0))
+         (secret-key-b (vector-ref keypair-b 1))
+         (encapsulation-a (mlkem-encaps public-key-a))
+         (ciphertext-a (vector-ref encapsulation-a 0))
+         (shared-secret-a (vector-ref encapsulation-a 1))
+         (encapsulation-b (mlkem-encaps public-key-a))
+         (ciphertext-b (vector-ref encapsulation-b 0))
+         (shared-secret-b (vector-ref encapsulation-b 1))
+         (decapsulated-secret (mlkem-decaps secret-key-a ciphertext-a))
+         (sizes-correct
+          (and (= (bytevector-length public-key-a) public-key-bytes)
+               (= (bytevector-length secret-key-a) secret-key-bytes)
+               (= (bytevector-length ciphertext-a) ciphertext-bytes)
+               (= (bytevector-length shared-secret-a) 32)
+               (= (bytevector-length decapsulated-secret) 32)))
+         (round-trip-correct (bytevector=? shared-secret-a decapsulated-secret))
+         (distinct-keypairs
+          (and (not (bytevector=? public-key-a public-key-b))
+               (not (bytevector=? secret-key-a secret-key-b))))
+         (distinct-encapsulations
+          (and (not (bytevector=? ciphertext-a ciphertext-b))
+               (not (bytevector=? shared-secret-a shared-secret-b))))
+         (ok (and sizes-correct round-trip-correct distinct-keypairs
+                  distinct-encapsulations)))
+    (display label) (display " sizes: pk=") (display public-key-bytes)
+    (display " sk=") (display secret-key-bytes)
+    (display " ct=") (display ciphertext-bytes)
+    (display " ss=32") (newline)
+    (check label ok)))
+
+(run-level "ML-KEM-512" 512 800 1632 768)
+(run-level "ML-KEM-768" 768 1184 2400 1088)
+(run-level "ML-KEM-1024" 1024 1568 3168 1568)
+
+;; Moonlab's repository contains a NIST-seeded KAT harness with the published
+;; pq-crystals count=0 DRBG seed and SHA3-256 fingerprints for every artifact.
+;; The shim invokes deterministic (non-QRNG) keygen/encaps with the resulting
+;; fixed d, z, and m bytes and checks all pk/sk/ct/K fingerprints.
+(check "ML-KEM-512 deterministic NIST KAT" (= (mlkem-nist-kat-raw 512) 0))
+(check "ML-KEM-768 deterministic NIST KAT" (= (mlkem-nist-kat-raw 768) 0))
+(check "ML-KEM-1024 deterministic NIST KAT" (= (mlkem-nist-kat-raw 1024) 0))
+
+;; Boundary errors must be Scheme catchable, before unsafe bytevector data ever
+;; reaches the C ABI.  Exact-size checks are the public contract.
+(check "wrong-size public key raises"
+       (raises? (lambda () (mlkem-encaps (make-bytevector 7 0)))))
+(check "wrong-size secret key raises"
+       (raises? (lambda ()
+                  (mlkem-decaps (make-bytevector 7 0) (make-bytevector 7 0)))))
+(check "invalid ML-KEM level raises"
+       (raises? (lambda () (mlkem-keygen 42))))
+
+(display "pqc_mlkem_test: ")
+(if (= failed 0)
+    (begin
+      (display "PASS (") (display passed) (display "/9)") (newline)
+      (exit 0))
+    (begin
+      (display "FAIL (") (display failed) (display " failed)") (newline)
+      (exit 1)))

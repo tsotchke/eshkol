@@ -3282,6 +3282,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_quantum.c)
         endif()
 
+        # Moonlab ML-KEM (Stage S4) follows the same opt-in contract as the
+        # state-vector/VQE bridge above.  Compile the shim unconditionally so
+        # its honest "not enabled" stubs remain available in default builds;
+        # ESHKOL_HAVE_MOONLAB selects the real FIPS 203 implementation only
+        # when ESHKOL_QUANTUM_ENABLED fetched and linked quantumsim.
+        if(EXISTS "${AGENT_FFI_DIR}/agent_pqc.c")
+            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_pqc.c)
+        endif()
+
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
         target_include_directories(eshkol-agent-ffi PRIVATE
