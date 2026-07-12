@@ -200,7 +200,7 @@ if(ESHKOL_QUANTUM_ENABLED)
 
     FetchContent_Declare(moonlab
         GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
-        GIT_TAG c613234cd8498804428f3838aa46dd730b1de810
+        GIT_TAG d2503460246da893c28b59845bb32689aa9602fc
         GIT_SHALLOW FALSE
     )
     FetchContent_MakeAvailable(moonlab)
