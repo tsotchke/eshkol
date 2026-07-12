@@ -951,9 +951,39 @@ typedef enum {
     AD_NODE_FRECHET_MEAN,              // Riemannian center of mass backward
     AD_NODE_ATAN2,                     // Binary atan2(y, x) backward
 
+    // Custom vector-Jacobian-product node (external adjoint). The reverse pass
+    // invokes a user-supplied backward callback stored in saved_tensors[0] as an
+    // eshkol_custom_vjp_t; it accumulates the callback's per-input gradients into
+    // this node's input variable nodes. Used to differentiate through opaque
+    // primitives that supply their own exact adjoint (e.g. a Moonlab VQE circuit),
+    // composed inside Eshkol's reverse-mode AD tape.
+    AD_NODE_CUSTOM,
+
     // Sentinel for bounds checking
     AD_NODE_TYPE_COUNT
 } ad_node_type_t;
+
+/**
+ * Custom vector-Jacobian-product descriptor for AD_NODE_CUSTOM.
+ *
+ * An AD_NODE_CUSTOM node models an opaque scalar-valued primitive y = f(x_0..x_{n-1})
+ * whose reverse-mode adjoint is supplied externally rather than by a hardcoded
+ * formula. During the backward pass the node's accumulated upstream gradient
+ * (dL/dy) is passed to `backward`, which fills `out_grads[i] = dy/dx_i` as an
+ * unscaled local partial; the runtime then accumulates
+ * `upstream * out_grads[i]` into `inputs[i]`.
+ *
+ * A pointer to this struct is stored in ad_node_t::saved_tensors[0]; the node's
+ * num_saved is 1. The struct, its `inputs` array, and its `ctx` are arena-owned
+ * with the same lifetime as the tape.
+ */
+typedef struct eshkol_custom_vjp {
+    /* Receives upstream for context, but fills unscaled dy/dx_i local partials. */
+    void (*backward)(void* ctx, double upstream, double* out_grads, int n);
+    void* ctx;              /* Opaque context (e.g. Hamiltonian handle + params). */
+    struct ad_node** inputs;/* n input variable nodes to accumulate into. */
+    int n;                  /* Number of inputs / gradient components. */
+} eshkol_custom_vjp_t;
 
 /**
  * @brief One node of the reverse-mode AD computational graph.
