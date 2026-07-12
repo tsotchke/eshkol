@@ -1,0 +1,48 @@
+;;; Representation-boundary regressions for R7RS vector mutation/equality.
+;;; Numeric #(...) literals use the tensor representation internally, while
+;;; (vector ...) uses tagged slots.  The public vector API must make that
+;;; implementation detail unobservable.
+
+(require stdlib)
+
+(define failures 0)
+
+(define (check name condition)
+  (if condition
+      (begin (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name) (newline))))
+
+(let ((v (vector 1 2 3)))
+  (vector-fill! v 7)
+  (check "vector-fill! mutates tagged vector"
+         (equal? v #(7 7 7)))
+  (check "equal? crosses tagged-vector/tensor representation"
+         (and (equal? v #(7 7 7))
+              (equal? #(7 7 7) v))))
+
+(let ((dst (vector 1 2 3))
+      (src #(8 9)))
+  (vector-copy! dst 1 src)
+  (check "vector-copy! tensor to tagged vector"
+         (equal? dst #(1 8 9))))
+
+(let ((dst #(0 0 0))
+      (src (vector 4 5)))
+  (vector-copy! dst 1 src)
+  (check "vector-copy! tagged vector to tensor"
+         (equal? dst #(0 4 5))))
+
+(let ((v (vector 1 2 3 4)))
+  (vector-copy! v 1 v 0 3)
+  (check "vector-copy! overlapping range uses memmove semantics"
+         (equal? v #(1 1 2 3))))
+
+(check "memq uses same-symbol identity"
+       (let ((xs '(a b c)))
+         (eq? (memq 'b xs) (cdr xs))))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

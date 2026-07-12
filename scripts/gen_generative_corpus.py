@@ -81,6 +81,193 @@ PRELUDE = r"""
 
 
 # ---------------------------------------------------------------------------
+# Manifest-driven deterministic surface probes.
+#
+# Random generation is valuable for combinations, but it must not be the only
+# reason a construct is covered: changing a seed or production weight could
+# silently make a builtin disappear from the corpus.  These self-checking R7RS
+# programs pin high-risk portable constructs on every run.  The declared head
+# set is checked against tests/coverage/language_surface.json by
+# language_coverage.py, so misspelling or removing a language construct is a
+# hard tracker failure rather than fake coverage.
+# ---------------------------------------------------------------------------
+SURFACE_PROBES = (
+    {
+        "name": "surface_numeric_exact_complex",
+        "heads": (
+            "exact?", "inexact?", "exact->inexact", "inexact->exact",
+            "numerator", "denominator", "rational?", "complex?",
+            "make-rectangular", "real-part", "imag-part", "magnitude",
+            "conjugate", "square",
+        ),
+        "checks": (
+            "(exact? 42)",
+            "(inexact? (exact->inexact 42))",
+            "(= (inexact->exact 3.0) 3)",
+            "(= (numerator (/ 6 8)) 3)",
+            "(= (denominator (/ 6 8)) 4)",
+            "(rational? (/ 6 8))",
+            "(complex? (make-rectangular 3 4))",
+            "(= (real-part (make-rectangular 3 4)) 3)",
+            "(= (imag-part (make-rectangular 3 4)) 4)",
+            "(= (magnitude (make-rectangular 3 4)) 5)",
+            "(= (real-part (conjugate (make-rectangular 3 4))) 3)",
+            "(= (imag-part (conjugate (make-rectangular 3 4))) -4)",
+            "(= (square 9) 81)",
+        ),
+    },
+    {
+        "name": "surface_numeric_transcendental",
+        "heads": (
+            "asin", "acos", "atan", "tan", "sinh", "cosh",
+            "rationalize", "number->string", "string->number",
+            "make-polar", "angle",
+        ),
+        "checks": (
+            "(< (abs (- (sin (asin 0.5)) 0.5)) 1e-12)",
+            "(< (abs (- (cos (acos 0.5)) 0.5)) 1e-12)",
+            "(< (abs (- (tan (atan 0.25)) 0.25)) 1e-12)",
+            "(< (abs (- (sinh 0.0) 0.0)) 1e-12)",
+            "(< (abs (- (cosh 0.0) 1.0)) 1e-12)",
+            "(= (rationalize 0.3 0.01) 3/10)",
+            "(string=? (number->string 255 16) \"ff\")",
+            "(= (string->number \"255\") 255)",
+            "(< (abs (- (magnitude (make-polar 2.0 0.5)) 2.0)) 1e-12)",
+            "(< (abs (- (angle (make-polar 2.0 0.5)) 0.5)) 1e-12)",
+        ),
+    },
+    {
+        "name": "surface_control_values",
+        "heads": (
+            "case", "when", "unless", "do", "values", "call-with-values",
+            "let-values", "let*-values", "delay", "force", "call/cc",
+            "dynamic-wind",
+        ),
+        "checks": (
+            "(case 2 ((1) #f) ((2 3) #t) (else #f))",
+            "(let ((x 0)) (when #t (set! x 3)) (= x 3))",
+            "(let ((x 0)) (unless #f (set! x 4)) (= x 4))",
+            "(do ((i 0 (+ i 1)) (s 0 (+ s i))) ((= i 5) (= s 10)))",
+            "(call-with-values (lambda () (values 2 3)) (lambda (a b) (= (+ a b) 5)))",
+            "(let-values (((a b) (values 2 3))) (= (+ a b) 5))",
+            "(let*-values (((a b) (values 2 3)) ((c) (+ a b))) (= c 5))",
+            "(let ((p (delay (+ 2 3)))) (= (force p) 5))",
+            "(= (call/cc (lambda (escape) (escape 7) 99)) 7)",
+            "(let ((x 0)) (dynamic-wind (lambda () (set! x (+ x 1))) "
+            "(lambda () (set! x (+ x 2))) (lambda () (set! x (+ x 4)))) "
+            "(= x 7))",
+        ),
+    },
+    {
+        "name": "surface_control_exceptions_promises",
+        "heads": (
+            "call-with-current-continuation", "delay-force",
+            "with-exception-handler", "raise",
+        ),
+        "checks": (
+            "(= (call-with-current-continuation (lambda (escape) (escape 11) 99)) 11)",
+            "(letrec ((p (delay (+ 4 5))) (q (delay-force p))) (= (force q) 9))",
+            "(= (with-exception-handler (lambda (x) (+ x 1)) (lambda () (raise 6))) 7)",
+        ),
+    },
+    {
+        "name": "surface_macro_hygiene",
+        "heads": (
+            "define-syntax", "let-syntax", "letrec-syntax",
+            "quasiquote", "unquote", "unquote-splicing",
+        ),
+        "forms": (
+            "(define-syntax gd-swap! "
+            "(syntax-rules () ((_ a b) (let ((tmp a)) (set! a b) (set! b tmp)))))",
+        ),
+        "checks": (
+            "(let ((tmp 99) (a 1) (b 2)) (gd-swap! a b) "
+            "(and (= tmp 99) (= a 2) (= b 1)))",
+            "(let-syntax ((twice (syntax-rules () ((_ x) (+ x x))))) (= (twice 6) 12))",
+            "(letrec-syntax ((identity (syntax-rules () ((_ x) x)))) "
+            "(equal? (identity '(1 2)) '(1 2)))",
+            "(let ((x 2) (xs '(3 4))) (equal? `(1 ,x ,@xs 5) '(1 2 3 4 5)))",
+        ),
+    },
+    {
+        "name": "surface_lists_cxr",
+        "heads": (
+            "caar", "caaar", "caadr", "cadar", "cdar", "cdaar", "cdadr",
+            "cddr", "cddar", "cdddr", "cadddr", "list-tail",
+            "member", "memq", "assoc",
+        ),
+        "checks": (
+            "(= (caar '((1 2) (3 4))) 1)",
+            "(= (caaar '(((1 2)) ((3 4)))) 1)",
+            "(= (caadr '((1 2) (3 4))) 3)",
+            "(= (cadar '((1 2) (3 4))) 2)",
+            "(equal? (cdar '((1 2) (3 4))) '(2))",
+            "(equal? (cdaar '(((1 2 3)))) '(2 3))",
+            "(equal? (cdadr '((0) (1 2 3))) '(2 3))",
+            "(equal? (cddr '(1 2 3 4)) '(3 4))",
+            "(equal? (cddar '((1 2 3 4))) '(3 4))",
+            "(equal? (cdddr '(1 2 3 4)) '(4))",
+            "(= (cadddr '(1 2 3 4)) 4)",
+            "(equal? (list-tail '(1 2 3 4) 2) '(3 4))",
+            "(equal? (member 3 '(1 2 3 4)) '(3 4))",
+            "(let ((xs '(a b c))) (eq? (memq 'b xs) (cdr xs)))",
+            "(equal? (assoc 'b '((a . 1) (b . 2))) '(b . 2))",
+        ),
+    },
+    {
+        "name": "surface_string_vector_predicates",
+        "heads": (
+            "char->integer", "char-alphabetic?", "char-numeric?",
+            "char-whitespace?", "char-upper-case?", "char-lower-case?",
+            "char=?", "char<?", "char>?", "string", "string-length",
+            "string-ref", "string->list", "string->symbol", "symbol->string",
+            "string=?", "string<?", "string>?", "vector->list",
+            "vector-fill!", "vector-copy!", "vector?", "string?", "char?",
+            "symbol?", "number?", "integer?", "real?", "procedure?",
+        ),
+        "checks": (
+            "(= (char->integer #\\A) 65)",
+            "(char-alphabetic? #\\A)",
+            "(char-numeric? #\\7)",
+            "(char-whitespace? #\\space)",
+            "(char-upper-case? #\\A)",
+            "(char-lower-case? #\\a)",
+            "(char=? #\\a #\\a)",
+            "(char<? #\\a #\\b)",
+            "(char>? #\\b #\\a)",
+            "(equal? (string #\\a #\\b #\\c) \"abc\")",
+            "(= (string-length \"abc\") 3)",
+            "(char=? (string-ref \"abc\" 1) #\\b)",
+            "(equal? (string->list \"abc\") '(#\\a #\\b #\\c))",
+            "(eq? (string->symbol \"abc\") 'abc)",
+            "(string=? (symbol->string 'abc) \"abc\")",
+            "(string=? \"abc\" \"abc\")",
+            "(string<? \"abc\" \"abd\")",
+            "(string>? \"abd\" \"abc\")",
+            "(equal? (vector->list #(1 2 3)) '(1 2 3))",
+            "(let ((v (vector 1 2 3))) (vector-fill! v 7) (equal? v #(7 7 7)))",
+            "(let ((v (vector 1 2 3))) (vector-copy! v 1 #(8 9)) (equal? v #(1 8 9)))",
+            "(and (vector? #(1)) (string? \"x\") (char? #\\x) (symbol? 'x) "
+            "(number? 1) (integer? 1) (real? 1) (procedure? (lambda (x) x)))",
+        ),
+    },
+)
+
+
+def surface_probe_heads():
+    """Return the constructs deliberately pinned by deterministic probes."""
+    return {head for spec in SURFACE_PROBES for head in spec["heads"]}
+
+
+def build_surface_program(spec):
+    lines = [PRELUDE]
+    lines.extend(spec.get("forms", ()))
+    for check in spec["checks"]:
+        lines.append("(display %s)(newline)" % check)
+    return "".join(line if line.endswith("\n") else line + "\n" for line in lines)
+
+
+# ---------------------------------------------------------------------------
 # Typed expression generator. Each gen_<type> returns a string that evaluates,
 # on any conformant R7RS-small implementation, to a value of that type WITHOUT
 # raising an error. Totality is enforced structurally: divisors/moduli are
@@ -405,7 +592,10 @@ def build_meta_program(seed, n_props=8, depth=3):
 def generate_programs(seed=1234, count=60, diff_probes=8, meta_props=8):
     """Return a deterministic list of (family, name, body). Pure function of
     the arguments — the harness and the CLI both call this."""
-    progs = []
+    progs = [
+        ("meta", spec["name"], build_surface_program(spec))
+        for spec in SURFACE_PROBES
+    ]
     for i in range(count):
         s = seed * 1_000_003 + i
         progs.append(("diff", "diff_%05d" % i, build_diff_program(s, diff_probes)))
@@ -440,8 +630,8 @@ def main():
         with open(os.path.join(out_dir, fname), "w") as fh:
             fh.write(header)
             fh.write(body)
-    print("Wrote %d programs (seed=%d, %d per family) to %s"
-          % (idx, args.seed, args.count, out_dir))
+    print("Wrote %d programs (seed=%d, %d per random family + %d surface probes) to %s"
+          % (idx, args.seed, args.count, len(SURFACE_PROBES), out_dir))
     return 0
 
 

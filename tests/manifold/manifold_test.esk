@@ -41,3 +41,4 @@
 (check "Christoffel tensor materialize" (= (vector-length (manifold-christoffel H a)) 3))
 
 (newline)(display "Passed: ")(display pass)(newline)(display "Failed: ")(display fail)(newline)
+(if (> fail 0) (exit 1))

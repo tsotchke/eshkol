@@ -2679,7 +2679,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "rationalize") && node->n_children == 3) {
         compile_expr(c, node->children[1], 0);
         compile_expr(c, node->children[2], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 345);
+        chunk_emit(c, OP_NATIVE_CALL, 349);
         return;
     }
 
@@ -5590,7 +5590,7 @@ static const BuiltinDef BUILTINS[] = {
     /* Rational numbers (330-349) */
     {"numerator", 331, 1}, {"denominator", 332, 1},
     {"exact->inexact", 343, 1}, {"inexact->exact", 344, 1},
-    {"rationalize", 345, 2},
+    {"rationalize", 349, 2},
     /* AD — new-style IDs (370-399) */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 383, 1},

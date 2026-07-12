@@ -170,6 +170,10 @@ extern "C" {
 eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims,
                                             uint64_t total_elements);
 
+double eshkol_tensor_reduce_precision_value(double value, int64_t dtype) {
+    return reduce_precision(value, static_cast<uint64_t>(dtype));
+}
+
 // Returns the dtype code (eshkol_tensor_dtype_t) of a tensor.
 int64_t eshkol_tensor_dtype_code(void* tensor_ptr) {
     if (!tensor_ptr) return ESHKOL_TENSOR_DTYPE_F64;

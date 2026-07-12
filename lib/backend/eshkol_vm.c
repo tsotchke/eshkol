@@ -251,12 +251,14 @@ static const BuiltinDef BUILTINS[] = {
     /* Apply — ID 70; List — IDs 71-80 */
     {"apply", 70, 2}, {"length", 71, 1},
     {"cadr", 77, 1}, {"cddr", 78, 1}, {"caar", 79, 1}, {"caddr", 80, 1},
-    /* AD dual numbers (old-style) — IDs 110-121 */
-    {"make-dual", 110, 2},
-    {"dual-value", 111, 1}, {"dual-derivative", 112, 1},
-    {"dual+", 113, 2}, {"dual*", 114, 2}, {"dual-", 115, 2}, {"dual/", 116, 2},
-    {"dual-sin", 117, 1}, {"dual-cos", 118, 1},
-    {"dual-exp", 119, 1}, {"dual-log", 120, 1}, {"dual-sqrt", 121, 1},
+    /* AD dual-number compatibility names route to the production 370+ VM
+     * implementation.  The historical 110-121 IDs had no dispatcher cases
+     * and therefore failed silently as "unhandled native call". */
+    {"make-dual", 370, 2},
+    {"dual-value", 371, 1}, {"dual-derivative", 372, 1},
+    {"dual+", 373, 2}, {"dual*", 375, 2}, {"dual-", 374, 2}, {"dual/", 376, 2},
+    {"dual-sin", 377, 1}, {"dual-cos", 378, 1},
+    {"dual-exp", 379, 1}, {"dual-log", 380, 1}, {"dual-sqrt", 381, 1},
     /* Equality — IDs 133-134 */
     {"eq?", 133, 2}, {"eqv?", 133, 2}, {"equal?", 134, 2},
     /* List operations — IDs 135-141 */
@@ -313,12 +315,12 @@ static const BuiltinDef BUILTINS[] = {
      * Rational numbers — IDs 330-349
      * ═══════════════════════════════════════════════════════════════ */
     {"numerator", 346, 1}, {"denominator", 347, 1},
-    {"rationalize", 345, 2},
+    {"rationalize", 349, 2},
     /* ═══════════════════════════════════════════════════════════════
      * AD — new-style IDs 370-399, high-level 750-756
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
-    {"dual?", 383, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
+    {"dual?", 1849, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
     {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
     {"divergence", 753, 2}, {"curl", 754, 2},
     {"laplacian", 755, 2}, {"directional-derivative", 756, 3},

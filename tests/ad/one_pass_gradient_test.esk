@@ -88,6 +88,9 @@
   (check (string-append label ": tape_allocations == 1")   (= (ad-tape-allocations) 1))
   (check (string-append label ": finite_difference_evals == 0") (= (ad-finite-difference-evals) 0)))
 
+(check "ad-counters returns the five production counters"
+       (= (length (ad-counters)) 5))
+
 ;; ============================================================================
 ;; Literal-lambda loss form, N = 4 and N = 64.
 ;; ============================================================================

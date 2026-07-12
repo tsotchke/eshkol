@@ -440,6 +440,12 @@ probe generative_differential_oracle 'generated R7RS programs agree across chibi
     'cd "$REPO_ROOT" && python3 scripts/run_generative_differential.py --smoke \
         --baseline tests/generative-diff/baseline.txt --quiet'
 
+# TOTAL-LANGUAGE coverage is a monotonic, manifest-derived contract.  The
+# dedicated harness also writes runtime_event evidence consumed directly by
+# INV-language-surface-exercise and the total-language completion oracle.
+probe language_surface_coverage_floor 'exposure-engine language coverage meets the committed monotonic floor' \
+    'cd "$REPO_ROOT" && ./scripts/run_language_coverage.sh'
+
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
 probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/numeric/bignum_rational_exactness_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "^PASS:" || exit 1; echo "$out" | grep -qE "(^| )FAIL" && exit 1; exit 0'

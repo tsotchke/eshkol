@@ -1,0 +1,66 @@
+;;; Deterministic production smoke for the high-risk tensor/ML surface.
+(require stdlib)
+
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (present? x) (not (eq? x #f)))
+
+(define p #(0.25 0.75))
+(define y #(0.0 1.0))
+(define a (matrix 2 2 1.0 2.0 3.0 4.0))
+(define eye2 (matrix 2 2 1.0 0.0 0.0 1.0))
+
+(check "mae-loss" (number? (mae-loss p y)))
+(check "bce-loss" (number? (bce-loss p y)))
+(check "huber-loss" (number? (huber-loss p y 1.0)))
+(check "focal-loss" (number? (focal-loss p y 2.0)))
+(check "triplet-loss" (number? (triplet-loss p y #(1.0 0.0) 1.0)))
+(check "contrastive-loss" (number? (contrastive-loss p y #(1.0 1.0) 1.0)))
+(check "label-smoothing-loss" (number? (label-smoothing-loss p y 2 0.1)))
+(check "cosine-embedding-loss" (number? (cosine-embedding-loss p y 1.0 0.0)))
+(check "cross-entropy-loss" (number? (cross-entropy-loss p y)))
+
+(define applied (tensor-apply #(1.0 2.0) square))
+(check "tensor-apply" (and (= (vector-ref applied 0) 1.0) (= (vector-ref applied 1) 4.0)))
+(check "tensor-reduce" (= (tensor-reduce #(1.0 2.0 3.0) + 0.0) 6.0))
+(define set-target #(1.0 2.0 3.0))
+(tensor-set set-target 1 9.0)
+(check "tensor-set" (= (tensor-ref set-target 1) 9.0))
+(check "tensor-reshape" (present? (tensor-reshape #(1.0 2.0 3.0 4.0) '(2 2))))
+(check "tile" (= (vector-length (tile #(1.0 2.0) (vector 2))) 4))
+(check "pad" (= (vector-length (pad #(1.0 2.0) 1 0.0)) 4))
+(check "einsum" (= (einsum "ii->" a) 5.0))
+(check "tensor-lu" (= (length (tensor-lu a)) 3))
+(check "tensor-svd" (= (length (tensor-svd a)) 3))
+(check "tensor-token-estimate" (integer? (tensor-token-estimate a)))
+(check "dropout" (present? (dropout p 0.0)))
+
+(check "gpu-matmul fallback" (present? (gpu-matmul a eye2)))
+(check "gpu-transpose fallback" (present? (gpu-transpose a)))
+(check "gpu-softmax fallback" (present? (gpu-softmax p)))
+(check "gpu-elementwise fallback" (present? (gpu-elementwise + p y)))
+
+(define conv-input (make-tensor '(1 1 2 2 2) 1.0))
+(define conv-kernel (make-tensor '(1 1 1 1 1) 1.0))
+(check "conv3d" (present? (conv3d conv-input conv-kernel 1 0)))
+
+(check "rotary-embedding" (present? (rotary-embedding a #(0.0 1.0) 2)))
+(check "feed-forward" (present? (feed-forward a eye2 #(0.0 0.0) eye2 #(0.0 0.0))))
+(check "multi-head-attention"
+       (present? (multi-head-attention a a a 1 eye2 eye2 eye2 eye2)))
+
+(define model-path "/tmp/eshkol-language-surface-model.bin")
+(check "model-save" (model-save model-path (list (cons "weights" a))))
+(check "model-load" (pair? (model-load model-path)))
+(delete-file model-path)
+
+(define (symbolic-square x) (differentiate (* x x) x))
+(check "differentiate" (present? (symbolic-square 3.0)))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

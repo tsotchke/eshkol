@@ -1,0 +1,34 @@
+;;; Deterministic coverage for the extended numeric surface.
+(require stdlib)
+
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+(define (near? a b) (< (abs (- a b)) 1e-12))
+
+(check "/rational" (and (= (numerator (/rational 6 8)) 3)
+                         (= (denominator (/rational 6 8)) 4)))
+(check "atan2" (near? (atan2 0.0 1.0) 0.0))
+(check "cbrt" (near? (cbrt 27.0) 3.0))
+(check "ceil" (= (ceil 1.2) 2.0))
+(check "exp2" (near? (exp2 5.0) 32.0))
+(check "fabs" (near? (fabs -3.5) 3.5))
+(check "floor/" (call-with-values (lambda () (floor/ -7 3))
+                   (lambda (q r) (and (= q -3) (= r 2)))))
+(check "inexact" (inexact? (inexact 3)))
+(check "log10" (near? (log10 100.0) 2.0))
+(check "log2" (near? (log2 32.0) 5.0))
+(check "mod" (= (mod -7 3) 2))
+(check "trunc" (= (trunc -1.8) -1.0))
+(check "truncate quotient/remainder"
+       (and (= (truncate-quotient -7 3) -2)
+            (= (truncate-remainder -7 3) -1)))
+(check "truncate/" (call-with-values (lambda () (truncate/ -7 3))
+                      (lambda (q r) (and (= q -2) (= r -1)))))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

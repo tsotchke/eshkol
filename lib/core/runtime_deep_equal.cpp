@@ -128,6 +128,13 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
                                            val1->data.int_val) == 0;
     }
 
+    auto is_vector = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
+        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
+            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
+            return hdr->subtype == HEAP_SUBTYPE_VECTOR;
+        }
+        return false;
+    };
     auto is_tensor = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
         if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
             eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
@@ -135,6 +142,8 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         }
         return false;
     };
+    bool is_v1 = is_vector(type1, val1);
+    bool is_v2 = is_vector(type2, val2);
     bool is_t1 = is_tensor(type1, val1);
     bool is_t2 = is_tensor(type2, val2);
     if (is_t1 && is_t2) {
@@ -156,15 +165,42 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1,
         return true;
     }
 
-    auto is_vector = [](uint8_t type, const eshkol_tagged_value_t* val) -> bool {
-        if (type == ESHKOL_VALUE_HEAP_PTR && val->data.ptr_val) {
-            eshkol_object_header_t* hdr = ESHKOL_GET_HEADER((void*)val->data.ptr_val);
-            return hdr->subtype == HEAP_SUBTYPE_VECTOR;
+    // R7RS sees both representations as vectors. A reader literal #(...)
+    // lowers to a numeric tensor for Eshkol's tensor/AD surface, whereas
+    // (vector ...) allocates tagged slots. equal? must compare their contents,
+    // not leak that internal representation choice.
+    if ((is_t1 && is_v2) || (is_v1 && is_t2)) {
+        const eshkol_tensor_t* tensor = reinterpret_cast<const eshkol_tensor_t*>(
+            is_t1 ? val1->data.ptr_val : val2->data.ptr_val);
+        const eshkol_tagged_value_t* vector_value = is_v1 ? val1 : val2;
+        if (!tensor || tensor->num_dimensions != 1) return false;
+        const auto* vector_base = reinterpret_cast<const uint8_t*>(
+            vector_value->data.ptr_val);
+        const int64_t vector_len = *reinterpret_cast<const int64_t*>(vector_base);
+        if (vector_len < 0 || static_cast<uint64_t>(vector_len) != tensor->total_elements)
+            return false;
+        const eshkol_tagged_value_t* vector_data =
+            reinterpret_cast<const eshkol_tagged_value_t*>(
+                vector_base + sizeof(int64_t));
+        if (tensor->dtype == ESHKOL_TENSOR_DTYPE_DUAL) {
+            const eshkol_tagged_value_t* tensor_data =
+                reinterpret_cast<const eshkol_tagged_value_t*>(tensor->elements);
+            for (int64_t i = 0; i < vector_len; ++i) {
+                if (!eshkol_deep_equal(&tensor_data[i], &vector_data[i])) return false;
+            }
+            return true;
         }
-        return false;
-    };
-    bool is_v1 = is_vector(type1, val1);
-    bool is_v2 = is_vector(type2, val2);
+        const double* tensor_data = reinterpret_cast<const double*>(tensor->elements);
+        for (int64_t i = 0; i < vector_len; ++i) {
+            eshkol_tagged_value_t numeric{};
+            numeric.type = ESHKOL_VALUE_DOUBLE;
+            numeric.flags = ESHKOL_VALUE_INEXACT_FLAG;
+            numeric.data.double_val = tensor_data[i];
+            if (!eshkol_deep_equal(&numeric, &vector_data[i])) return false;
+        }
+        return true;
+    }
+
     if (is_v1 && is_v2) {
         if (val1->data.ptr_val == val2->data.ptr_val) return true;
         int64_t len1 = *(int64_t*)(uintptr_t)val1->data.ptr_val;

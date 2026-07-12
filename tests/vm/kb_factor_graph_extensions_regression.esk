@@ -7,6 +7,8 @@
 
 (display (if (= (kb-count kb) 3) "PASS" "FAIL")) (display ": kb-count all") (newline)
 (display (if (= (kb-count-predicate kb 'likes) 2) "PASS" "FAIL")) (display ": kb-count predicate") (newline)
+(display (if (= (kb-count-matching kb 'likes) 2) "PASS" "FAIL"))
+(display ": kb-count matching alias") (newline)
 
 (display (if (kb-retract! kb (make-fact '(likes alice cats))) "PASS" "FAIL"))
 (display ": kb-retract structural") (newline)
@@ -25,6 +27,8 @@
 (display ": fg-entropy supports dim > 64") (newline)
 (display (if (> (fg-total-entropy fg) 4.0) "PASS" "FAIL"))
 (display ": fg-total-entropy") (newline)
+(display (if (> (fg-joint-entropy fg) 4.0) "PASS" "FAIL"))
+(display ": fg-joint-entropy alias") (newline)
 
 (define observed (make-factor-graph 1 '(3)))
 (display (if (fg-observe! observed 0 2) "PASS" "FAIL"))

@@ -73,6 +73,7 @@
        (b2 (dataloader-next dl))
        (b3 (dataloader-next dl)))
   (dataloader-reset! dl)
+  (dataloader-reset dl)
   (display (if (dataloader-has-next dl) "PASS" "FAIL"))
   (display ": reset dataloader has next batch again") (newline))
 

@@ -2072,6 +2072,7 @@ static EscapeAnalyzer g_escape_analyzer;
 // Forward declarations
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
 static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
+static bool g_source_parse_failed = false;
 
 static void print_help(int x = 0)
 {
@@ -2163,6 +2164,11 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
         asts.push_back(ast);
         ast = eshkol_parse_next_ast(read_file);
     }
+    /* ESHKOL_INVALID is also the parser's EOF sentinel.  If the stream has
+     * not reached EOF, however, the invalid node is a reported syntax error
+     * and compilation must not silently truncate the file and return success
+     * (notably for the R7RS `syntax-error` form). */
+    if (!read_file.eof()) g_source_parse_failed = true;
 
     read_file.close();
 }
@@ -4348,8 +4354,14 @@ int main(int argc, char **argv)
 
     // First pass: Load source files to check for stdlib requirements
     // (We'll process requires after potentially adding stdlib.o)
+    eshkol_reset_parse_errors();
     for (const auto &source_file : source_files) {
         load_file_asts(source_file, asts, debug_mode);
+    }
+    if (g_source_parse_failed || eshkol_parse_had_error()) {
+        eshkol_error("Source parsing failed; refusing to compile a truncated program");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+        return 1;
     }
 
     // Bug Y (Noesis 2026-04-30): stdlib auto-loading was previously

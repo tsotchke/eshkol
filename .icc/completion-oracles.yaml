@@ -116,6 +116,14 @@ oracles:
         label: 'Generative adversarial AD oracle: a seeded, growing family of random differentiable programs (scalar + field + tensor/ML-op compositions; gradient/laplacian/hessian; scalar/vector/tensor-literal points; literal/first-class/wrapper loss forms) matches central finite differences — continuous silent-wrong-gradient tripwire, no zero-gradient-where-FD-is-nonzero'
         action: ./scripts/run_icc_smoke.sh
 
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["language_surface_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'TOTAL-LANGUAGE exposure coverage meets the committed monotonic floor; new language surface or generator regressions cannot silently reduce coverage'
+        action: ./scripts/run_language_coverage.sh
+
       # Fix-campaign regression gates (2026-07-10): each guards a fixed
       # silent-wrong-answer or scale bug so it cannot silently reopen.
       - runtime_event:
@@ -146,6 +154,35 @@ oracles:
         severity: high
         label: 'AD nesting: jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)'
         action: ./scripts/run_icc_smoke.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # TOTAL-LANGUAGE completion — unlike the compiler-readiness ratchet above,
+  # this target stays red until every high-risk category is exercised. It is
+  # the phase-4 definition of done for the manifest-driven phase-3 campaign.
+  # ─────────────────────────────────────────────────────────────────
+  - name: total-language-coverage
+    aliases: [language-coverage, total-language, exposure-engine-coverage]
+    requires:
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["language_surface_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Exposure-engine coverage meets the committed monotonic floor
+        action: ./scripts/run_language_coverage.sh
+
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["language_surface_high_risk_complete"]
+          event_values: ["PASS"]
+        severity: high
+        label: No numeric, tensor/AD, geometry, control-flow, consciousness, macro, or memory-region construct remains unexercised
+        action: ./scripts/run_language_coverage.sh --require-zero-high-risk
+
+      - test_evidence: true
+        severity: medium
+        label: Language-surface manifest, policy, and exposure-engine tests are indexed
+        action: python3 scripts/gen_language_surface.py --check
 
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.

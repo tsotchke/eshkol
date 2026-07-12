@@ -26,6 +26,7 @@ Usage:
 """
 
 import argparse
+import difflib
 import json
 import os
 import re
@@ -75,6 +76,47 @@ QUANTUM_AGENT_BUILTINS = {
 TRIPLE = re.compile(r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\}')
 
 
+def _strip_c_comments(text):
+    """Remove C/C++ comments while preserving quoted literals byte-for-byte.
+
+    Dispatch extraction must not promote commented-out experiments into the
+    public language manifest (for example the disabled `det` alias).  A small
+    state machine avoids the usual regex bug of treating `//` inside a string
+    literal as a comment.
+    """
+    out = []
+    i = 0
+    state = "code"
+    while i < len(text):
+        c = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+        if state == "code":
+            if c == '"':
+                state = "string"; out.append(c); i += 1
+            elif c == "'":
+                state = "char"; out.append(c); i += 1
+            elif c == "/" and nxt == "/":
+                state = "line"; out.extend("  "); i += 2
+            elif c == "/" and nxt == "*":
+                state = "block"; out.extend("  "); i += 2
+            else:
+                out.append(c); i += 1
+        elif state in ("string", "char"):
+            out.append(c); i += 1
+            if c == "\\" and i < len(text):
+                out.append(text[i]); i += 1
+            elif (state == "string" and c == '"') or (state == "char" and c == "'"):
+                state = "code"
+        elif state == "line":
+            if c == "\n": out.append(c); state = "code"
+            else: out.append(" ")
+            i += 1
+        else:
+            if c == "*" and nxt == "/": out.extend("  "); i += 2; state = "code"
+            else: out.append("\n" if c == "\n" else " "); i += 1
+    return "".join(out)
+
+
 def _slice_table(path, start_marker, end_marker_after):
     """Return the source text of the BuiltinDef table body."""
     with open(path, encoding="utf-8", errors="replace") as fh:
@@ -105,7 +147,7 @@ def extract_llvm_dispatch():
     overlaps the native/VM id-tables and adds AOT-only intrinsics (the R7RS
     IO/mutation forms, the NN/optimizer/linalg surface, atomics, etc.)."""
     with open(LLVM_CPP, encoding="utf-8", errors="replace") as fh:
-        text = fh.read()
+        text = _strip_c_comments(fh.read())
     names = set(re.findall(r'func_name\s*==\s*"([^"]+)"', text))
     # a few dispatch strings are internal markers, not user-callable builtins
     NOISE = {"target-intrinsic", "sum-tag", "sum-value", "features",
@@ -555,12 +597,44 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=os.path.join(REPO, "tests", "coverage",
                                                   "language_surface.json"))
+    ap.add_argument(
+        "--check",
+        action="store_true",
+        help="fail when --out differs from the surface extracted from source",
+    )
     args = ap.parse_args()
     manifest = build_manifest()
+    rendered = json.dumps(manifest, indent=2, sort_keys=False) + "\n"
+
+    if args.check:
+        try:
+            with open(args.out, encoding="utf-8") as fh:
+                committed = fh.read()
+        except FileNotFoundError:
+            print("FAIL: language-surface manifest is missing: %s" % args.out,
+                  file=sys.stderr)
+            return 1
+        if committed != rendered:
+            print("FAIL: language-surface manifest is stale: %s" % args.out,
+                  file=sys.stderr)
+            diff = difflib.unified_diff(
+                committed.splitlines(),
+                rendered.splitlines(),
+                fromfile=args.out,
+                tofile="source-extracted language surface",
+                lineterm="",
+            )
+            for line in list(diff)[:200]:
+                print(line, file=sys.stderr)
+            print("Regenerate with: python3 scripts/gen_language_surface.py",
+                  file=sys.stderr)
+            return 1
+        print("OK: language-surface manifest matches compiler source (%s)" % args.out)
+        return 0
+
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as fh:
-        json.dump(manifest, fh, indent=2, sort_keys=False)
-        fh.write("\n")
+        fh.write(rendered)
     c = manifest["counts"]
     print("Wrote %s" % args.out)
     print("  builtins: %d (native-closure %d, vm %d, llvm-aot %d, aot-only %d)"

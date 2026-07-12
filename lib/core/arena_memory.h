@@ -483,6 +483,18 @@ void eshkol_region_write_barrier_range(const void* dst,
                                        eshkol_tagged_value_t* slots,
                                        uint64_t n);
 
+// Representation-aware vector mutation. Eshkol exposes both Scheme vectors
+// (inline tagged slots) and numeric tensor-backed #(...) literals through the
+// R7RS vector API; vector-copy! must therefore bridge both layouts safely.
+typedef enum eshkol_vector_copy_status {
+    ESHKOL_VECTOR_COPY_OK = 0,
+    ESHKOL_VECTOR_COPY_NULL = 1,
+    ESHKOL_VECTOR_COPY_BOUNDS = 2,
+    ESHKOL_VECTOR_COPY_TYPE = 3
+} eshkol_vector_copy_status_t;
+int32_t eshkol_vector_copy_mutating(void* dst, int64_t at,
+                                    const void* src, int64_t start, int64_t end);
+
 // Region statistics
 size_t region_get_used_memory(const eshkol_region_t* region);
 size_t region_get_total_memory(const eshkol_region_t* region);
@@ -597,6 +609,10 @@ eshkol_tensor_t* arena_allocate_tensor_with_header(arena_t* arena);
 // Allocate tensor with dimensions and elements arrays in one call
 // Returns fully initialized tensor with dims and elements arrays allocated
 eshkol_tensor_t* arena_allocate_tensor_full(arena_t* arena, uint64_t num_dims, uint64_t total_elements);
+
+// Apply the logical tensor dtype's precision to one f64 value. Storage remains
+// f64; this is the scalar companion to eshkol_tensor_apply_dtype().
+double eshkol_tensor_reduce_precision_value(double value, int64_t dtype);
 
 // Extract tensor elements (double bitpatterns) as int64 dimension values
 int64_t eshkol_tensor_to_dims(const void* tensor_ptr, int64_t* dims_out, int64_t max_dims);
