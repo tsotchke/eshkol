@@ -2,7 +2,8 @@
  * Moonlab Quantum State-Vector Bindings for Eshkol (Stage S1)
  *
  * Thin C shim over Moonlab's dense state-vector core (quantum_state_t,
- * gate_*, quantum_measure, measurement_expectation_z).
+ * gate_*, quantum_measure, measurement_expectation_z), plus the Stage S2
+ * VQE surface (molecular Pauli Hamiltonians, solver, and exact gradient).
  *
  * Compile with -DESHKOL_HAVE_MOONLAB and link against libquantumsim (set by
  * CMakeLists.txt's Agent FFI block only when configured with
@@ -25,6 +26,10 @@
  *   - src/quantum/measurement.h  : measurement_expectation_z
  *   - src/utils/quantum_entropy.h: quantum_entropy_ctx_t,
  *                                   quantum_entropy_ctx_create_hw/_destroy
+ *   - src/algorithms/vqe.h         : molecular Hamiltonians, VQE solver,
+ *                                   optimizer, and vqe_solve
+ *   - src/applications/moonlab_export.h
+ *                                 : moonlab_vqe_gradient stable ABI wrapper
  *
  * quantum_state_t is a public struct in Moonlab (state.h) but this shim
  * follows the same discipline as the Rust binding (the model called out in
@@ -48,6 +53,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <float.h>
 
 /*******************************************************************************
  * CONDITIONAL COMPILATION: full Moonlab-backed implementation vs graceful stubs
@@ -59,6 +65,8 @@
 #include "quantum/gates.h"
 #include "quantum/measurement.h"
 #include "utils/quantum_entropy.h"
+#include "algorithms/vqe.h"
+#include "applications/moonlab_export.h"
 
 /*******************************************************************************
  * Handle Table
@@ -68,6 +76,27 @@
 
 static quantum_state_t* g_qstate_handles[MAX_QSTATE_HANDLES] = {0};
 static int g_next_qstate_handle = 1;
+
+/* Stage S2 keeps Moonlab-owned Pauli Hamiltonians behind the same small,
+ * integer-handle boundary as state vectors.  Scheme therefore never mirrors
+ * Moonlab's mutable structs or needs to know their ABI layout. */
+#define MAX_HAMILTONIAN_HANDLES 256
+static pauli_hamiltonian_t* g_hamiltonian_handles[MAX_HAMILTONIAN_HANDLES] = {0};
+static int g_next_hamiltonian_handle = 1;
+
+/* A gradient computation needs a vqe_solver_t plus an ansatz and optimizer.
+ * Eshkol's generic vector is heterogeneous, not a contiguous double buffer,
+ * so Scheme fills this private context element by element and reads the
+ * resulting gradient the same way. */
+#define MAX_VQE_GRADIENT_CONTEXTS 64
+typedef struct {
+    vqe_solver_t* solver;
+    vqe_ansatz_t* ansatz;
+    vqe_optimizer_t* optimizer;
+    double* gradient;
+} vqe_gradient_context_t;
+static vqe_gradient_context_t* g_vqe_gradient_contexts[MAX_VQE_GRADIENT_CONTEXTS] = {0};
+static int g_next_vqe_gradient_context = 1;
 
 /** @brief Human-readable last-error message, mirrored via eshkol_quantum_last_error(). */
 static char g_quantum_last_error[256] = {0};
@@ -99,6 +128,94 @@ static int alloc_qstate(quantum_state_t* state) {
 static quantum_state_t* get_qstate(int64_t h) {
     if (h < 1 || h >= MAX_QSTATE_HANDLES) return NULL;
     return g_qstate_handles[h];
+}
+
+static int alloc_hamiltonian(pauli_hamiltonian_t* hamiltonian) {
+    for (int i = g_next_hamiltonian_handle; i < MAX_HAMILTONIAN_HANDLES; i++) {
+        if (!g_hamiltonian_handles[i]) {
+            g_hamiltonian_handles[i] = hamiltonian;
+            g_next_hamiltonian_handle = i + 1;
+            return i;
+        }
+    }
+    for (int i = 1; i < g_next_hamiltonian_handle; i++) {
+        if (!g_hamiltonian_handles[i]) {
+            g_hamiltonian_handles[i] = hamiltonian;
+            g_next_hamiltonian_handle = i + 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static pauli_hamiltonian_t* get_hamiltonian(int64_t h) {
+    if (h < 1 || h >= MAX_HAMILTONIAN_HANDLES) return NULL;
+    return g_hamiltonian_handles[h];
+}
+
+static int alloc_vqe_gradient_context(vqe_gradient_context_t* context) {
+    for (int i = g_next_vqe_gradient_context; i < MAX_VQE_GRADIENT_CONTEXTS; i++) {
+        if (!g_vqe_gradient_contexts[i]) {
+            g_vqe_gradient_contexts[i] = context;
+            g_next_vqe_gradient_context = i + 1;
+            return i;
+        }
+    }
+    for (int i = 1; i < g_next_vqe_gradient_context; i++) {
+        if (!g_vqe_gradient_contexts[i]) {
+            g_vqe_gradient_contexts[i] = context;
+            g_next_vqe_gradient_context = i + 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static vqe_gradient_context_t* get_vqe_gradient_context(int64_t h) {
+    if (h < 1 || h >= MAX_VQE_GRADIENT_CONTEXTS) return NULL;
+    return g_vqe_gradient_contexts[h];
+}
+
+static void free_vqe_gradient_context(vqe_gradient_context_t* context) {
+    if (!context) return;
+    free(context->gradient);
+    vqe_solver_free(context->solver);
+    vqe_ansatz_free(context->ansatz);
+    vqe_optimizer_free(context->optimizer);
+    free(context);
+}
+
+/* Explicit destroy functions are the normal lifecycle path.  This atexit
+ * cleanup is the final backstop for handles that survived a Scheme process,
+ * including handles abandoned by a non-local exit.  Contexts go first because
+ * their solvers borrow the Hamiltonians. */
+static void teardown_vqe_handles(void) {
+    for (int i = 1; i < MAX_VQE_GRADIENT_CONTEXTS; i++) {
+        free_vqe_gradient_context(g_vqe_gradient_contexts[i]);
+        g_vqe_gradient_contexts[i] = NULL;
+    }
+    for (int i = 1; i < MAX_HAMILTONIAN_HANDLES; i++) {
+        pauli_hamiltonian_free(g_hamiltonian_handles[i]);
+        g_hamiltonian_handles[i] = NULL;
+    }
+}
+
+static void ensure_vqe_handle_cleanup(void) {
+    static int registered = 0;
+    if (!registered) {
+        atexit(teardown_vqe_handles);
+        registered = 1;
+    }
+}
+
+static double error_double(void) {
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+
+static double unavailable_double(const char* message) {
+    set_last_error(message);
+    return error_double();
 }
 
 /*******************************************************************************
@@ -280,6 +397,257 @@ int32_t eshkol_quantum_num_qubits(int64_t handle) {
     return (int32_t)state->num_qubits;
 }
 
+/*******************************************************************************
+ * Stage S2: molecular Hamiltonians and VQE
+ ******************************************************************************/
+
+/** Store a newly-created Moonlab Hamiltonian behind an Eshkol handle. */
+static int64_t store_hamiltonian(pauli_hamiltonian_t* hamiltonian, const char* op) {
+    if (!hamiltonian) {
+        set_last_error(op);
+        return -1;
+    }
+    ensure_vqe_handle_cleanup();
+    int handle = alloc_hamiltonian(hamiltonian);
+    if (handle < 0) {
+        pauli_hamiltonian_free(hamiltonian);
+        set_last_error("VQE Hamiltonian handle table exhausted");
+        return -1;
+    }
+    return (int64_t)handle;
+}
+
+/** @return Handle for H2/STO-3G at @p bond_distance Angstroms, or -1 on failure. */
+int64_t eshkol_vqe_make_h2_hamiltonian(double bond_distance) {
+    return store_hamiltonian(vqe_create_h2_hamiltonian(bond_distance),
+                             "make-h2-hamiltonian: Moonlab allocation failed");
+}
+
+/** @return Handle for LiH/6-31G at @p bond_distance Angstroms, or -1 on failure. */
+int64_t eshkol_vqe_make_lih_hamiltonian(double bond_distance) {
+    return store_hamiltonian(vqe_create_lih_hamiltonian(bond_distance),
+                             "make-lih-hamiltonian: Moonlab allocation failed");
+}
+
+/** @return Handle for H2O/STO-3G fixed geometry, or -1 on failure. */
+int64_t eshkol_vqe_make_h2o_hamiltonian(void) {
+    return store_hamiltonian(vqe_create_h2o_hamiltonian(),
+                             "make-h2o-hamiltonian: Moonlab allocation failed");
+}
+
+/** Release a Hamiltonian handle. Safe on an already-released handle. */
+void eshkol_vqe_hamiltonian_destroy(int64_t handle) {
+    if (handle < 1 || handle >= MAX_HAMILTONIAN_HANDLES) return;
+    pauli_hamiltonian_free(g_hamiltonian_handles[handle]);
+    g_hamiltonian_handles[handle] = NULL;
+}
+
+/**
+ * @return Full-CI reference energy, including nuclear repulsion, or NaN on
+ * failure. The NaN is intentional: Scheme converts it to a catchable error
+ * rather than ever exposing a fabricated energy.
+ */
+double eshkol_vqe_hamiltonian_exact_ground_energy(int64_t handle) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    if (!hamiltonian) {
+        return unavailable_double("hamiltonian-exact-ground-energy: invalid Hamiltonian handle");
+    }
+    double energy = vqe_exact_ground_state_energy(hamiltonian);
+    if (energy != energy || energy >= DBL_MAX) {
+        return unavailable_double("vqe_exact_ground_state_energy failed");
+    }
+    return energy;
+}
+
+/**
+ * Build the intentionally small, deterministic Stage S2 VQE configuration:
+ * one hardware-efficient layer and ADAM.  Moonlab's own H2 VQE test uses this
+ * pairing; it reaches the exact two-qubit reference while keeping a single
+ * essential Scheme tuning knob (the iteration cap).  The optimizer is quiet
+ * because Eshkol, not Moonlab's stdout formatter, owns user-facing output.
+ * The caller owns ansatz/optimizer/solver and frees all three.
+ */
+static vqe_solver_t* create_default_vqe_solver(pauli_hamiltonian_t* hamiltonian,
+                                                int32_t iterations,
+                                                vqe_ansatz_t** ansatz_out,
+                                                vqe_optimizer_t** optimizer_out) {
+    *ansatz_out = NULL;
+    *optimizer_out = NULL;
+    if (!hamiltonian) {
+        set_last_error("VQE: invalid Hamiltonian handle");
+        return NULL;
+    }
+    if (iterations <= 0) {
+        set_last_error("vqe-optimize: iterations must be positive");
+        return NULL;
+    }
+
+    quantum_entropy_ctx_t* entropy = ensure_measure_entropy();
+    if (!entropy) return NULL;
+
+    vqe_ansatz_t* ansatz = vqe_create_hardware_efficient_ansatz(
+        hamiltonian->num_qubits, 1);
+    if (!ansatz) {
+        set_last_error("vqe-optimize: could not create hardware-efficient ansatz");
+        return NULL;
+    }
+
+    vqe_optimizer_t* optimizer = vqe_optimizer_create(VQE_OPTIMIZER_ADAM);
+    if (!optimizer) {
+        vqe_ansatz_free(ansatz);
+        set_last_error("vqe-optimize: could not create ADAM optimizer");
+        return NULL;
+    }
+    optimizer->max_iterations = (size_t)iterations;
+    optimizer->tolerance = 1e-9;
+    optimizer->learning_rate = 0.03;
+    optimizer->verbose = 0;
+
+    vqe_solver_t* solver = vqe_solver_create(hamiltonian, ansatz, optimizer, entropy);
+    if (!solver) {
+        vqe_optimizer_free(optimizer);
+        vqe_ansatz_free(ansatz);
+        set_last_error("vqe-optimize: could not create Moonlab VQE solver");
+        return NULL;
+    }
+
+    *ansatz_out = ansatz;
+    *optimizer_out = optimizer;
+    return solver;
+}
+
+/**
+ * Run Moonlab VQE using the default one-layer hardware-efficient ansatz.
+ * @return Optimized variational energy, or NaN on a genuine Moonlab failure.
+ */
+double eshkol_vqe_optimize(int64_t handle, int32_t iterations) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    vqe_ansatz_t* ansatz = NULL;
+    vqe_optimizer_t* optimizer = NULL;
+    vqe_solver_t* solver = create_default_vqe_solver(hamiltonian, iterations,
+                                                       &ansatz, &optimizer);
+    if (!solver) return error_double();
+
+    vqe_result_t result = vqe_solve(solver);
+    double energy = result.ground_state_energy;
+    free(result.optimal_parameters);
+    vqe_solver_free(solver);
+    vqe_optimizer_free(optimizer);
+    vqe_ansatz_free(ansatz);
+
+    if (energy != energy || energy >= DBL_MAX) {
+        return unavailable_double("vqe-optimize: Moonlab VQE solve failed");
+    }
+    return energy;
+}
+
+/**
+ * Start a private default-ansatz VQE context for vqe-gradient.  It exposes
+ * scalar set/read operations because Eshkol Scheme vectors are not C double
+ * buffers.  The actual gradient is still Moonlab's native exact path.
+ */
+int64_t eshkol_vqe_gradient_context_create(int64_t handle) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    vqe_ansatz_t* ansatz = NULL;
+    vqe_optimizer_t* optimizer = NULL;
+    vqe_solver_t* solver = create_default_vqe_solver(hamiltonian, 1,
+                                                       &ansatz, &optimizer);
+    if (!solver) return -1;
+
+    vqe_gradient_context_t* context = calloc(1, sizeof(*context));
+    if (!context) {
+        vqe_solver_free(solver);
+        vqe_optimizer_free(optimizer);
+        vqe_ansatz_free(ansatz);
+        set_last_error("vqe-gradient: allocation failed");
+        return -1;
+    }
+    context->solver = solver;
+    context->ansatz = ansatz;
+    context->optimizer = optimizer;
+
+    int slot = alloc_vqe_gradient_context(context);
+    if (slot < 0) {
+        free_vqe_gradient_context(context);
+        set_last_error("vqe-gradient context handle table exhausted");
+        return -1;
+    }
+    ensure_vqe_handle_cleanup();
+    return (int64_t)slot;
+}
+
+void eshkol_vqe_gradient_context_destroy(int64_t handle) {
+    if (handle < 1 || handle >= MAX_VQE_GRADIENT_CONTEXTS) return;
+    free_vqe_gradient_context(g_vqe_gradient_contexts[handle]);
+    g_vqe_gradient_contexts[handle] = NULL;
+}
+
+int64_t eshkol_vqe_gradient_parameter_count(int64_t handle) {
+    vqe_gradient_context_t* context = get_vqe_gradient_context(handle);
+    if (!context || !context->ansatz) {
+        set_last_error("vqe-gradient: invalid gradient context handle");
+        return -1;
+    }
+    if (context->ansatz->num_parameters > INT32_MAX) {
+        set_last_error("vqe-gradient: parameter count exceeds Eshkol vector limit");
+        return -1;
+    }
+    return (int64_t)context->ansatz->num_parameters;
+}
+
+int32_t eshkol_vqe_gradient_set_parameter(int64_t handle, int32_t index, double value) {
+    vqe_gradient_context_t* context = get_vqe_gradient_context(handle);
+    if (!context || !context->ansatz || index < 0 ||
+        (size_t)index >= context->ansatz->num_parameters) {
+        set_last_error("vqe-gradient: parameter index out of range");
+        return -1;
+    }
+    if (value != value) {
+        set_last_error("vqe-gradient: parameter must be a finite number");
+        return -1;
+    }
+    context->ansatz->parameters[index] = value;
+    return 0;
+}
+
+int32_t eshkol_vqe_gradient_compute(int64_t handle) {
+    vqe_gradient_context_t* context = get_vqe_gradient_context(handle);
+    if (!context || !context->solver || !context->ansatz) {
+        set_last_error("vqe-gradient: invalid gradient context handle");
+        return -1;
+    }
+    size_t n = context->ansatz->num_parameters;
+    double* gradient = calloc(n, sizeof(double));
+    if (!gradient) {
+        set_last_error("vqe-gradient: allocation failed");
+        return -1;
+    }
+
+    /* moonlab_vqe_gradient is Moonlab's frozen ABI wrapper around
+     * vqe_compute_gradient.  It dispatches to reverse-mode adjoint for the
+     * noise-free HEA context built above, with analytic parameter-shift as
+     * Moonlab's exact fallback. */
+    int rc = moonlab_vqe_gradient(context->solver, context->ansatz->parameters,
+                                  gradient, n);
+    if (rc != 0) {
+        free(gradient);
+        set_last_error("vqe-gradient: Moonlab exact gradient failed");
+        return -1;
+    }
+    free(context->gradient);
+    context->gradient = gradient;
+    return 0;
+}
+
+double eshkol_vqe_gradient_get(int64_t handle, int32_t index) {
+    vqe_gradient_context_t* context = get_vqe_gradient_context(handle);
+    if (!context || !context->gradient || index < 0 ||
+        (size_t)index >= context->ansatz->num_parameters) {
+        return unavailable_double("vqe-gradient: gradient unavailable or index out of range");
+    }
+    return context->gradient[index];
+}
+
 /**
  * @brief Copies the last shim-level error message into @p buf.
  * @return Number of bytes written (excluding NUL), or -1 if @p buf is NULL/too small.
@@ -342,6 +710,36 @@ int32_t eshkol_quantum_measure(int64_t handle, int32_t qubit) { (void)handle; (v
 /** @brief Stub: always fails (NaN sentinel) since no states exist without Moonlab support. */
 double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit) {
     (void)handle; (void)qubit;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+
+/* Stage S2 VQE stubs.  Keep every declared symbol available in a default-OFF
+ * build so agent.quantum can raise the same explicit, catchable unavailability
+ * error instead of becoming an unresolved extern. */
+int64_t eshkol_vqe_make_h2_hamiltonian(double bond_distance) { (void)bond_distance; return -1; }
+int64_t eshkol_vqe_make_lih_hamiltonian(double bond_distance) { (void)bond_distance; return -1; }
+int64_t eshkol_vqe_make_h2o_hamiltonian(void) { return -1; }
+void eshkol_vqe_hamiltonian_destroy(int64_t handle) { (void)handle; }
+double eshkol_vqe_hamiltonian_exact_ground_energy(int64_t handle) {
+    (void)handle;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+double eshkol_vqe_optimize(int64_t handle, int32_t iterations) {
+    (void)handle; (void)iterations;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+int64_t eshkol_vqe_gradient_context_create(int64_t handle) { (void)handle; return -1; }
+void eshkol_vqe_gradient_context_destroy(int64_t handle) { (void)handle; }
+int64_t eshkol_vqe_gradient_parameter_count(int64_t handle) { (void)handle; return -1; }
+int32_t eshkol_vqe_gradient_set_parameter(int64_t handle, int32_t index, double value) {
+    (void)handle; (void)index; (void)value; return -1;
+}
+int32_t eshkol_vqe_gradient_compute(int64_t handle) { (void)handle; return -1; }
+double eshkol_vqe_gradient_get(int64_t handle, int32_t index) {
+    (void)handle; (void)index;
     volatile double zero = 0.0;
     return zero / zero;
 }

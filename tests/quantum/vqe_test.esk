@@ -1,0 +1,49 @@
+;; S2 ON-path VQE verification. Requires a quantum-enabled build:
+;;   cmake -B build-quantum -DESHKOL_QUANTUM_ENABLED=ON \
+;;     -DESHKOL_BUILD_TESTS=ON -DESHKOL_BUILD_AGENT_FFI=ON \
+;;     -DFETCHCONTENT_SOURCE_DIR_MOONLAB=/path/to/moonlab-machO-fix
+;;   cmake --build build-quantum --target eshkol-run
+;;   build-quantum/eshkol-run tests/quantum/vqe_test.esk
+;;
+;; H2 at 0.735 Å takes Moonlab's equilibrium-coefficient path.  The familiar
+;; minimal-basis literature result is about -1.137 Ha; this pinned Moonlab
+;; coefficient set's direct-diagonalization oracle returns -1.142170640288 Ha
+;; (including its nuclear-repulsion term).  VQE must recover that exact oracle
+;; within the specified tolerance.
+
+(require agent.quantum)
+
+(define h2-moonlab-exact-energy -1.142170640288)
+(define exact-tolerance 0.000001)
+(define vqe-tolerance 0.000001)
+
+(define (finite-vector? values)
+  (let loop ((i 0))
+    (if (< i (vector-length values))
+        (and (= (vector-ref values i) (vector-ref values i))
+             (loop (+ i 1)))
+        #t)))
+
+(with-hamiltonian
+ (make-h2-hamiltonian 0.735)
+ (lambda (ham)
+   (let* ((exact (hamiltonian-exact-ground-energy ham))
+          ;; Stage S2 defaults to one hardware-efficient layer + ADAM.
+          (optimized (vqe-optimize ham 500))
+          ;; This also exercises Moonlab's native adjoint gradient path.
+          (gradient (vqe-gradient ham (vector 0.1 0.2 0.3 0.4)))
+          (reference-error (abs (- exact h2-moonlab-exact-energy)))
+          (vqe-error (abs (- optimized exact)))
+          (passed (and (< reference-error exact-tolerance)
+                       (< vqe-error vqe-tolerance)
+                       (= (vector-length gradient) 4)
+                       (finite-vector? gradient))))
+     (display "H2 exact ground energy (Ha): ") (display exact) (newline)
+     (display "H2 VQE optimized energy (Ha): ") (display optimized) (newline)
+     (display "H2 |VQE - exact| (Ha): ") (display vqe-error) (newline)
+     (display "H2 VQE gradient entries: ") (display (vector-length gradient)) (newline)
+     (if passed
+         (begin (display "VQE H2: PASS") (newline))
+         (begin
+           (display "VQE H2: FAIL") (newline)
+           (error "H2 exact reference or VQE convergence outside tolerance"))))))
