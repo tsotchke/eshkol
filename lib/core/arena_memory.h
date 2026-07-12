@@ -256,6 +256,11 @@ ad_node_t* arena_allocate_ad_node(arena_t* arena);
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type
 ad_node_t* arena_allocate_ad_batch(arena_t* arena, size_t count);
 
+// Runtime reverse-dispatch hook for AD_NODE_CUSTOM. The node's saved_tensors[0]
+// is an eshkol_custom_vjp_t whose callback writes unscaled local partials; this
+// helper applies the node upstream adjoint and accumulates into every input.
+void eshkol_ad_node_custom_backward(void* node_ptr);
+
 // Global tape pointer for AD operations (shared across JIT modules in REPL).
 // Not thread_local due to cross-platform LLVM↔C TLS ABI constraints.
 // Thread safety: AD tape stack (__ad_tape_stack) is thread_local.
