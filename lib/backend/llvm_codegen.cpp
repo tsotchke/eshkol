@@ -7018,10 +7018,189 @@ private:
         return val;
     }
 
+    // Apply an optional Scheme converter exactly once.  Converter execution is
+    // generated here (rather than in the C parameter runtime) because a
+    // converter is an arbitrary Eshkol closure.
+    Value* codegenOptionalParameterConverter(Value* converter, Value* value,
+                                             const char* context_name) {
+        Value* converter_tagged = ensureTaggedValue(converter);
+        Value* candidate = ensureTaggedValue(value);
+        Value* converter_type = getBaseType(getTaggedValueType(converter_tagged));
+        Value* has_converter = builder->CreateICmpNE(
+            converter_type, ConstantInt::get(int8_type, ESHKOL_VALUE_NULL));
+
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* call_converter_bb = BasicBlock::Create(*context,
+            "parameter_converter_call", current_func);
+        BasicBlock* identity_bb = BasicBlock::Create(*context,
+            "parameter_converter_identity", current_func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context,
+            "parameter_converter_merge", current_func);
+        builder->CreateCondBr(has_converter, call_converter_bb, identity_bb);
+
+        builder->SetInsertPoint(identity_bb);
+        builder->CreateBr(merge_bb);
+        BasicBlock* identity_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(call_converter_bb);
+        // Do not recursively emit the parameter-object dispatch while
+        // compiling the converter invocation itself.  A converter is required
+        // to be a procedure, and re-entering that dispatch here would make
+        // every ordinary closure call instantiate an unbounded tree of
+        // hypothetical parameter-set converter calls at compile time.
+        Value* converted = codegenClosureCall(converter_tagged, {candidate},
+                                              context_name, false);
+        builder->CreateBr(merge_bb);
+        BasicBlock* converter_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2,
+                                              "parameter_converted");
+        result->addIncoming(candidate, identity_exit);
+        result->addIncoming(ensureTaggedValue(converted), converter_exit);
+        return result;
+    }
+
+    Value* codegenParameterConverterFor(Value* param_ptr, Value* value,
+                                        const char* context_name) {
+        Value* converter_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                      "parameter_converter");
+        FunctionCallee converter_ref = module->getOrInsertFunction(
+            "eshkol_parameter_converter_ref_ptr",
+            FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false));
+        builder->CreateCall(converter_ref, {param_ptr, converter_slot});
+        Value* converter = builder->CreateLoad(tagged_value_type, converter_slot);
+        return codegenOptionalParameterConverter(converter, value, context_name);
+    }
+
+    Value* codegenParameterRef(Value* param_ptr) {
+        Value* result_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                   "parameter_ref");
+        FunctionCallee ref = module->getOrInsertFunction(
+            "eshkol_parameter_ref_ptr",
+            FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false));
+        builder->CreateCall(ref, {param_ptr, result_slot});
+        return builder->CreateLoad(tagged_value_type, result_slot);
+    }
+
+    Value* codegenParameterSet(Value* param_ptr, Value* value) {
+        Value* value_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                  "parameter_set_value");
+        Value* tagged_value = ensureTaggedValue(value);
+        builder->CreateStore(tagged_value, value_slot);
+        FunctionCallee set = module->getOrInsertFunction(
+            "eshkol_parameter_set_ptr",
+            FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false));
+        builder->CreateCall(set, {param_ptr, value_slot});
+        return tagged_value;
+    }
+
+    Value* codegenParameterPush(Value* parameter, Value* value) {
+        Value* parameter_tagged = ensureTaggedValue(parameter);
+        Value* param_bits = unpackInt64FromTaggedValue(parameter_tagged);
+        Value* param_ptr = builder->CreateIntToPtr(param_bits, ptr_type,
+                                                   "parameter_push_handle");
+        Value* value_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                  "parameter_push_value");
+        Value* tagged_value = ensureTaggedValue(value);
+        builder->CreateStore(tagged_value, value_slot);
+        FunctionCallee push = module->getOrInsertFunction(
+            "eshkol_parameter_push_ptr",
+            FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false));
+        builder->CreateCall(push, {param_ptr, value_slot});
+        return tagged_value;
+    }
+
+    Value* codegenParameterPop(Value* parameter) {
+        Value* parameter_tagged = ensureTaggedValue(parameter);
+        Value* param_bits = unpackInt64FromTaggedValue(parameter_tagged);
+        Value* param_ptr = builder->CreateIntToPtr(param_bits, ptr_type,
+                                                   "parameter_pop_handle");
+        FunctionCallee pop = module->getOrInsertFunction(
+            "eshkol_parameter_pop",
+            FunctionType::get(builder->getVoidTy(), {ptr_type}, false));
+        builder->CreateCall(pop, {param_ptr});
+        return packNullToTaggedValue();
+    }
+
+    Value* codegenMakeParameter(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars < 1 || op->call_op.num_vars > 2) {
+            eshkol_error("make-parameter requires an initial value and an optional converter");
+            return packNullToTaggedValue();
+        }
+
+        Value* initial = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        Value* converter = packNullToTaggedValue();
+        if (op->call_op.num_vars == 2) {
+            converter = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+            if (builder->GetInsertBlock()->getTerminator()) {
+                return UndefValue::get(tagged_value_type);
+            }
+            initial = codegenOptionalParameterConverter(converter, initial,
+                                                        "make-parameter-converter");
+        }
+
+        Value* initial_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                    "parameter_default");
+        builder->CreateStore(initial, initial_slot);
+        Value* arena_ptr = getArenaPtr();
+        FunctionCallee make = module->getOrInsertFunction(
+            "eshkol_make_parameter_ptr",
+            FunctionType::get(ptr_type, {ptr_type, ptr_type}, false));
+        Value* param_ptr = builder->CreateCall(make, {arena_ptr, initial_slot},
+                                               "parameter_handle");
+
+        Value* converter_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                      "parameter_converter_value");
+        builder->CreateStore(converter, converter_slot);
+        FunctionCallee set_converter = module->getOrInsertFunction(
+            "eshkol_parameter_set_converter_ptr",
+            FunctionType::get(builder->getVoidTy(), {ptr_type, ptr_type}, false));
+        builder->CreateCall(set_converter, {param_ptr, converter_slot});
+        return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
+    }
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
-    Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args, const char* caller_info = "unknown") {
-        (void)caller_info;  // Used for debugging
+    Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
+                              const char* caller_info = "unknown",
+                              bool parameter_dispatch = true) {
+        func_result = ensureTaggedValue(func_result);
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "call_merge", current_func);
+
+        // A parameter object is both a heap object and a procedure.  Dispatch
+        // it before the ordinary closure path so it never gets interpreted as
+        // an eshkol_closure_t.  Zero arguments read the real dynamic stack;
+        // one or more preserve the historical setter behaviour using the first
+        // argument, after its parameter-specific converter has run.
+        Value* parameter_result = nullptr;
+        BasicBlock* parameter_exit_bb = nullptr;
+        if (parameter_dispatch) {
+            Value* is_parameter = isHeapSubtype(func_result, HEAP_SUBTYPE_PARAMETER);
+            BasicBlock* parameter_bb = BasicBlock::Create(*context, "call_parameter", current_func);
+            BasicBlock* dispatch_bb = BasicBlock::Create(*context, "call_non_parameter", current_func);
+            builder->CreateCondBr(is_parameter, parameter_bb, dispatch_bb);
+
+            builder->SetInsertPoint(parameter_bb);
+            Value* parameter_bits = unpackInt64FromTaggedValue(func_result);
+            Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
+                                                           "call_parameter_handle");
+            if (call_args.empty()) {
+                parameter_result = codegenParameterRef(parameter_ptr);
+            } else {
+                Value* converted = codegenParameterConverterFor(
+                    parameter_ptr, call_args[0], "parameter-procedure-converter");
+                parameter_result = codegenParameterSet(parameter_ptr, converted);
+            }
+            builder->CreateBr(merge_bb);
+            parameter_exit_bb = builder->GetInsertBlock();
+
+            builder->SetInsertPoint(dispatch_bb);
+        }
         // Check if the result is a CLOSURE_PTR (legacy) or CALLABLE (consolidated) or a direct function pointer
         // M1 Migration: Check both legacy and consolidated formats for backward compatibility
         Value* type_tag = getTaggedValueType(func_result);
@@ -7032,10 +7211,8 @@ private:
             ConstantInt::get(int8_type, ESHKOL_VALUE_CALLABLE));
         Value* is_closure = builder->CreateOr(is_legacy_closure, is_callable_type);
 
-        Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* closure_bb = BasicBlock::Create(*context, "call_closure", current_func);
         BasicBlock* direct_bb = BasicBlock::Create(*context, "call_direct", current_func);
-        BasicBlock* merge_bb = BasicBlock::Create(*context, "call_merge", current_func);
 
         builder->CreateCondBr(is_closure, closure_bb, direct_bb);
 
@@ -7643,12 +7820,17 @@ private:
 
         // MERGE: PHI node to select result from all paths
         builder->SetInsertPoint(merge_bb);
-        PHINode* phi = builder->CreatePHI(tagged_value_type, results.size() + 2, "call_result");
+        PHINode* phi = builder->CreatePHI(tagged_value_type,
+                                          results.size() + (parameter_dispatch ? 3 : 2),
+                                          "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
         }
         phi->addIncoming(direct_result, direct_exit_bb);
         phi->addIncoming(as_is_result, as_is_exit_bb);
+        if (parameter_dispatch) {
+            phi->addIncoming(ensureTaggedValue(parameter_result), parameter_exit_bb);
+        }
 
         return phi;
     }
@@ -10539,6 +10721,9 @@ private:
                 eshkol_error("parameterize should have been transformed at parse time");
                 return nullptr;
 
+            case ESHKOL_MAKE_PARAMETER_OP:
+                return codegenMakeParameter(op);
+
             case ESHKOL_QUOTE_OP:
                 // Quote returns the AST as literal data
                 if (op->call_op.num_vars > 0) {
@@ -11969,6 +12154,47 @@ private:
         }
         
         std::string func_name = op->call_op.func->variable.id;
+
+        // Parser-private parameter helpers.  They are intentionally lowered
+        // here instead of exposed as Scheme-library procedures: this keeps the
+        // opaque eshkol_param_t handle inside the native object path while the
+        // parser can still build ordinary dynamic-wind closures for unwind
+        // safety.
+        if (func_name == "__eshkol_parameter_convert") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("internal parameter conversion requires a parameter and a value");
+                return packNullToTaggedValue();
+            }
+            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            Value* parameter_bits = unpackInt64FromTaggedValue(parameter);
+            Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
+                                                           "parameter_convert_handle");
+            return codegenParameterConverterFor(parameter_ptr, value,
+                                                "parameterize-converter");
+        }
+        if (func_name == "__eshkol_parameter_push") {
+            if (op->call_op.num_vars != 2) {
+                eshkol_error("internal parameter push requires a parameter and a converted value");
+                return packNullToTaggedValue();
+            }
+            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            Value* value = ensureTaggedValue(codegenAST(&op->call_op.variables[1]));
+            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            return codegenParameterPush(parameter, value);
+        }
+        if (func_name == "__eshkol_parameter_pop") {
+            if (op->call_op.num_vars != 1) {
+                eshkol_error("internal parameter pop requires a parameter");
+                return packNullToTaggedValue();
+            }
+            Value* parameter = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+            if (builder->GetInsertBlock()->getTerminator()) return UndefValue::get(tagged_value_type);
+            return codegenParameterPop(parameter);
+        }
 
         // TCO CHECK: If TCO is active and this is a self-recursive call, use tail call jump
         // Check the binding module's TCO context (set by letrec during lambda generation)
@@ -14947,21 +15173,10 @@ private:
         // R7RS Parameter Objects
         // =========================================================================
         if (func_name == "make-parameter") {
-            // (make-parameter default-value)
-            if (op->call_op.num_vars < 1) return nullptr;
-            TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-            if (!tv.llvm_value) return nullptr;
-            Value* default_val = typedValueToTaggedValue(tv);
-            Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-            // Call eshkol_make_parameter(arena, default_val) — pass tagged value by pointer
-            FunctionType* mkp_type = FunctionType::get(PointerType::getUnqual(*context),
-                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false);
-            FunctionCallee mkp_fn = module->getOrInsertFunction("eshkol_make_parameter_ptr", mkp_type);
-            // Store default_val to stack slot
-            Value* val_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "param_default");
-            builder->CreateStore(default_val, val_alloca);
-            Value* param_ptr = builder->CreateCall(mkp_fn, {arena_ptr, val_alloca});
-            return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
+            // Preserve the direct CALL_OP route used by eval/JIT and FFI ASTs:
+            // it must share the same converter-aware object construction as
+            // the parser-recognized special form.
+            return codegenMakeParameter(op);
         }
 
         if (func_name == "parameter?") {

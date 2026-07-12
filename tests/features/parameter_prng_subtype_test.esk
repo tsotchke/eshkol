@@ -8,13 +8,10 @@
 ;; eshkol_make_parameter was misidentified by (prng? ...) as a PRNG.
 ;; HEAP_SUBTYPE_PARAMETER now has its own canonical id (24).
 ;;
-;; Note on representations: source-level (make-parameter x) is rewritten by
-;; the parser into a closure over a vector cell, so in compiled programs the
-;; parameter value is CALLABLE, not a HEAP_SUBTYPE_PARAMETER object. The
-;; heap-object path (eshkol_make_parameter, reachable via eval/FFI) is
-;; covered by tests/v1_2_edge_cases/parameter_prng_collision_jit_test.esk,
-;; which is JIT-only because eval is unavailable in AOT binaries. This file
-;; checks the cross-discrimination that must hold in BOTH JIT and AOT.
+;; Source-level (make-parameter x) is a HEAP_SUBTYPE_PARAMETER object backed
+;; by the runtime dynamic stack. The JIT eval path is covered separately by
+;; tests/v1_2_edge_cases/parameter_prng_collision_jit_test.esk; this file
+;; checks the cross-discrimination that must hold in both AOT and JIT.
 
 (require stdlib)
 
