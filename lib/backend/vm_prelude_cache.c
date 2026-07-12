@@ -58,16 +58,20 @@ int main(void) {
     printf("\nstatic const uint8_t prelude_ops[] = {\n    ");
     for (int i = 0; i < chunk.code_len; i++) {
         printf("%d", chunk.code[i].op);
-        if (i < chunk.code_len - 1) printf(", ");
-        if ((i + 1) % 20 == 0) printf("\n    ");
+        if (i < chunk.code_len - 1) {
+            printf(",");
+            printf((i + 1) % 20 == 0 ? "\n    " : " ");
+        }
     }
     printf("\n};\n");
 
     printf("\nstatic const int32_t prelude_operands[] = {\n    ");
     for (int i = 0; i < chunk.code_len; i++) {
         printf("%d", chunk.code[i].operand);
-        if (i < chunk.code_len - 1) printf(", ");
-        if ((i + 1) % 15 == 0) printf("\n    ");
+        if (i < chunk.code_len - 1) {
+            printf(",");
+            printf((i + 1) % 15 == 0 ? "\n    " : " ");
+        }
     }
     printf("\n};\n");
 
@@ -75,8 +79,10 @@ int main(void) {
     printf("\nstatic const uint8_t prelude_const_types[] = {\n    ");
     for (int i = 0; i < chunk.n_constants; i++) {
         printf("%d", chunk.constants[i].type);
-        if (i < chunk.n_constants - 1) printf(", ");
-        if ((i + 1) % 20 == 0) printf("\n    ");
+        if (i < chunk.n_constants - 1) {
+            printf(",");
+            printf((i + 1) % 20 == 0 ? "\n    " : " ");
+        }
     }
     printf("\n};\n");
 
@@ -86,8 +92,10 @@ int main(void) {
             printf("%lldLL", (long long)chunk.constants[i].as.i);
         else
             printf("0LL");
-        if (i < chunk.n_constants - 1) printf(", ");
-        if ((i + 1) % 10 == 0) printf("\n    ");
+        if (i < chunk.n_constants - 1) {
+            printf(",");
+            printf((i + 1) % 10 == 0 ? "\n    " : " ");
+        }
     }
     printf("\n};\n");
 
@@ -97,8 +105,10 @@ int main(void) {
             printf("%.17g", chunk.constants[i].as.f);
         else
             printf("0.0");
-        if (i < chunk.n_constants - 1) printf(", ");
-        if ((i + 1) % 8 == 0) printf("\n    ");
+        if (i < chunk.n_constants - 1) {
+            printf(",");
+            printf((i + 1) % 8 == 0 ? "\n    " : " ");
+        }
     }
     printf("\n};\n");
 

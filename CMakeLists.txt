@@ -1592,6 +1592,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_tensor_index.cpp
   lib/core/runtime_tensor_fill.cpp
   lib/core/runtime_tensor_math.cpp
+  lib/core/runtime_vector_mutation.cpp
 )
 
 set(ESHKOL_RUNTIME_HOSTED_SRC

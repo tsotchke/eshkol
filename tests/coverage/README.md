@@ -1,7 +1,7 @@
 # Language-surface coverage tracking
 
 This directory is the backbone for **TOTAL-LANGUAGE exposure-engine coverage**:
-the mechanism that measures which of Eshkol's ~1033 user-facing constructs the
+the mechanism that measures which of Eshkol's 1,056 user-facing constructs the
 generative exposure engines actually exercise, names the gap, and turns
 "cover the whole language" into a measurable ICC completion-oracle criterion.
 
@@ -10,6 +10,7 @@ generative exposure engines actually exercise, names the gap, and turns
 | File | Producer | What it is |
 |---|---|---|
 | `language_surface.json` | `scripts/gen_language_surface.py` | Ground-truth manifest: every core builtin, tracked Agent FFI API, special form, AST op, and prelude fn, each categorised by risk. Extracted from source — never hand-maintained. |
+| `coverage_policy.json` | monotonic ratchet | Minimum covered count/fraction and the categories that must reach zero uncovered before TOTAL-LANGUAGE completion. The floor can only increase. |
 | `coverage_run.json` | `scripts/language_coverage.py` | Per-run sidecar: covered / total, covered fraction, covered + uncovered names by category. |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
 
@@ -18,6 +19,7 @@ Regenerate everything:
 ```sh
 python3 scripts/gen_language_surface.py     # -> language_surface.json
 python3 scripts/language_coverage.py        # -> coverage_run.json  (+ prints summary)
+./scripts/run_language_coverage.sh          # check manifest + policy; write ICC JSONL
 ```
 
 Both scripts are pure functions of the source tree and the (deterministic,
@@ -50,12 +52,13 @@ Each builtin records which backend(s) register it (`native`, `vm`,
 
 `language_coverage.py` is the "ICC tracks the language dynamically" mechanism:
 
-1. Import and run both generative engines in-process, and read the quantum
-   acceptance corpus that the opt-in `quantum-macos` CI lane compiles and runs:
+1. Import both generative engines in-process, and read the complete deterministic
+   CI corpus (including the quantum acceptance corpus and explicit VM/AOT
+   extension suites) that the workflow compiles and runs:
    `gen_generative_corpus.generate_programs()` and
    `gen_ad_adversarial.Gen().generate()` (plus their in-language preludes,
-   which are compiled and executed as part of every program), plus every
-   `tests/quantum/*.esk` file.
+   which are compiled and executed as part of every program), the complete
+   `run_all_tests.sh` Scheme corpus, and the opt-in `tests/quantum/*.esk` files.
 2. Scan the concatenated generated source with a small s-expression head
    collector: the symbol immediately following each `(` is an
    application/operator head, and the reader macros `'` `` ` `` `,` `,@` and
@@ -87,27 +90,33 @@ The JSON contract (`covered`, `surface_total`, `covered_fraction`,
 ## Wiring into the ICC completion-oracle
 
 The coverage fraction is designed to be an oracle criterion, not a one-off
-report. `language_coverage.py --emit-runtime-event` prints a long-form ICC
-`runtime_event`:
+report. `language_coverage.py --emit-runtime-event` prints two long-form ICC
+`runtime_event` records: the monotonic floor and the final high-risk-complete
+criterion. `--trace PATH` writes them as fresh JSONL evidence:
 
 ```json
 {"kind": "runtime_event", "event": "language_surface_coverage",
- "covered_fraction": 0.0987, "covered": 102, "surface_total": 1033,
+ "name": "language_surface_coverage", "value": "PASS",
+ "covered_fraction": 0.7661, "covered": 809, "surface_total": 1056,
  "status": "PASSED"}
 ```
 
-Recommended integration (next phase, mirrors `define_loop_flat_rss_aot` and the
-other pillars in the release oracle):
+The integration mirrors `define_loop_flat_rss_aot` and the other release
+pillars:
 
-1. A harness `scripts/run_language_coverage.sh` runs
-   `language_coverage.py --emit-runtime-event --threshold <T>` and writes the
-   event line into a trace under `scripts/icc_traces/` (long-form
-   `PASSED nodeid::name` convention used by the smoke harness).
-2. Add a `language_surface_coverage` pillar to the release oracle with a
-   ratcheting threshold `T` (start at today's 0.099 floor; raise it as the
-   generators grow so coverage can only increase).
-3. Gate "are we done" the standard way, after regenerating traces:
-   `icc readiness --repo eshkol --target <oracle> --trace-dir scripts/icc_traces`.
+1. `scripts/run_language_coverage.sh` first proves the checked-in manifest is
+   source-current, then runs the tracker and writes
+   `scripts/icc_traces/language_surface_coverage.jsonl`.
+2. `coverage_policy.json` owns the one-way floor. A command-line threshold may
+   raise it for an exploratory run but cannot lower it.
+3. `eshkol-compiler-readiness` requires the floor event to PASS.
+4. `total-language-coverage` additionally requires
+   `language_surface_high_risk_complete=PASS`; it remains honestly red until
+   every high-risk construct is exercised. Phase 4 closes this criterion:
+   all numeric, tensor/AD, geometry, control-flow, consciousness, macro-syntax,
+   and memory-region constructs have deterministic execution evidence.
+5. Gate the campaign after regenerating traces:
+   `icc readiness --repo eshkol --target total-language-coverage --trace-dir scripts/icc_traces`.
 
 Because the threshold ratchets, the oracle enforces monotonic progress toward
 total-language coverage: any engine change that drops a previously-covered
@@ -121,4 +130,4 @@ prioritisation: `numeric`, `tensor_ad`, `geometry`, `control_flow`,
 `consciousness`, `higher_order`, `list_pair`, `vector`, `string_char`, `hash`,
 `predicate`, `io_port`, `binding_form`, `macro_syntax`, `module`,
 `memory_region`, `misc_core`, `ffi_system`, `misc`. See `coverage_gap.md` for
-the current ranked gap and the phase-2 roadmap.
+the remaining lower-risk surface and the next monotonic ratchet.

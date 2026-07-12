@@ -1,0 +1,16 @@
+;;; Ownership forms must remain semantically transparent at their read site.
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(let ((x (list 1 2 3)))
+  (check "shared preserves object identity" (eq? (shared x) x)))
+(let ((x (list 4 5 6)))
+  (check "weak-ref preserves live object identity" (eq? (weak-ref x) x)))
+
+(if (= failures 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL") (newline) (exit 1)))

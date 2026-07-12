@@ -13,7 +13,7 @@ description: >
   Verified by `icc architecture-verify --repo eshkol --model
   .icc/architecture-model.yaml`.
 
-  Ground truth: tests/coverage/language_surface.json (985 builtins including
+  Ground truth: tests/coverage/language_surface.json (1,056 constructs including
   22 opt-in Agent FFI quantum APIs, 116 special forms, 112 AST ops) and
   scripts/language_coverage.py (dynamic exposure-engine coverage tracker).
 
@@ -321,11 +321,11 @@ invariants:
   #    the language_surface_coverage runtime_event scripts/language_coverage.py
   #    emits.  The generic exercise kind is PRESENCE+RECENCY based: it FAILs when
   #    other traces exist but no coverage trace is fresh (engines not run), and
-  #    PASSes when a fresh coverage trace is present.  The 9.9% covered_fraction
-  #    THRESHOLD is enforced separately by the coverage oracle criterion / an
-  #    exercise point-tracker (see PR notes) — the generic checker does not read
-  #    the fraction.  High severity because numeric/tensor_ad/control_flow/
-  #    memory_region categories are near-zero exercised today.
+  #    PASSes when a fresh coverage trace is present.  The committed 76.6%
+  #    covered_fraction floor is enforced by tests/coverage/coverage_policy.json
+  #    and the total-language completion oracle; the generic checker does not
+  #    interpret numeric event fields.  The dedicated completion oracle also
+  #    requires zero uncovered high-risk constructs.
   - id: INV-language-surface-exercise
     kind: exercise
     incident: language-surface-under-exercised
@@ -334,7 +334,8 @@ invariants:
     description: >
       The exposure engines must produce a fresh language_surface_coverage
       runtime_event (evidence the language surface is being exercised).  Bind
-      the covered_fraction threshold in the readiness oracle, not here.
+      the covered_fraction threshold in the readiness oracle and committed
+      coverage policy, not here.
     capability: language_surface_coverage
     window_days: 30
     evidence:

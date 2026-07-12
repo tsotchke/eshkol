@@ -14,11 +14,11 @@
     }
   },
   "counts": {
-    "builtins_total": 985,
+    "builtins_total": 984,
     "builtins_in_native_closure_table": 427,
     "builtins_in_vm_table": 639,
-    "builtins_in_llvm_aot_dispatch": 737,
-    "builtins_aot_only": 302,
+    "builtins_in_llvm_aot_dispatch": 736,
+    "builtins_aot_only": 301,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 112,
@@ -26,7 +26,7 @@
   },
   "builtins_by_category": {
     "ffi_system": 292,
-    "tensor_ad": 222,
+    "tensor_ad": 221,
     "numeric": 86,
     "predicate": 70,
     "geometry": 61,
@@ -2728,15 +2728,6 @@
       "category": "tensor_ad"
     },
     {
-      "name": "det",
-      "ids": [],
-      "arity": null,
-      "backends": [
-        "native_llvm"
-      ],
-      "category": "tensor_ad"
-    },
-    {
       "name": "diff",
       "ids": [
         393
@@ -2950,7 +2941,8 @@
     {
       "name": "dual*",
       "ids": [
-        114
+        114,
+        375
       ],
       "arity": 2,
       "backends": [
@@ -2962,7 +2954,8 @@
     {
       "name": "dual+",
       "ids": [
-        113
+        113,
+        373
       ],
       "arity": 2,
       "backends": [
@@ -2974,7 +2967,8 @@
     {
       "name": "dual-",
       "ids": [
-        115
+        115,
+        374
       ],
       "arity": 2,
       "backends": [
@@ -2986,7 +2980,8 @@
     {
       "name": "dual-cos",
       "ids": [
-        118
+        118,
+        378
       ],
       "arity": 1,
       "backends": [
@@ -2998,7 +2993,8 @@
     {
       "name": "dual-derivative",
       "ids": [
-        112
+        112,
+        372
       ],
       "arity": 1,
       "backends": [
@@ -3010,7 +3006,8 @@
     {
       "name": "dual-exp",
       "ids": [
-        119
+        119,
+        379
       ],
       "arity": 1,
       "backends": [
@@ -3022,7 +3019,8 @@
     {
       "name": "dual-log",
       "ids": [
-        120
+        120,
+        380
       ],
       "arity": 1,
       "backends": [
@@ -3046,7 +3044,8 @@
     {
       "name": "dual-sin",
       "ids": [
-        117
+        117,
+        377
       ],
       "arity": 1,
       "backends": [
@@ -3058,7 +3057,8 @@
     {
       "name": "dual-sqrt",
       "ids": [
-        121
+        121,
+        381
       ],
       "arity": 1,
       "backends": [
@@ -3082,7 +3082,8 @@
     {
       "name": "dual-value",
       "ids": [
-        111
+        111,
+        371
       ],
       "arity": 1,
       "backends": [
@@ -3094,7 +3095,8 @@
     {
       "name": "dual/",
       "ids": [
-        116
+        116,
+        376
       ],
       "arity": 2,
       "backends": [
@@ -3106,7 +3108,8 @@
     {
       "name": "dual?",
       "ids": [
-        383
+        383,
+        1849
       ],
       "arity": 1,
       "backends": [
@@ -7473,7 +7476,7 @@
     {
       "name": "rationalize",
       "ids": [
-        345
+        349
       ],
       "arity": 2,
       "backends": [

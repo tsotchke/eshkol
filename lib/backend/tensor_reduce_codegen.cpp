@@ -1225,6 +1225,10 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* total_elements = ctx_.builder().CreateLoad(ctx_.int64Type(), total_elements_field_ptr);
     llvm::Value* result_total_elements_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 3);
     ctx_.builder().CreateStore(total_elements, result_total_elements_field_ptr);
+    llvm::Value* dtype_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, tensor_ptr, 4);
+    llvm::Value* dtype = ctx_.builder().CreateLoad(ctx_.int64Type(), dtype_field_ptr);
+    llvm::Value* result_dtype_field_ptr = ctx_.builder().CreateStructGEP(tensor_type, typed_result_tensor_ptr, 4);
+    ctx_.builder().CreateStore(dtype, result_dtype_field_ptr);
 
     // Allocate result elements array using arena
     llvm::Value* elements_size = ctx_.builder().CreateMul(total_elements,
@@ -1268,26 +1272,30 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     llvm::Value* src_elem = ctx_.builder().CreateLoad(ctx_.int64Type(), src_elem_ptr);
 
     // Apply function based on function name
-    llvm::Value* result_elem = nullptr;
+    llvm::Value* src_double = ctx_.builder().CreateBitCast(src_elem, ctx_.doubleType());
+    llvm::Value* result_double = nullptr;
     if (func_name == "double") {
-        result_elem = ctx_.builder().CreateMul(src_elem, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+        result_double = ctx_.builder().CreateFMul(
+            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 2.0));
     } else if (func_name == "square") {
-        result_elem = ctx_.builder().CreateMul(src_elem, src_elem);
+        result_double = ctx_.builder().CreateFMul(src_double, src_double);
     } else if (func_name == "increment") {
-        result_elem = ctx_.builder().CreateAdd(src_elem, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        result_double = ctx_.builder().CreateFAdd(
+            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 1.0));
     } else if (func_name == "negate") {
-        result_elem = ctx_.builder().CreateNeg(src_elem);
+        result_double = ctx_.builder().CreateFNeg(src_double);
     } else if (func_name == "abs") {
-        // abs(x) = x < 0 ? -x : x
-        llvm::Value* is_negative = ctx_.builder().CreateICmpSLT(src_elem, llvm::ConstantInt::get(ctx_.int64Type(), 0));
-        llvm::Value* negated = ctx_.builder().CreateNeg(src_elem);
-        result_elem = ctx_.builder().CreateSelect(is_negative, negated, src_elem);
+        llvm::Value* is_negative = ctx_.builder().CreateFCmpOLT(
+            src_double, llvm::ConstantFP::get(ctx_.doubleType(), 0.0));
+        result_double = ctx_.builder().CreateSelect(
+            is_negative, ctx_.builder().CreateFNeg(src_double), src_double);
     } else if (func_name == "identity") {
-        result_elem = src_elem;
+        result_double = src_double;
     } else {
         eshkol_warn("Unknown function in tensor-apply: %s, using identity", func_name.c_str());
-        result_elem = src_elem;
+        result_double = src_double;
     }
+    llvm::Value* result_elem = ctx_.builder().CreateBitCast(result_double, ctx_.int64Type());
 
     // Store result element at current index
     llvm::Value* result_elem_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), typed_result_elements_ptr, current_index);
@@ -1303,7 +1311,7 @@ llvm::Value* TensorCodegen::tensorApply(const eshkol_operations_t* op) {
     // Loop exit: continue with rest of function
     ctx_.builder().SetInsertPoint(loop_exit);
 
-    return ctx_.builder().CreatePtrToInt(typed_result_tensor_ptr, ctx_.int64Type());
+    return tagged_.packHeapPtr(typed_result_tensor_ptr);
 }
 
 llvm::Value* TensorCodegen::tensorReduceAll(const eshkol_operations_t* op) {

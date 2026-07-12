@@ -4634,6 +4634,36 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
 }
 
 /**
+ * @brief VM identity equality shared by `eq?`, `eqv?`, and `memq`.
+ *
+ * The bytecode VM currently represents both Scheme strings and internable
+ * symbols with VAL_STRING/HEAP_STRING.  Quoted occurrences are materialised
+ * independently, so raw heap-pointer comparison makes two occurrences of the
+ * same symbol unequal.  R7RS requires symbols with the same spelling to be
+ * `eqv?`; content comparison for the shared string representation supplies
+ * that guarantee.  `eq?` on distinct mutable strings is unspecified, so this
+ * deterministic content result remains conforming until symbols receive a
+ * dedicated VM tag/intern table.
+ */
+static int vm_identity_equal(VM* vm, Value a, Value b) {
+    if (a.type != b.type) return 0;
+    switch ((int)a.type) {
+        case VAL_NIL:   return 1;
+        case VAL_BOOL:  return a.as.b == b.as.b;
+        case VAL_INT:   return a.as.i == b.as.i;
+        case VAL_CHAR:  return a.as.i == b.as.i;
+        case VAL_FLOAT: return a.as.f == b.as.f;
+        case VAL_STRING: {
+            VmString* as = vm_value_as_string(vm, a);
+            VmString* bs = vm_value_as_string(vm, b);
+            return as && bs && as->byte_len == bs->byte_len &&
+                   memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        default: return a.as.ptr == b.as.ptr;
+    }
+}
+
+/**
  * @brief Deep structural equality (`equal?` per R7RS): recurses through pairs
  *        and vectors, compares strings by content and numbers by value.
  *        Numbers keep exactness distinctions (an exact int is not `equal?` to
@@ -4642,7 +4672,32 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
  *        freshly-built equal structures reported `#f`.
  */
 static int vm_deep_equal(VM* vm, Value a, Value b) {
-    if (a.type != b.type) return 0;
+    if (a.type != b.type) {
+        /* Native #(...) literals use the tensor representation while
+         * (vector ...) uses tagged vector slots. Preserve R7RS equal?
+         * semantics across that internal boundary. */
+        if ((a.type == VAL_VECTOR && b.type == VAL_TENSOR) ||
+            (a.type == VAL_TENSOR && b.type == VAL_VECTOR)) {
+            Value vv = a.type == VAL_VECTOR ? a : b;
+            Value tv = a.type == VAL_TENSOR ? a : b;
+            HeapObject* vo = vm->heap.objects[vv.as.ptr];
+            HeapObject* to = vm->heap.objects[tv.as.ptr];
+            VmVector* vector = (vo && vo->opaque.ptr) ? (VmVector*)vo->opaque.ptr : NULL;
+            VmTensor* tensor = (to && to->opaque.ptr) ? (VmTensor*)to->opaque.ptr : NULL;
+            if (!vector || !tensor || tensor->n_dims != 1 || vector->len != tensor->total)
+                return 0;
+            for (int i = 0; i < vector->len; ++i) {
+                Value item = vector->items[i];
+                double numeric;
+                if (item.type == VAL_INT) numeric = (double)item.as.i;
+                else if (item.type == VAL_FLOAT) numeric = item.as.f;
+                else return 0;
+                if (numeric != tensor->data[i]) return 0;
+            }
+            return 1;
+        }
+        return 0;
+    }
     switch ((int)a.type) {
         case VAL_NIL:   return 1;
         case VAL_BOOL:  return a.as.b == b.as.b;
@@ -5090,8 +5145,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value lst = vm_pop(vm), obj = vm_pop(vm);
         while (lst.type == VAL_PAIR) {
             Value car = vm->heap.objects[lst.as.ptr]->cons.car;
-            /* eq?: same type + same value/pointer */
-            if (car.type == obj.type && car.as.i == obj.as.i) {
+            if (vm_identity_equal(vm, car, obj)) {
                 vm_push(vm, lst); break;
             }
             lst = vm->heap.objects[lst.as.ptr]->cons.cdr;
@@ -5160,6 +5214,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm->heap.objects[ptr]->type = HEAP_COMPLEX;
             vm->heap.objects[ptr]->opaque.ptr = z;
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
+        } else if (fid == 301) { /* make-polar */
+            /* Arguments are pushed left-to-right, so angle is on top.  This
+             * must be handled before the unary complex-operation path: that
+             * path used to pop angle as the magnitude and then magnitude as
+             * the angle, silently constructing the wrong complex number. */
+            Value angle = vm_pop(vm), magnitude = vm_pop(vm);
+            VmComplex* z = vm_make_polar(&vm->heap.regions,
+                                          as_number(magnitude),
+                                          as_number(angle));
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr < 0 || !z) { vm->error = 1; break; }
+            vm->heap.objects[ptr]->type = HEAP_COMPLEX;
+            vm->heap.objects[ptr]->opaque.ptr = z;
+            vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = ptr});
         } else if (fid == 302) { /* real-part */
             Value z_val = vm_pop(vm);
             if (z_val.type == VAL_COMPLEX) {
@@ -5211,8 +5279,6 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (a_val.type == VAL_COMPLEX) a_z = *(VmComplex*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
                 VmComplex* result = NULL;
                 switch (fid) {
-                    case 301: { Value ang = vm_pop(vm);
-                        result = vm_make_polar(&vm->heap.regions, as_number(a_val), as_number(ang)); break; }
                     case 305: vm_push(vm, FLOAT_VAL(vm_complex_angle(&a_z))); break;
                     case 306: result = vm_complex_conjugate(&vm->heap.regions, &a_z); break;
                     case 311: result = vm_complex_sqrt(&vm->heap.regions, &a_z); break;
@@ -5718,6 +5784,11 @@ static void vm_dispatch_native(VM* vm, int fid) {
         AdTape* tape = vm_ad_tape_from_value(vm, tape_val);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
         vm_push(vm, INT_VAL(ad_pow(tape, (int)base.as.i, (int)exponent.as.i)));
+        break;
+    }
+    case 1849: { /* dual? */
+        Value value = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(value.type == VAL_DUAL));
         break;
     }
 
@@ -10263,15 +10334,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 133: { /* eq?: identity equality */
         Value b = vm_pop(vm), a = vm_pop(vm);
-        int result = 0;
-        if (a.type != b.type) result = 0;
-        else if (a.type == VAL_NIL) result = 1;
-        else if (a.type == VAL_BOOL) result = (a.as.b == b.as.b);
-        else if (a.type == VAL_INT) result = (a.as.i == b.as.i);
-        else if (a.type == VAL_CHAR) result = (a.as.i == b.as.i);
-        else if (a.type == VAL_FLOAT) result = (a.as.f == b.as.f);
-        else result = (a.as.ptr == b.as.ptr);
-        vm_push(vm, BOOL_VAL(result));
+        vm_push(vm, BOOL_VAL(vm_identity_equal(vm, a, b)));
         break;
     }
 
