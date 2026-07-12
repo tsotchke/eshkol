@@ -421,6 +421,10 @@ static const BuiltinDef BUILTINS[] = {
     {"ws-register!", 542, 3}, {"ws-step!", 543, 1},
     {"ws-get-content", 544, 1}, {"ws-set-content!", 545, 2},
     {"ws-get-dim", 546, 1}, {"ws-get-step-count", 547, 1},
+    /* R7RS dynamic parameters — make-parameter has optional arity and is
+     * lowered directly by vm_compiler.c; these fixed-arity operations remain
+     * first-class preamble closures. */
+    {"parameter-ref", 701, 1}, {"parameter?", 704, 1},
     /* ═══════════════════════════════════════════════════════════════
      * I/O — IDs 580-602
      * ═══════════════════════════════════════════════════════════════ */

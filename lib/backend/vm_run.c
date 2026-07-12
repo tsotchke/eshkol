@@ -11,6 +11,68 @@
  *        vm_*_dispatch() runtime modules, exception handling, and
  *        continuations) directly inline in this function body.
  */
+static size_t vm_continuation_allocation_size(const VM* vm) {
+    return sizeof(VmContinuation) +
+        (size_t)vm->sp * sizeof(Value) +
+        (size_t)vm->frame_count * sizeof(CallFrame) +
+        (size_t)vm->n_winds * 2 * sizeof(Value) +
+        (size_t)vm->n_parameter_bindings * 2 * sizeof(Value);
+}
+
+static void vm_capture_continuation_dynamic_state(VM* vm,
+                                                  VmContinuation* cont) {
+    char* cursor = (char*)cont->saved_frames +
+        (size_t)vm->frame_count * sizeof(CallFrame);
+    cont->n_winds = vm->n_winds;
+    cont->n_parameter_bindings = vm->n_parameter_bindings;
+    cont->saved_wind_befores = (Value*)cursor;
+    cursor += (size_t)cont->n_winds * sizeof(Value);
+    cont->saved_wind_afters = (Value*)cursor;
+    cursor += (size_t)cont->n_winds * sizeof(Value);
+    cont->saved_parameter_bindings = (Value*)cursor;
+    cursor += (size_t)cont->n_parameter_bindings * sizeof(Value);
+    cont->saved_parameter_values = (Value*)cursor;
+
+    for (int i = 0; i < cont->n_winds; i++) {
+        cont->saved_wind_befores[i] = vm->wind_stack[i].before;
+        cont->saved_wind_afters[i] = vm->wind_stack[i].after;
+    }
+    for (int i = 0; i < cont->n_parameter_bindings; i++) {
+        Value parameter_value = vm->parameter_bindings[i];
+        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
+        cont->saved_parameter_bindings[i] = parameter_value;
+        if (parameter) vm_param_ref(parameter, &cont->saved_parameter_values[i]);
+        else cont->saved_parameter_values[i] = NIL_VAL;
+    }
+}
+
+static void vm_restore_continuation_dynamic_state(VM* vm,
+                                                  const VmContinuation* cont) {
+    /* Parameter values live outside the VM execution stack.  Rebuild their
+     * dynamic stacks from the continuation snapshot before resuming code;
+     * merely restoring a binding depth would otherwise leave captured
+     * parameterize extents pointing at the values of the abandoned path. */
+    vm_unwind_parameter_bindings(vm, 0);
+
+    for (int i = 0; i < cont->n_winds; i++) {
+        vm->wind_stack[i].before = cont->saved_wind_befores[i];
+        vm->wind_stack[i].after = cont->saved_wind_afters[i];
+    }
+    vm->n_winds = cont->n_winds;
+
+    for (int i = 0; i < cont->n_parameter_bindings; i++) {
+        Value parameter_value = cont->saved_parameter_bindings[i];
+        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
+        if (!parameter) {
+            vm->error = 1;
+            return;
+        }
+        vm_param_push(&vm->heap.regions, parameter,
+                      &cont->saved_parameter_values[i]);
+        if (!vm_record_parameter_binding(vm, parameter_value)) return;
+    }
+}
+
 void vm_run(VM* vm) {
 #if defined(__GNUC__) || defined(__clang__)
 /* =========================================================================
@@ -331,6 +393,13 @@ void vm_run(VM* vm) {
         int argc = instr.operand;
         Value func = vm->stack[vm->sp - 1 - argc];
 
+        if (func.type == VAL_PARAMETER_OBJ) {
+            Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
+            vm->sp -= argc + 1;
+            vm_push(vm, result);
+            DISPATCH();
+        }
+
         /* Continuation invocation: (k value) */
         if (func.type == VAL_CONTINUATION && argc >= 1) {
             Value val = vm->stack[vm->sp - 1];
@@ -339,10 +408,11 @@ void vm_run(VM* vm) {
                 while (vm->n_winds > cont->n_winds) {
                     vm->n_winds--;
                     Value after = vm->wind_stack[vm->n_winds].after;
-                    if (after.type == VAL_CLOSURE)
-                        vm_call_closure_from_native(vm, after, NULL, 0);
+                    vm_run_wind_after(vm, after);
                 }
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
+                vm_restore_continuation_dynamic_state(vm, cont);
+                if (vm->error) goto vm_exit;
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
                 memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp;
@@ -375,13 +445,36 @@ void vm_run(VM* vm) {
     lbl_TAIL_CALL: {
         int argc = instr.operand;
         Value func = vm->stack[vm->sp - 1 - argc];
+        if (func.type == VAL_PARAMETER_OBJ) {
+            Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
+            if (vm->frame_count <= 0) {
+                vm->sp = 0;
+                vm_push(vm, result);
+                vm->halted = 1;
+                goto vm_exit;
+            }
+            vm->frame_count--;
+            if (vm->frames[vm->frame_count].return_pc == -1) {
+                vm->sp = 0;
+                vm_push(vm, result);
+                vm->halted = 1;
+                goto vm_exit;
+            }
+            vm->sp = vm->fp - 1;
+            vm->fp = vm->frames[vm->frame_count].return_fp;
+            vm->pc = vm->frames[vm->frame_count].return_pc;
+            vm_push(vm, result);
+            DISPATCH();
+        }
         /* Continuation invocation in tail position */
         if (func.type == VAL_CONTINUATION && argc >= 1) {
             Value val = vm->stack[vm->sp - 1];
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
-                while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
+                vm_restore_continuation_dynamic_state(vm, cont);
+                if (vm->error) goto vm_exit;
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                 vm_push(vm, val); DISPATCH();
@@ -609,15 +702,16 @@ void vm_run(VM* vm) {
         vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
         /* Store: pc, fp, sp, frame_count, n_handlers, n_winds + copy of stack + frames */
         VmContinuation* cont = (VmContinuation*)vm_alloc(&vm->heap.regions,
-            sizeof(VmContinuation) + vm->sp * sizeof(Value) + vm->frame_count * sizeof(CallFrame));
+            vm_continuation_allocation_size(vm));
         if (!cont) { vm->error = 1; goto vm_exit; }
         cont->pc = vm->pc; cont->fp = vm->fp; cont->sp = vm->sp;
         cont->frame_count = vm->frame_count;
-        cont->n_handlers = vm->n_handlers; cont->n_winds = vm->n_winds;
+        cont->n_handlers = vm->n_handlers;
         cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
         cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
         memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
         memcpy(cont->saved_frames, vm->frames, vm->frame_count * sizeof(CallFrame));
+        vm_capture_continuation_dynamic_state(vm, cont);
         vm->heap.objects[cont_ptr]->opaque.ptr = cont;
         /* Create continuation closure: a special closure that invokes OP_INVOKE_CC */
         Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
@@ -643,6 +737,7 @@ void vm_run(VM* vm) {
         vm->handler_stack[vm->n_handlers].fp = vm->fp;
         vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
         vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
+        vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
         vm->n_handlers++;
         DISPATCH();
     }
@@ -668,11 +763,12 @@ void vm_run(VM* vm) {
                 while (vm->n_winds > cont->n_winds) {
                     vm->n_winds--;
                     Value after = vm->wind_stack[vm->n_winds].after;
-                    if (after.type == VAL_CLOSURE)
-                        vm_call_closure_from_native(vm, after, NULL, 0);
+                    vm_run_wind_after(vm, after);
                 }
                 /* Restore saved state (with bounds validation) */
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
+                vm_restore_continuation_dynamic_state(vm, cont);
+                if (vm->error) goto vm_exit;
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value));
                 memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp;
@@ -705,21 +801,21 @@ void vm_run(VM* vm) {
 
     lbl_WIND_PUSH: {
         Value after = vm_pop(vm);
-        Value before = vm_pop(vm);
         if (vm->n_winds >= 32) { fprintf(stderr, "WIND STACK OVERFLOW\n"); vm->error = 1; goto vm_exit; }
-        vm->wind_stack[vm->n_winds].before = before;
+        /* The compiler has already called before and leaves only the after
+         * thunk on the operand stack.  Keep before as metadata for future
+         * continuation re-entry support; consuming a second stack value here
+         * previously corrupted the surrounding dynamic extent. */
+        vm->wind_stack[vm->n_winds].before = NIL_VAL;
         vm->wind_stack[vm->n_winds].after = after;
         vm->n_winds++;
         DISPATCH();
     }
 
     lbl_WIND_POP: {
-        if (vm->n_winds > 0) {
-            vm->n_winds--;
-            Value after = vm->wind_stack[vm->n_winds].after;
-            if (after.type == VAL_CLOSURE)
-                vm_call_closure_from_native(vm, after, NULL, 0);
-        }
+        /* Normal-path after invocation is emitted explicitly by the
+         * compiler.  This opcode only removes the exceptional-exit guard. */
+        if (vm->n_winds > 0) vm->n_winds--;
         DISPATCH();
     }
 
@@ -914,13 +1010,23 @@ vm_exit:
             int argc = instr.operand;
             Value func = vm->stack[vm->sp - 1 - argc]; /* function is below args */
 
+            if (func.type == VAL_PARAMETER_OBJ) {
+                Value result = vm_parameter_invoke(vm, func,
+                    &vm->stack[vm->sp - argc], argc);
+                vm->sp -= argc + 1;
+                vm_push(vm, result);
+                break;
+            }
+
             /* Continuation invocation: (k value) */
             if (func.type == VAL_CONTINUATION && argc >= 1) {
                 Value val = vm->stack[vm->sp - 1];
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
+                    vm_restore_continuation_dynamic_state(vm, cont);
+                    if (vm->error) break;
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
@@ -951,6 +1057,28 @@ vm_exit:
         case OP_TAIL_CALL: {
             int argc = instr.operand;
             Value func = vm->stack[vm->sp - 1 - argc];
+            if (func.type == VAL_PARAMETER_OBJ) {
+                Value result = vm_parameter_invoke(vm, func,
+                    &vm->stack[vm->sp - argc], argc);
+                if (vm->frame_count <= 0) {
+                    vm->sp = 0;
+                    vm_push(vm, result);
+                    vm->halted = 1;
+                    break;
+                }
+                vm->frame_count--;
+                if (vm->frames[vm->frame_count].return_pc == -1) {
+                    vm->sp = 0;
+                    vm_push(vm, result);
+                    vm->halted = 1;
+                    break;
+                }
+                vm->sp = vm->fp - 1;
+                vm->fp = vm->frames[vm->frame_count].return_fp;
+                vm->pc = vm->frames[vm->frame_count].return_pc;
+                vm_push(vm, result);
+                break;
+            }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
             HeapObject* cl = vm->heap.objects[func.as.ptr];
 
@@ -1166,15 +1294,16 @@ vm_exit:
             if (cont_ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[cont_ptr]->type = HEAP_CONTINUATION;
             VmContinuation* cont = (VmContinuation*)vm_alloc(&vm->heap.regions,
-                sizeof(VmContinuation) + vm->sp * sizeof(Value) + vm->frame_count * sizeof(CallFrame));
+                vm_continuation_allocation_size(vm));
             if (!cont) { vm->error = 1; break; }
             cont->pc = vm->pc; cont->fp = vm->fp; cont->sp = vm->sp;
             cont->frame_count = vm->frame_count;
-            cont->n_handlers = vm->n_handlers; cont->n_winds = vm->n_winds;
+            cont->n_handlers = vm->n_handlers;
             cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
             cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
             memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
             memcpy(cont->saved_frames, vm->frames, vm->frame_count * sizeof(CallFrame));
+            vm_capture_continuation_dynamic_state(vm, cont);
             vm->heap.objects[cont_ptr]->opaque.ptr = cont;
             Value cont_val = (Value){.type = VAL_CONTINUATION, .as.ptr = cont_ptr};
             vm_push(vm, proc); vm_push(vm, cont_val);
@@ -1192,8 +1321,10 @@ vm_exit:
             if (cont_val.type == VAL_CONTINUATION) {
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
                 if (cont) {
-                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; Value a = vm->wind_stack[vm->n_winds].after; if (a.type == VAL_CLOSURE) vm_call_closure_from_native(vm, a, NULL, 0); }
+                    while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
+                    vm_restore_continuation_dynamic_state(vm, cont);
+                    if (vm->error) break;
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
@@ -1209,6 +1340,7 @@ vm_exit:
             vm->handler_stack[vm->n_handlers].fp = vm->fp;
             vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
             vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
+            vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
             vm->n_handlers++;
             break;
         }
@@ -1232,12 +1364,12 @@ vm_exit:
             break;
         }
         case OP_WIND_PUSH: {
-            Value after = vm_pop(vm), before = vm_pop(vm);
-            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = before; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
+            Value after = vm_pop(vm);
+            if (vm->n_winds < 32) { vm->wind_stack[vm->n_winds].before = NIL_VAL; vm->wind_stack[vm->n_winds].after = after; vm->n_winds++; }
             break;
         }
         case OP_WIND_POP: {
-            if (vm->n_winds > 0) { vm->n_winds--; Value after = vm->wind_stack[vm->n_winds].after; if (after.type == VAL_CLOSURE) vm_call_closure_from_native(vm, after, NULL, 0); }
+            if (vm->n_winds > 0) vm->n_winds--;
             break;
         }
         /* OP_CLOSE_UPVALUE handled at line 720 — no duplicate */

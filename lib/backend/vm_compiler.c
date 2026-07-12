@@ -497,41 +497,70 @@ static void compile_form_define_record_type(FuncChunk* c, Node* node, int tail) 
 }
 
 /** @brief Compile a `(parameterize ((param value)...) body...)` special
- *         form: pushes each parameter binding (native call 702), compiles
- *         the body, then pops all bindings in reverse order (native call
- *         703) for correct unwinding. */
+ *         form.  Parameter and value expressions are first evaluated into
+ *         locals, then every converter is run exactly once before any
+ *         dynamic binding is installed.  This mirrors the native lowering:
+ *         a converter that raises cannot leave a partially-bound parameter
+ *         stack, and cleanup never re-evaluates a parameter expression. */
 static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
-    (void)head; (void)tail;
+    (void)head;
     Node* bindings = node->children[1];
-    int n_bindings = bindings->n_children;
+    int saved_locals = c->n_locals;
+    int parameter_slots[64];
+    int raw_value_slots[64];
+    int converted_value_slots[64];
+    int n_bindings = 0;
 
-    /* Push each parameter binding */
-    for (int i = 0; i < n_bindings; i++) {
-        if (bindings->children[i]->type == N_LIST &&
-            bindings->children[i]->n_children == 2) {
-            compile_expr(c, bindings->children[i]->children[0], 0); /* param */
-            compile_expr(c, bindings->children[i]->children[1], 0); /* new value */
-            chunk_emit(c, OP_NATIVE_CALL, 702); /* parameterize-push */
-            chunk_emit(c, OP_POP, 0); /* discard void result */
-        }
+    /* Preserve the normal left-to-right evaluation of binding expressions. */
+    for (int i = 0; i < bindings->n_children && n_bindings < 64; i++) {
+        Node* binding = bindings->children[i];
+        if (binding->type != N_LIST || binding->n_children != 2) continue;
+        compile_expr(c, binding->children[0], 0);
+        parameter_slots[n_bindings] = add_local(c, "__parameterize_parameter__");
+        compile_expr(c, binding->children[1], 0);
+        raw_value_slots[n_bindings] = add_local(c, "__parameterize_raw_value__");
+        n_bindings++;
     }
 
-    /* Compile body */
+    /* Converters run after all binding expressions but before the first push.
+     * Native 705 is deliberately separate from 702 so it is impossible for
+     * a binding to be converted twice. */
+    for (int i = 0; i < n_bindings; i++) {
+        chunk_emit(c, OP_GET_LOCAL, parameter_slots[i]);
+        chunk_emit(c, OP_GET_LOCAL, raw_value_slots[i]);
+        chunk_emit(c, OP_NATIVE_CALL, 705); /* parameter-convert */
+        converted_value_slots[i] = add_local(c, "__parameterize_value__");
+    }
+
+    /* Enter every binding.  Native 702 records a parameter cleanup entry in
+     * the VM wind stack, so exceptions and continuation escapes pop in LIFO
+     * order before enclosing dynamic-wind after thunks run. */
+    for (int i = 0; i < n_bindings; i++) {
+        chunk_emit(c, OP_GET_LOCAL, parameter_slots[i]);
+        chunk_emit(c, OP_GET_LOCAL, converted_value_slots[i]);
+        chunk_emit(c, OP_NATIVE_CALL, 702); /* parameterize-push */
+        chunk_emit(c, OP_POP, 0);
+    }
+
+    /* A tail call would bypass the mandatory pop sequence, so a bound body
+     * is never compiled in tail position. */
     for (int i = 2; i < node->n_children; i++) {
         if (i > 2) chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        compile_expr(c, node->children[i],
+                     n_bindings == 0 && tail && i == node->n_children - 1);
     }
 
-    /* Pop each binding in reverse order for proper unwinding */
+    /* Pop each stored parameter in reverse order without re-evaluation. */
     for (int i = n_bindings - 1; i >= 0; i--) {
-        if (bindings->children[i]->type == N_LIST &&
-            bindings->children[i]->n_children >= 1) {
-            compile_expr(c, bindings->children[i]->children[0], 0); /* param */
-            chunk_emit(c, OP_NATIVE_CALL, 703); /* parameterize-pop */
-            chunk_emit(c, OP_POP, 0);
-        }
+        chunk_emit(c, OP_GET_LOCAL, parameter_slots[i]);
+        chunk_emit(c, OP_NATIVE_CALL, 703); /* parameterize-pop */
+        chunk_emit(c, OP_POP, 0);
     }
+
+    int n_locals = c->n_locals - saved_locals;
+    if (n_locals > 0) chunk_emit(c, OP_POPN, n_locals);
+    c->n_locals = saved_locals;
     return;
 }
 
@@ -2177,6 +2206,19 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (define-record-type name (constructor field...) pred (field accessor [mutator]) ...) */
     if (is_sym(head, "define-record-type") && node->n_children >= 4) { compile_form_define_record_type(c, node, tail); return; }
+
+    /* (make-parameter default [converter]) — this is a VM special lowering
+     * because the builtin preamble is fixed-arity while R7RS permits the
+     * optional converter.  Native 700 applies that converter to the default
+     * and keeps it for every later parameterize binding. */
+    if (is_sym(head, "make-parameter") &&
+        (node->n_children == 2 || node->n_children == 3)) {
+        compile_expr(c, node->children[1], 0);
+        if (node->n_children == 3) compile_expr(c, node->children[2], 0);
+        else chunk_emit(c, OP_NIL, 0);
+        chunk_emit(c, OP_NATIVE_CALL, 700);
+        return;
+    }
 
     /* (parameterize ((param1 val1) (param2 val2) ...) body ...) */
     if (is_sym(head, "parameterize") && node->n_children >= 3) { compile_form_parameterize(c, node, tail); return; }

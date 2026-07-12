@@ -338,6 +338,14 @@ class EshkolRuntime {
                 eshkol_qrng_uint64: () => BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
                 eshkol_qrng_range: (min, max) => BigInt(Math.floor(Math.random() * Number(max - min)) + Number(min)),
                 eshkol_init_global_arena: () => {},
+                // R7RS parameter-object runtime (make-parameter / parameterize):
+                // opaque no-ops in the browser lite runtime (no arena), matching
+                // the other hosted-runtime imports. Full fidelity on native + VM.
+                eshkol_make_parameter_ptr: () => 0,
+                eshkol_parameter_set_ptr: () => {},
+                eshkol_parameter_set_converter_ptr: () => {},
+                eshkol_parameter_ref_ptr: () => {},
+                eshkol_parameter_converter_ref_ptr: () => {},
                 eshkol_init_stack_size: () => {},
                 eshkol_check_recursion_depth: () => 0,  // returns i32 (size_t)
                 eshkol_decrement_recursion_depth: () => {},

@@ -13,24 +13,11 @@
 // ESHKOL_ARENA_POISON, 0xCB-poisoned) memory -- a use-after-free the next
 // time the parameter was read.
 //
-// NOTE on reachability from Eshkol source: `(make-parameter x)` is rewritten
-// by the parser (lib/frontend/parser.cpp, ESHKOL_MAKE_PARAMETER_OP) into a
-// closure over a vector cell -- normal source-level make-parameter/
-// parameterize therefore never touches this runtime object at all,
-// vector-set!/vector-ref already carry their own (already-correct) region
-// write barrier coverage. The `eshkol_param_t` heap object is only ever
-// constructed via `(eval '(make-parameter ...))` (JIT-only; see
-// tests/v1_2_edge_cases/parameter_prng_collision_jit_test.esk), and even then
-// there is no call-dispatch anywhere in codegen that recognizes
-// HEAP_SUBTYPE_PARAMETER as callable, so `eshkol_parameter_push/pop/ref` are
-// currently unreachable from any Eshkol program, source-level or eval'd. They
-// are nonetheless real, exported extern "C" runtime entry points (the
-// intended backing store for make-parameter/parameterize once/if that
-// call-dispatch is wired up, and reachable today via direct C API / FFI use),
-// so this test exercises them directly against the real region/arena
-// lifecycle -- exactly as tests/core/runtime_regions_test.cpp already does
-// for the sibling region-evacuation classes of bug (ESH-0214c/d, the
-// bignum-rational EVAC_LEAF UAF).
+// Source-level `(make-parameter x)` now constructs this object and
+// `parameterize` pushes/pops its dynamic stack through this same C ABI. This
+// direct test remains intentional: the regression is in the C storage layer,
+// where a value copied out of an active region must remain valid after that
+// region closes, independent of parser and closure-call lowering.
 
 #include "../../lib/core/arena_memory.h"
 

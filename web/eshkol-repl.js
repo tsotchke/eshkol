@@ -285,6 +285,17 @@ class EshkolRepl {
                 eshkol_init_global_arena: () => {},
                 eshkol_tagged_cons_set_tagged_value: () => {},
 
+                // R7RS parameter-object runtime (make-parameter / parameterize).
+                // The hosted store operates on native arena memory; the browser
+                // lite runtime has no arena (eshkol_current_arena stubs to 0), so
+                // these are opaque no-ops like the other hosted-runtime imports.
+                // Full parameter fidelity is on the native and VM execution paths.
+                eshkol_make_parameter_ptr: () => 0,
+                eshkol_parameter_set_ptr: () => {},
+                eshkol_parameter_set_converter_ptr: () => {},
+                eshkol_parameter_ref_ptr: () => {},
+                eshkol_parameter_converter_ref_ptr: () => {},
+
                 // Named-let TCO loop per-iteration arena scope reclamation
                 // (ESH-0214b / fix/loop-arena-reclamation) -- the browser
                 // build never rewinds the arena (arena_allocate above is a

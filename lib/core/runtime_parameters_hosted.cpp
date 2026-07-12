@@ -45,7 +45,18 @@ typedef struct {
     eshkol_tagged_value_t* stack;
     int top;
     int capacity;
+    // The converter is Scheme code and is therefore invoked by generated
+    // code, not by this C ABI.  Keeping it alongside the dynamic stack makes
+    // the parameter object self-contained: call dispatch and parameterize
+    // can retrieve the exact converter associated with this handle.
+    eshkol_tagged_value_t converter;
 } eshkol_param_t;
+
+static eshkol_tagged_value_t eshkol_parameter_null_value() {
+    eshkol_tagged_value_t null_val{};
+    null_val.type = ESHKOL_VALUE_NULL;
+    return null_val;
+}
 
 /**
  * @brief Create an R7RS parameter object seeded with `default_val` (`make-parameter` support).
@@ -68,6 +79,8 @@ void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val) {
     if (!param) {
         return nullptr;
     }
+
+    param->converter = eshkol_parameter_null_value();
 
     const int initial_capacity = 8;
     param->stack = (eshkol_tagged_value_t*)std::malloc(
@@ -153,6 +166,38 @@ void eshkol_parameter_pop(void* param_ptr) {
 }
 
 /**
+ * @brief Replace the current binding of a parameter object.
+ *
+ * This is the one-argument procedure-call path, distinct from
+ * `parameterize`'s push/pop dynamic extent.  It updates the top-most slot so
+ * a write inside a parameterize body remains local to that binding.  As with
+ * construction and push, route the value through the region barrier before it
+ * reaches the long-lived malloc stack.
+ */
+void eshkol_parameter_set(void* param_ptr, eshkol_tagged_value_t val) {
+    if (!param_ptr) return;
+    eshkol_param_t* param = (eshkol_param_t*)param_ptr;
+    if (param->top < 0 || !param->stack) return;
+    eshkol_region_write_barrier_into(&param->stack[param->top],
+                                     &param->stack[param->top], &val);
+}
+
+/** Store the optional Scheme converter associated with a parameter object. */
+void eshkol_parameter_set_converter(void* param_ptr,
+                                    eshkol_tagged_value_t converter) {
+    if (!param_ptr) return;
+    eshkol_param_t* param = (eshkol_param_t*)param_ptr;
+    eshkol_region_write_barrier_into(&param->converter, &param->converter,
+                                     &converter);
+}
+
+/** Return the optional Scheme converter, or #<null> when none was supplied. */
+eshkol_tagged_value_t eshkol_parameter_converter_ref(void* param_ptr) {
+    if (!param_ptr) return eshkol_parameter_null_value();
+    return ((eshkol_param_t*)param_ptr)->converter;
+}
+
+/**
  * @brief Read the current (top-of-stack) value bound to a parameter.
  *
  * Returns a zeroed ESHKOL_VALUE_NULL tagged value if the handle is null or the
@@ -164,22 +209,12 @@ void eshkol_parameter_pop(void* param_ptr) {
  */
 eshkol_tagged_value_t eshkol_parameter_ref(void* param_ptr) {
     if (!param_ptr) {
-        eshkol_tagged_value_t null_val;
-        null_val.type = ESHKOL_VALUE_NULL;
-        null_val.flags = 0;
-        null_val.reserved = 0;
-        null_val.data.int_val = 0;
-        return null_val;
+        return eshkol_parameter_null_value();
     }
     eshkol_param_t* param = (eshkol_param_t*)param_ptr;
 
     if (param->top < 0 || !param->stack) {
-        eshkol_tagged_value_t null_val;
-        null_val.type = ESHKOL_VALUE_NULL;
-        null_val.flags = 0;
-        null_val.reserved = 0;
-        null_val.data.int_val = 0;
-        return null_val;
+        return eshkol_parameter_null_value();
     }
 
     return param->stack[param->top];
@@ -197,10 +232,30 @@ void eshkol_parameter_push_ptr(void* param, const eshkol_tagged_value_t* val) {
     eshkol_parameter_push(param, *val);
 }
 
+/** Pointer-argument wrapper around eshkol_parameter_set. */
+void eshkol_parameter_set_ptr(void* param, const eshkol_tagged_value_t* val) {
+    if (!val) return;
+    eshkol_parameter_set(param, *val);
+}
+
+/** Pointer-argument wrapper around eshkol_parameter_set_converter. */
+void eshkol_parameter_set_converter_ptr(void* param,
+                                        const eshkol_tagged_value_t* converter) {
+    if (!converter) return;
+    eshkol_parameter_set_converter(param, *converter);
+}
+
 /** @brief Pointer-argument wrapper around eshkol_parameter_ref; writes the current value through `result` (no-op if `result` is null). */
 void eshkol_parameter_ref_ptr(void* param, eshkol_tagged_value_t* result) {
     if (!result) return;
     *result = eshkol_parameter_ref(param);
+}
+
+/** Pointer-result wrapper around eshkol_parameter_converter_ref. */
+void eshkol_parameter_converter_ref_ptr(void* param,
+                                        eshkol_tagged_value_t* result) {
+    if (!result) return;
+    *result = eshkol_parameter_converter_ref(param);
 }
 
 }  // extern "C"

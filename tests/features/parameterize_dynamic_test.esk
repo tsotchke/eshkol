@@ -1,0 +1,91 @@
+;; R7RS parameter objects must use the hosted eshkol_param_t dynamic stack.
+;; Covers converter-once behavior, nesting, restoration after normal and
+;; exceptional exits, plus composition with dynamic-wind.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define (check name value)
+  (if value
+      (begin (set! passed (+ passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! failed (+ failed 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define converter-calls 0)
+(define (tens x)
+  (begin
+    (set! converter-calls (+ converter-calls 1))
+    (* x 10)))
+
+(define current-test-value (make-parameter 1 tens))
+
+(check "parameter? recognizes source-level parameter" (parameter? current-test-value))
+(check "converter applies once to initial value" (= converter-calls 1))
+(check "initial value is converted" (= (current-test-value) 10))
+
+(parameterize ((current-test-value 2))
+  (check "parameterize applies converter once" (= converter-calls 2))
+  (check "parameterize reads converted value" (= (current-test-value) 20)))
+(check "normal parameterize restores converted default" (= (current-test-value) 10))
+
+(parameterize ((current-test-value 3))
+  (check "outer dynamic binding" (= (current-test-value) 30))
+  (parameterize ((current-test-value 4))
+    (check "inner dynamic binding" (= (current-test-value) 40)))
+  (check "nested parameterize restores outer binding" (= (current-test-value) 30)))
+(check "nested parameterize restores default" (= (current-test-value) 10))
+(check "each nested binding converts once" (= converter-calls 4))
+
+(define value-seen-by-handler
+  (guard (e (#t (current-test-value)))
+    (parameterize ((current-test-value 5))
+      (raise 'parameterize-test-exception))))
+(check "handler sees restored parameter after exception unwind" (= value-seen-by-handler 10))
+(check "exceptional parameterize restores default" (= (current-test-value) 10))
+(check "exceptional binding converts once" (= converter-calls 5))
+
+(define wind-order "")
+(dynamic-wind
+  (lambda () (set! wind-order (string-append wind-order "B")))
+  (lambda ()
+    (parameterize ((current-test-value 6))
+      (set! wind-order
+            (string-append wind-order (if (= (current-test-value) 60) "I" "X"))))
+    (set! wind-order
+          (string-append wind-order (if (= (current-test-value) 10) "R" "X"))))
+  (lambda () (set! wind-order (string-append wind-order "A"))))
+(check "dynamic-wind observes parameter binding then restoration" (string=? wind-order "BIRA"))
+(check "dynamic-wind parameterize converts once" (= converter-calls 6))
+
+;; Preserve the existing one-argument parameter procedure behavior while
+;; ensuring it writes the current eshkol_param_t stack slot, not a vector cell.
+(current-test-value 7)
+(check "one-argument parameter call stores converted value" (= (current-test-value) 70))
+(check "one-argument parameter call converts once" (= converter-calls 7))
+
+;; Multiple bindings must convert each value once before either dynamic stack
+;; is pushed, then unwind in reverse order without disturbing the setter
+;; value above.
+(define secondary-calls 0)
+(define (plus-one-hundred x)
+  (begin
+    (set! secondary-calls (+ secondary-calls 1))
+    (+ x 100)))
+(define secondary-test-value (make-parameter 1 plus-one-hundred))
+(check "second parameter converter applies once to initial value" (= secondary-calls 1))
+(parameterize ((current-test-value 8) (secondary-test-value 4))
+  (check "multiple parameterize binds first parameter" (= (current-test-value) 80))
+  (check "multiple parameterize binds second parameter" (= (secondary-test-value) 104))
+  (check "multiple parameterize applies each converter once"
+         (and (= converter-calls 8) (= secondary-calls 2))))
+(check "multiple parameterize restores first parameter" (= (current-test-value) 70))
+(check "multiple parameterize restores second parameter" (= (secondary-test-value) 101))
+
+(display "---") (newline)
+(display "Total: ") (display (+ passed failed))
+(display ", PASS: ") (display passed)
+(display ", FAIL: ") (display failed)
+(newline)
+(if (> failed 0) (exit 1))

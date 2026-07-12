@@ -295,13 +295,26 @@ typedef struct VM {
     int n_outputs;
 
     /* Exception handling */
-    struct { int pc; int sp; int fp; int frame_count; int n_winds; } handler_stack[16];
+    struct {
+        int pc;
+        int sp;
+        int fp;
+        int frame_count;
+        int n_winds;
+        int n_parameter_bindings;
+    } handler_stack[16];
     int n_handlers;
     Value current_exception;
 
     /* Dynamic-wind stack */
     struct { Value before; Value after; } wind_stack[32];
     int n_winds;
+
+    /* Dynamic parameter bindings parallel dynamic-wind for VM exception
+     * unwinding.  Each entry names a VmParameter whose stack received an
+     * actual native 702 push; normal 703 and exceptional exits pop LIFO. */
+    Value parameter_bindings[64];
+    int n_parameter_bindings;
 
     /* Status */
     int halted;
@@ -830,9 +843,13 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
 
 /* Continuation: saved VM state for call/cc */
 typedef struct {
-    int pc, fp, sp, frame_count, n_handlers, n_winds;
+    int pc, fp, sp, frame_count, n_handlers, n_winds, n_parameter_bindings;
     Value* saved_stack;
     CallFrame* saved_frames;
+    Value* saved_wind_befores;
+    Value* saved_wind_afters;
+    Value* saved_parameter_bindings;
+    Value* saved_parameter_values;
 } VmContinuation;
 
 /* Simple vector for VEC_CREATE/VEC_REF/VEC_SET/VEC_LEN opcodes */

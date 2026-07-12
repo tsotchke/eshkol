@@ -1299,6 +1299,10 @@ typedef struct eshkol_exception {
  */
 typedef struct eshkol_exception_handler {
     void* jmp_buf_ptr;                  // Pointer to setjmp buffer
+    // Dynamic-wind stack present when this handler was installed.  A raise
+    // must run after-thunks for every extent entered after this point before
+    // it transfers control with longjmp.
+    void* wind_mark;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
 } eshkol_exception_handler_t;
 
@@ -1485,6 +1489,29 @@ void eshkol_pop_dynamic_wind(void);
 void eshkol_unwind_dynamic_wind(void* saved_wind_mark);
 
 // ===== END FIRST-CLASS CONTINUATIONS =====
+
+// ===== R7RS DYNAMIC PARAMETERS =====
+// The by-value entry points are the stable hosted C ABI.  The pointer forms
+// are provided for generated LLVM code, whose ABI passes tagged aggregates by
+// address on every supported target.
+void* eshkol_make_parameter(void* arena, eshkol_tagged_value_t default_val);
+void eshkol_parameter_push(void* param, eshkol_tagged_value_t value);
+void eshkol_parameter_pop(void* param);
+eshkol_tagged_value_t eshkol_parameter_ref(void* param);
+void eshkol_parameter_set(void* param, eshkol_tagged_value_t value);
+void eshkol_parameter_set_converter(void* param, eshkol_tagged_value_t converter);
+eshkol_tagged_value_t eshkol_parameter_converter_ref(void* param);
+
+void* eshkol_make_parameter_ptr(void* arena, const eshkol_tagged_value_t* default_val);
+void eshkol_parameter_push_ptr(void* param, const eshkol_tagged_value_t* value);
+void eshkol_parameter_set_ptr(void* param, const eshkol_tagged_value_t* value);
+void eshkol_parameter_set_converter_ptr(void* param,
+                                        const eshkol_tagged_value_t* converter);
+void eshkol_parameter_ref_ptr(void* param, eshkol_tagged_value_t* result);
+void eshkol_parameter_converter_ref_ptr(void* param,
+                                        eshkol_tagged_value_t* result);
+
+// ===== END R7RS DYNAMIC PARAMETERS =====
 
 /**
  * @brief Initialize process/thread stack sizing for deep recursion support.

@@ -4543,6 +4543,96 @@ static double vm_round_half_even(double x) {
     return r;
 }
 
+static VmParameter* vm_parameter_from_value(VM* vm, Value value) {
+    if (!vm || !is_heap_type(vm, value, HEAP_PARAMETER)) return NULL;
+    return (VmParameter*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+}
+
+static Value vm_parameter_converter(VmParameter* parameter) {
+    Value converter = NIL_VAL;
+    vm_param_converter_ref(parameter, &converter);
+    return converter;
+}
+
+static Value vm_parameter_apply_converter(VM* vm, VmParameter* parameter,
+                                          Value value) {
+    Value converter = vm_parameter_converter(parameter);
+    if (converter.type == VAL_CLOSURE) {
+        return vm_call_closure_from_native(vm, converter, &value, 1);
+    }
+    return value;
+}
+
+static void vm_unwind_parameter_bindings(VM* vm, int target_depth) {
+    if (!vm) return;
+    if (target_depth < 0) target_depth = 0;
+    while (vm->n_parameter_bindings > target_depth) {
+        Value parameter_value = vm->parameter_bindings[--vm->n_parameter_bindings];
+        VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
+        if (parameter) vm_param_pop(parameter);
+    }
+}
+
+static int vm_record_parameter_binding(VM* vm, Value parameter_value) {
+    if (!vm) return 0;
+    if (vm->n_parameter_bindings >=
+        (int)(sizeof(vm->parameter_bindings) / sizeof(vm->parameter_bindings[0]))) {
+        fprintf(stderr, "ERROR: parameterize binding stack overflow\n");
+        vm->error = 1;
+        return 0;
+    }
+    vm->parameter_bindings[vm->n_parameter_bindings++] = parameter_value;
+    return 1;
+}
+
+static void vm_pop_recorded_parameter_binding(VM* vm, Value parameter_value) {
+    if (!vm || vm->n_parameter_bindings <= 0) return;
+    int top = vm->n_parameter_bindings - 1;
+    if (vm->parameter_bindings[top].type == parameter_value.type &&
+        vm->parameter_bindings[top].as.ptr == parameter_value.as.ptr) {
+        vm->n_parameter_bindings = top;
+    }
+}
+
+/* Parameters are entered in the VM's dynamic-wind stack as cleanup entries.
+ * That makes an outer dynamic-wind's after thunk observe the restored
+ * parameter value on exceptions and continuation escapes, just as the
+ * compiled native dynamic-wind lowering does. */
+static void vm_pop_parameter_binding(VM* vm, Value parameter_value) {
+    VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
+    if (parameter) vm_param_pop(parameter);
+    vm_pop_recorded_parameter_binding(vm, parameter_value);
+}
+
+static void vm_run_wind_after(VM* vm, Value after) {
+    if (after.type == VAL_CLOSURE) {
+        vm_call_closure_from_native(vm, after, NULL, 0);
+    } else if (after.type == VAL_PARAMETER_OBJ) {
+        vm_pop_parameter_binding(vm, after);
+    }
+}
+
+/* Procedure-call semantics for VAL_PARAMETER_OBJ.  The bytecode interpreter
+ * calls this from OP_CALL/OP_TAIL_CALL; a zero-arity call reads the dynamic
+ * stack and a one-or-more-arity call updates its current slot with the first
+ * converted argument, matching the hosted native path's legacy setter API. */
+static Value vm_parameter_invoke(VM* vm, Value parameter_value,
+                                 const Value* args, int argc) {
+    VmParameter* parameter = vm_parameter_from_value(vm, parameter_value);
+    if (!parameter) {
+        if (vm) vm->error = 1;
+        return NIL_VAL;
+    }
+    if (argc == 0) {
+        Value result;
+        vm_param_ref(parameter, &result);
+        return result;
+    }
+    Value converted = vm_parameter_apply_converter(vm, parameter, args[0]);
+    vm_param_set(parameter, &converted);
+    return converted;
+}
+
 /**
  * @brief Deep structural equality (`equal?` per R7RS): recurses through pairs
  *        and vectors, compares strings by content and numbers by value.
@@ -9389,39 +9479,63 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     /* ══════════════════════════════════════════════════════════════════════
-     * Parameter Operations (700-704)
+     * Parameter Operations (700-705)
      * ══════════════════════════════════════════════════════════════════════ */
     case 700: { /* make-parameter(default, converter) */
         Value conv = vm_pop(vm), dflt = vm_pop(vm);
-        VmParameter* p = vm_param_make(&vm->heap.regions,
-            (void*)(uintptr_t)dflt.as.i, (void*)(uintptr_t)conv.as.i);
+        /* R7RS: the converter is applied to the default during creation. */
+        if (conv.type == VAL_CLOSURE) {
+            dflt = vm_call_closure_from_native(vm, conv, &dflt, 1);
+        }
+        VmParameter* p = vm_param_make(&vm->heap.regions, &dflt, &conv);
         if (!p) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_HEAP_OPAQUE(vm, HEAP_PARAMETER, VAL_PARAMETER_OBJ, p);
         break;
     }
     case 701: { /* parameter-ref */
         Value p_val = vm_pop(vm);
-        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
-            VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
-            void* v = vm_param_ref(p);
-            vm_push(vm, INT_VAL((int64_t)(intptr_t)v));
+        VmParameter* p = vm_parameter_from_value(vm, p_val);
+        if (p) {
+            Value value;
+            vm_param_ref(p, &value);
+            vm_push(vm, value);
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 702: { /* parameterize-push(param, value) */
+    case 702: { /* parameterize-push(param, converted-value) */
         Value val = vm_pop(vm), p_val = vm_pop(vm);
-        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
-            VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
-            vm_param_push(&vm->heap.regions, p, (void*)(uintptr_t)val.as.i);
+        VmParameter* p = vm_parameter_from_value(vm, p_val);
+        if (!p) {
+            vm->error = 1;
+        } else if (vm->n_winds >=
+                   (int)(sizeof(vm->wind_stack) / sizeof(vm->wind_stack[0]))) {
+            fprintf(stderr, "ERROR: parameterize dynamic stack overflow\n");
+            vm->error = 1;
+        } else {
+            vm_param_push(&vm->heap.regions, p, &val);
+            if (vm_record_parameter_binding(vm, p_val)) {
+                vm->wind_stack[vm->n_winds].before = NIL_VAL;
+                vm->wind_stack[vm->n_winds].after = p_val;
+                vm->n_winds++;
+            } else {
+                vm_param_pop(p);
+            }
         }
         vm_push(vm, NIL_VAL);
         break;
     }
     case 703: { /* parameterize-pop(param) */
         Value p_val = vm_pop(vm);
-        if (is_heap_type(vm, p_val, HEAP_PARAMETER)) {
-            VmParameter* p = (VmParameter*)vm->heap.objects[p_val.as.ptr]->opaque.ptr;
-            vm_param_pop(p);
+        if (vm->n_winds > 0 &&
+            vm->wind_stack[vm->n_winds - 1].after.type == p_val.type &&
+            vm->wind_stack[vm->n_winds - 1].after.as.ptr == p_val.as.ptr) {
+            vm->n_winds--;
+            vm_pop_parameter_binding(vm, p_val);
+        } else {
+            /* A malformed bytecode stream must not silently leave a binding
+             * active; retain the old direct cleanup behavior and flag it. */
+            vm->error = 1;
+            vm_pop_parameter_binding(vm, p_val);
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -9430,6 +9544,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value v = vm_pop(vm);
         int is_param = (is_heap_type(vm, v, HEAP_PARAMETER));
         vm_push(vm, BOOL_VAL(is_param));
+        break;
+    }
+    case 705: { /* parameter-convert(param, value) */
+        Value value = vm_pop(vm), p_val = vm_pop(vm);
+        VmParameter* p = vm_parameter_from_value(vm, p_val);
+        vm_push(vm, p ? vm_parameter_apply_converter(vm, p, value) : NIL_VAL);
+        if (!p) vm->error = 1;
         break;
     }
 
@@ -10403,9 +10524,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             while (vm->n_winds > target_winds) {
                 vm->n_winds--;
                 Value after = vm->wind_stack[vm->n_winds].after;
-                if (after.type == VAL_CLOSURE)
-                    vm_call_closure_from_native(vm, after, NULL, 0);
+                vm_run_wind_after(vm, after);
             }
+            vm_unwind_parameter_bindings(
+                vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
             vm->sp = vm->handler_stack[vm->n_handlers].sp;
             vm->fp = vm->handler_stack[vm->n_handlers].fp;
             vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;

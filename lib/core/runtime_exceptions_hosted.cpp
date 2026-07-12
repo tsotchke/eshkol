@@ -689,6 +689,10 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
     g_raised_value_set_by_user = false;  // Reset for next raise
 
     if (g_exception_handler_stack && g_exception_handler_stack->jmp_buf_ptr) {
+        // A longjmp skips generated normal-exit code.  Unwind dynamic-wind
+        // first so parameterize after-thunks pop their eshkol_param_t stack
+        // entries (and ordinary dynamic-wind cleanup retains R7RS ordering).
+        eshkol_unwind_dynamic_wind(g_exception_handler_stack->wind_mark);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -730,6 +734,7 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
     }
 
     handler->jmp_buf_ptr = jmp_buf_ptr;
+    handler->wind_mark = g_dynamic_wind_stack;
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
 }
