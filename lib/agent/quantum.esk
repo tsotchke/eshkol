@@ -1,5 +1,5 @@
 ;;
-;; quantum.esk - Moonlab quantum state-vector FFI wrapper (Stage S1)
+;; quantum.esk - Moonlab state-vector and VQE FFI wrapper (Stages S1/S2)
 ;; Bindings to agent_quantum.c, which links Moonlab's libquantumsim.
 ;;
 ;; Only usable when Eshkol is built with -DESHKOL_QUANTUM_ENABLED=ON (see
@@ -30,7 +30,15 @@
          apply-rz
          measure
          expectation-z
-         with-quantum-state)
+         with-quantum-state
+         make-h2-hamiltonian
+         make-lih-hamiltonian
+         make-h2o-hamiltonian
+         hamiltonian-destroy!
+         hamiltonian-exact-ground-energy
+         vqe-optimize
+         vqe-gradient
+         with-hamiltonian)
 
 ;; FFI declarations
 (extern i64    quantum-state-create-raw     i32           :real eshkol_quantum_state_create)
@@ -48,6 +56,22 @@
 (extern double quantum-expectation-z-raw    i64 i32       :real eshkol_quantum_expectation_z)
 (extern i32    quantum-last-error-raw       ptr i64       :real eshkol_quantum_last_error)
 
+;; Stage S2 VQE declarations.  Hamiltonians remain opaque i64 handles; the
+;; gradient context is private to vqe-gradient and exists only because Scheme
+;; vectors are heterogeneous values rather than contiguous C double arrays.
+(extern i64    vqe-make-h2-hamiltonian-raw  double        :real eshkol_vqe_make_h2_hamiltonian)
+(extern i64    vqe-make-lih-hamiltonian-raw double        :real eshkol_vqe_make_lih_hamiltonian)
+(extern i64    vqe-make-h2o-hamiltonian-raw              :real eshkol_vqe_make_h2o_hamiltonian)
+(extern void   hamiltonian-destroy-raw      i64           :real eshkol_vqe_hamiltonian_destroy)
+(extern double hamiltonian-exact-energy-raw i64           :real eshkol_vqe_hamiltonian_exact_ground_energy)
+(extern double vqe-optimize-raw             i64 i32       :real eshkol_vqe_optimize)
+(extern i64    vqe-gradient-context-create-raw i64        :real eshkol_vqe_gradient_context_create)
+(extern void   vqe-gradient-context-destroy-raw i64       :real eshkol_vqe_gradient_context_destroy)
+(extern i64    vqe-gradient-parameter-count-raw i64       :real eshkol_vqe_gradient_parameter_count)
+(extern i32    vqe-gradient-set-parameter-raw i64 i32 double :real eshkol_vqe_gradient_set_parameter)
+(extern i32    vqe-gradient-compute-raw     i64           :real eshkol_vqe_gradient_compute)
+(extern double vqe-gradient-get-raw         i64 i32       :real eshkol_vqe_gradient_get)
+
 ;; ---------------------------------------------------------------------------
 ;; Internal: honest error surface. Moonlab/the shim signal failure with a
 ;; negative return code; this turns that into a catchable Eshkol error
@@ -63,6 +87,13 @@
   (if (< rc 0)
       (error (string-append "agent.quantum: " op-name " failed: " (quantum-last-error)))
       rc))
+
+(define (check-quantum-real! op-name value)
+  ;; Moonlab and the C shim use NaN for an error when a C API has only a
+  ;; double return channel.  NaN is the only Scheme number unequal to itself.
+  (if (= value value)
+      value
+      (error (string-append "agent.quantum: " op-name " failed: " (quantum-last-error)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Lifecycle
@@ -163,3 +194,106 @@
     (dynamic-wind (lambda () #f)
                   (lambda () (fn st))
                   (lambda () (quantum-state-destroy! st)))))
+
+;; ---------------------------------------------------------------------------
+;; Stage S2: molecular Hamiltonians and Variational Quantum Eigensolver
+;; ---------------------------------------------------------------------------
+
+(define (check-hamiltonian-handle! op-name handle)
+  (if (< handle 0)
+      (error (string-append "agent.quantum: " op-name " failed: " (quantum-last-error)))
+      handle))
+
+(define (make-h2-hamiltonian bond-distance)
+  "Create a Moonlab H2/STO-3G Pauli Hamiltonian at `bond-distance` Angstroms.
+   Returns an opaque Hamiltonian handle; release it with hamiltonian-destroy!
+   or use with-hamiltonian."
+  (capability-require! 'ffi 'make-h2-hamiltonian)
+  (check-hamiltonian-handle! "make-h2-hamiltonian"
+                            (vqe-make-h2-hamiltonian-raw bond-distance)))
+
+(define (make-lih-hamiltonian bond-distance)
+  "Create a Moonlab LiH/6-31G Pauli Hamiltonian at `bond-distance` Angstroms."
+  (capability-require! 'ffi 'make-lih-hamiltonian)
+  (check-hamiltonian-handle! "make-lih-hamiltonian"
+                            (vqe-make-lih-hamiltonian-raw bond-distance)))
+
+(define (make-h2o-hamiltonian)
+  "Create Moonlab's fixed-geometry H2O/STO-3G Pauli Hamiltonian."
+  (capability-require! 'ffi 'make-h2o-hamiltonian)
+  (check-hamiltonian-handle! "make-h2o-hamiltonian"
+                            (vqe-make-h2o-hamiltonian-raw)))
+
+(define (hamiltonian-destroy! ham)
+  "Free an opaque Hamiltonian handle. Safe to call once; an invalid or already
+   released handle is a C-side no-op, matching quantum-state-destroy!."
+  (hamiltonian-destroy-raw ham))
+
+(define (with-hamiltonian ham fn)
+  "Call (fn ham) and release `ham` on every exit path.  Construct `ham` with
+   one of make-h2-hamiltonian, make-lih-hamiltonian, or make-h2o-hamiltonian."
+  (dynamic-wind (lambda () #f)
+                (lambda () (fn ham))
+                (lambda () (hamiltonian-destroy! ham))))
+
+(define (hamiltonian-exact-ground-energy ham)
+  "Return Moonlab's direct-diagonalization ground-state reference energy in
+   Hartree, including nuclear repulsion. Intended for small Hamiltonians."
+  (check-quantum-real! "hamiltonian-exact-ground-energy"
+                       (hamiltonian-exact-energy-raw ham)))
+
+(define (vqe-optimize ham . maybe-iterations)
+  "Run ideal Moonlab VQE and return its optimized variational energy in Hartree.
+   Usage: (vqe-optimize ham [iterations]).  The Stage S2 default is a one-layer
+   hardware-efficient ansatz with ADAM and 500 iterations; the optional
+   positive iteration count is the essential tuning knob."
+  (if (not (or (null? maybe-iterations)
+               (null? (cdr maybe-iterations))))
+      (error "agent.quantum: vqe-optimize accepts at most one iteration count")
+      (let ((iterations (if (null? maybe-iterations) 500 (car maybe-iterations))))
+        (if (< iterations 1)
+            (error "agent.quantum: vqe-optimize iterations must be positive")
+            (check-quantum-real! "vqe-optimize"
+                                 (vqe-optimize-raw ham iterations))))))
+
+(define (vqe-gradient ham params)
+  "Return Moonlab's exact dE/dtheta vector for the default one-layer
+   hardware-efficient ansatz. `params` must have exactly 2*nqubits entries.
+   Moonlab uses reverse-mode adjoint differentiation for this ideal HEA path
+   (with its analytic parameter-shift fallback for unsupported configurations);
+   no finite differences are computed."
+  (if (not (vector? params))
+      (error "agent.quantum: vqe-gradient params must be a vector")
+      (let ((context (vqe-gradient-context-create-raw ham)))
+        (if (< context 0)
+            (error (string-append "agent.quantum: vqe-gradient failed: " (quantum-last-error)))
+            (dynamic-wind
+             (lambda () #f)
+             (lambda ()
+               (let ((count (vqe-gradient-parameter-count-raw context)))
+                 (if (< count 0)
+                     (error (string-append "agent.quantum: vqe-gradient failed: " (quantum-last-error)))
+                     (if (not (= (vector-length params) count))
+                         (error "agent.quantum: vqe-gradient parameter vector has the wrong length")
+                         (begin
+                           (let set-params ((i 0))
+                             (if (< i count)
+                                 (begin
+                                   (check-gate-result! "vqe-gradient"
+                                                       (vqe-gradient-set-parameter-raw
+                                                        context i (vector-ref params i)))
+                                   (set-params (+ i 1)))
+                                 #t))
+                           (check-gate-result! "vqe-gradient"
+                                               (vqe-gradient-compute-raw context))
+                           (let ((gradient (make-vector count 0.0)))
+                             (let collect ((i 0))
+                               (if (< i count)
+                                   (begin
+                                     (vector-set! gradient i
+                                                  (check-quantum-real!
+                                                   "vqe-gradient"
+                                                   (vqe-gradient-get-raw context i)))
+                                     (collect (+ i 1)))
+                                   gradient))))))))
+             (lambda () (vqe-gradient-context-destroy-raw context)))))))
