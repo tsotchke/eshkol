@@ -11,6 +11,7 @@
  */
 
 #include <eshkol/backend/collection_codegen.h>
+#include "../core/arena_memory.h"
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
@@ -2249,11 +2250,12 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
     // Extract dest pointer
     llvm::Value* to_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(to_arg), ctx_.ptrType());
 
-    // Extract source pointer and length
+    // Extract source pointer. Its logical length depends on the runtime
+    // representation (inline Scheme vector vs tensor-backed #(...) literal),
+    // so the representation-aware runtime helper resolves the default end.
     llvm::Value* from_ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(from_arg), ctx_.ptrType());
-    llvm::Value* from_len = ctx_.builder().CreateLoad(ctx_.int64Type(), from_ptr, "from_len");
 
-    // Get start (default 0) and end (default from_len)
+    // Get start (default 0) and end (sentinel -1 means source length).
     llvm::Value* start;
     if (op->call_op.num_vars >= 4) {
         void* start_typed = codegen_typed_ast_callback_(&op->call_op.variables[3], callback_context_);
@@ -2273,49 +2275,73 @@ llvm::Value* CollectionCodegen::vectorCopy(const eshkol_operations_t* op) {
         if (!end_tagged) return nullptr;
         end = tagged_.unpackInt64(end_tagged);
     } else {
-        end = from_len;
+        end = llvm::ConstantInt::getSigned(ctx_.int64Type(), -1);
     }
 
-    // Number of elements to copy
-    llvm::Value* count = ctx_.builder().CreateSub(end, start, "copy_count");
-
-    // Get element bases (after length field at offset 8)
-    llvm::Value* to_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), to_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* to_elem_typed = ctx_.builder().CreatePointerCast(to_elem_base, ctx_.ptrType());
-
-    llvm::Value* from_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), from_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Value* from_elem_typed = ctx_.builder().CreatePointerCast(from_elem_base, ctx_.ptrType());
-
-    // Use memmove (handles overlapping regions) on tagged values (16 bytes each)
-    llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), to_elem_typed, at_idx);
-    llvm::Value* src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), from_elem_typed, start);
-    llvm::Value* byte_count = ctx_.builder().CreateMul(count,
-        llvm::ConstantInt::get(ctx_.int64Type(), 16), "byte_count");
-
-    ctx_.builder().CreateMemMove(
-        dest_ptr, llvm::MaybeAlign(8),
-        src_ptr, llvm::MaybeAlign(8),
-        byte_count);
-
-    // ESH-0214c region write barrier (range form): the copied slots may hold
-    // region-allocated values while `to` lives outside the region; promote each
-    // in place. Fast path (no active region) is one load+branch in the runtime.
-    {
-        llvm::Function* wb_range =
-            ctx_.module().getFunction("eshkol_region_write_barrier_range");
-        if (!wb_range) {
-            llvm::FunctionType* wb_ty = llvm::FunctionType::get(
-                ctx_.builder().getVoidTy(),
-                {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
-            wb_range = llvm::Function::Create(
-                wb_ty, llvm::GlobalValue::ExternalLinkage,
-                "eshkol_region_write_barrier_range", &ctx_.module());
-        }
-        ctx_.builder().CreateCall(wb_range, {to_ptr, dest_ptr, count});
+    // The helper understands both public vector representations, preserves
+    // memmove overlap semantics, applies logical tensor dtype reduction, and
+    // runs the OALR write barrier for tagged destinations.
+    llvm::Function* copy_helper =
+        ctx_.module().getFunction("eshkol_vector_copy_mutating");
+    if (!copy_helper) {
+        llvm::FunctionType* helper_ty = llvm::FunctionType::get(
+            ctx_.builder().getInt32Ty(),
+            {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(),
+             ctx_.int64Type(), ctx_.int64Type()}, false);
+        copy_helper = llvm::Function::Create(
+            helper_ty, llvm::GlobalValue::ExternalLinkage,
+            "eshkol_vector_copy_mutating", &ctx_.module());
     }
+    llvm::Value* status = ctx_.builder().CreateCall(
+        copy_helper, {to_ptr, at_idx, from_ptr, start, end}, "vector_copy_status");
 
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+    llvm::BasicBlock* copy_ok = llvm::BasicBlock::Create(
+        ctx_.context(), "vector_copy_ok", current_func);
+    llvm::BasicBlock* copy_fail = llvm::BasicBlock::Create(
+        ctx_.context(), "vector_copy_fail", current_func);
+    ctx_.builder().CreateCondBr(
+        ctx_.builder().CreateICmpEQ(
+            status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
+                                           ESHKOL_VECTOR_COPY_OK)),
+        copy_ok, copy_fail);
+
+    ctx_.builder().SetInsertPoint(copy_fail);
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            ctx_.builder().getVoidTy(), {ctx_.ptrType()}, false);
+        raise_func = llvm::Function::Create(
+            raise_type, llvm::Function::ExternalLinkage, "eshkol_raise",
+            &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+    llvm::Function* make_exc =
+        ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            ctx_.ptrType(), {ctx_.builder().getInt32Ty(), ctx_.ptrType()}, false);
+        make_exc = llvm::Function::Create(
+            make_type, llvm::Function::ExternalLinkage,
+            "eshkol_make_exception_with_header", &ctx_.module());
+    }
+    llvm::Value* is_bounds = ctx_.builder().CreateICmpEQ(
+        status, llvm::ConstantInt::get(ctx_.builder().getInt32Ty(),
+                                       ESHKOL_VECTOR_COPY_BOUNDS));
+    llvm::Value* bounds_msg = ctx_.builder().CreateGlobalString(
+        "vector-copy!: index out of range");
+    llvm::Value* type_msg = ctx_.builder().CreateGlobalString(
+        "vector-copy!: incompatible vector/tensor element representation");
+    llvm::Value* message = ctx_.builder().CreateSelect(
+        is_bounds, bounds_msg, type_msg, "vector_copy_error_message");
+    llvm::Value* exception = ctx_.builder().CreateCall(
+        make_exc,
+        {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), ESHKOL_EXCEPTION_ERROR),
+         message});
+    ctx_.builder().CreateCall(raise_func, {exception});
+    ctx_.builder().CreateUnreachable();
+
+    ctx_.builder().SetInsertPoint(copy_ok);
     return tagged_.packNull();
 }
 

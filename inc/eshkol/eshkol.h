@@ -2835,6 +2835,9 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
  * continuing to accumulate from a previously parsed file/stream.
  */
 extern "C" void eshkol_reset_parse_line_counter(void);
+/** Reset/query the current thread's cumulative parser error state. */
+extern "C" void eshkol_reset_parse_errors(void);
+extern "C" int eshkol_parse_had_error(void);
 
 #endif
 

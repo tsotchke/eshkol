@@ -94,6 +94,28 @@ done
 
 echo ""
 
+# syntax-error is a compile-time assertion form: exercising it correctly means
+# proving compilation fails with its diagnostic, not adding a permanently red
+# positive test to the *.esk corpus.
+SYNTAX_ERROR_FIXTURE="$TEST_DIR/negative/syntax_error_negative.esk"
+printf "Testing %-45s " "syntax_error_negative"
+if ./$BUILD_DIR/eshkol-run "$SYNTAX_ERROR_FIXTURE" -L./$BUILD_DIR \
+       >/tmp/macros_syntax_error.log 2>&1; then
+    echo -e "${RED}EXPECTED COMPILE FAILURE${NC}"
+    FAILED_TESTS+=("syntax_error_negative")
+    ((FAIL++)) || true
+elif grep -q "intentional syntax-error coverage probe" /tmp/macros_syntax_error.log; then
+    echo -e "${GREEN}PASS${NC}"
+    ((PASS++)) || true
+else
+    echo -e "${RED}WRONG DIAGNOSTIC${NC}"
+    tail -8 /tmp/macros_syntax_error.log | sed 's/^/    /'
+    FAILED_TESTS+=("syntax_error_negative")
+    ((FAIL++)) || true
+fi
+
+echo ""
+
 # ===== Summary =====
 echo "========================================="
 echo "  Macros Test Results Summary"
@@ -113,7 +135,7 @@ if [ $FAIL -gt 0 ]; then
 fi
 
 # Clean up
-rm -f a.out /tmp/macros_compile.log /tmp/macros_test_output.txt
+rm -f a.out /tmp/macros_compile.log /tmp/macros_test_output.txt /tmp/macros_syntax_error.log
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

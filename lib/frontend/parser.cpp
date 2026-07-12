@@ -31,10 +31,12 @@ static thread_local const char* g_parse_source = NULL;
  * eshkol_reset_parse_line_counter() at the start of a fresh file. */
 static thread_local uint32_t g_stream_line = 1;
 static thread_local uint32_t g_stream_column = 1;
+static thread_local bool g_parse_had_error = false;
 
 /* Emit error with file:line:col + caret underline.
  * Falls back to plain eshkol_error if source text unavailable. */
 #define PARSE_ERROR_AT(tok, ...) do { \
+    g_parse_had_error = true; \
     if (g_parse_source) { \
         eshkol_error_at(g_parse_filename, (tok).line, (tok).column, \
                         g_parse_source, __VA_ARGS__); \
@@ -258,8 +260,15 @@ public:
             case '"':
                 return readString();
             default:
-                // Check for arrow type: ->
-                if (ch == '-' && pos + 1 < length && input[pos + 1] == '>') {
+                // A standalone `->` is the function-type separator.  Symbols
+                // may legitimately begin with the same characters (`->foo`),
+                // so require a token boundary after the arrow instead of
+                // splitting every such symbol into TOKEN_ARROW + TOKEN_SYMBOL.
+                if (ch == '-' && pos + 1 < length && input[pos + 1] == '>' &&
+                    (pos + 2 == length ||
+                     std::isspace((unsigned char)input[pos + 2]) ||
+                     input[pos + 2] == '(' || input[pos + 2] == ')' ||
+                     input[pos + 2] == '\'' || input[pos + 2] == '"')) {
                     pos += 2;
                     column_ += 2;
                     return {TOKEN_ARROW, "->", pos - 2, tok_line, tok_col};
@@ -10481,6 +10490,14 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_line = 1;
     g_stream_column = 1;
+}
+
+extern "C" void eshkol_reset_parse_errors(void) {
+    g_parse_had_error = false;
+}
+
+extern "C" int eshkol_parse_had_error(void) {
+    return g_parse_had_error ? 1 : 0;
 }
 
 /**
