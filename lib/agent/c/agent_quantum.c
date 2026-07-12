@@ -28,6 +28,7 @@
  *                                   quantum_entropy_ctx_create_hw/_destroy
  *   - src/algorithms/vqe.h         : molecular Hamiltonians, VQE solver,
  *                                   optimizer, and vqe_solve
+ *   - src/applications/bell_test.h : bell_test_run_chsh CHSH experiment
  *   - src/applications/moonlab_export.h
  *                                 : moonlab_vqe_gradient stable ABI wrapper
  *
@@ -88,6 +89,7 @@ typedef struct {
 #include "quantum/measurement.h"
 #include "utils/quantum_entropy.h"
 #include "algorithms/vqe.h"
+#include "applications/bell_test.h"
 #include "applications/moonlab_export.h"
 
 /*******************************************************************************
@@ -238,6 +240,42 @@ static double error_double(void) {
 static double unavailable_double(const char* message) {
     set_last_error(message);
     return error_double();
+}
+
+/*******************************************************************************
+ * Stage S5: Bell/CHSH acceptance experiment
+ ******************************************************************************/
+
+/**
+ * Run Moonlab's public CHSH experiment with the canonical settings that
+ * maximise the |Phi+> violation: Alice (0, pi/2), Bob (pi/4, -pi/4).
+ *
+ * bell_test_default_config() uses a historical set of angles that does not
+ * match bell_test_run_chsh()'s difference-angle correlator, so the default
+ * configuration reports about 1.3 rather than the physical 2*sqrt(2).  Keep
+ * the public experiment, but explicitly select the canonical settings here;
+ * this makes the Scheme gate a test of entanglement rather than a test of that
+ * stale application default.  The returned S is positive for this ordering.
+ *
+ * @return CHSH S on success, or NaN with eshkol_quantum_last_error() set.
+ */
+double eshkol_quantum_bell_chsh(int32_t num_trials) {
+    if (num_trials < 4) {
+        return unavailable_double("bell-chsh: num-trials must be at least four");
+    }
+
+    bell_test_config_t config = bell_test_default_config();
+    config.num_trials = num_trials;
+    config.alice_angle_1 = 0.0;
+    config.alice_angle_2 = 1.57079632679489661923;  /* pi / 2 */
+    config.bob_angle_1 = 0.78539816339744830962;    /* pi / 4 */
+    config.bob_angle_2 = -0.78539816339744830962;   /* -pi / 4 */
+
+    bell_test_results_t results;
+    if (bell_test_run_chsh(&config, &results) != 0 || results.S != results.S) {
+        return unavailable_double("bell-chsh: Moonlab CHSH experiment failed");
+    }
+    return results.S;
 }
 
 /*******************************************************************************
@@ -1012,6 +1050,12 @@ int32_t eshkol_quantum_measure(int64_t handle, int32_t qubit) { (void)handle; (v
 /** @brief Stub: always fails (NaN sentinel) since no states exist without Moonlab support. */
 double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit) {
     (void)handle; (void)qubit;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+/** @brief Stub: Moonlab support was not compiled in, so CHSH is unavailable. */
+double eshkol_quantum_bell_chsh(int32_t num_trials) {
+    (void)num_trials;
     volatile double zero = 0.0;
     return zero / zero;
 }
