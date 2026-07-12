@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <cstring>
 
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
@@ -2448,6 +2449,92 @@ llvm::Value* AutodiffCodegen::recordADNodeTensor(
     return node_ptr;
 }
 
+// === Custom scalar VJP AD Node Recording ===
+
+/**
+ * @brief Allocate and append an AD_NODE_CUSTOM scalar node.
+ *
+ * The external descriptor owns the complete multi-input edge list because a
+ * scalar ad_node_t has only input1/input2 fields.  We deliberately keep those
+ * legacy binary fields null and save the descriptor as the sole saved tensor;
+ * the runtime custom-backward helper reads it and accumulates into every input.
+ */
+llvm::Value* AutodiffCodegen::recordADNodeCustom(
+    llvm::Value* value,
+    llvm::Value* inputs,
+    llvm::Value* input_count,
+    llvm::Value* custom_vjp)
+{
+    if (!value || !inputs || !input_count || !custom_vjp) return nullptr;
+
+    llvm::Value* arena_ptr = getArenaPtr();
+    llvm::Function* node_alloc = mem_.getArenaAllocateAdNodeWithHeader();
+    llvm::Function* raw_alloc = mem_.getArenaAllocate();
+    if (!arena_ptr || !node_alloc || !raw_alloc) return nullptr;
+
+    llvm::StructType* ad_type = ctx_.adNodeType();
+    auto null_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    auto zero_f64 = llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    llvm::Value* node_ptr = ctx_.builder().CreateCall(node_alloc, {arena_ptr});
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int32Type(), static_cast<int>(AD_NODE_CUSTOM)),
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 0));
+    ctx_.builder().CreateStore(value,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 1));
+    ctx_.builder().CreateStore(zero_f64,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 2));
+    ctx_.builder().CreateStore(null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 3));
+    ctx_.builder().CreateStore(null_ptr,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 4));
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int64Type(), next_node_id_++),
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 5));
+
+    // saved_tensors is always a one-slot arena allocation for custom nodes.
+    llvm::Value* saved_slots = ctx_.builder().CreateCall(raw_alloc, {
+        arena_ptr,
+        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(void*))
+    });
+    llvm::Value* saved_slots_typed = ctx_.builder().CreatePointerCast(
+        saved_slots, ctx_.ptrType());
+    ctx_.builder().CreateStore(custom_vjp, saved_slots_typed);
+    ctx_.builder().CreateStore(saved_slots_typed,
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 10));
+    ctx_.builder().CreateStore(
+        llvm::ConstantInt::get(ctx_.int64Type(), 1),
+        ctx_.builder().CreateStructGEP(ad_type, node_ptr, 11));
+
+    // `inputs` and `input_count` are carried by custom_vjp->inputs/n. Keeping
+    // the explicit parameters in this builder makes the tape-lifetime contract
+    // visible at the compiler call site and prevents accidental stack storage.
+    (void)inputs;
+    (void)input_count;
+
+    llvm::GlobalVariable* tape_global = ctx_.currentAdTape();
+    if (tape_global) {
+        llvm::Value* tape_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), tape_global);
+        llvm::Value* tape_not_null = ctx_.builder().CreateICmpNE(
+            tape_ptr, llvm::ConstantPointerNull::get(ctx_.ptrType()));
+        llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+        llvm::BasicBlock* add_block = llvm::BasicBlock::Create(
+            ctx_.context(), "add_custom_to_tape", current_func);
+        llvm::BasicBlock* skip_block = llvm::BasicBlock::Create(
+            ctx_.context(), "skip_custom_tape", current_func);
+        ctx_.builder().CreateCondBr(tape_not_null, add_block, skip_block);
+
+        ctx_.builder().SetInsertPoint(add_block);
+        if (llvm::Function* add_node = mem_.getArenaTapeAddNode()) {
+            ctx_.builder().CreateCall(add_node, {tape_ptr, node_ptr});
+        }
+        ctx_.builder().CreateBr(skip_block);
+        ctx_.builder().SetInsertPoint(skip_block);
+    }
+
+    return node_ptr;
+}
+
 // === Tensor Gradient Accumulation ===
 
 /**
@@ -3404,6 +3491,13 @@ static bool adAstUsesTensorOps(
         case ESHKOL_IF_OP:
         case ESHKOL_COND_OP: {
             const eshkol_ast_t* f = op->call_op.func;
+            // Moonlab's VQE primitive consumes the reverse-mode AD-node tensor
+            // produced for vector inputs. Mark it as tensor-flowing so
+            // (gradient (lambda (p) (vqe-energy ham p)) (vector ...)) takes
+            // the reverse path rather than the forward dual-vector path.
+            if (f && f->type == ESHKOL_VAR && f->variable.id &&
+                (std::strcmp(f->variable.id, "vqe-energy") == 0 ||
+                 std::strcmp(f->variable.id, "vqe-energy-primitive") == 0)) return true;
             if (f && f->type == ESHKOL_VAR && adIsTensorValuedBuiltin(f->variable.id)) return true;
             // Follow a call into a user-defined function's body (ESH-0235).
             if (bodies && visited && depth < 8 && f && f->type == ESHKOL_VAR &&
@@ -11375,6 +11469,7 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     llvm::BasicBlock* mobius_add_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mobius_add", current_func);
     llvm::BasicBlock* mobius_matmul_block = llvm::BasicBlock::Create(ctx_.context(), "grad_mobius_matmul", current_func);
     llvm::BasicBlock* gyrovector_block = llvm::BasicBlock::Create(ctx_.context(), "grad_gyrovector", current_func);
+    llvm::BasicBlock* custom_block = llvm::BasicBlock::Create(ctx_.context(), "grad_custom", current_func);
 
     // --- CONV2D (type=19): dL/d_input ≈ grad (scalar approx) ---
     ctx_.builder().SetInsertPoint(check_conv2d);
@@ -11714,8 +11809,18 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
     // --- GYROVECTOR_SPACE (type=40) ---
     ctx_.builder().SetInsertPoint(check_gyrovector);
     llvm::Value* is_gyrovector = ctx_.builder().CreateICmpEQ(node_type, llvm::ConstantInt::get(ctx_.int32Type(), 40));
+    llvm::BasicBlock* check_custom = llvm::BasicBlock::Create(ctx_.context(), "check_custom", current_func);
+    ctx_.builder().CreateCondBr(is_gyrovector, gyrovector_block, check_custom);
+
+    // --- CUSTOM (external vector-Jacobian product) ---
+    // AD_NODE_CUSTOM is intentionally compared through the C enum, never a
+    // stale literal: it is appended after AD_NODE_ATAN2 and may move again.
+    ctx_.builder().SetInsertPoint(check_custom);
+    llvm::Value* is_custom = ctx_.builder().CreateICmpEQ(
+        node_type,
+        llvm::ConstantInt::get(ctx_.int32Type(), static_cast<int>(AD_NODE_CUSTOM)));
     llvm::BasicBlock* unknown_type_block = llvm::BasicBlock::Create(ctx_.context(), "grad_unknown_type", current_func);
-    ctx_.builder().CreateCondBr(is_gyrovector, gyrovector_block, unknown_type_block);
+    ctx_.builder().CreateCondBr(is_custom, custom_block, unknown_type_block);
 
     ctx_.builder().SetInsertPoint(gyrovector_block);
     {
@@ -11741,6 +11846,16 @@ void AutodiffCodegen::propagateGradient(llvm::Value* node_ptr) {
             accumulateGradient(input1, ctx_.builder().CreateFMul(node_grad, lambda_x));
             accumulateGradient(input2, ctx_.builder().CreateFMul(node_grad, lambda_y));
         }
+    }
+    ctx_.builder().CreateBr(done_block);
+
+    ctx_.builder().SetInsertPoint(custom_block);
+    {
+        llvm::FunctionType* custom_backward_type = llvm::FunctionType::get(
+            ctx_.voidType(), {ctx_.ptrType()}, false);
+        llvm::FunctionCallee custom_backward = ctx_.module().getOrInsertFunction(
+            "eshkol_ad_node_custom_backward", custom_backward_type);
+        ctx_.builder().CreateCall(custom_backward, {node_ptr});
     }
     ctx_.builder().CreateBr(done_block);
 

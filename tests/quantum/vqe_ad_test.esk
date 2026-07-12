@@ -1,0 +1,96 @@
+;; Stage S3: Eshkol reverse-mode AD through Moonlab's fixed-parameter VQE
+;; energy. Requires -DESHKOL_QUANTUM_ENABLED=ON.
+;;
+;; This proves three independent properties of the AD bridge:
+;;   1. Its custom VJP is Moonlab's exact native adjoint.
+;;   2. That adjoint agrees with a central finite-difference oracle.
+;;   3. The opaque VQE node remains composable in Eshkol's surrounding tape.
+
+(require agent.quantum)
+
+(define pass 0)
+(define fail 0)
+
+(define (check label ok)
+  (if ok
+      (begin (set! pass (+ pass 1))
+             (display "PASS: ") (display label) (newline))
+      (begin (set! fail (+ fail 1))
+             (display "FAIL: ") (display label) (newline))))
+
+(define (perturb p index delta)
+  (let ((out (make-vector (vector-length p) 0.0)))
+    (let loop ((i 0))
+      (if (< i (vector-length p))
+          (begin
+            (vector-set! out i (if (= i index)
+                                    (+ (vector-ref p i) delta)
+                                    (vector-ref p i)))
+            (loop (+ i 1)))
+          out))))
+
+(define (max-abs-diff a b)
+  (if (not (= (vector-length a) (vector-length b)))
+      1e300
+      (let loop ((i 0) (m 0.0))
+        (if (< i (vector-length a))
+            (loop (+ i 1) (max m (abs (- (vector-ref a i) (vector-ref b i)))))
+            m))))
+
+(define (finite-difference-gradient ham p eps)
+  (let ((out (make-vector (vector-length p) 0.0)))
+    (let loop ((i 0))
+      (if (< i (vector-length p))
+          (begin
+            (vector-set! out i
+              (/ (- (vqe-energy ham (perturb p i eps))
+                    (vqe-energy ham (perturb p i (- eps))))
+                 (* 2.0 eps)))
+            (loop (+ i 1)))
+          out))))
+
+(define (scaled-gradient scalar g)
+  (let ((out (make-vector (vector-length g) 0.0)))
+    (let loop ((i 0))
+      (if (< i (vector-length g))
+          (begin (vector-set! out i (* scalar (vector-ref g i)))
+                 (loop (+ i 1)))
+          out))))
+
+(with-hamiltonian
+ (make-h2-hamiltonian 0.735)
+ (lambda (ham)
+   (let* ((params0 (vector 0.1 0.2 0.3 0.4))
+          (energy (vqe-energy ham params0))
+          (g-eshkol (gradient (lambda (p) (vqe-energy ham p)) params0))
+          (g-moonlab (vqe-gradient ham params0))
+          (g-fd (finite-difference-gradient ham params0 1e-5))
+          (g-square (gradient
+                     (lambda (p)
+                       (let ((e (vqe-energy ham p)))
+                         (* e e)))
+                     params0))
+          (g-square-expected (scaled-gradient (* 2.0 energy) g-moonlab))
+          (adjoint-error (max-abs-diff g-eshkol g-moonlab))
+          (fd-error (max-abs-diff g-eshkol g-fd))
+          (compose-error (max-abs-diff g-square g-square-expected)))
+     (display "E(params0): ") (display energy) (newline)
+     (display "g_eshkol: ") (display g-eshkol) (newline)
+     (display "g_moonlab: ") (display g-moonlab) (newline)
+     (display "g_fd: ") (display g-fd) (newline)
+     (display "2E*g_moonlab: ") (display g-square-expected) (newline)
+     (display "g_(E^2): ") (display g-square) (newline)
+     (display "max |g_eshkol - g_moonlab|: ") (display adjoint-error) (newline)
+     (display "max |g_eshkol - g_fd|: ") (display fd-error) (newline)
+     (display "max |g_(E^2) - 2E*g_moonlab|: ") (display compose-error) (newline)
+     (check "custom VJP matches Moonlab native adjoint (< 1e-8)"
+            (< adjoint-error 1e-8))
+     (check "custom VJP matches central finite difference (< 1e-4)"
+            (< fd-error 1e-4))
+     (check "VQE energy composes through Eshkol chain rule (< 1e-6)"
+            (< compose-error 1e-6)))))
+
+(display "vqe_ad_test: ")
+(if (= fail 0)
+    (begin (display "PASS (") (display pass) (display "/3)") (newline) (exit 0))
+    (begin (display "FAIL (") (display fail) (display " failed)") (newline) (exit 1)))

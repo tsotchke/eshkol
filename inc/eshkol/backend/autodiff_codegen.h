@@ -212,6 +212,17 @@ public:
         llvm::Value* shape, llvm::Value* ndim);
 
     /**
+     * Record an opaque scalar primitive with an externally supplied VJP.
+     * `inputs` is an arena-owned ad_node_t* array of `input_count` entries and
+     * `custom_vjp` is an arena-owned eshkol_custom_vjp_t whose inputs field
+     * refers to that array. The descriptor is saved in saved_tensors[0].
+     */
+    llvm::Value* recordADNodeCustom(llvm::Value* value,
+                                    llvm::Value* inputs,
+                                    llvm::Value* input_count,
+                                    llvm::Value* custom_vjp);
+
+    /**
      * Accumulate a tensor gradient onto an AD node's tensor_gradient field.
      * If tensor_gradient is NULL, allocates and zero-fills it first.
      * @param node_ptr Pointer to AD node
