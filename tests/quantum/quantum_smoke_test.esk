@@ -18,8 +18,10 @@
         correlated
         (loop (+ i 1) (+ correlated (if (bell-correlated?) 1 0))))))
 
-(let* ((n 200)
-       (ok (run-bell n)))
+(define n 200)
+(define ok (run-bell n))
+
+(begin
   (display "Bell-pair correlation over ") (display n) (display " shots: ")
   (display ok) (display "/") (display n)
   (display (if (= ok n) "  PASS" "  FAIL")) (newline))
@@ -27,3 +29,9 @@
 ;; Honest quantum-random: should now be sourced from Moonlab's Bell-verified QRNG.
 (display "quantum-random sample: ") (display (quantum-random)) (newline)
 (display "quantum-random-int(100): ") (display (quantum-random-int 100)) (newline)
+(display "quantum-random-range(10,20): ") (display (quantum-random-range 10 20)) (newline)
+
+(display "quantum_smoke_test: ")
+(if (= ok n)
+    (begin (display "PASS (Bell 200/200)") (newline) (exit 0))
+    (begin (display "FAIL (Bell correlation was not 200/200)") (newline) (exit 1)))

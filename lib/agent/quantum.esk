@@ -1,5 +1,5 @@
 ;;
-;; quantum.esk - Moonlab state-vector and VQE FFI wrapper (Stages S1/S2)
+;; quantum.esk - Moonlab state-vector, CHSH, and VQE FFI wrapper (S1-S5)
 ;; Bindings to agent_quantum.c, which links Moonlab's libquantumsim.
 ;;
 ;; Only usable when Eshkol is built with -DESHKOL_QUANTUM_ENABLED=ON (see
@@ -9,9 +9,9 @@
 ;; agent.http uses for its libcurl-optional symbols.
 ;;
 ;; HONESTY NOTE: this module gives you the real thing -- Moonlab's actual
-;; state-vector simulator, gates, and measurement, Bell-verifiable via
-;; Moonlab's own bell_test_run_chsh (not bound here yet; see Stage S5 in the
-;; design doc). It is unrelated to the classical `quantum-random` builtin
+;; state-vector simulator, gates, and measurement, Bell-verifiable through the
+;; public bell-chsh wrapper around Moonlab's bell_test_run_chsh. It is unrelated
+;; to the classical `quantum-random` builtin
 ;; family (lib/quantum/quantum_rng.c) -- see Part D for wiring that builtin to
 ;; Moonlab's QRNG.
 ;;
@@ -30,6 +30,7 @@
          apply-rz
          measure
          expectation-z
+         bell-chsh
          with-quantum-state
          make-h2-hamiltonian
          make-lih-hamiltonian
@@ -56,6 +57,7 @@
 (extern i32    quantum-measure-raw          i64 i32       :real eshkol_quantum_measure)
 (extern double quantum-expectation-z-raw    i64 i32       :real eshkol_quantum_expectation_z)
 (extern i32    quantum-last-error-raw       ptr i64       :real eshkol_quantum_last_error)
+(extern double bell-chsh-raw                i32           :real eshkol_quantum_bell_chsh)
 
 ;; Stage S2 VQE declarations.  Hamiltonians remain opaque i64 handles; the
 ;; gradient context is private to vqe-gradient and exists only because Scheme
@@ -183,6 +185,13 @@
 (define (expectation-z st qubit)
   "Expectation value <psi|Z_qubit|psi> in [-1, 1], without collapsing the state."
   (quantum-expectation-z-raw st qubit))
+
+(define (bell-chsh num-trials)
+  "Run Moonlab's CHSH Bell experiment and return its signed S value.
+   Uses the canonical maximum-violation settings: Alice (0, pi/2), Bob
+   (pi/4, -pi/4). `num-trials` must be at least four."
+  (capability-require! 'ffi 'bell-chsh)
+  (check-quantum-real! "bell-chsh" (bell-chsh-raw num-trials)))
 
 ;; ---------------------------------------------------------------------------
 ;; Convenience: auto-destroy on exit (mirrors sqlite.esk's with-db)

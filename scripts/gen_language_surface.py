@@ -38,6 +38,39 @@ VM_C = os.path.join(REPO, "lib", "backend", "eshkol_vm.c")
 LLVM_CPP = os.path.join(REPO, "lib", "backend", "llvm_codegen.cpp")
 PARSER = os.path.join(REPO, "lib", "frontend", "parser.cpp")
 ESHKOL_H = os.path.join(REPO, "inc", "eshkol", "eshkol.h")
+AGENT_QUANTUM = os.path.join(REPO, "lib", "agent", "quantum.esk")
+AGENT_PQC = os.path.join(REPO, "lib", "agent", "pqc.esk")
+
+# Agent modules are part of the user-callable language surface even though they
+# are not registered in the core VM/native builtin tables. Keep this list small
+# and intentional: it is the Moonlab-backed contract exercised only on the
+# ESHKOL_QUANTUM_ENABLED=ON lane. The source check in
+# extract_agent_module_provides() below prevents a manifest entry from drifting
+# away from its exported Scheme API.
+QUANTUM_AGENT_BUILTINS = {
+    "make-quantum-state": (AGENT_QUANTUM, 1, "ffi_system"),
+    "apply-hadamard": (AGENT_QUANTUM, 2, "ffi_system"),
+    "apply-pauli-x": (AGENT_QUANTUM, 2, "ffi_system"),
+    "apply-pauli-y": (AGENT_QUANTUM, 2, "ffi_system"),
+    "apply-pauli-z": (AGENT_QUANTUM, 2, "ffi_system"),
+    "apply-cnot": (AGENT_QUANTUM, 3, "ffi_system"),
+    "apply-rx": (AGENT_QUANTUM, 3, "ffi_system"),
+    "apply-ry": (AGENT_QUANTUM, 3, "ffi_system"),
+    "apply-rz": (AGENT_QUANTUM, 3, "ffi_system"),
+    "measure": (AGENT_QUANTUM, 2, "ffi_system"),
+    "expectation-z": (AGENT_QUANTUM, 2, "ffi_system"),
+    "bell-chsh": (AGENT_QUANTUM, 1, "ffi_system"),
+    "make-h2-hamiltonian": (AGENT_QUANTUM, 1, "ffi_system"),
+    "make-lih-hamiltonian": (AGENT_QUANTUM, 1, "ffi_system"),
+    "make-h2o-hamiltonian": (AGENT_QUANTUM, 0, "ffi_system"),
+    "hamiltonian-exact-ground-energy": (AGENT_QUANTUM, 1, "tensor_ad"),
+    "vqe-optimize": (AGENT_QUANTUM, 2, "tensor_ad"),
+    "vqe-gradient": (AGENT_QUANTUM, 2, "tensor_ad"),
+    "vqe-energy": (AGENT_QUANTUM, 2, "tensor_ad"),
+    "mlkem-keygen": (AGENT_PQC, 1, "ffi_system"),
+    "mlkem-encaps": (AGENT_PQC, 1, "ffi_system"),
+    "mlkem-decaps": (AGENT_PQC, 2, "ffi_system"),
+}
 
 TRIPLE = re.compile(r'\{\s*"([^"]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*\}')
 
@@ -133,6 +166,22 @@ def extract_prelude_defs():
     names.update({"map", "filter", "fold-left", "fold-right", "for-each",
                   "reduce", "compose", "any", "every", "find", "take", "drop"})
     return sorted(names)
+
+
+def extract_agent_module_provides(path):
+    """Extract the flat public API from an agent module's `(provide ...)` form.
+
+    Agent modules are compiled into programs that require them, rather than
+    registered in the core BUILTINS[] tables. This is deliberately a narrow
+    parser for the flat provide lists used by lib/agent/*.esk, not a general
+    Scheme parser.
+    """
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        text = fh.read()
+    match = re.search(r"\(provide\s+([^)]*)\)", text, re.S)
+    if not match:
+        raise ValueError("no flat (provide ...) form in %s" % path)
+    return set(re.findall(r"[A-Za-z][A-Za-z0-9!?*/<>=._+-]*", match.group(1)))
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +461,29 @@ def build_manifest():
             "category": categorize(name),
         })
 
+    # The Moonlab agent APIs are opt-in, but are still user-callable Scheme
+    # names and therefore need to participate in total-language coverage. They
+    # have no core builtin id by design; `agent_ffi` honestly records their
+    # dispatch vehicle without pretending the VM implements them.
+    agent_provides = {}
+    for _, (path, _, _) in QUANTUM_AGENT_BUILTINS.items():
+        agent_provides.setdefault(path, extract_agent_module_provides(path))
+    for name, (path, arity, category) in sorted(QUANTUM_AGENT_BUILTINS.items()):
+        if name not in agent_provides[path]:
+            raise ValueError("tracked quantum API %s is not provided by %s"
+                             % (name, os.path.relpath(path, REPO)))
+        if name in names:
+            raise ValueError("quantum agent API %s unexpectedly collides with a core builtin"
+                             % name)
+        builtins.append({
+            "name": name,
+            "ids": [],
+            "arity": arity,
+            "backends": ["agent_ffi"],
+            "category": category,
+            "source": os.path.relpath(path, REPO),
+        })
+
     special = []
     for kw in sorted(forms):
         special.append({
@@ -440,6 +512,10 @@ def build_manifest():
                 "special_forms": "lib/frontend/parser.cpp get_operator_type + "
                                  "direct dispatch",
                 "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+                "quantum_agent_ffi": [
+                    "lib/agent/quantum.esk provide",
+                    "lib/agent/pqc.esk provide",
+                ],
             },
         },
         "counts": {
@@ -452,6 +528,7 @@ def build_manifest():
                                                  if "native_llvm" in b["backends"]),
             "builtins_aot_only": sum(1 for b in builtins
                                      if b["backends"] == ["native_llvm"]),
+            "quantum_agent_ffi_builtins": len(QUANTUM_AGENT_BUILTINS),
             "special_forms": len(special),
             "ast_ops": len(ops),
             "prelude": len(prelude_entries),

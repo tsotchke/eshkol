@@ -1,0 +1,20 @@
+;; Stage S5 ON-path Bell/CHSH acceptance gate. Requires
+;; -DESHKOL_QUANTUM_ENABLED=ON.
+;;
+;; A local hidden-variable theory satisfies |S| <= 2.  Moonlab's ideal Bell
+;; state should approach 2*sqrt(2) ~= 2.828.  The lower bound proves a genuine
+;; quantum violation; the upper bound catches a malformed normalization.
+
+(require agent.quantum)
+
+(define shots 16000)
+(define s (bell-chsh shots))
+(define passed (and (> s 2.4) (<= s 2.95)))
+
+(display "CHSH S over ") (display shots) (display " shots: ")
+(display s) (newline)
+
+(display "bell_chsh_test: ")
+(if passed
+    (begin (display "PASS (2.4 < S <= 2.95)") (newline) (exit 0))
+    (begin (display "FAIL (expected 2.4 < S <= 2.95)") (newline) (exit 1)))

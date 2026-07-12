@@ -368,6 +368,7 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_quantum_expectation_z(int64_t handle, int32_t qubit)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_quantum_bell_chsh(int32_t num_trials) ESHKOL_OPTIONAL_AGENT_FFI;
     int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size)
         ESHKOL_OPTIONAL_AGENT_FFI;
 
@@ -1107,6 +1108,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_gate_rz);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_measure);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_expectation_z);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_bell_chsh);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_last_error);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_make_h2_hamiltonian);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_make_lih_hamiltonian);

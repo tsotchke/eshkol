@@ -6,22 +6,27 @@
       "vm_builtins": "lib/backend/eshkol_vm.c BUILTINS[]",
       "ast_ops": "inc/eshkol/eshkol.h eshkol_op_t",
       "special_forms": "lib/frontend/parser.cpp get_operator_type + direct dispatch",
-      "prelude": "lib/backend/eshkol_compiler.c scheme_prelude"
+      "prelude": "lib/backend/eshkol_compiler.c scheme_prelude",
+      "quantum_agent_ffi": [
+        "lib/agent/quantum.esk provide",
+        "lib/agent/pqc.esk provide"
+      ]
     }
   },
   "counts": {
-    "builtins_total": 958,
+    "builtins_total": 985,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 637,
-    "builtins_in_llvm_aot_dispatch": 733,
-    "builtins_aot_only": 299,
+    "builtins_in_vm_table": 639,
+    "builtins_in_llvm_aot_dispatch": 737,
+    "builtins_aot_only": 302,
+    "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 112,
     "prelude": 16
   },
   "builtins_by_category": {
-    "ffi_system": 274,
-    "tensor_ad": 218,
+    "ffi_system": 292,
+    "tensor_ad": 222,
     "numeric": 86,
     "predicate": 70,
     "geometry": 61,
@@ -32,8 +37,8 @@
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
+    "misc": 13,
     "misc_core": 13,
-    "misc": 8,
     "control_flow": 5
   },
   "special_forms_by_category": {
@@ -293,6 +298,33 @@
         "native_llvm"
       ],
       "category": "numeric"
+    },
+    {
+      "name": "__eshkol_parameter_convert",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "__eshkol_parameter_pop",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "__eshkol_parameter_push",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "_atan1",
@@ -6873,10 +6905,24 @@
       "category": "geometry"
     },
     {
-      "name": "parameter?",
-      "ids": [],
-      "arity": null,
+      "name": "parameter-ref",
+      "ids": [
+        701
+      ],
+      "arity": 1,
       "backends": [
+        "vm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "parameter?",
+      "ids": [
+        704
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "predicate"
@@ -10572,6 +10618,15 @@
       "category": "ffi_system"
     },
     {
+      "name": "vqe-energy-primitive",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
       "name": "vref",
       "ids": [
         -1
@@ -11019,6 +11074,226 @@
         "native_llvm"
       ],
       "category": "tensor_ad"
+    },
+    {
+      "name": "apply-cnot",
+      "ids": [],
+      "arity": 3,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-hadamard",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-pauli-x",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-pauli-y",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-pauli-z",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-rx",
+      "ids": [],
+      "arity": 3,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-ry",
+      "ids": [],
+      "arity": 3,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "apply-rz",
+      "ids": [],
+      "arity": 3,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "bell-chsh",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "expectation-z",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "hamiltonian-exact-ground-energy",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "tensor_ad",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "make-h2-hamiltonian",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "make-h2o-hamiltonian",
+      "ids": [],
+      "arity": 0,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "make-lih-hamiltonian",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "make-quantum-state",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "measure",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "mlkem-decaps",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/pqc.esk"
+    },
+    {
+      "name": "mlkem-encaps",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/pqc.esk"
+    },
+    {
+      "name": "mlkem-keygen",
+      "ids": [],
+      "arity": 1,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/pqc.esk"
+    },
+    {
+      "name": "vqe-energy",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "tensor_ad",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "vqe-gradient",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "tensor_ad",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "vqe-optimize",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "tensor_ad",
+      "source": "lib/agent/quantum.esk"
     }
   ],
   "special_forms": [

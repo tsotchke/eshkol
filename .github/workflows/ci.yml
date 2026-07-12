@@ -33,6 +33,97 @@ env:
   WINDOWS_LLVM_SDK_VERSION: '21.1.8'
 
 jobs:
+  # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
+  # separate advisory job. `continue-on-error` makes the lane informative
+  # without turning the default required CI set into a Moonlab availability
+  # gate; branch-protection configuration must not add this check as required.
+  quantum-macos:
+    name: quantum-macos (advisory)
+    runs-on: macos-14
+    continue-on-error: true
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+
+      - name: Configure quantum build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_PREFIX="$(brew --prefix llvm@${LLVM_MAJOR})"
+          export PATH="$LLVM_PREFIX/bin:$PATH"
+          cmake -S . -B build-quantum -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_PREFIX/bin/llvm-config" \
+            -DESHKOL_QUANTUM_ENABLED=ON \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_BUILD_AGENT_FFI=ON
+
+      - name: Build quantum runner and stdlib
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build-quantum --target eshkol-run stdlib --parallel
+
+      - name: Run quantum integration gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner="$PWD/build-quantum/eshkol-run"
+          libflag="-L$PWD/build-quantum"
+          for test in tests/quantum/*.esk; do
+            echo "== $test =="
+            output="$($runner -r "$test" "$libflag" 2>&1)"
+            printf '%s\n' "$output"
+            case "$(basename "$test")" in
+              quantum_smoke_test.esk)
+                grep -q 'Bell-pair correlation over 200 shots: 200/200  PASS' <<<"$output"
+                grep -q 'quantum_smoke_test: PASS' <<<"$output"
+                ;;
+              vqe_test.esk)
+                grep -q 'VQE H2: PASS' <<<"$output"
+                ;;
+              vqe_ad_test.esk)
+                grep -q 'vqe_ad_test: PASS (3/3)' <<<"$output"
+                ;;
+              pqc_mlkem_test.esk)
+                grep -q 'pqc_mlkem_test: PASS (9/9)' <<<"$output"
+                ;;
+              bell_chsh_test.esk)
+                grep -q 'bell_chsh_test: PASS' <<<"$output"
+                ;;
+              quantum_surface_coverage_test.esk)
+                grep -q 'quantum_surface_coverage_test: PASS (3/3)' <<<"$output"
+                ;;
+              vqe_ad_adversarial.esk)
+                grep -q 'vqe_ad_adversarial: PASS' <<<"$output"
+                ;;
+              *)
+                echo "Unhandled quantum test: $test" >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      # The default AD oracle remains Moonlab-free. This opt-in invocation
+      # enables its VQE-energy AD-vs-finite-difference probe on the same
+      # quantum build that compiled the agent.quantum bridge.
+      - name: Run quantum AD adversarial probe
+        shell: bash
+        env:
+          BUILD_DIR: build-quantum
+          ESHKOL_QUANTUM_ENABLED: 'ON'
+        run: |
+          set -euxo pipefail
+          ./scripts/run_ad_adversarial.sh --quick
+
   unix-matrix:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}

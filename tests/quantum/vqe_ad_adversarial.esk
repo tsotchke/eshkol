@@ -1,0 +1,80 @@
+;; Stage S5: adversarial AD oracle probe for the Moonlab VQE bridge.
+;; This file is invoked by scripts/run_ad_adversarial.sh only when
+;; ESHKOL_QUANTUM_ENABLED=ON; it is also self-checking when run directly.
+
+(require agent.quantum)
+
+(define passed 0)
+(define failed 0)
+
+(define (check label actual expected tolerance)
+  (let ((error (abs (- actual expected))))
+    (if (< error tolerance)
+        (begin
+          (set! passed (+ passed 1))
+          (display "PASS: ") (display label)
+          (display " error=") (display error) (newline))
+        (begin
+          (set! failed (+ failed 1))
+          (display "FAIL: ") (display label)
+          (display " ad=") (display actual)
+          (display " fd=") (display expected)
+          (display " error=") (display error) (newline)))))
+
+(define (perturb p index delta)
+  (let ((out (make-vector (vector-length p) 0.0)))
+    (let loop ((i 0))
+      (if (< i (vector-length p))
+          (begin
+            (vector-set! out i (if (= i index)
+                                    (+ (vector-ref p i) delta)
+                                    (vector-ref p i)))
+            (loop (+ i 1)))
+          out))))
+
+(define (finite-difference-gradient ham p eps)
+  (let ((out (make-vector (vector-length p) 0.0)))
+    (let loop ((i 0))
+      (if (< i (vector-length p))
+          (begin
+            (vector-set! out i
+              (/ (- (vqe-energy ham (perturb p i eps))
+                    (vqe-energy ham (perturb p i (- eps))))
+                 (* 2.0 eps)))
+            (loop (+ i 1)))
+          out))))
+
+(define (max-abs-diff left right)
+  (if (not (= (vector-length left) (vector-length right)))
+      1e300
+      (let loop ((i 0) (maximum 0.0))
+        (if (< i (vector-length left))
+            (loop (+ i 1)
+                  (max maximum
+                       (abs (- (vector-ref left i) (vector-ref right i)))))
+            maximum))))
+
+(define (probe ham label params)
+  (let* ((ad-gradient (gradient (lambda (p) (vqe-energy ham p)) params))
+         (fd-gradient (finite-difference-gradient ham params 1e-5))
+         (error (max-abs-diff ad-gradient fd-gradient)))
+    (check label error 0.0 1e-4)))
+
+;; Three separated points make a zero/custom-VJP regression visible without
+;; trusting Moonlab's native gradient as the oracle. The central difference is
+;; computed entirely through vqe-energy, the exact path under test.
+(with-hamiltonian
+ (make-h2-hamiltonian 0.735)
+ (lambda (ham)
+   (probe ham "quantum.vqe_ad_fd.theta-a" (vector 0.1 0.2 0.3 0.4))
+   (probe ham "quantum.vqe_ad_fd.theta-b" (vector -0.6 0.15 0.8 -0.25))
+   (probe ham "quantum.vqe_ad_fd.theta-c" (vector 1.1 -0.9 0.45 0.7))))
+
+(display "vqe_ad_adversarial: ")
+(if (= failed 0)
+    (begin (display "PASS (") (display passed) (display "/3)") (newline))
+    (begin (display "FAIL (") (display failed) (display " failed)") (newline)))
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(display "Xknown: 0") (newline)
+(if (= failed 0) (exit 0) (exit 1))

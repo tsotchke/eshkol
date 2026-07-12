@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """language_coverage.py — dynamic language-surface coverage for the exposure engines.
 
-Runs the two generative exposure engines, collects the set of BUILTINS and
+Runs the generative exposure engines plus the opt-in quantum test corpus,
+collects the set of BUILTINS and
 SPECIAL FORMS their generated (and executed) programs actually contain, diffs
 that against the ground-truth manifest (tests/coverage/language_surface.json),
 and reports covered% plus the categorised list of UNCOVERED constructs — the
@@ -15,12 +16,14 @@ completion-oracle runtime_event (see tests/coverage/README.md).
 Engines measured:
   * scripts/gen_generative_corpus.py        (run_generative_differential.py)
   * tests/ad_adversarial/gen_ad_adversarial.py (run_ad_adversarial.sh)
+  * tests/quantum/*.esk                     (quantum-macos CI lane)
 
 Usage:
   python3 scripts/language_coverage.py [--json OUT] [--emit-runtime-event]
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -109,6 +112,24 @@ def gen_ad_adversarial_text():
     return "\n".join(parts)
 
 
+def quantum_test_text():
+    """Return the exact quantum-enabled test corpus exercised by CI.
+
+    These tests require Moonlab and therefore run only in the separate opt-in
+    macOS lane. Their source still participates in this manifest calculation:
+    every file is self-checking and is executed by that lane, matching the
+    source-scan contract used for the deterministic generative engines.
+    """
+    paths = sorted(glob.glob(os.path.join(REPO, "tests", "quantum", "*.esk")))
+    if not paths:
+        raise RuntimeError("no quantum coverage tests found")
+    parts = []
+    for path in paths:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            parts.append(fh.read())
+    return "\n".join(parts), [os.path.relpath(path, REPO) for path in paths]
+
+
 def load_manifest():
     with open(MANIFEST) as fh:
         return json.load(fh)
@@ -137,8 +158,15 @@ def main():
     # internal-only helpers (leading underscore) are not user-facing surface.
     surface = {k: v for k, v in surface.items() if not k.startswith("_")}
 
-    text = gen_generative_corpus_text() + "\n" + gen_ad_adversarial_text()
-    heads = collect_heads(text)
+    quantum_text, quantum_paths = quantum_test_text()
+    engine_text = {
+        "gen_generative_corpus.py": gen_generative_corpus_text(),
+        "gen_ad_adversarial.py": gen_ad_adversarial_text(),
+        "tests/quantum/*.esk (quantum-enabled CI)": quantum_text,
+    }
+    heads_by_engine = {name: collect_heads(text)
+                       for name, text in engine_text.items()}
+    heads = set().union(*heads_by_engine.values())
 
     covered = {k: v for k, v in surface.items() if k in heads}
     uncovered = {k: v for k, v in surface.items() if k not in heads}
@@ -172,7 +200,14 @@ def main():
         "covered_by_category": {k: len(v) for k, v in sorted(cov_by_cat.items())},
         "uncovered_by_category": {k: sorted(v) for k, v in ranked},
         "covered_names": sorted(covered),
-        "engines": ["gen_generative_corpus.py", "gen_ad_adversarial.py"],
+        "engines": list(engine_text),
+        "covered_by_engine": {
+            name: len(set(surface) & engine_heads)
+            for name, engine_heads in heads_by_engine.items()
+        },
+        "quantum_test_paths": quantum_paths,
+        "exercised_by_quantum_tests": sorted(set(surface) &
+                                              heads_by_engine["tests/quantum/*.esk (quantum-enabled CI)"]),
     }
     os.makedirs(os.path.dirname(args.json), exist_ok=True)
     with open(args.json, "w") as fh:
