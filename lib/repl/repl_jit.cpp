@@ -383,6 +383,18 @@ extern "C" {
         ESHKOL_OPTIONAL_AGENT_FFI;
     double eshkol_vqe_optimize(int64_t handle, int32_t iterations)
         ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_vqe_energy_from_tagged(int64_t handle, const void* params)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void* eshkol_vqe_ad_prepare(int64_t handle, const void* params)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_vqe_ad_prepared_energy(const void* prepared)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void* eshkol_vqe_ad_prepared_inputs(void* prepared)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_vqe_ad_prepared_input_count(const void* prepared)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void* eshkol_vqe_ad_prepared_vjp(void* prepared)
+        ESHKOL_OPTIONAL_AGENT_FFI;
     int64_t eshkol_vqe_gradient_context_create(int64_t handle)
         ESHKOL_OPTIONAL_AGENT_FFI;
     void eshkol_vqe_gradient_context_destroy(int64_t handle)
@@ -1087,6 +1099,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_energy_from_tagged);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepare);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_energy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_inputs);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_input_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_ad_prepared_vjp);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_context_create);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_context_destroy);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_parameter_count);

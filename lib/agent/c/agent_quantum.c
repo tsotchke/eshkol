@@ -54,6 +54,28 @@
 #include <stdlib.h>
 #include <string.h>
 #include <float.h>
+#include <limits.h>
+
+/* The VQE AD bridge needs Eshkol's arena-owned tape nodes. Do not include
+ * arena_memory.h here: it exposes C++ thread_local declarations and this shim
+ * is intentionally compiled as C. Keep the tiny runtime boundary explicit. */
+#include "../../../inc/eshkol/eshkol.h"
+
+typedef struct arena arena_t;
+extern arena_t* eshkol_current_arena(void);
+extern void* arena_allocate_aligned(arena_t* arena, size_t size, size_t alignment);
+extern void* arena_allocate_zeroed(arena_t* arena, size_t size);
+
+/* Must stay in lockstep with eshkol_tensor_t's first five fields in
+ * lib/core/arena_memory.h. The AD parameter tensor uses this homogeneous
+ * int64-bit-pattern element layout. */
+typedef struct {
+    uint64_t* dimensions;
+    uint64_t num_dimensions;
+    int64_t* elements;
+    uint64_t total_elements;
+    uint64_t dtype;
+} vqe_tensor_layout_t;
 
 /*******************************************************************************
  * CONDITIONAL COMPILATION: full Moonlab-backed implementation vs graceful stubs
@@ -517,6 +539,286 @@ static vqe_solver_t* create_default_vqe_solver(pauli_hamiltonian_t* hamiltonian,
 }
 
 /**
+ * Evaluate the fixed-parameter Stage S2 default ansatz.  This is deliberately
+ * separate from vqe_solve(): the bridge needs E(theta), not an optimizer run.
+ */
+static double vqe_energy_at_parameters(int64_t handle, const double* parameters,
+                                       size_t parameter_count) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    if (!hamiltonian || !parameters) {
+        return unavailable_double("vqe-energy: invalid Hamiltonian handle or parameter buffer");
+    }
+
+    vqe_ansatz_t* ansatz = NULL;
+    vqe_optimizer_t* optimizer = NULL;
+    vqe_solver_t* solver = create_default_vqe_solver(hamiltonian, 1,
+                                                      &ansatz, &optimizer);
+    if (!solver) return error_double();
+
+    if (parameter_count != ansatz->num_parameters) {
+        vqe_solver_free(solver);
+        vqe_optimizer_free(optimizer);
+        vqe_ansatz_free(ansatz);
+        return unavailable_double("vqe-energy: parameter vector has the wrong length");
+    }
+
+    double energy = vqe_compute_energy(solver, parameters);
+    vqe_solver_free(solver);
+    vqe_optimizer_free(optimizer);
+    vqe_ansatz_free(ansatz);
+
+    if (energy != energy || energy >= DBL_MAX) {
+        return unavailable_double("vqe-energy: Moonlab energy evaluation failed");
+    }
+    return energy;
+}
+
+/** Run exactly the same native adjoint path exposed by Stage S2's vqe-gradient. */
+static int vqe_gradient_at_parameters(int64_t handle, const double* parameters,
+                                      double* gradient, size_t parameter_count) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    if (!hamiltonian || !parameters || !gradient) {
+        set_last_error("vqe-energy AD: invalid Hamiltonian handle or gradient buffer");
+        return -1;
+    }
+
+    vqe_ansatz_t* ansatz = NULL;
+    vqe_optimizer_t* optimizer = NULL;
+    vqe_solver_t* solver = create_default_vqe_solver(hamiltonian, 1,
+                                                      &ansatz, &optimizer);
+    if (!solver) return -1;
+
+    if (parameter_count != ansatz->num_parameters) {
+        vqe_solver_free(solver);
+        vqe_optimizer_free(optimizer);
+        vqe_ansatz_free(ansatz);
+        set_last_error("vqe-energy AD: parameter vector has the wrong length");
+        return -1;
+    }
+
+    /* moonlab_vqe_gradient is the frozen ABI around Moonlab's exact native
+     * adjoint (with its analytic parameter-shift fallback), matching
+     * eshkol_vqe_gradient_compute exactly. */
+    int rc = moonlab_vqe_gradient(solver, parameters, gradient, parameter_count);
+    vqe_solver_free(solver);
+    vqe_optimizer_free(optimizer);
+    vqe_ansatz_free(ansatz);
+    if (rc != 0) {
+        set_last_error("vqe-energy AD: Moonlab exact gradient failed");
+        return -1;
+    }
+    return 0;
+}
+
+/* Converts an ordinary Scheme numeric vector/tensor to a contiguous arena
+ * buffer. The compiler intrinsic calls this only outside AD mode. */
+static double* vqe_copy_plain_parameters(const eshkol_tagged_value_t* params,
+                                         size_t* count_out) {
+    if (!params || !count_out) {
+        set_last_error("vqe-energy: params must be a vector");
+        return NULL;
+    }
+
+    size_t count = 0;
+    double* values = NULL;
+    arena_t* arena = eshkol_current_arena();
+    if (!arena) {
+        set_last_error("vqe-energy: no active Eshkol arena");
+        return NULL;
+    }
+
+    if (ESHKOL_IS_VECTOR_COMPAT(*params)) {
+        const uint8_t* raw = (const uint8_t*)(uintptr_t)params->data.ptr_val;
+        if (!raw) {
+            set_last_error("vqe-energy: params must be a vector");
+            return NULL;
+        }
+        int64_t signed_count = 0;
+        memcpy(&signed_count, raw, sizeof(signed_count));
+        if (signed_count <= 0 || (uint64_t)signed_count > SIZE_MAX / sizeof(double)) {
+            set_last_error("vqe-energy: parameter vector must be non-empty");
+            return NULL;
+        }
+        count = (size_t)signed_count;
+        values = (double*)arena_allocate_aligned(arena, count * sizeof(double), sizeof(double));
+        if (!values) {
+            set_last_error("vqe-energy: allocation failed");
+            return NULL;
+        }
+        const eshkol_tagged_value_t* elements =
+            (const eshkol_tagged_value_t*)(raw + sizeof(int64_t));
+        for (size_t i = 0; i < count; ++i) {
+            if (elements[i].type == ESHKOL_VALUE_DOUBLE) {
+                values[i] = elements[i].data.double_val;
+            } else if (elements[i].type == ESHKOL_VALUE_INT64) {
+                values[i] = (double)elements[i].data.int_val;
+            } else {
+                set_last_error("vqe-energy: parameters must be real numbers");
+                return NULL;
+            }
+            if (values[i] != values[i]) {
+                set_last_error("vqe-energy: parameters must be finite numbers");
+                return NULL;
+            }
+        }
+    } else if (ESHKOL_IS_TENSOR_COMPAT(*params)) {
+        const vqe_tensor_layout_t* tensor =
+            (const vqe_tensor_layout_t*)(uintptr_t)params->data.ptr_val;
+        if (!tensor || !tensor->elements || tensor->total_elements == 0 ||
+            tensor->total_elements > SIZE_MAX / sizeof(double)) {
+            set_last_error("vqe-energy: parameter tensor must be non-empty");
+            return NULL;
+        }
+        count = (size_t)tensor->total_elements;
+        values = (double*)arena_allocate_aligned(arena, count * sizeof(double), sizeof(double));
+        if (!values) {
+            set_last_error("vqe-energy: allocation failed");
+            return NULL;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            memcpy(&values[i], &tensor->elements[i], sizeof(double));
+            if (values[i] != values[i]) {
+                set_last_error("vqe-energy: parameters must be finite numbers");
+                return NULL;
+            }
+        }
+    } else {
+        set_last_error("vqe-energy: params must be a vector");
+        return NULL;
+    }
+
+    *count_out = count;
+    return values;
+}
+
+/** C entry used by the non-AD half of the compiler intrinsic. */
+double eshkol_vqe_energy_from_tagged(int64_t handle,
+                                     const eshkol_tagged_value_t* params) {
+    size_t count = 0;
+    double* values = vqe_copy_plain_parameters(params, &count);
+    if (!values) return error_double();
+    return vqe_energy_at_parameters(handle, values, count);
+}
+
+typedef struct {
+    int64_t hamiltonian_handle;
+    int parameter_count;
+    double parameters[];
+} vqe_custom_vjp_context_t;
+
+typedef struct {
+    double energy;
+    eshkol_custom_vjp_t* vjp;
+    ad_node_t** inputs;
+    int64_t input_count;
+} vqe_ad_prepared_t;
+
+/* The custom-VJP convention is local partials only. `upstream` is supplied by
+ * the general runtime callback ABI but is intentionally not applied here;
+ * eshkol_ad_node_custom_backward multiplies it exactly once. */
+static void vqe_custom_vjp_backward(void* raw_ctx, double upstream,
+                                    double* out_grads, int n) {
+    (void)upstream;
+    if (!out_grads || n <= 0) return;
+    for (int i = 0; i < n; ++i) out_grads[i] = 0.0;
+
+    vqe_custom_vjp_context_t* ctx = (vqe_custom_vjp_context_t*)raw_ctx;
+    if (!ctx || ctx->parameter_count != n) return;
+    (void)vqe_gradient_at_parameters(ctx->hamiltonian_handle, ctx->parameters,
+                                     out_grads, (size_t)n);
+}
+
+/**
+ * Prepare an arena-owned descriptor for an AD-node tensor of VQE parameters.
+ * The generated intrinsic invokes this only while Eshkol reverse mode is live:
+ * tensor elements are therefore ad_node_t* bit patterns, not f64 bit patterns.
+ */
+void* eshkol_vqe_ad_prepare(int64_t handle, const eshkol_tagged_value_t* params) {
+    if (!params || !ESHKOL_IS_TENSOR_COMPAT(*params)) {
+        set_last_error("vqe-energy AD: params must be an AD tensor");
+        return NULL;
+    }
+    const vqe_tensor_layout_t* tensor =
+        (const vqe_tensor_layout_t*)(uintptr_t)params->data.ptr_val;
+    if (!tensor || !tensor->elements || tensor->total_elements == 0 ||
+        tensor->total_elements > (uint64_t)INT_MAX) {
+        set_last_error("vqe-energy AD: invalid parameter tensor");
+        return NULL;
+    }
+
+    const int n = (int)tensor->total_elements;
+    arena_t* arena = eshkol_current_arena();
+    if (!arena || (size_t)n > SIZE_MAX / sizeof(ad_node_t*) ||
+        (size_t)n > (SIZE_MAX - sizeof(vqe_custom_vjp_context_t)) / sizeof(double)) {
+        set_last_error("vqe-energy AD: allocation size overflow");
+        return NULL;
+    }
+
+    ad_node_t** inputs = (ad_node_t**)arena_allocate_aligned(
+        arena, (size_t)n * sizeof(*inputs), sizeof(void*));
+    vqe_custom_vjp_context_t* ctx = (vqe_custom_vjp_context_t*)arena_allocate_aligned(
+        arena, sizeof(*ctx) + (size_t)n * sizeof(double), sizeof(double));
+    if (!inputs || !ctx) {
+        set_last_error("vqe-energy AD: arena allocation failed");
+        return NULL;
+    }
+
+    ctx->hamiltonian_handle = handle;
+    ctx->parameter_count = n;
+    for (int i = 0; i < n; ++i) {
+        ad_node_t* input = (ad_node_t*)(uintptr_t)tensor->elements[i];
+        if (!input) {
+            set_last_error("vqe-energy AD: parameter tensor contains a non-AD value");
+            return NULL;
+        }
+        inputs[i] = input;
+        ctx->parameters[i] = input->value;
+    }
+
+    double energy = vqe_energy_at_parameters(handle, ctx->parameters, (size_t)n);
+    if (energy != energy) return NULL;
+
+    eshkol_custom_vjp_t* vjp = (eshkol_custom_vjp_t*)arena_allocate_zeroed(
+        arena, sizeof(*vjp));
+    vqe_ad_prepared_t* prepared = (vqe_ad_prepared_t*)arena_allocate_zeroed(
+        arena, sizeof(*prepared));
+    if (!vjp || !prepared) {
+        set_last_error("vqe-energy AD: arena allocation failed");
+        return NULL;
+    }
+
+    vjp->backward = vqe_custom_vjp_backward;
+    vjp->ctx = ctx;
+    vjp->inputs = inputs;
+    vjp->n = n;
+    prepared->energy = energy;
+    prepared->vjp = vjp;
+    prepared->inputs = inputs;
+    prepared->input_count = n;
+    return prepared;
+}
+
+double eshkol_vqe_ad_prepared_energy(const void* raw_prepared) {
+    const vqe_ad_prepared_t* prepared = (const vqe_ad_prepared_t*)raw_prepared;
+    return prepared ? prepared->energy : error_double();
+}
+
+void* eshkol_vqe_ad_prepared_inputs(void* raw_prepared) {
+    vqe_ad_prepared_t* prepared = (vqe_ad_prepared_t*)raw_prepared;
+    return prepared ? prepared->inputs : NULL;
+}
+
+int64_t eshkol_vqe_ad_prepared_input_count(const void* raw_prepared) {
+    const vqe_ad_prepared_t* prepared = (const vqe_ad_prepared_t*)raw_prepared;
+    return prepared ? prepared->input_count : 0;
+}
+
+void* eshkol_vqe_ad_prepared_vjp(void* raw_prepared) {
+    vqe_ad_prepared_t* prepared = (vqe_ad_prepared_t*)raw_prepared;
+    return prepared ? prepared->vjp : NULL;
+}
+
+/**
  * Run Moonlab VQE using the default one-layer hardware-efficient ansatz.
  * @return Optimized variational energy, or NaN on a genuine Moonlab failure.
  */
@@ -731,6 +1033,27 @@ double eshkol_vqe_optimize(int64_t handle, int32_t iterations) {
     volatile double zero = 0.0;
     return zero / zero;
 }
+double eshkol_vqe_energy_from_tagged(int64_t handle,
+                                     const eshkol_tagged_value_t* params) {
+    (void)handle; (void)params;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+void* eshkol_vqe_ad_prepare(int64_t handle, const eshkol_tagged_value_t* params) {
+    (void)handle; (void)params;
+    return NULL;
+}
+double eshkol_vqe_ad_prepared_energy(const void* prepared) {
+    (void)prepared;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+void* eshkol_vqe_ad_prepared_inputs(void* prepared) { (void)prepared; return NULL; }
+int64_t eshkol_vqe_ad_prepared_input_count(const void* prepared) {
+    (void)prepared;
+    return 0;
+}
+void* eshkol_vqe_ad_prepared_vjp(void* prepared) { (void)prepared; return NULL; }
 int64_t eshkol_vqe_gradient_context_create(int64_t handle) { (void)handle; return -1; }
 void eshkol_vqe_gradient_context_destroy(int64_t handle) { (void)handle; }
 int64_t eshkol_vqe_gradient_parameter_count(int64_t handle) { (void)handle; return -1; }

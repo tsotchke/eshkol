@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 
@@ -191,6 +192,45 @@ void* eshkol_ad_mixed_record(void* arena_v, void* tape_v, double value, double d
     arena_tape_add_node(tape, scaled);
     arena_tape_add_node(tape, result);
     return result;
+}
+
+/**
+ * @brief Run an externally supplied vector-Jacobian product for AD_NODE_CUSTOM.
+ *
+ * The callback contract intentionally returns unscaled local partials
+ * `dy/dx_i`; this helper owns the universal reverse-mode rule and performs
+ * `input_i->gradient += node->gradient * dy/dx_i`.  Keeping the upstream
+ * multiplication here makes one custom primitive compose exactly like every
+ * built-in scalar node, including when several downstream paths meet at it.
+ */
+void eshkol_ad_node_custom_backward(void* node_ptr) {
+    ad_node_t* node = static_cast<ad_node_t*>(node_ptr);
+    if (!node || !node->saved_tensors || node->num_saved == 0) return;
+
+    eshkol_custom_vjp_t* vjp =
+        static_cast<eshkol_custom_vjp_t*>(node->saved_tensors[0]);
+    if (!vjp || !vjp->backward || !vjp->inputs || vjp->n <= 0) return;
+
+    const int n = vjp->n;
+    double stack_grads[64];
+    double* local_grads = stack_grads;
+    if (n > static_cast<int>(sizeof(stack_grads) / sizeof(stack_grads[0]))) {
+        const size_t count = static_cast<size_t>(n);
+        if (count > std::numeric_limits<size_t>::max() / sizeof(double)) return;
+        arena_t* arena = eshkol_current_arena();
+        local_grads = static_cast<double*>(
+            arena_allocate_aligned(arena, count * sizeof(double), alignof(double)));
+        if (!local_grads) return;
+    }
+
+    const double upstream = node->gradient;
+    vjp->backward(vjp->ctx, upstream, local_grads, n);
+    for (int i = 0; i < n; ++i) {
+        ad_node_t* input = vjp->inputs[i];
+        if (input) {
+            input->gradient += upstream * local_grads[i];
+        }
+    }
 }
 
 /**
