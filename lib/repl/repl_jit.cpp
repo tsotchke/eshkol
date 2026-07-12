@@ -371,6 +371,30 @@ extern "C" {
     int32_t eshkol_quantum_last_error(char* buf, int64_t buf_size)
         ESHKOL_OPTIONAL_AGENT_FFI;
 
+    // Moonlab VQE (agent.quantum, Stage S2).  The C shim owns all Moonlab
+    // structs behind integer handles; see lib/agent/c/agent_quantum.c.
+    int64_t eshkol_vqe_make_h2_hamiltonian(double bond_distance)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_vqe_make_lih_hamiltonian(double bond_distance)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_vqe_make_h2o_hamiltonian(void) ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_vqe_hamiltonian_destroy(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_vqe_hamiltonian_exact_ground_energy(int64_t handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_vqe_optimize(int64_t handle, int32_t iterations)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_vqe_gradient_context_create(int64_t handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    void eshkol_vqe_gradient_context_destroy(int64_t handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int64_t eshkol_vqe_gradient_parameter_count(int64_t handle)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_vqe_gradient_set_parameter(int64_t handle, int32_t index,
+                                               double value) ESHKOL_OPTIONAL_AGENT_FFI;
+    int32_t eshkol_vqe_gradient_compute(int64_t handle) ESHKOL_OPTIONAL_AGENT_FFI;
+    double eshkol_vqe_gradient_get(int64_t handle, int32_t index)
+        ESHKOL_OPTIONAL_AGENT_FFI;
+
     void* qllm_process_spawn(const char* command, const char* cwd_arg,
                              const char* env_arg, int64_t flags)
         ESHKOL_OPTIONAL_AGENT_FFI;
@@ -1057,6 +1081,18 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_measure);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_expectation_z);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_quantum_last_error);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_make_h2_hamiltonian);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_make_lih_hamiltonian);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_make_h2o_hamiltonian);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_hamiltonian_exact_ground_energy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_optimize);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_context_create);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_context_destroy);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_parameter_count);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_set_parameter);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_compute);
+    ADD_OPTIONAL_AGENT_FFI_SYMBOL(eshkol_vqe_gradient_get);
 
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn);
     ADD_OPTIONAL_AGENT_FFI_SYMBOL(qllm_process_spawn_shell);

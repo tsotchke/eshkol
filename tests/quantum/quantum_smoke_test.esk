@@ -1,0 +1,29 @@
+;; S1 ON-path smoke: agent.quantum over Moonlab. Bell-pair correlation +
+;; honest quantum-random routing. Requires -DESHKOL_QUANTUM_ENABLED=ON.
+(require agent.quantum)
+
+;; Prepare a Bell pair (H on q0, CNOT q0->q1); measuring q0 must equal q1.
+(define (bell-correlated?)
+  (let ((st (make-quantum-state 2)))
+    (apply-hadamard st 0)
+    (apply-cnot st 0 1)
+    (let ((m0 (measure st 0))
+          (m1 (measure st 1)))
+      (quantum-state-destroy! st)
+      (= m0 m1))))
+
+(define (run-bell trials)
+  (let loop ((i 0) (correlated 0))
+    (if (= i trials)
+        correlated
+        (loop (+ i 1) (+ correlated (if (bell-correlated?) 1 0))))))
+
+(let* ((n 200)
+       (ok (run-bell n)))
+  (display "Bell-pair correlation over ") (display n) (display " shots: ")
+  (display ok) (display "/") (display n)
+  (display (if (= ok n) "  PASS" "  FAIL")) (newline))
+
+;; Honest quantum-random: should now be sourced from Moonlab's Bell-verified QRNG.
+(display "quantum-random sample: ") (display (quantum-random)) (newline)
+(display "quantum-random-int(100): ") (display (quantum-random-int 100)) (newline)
