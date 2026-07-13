@@ -45,8 +45,15 @@ TYPE_CHECKER_TEST="$PROJECT_DIR/tests/types/type_checker_test.cpp"
 # Source files needed
 SOURCES="$PROJECT_DIR/lib/types/hott_types.cpp $PROJECT_DIR/lib/types/type_checker.cpp $PROJECT_DIR/lib/types/dependent.cpp $PROJECT_DIR/lib/core/ast.cpp"
 
-# Output directory
-BUILD_DIR="$PROJECT_DIR/build"
+# Honour the aggregate harness/CI build selection instead of silently linking
+# against a different checkout's default `build/` archive.  Accept either a
+# repo-relative BUILD_DIR (the normal CI form) or an absolute path.
+BUILD_DIR_SETTING="${BUILD_DIR:-build}"
+if [[ "$BUILD_DIR_SETTING" = /* ]]; then
+    BUILD_DIR="$BUILD_DIR_SETTING"
+else
+    BUILD_DIR="$PROJECT_DIR/$BUILD_DIR_SETTING"
+fi
 mkdir -p "$BUILD_DIR"
 
 # Compile and run each test

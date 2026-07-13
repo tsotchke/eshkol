@@ -1,4 +1,0 @@
-; FILED: let-values silently binds wrong values (no error, wrong output).
-; native -r : 3
-; vm        : 0
-(let-values (((a b) (values 1 2))) (display (+ a b)))

@@ -18,7 +18,27 @@
 
 extern "C" {
 
+// Stable hosted symbols used by the executable FFI/low-level language-surface
+// conformance probe. Keeping them in the core runtime makes the extern-var and
+// raw-pointer tests portable across every supported host linker.
+uint64_t eshkol_runtime_ffi_surface_probe = 0;
+
+const char* eshkol_runtime_ffi_surface_cstring(void) {
+    return "ffi-surface";
+}
+
 extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
+
+/** Copy a temporary C buffer into Eshkol's canonical header-tagged string shape. */
+void* eshkol_runtime_copy_string(void* arena, const char* source) {
+    if (!arena || !source) return nullptr;
+    const uint64_t byte_len = static_cast<uint64_t>(std::strlen(source));
+    char* result = static_cast<char*>(
+        arena_allocate_string_with_header(arena, byte_len));
+    if (!result) return nullptr;
+    std::memcpy(result, source, static_cast<std::size_t>(byte_len) + 1);
+    return result;
+}
 
 /* Public byte-count for an Eshkol string. Reads the header size field, which
  * includes the trailing NUL, and falls back to strlen for raw C strings. */

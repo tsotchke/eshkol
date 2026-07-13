@@ -29,6 +29,7 @@
 #   --no-aot  skip the AOT lane
 #   --regen   re-run the (deterministic) generator before running
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 GEN_DIR="$REPO_ROOT/tests/ad_oracle/generated"

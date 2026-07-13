@@ -11,11 +11,11 @@ arbitrary-precision `int` / `fractions.Fraction`, or analytic identities.
 |---|---|---|---|---|---|
 | bignum_magnitude | 1..998 | 998 | 998 | clean | clean |
 | bignum_arith | 1..400 | 400 | 400 | clean | clean |
-| bignum_divmod | 1..200 | 20 | 20 | WRONG@25+ | WRONG@25+ |
-| bignum_gcd | 1..128 | 60 | 60 | WRONG@61+ | WRONG@61+ |
+| bignum_divmod | 1..200 | 200 | 200 | clean | clean |
+| bignum_gcd | 1..128 | 128 | 128 | clean | clean |
 | bignum_roundtrip | 1..596 | 596 | 596 | clean | clean |
-| rational_harmonic | 1..80 | 46 | 46 | WRONG@47+ | WRONG@47+ |
-| rational_product | 1..40 | 19 | 19 | WRONG@20+ | WRONG@20+ |
+| rational_harmonic | 1..80 | 80 | 80 | clean | clean |
+| rational_product | 1..40 | 40 | 40 | clean | clean |
 | exactness_contagion | 1..60 | 60 | 60 | clean | clean |
 | complex_power | 1..128 | 128 | 128 | clean | clean |
 | tower_coercion | 1..40 | 40 | 40 | clean | clean |
@@ -24,15 +24,12 @@ arbitrary-precision `int` / `fractions.Fraction`, or analytic identities.
 
 ## Silent-wrong / boundary findings
 
-- **bignum_divmod/jit**: first wrong n=25, 34 wrong depths (n=25..200); correct through n=20.
-- **bignum_divmod/aot**: first wrong n=25, 34 wrong depths (n=25..200); correct through n=20.
-- **bignum_gcd/jit**: first wrong n=61, 68 wrong depths (n=61..128); correct through n=60.
-- **bignum_gcd/aot**: first wrong n=61, 68 wrong depths (n=61..128); correct through n=60.
-- **rational_harmonic/jit**: first wrong n=47, 34 wrong depths (n=47..80); correct through n=46.
-- **rational_harmonic/aot**: first wrong n=47, 34 wrong depths (n=47..80); correct through n=46.
-- **rational_product/jit**: first wrong n=20, 21 wrong depths (n=20..40); correct through n=19.
-- **rational_product/aot**: first wrong n=20, 21 wrong depths (n=20..40); correct through n=19.
+- none (every family clean across all axes).
 
 ## Regressions vs baseline
+
+- none.
+
+## Capacity boundary shifts vs baseline
 
 - none.

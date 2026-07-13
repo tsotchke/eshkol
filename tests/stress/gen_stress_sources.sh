@@ -7,6 +7,7 @@
 #
 # Every generator is deterministic: same script -> byte-identical sources.
 set -eu
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")"
 mkdir -p generated
 

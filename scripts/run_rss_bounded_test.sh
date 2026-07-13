@@ -35,6 +35,7 @@
 #   must contain "(define total-passes 300000)" and print PASS on success).
 #   BUILD_DIR env var selects the build directory (default: build).
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 

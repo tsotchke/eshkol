@@ -142,12 +142,14 @@ private:
     uint32_t column_;
     size_t line_start_;  // Position of current line start for column calculation
     std::vector<Token> pushback_buffer;  // Buffer for pushed back tokens
+    bool fold_case_symbols_;
 
 public:
-    SchemeTokenizer(const std::string& text, uint32_t start_line = 1, uint32_t start_column = 1)
+    SchemeTokenizer(const std::string& text, uint32_t start_line = 1,
+                    uint32_t start_column = 1, bool fold_case_symbols = false)
         : input(text), pos(0), length(text.length()),
           line_(start_line), column_(start_column),
-          line_start_(0) {}
+          line_start_(0), fold_case_symbols_(fold_case_symbols) {}
 
     // Push a token back to be returned by the next nextToken() call
     void pushBack(const Token& token) {
@@ -881,6 +883,10 @@ private:
             column_++;
         }
 
+        if (fold_case_symbols_) {
+            std::transform(value.begin(), value.end(), value.begin(),
+                           [](unsigned char c) { return (char)std::tolower(c); });
+        }
         return {TOKEN_SYMBOL, value, start, tok_line, tok_col};
     }
 };
@@ -3737,9 +3743,9 @@ static eshkol_ast_t make_r7rs_require_ast(const std::vector<R7rsImportSpec>& spe
  * the underlying imported binding.
  */
 static eshkol_ast_t make_define_alias_ast(const std::string& alias,
-                                          const std::string& source,
-                                          uint32_t line,
-                                          uint32_t column) {
+                                           const std::string& source,
+                                           uint32_t line,
+                                           uint32_t column) {
     eshkol_ast_t ast = {};
     ast.type = ESHKOL_OP;
     ast.line = line;
@@ -3764,6 +3770,73 @@ static eshkol_ast_t make_define_alias_ast(const std::string& alias,
     ast.operation.define_op.export_symbol = 0;
     ast.operation.define_op.export_name = nullptr;
     ast.operation.define_op.is_no_return = 0;
+    return ast;
+}
+
+/** Build a plain variable definition from an already constructed value AST. */
+static eshkol_ast_t make_parser_define_value_ast(const std::string& name,
+                                                  eshkol_ast_t value,
+                                                  uint32_t line,
+                                                  uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_DEFINE_OP;
+    ast.operation.define_op.name = copy_parser_string(name);
+    ast.operation.define_op.value = new eshkol_ast_t(value);
+    ast.operation.define_op.is_function = 0;
+    ast.operation.define_op.parameters = nullptr;
+    ast.operation.define_op.num_params = 0;
+    ast.operation.define_op.is_variadic = 0;
+    ast.operation.define_op.rest_param = nullptr;
+    ast.operation.define_op.is_external = 0;
+    ast.operation.define_op.return_type = nullptr;
+    ast.operation.define_op.param_types = nullptr;
+    return ast;
+}
+
+/** Build a set! node used by parser lowerings. */
+static eshkol_ast_t make_parser_set_ast(const std::string& name,
+                                        eshkol_ast_t value,
+                                        uint32_t line,
+                                        uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_SET_OP;
+    ast.operation.set_op.name = copy_parser_string(name);
+    ast.operation.set_op.value = new eshkol_ast_t(value);
+    return ast;
+}
+
+/** Build a lambda node with fixed parameters and an optional rest parameter. */
+static eshkol_ast_t make_parser_lambda_ast(const std::vector<std::string>& params,
+                                           const std::string* rest_param,
+                                           eshkol_ast_t body,
+                                           uint32_t line,
+                                           uint32_t column) {
+    eshkol_ast_t ast = {};
+    ast.type = ESHKOL_OP;
+    ast.line = line;
+    ast.column = column;
+    ast.operation.op = ESHKOL_LAMBDA_OP;
+    ast.operation.lambda_op.num_params = params.size();
+    ast.operation.lambda_op.parameters = params.empty()
+        ? nullptr : new eshkol_ast_t[params.size()];
+    for (size_t i = 0; i < params.size(); i++) {
+        ast.operation.lambda_op.parameters[i] =
+            make_parser_var_ast(params[i].c_str(), line, column);
+    }
+    ast.operation.lambda_op.body = new eshkol_ast_t(body);
+    ast.operation.lambda_op.captured_vars = nullptr;
+    ast.operation.lambda_op.num_captured = 0;
+    ast.operation.lambda_op.is_variadic = rest_param ? 1 : 0;
+    ast.operation.lambda_op.rest_param = rest_param
+        ? copy_parser_string(*rest_param) : nullptr;
+    ast.operation.lambda_op.return_type = nullptr;
+    ast.operation.lambda_op.param_types = nullptr;
     return ast;
 }
 
@@ -4560,6 +4633,130 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
         if (first_symbol == "define-library") {
             return parse_define_library_form(tokenizer, token);
+        }
+
+        // R7RS define-values is lowered into ordinary top-level definitions
+        // plus one call-with-values.  The producer is evaluated exactly once;
+        // a generated consumer assigns each result into its predeclared global.
+        // Using the existing multiple-values machinery keeps arity checking and
+        // variadic/dotted formals consistent with lambda semantics.
+        if (first_symbol == "define-values") {
+            const uint32_t form_line = token.line;
+            const uint32_t form_column = token.column;
+            std::vector<std::string> names;
+            std::string rest_name;
+            bool has_rest = false;
+
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_LPAREN) {
+                while (true) {
+                    token = tokenizer.nextToken();
+                    if (token.type == TOKEN_RPAREN) break;
+                    if (token.type != TOKEN_SYMBOL) {
+                        PARSE_ERROR_AT(token, "define-values formals must be identifiers");
+                        ast.type = ESHKOL_INVALID;
+                        return ast;
+                    }
+                    if (token.value == ".") {
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_SYMBOL || token.value == ".") {
+                            PARSE_ERROR_AT(token, "define-values dotted tail must be an identifier");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        rest_name = token.value;
+                        has_rest = true;
+                        token = tokenizer.nextToken();
+                        if (token.type != TOKEN_RPAREN) {
+                            PARSE_ERROR_AT(token, "define-values dotted tail must end the formals list");
+                            ast.type = ESHKOL_INVALID;
+                            return ast;
+                        }
+                        break;
+                    }
+                    names.push_back(token.value);
+                }
+            } else if (token.type == TOKEN_SYMBOL) {
+                rest_name = token.value;
+                has_rest = true;
+            } else {
+                PARSE_ERROR_AT(token, "define-values requires an identifier or formals list");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            token = tokenizer.nextToken();
+            if (token.type == TOKEN_EOF || token.type == TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "define-values requires a producer expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            tokenizer.pushBack(token);
+            eshkol_ast_t producer_expr = parse_expression(tokenizer);
+            if (producer_expr.type == ESHKOL_INVALID) return producer_expr;
+            token = tokenizer.nextToken();
+            if (token.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "define-values takes exactly one producer expression");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+
+            std::vector<eshkol_ast_t> lowered;
+            eshkol_ast_t false_ast = {};
+            false_ast.line = form_line;
+            false_ast.column = form_column;
+            eshkol_ast_make_bool(&false_ast, false);
+            for (const std::string& name : names) {
+                lowered.push_back(make_parser_define_value_ast(
+                    name, false_ast, form_line, form_column));
+            }
+            if (has_rest) {
+                lowered.push_back(make_parser_define_value_ast(
+                    rest_name, false_ast, form_line, form_column));
+            }
+
+            std::vector<std::string> temp_names;
+            std::vector<eshkol_ast_t> assignments;
+            temp_names.reserve(names.size());
+            for (size_t i = 0; i < names.size(); i++) {
+                std::string temp = "__eshkol_define_values_" +
+                    std::to_string(form_line) + "_" +
+                    std::to_string(form_column) + "_" + std::to_string(i);
+                temp_names.push_back(temp);
+                assignments.push_back(make_parser_set_ast(
+                    names[i], make_parser_var_ast(temp.c_str(), form_line, form_column),
+                    form_line, form_column));
+            }
+            std::string temp_rest;
+            const std::string* temp_rest_ptr = nullptr;
+            if (has_rest) {
+                temp_rest = "__eshkol_define_values_rest_" +
+                    std::to_string(form_line) + "_" + std::to_string(form_column);
+                temp_rest_ptr = &temp_rest;
+                assignments.push_back(make_parser_set_ast(
+                    rest_name,
+                    make_parser_var_ast(temp_rest.c_str(), form_line, form_column),
+                    form_line, form_column));
+            }
+            assignments.push_back(false_ast);
+
+            eshkol_ast_t producer_lambda = make_parser_lambda_ast(
+                {}, nullptr, producer_expr, form_line, form_column);
+            eshkol_ast_t consumer_lambda = make_parser_lambda_ast(
+                temp_names, temp_rest_ptr,
+                make_sequence_or_null_ast(assignments, form_line, form_column),
+                form_line, form_column);
+            eshkol_ast_t invoke = {};
+            invoke.type = ESHKOL_OP;
+            invoke.line = form_line;
+            invoke.column = form_column;
+            invoke.operation.op = ESHKOL_CALL_WITH_VALUES_OP;
+            invoke.operation.call_with_values_op.producer =
+                new eshkol_ast_t(producer_lambda);
+            invoke.operation.call_with_values_op.consumer =
+                new eshkol_ast_t(consumer_lambda);
+            lowered.push_back(invoke);
+            return make_sequence_or_null_ast(lowered, form_line, form_column);
         }
 
         // R7RS (delay expr) → (%make-lazy-promise (lambda () expr))
@@ -6921,6 +7118,7 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // (include "filename" ...)
         if (ast.operation.op == ESHKOL_INCLUDE_OP) {
             std::vector<eshkol_ast_t> all_exprs;
+            const bool case_insensitive = (first_symbol == "include-ci");
 
             while (true) {
                 token = tokenizer.nextToken();
@@ -6946,10 +7144,23 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                while (true) {
-                    eshkol_ast_t file_ast = eshkol_parse_next_ast_from_stream(inc_file);
-                    if (file_ast.type == ESHKOL_INVALID) break;
-                    all_exprs.push_back(file_ast);
+                if (case_insensitive) {
+                    std::ostringstream buffer;
+                    buffer << inc_file.rdbuf();
+                    SchemeTokenizer included(buffer.str(), 1, 1, true);
+                    while (true) {
+                        Token peek = included.peekToken();
+                        if (peek.type == TOKEN_EOF) break;
+                        eshkol_ast_t file_ast = parse_expression(included);
+                        if (file_ast.type == ESHKOL_INVALID) break;
+                        all_exprs.push_back(file_ast);
+                    }
+                } else {
+                    while (true) {
+                        eshkol_ast_t file_ast = eshkol_parse_next_ast_from_stream(inc_file);
+                        if (file_ast.type == ESHKOL_INVALID) break;
+                        all_exprs.push_back(file_ast);
+                    }
                 }
                 inc_file.close();
             }

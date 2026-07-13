@@ -1679,6 +1679,18 @@ void  eshkol_runtime_set_current_input_fp(void* fp);
  */
 void  eshkol_runtime_set_current_error_fp(void* fp);
 
+/** Copy a NUL-terminated C buffer into a header-tagged, arena-owned string. */
+void* eshkol_runtime_copy_string(void* arena, const char* source);
+
+// Hosted FILE* port lifecycle registry. Generated code registers every file
+// port when it is opened and closes it through this API, allowing the R7RS
+// string-port?/input-port-open?/output-port-open? predicates to report actual
+// runtime state instead of guessing from the immutable tagged-value bits.
+void* eshkol_runtime_register_port(void* fp, uint8_t type_tag, int is_string);
+int   eshkol_runtime_port_is_open(void* fp, uint8_t direction_flag);
+int   eshkol_runtime_port_is_string(void* fp);
+int   eshkol_runtime_close_port(void* fp);
+
 // Process-global runtime helpers emitted by codegen/JIT modules.
 /**
  * @brief Look up a compiled function or global's address by interned symbol name.

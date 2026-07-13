@@ -19,6 +19,7 @@
 #   2. Add a `probe <probe_id> "<label>" '<bash command>'` line below
 #   3. The command must exit 0 for PASS; any nonzero exits → FAIL
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"
@@ -31,9 +32,17 @@ mkdir -p "$TRACE_DIR"
 : "${TRACE_FILE:?}"
 : > "$TRACE_FILE"
 
-ESHKOL_RUN="$REPO_ROOT/build/eshkol-run"
+BUILD_DIR="${BUILD_DIR:-build}"
+case "$BUILD_DIR" in
+    /*) BUILD_DIR_PATH="$BUILD_DIR" ;;
+    *)  BUILD_DIR_PATH="$REPO_ROOT/$BUILD_DIR" ;;
+esac
+BUILD_DIR="$BUILD_DIR_PATH"
+export BUILD_DIR
+
+ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 if [ ! -x "$ESHKOL_RUN" ]; then
-    echo "scripts/run_icc_smoke.sh: build/eshkol-run not found — run \`cmake --build build\` first." >&2
+    echo "scripts/run_icc_smoke.sh: $ESHKOL_RUN not found — run \`cmake --build $BUILD_DIR_PATH\` first." >&2
     exit 2
 fi
 
@@ -56,17 +65,25 @@ fi
 #     event_values: ["PASS"]
 emit_event() {
     local probe_id="$1" status="$2" snippet="$3"
-    # Escape backslashes and quotes in snippet for JSON-safe embedding.
-    local esc_snippet
-    esc_snippet=$(printf '%s' "$snippet" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     : "${TRACE_FILE:?}"
-    printf '{"kind":"eshkol_smoke","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$probe_id" "$status" "$esc_snippet" >> "$TRACE_FILE"
+    # json.dumps handles newlines, tabs, control bytes, quotes, backslashes,
+    # and Unicode labels. Hand-escaping only quotes/backslashes produced
+    # invalid JSON-L whenever a failing probe emitted a multiline diagnostic.
+    python3 -c '
+import json, sys
+print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],
+                  "value": sys.argv[2], "snippet": sys.argv[3],
+                  "confidence": 0.95}, ensure_ascii=False))
+' "$probe_id" "$status" "$snippet" >> "$TRACE_FILE"
 }
+
+PROBE_TOTAL=0
+PROBE_FAILURES=0
 
 probe() {
     local probe_id="$1" label="$2" cmd="$3"
     local out status snippet
+    PROBE_TOTAL=$((PROBE_TOTAL + 1))
     # Capture combined stdout+stderr so the snippet is informative when
     # something fails. Bound the snippet so a multi-MB log doesn't blow
     # up the trace file.
@@ -77,6 +94,7 @@ probe() {
         emit_event "$probe_id" PASS "$snippet"
         printf '  ✓ %-40s %s\n' "$probe_id" "$label"
     else
+        PROBE_FAILURES=$((PROBE_FAILURES + 1))
         snippet=$(printf '%s' "$out" | tail -c 200)
         emit_event "$probe_id" FAIL "$snippet"
         printf '  ✗ %-40s %s (exit %d)\n' "$probe_id" "$label" "$status"
@@ -103,25 +121,25 @@ probe jit_repl_clean_exit "eshkol-run -r returns 0 on a noop input" \
 # ─────────────────────────────────────────────────────────────────
 # Agent FFI probes (#234/#236/#237/#248 contracts)
 # ─────────────────────────────────────────────────────────────────
-probe native_http_get_works "HTTPS GET to httpbin.org returns 200" \
+probe native_http_get_works "HTTPS GET to postman-echo.com returns 200" \
     'tmp=$(mktemp).esk;
      cat > "$tmp" <<EOF
 (require agent.http)
 (http-init)
-(let ((r (http-get "https://httpbin.org/get" 10000)))
+(let ((r (http-get "https://postman-echo.com/get" 10000)))
   (if (and r (= (car r) 200)) (exit 0) (exit 1)))
 EOF
      "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
 
-probe native_http_post_json_works "POST JSON round-trips via httpbin.org/post" \
+probe native_http_post_json_works "POST JSON round-trips via postman-echo.com" \
     'tmp=$(mktemp).esk;
      cat > "$tmp" <<EOF
 (require agent.http)
 (http-init)
-(let ((r (http-post "https://httpbin.org/post"
+(let ((r (http-post "https://postman-echo.com/post"
                     (list (cons "Content-Type" "application/json"))
                     "{\"k\":\"v\"}" 10000)))
-  (if (and r (= (car r) 200) (string-contains (cdr r) "\"k\": \"v\""))
+  (if (and r (= (car r) 200) (string-contains (cdr r) "\"k\":\"v\""))
       (exit 0) (exit 1)))
 EOF
      "$ESHKOL_RUN" -r "$tmp" 2>&1; rc=$?; rm -f "$tmp"; exit $rc'
@@ -187,10 +205,10 @@ EOF
 # v1.2 release probes
 # ─────────────────────────────────────────────────────────────────
 probe stdlib_o_loads "build/stdlib.o exists and is non-empty" \
-    'test -s "$REPO_ROOT/build/stdlib.o"'
+    'test -s "$BUILD_DIR_PATH/stdlib.o"'
 
 probe stdlib_compiles_clean "stdlib rebuilds without errors" \
-    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build build --target stdlib >/dev/null 2>&1'
+    'cd "$REPO_ROOT" && touch lib/stdlib.esk && cmake --build "$BUILD_DIR_PATH" --target stdlib >/dev/null 2>&1'
 
 probe error_messages_have_source_locations "Diagnostic includes line:col" \
     'tmp=$(mktemp).esk; bin=$(mktemp).bin; rm -f "$bin";
@@ -255,9 +273,11 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
      done;
      exit 0'
 
-probe example_agent_compiles "examples/agent.esk compiles" \
-    'cd "$REPO_ROOT" && test -f examples/agent.esk &&
-     "$ESHKOL_RUN" examples/agent.esk -o /tmp/icc_selene.bin >/dev/null 2>&1'
+probe example_agent_compiles "agent-backed eagle training example compiles" \
+    'cd "$REPO_ROOT" && test -f examples/eagle_train.esk;
+     bin=$(mktemp "${TMPDIR:-/tmp}/icc-eagle.XXXXXX"); rm -f "$bin";
+     "$ESHKOL_RUN" examples/eagle_train.esk -o "$bin" >/dev/null 2>&1;
+     rc=$?; rm -f "$bin"; exit $rc'
 
 # ───────────────────────────────────────────────────────────────────
 # v1.3-evolve probes — see .icc/completion-oracles.yaml::v1.3-evolve.
@@ -352,7 +372,7 @@ probe ad_input2_attention_grad_works 'gradient flows through scaled-dot-attentio
 probe tensor_input2_grad_exact_firstclass_and_vector \
     'input2 tensor gradients (matmul B / conv2d kernel / attention K,V / per-feature batch+layer-norm gamma) match central FD EXACTLY across literal, first-class AND higher-order loss forms and vector gamma (JIT+AOT, 24/24)' \
     'cd "$REPO_ROOT";
-     out=$(BUILD_DIR=build bash scripts/run_tensor_input2_grad_gate.sh 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_tensor_input2_grad_gate.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "ESH-0212 tensor-AD second-operand gate: PASS"'
 
 # Generative adversarial AD-vs-finite-difference oracle. Unlike the fixed
@@ -368,13 +388,13 @@ probe tensor_input2_grad_exact_firstclass_and_vector \
 probe ad_adversarial_fd_oracle \
     'generative AD-vs-finite-difference sweep (random scalar/field/tensor-ML compositions, grad+laplacian+hessian, literal/first-class/wrapper loss, tensor-literal points) matches central FD — no silent-wrong gradients' \
     'cd "$REPO_ROOT";
-     out=$(BUILD_DIR=build bash scripts/run_ad_adversarial.sh --quick 2>&1) || exit 1;
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_ad_adversarial.sh --quick 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "ad_adversarial gate: PASS"'
 
 probe region_evac_subtype_coverage \
     'ESH-0214d/e region escape-evacuator keeps promoted logic/workspace/PROMISE subtype interiors intact under ESHKOL_ARENA_POISON=1 (AOT, flat RSS)' \
     'cd "$REPO_ROOT";
-     out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR=build bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
+     out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "region_evac_subtype_coverage_test.sh: PASS"'
 
 probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
@@ -448,16 +468,23 @@ probe language_surface_coverage_floor 'exposure-engine language coverage meets t
 
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
 probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \
-    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/numeric/bignum_rational_exactness_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "^PASS:" || exit 1; echo "$out" | grep -qE "(^| )FAIL" && exit 1; exit 0'
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/numeric/bignum_rational_exactness_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "^PASS:" || exit 1; echo "$out" | grep -qE "(^| )FAIL" && exit 1; exit 0'
 probe closure_set_tco_loop_oracle 'closure created in a named-let/TCO loop that set!s a captured global keeps the mutation (ESH-0094)' \
-    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/closures/closure_set_in_tco_loop_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/closures/closure_set_in_tco_loop_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail-recursive and correct vs reference (ESH-0098/0108)' \
-    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe ad_forward_over_reverse_oracle 'jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)' \
-    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" build/eshkol-run -r tests/ad/forward_over_reverse_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+    'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/ad/forward_over_reverse_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 
 echo
 echo "Trace written: $TRACE_FILE"
+echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
 echo "Run: python3 ~/Desktop/infinite_context_coder/scripts/codebase_tool.py \\"
 echo "         completion-oracle --repo eshkol_lang \\"
 echo "         --target agent-ffi-ready --trace-dir scripts/icc_traces"
+
+if [ "$PROBE_FAILURES" -ne 0 ]; then
+    echo "ICC smoke gate: FAIL ($PROBE_FAILURES probe(s) failed)" >&2
+    exit 1
+fi
+echo "ICC smoke gate: PASS"

@@ -1,0 +1,4 @@
+; include-ci must case-fold identifiers while preserving literal data.
+(include-ci "tests/vm_parity/corpus/include_ci_fixture.scm")
+(display included-vm-case-value) (newline)
+(display included-vm-case-string) (newline)

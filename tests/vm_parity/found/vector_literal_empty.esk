@@ -1,4 +1,0 @@
-; FILED: #(...) vector literals silently become () in the VM.
-; native -r : 20
-; vm        : () (and vector-ref on it yields ())
-(display (vector-ref #(10 20 30) 1))

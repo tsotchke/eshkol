@@ -343,7 +343,11 @@ void vm_run(VM* vm) {
         if (closure_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
             if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                vm_push(vm, cl->closure.upvalues[instr.operand]);
+                int32_t open_slot = cl->closure.open_slots[instr.operand];
+                if (open_slot >= 0 && open_slot < STACK_SIZE)
+                    vm_push(vm, vm->stack[open_slot]);
+                else
+                    vm_push(vm, cl->closure.upvalues[instr.operand]);
             } else {
                 fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                 vm_push(vm, NIL_VAL);
@@ -358,7 +362,11 @@ void vm_run(VM* vm) {
         if (closure_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
             if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
+                int32_t open_slot = cl->closure.open_slots[instr.operand];
+                if (open_slot >= 0 && open_slot < STACK_SIZE)
+                    vm->stack[open_slot] = vm_peek(vm, 0);
+                else
+                    cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
             } else {
                 fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
             }
@@ -380,6 +388,8 @@ void vm_run(VM* vm) {
         vm->heap.objects[ptr]->type = HEAP_CLOSURE;
         vm->heap.objects[ptr]->closure.func_pc = func_pc;
         vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
+        for (int i = 0; i < 16; i++)
+            vm->heap.objects[ptr]->closure.open_slots[i] = -1;
         for (int i = n_upvalues - 1; i >= 0; i--) {
             vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
         }
@@ -425,7 +435,9 @@ void vm_run(VM* vm) {
         }
 
         if (func.type != VAL_CLOSURE) {
-            fprintf(stderr, "ERROR: calling non-function\n");
+            fprintf(stderr,
+                    "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                    vm->pc - 1, argc, (int)func.type);
             vm->error = 1; goto vm_exit;
         }
 
@@ -960,7 +972,11 @@ vm_exit:
             if (closure_val.type == VAL_CLOSURE) {
                 HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
                 if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                    vm_push(vm, cl->closure.upvalues[instr.operand]);
+                    int32_t open_slot = cl->closure.open_slots[instr.operand];
+                    if (open_slot >= 0 && open_slot < STACK_SIZE)
+                        vm_push(vm, vm->stack[open_slot]);
+                    else
+                        vm_push(vm, cl->closure.upvalues[instr.operand]);
                 } else {
                     fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                     vm_push(vm, NIL_VAL);
@@ -975,7 +991,11 @@ vm_exit:
             if (closure_val.type == VAL_CLOSURE) {
                 HeapObject* cl = vm->heap.objects[closure_val.as.ptr];
                 if (instr.operand >= 0 && instr.operand < cl->closure.n_upvalues) {
-                    cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
+                    int32_t open_slot = cl->closure.open_slots[instr.operand];
+                    if (open_slot >= 0 && open_slot < STACK_SIZE)
+                        vm->stack[open_slot] = vm_peek(vm, 0);
+                    else
+                        cl->closure.upvalues[instr.operand] = vm_peek(vm, 0);
                 } else {
                     fprintf(stderr, "UPVALUE INDEX OUT OF BOUNDS\n");
                 }
@@ -997,6 +1017,8 @@ vm_exit:
             vm->heap.objects[ptr]->type = HEAP_CLOSURE;
             vm->heap.objects[ptr]->closure.func_pc = func_pc;
             vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
+            for (int i = 0; i < 16; i++)
+                vm->heap.objects[ptr]->closure.open_slots[i] = -1;
             /* Pop upvalues from stack (pushed before CLOSURE, in reverse order) */
             for (int i = n_upvalues - 1; i >= 0; i--) {
                 vm->heap.objects[ptr]->closure.upvalues[i] = vm_pop(vm);
@@ -1035,7 +1057,9 @@ vm_exit:
             }
 
             if (func.type != VAL_CLOSURE) {
-                fprintf(stderr, "ERROR: calling non-function\n");
+                fprintf(stderr,
+                        "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                        vm->pc - 1, argc, (int)func.type);
                 vm->error = 1; break;
             }
 

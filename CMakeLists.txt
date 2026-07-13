@@ -1473,7 +1473,7 @@ set(ESHKOL_VM_STACK_SIZE "4096" CACHE STRING
     "Bytecode VM value stack slot count")
 set(ESHKOL_VM_MAX_FRAMES "256" CACHE STRING
     "Bytecode VM call frame capacity")
-set(ESHKOL_VM_MAX_CONSTS "1024" CACHE STRING
+set(ESHKOL_VM_MAX_CONSTS "4096" CACHE STRING
     "Bytecode VM constant pool capacity")
 set(ESHKOL_VM_MAX_CODE "100000" CACHE STRING
     "Bytecode VM decoded instruction capacity")

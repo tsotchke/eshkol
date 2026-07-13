@@ -412,7 +412,9 @@ def main():
     ap.add_argument("--count", type=int, default=60, help="programs per family")
     ap.add_argument("--depth", type=int, default=4)
     ap.add_argument("--timeout", type=int, default=30)
-    ap.add_argument("--build", default="build")
+    ap.add_argument(
+        "--build", default=os.environ.get("BUILD_DIR", "build"),
+        help="build directory (default: BUILD_DIR or ./build)")
     ap.add_argument("--baseline", default=None,
                     help="known-divergence file; exit non-zero only on NEW divergences")
     ap.add_argument("--write-baseline", default=None,
@@ -430,9 +432,11 @@ def main():
     if args.smoke:
         args.count = min(args.count, 12)
 
-    if not os.path.exists(os.path.join(REPO_ROOT, args.build, "eshkol-run")):
-        print("FATAL: build/eshkol-run not found — build it: "
-              "cmake --build build --target eshkol-run stdlib -j", file=sys.stderr)
+    eshkol_run = os.path.join(REPO_ROOT, args.build, "eshkol-run")
+    if not os.path.exists(eshkol_run):
+        print("FATAL: %s not found — build it with: " % eshkol_run +
+              "cmake --build %s --target eshkol-run stdlib -j" % args.build,
+              file=sys.stderr)
         return 2
 
     os.makedirs(args.trace_dir, exist_ok=True)

@@ -116,7 +116,12 @@ fi
 # signalled child (timeout kill -> 137, SIGSEGV -> 139) so a genuine crash is
 # still distinguishable from a timeout in logs.
 run_guarded() {  # run_guarded <secs> <cmd...>
-    perl -e '
+    # macOS does not provide the glibc-style C.UTF-8 locale.  Perl resolves
+    # the inherited locale before it executes this wrapper and otherwise
+    # aborts with exit 9 before either oracle starts.  The corpus is ASCII and
+    # each engine performs its own UTF-8 handling, so the portable C locale is
+    # the correct deterministic environment for the timeout supervisor.
+    LC_ALL=C LANG=C perl -e '
         my $t = shift;
         my $pid = fork();
         exit 127 unless defined $pid;

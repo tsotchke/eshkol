@@ -1,0 +1,33 @@
+;; Complete datum-reader / external-representation parity.
+(define input
+  (open-input-string
+    "\"hi\\nthere\" (1 \"a\" foo) #\\space #(2 \"b\") .foo (a . b) 6/8 #\\x41"))
+
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(write (read input))
+(newline)
+(display (eof-object? (read input)))
+(newline)
+
+(define sym (string->symbol "roundtrip-symbol"))
+(display (symbol? sym))
+(newline)
+(write sym)
+(newline)
+(write (symbol->string sym))
+(newline)
+(write '(quoted-symbol "quoted string"))
+(newline)

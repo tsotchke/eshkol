@@ -177,3 +177,6 @@ artifacts/generative-diff/
 # Generated (deterministic) corpus for the generative-differential harness —
 # regenerable via scripts/gen_generative_corpus.py; never checked in.
 tests/generative-diff/corpus/
+# ICC emits timestamped architecture verdicts here. They are local runtime
+# evidence, not source artifacts; release readiness consumes the newest one.
+.icc/runtime-traces-oracle-view/

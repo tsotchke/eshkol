@@ -7,10 +7,13 @@
  */
 
 #include "arena_memory.h"
+#include "../../inc/eshkol/eshkol.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 // String ports use fmemopen (input) / open_memstream (output) to create
 // FILE-backed ports from in-memory strings. Existing I/O operations work
@@ -25,6 +28,63 @@ static struct {
 } string_output_ports[MAX_STRING_OUTPUT_PORTS];
 
 static int num_string_output_ports = 0;
+
+struct hosted_port_state_t {
+    uint8_t type_tag;
+    bool is_string;
+    bool is_open;
+};
+
+static std::mutex g_hosted_ports_mutex;
+static std::unordered_map<FILE*, hosted_port_state_t> g_hosted_ports;
+
+/** Register an opened hosted FILE* and return it unchanged for IR call chains. */
+extern "C" void* eshkol_runtime_register_port(void* fp_void, uint8_t type_tag,
+                                                int is_string) {
+    FILE* fp = static_cast<FILE*>(fp_void);
+    if (!fp) return nullptr;
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    g_hosted_ports[fp] = {type_tag, is_string != 0, true};
+    return fp_void;
+}
+
+/** Query whether a registered port is open in the requested direction. */
+extern "C" int eshkol_runtime_port_is_open(void* fp_void, uint8_t direction_flag) {
+    FILE* fp = static_cast<FILE*>(fp_void);
+    if (!fp) return 0;
+    if ((fp == stdin && direction_flag == 0x10) ||
+        ((fp == stdout || fp == stderr) && direction_flag == 0x40)) {
+        return 1;
+    }
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    auto it = g_hosted_ports.find(fp);
+    return it != g_hosted_ports.end() && it->second.is_open &&
+        (it->second.type_tag & direction_flag) != 0;
+}
+
+/** Return true only for a live port created by open-{input,output}-string. */
+extern "C" int eshkol_runtime_port_is_string(void* fp_void) {
+    FILE* fp = static_cast<FILE*>(fp_void);
+    if (!fp) return 0;
+    std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+    auto it = g_hosted_ports.find(fp);
+    return it != g_hosted_ports.end() && it->second.is_open && it->second.is_string;
+}
+
+/** Close a hosted port exactly once and retain its closed state for predicates. */
+extern "C" int eshkol_runtime_close_port(void* fp_void) {
+    FILE* fp = static_cast<FILE*>(fp_void);
+    if (!fp) return EOF;
+    {
+        std::lock_guard<std::mutex> lock(g_hosted_ports_mutex);
+        auto it = g_hosted_ports.find(fp);
+        if (it != g_hosted_ports.end()) {
+            if (!it->second.is_open) return 0;
+            it->second.is_open = false;
+        }
+    }
+    return fclose(fp);
+}
 
 /**
  * @brief Open a read-only string port over `str` (R7RS `open-input-string` support).
@@ -45,7 +105,8 @@ static int num_string_output_ports = 0;
 extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int64_t len) {
     if (len == 0) {
         // tmpfile() is portable and returns EOF immediately on first read.
-        return tmpfile();
+        return eshkol_runtime_register_port(tmpfile(),
+            ESHKOL_VALUE_HEAP_PTR | 0x10, 1);
     }
 #ifdef _WIN32
     (void)arena_void;
@@ -58,14 +119,16 @@ extern "C" void* eshkol_open_input_string(void* arena_void, const char* str, int
         return nullptr;
     }
     rewind(fp);
-    return fp;
+    return eshkol_runtime_register_port(fp, ESHKOL_VALUE_HEAP_PTR | 0x10, 1);
 #else
     auto* arena = static_cast<arena_t*>(arena_void);
     // Copy string to arena so fmemopen has a stable buffer.
     char* copy = static_cast<char*>(arena_allocate(arena, static_cast<size_t>(len) + 1));
     memcpy(copy, str, static_cast<size_t>(len));
     copy[len] = '\0';
-    return fmemopen(copy, static_cast<size_t>(len), "r");
+    return eshkol_runtime_register_port(
+        fmemopen(copy, static_cast<size_t>(len), "r"),
+        ESHKOL_VALUE_HEAP_PTR | 0x10, 1);
 #endif
 }
 
@@ -95,7 +158,8 @@ extern "C" void* eshkol_open_output_string(void) {
                               &string_output_ports[idx].size);
 #endif
     string_output_ports[idx].fp = fp;
-    return fp;
+    return eshkol_runtime_register_port(fp,
+        ESHKOL_VALUE_HEAP_PTR | 0x40, 1);
 }
 
 /**

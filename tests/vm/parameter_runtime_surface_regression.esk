@@ -1,0 +1,17 @@
+;; Directly exercise the VM-only parameter runtime entry points.  Ordinary
+;; Scheme code calls a parameter object as a procedure; this probe also locks
+;; the lower-level parameter-ref surface that the VM compiler exposes.
+(define p (make-parameter 11 (lambda (x) (+ x 1))))
+
+(display "T1 parameter-ref sees converted initial value: ")
+(display (if (= (parameter-ref p) 12) "PASS" "FAIL"))
+(newline)
+
+(p 20)
+(display "T2 parameter procedure setter applies converter exactly once: ")
+(display (if (= (parameter-ref p) 21) "PASS" "FAIL"))
+(newline)
+
+(display "T3 parameter object call matches parameter-ref: ")
+(display (if (= (p) (parameter-ref p)) "PASS" "FAIL"))
+(newline)

@@ -1,0 +1,77 @@
+;;; Deterministic hosted system/FFI surface completion.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define root "/tmp/eshkol_system_surface")
+(define original-directory (current-directory))
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (write expected)
+             (display " actual=") (write actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(define (check-true name actual) (check name #t (if actual #t #f)))
+
+(mkdir-recursive root)
+(write-file (path-join root "source.txt") "surface")
+
+(check-true "current-jiffy exact" (exact? (current-jiffy)))
+(check-true "current-second inexact" (inexact? (current-second)))
+(check "time returns expression value" 42 (time (+ 40 2)))
+(sleep 0)
+(check-true "sleep returns" #t)
+(check-true "system returns numeric status" (number? (system "")))
+
+(check-true "directory-list" (list? (directory-list root)))
+(check-true "directory-walk" (list? (directory-walk root)))
+(check-true "file-stat" (not (not (file-stat (path-join root "source.txt")))))
+(check-true "file-chmod returns boolean"
+            (boolean? (file-chmod (path-join root "source.txt") 384)))
+(check-true "file-rename"
+            (file-rename (path-join root "source.txt") (path-join root "renamed.txt")))
+
+(define temporary-directory (mkdtemp "/tmp/eshkol-surface-XXXXXX"))
+(check-true "mkdtemp" (and (string? temporary-directory)
+                             (directory-exists? temporary-directory)))
+(if (string? temporary-directory)
+    (directory-delete-recursive temporary-directory)
+    #f)
+
+(check-true "set-current-directory!" (set-current-directory! root))
+(check-true "current-directory changed" (string-ends-with? (current-directory)
+                                                            "eshkol_system_surface"))
+(set-current-directory! original-directory)
+
+(check "poll-fd invalid descriptor" #f (poll-fd -1 0))
+(check "process-setpgid invalid pid" #f (process-setpgid -1 0))
+
+(define watcher (fs-watch-recursive root (lambda (event) event)))
+(check-true "fs-watch-recursive returns handle" (or (integer? watcher) (not watcher)))
+(if (integer? watcher) (fs-unwatch watcher) #f)
+
+;; Empty text never emits a terminal escape when stdout is a CI pipe, but it
+;; still executes the hosted clipboard path and validates its contract.
+(check "term-clipboard-write" #t (term-clipboard-write ""))
+(check "websocket-send-binary invalid handle" #f (websocket-send-binary 0 "x"))
+
+(check-true "thread-pool-info" (and (exact? (thread-pool-info))
+                                     (>= (thread-pool-info) 1)))
+(check-true "thread-pool-size" (and (exact? (thread-pool-size))
+                                     (>= (thread-pool-size) 1)))
+(thread-pool-stats)
+(check-true "thread-pool-stats returns" #t)
+
+(check "matrix trace" 5.0
+       (trace (reshape (tensor 1.0 2.0 3.0 4.0) 2 2)))
+
+(directory-delete-recursive root)
+
+(display "System completion: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))

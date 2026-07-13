@@ -21,7 +21,7 @@
 #endif
 
 #ifndef ESHKOL_VM_MAX_CONSTS
-#define ESHKOL_VM_MAX_CONSTS 1024
+#define ESHKOL_VM_MAX_CONSTS 4096
 #endif
 
 #ifndef ESHKOL_VM_MAX_CODE

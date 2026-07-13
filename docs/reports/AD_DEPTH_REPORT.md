@@ -11,30 +11,15 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 
 | composition | capture | MCD | tracked |
 |---|---|---|---|
-| deriv | capnone | 8 | ESH-0118 |
-| deriv | glob | 8 | ESH-0118 |
-| deriv | localparam | 8 | ESH-0122 |
-| deriv | vecref | 8 | ESH-0122 |
-| gofd | vecref | 8 | ESH-0117 |
-| gradn | capnone | 3 | ESH-0118 |
+| deriv | capnone | 8 |  |
+| deriv | glob | 8 |  |
+| deriv | localparam | 8 |  |
+| deriv | vecref | 8 |  |
+| gofd | vecref | 8 |  |
+| gradn | capnone | 3 |  |
 | gradn | vecref | 1 | ESH-0122 |
-| hessod | vecref | 0 | ESH-0121 |
-| jacod | vecref | 0 | ESH-0120 |
-
-## ✅ Improvements over baseline (fix landed)
-
-- `gofd.mono.v2.inline.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.mono.v2.named.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.mono.v3.inline.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.mono.v3.named.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.poly.v2.inline.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.poly.v2.named.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.poly.v3.inline.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gofd.poly.v3.named.vecref`: max-depth **8** > baseline **1** (update BASELINE in ad_depth_report.py once confirmed)
-- `gradn.expc.s.inline.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
-- `gradn.expc.s.named.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
-- `gradn.mono.s.inline.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
-- `gradn.mono.s.named.capnone`: max-depth **3** > baseline **2** (update BASELINE in ad_depth_report.py once confirmed)
+| hessod | vecref | 1 | ESH-0121 |
+| jacod | vecref | 8 |  |
 
 ## Per-cell depth tables
 
@@ -120,24 +105,24 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 
 | cell | lane | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | MCD |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `hessod.expc.v2.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `hessod.expc.v2.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `hessod.expc.v3.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `hessod.expc.v3.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `hessod.mono.v2.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `hessod.mono.v2.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `hessod.mono.v3.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `hessod.mono.v3.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
+| `hessod.expc.v2.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
+| `hessod.expc.v2.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
+| `hessod.expc.v3.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
+| `hessod.expc.v3.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
+| `hessod.mono.v2.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
+| `hessod.mono.v2.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
+| `hessod.mono.v3.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
+| `hessod.mono.v3.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
 
 ### jacod
 
 | cell | lane | d1 | d2 | d3 | d4 | d5 | d6 | d7 | d8 | MCD |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `jacod.expc.v2.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `jacod.expc.v2.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `jacod.expc.v3.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `jacod.expc.v3.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `jacod.mono.v2.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `jacod.mono.v2.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
-| `jacod.mono.v3.inline.vecref` | jit | F | F | F | F | F | F | F | F | **0** |
-| `jacod.mono.v3.inline.vecref` | aot | F | F | F | F | F | F | F | F | **0** |
+| `jacod.expc.v2.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `jacod.expc.v2.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |
+| `jacod.expc.v3.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `jacod.expc.v3.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |
+| `jacod.mono.v2.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `jacod.mono.v2.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |
+| `jacod.mono.v3.inline.vecref` | jit | P | P | P | P | P | P | P | P | **8** |
+| `jacod.mono.v3.inline.vecref` | aot | P | P | P | P | P | P | P | P | **8** |

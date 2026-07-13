@@ -66,6 +66,12 @@ VALID_STATUSES = ("vm-supported", "native-only-justified", "gap")
 # name in and let the manifest carry a row for it.
 CODEGEN_NAME_DENYLIST = {
     "main",  # entry-point sentinel comparisons, not a callable builtin
+    # Parser-generated parameterize plumbing.  The VM lowers parameterize
+    # directly to native IDs 702/705 and never exposes these LLVM-only helper
+    # spellings to Scheme code.
+    "__eshkol_parameter_convert",
+    "__eshkol_parameter_push",
+    "__eshkol_parameter_pop",
 }
 
 

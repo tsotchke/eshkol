@@ -3,6 +3,7 @@
 # failure (nonzero exit + "[Eshkol] fatal signal" stack-overflow diagnostic on
 # stderr) on BOTH the JIT (-r) and AOT lanes, not a silent rc132.
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUN="$ROOT/build/eshkol-run"

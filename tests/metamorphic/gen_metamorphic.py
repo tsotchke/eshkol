@@ -292,9 +292,6 @@ def gen_roundtrip_control(trials):
         "(define (metamorphic-sum xs)",
         "  (if (null? xs) 0 (+ (car xs) (metamorphic-sum (cdr xs)))))",
         "",
-        "(metamorphic-xknown! \"roundtrip.write_read.string.case0\" \"ESH-0170\"",
-        "  \"(write \\\"hi\\\") prints native output \\\"hi\\\" without read-syntax quotes; native LLVM path has no general datum read\")",
-        "",
     ])
     for i in range(trials):
         rng = Rng(i)
@@ -305,6 +302,13 @@ def gen_roundtrip_control(trials):
         tensor_expr = "(tensor " + " ".join(str(v) for v in tvals) + ")"
         path = f"/tmp/eshkol-metamorphic-tensor-{i}.bin"
         cex = f"case={i} x={x} y={y} z={z} xs={xs} delta={delta} tensor={tvals}"
+        lines.append(f"(define metamorphic-roundtrip-value-{i} (list {x} \"case-{i}\\nvalue\" 'roundtrip-symbol {lst(xs)}))")
+        lines.append(f"(define metamorphic-roundtrip-port-{i} (open-output-string))")
+        lines.append(f"(write metamorphic-roundtrip-value-{i} metamorphic-roundtrip-port-{i})")
+        lines.append(f"(define metamorphic-roundtrip-text-{i} (get-output-string metamorphic-roundtrip-port-{i}))")
+        emit_check(lines, f"roundtrip.write_read.case{i}",
+                   f"(equal? (read (open-input-string metamorphic-roundtrip-text-{i})) metamorphic-roundtrip-value-{i})",
+                   cex)
         emit_check(lines, f"control.callcc_identity.case{i}",
                    f"(= (call/cc (lambda (k) {x})) {x})", cex)
         emit_check(lines, f"control.apply_map_consistency.case{i}",

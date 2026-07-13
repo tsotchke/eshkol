@@ -1,0 +1,116 @@
+;; Deterministic execution coverage for the remaining pure language surface.
+;; Every named operation below is executed and its result is checked.
+
+(require stdlib)
+(include-ci "tests/features/fixtures/language_surface_include_ci.scm")
+
+(define passed 0)
+(define failed 0)
+
+(define (check name condition)
+  (if condition
+      (begin
+        (set! passed (+ passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! failed (+ failed 1))
+        (display "FAIL: ") (display name) (newline))))
+
+;; Binding/module forms.
+(define-values (surface-a surface-b) (values 19 23))
+(check "define-values binds every value" (= (+ surface-a surface-b) 42))
+(define define-values-evaluations 0)
+(define-values (surface-once)
+  (begin (set! define-values-evaluations (+ define-values-evaluations 1))
+         (values 11)))
+(check "define-values evaluates its producer once"
+       (and (= surface-once 11) (= define-values-evaluations 1)))
+(define-values surface-rest (values 2 3 5))
+(check "define-values identifier form captures all values"
+       (equal? surface-rest '(2 3 5)))
+(define-values (surface-head . surface-tail) (values 7 11 13))
+(check "define-values dotted formals"
+       (and (= surface-head 7) (equal? surface-tail '(11 13))))
+(define-values () (values))
+(check "define-values accepts zero values" #t)
+(check "include-ci executes its case-folded fixture" (= included-surface-value 73))
+
+;; Higher-order/list operations.
+(check "fold-left" (= (fold-left + 0 '(1 2 3 4)) 10))
+(check "remv" (equal? (remv 2 '(1 2 3)) '(1 3)))
+
+;; Bytevector and vector mutation/construction.
+(define bv-dst (make-bytevector 5 0))
+(bytevector-copy! bv-dst 1 (bytevector 7 8 9))
+(check "bytevector-copy! writes the requested destination range"
+       (and (= (bytevector-u8-ref bv-dst 0) 0)
+            (= (bytevector-u8-ref bv-dst 1) 7)
+            (= (bytevector-u8-ref bv-dst 3) 9)))
+(check "vector-append" (equal? (vector-append #(1 2) #(3 4)) #(1 2 3 4)))
+
+;; Mutable and derived string operations.
+(define mutable-copy (string-copy "abcde"))
+(string-copy! mutable-copy 1 "XYZ")
+(check "string-copy!" (string=? mutable-copy "aXYZe"))
+(string-fill! mutable-copy #\q)
+(check "string-fill!" (string=? mutable-copy "qqqqq"))
+(check "string-index-of" (= (string-index-of "abracadabra" "cad" 0) 4))
+(check "string-join" (string=? (string-join '("a" "b" "c") ":") "a:b:c"))
+(check "string-pad-left" (string=? (string-pad-left "7" 3 #\0) "007"))
+(check "string-pad-right" (string=? (string-pad-right "7" 3 #\0) "700"))
+(check "string-repeat" (string=? (string-repeat "ab" 3) "ababab"))
+(check "string-reverse" (string=? (string-reverse "abc") "cba"))
+(check "string-split" (equal? (string-split "a,b,c" ",") '("a" "b" "c")))
+(check "string-trim" (string=? (string-trim "  value\n") "value"))
+(check "string-truncate-display"
+       (string=? (string-truncate-display "abcdef" 5 "...") "ab..."))
+
+;; Case-insensitive and ordering predicates.
+(check "char<=?" (char<=? #\a #\b))
+(check "char>=?" (char>=? #\b #\a))
+(check "char-ci<?" (char-ci<? #\A #\b))
+(check "char-ci<=?" (char-ci<=? #\A #\a))
+(check "char-ci>?" (char-ci>? #\B #\a))
+(check "char-ci>=?" (char-ci>=? #\A #\a))
+(check "string-ci=?" (string-ci=? "Eshkol" "ESHKOL"))
+(check "string-ci<?" (string-ci<? "alpha" "BETA"))
+(check "string-ci<=?" (string-ci<=? "same" "SAME"))
+(check "string-ci>?" (string-ci>? "zeta" "ETA"))
+(check "string-ci>=?" (string-ci>=? "same" "SAME"))
+
+;; Sum types and predicates.
+(define left-value (inject-left 41))
+(define right-value (inject-right 43))
+(check "left? recognizes inject-left" (and (left? left-value) (not (right? left-value))))
+(check "right? recognizes inject-right" (and (right? right-value) (not (left? right-value))))
+(check "sum-tag" (and (= (sum-tag left-value) 0) (= (sum-tag right-value) 1)))
+(check "sum-value" (and (= (sum-value left-value) 41) (= (sum-value right-value) 43)))
+
+;; Hash-table aliases each execute their distinct dispatcher entry.
+(define aliases (make-hash-table))
+(hash-table-set! aliases "a" 1)
+(hash-table-set! aliases "b" 2)
+(check "hash-table-exists?" (hash-table-exists? aliases "a"))
+(check "hash-table-ref/default present" (= (hash-table-ref/default aliases "a" 0) 1))
+(check "hash-table-ref/default missing" (= (hash-table-ref/default aliases "missing" 9) 9))
+(check "hash-table/count" (= (hash-table/count aliases) 2))
+(check "hash-table-keys" (= (length (hash-table-keys aliases)) 2))
+(check "hash-table-values" (= (length (hash-table-values aliases)) 2))
+(hash-table-delete! aliases "a")
+(check "hash-table-delete!" (not (hash-table-exists? aliases "a")))
+(hash-delete! aliases "b")
+(check "hash-delete!" (= (hash-table/count aliases) 0))
+(hash-table-set! aliases "c" 3)
+(hash-table-clear! aliases)
+(check "hash-table-clear!" (= (hash-table/count aliases) 0))
+
+;; Predicates/environments with deterministic contracts.
+(check "promise?" (promise? (delay 5)))
+(check "exact-rational?" (exact-rational? (make-rational 1 3)))
+(check "interaction-environment" (not (null? (interaction-environment))))
+(check "null-environment" (null? (null-environment 7)))
+(check "scheme-report-environment" (not (null? (scheme-report-environment 7))))
+(void)
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)

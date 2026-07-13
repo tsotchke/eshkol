@@ -1,0 +1,2 @@
+(define INCLUDED-VM-CASE-VALUE 73)
+(define INCLUDED-VM-CASE-STRING "MiXeD-Literal")

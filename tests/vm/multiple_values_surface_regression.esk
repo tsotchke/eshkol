@@ -1,0 +1,56 @@
+;; Hosted-VM execution regression for the complete multiple-values contract.
+(define failures 0)
+(define (check name ok)
+  (if ok
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (set! failures (+ failures 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define evaluations 0)
+(define-values (a b)
+  (begin (set! evaluations (+ evaluations 1)) (values 19 23)))
+(check "define-values fixed" (and (= a 19) (= b 23) (= evaluations 1)))
+
+(define-values rest-values (values 2 3 5))
+(check "define-values identifier rest" (equal? rest-values '(2 3 5)))
+(define-values (head . tail) (values 7 11 13))
+(check "define-values dotted rest" (and (= head 7) (equal? tail '(11 13))))
+(define-values () (values))
+(check "define-values zero" #t)
+
+(check "let-values fixed"
+       (= (let-values (((x y) (values 17 25))) (+ x y)) 42))
+(check "let*-values sequential"
+       (= (let*-values (((x y) (values 2 3))
+                        ((z) (values (+ x y))))
+            z)
+          5))
+(check "ordinary vector remains one value"
+       (= (call-with-values (lambda () (vector 1 2 3)) vector-length) 3))
+(check "vector literal remains one value"
+       (= (call-with-values (lambda () #(4 5 6 7)) vector-length) 4))
+(check "zero values call zero-argument consumer"
+       (= (call-with-values (lambda () (values)) (lambda () 42)) 42))
+(check "nine values are not dropped"
+       (= (call-with-values
+            (lambda () (values 1 2 3 4 5 6 7 8 9))
+            (lambda (a b c d e f g h i) (+ a b c d e f g h i)))
+          45))
+(check "sixteen-value dispatch ceiling is implemented"
+       (= (call-with-values
+            (lambda () (values 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+            (lambda (a b c d e f g h i j k l m n o p)
+              (+ a b c d e f g h i j k l m n o p)))
+          136))
+(check "let-values producers are simultaneous"
+       (= (let ((x 100))
+            (let-values (((x) (values 1))
+                         ((y) (values x)))
+              (+ x y)))
+          101))
+(check "let-values restores shadowed binding"
+       (= (let ((x 9))
+            (+ (let-values (((x) (values 1))) x) x))
+          10))
+
+(display "Failed: ") (display failures) (newline)

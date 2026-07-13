@@ -2,8 +2,8 @@
   "schema_version": 1,
   "baseline_commit": "1fb762301a0c1fc9d05cd72636c89bd50bed178d",
   "baseline_surface_total": 1056,
-  "minimum_covered": 809,
-  "minimum_covered_fraction": 0.766,
+  "minimum_covered": 1056,
+  "minimum_covered_fraction": 1.0,
   "high_risk_categories": [
     "numeric",
     "tensor_ad",
@@ -14,7 +14,7 @@
     "memory_region"
   ],
   "completion": {
-    "minimum_covered_fraction": 0.766,
+    "minimum_covered_fraction": 1.0,
     "maximum_uncovered_high_risk": 0
   },
   "aspirational_surface_fraction": 1.0
