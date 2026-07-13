@@ -424,7 +424,6 @@ make-factor-graph	vm-supported
 make-hash-table	vm-supported	
 make-kb	vm-supported	
 make-line-reader	vm-supported	
-make-list	vm-supported	
 make-lru-cache	vm-supported	
 make-parameter	gap	no VM name binding
 make-pipe	vm-supported	
@@ -927,4 +926,3 @@ xavier-uniform!	gap	ml faculty has no VM fid coverage
 zero-grad!	gap	ml faculty has no VM fid coverage
 zero?	vm-supported	
 zeros	vm-supported	
-zip	gap	no VM name binding
