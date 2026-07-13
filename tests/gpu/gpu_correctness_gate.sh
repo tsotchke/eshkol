@@ -37,7 +37,9 @@
 #                   Windows LLVM SDK clang++.exe used for generated AOT links.
 #   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
 #                   Optional Windows generator overrides. Defaults select the
-#                   newest installed VS 2022+ generator, x64, and ClangCL.
+#                   newest installed VS 2022+ generator, x64, and its native
+#                   toolset. Set GPU_GATE_CMAKE_TOOLSET=ClangCL when that
+#                   optional Visual Studio component is installed.
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -208,8 +210,9 @@ EOF
         cmake_args+=(
             -G "$generator"
             -A "${GPU_GATE_CMAKE_PLATFORM:-x64}"
-            -T "${GPU_GATE_CMAKE_TOOLSET:-ClangCL}"
         )
+        [ -n "${GPU_GATE_CMAKE_TOOLSET:-}" ] \
+            && cmake_args+=(-T "$GPU_GATE_CMAKE_TOOLSET")
         [ -n "${LLVM_DIR:-}" ] && cmake_args+=(-DLLVM_DIR="$LLVM_DIR")
         [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ] \
             && cmake_args+=(-DESHKOL_HOST_CXX_COMPILER="$ESHKOL_HOST_CXX_COMPILER")
