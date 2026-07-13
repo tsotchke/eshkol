@@ -184,13 +184,26 @@ configure_and_build() {
     if [ "$WINDOWS_POSIX" -eq 1 ]; then
         local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
         if [ -z "$generator" ]; then
-            if cmake --help 2>/dev/null | grep -q 'Visual Studio 18 2026'; then
-                generator='Visual Studio 18 2026'
-            elif cmake --help 2>/dev/null | grep -q 'Visual Studio 17 2022'; then
-                generator='Visual Studio 17 2022'
-            else
-                fail "no supported Visual Studio 2022+ CMake generator found for Windows CUDA"
-            fi
+            local vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+            local candidate version_range install
+            [ -x "$vswhere" ] \
+                || fail "vswhere.exe not found; set GPU_GATE_CMAKE_GENERATOR to an installed Visual Studio 2022+ generator"
+            while IFS='|' read -r candidate version_range; do
+                cmake --help 2>/dev/null | grep -qF "$candidate" || continue
+                install="$("$vswhere" -latest -products '*' \
+                    -requires Microsoft.Component.MSBuild \
+                    -version "$version_range" -property installationPath \
+                    2>/dev/null || true)"
+                if [ -n "$install" ]; then
+                    generator="$candidate"
+                    break
+                fi
+            done <<'EOF'
+Visual Studio 18 2026|[18.0,19.0)
+Visual Studio 17 2022|[17.0,18.0)
+EOF
+            [ -n "$generator" ] \
+                || fail "no installed Visual Studio 2022+ CMake generator with MSBuild found"
         fi
         cmake_args+=(
             -G "$generator"
