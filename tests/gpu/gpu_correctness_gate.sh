@@ -163,6 +163,8 @@ runner_path() {
 configure_and_build() {
     local build_dir="$1" gpu_flag="$2"
     local runner=""
+    mkdir -p "$(dirname "$build_dir")" \
+        || fail "could not create build root parent for $build_dir"
     runner="$(runner_path "$build_dir" 2>/dev/null || true)"
     if [ "$REUSE_BUILDS" = "1" ] && [ -n "$runner" ]; then
         log "  reusing $runner (REUSE_BUILDS=1)"
