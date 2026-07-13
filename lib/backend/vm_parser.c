@@ -48,6 +48,7 @@ typedef struct {
     const char* source_path;   /* Source file path */
     char loaded_modules[64][128]; /* Module cache for require */
     int n_loaded;
+    int fold_case_symbols;    /* include-ci reader mode (R7RS case-folding) */
 } CompilerContext;
 
 static CompilerContext g_compiler_ctx = {0};
@@ -541,6 +542,10 @@ static Node* parse_sexp(void) {
     while (*src_ptr && !isspace(*src_ptr) && *src_ptr != '(' && *src_ptr != ')' && *src_ptr != '"' && i < 127)
         buf[i++] = *src_ptr++;
     buf[i] = 0;
+    if (g_compiler_ctx.fold_case_symbols) {
+        for (int j = 0; j < i; j++)
+            buf[j] = (char)tolower((unsigned char)buf[j]);
+    }
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 

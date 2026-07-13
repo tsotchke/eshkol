@@ -323,17 +323,17 @@ hash-keys	vm-supported
 hash-ref	vm-supported	
 hash-remove!	vm-supported	
 hash-set!	vm-supported	
-hash-table-clear!	gap	hash tables have no VM binding
-hash-table-contains?	gap	hash tables have no VM binding
-hash-table-delete!	gap	hash tables have no VM binding
-hash-table-exists?	gap	hash tables have no VM binding
-hash-table-keys	gap	hash tables have no VM binding
+hash-table-clear!	vm-supported	alias of hash-clear! (fid 668)
+hash-table-contains?	vm-supported	alias of hash-has-key? (fid 664)
+hash-table-delete!	vm-supported	alias of hash-delete! (fid 663)
+hash-table-exists?	vm-supported	alias of hash-has-key? (fid 664)
+hash-table-keys	vm-supported	alias of hash-keys (fid 665)
 hash-table-ref	gap	hash tables have no VM binding
-hash-table-ref/default	gap	hash tables have no VM binding
-hash-table-set!	gap	hash tables have no VM binding
-hash-table-size	gap	hash tables have no VM binding
-hash-table-values	gap	hash tables have no VM binding
-hash-table/count	gap	hash tables have no VM binding
+hash-table-ref/default	vm-supported	alias of hash-ref (fid 661)
+hash-table-set!	vm-supported	alias of hash-set! (fid 662)
+hash-table-size	vm-supported	alias of hash-count (fid 667)
+hash-table-values	vm-supported	alias of hash-values (fid 666)
+hash-table/count	vm-supported	alias of hash-count (fid 667)
 hash-table?	vm-supported	
 hash-values	vm-supported	
 hinge-loss	gap	ml faculty has no VM fid coverage
@@ -882,8 +882,8 @@ username	vm-supported
 usize->ptr	native-only-justified	low-level memory/FFI primitive tied to native codegen
 utf8->string	vm-supported	
 uuid-v4	vm-supported	
-vector	gap	(vector ...) constructor form returns () (found/vector_constructor_empty.esk)
-vector->list	gap	BUILTINS fid 140 unimplemented in vm_native.c (found/vector_constructor_empty.esk)
+vector	vm-supported	OP_VEC_CREATE preserves ordinary Scheme vector identity and elements
+vector->list	vm-supported	dedicated native fid 140 preserves element order
 vector->tensor	gap	tensor linalg/manipulation fid missing in VM
 vector-append	gap	no VM name binding
 vector-copy	gap	R7RS vector-copy is missing on the VM; intertwined with tensor-backed #(...) vector-literal parity

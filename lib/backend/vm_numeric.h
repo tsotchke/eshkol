@@ -46,6 +46,7 @@
 #define VAL_RIEMANNIAN_ADAM_STATE 27 /* heap-allocated optimizer state       */
 #define VAL_FUTURE      28   /* heap-allocated standalone VM future handle   */
 #define VAL_CHAR        29   /* immediate Unicode character (codepoint in .as.i) */
+#define VAL_MULTI_VALUE 30   /* opaque R7RS multiple-values packet            */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5

@@ -22,6 +22,7 @@ TESTS=(
     tests/vm/numeric_alias_surface_regression.esk
     tests/vm/event_emitter_surface_regression.esk
     tests/vm/parameter_runtime_surface_regression.esk
+    tests/vm/multiple_values_surface_regression.esk
 )
 
 echo "========================================="

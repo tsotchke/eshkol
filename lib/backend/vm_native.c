@@ -5274,6 +5274,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
 
+    case 140: { /* vector->list: preserve element order */
+        Value vec_val = vm_pop(vm);
+        if (vec_val.type != VAL_VECTOR ||
+            !is_valid_heap_ptr(vm, vec_val.as.ptr) ||
+            vm->heap.objects[vec_val.as.ptr]->type != HEAP_VECTOR) {
+            fprintf(stderr, "ERROR: vector->list expects a vector\n");
+            vm->error = 1;
+            break;
+        }
+        VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
+        Value result = NIL_VAL;
+        if (vec) {
+            for (int i = vec->len - 1; i >= 0; i--) {
+                int32_t p = heap_alloc(&vm->heap);
+                if (p < 0) { vm->error = 1; break; }
+                vm->heap.objects[p]->type = HEAP_CONS;
+                vm->heap.objects[p]->cons.car = vec->items[i];
+                vm->heap.objects[p]->cons.cdr = result;
+                result = PAIR_VAL(p);
+            }
+        }
+        if (!vm->error) vm_push(vm, result);
+        break;
+    }
+
     case 227: { /* list->vector: (list->vector lst) → #(elts...)
                  * Native id 227: previously the name table aliased
                  * list->vector to id 139 (memq), so it silently returned #f. */
@@ -9414,16 +9439,36 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * MultiValue Operations (650-654)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 650: { /* values(v) — single-value pass-through; value already on stack */
+    case 650: { /* pack-values: value... count -> opaque multi-value packet */
+        Value count_value = vm_pop(vm);
+        int count = (int)as_number(count_value);
+        if (count < 0 || count > vm->sp) {
+            fprintf(stderr, "ERROR: invalid multiple-values count %d\n", count);
+            vm->error = 1;
+            break;
+        }
+        int32_t ptr = heap_alloc(&vm->heap);
+        if (ptr < 0) { vm->error = 1; break; }
+        VmVector* values = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+        if (!values) { vm->error = 1; break; }
+        values->len = count;
+        values->cap = count;
+        values->items = (Value*)vm_alloc(&vm->heap.regions,
+                                         (size_t)(count > 0 ? count : 1) * sizeof(Value));
+        if (!values->items) { vm->error = 1; break; }
+        for (int i = count - 1; i >= 0; i--) values->items[i] = vm_pop(vm);
+        vm->heap.objects[ptr]->type = HEAP_MULTI_VALUE;
+        vm->heap.objects[ptr]->opaque.ptr = values;
+        vm_push(vm, (Value){.type = VAL_MULTI_VALUE, .as.ptr = ptr});
         break;
     }
     case 651: { /* multi-value-ref(mv, idx) — extract from multi-value container */
         Value idx = vm_pop(vm), mv = vm_pop(vm);
-        if (is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
-            VmMultiValue* mvobj = (VmMultiValue*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
+        if (mv.type == VAL_MULTI_VALUE && is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
+            VmVector* mvobj = (VmVector*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
-            if (mvobj && i >= 0 && i < mvobj->count) {
-                vm_push(vm, INT_VAL((int64_t)(intptr_t)mvobj->values[i]));
+            if (mvobj && i >= 0 && i < mvobj->len) {
+                vm_push(vm, mvobj->items[i]);
                 break;
             }
         }
@@ -9434,9 +9479,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 652: { /* multi-value-count(mv) — number of values in container */
         Value mv = vm_pop(vm);
-        if (is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
-            VmMultiValue* mvobj = (VmMultiValue*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(mvobj ? mvobj->count : 1));
+        if (mv.type == VAL_MULTI_VALUE && is_heap_type(vm, mv, HEAP_MULTI_VALUE)) {
+            VmVector* mvobj = (VmVector*)vm->heap.objects[mv.as.ptr]->opaque.ptr;
+            vm_push(vm, INT_VAL(mvobj ? mvobj->len : 0));
         } else {
             vm_push(vm, INT_VAL(1)); /* single value counts as 1 */
         }
@@ -9444,7 +9489,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 653: { /* multi-value? — check if value is a multi-value container */
         Value v = vm_pop(vm);
-        int is_mv = (is_heap_type(vm, v, HEAP_MULTI_VALUE));
+        int is_mv = (v.type == VAL_MULTI_VALUE &&
+                     is_heap_type(vm, v, HEAP_MULTI_VALUE));
         vm_push(vm, BOOL_VAL(is_mv));
         break;
     }
@@ -9452,9 +9498,63 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value consumer = vm_pop(vm), producer = vm_pop(vm);
         /* Call producer with 0 args */
         Value produced = vm_call_closure_from_native(vm, producer, NULL, 0);
-        /* Call consumer with produced value */
-        Value result = vm_call_closure_from_native(vm, consumer, &produced, 1);
+        Value result;
+        if (produced.type == VAL_MULTI_VALUE &&
+            is_heap_type(vm, produced, HEAP_MULTI_VALUE)) {
+            VmVector* values = (VmVector*)vm->heap.objects[produced.as.ptr]->opaque.ptr;
+            result = vm_call_closure_from_native(vm, consumer,
+                                                 values ? values->items : NULL,
+                                                 values ? values->len : 0);
+        } else {
+            result = vm_call_closure_from_native(vm, consumer, &produced, 1);
+        }
         vm_push(vm, result);
+        break;
+    }
+    case 655: { /* multi-value-rest: packet start -> proper list of remaining values */
+        Value start_value = vm_pop(vm), packet = vm_pop(vm);
+        int start = (int)as_number(start_value);
+        int count = 1;
+        Value* items = &packet;
+        if (packet.type == VAL_MULTI_VALUE &&
+            is_heap_type(vm, packet, HEAP_MULTI_VALUE)) {
+            VmVector* values = (VmVector*)vm->heap.objects[packet.as.ptr]->opaque.ptr;
+            count = values ? values->len : 0;
+            items = values ? values->items : NULL;
+        }
+        if (start < 0 || start > count) {
+            fprintf(stderr, "ERROR: multiple-values rest index %d out of range [0,%d]\n",
+                    start, count);
+            vm->error = 1;
+            break;
+        }
+        Value result = NIL_VAL;
+        for (int i = count - 1; i >= start; i--)
+            result = vm_cons_value(vm, items[i], result);
+        vm_push(vm, result);
+        break;
+    }
+    case 656: { /* validate-values-arity: packet min max(-1 means unbounded) */
+        Value max_value = vm_pop(vm), min_value = vm_pop(vm), packet = vm_pop(vm);
+        int min_count = (int)as_number(min_value);
+        int max_count = (int)as_number(max_value);
+        int count = 1;
+        if (packet.type == VAL_MULTI_VALUE &&
+            is_heap_type(vm, packet, HEAP_MULTI_VALUE)) {
+            VmVector* values = (VmVector*)vm->heap.objects[packet.as.ptr]->opaque.ptr;
+            count = values ? values->len : 0;
+        }
+        if (count < min_count || (max_count >= 0 && count > max_count)) {
+            if (max_count < 0)
+                fprintf(stderr, "ERROR: expected at least %d values, received %d\n",
+                        min_count, count);
+            else
+                fprintf(stderr, "ERROR: expected %d values, received %d\n",
+                        min_count, count);
+            vm->error = 1;
+            break;
+        }
+        vm_push(vm, packet);
         break;
     }
 
@@ -10858,8 +10958,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 251: { /* call-with-values-apply: unpack multi-value result */
         Value consumer = vm_pop(vm), result = vm_pop(vm);
         if (consumer.type == VAL_CLOSURE) {
-            /* If result is a vector (multi-value container), unpack */
-            if (result.type == VAL_VECTOR) {
+            /* Only an opaque multiple-values packet is unpacked.  An ordinary
+             * Scheme vector is one value and must be passed as one argument. */
+            if (result.type == VAL_MULTI_VALUE &&
+                is_heap_type(vm, result, HEAP_MULTI_VALUE)) {
                 VmVector* mv = (VmVector*)vm->heap.objects[result.as.ptr]->opaque.ptr;
                 if (mv && mv->len > 0) {
                     Value r = vm_call_closure_from_native(vm, consumer, mv->items, mv->len);

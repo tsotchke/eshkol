@@ -61,7 +61,7 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (25 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (30 programs inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
@@ -103,13 +103,10 @@ header. Filed while building this gate, 2026-07:
 | `exact_division_lost.esk` | `(/ 1 3)` → `0.333333`, not `1/3` |
 | `expt_bignum_to_float.esk` | `(expt 2 100)` → float, not bignum |
 | `force_returns_promise.esk` | `force` returns the promise object |
-| `let_values_silent_zero.esk` | `let-values` binds wrong values silently |
 | `case_lambda_wrong_clause.esk` | `case-lambda` picks the wrong clause |
 | `dynamic_wind_after_twice.esk` | after-thunk runs twice |
 | `char_type_collapsed.esk` | chars display as integers |
 | `equal_eq_structural_false.esk` | `equal?`/`eq?` → `#f` on equal lists / same symbols |
-| `vector_literal_empty.esk` | `#(...)` literals become `()` |
-| `vector_constructor_empty.esk` | `(vector ...)` → `()`; `vector->list` fid 140 unimplemented; `list->vector` fid collides with `memq` (139) |
 | `symbol_string_unhandled_fid.esk` | `symbol->string`/`string->symbol` fids 184/185 unimplemented |
 | `write_does_not_quote.esk` | `write` emits display syntax |
 | `iota_returns_empty.esk` | `iota` returns `()` |

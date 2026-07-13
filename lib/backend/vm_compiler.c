@@ -564,54 +564,120 @@ static void compile_form_parameterize(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
+/** @brief Emit an exact/minimum arity check for a values packet in
+ *         @p result_slot.  Native 656 accepts `(packet min max)`, where -1
+ *         means no upper bound, and returns the packet unchanged. */
+static void compile_validate_values_arity(FuncChunk* c, int result_slot,
+                                          int min_count, int max_count) {
+    chunk_emit(c, OP_GET_LOCAL, result_slot);
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(min_count)));
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(max_count)));
+    chunk_emit(c, OP_NATIVE_CALL, 656);
+    chunk_emit(c, OP_POP, 0);
+}
+
 /**
- * @brief Compile a `(let-values (((formals) producer)...) body...)`
- *        special form: for each binding, evaluates the producer and binds
- *        its (single, since this VM's values aren't unpacked here) result
- *        to the first formal, with any remaining formals bound to nil;
- *        compiles the body, then pops all bound locals.
+ * @brief Bind a producer result already stored in @p result_slot to R7RS
+ *        values formals.  A symbol captures all values as a proper list;
+ *        a fixed list requires an exact count; dotted formals require at
+ *        least the fixed prefix and bind the remainder as a proper list.
  */
-static void compile_form_let_values(FuncChunk* c, Node* node, int tail) {
-    Node* head = node->children[0];
-    (void)head; (void)tail;
+static void compile_bind_values_formals(FuncChunk* c, int result_slot,
+                                        Node* formals) {
+    if (!formals) return;
+    if (formals->type == N_SYMBOL) {
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+        chunk_emit(c, OP_NATIVE_CALL, 655);
+        add_local(c, formals->symbol);
+        return;
+    }
+    if (formals->type != N_LIST) {
+        fprintf(stderr, "ERROR: values formals must be a symbol or list\n");
+        return;
+    }
+
+    int dot = -1;
+    for (int i = 0; i < formals->n_children; i++) {
+        if (is_sym(formals->children[i], ".")) { dot = i; break; }
+    }
+    int fixed = dot >= 0 ? dot : formals->n_children;
+    Node* rest = NULL;
+    if (dot >= 0) {
+        if (dot + 2 != formals->n_children ||
+            formals->children[dot + 1]->type != N_SYMBOL) {
+            fprintf(stderr, "ERROR: malformed dotted values formals\n");
+            return;
+        }
+        rest = formals->children[dot + 1];
+    }
+
+    compile_validate_values_arity(c, result_slot, fixed, rest ? -1 : fixed);
+    for (int i = 0; i < fixed; i++) {
+        if (formals->children[i]->type != N_SYMBOL) {
+            fprintf(stderr, "ERROR: values formal must be an identifier\n");
+            continue;
+        }
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+        chunk_emit(c, OP_NATIVE_CALL, 651);
+        add_local(c, formals->children[i]->symbol);
+    }
+    if (rest) {
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(fixed)));
+        chunk_emit(c, OP_NATIVE_CALL, 655);
+        add_local(c, rest->symbol);
+    }
+}
+
+/** @brief Compile `(define-values formals producer)` with a single producer
+ *         evaluation and full fixed/rest/zero-value semantics. */
+static void compile_form_define_values(FuncChunk* c, Node* node) {
+    compile_expr(c, node->children[2], 0);
+    int result_slot = add_local(c, "__define_values_result__");
+    compile_bind_values_formals(c, result_slot, node->children[1]);
+}
+
+/**
+ * @brief Compile `let-values` or `let*-values`.  `let-values` evaluates every
+ *        producer before introducing any binding; `let*-values` introduces
+ *        each binding before compiling the next producer.  Both retain the
+ *        producer packets as scoped temporaries and remove all temporaries and
+ *        bindings with one OP_POPN after the body result is produced.
+ */
+static void compile_form_let_values(FuncChunk* c, Node* node, int tail,
+                                    int sequential) {
     Node* bindings_list = node->children[1];
     int saved_locals = c->n_locals;
+    int result_slots[64];
+    Node* formals[64];
+    int n_bindings = 0;
 
-    for (int b = 0; b < bindings_list->n_children; b++) {
+    for (int b = 0; b < bindings_list->n_children && n_bindings < 64; b++) {
         Node* binding = bindings_list->children[b];
         if (binding->type != N_LIST || binding->n_children != 2) continue;
-        Node* formals = binding->children[0]; /* (x y ...) or single var */
-        Node* producer = binding->children[1];
-
-        /* Compile the producer expression */
-        compile_expr(c, producer, 0);
-
-        if (formals->type == N_LIST) {
-            /* Multiple return values — bind first to result, rest get nil */
-            if (formals->n_children > 0)
-                add_local(c, formals->children[0]->symbol);
-            for (int i = 1; i < formals->n_children; i++) {
-                chunk_emit(c, OP_NIL, 0);
-                add_local(c, formals->children[i]->symbol);
-            }
-        } else if (formals->type == N_SYMBOL) {
-            /* Single variable */
-            add_local(c, formals->symbol);
-        }
+        compile_expr(c, binding->children[1], 0);
+        result_slots[n_bindings] = add_local(c, "__let_values_result__");
+        formals[n_bindings] = binding->children[0];
+        n_bindings++;
+        if (sequential)
+            compile_bind_values_formals(c, result_slots[n_bindings - 1],
+                                        formals[n_bindings - 1]);
+    }
+    if (!sequential) {
+        for (int i = 0; i < n_bindings; i++)
+            compile_bind_values_formals(c, result_slots[i], formals[i]);
     }
 
-    /* Compile body expressions */
+    int scoped_locals = c->n_locals - saved_locals;
     for (int i = 2; i < node->n_children; i++) {
         if (i > 2) chunk_emit(c, OP_POP, 0);
-        compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        compile_expr(c, node->children[i],
+                     scoped_locals == 0 && tail && i == node->n_children - 1);
     }
-
-    /* Clean up scope: pop bindings below result */
-    int n_bound = c->n_locals - saved_locals;
-    if (n_bound > 0)
-        chunk_emit(c, OP_POPN, n_bound);
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
     c->n_locals = saved_locals;
-    return;
 }
 
 /**
@@ -2029,32 +2095,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * are first-class closures defined in the preamble. They resolve via normal variable lookup
      * and are called via the standard CALL mechanism. No special-casing needed. */
 
-    /* Vector / tensor literal: #(1 2 3)
-     * If ALL elements are numeric literals → create tensor (homogeneous doubles)
-     * Otherwise → create vector (heterogeneous tagged values) */
+    /* R7RS vector constructor / reader literal.  Numeric vectors remain
+     * vectors; tensors have their own `(tensor ...)` constructor.  Treating
+     * `#(1 2 3)` as a tensor made vector?, vector-length, call-with-values,
+     * and every vector consumer silently disagree with the native backend. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
-        int all_numeric = (n_elems > 0);
-        for (int i = 1; i < node->n_children; i++) {
-            if (node->children[i]->type != N_NUMBER) { all_numeric = 0; break; }
-        }
-        if (all_numeric) {
-            /* Tensor path: push each value, then the count LAST (as TOS),
-             * then call tensor-from-stack.  The count must be the
-             * top-of-stack so the native can pop it deterministically —
-             * an earlier convention pushed count first and had the native
-             * guess it back via a stack-distance heuristic, which
-             * mis-fired whenever an element value equalled its distance
-             * from TOS (e.g. #(2 2 2) → guessed n=2, built a 2-element
-             * tensor from garbage and corrupted the stack). */
-            for (int i = 1; i < node->n_children; i++)
-                compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
-            chunk_emit(c, OP_NATIVE_CALL, 1830); /* tensor-from-stack */
-        } else {
-            for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_VEC_CREATE, n_elems);
-        }
+        for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
+        chunk_emit(c, OP_VEC_CREATE, n_elems);
         return;
     }
     if (is_sym(head, "make-vector") && node->n_children >= 2) {
@@ -2224,7 +2272,8 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "parameterize") && node->n_children >= 3) { compile_form_parameterize(c, node, tail); return; }
 
     /* (let-values (((x y ...) producer) ...) body ...) */
-    if (is_sym(head, "let-values") && node->n_children >= 3) { compile_form_let_values(c, node, tail); return; }
+    if (is_sym(head, "let-values") && node->n_children >= 3) { compile_form_let_values(c, node, tail, 0); return; }
+    if (is_sym(head, "let*-values") && node->n_children >= 3) { compile_form_let_values(c, node, tail, 1); return; }
 
     /* (with-exception-handler handler thunk) — call thunk with handler installed.
      * Uses OP_GET_EXN to access exception from VM register. */
@@ -2269,13 +2318,15 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (values expr1 expr2 ...) — multiple return values.
      * Simplified: pack into a vector. Single value = return as-is. */
-    if (is_sym(head, "values") && node->n_children >= 2) {
+    if (is_sym(head, "values") && node->n_children >= 1) {
         if (node->n_children == 2) {
             compile_expr(c, node->children[1], tail);
         } else {
             for (int i = 1; i < node->n_children; i++)
                 compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_VEC_CREATE, node->n_children - 1);
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(node->n_children - 1)));
+            chunk_emit(c, OP_NATIVE_CALL, 650);
         }
         return;
     }
@@ -2675,15 +2726,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* -- define-values -- */
     if (is_sym(head, "define-values") && node->n_children >= 3) {
-        compile_expr(c, node->children[2], 0);
-        Node* formals = node->children[1];
-        if (formals->type == N_LIST) {
-            add_local(c, formals->children[0]->symbol);
-            for (int i = 1; i < formals->n_children; i++) {
-                chunk_emit(c, OP_NIL, 0);
-                add_local(c, formals->children[i]->symbol);
-            }
-        }
+        compile_form_define_values(c, node);
         return;
     }
 
@@ -2702,15 +2745,21 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
 #else
         const char* path = node->children[1]->symbol;
+        int fold_case = is_sym(head, "include-ci");
         FILE* incf = fopen(path, "r");
         if (incf) {
             fseek(incf, 0, SEEK_END); long len = ftell(incf); fseek(incf, 0, SEEK_SET);
             char* src = (char*)malloc(len + 1);
             if (src) {
                 fread(src, 1, len, incf); src[len] = 0; fclose(incf);
-                const char* saved = src_ptr; src_ptr = src;
+                const char* saved = src_ptr;
+                int saved_fold_case = g_compiler_ctx.fold_case_symbols;
+                src_ptr = src;
+                g_compiler_ctx.fold_case_symbols = fold_case;
                 while (1) { skip_ws(); if (!*src_ptr) break; Node* e = parse_sexp(); if (!e) break; compile_expr(c, e, 0); free_node(e); }
-                src_ptr = saved; free(src);
+                src_ptr = saved;
+                g_compiler_ctx.fold_case_symbols = saved_fold_case;
+                free(src);
             } else fclose(incf);
         }
         return;

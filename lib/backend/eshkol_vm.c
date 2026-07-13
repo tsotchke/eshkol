@@ -542,10 +542,17 @@ static const BuiltinDef BUILTINS[] = {
      * Hash tables — IDs 660-670
      * ═══════════════════════════════════════════════════════════════ */
     {"make-hash-table", 660, 0},
-    {"hash-ref", 661, 3}, {"hash-set!", 662, 3},
-    {"hash-has-key?", 663, 2}, {"hash-remove!", 664, 2},
-    {"hash-keys", 665, 1}, {"hash-values", 666, 1},
-    {"hash-count", 667, 1}, {"hash-clear!", 668, 1},
+    {"hash-ref", 661, 3}, {"hash-table-ref/default", 661, 3},
+    {"hash-set!", 662, 3}, {"hash-table-set!", 662, 3},
+    {"hash-delete!", 663, 2}, {"hash-remove!", 663, 2},
+    {"hash-table-delete!", 663, 2},
+    {"hash-has-key?", 664, 2}, {"hash-table-contains?", 664, 2},
+    {"hash-table-exists?", 664, 2},
+    {"hash-keys", 665, 1}, {"hash-table-keys", 665, 1},
+    {"hash-values", 666, 1}, {"hash-table-values", 666, 1},
+    {"hash-count", 667, 1}, {"hash-table-size", 667, 1},
+    {"hash-table/count", 667, 1},
+    {"hash-clear!", 668, 1}, {"hash-table-clear!", 668, 1},
     {"hash-table?", 670, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Character operations — IDs 680-691
