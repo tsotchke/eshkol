@@ -7,16 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.3-evolve] - 2026-07-10
+## [1.3.3-evolve] - 2026-07-13 (release candidate; untagged)
 
-An evolve point release over v1.3.2-evolve: an exact-gradient correction to
-the automatic-differentiation `input2` path that v1.3.2 had claimed complete,
-a region-escape evacuator fix that closes out the ESH-0214 series for the
-`PROMISE` heap subtype, and documentation of a subprocess race fix that
-shipped in v1.3.2 but was never written up.
+An evolve release over v1.3.2-evolve that completes the Moonlab quantum
+trajectory, closes native/VM semantic gaps, makes every declared language
+surface executable under deterministic coverage, and incorporates the
+correctness and memory-safety defects exposed while driving every release
+gate green.  This section describes an **untagged release candidate**; no
+`v1.3.3-evolve` tag has been published.
+
+### Added
+
+- **Moonlab quantum trajectory, S1-S5.** A gated `agent.quantum` integration
+  now provides circuit construction, gates and measurement, Bell-verified
+  quantum randomness, H2 Hamiltonians and VQE, exact/variational energy and
+  gradients, differentiability through quantum circuits using the new
+  `AD_NODE_CUSTOM` custom-VJP node, and FIPS 203 ML-KEM 512/768/1024 key
+  encapsulation seeded from Moonlab's QRNG. The capstone adds a hosted macOS
+  quantum lane, a Bell-CHSH gate, adversarial finite-difference checking,
+  coverage evidence, and an ICC architecture invariant. Bell correlation is
+  200/200, H2 VQE agrees with the exact energy to `4.4e-16`, and the CHSH gate
+  measures `S ~= 2.86`. (#261, #268-#270, #272-#273)
+- **Executable language-surface completion.** Deterministic native and VM
+  probes now execute every one of the 1,056 declared language-surface rows.
+  The coverage policy is ratcheted to **1056/1056 (100%)**, with no token-only,
+  unreachable, or dead-code credit and zero uncovered high-risk rows. (#258,
+  #274 and this release candidate)
+- **Production architecture evidence.** The ICC architecture model now checks
+  eight static/runtime invariants, including honest VM dispatch, quantum QRNG
+  provenance, WebAssembly import glue, executable coverage, and the corrected
+  Poincare tangent metric.
+
+### Changed
+
+- **`make-parameter` and `parameterize` are fully wired, not emulated.** Native,
+  VM, and WebAssembly-hosted paths use real dynamic parameter objects with
+  converter-once semantics, unwind-safe push/pop behavior, and region write
+  barriers. (#267, #271)
+- **Hosted VM parity is explicit and executable.** The native-vs-VM corpus is
+  now 68/68 across source and ESKB execution; the extended VM surface is 52/52.
+  Multiple values, empty vectors, closure mutation, parameters, system calls,
+  image operations, datum read/write serialization, polling,
+  environment-aware process spawning, and other formerly dormant dispatch
+  paths now execute with native-compatible results.
+- **Large-list sort is stable and memory-bounded.** The old arena-retained
+  list merge sort consumed roughly 32 GB for two million values. A stable
+  bottom-up vector merge sort reduces peak RSS to about 362 MiB while
+  preserving order for equal keys. (#266)
+- **Persisted artifacts default to O2**, while JIT execution remains O0 unless
+  requested; opt-level behavior is pinned by seven contract checks.
+
+### Verification
+
+- Aggregate suite: **44/44 suites, 714/714 tests**.
+- CTest: **69/69**; SICP full-book gate: **88/88** JIT+AOT probes.
+- Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
+  differential: **31 programs, zero divergences**.
+- VM parity: **68/68**; VM extended surface: **52/52**.
+- Executable language coverage: **1056/1056 (100%)**; WebAssembly import glue:
+  **100/100 imports provided**.
+- Taylor monomorphization equivalence: **441/441 JIT + 441/441 AOT**, bit-exact
+  through order eight.
+- ICC architecture model: **8/8 invariants**; ICC release readiness:
+  **100/100, oracle complete** (recorded in the readiness report).
 
 ### Fixed
 
+- **Correct Poincare-ball exponential-map convention.** Tangent vectors now
+  use the Riemannian norm induced by `g_x = lambda_x^2 I`; off-origin
+  exp/log round trips and geodesic lengths are locked against analytic
+  identities instead of an inconsistent Euclidean tangent norm.
+- **Complete R7RS multiple-value semantics.** `values`, `call-with-values`,
+  `let-values`, `let*-values`, zero-value producers, multi-value arity, and
+  nested producers now agree across native JIT/AOT and VM execution instead
+  of silently collapsing to zero or one value.
+- **Hosted port and system contracts.** Rebinding an input/output file port no
+  longer invalidates the live stream; string ports preserve cursor/lifecycle
+  semantics; `directory-walk` returns a proper Scheme list in deterministic
+  breadth-first order; and `current-jiffy` preserves its exact 64-bit value
+  instead of round-tripping through `double`.
+- **Image buffer ownership in the VM.** Image read/grayscale/resize results are
+  global-arena-owned and are no longer passed to `free`, eliminating a latent
+  invalid-free/use-after-free path when these hosted operations execute.
+- **Green-CI root fixes.** Tail-call-terminated library functions now complete
+  symbol registration before return emission, preventing O2 dead stripping;
+  Windows lite compile timeouts are reported honestly and use an appropriate
+  budget; rational/bignum region evacuation preserves interior pointers; and
+  `quantum-random-int` honors its bound on the LLVM path. (#262, #265)
+- **Exact numeric and AD hardening.** Exact bignum `gcd`/division, rational and
+  complex equality, bignum-aware VM arithmetic, forward-over-reverse
+  Jacobian/Hessian composition, tensor-vector dual propagation, reshape and
+  2-D matmul Hessians, and first-class/vector-gamma tensor gradients are now
+  covered by differential and finite-difference oracles. (#229, #241,
+  #246-#249, #252, #257)
+- **Release-oracle portability and isolation.** Aggregate C++/SICP gates honor
+  their requested build directory, the Chibi reference supervisor forces the
+  portable `C` locale on macOS, and the generative oracle honors `BUILD_DIR`.
+  LLVM target intrinsics remain allowed in freestanding objects while all
+  undeclared hosted ABI dependencies are still rejected.
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed
