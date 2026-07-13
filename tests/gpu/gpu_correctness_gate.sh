@@ -30,7 +30,8 @@
 #                   ~6 significant digits, not full round-trip precision —
 #                   see the comment in gpu_correctness_gate.esk)
 #   LLVM_CONFIG     path to llvm-config (auto-detected via `brew --prefix
-#                   llvm@21` on macOS, or llvm-config-21 on Linux, if unset)
+#                   llvm@21` on macOS, or llvm-config-21/llvm-config on
+#                   Linux and Git Bash/MSYS2 Windows, if unset)
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -83,7 +84,7 @@ case "$UNAME_S" in
             HAVE_GPU_FRAMEWORK=1
         fi
         ;;
-    Linux)
+    Linux|MINGW*|MSYS*|CYGWIN*)
         if command -v nvidia-smi >/dev/null 2>&1 || command -v nvcc >/dev/null 2>&1; then
             HAVE_GPU_FRAMEWORK=1
         fi
@@ -97,7 +98,8 @@ if [ "$HAVE_GPU_FRAMEWORK" -ne 1 ]; then
     skip "no GPU build framework detected on $UNAME_S (no Metal SDK / no nvidia-smi or nvcc) — nothing to execute"
 fi
 
-if [ "$UNAME_S" = "Linux" ]; then
+case "$UNAME_S" in
+Linux|MINGW*|MSYS*|CYGWIN*)
     if command -v nvidia-smi >/dev/null 2>&1; then
         if ! nvidia-smi -L >/dev/null 2>&1 || [ -z "$(nvidia-smi -L 2>/dev/null)" ]; then
             skip "nvidia-smi present but reports no GPU device"
@@ -111,7 +113,8 @@ if [ "$UNAME_S" = "Linux" ]; then
     else
         skip "nvcc present but no NVIDIA device node or nvidia-smi GPU was found — CUDA toolchain without a runtime device (e.g. hosted compile-only CI)"
     fi
-fi
+    ;;
+esac
 
 # ─────────────────────────────────────────────────────────────────
 # Step 2: resolve LLVM (mirrors CMakeLists.txt / nix/jetson/build.sh's
@@ -132,8 +135,10 @@ fi
 
 configure_and_build() {
     local build_dir="$1" gpu_flag="$2"
-    if [ "$REUSE_BUILDS" = "1" ] && [ -x "$build_dir/eshkol-run" ]; then
-        log "  reusing $build_dir/eshkol-run (REUSE_BUILDS=1)"
+    local runner="$build_dir/eshkol-run"
+    [ -x "$runner" ] || runner="$build_dir/eshkol-run.exe"
+    if [ "$REUSE_BUILDS" = "1" ] && [ -x "$runner" ]; then
+        log "  reusing $runner (REUSE_BUILDS=1)"
         return 0
     fi
     log "  configuring $build_dir (ESHKOL_GPU_ENABLED=$gpu_flag)..."
@@ -173,6 +178,8 @@ configure_and_build "$BUILD_DIR_CPU" OFF || fail "CPU-only reference build faile
 
 GPU_RUN="$REPO_ROOT/$BUILD_DIR_GPU/eshkol-run"
 CPU_RUN="$REPO_ROOT/$BUILD_DIR_CPU/eshkol-run"
+[ -x "$GPU_RUN" ] || GPU_RUN="$GPU_RUN.exe"
+[ -x "$CPU_RUN" ] || CPU_RUN="$CPU_RUN.exe"
 [ -x "$GPU_RUN" ] || fail "$GPU_RUN missing after build"
 [ -x "$CPU_RUN" ] || fail "$CPU_RUN missing after build"
 
@@ -188,6 +195,13 @@ log "Compiling gate payload with both binaries..."
     || fail "GPU binary failed to compile $GATE_ESK — $(tail -n 20 "$WORK_DIR/gpu_compile.log")"
 "$CPU_RUN" "$GATE_ESK" -o "$WORK_DIR/gate_cpu.bin" > "$WORK_DIR/cpu_compile.log" 2>&1 \
     || fail "CPU-reference binary failed to compile $GATE_ESK — $(tail -n 20 "$WORK_DIR/cpu_compile.log")"
+
+GPU_PAYLOAD="$WORK_DIR/gate_gpu.bin"
+CPU_PAYLOAD="$WORK_DIR/gate_cpu.bin"
+[ -x "$GPU_PAYLOAD" ] || GPU_PAYLOAD="$GPU_PAYLOAD.exe"
+[ -x "$CPU_PAYLOAD" ] || CPU_PAYLOAD="$CPU_PAYLOAD.exe"
+[ -x "$GPU_PAYLOAD" ] || fail "GPU gate payload missing after successful compile"
+[ -x "$CPU_PAYLOAD" ] || fail "CPU-reference gate payload missing after successful compile"
 
 # ─────────────────────────────────────────────────────────────────
 # Step 4: runtime GPU-presence check + forced-dispatch run. Verbose GPU
@@ -205,7 +219,7 @@ log "Running GPU-enabled binary with dispatch forced..."
 GPU_STDOUT="$WORK_DIR/gpu_stdout.txt"
 GPU_STDERR="$WORK_DIR/gpu_stderr.txt"
 ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=legacy \
-    "$WORK_DIR/gate_gpu.bin" > "$GPU_STDOUT" 2> "$GPU_STDERR"
+    "$GPU_PAYLOAD" > "$GPU_STDOUT" 2> "$GPU_STDERR"
 gpu_run_rc=$?
 [ "$gpu_run_rc" -eq 0 ] || fail "GPU binary crashed/exited $gpu_run_rc — stderr: $(tail -n 40 "$GPU_STDERR")"
 grep -q "^GATE-DONE$" "$GPU_STDOUT" || fail "GPU run did not reach GATE-DONE — output: $(cat "$GPU_STDOUT")"
@@ -220,7 +234,7 @@ fi
 log ""
 log "Running CPU-only reference binary..."
 CPU_STDOUT="$WORK_DIR/cpu_stdout.txt"
-"$WORK_DIR/gate_cpu.bin" > "$CPU_STDOUT" 2>"$WORK_DIR/cpu_stderr.txt"
+"$CPU_PAYLOAD" > "$CPU_STDOUT" 2>"$WORK_DIR/cpu_stderr.txt"
 cpu_run_rc=$?
 [ "$cpu_run_rc" -eq 0 ] || fail "CPU-reference binary crashed/exited $cpu_run_rc"
 grep -q "^GATE-DONE$" "$CPU_STDOUT" || fail "CPU run did not reach GATE-DONE"
