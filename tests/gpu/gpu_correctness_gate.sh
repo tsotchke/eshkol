@@ -32,6 +32,12 @@
 #   LLVM_CONFIG     path to llvm-config (auto-detected via `brew --prefix
 #                   llvm@21` on macOS, or llvm-config-21/llvm-config on
 #                   Linux and Git Bash/MSYS2 Windows, if unset)
+#   LLVM_DIR        Windows LLVM SDK CMake directory containing LLVMConfig.cmake.
+#   ESHKOL_HOST_CXX_COMPILER
+#                   Windows LLVM SDK clang++.exe used for generated AOT links.
+#   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
+#                   Optional Windows generator overrides. Defaults select the
+#                   newest installed VS 2022+ generator, x64, and ClangCL.
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -73,6 +79,7 @@ fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
 # full build if neither Metal nor a CUDA toolchain is present at all.
 # ─────────────────────────────────────────────────────────────────
 UNAME_S="$(uname -s)"
+WINDOWS_POSIX=0
 HAVE_GPU_FRAMEWORK=0
 case "$UNAME_S" in
     Darwin)
@@ -85,6 +92,7 @@ case "$UNAME_S" in
         fi
         ;;
     Linux|MINGW*|MSYS*|CYGWIN*)
+        case "$UNAME_S" in MINGW*|MSYS*|CYGWIN*) WINDOWS_POSIX=1 ;; esac
         if command -v nvidia-smi >/dev/null 2>&1 || command -v nvcc >/dev/null 2>&1; then
             HAVE_GPU_FRAMEWORK=1
         fi
@@ -120,7 +128,10 @@ esac
 # Step 2: resolve LLVM (mirrors CMakeLists.txt / nix/jetson/build.sh's
 # lite-build LLVM discovery).
 # ─────────────────────────────────────────────────────────────────
-if [ -z "${LLVM_CONFIG:-}" ]; then
+if [ "$WINDOWS_POSIX" -eq 1 ] && [ -n "${LLVM_DIR:-}" ]; then
+    [ -f "$LLVM_DIR/LLVMConfig.cmake" ] \
+        || fail "LLVM_DIR=$LLVM_DIR does not contain LLVMConfig.cmake"
+elif [ -z "${LLVM_CONFIG:-}" ]; then
     if [ "$UNAME_S" = "Darwin" ] && command -v brew >/dev/null 2>&1 && brew --prefix llvm@21 >/dev/null 2>&1; then
         LLVM_CONFIG="$(brew --prefix llvm@21)/bin/llvm-config"
     elif command -v llvm-config-21 >/dev/null 2>&1; then
@@ -131,25 +142,70 @@ if [ -z "${LLVM_CONFIG:-}" ]; then
         fail "could not locate llvm-config (LLVM 21) — set LLVM_CONFIG explicitly"
     fi
 fi
-[ -x "$LLVM_CONFIG" ] || fail "LLVM_CONFIG=$LLVM_CONFIG is not executable"
+if [ -n "${LLVM_CONFIG:-}" ]; then
+    [ -x "$LLVM_CONFIG" ] || fail "LLVM_CONFIG=$LLVM_CONFIG is not executable"
+fi
+
+runner_path() {
+    local build_dir="$1" candidate
+    for candidate in \
+        "$build_dir/eshkol-run" \
+        "$build_dir/eshkol-run.exe" \
+        "$build_dir/Release/eshkol-run.exe"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
 
 configure_and_build() {
     local build_dir="$1" gpu_flag="$2"
-    local runner="$build_dir/eshkol-run"
-    [ -x "$runner" ] || runner="$build_dir/eshkol-run.exe"
-    if [ "$REUSE_BUILDS" = "1" ] && [ -x "$runner" ]; then
+    local runner=""
+    runner="$(runner_path "$build_dir" 2>/dev/null || true)"
+    if [ "$REUSE_BUILDS" = "1" ] && [ -n "$runner" ]; then
         log "  reusing $runner (REUSE_BUILDS=1)"
         return 0
     fi
     log "  configuring $build_dir (ESHKOL_GPU_ENABLED=$gpu_flag)..."
-    cmake -S "$REPO_ROOT" -B "$build_dir" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DESHKOL_REQUIRED_LLVM_MAJOR=21 \
-        -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
-        -DESHKOL_XLA_ENABLED=OFF \
-        -DESHKOL_GPU_ENABLED="$gpu_flag" \
-        -DESHKOL_BUILD_TESTS=OFF \
-        > "$build_dir.configure.log" 2>&1 || { tail -n 60 "$build_dir.configure.log"; return 1; }
+    local -a cmake_args=(
+        -S "$REPO_ROOT"
+        -B "$build_dir"
+        -DCMAKE_BUILD_TYPE=Release
+        -DESHKOL_REQUIRED_LLVM_MAJOR=21
+        -DESHKOL_XLA_ENABLED=OFF
+        -DESHKOL_GPU_ENABLED="$gpu_flag"
+        -DESHKOL_BUILD_TESTS=OFF
+    )
+
+    if [ "$WINDOWS_POSIX" -eq 1 ]; then
+        local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
+        if [ -z "$generator" ]; then
+            if cmake --help 2>/dev/null | grep -q 'Visual Studio 18 2026'; then
+                generator='Visual Studio 18 2026'
+            elif cmake --help 2>/dev/null | grep -q 'Visual Studio 17 2022'; then
+                generator='Visual Studio 17 2022'
+            else
+                fail "no supported Visual Studio 2022+ CMake generator found for Windows CUDA"
+            fi
+        fi
+        cmake_args+=(
+            -G "$generator"
+            -A "${GPU_GATE_CMAKE_PLATFORM:-x64}"
+            -T "${GPU_GATE_CMAKE_TOOLSET:-ClangCL}"
+        )
+        [ -n "${LLVM_DIR:-}" ] && cmake_args+=(-DLLVM_DIR="$LLVM_DIR")
+        [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ] \
+            && cmake_args+=(-DESHKOL_HOST_CXX_COMPILER="$ESHKOL_HOST_CXX_COMPILER")
+        [ -n "${LLVM_CONFIG:-}" ] \
+            && cmake_args+=(-DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG")
+    else
+        cmake_args+=(-G Ninja -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG")
+    fi
+
+    cmake "${cmake_args[@]}" > "$build_dir.configure.log" 2>&1 \
+        || { tail -n 60 "$build_dir.configure.log"; return 1; }
 
     if [ "$gpu_flag" = "ON" ] && ! grep -q "GPU acceleration: ENABLED" "$build_dir.configure.log"; then
         # Framework check in step 1 said yes, but CMake's own probe (which
@@ -159,7 +215,9 @@ configure_and_build() {
     fi
 
     log "  building $build_dir..."
-    ninja -C "$build_dir" eshkol-run > "$build_dir.build.log" 2>&1 || { tail -n 80 "$build_dir.build.log"; return 1; }
+    cmake --build "$build_dir" --config Release --target eshkol-run --parallel \
+        > "$build_dir.build.log" 2>&1 \
+        || { tail -n 80 "$build_dir.build.log"; return 1; }
 }
 
 log "=== Eshkol GPU execution correctness gate ==="
@@ -176,10 +234,10 @@ fi
 log "Building CPU-only reference ($BUILD_DIR_CPU)..."
 configure_and_build "$BUILD_DIR_CPU" OFF || fail "CPU-only reference build failed — see $BUILD_DIR_CPU.build.log"
 
-GPU_RUN="$REPO_ROOT/$BUILD_DIR_GPU/eshkol-run"
-CPU_RUN="$REPO_ROOT/$BUILD_DIR_CPU/eshkol-run"
-[ -x "$GPU_RUN" ] || GPU_RUN="$GPU_RUN.exe"
-[ -x "$CPU_RUN" ] || CPU_RUN="$CPU_RUN.exe"
+GPU_RUN="$(runner_path "$BUILD_DIR_GPU" 2>/dev/null || true)"
+CPU_RUN="$(runner_path "$BUILD_DIR_CPU" 2>/dev/null || true)"
+[ -n "$GPU_RUN" ] && GPU_RUN="$REPO_ROOT/$GPU_RUN"
+[ -n "$CPU_RUN" ] && CPU_RUN="$REPO_ROOT/$CPU_RUN"
 [ -x "$GPU_RUN" ] || fail "$GPU_RUN missing after build"
 [ -x "$CPU_RUN" ] || fail "$CPU_RUN missing after build"
 
