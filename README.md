@@ -8,7 +8,11 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.1--evolve-green.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.3--evolve--rc-orange.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+
+🧪 **v1.3.3-evolve release candidate prepared (untagged)** — complete quantum
+S1-S5, 100% executable language-surface coverage, and the full release-gate
+record are summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 📣 **v1.3.0-evolve released** — see [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 

@@ -279,14 +279,16 @@ public:
      * @param op The operation AST node
      * @return Port as tagged value
      */
-    llvm::Value* openInputFile(const eshkol_operations_t* op);
+    llvm::Value* openInputFile(const eshkol_operations_t* op,
+                               bool wrapper_uses_first_argument = false);
 
     /**
      * Open file for output: (open-output-file filename)
      * @param op The operation AST node
      * @return Port as tagged value
      */
-    llvm::Value* openOutputFile(const eshkol_operations_t* op);
+    llvm::Value* openOutputFile(const eshkol_operations_t* op,
+                                bool wrapper_uses_first_argument = false);
 
     /**
      * Open file for append: (open-output-file-append filename).
@@ -304,7 +306,8 @@ private:
      * mode_str is "w" or "a"; scheme_name is the diagnostic name. */
     llvm::Value* openOutputFileImpl(const eshkol_operations_t* op,
                                      const char* mode_str,
-                                     const char* scheme_name);
+                                     const char* scheme_name,
+                                     bool wrapper_uses_first_argument = false);
 
 public:
 

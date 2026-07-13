@@ -1,5 +1,5 @@
-; FILED: `write` does not produce read-syntax — strings print unquoted.
-; native -r : "hi"(1 "a")
-; vm        : hi(1 a)
+; RESOLVED: `write` now emits a readable external representation, including
+; quoted/escaped strings and recursive list structure.
+; native -r == VM: "hi"(1 "a")
 (write "hi")
 (write (list 1 "a"))

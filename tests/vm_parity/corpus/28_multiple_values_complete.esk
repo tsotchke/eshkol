@@ -1,0 +1,53 @@
+; Full R7RS multiple-values parity: opaque packets must not alias vectors,
+; producers run once, and fixed/rest/zero/dotted formals all bind correctly.
+
+(define producer-count 0)
+(define-values (a b)
+  (begin (set! producer-count (+ producer-count 1)) (values 19 23)))
+(display (+ a b)) (newline)
+(display producer-count) (newline)
+
+(define-values all-values (values 2 3 5))
+(display all-values) (newline)
+(define-values (head . tail) (values 7 11 13))
+(display head) (display tail) (newline)
+(define-values () (values))
+
+(display (let-values (((x y) (values 17 25))) (+ x y))) (newline)
+(display (let*-values (((x y) (values 2 3))
+                       ((z) (values (+ x y))))
+           z)) (newline)
+
+; A plain vector is one value, never a multiple-values packet.
+(call-with-values (lambda () (vector 1 2 3))
+  (lambda (v) (display (vector-length v)) (newline)))
+(call-with-values (lambda () #(4 5 6 7))
+  (lambda (v) (display (vector-length v)) (newline)))
+
+; Zero values call a zero-argument consumer.
+(call-with-values (lambda () (values))
+  (lambda () (display 0) (newline)))
+
+; Dynamic consumer dispatch is complete through the closure system's declared
+; 16-argument ceiling (the historical implementation silently dropped >8).
+(call-with-values
+  (lambda () (values 1 2 3 4 5 6 7 8 9))
+  (lambda (a b c d e f g h i)
+    (display (+ a b c d e f g h i)) (newline)))
+(call-with-values
+  (lambda () (values 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16))
+  (lambda (a b c d e f g h i j k l m n o p)
+    (display (+ a b c d e f g h i j k l m n o p)) (newline)))
+
+; let-values producers are simultaneous and bindings do not leak.
+(let ((x 100))
+  (display
+    (let-values (((x) (values 1))
+                 ((y) (values x)))
+      (+ x y)))
+  (newline))
+(let ((x 9))
+  (display (let-values (((x) (values 1))) x))
+  (newline)
+  (display x)
+  (newline))

@@ -48,6 +48,7 @@ typedef struct {
     const char* source_path;   /* Source file path */
     char loaded_modules[64][128]; /* Module cache for require */
     int n_loaded;
+    int fold_case_symbols;    /* include-ci reader mode (R7RS case-folding) */
 } CompilerContext;
 
 static CompilerContext g_compiler_ctx = {0};
@@ -541,6 +542,10 @@ static Node* parse_sexp(void) {
     while (*src_ptr && !isspace(*src_ptr) && *src_ptr != '(' && *src_ptr != ')' && *src_ptr != '"' && i < 127)
         buf[i++] = *src_ptr++;
     buf[i] = 0;
+    if (g_compiler_ctx.fold_case_symbols) {
+        for (int j = 0; j < i; j++)
+            buf[j] = (char)tolower((unsigned char)buf[j]);
+    }
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 
@@ -872,7 +877,7 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
  *         constants, symbols as packed 8-byte constant chunks passed to
- *         native call 100 (symbol construction), and lists as a chain of
+ *         native call 101 (symbol construction), and lists as a chain of
  *         OP_CONS built from an OP_NIL base (right to left). */
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
@@ -895,7 +900,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         return;
     }
     if (datum->type == N_SYMBOL) {
-        /* Quoted symbol → compile as string */
+        /* Quoted symbol → preserve its distinct Scheme symbol tag. */
         int len = (int)strlen(datum->symbol);
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
@@ -905,7 +910,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                 pack |= ((int64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        chunk_emit(c, OP_NATIVE_CALL, 101);
         return;
     }
     if (datum->type == N_LIST) {

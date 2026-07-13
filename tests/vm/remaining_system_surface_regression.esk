@@ -1,0 +1,68 @@
+;;; Deterministic execution probes for the last VM-only system surfaces.
+
+(display "=== remaining VM system surface regression ===") (newline)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name condition)
+  (display name) (display ": ")
+  (if condition
+      (begin (display "PASS") (set! passed (+ passed 1)))
+      (begin (display "FAIL") (set! failed (+ failed 1))))
+  (newline))
+
+;; directory-entries must produce a proper Scheme list, including when the
+;; directory happens to be empty.
+(check "directory-entries returns list"
+       (list? (directory-entries "/tmp")))
+
+;; Exercise the public force-future spelling (not merely its `force` alias).
+(check "force-future resolves future value"
+       (= 42 (force-future (future 42))))
+
+;; The hosted VM condition-variable implementation is cooperative: waiting
+;; releases and reacquires the mutex without blocking the single VM thread.
+(define cv (make-condition-variable))
+(define cv-mutex (make-mutex))
+(check "condvar-wait releases and reacquires mutex"
+       (and (mutex-lock! cv-mutex)
+            (condvar-wait! cv cv-mutex)
+            (mutex-unlock! cv-mutex)))
+
+;; A 2x2 single-channel image resized to 1x1 must stay a tensor.
+(define resized
+  (image-resize (make-tensor '(2 2) 0.25) 1 1))
+(check "image-resize preserves a constant image"
+       (and (tensor? resized)
+            (= 0.25 (tensor-ref resized 0))))
+
+;; Polling an empty descriptor set is deterministic and non-blocking.
+(check "io-poll empty descriptor set"
+       (null? (io-poll '() 0)))
+
+;; Run a tiny child with an explicit environment on each hosted platform.
+(define windows? (string=? (os-type) "windows"))
+(define spawn-command
+  (if windows? "C:/Windows/System32/cmd.exe" "/bin/sh"))
+(define spawn-arguments
+  (if windows?
+      (list "/C" "if %ESHKOL_SURFACE%==1 (exit 0) else (exit 1)")
+      (list "-c" "test \"$ESHKOL_SURFACE\" = 1")))
+(define child
+  (process-spawn-with-env
+    spawn-command
+    spawn-arguments
+    (list (cons "ESHKOL_SURFACE" "1"))))
+(check "process-spawn-with-env propagates environment"
+       (and child (= 0 (process-wait child))))
+
+(check "shell-split tokenizes deterministic words"
+       (equal? (shell-split "alpha beta") (list "alpha" "beta")))
+
+(display "Remaining VM system surface: ")
+(display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+
+;; The surface harness treats any emitted FAIL token as failure.  `exit` is a
+;; native-only R7RS form, so a portable VM probe returns normally here.

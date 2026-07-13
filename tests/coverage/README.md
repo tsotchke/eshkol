@@ -111,10 +111,9 @@ pillars:
    raise it for an exploratory run but cannot lower it.
 3. `eshkol-compiler-readiness` requires the floor event to PASS.
 4. `total-language-coverage` additionally requires
-   `language_surface_high_risk_complete=PASS`; it remains honestly red until
-   every high-risk construct is exercised. Phase 4 closes this criterion:
-   all numeric, tensor/AD, geometry, control-flow, consciousness, macro-syntax,
-   and memory-region constructs have deterministic execution evidence.
+   `language_surface_high_risk_complete=PASS`. Phase 4 closes both that
+   criterion and the complete surface: all 1,056 constructs now have
+   deterministic execution evidence and the monotonic policy floor is 100%.
 5. Gate the campaign after regenerating traces:
    `icc readiness --repo eshkol --target total-language-coverage --trace-dir scripts/icc_traces`.
 

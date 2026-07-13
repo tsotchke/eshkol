@@ -27,6 +27,7 @@
 # not fail the sweep — the sweep-level trace event is PASS iff every
 # non-allowlisted file+mode is PASS.
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 

@@ -107,7 +107,11 @@ run_smoke() {
             LC_ALL=C LC_CTYPE=C LANG=C \
             "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"$LAST_OUT" 2>&1
     else
-        ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache-$label" \
+        # Isolate the fake repository from a BUILD_DIR exported by the outer
+        # aggregate harness.  This branch is specifically the default-build
+        # behavior test, so it must exercise the fake repo's `build/` runner.
+        BUILD_DIR=build \
+            ESHKOL_JIT_CACHE_DIR="$WORK/jit-cache-$label" \
             LC_ALL=C LC_CTYPE=C LANG=C \
             "$FAKE/scripts/run_sicp_smoke.sh" "$@" >"$LAST_OUT" 2>&1
     fi

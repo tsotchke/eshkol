@@ -13814,21 +13814,25 @@ private:
         if (func_name == "eof-object?") return strio_->eofObject(op);
         // R7RS eof-object: returns the EOF sentinel value
         if (func_name == "eof-object") {
-            // Return a tagged value with type ESHKOL_VALUE_NULL and a special marker
-            // EOF is represented as null type with data = 0xEOF magic
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, -1));
+            Value* eof = llvm::ConstantAggregateZero::get(tagged_value_type);
+            return builder->CreateInsertValue(eof,
+                ConstantInt::get(int8_type, 0xFF), {0}, "eof_object");
         }
-        // R7RS textual-port?: all our ports are textual
+        // R7RS textual-port?: a port without the binary flag.
         if (func_name == "textual-port?") {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
-            Value* type = getTaggedValueType(arg);
-            Value* base_type = getBaseType(type);
-            // A port is HEAP_PTR with the port flag (0x10)
-            Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            // All our ports are textual for now
-            return packBoolToTaggedValue(is_heap);
+            Value* type_tag = getTaggedValueType(arg);
+            Value* port_flags = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_ANY_FLAG));
+            Value* is_port = builder->CreateICmpNE(port_flags,
+                ConstantInt::get(int8_type, 0));
+            Value* binary_flag = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_BINARY_FLAG));
+            Value* is_textual = builder->CreateAnd(is_port,
+                builder->CreateICmpEQ(binary_flag, ConstantInt::get(int8_type, 0)));
+            return packBoolToTaggedValue(is_textual);
         }
         // R7RS binary-port?: check port flag bits (0x50) AND binary flag (0x04)
         if (func_name == "binary-port?") {
@@ -13939,17 +13943,31 @@ private:
             Value* arg = codegenAST(&op->call_op.variables[0]);
             Value* tagged = ensureTaggedValue(arg);
             Value* type_tag = builder->CreateExtractValue(tagged, {0});
-            Value* is_port;
-            if (func_name == "input-port-open?") {
-                is_port = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10));
-            } else if (func_name == "output-port-open?") {
-                is_port = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
-            } else {
-                is_port = ConstantInt::get(Type::getInt1Ty(*context), 0);
+            Value* fp_int = builder->CreateExtractValue(tagged, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            if (func_name == "string-port?") {
+                FunctionCallee predicate = module->getOrInsertFunction(
+                    "eshkol_runtime_port_is_string",
+                    FunctionType::get(int32_type,
+                        {PointerType::getUnqual(*context)}, false));
+                Value* runtime_result = builder->CreateCall(predicate, {fp});
+                return tagged_->packBool(builder->CreateICmpNE(runtime_result,
+                    ConstantInt::get(int32_type, 0)));
             }
-            return tagged_->packBool(is_port);
+
+            const uint8_t direction = func_name == "input-port-open?" ? 0x10 : 0x40;
+            Value* has_direction = builder->CreateICmpNE(
+                builder->CreateAnd(type_tag, ConstantInt::get(int8_type, direction)),
+                ConstantInt::get(int8_type, 0));
+            FunctionCallee predicate = module->getOrInsertFunction(
+                "eshkol_runtime_port_is_open",
+                FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context), int8_type}, false));
+            Value* runtime_result = builder->CreateCall(predicate, {
+                fp, ConstantInt::get(int8_type, direction)});
+            Value* is_open = builder->CreateICmpNE(runtime_result,
+                ConstantInt::get(int32_type, 0));
+            return tagged_->packBool(builder->CreateAnd(has_direction, is_open));
         }
 
         // R7RS default port procedures (current-input/output/error-port).
@@ -14044,12 +14062,12 @@ private:
             if (!proc_val) return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
-            // Close port: call fclose on the FILE*
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // call-with-input-file: (call-with-input-file filename proc)
@@ -14058,7 +14076,7 @@ private:
             if (!filename) return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
             // Open file
-            Value* port_val = strio_->openInputFile(op);
+            Value* port_val = strio_->openInputFile(op, true);
             if (!port_val) return nullptr;
             // Call proc with port
             Value* proc_val = codegenAST(&op->call_op.variables[1]);
@@ -14066,11 +14084,12 @@ private:
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
             // Close
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // call-with-output-file: (call-with-output-file filename proc)
@@ -14078,48 +14097,74 @@ private:
             Value* filename = codegenAST(&op->call_op.variables[0]);
             if (!filename) return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
-            Value* port_val = strio_->openOutputFile(op);
+            Value* port_val = strio_->openOutputFile(op, true);
             if (!port_val) return nullptr;
             Value* proc_val = codegenAST(&op->call_op.variables[1]);
             if (!proc_val) return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // with-input-from-file: (with-input-from-file filename thunk)
-        // Opens file, calls thunk (no args), closes file, returns thunk result
+        // Opens file, temporarily rebinds current-input-port, calls thunk,
+        // restores the previous current port, closes, and returns the result.
         if (func_name == "with-input-from-file") {
-            Value* port_val = strio_->openInputFile(op);
+            Value* port_val = strio_->openInputFile(op, true);
             if (!port_val) return nullptr;
             Value* thunk_val = codegenAST(&op->call_op.variables[1]);
             if (!thunk_val) return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
-            Value* result = codegenClosureCall(thunk_val, {}, "with-input-from-file");
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            FunctionType* getter_type = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            FunctionType* setter_type = FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)}, false);
+            FunctionCallee getter = module->getOrInsertFunction(
+                "eshkol_runtime_current_input_fp", getter_type);
+            FunctionCallee setter = module->getOrInsertFunction(
+                "eshkol_runtime_set_current_input_fp", setter_type);
+            Value* previous = builder->CreateCall(getter, {}, "previous_input_port");
+            builder->CreateCall(setter, {fp});
+            Value* result = codegenClosureCall(thunk_val, {}, "with-input-from-file");
+            builder->CreateCall(setter, {previous});
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {fp});
             return ensureTaggedValue(result);
         }
         // with-output-to-file: (with-output-to-file filename thunk)
         if (func_name == "with-output-to-file") {
-            Value* port_val = strio_->openOutputFile(op);
+            Value* port_val = strio_->openOutputFile(op, true);
             if (!port_val) return nullptr;
             Value* thunk_val = codegenAST(&op->call_op.variables[1]);
             if (!thunk_val) return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
-            Value* result = codegenClosureCall(thunk_val, {}, "with-output-to-file");
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            FunctionType* getter_type = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            FunctionType* setter_type = FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)}, false);
+            FunctionCallee getter = module->getOrInsertFunction(
+                "eshkol_runtime_current_output_fp", getter_type);
+            FunctionCallee setter = module->getOrInsertFunction(
+                "eshkol_runtime_set_current_output_fp", setter_type);
+            Value* previous = builder->CreateCall(getter, {}, "previous_output_port");
+            builder->CreateCall(setter, {fp});
+            Value* result = codegenClosureCall(thunk_val, {}, "with-output-to-file");
+            builder->CreateCall(setter, {previous});
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {fp});
             return ensureTaggedValue(result);
         }
 
@@ -14515,6 +14560,7 @@ private:
         if (func_name == "hash-set!") return hash_->hashSet(op);
         if (func_name == "hash-has-key?") return hash_->hashHasKey(op);
         if (func_name == "hash-remove!") return hash_->hashRemove(op);
+        if (func_name == "hash-delete!") return hash_->hashRemove(op);
         if (func_name == "hash-keys") return hash_->hashKeys(op);
         if (func_name == "hash-values") return hash_->hashValues(op);
         if (func_name == "hash-count") return hash_->hashCount(op);
@@ -14535,6 +14581,11 @@ private:
         if (func_name == "hash-table-size") return hash_->hashCount(op);
         if (func_name == "hash-table/count") return hash_->hashCount(op);
         if (func_name == "hash-table-clear!") return hash_->hashClear(op);
+
+        // R7RS unspecified-value constructor.  Eshkol represents the single
+        // unspecified value as its canonical null tagged value.
+        if (func_name == "void" && op->call_op.num_vars == 0)
+            return packNullToTaggedValue();
 
         // Handle if conditional
         if (func_name == "if") return codegenIfCall(op);
@@ -20706,22 +20757,45 @@ private:
 
     // ===== MULTIPLE RETURN VALUES OPERATIONS =====
 
+    // Emit a diagnosed runtime error from a multiple-values dispatch path.
+    // The caller must have positioned the builder in a dedicated failure block;
+    // this helper terminates that block with `unreachable`.
+    void emitMultipleValuesRaise(const char* message) {
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+        Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", module.get());
+        }
+        Value* msg = builder->CreateGlobalString(message);
+        Value* exc_type = ConstantInt::get(builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        Value* exc = builder->CreateCall(make_exc_func, {exc_type, msg});
+        builder->CreateCall(raise_func, {exc});
+        builder->CreateUnreachable();
+    }
+
     // (values expr1 expr2 ...) - Return multiple values
     // Creates a multi-value object that packages multiple values together
     Value* codegenValues(const eshkol_operations_t* op) {
         uint64_t num_values = op->values_op.num_values;
-
-        // Special case: (values) returns nothing
-        if (num_values == 0) {
-            return packNullToTaggedValue();
-        }
 
         // Special case: (values x) returns x directly (single value optimization)
         if (num_values == 1) {
             return codegenAST(&op->values_op.expressions[0]);
         }
 
-        // Multiple values: create a multi-value object
+        // Zero or multiple values: create an opaque multi-value object.  In
+        // particular, `(values)` is NOT Scheme null: call-with-values must be
+        // able to distinguish a zero-value result from one ordinary null value.
         // Structure: [count: size_t, val1: tagged, val2: tagged, ...]
 
         // Call arena_allocate_multi_value to allocate the multi-value object
@@ -20791,10 +20865,10 @@ private:
             return packNullToTaggedValue();
         }
 
-        // Check if produced value is a multi-value object
-        Value* type_tag = getTaggedValueType(produced);
-        Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        // Check the object subtype, not merely the HEAP_PTR tag.  Scheme
+        // vectors, strings, cons cells, parameters, and many other ordinary
+        // one-value objects share that outer tag and must never be unpacked.
+        Value* is_multi_value = isHeapSubtype(produced, HEAP_SUBTYPE_MULTI_VALUE);
 
         // For single value, just call consumer with that value
         // For multi-value, unpack and call with all values
@@ -20805,7 +20879,7 @@ private:
         BasicBlock* single_block = BasicBlock::Create(*context, "single_value", current_func);
         BasicBlock* merge_block = BasicBlock::Create(*context, "cwv_merge", current_func);
 
-        builder->CreateCondBr(is_heap_ptr, multi_block, single_block);
+        builder->CreateCondBr(is_multi_value, multi_block, single_block);
 
         // Multi-value block: unpack values and call consumer with them
         builder->SetInsertPoint(multi_block);
@@ -20829,7 +20903,10 @@ private:
     }
 
     // Helper: Call consumer with unpacked multi-value
-    // Uses runtime dispatch to handle variable number of values (up to 8)
+    // Uses runtime dispatch to handle the closure call system's supported
+    // dynamic arities (0..16).  Counts above the documented closure dispatch
+    // ceiling are rejected explicitly rather than silently calling the
+    // consumer with zero arguments.
     Value* callConsumerWithMultiValue(Value* consumer, Value* multi_val) {
         // Extract the pointer from the tagged value
         Value* mv_ptr = unpackPtrFromTaggedValue(multi_val);
@@ -20838,45 +20915,56 @@ private:
         Value* count_ptr = builder->CreatePointerCast(mv_ptr, ptr_type);
         Value* count = builder->CreateLoad(int64_type, count_ptr, "mv_count");
 
-        // Read all values into an array (up to 8)
-        std::vector<Value*> values;
+        constexpr int MAX_DYNAMIC_VALUES = 16;
+
         size_t offset = sizeof(size_t);
 
-        for (int i = 0; i < 8; i++) {
-            Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
-                ConstantInt::get(int64_type, offset + i * sizeof(eshkol_tagged_value_t)), "mv_elem");
-            Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
-                ptr_type);
-            values.push_back(builder->CreateLoad(tagged_value_type, typed_ptr, "mv_val"));
-        }
-
-        // Create switch for different value counts (1-8)
+        // Create switch for different value counts (0..16).
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* merge_bb = BasicBlock::Create(*context, "mv_merge", current_func);
-        BasicBlock* default_bb = BasicBlock::Create(*context, "mv_default", current_func);
+        BasicBlock* overflow_bb = BasicBlock::Create(*context, "mv_arity_overflow", current_func);
 
-        SwitchInst* sw = builder->CreateSwitch(count, default_bb, 8);
+        SwitchInst* sw = builder->CreateSwitch(count, overflow_bb, MAX_DYNAMIC_VALUES + 1);
 
         std::vector<std::pair<BasicBlock*, Value*>> results;
 
+        // Zero values call a genuinely zero-argument consumer.
+        BasicBlock* zero_bb = BasicBlock::Create(*context, "mv_case_0", current_func);
+        sw->addCase(ConstantInt::get(int64_type, 0), zero_bb);
+        builder->SetInsertPoint(zero_bb);
+        Value* zero_result = codegenClosureCall(consumer, {}, "call-with-values-zero");
+        builder->CreateBr(merge_bb);
+        results.push_back({builder->GetInsertBlock(), zero_result});
+
         // Generate case blocks for each arity
-        for (int n = 1; n <= 8; n++) {
+        for (int n = 1; n <= MAX_DYNAMIC_VALUES; n++) {
             BasicBlock* case_bb = BasicBlock::Create(*context, "mv_case_" + std::to_string(n), current_func);
             sw->addCase(ConstantInt::get(int64_type, n), case_bb);
 
             builder->SetInsertPoint(case_bb);
-            std::vector<Value*> case_args(values.begin(), values.begin() + n);
+            // Load only the validated prefix in its matching case.  Hoisting
+            // MAX_DYNAMIC_VALUES loads before the switch would read beyond a
+            // zero/small packet even when those values are never selected.
+            std::vector<Value*> case_args;
+            case_args.reserve((size_t)n);
+            for (int i = 0; i < n; i++) {
+                Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
+                    ConstantInt::get(int64_type,
+                        offset + i * sizeof(eshkol_tagged_value_t)), "mv_elem");
+                Value* typed_ptr = builder->CreatePointerCast(elem_ptr, ptr_type);
+                case_args.push_back(
+                    builder->CreateLoad(tagged_value_type, typed_ptr, "mv_val"));
+            }
             Value* result = codegenClosureCall(consumer, case_args, "call-with-values");
             builder->CreateBr(merge_bb);
             results.push_back({builder->GetInsertBlock(), result});
         }
 
-        // Default case (0 values or >8) - call with no args
-        builder->SetInsertPoint(default_bb);
-        std::vector<Value*> no_args;
-        Value* default_result = codegenClosureCall(consumer, no_args, "call-with-values-default");
-        builder->CreateBr(merge_bb);
-        results.push_back({builder->GetInsertBlock(), default_result});
+        // The closure dispatcher has a deliberate 16-argument dynamic ceiling.
+        // Exceeding it is a diagnosed capability error, never silent truncation.
+        builder->SetInsertPoint(overflow_bb);
+        emitMultipleValuesRaise(
+            "call-with-values produced more than 16 values; dynamic closure dispatch limit exceeded");
 
         // Merge all results
         builder->SetInsertPoint(merge_bb);
@@ -20906,91 +20994,114 @@ private:
     Value* codegenLetValues(const eshkol_operations_t* op) {
         bool is_star = (op->op == ESHKOL_LET_STAR_VALUES_OP);
 
-        // Save current scope
-        std::unordered_map<std::string, Value*> saved_env;
-        if (!is_star) {
-            // For let-values, we need to evaluate all producers before any bindings
-            // Save current environment
-            saved_env = symbol_table;
-        }
+        // Save the complete lexical environment.  Both forms introduce a
+        // scope and must restore shadowed bindings exactly after the body.
+        const std::unordered_map<std::string, Value*> saved_env = symbol_table;
 
-        // For each binding, evaluate producer and bind variables
-        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-            // Get variable names and count for this binding
-            char** vars = op->let_values_op.binding_vars[i];
-            uint64_t var_count = op->let_values_op.binding_var_counts[i];
+        auto bind_produced_values = [&](Value* raw_produced, char** vars,
+                                        uint64_t var_count) -> bool {
+            if (!raw_produced) return false;
+            Value* produced = ensureTaggedValue(raw_produced);
+            Value* is_multi = isHeapSubtype(produced, HEAP_SUBTYPE_MULTI_VALUE);
+            Function* current_func = builder->GetInsertBlock()->getParent();
 
-            // Evaluate producer expression
-            Value* produced = codegenAST(&op->let_values_op.producers[i]);
-            if (!produced) {
-                eshkol_error("Failed to codegen producer in let-values");
-                return packNullToTaggedValue();
+            BasicBlock* multi_bb = BasicBlock::Create(*context, "lv_multi", current_func);
+            BasicBlock* single_bb = BasicBlock::Create(*context, "lv_single", current_func);
+            BasicBlock* multi_ok_bb = BasicBlock::Create(*context, "lv_multi_arity_ok", current_func);
+            BasicBlock* single_ok_bb = var_count == 1
+                ? BasicBlock::Create(*context, "lv_single_arity_ok", current_func)
+                : nullptr;
+            BasicBlock* error_bb = BasicBlock::Create(*context, "lv_arity_error", current_func);
+            BasicBlock* merge_bb = BasicBlock::Create(*context, "lv_merge", current_func);
+
+            builder->CreateCondBr(is_multi, multi_bb, single_bb);
+
+            // Packet path: validate count before reading any element.
+            builder->SetInsertPoint(multi_bb);
+            Value* mv_ptr = unpackPtrFromTaggedValue(produced);
+            Value* count_ptr = builder->CreatePointerCast(mv_ptr, ptr_type);
+            Value* count = builder->CreateLoad(int64_type, count_ptr, "lv_count");
+            Value* count_ok = builder->CreateICmpEQ(
+                count, ConstantInt::get(int64_type, var_count));
+            builder->CreateCondBr(count_ok, multi_ok_bb, error_bb);
+
+            builder->SetInsertPoint(multi_ok_bb);
+            std::vector<Value*> multi_vals;
+            multi_vals.reserve((size_t)var_count);
+            const size_t offset = sizeof(size_t);
+            for (uint64_t j = 0; j < var_count; j++) {
+                Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
+                    ConstantInt::get(int64_type,
+                        offset + j * sizeof(eshkol_tagged_value_t)), "lv_elem");
+                Value* typed_ptr = builder->CreatePointerCast(elem_ptr, ptr_type);
+                multi_vals.push_back(
+                    builder->CreateLoad(tagged_value_type, typed_ptr, "lv_val"));
             }
+            builder->CreateBr(merge_bb);
+            BasicBlock* multi_exit_bb = builder->GetInsertBlock();
 
-            // Check if produced is a multi-value or single value
-            // For simplicity, we'll extract values directly
-
-            if (var_count == 0) {
-                // No variables to bind, just evaluate for side effects
-                continue;
-            }
-
-            if (var_count == 1) {
-                // Single variable - bind directly
-                symbol_table[vars[0]] = produced;
+            // An ordinary object is exactly one Scheme value, regardless of
+            // its outer HEAP_PTR tag.  It is valid only for one formal.
+            builder->SetInsertPoint(single_bb);
+            if (single_ok_bb) {
+                builder->CreateBr(single_ok_bb);
+                builder->SetInsertPoint(single_ok_bb);
+                builder->CreateBr(merge_bb);
             } else {
-                // Multiple variables - need to unpack multi-value
-                // Check if it's a HEAP_PTR (multi-value)
-                Value* type_tag = getTaggedValueType(produced);
-                Value* is_heap_ptr = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+                builder->CreateBr(error_bb);
+            }
+            BasicBlock* single_exit_bb = single_ok_bb ? builder->GetInsertBlock() : nullptr;
 
-                // Create blocks
-                Function* current_func = builder->GetInsertBlock()->getParent();
-                BasicBlock* multi_block = BasicBlock::Create(*context, "lv_multi", current_func);
-                BasicBlock* single_block = BasicBlock::Create(*context, "lv_single", current_func);
-                BasicBlock* merge_block = BasicBlock::Create(*context, "lv_merge", current_func);
+            builder->SetInsertPoint(error_bb);
+            std::string message = "let-values arity mismatch: expected " +
+                std::to_string(var_count) + " value" +
+                (var_count == 1 ? "" : "s");
+            emitMultipleValuesRaise(message.c_str());
 
-                builder->CreateCondBr(is_heap_ptr, multi_block, single_block);
+            builder->SetInsertPoint(merge_bb);
+            for (uint64_t j = 0; j < var_count; j++) {
+                PHINode* phi = builder->CreatePHI(tagged_value_type,
+                    single_ok_bb ? 2 : 1, std::string("lv_") + vars[j]);
+                phi->addIncoming(multi_vals[j], multi_exit_bb);
+                if (single_ok_bb) phi->addIncoming(produced, single_exit_bb);
+                symbol_table[vars[j]] = phi;
+            }
+            return true;
+        };
 
-                // Multi-value block: unpack values
-                builder->SetInsertPoint(multi_block);
-
-                Value* mv_ptr = unpackPtrFromTaggedValue(produced);
-                size_t offset = sizeof(size_t);
-
-                std::vector<Value*> multi_vals;
-                for (uint64_t j = 0; j < var_count; j++) {
-                    Value* elem_ptr = builder->CreateGEP(builder->getInt8Ty(), mv_ptr,
-                        ConstantInt::get(int64_type, offset + j * sizeof(eshkol_tagged_value_t)), "lv_elem");
-                    Value* typed_ptr = builder->CreatePointerCast(elem_ptr,
-                        ptr_type);
-                    multi_vals.push_back(builder->CreateLoad(tagged_value_type, typed_ptr, "lv_val"));
+        if (!is_star) {
+            // R7RS let-values evaluates every producer in the original outer
+            // environment before installing any bindings.
+            std::vector<Value*> produced_values;
+            produced_values.reserve((size_t)op->let_values_op.num_bindings);
+            for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                Value* produced = codegenAST(&op->let_values_op.producers[i]);
+                if (!produced) {
+                    symbol_table = saved_env;
+                    eshkol_error("Failed to codegen producer in let-values");
+                    return packNullToTaggedValue();
                 }
-
-                builder->CreateBr(merge_block);
-                multi_block = builder->GetInsertBlock();
-
-                // Single-value block: first var gets value, rest get null
-                builder->SetInsertPoint(single_block);
-
-                std::vector<Value*> single_vals;
-                single_vals.push_back(produced);
-                for (uint64_t j = 1; j < var_count; j++) {
-                    single_vals.push_back(packNullToTaggedValue());
+                produced_values.push_back(produced);
+            }
+            for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                if (!bind_produced_values(produced_values[(size_t)i],
+                        op->let_values_op.binding_vars[i],
+                        op->let_values_op.binding_var_counts[i])) {
+                    symbol_table = saved_env;
+                    return packNullToTaggedValue();
                 }
-
-                builder->CreateBr(merge_block);
-                single_block = builder->GetInsertBlock();
-
-                // Merge and create PHI nodes for each variable
-                builder->SetInsertPoint(merge_block);
-
-                for (uint64_t j = 0; j < var_count; j++) {
-                    PHINode* phi = builder->CreatePHI(tagged_value_type, 2, std::string("lv_") + vars[j]);
-                    phi->addIncoming(multi_vals[j], multi_block);
-                    phi->addIncoming(single_vals[j], single_block);
-                    symbol_table[vars[j]] = phi;
+            }
+        } else {
+            // let*-values installs each clause before compiling the next
+            // producer, so later clauses see the earlier bindings.
+            for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                Value* produced = codegenAST(&op->let_values_op.producers[i]);
+                if (!produced || !bind_produced_values(produced,
+                        op->let_values_op.binding_vars[i],
+                        op->let_values_op.binding_var_counts[i])) {
+                    symbol_table = saved_env;
+                    eshkol_error("Failed to codegen producer in let*-values");
+                    return packNullToTaggedValue();
                 }
             }
         }
@@ -20998,21 +21109,7 @@ private:
         // Evaluate body
         Value* result = codegenAST(op->let_values_op.body);
 
-        // Restore environment (for non-star version, bindings go out of scope)
-        for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
-            char** vars = op->let_values_op.binding_vars[i];
-            uint64_t var_count = op->let_values_op.binding_var_counts[i];
-            for (uint64_t j = 0; j < var_count; j++) {
-                symbol_table.erase(vars[j]);
-            }
-        }
-
-        // Restore any shadowed bindings
-        for (const auto& pair : saved_env) {
-            if (symbol_table.find(pair.first) == symbol_table.end()) {
-                symbol_table[pair.first] = pair.second;
-            }
-        }
+        symbol_table = saved_env;
 
         return result ? result : packNullToTaggedValue();
     }
@@ -23224,11 +23321,16 @@ private:
 
         // Map type strings to LLVM types
         auto mapStringToType = [this](const char* type_str) -> Type* {
-            if (strcmp(type_str, "int") == 0) return int32_type;
-            if (strcmp(type_str, "long") == 0) return int64_type;
-            if (strcmp(type_str, "float") == 0) return Type::getFloatTy(*context);
-            if (strcmp(type_str, "double") == 0) return double_type;
-            if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0) {
+            if (strcmp(type_str, "int") == 0 || strcmp(type_str, "i32") == 0)
+                return int32_type;
+            if (strcmp(type_str, "long") == 0 || strcmp(type_str, "i64") == 0)
+                return int64_type;
+            if (strcmp(type_str, "float") == 0 || strcmp(type_str, "f32") == 0)
+                return Type::getFloatTy(*context);
+            if (strcmp(type_str, "double") == 0 || strcmp(type_str, "f64") == 0)
+                return double_type;
+            if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0 ||
+                strcmp(type_str, "ptr") == 0) {
                 return PointerType::getUnqual(*context); // char*
             }
             // Default to int32 for unknown types
@@ -31570,8 +31672,15 @@ private:
         Value* close_bracket_str = codegenString("]");
         builder->CreateCall(strcat_func, {typed_string_buffer, close_bracket_str});
         
-        // Return string buffer as int64 (pointer)
-        return builder->CreatePtrToInt(typed_string_buffer, int64_type);
+        // Copy the temporary formatting buffer into a canonical header-tagged
+        // string. A raw arena allocation has no HEAP_SUBTYPE_STRING header and
+        // was previously rendered as (#<unknown>).
+        FunctionCallee copy_string = module->getOrInsertFunction(
+            "eshkol_runtime_copy_string",
+            FunctionType::get(PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
+        return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
     
     Value* codegenMatrixToString(const eshkol_operations_t* op) {
@@ -31780,8 +31889,12 @@ private:
         Value* close_bracket_str = codegenString("]");
         builder->CreateCall(strcat_func, {typed_string_buffer, close_bracket_str});
         
-        // Return string buffer as int64 (pointer)
-        return builder->CreatePtrToInt(typed_string_buffer, int64_type);
+        FunctionCallee copy_string = module->getOrInsertFunction(
+            "eshkol_runtime_copy_string",
+            FunctionType::get(PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
+        return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
     
     // Production implementation: Compound car/cdr operations using TAGGED cons cells
@@ -33260,10 +33373,11 @@ private:
 
         Value* val = codegenAST(&op->call_op.variables[0]);
         if (!val) return nullptr;
+        val = ensureTaggedValue(val);
 
         // Create cons cell: (tag . value)
         Value* tag_val = tagged_->packInt64(ConstantInt::get(int64_type, tag), true);
-        Value* cons_int = codegenArenaConsCell(tag_val, val);
+        Value* cons_int = codegenTaggedArenaConsCellFromTaggedValue(tag_val, val);
 
         // Pack as HEAP_PTR tagged value (same as regular cons cells)
         Value* cons_ptr = builder->CreateIntToPtr(cons_int, ptr_type);
@@ -33284,10 +33398,7 @@ private:
         Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
         Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
 
-        // Read car (tag) from cons cell offset 0
-        Value* car_ptr = builder->CreateStructGEP(
-            StructType::get(int64_type, int64_type), cons_ptr, 0);
-        return builder->CreateLoad(tagged_value_type, car_ptr);
+        return extractConsCarAsTaggedValue(cons_ptr);
     }
 
     // (sum-value sum-val) — extract inner value from sum type
@@ -33302,12 +33413,8 @@ private:
 
         // Extract cons pointer and get cdr (the value)
         Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
-        Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
 
-        // Read cdr (value) from cons cell offset 1
-        Value* cdr_ptr = builder->CreateStructGEP(
-            StructType::get(int64_type, int64_type), cons_ptr, 1);
-        return builder->CreateLoad(tagged_value_type, cdr_ptr);
+        return extractCdrAsTaggedValue(ptr_int);
     }
 
     // (left? sum-val) or (right? sum-val) — check sum variant
@@ -33324,9 +33431,7 @@ private:
         Value* ptr_int = tagged_->safeExtractInt64(sum_tagged);
         Value* cons_ptr = builder->CreateIntToPtr(ptr_int, ptr_type);
 
-        Value* car_ptr = builder->CreateStructGEP(
-            StructType::get(int64_type, int64_type), cons_ptr, 0);
-        Value* tag_tagged = builder->CreateLoad(tagged_value_type, car_ptr);
+        Value* tag_tagged = extractConsCarAsTaggedValue(cons_ptr);
 
         // Extract the int64 from the tag
         Value* tag_int = tagged_->unpackInt64(tag_tagged);

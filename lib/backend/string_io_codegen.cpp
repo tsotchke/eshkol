@@ -2426,6 +2426,14 @@ static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
     llvm::BasicBlock* null_exit = ctx.builder().GetInsertBlock();
 
     ctx.builder().SetInsertPoint(port_block);
+    llvm::FunctionCallee register_port = ctx.module().getOrInsertFunction(
+        "eshkol_runtime_register_port",
+        llvm::FunctionType::get(ctx.ptrType(),
+            {ctx.ptrType(), ctx.int8Type(), ctx.int32Type()}, false));
+    file_ptr = ctx.builder().CreateCall(register_port, {
+        file_ptr, llvm::ConstantInt::get(ctx.int8Type(), port_type),
+        llvm::ConstantInt::get(ctx.int32Type(), 0)},
+        std::string(name) + "_registered");
     llvm::Value* file_ptr_int = ctx.builder().CreatePtrToInt(file_ptr, ctx.int64Type());
     llvm::Value* port_val = llvm::UndefValue::get(ctx.taggedValueType());
     port_val = ctx.builder().CreateInsertValue(port_val,
@@ -2450,13 +2458,15 @@ static llvm::Value* packFilePortOrFalse(CodegenContext& ctx,
  * @brief Codegen for R7RS `(open-input-file filename)`: calls `fopen` in
  *        "r" mode and packs the result as an input file port (or #f on failure).
  */
-llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
+llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op,
+                                             bool wrapper_uses_first_argument) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::openInputFile - callbacks not set");
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
+    if ((!wrapper_uses_first_argument && op->call_op.num_vars != 1) ||
+        (wrapper_uses_first_argument && op->call_op.num_vars < 1)) {
         eshkol_warn("open-input-file requires exactly 1 argument");
         return nullptr;
     }
@@ -2487,13 +2497,15 @@ llvm::Value* StringIOCodegen::openInputFile(const eshkol_operations_t* op) {
 // open-output-file-append (mode="a"). Bug Q (2026-04-23) added the
 // append variant for write-ahead logs; the only difference from the
 // truncating form is the fopen mode passed.
-llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op) {
-    return openOutputFileImpl(op, "w", "open-output-file");
+llvm::Value* StringIOCodegen::openOutputFile(const eshkol_operations_t* op,
+                                              bool wrapper_uses_first_argument) {
+    return openOutputFileImpl(op, "w", "open-output-file",
+                              wrapper_uses_first_argument);
 }
 
 /** @brief Codegen for `(open-output-file-append filename)`: opens in "a" (append) mode. */
 llvm::Value* StringIOCodegen::openOutputFileAppend(const eshkol_operations_t* op) {
-    return openOutputFileImpl(op, "a", "open-output-file-append");
+    return openOutputFileImpl(op, "a", "open-output-file-append", false);
 }
 
 /**
@@ -2503,13 +2515,15 @@ llvm::Value* StringIOCodegen::openOutputFileAppend(const eshkol_operations_t* op
  */
 llvm::Value* StringIOCodegen::openOutputFileImpl(const eshkol_operations_t* op,
                                                   const char* mode_str,
-                                                  const char* scheme_name) {
+                                                  const char* scheme_name,
+                                                  bool wrapper_uses_first_argument) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::%s - callbacks not set", scheme_name);
         return tagged_.packNull();
     }
 
-    if (op->call_op.num_vars != 1) {
+    if ((!wrapper_uses_first_argument && op->call_op.num_vars != 1) ||
+        (wrapper_uses_first_argument && op->call_op.num_vars < 1)) {
         eshkol_warn("%s requires exactly 1 argument", scheme_name);
         return nullptr;
     }
@@ -2827,7 +2841,7 @@ llvm::Value* StringIOCodegen::readString(const eshkol_operations_t* op) {
     return phi;
 }
 
-/** @brief Codegen for R7RS `(close-port port)`: calls libc `fclose` on the port's `FILE*`. */
+/** @brief Codegen for R7RS `(close-port port)`: closes via the lifecycle registry. */
 llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
     if (!codegen_typed_ast_callback_ || !typed_to_tagged_callback_) {
         eshkol_warn("StringIOCodegen::closePort - callbacks not set");
@@ -2839,9 +2853,6 @@ llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
         return nullptr;
     }
 
-    llvm::Function* fclose_func = getOrDeclareFclose(ctx_);
-    if (!fclose_func) return nullptr;
-
     // Get port argument
     void* tv_ptr = codegen_typed_ast_callback_(&op->call_op.variables[0], callback_context_);
     if (!tv_ptr) return nullptr;
@@ -2852,8 +2863,10 @@ llvm::Value* StringIOCodegen::closePort(const eshkol_operations_t* op) {
     llvm::Value* file_ptr_int = ctx_.builder().CreateExtractValue(tagged, {4});
     llvm::Value* file_ptr = ctx_.builder().CreateIntToPtr(file_ptr_int, ctx_.ptrType());
 
-    // Call fclose
-    ctx_.builder().CreateCall(fclose_func, {file_ptr});
+    llvm::FunctionCallee close_func = ctx_.module().getOrInsertFunction(
+        "eshkol_runtime_close_port",
+        llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false));
+    ctx_.builder().CreateCall(close_func, {file_ptr});
 
     // Return void as tagged value (0)
     return tagged_.packInt64(llvm::ConstantInt::get(ctx_.int64Type(), 0), true);

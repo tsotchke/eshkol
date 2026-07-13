@@ -74,7 +74,7 @@ typedef struct { uint8_t op; int32_t operand; } Instr;
 typedef enum {
     VAL_NIL=0, VAL_INT=1, VAL_FLOAT=2, VAL_BOOL=3,
     VAL_PAIR=4, VAL_CLOSURE=5, VAL_STRING=6, VAL_VECTOR=7,
-    VAL_CONTINUATION=8, VAL_HASH=9
+    VAL_CONTINUATION=8, VAL_HASH=9, VAL_MULTI_VALUE=10
 } ValType;
 typedef struct { ValType type; union { int64_t i; double f; int b; int32_t ptr; } as; } Value;
 #define INT_VAL(v) ((Value){.type=VAL_INT, .as.i=(v)})
@@ -111,6 +111,7 @@ typedef struct MacroNode {
 
 static const char* src_ptr = NULL;
 static int g_trace_on = 0;  /* global, set by --trace flag */
+static int fold_case_symbols = 0; /* include-ci reader mode */
 
 /** @brief Advance src_ptr past whitespace and `;`-to-end-of-line comments. */
 static void skip_ws(void) {
@@ -283,6 +284,10 @@ static Node* parse_sexp(void) {
     while (*src_ptr && !isspace(*src_ptr) && *src_ptr != '(' && *src_ptr != ')' && *src_ptr != '"' && i < 127)
         buf[i++] = *src_ptr++;
     buf[i] = 0;
+    if (fold_case_symbols) {
+        for (int j = 0; j < i; j++)
+            buf[j] = (char)tolower((unsigned char)buf[j]);
+    }
     Node* n = make_node(N_SYMBOL); if (!n) return NULL; strncpy(n->symbol, buf, 127); n->symbol[127] = 0; return n;
 }
 
@@ -399,6 +404,96 @@ static int add_local(FuncChunk* c, const char* name) {
 
 static void compile_expr(FuncChunk* c, Node* node, int tail_position);
 
+static void compile_validate_values_arity(FuncChunk* c, int result_slot,
+                                          int min_count, int max_count) {
+    chunk_emit(c, OP_GET_LOCAL, result_slot);
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(min_count)));
+    chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(max_count)));
+    chunk_emit(c, OP_NATIVE_CALL, 656);
+    chunk_emit(c, OP_POP, 0);
+}
+
+/** @brief Bind an evaluated values packet to fixed, dotted, or identifier
+ *         formals using the VM's opaque multiple-values representation. */
+static void compile_bind_values_formals(FuncChunk* c, int result_slot,
+                                        Node* formals) {
+    if (!formals) return;
+    if (formals->type == N_SYMBOL) {
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+        chunk_emit(c, OP_NATIVE_CALL, 655);
+        add_local(c, formals->symbol);
+        return;
+    }
+    if (formals->type != N_LIST) {
+        fprintf(stderr, "ERROR: values formals must be a symbol or list\n");
+        return;
+    }
+    int dot = -1;
+    for (int i = 0; i < formals->n_children; i++)
+        if (is_sym(formals->children[i], ".")) { dot = i; break; }
+    int fixed = dot >= 0 ? dot : formals->n_children;
+    Node* rest = NULL;
+    if (dot >= 0) {
+        if (dot + 2 != formals->n_children || formals->children[dot + 1]->type != N_SYMBOL) {
+            fprintf(stderr, "ERROR: malformed dotted values formals\n");
+            return;
+        }
+        rest = formals->children[dot + 1];
+    }
+    compile_validate_values_arity(c, result_slot, fixed, rest ? -1 : fixed);
+    for (int i = 0; i < fixed; i++) {
+        if (formals->children[i]->type != N_SYMBOL) continue;
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+        chunk_emit(c, OP_NATIVE_CALL, 651);
+        add_local(c, formals->children[i]->symbol);
+    }
+    if (rest) {
+        chunk_emit(c, OP_GET_LOCAL, result_slot);
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(fixed)));
+        chunk_emit(c, OP_NATIVE_CALL, 655);
+        add_local(c, rest->symbol);
+    }
+}
+
+static void compile_form_define_values(FuncChunk* c, Node* node) {
+    compile_expr(c, node->children[2], 0);
+    int result_slot = add_local(c, "__define_values_result__");
+    compile_bind_values_formals(c, result_slot, node->children[1]);
+}
+
+static void compile_form_let_values_complete(FuncChunk* c, Node* node,
+                                             int tail, int sequential) {
+    Node* bindings = node->children[1];
+    int saved_locals = c->n_locals;
+    int result_slots[64];
+    Node* formals[64];
+    int n_bindings = 0;
+    for (int b = 0; b < bindings->n_children && n_bindings < 64; b++) {
+        Node* binding = bindings->children[b];
+        if (binding->type != N_LIST || binding->n_children != 2) continue;
+        compile_expr(c, binding->children[1], 0);
+        result_slots[n_bindings] = add_local(c, "__let_values_result__");
+        formals[n_bindings] = binding->children[0];
+        n_bindings++;
+        if (sequential)
+            compile_bind_values_formals(c, result_slots[n_bindings - 1],
+                                        formals[n_bindings - 1]);
+    }
+    if (!sequential)
+        for (int i = 0; i < n_bindings; i++)
+            compile_bind_values_formals(c, result_slots[i], formals[i]);
+    int scoped_locals = c->n_locals - saved_locals;
+    for (int i = 2; i < node->n_children; i++) {
+        if (i > 2) chunk_emit(c, OP_POP, 0);
+        compile_expr(c, node->children[i],
+                     scoped_locals == 0 && tail && i == node->n_children - 1);
+    }
+    if (scoped_locals > 0) chunk_emit(c, OP_POPN, scoped_locals);
+    c->n_locals = saved_locals;
+}
+
 /** @brief Scan an AST subtree for a `(set! name ...)` reference to
  *         @p name. */
 static int scan_for_set(Node* node, const char* name) {
@@ -480,7 +575,7 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
  *         constants, symbols as packed 8-byte constant chunks passed to
- *         native call 100 (symbol construction), and lists as a chain of
+ *         native call 101 (symbol construction), and lists as a chain of
  *         OP_CONS built from an OP_NIL base (right to left). */
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
@@ -501,7 +596,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         return;
     }
     if (datum->type == N_SYMBOL) {
-        /* Quoted symbol → compile as string */
+        /* Quoted symbol → preserve its distinct Scheme symbol tag. */
         int len = (int)strlen(datum->symbol);
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
@@ -511,7 +606,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                 pack |= ((int64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        chunk_emit(c, OP_NATIVE_CALL, 101);
         return;
     }
     if (datum->type == N_LIST) {
@@ -553,7 +648,7 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         if (ci >= 0) chunk_emit(c, OP_CONST, ci);
         return;
     }
-    /* Atom: symbol — quote as string */
+    /* Atom: symbol — preserve its distinct Scheme symbol tag. */
     if (node->type == N_SYMBOL) {
         int len = (int)strlen(node->symbol);
         int n_packs = (len + 7) / 8;
@@ -564,7 +659,7 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
                 pack |= ((int64_t)(unsigned char)node->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        chunk_emit(c, OP_NATIVE_CALL, 101);
         return;
     }
     /* Atom: string */
@@ -1336,46 +1431,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
-    /* (let-values (((x y ...) producer) ...) body ...) */
     if (is_sym(head, "let-values") && node->n_children >= 3) {
-        Node* bindings_list = node->children[1];
-        int saved_locals = c->n_locals;
-
-        for (int b = 0; b < bindings_list->n_children; b++) {
-            Node* binding = bindings_list->children[b];
-            if (binding->type != N_LIST || binding->n_children != 2) continue;
-            Node* formals = binding->children[0]; /* (x y ...) or single var */
-            Node* producer = binding->children[1];
-
-            /* Compile the producer expression */
-            compile_expr(c, producer, 0);
-
-            if (formals->type == N_LIST) {
-                /* Multiple return values — bind first to result, rest get nil */
-                if (formals->n_children > 0)
-                    add_local(c, formals->children[0]->symbol);
-                for (int i = 1; i < formals->n_children; i++) {
-                    chunk_emit(c, OP_NIL, 0);
-                    add_local(c, formals->children[i]->symbol);
-                }
-            } else if (formals->type == N_SYMBOL) {
-                /* Single variable */
-                add_local(c, formals->symbol);
-            }
-        }
-
-        /* Compile body expressions */
-        for (int i = 2; i < node->n_children; i++) {
-            if (i > 2) chunk_emit(c, OP_POP, 0);
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
-        }
-
-        /* Clean up scope: pop bindings below result */
-        int n_bound = c->n_locals - saved_locals;
-        if (n_bound > 0)
-            chunk_emit(c, OP_POPN, n_bound);
-        c->n_locals = saved_locals;
-        return;
+        compile_form_let_values_complete(c, node, tail, 0); return;
+    }
+    if (is_sym(head, "let*-values") && node->n_children >= 3) {
+        compile_form_let_values_complete(c, node, tail, 1); return;
     }
 
     /* (with-exception-handler handler thunk) — call thunk with handler installed.
@@ -1567,13 +1627,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (values expr1 expr2 ...) — multiple return values.
      * Simplified: pack into a vector. Single value = return as-is. */
-    if (is_sym(head, "values") && node->n_children >= 2) {
+    if (is_sym(head, "values") && node->n_children >= 1) {
         if (node->n_children == 2) {
             compile_expr(c, node->children[1], tail);
         } else {
             for (int i = 1; i < node->n_children; i++)
                 compile_expr(c, node->children[i], 0);
-            chunk_emit(c, OP_VEC_CREATE, node->n_children - 1);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(node->n_children - 1)));
+            chunk_emit(c, OP_NATIVE_CALL, 650);
         }
         return;
     }
@@ -3202,15 +3263,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* -- define-values -- */
     if (is_sym(head, "define-values") && node->n_children >= 3) {
-        compile_expr(c, node->children[2], 0);
-        Node* formals = node->children[1];
-        if (formals->type == N_LIST) {
-            add_local(c, formals->children[0]->symbol);
-            for (int i = 1; i < formals->n_children; i++) {
-                chunk_emit(c, OP_NIL, 0);
-                add_local(c, formals->children[i]->symbol);
-            }
-        }
+        compile_form_define_values(c, node);
         return;
     }
 
@@ -3231,9 +3284,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             char* src = (char*)malloc(len + 1);
             if (src) {
                 fread(src, 1, len, incf); src[len] = 0; fclose(incf);
-                const char* saved = src_ptr; src_ptr = src;
+                const char* saved = src_ptr;
+                src_ptr = src;
                 while (1) { skip_ws(); if (!*src_ptr) break; Node* e = parse_sexp(); if (!e) break; compile_expr(c, e, 0); free_node(e); }
-                src_ptr = saved; free(src);
+                src_ptr = saved;
+                free(src);
             } else fclose(incf);
         }
         return;
@@ -3248,9 +3303,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
             char* src = (char*)malloc(len + 1);
             if (src) {
                 fread(src, 1, len, incf); src[len] = 0; fclose(incf);
-                const char* saved = src_ptr; src_ptr = src;
+                const char* saved = src_ptr;
+                int saved_fold_case = fold_case_symbols;
+                src_ptr = src;
+                fold_case_symbols = 1;
                 while (1) { skip_ws(); if (!*src_ptr) break; Node* e = parse_sexp(); if (!e) break; compile_expr(c, e, 0); free_node(e); }
-                src_ptr = saved; free(src);
+                src_ptr = saved;
+                fold_case_symbols = saved_fold_case;
+                free(src);
             } else fclose(incf);
         }
         return;
@@ -3344,7 +3404,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /***************************************************************************
-     * Missing I/O: write-char, write-line, read
+     * Hosted datum I/O.  The desktop ESKB emitter must use the same arity-
+     * specific native IDs as the source compiler; sending an explicit port
+     * to legacy zero-arity fid 588 leaves that port on the operand stack and
+     * corrupts the following call frame.
      ***************************************************************************/
     if (is_sym(head, "write-char") && node->n_children >= 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 586); return;
@@ -3352,9 +3415,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "write-line") && node->n_children >= 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 726); return;
     }
-    if (is_sym(head, "read") && node->n_children <= 2) {
-        if (node->n_children == 2) compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 588); return;
+    if (is_sym(head, "read") && (node->n_children == 1 || node->n_children == 2)) {
+        if (node->n_children == 2) {
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 619);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 588);
+        }
+        return;
+    }
+    if (is_sym(head, "write") && (node->n_children == 2 || node->n_children == 3)) {
+        compile_expr(c, node->children[1], 0);
+        if (node->n_children == 3) {
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 618);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 212);
+        }
+        return;
     }
 
     /***************************************************************************
@@ -3452,7 +3530,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 #define STACK_SIZE 4096
 #define MAX_FRAMES 256
 
-typedef enum { HEAP_CONS=0, HEAP_CLOSURE=1, HEAP_STRING=2, HEAP_VECTOR=3, HEAP_CONTINUATION=4, HEAP_HASH=5 } HeapType;
+typedef enum { HEAP_CONS=0, HEAP_CLOSURE=1, HEAP_STRING=2, HEAP_VECTOR=3, HEAP_CONTINUATION=4, HEAP_HASH=5, HEAP_MULTI_VALUE=6 } HeapType;
 
 typedef struct HeapObjectTag {
     HeapType type;
@@ -3499,6 +3577,7 @@ static void print_value(Value v, HeapObject* heap, int depth, int mode) {
     case VAL_NIL:   printf("()"); break;
     case VAL_CLOSURE: printf("<closure>"); break;
     case VAL_CONTINUATION: printf("<continuation>"); break;
+    case VAL_MULTI_VALUE: printf("<multiple-values>"); break;
     case VAL_HASH: printf("<hash-table:%d>", heap[v.as.ptr].hash.count); break;
     case VAL_STRING:
         if (mode == 1) {
@@ -5062,6 +5141,85 @@ static void execute_chunk(FuncChunk* chunk) {
             case 238: { PUSH(((Value){.type=VAL_NIL})); break; } /* void */
             case 239: { Value v=POP(); PUSH(((Value){.type=VAL_BOOL,.as.b=(v.type==VAL_HASH)})); break; } /* hash-table? */
             case 250: { Value x=POP(),y=POP(); PUSH(FLOAT_VAL(atan2(AS_NUM(y),AS_NUM(x)))); break; } /* atan2 */
+            case 650: { /* pack-values: value... count -> opaque multi-value packet */
+                Value count_value = POP();
+                int count = (int)AS_NUM(count_value);
+                if (count < 0 || count > sp || count > 64) {
+                    fprintf(stderr, "ERROR: invalid multiple-values count %d\n", count);
+                    error = 1;
+                    break;
+                }
+                int32_t ptr = HALLOC(); if (ptr < 0) break;
+                heap[ptr].type = HEAP_MULTI_VALUE;
+                heap[ptr].vector.len = count;
+                for (int i = count - 1; i >= 0; i--) heap[ptr].vector.items[i] = POP();
+                PUSH(((Value){.type=VAL_MULTI_VALUE,.as.ptr=ptr}));
+                break;
+            }
+            case 651: { /* multiple-value-ref */
+                Value index_value = POP(), packet = POP();
+                int index = (int)AS_NUM(index_value);
+                if (packet.type == VAL_MULTI_VALUE &&
+                    heap[packet.as.ptr].type == HEAP_MULTI_VALUE) {
+                    if (index >= 0 && index < heap[packet.as.ptr].vector.len)
+                        PUSH(heap[packet.as.ptr].vector.items[index]);
+                    else { fprintf(stderr, "ERROR: multiple-value-ref index out of range\n"); error = 1; }
+                } else if (index == 0) PUSH(packet);
+                else { fprintf(stderr, "ERROR: multiple-value-ref index out of range\n"); error = 1; }
+                break;
+            }
+            case 652: { /* multiple-value-count */
+                Value packet = POP();
+                int count = packet.type == VAL_MULTI_VALUE &&
+                            heap[packet.as.ptr].type == HEAP_MULTI_VALUE
+                                ? heap[packet.as.ptr].vector.len : 1;
+                PUSH(INT_VAL(count));
+                break;
+            }
+            case 653: { /* multiple-value? */
+                Value packet = POP();
+                PUSH(((Value){.type=VAL_BOOL,.as.b=(packet.type == VAL_MULTI_VALUE &&
+                    heap[packet.as.ptr].type == HEAP_MULTI_VALUE)}));
+                break;
+            }
+            case 655: { /* multiple-value-rest */
+                Value start_value = POP(), packet = POP();
+                int start = (int)AS_NUM(start_value);
+                int count = 1;
+                Value* items = &packet;
+                if (packet.type == VAL_MULTI_VALUE && heap[packet.as.ptr].type == HEAP_MULTI_VALUE) {
+                    count = heap[packet.as.ptr].vector.len;
+                    items = heap[packet.as.ptr].vector.items;
+                }
+                if (start < 0 || start > count) {
+                    fprintf(stderr, "ERROR: multiple-values rest index out of range\n");
+                    error = 1;
+                    break;
+                }
+                Value result = {.type=VAL_NIL};
+                for (int i = count - 1; i >= start; i--) {
+                    int32_t ptr = HALLOC(); if (ptr < 0) break;
+                    heap[ptr].type = HEAP_CONS;
+                    heap[ptr].cons.car = items[i];
+                    heap[ptr].cons.cdr = result;
+                    result = (Value){.type=VAL_PAIR,.as.ptr=ptr};
+                }
+                PUSH(result);
+                break;
+            }
+            case 656: { /* validate-values-arity */
+                Value max_value = POP(), min_value = POP(), packet = POP();
+                int min_count = (int)AS_NUM(min_value), max_count = (int)AS_NUM(max_value);
+                int count = packet.type == VAL_MULTI_VALUE &&
+                            heap[packet.as.ptr].type == HEAP_MULTI_VALUE
+                                ? heap[packet.as.ptr].vector.len : 1;
+                if (count < min_count || (max_count >= 0 && count > max_count)) {
+                    fprintf(stderr, "ERROR: expected %d%s values, received %d\n",
+                            min_count, max_count < 0 ? " or more" : "", count);
+                    error = 1;
+                } else PUSH(packet);
+                break;
+            }
             case 252: { /* propagate_open_slot: child_closure, child_uv_idx, parent_uv_idx → void
                          * If the parent closure (at stack[fp-1]) has an open slot for parent_uv_idx,
                          * copy that open slot to child_closure's child_uv_idx. */
@@ -5083,8 +5241,9 @@ static void execute_chunk(FuncChunk* chunk) {
             case 251: { /* call-with-values-apply: result consumer → call consumer with unpacked result */
                 Value consumer=POP(), result=POP();
                 if (consumer.type != VAL_CLOSURE) { PUSH(((Value){.type=VAL_NIL})); break; }
-                if (result.type == VAL_VECTOR) {
-                    /* Unpack vector values as arguments */
+                if (result.type == VAL_MULTI_VALUE &&
+                    heap[result.as.ptr].type == HEAP_MULTI_VALUE) {
+                    /* Unpack only an opaque values packet. */
                     int argc = heap[result.as.ptr].vector.len;
                     PUSH(consumer);
                     for (int vi = 0; vi < argc; vi++)

@@ -35,6 +35,7 @@
 # gradient of vqe-energy with central finite differences through vqe-energy;
 # ordinary default builds remain Moonlab-free and skip this opt-in probe.
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 GEN_DIR="$REPO_ROOT/tests/ad_adversarial/generated"

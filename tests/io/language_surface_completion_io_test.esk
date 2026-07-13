@@ -1,0 +1,82 @@
+;;; Deterministic R7RS port and conversion surface completion.
+
+(require stdlib)
+
+(define passed 0)
+(define failed 0)
+(define text-file "/tmp/eshkol_language_surface_io.txt")
+(define binary-file "/tmp/eshkol_language_surface_io.bin")
+(define call-file "/tmp/eshkol_language_surface_call.txt")
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (write expected)
+             (display " actual=") (write actual) (newline)
+             (set! failed (+ failed 1)))))
+
+;; Tensor formatting helpers historically had no executable caller.
+(check "vector-to-string" "[1, 2, 3]"
+       (vector-to-string (tensor 1.0 2.0 3.0)))
+(check "matrix-to-string" "[[1, 2], [3, 4]]"
+       (matrix-to-string (reshape (tensor 1.0 2.0 3.0 4.0) 2 2)))
+
+;; Canonical EOF and textual/string-port identity.
+(check "eof-object constructor agrees with predicate" #t
+       (eof-object? (eof-object)))
+(check "textual-port? rejects ordinary heap values" #f (textual-port? "not a port"))
+(define string-in (open-input-string "abcdef"))
+(check "input string-port?" #t (string-port? string-in))
+(check "input textual-port?" #t (textual-port? string-in))
+(check "input-port-open? before close" #t (input-port-open? string-in))
+(check "char-ready? on in-memory input" #t (char-ready? string-in))
+(check "read-string from in-memory input" "abc" (read-string 3 string-in))
+(close-input-port string-in)
+(check "input-port-open? after close" #f (input-port-open? string-in))
+
+(define string-out (open-output-string))
+(check "output string-port?" #t (string-port? string-out))
+(check "output textual-port?" #t (textual-port? string-out))
+(check "output-port-open? before close" #t (output-port-open? string-out))
+(write-shared '(1 2 3) string-out)
+(check "write-shared to string port" "(1 2 3)" (get-output-string string-out))
+(close-output-port string-out)
+(check "output-port-open? after close" #f (output-port-open? string-out))
+
+;; Binary peek must not consume the byte.
+(define binary-out (open-binary-output-file binary-file))
+(write-u8 65 binary-out)
+(write-u8 66 binary-out)
+(close-port binary-out)
+(define binary-in (open-binary-input-file binary-file))
+(check "peek-u8" 65 (peek-u8 binary-in))
+(check "peek-u8 does not consume" 65 (read-u8 binary-in))
+(close-port binary-in)
+
+;; File wrappers call their procedures with live ports and close afterward.
+(check "call-with-output-file result" 73
+       (call-with-output-file call-file
+         (lambda (port) (write-string "wrapped" port) 73)))
+(check "call-with-input-file" "wrapped"
+       (call-with-input-file call-file (lambda (port) (read-string 7 port))))
+
+(define explicit-port (open-output-file text-file))
+(check "call-with-port result" 91
+       (call-with-port explicit-port
+         (lambda (port) (write-string "explicit" port) 91)))
+(check "call-with-port closes" #f (output-port-open? explicit-port))
+
+;; The with-* forms must temporarily rebind the implicit current port.
+(with-output-to-file text-file (lambda () (display "implicit")))
+(check "with-input-from-file rebinds current input" "implicit"
+       (with-input-from-file text-file (lambda () (read-string 8))))
+
+(delete-file text-file)
+(delete-file binary-file)
+(delete-file call-file)
+
+(display "I/O completion: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))

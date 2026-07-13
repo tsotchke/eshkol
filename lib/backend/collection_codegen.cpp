@@ -2573,11 +2573,11 @@ llvm::Value* CollectionCodegen::vectorCopyNew(const eshkol_operations_t* op) {
  * @brief Emit IR for `(vector-append v1 v2 ...)`.
  *
  * With zero arguments, returns a freshly allocated empty vector. Otherwise
- * codegens each argument, reads its length word (assumes the
- * [length][tagged elements...] Scheme-vector layout for every operand — no
- * tensor-subtype dispatch here), sums the lengths, allocates a new vector
- * of the total size, and `memcpy`s each source's 16-byte-per-element
- * region into the appropriate offset of the destination in argument order.
+ * codegens each argument and dispatches on its runtime subtype. Constructed
+ * Scheme vectors use `[length][tagged elements...]`; reader `#(...)` literals
+ * use the tensor layout. The result is always a fresh Scheme vector, with
+ * tensor scalars converted to tagged values while copying. This is required
+ * by R7RS because a vector literal must be accepted anywhere a vector is.
  *
  * @param op AST operation node; call arguments are the vectors to concatenate.
  * @return Tagged HEAP_PTR to the newly allocated, concatenated vector.
@@ -2599,18 +2599,65 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         return tagged_.packHeapPtr(vec_ptr);
     }
 
-    // Collect all source vector pointers and compute total length
-    std::vector<llvm::Value*> src_ptrs;
+    // Collect representation-aware source metadata and compute total length.
     std::vector<llvm::Value*> src_lens;
+    std::vector<llvm::Value*> src_elem_bases;
+    std::vector<llvm::Value*> src_is_tensor;
+    llvm::Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
     for (uint64_t i = 0; i < num_vecs; i++) {
         llvm::Value* vec_arg = codegen_ast_callback_(&op->call_op.variables[i], callback_context_);
         if (!vec_arg) return nullptr;
 
         llvm::Value* ptr = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(vec_arg), ctx_.ptrType());
-        llvm::Value* len = ctx_.builder().CreateLoad(ctx_.int64Type(), ptr, "src_len");
-        src_ptrs.push_back(ptr);
+        llvm::Value* header_ptr = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), -8));
+        llvm::Value* subtype = ctx_.builder().CreateLoad(
+            ctx_.int8Type(), header_ptr, "vappend_subtype");
+        llvm::Value* is_tensor = ctx_.builder().CreateICmpEQ(
+            subtype, llvm::ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_TENSOR));
+
+        llvm::BasicBlock* tensor_meta = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_tensor_meta", current_func);
+        llvm::BasicBlock* vector_meta = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_vector_meta", current_func);
+        llvm::BasicBlock* meta_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_meta_merge", current_func);
+        ctx_.builder().CreateCondBr(is_tensor, tensor_meta, vector_meta);
+
+        ctx_.builder().SetInsertPoint(tensor_meta);
+        llvm::Value* tensor_len_ptr = ctx_.builder().CreateStructGEP(
+            ctx_.tensorType(), ptr, 3);
+        llvm::Value* tensor_len = ctx_.builder().CreateLoad(
+            ctx_.int64Type(), tensor_len_ptr, "vappend_tensor_len");
+        llvm::Value* tensor_elems_ptr = ctx_.builder().CreateStructGEP(
+            ctx_.tensorType(), ptr, 2);
+        llvm::Value* tensor_elems = ctx_.builder().CreateLoad(
+            ctx_.ptrType(), tensor_elems_ptr, "vappend_tensor_elems");
+        ctx_.builder().CreateBr(meta_merge);
+        tensor_meta = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(vector_meta);
+        llvm::Value* vector_len = ctx_.builder().CreateLoad(
+            ctx_.int64Type(), ptr, "vappend_vector_len");
+        llvm::Value* vector_elems = ctx_.builder().CreateGEP(
+            ctx_.int8Type(), ptr, llvm::ConstantInt::get(ctx_.int64Type(), 8));
+        ctx_.builder().CreateBr(meta_merge);
+        vector_meta = ctx_.builder().GetInsertBlock();
+
+        ctx_.builder().SetInsertPoint(meta_merge);
+        llvm::PHINode* len = ctx_.builder().CreatePHI(
+            ctx_.int64Type(), 2, "vappend_len");
+        len->addIncoming(tensor_len, tensor_meta);
+        len->addIncoming(vector_len, vector_meta);
+        llvm::PHINode* elem_base = ctx_.builder().CreatePHI(
+            ctx_.ptrType(), 2, "vappend_elems");
+        elem_base->addIncoming(tensor_elems, tensor_meta);
+        elem_base->addIncoming(vector_elems, vector_meta);
+
         src_lens.push_back(len);
+        src_elem_bases.push_back(elem_base);
+        src_is_tensor.push_back(is_tensor);
     }
 
     // Sum up total length
@@ -2633,21 +2680,79 @@ llvm::Value* CollectionCodegen::vectorAppend(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* new_elem_typed = ctx_.builder().CreatePointerCast(new_elem_base, ctx_.ptrType());
 
-    // Copy elements from each source vector
+    // Copy elements from each source. Scheme vectors can use memcpy; tensor
+    // elements need conversion from their compact 8-byte scalar encoding into
+    // 16-byte tagged slots in the resulting Scheme vector.
     llvm::Value* offset = llvm::ConstantInt::get(ctx_.int64Type(), 0);
     for (uint64_t i = 0; i < num_vecs; i++) {
-        llvm::Value* src_elem_base = ctx_.builder().CreateGEP(ctx_.int8Type(), src_ptrs[i],
-            llvm::ConstantInt::get(ctx_.int64Type(), 8));
-        llvm::Value* src_elem_typed = ctx_.builder().CreatePointerCast(src_elem_base, ctx_.ptrType());
+        llvm::BasicBlock* tensor_copy = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_tensor_copy", current_func);
+        llvm::BasicBlock* vector_copy = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_vector_copy", current_func);
+        llvm::BasicBlock* copy_merge = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_copy_merge", current_func);
+        ctx_.builder().CreateCondBr(src_is_tensor[i], tensor_copy, vector_copy);
 
-        llvm::Value* dest_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), new_elem_typed, offset);
-        llvm::Value* byte_count = ctx_.builder().CreateMul(src_lens[i],
-            llvm::ConstantInt::get(ctx_.int64Type(), 16));
-
+        ctx_.builder().SetInsertPoint(vector_copy);
+        llvm::Value* dest_ptr = ctx_.builder().CreateGEP(
+            ctx_.taggedValueType(), new_elem_typed, offset);
+        llvm::Value* byte_count = ctx_.builder().CreateMul(
+            src_lens[i], llvm::ConstantInt::get(ctx_.int64Type(), 16));
         ctx_.builder().CreateMemCpy(
-            dest_ptr, llvm::MaybeAlign(8),
-            src_elem_typed, llvm::MaybeAlign(8),
-            byte_count);
+            dest_ptr, llvm::MaybeAlign(8), src_elem_bases[i],
+            llvm::MaybeAlign(8), byte_count);
+        ctx_.builder().CreateBr(copy_merge);
+
+        ctx_.builder().SetInsertPoint(tensor_copy);
+        llvm::BasicBlock* loop_header = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_tensor_loop", current_func);
+        llvm::BasicBlock* loop_body = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_tensor_body", current_func);
+        llvm::BasicBlock* loop_exit = llvm::BasicBlock::Create(
+            ctx_.context(), "vappend_tensor_done", current_func);
+        llvm::BasicBlock* tensor_preheader = ctx_.builder().GetInsertBlock();
+        ctx_.builder().CreateBr(loop_header);
+
+        ctx_.builder().SetInsertPoint(loop_header);
+        llvm::PHINode* elem_i = ctx_.builder().CreatePHI(
+            ctx_.int64Type(), 2, "vappend_tensor_i");
+        elem_i->addIncoming(llvm::ConstantInt::get(ctx_.int64Type(), 0),
+                            tensor_preheader);
+        ctx_.builder().CreateCondBr(
+            ctx_.builder().CreateICmpULT(elem_i, src_lens[i]),
+            loop_body, loop_exit);
+
+        ctx_.builder().SetInsertPoint(loop_body);
+        llvm::Value* raw_ptr = ctx_.builder().CreateGEP(
+            ctx_.int64Type(), src_elem_bases[i], elem_i);
+        llvm::Value* raw = ctx_.builder().CreateLoad(
+            ctx_.int64Type(), raw_ptr, "vappend_tensor_raw");
+        // Tensor payloads may carry reverse-AD node pointers as well as double
+        // bit patterns. Mirror vector->list/vector-ref's established encoding.
+        llvm::Value* not_zero = ctx_.builder().CreateICmpNE(
+            raw, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        llvm::Value* in_ptr_range = ctx_.builder().CreateICmpULT(
+            raw, llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+        llvm::Value* could_be_ad_ptr = ctx_.builder().CreateAnd(not_zero, in_ptr_range);
+        llvm::Value* as_ad = tagged_.packPtr(raw, ESHKOL_VALUE_CALLABLE);
+        llvm::Value* as_double = tagged_.packDouble(
+            ctx_.builder().CreateBitCast(raw, ctx_.doubleType()));
+        llvm::Value* tagged_elem = ctx_.builder().CreateSelect(
+            could_be_ad_ptr, as_ad, as_double, "vappend_tensor_tagged");
+        llvm::Value* dest_index = ctx_.builder().CreateAdd(offset, elem_i);
+        llvm::Value* tensor_dest = ctx_.builder().CreateGEP(
+            ctx_.taggedValueType(), new_elem_typed, dest_index);
+        ctx_.builder().CreateStore(tagged_elem, tensor_dest);
+        llvm::Value* next_i = ctx_.builder().CreateAdd(
+            elem_i, llvm::ConstantInt::get(ctx_.int64Type(), 1));
+        llvm::BasicBlock* tensor_latch = ctx_.builder().GetInsertBlock();
+        elem_i->addIncoming(next_i, tensor_latch);
+        ctx_.builder().CreateBr(loop_header);
+
+        ctx_.builder().SetInsertPoint(loop_exit);
+        ctx_.builder().CreateBr(copy_merge);
+
+        ctx_.builder().SetInsertPoint(copy_merge);
 
         offset = ctx_.builder().CreateAdd(offset, src_lens[i]);
     }

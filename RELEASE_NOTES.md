@@ -1,50 +1,88 @@
 # Eshkol v1.3.3-evolve — Release Notes
 
-**Release Date**: July 10, 2026
+**Candidate Date**: July 13, 2026
+**Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
 
-Eshkol v1.3.3-evolve is an evolve point release over v1.3.2-evolve. It
-corrects an overstated automatic-differentiation claim from the v1.3.2
-CHANGELOG, closes out the region-escape evacuator series for the last
-remaining heap subtype, and documents a subprocess race fix that had already
-shipped. Full technical detail lives in [CHANGELOG.md](CHANGELOG.md); this
-page is the user-facing summary.
+Eshkol v1.3.3-evolve combines the completed Moonlab quantum stack with a
+language-wide correctness and evidence campaign. Every declared language
+surface now has deterministic executable evidence, native and VM behavior is
+cross-checked, and the release candidate is green across the aggregate,
+full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
+architecture gates. Full technical detail lives in
+[CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: builds on the v1.3.2-evolve gates; the
-`region_evac_subtype_coverage` gate now also exercises `PROMISE`
-escape-then-force, and the `input2` gradient gate (24/24, JIT+AOT) now
-verifies exact gradients rather than passing on unchanged zero-gradient
-behavior.
+**Release gates**: 44/44 suites and 714/714 tests; CTest 69/69; SICP 88/88
+JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
+31 programs with zero divergences; VM parity 68/68; VM extended surface
+52/52; executable language coverage 1056/1056 (100%); WebAssembly imports
+100/100 provided; Taylor monomorphization equivalence 441/441 under both JIT
+and AOT; ICC architecture model 8/8; ICC readiness 100/100.
 
 ## Highlights
 
-### Automatic differentiation — correction
+### Quantum computing, differentiation, and post-quantum cryptography
 
-- **Exact tensor AD gradients for first-class losses and vector/learnable
-  gamma.** v1.3.2's CHANGELOG entry for #212 claimed the `input2` gradient
-  path was complete for `conv2d`/`batchnorm`/`layernorm`/`attention`; an
-  adversarial audit found that change was a no-op (test and roadmap updates
-  only, no gradient code). This release ships the real fix: first-class
-  losses (no compile-time `Function*`) no longer silently lose the tangent
-  through the forward-mode-dual closure path; batch-norm/layer-norm gamma/beta
-  are now differentiated per-feature rather than as one scalar; and any
-  remaining unsupported tensor-op backward path raises an explicit error
-  instead of returning a silent zero gradient. (#229)
+- **S1 — honest quantum execution.** `agent.quantum` exposes state creation,
+  gates, measurement, and randomness routed through Moonlab's Bell-verified
+  QRNG. The Bell smoke is perfectly correlated at 200/200 shots. (#261)
+- **S2 — VQE.** Hamiltonian construction, exact energy, variational energy,
+  optimization, and native gradients are public builtins. H2 converges to its
+  exact ground-state energy within `4.4e-16`. (#268)
+- **S3 — differentiate through circuits.** `AD_NODE_CUSTOM` adds a general
+  custom vector-Jacobian-product node to Eshkol's reverse tape. VQE energy is
+  composably differentiable inside ordinary Eshkol functions and agrees with
+  Moonlab's adjoint and finite differences. (#270)
+- **S4 — ML-KEM.** FIPS 203 ML-KEM 512/768/1024 key generation,
+  encapsulation, and decapsulation are available through `agent.pqc`, with
+  Bell-verified QRNG seeding and NIST KAT/round-trip checks. (#272)
+- **S5 — permanent evidence.** A hosted macOS quantum lane runs the complete
+  quantum suite. A 16K-shot CHSH gate measures `S ~= 2.86`, beyond the
+  classical bound, and quantum behavior is wired into the AD adversarial
+  oracle, executable coverage manifest, and ICC architecture model. (#273)
 
-### Resident-memory correctness
+Quantum remains build-gated with `-DESHKOL_QUANTUM_ENABLED=ON`; the default
+build remains dependency-light. The pinned Moonlab revision includes the
+upstream macOS weak-import linker fix and builds without a local override.
 
-- **Region escape evacuator now covers `PROMISE`.** A `delay`/`make-promise`
-  created inside `with-region` that escaped the region no longer dangles
-  after the region is popped. This completes the ESH-0214 region-evacuator
-  series. (#230, ESH-0214e)
+### Complete executable language coverage
 
-### Documentation
+- The coverage manifest now has **1,056/1,056 executable rows**. Credit
+  requires a deterministic reachable execution trace; tokens, declarations,
+  and dead code do not count.
+- Native and bytecode backends agree on **68/68 parity probes**, including
+  multiple values, vectors, closures, parameters, include forms, numeric
+  boundaries, full datum read/write round trips, and ESKB execution.
+  Unsupported features fail explicitly rather than fabricating values.
+- The formerly dormant hosted VM surface is now executed by **52/52 tests**,
+  covering I/O, system, image, polling, process, concurrency, crypto, format,
+  networking, and layout operations.
+- `make-parameter`/`parameterize` now use real dynamic parameter objects on
+  native, VM, and WebAssembly-hosted paths, including converter-once and
+  unwind-safe dynamic extent. (#271)
 
-- **Subprocess `process-wait` kqueue race — documented.** The fix for a
-  lost-wakeup race in `process-wait` on macOS (a child exiting before its
-  `kevent` exit filter was registered could make `process-wait` block for the
-  full timeout and misreport a dead process as still running) shipped in
-  v1.3.2-evolve but was omitted from that release's notes. It is recorded
-  here for completeness; no v1.3.3 code change was required.
+### Correctness and production hardening
+
+- Poincare-ball exp/log behavior now uses the correct Riemannian tangent norm
+  at the base point, with off-origin analytic length and round-trip checks.
+- Complete R7RS multiple-value semantics now agree across JIT, AOT, and VM.
+- Hosted port rebinding/lifecycle, exact 64-bit `current-jiffy`, proper-list
+  `directory-walk`, and image-buffer ownership defects are fixed.
+- Tail-call library exports can no longer be stripped at O2; rational/bignum
+  region evacuation no longer leaves dangling interior pointers; the Windows
+  lite harness reports compile timeouts honestly. (#265)
+- Large-list sort is now a stable bottom-up vector merge sort: the two-million
+  element stress case drops from roughly 32 GB peak RSS to about 362 MiB.
+  (#266)
+- Exact numeric and automatic-differentiation fixes cover bignums, rationals,
+  tensors, forward-over-reverse composition, Hessians, and explicit
+  unsupported-op errors instead of silent zero gradients.
+
+### Release integrity
+
+The full suite uses an isolated requested build directory; reference and
+generative oracles execute portably on macOS; freestanding object checks allow
+only target intrinsics (never undeclared hosted ABI calls); and every required
+WebAssembly environment import is present in both JavaScript runtimes.
 
 ---
 

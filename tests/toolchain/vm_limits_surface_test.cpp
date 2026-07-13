@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
                          "CMake exposes bytecode VM stack capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_FRAMES \"256\" CACHE STRING",
                          "CMake exposes bytecode VM frame capacity") &&
-         expect_contains(cmake, "set(ESHKOL_VM_MAX_CONSTS \"1024\" CACHE STRING",
+         expect_contains(cmake, "set(ESHKOL_VM_MAX_CONSTS \"4096\" CACHE STRING",
                          "CMake exposes bytecode VM constant-pool capacity") &&
          expect_contains(cmake, "set(ESHKOL_VM_MAX_CODE \"100000\" CACHE STRING",
                          "CMake exposes bytecode VM instruction capacity") &&
@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
                          "vm_limits.h preserves the stack default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_FRAMES 256",
                          "vm_limits.h preserves the frame default") &&
-         expect_contains(header, "#define ESHKOL_VM_MAX_CONSTS 1024",
+         expect_contains(header, "#define ESHKOL_VM_MAX_CONSTS 4096",
                          "vm_limits.h preserves the const-pool default") &&
          expect_contains(header, "#define ESHKOL_VM_MAX_CODE 100000",
                          "vm_limits.h preserves the instruction default") &&

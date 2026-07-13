@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,28 @@ int fail(const std::string& message) {
 
 bool contains(const std::string& text, const std::string& needle) {
     return text.find(needle) != std::string::npos;
+}
+
+/** Return the first declaration that is not an LLVM target intrinsic.
+ *
+ * Optimized atomic operations may lower to target-specific `llvm.*`
+ * intrinsics before the bitcode sidecar is emitted (notably AArch64
+ * ldaxr/stlxr/clrex).  Those declarations are required by their call sites
+ * and disappear into instructions during object emission; they are not
+ * freestanding ABI dependencies.  Any other declaration remains forbidden.
+ */
+std::string first_non_intrinsic_declaration(const std::string& ir) {
+    std::istringstream input(ir);
+    std::string line;
+    while (std::getline(input, line)) {
+        const std::size_t declaration = line.find("declare ");
+        if (declaration == std::string::npos) continue;
+        const std::size_t symbol = line.find('@', declaration);
+        if (symbol == std::string::npos || line.compare(symbol + 1, 5, "llvm.") != 0) {
+            return line;
+        }
+    }
+    return {};
 }
 
 std::string native_target_triple() {
@@ -233,9 +256,11 @@ int main(int argc, char** argv) {
         if (int rc = expect_success("llvm-dis", ir)) {
             return rc;
         }
-        if (contains(ir.output, "declare ")) {
-            return fail("freestanding low-level bitcode has unused external declarations\n" +
-                        ir.output);
+        const std::string external_declaration =
+            first_non_intrinsic_declaration(ir.output);
+        if (!external_declaration.empty()) {
+            return fail("freestanding low-level bitcode has an external ABI declaration: " +
+                        external_declaration + "\n" + ir.output);
         }
         const std::vector<std::string> required_ir = {
             "kernel_next",

@@ -119,6 +119,7 @@ TEST_SCRIPTS=(
     "run_cpp_type_tests.sh"
     "run_vm_tests.sh"
     "run_vm_surface_tests.sh"
+    "run_r7rs_tests.sh"
     "run_surface_extension_tests.sh"
     "run_parser_tests.sh"
     "run_control_flow_tests.sh"
