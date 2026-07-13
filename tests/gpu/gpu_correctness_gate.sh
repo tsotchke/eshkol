@@ -37,8 +37,9 @@
 #                   Windows LLVM SDK clang++.exe used for generated AOT links.
 #   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
 #                   Optional Windows generator overrides. The default prefers
-#                   Ninja with MSVC from an active VsDevCmd environment, which
-#                   does not require CUDA's optional Visual Studio integration;
+#                   Ninja with the LLVM SDK's clang-cl and MSVC as nvcc's host
+#                   compiler from an active VsDevCmd environment. This does not
+#                   require CUDA's optional Visual Studio integration;
 #                   otherwise it selects the newest installed VS 2022+
 #                   generator. Set GPU_GATE_CMAKE_TOOLSET=ClangCL only when
 #                   that optional Visual Studio component is installed.
@@ -188,10 +189,20 @@ configure_and_build() {
     if [ "$WINDOWS_POSIX" -eq 1 ]; then
         local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
         local msvc_cl=""
+        local windows_cc=""
         msvc_cl="$(command -v cl.exe 2>/dev/null \
             || command -v cl 2>/dev/null || true)"
+        if [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ]; then
+            windows_cc="$(dirname "$ESHKOL_HOST_CXX_COMPILER")/clang-cl.exe"
+            [ -x "$windows_cc" ] || windows_cc=""
+        fi
+        if [ -z "$windows_cc" ]; then
+            windows_cc="$(command -v clang-cl.exe 2>/dev/null \
+                || command -v clang-cl 2>/dev/null || true)"
+        fi
+        [ -n "$windows_cc" ] || windows_cc="$msvc_cl"
         if [ -z "$generator" ] && command -v ninja >/dev/null 2>&1 \
-            && [ -n "$msvc_cl" ]; then
+            && [ -n "$windows_cc" ] && [ -n "$msvc_cl" ]; then
             generator='Ninja'
         fi
         if [ -z "$generator" ]; then
@@ -219,8 +230,9 @@ EOF
         if [ "$generator" = 'Ninja' ]; then
             cmake_args+=(
                 -G Ninja
-                -DCMAKE_C_COMPILER="$msvc_cl"
-                -DCMAKE_CXX_COMPILER="$msvc_cl"
+                -DCMAKE_C_COMPILER="$windows_cc"
+                -DCMAKE_CXX_COMPILER="$windows_cc"
+                -DCMAKE_CUDA_HOST_COMPILER="$msvc_cl"
             )
             if command -v rc.exe >/dev/null 2>&1; then
                 cmake_args+=(-DCMAKE_RC_COMPILER="$(command -v rc.exe)")
