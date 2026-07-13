@@ -26,7 +26,7 @@
                   (= seen 1)
                   (= last-value 42))
              "PASS"
-             "FAIL"))
+             (list "FAIL" registered emitted seen last-value)))
 (newline)
 
 (define once-count 0)
@@ -44,7 +44,7 @@
                   (= once-second 0)
                   (= once-count 1))
              "PASS"
-             "FAIL"))
+             (list "FAIL" once-registered once-first once-second once-count)))
 (newline)
 
 (define removed-seen 0)
@@ -62,7 +62,7 @@
                   (= remove-emit 0)
                   (= removed-seen 0))
              "PASS"
-             "FAIL"))
+             (list "FAIL" sum-registered sum-emitted sum)))
 (newline)
 
 (define sum 0)

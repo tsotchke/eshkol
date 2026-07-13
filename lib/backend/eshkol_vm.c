@@ -334,6 +334,9 @@ static const BuiltinDef BUILTINS[] = {
     {"ad-backward", 408, 2}, {"ad-gradient", 409, 2}, {"ad-gradient-of", 409, 2},
     {"ad-tape-release", 1841, 1}, {"ad-node-value", 1842, 2}, {"ad-value", 1842, 2},
     {"ad-value-of", 1842, 2}, {"ad-tape-length", 1843, 1}, {"ad-pow", 1844, 3},
+    {"ad-reset-counters!", 2082, 0}, {"ad-primal-calls", 2083, 0},
+    {"ad-reverse-passes", 2084, 0}, {"ad-tape-allocations", 2085, 0},
+    {"ad-finite-difference-evals", 2086, 0}, {"ad-counters", 2087, 0},
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
@@ -457,6 +460,7 @@ static const BuiltinDef BUILTINS[] = {
     {"url-encode", 1954, 1}, {"url-decode", 1955, 1},
     {"url-parse", 1960, 1},
     {"base64url-encode", 1961, 1}, {"base64url-decode", 1962, 1},
+    {"base64-encode-string", 2080, 1}, {"base64-decode-string", 2081, 1},
     {"uuid-v4", 1963, 0}, {"constant-time-equal?", 1964, 2},
     {"sha256-file", 1965, 1},
     {"regex-compile", 1966, 1}, {"regex-free", 1967, 1},

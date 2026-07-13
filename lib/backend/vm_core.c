@@ -197,7 +197,15 @@ typedef struct {
     HeapType type;
     union {
         struct { Value car; Value cdr; } cons;
-        struct { int32_t func_pc; int32_t n_upvalues; Value upvalues[16]; } closure;
+        struct {
+            int32_t func_pc;
+            int32_t n_upvalues;
+            Value upvalues[16];
+            /* -1 means closed/captured-by-value; otherwise this is an
+             * absolute VM stack slot shared by every closure that captures
+             * the same live top-level binding. */
+            int32_t open_slots[16];
+        } closure;
         struct { void* ptr; int subtype; } opaque;  /* for complex, rational, tensor, logic, etc. */
     };
 } HeapObject;
@@ -328,6 +336,15 @@ typedef struct VM {
      * This enables transparent reverse-mode gradient computation. */
     void* active_tape;                /* AdTape* or NULL */
     int   ad_node_map[STACK_SIZE];    /* stack slot → tape node index (-1 = not tracked) */
+
+    /* Backend-local AD instrumentation.  These mirror the public native
+     * `(ad-*-counters)` contract, but count the VM's own exact/finite-
+     * difference work instead of reporting the LLVM runtime's globals. */
+    uint64_t ad_primal_calls;
+    uint64_t ad_reverse_passes;
+    uint64_t ad_tape_allocations;
+    uint64_t ad_tape_nodes;
+    uint64_t ad_finite_difference_evals;
 
     /* VM-lifetime geometric optimizer state for compatibility builtins. */
     void* geometric_adam_states[16];   /* VmRiemannianAdamState* */

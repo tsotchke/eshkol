@@ -898,6 +898,7 @@ vector-to-string	gap	tensor linalg/manipulation fid missing in VM
 vector?	vm-supported	
 volatile-load	native-only-justified	low-level memory/FFI primitive tied to native codegen
 volatile-store!	native-only-justified	low-level memory/FFI primitive tied to native codegen
+vqe-energy-primitive	native-only-justified	LLVM-only AD_NODE_CUSTOM intrinsic; the VM tape has no custom-VJP node, and pretending plain-energy support would silently break gradient semantics
 vref	vm-supported	
 walk	gap	does not resolve bindings (found/logic_walk_unresolved.esk)
 websocket-close	vm-supported	

@@ -972,6 +972,119 @@ static Value vm_base64url_decode_value(VM* vm, Value input) {
     return result;
 }
 
+/** @brief Base64-encode bytes using the padded RFC 4648 section 4 alphabet. */
+static Value vm_base64_encode_value(VM* vm, Value input) {
+    static const char table[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const unsigned char* data = NULL;
+    int64_t len = 0;
+    if (!vm_bytes_from_value(vm, input, &data, &len) || len < 0)
+        return BOOL_VAL(0);
+    const size_t groups = ((size_t)len + 2u) / 3u;
+    if (groups > (SIZE_MAX - 1u) / 4u)
+        return BOOL_VAL(0);
+
+    size_t out_len = 4u * groups;
+    char* out = (char*)malloc(out_len + 1u);
+    if (!out) return BOOL_VAL(0);
+
+    size_t pos = 0;
+    int64_t i = 0;
+    while (i + 2 < len) {
+        uint32_t word = ((uint32_t)data[i] << 16) |
+                        ((uint32_t)data[i + 1] << 8) |
+                        (uint32_t)data[i + 2];
+        out[pos++] = table[(word >> 18) & 63u];
+        out[pos++] = table[(word >> 12) & 63u];
+        out[pos++] = table[(word >> 6) & 63u];
+        out[pos++] = table[word & 63u];
+        i += 3;
+    }
+    if (i < len) {
+        uint32_t word = (uint32_t)data[i] << 16;
+        const int have_second = (i + 1 < len);
+        if (have_second) word |= (uint32_t)data[i + 1] << 8;
+        out[pos++] = table[(word >> 18) & 63u];
+        out[pos++] = table[(word >> 12) & 63u];
+        out[pos++] = have_second ? table[(word >> 6) & 63u] : '=';
+        out[pos++] = '=';
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)pos);
+    free(out);
+    return result;
+}
+
+/** @brief Decode one RFC 4648 section 4 alphabet character. */
+static int vm_base64_value(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+/** @brief Strictly decode padded RFC 4648 section 4 Base64 into a string.
+ *
+ * Rejects misplaced padding and non-canonical non-zero trailing bits rather
+ * than accepting multiple encodings of the same byte sequence. */
+static Value vm_base64_decode_value(VM* vm, Value input) {
+    const unsigned char* data = NULL;
+    int64_t len = 0;
+    if (!vm_bytes_from_value(vm, input, &data, &len) || len < 0)
+        return BOOL_VAL(0);
+    if (len == 0) return vm_string_value(vm, "", 0);
+    if ((len % 4) != 0) return BOOL_VAL(0);
+
+    int padding = 0;
+    if (data[len - 1] == '=') padding++;
+    if (len >= 2 && data[len - 2] == '=') padding++;
+    for (int64_t i = 0; i < len - padding; ++i) {
+        if (data[i] == '=' || vm_base64_value(data[i]) < 0)
+            return BOOL_VAL(0);
+    }
+    for (int64_t i = len - padding; i < len; ++i) {
+        if (data[i] != '=') return BOOL_VAL(0);
+    }
+
+    size_t out_len = ((size_t)len / 4u) * 3u - (size_t)padding;
+    char* out = (char*)malloc(out_len + 1u);
+    if (!out) return BOOL_VAL(0);
+    size_t pos = 0;
+
+    for (int64_t i = 0; i < len; i += 4) {
+        const int last = (i + 4 == len);
+        int a = vm_base64_value(data[i]);
+        int b = vm_base64_value(data[i + 1]);
+        int c = data[i + 2] == '=' ? 0 : vm_base64_value(data[i + 2]);
+        int d = data[i + 3] == '=' ? 0 : vm_base64_value(data[i + 3]);
+        if (a < 0 || b < 0 || c < 0 || d < 0 ||
+            (!last && (data[i + 2] == '=' || data[i + 3] == '='))) {
+            free(out);
+            return BOOL_VAL(0);
+        }
+        if (last && padding == 2 && (b & 0x0f) != 0) {
+            free(out);
+            return BOOL_VAL(0);
+        }
+        if (last && padding == 1 && (c & 0x03) != 0) {
+            free(out);
+            return BOOL_VAL(0);
+        }
+
+        uint32_t word = ((uint32_t)a << 18) | ((uint32_t)b << 12) |
+                        ((uint32_t)c << 6) | (uint32_t)d;
+        if (pos < out_len) out[pos++] = (char)((word >> 16) & 0xffu);
+        if (pos < out_len) out[pos++] = (char)((word >> 8) & 0xffu);
+        if (pos < out_len) out[pos++] = (char)(word & 0xffu);
+    }
+    out[pos] = '\0';
+    Value result = vm_string_value(vm, out, (int64_t)pos);
+    free(out);
+    return result;
+}
+
 /** @brief Fill `out` with `len` random bytes, preferring /dev/urandom on POSIX
  *         and falling back to a seeded rand() stream (not cryptographically
  *         strong) if the device is unavailable or on other platforms. */
@@ -4485,6 +4598,13 @@ int eshkol_vm_host_push_double(VM* vm, double value) {
     return (!vm->error && vm->sp == before + 1) ? 0 : -1;
 }
 
+/** @brief Invoke a user closure as part of an AD operation and account for
+ *         the actual primal evaluation performed by this VM backend. */
+static Value vm_ad_call_closure(VM* vm, Value closure, Value* args, int argc) {
+    if (vm) vm->ad_primal_calls++;
+    return vm_call_closure_from_native(vm, closure, args, argc);
+}
+
 /** @brief Peek into a closure's bytecode to find the native function id (fid)
  *         it's a thin wrapper around, by scanning its first few instructions
  *         for an OP_NATIVE_CALL before an OP_RETURN. Used to recognize
@@ -5661,6 +5781,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * AD Operations (390-409) — reverse-mode tape + forward-mode derivative
      * ══════════════════════════════════════════════════════════════════════ */
+    case 2082: { /* ad-reset-counters! */
+        vm->ad_primal_calls = 0;
+        vm->ad_reverse_passes = 0;
+        vm->ad_tape_allocations = 0;
+        vm->ad_tape_nodes = 0;
+        vm->ad_finite_difference_evals = 0;
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 2083: { vm_push(vm, INT_VAL((int64_t)vm->ad_primal_calls)); break; }
+    case 2084: { vm_push(vm, INT_VAL((int64_t)vm->ad_reverse_passes)); break; }
+    case 2085: { vm_push(vm, INT_VAL((int64_t)vm->ad_tape_allocations)); break; }
+    case 2086: { vm_push(vm, INT_VAL((int64_t)vm->ad_finite_difference_evals)); break; }
+    case 2087: { /* ad-counters → ordered five-entry association list */
+        Value result = NIL_VAL;
+        result = vm_cons_value(vm, vm_alist_entry(vm, "finite-difference-evals",
+                               INT_VAL((int64_t)vm->ad_finite_difference_evals)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "tape-nodes",
+                               INT_VAL((int64_t)vm->ad_tape_nodes)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "tape-allocations",
+                               INT_VAL((int64_t)vm->ad_tape_allocations)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "reverse-passes",
+                               INT_VAL((int64_t)vm->ad_reverse_passes)), result);
+        result = vm_cons_value(vm, vm_alist_entry(vm, "primal-calls",
+                               INT_VAL((int64_t)vm->ad_primal_calls)), result);
+        vm_push(vm, result);
+        break;
+    }
     case 390: { /* ad-tape-new */
         AdTape* tape = ad_tape_new(&vm->heap.regions);
         if (!tape) { vm_push(vm, NIL_VAL); break; }
@@ -5692,7 +5840,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm->heap.objects[dptr]->opaque.ptr = d;
         Value dual_arg = (Value){.type = VAL_DUAL, .as.ptr = dptr};
         /* Call f(dual) via closure bridge */
-        Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
+        Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
         /* Extract tangent = derivative */
         if (result.type == VAL_DUAL && result.as.ptr >= 0) {
             VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
@@ -7491,6 +7639,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1962: { /* base64url-decode(data) → string or #f */
         Value data_val = vm_pop(vm);
         vm_push(vm, vm_base64url_decode_value(vm, data_val));
+        break;
+    }
+    case 2080: { /* base64-encode-string(data) → padded RFC 4648 string */
+        Value data_val = vm_pop(vm);
+        vm_push(vm, vm_base64_encode_value(vm, data_val));
+        break;
+    }
+    case 2081: { /* base64-decode-string(data) → decoded string or #f */
+        Value data_val = vm_pop(vm);
+        vm_push(vm, vm_base64_decode_value(vm, data_val));
         break;
     }
     case 1963: { /* uuid-v4() → string */
@@ -9737,7 +9895,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             /* Scalar case: f'(x) via single dual pass */
             Value dual_arg;
             VM_AD_MAKE_DUAL(vm, point[0], 1.0, dual_arg);
-            Value result = vm_call_closure_from_native(vm, f_val, &dual_arg, 1);
+            Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
             if (result.type == VAL_DUAL && result.as.ptr >= 0) {
                 VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
                 vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
@@ -9752,7 +9910,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int j = 0; j < n; j++) {
                     VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
                 }
-                Value result = vm_call_closure_from_native(vm, f_val, args, n);
+                Value result = vm_ad_call_closure(vm, f_val, args, n);
                 if (result.type == VAL_DUAL && result.as.ptr >= 0) {
                     VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
                     partials[i] = rd ? rd->tangent : 0;
@@ -9806,7 +9964,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         for (int j = 0; j < n; j++) {
             VM_AD_MAKE_DUAL(vm, point[j], (j == 0) ? 1.0 : 0.0, probe_args[j]);
         }
-        Value probe_result = vm_call_closure_from_native(vm, f_val, probe_args, n);
+        Value probe_result = vm_ad_call_closure(vm, f_val, probe_args, n);
 
         /* Determine output dimension: scalar (m=1) or tensor (m = tensor size) */
         int m = 1;
@@ -9835,7 +9993,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 for (int j = 0; j < n; j++) {
                     VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
                 }
-                Value result = vm_call_closure_from_native(vm, f_val, args, n);
+                Value result = vm_ad_call_closure(vm, f_val, args, n);
 
                 if (m == 1) {
                     /* Scalar output */
@@ -9916,7 +10074,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             /* Scalar hessian via hyper-dual: seed (x, 1, 1, 0) → f₁₂ = f''(x) */
             Value hd_arg;
             VM_HD_MAKE(vm, point[0], 1.0, 1.0, 0.0, hd_arg);
-            Value result = vm_call_closure_from_native(vm, f_val, &hd_arg, 1);
+            Value result = vm_ad_call_closure(vm, f_val, &hd_arg, 1);
             if (result.type == VAL_HYPER_DUAL && result.as.ptr >= 0) {
                 VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
                 vm_push(vm, FLOAT_VAL(rh ? rh->f12 : 0.0));
@@ -9936,7 +10094,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     for (int k = 0; k < n; k++) {
                         VM_HD_MAKE(vm, point[k], (k==i)?1.0:0.0, (k==j)?1.0:0.0, 0.0, args[k]);
                     }
-                    Value r = vm_call_closure_from_native(vm, f_val, args, n);
+                    Value r = vm_ad_call_closure(vm, f_val, args, n);
                     double h_ij = 0.0;
                     if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
                         VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
@@ -9989,7 +10147,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             for (int j = 0; j < n; j++) {
                 VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
             }
-            Value result = vm_call_closure_from_native(vm, f_val, args, n);
+            Value result = vm_ad_call_closure(vm, f_val, args, n);
 
             /* Extract the i-th component's tangent */
             if (result.type == VAL_TENSOR && result.as.ptr >= 0) {
@@ -10012,7 +10170,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     /* F(x + h*ei)[i] */
                     Value ap[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) ap[k] = FLOAT_VAL(pt_plus[k]);
-                    Value rp = vm_call_closure_from_native(vm, f_val, ap, n);
+                    Value rp = vm_ad_call_closure(vm, f_val, ap, n);
                     fplus = 0;
                     if (rp.type == VAL_TENSOR && rp.as.ptr >= 0) {
                         VmTensor* tp = (VmTensor*)vm->heap.objects[rp.as.ptr]->opaque.ptr;
@@ -10021,7 +10179,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     /* F(x - h*ei)[i] */
                     Value am[VM_AD_MAX_VARS];
                     for (int k = 0; k < n; k++) am[k] = FLOAT_VAL(pt_minus[k]);
-                    Value rm = vm_call_closure_from_native(vm, f_val, am, n);
+                    Value rm = vm_ad_call_closure(vm, f_val, am, n);
+                    vm->ad_finite_difference_evals += 2;
                     fminus = 0;
                     if (rm.type == VAL_TENSOR && rm.as.ptr >= 0) {
                         VmTensor* tm = (VmTensor*)vm->heap.objects[rm.as.ptr]->opaque.ptr;
@@ -10092,8 +10251,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 ap[k] = FLOAT_VAL(point[k] + ((k == j) ? h : 0));
                 am[k] = FLOAT_VAL(point[k] - ((k == j) ? h : 0));
             }
-            Value rp = vm_call_closure_from_native(vm, f_val, ap, 3);
-            Value rm = vm_call_closure_from_native(vm, f_val, am, 3);
+            Value rp = vm_ad_call_closure(vm, f_val, ap, 3);
+            Value rm = vm_ad_call_closure(vm, f_val, am, 3);
+            vm->ad_finite_difference_evals += 2;
 
             /* Extract 3 components from each result */
             double fp[3] = {0,0,0}, fm[3] = {0,0,0};
@@ -10186,7 +10346,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                              0.0,
                              args[k]);
             }
-            Value r = vm_call_closure_from_native(vm, f_val, args, n);
+            Value r = vm_ad_call_closure(vm, f_val, args, n);
             if (r.type == VAL_HYPER_DUAL && r.as.ptr >= 0) {
                 VmHyperDual* rh = (VmHyperDual*)vm->heap.objects[r.as.ptr]->opaque.ptr;
                 if (rh) laplacian += rh->f12;
@@ -10254,7 +10414,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         for (int j = 0; j < n; j++) {
             VM_AD_MAKE_DUAL(vm, point[j], dir[j], args[j]);
         }
-        Value result = vm_call_closure_from_native(vm, f_val, args, n);
+        Value result = vm_ad_call_closure(vm, f_val, args, n);
         if (result.type == VAL_DUAL && result.as.ptr >= 0) {
             VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
             vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
@@ -10570,8 +10730,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
             int uv_idx = (int)as_number(uv_idx_v);
             int slot = (int)as_number(slot_v);
-            if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues && slot >= 0 && vm->fp + slot < vm->sp)
-                cl->closure.upvalues[uv_idx] = vm->stack[vm->fp + slot];
+            int absolute_slot = vm->fp + slot;
+            if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
+                absolute_slot >= 0 && absolute_slot < vm->sp)
+                cl->closure.open_slots[uv_idx] = absolute_slot;
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -10714,24 +10876,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else vm_push(vm, result);
         break;
     }
-    case 252: { /* propagate upvalue: copy parent closure's upvalue[slot] into child upvalue[uv_idx].
-                 * Called when a lambda inside a function captures a variable via the parent's upvalue
-                 * (is_local=false). The parent closure lives at stack[fp-1] per calling convention. */
+    case 252: { /* propagate a parent's open upvalue slot into a child closure */
         Value slot_v = vm_pop(vm), uv_idx_v = vm_pop(vm), cl_val = vm_pop(vm);
         if (cl_val.type == VAL_CLOSURE) {
             HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
             int uv_idx = (int)as_number(uv_idx_v);
             int slot = (int)as_number(slot_v);
-            /* Read from the PARENT closure's upvalue array, not the stack frame.
-             * Bug was: vm->stack[vm->fp + slot] reads local slot index `slot` which is
-             * wrong — `slot` is an upvalue index, not a stack-frame offset. */
             if (vm->fp > 0) {
                 Value parent_val = vm->stack[vm->fp - 1];
                 if (parent_val.type == VAL_CLOSURE) {
                     HeapObject* parent_cl = vm->heap.objects[parent_val.as.ptr];
                     if (uv_idx >= 0 && uv_idx < cl->closure.n_upvalues &&
                         slot >= 0 && slot < parent_cl->closure.n_upvalues) {
-                        cl->closure.upvalues[uv_idx] = parent_cl->closure.upvalues[slot];
+                        int32_t parent_open = parent_cl->closure.open_slots[slot];
+                        if (parent_open >= 0)
+                            cl->closure.open_slots[uv_idx] = parent_open;
+                        else
+                            cl->closure.upvalues[uv_idx] = parent_cl->closure.upvalues[slot];
                     }
                 }
             }
@@ -12615,6 +12776,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Create tape and variable nodes */
         AdTape* tape = ad_tape_new(&vm->heap.regions);
         if (!tape) { vm_push(vm, FLOAT_VAL(0)); break; }
+        vm->ad_tape_allocations++;
 
         int var_nodes[64];
         Value args[64];
@@ -12639,7 +12801,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
 
         /* Call f(x1, x2, ..., xn) — arithmetic will record on tape */
-        Value result = vm_call_closure_from_native(vm, f_val, args, n);
+        (void)vm_ad_call_closure(vm, f_val, args, n);
 
         /* Capture result's tape node (it's at the return value position) */
         /* The closure bridge captures result from stack[sp-1] before restoring sp.
@@ -12650,6 +12812,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* Deactivate tape */
         vm->active_tape = saved_tape;
+        vm->ad_tape_nodes += (uint64_t)tape->len;
 
         if (output_node < 0) {
             /* Function didn't produce any tape operations — constant function */
@@ -12662,6 +12825,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
         /* Run backward pass */
         ad_backward(tape, output_node);
+        vm->ad_reverse_passes++;
 
         /* Collect gradients from variable nodes */
         if (n == 1) {

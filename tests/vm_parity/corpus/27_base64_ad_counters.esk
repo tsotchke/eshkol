@@ -1,0 +1,23 @@
+; RFC 4648 Base64 and backend-local AD instrumentation must agree across
+; native LLVM, VM source, and emitted ESKB execution.
+(display (base64-encode-string "Hello")) (newline)
+(display (base64-decode-string "SGVsbG8=")) (newline)
+(display (base64-encode-string "")) (newline)
+(display (base64-decode-string "")) (newline)
+
+(ad-reset-counters!)
+(display (= (ad-primal-calls) 0)) (newline)
+(display (= (ad-reverse-passes) 0)) (newline)
+(display (= (ad-tape-allocations) 0)) (newline)
+(display (= (ad-finite-difference-evals) 0)) (newline)
+(display (= (length (ad-counters)) 5)) (newline)
+
+(define tape (ad-tape-new))
+(define x (ad-var tape 3.0))
+(define y (ad-mul tape x x))
+(ad-backward tape y)
+(display (= (ad-gradient tape x) 6.0)) (newline)
+(display (= (ad-primal-calls) 0)) (newline)
+(display (= (ad-reverse-passes) 0)) (newline)
+(display (= (ad-tape-allocations) 0)) (newline)
+(display (= (ad-finite-difference-evals) 0)) (newline)

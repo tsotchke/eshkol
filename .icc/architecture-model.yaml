@@ -262,27 +262,29 @@ capabilities:
 # --------------------------------------------------------------------------
 invariants:
 
-  # 1. dispatch-table-completeness (VM-parity gap), encoded as key-space-equality.
-  #    The native closure table and the VM table must index the same builtin-name
-  #    space.  Expected to FAIL: the campaign's structural VM-parity gap — native
-  #    has AOT-only builtins the VM lacks (and vice-versa for arity helpers).
+  # 1. Dispatch parity is a classified, executable contract.  Literal table
+  #    equality is incorrect: each backend intentionally owns internal helpers
+  #    and opt-in native-only intrinsics.  The ratchet requires every native
+  #    surface symbol to be VM-supported or consciously justified, and the
+  #    runtime gate differentially executes the shared subset three ways.
   - id: INV-dispatch-table-completeness
-    kind: key-space-equality
+    kind: intended-invariant
     incident: vm-parity-gap
     severity: high
-    fidelity: grep
     description: >
-      Every builtin in the native closure table (eshkol_compiler.c BUILTINS[])
-      should have a corresponding VM dispatch entry (eshkol_vm.c BUILTINS[]).
-      Divergent names are the VM-parity gap; see language_surface.json
-      counts.builtins_in_native_closure_table vs builtins_in_vm_table.
-    sites:
-      - id: native-closure-table
-        path: lib/backend/eshkol_compiler.c
-        key_pattern: '\{\s*"([^"]+)"\s*,'
-      - id: vm-dispatch-table
-        path: lib/backend/eshkol_vm.c
-        key_pattern: '\{\s*"([^"]+)"\s*,'
+      Every native codegen symbol is present in the VM surface or explicitly
+      classified in PARITY.tsv, and the supported subset produces identical
+      output under native LLVM, VM source, and emitted ESKB execution.
+    invariant_name: classified-native-vm-dispatch-parity
+    impl: {path: scripts/vm_parity_audit.py, symbol: audit}
+    reference: {path: scripts/vm_parity_audit.py, symbol: vm_surface}
+    guard:
+      path: scripts/vm_parity_audit.py
+      symbol: audit
+      pattern: 'unratcheted\s*=\s*sorted'
+    evidence:
+      trace_name_pattern: '^vm_parity_gate$'
+      max_age_days: 45
 
   # 2. ffi-registration-completeness (incident #250), encoded as dependency-presence.
   #    A declared FFI/system builtin must have its runtime symbol DEFINED (the

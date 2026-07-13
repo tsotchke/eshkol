@@ -20,6 +20,8 @@ TESTS=(
     tests/vm/ad_tape_lowlevel_regression.esk
     tests/vm/vm_kb_tensor_test.esk
     tests/vm/numeric_alias_surface_regression.esk
+    tests/vm/event_emitter_surface_regression.esk
+    tests/vm/parameter_runtime_surface_regression.esk
 )
 
 echo "========================================="

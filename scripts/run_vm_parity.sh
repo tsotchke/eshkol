@@ -90,6 +90,17 @@ emit_event() { # name value snippet
         "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "$TRACE_FILE"
 }
 
+# ICC architecture invariants consume canonical test_result evidence rather
+# than the parity gate's richer domain-specific events.  Emit both: the
+# vm_parity event remains the completion-oracle payload, while test_result is
+# the runtime proof for INV-dispatch-table-completeness.
+emit_test_result() { # name PASS|FAIL snippet
+    local passed=false
+    [ "$2" = "PASS" ] && passed=true
+    printf '{"kind":"test_result","name":"%s","value":{"passed":%s,"summary":"%s"},"timestamp":%s}\n' \
+        "$(json_escape "$1")" "$passed" "$(json_escape "$3")" "$(date +%s)" >> "$TRACE_FILE"
+}
+
 pass=0; fail=0
 report() { # PASS|FAIL nodeid event_name snippet
     if [ "$1" = "PASS" ]; then
@@ -113,8 +124,10 @@ else
 fi
 
 if [ "$AUDIT_ONLY" -eq 1 ]; then
-    emit_event "vm_parity_gate" "$([ $fail -eq 0 ] && echo PASS || echo FAIL)" \
-        "audit-only: $pass passed, $fail failed"
+    gate_status="$([ $fail -eq 0 ] && echo PASS || echo FAIL)"
+    gate_summary="audit-only: $pass passed, $fail failed"
+    emit_event "vm_parity_gate" "$gate_status" "$gate_summary"
+    emit_test_result "vm_parity_gate" "$gate_status" "$gate_summary"
     echo; echo "vm-parity (audit-only): $pass passed, $fail failed"
     [ $fail -eq 0 ] || exit 1
     exit 0
@@ -170,7 +183,19 @@ for f in "${corpus_files[@]}"; do
     base=$(basename "$f" .esk)
     d="$WORK/$base"; mkdir -p "$d"
 
-    run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" -r "$f" >"$d/native.raw" 2>"$d/native.err"
+    native_args=(-r "$f")
+    case "$base" in
+        17_guard_raise|18_call_cc)
+            # These primitives are compiler/runtime builtins and do not depend
+            # on the Scheme stdlib.  Loading the full stdlib makes LLVM spend
+            # roughly three minutes optimizing either tiny probe on macOS
+            # (measured 190.90 s for guard versus <1 s with --no-stdlib), which
+            # turns a semantic parity gate into a compile-throughput timeout.
+            # Keep the probes exact while isolating the control-flow surface.
+            native_args=(-n -r "$f")
+            ;;
+    esac
+    run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" "${native_args[@]}" >"$d/native.raw" 2>"$d/native.err"
     nrc=$?
     normalize "$d/native.raw" "$d/native.out"
 
@@ -249,11 +274,15 @@ done
 echo
 echo "vm-parity: $pass passed, $fail failed"
 if [ $fail -eq 0 ]; then
-    emit_event "vm_parity_gate" "PASS" "$pass checks green (audit + corpus + oos)"
+    gate_summary="$pass checks green (audit + corpus + oos)"
+    emit_event "vm_parity_gate" "PASS" "$gate_summary"
+    emit_test_result "vm_parity_gate" "PASS" "$gate_summary"
     echo "Trace written: $TRACE_FILE"
     exit 0
 else
-    emit_event "vm_parity_gate" "FAIL" "$fail of $((pass+fail)) checks failed"
+    gate_summary="$fail of $((pass+fail)) checks failed"
+    emit_event "vm_parity_gate" "FAIL" "$gate_summary"
+    emit_test_result "vm_parity_gate" "FAIL" "$gate_summary"
     echo "Trace written: $TRACE_FILE"
     exit 1
 fi
