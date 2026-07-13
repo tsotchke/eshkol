@@ -58,7 +58,11 @@ in pkgs.mkShell {
     else
       _eshkol_cuda_runtime="$CUDA_CUDART/lib:$CUDA_CUBLAS/lib"
     fi
-    export LD_LIBRARY_PATH="/run/opengl-driver/lib:$_eshkol_cuda_runtime:$GCC14_LIBDIR''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    # AOT executables link the hosted runtime directly rather than inheriting
+    # the eshkol-run wrapper, so keep OpenSSL in the runtime closure as well.
+    # Without it, CUDA resolves correctly but the generated program exits 127
+    # on libcrypto.so.3 before it can prove device dispatch.
+    export LD_LIBRARY_PATH="/run/opengl-driver/lib:$_eshkol_cuda_runtime:${pkgs.openssl.out}/lib:$GCC14_LIBDIR''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     unset _eshkol_cuda_runtime
   '';
 }
