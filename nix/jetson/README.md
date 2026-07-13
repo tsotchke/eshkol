@@ -42,7 +42,7 @@ Three gotchas the build/run scripts handle:
 
 ## Verifying a real GPU GEMM
 
-`tests/gpu/jetson_gemm_bench.esk` runs an NxN matmul and reports GFLOPS. Force GPU
+`nix/jetson/jetson_gemm_bench.esk` runs an NxN matmul and reports GFLOPS. Force GPU
 dispatch with `ESHKOL_GPU_THRESHOLD=1`; `ESHKOL_GPU_VERBOSE=1` prints
 `[GPU] matmul ... -> CUDA cuBLAS` lines.
 

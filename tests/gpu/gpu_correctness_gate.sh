@@ -97,12 +97,19 @@ if [ "$HAVE_GPU_FRAMEWORK" -ne 1 ]; then
     skip "no GPU build framework detected on $UNAME_S (no Metal SDK / no nvidia-smi or nvcc) — nothing to execute"
 fi
 
-if [ "$UNAME_S" = "Linux" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
-    skip "nvcc present but nvidia-smi is not — CUDA toolchain without a driver/GPU (e.g. a hosted CI compile-only runner)"
-fi
-if [ "$UNAME_S" = "Linux" ] && command -v nvidia-smi >/dev/null 2>&1; then
-    if ! nvidia-smi -L >/dev/null 2>&1 || [ -z "$(nvidia-smi -L 2>/dev/null)" ]; then
-        skip "nvidia-smi present but reports no GPU device"
+if [ "$UNAME_S" = "Linux" ]; then
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        if ! nvidia-smi -L >/dev/null 2>&1 || [ -z "$(nvidia-smi -L 2>/dev/null)" ]; then
+            skip "nvidia-smi present but reports no GPU device"
+        fi
+    elif [ -e /dev/nvhost-gpu ] || [ -e /dev/nvidiactl ] || [ -e /dev/nvidia0 ]; then
+        # Jetson/L4T exposes the integrated GPU through nvhost device nodes
+        # and intentionally does not ship the datacenter-oriented nvidia-smi
+        # utility.  Treat this only as a coarse device hint: step 4 still
+        # requires an actual Eshkol [GPU] dispatch record before issuing PASS.
+        log "CUDA device node detected without nvidia-smi (Jetson/L4T path); runtime dispatch proof remains required"
+    else
+        skip "nvcc present but no NVIDIA device node or nvidia-smi GPU was found — CUDA toolchain without a runtime device (e.g. hosted compile-only CI)"
     fi
 fi
 
