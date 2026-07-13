@@ -39,6 +39,7 @@
 #   --no-aot  skip AOT mode everywhere
 #   --only S  run only rows whose file contains S
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 STRESS_DIR="$REPO_ROOT/tests/stress"

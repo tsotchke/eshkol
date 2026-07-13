@@ -12,11 +12,11 @@ Kinds (see .swarm/DEPTH_PARAMETRIC_TESTING.md):
   non_tail       non-tail recursion (stack acc) -> documented CLEAN ceiling (ESH-0112)
   cps            CPS / explicit continuation    -> clean 100000 guard (ESH-0080 fixed #93)
   through_map    recursion through map (h.o.)    -> clean 100000 guard
-  metacircular   interpreted recursion (eval)   -> ESH-0119 (silent SIGILL ~30k)
+  metacircular   interpreted recursion (eval)   -> clean platform boundary
   dynamic_wind   deep dynamic-wind nesting      -> clean SIGBUS diagnostic ~100k
   callcc         deep call/cc nesting           -> clean 100000 guard
-  guard          deep guard nesting             -> ESH-0119 (silent SIGILL ~200k)
-  stdlib_length  stdlib (length) on long list   -> ESH-0108 (non-tail length)
+  guard          deep guard nesting             -> clean platform boundary
+  stdlib_length  stdlib (length) on long list   -> tail-safe to 1M
 
 Every probe computes a value with a KNOWN CLOSED FORM and checks it in-language:
   tri   sum_{k=1}^{N} k = N*(N+1)/2   (the recursion sums; the oracle multiplies)
@@ -155,7 +155,7 @@ KINDS = {
         ],
     },
     "metacircular": {
-        "doc": "recursion through a metacircular evaluator -- silent SIGILL ~30k (ESH-0119)",
+        "doc": "recursion through a metacircular evaluator -- clean platform-dependent boundary",
         "defs": None,  # emitted specially (multi-line evaluator, embeds {N} in prog)
         "call": None,
         "oracle": "tri",
@@ -164,14 +164,14 @@ KINDS = {
             (100, "pass"),
             (1000, "pass"),
             (10000, "pass"),
-            (30000, ("xknown", "ESH-0119")),
-            (50000, ("xknown", "ESH-0119")),
+            (30000, "boundary"),
+            (50000, "boundary"),
         ],
     },
     "dynamic_wind": {
-        # ~100k overflows nondeterministically as SIGBUS (caught -> diagnostic)
-        # OR SIGILL (not caught -> silent) -- the silent variant is ESH-0119.
-        "doc": "deep dynamic-wind nesting -- overflow ~100k; SIGILL variant silent (ESH-0119)",
+        # The fatal-signal path now converts any native-stack limit into a
+        # clean diagnostic; the exact boundary remains platform-dependent.
+        "doc": "deep dynamic-wind nesting -- clean platform-dependent boundary near 100k",
         "defs": ("(define (dw n)\n"
                  "  (if (= n 0) 0\n"
                  "      (dynamic-wind (lambda () #f)\n"
@@ -185,7 +185,7 @@ KINDS = {
             (10000, "pass"),
             (50000, "pass"),
             (90000, "boundary"),
-            (100000, ("xknown", "ESH-0119")),
+            (100000, "boundary"),
         ],
     },
     "callcc": {
@@ -203,7 +203,7 @@ KINDS = {
         ],
     },
     "guard": {
-        "doc": "deep guard nesting -- silent SIGILL ~200k (ESH-0119)",
+        "doc": "deep guard nesting -- clean platform-dependent boundary",
         "defs": "(define (g n) (if (= n 0) 0 (guard (e (#t -1)) (+ n (g (- n 1))))))",
         "call": "(g {N})",
         "oracle": "tri",
@@ -213,12 +213,12 @@ KINDS = {
             (10000, "pass"),
             (100000, "boundary"),
             (150000, "boundary"),
-            (200000, ("xknown", "ESH-0119")),
-            (300000, ("xknown", "ESH-0119")),
+            (200000, "boundary"),
+            (300000, "boundary"),
         ],
     },
     "stdlib_length": {
-        "doc": "stdlib (length) on a long list -- non-tail length SIGILLs (ESH-0108)",
+        "doc": "stdlib (length) on a long list -- tail-safe after ESH-0108",
         "defs": "(define (build n acc) (if (= n 0) acc (build (- n 1) (cons n acc))))",
         "call": "(length (build {N} (quote ())))",
         "oracle": "count",
@@ -227,8 +227,8 @@ KINDS = {
             (10000, "pass"),
             (100000, "pass"),
             (300000, "boundary"),
-            (500000, ("xknown", "ESH-0108")),
-            (1000000, ("xknown", "ESH-0108")),
+            (500000, "pass"),
+            (1000000, "pass"),
         ],
     },
 }

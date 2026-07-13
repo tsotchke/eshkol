@@ -34,6 +34,7 @@
 #
 # Usage: scripts/run_differential.sh [corpus_dir] [--with-vm] [--no-aot]
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 TRACE_DIR="$REPO_ROOT/scripts/icc_traces"

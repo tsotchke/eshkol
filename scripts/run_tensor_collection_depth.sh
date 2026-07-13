@@ -34,6 +34,7 @@
 #   scripts/run_tensor_collection_depth.sh [--max-rank R] [--max-chain C]
 #       [--max-nest D] [--no-aot] [--timeout SECS] [--no-regen]
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 

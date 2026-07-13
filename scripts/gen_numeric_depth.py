@@ -33,6 +33,7 @@ harder in the nightly lane without editing the generator.
 import argparse
 import json
 import os
+from decimal import Decimal, localcontext
 from fractions import Fraction
 
 # ---------------------------------------------------------------------------
@@ -275,31 +276,37 @@ def gen_exactness_contagion(scale):
 # ---------------------------------------------------------------------------
 
 def gen_complex_power(scale):
-    import math
     fam = "complex_power"
     ns = list(range(1, int(128 * scale) + 1))
     lines = [HEADER, f'; Family: {fam} — (make-rectangular ..)^n vs analytic re/im/magnitude\n']
-    # fixed base r*e^{iθ} with r slightly >1 so magnitude grows measurably
-    r = 1.03
-    theta = 0.4
-    re0 = r * math.cos(theta)   # real floats (cmath.* would yield complex reprs)
-    im0 = r * math.sin(theta)
-    lines.append(f"(define zb (make-rectangular {re0!r} {im0!r}))\n")
-    for n in ns:
-        w = complex(re0, im0) ** n
-        mag = abs(w)
-        # tolerance scales with magnitude (float rounding accumulates over n mults)
-        tol = max(1e-9, abs(mag) * 1e-9 * n)
-        # i^n cycle: exact-ish analytic values
-        icyc = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)][n % 4]
-        ok = (f"(let ((zn (expt zb {n})) (in (expt (make-rectangular 0.0 1.0) {n})))"
-              f" (and (< (abs (- (real-part zn) {w.real!r})) {tol!r})"
-              f" (< (abs (- (imag-part zn) {w.imag!r})) {tol!r})"
-              f" (< (abs (- (magnitude zn) {mag!r})) {tol!r})"
-              f" (< (abs (- (real-part in) {icyc[0]!r})) 1e-6)"
-              f" (< (abs (- (imag-part in) {icyc[1]!r})) 1e-6)))")
-        lines.append(check_bool(fam, n, ok, f"(real-part (expt zb {n}))",
-                                f"re={w.real:.6g} im={w.imag:.6g}"))
+    # Decimal recurrence makes the generated oracle byte-identical across
+    # Python/libm versions.  The prior cmath power used platform libm and
+    # rewrote hundreds of expected literals by a few ulps on regeneration.
+    re0 = Decimal("0.95")
+    im0 = Decimal("0.4")
+    lines.append(f"(define zb (make-rectangular {re0} {im0}))\n")
+    with localcontext() as ctx:
+        ctx.prec = 80
+        w_re, w_im = Decimal(1), Decimal(0)
+        for n in ns:
+            w_re, w_im = w_re * re0 - w_im * im0, w_re * im0 + w_im * re0
+            mag = (w_re * w_re + w_im * w_im).sqrt()
+            # Tolerance scales with magnitude and multiplication depth while
+            # remaining much tighter than the values under test.
+            tol = max(Decimal("1e-9"), abs(mag) * Decimal("1e-9") * n)
+            icyc = [(1, 0), (0, 1), (-1, 0), (0, -1)][n % 4]
+            real = format(w_re, ".25g")
+            imag = format(w_im, ".25g")
+            mag_s = format(mag, ".25g")
+            tol_s = format(tol, ".25g")
+            ok = (f"(let ((zn (expt zb {n})) (in (expt (make-rectangular 0.0 1.0) {n})))"
+                  f" (and (< (abs (- (real-part zn) {real})) {tol_s})"
+                  f" (< (abs (- (imag-part zn) {imag})) {tol_s})"
+                  f" (< (abs (- (magnitude zn) {mag_s})) {tol_s})"
+                  f" (< (abs (- (real-part in) {icyc[0]}.0)) 1e-6)"
+                  f" (< (abs (- (imag-part in) {icyc[1]}.0)) 1e-6)))")
+            lines.append(check_bool(fam, n, ok, f"(real-part (expt zb {n}))",
+                                    f"re={w_re:.6g} im={w_im:.6g}"))
     lines.append(done(fam))
     manifest = {"family": fam, "ns": ns, "expected_max": ns[-1], "known_degradation": [], "expected_wrong": []}
     return fam, "".join(lines), manifest

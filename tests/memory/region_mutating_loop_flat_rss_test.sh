@@ -22,6 +22,7 @@
 #   BUILD_DIR env var selects the build directory (default: build).
 #   ESHKOL_RUN env var overrides the eshkol-run binary path directly.
 set -u
+export LC_ALL=C LC_CTYPE=C LANG=C
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
 

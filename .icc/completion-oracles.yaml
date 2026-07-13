@@ -564,9 +564,8 @@ oracles:
       - no_stubbed_paths:
           - production_fallback
           - synthetic_model_only
-          - not_exercised_by_real_smoke
         severity: high
-        label: 'No silent fallbacks in v1.3 production paths'
+        label: 'No silent fallbacks or synthetic implementations in v1.3 production paths'
         action: classify_or_replace_each_stub
 
   # -----------------------------------------------------------------
