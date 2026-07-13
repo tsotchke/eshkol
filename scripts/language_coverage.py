@@ -74,6 +74,8 @@ CI_VM_SURFACE_TESTS = (
     "tests/vm/ad_tape_lowlevel_regression.esk",
     "tests/vm/vm_kb_tensor_test.esk",
     "tests/vm/numeric_alias_surface_regression.esk",
+    "tests/vm/event_emitter_surface_regression.esk",
+    "tests/vm/parameter_runtime_surface_regression.esk",
 )
 
 CI_SURFACE_EXTENSION_TESTS = (
@@ -100,6 +102,12 @@ def collect_heads(text):
     """Return the set of symbols that appear as an application/operator head, plus
     the special forms introduced by reader macros (', `, , ,@) and #( vectors."""
     heads = set()
+    # Named let is reader syntax `(let name ((binding value) ...) body ...)`,
+    # not a literal `(named-let ...)` head.  Record the semantic special form
+    # when that executed source shape is present; otherwise the manifest can
+    # never credit the real named-let stress tests.
+    if re.search(r"\(\s*let\s+[^\s()]+\s*\(\s*\(", text):
+        heads.add("named-let")
     # reader-macro forms actually present in the source
     if "#(" in text:
         heads.add("vector")           # vector literal reader syntax
@@ -179,6 +187,17 @@ def quantum_test_text():
     for path in paths:
         with open(path, encoding="utf-8", errors="replace") as fh:
             parts.append(fh.read())
+    # The gated quantum corpus loads these two modules and exercises their
+    # public wrappers end-to-end.  Include the exact loaded module sources so
+    # compiler intrinsics such as vqe-energy-primitive receive transitive,
+    # execution-backed coverage instead of requiring a fake direct test call.
+    for relative in ("lib/agent/quantum.esk", "lib/agent/pqc.esk"):
+        module_path = os.path.join(REPO, relative)
+        if not os.path.isfile(module_path):
+            raise RuntimeError("quantum module source missing: %s" % relative)
+        with open(module_path, encoding="utf-8", errors="replace") as fh:
+            parts.append(fh.read())
+        paths.append(module_path)
     return "\n".join(parts), [os.path.relpath(path, REPO) for path in paths]
 
 
