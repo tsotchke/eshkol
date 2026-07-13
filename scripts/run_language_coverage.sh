@@ -8,6 +8,7 @@ REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
 TRACE_FILE=${LANGUAGE_COVERAGE_TRACE:-"$TRACE_DIR/language_surface_coverage.jsonl"}
 RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS:-}
+EXTRA_RUNTIME_TRACE_DIRS=${LANGUAGE_COVERAGE_EXTRA_RUNTIME_TRACE_DIRS:-}
 BUILD_DIR=${BUILD_DIR:-build}
 QUANTUM_BUILD_DIR=${QUANTUM_BUILD_DIR:-build-quantum}
 GENERATED_TRACE_ROOT=
@@ -55,11 +56,13 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
 
     GENERATED_TRACE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-language-coverage.XXXXXX")
     cleanup() {
-        if [ "${KEEP_LANGUAGE_COVERAGE_TRACES:-0}" = 1 ]; then
+        local rc=$?
+        if [ "${KEEP_LANGUAGE_COVERAGE_TRACES:-0}" = 1 ] || [ "$rc" -ne 0 ]; then
             echo "Kept fresh language-coverage traces: $GENERATED_TRACE_ROOT"
         else
             rm -rf "$GENERATED_TRACE_ROOT"
         fi
+        return "$rc"
     }
     trap cleanup EXIT
     CORE_TRACE="$GENERATED_TRACE_ROOT/core"
@@ -78,6 +81,14 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
     done
 
     RUNTIME_TRACE_DIRS="$CORE_TRACE:$QUANTUM_TRACE"
+fi
+
+if [ -n "$EXTRA_RUNTIME_TRACE_DIRS" ]; then
+    if [ -n "$RUNTIME_TRACE_DIRS" ]; then
+        RUNTIME_TRACE_DIRS="$RUNTIME_TRACE_DIRS:$EXTRA_RUNTIME_TRACE_DIRS"
+    else
+        RUNTIME_TRACE_DIRS="$EXTRA_RUNTIME_TRACE_DIRS"
+    fi
 fi
 
 OLD_IFS=$IFS
