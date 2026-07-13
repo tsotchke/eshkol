@@ -1634,40 +1634,19 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_directory_walk_v(eshkol_sysbuilt
         closedir(d);
     }
 
-    /* Build tagged value list (reversed — cons prepends) */
-    /* For LLVM path, we'd need to build proper cons cells.
-     * For now, return a simple string with newline-separated paths
-     * that can be split in Eshkol. */
-    if (result_count == 0) {
-        return sys_make_null();
+    /* The public contract (and the VM implementation) is a proper Scheme
+     * list, not the historical newline-packed string placeholder.  Build in
+     * reverse index order so cons-prepending preserves deterministic BFS
+     * traversal order.  The empty directory naturally returns '(). */
+    eshkol_sysbuiltin_value_t out = sys_make_null();
+    for (int i = result_count - 1; i >= 0; --i) {
+        eshkol_sysbuiltin_value_t item = sys_make_string(results[i]);
+        if (item.type == SYS_TYPE_NULL) return sys_make_null();
+        eshkol_sysbuiltin_value_t next = sys_make_pair(item, out);
+        if (next.type == SYS_TYPE_NULL) return sys_make_null();
+        out = next;
     }
-
-    /* Calculate total length */
-    size_t total_len = 0;
-    for (int i = 0; i < result_count; i++) {
-        total_len += strlen(results[i]) + 1; /* +1 for newline */
-    }
-
-    void* arena = get_global_arena();
-    char* buf = arena_allocate_string_with_header(arena, total_len);
-    if (!buf) {
-        /* results are arena-allocated — no individual free needed */
-        return sys_make_null();
-    }
-    char* p = buf;
-    for (int i = 0; i < result_count; i++) {
-        size_t len = strlen(results[i]);
-        memcpy(p, results[i], len);
-        p += len;
-        *p++ = '\n';
-    }
-    if (p > buf) p[-1] = '\0'; /* replace last newline with null */
-    else *p = '\0';
-
-    eshkol_sysbuiltin_value_t v = {0, 0, 0, 0, 0};
-    v.type = SYS_TYPE_HEAP_PTR;
-    v.data = (uint64_t)buf;
-    return v;
+    return out;
 #else
     return sys_make_null();
 #endif

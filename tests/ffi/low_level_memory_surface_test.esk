@@ -1,0 +1,52 @@
+;;; Executable low-level pointer/volatile/atomic/fence/extern-var conformance.
+
+(require stdlib)
+
+(extern-var i64 ffi-probe :extern-symbol eshkol_runtime_ffi_surface_probe)
+(extern ptr ffi-cstring :real eshkol_runtime_ffi_surface_cstring)
+
+(define passed 0)
+(define failed 0)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline)
+             (set! passed (+ passed 1)))
+      (begin (display "FAIL: ") (display name)
+             (display " expected=") (write expected)
+             (display " actual=") (write actual) (newline)
+             (set! failed (+ failed 1)))))
+
+(define probe-ptr (addr-of ffi-probe))
+(check "null-ptr" 0 (ptr->usize (null-ptr)))
+(check "addr-of yields non-null address" #t (> (ptr->usize probe-ptr) 0))
+(check "usize->ptr round trip" (ptr->usize probe-ptr)
+       (ptr->usize (usize->ptr (ptr->usize probe-ptr))))
+(check "ptr-add zero" (ptr->usize probe-ptr) (ptr->usize (ptr-add probe-ptr 0)))
+(check "ptr->string copies C text" "ffi-surface" (ptr->string (ffi-cstring)))
+
+(volatile-store! i64 probe-ptr 10)
+(check "volatile load/store" 10 (volatile-load i64 probe-ptr))
+
+(atomic-store! i64 probe-ptr 12 seq-cst)
+(check "atomic-store!/atomic-load" 12 (atomic-load i64 probe-ptr acquire))
+(check "atomic-exchange! returns prior" 12
+       (atomic-exchange! i64 probe-ptr 20 acq-rel))
+(check "atomic-exchange! writes replacement" 20
+       (atomic-load i64 probe-ptr acquire))
+(check "atomic-compare-exchange! returns observed" 20
+       (atomic-compare-exchange! i64 probe-ptr 20 25 acq-rel acquire))
+(check "atomic compare-exchange writes desired" 25
+       (atomic-load i64 probe-ptr acquire))
+(check "atomic-fetch-add!" 25 (atomic-fetch-add! i64 probe-ptr 5 acq-rel))
+(check "atomic-fetch-sub!" 30 (atomic-fetch-sub! i64 probe-ptr 2 acq-rel))
+(check "atomic-fetch-and!" 28 (atomic-fetch-and! i64 probe-ptr 15 acq-rel))
+(check "atomic-fetch-or!" 12 (atomic-fetch-or! i64 probe-ptr 2 acq-rel))
+(check "atomic-fetch-xor!" 14 (atomic-fetch-xor! i64 probe-ptr 3 acq-rel))
+(check "atomic final value" 13 (atomic-load i64 probe-ptr seq-cst))
+
+(compiler-fence seq-cst)
+(memory-fence seq-cst)
+
+(display "Low-level FFI surface: ") (display passed) (display " passed, ")
+(display failed) (display " failed") (newline)
+(if (> failed 0) (exit 1) (exit 0))

@@ -13814,21 +13814,25 @@ private:
         if (func_name == "eof-object?") return strio_->eofObject(op);
         // R7RS eof-object: returns the EOF sentinel value
         if (func_name == "eof-object") {
-            // Return a tagged value with type ESHKOL_VALUE_NULL and a special marker
-            // EOF is represented as null type with data = 0xEOF magic
-            return packInt64ToTaggedValue(ConstantInt::get(int64_type, -1));
+            Value* eof = llvm::ConstantAggregateZero::get(tagged_value_type);
+            return builder->CreateInsertValue(eof,
+                ConstantInt::get(int8_type, 0xFF), {0}, "eof_object");
         }
-        // R7RS textual-port?: all our ports are textual
+        // R7RS textual-port?: a port without the binary flag.
         if (func_name == "textual-port?") {
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
-            Value* type = getTaggedValueType(arg);
-            Value* base_type = getBaseType(type);
-            // A port is HEAP_PTR with the port flag (0x10)
-            Value* is_heap = builder->CreateICmpEQ(base_type, ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            // All our ports are textual for now
-            return packBoolToTaggedValue(is_heap);
+            Value* type_tag = getTaggedValueType(arg);
+            Value* port_flags = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_ANY_FLAG));
+            Value* is_port = builder->CreateICmpNE(port_flags,
+                ConstantInt::get(int8_type, 0));
+            Value* binary_flag = builder->CreateAnd(type_tag,
+                ConstantInt::get(int8_type, ESHKOL_PORT_BINARY_FLAG));
+            Value* is_textual = builder->CreateAnd(is_port,
+                builder->CreateICmpEQ(binary_flag, ConstantInt::get(int8_type, 0)));
+            return packBoolToTaggedValue(is_textual);
         }
         // R7RS binary-port?: check port flag bits (0x50) AND binary flag (0x04)
         if (func_name == "binary-port?") {
@@ -13939,17 +13943,31 @@ private:
             Value* arg = codegenAST(&op->call_op.variables[0]);
             Value* tagged = ensureTaggedValue(arg);
             Value* type_tag = builder->CreateExtractValue(tagged, {0});
-            Value* is_port;
-            if (func_name == "input-port-open?") {
-                is_port = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x10));
-            } else if (func_name == "output-port-open?") {
-                is_port = builder->CreateICmpEQ(type_tag,
-                    ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR | 0x40));
-            } else {
-                is_port = ConstantInt::get(Type::getInt1Ty(*context), 0);
+            Value* fp_int = builder->CreateExtractValue(tagged, {4});
+            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
+            if (func_name == "string-port?") {
+                FunctionCallee predicate = module->getOrInsertFunction(
+                    "eshkol_runtime_port_is_string",
+                    FunctionType::get(int32_type,
+                        {PointerType::getUnqual(*context)}, false));
+                Value* runtime_result = builder->CreateCall(predicate, {fp});
+                return tagged_->packBool(builder->CreateICmpNE(runtime_result,
+                    ConstantInt::get(int32_type, 0)));
             }
-            return tagged_->packBool(is_port);
+
+            const uint8_t direction = func_name == "input-port-open?" ? 0x10 : 0x40;
+            Value* has_direction = builder->CreateICmpNE(
+                builder->CreateAnd(type_tag, ConstantInt::get(int8_type, direction)),
+                ConstantInt::get(int8_type, 0));
+            FunctionCallee predicate = module->getOrInsertFunction(
+                "eshkol_runtime_port_is_open",
+                FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context), int8_type}, false));
+            Value* runtime_result = builder->CreateCall(predicate, {
+                fp, ConstantInt::get(int8_type, direction)});
+            Value* is_open = builder->CreateICmpNE(runtime_result,
+                ConstantInt::get(int32_type, 0));
+            return tagged_->packBool(builder->CreateAnd(has_direction, is_open));
         }
 
         // R7RS default port procedures (current-input/output/error-port).
@@ -14044,12 +14062,12 @@ private:
             if (!proc_val) return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-port");
-            // Close port: call fclose on the FILE*
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // call-with-input-file: (call-with-input-file filename proc)
@@ -14058,7 +14076,7 @@ private:
             if (!filename) return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
             // Open file
-            Value* port_val = strio_->openInputFile(op);
+            Value* port_val = strio_->openInputFile(op, true);
             if (!port_val) return nullptr;
             // Call proc with port
             Value* proc_val = codegenAST(&op->call_op.variables[1]);
@@ -14066,11 +14084,12 @@ private:
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-input-file");
             // Close
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // call-with-output-file: (call-with-output-file filename proc)
@@ -14078,48 +14097,74 @@ private:
             Value* filename = codegenAST(&op->call_op.variables[0]);
             if (!filename) return nullptr;
             Value* filename_tagged = ensureTaggedValue(filename);
-            Value* port_val = strio_->openOutputFile(op);
+            Value* port_val = strio_->openOutputFile(op, true);
             if (!port_val) return nullptr;
             Value* proc_val = codegenAST(&op->call_op.variables[1]);
             if (!proc_val) return nullptr;
             proc_val = ensureTaggedValue(proc_val);
             Value* result = codegenClosureCall(proc_val, {port_val}, "call-with-output-file");
-            Value* fp_int = builder->CreateExtractValue(port_val, {4});
-            Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            Value* close_fp_int = builder->CreateExtractValue(port_val, {4});
+            Value* close_fp = builder->CreateIntToPtr(close_fp_int, PointerType::getUnqual(*context));
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {close_fp});
             return ensureTaggedValue(result);
         }
         // with-input-from-file: (with-input-from-file filename thunk)
-        // Opens file, calls thunk (no args), closes file, returns thunk result
+        // Opens file, temporarily rebinds current-input-port, calls thunk,
+        // restores the previous current port, closes, and returns the result.
         if (func_name == "with-input-from-file") {
-            Value* port_val = strio_->openInputFile(op);
+            Value* port_val = strio_->openInputFile(op, true);
             if (!port_val) return nullptr;
             Value* thunk_val = codegenAST(&op->call_op.variables[1]);
             if (!thunk_val) return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
-            Value* result = codegenClosureCall(thunk_val, {}, "with-input-from-file");
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            FunctionType* getter_type = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            FunctionType* setter_type = FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)}, false);
+            FunctionCallee getter = module->getOrInsertFunction(
+                "eshkol_runtime_current_input_fp", getter_type);
+            FunctionCallee setter = module->getOrInsertFunction(
+                "eshkol_runtime_set_current_input_fp", setter_type);
+            Value* previous = builder->CreateCall(getter, {}, "previous_input_port");
+            builder->CreateCall(setter, {fp});
+            Value* result = codegenClosureCall(thunk_val, {}, "with-input-from-file");
+            builder->CreateCall(setter, {previous});
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {fp});
             return ensureTaggedValue(result);
         }
         // with-output-to-file: (with-output-to-file filename thunk)
         if (func_name == "with-output-to-file") {
-            Value* port_val = strio_->openOutputFile(op);
+            Value* port_val = strio_->openOutputFile(op, true);
             if (!port_val) return nullptr;
             Value* thunk_val = codegenAST(&op->call_op.variables[1]);
             if (!thunk_val) return nullptr;
             thunk_val = ensureTaggedValue(thunk_val);
-            Value* result = codegenClosureCall(thunk_val, {}, "with-output-to-file");
             Value* fp_int = builder->CreateExtractValue(port_val, {4});
             Value* fp = builder->CreateIntToPtr(fp_int, PointerType::getUnqual(*context));
-            llvm::FunctionCallee fclose_fn = module->getOrInsertFunction("fclose",
-                FunctionType::get(int32_type, {PointerType::getUnqual(*context)}, false));
-            builder->CreateCall(fclose_fn, {fp});
+            FunctionType* getter_type = FunctionType::get(
+                PointerType::getUnqual(*context), {}, false);
+            FunctionType* setter_type = FunctionType::get(Type::getVoidTy(*context),
+                {PointerType::getUnqual(*context)}, false);
+            FunctionCallee getter = module->getOrInsertFunction(
+                "eshkol_runtime_current_output_fp", getter_type);
+            FunctionCallee setter = module->getOrInsertFunction(
+                "eshkol_runtime_set_current_output_fp", setter_type);
+            Value* previous = builder->CreateCall(getter, {}, "previous_output_port");
+            builder->CreateCall(setter, {fp});
+            Value* result = codegenClosureCall(thunk_val, {}, "with-output-to-file");
+            builder->CreateCall(setter, {previous});
+            FunctionCallee close_fn = module->getOrInsertFunction(
+                "eshkol_runtime_close_port", FunctionType::get(int32_type,
+                    {PointerType::getUnqual(*context)}, false));
+            builder->CreateCall(close_fn, {fp});
             return ensureTaggedValue(result);
         }
 
@@ -23276,11 +23321,16 @@ private:
 
         // Map type strings to LLVM types
         auto mapStringToType = [this](const char* type_str) -> Type* {
-            if (strcmp(type_str, "int") == 0) return int32_type;
-            if (strcmp(type_str, "long") == 0) return int64_type;
-            if (strcmp(type_str, "float") == 0) return Type::getFloatTy(*context);
-            if (strcmp(type_str, "double") == 0) return double_type;
-            if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0) {
+            if (strcmp(type_str, "int") == 0 || strcmp(type_str, "i32") == 0)
+                return int32_type;
+            if (strcmp(type_str, "long") == 0 || strcmp(type_str, "i64") == 0)
+                return int64_type;
+            if (strcmp(type_str, "float") == 0 || strcmp(type_str, "f32") == 0)
+                return Type::getFloatTy(*context);
+            if (strcmp(type_str, "double") == 0 || strcmp(type_str, "f64") == 0)
+                return double_type;
+            if (strcmp(type_str, "char*") == 0 || strcmp(type_str, "string") == 0 ||
+                strcmp(type_str, "ptr") == 0) {
                 return PointerType::getUnqual(*context); // char*
             }
             // Default to int32 for unknown types
@@ -31622,8 +31672,15 @@ private:
         Value* close_bracket_str = codegenString("]");
         builder->CreateCall(strcat_func, {typed_string_buffer, close_bracket_str});
         
-        // Return string buffer as int64 (pointer)
-        return builder->CreatePtrToInt(typed_string_buffer, int64_type);
+        // Copy the temporary formatting buffer into a canonical header-tagged
+        // string. A raw arena allocation has no HEAP_SUBTYPE_STRING header and
+        // was previously rendered as (#<unknown>).
+        FunctionCallee copy_string = module->getOrInsertFunction(
+            "eshkol_runtime_copy_string",
+            FunctionType::get(PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
+        return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
     
     Value* codegenMatrixToString(const eshkol_operations_t* op) {
@@ -31832,8 +31889,12 @@ private:
         Value* close_bracket_str = codegenString("]");
         builder->CreateCall(strcat_func, {typed_string_buffer, close_bracket_str});
         
-        // Return string buffer as int64 (pointer)
-        return builder->CreatePtrToInt(typed_string_buffer, int64_type);
+        FunctionCallee copy_string = module->getOrInsertFunction(
+            "eshkol_runtime_copy_string",
+            FunctionType::get(PointerType::getUnqual(*context),
+                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)}, false));
+        Value* result_string = builder->CreateCall(copy_string, {arena_ptr, typed_string_buffer});
+        return packPtrToTaggedValue(result_string, ESHKOL_VALUE_HEAP_PTR);
     }
     
     // Production implementation: Compound car/cdr operations using TAGGED cons cells

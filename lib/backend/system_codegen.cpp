@@ -570,8 +570,11 @@ llvm::Value* SystemCodegen::currentTimeNs(const eshkol_operations_t* op) {
         llvm::ConstantInt::get(ctx_.int64Type(), 1000000000LL), "sec_ns");
     llvm::Value* total_ns = ctx_.builder().CreateAdd(sec_ns, tv_nsec, "total_ns");
 
-    llvm::Value* result = ctx_.builder().CreateSIToFP(total_ns, ctx_.doubleType(), "ns_double");
-    return tagged_.packDouble(result);
+    // R7RS `current-jiffy` is an exact integer.  `current-time-ns` shares this
+    // implementation, so preserve the full i64 payload instead of rounding a
+    // nanosecond timestamp through IEEE-754 double (which also incorrectly
+    // cleared the exactness flag).
+    return tagged_.packInt64(total_ns, true);
 }
 
 /**
