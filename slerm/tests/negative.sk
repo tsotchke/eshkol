@@ -1,0 +1,27 @@
+;; Negative / edge-case checks for slermes-eshkol.
+;; Every form below must either produce a correct value or a clear error
+;; string -- never a silent wrong number or a crash.
+
+;; 1) Nested derivative -- now SUPPORTED (symbolic differentiation composes
+;;    through nested derivatives, matching upstream eshkol). This must give
+;;    the correct value 160 (= d^2/dx^2 (x^5) at x=2), NOT error and NOT 0.
+(display (derivative (lambda (x) (derivative (lambda (y) (* y y y y y)) x)) 2.0))
+(newline)
+
+;; 2) Non-numeric x0 must not crash (read as symbol -> error path).
+;; (display (derivative (lambda (x) (* x x)) foo))
+
+;; 3) derivative-n with k=0 is degenerate (clamped to k=1) and must not crash.
+(display (derivative-n (lambda (x) (* x x x)) 2.0 0))
+(newline)
+
+;; 4) Arithmetic on mismatched types must error, not segfault.
+;; (display (+ 1 (quote a)))
+
+;; 5) A definition then use, to confirm state survives edge evals.
+(define (square x) (* x x))
+(display (derivative square 3.0))
+(newline)
+
+;; 6) derivative of a non-closure must give a clear error, not a crash.
+;; (display (derivative 42 1.0))

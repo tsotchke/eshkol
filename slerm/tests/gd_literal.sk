@@ -1,0 +1,10 @@
+(define (predict w x) (* w x))
+(define (loss w)
+  (fold-left (lambda (total pair)
+               (let ((error (- (predict w (car pair)) (cadr pair))))
+                 (+ total (* error error))))
+             0.0 (quote ((1.0 2.0) (2.0 4.0) (3.0 6.0)))))
+(define (train w lr steps)
+  (if (= steps 0) w
+    (train (- w (* lr (derivative loss w))) lr (- steps 1))))
+(display (train 0.0 0.01 200))

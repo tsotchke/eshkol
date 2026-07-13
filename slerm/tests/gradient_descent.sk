@@ -1,0 +1,19 @@
+;; eshkol's headline example — train a linear model y = 2x
+;; slermes-eshkol clean-room reimplementation.
+;; Expects: (train 0.0 0.01 200) => 2.0
+
+(define training-data '((1.0 2.0) (2.0 4.0) (3.0 6.0) (4.0 8.0) (5.0 10.0)))
+
+(define (predict w x) (* w x))
+
+(define (loss w)
+  (fold-left (lambda (total pair)
+               (let ((error (- (predict w (car pair)) (cadr pair))))
+                 (+ total (* error error))))
+             0.0 training-data))
+
+(define (train w lr steps)
+  (if (= steps 0) w
+    (train (- w (* lr (derivative loss w))) lr (- steps 1))))
+
+(display (train 0.0 0.01 200))
