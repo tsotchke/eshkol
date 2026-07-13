@@ -45,5 +45,20 @@ in pkgs.mkShell {
     export CUDA_CUDART=${cp.cuda_cudart}
     export CUDA_CUBLAS=${cp.libcublas}
     export CUDA_CCCL=${cp.cuda_cccl}
+
+    # Runtime closure for generated CUDA executables.  Jetson/L4T does not
+    # expose its integrated GPU through nvidia-smi, and Nix's CUDA package can
+    # otherwise put a stub libcuda plus a driver-incompatible cuBLAS ahead of
+    # the board's native libraries.  Prefer the real L4T driver and the
+    # installed CUDA-11.4 aggregate; retain the pinned 11.8 cudart/cuBLAS as a
+    # portable fallback when the aggregate is absent.
+    export JETSON_L4T_CUDA="$(find /nix/store -maxdepth 1 -type d -name '*-cuda-merged-11.4' -print -quit 2>/dev/null || true)"
+    if [ -n "$JETSON_L4T_CUDA" ]; then
+      _eshkol_cuda_runtime="$JETSON_L4T_CUDA/lib"
+    else
+      _eshkol_cuda_runtime="$CUDA_CUDART/lib:$CUDA_CUBLAS/lib"
+    fi
+    export LD_LIBRARY_PATH="/run/opengl-driver/lib:$_eshkol_cuda_runtime:$GCC14_LIBDIR''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    unset _eshkol_cuda_runtime
   '';
 }

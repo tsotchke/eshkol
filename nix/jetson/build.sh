@@ -34,7 +34,8 @@ ninja -C build-cuda
 echo "Built: $REPO/build-cuda/eshkol-run"
 echo
 echo "=== RUNTIME NOTE ==="
-echo "Set LD_LIBRARY_PATH so the REAL L4T driver libcuda and L4T-native cuBLAS 11.6"
-echo "win over nix's stub libcuda and nix's cuBLAS 11.8 (cublasCreate status=3 on the"
-echo "11.4 driver). Force GPU matmul dispatch with ESHKOL_GPU_THRESHOLD=1;"
+echo "The Jetson Nix shell sets LD_LIBRARY_PATH so the REAL L4T driver libcuda and"
+echo "L4T-native cuBLAS 11.6 win over nix's stub libcuda and nix's cuBLAS 11.8"
+echo "(cublasCreate status=3 on the 11.4 driver). Keep execution inside this shell."
+echo "Force GPU matmul dispatch with ESHKOL_GPU_THRESHOLD=1;"
 echo "ESHKOL_GPU_VERBOSE=1 prints [GPU] dispatch lines."

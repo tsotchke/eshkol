@@ -33,12 +33,13 @@ Three gotchas the build/run scripts handle:
 
 2. **Stub libcuda.** nix `cuda_cudart` ships a *stub* `libcuda.so.1` in its main
    `lib/`. If it wins the runtime search, `cudaGetDeviceCount` returns error 34
-   (`cudaErrorStubLibrary`). Fix: put `/run/opengl-driver/lib` (the real L4T
-   driver) first on `LD_LIBRARY_PATH`.
+   (`cudaErrorStubLibrary`). The shell hook puts `/run/opengl-driver/lib` (the
+   real L4T driver) first on `LD_LIBRARY_PATH`.
 
 3. **cuBLAS version.** nix cuBLAS 11.8 fails `cublasCreate` with status 3 on the
    11.4 driver. The **L4T-native cuBLAS 11.6** (`cuda-merged-11.4/lib`) initializes
-   cleanly (ABI-stable within CUDA 11.x). Put it ahead of nix cuBLAS at runtime.
+   cleanly (ABI-stable within CUDA 11.x). The shell hook discovers that installed
+   aggregate and puts it ahead of nix cuBLAS automatically.
 
 ## Verifying a real GPU GEMM
 
