@@ -27,7 +27,7 @@ static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int la
 
 /** @brief Emit bytecode that constructs a quoted-symbol value: packs
  *         @p symbol's bytes into 8-byte constant chunks and passes them to
- *         native call 100 (symbol construction). Shared by compile_quote()
+ *         native call 101 (symbol construction). Shared by compile_quote()
  *         and compile_quasiquote() paths that need to quote a bare
  *         symbol. */
 static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
@@ -40,7 +40,7 @@ static void compile_symbol_literal(FuncChunk* c, const char* symbol) {
             pack |= ((int64_t)(unsigned char)symbol[p * 8 + b]) << (b * 8);
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
     }
-    chunk_emit(c, OP_NATIVE_CALL, 100);
+    chunk_emit(c, OP_NATIVE_CALL, 101);
 }
 
 /**

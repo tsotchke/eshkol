@@ -575,7 +575,7 @@ static int needs_boxing(Node* body_nodes[], int n_bodies, const char* name) {
 
 /** @brief Compile a `(quote datum)` literal: numbers/booleans/strings as
  *         constants, symbols as packed 8-byte constant chunks passed to
- *         native call 100 (symbol construction), and lists as a chain of
+ *         native call 101 (symbol construction), and lists as a chain of
  *         OP_CONS built from an OP_NIL base (right to left). */
 static void compile_quote(FuncChunk* c, Node* datum) {
     if (!datum) { chunk_emit(c, OP_NIL, 0); return; }
@@ -596,7 +596,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
         return;
     }
     if (datum->type == N_SYMBOL) {
-        /* Quoted symbol → compile as string */
+        /* Quoted symbol → preserve its distinct Scheme symbol tag. */
         int len = (int)strlen(datum->symbol);
         int n_packs = (len + 7) / 8;
         chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(len)));
@@ -606,7 +606,7 @@ static void compile_quote(FuncChunk* c, Node* datum) {
                 pack |= ((int64_t)(unsigned char)datum->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        chunk_emit(c, OP_NATIVE_CALL, 101);
         return;
     }
     if (datum->type == N_LIST) {
@@ -648,7 +648,7 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
         if (ci >= 0) chunk_emit(c, OP_CONST, ci);
         return;
     }
-    /* Atom: symbol — quote as string */
+    /* Atom: symbol — preserve its distinct Scheme symbol tag. */
     if (node->type == N_SYMBOL) {
         int len = (int)strlen(node->symbol);
         int n_packs = (len + 7) / 8;
@@ -659,7 +659,7 @@ static void compile_quasiquote(FuncChunk* c, Node* node) {
                 pack |= ((int64_t)(unsigned char)node->symbol[p * 8 + b]) << (b * 8);
             chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(pack)));
         }
-        chunk_emit(c, OP_NATIVE_CALL, 100);
+        chunk_emit(c, OP_NATIVE_CALL, 101);
         return;
     }
     /* Atom: string */
@@ -3404,7 +3404,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /***************************************************************************
-     * Missing I/O: write-char, write-line, read
+     * Hosted datum I/O.  The desktop ESKB emitter must use the same arity-
+     * specific native IDs as the source compiler; sending an explicit port
+     * to legacy zero-arity fid 588 leaves that port on the operand stack and
+     * corrupts the following call frame.
      ***************************************************************************/
     if (is_sym(head, "write-char") && node->n_children >= 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 586); return;
@@ -3412,9 +3415,24 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     if (is_sym(head, "write-line") && node->n_children >= 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NATIVE_CALL, 726); return;
     }
-    if (is_sym(head, "read") && node->n_children <= 2) {
-        if (node->n_children == 2) compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_NATIVE_CALL, 588); return;
+    if (is_sym(head, "read") && (node->n_children == 1 || node->n_children == 2)) {
+        if (node->n_children == 2) {
+            compile_expr(c, node->children[1], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 619);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 588);
+        }
+        return;
+    }
+    if (is_sym(head, "write") && (node->n_children == 2 || node->n_children == 3)) {
+        compile_expr(c, node->children[1], 0);
+        if (node->n_children == 3) {
+            compile_expr(c, node->children[2], 0);
+            chunk_emit(c, OP_NATIVE_CALL, 618);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 212);
+        }
+        return;
     }
 
     /***************************************************************************

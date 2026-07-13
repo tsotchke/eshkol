@@ -284,7 +284,7 @@ static const BuiltinDef BUILTINS[] = {
     {"null?", 203, 1}, {"pair?", 204, 1}, {"not", 205, 1},
     {"number?", 206, 1}, {"string?", 207, 1}, {"boolean?", 208, 1},
     {"procedure?", 209, 1}, {"vector?", 210, 1},
-    {"display", 211, 1}, {"write", 212, 1},
+    {"display", 211, 1}, {"_write1", 212, 1}, {"_write2", 618, 2},
     {"exact->inexact", 213, 1}, {"inexact->exact", 214, 1},
     {"string->number", 215, 1},
     {"char->integer", 216, 1}, {"integer->char", 217, 1},
@@ -435,7 +435,8 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"open-input-file", 580, 1}, {"open-output-file", 581, 1},
     {"close-port", 582, 1}, {"read-char", 583, 1}, {"read-line", 585, 1},
-    {"write-char", 586, 1}, {"write-string", 587, 2}, {"read", 588, 0},
+    {"write-char", 586, 1}, {"write-string", 587, 2},
+    {"_read0", 588, 0}, {"_read1", 619, 1},
     {"eof-object?", 592, 1},
     {"open-input-string", 596, 1}, {"open-output-string", 597, 0},
     {"get-output-string", 598, 1}, {"file-exists?", 599, 1},
@@ -1065,33 +1066,12 @@ static void compile_source_to_chunk_with_options(const char* source,
     if (include_desktop_prelude) {
         emit_builtin_preamble(chunk);
 
-        /* Scheme prelude */
-        static const char* prelude =
-            "(define (map f lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (loop (cdr l) (cons (f (car l)) acc)))))\n"
-            "(define (filter pred lst) (let loop ((l lst) (acc (list))) (if (null? l) (reverse acc) (if (pred (car l)) (loop (cdr l) (cons (car l) acc)) (loop (cdr l) acc)))))\n"
-            "(define (fold-left f init lst) (let loop ((l lst) (acc init)) (if (null? l) acc (loop (cdr l) (f acc (car l))))))\n"
-            "(define (fold-right f init lst) (if (null? lst) init (f (car lst) (fold-right f init (cdr lst)))))\n"
-            "(define (for-each f lst) (if (null? lst) 0 (begin (f (car lst)) (for-each f (cdr lst)))))\n"
-            "(define + (lambda args (fold-left add2 0 args)))\n"
-            "(define * (lambda args (fold-left mul2 1 args)))\n"
-            "(define (- . args) (if (null? (cdr args)) (sub2 0 (car args)) (fold-left sub2 (car args) (cdr args))))\n"
-            "(define (/ . args) (if (null? (cdr args)) (div2 1 (car args)) (fold-left div2 (car args) (cdr args))))\n"
-            "(define _append-2 append)\n"
-            "(define (append . lists) (fold-right _append-2 '() lists))\n"
-            "(define (number->string n . args) (_number->string-2 n (if (null? args) 10 (car args))))\n"
-            "(define (atan x . rest) (if (null? rest) (_atan1 x) (_atan2 x (car rest))))\n"
-            "(define (max a . rest) (fold-left _max2 a rest))\n"
-            "(define (min a . rest) (fold-left _min2 a rest))\n"
-            "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
-            "(define (format fmt . args) (_format-list fmt args))\n"
-            "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
-            "(define (make-list n val) (let loop ((i 0) (acc (list))) (if (= i n) acc (loop (+ i 1) (cons val acc)))))\n"
-            "(define (make-fact . args) (_make-fact1 (if (and (not (null? args)) (null? (cdr args)) (pair? (car args))) (car args) args)))\n"
-            "(define (make-factor-graph n . rest) (if (null? rest) (_make-fg2 n (make-list n 2)) (_make-fg2 n (car rest))))\n"
-            "(define (tensor-sum t . args) (if (null? args) (_tensor-reduce-sum t -1) (_tensor-reduce-sum t (car args))))\n"
-            "(define (tensor-mean t . args) (if (null? args) (_tensor-reduce-mean t -1) (_tensor-reduce-mean t (car args))))\n"
-            "(define (tensor-max t . args) (if (null? args) (_tensor-reduce-max t -1) (_tensor-reduce-max t (car args))))\n"
-            "(define (tensor-min t . args) (if (null? args) (_tensor-reduce-min t -1) (_tensor-reduce-min t (car args))))\n";
+        /* Scheme prelude: this emitter is a fourth consumer of the VM
+         * prelude, not a fourth definition.  Keeping a private copy here
+         * previously let ESKB drift behind source execution and the cached
+         * REPL path (notably missing variadic read/write and multi-list map),
+         * producing bytecode that called NIL-valued globals. */
+        const char* prelude = ESHKOL_VM_PRELUDE_SOURCE;
         src_ptr = prelude;
         while (1) {
             skip_ws(); if (!*src_ptr) break;

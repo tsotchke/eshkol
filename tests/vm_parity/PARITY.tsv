@@ -721,7 +721,7 @@ step-decay-lr	gap	ml faculty has no VM fid coverage
 string	gap	extended string surface missing in VM
 string->list	vm-supported	
 string->number	vm-supported	
-string->symbol	gap	BUILTINS fid 185 unimplemented in vm_native.c (found/symbol_string_unhandled_fid.esk)
+string->symbol	vm-supported
 string->utf8	vm-supported	
 string-append	vm-supported	
 string-ci<=?	gap	extended string surface missing in VM
@@ -760,7 +760,7 @@ substitution?	vm-supported
 substring	vm-supported	
 sum-tag	gap	no VM name binding
 sum-value	gap	no VM name binding
-symbol->string	gap	BUILTINS fid 184 unimplemented in vm_native.c (found/symbol_string_unhandled_fid.esk)
+symbol->string	vm-supported
 symbol=?	gap	no VM name binding
 symbol?	vm-supported	
 symlink-create	vm-supported	
@@ -910,7 +910,7 @@ with-exception-handler	vm-supported
 with-input-from-file	gap	port/file IO surface missing in VM
 with-output-to-file	gap	port/file IO surface missing in VM
 workspace?	vm-supported	
-write	gap	does not emit read syntax (found/write_does_not_quote.esk)
+write	vm-supported
 write-bytevector	vm-supported	
 write-char	vm-supported	
 write-file	gap	port/file IO surface missing in VM

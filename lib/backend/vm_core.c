@@ -603,6 +603,7 @@ static int add_constant(VM* vm, Value v) {
 /* Forward declarations for print_value */
 typedef struct { Value* items; int len; int cap; } VmVector;
 
+static void print_value_mode(VM* vm, Value v, int write_syntax);
 static void print_value(VM* vm, Value v);
 
 /**
@@ -641,15 +642,18 @@ static void print_tensor_recursive(VM* vm, const VmTensor* t, int dim, int64_t o
  *        the VM's heap. Most opaque heap types not yet given a full
  *        printer render as a `<type-name>` placeholder.
  */
-static void print_value(VM* vm, Value v) {
+static void print_value_mode(VM* vm, Value v, int write_syntax) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
         case VAL_INT:   printf("%lld", (long long)v.as.i); break;
         case VAL_FLOAT: printf("%.6g", v.as.f); break;
         case VAL_CHAR: {
-            /* `display` renders a character as its glyph (UTF-8). `write`
-             * would use #\ syntax, but this VM shares one printer for both
-             * (the write/display distinction is filed separately). */
+            if (write_syntax) {
+                if (v.as.i == ' ') { fputs("#\\space", stdout); break; }
+                if (v.as.i == '\n') { fputs("#\\newline", stdout); break; }
+                if (v.as.i == '\t') { fputs("#\\tab", stdout); break; }
+                fputs("#\\", stdout);
+            }
             char buf[4];
             int n = vm_utf8_encode((int)v.as.i, buf);
             if (n > 0) printf("%.*s", n, buf);
@@ -664,17 +668,41 @@ static void print_value(VM* vm, Value v) {
                 if (!first) printf(" ");
                 first = 0;
                 HeapObject* obj = vm->heap.objects[cur.as.ptr];
-                print_value(vm, obj->cons.car);
+                print_value_mode(vm, obj->cons.car, write_syntax);
                 cur = obj->cons.cdr;
             }
             if (cur.type != VAL_NIL) {
                 printf(" . ");
-                print_value(vm, cur);
+                print_value_mode(vm, cur, write_syntax);
             }
             printf(")");
             break;
         }
         case VAL_STRING: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                VmString* s = (VmString*)obj->opaque.ptr;
+                if (!write_syntax) {
+                    printf("%.*s", s->byte_len, s->data);
+                } else {
+                    fputc('"', stdout);
+                    for (int i = 0; i < s->byte_len; ++i) {
+                        unsigned char ch = (unsigned char)s->data[i];
+                        switch (ch) {
+                            case '"': fputs("\\\"", stdout); break;
+                            case '\\': fputs("\\\\", stdout); break;
+                            case '\n': fputs("\\n", stdout); break;
+                            case '\r': fputs("\\r", stdout); break;
+                            case '\t': fputs("\\t", stdout); break;
+                            default: fputc((int)ch, stdout); break;
+                        }
+                    }
+                    fputc('"', stdout);
+                }
+            }
+            break;
+        }
+        case VAL_SYMBOL: {
             HeapObject* obj = vm->heap.objects[v.as.ptr];
             if (obj && obj->opaque.ptr) {
                 VmString* s = (VmString*)obj->opaque.ptr;
@@ -689,7 +717,7 @@ static void print_value(VM* vm, Value v) {
                 VmVector* vec = (VmVector*)obj->opaque.ptr;
                 for (int i = 0; i < vec->len; i++) {
                     if (i) printf(" ");
-                    print_value(vm, vec->items[i]);
+                    print_value_mode(vm, vec->items[i], write_syntax);
                 }
             }
             printf(")");
@@ -759,9 +787,15 @@ static void print_value(VM* vm, Value v) {
         case VAL_RIEMANNIAN_ADAM_STATE: printf("<riemannian-adam-state>"); break;
         case VAL_PORT:        printf("<port>"); break;
         case VAL_FUTURE:      printf("<future>"); break;
+        case VAL_EOF:         printf("#<eof>"); break;
         case VAL_VOID:        break; /* unspecified — produces no output */
         default: printf("<unknown>"); break;
     }
+}
+
+/** Display-style printer used by diagnostics and the `display` primitive. */
+static void print_value(VM* vm, Value v) {
+    print_value_mode(vm, v, 0);
 }
 
 /*******************************************************************************

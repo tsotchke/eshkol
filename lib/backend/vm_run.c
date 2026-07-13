@@ -435,7 +435,9 @@ void vm_run(VM* vm) {
         }
 
         if (func.type != VAL_CLOSURE) {
-            fprintf(stderr, "ERROR: calling non-function\n");
+            fprintf(stderr,
+                    "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                    vm->pc - 1, argc, (int)func.type);
             vm->error = 1; goto vm_exit;
         }
 
@@ -1055,7 +1057,9 @@ vm_exit:
             }
 
             if (func.type != VAL_CLOSURE) {
-                fprintf(stderr, "ERROR: calling non-function\n");
+                fprintf(stderr,
+                        "ERROR: calling non-function at pc=%d argc=%d type=%d\n",
+                        vm->pc - 1, argc, (int)func.type);
                 vm->error = 1; break;
             }
 

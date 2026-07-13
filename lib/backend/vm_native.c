@@ -119,10 +119,17 @@ static void vm_process_forget_pty(VM* vm, int64_t pid, int close_fd) {
     }
 }
 
-/** @brief Safely unwrap a VAL_STRING Value to its underlying VmString*, or NULL
- *         if the value isn't a valid heap-backed string. */
+/** @brief Safely unwrap a heap-backed string or symbol spelling.
+ *
+ * Symbols and strings have distinct Scheme value tags, but intentionally
+ * share the immutable VmString byte representation.  Existing hosted APIs
+ * that historically accepted the VM's old string-as-symbol representation
+ * therefore remain source-compatible while `string?`, `symbol?`, and
+ * `write` can now distinguish the language types correctly.
+ */
 static VmString* vm_value_as_string(VM* vm, Value value) {
-    if (!vm || value.type != VAL_STRING || !is_valid_heap_ptr(vm, value.as.ptr))
+    if (!vm || (value.type != VAL_STRING && value.type != VAL_SYMBOL) ||
+        !is_valid_heap_ptr(vm, value.as.ptr))
         return NULL;
     HeapObject* obj = vm->heap.objects[value.as.ptr];
     if (!obj || obj->type != HEAP_STRING)
@@ -2602,7 +2609,8 @@ static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
     case 'a':
     default:
         switch ((int)value.type) {
-        case VAL_STRING: {
+        case VAL_STRING:
+        case VAL_SYMBOL: {
             VmString* s = vm_value_as_string(vm, value);
             return s && s->data &&
                    vm_format_append(out, cap, pos, s->data, (size_t)s->byte_len);
@@ -3461,7 +3469,7 @@ static void vm_json_write_object(VM* vm, VmJsonBuffer* out, Value alist, int lev
  *         (always arrays) to their JSON text form; anything else becomes "null". */
 static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int level, int indent) {
     char num[64];
-    switch (value.type) {
+    switch ((int)value.type) {
     case VAL_NIL:
         vm_json_append(out, "null");
         break;
@@ -3477,6 +3485,7 @@ static void vm_json_write_value(VM* vm, VmJsonBuffer* out, Value value, int leve
         vm_json_append(out, num);
         break;
     case VAL_STRING:
+    case VAL_SYMBOL:
         vm_json_write_string(vm, out, value);
         break;
     case VAL_PAIR:
@@ -3761,7 +3770,7 @@ static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
         return 0;
     }
 
-    switch (a.type) {
+    switch ((int)a.type) {
     case VAL_NIL:
         return 1;
     case VAL_INT:
@@ -3770,7 +3779,8 @@ static int vm_values_equal_deep(VM* vm, Value a, Value b, int depth) {
         return a.as.f == b.as.f;
     case VAL_BOOL:
         return a.as.b == b.as.b;
-    case VAL_STRING: {
+    case VAL_STRING:
+    case VAL_SYMBOL: {
         if (!is_valid_heap_ptr(vm, a.as.ptr) || !is_valid_heap_ptr(vm, b.as.ptr)) return 0;
         if (vm->heap.objects[a.as.ptr]->type != HEAP_STRING ||
             vm->heap.objects[b.as.ptr]->type != HEAP_STRING) return 0;
@@ -4768,14 +4778,11 @@ static Value vm_parameter_invoke(VM* vm, Value parameter_value,
 /**
  * @brief VM identity equality shared by `eq?`, `eqv?`, and `memq`.
  *
- * The bytecode VM currently represents both Scheme strings and internable
- * symbols with VAL_STRING/HEAP_STRING.  Quoted occurrences are materialised
- * independently, so raw heap-pointer comparison makes two occurrences of the
- * same symbol unequal.  R7RS requires symbols with the same spelling to be
- * `eqv?`; content comparison for the shared string representation supplies
- * that guarantee.  `eq?` on distinct mutable strings is unspecified, so this
- * deterministic content result remains conforming until symbols receive a
- * dedicated VM tag/intern table.
+ * Symbols have a dedicated VAL_SYMBOL tag but share the immutable VmString
+ * payload representation.  Quoted occurrences are materialised independently,
+ * so compare symbol spellings to provide the R7RS canonical-symbol guarantee.
+ * `eq?` on distinct mutable strings is unspecified; retaining deterministic
+ * content equality for VAL_STRING preserves the VM's established behavior.
  */
 static int vm_identity_equal(VM* vm, Value a, Value b) {
     if (a.type != b.type) return 0;
@@ -4786,6 +4793,12 @@ static int vm_identity_equal(VM* vm, Value a, Value b) {
         case VAL_CHAR:  return a.as.i == b.as.i;
         case VAL_FLOAT: return a.as.f == b.as.f;
         case VAL_STRING: {
+            VmString* as = vm_value_as_string(vm, a);
+            VmString* bs = vm_value_as_string(vm, b);
+            return as && bs && as->byte_len == bs->byte_len &&
+                   memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        case VAL_SYMBOL: {
             VmString* as = vm_value_as_string(vm, a);
             VmString* bs = vm_value_as_string(vm, b);
             return as && bs && as->byte_len == bs->byte_len &&
@@ -4837,6 +4850,12 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
         case VAL_CHAR:  return a.as.i == b.as.i;
         case VAL_FLOAT: return a.as.f == b.as.f;
         case VAL_STRING: {
+            VmString* as = vm_value_as_string(vm, a);
+            VmString* bs = vm_value_as_string(vm, b);
+            return as && bs && as->byte_len == bs->byte_len &&
+                   memcmp(as->data, bs->data, (size_t)as->byte_len) == 0;
+        }
+        case VAL_SYMBOL: {
             VmString* as = vm_value_as_string(vm, a);
             VmString* bs = vm_value_as_string(vm, b);
             return as && bs && as->byte_len == bs->byte_len &&
@@ -5004,6 +5023,438 @@ static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
     VmBignum* bb = vm_coerce_bignum(vm, b);
     if (!ab || !bb) return 0;
     return bignum_compare(ab, bb);
+}
+
+/** Write one value to an arbitrary VM output port using either display or
+ * R7RS external-representation syntax.  Keeping this port-aware serializer
+ * beside native dispatch lets `(write value port)` work for file and string
+ * ports instead of silently falling back to stdout. */
+static void vm_write_value_port(VM* vm, Value value, VmPort* port,
+                                int write_syntax) {
+    char number[160];
+    if (!vm || !port) return;
+    switch ((int)value.type) {
+    case VAL_NIL: vm_port_write_cstr(port, "()"); break;
+    case VAL_INT:
+        snprintf(number, sizeof(number), "%lld", (long long)value.as.i);
+        vm_port_write_cstr(port, number);
+        break;
+    case VAL_FLOAT:
+        snprintf(number, sizeof(number), "%.17g", value.as.f);
+        vm_port_write_cstr(port, number);
+        break;
+    case VAL_BOOL: vm_port_write_cstr(port, value.as.b ? "#t" : "#f"); break;
+    case VAL_CHAR: {
+        if (write_syntax) {
+            if (value.as.i == ' ') { vm_port_write_cstr(port, "#\\space"); break; }
+            if (value.as.i == '\n') { vm_port_write_cstr(port, "#\\newline"); break; }
+            if (value.as.i == '\t') { vm_port_write_cstr(port, "#\\tab"); break; }
+            vm_port_write_cstr(port, "#\\");
+        }
+        char bytes[4];
+        int count = vm_utf8_encode((int)value.as.i, bytes);
+        if (count > 0) vm_port_write_bytes(port, bytes, count);
+        break;
+    }
+    case VAL_STRING:
+    case VAL_SYMBOL: {
+        VmString* string = vm_value_as_string(vm, value);
+        int quote = write_syntax && value.type == VAL_STRING;
+        if (quote) vm_port_write_cstr(port, "\"");
+        if (string && string->data) {
+            for (int i = 0; i < string->byte_len; ++i) {
+                unsigned char ch = (unsigned char)string->data[i];
+                if (quote && ch == '"') vm_port_write_cstr(port, "\\\"");
+                else if (quote && ch == '\\') vm_port_write_cstr(port, "\\\\");
+                else if (quote && ch == '\n') vm_port_write_cstr(port, "\\n");
+                else if (quote && ch == '\r') vm_port_write_cstr(port, "\\r");
+                else if (quote && ch == '\t') vm_port_write_cstr(port, "\\t");
+                else vm_port_write_bytes(port, (const char*)&string->data[i], 1);
+            }
+        }
+        if (quote) vm_port_write_cstr(port, "\"");
+        break;
+    }
+    case VAL_PAIR: {
+        vm_port_write_cstr(port, "(");
+        Value cursor = value;
+        int first = 1;
+        while (cursor.type == VAL_PAIR) {
+            if (!first) vm_port_write_cstr(port, " ");
+            first = 0;
+            HeapObject* cell = vm->heap.objects[cursor.as.ptr];
+            vm_write_value_port(vm, cell->cons.car, port, write_syntax);
+            cursor = cell->cons.cdr;
+        }
+        if (cursor.type != VAL_NIL) {
+            vm_port_write_cstr(port, " . ");
+            vm_write_value_port(vm, cursor, port, write_syntax);
+        }
+        vm_port_write_cstr(port, ")");
+        break;
+    }
+    case VAL_VECTOR: {
+        vm_port_write_cstr(port, "#(");
+        HeapObject* object = vm->heap.objects[value.as.ptr];
+        VmVector* vector = object ? (VmVector*)object->opaque.ptr : NULL;
+        for (int i = 0; vector && i < vector->len; ++i) {
+            if (i) vm_port_write_cstr(port, " ");
+            vm_write_value_port(vm, vector->items[i], port, write_syntax);
+        }
+        vm_port_write_cstr(port, ")");
+        break;
+    }
+    case VAL_RATIONAL: {
+        VmRational* rational = (VmRational*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        if (!rational) { vm_port_write_cstr(port, "#<rational>"); break; }
+        snprintf(number, sizeof(number), "%lld/%lld", (long long)rational->num,
+                 (long long)rational->denom);
+        vm_port_write_cstr(port, number);
+        break;
+    }
+    case VAL_BIGNUM: {
+        VmBignum* bignum = (VmBignum*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        char* text = bignum ? bignum_to_string(&vm->heap.regions, bignum) : NULL;
+        vm_port_write_cstr(port, text ? text : "#<bignum>");
+        break;
+    }
+    case VAL_EOF: vm_port_write_cstr(port, "#<eof>"); break;
+    case VAL_VOID: break;
+    default:
+        snprintf(number, sizeof(number), "#<value:%d>", (int)value.type);
+        vm_port_write_cstr(port, number);
+        break;
+    }
+}
+
+/* ── Runtime datum reader -------------------------------------------------
+ *
+ * The source VM used to implement `(read)` as a single getchar(), returning
+ * an integer and ignoring explicit ports.  Keep this reader intentionally
+ * self-contained over VmPort so source execution, cached ESKB execution, and
+ * WASM share the same bounded R7RS datum semantics.  Flat lists are built
+ * iteratively; only syntactic nesting consumes C recursion, guarded by the
+ * same conservative depth bound on every platform.
+ */
+#define VM_READER_MAX_DEPTH 512
+#define VM_READER_MAX_TOKEN (1024 * 1024)
+
+static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof);
+static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok);
+
+static int vm_reader_delimiter(int ch) {
+    return ch < 0 || isspace((unsigned char)ch) || ch == '(' || ch == ')' ||
+           ch == '"' || ch == ';' || ch == '\'' || ch == '`' || ch == ',';
+}
+
+static int vm_reader_skip_space(VmPort* port) {
+    for (;;) {
+        int ch = vm_port_peek_byte(port);
+        if (ch < 0) return -1;
+        if (isspace((unsigned char)ch)) {
+            (void)vm_port_read_byte(port);
+            continue;
+        }
+        if (ch == ';') {
+            do { ch = vm_port_read_byte(port); } while (ch >= 0 && ch != '\n');
+            continue;
+        }
+        return ch;
+    }
+}
+
+static Value vm_reader_string_value(VM* vm, const char* bytes, size_t len,
+                                    int symbol) {
+    if (!vm || !bytes || len > INT32_MAX) return NIL_VAL;
+    VmString* string = vm_string_new(&vm->heap.regions, bytes, (int)len);
+    int32_t ptr = string ? heap_alloc(&vm->heap) : -1;
+    if (!string || ptr < 0) {
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_STRING;
+    vm->heap.objects[ptr]->opaque.ptr = string;
+    return (Value){.type = symbol ? VAL_SYMBOL : VAL_STRING, .as.ptr = ptr};
+}
+
+static Value vm_reader_cons(VM* vm, Value car, Value cdr, int* ok) {
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) {
+        if (ok) *ok = 0;
+        vm->error = 1;
+        return NIL_VAL;
+    }
+    vm->heap.objects[ptr]->type = HEAP_CONS;
+    vm->heap.objects[ptr]->cons.car = car;
+    vm->heap.objects[ptr]->cons.cdr = cdr;
+    return PAIR_VAL(ptr);
+}
+
+static Value vm_reader_prefixed(VM* vm, const char* name, Value datum, int* ok) {
+    Value symbol = vm_reader_string_value(vm, name, strlen(name), 1);
+    Value tail = vm_reader_cons(vm, datum, NIL_VAL, ok);
+    return *ok ? vm_reader_cons(vm, symbol, tail, ok) : NIL_VAL;
+}
+
+static Value vm_reader_list(VM* vm, VmPort* port, int depth, int* ok) {
+    Value head = NIL_VAL;
+    Value tail = NIL_VAL;
+    for (;;) {
+        int ch = vm_reader_skip_space(port);
+        if (ch < 0) { *ok = 0; vm->error = 1; return NIL_VAL; }
+        if (ch == ')') {
+            (void)vm_port_read_byte(port);
+            return head;
+        }
+        Value item;
+        int datum_eof = 0;
+        if (ch == '.') {
+            (void)vm_port_read_byte(port);
+            int next = vm_port_peek_byte(port);
+            if (vm_reader_delimiter(next)) {
+                if (head.type != VAL_PAIR) {
+                    *ok = 0; vm->error = 1; return NIL_VAL;
+                }
+                Value cdr = vm_reader_datum(vm, port, depth + 1, ok, &datum_eof);
+                if (!*ok || datum_eof || vm_reader_skip_space(port) != ')') {
+                    *ok = 0; vm->error = 1; return NIL_VAL;
+                }
+                (void)vm_port_read_byte(port);
+                vm->heap.objects[tail.as.ptr]->cons.cdr = cdr;
+                return head;
+            }
+            /* A dot followed by a non-delimiter is a peculiar identifier
+             * (for example `.foo`), not dotted-pair punctuation.  The dot
+             * has already been consumed, so seed the ordinary token parser
+             * with it and let that parser consume the remainder. */
+            item = vm_reader_token(vm, port, '.', ok);
+        } else {
+            item = vm_reader_datum(vm, port, depth + 1, ok, &datum_eof);
+        }
+        if (!*ok || datum_eof) { *ok = 0; vm->error = 1; return NIL_VAL; }
+        Value cell = vm_reader_cons(vm, item, NIL_VAL, ok);
+        if (!*ok) return NIL_VAL;
+        if (head.type == VAL_NIL) head = cell;
+        else vm->heap.objects[tail.as.ptr]->cons.cdr = cell;
+        tail = cell;
+    }
+}
+
+static Value vm_reader_vector(VM* vm, VmPort* port, int depth, int* ok) {
+    Value list = vm_reader_list(vm, port, depth, ok);
+    if (!*ok) return NIL_VAL;
+    int count = 0;
+    for (Value cur = list; cur.type == VAL_PAIR;
+         cur = vm->heap.objects[cur.as.ptr]->cons.cdr) ++count;
+    int32_t ptr = heap_alloc(&vm->heap);
+    VmVector* vector = ptr >= 0
+        ? (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector)) : NULL;
+    if (ptr < 0 || !vector) { *ok = 0; vm->error = 1; return NIL_VAL; }
+    vector->len = count;
+    vector->cap = count;
+    vector->items = count ? (Value*)vm_alloc(&vm->heap.regions,
+                                              (size_t)count * sizeof(Value)) : NULL;
+    if (count && !vector->items) { *ok = 0; vm->error = 1; return NIL_VAL; }
+    int index = 0;
+    for (Value cur = list; cur.type == VAL_PAIR;
+         cur = vm->heap.objects[cur.as.ptr]->cons.cdr)
+        vector->items[index++] = vm->heap.objects[cur.as.ptr]->cons.car;
+    vm->heap.objects[ptr]->type = HEAP_VECTOR;
+    vm->heap.objects[ptr]->opaque.ptr = vector;
+    return (Value){.type = VAL_VECTOR, .as.ptr = ptr};
+}
+
+static Value vm_reader_string(VM* vm, VmPort* port, int* ok) {
+    size_t cap = 64, len = 0;
+    char* bytes = (char*)malloc(cap);
+    if (!bytes) { *ok = 0; vm->error = 1; return NIL_VAL; }
+    for (;;) {
+        int ch = vm_port_read_byte(port);
+        if (ch < 0) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
+        if (ch == '"') break;
+        if (ch == '\\') {
+            ch = vm_port_read_byte(port);
+            if (ch < 0) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
+            if (ch == 'n') ch = '\n';
+            else if (ch == 'r') ch = '\r';
+            else if (ch == 't') ch = '\t';
+            else if (ch == '\n') continue;
+        }
+        if (len >= VM_READER_MAX_TOKEN) {
+            free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        if (len == cap) {
+            size_t next_cap = cap * 2;
+            char* grown = (char*)realloc(bytes, next_cap);
+            if (!grown) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; }
+            bytes = grown;
+            cap = next_cap;
+        }
+        bytes[len++] = (char)ch;
+    }
+    Value result = vm_reader_string_value(vm, bytes, len, 0);
+    free(bytes);
+    return result;
+}
+
+static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok) {
+    size_t cap = 64, len = 0;
+    char* token = (char*)malloc(cap);
+    if (!token) { *ok = 0; vm->error = 1; return NIL_VAL; }
+    token[len++] = (char)first;
+    while (!vm_reader_delimiter(vm_port_peek_byte(port))) {
+        int ch = vm_port_read_byte(port);
+        if (len >= VM_READER_MAX_TOKEN) {
+            free(token); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        if (len + 1 >= cap) {
+            size_t next_cap = cap * 2;
+            char* grown = (char*)realloc(token, next_cap);
+            if (!grown) { free(token); *ok = 0; vm->error = 1; return NIL_VAL; }
+            token = grown;
+            cap = next_cap;
+        }
+        token[len++] = (char)ch;
+    }
+    token[len] = '\0';
+
+    if (!strcmp(token, "#t") || !strcmp(token, "#true")) {
+        free(token); return BOOL_VAL(1);
+    }
+    if (!strcmp(token, "#f") || !strcmp(token, "#false")) {
+        free(token); return BOOL_VAL(0);
+    }
+    if (!strncmp(token, "#\\", 2)) {
+        const char* spelling = token + 2;
+        int64_t cp = !strcmp(spelling, "space") ? ' ' :
+                     !strcmp(spelling, "newline") ? '\n' :
+                     !strcmp(spelling, "tab") ? '\t' :
+                     !strcmp(spelling, "return") ? '\r' :
+                     !strcmp(spelling, "null") ? 0 :
+                     (unsigned char)spelling[0];
+        if (spelling[0] == 'x' && spelling[1] != '\0') {
+            char* hex_end = NULL;
+            errno = 0;
+            long parsed = strtol(spelling + 1, &hex_end, 16);
+            if (errno == 0 && hex_end && *hex_end == '\0' &&
+                parsed >= 0 && parsed <= 0x10ffffL)
+                cp = (int64_t)parsed;
+        }
+        free(token);
+        return (Value){.type = VAL_CHAR, .as.i = cp};
+    }
+
+    char* end = NULL;
+    errno = 0;
+    long long integer = strtoll(token, &end, 10);
+    if (end && *end == '\0' && end != token && errno != ERANGE) {
+        free(token); return INT_VAL((int64_t)integer);
+    }
+    /* Preserve exactness beyond int64 instead of silently turning a decimal
+     * integer into a symbol.  bignum_from_string is arena-backed and accepts
+     * the same optional leading sign as strtoll. */
+    int decimal_integer = token[0] != '\0';
+    size_t digit_index = (token[0] == '+' || token[0] == '-') ? 1u : 0u;
+    if (token[digit_index] == '\0') decimal_integer = 0;
+    for (size_t i = digit_index; decimal_integer && token[i] != '\0'; ++i)
+        if (!isdigit((unsigned char)token[i])) decimal_integer = 0;
+    if (decimal_integer && errno == ERANGE) {
+        VmBignum* bignum = bignum_from_string(&vm->heap.regions, token);
+        int32_t ptr = bignum ? heap_alloc(&vm->heap) : -1;
+        if (!bignum || ptr < 0) {
+            free(token); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        vm->heap.objects[ptr]->type = HEAP_BIGNUM;
+        vm->heap.objects[ptr]->opaque.ptr = bignum;
+        free(token);
+        return (Value){.type = VAL_BIGNUM, .as.ptr = ptr};
+    }
+    /* Exact rationals are normalized by the production numeric tower and
+     * collapse to an integer when the reduced denominator is one. */
+    char* slash = strchr(token, '/');
+    if (slash && slash != token && slash[1] != '\0' && !strchr(slash + 1, '/')) {
+        *slash = '\0';
+        char *num_end = NULL, *den_end = NULL;
+        errno = 0;
+        long long numerator = strtoll(token, &num_end, 10);
+        int numerator_ok = errno != ERANGE && num_end && *num_end == '\0';
+        errno = 0;
+        long long denominator = strtoll(slash + 1, &den_end, 10);
+        int denominator_ok = errno != ERANGE && den_end && *den_end == '\0' &&
+                             denominator != 0;
+        *slash = '/';
+        if (numerator_ok && denominator_ok) {
+            VmRational* rational = vm_rational_make(
+                vm_active_arena(&vm->heap.regions),
+                (int64_t)numerator, (int64_t)denominator);
+            if (!rational) {
+                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
+            }
+            if (rational->denom == 1) {
+                int64_t value = rational->num;
+                free(token);
+                return INT_VAL(value);
+            }
+            int32_t ptr = heap_alloc(&vm->heap);
+            if (ptr < 0) {
+                free(token); *ok = 0; vm->error = 1; return NIL_VAL;
+            }
+            vm->heap.objects[ptr]->type = HEAP_RATIONAL;
+            vm->heap.objects[ptr]->opaque.ptr = rational;
+            free(token);
+            return (Value){.type = VAL_RATIONAL, .as.ptr = ptr};
+        }
+    }
+    errno = 0;
+    end = NULL;
+    double real = strtod(token, &end);
+    if (end && *end == '\0' && end != token && errno != ERANGE &&
+        (strchr(token, '.') || strchr(token, 'e') || strchr(token, 'E'))) {
+        free(token); return FLOAT_VAL(real);
+    }
+    Value result = vm_reader_string_value(vm, token, len, 1);
+    free(token);
+    return result;
+}
+
+static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof) {
+    if (eof) *eof = 0;
+    if (!vm || !port || depth > VM_READER_MAX_DEPTH) {
+        if (ok) *ok = 0;
+        if (vm) vm->error = 1;
+        return NIL_VAL;
+    }
+    int ch = vm_reader_skip_space(port);
+    if (ch < 0) {
+        if (eof) *eof = 1;
+        return (Value){.type = VAL_EOF};
+    }
+    ch = vm_port_read_byte(port);
+    if (ch == '(') return vm_reader_list(vm, port, depth, ok);
+    if (ch == ')') { *ok = 0; vm->error = 1; return NIL_VAL; }
+    if (ch == '"') return vm_reader_string(vm, port, ok);
+    if (ch == '#' && vm_port_peek_byte(port) == '(') {
+        (void)vm_port_read_byte(port);
+        return vm_reader_vector(vm, port, depth, ok);
+    }
+    if (ch == '\'' || ch == '`' || ch == ',') {
+        const char* prefix = ch == '\'' ? "quote" : ch == '`' ? "quasiquote" : "unquote";
+        if (ch == ',' && vm_port_peek_byte(port) == '@') {
+            (void)vm_port_read_byte(port);
+            prefix = "unquote-splicing";
+        }
+        int datum_eof = 0;
+        Value datum = vm_reader_datum(vm, port, depth + 1, ok, &datum_eof);
+        if (!*ok || datum_eof) { *ok = 0; vm->error = 1; return NIL_VAL; }
+        return vm_reader_prefixed(vm, prefix, datum, ok);
+    }
+    return vm_reader_token(vm, port, ch, ok);
+}
+
+static Value vm_reader_from_port(VM* vm, VmPort* port) {
+    int ok = 1, eof = 0;
+    Value result = vm_reader_datum(vm, port, 0, &ok, &eof);
+    return ok ? result : NIL_VAL;
 }
 
 static void vm_dispatch_native(VM* vm, int fid) {
@@ -5230,13 +5681,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value lst = vm_pop(vm), obj = vm_pop(vm);
         while (lst.type == VAL_PAIR) {
             Value car = vm->heap.objects[lst.as.ptr]->cons.car;
-            if (car.type == obj.type && ((car.type == VAL_INT && car.as.i == obj.as.i) ||
-                (car.type == VAL_FLOAT && car.as.f == obj.as.f) ||
-                (car.type == VAL_BOOL && car.as.b == obj.as.b) ||
-                (car.type == VAL_STRING && obj.type == VAL_STRING &&
-                 vm->heap.objects[car.as.ptr]->opaque.ptr && vm->heap.objects[obj.as.ptr]->opaque.ptr &&
-                 strcmp(((VmString*)vm->heap.objects[car.as.ptr]->opaque.ptr)->data,
-                        ((VmString*)vm->heap.objects[obj.as.ptr]->opaque.ptr)->data) == 0))) {
+            if (vm_deep_equal(vm, car, obj)) {
                 vm_push(vm, lst); break;
             }
             lst = vm->heap.objects[lst.as.ptr]->cons.cdr;
@@ -5251,19 +5696,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
             Value pair = vm->heap.objects[alist.as.ptr]->cons.car;
             if (pair.type == VAL_PAIR) {
                 Value car = vm->heap.objects[pair.as.ptr]->cons.car;
-                if (car.type == key.type && ((car.type == VAL_INT && car.as.i == key.as.i) ||
-                    (car.type == VAL_FLOAT && car.as.f == key.as.f) ||
-                    (car.type == VAL_BOOL && car.as.b == key.as.b))) {
-                    vm_push(vm, pair); found = 1; break;
-                }
-                if (car.type == VAL_STRING && key.type == VAL_STRING) {
-                    VmString* a = vm_value_as_string(vm, car);
-                    VmString* b = vm_value_as_string(vm, key);
-                    if (a && b && a->byte_len == b->byte_len &&
-                        memcmp(a->data, b->data, (size_t)a->byte_len) == 0) {
-                        vm_push(vm, pair); found = 1; break;
-                    }
-                } else if (car.type == key.type && car.type >= VAL_PAIR && car.as.ptr == key.as.ptr) {
+                if (vm_deep_equal(vm, car, key)) {
                     vm_push(vm, pair); found = 1; break;
                 }
             }
@@ -7211,14 +7644,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, (Value){.type = VAL_VOID});
         break;
     }
-    case 588: { /* read — read a single char from stdin, return as integer */
-        int ch = getchar();
-        vm_push(vm, ch == EOF ? NIL_VAL : INT_VAL(ch));
+    case 588: { /* _read0 — complete datum reader over current input */
+        vm_push(vm, vm_reader_from_port(vm, vm_port_current_input()));
+        break;
+    }
+    case 619: { /* _read1(port) — complete datum reader over explicit port */
+        Value port_value = vm_pop(vm);
+        VmPort* port = vm_value_as_port(vm, port_value);
+        if (!port || port->dir != VM_PORT_INPUT) {
+            fprintf(stderr, "ERROR: read requires an open input port\n");
+            vm->error = 1;
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        vm_push(vm, vm_reader_from_port(vm, port));
         break;
     }
     case 589: { /* write(datum) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_write_value_port(vm, v, vm_port_current_output(), 1);
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -7233,7 +7677,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 592: { /* eof-object? */
         Value v = vm_pop(vm);
-        vm_push(vm, BOOL_VAL(v.type == VAL_NIL));
+        vm_push(vm, BOOL_VAL(v.type == VAL_EOF));
         break;
     }
     case 593: { /* current-input-port */
@@ -10544,7 +10988,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
      * Compiler-required native functions (merged from eshkol_compiler.c)
      * ══════════════════════════════════════════════════════════════════════ */
 
-    case 100: { /* build-string-from-packed: TOS has packed chars, below that length */
+    case 100: /* build-string-from-packed: TOS has packed chars, below that length */
+    case 101: { /* build-symbol-from-packed: same payload, distinct Scheme type */
         /* Stack: [len, pack0, pack1, ..., packN-1] where N = (len+7)/8 */
         /* Peek down to find the length */
         int n_packs_guess = 0;
@@ -10579,7 +11024,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (ptr >= 0) {
                 vm->heap.objects[ptr]->type = HEAP_STRING;
                 vm->heap.objects[ptr]->opaque.ptr = s;
-                vm_push(vm, (Value){.type = VAL_STRING, .as.ptr = ptr});
+                vm_push(vm, (Value){.type = fid == 101 ? VAL_SYMBOL : VAL_STRING,
+                                    .as.ptr = ptr});
                 break;
             }
         }
@@ -10713,7 +11159,26 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 209: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CLOSURE)); break; }/* procedure? */
     case 210: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_VECTOR)); break; } /* vector? */
     case 211: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* display */
-    case 212: { Value a = vm_pop(vm); print_value(vm, a); fflush(stdout); vm_push(vm, (Value){.type = VAL_VOID}); break; } /* write */
+    case 212: { /* _write1(value) */
+        Value a = vm_pop(vm);
+        vm_write_value_port(vm, a, vm_port_current_output(), 1);
+        fflush(stdout);
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
+    case 618: { /* _write2(value, port) */
+        Value port_value = vm_pop(vm);
+        Value value = vm_pop(vm);
+        VmPort* port = vm_value_as_port(vm, port_value);
+        if (!port || port->dir != VM_PORT_OUTPUT) {
+            fprintf(stderr, "ERROR: write requires an open output port\n");
+            vm->error = 1;
+        } else {
+            vm_write_value_port(vm, value, port, 1);
+        }
+        vm_push(vm, (Value){.type = VAL_VOID});
+        break;
+    }
     case 213: { Value a = vm_pop(vm); vm_push(vm, FLOAT_VAL(as_number_vm(vm, a))); break; }  /* exact->inexact */
     case 214: { Value a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number_vm(vm, a))); break; } /* inexact->exact */
     case 215: { /* string->number — handles #x/#b/#o/#d prefixes */
@@ -10958,7 +11423,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 241: { /* write (native) */
         Value v = vm_pop(vm);
-        print_value(vm, v);
+        vm_write_value_port(vm, v, vm_port_current_output(), 1);
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -11047,6 +11512,21 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1688: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) < (int)as_number(b))); break; }
     case 1689: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, BOOL_VAL((int)as_number(a) > (int)as_number(b))); break; }
 
+    case 184: { /* symbol->string: preserve immutable spelling, change Scheme tag */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_SYMBOL && vm_value_as_string(vm, a)) a.type = VAL_STRING;
+        else a = BOOL_VAL(0);
+        vm_push(vm, a);
+        break;
+    }
+    case 185: { /* string->symbol: preserve immutable spelling, change Scheme tag */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_STRING && vm_value_as_string(vm, a)) a.type = VAL_SYMBOL;
+        else a = BOOL_VAL(0);
+        vm_push(vm, a);
+        break;
+    }
+
     /* ══════════════════════════════════════════════════════════════════════
      * Bitwise operations (1692-1696)
      * ══════════════════════════════════════════════════════════════════════ */
@@ -11069,8 +11549,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Additional predicates (160-166)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 160: { Value a = vm_pop(vm); /* symbol? — in the VM, symbols are interned strings */
-        vm_push(vm, BOOL_VAL(a.type == VAL_STRING)); break; }
+    case 160: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_SYMBOL)); break; } /* symbol? */
     case 161: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_CHAR)); break; } /* char? */
     case 162: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_INT || a.type == VAL_RATIONAL)); break; } /* exact? */
     case 163: { Value a = vm_pop(vm); vm_push(vm, BOOL_VAL(a.type == VAL_FLOAT)); break; } /* inexact? */
@@ -11141,7 +11620,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
             case VAL_NIL: t = "nil"; break; case VAL_INT: t = "integer"; break;
             case VAL_FLOAT: t = "float"; break; case VAL_BOOL: t = "boolean"; break;
             case VAL_PAIR: t = "pair"; break; case VAL_CLOSURE: t = "procedure"; break;
-            case VAL_STRING: t = "string"; break; case VAL_VECTOR: t = "vector"; break;
+            case VAL_STRING: t = "string"; break; case VAL_SYMBOL: t = "symbol"; break;
+            case VAL_VECTOR: t = "vector"; break;
             case VAL_COMPLEX: t = "complex"; break; case VAL_RATIONAL: t = "rational"; break;
             case VAL_FUTURE: t = "future"; break;
         }

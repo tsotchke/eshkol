@@ -14,9 +14,9 @@
     }
   },
   "counts": {
-    "builtins_total": 984,
+    "builtins_total": 988,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 658,
+    "builtins_in_vm_table": 660,
     "builtins_in_llvm_aot_dispatch": 738,
     "builtins_aot_only": 283,
     "quantum_agent_ffi_builtins": 22,
@@ -30,7 +30,7 @@
     "numeric": 86,
     "predicate": 70,
     "geometry": 61,
-    "io_port": 48,
+    "io_port": 52,
     "string_char": 41,
     "list_pair": 38,
     "consciousness": 37,
@@ -429,6 +429,28 @@
       "category": "misc"
     },
     {
+      "name": "_read0",
+      "ids": [
+        588
+      ],
+      "arity": 0,
+      "backends": [
+        "vm"
+      ],
+      "category": "io_port"
+    },
+    {
+      "name": "_read1",
+      "ids": [
+        619
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "io_port"
+    },
+    {
       "name": "_string-append-2",
       "ids": [
         554
@@ -482,6 +504,28 @@
         "vm"
       ],
       "category": "tensor_ad"
+    },
+    {
+      "name": "_write1",
+      "ids": [
+        212
+      ],
+      "arity": 1,
+      "backends": [
+        "vm"
+      ],
+      "category": "io_port"
+    },
+    {
+      "name": "_write2",
+      "ids": [
+        618
+      ],
+      "arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "io_port"
     },
     {
       "name": "abs",
@@ -7553,7 +7597,6 @@
       "arity": 0,
       "backends": [
         "native",
-        "vm",
         "native_llvm"
       ],
       "category": "io_port"
@@ -10843,13 +10886,11 @@
     {
       "name": "write",
       "ids": [
-        212,
         241
       ],
       "arity": 1,
       "backends": [
         "native",
-        "vm",
         "native_llvm"
       ],
       "category": "io_port"

@@ -47,6 +47,8 @@
 #define VAL_FUTURE      28   /* heap-allocated standalone VM future handle   */
 #define VAL_CHAR        29   /* immediate Unicode character (codepoint in .as.i) */
 #define VAL_MULTI_VALUE 30   /* opaque R7RS multiple-values packet            */
+#define VAL_SYMBOL      31   /* heap-backed internable Scheme symbol spelling */
+#define VAL_EOF         32   /* distinct end-of-file object                    */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
