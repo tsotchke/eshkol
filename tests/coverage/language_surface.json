@@ -16,9 +16,9 @@
   "counts": {
     "builtins_total": 984,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 639,
-    "builtins_in_llvm_aot_dispatch": 736,
-    "builtins_aot_only": 301,
+    "builtins_in_vm_table": 658,
+    "builtins_in_llvm_aot_dispatch": 738,
+    "builtins_aot_only": 283,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 112,
@@ -589,9 +589,12 @@
     },
     {
       "name": "ad-counters",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2087
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -622,9 +625,12 @@
     },
     {
       "name": "ad-finite-difference-evals",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2086
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -713,9 +719,12 @@
     },
     {
       "name": "ad-primal-calls",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2083
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -734,18 +743,24 @@
     },
     {
       "name": "ad-reset-counters!",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2082
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
     },
     {
       "name": "ad-reverse-passes",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2084
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -812,9 +827,12 @@
     },
     {
       "name": "ad-tape-allocations",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2085
+      ],
+      "arity": 0,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "tensor_ad"
@@ -1229,18 +1247,24 @@
     },
     {
       "name": "base64-decode-string",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2081
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
     },
     {
       "name": "base64-encode-string",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        2080
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "ffi_system"
@@ -4418,11 +4442,14 @@
     {
       "name": "hash-delete!",
       "ids": [
-        207
+        207,
+        663
       ],
       "arity": 2,
       "backends": [
-        "native"
+        "native",
+        "vm",
+        "native_llvm"
       ],
       "category": "hash"
     },
@@ -4430,7 +4457,8 @@
       "name": "hash-has-key?",
       "ids": [
         203,
-        663
+        663,
+        664
       ],
       "arity": 2,
       "backends": [
@@ -4471,6 +4499,7 @@
     {
       "name": "hash-remove!",
       "ids": [
+        663,
         664
       ],
       "arity": 2,
@@ -4497,45 +4526,60 @@
     },
     {
       "name": "hash-table-clear!",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        668
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-contains?",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        664
+      ],
+      "arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-delete!",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        663
+      ],
+      "arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-exists?",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        664
+      ],
+      "arity": 2,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-keys",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        665
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
@@ -4551,45 +4595,60 @@
     },
     {
       "name": "hash-table-ref/default",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        661
+      ],
+      "arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-set!",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        662
+      ],
+      "arity": 3,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-size",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        667
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table-values",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        666
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
     },
     {
       "name": "hash-table/count",
-      "ids": [],
-      "arity": null,
+      "ids": [
+        667
+      ],
+      "arity": 1,
       "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "hash"
@@ -10598,7 +10657,8 @@
       "arity": 0,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "misc_core"
     },

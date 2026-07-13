@@ -1,0 +1,5 @@
+;;; `emergency-exit` must terminate immediately with the requested status.
+;;; The FFI harness runs this in both AOT and JIT modes and treats status 0 as
+;;; the proof; any code after this form is intentionally unreachable.
+
+(emergency-exit 0)

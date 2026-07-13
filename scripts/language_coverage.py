@@ -56,6 +56,7 @@ CI_TEST_GLOBS = (
     "tests/signal/*.esk", "tests/xla/*.esk", "tests/gpu/*.esk",
     "tests/error_handling/*.esk", "tests/macros/*.esk", "tests/repl/*.esk",
     "tests/web/*.esk", "tests/tco/*.esk", "tests/io/*.esk", "tests/ffi/*.esk",
+    "tests/r7rs/*.esk",
     "tests/benchmark/*.esk", "tests/benchmarks/*.esk", "tests/migration/*.esk",
     "tests/codegen/**/*.esk", "tests/numeric/*.esk", "tests/sicp/**/*.esk",
     "tests/v1_2_edge_cases/*.esk",
@@ -66,16 +67,16 @@ CI_TEST_GLOBS = (
 # servers, process replacement), so list the pure numeric/stateful subset
 # explicitly instead of claiming unexecuted coverage.
 CI_VM_SURFACE_TESTS = (
-    "tests/vm/geometric_surface_regression.esk",
     "tests/vm/geometric_fallback_numeric_regression.esk",
     "tests/vm/riemannian_adam_state_regression.esk",
     "tests/vm/kb_factor_graph_extensions_regression.esk",
     "tests/vm/workspace_introspection_regression.esk",
     "tests/vm/ad_tape_lowlevel_regression.esk",
     "tests/vm/vm_kb_tensor_test.esk",
-    "tests/vm/numeric_alias_surface_regression.esk",
-    "tests/vm/event_emitter_surface_regression.esk",
-    "tests/vm/parameter_runtime_surface_regression.esk",
+)
+
+CI_VM_SURFACE_GLOBS = (
+    "tests/vm/*_surface_regression.esk",
 )
 
 CI_SURFACE_EXTENSION_TESTS = (
@@ -213,6 +214,8 @@ def complete_ci_test_text():
     for pattern in CI_TEST_GLOBS:
         paths.update(glob.glob(os.path.join(REPO, pattern), recursive=True))
     paths.update(os.path.join(REPO, path) for path in CI_VM_SURFACE_TESTS)
+    for pattern in CI_VM_SURFACE_GLOBS:
+        paths.update(glob.glob(os.path.join(REPO, pattern)))
     paths.update(os.path.join(REPO, path) for path in CI_SURFACE_EXTENSION_TESTS)
     paths = sorted(path for path in paths if os.path.isfile(path))
     if not paths:
