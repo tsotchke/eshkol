@@ -130,6 +130,18 @@ static VmString* vm_value_as_string(VM* vm, Value value) {
     return (VmString*)obj->opaque.ptr;
 }
 
+/** Return a UTF-8 string view for either a Scheme string or character.
+ * Character-accepting string helpers use this instead of collapsing VAL_CHAR
+ * to NULL through vm_value_as_string().  The one-codepoint string is arena
+ * owned, matching every other VM string temporary. */
+static VmString* vm_value_as_string_or_char(VM* vm, Value value) {
+    VmString* string_value = vm_value_as_string(vm, value);
+    if (string_value || value.type != VAL_CHAR) return string_value;
+    char utf8[4];
+    int byte_len = vm_utf8_encode((int)value.as.i, utf8);
+    return vm_string_new(&vm->heap.regions, utf8, byte_len);
+}
+
 /** @brief Safely unwrap a VAL_PORT Value to its underlying VmPort*, resolving the
  *         well-known stdin/stdout/stderr opaque pointers to the live singleton
  *         port objects (re-initializing them if needed). Returns NULL on any
@@ -9075,7 +9087,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value suffix_val = vm_pop(vm);
         Value str_val = vm_pop(vm);
         vm_push(vm, BOOL_VAL(vm_string_ends_with_bytes(vm_value_as_string(vm, str_val),
-                                                       vm_value_as_string(vm, suffix_val))));
+                                                       vm_value_as_string_or_char(vm, suffix_val))));
         break;
     }
     case 1957: { /* string-index-of(str, substr, start) → integer or #f */
@@ -9083,7 +9095,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value sub_val = vm_pop(vm);
         Value str_val = vm_pop(vm);
         vm_push(vm, vm_string_index_of_value(vm_value_as_string(vm, str_val),
-                                             vm_value_as_string(vm, sub_val),
+                                             vm_value_as_string_or_char(vm, sub_val),
                                              (int64_t)as_number(start_val)));
         break;
     }
@@ -12716,7 +12728,8 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     int ndims = (c == 1) ? 2 : 3;
                     if (c == 1) { shape[0] = h; shape[1] = w; }
                     VmTensor* t = vm_tensor_from_data(&vm->heap.regions, data, shape, ndims);
-                    free(data);
+                    /* image_io returns global-arena storage; ownership stays
+                     * with that arena after the VM copies the pixels. */
                     if (t) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t); break; }
                 }
             }
@@ -12768,7 +12781,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 if (gray) {
                     int64_t shape[2] = { h, w };
                     VmTensor* gt = vm_tensor_from_data(&vm->heap.regions, gray, shape, 2);
-                    free(gray);
+                    /* `gray` is global-arena-owned; never free it directly. */
                     if (gt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, gt); break; }
                 }
             }
@@ -12796,7 +12809,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
                     int ndims = (c == 1) ? 2 : 3;
                     if (c == 1) { shape[0] = new_h; shape[1] = new_w; }
                     VmTensor* rt = vm_tensor_from_data(&vm->heap.regions, resized, shape, ndims);
-                    free(resized);
+                    /* `resized` is global-arena-owned; never free it directly. */
                     if (rt) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, rt); break; }
                 }
             }
