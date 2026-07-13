@@ -748,6 +748,43 @@ else()
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
 endif()
 
+set(ESHKOL_LLVM_TARGET_INCLUDE_DIRS "${LLVM_INCLUDE_DIRS}")
+if(LLVM_INCLUDE_DIRS AND NOT WIN32)
+    # Put only LLVM's public namespaces ahead of compiler-default includes.
+    # Adding the whole LLVM include root with -isystem also shadows the host
+    # standard library's top-level cxxabi.h, which is incompatible when LLVM
+    # was built with libc++ but Eshkol is compiled with GCC/libstdc++.  A tiny
+    # symlink overlay gives <llvm/...> and <llvm-c/...> priority over a stale
+    # /usr/include/llvm without changing any C/C++ ABI header lookup.
+    string(SHA256 _eshkol_llvm_include_hash "${LLVM_INCLUDE_DIRS}")
+    string(SUBSTRING "${_eshkol_llvm_include_hash}" 0 12 _eshkol_llvm_include_hash)
+    set(_eshkol_llvm_overlay
+        "${ESHKOL_GENERATED_INCLUDE_DIR}/llvm-selected-${_eshkol_llvm_include_hash}")
+    file(MAKE_DIRECTORY "${_eshkol_llvm_overlay}")
+    set(_eshkol_llvm_overlay_ready FALSE)
+    foreach(_llvm_include_dir IN LISTS LLVM_INCLUDE_DIRS)
+        foreach(_llvm_namespace llvm llvm-c)
+            if(EXISTS "${_llvm_include_dir}/${_llvm_namespace}" AND
+               NOT EXISTS "${_eshkol_llvm_overlay}/${_llvm_namespace}")
+                file(CREATE_LINK
+                    "${_llvm_include_dir}/${_llvm_namespace}"
+                    "${_eshkol_llvm_overlay}/${_llvm_namespace}"
+                    SYMBOLIC RESULT _eshkol_llvm_link_result)
+                if(NOT "${_eshkol_llvm_link_result}" STREQUAL "0")
+                    message(FATAL_ERROR
+                        "Failed to create selected-LLVM header overlay for "
+                        "${_llvm_namespace}: ${_eshkol_llvm_link_result}")
+                endif()
+                set(_eshkol_llvm_overlay_ready TRUE)
+            endif()
+        endforeach()
+    endforeach()
+    if(_eshkol_llvm_overlay_ready OR
+       EXISTS "${_eshkol_llvm_overlay}/llvm")
+        set(ESHKOL_LLVM_TARGET_INCLUDE_DIRS "${_eshkol_llvm_overlay}")
+    endif()
+endif()
+
 function(eshkol_target_llvm_includes target_name)
     if(NOT LLVM_INCLUDE_DIRS)
         return()
@@ -758,7 +795,8 @@ function(eshkol_target_llvm_includes target_name)
     # did the opposite and caused LLVM 21 libraries to compile against LLVM 18
     # headers on multi-LLVM hosts.  SYSTEM keeps third-party diagnostics quiet;
     # BEFORE preserves ABI-consistent header selection on every generator.
-    target_include_directories(${target_name} SYSTEM BEFORE PRIVATE ${LLVM_INCLUDE_DIRS})
+    target_include_directories(${target_name} SYSTEM BEFORE PRIVATE
+        ${ESHKOL_LLVM_TARGET_INCLUDE_DIRS})
 endfunction()
 
 # ===== Windows (MinGW/MSYS2) runtime symbol export for the in-process JIT =====
