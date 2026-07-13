@@ -212,10 +212,18 @@ if(ESHKOL_QUANTUM_ENABLED)
     endif()
 
     # Moonlab's shared target uses CMake's standard output location.  The AOT
-    # linker receives this concrete path plus an rpath in the agent-FFI block.
+    # linker receives this concrete path plus an rpath in the unconditional
+    # hosted-runtime link closure below.  Moonlab's QRNG wrapper is part of the
+    # general runtime, so this dependency must not be gated on `(require agent.*)`.
     set(ESHKOL_MOONLAB_LIBRARY_DIR "${moonlab_BINARY_DIR}")
-    set(ESHKOL_MOONLAB_LIBRARY_FILE
-        "${ESHKOL_MOONLAB_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}quantumsim${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    if(WIN32)
+        # A Windows linker consumes the import library, not the runtime DLL.
+        set(ESHKOL_MOONLAB_LIBRARY_FILE
+            "${ESHKOL_MOONLAB_LIBRARY_DIR}/${CMAKE_IMPORT_LIBRARY_PREFIX}quantumsim${CMAKE_IMPORT_LIBRARY_SUFFIX}")
+    else()
+        set(ESHKOL_MOONLAB_LIBRARY_FILE
+            "${ESHKOL_MOONLAB_LIBRARY_DIR}/${CMAKE_SHARED_LIBRARY_PREFIX}quantumsim${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    endif()
     message(STATUS "Moonlab quantum integration: ENABLED (target=quantumsim)")
 endif()
 
@@ -740,24 +748,17 @@ else()
     list(FILTER LLVM_CXXFLAGS_LIST EXCLUDE REGEX "^-fno-exceptions$")
 endif()
 
-set(ESHKOL_LLVM_INCLUDE_OPTIONS "")
-if(LLVM_INCLUDE_DIRS AND NOT ESHKOL_USING_MSVC)
-    foreach(llvm_include_dir IN LISTS LLVM_INCLUDE_DIRS)
-        list(APPEND ESHKOL_LLVM_INCLUDE_OPTIONS "SHELL:-idirafter ${llvm_include_dir}")
-    endforeach()
-endif()
-
 function(eshkol_target_llvm_includes target_name)
     if(NOT LLVM_INCLUDE_DIRS)
         return()
     endif()
 
-    if(ESHKOL_USING_MSVC)
-        target_include_directories(${target_name} PRIVATE ${LLVM_INCLUDE_DIRS})
-    else()
-        target_compile_options(${target_name} PRIVATE
-            $<$<COMPILE_LANGUAGE:C,CXX>:${ESHKOL_LLVM_INCLUDE_OPTIONS}>)
-    endif()
+    # The explicitly selected LLVM toolchain must win over a different LLVM
+    # release installed in the compiler's default include path.  `-idirafter`
+    # did the opposite and caused LLVM 21 libraries to compile against LLVM 18
+    # headers on multi-LLVM hosts.  SYSTEM keeps third-party diagnostics quiet;
+    # BEFORE preserves ABI-consistent header selection on every generator.
+    target_include_directories(${target_name} SYSTEM BEFORE PRIVATE ${LLVM_INCLUDE_DIRS})
 endfunction()
 
 # ===== Windows (MinGW/MSYS2) runtime symbol export for the in-process JIT =====
@@ -1321,6 +1322,19 @@ if(NOT APPLE)
             "always linked into eshkol-run AOT/-r binaries) will fail to LINK on "
             "this host. Install libssl-dev (Debian/Ubuntu), openssl-devel "
             "(Fedora/RHEL), or the platform equivalent.")
+    endif()
+endif()
+
+# Moonlab's QRNG/PQC wrappers are compiled into the ordinary hosted runtime,
+# not only the optional agent-FFI archive.  Every quantum-enabled AOT link must
+# therefore carry Moonlab in its base runtime closure even when the source has
+# no `(require agent.*)` form.  This also makes the generated executable's
+# runtime lookup deterministic on Unix instead of relying on ambient loader
+# paths.
+if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim AND ESHKOL_MOONLAB_LIBRARY_FILE)
+    eshkol_append_host_runtime_link_arg("${ESHKOL_MOONLAB_LIBRARY_FILE}")
+    if(NOT WIN32)
+        eshkol_append_host_runtime_link_arg("-Wl,-rpath,${ESHKOL_MOONLAB_LIBRARY_DIR}")
     endif()
 endif()
 
@@ -3481,18 +3495,6 @@ if(ESHKOL_BUILD_AGENT_FFI)
         endif()
         if(NCURSES_AGENT)
             list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${NCURSES_AGENT}")
-        endif()
-        if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim AND ESHKOL_MOONLAB_LIBRARY_FILE)
-            # Concrete path (not a generator expression - see the "Avoids
-            # generator expressions" note above), plus an rpath so the AOT
-            # binary finds Moonlab's shared library at run time without
-            # requiring the user to set LD_LIBRARY_PATH/DYLD_LIBRARY_PATH.
-            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${ESHKOL_MOONLAB_LIBRARY_FILE}")
-            if(APPLE)
-                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-Wl,-rpath,${ESHKOL_MOONLAB_LIBRARY_DIR}")
-            else()
-                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-Wl,-rpath,${ESHKOL_MOONLAB_LIBRARY_DIR}")
-            endif()
         endif()
         if(APPLE)
             list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS

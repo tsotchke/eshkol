@@ -38702,9 +38702,15 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
 #ifdef __APPLE__
         link_args.emplace_back("-framework");
         link_args.emplace_back("Accelerate");
-#elif defined(__linux__) || defined(_WIN32)
-        append_host_runtime_link_args(link_args);
 #endif
+
+        // Configured hosted-runtime dependencies are cross-platform. In a
+        // quantum build this includes Moonlab even when no agent module is
+        // required; on Linux/Windows it also carries BLAS/CUDA/crypto system
+        // libraries. This used to be skipped on Apple, leaving standalone
+        // quantum AOT binaries with unresolved moonlab_* symbols even though
+        // the JIT and compiler process were linked correctly.
+        append_host_runtime_link_args(link_args);
 
         // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
 #ifdef __APPLE__

@@ -115,6 +115,19 @@ jobs:
             esac
           done
 
+          # `-r` resolves Moonlab from the already-linked compiler process.
+          # Compile and execute one representative standalone binary as well,
+          # so CI proves that the generated AOT link closure and loader rpath
+          # carry Moonlab without an agent-FFI require or ambient DYLD paths.
+          aot_dir="${RUNNER_TEMP}/eshkol-quantum-aot"
+          aot_bin="${aot_dir}/quantum-smoke${{ runner.os == 'Windows' && '.exe' || '' }}"
+          mkdir -p "$aot_dir"
+          "$runner" tests/quantum/quantum_smoke_test.esk -o "$aot_bin" "$libflag"
+          aot_output="$("$aot_bin" 2>&1)"
+          printf '%s\n' "$aot_output"
+          grep -q 'Bell-pair correlation over 200 shots: 200/200  PASS' <<<"$aot_output"
+          grep -q 'quantum_smoke_test: PASS' <<<"$aot_output"
+
       # The default AD oracle remains Moonlab-free. This opt-in invocation
       # enables its VQE-energy AD-vs-finite-difference probe on the same
       # quantum build that compiled the agent.quantum bridge.
