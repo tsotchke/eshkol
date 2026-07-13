@@ -2715,7 +2715,13 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_runtime_language_coverage.py")
     find_program(ESHKOL_PYTHON3_EXECUTABLE NAMES python3 python)
-    if(ESHKOL_PYTHON3_EXECUTABLE)
+    # Native Windows builds intentionally omit the bytecode VM.  Do not
+    # register a test whose generator expression names that absent target;
+    # CMake evaluates TARGET_FILE expressions during generation and would
+    # otherwise reject the entire Windows build before any test can run.
+    # The VM target is declared later in this file, so TARGET cannot be used
+    # as the configure-time guard here.
+    if(ESHKOL_PYTHON3_EXECUTABLE AND NOT WIN32)
         add_test(
             NAME runtime_language_coverage_test
             COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
