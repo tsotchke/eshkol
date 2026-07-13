@@ -36,10 +36,12 @@
 #   ESHKOL_HOST_CXX_COMPILER
 #                   Windows LLVM SDK clang++.exe used for generated AOT links.
 #   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
-#                   Optional Windows generator overrides. Defaults select the
-#                   newest installed VS 2022+ generator, x64, and its native
-#                   toolset. Set GPU_GATE_CMAKE_TOOLSET=ClangCL when that
-#                   optional Visual Studio component is installed.
+#                   Optional Windows generator overrides. The default prefers
+#                   Ninja with MSVC from an active VsDevCmd environment, which
+#                   does not require CUDA's optional Visual Studio integration;
+#                   otherwise it selects the newest installed VS 2022+
+#                   generator. Set GPU_GATE_CMAKE_TOOLSET=ClangCL only when
+#                   that optional Visual Studio component is installed.
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -185,6 +187,13 @@ configure_and_build() {
 
     if [ "$WINDOWS_POSIX" -eq 1 ]; then
         local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
+        local msvc_cl=""
+        msvc_cl="$(command -v cl.exe 2>/dev/null \
+            || command -v cl 2>/dev/null || true)"
+        if [ -z "$generator" ] && command -v ninja >/dev/null 2>&1 \
+            && [ -n "$msvc_cl" ]; then
+            generator='Ninja'
+        fi
         if [ -z "$generator" ]; then
             local vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
             local candidate version_range install
@@ -207,12 +216,23 @@ EOF
             [ -n "$generator" ] \
                 || fail "no installed Visual Studio 2022+ CMake generator with MSBuild found"
         fi
-        cmake_args+=(
-            -G "$generator"
-            -A "${GPU_GATE_CMAKE_PLATFORM:-x64}"
-        )
-        [ -n "${GPU_GATE_CMAKE_TOOLSET:-}" ] \
-            && cmake_args+=(-T "$GPU_GATE_CMAKE_TOOLSET")
+        if [ "$generator" = 'Ninja' ]; then
+            cmake_args+=(
+                -G Ninja
+                -DCMAKE_C_COMPILER="$msvc_cl"
+                -DCMAKE_CXX_COMPILER="$msvc_cl"
+            )
+            if command -v rc.exe >/dev/null 2>&1; then
+                cmake_args+=(-DCMAKE_RC_COMPILER="$(command -v rc.exe)")
+            fi
+        else
+            cmake_args+=(
+                -G "$generator"
+                -A "${GPU_GATE_CMAKE_PLATFORM:-x64}"
+            )
+            [ -n "${GPU_GATE_CMAKE_TOOLSET:-}" ] \
+                && cmake_args+=(-T "$GPU_GATE_CMAKE_TOOLSET")
+        fi
         [ -n "${LLVM_DIR:-}" ] && cmake_args+=(-DLLVM_DIR="$LLVM_DIR")
         [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ] \
             && cmake_args+=(-DESHKOL_HOST_CXX_COMPILER="$ESHKOL_HOST_CXX_COMPILER")
