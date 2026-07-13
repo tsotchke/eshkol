@@ -5,6 +5,22 @@
 (define (approx= a b) (< (abs (- a b)) 1e-4))
 (define (check nm ok) (if ok (begin (set! pass (+ pass 1))(display "PASS: ")(display nm)(newline))
                             (begin (set! fail (+ fail 1))(display "FAIL: ")(display nm)(newline))))
+(define (vec-norm v)
+  (let loop ((i 0) (sum 0.0))
+    (if (< i (vector-length v))
+        (loop (+ i 1) (+ sum (* (vector-ref v i) (vector-ref v i))))
+        (sqrt sum))))
+(define (poincare-lambda x)
+  (let loop ((i 0) (sum 0.0))
+    (if (< i (vector-length x))
+        (loop (+ i 1) (+ sum (* (vector-ref x i) (vector-ref x i))))
+        (/ 2.0 (- 1.0 sum)))))
+(define (vector-approx= x y)
+  (let loop ((i 0))
+    (if (= i (vector-length x))
+        #t
+        (and (approx= (vector-ref x i) (vector-ref y i))
+             (loop (+ i 1))))))
 
 (define H (make-hyperbolic-manifold 3))
 (define E (make-euclidean-manifold 3))
@@ -19,8 +35,26 @@
 (check "Euclidean distance = L2" (approx= (manifold-distance E a b) (sqrt 0.13)))
 ;; exp/log roundtrip
 (define v #(0.05 -0.03 0.02))
-(define rt (manifold-log-map H a (manifold-exp-map H a v)))
-(check "Poincaré exp/log roundtrip" (and (approx= (vector-ref rt 0) 0.05) (approx= (vector-ref rt 1) -0.03)))
+(define exp-a-v (manifold-exp-map H a v))
+(define rt (manifold-log-map H a exp-a-v))
+(check "Poincaré exp/log roundtrip" (vector-approx= rt v))
+;; In Poincaré coordinates, a tangent vector's Riemannian norm is
+;; lambda(base) * ||v||_2.  The conformal factor therefore belongs inside
+;; tanh in exp_base(v); comparing distance to the raw coordinate norm would
+;; use the wrong tangent-space metric away from the origin.
+(check "Poincaré exp length = Riemannian tangent norm"
+       (approx= (manifold-distance H a exp-a-v)
+                (* (poincare-lambda a) (vec-norm v))))
+;; Exercise a substantially off-origin point, where omitting lambda(base)
+;; creates a large and easy-to-detect inverse/length error.
+(define off-base #(0.60 0.20 0.00))
+(define off-v #(0.01 -0.02 0.005))
+(define off-exp (manifold-exp-map H off-base off-v))
+(check "Poincaré off-origin exp/log roundtrip"
+       (vector-approx= (manifold-log-map H off-base off-exp) off-v))
+(check "Poincaré off-origin geodesic length"
+       (approx= (manifold-distance H off-base off-exp)
+                (* (poincare-lambda off-base) (vec-norm off-v))))
 ;; curvature closed forms
 (check "scalar curvature E=0"  (approx= (manifold-scalar-curvature E) 0.0))
 (check "scalar curvature H=-6" (approx= (manifold-scalar-curvature H) -6.0))
