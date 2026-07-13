@@ -12,6 +12,7 @@
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
 #include <eshkol/core/rational.h>
+#include <eshkol/core/runtime.h>
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
 #include "../core/arena_memory.h"  // For runtime function declarations
 #include <eshkol/backend/blas_backend.h>  // For BLAS runtime functions
@@ -639,6 +640,37 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
 static std::string resolveModulePath(const std::string& module_name, const std::string& base_dir = ".");
 
 /**
+ * Scoped parser/codegen provenance for nested module loads.
+ *
+ * Requiring a module can recursively require another module. A one-way
+ * eshkol_set_source_context() call would leave the caller attributed to the
+ * last dependency compiled, so preserve and restore all active source text.
+ */
+class ScopedSourceContext {
+public:
+    ScopedSourceContext(const std::string& path, const std::string& text)
+        : previous_path_(eshkol_get_source_context_path())
+        , previous_text_(eshkol_get_source_context_text())
+        , previous_parse_path_(eshkol_get_parse_source_context())
+    {
+        eshkol_set_source_context(path.c_str(), text.c_str());
+    }
+
+    ~ScopedSourceContext() {
+        eshkol_set_source_context(previous_path_.c_str(), previous_text_.c_str());
+        eshkol_set_parse_source_context(previous_parse_path_.c_str());
+    }
+
+    ScopedSourceContext(const ScopedSourceContext&) = delete;
+    ScopedSourceContext& operator=(const ScopedSourceContext&) = delete;
+
+private:
+    std::string previous_path_;
+    std::string previous_text_;
+    std::string previous_parse_path_;
+};
+
+/**
  * @brief Constructs an empty REPL JIT context and enables REPL-mode codegen immediately.
  *
  * The LLJIT instance itself is not created here; call initializeJIT() before
@@ -960,6 +992,8 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_runtime_set_current_output_fp);
     ADD_SYMBOL(eshkol_runtime_set_current_input_fp);
     ADD_SYMBOL(eshkol_runtime_set_current_error_fp);
+    ADD_SYMBOL(eshkol_language_coverage_exec_op);
+    ADD_SYMBOL(eshkol_language_coverage_exec_call);
     ADD_SYMBOL(eshkol_check_forward_ref);
     ADD_SYMBOL(eshkol_repl_forward_ref_stub_addr);
     ADD_SYMBOL(eshkol_repl_variadic_fixed_params);
@@ -2707,6 +2741,11 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     std::string content = buffer.str();
     module_file.close();
 
+    // Attribute parser, codegen, diagnostics, and opt-in runtime coverage to
+    // the module itself. The guard restores the requiring file, including
+    // across recursive dependency loads.
+    ScopedSourceContext source_context(module_path, content);
+
     // Parse all ASTs from the module
     std::vector<eshkol_ast_t> module_asts = parseAllAstsFromString(content);
 
@@ -2791,7 +2830,7 @@ bool ReplJITContext::loadModule(const std::string& module_name, bool allow_preco
     // Batch-compile all definitions together (allows forward references)
     if (!batch_asts.empty()) {
         try {
-            executeBatch(batch_asts, true);  // silent = true for module loading
+            executeBatch(batch_asts, true, module_path, content);
         } catch (const std::exception& e) {
             std::cerr << "     error: " << e.what() << std::endl;
         }
@@ -3129,9 +3168,25 @@ static std::string resolveModulePath(const std::string& module_name, const std::
  * (caller-owned), or nullptr if there was no entry function (define-only
  * batch).
  */
-void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent) {
+void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
+                                   const std::string& source_path,
+                                   const std::string& source_text) {
     if (asts.empty()) {
         return nullptr;
+    }
+
+    // Module/import callers pass provenance explicitly so codegen cannot
+    // inherit a requiring file's ambient source context. Keep the guard alive
+    // through IR generation and entry execution; ordinary REPL/file batches
+    // continue using the context established by their host.
+    std::unique_ptr<ScopedSourceContext> explicit_source_context;
+    if (!source_path.empty()) {
+        explicit_source_context = std::make_unique<ScopedSourceContext>(
+            source_path, source_text);
+        if (source_path != eshkol_get_source_context_path()) {
+            throw std::runtime_error(
+                "failed to establish explicit JIT batch source context");
+        }
     }
 
     // Pre-register all lambda variables so they're tracked
@@ -3175,8 +3230,12 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent)
         num_asts_for_codegen = codegen_asts.size();
     }
 
-    LLVMModuleRef c_module = eshkol_generate_llvm_ir(
-        asts_for_codegen, num_asts_for_codegen, module_name.c_str());
+    LLVMModuleRef c_module = source_path.empty()
+        ? eshkol_generate_llvm_ir(
+              asts_for_codegen, num_asts_for_codegen, module_name.c_str())
+        : eshkol_generate_llvm_ir_with_source(
+              asts_for_codegen, num_asts_for_codegen, module_name.c_str(),
+              source_path.c_str(), source_text.c_str());
 
     if (!c_module) {
         // Quirk #6 (2026-04-23): throw on codegen/verify failure so the
@@ -3520,6 +3579,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             std::string content = buffer.str();
             file.close();
 
+            // Imports compile synchronously inside the caller's execute().
+            // Preserve the caller while attributing this imported file.
+            ScopedSourceContext source_context(canonical_path, content);
+
             // Parse all ASTs from the file
             std::vector<eshkol_ast_t> file_asts = parseAllAstsFromString(content);
             if (file_asts.empty()) {
@@ -3558,7 +3621,8 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             void* last_result = nullptr;
             if (!batch_asts.empty()) {
                 try {
-                    last_result = executeBatch(batch_asts, true);
+                    last_result = executeBatch(batch_asts, true,
+                                               canonical_path, content);
                 } catch (const std::exception& e) {
                     // Loaded-file batch failed.  Warn so the user knows the
                     // file partially failed to load — silent failure here

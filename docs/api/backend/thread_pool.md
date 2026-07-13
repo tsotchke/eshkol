@@ -52,11 +52,11 @@ Task function signature: takes user data, returns a result pointer.
 
 ```c
 typedef struct eshkol_thread_pool_config {
- size_t num_threads; 
- size_t task_queue_capacity; 
- size_t thread_arena_size; 
- bool enable_metrics; 
- const char* name; 
+ size_t num_threads;
+ size_t task_queue_capacity;
+ size_t thread_arena_size;
+ bool enable_metrics;
+ const char* name;
 } eshkol_thread_pool_config_t;
 ```
 
@@ -303,16 +303,16 @@ true if all futures completed, false if the wait timed out
 
 ```c
 typedef struct eshkol_thread_pool_metrics {
- size_t tasks_submitted; 
- size_t tasks_completed; 
- size_t tasks_pending; 
- size_t active_workers; 
- size_t peak_queue_depth; 
- uint64_t total_task_time_us; 
- uint64_t total_wait_time_us; 
- uint64_t avg_task_time_us; 
- uint64_t avg_wait_time_us; 
- size_t num_threads; 
+ size_t tasks_submitted;
+ size_t tasks_completed;
+ size_t tasks_pending;
+ size_t active_workers;
+ size_t peak_queue_depth;
+ uint64_t total_task_time_us;
+ uint64_t total_wait_time_us;
+ uint64_t avg_task_time_us;
+ uint64_t avg_wait_time_us;
+ size_t num_threads;
 } eshkol_thread_pool_metrics_t;
 ```
 

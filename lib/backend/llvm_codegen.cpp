@@ -34,6 +34,7 @@
 #include <eshkol/logger.h>
 #include <eshkol/platform_runtime.h>
 #include <eshkol/runtime_exports.h>
+#include <eshkol/core/runtime.h>
 #include <eshkol/pkg/subprocess.h>
 #include "../core/arena_memory.h"
 #include <sstream>
@@ -450,6 +451,7 @@ static void deadStripWasmModule(llvm::Module& module) {
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstddef>
 #include <mutex>
 #include <thread>
 #ifdef __APPLE__
@@ -496,7 +498,7 @@ static bool g_uses_stdlib = false;
 static bool g_emit_debug_info = false;
 static std::string g_debug_source_filename;
 static std::string g_debug_source_directory;
-// Source text + filepath for structured error messages with caret display
+// Source text + filepath for structured error messages with caret display.
 static std::string g_source_text;
 static std::string g_source_filepath;
 
@@ -1210,6 +1212,15 @@ private:
     // Reset at the start of every generateIR() / library compilation so two
     // compilations of the same source always produce identical IR.
     uint64_t name_uniquifier_ = 0;
+
+    // Interned plain C strings used only by opt-in runtime language coverage.
+    // Keeping one global per distinct spelling avoids bloating instrumented
+    // modules with a copy of the source path for every AST node.
+    std::unordered_map<std::string, llvm::Value*> coverage_string_cache_;
+    const bool language_coverage_enabled_ = [] {
+        const char* dir = std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
+        return dir && *dir;
+    }();
 
     // Type system (manages all LLVM types)
     std::unique_ptr<eshkol::TypeSystem> types;
@@ -7257,16 +7268,21 @@ private:
             Value* state_int = unpackInt64FromTaggedValue(state_tagged);
             Value* state_ptr = builder->CreateIntToPtr(state_int, PointerType::getUnqual(*context));
 
-            // Store value at state->value (offset 8, after void* jmp_buf_ptr)
+            // Store value at state->value using the public runtime ABI layout.
             Value* value_slot = builder->CreateGEP(int8_type, state_ptr,
-                ConstantInt::get(int64_type, 8));
+                ConstantInt::get(
+                    int64_type,
+                    offsetof(eshkol_continuation_state_t, value)));
             Value* invoke_value = call_args.empty() ? packNullToTaggedValue() : call_args[0];
             builder->CreateStore(invoke_value, value_slot);
 
             // Unwind dynamic-wind stack before longjmp
-            // Load wind_mark from state (offset 24 = 8 + 16: after jmp_buf_ptr + value)
+            // Load the dynamic-wind and promise marks from the same public
+            // ABI rather than assuming host-specific padding.
             Value* wind_mark_ptr = builder->CreateGEP(int8_type, state_ptr,
-                ConstantInt::get(int64_type, 24));
+                ConstantInt::get(
+                    int64_type,
+                    offsetof(eshkol_continuation_state_t, wind_mark)));
             Value* wind_mark = builder->CreateLoad(PointerType::getUnqual(*context), wind_mark_ptr);
 
             Function* unwind_func = module->getFunction("eshkol_unwind_dynamic_wind");
@@ -7277,6 +7293,27 @@ private:
                     "eshkol_unwind_dynamic_wind", module.get());
             }
             builder->CreateCall(unwind_func, {wind_mark});
+
+            // A continuation may escape from the middle of a promise thunk.
+            // Roll back every promise evaluation entered after the capture
+            // point before longjmp, just as the exception runtime does.  The
+            // saved mark follows wind_mark in eshkol_continuation_state_t.
+            Value* promise_mark_ptr = builder->CreateGEP(int8_type, state_ptr,
+                ConstantInt::get(
+                    int64_type,
+                    offsetof(eshkol_continuation_state_t, promise_mark)));
+            Value* promise_mark = builder->CreateLoad(
+                PointerType::getUnqual(*context), promise_mark_ptr);
+            Function* promise_unwind_func =
+                module->getFunction("eshkol_promise_eval_unwind_to");
+            if (!promise_unwind_func) {
+                FunctionType* promise_unwind_type = FunctionType::get(
+                    builder->getVoidTy(), {builder->getPtrTy()}, false);
+                promise_unwind_func = Function::Create(
+                    promise_unwind_type, Function::ExternalLinkage,
+                    "eshkol_promise_eval_unwind_to", module.get());
+            }
+            builder->CreateCall(promise_unwind_func, {promise_mark});
 
             // Load jmp_buf_ptr and longjmp
             Value* jmp_buf_ptr = builder->CreateLoad(PointerType::getUnqual(*context), state_ptr);
@@ -9360,6 +9397,67 @@ private:
     uint32_t current_source_line = 0;
     uint32_t current_source_column = 0;
 
+    Value* languageCoverageString(const std::string& value) {
+        auto it = coverage_string_cache_.find(value);
+        if (it != coverage_string_cache_.end()) {
+            return it->second;
+        }
+        Value* ptr = builder->CreateGlobalStringPtr(
+            value, "eshkol_language_coverage_string");
+        coverage_string_cache_.emplace(value, ptr);
+        return ptr;
+    }
+
+    void emitLanguageCoverage(const eshkol_ast_t* ast) {
+        if (!language_coverage_enabled_ || !ast || ast->type != ESHKOL_OP) {
+            return;
+        }
+
+        const char* source_path =
+            g_source_filepath.empty() ? "<unknown>" : g_source_filepath.c_str();
+        eshkol_language_coverage_codegen(
+            source_path,
+            ast->line,
+            ast->column,
+            static_cast<uint32_t>(ast->operation.op));
+
+        if (!builder->GetInsertBlock() ||
+            builder->GetInsertBlock()->getTerminator()) {
+            return;
+        }
+
+        Type* void_type = Type::getVoidTy(*context);
+        Type* ptr_type = PointerType::getUnqual(*context);
+        Type* i32_type = Type::getInt32Ty(*context);
+        Value* source = languageCoverageString(source_path);
+        Value* line = ConstantInt::get(i32_type, ast->line);
+        Value* column = ConstantInt::get(i32_type, ast->column);
+        Value* operation = ConstantInt::get(
+            i32_type, static_cast<uint32_t>(ast->operation.op));
+
+        FunctionCallee op_hook = module->getOrInsertFunction(
+            "eshkol_language_coverage_exec_op",
+            FunctionType::get(void_type,
+                              {ptr_type, i32_type, i32_type, i32_type},
+                              false));
+        builder->CreateCall(op_hook, {source, line, column, operation});
+
+        if (ast->operation.op == ESHKOL_CALL_OP &&
+            ast->operation.call_op.func &&
+            ast->operation.call_op.func->type == ESHKOL_VAR &&
+            ast->operation.call_op.func->variable.id &&
+            *ast->operation.call_op.func->variable.id) {
+            Value* name = languageCoverageString(
+                ast->operation.call_op.func->variable.id);
+            FunctionCallee call_hook = module->getOrInsertFunction(
+                "eshkol_language_coverage_exec_call",
+                FunctionType::get(void_type,
+                                  {ptr_type, i32_type, i32_type, ptr_type},
+                                  false));
+            builder->CreateCall(call_hook, {source, line, column, name});
+        }
+    }
+
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
 
@@ -9386,6 +9484,8 @@ private:
                 }
             }
         }
+
+        emitLanguageCoverage(ast);
 
         switch (ast->type) {
             case ESHKOL_INVALID:
@@ -14713,8 +14813,15 @@ private:
                  ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE),
                  ConstantInt::get(int8_type, 0)});
 
-            // Store forced = 0
-            builder->CreateStore(ConstantInt::get(int64_type, 0), promise_ptr);
+            // Promise state:
+            //   0 = ordinary delay (force exactly this promise)
+            //   1 = forced (cached value is authoritative)
+            //   2 = delay-force (iteratively force the produced promise)
+            //   3 = evaluating ordinary, 4 = evaluating delay-force
+            //       (cycle/re-entrancy guards with rollback provenance)
+            const uint64_t initial_state =
+                func_name == "%make-lazy-promise-force" ? 2 : 0;
+            builder->CreateStore(ConstantInt::get(int64_type, initial_state), promise_ptr);
 
             // Store thunk at offset 8
             Value* thunk_slot = builder->CreateGEP(int8_type, promise_ptr,
@@ -14767,17 +14874,26 @@ private:
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
-            // Check: type == HEAP_PTR && header subtype == HEAP_SUBTYPE_PROMISE
+            // Check: type == HEAP_PTR, not a raw lazy-future allocation, and
+            // header subtype == HEAP_SUBTYPE_PROMISE. Futures carry the same
+            // tagged-value type but have no arena header at ptr-8, so reading
+            // their would-be header is undefined.
+            constexpr uint8_t FUTURE_FLAG = 10;
             Value* type_tag = builder->CreateExtractValue(arg, {0});
+            Value* flags = builder->CreateExtractValue(arg, {1});
             Value* is_heap = builder->CreateICmpEQ(type_tag,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+            Value* is_future = builder->CreateICmpEQ(flags,
+                ConstantInt::get(int8_type, FUTURE_FLAG));
+            Value* is_headered_heap = builder->CreateAnd(
+                is_heap, builder->CreateNot(is_future));
 
             Function* current_func = builder->GetInsertBlock()->getParent();
             BasicBlock* check_sub_bb = BasicBlock::Create(*context, "promise_check_sub", current_func);
             BasicBlock* false_bb = BasicBlock::Create(*context, "promise_false", current_func);
             BasicBlock* merge_bb = BasicBlock::Create(*context, "promise_merge", current_func);
 
-            builder->CreateCondBr(is_heap, check_sub_bb, false_bb);
+            builder->CreateCondBr(is_headered_heap, check_sub_bb, false_bb);
 
             builder->SetInsertPoint(check_sub_bb);
             Value* ptr = builder->CreateIntToPtr(
@@ -14807,6 +14923,46 @@ private:
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
+            Function* current_func = builder->GetInsertBlock()->getParent();
+
+            // Explicit loop state. LLVM's mem2reg pass promotes these entry
+            // allocas to SSA, while code generation remains robust when the
+            // dynamic closure dispatcher introduces additional basic blocks.
+            IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+            BasicBlock& entry = current_func->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+            AllocaInst* force_current_slot = builder->CreateAlloca(
+                tagged_value_type, nullptr, "force.current");
+            AllocaInst* force_mark_slot = builder->CreateAlloca(
+                builder->getPtrTy(), nullptr, "force.mark");
+            AllocaInst* force_result_slot = builder->CreateAlloca(
+                tagged_value_type, nullptr, "force.result");
+            builder->restoreIP(saved_ip);
+            builder->CreateStore(arg, force_current_slot);
+
+            auto declare_promise_runtime = [&](const char* name,
+                                               llvm::Type* return_type,
+                                               std::vector<llvm::Type*> args) {
+                if (Function* existing = module->getFunction(name)) {
+                    return existing;
+                }
+                return Function::Create(
+                    FunctionType::get(return_type, args, false),
+                    Function::ExternalLinkage, name, module.get());
+            };
+            Function* promise_mark_func = declare_promise_runtime(
+                "eshkol_promise_eval_mark", builder->getPtrTy(), {});
+            Function* promise_begin_func = declare_promise_runtime(
+                "eshkol_promise_eval_begin", builder->getVoidTy(),
+                {builder->getPtrTy(), int64_type});
+            Function* promise_commit_one_func = declare_promise_runtime(
+                "eshkol_promise_eval_commit_one", builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()});
+            Function* promise_commit_to_func = declare_promise_runtime(
+                "eshkol_promise_eval_commit_to", builder->getVoidTy(),
+                {builder->getPtrTy(), builder->getPtrTy()});
+            builder->CreateStore(
+                builder->CreateCall(promise_mark_func, {}), force_mark_slot);
 
             // Two heap-resident things support force:
             //   - Promises (delay/force, R7RS): allocated via the arena
@@ -14824,21 +14980,30 @@ private:
             // so the thunk never ran.
             constexpr uint8_t FUTURE_FLAG = 10;
 
-            Value* type_tag = builder->CreateExtractValue(arg, {0});
-            Value* arg_flags = builder->CreateExtractValue(arg, {1});
+            BasicBlock* dispatch_bb = BasicBlock::Create(
+                *context, "force_dispatch", current_func);
+            BasicBlock* unwind_bb = BasicBlock::Create(
+                *context, "force_unwind", current_func);
+            BasicBlock* done_bb = BasicBlock::Create(
+                *context, "force_done", current_func);
+            builder->CreateBr(dispatch_bb);
+            builder->SetInsertPoint(dispatch_bb);
+
+            Value* current = builder->CreateLoad(
+                tagged_value_type, force_current_slot, "force_current");
+            Value* type_tag = builder->CreateExtractValue(current, {0});
+            Value* arg_flags = builder->CreateExtractValue(current, {1});
             Value* is_heap = builder->CreateICmpEQ(type_tag,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
             Value* is_future_flagged = builder->CreateICmpEQ(arg_flags,
                 ConstantInt::get(int8_type, FUTURE_FLAG));
             Value* is_future = builder->CreateAnd(is_heap, is_future_flagged);
 
-            Function* current_func = builder->GetInsertBlock()->getParent();
             BasicBlock* future_bb = BasicBlock::Create(*context, "force_future", current_func);
             BasicBlock* check_promise_bb = BasicBlock::Create(*context, "force_check_promise", current_func);
             BasicBlock* check_sub_bb = BasicBlock::Create(*context, "force_check_sub", current_func);
             BasicBlock* promise_bb = BasicBlock::Create(*context, "force_promise", current_func);
             BasicBlock* not_promise_bb = BasicBlock::Create(*context, "force_not_promise", current_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "force_merge", current_func);
 
             // Future first — its "ptr - 8" is undefined memory, so we
             // MUST NOT fall into the heap-header check for futures.
@@ -14846,7 +15011,9 @@ private:
 
             // ── FUTURE PATH (lazy_future runtime helpers) ───────────────
             builder->SetInsertPoint(future_bb);
-            Value* future_ptr_raw = builder->CreateExtractValue(arg, {4});
+            Value* future_current = builder->CreateLoad(
+                tagged_value_type, force_current_slot);
+            Value* future_ptr_raw = builder->CreateExtractValue(future_current, {4});
             Value* future_ptr = builder->CreateIntToPtr(future_ptr_raw,
                 PointerType::getUnqual(*context));
 
@@ -14952,8 +15119,8 @@ private:
             PHINode* fut_phi = builder->CreatePHI(tagged_value_type, 2, "future_val");
             fut_phi->addIncoming(fut_eval_result, fut_eval_exit);
             fut_phi->addIncoming(fut_cached_val, fut_cached_bb);
-            builder->CreateBr(merge_bb);
-            BasicBlock* fut_done_exit = builder->GetInsertBlock();
+            builder->CreateStore(fut_phi, force_result_slot);
+            builder->CreateBr(unwind_bb);
 
             // ── PROMISE PATH (existing) ─────────────────────────────────
             builder->SetInsertPoint(check_promise_bb);
@@ -14961,92 +15128,169 @@ private:
 
             // Check subtype header
             builder->SetInsertPoint(check_sub_bb);
+            Value* promise_current = builder->CreateLoad(
+                tagged_value_type, force_current_slot);
             Value* ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
+                builder->CreateExtractValue(promise_current, {4}),
+                PointerType::getUnqual(*context));
             Value* header = builder->CreateLoad(int8_type,
                 builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
             Value* is_promise = builder->CreateICmpEQ(header,
                 ConstantInt::get(int8_type, HEAP_SUBTYPE_PROMISE));
             builder->CreateCondBr(is_promise, promise_bb, not_promise_bb);
 
-            // Promise path: check forced flag, call thunk if needed, cache result
+            // Promise state machine:
+            //   0 ordinary delay, 1 forced, 2 delay-force,
+            //   3 evaluating ordinary, 4 evaluating delay-force.
+            // A delay-force node uses its cached slot as an intrusive parent
+            // link while evaluating, then the unwind loop path-compresses the
+            // entire chain to the final value. This is O(n) time, O(1)
+            // auxiliary memory, and adds no generated-code stack frame per
+            // promise link.
             builder->SetInsertPoint(promise_bb);
-            Value* forced_flag = builder->CreateLoad(int64_type, ptr, "forced");
-            Value* already_forced = builder->CreateICmpNE(forced_flag,
-                ConstantInt::get(int64_type, 0));
+            Value* promise_state = builder->CreateLoad(
+                int64_type, ptr, "promise_state");
+            BasicBlock* cached_bb = BasicBlock::Create(
+                *context, "promise_cached", current_func);
+            BasicBlock* ordinary_bb = BasicBlock::Create(
+                *context, "promise_ordinary", current_func);
+            BasicBlock* lazy_bb = BasicBlock::Create(
+                *context, "promise_delay_force", current_func);
+            BasicBlock* eval_bb = BasicBlock::Create(
+                *context, "promise_eval", current_func);
+            BasicBlock* eval_ordinary_bb = BasicBlock::Create(
+                *context, "promise_eval_ordinary", current_func);
+            BasicBlock* eval_lazy_bb = BasicBlock::Create(
+                *context, "promise_eval_delay_force", current_func);
+            BasicBlock* reentrant_bb = BasicBlock::Create(
+                *context, "promise_reentrant", current_func);
+            BasicBlock* bad_state_bb = BasicBlock::Create(
+                *context, "promise_bad_state", current_func);
+            SwitchInst* state_switch = builder->CreateSwitch(
+                promise_state, bad_state_bb, 5);
+            state_switch->addCase(
+                ConstantInt::get(int64_type, 0), ordinary_bb);
+            state_switch->addCase(
+                ConstantInt::get(int64_type, 1), cached_bb);
+            state_switch->addCase(
+                ConstantInt::get(int64_type, 2), lazy_bb);
+            state_switch->addCase(
+                ConstantInt::get(int64_type, 3), reentrant_bb);
+            state_switch->addCase(
+                ConstantInt::get(int64_type, 4), reentrant_bb);
 
-            BasicBlock* cached_bb = BasicBlock::Create(*context, "promise_cached", current_func);
-            BasicBlock* eval_bb = BasicBlock::Create(*context, "promise_eval", current_func);
-            BasicBlock* promise_done_bb = BasicBlock::Create(*context, "promise_done", current_func);
-
-            builder->CreateCondBr(already_forced, cached_bb, eval_bb);
-
-            // Already forced: return cached value
             builder->SetInsertPoint(cached_bb);
             Value* cached_slot = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 24));
             Value* cached_typed = builder->CreatePointerCast(cached_slot,
                 PointerType::getUnqual(tagged_value_type));
-            Value* cached_val = builder->CreateLoad(tagged_value_type, cached_typed, "cached");
-            builder->CreateBr(promise_done_bb);
+            Value* cached_val = builder->CreateLoad(
+                tagged_value_type, cached_typed, "promise_cached_value");
+            builder->CreateStore(cached_val, force_result_slot);
+            builder->CreateBr(unwind_bb);
 
-            // Not forced: call thunk via the standard closure dispatcher,
-            // cache, set forced.
-            //
-            // Earlier this path called `func_ptr(closure_ptr)` directly with
-            // a hardcoded `tagged_value func(ptr)` signature. That works ONLY
-            // for thunks with zero captures. A `(delay <expr>)` whose <expr>
-            // references any free variable lowers to a 0-arg lambda with N
-            // capture parameters and signature
-            //   tagged_value func(ptr, ptr, ..., ptr)   // N capture pointers
-            // The hardcoded call passed the closure pointer in the first
-            // capture slot and the rest stayed undefined, so the lambda body
-            // read garbage and force returned arbitrary bits. Visible as
-            //   (define (mk x) (delay x))
-            //   (force (mk 42))            ;; → #<unknown>, not 42
-            // and as broken SRFI 41 streams (`stream-cdr` of a normal stream
-            // would walk into a malformed pair). codegenClosureCall handles
-            // the (call_args × num_captures) dispatch generically.
+            // Mark evaluation before invoking the thunk so self-recursive or
+            // cyclic promise graphs fail deterministically rather than
+            // overflowing the native stack.
+            builder->SetInsertPoint(ordinary_bb);
+            builder->CreateCall(promise_begin_func,
+                {ptr, ConstantInt::get(int64_type, 0)});
+            builder->CreateBr(eval_bb);
+
+            builder->SetInsertPoint(lazy_bb);
+            builder->CreateCall(promise_begin_func,
+                {ptr, ConstantInt::get(int64_type, 2)});
+            builder->CreateBr(eval_bb);
+
             builder->SetInsertPoint(eval_bb);
+            PHINode* flatten = builder->CreatePHI(
+                builder->getInt1Ty(), 2, "promise_flatten");
+            flatten->addIncoming(ConstantInt::getFalse(*context), ordinary_bb);
+            flatten->addIncoming(ConstantInt::getTrue(*context), lazy_bb);
             Value* thunk_slot = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 8));
             Value* thunk_typed = builder->CreatePointerCast(thunk_slot,
                 PointerType::getUnqual(tagged_value_type));
-            Value* thunk = builder->CreateLoad(tagged_value_type, thunk_typed, "thunk");
+            Value* thunk = builder->CreateLoad(
+                tagged_value_type, thunk_typed, "promise_thunk");
+            Value* evaluated = codegenClosureCall(thunk, {}, "force_thunk");
+            builder->CreateCondBr(flatten, eval_lazy_bb, eval_ordinary_bb);
 
-            Value* result = codegenClosureCall(thunk, {}, "force_thunk");
+            // Ordinary delay memoizes exactly its thunk result, even if that
+            // result is itself a promise. delay-force is the flattening form.
+            builder->SetInsertPoint(eval_ordinary_bb);
+            Value* ordinary_current = builder->CreateLoad(
+                tagged_value_type, force_current_slot);
+            Value* ordinary_ptr = builder->CreateIntToPtr(
+                builder->CreateExtractValue(ordinary_current, {4}),
+                PointerType::getUnqual(*context));
+            builder->CreateStore(evaluated, force_result_slot);
+            builder->CreateCall(promise_commit_one_func,
+                {ordinary_ptr, force_result_slot});
+            builder->CreateBr(unwind_bb);
 
-            // codegenClosureCall may have created additional basic blocks;
-            // capture the actual exit block so the PHI predecessor is right.
-            BasicBlock* eval_exit = builder->GetInsertBlock();
+            // Continue through the shared dispatch so a delay-force result can
+            // itself be a promise, a future, or an ordinary value.
+            builder->SetInsertPoint(eval_lazy_bb);
+            builder->CreateStore(evaluated, force_current_slot);
+            builder->CreateBr(dispatch_bb);
 
-            // Cache the result
-            Value* eval_cached_slot = builder->CreateGEP(int8_type, ptr,
-                ConstantInt::get(int64_type, 24));
-            Value* eval_cached_typed = builder->CreatePointerCast(eval_cached_slot,
-                PointerType::getUnqual(tagged_value_type));
-            builder->CreateStore(result, eval_cached_typed);
+            auto emit_promise_error = [&](const char* message) {
+                Function* raise_func = module->getFunction("eshkol_raise");
+                if (!raise_func) {
+                    FunctionType* raise_type = FunctionType::get(
+                        builder->getVoidTy(), {builder->getPtrTy()}, false);
+                    raise_func = Function::Create(raise_type,
+                        Function::ExternalLinkage, "eshkol_raise", module.get());
+                    raise_func->setDoesNotReturn();
+                }
+                Function* make_exc_func =
+                    module->getFunction("eshkol_make_exception_with_header");
+                if (!make_exc_func) {
+                    FunctionType* make_type = FunctionType::get(
+                        builder->getPtrTy(),
+                        {builder->getInt32Ty(), builder->getPtrTy()}, false);
+                    make_exc_func = Function::Create(make_type,
+                        Function::ExternalLinkage,
+                        "eshkol_make_exception_with_header", module.get());
+                }
+                Value* error_msg = codegenString(message);
+                Value* exc_type = ConstantInt::get(
+                    builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+                Value* exception = builder->CreateCall(
+                    make_exc_func, {exc_type, error_msg});
+                builder->CreateCall(raise_func, {exception});
+                builder->CreateUnreachable();
+            };
 
-            // Set forced flag
-            builder->CreateStore(ConstantInt::get(int64_type, 1), ptr);
-            builder->CreateBr(promise_done_bb);
+            builder->SetInsertPoint(reentrant_bb);
+            emit_promise_error(
+                "force: promise evaluation is re-entrant or cyclic");
 
-            builder->SetInsertPoint(promise_done_bb);
-            PHINode* promise_result = builder->CreatePHI(tagged_value_type, 2, "promise_val");
-            promise_result->addIncoming(cached_val, cached_bb);
-            promise_result->addIncoming(result, eval_exit);
-            builder->CreateBr(merge_bb);
+            builder->SetInsertPoint(bad_state_bb);
+            emit_promise_error("force: corrupt promise state");
 
-            // Not a promise: return value as-is (R7RS: force on non-promise returns it)
+            // Non-promises are fixed points of force.
             builder->SetInsertPoint(not_promise_bb);
-            builder->CreateBr(merge_bb);
+            Value* resolved_current = builder->CreateLoad(
+                tagged_value_type, force_current_slot);
+            builder->CreateStore(resolved_current, force_result_slot);
+            builder->CreateBr(unwind_bb);
 
-            builder->SetInsertPoint(merge_bb);
-            PHINode* final_result = builder->CreatePHI(tagged_value_type, 3, "force_result");
-            final_result->addIncoming(fut_phi, fut_done_exit);
-            final_result->addIncoming(promise_result, promise_done_bb);
-            final_result->addIncoming(arg, not_promise_bb);
-            return final_result;
+            // Path-compress every delay-force node opened by this force call.
+            // The runtime uses the promises' cached slots as an intrusive
+            // evaluation chain, so this remains O(1) auxiliary memory and is
+            // also unwindable across exceptions and continuation escapes.
+            builder->SetInsertPoint(unwind_bb);
+            Value* force_mark = builder->CreateLoad(
+                builder->getPtrTy(), force_mark_slot, "force_mark");
+            builder->CreateCall(promise_commit_to_func,
+                {force_mark, force_result_slot});
+            builder->CreateBr(done_bb);
+
+            builder->SetInsertPoint(done_bb);
+            return builder->CreateLoad(
+                tagged_value_type, force_result_slot, "force_value");
         }
 
         // Handle complex number operations
@@ -21131,6 +21375,25 @@ private:
     // evaluating UNQUOTE bodies, splicing UNQUOTE_SPLICING bodies, and
     // quoting everything else. Anything that isn't a recognised list shape
     // falls back to codegenQuotedAST, which treats the AST as data.
+    Value* codegenQuasiquoteEscape(const eshkol_ast_t* escape) {
+        if (!escape || escape->type != ESHKOL_OP ||
+            (escape->operation.op != ESHKOL_UNQUOTE_OP &&
+             escape->operation.op != ESHKOL_UNQUOTE_SPLICING_OP)) {
+            return packNullToTaggedValue();
+        }
+
+        // Quasiquote lowers escapes internally instead of routing the escape
+        // node through codegenAST().  Emit the same execution hook here so an
+        // evaluated comma/comma-at earns evidence, while an escape in an
+        // untaken branch still earns none.  The body itself is then compiled
+        // normally and retains its own source evidence.
+        emitLanguageCoverage(escape);
+        if (escape->operation.call_op.num_vars > 0) {
+            return codegenAST(&escape->operation.call_op.variables[0]);
+        }
+        return packNullToTaggedValue();
+    }
+
     Value* codegenQuasiquote(const eshkol_ast_t* ast) {
         if (!ast) return packNullToTaggedValue();
 
@@ -21152,10 +21415,7 @@ private:
                     const eshkol_ast_t* elem = &elems[i];
                     if (elem->type == ESHKOL_OP &&
                         elem->operation.op == ESHKOL_UNQUOTE_SPLICING_OP) {
-                        Value* spliced = packNullToTaggedValue();
-                        if (elem->operation.call_op.num_vars > 0) {
-                            spliced = codegenAST(&elem->operation.call_op.variables[0]);
-                        }
+                        Value* spliced = codegenQuasiquoteEscape(elem);
                         Value* spliced_tagged = ensureTaggedValue(spliced);
                         Value* acc_tagged = ensureTaggedValue(acc);
                         Value* out_slot = builder->CreateAlloca(tagged_value_type);
@@ -21195,18 +21455,12 @@ private:
                 return builder->CreateLoad(tagged_value_type, vec_slot);
             }
             if (ast->operation.op == ESHKOL_UNQUOTE_OP) {
-                if (ast->operation.call_op.num_vars > 0) {
-                    return codegenAST(&ast->operation.call_op.variables[0]);
-                }
-                return packNullToTaggedValue();
+                return codegenQuasiquoteEscape(ast);
             }
             if (ast->operation.op == ESHKOL_UNQUOTE_SPLICING_OP) {
                 // Bare splice at top-level — evaluate the body. Splicing into
                 // an enclosing list is handled in the CALL_OP branch below.
-                if (ast->operation.call_op.num_vars > 0) {
-                    return codegenAST(&ast->operation.call_op.variables[0]);
-                }
-                return packNullToTaggedValue();
+                return codegenQuasiquoteEscape(ast);
             }
 
             // Dotted-pair tail from parser: `(a b . ,expr) becomes
@@ -21248,10 +21502,7 @@ private:
                         // Evaluate the splice body and append it to acc via
                         // the C runtime helper (avoids a large inline loop in
                         // IR for what is a rare path).
-                        Value* spliced = packNullToTaggedValue();
-                        if (elem->operation.call_op.num_vars > 0) {
-                            spliced = codegenAST(&elem->operation.call_op.variables[0]);
-                        }
+                        Value* spliced = codegenQuasiquoteEscape(elem);
                         Value* spliced_tagged = ensureTaggedValue(spliced);
                         Value* acc_tagged = ensureTaggedValue(acc);
 
@@ -37626,6 +37877,15 @@ void eshkol_disable_debug_info(void) {
 void eshkol_set_source_context(const char* filepath, const char* source_text) {
     g_source_filepath = filepath ? filepath : "";
     g_source_text = source_text ? source_text : "";
+    eshkol_set_parse_source_context(filepath);
+}
+
+const char* eshkol_get_source_context_path(void) {
+    return g_source_filepath.c_str();
+}
+
+const char* eshkol_get_source_context_text(void) {
+    return g_source_text.c_str();
 }
 
 void eshkol_set_optimization_level(int level) {
@@ -37659,6 +37919,9 @@ int eshkol_get_freestanding_codegen(void) {
 }
 
 LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
+    struct FlushLanguageCoverage {
+        ~FlushLanguageCoverage() { eshkol_language_coverage_flush(); }
+    } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
                                   g_freestanding_codegen);
@@ -37682,7 +37945,53 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
     }
 }
 
+LLVMModuleRef eshkol_generate_llvm_ir_with_source(
+    const eshkol_ast_t* asts, size_t num_asts, const char* module_name,
+    const char* source_path, const char* source_text) {
+    struct RestoreSourceContext {
+        std::string path = g_source_filepath;
+        std::string text = g_source_text;
+        std::string parse_path = eshkol_get_parse_source_context();
+
+        ~RestoreSourceContext() {
+            g_source_filepath = path;
+            g_source_text = text;
+            eshkol_set_parse_source_context(parse_path.c_str());
+        }
+    } restore;
+    struct FlushLanguageCoverage {
+        ~FlushLanguageCoverage() { eshkol_language_coverage_flush(); }
+    } flush_language_coverage;
+
+    g_source_filepath = source_path ? source_path : "";
+    g_source_text = source_text ? source_text : "";
+    eshkol_set_parse_source_context(source_path);
+
+    try {
+        EshkolLLVMCodeGen codegen(module_name, false, g_codegen_target_triple,
+                                  g_freestanding_codegen);
+        auto result = codegen.generateIR(asts, num_asts);
+
+        if (!result.first || !result.second) {
+            return nullptr;
+        }
+
+        Module* raw_module = result.first.get();
+        LLVMModuleRef module_ref = wrap(raw_module);
+        auto wrapper = std::make_unique<EshkolLLVMModule>(
+            std::move(result.first), std::move(result.second));
+        g_llvm_modules[module_ref] = std::move(wrapper);
+        return module_ref;
+    } catch (const std::exception& e) {
+        eshkol_error("Failed to generate LLVM IR: %s", e.what());
+        return nullptr;
+    }
+}
+
 LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name) {
+    struct FlushLanguageCoverage {
+        ~FlushLanguageCoverage() { eshkol_language_coverage_flush(); }
+    } flush_language_coverage;
     try {
         EshkolLLVMCodeGen codegen(module_name, true, g_codegen_target_triple,
                                   g_freestanding_codegen);  // library mode

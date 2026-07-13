@@ -74,6 +74,19 @@ static void vm_restore_continuation_dynamic_state(VM* vm,
 }
 
 void vm_run(VM* vm) {
+    const int owns_native_escape = !vm->native_escape_ready;
+    if (owns_native_escape) {
+        vm->native_escape_ready = 1;
+        if (setjmp(vm->native_escape_jmp) != 0) {
+            /* A handled raise or continuation crossed one or more native C
+             * helper frames.  Its handler/continuation already restored pc,
+             * stack, frames, winds, parameters, and promise state; resume the
+             * owning interpreter loop from that exact state. */
+            vm->native_call_depth = 0;
+            vm->halted = 0;
+            vm->error = 0;
+        }
+    }
 #if defined(__GNUC__) || defined(__clang__)
 /* =========================================================================
  * Computed-goto (threaded) dispatch — GCC/Clang only.
@@ -149,6 +162,8 @@ void vm_run(VM* vm) {
         [OP_WIND_PUSH]     = &&lbl_WIND_PUSH,
         [OP_WIND_POP]      = &&lbl_WIND_POP,
         [OP_VOID]          = &&lbl_VOID,
+        [OP_LANGUAGE_COVERAGE] = &&lbl_LANGUAGE_COVERAGE,
+        [OP_LANGUAGE_COVERAGE_CALL] = &&lbl_LANGUAGE_COVERAGE_CALL,
     };
 
     #define DISPATCH() do { \
@@ -403,6 +418,8 @@ void vm_run(VM* vm) {
         int argc = instr.operand;
         Value func = vm->stack[vm->sp - 1 - argc];
 
+        vm_language_coverage_named_call(vm, func);
+
         if (func.type == VAL_PARAMETER_OBJ) {
             Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
             vm->sp -= argc + 1;
@@ -420,6 +437,7 @@ void vm_run(VM* vm) {
                     Value after = vm->wind_stack[vm->n_winds].after;
                     vm_run_wind_after(vm, after);
                 }
+                vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
                 if (vm->error) goto vm_exit;
@@ -430,6 +448,7 @@ void vm_run(VM* vm) {
                 vm->n_handlers = cont->n_handlers;
                 vm->pc = cont->pc;
                 vm_push(vm, val);
+                vm_escape_native_control(vm);
                 DISPATCH();
             }
         }
@@ -457,6 +476,7 @@ void vm_run(VM* vm) {
     lbl_TAIL_CALL: {
         int argc = instr.operand;
         Value func = vm->stack[vm->sp - 1 - argc];
+        vm_language_coverage_named_call(vm, func);
         if (func.type == VAL_PARAMETER_OBJ) {
             Value result = vm_parameter_invoke(vm, func, &vm->stack[vm->sp - argc], argc);
             if (vm->frame_count <= 0) {
@@ -484,12 +504,15 @@ void vm_run(VM* vm) {
             VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
             if (cont) {
                 while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
                 if (vm->error) goto vm_exit;
                 memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                 vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
-                vm_push(vm, val); DISPATCH();
+                vm_push(vm, val);
+                vm_escape_native_control(vm);
+                DISPATCH();
             }
         }
         if (func.type != VAL_CLOSURE) { vm->error = 1; goto vm_exit; }
@@ -586,11 +609,20 @@ void vm_run(VM* vm) {
         vm_push(vm, (Value){.type = VAL_VOID});
         DISPATCH();
 
+    lbl_LANGUAGE_COVERAGE:
+        DISPATCH();
+
+    lbl_LANGUAGE_COVERAGE_CALL:
+        vm->language_coverage_call_hash = (uint32_t)instr.operand;
+        vm->language_coverage_call_pc = vm->pc;
+        DISPATCH();
+
     lbl_HALT:
         vm->halted = 1;
         goto vm_exit;
 
     lbl_NATIVE_CALL: {
+        vm_language_coverage_native_dispatch(vm, instr.operand);
         vm_dispatch_native(vm, instr.operand);
         DISPATCH();
     }
@@ -719,6 +751,7 @@ void vm_run(VM* vm) {
         cont->pc = vm->pc; cont->fp = vm->fp; cont->sp = vm->sp;
         cont->frame_count = vm->frame_count;
         cont->n_handlers = vm->n_handlers;
+        cont->promise_mark = vm->promise_eval_head;
         cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
         cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
         memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
@@ -750,6 +783,7 @@ void vm_run(VM* vm) {
         vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
         vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
         vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
+        vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
         vm->n_handlers++;
         DISPATCH();
     }
@@ -777,6 +811,7 @@ void vm_run(VM* vm) {
                     Value after = vm->wind_stack[vm->n_winds].after;
                     vm_run_wind_after(vm, after);
                 }
+                vm_promise_eval_unwind_to(vm, cont->promise_mark);
                 /* Restore saved state (with bounds validation) */
                 if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; goto vm_exit; }
                 vm_restore_continuation_dynamic_state(vm, cont);
@@ -788,6 +823,7 @@ void vm_run(VM* vm) {
                 vm->n_handlers = cont->n_handlers;
                 vm->pc = cont->pc;
                 vm_push(vm, val);
+                vm_escape_native_control(vm);
             }
         }
         DISPATCH();
@@ -833,7 +869,7 @@ void vm_run(VM* vm) {
 
 vm_exit:
     #undef DISPATCH
-    ;
+    if (owns_native_escape) vm->native_escape_ready = 0;
 
 #else
 /* =========================================================================
@@ -1032,6 +1068,8 @@ vm_exit:
             int argc = instr.operand;
             Value func = vm->stack[vm->sp - 1 - argc]; /* function is below args */
 
+            vm_language_coverage_named_call(vm, func);
+
             if (func.type == VAL_PARAMETER_OBJ) {
                 Value result = vm_parameter_invoke(vm, func,
                     &vm->stack[vm->sp - argc], argc);
@@ -1046,12 +1084,14 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[func.as.ptr]->opaque.ptr;
                 if (cont) {
                     while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
                     if (vm->error) break;
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
+                    vm_escape_native_control(vm);
                 }
                 break;
             }
@@ -1081,6 +1121,7 @@ vm_exit:
         case OP_TAIL_CALL: {
             int argc = instr.operand;
             Value func = vm->stack[vm->sp - 1 - argc];
+            vm_language_coverage_named_call(vm, func);
             if (func.type == VAL_PARAMETER_OBJ) {
                 Value result = vm_parameter_invoke(vm, func,
                     &vm->stack[vm->sp - argc], argc);
@@ -1101,6 +1142,38 @@ vm_exit:
                 vm->fp = vm->frames[vm->frame_count].return_fp;
                 vm->pc = vm->frames[vm->frame_count].return_pc;
                 vm_push(vm, result);
+                break;
+            }
+            if (func.type == VAL_CONTINUATION && argc >= 1) {
+                Value val = vm->stack[vm->sp - 1];
+                VmContinuation* cont = (VmContinuation*)
+                    vm->heap.objects[func.as.ptr]->opaque.ptr;
+                if (cont) {
+                    while (vm->n_winds > cont->n_winds) {
+                        vm->n_winds--;
+                        vm_run_wind_after(
+                            vm, vm->wind_stack[vm->n_winds].after);
+                    }
+                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
+                    if (cont->sp > STACK_SIZE ||
+                        cont->frame_count > MAX_FRAMES) {
+                        vm->error = 1;
+                        break;
+                    }
+                    vm_restore_continuation_dynamic_state(vm, cont);
+                    if (vm->error) break;
+                    memcpy(vm->stack, cont->saved_stack,
+                           cont->sp * sizeof(Value));
+                    memcpy(vm->frames, cont->saved_frames,
+                           cont->frame_count * sizeof(CallFrame));
+                    vm->sp = cont->sp;
+                    vm->fp = cont->fp;
+                    vm->frame_count = cont->frame_count;
+                    vm->n_handlers = cont->n_handlers;
+                    vm->pc = cont->pc;
+                    vm_push(vm, val);
+                    vm_escape_native_control(vm);
+                }
                 break;
             }
             if (func.type != VAL_CLOSURE) { vm->error = 1; break; }
@@ -1196,11 +1269,20 @@ vm_exit:
             vm_push(vm, (Value){.type = VAL_VOID});
             break;
 
+        case OP_LANGUAGE_COVERAGE:
+            break;
+
+        case OP_LANGUAGE_COVERAGE_CALL:
+            vm->language_coverage_call_hash = (uint32_t)instr.operand;
+            vm->language_coverage_call_pc = vm->pc;
+            break;
+
         case OP_HALT:
             vm->halted = 1;
             break;
 
         case OP_NATIVE_CALL: {
+            vm_language_coverage_native_dispatch(vm, instr.operand);
             vm_dispatch_native(vm, instr.operand);
             break;
         }
@@ -1323,6 +1405,7 @@ vm_exit:
             cont->pc = vm->pc; cont->fp = vm->fp; cont->sp = vm->sp;
             cont->frame_count = vm->frame_count;
             cont->n_handlers = vm->n_handlers;
+            cont->promise_mark = vm->promise_eval_head;
             cont->saved_stack = (Value*)((char*)cont + sizeof(VmContinuation));
             cont->saved_frames = (CallFrame*)((char*)cont->saved_stack + vm->sp * sizeof(Value));
             memcpy(cont->saved_stack, vm->stack, vm->sp * sizeof(Value));
@@ -1346,12 +1429,14 @@ vm_exit:
                 VmContinuation* cont = (VmContinuation*)vm->heap.objects[cont_val.as.ptr]->opaque.ptr;
                 if (cont) {
                     while (vm->n_winds > cont->n_winds) { vm->n_winds--; vm_run_wind_after(vm, vm->wind_stack[vm->n_winds].after); }
+                    vm_promise_eval_unwind_to(vm, cont->promise_mark);
                     if (cont->sp > STACK_SIZE || cont->frame_count > MAX_FRAMES) { vm->error = 1; break; }
                     vm_restore_continuation_dynamic_state(vm, cont);
                     if (vm->error) break;
                     memcpy(vm->stack, cont->saved_stack, cont->sp * sizeof(Value)); memcpy(vm->frames, cont->saved_frames, cont->frame_count * sizeof(CallFrame));
                     vm->sp = cont->sp; vm->fp = cont->fp; vm->frame_count = cont->frame_count; vm->n_handlers = cont->n_handlers; vm->pc = cont->pc;
                     vm_push(vm, val);
+                    vm_escape_native_control(vm);
                 }
             }
             break;
@@ -1365,6 +1450,7 @@ vm_exit:
             vm->handler_stack[vm->n_handlers].frame_count = vm->frame_count;
             vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
             vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
+            vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
             vm->n_handlers++;
             break;
         }
@@ -1404,6 +1490,7 @@ vm_exit:
             break;
         }
     }
+    if (owns_native_escape) vm->native_escape_ready = 0;
 #endif
 }
 

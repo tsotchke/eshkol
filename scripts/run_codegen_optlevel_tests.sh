@@ -51,11 +51,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 PROBE="$WORK/optlevel_probe.esk"
-cat > "$PROBE" <<'EOF'
-(define (sq x) (* x x))
-(display (sq 21))
-(newline)
-EOF
+printf '%s\n' \
+    '(define (sq x) (* x x))' \
+    '(display (sq 21))' \
+    '(newline)' | tee "$PROBE" >/dev/null
 
 # Assert that the applied backend opt level matches an expected marker.
 #   $1 = human-readable case name

@@ -887,40 +887,88 @@ static void compile_form_dynamic_wind(FuncChunk* c, Node* node, int tail) {
     return;
 }
 
-/** @brief Compile `(delay expr)` (and `make-promise`-style forces): builds
+/** @brief Compile `(delay expr)` / `(delay-force expr)`: builds
  *         a zero-argument thunk closure computing @p expr, inlines its
- *         bytecode into @p c, and packages it as a 2-element promise
- *         vector `#(#f thunk)` (forced-flag, thunk-or-value), matching
- *         the layout `force` expects. */
+ *         bytecode into @p c, and packages it as a tagged 3-slot promise
+ *         `[state thunk cached]`. State 0 is ordinary delay, state 2 is the
+ *         iterative delay-force trampoline, and state 1 is memoized. */
 static void compile_form_delay(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
-    (void)head; (void)tail;
-    {
-        /* Save current chunk state, compile a sub-function */
-        FuncChunk func; chunk_init_arrays(&func);
-        func.enclosing = c;
-        func.param_count = 0;
-        compile_expr(&func, node->children[1], 1); /* compile expr as body */
-        chunk_emit(&func, OP_RETURN, 0);
-        /* Inline the function code */
-        int jover = c->code_len;
-        chunk_emit(c, OP_JUMP, 0);
-        int cfunc = c->n_constants;
-        chunk_add_const(c, INT_VAL(c->code_len));
-        for (int i = 0; i < func.code_len; i++) {
-            Instr fi = func.code[i];
-            if (fi.op == OP_CONST) fi.operand = chunk_add_const(c, func.constants[fi.operand]);
-            if (fi.op == OP_JUMP || fi.op == OP_JUMP_IF_FALSE || fi.op == OP_LOOP || fi.op == OP_PUSH_HANDLER)
-                fi.operand += c->code_len;
-            chunk_emit(c, fi.op, fi.operand);
+    int force_through = is_sym(head, "delay-force");
+    (void)tail;
+    FuncChunk func; chunk_init_arrays(&func);
+    func.enclosing = c;
+    func.param_count = 0;
+    compile_expr(&func, node->children[1], 1);
+    chunk_emit(&func, OP_RETURN, 0);
+
+    int cfunc = chunk_add_const(c, INT_VAL(0));
+    int jover = placeholder(c);
+    int func_start = c->code_len;
+    c->constants[cfunc].as.i = func_start;
+
+    int const_map[MAX_CONSTS];
+    for (int i = 0; i < func.n_constants; ++i)
+        const_map[i] = chunk_add_const(c, func.constants[i]);
+    for (int i = 0; i < func.code_len; ++i) {
+        if (func.code[i].op == OP_CLOSURE) {
+            int child_ci = func.code[i].operand & 0xFFFF;
+            c->constants[const_map[child_ci]].as.i += func_start;
         }
-        patch(c, jover, OP_JUMP, c->code_len);
-        /* Stack: push #f, push closure, create vector */
-        chunk_emit(c, OP_FALSE, 0);
-        chunk_emit(c, OP_CLOSURE, cfunc);
-        chunk_emit(c, OP_VEC_CREATE, 2); /* #(#f thunk) */
-        chunk_free_arrays(&func);
     }
+    for (int i = 0; i < func.code_len; ++i) {
+        Instr instr = func.code[i];
+        if (instr.op == OP_CONST) instr.operand = const_map[instr.operand];
+        if (instr.op == OP_JUMP || instr.op == OP_JUMP_IF_FALSE ||
+            instr.op == OP_LOOP || instr.op == OP_PUSH_HANDLER)
+            instr.operand += func_start;
+        if (instr.op == OP_CLOSURE) {
+            int child_ci = instr.operand & 0xFFFF;
+            int child_upvalues = (instr.operand >> 16) & 0xFF;
+            instr.operand = const_map[child_ci] | (child_upvalues << 16);
+        }
+        chunk_emit_instr(c, instr);
+    }
+    patch(c, jover, OP_JUMP, c->code_len);
+
+    /* Stack: state, captured thunk, cached-null. */
+    chunk_emit(c, OP_CONST,
+               chunk_add_const(c, INT_VAL(force_through ? 2 : 0)));
+    int n_upvalues = func.n_upvalues;
+    for (int i = 0; i < n_upvalues; ++i) {
+        chunk_emit(c, func.upvalues[i].is_local ? OP_GET_LOCAL : OP_GET_UPVALUE,
+                   func.upvalues[i].enclosing_slot);
+    }
+    chunk_emit(c, OP_CLOSURE, cfunc | (n_upvalues << 16));
+
+    /* Preserve mutable top-level captures and relayed enclosing upvalues in
+     * exactly the same way as an ordinary lambda closure. */
+    if (c->enclosing == NULL) {
+        for (int i = 0; i < n_upvalues; ++i) {
+            if (!func.upvalues[i].is_local) continue;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, 151);
+            chunk_emit(c, OP_POP, 0);
+        }
+    } else {
+        for (int i = 0; i < n_upvalues; ++i) {
+            if (func.upvalues[i].is_local) continue;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, 252);
+            chunk_emit(c, OP_POP, 0);
+        }
+    }
+
+    chunk_emit(c, OP_NIL, 0);
+    chunk_emit(c, OP_VEC_CREATE, 3);
+    chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_PROMISE_CREATE);
+    chunk_free_arrays(&func);
     return;
 }
 
@@ -2353,7 +2401,11 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* (delay expr) → create a promise: #(#f <thunk>)
      * The thunk is a nullary closure wrapping expr. */
-    if (is_sym(head, "delay") && node->n_children == 2) { compile_form_delay(c, node, tail); return; }
+    if ((is_sym(head, "delay") || is_sym(head, "delay-force")) &&
+        node->n_children == 2) {
+        compile_form_delay(c, node, tail);
+        return;
+    }
 
     /* (force promise) → force a promise (evaluate thunk if not yet forced) */
     if (is_sym(head, "force") && node->n_children == 2) {
@@ -2376,10 +2428,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
     }
 
     /* (make-promise val) / (promise? x) */
-    if (is_sym(head, "promise?") && node->n_children == 2) {
-        /* A promise is a vector of length 2 with first element being bool */
+    if (is_sym(head, "make-promise") && node->n_children == 2) {
+        chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));
+        chunk_emit(c, OP_NIL, 0);
         compile_expr(c, node->children[1], 0);
-        chunk_emit(c, OP_VEC_P, 0); /* rough check: is it a vector? */
+        chunk_emit(c, OP_VEC_CREATE, 3);
+        chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_PROMISE_CREATE);
+        return;
+    }
+    if (is_sym(head, "promise?") && node->n_children == 2) {
+        compile_expr(c, node->children[1], 0);
+        chunk_emit(c, OP_NATIVE_CALL, VM_NATIVE_PROMISE_P);
         return;
     }
 
@@ -2812,6 +2871,10 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         for (int i = 1; i < node->n_children; i++) {
             compile_expr(c, node->children[i], 0);
             add_local(c, "__call_arg__");
+        }
+        if (head->type == N_SYMBOL && vm_language_coverage_compilation_enabled()) {
+            chunk_emit(c, OP_LANGUAGE_COVERAGE_CALL,
+                       (int)vm_language_coverage_name_hash(head->symbol));
         }
         if (tail)
             chunk_emit(c, OP_TAIL_CALL, argc);

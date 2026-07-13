@@ -3,6 +3,14 @@
 (display ": div2 exact division")
 (newline)
 
+(display (if (= (mul2 6 7) 42) "PASS" "FAIL"))
+(display ": mul2 exact multiplication")
+(newline)
+
+(display (if (= (sub2 50 8) 42) "PASS" "FAIL"))
+(display ": sub2 exact subtraction")
+(newline)
+
 (define d (make-dual 2.0 1.0))
 (define d2 (make-dual 3.0 0.5))
 (display (if (and (dual? d)

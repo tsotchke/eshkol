@@ -1610,6 +1610,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_lifecycle_hosted.cpp
   lib/core/runtime_operations_hosted.cpp
   lib/core/runtime_parameters_hosted.cpp
+  lib/core/runtime_language_coverage_hosted.cpp
   lib/core/runtime_reader_hosted.cpp
   lib/core/runtime_shutdown_hooks_hosted.cpp
   lib/core/runtime_signals_hosted.cpp
@@ -2710,6 +2711,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ma
         ${LLVM_SYSTEM_LIBS_LIST}
     )
     add_test(NAME machine_integer_types_test COMMAND machine_integer_types_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_runtime_language_coverage.py")
+    find_program(ESHKOL_PYTHON3_EXECUTABLE NAMES python3 python)
+    if(ESHKOL_PYTHON3_EXECUTABLE)
+        add_test(
+            NAME runtime_language_coverage_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/test_runtime_language_coverage.py"
+                    --eshkol-run $<TARGET_FILE:eshkol-run>
+                    --eshkol-vm $<TARGET_FILE:eshkol-vm-standalone-test>
+        )
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/pointer_type_surface_test.cpp")

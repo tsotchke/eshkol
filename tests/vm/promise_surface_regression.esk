@@ -1,0 +1,87 @@
+;; R7RS promise semantics and iterative delay-force regression for the VM.
+
+(display "=== promise VM surface regression ===") (newline)
+
+(define (check name condition)
+  (display name) (display ": ")
+  (display (if condition "PASS" "FAIL"))
+  (newline))
+
+(define evaluations 0)
+(define ordinary
+  (delay
+    (begin
+      (set! evaluations (+ evaluations 1))
+      42)))
+
+(check "T1 promise? rejects ordinary vectors"
+       (and (promise? ordinary) (not (promise? #(0 1 2)))))
+(check "T2 delay memoizes exactly once"
+       (and (= (force ordinary) 42)
+            (= (force ordinary) 42)
+            (= evaluations 1)))
+
+(define ready (make-promise 73))
+(check "T3 make-promise is already forced"
+       (and (promise? ready) (= (force ready) 73)))
+
+(define retry-evaluations 0)
+(define retryable
+  (delay
+    (begin
+      (set! retry-evaluations (+ retry-evaluations 1))
+      (if (= retry-evaluations 1)
+          (raise 'retry-promise)
+          91))))
+(define first-force-raised
+  (guard (condition (#t #t))
+    (begin (force retryable) #f)))
+(check "T4 failed promise evaluation remains retryable"
+       (and first-force-raised
+            (= (force retryable) 91)
+            (= retry-evaluations 2)))
+
+(define promise-escape-state (vector 0 #f #f))
+(define promise-escape-result
+  (call/cc
+    (lambda (k)
+      (vector-set! promise-escape-state 1 k)
+      'captured)))
+(if (equal? promise-escape-result 'captured)
+    (begin
+      (vector-set!
+        promise-escape-state 2
+        (delay
+          (begin
+            (vector-set! promise-escape-state 0
+                         (+ (vector-ref promise-escape-state 0) 1))
+            ((vector-ref promise-escape-state 1) 'escaped)
+            137)))
+      (force (vector-ref promise-escape-state 2)))
+    (begin
+      (vector-set! promise-escape-state 1 (lambda (value) value))
+      (check "T5 continuation escape leaves promise retryable"
+             (and (= (force (vector-ref promise-escape-state 2)) 137)
+                  (= (force (vector-ref promise-escape-state 2)) 137)
+                  (= (vector-ref promise-escape-state 0) 2)))))
+
+;; Ordinary delay does not flatten a promise returned by its body.
+(define ordinary-nested (delay (delay 9)))
+(define ordinary-inner (force ordinary-nested))
+(check "T6 delay preserves a nested promise"
+       (and (promise? ordinary-inner) (= (force ordinary-inner) 9)))
+
+;; delay-force does flatten, memoize, and use an iterative trampoline.  This
+;; depth is deliberately above the VM call-frame limit; recursive forcing
+;; would overflow, while the production path-compressing implementation does
+;; not consume the call stack.
+(define (lazy-countdown n)
+  (if (= n 0)
+      (delay 17)
+      (delay-force (lazy-countdown (- n 1)))))
+
+(define deep (lazy-countdown 20000))
+(check "T7 delay-force flattens a deep promise chain iteratively"
+       (and (= (force deep) 17) (= (force deep) 17)))
+
+(display "=== promise VM surface complete ===") (newline)

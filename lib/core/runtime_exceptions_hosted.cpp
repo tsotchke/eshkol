@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <setjmp.h>
+#include <cstdint>
 #include <string>
 #include <string.h>
 
@@ -30,6 +31,114 @@ eshkol_exception_handler_t* g_exception_handler_stack = nullptr;
 // R7RS: stores the original raised tagged_value for with-exception-handler
 eshkol_tagged_value_t g_raised_tagged_value = {0, 0, 0, {0}};
 static bool g_raised_value_set_by_user = false;
+
+// Promise evaluation is an intrusive, thread-local chain. While a promise is
+// being evaluated its cached-value slot temporarily stores the previous chain
+// head and its state is 3 (ordinary delay) or 4 (delay-force). This gives
+// exception/continuation rollback O(n) time and O(1) auxiliary memory even for
+// very deep delay-force chains.
+static thread_local void* g_promise_eval_head = nullptr;
+
+static int64_t* promise_state_slot(void* promise) {
+    return reinterpret_cast<int64_t*>(promise);
+}
+
+static eshkol_tagged_value_t* promise_cached_slot(void* promise) {
+    return reinterpret_cast<eshkol_tagged_value_t*>(
+        static_cast<uint8_t*>(promise) + 24);
+}
+
+static void* promise_link_target(const eshkol_tagged_value_t& link) {
+    return link.type == ESHKOL_VALUE_HEAP_PTR
+        ? reinterpret_cast<void*>(static_cast<uintptr_t>(link.data.ptr_val))
+        : nullptr;
+}
+
+static eshkol_tagged_value_t promise_link_value(void* promise) {
+    eshkol_tagged_value_t link{};
+    if (promise) {
+        link.type = ESHKOL_VALUE_HEAP_PTR;
+        link.data.ptr_val = static_cast<uint64_t>(
+            reinterpret_cast<uintptr_t>(promise));
+    } else {
+        link.type = ESHKOL_VALUE_NULL;
+    }
+    return link;
+}
+
+static bool promise_mark_is_reachable(void* mark) {
+    void* cursor = g_promise_eval_head;
+    while (cursor && cursor != mark) {
+        const int64_t state = *promise_state_slot(cursor);
+        if (state != 3 && state != 4) return false;
+        cursor = promise_link_target(*promise_cached_slot(cursor));
+    }
+    return cursor == mark;
+}
+
+extern "C" void* eshkol_promise_eval_mark(void) {
+    return g_promise_eval_head;
+}
+
+extern "C" void eshkol_promise_eval_begin(void* promise,
+                                           int64_t original_state) {
+    if (!promise || (original_state != 0 && original_state != 2)) {
+        eshkol_error("invalid promise evaluation begin");
+        return;
+    }
+    *promise_cached_slot(promise) = promise_link_value(g_promise_eval_head);
+    *promise_state_slot(promise) = original_state == 0 ? 3 : 4;
+    g_promise_eval_head = promise;
+}
+
+extern "C" void eshkol_promise_eval_commit_one(
+    void* promise, const eshkol_tagged_value_t* result) {
+    if (!promise || !result || g_promise_eval_head != promise) {
+        eshkol_error("promise evaluation commit order is corrupt");
+        return;
+    }
+    eshkol_tagged_value_t previous = *promise_cached_slot(promise);
+    const int64_t state = *promise_state_slot(promise);
+    if (state != 3 && state != 4) {
+        eshkol_error("promise evaluation commit saw invalid state");
+        return;
+    }
+    g_promise_eval_head = promise_link_target(previous);
+    *promise_cached_slot(promise) = *result;
+    *promise_state_slot(promise) = 1;
+}
+
+extern "C" void eshkol_promise_eval_commit_to(
+    void* mark, const eshkol_tagged_value_t* result) {
+    if (!result || !promise_mark_is_reachable(mark)) {
+        eshkol_error("promise evaluation commit mark is not active");
+        return;
+    }
+    while (g_promise_eval_head != mark) {
+        void* promise = g_promise_eval_head;
+        eshkol_tagged_value_t previous = *promise_cached_slot(promise);
+        g_promise_eval_head = promise_link_target(previous);
+        *promise_cached_slot(promise) = *result;
+        *promise_state_slot(promise) = 1;
+    }
+}
+
+extern "C" void eshkol_promise_eval_unwind_to(void* mark) {
+    if (!promise_mark_is_reachable(mark)) {
+        // A continuation captured inside a now-completed force cannot recreate
+        // that expired dynamic extent. Leave the current chain untouched.
+        return;
+    }
+    while (g_promise_eval_head != mark) {
+        void* promise = g_promise_eval_head;
+        eshkol_tagged_value_t previous = *promise_cached_slot(promise);
+        const int64_t evaluating_state = *promise_state_slot(promise);
+        g_promise_eval_head = promise_link_target(previous);
+        *promise_cached_slot(promise) = eshkol_tagged_value_t{};
+        promise_cached_slot(promise)->type = ESHKOL_VALUE_NULL;
+        *promise_state_slot(promise) = evaluating_state == 4 ? 2 : 0;
+    }
+}
 
 // Store a tagged value before raising (called from codegen for user `raise`)
 extern "C" void eshkol_set_raised_value(const eshkol_tagged_value_t* value) {
@@ -693,6 +802,8 @@ extern "C" void eshkol_raise(eshkol_exception_t* exception) {
         // first so parameterize after-thunks pop their eshkol_param_t stack
         // entries (and ordinary dynamic-wind cleanup retains R7RS ordering).
         eshkol_unwind_dynamic_wind(g_exception_handler_stack->wind_mark);
+        eshkol_promise_eval_unwind_to(
+            g_exception_handler_stack->promise_mark);
         // Jump to the handler
         longjmp(*(jmp_buf*)g_exception_handler_stack->jmp_buf_ptr, 1);
     } else {
@@ -735,6 +846,7 @@ extern "C" void eshkol_push_exception_handler(void* jmp_buf_ptr) {
 
     handler->jmp_buf_ptr = jmp_buf_ptr;
     handler->wind_mark = g_dynamic_wind_stack;
+    handler->promise_mark = eshkol_promise_eval_mark();
     handler->prev = g_exception_handler_stack;
     g_exception_handler_stack = handler;
 }

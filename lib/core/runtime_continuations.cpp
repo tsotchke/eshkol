@@ -42,6 +42,7 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     memset(&state->value, 0, sizeof(eshkol_tagged_value_t));
     state->value.type = ESHKOL_VALUE_NULL;
     state->wind_mark = (void*)g_dynamic_wind_stack;
+    state->promise_mark = eshkol_promise_eval_mark();
     return state;
 }
 
