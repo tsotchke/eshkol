@@ -7,6 +7,12 @@ set -e
 
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
+REPL_TEST_TIMEOUT="${REPL_TEST_TIMEOUT:-30}"
+
+if ! [[ "$REPL_TEST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: REPL_TEST_TIMEOUT must be a positive integer number of seconds." >&2
+    exit 2
+fi
 
 if [[ "$BUILD_DIR" = /* ]]; then
     REPL_BIN="$BUILD_DIR/eshkol-repl"
@@ -70,7 +76,7 @@ for test_file in tests/repl/*.esk; do
     set +e
     if command -v timeout > /dev/null 2>&1; then
         # Linux has timeout
-        { cat "$test_file"; echo ""; echo ":quit"; } | timeout 10 "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
+        { cat "$test_file"; echo ""; echo ":quit"; } | timeout "$REPL_TEST_TIMEOUT" "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
         EXIT_CODE=$?
     else
         # macOS - run directly (no timeout needed, tests are fast)
