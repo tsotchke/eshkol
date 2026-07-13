@@ -236,8 +236,8 @@ configure_and_build "$BUILD_DIR_CPU" OFF || fail "CPU-only reference build faile
 
 GPU_RUN="$(runner_path "$BUILD_DIR_GPU" 2>/dev/null || true)"
 CPU_RUN="$(runner_path "$BUILD_DIR_CPU" 2>/dev/null || true)"
-[ -n "$GPU_RUN" ] && GPU_RUN="$REPO_ROOT/$GPU_RUN"
-[ -n "$CPU_RUN" ] && CPU_RUN="$REPO_ROOT/$CPU_RUN"
+case "$GPU_RUN" in ""|/*|[A-Za-z]:/*) ;; *) GPU_RUN="$REPO_ROOT/$GPU_RUN" ;; esac
+case "$CPU_RUN" in ""|/*|[A-Za-z]:/*) ;; *) CPU_RUN="$REPO_ROOT/$CPU_RUN" ;; esac
 [ -x "$GPU_RUN" ] || fail "$GPU_RUN missing after build"
 [ -x "$CPU_RUN" ] || fail "$CPU_RUN missing after build"
 
