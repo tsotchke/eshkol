@@ -123,6 +123,28 @@ void append_configured_link_args(const char* raw_args,
     }
 }
 
+void append_host_agent_ffi_dependency_link_args(std::vector<std::string>& link_args) {
+    std::vector<std::string> configured_args;
+    append_configured_link_args(ESHKOL_HOST_AGENT_FFI_LINK_ARGS, configured_args);
+
+    for (const auto& item : configured_args) {
+        // This AOT path has already resolved and appended the relocatable
+        // agent archive beside libeshkol-runtime.  The configured string also
+        // contains the build-tree archive and its force/whole-archive wrapper
+        // for eshkol-run itself; replaying those tokens would both pin the
+        // generated executable to the original build directory and load the
+        // archive twice.  Preserve only the dependency closure discovered by
+        // CMake (including optional libraries only when their source modules
+        // were compiled).
+        if (item == "-Wl,--whole-archive" ||
+            item == "-Wl,--no-whole-archive" ||
+            item.find("eshkol-agent-ffi") != std::string::npos) {
+            continue;
+        }
+        link_args.emplace_back(item);
+    }
+}
+
 void append_host_llvm_link_args(std::vector<std::string>& link_args) {
     append_configured_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
 }
@@ -38666,19 +38688,12 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             if (std::filesystem::exists(agent_ffi_path)) {
                 link_args.emplace_back(agent_ffi_path.generic_string());
                 eshkol_debug("Linking agent FFI: %s", agent_ffi_path.string().c_str());
-                // Agent FFI dependencies
-#ifdef __APPLE__
-                link_args.emplace_back("-lncurses");
-                link_args.emplace_back("-framework");
-                link_args.emplace_back("Security");
-                link_args.emplace_back("-framework");
-                link_args.emplace_back("CoreFoundation");
-#else
-                link_args.emplace_back("-lncurses");
-#endif
-                // Optional: PCRE2 and SQLite3 (if available on system)
-                link_args.emplace_back("-lpcre2-8");
-                link_args.emplace_back("-lsqlite3");
+                // Replay the exact dependency closure CMake discovered for
+                // this build.  Do not unconditionally add optional PCRE2 or
+                // SQLite short names: runtime-only hosts may intentionally
+                // omit their development-link symlinks, and in that case the
+                // corresponding agent modules were not compiled at all.
+                append_host_agent_ffi_dependency_link_args(link_args);
             }
         } else {
             link_args.emplace_back(
