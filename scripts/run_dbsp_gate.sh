@@ -59,7 +59,7 @@ else
     echo "AOT: FAIL (compile)"
     FAILURES=$((FAILURES + 1))
 fi
-rm -f "$AOT_BIN"
+rm -f -- "${AOT_BIN:?}"
 
 echo ""
 echo "========================================="

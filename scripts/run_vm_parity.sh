@@ -98,7 +98,7 @@ emit_test_result() { # name PASS|FAIL snippet
     local passed=false
     [ "$2" = "PASS" ] && passed=true
     printf '{"kind":"test_result","name":"%s","value":{"passed":%s,"summary":"%s"},"timestamp":%s}\n' \
-        "$(json_escape "$1")" "$passed" "$(json_escape "$3")" "$(date +%s)" >> "$TRACE_FILE"
+        "$(json_escape "$1")" "$passed" "$(json_escape "$3")" "$(date +%s)" >> "${TRACE_FILE:?}"
 }
 
 pass=0; fail=0

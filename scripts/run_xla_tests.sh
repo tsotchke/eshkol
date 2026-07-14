@@ -14,7 +14,7 @@ cd "$REPO_ROOT"
 TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
 XLA_TARGET_TRACE="$TRACE_DIR/xla_target_queries.jsonl"
 mkdir -p "$TRACE_DIR"
-: > "$XLA_TARGET_TRACE"
+: > "${XLA_TARGET_TRACE:?}"
 
 emit_xla_target_query_trace() {
     python3 -c '
@@ -29,7 +29,7 @@ print(json.dumps({
     ),
     "confidence": 0.95,
 }))
-' >> "$XLA_TARGET_TRACE"
+' >> "${XLA_TARGET_TRACE:?}"
 }
 
 # Colors for output

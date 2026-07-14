@@ -88,7 +88,7 @@ WORK_BIN="$ARTIFACT_DIR/aot_work_bin"
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/tcd_results.XXXXXX")"
 : "${WORK_BIN:?WORK_BIN must be set}"
 : "${RESULTS:?RESULTS must be set}"
-cleanup() { rm -f "$WORK_BIN" "$RESULTS"; }
+cleanup() { rm -f -- "${WORK_BIN:?}" "${RESULTS:?}"; }
 trap cleanup EXIT
 
 check_disk_cap() {
@@ -97,7 +97,7 @@ check_disk_cap() {
     [ -z "$used_mb" ] && used_mb=0
     if [ "$used_mb" -gt "$ARTIFACT_CAP_MB" ]; then
         echo "run_tensor_collection_depth.sh: artifact dir ${used_mb}MB > cap ${ARTIFACT_CAP_MB}MB — aborting." >&2
-        rm -f "$WORK_BIN"; rm -rf "$LOG_DIR"; exit 4
+        rm -f -- "${WORK_BIN:?}"; rm -rf -- "${LOG_DIR:?}"; exit 4
     fi
 }
 
@@ -112,7 +112,7 @@ json_escape() {
 }
 emit_event() { # name value family depth axis detail
     printf '{"kind":"tensor_collection_depth","name":"%s","value":"%s","family":"%s","depth":%s,"axis":"%s","detail":"%s"}\n' \
-        "$1" "$2" "$3" "$4" "$5" "$(json_escape "$6")" >> "$TRACE_FILE"
+        "$1" "$2" "$3" "$4" "$5" "$(json_escape "$6")" >> "${TRACE_FILE:?}"
 }
 
 # run one axis; echoes "STATUS|value" where STATUS in RAN|LIMIT and value is the
@@ -127,13 +127,13 @@ run_axis() {
             ;;
         aot-O0|aot-O2)
             local olvl="${axis#aot-O}"
-            rm -f "$WORK_BIN"
+            rm -f -- "${WORK_BIN:?}"
             if ! run_to "$TIMEOUT" "$ESHKOL_RUN" -O "$olvl" "$main" -o "$WORK_BIN" >"$errlog" 2>&1; then
                 echo "LIMIT|"; return
             fi
             [ -x "$WORK_BIN" ] || { echo "LIMIT|"; return; }
             out="$(run_to "$TIMEOUT" "$WORK_BIN" 2>"$errlog")"; ec=$?
-            rm -f "$WORK_BIN"
+            rm -f -- "${WORK_BIN:?}"
             ;;
     esac
     if [ "$ec" -eq 124 ]; then echo "LIMIT|"; return; fi
@@ -175,7 +175,7 @@ while IFS= read -r line; do
         if [ "$st" = "RAN" ] && [ "$val" = "$expected" ]; then axcls="PASS"
         elif [ "$st" = "RAN" ]; then axcls="WRONG"
         else axcls="LIMIT"; fi
-        printf 'AX\t%s\t%s\t%s\t%s\t%s\n' "$family" "$axis" "$depth" "$axcls" "$val" >> "$RESULTS"
+        printf 'AX\t%s\t%s\t%s\t%s\t%s\n' "$family" "$axis" "$depth" "$axcls" "$val" >> "${RESULTS:?}"
     done
 
     # combined classification across axes
@@ -194,7 +194,7 @@ while IFS= read -r line; do
     fi
 
     n_total=$((n_total+1))
-    printf 'CB\t%s\t%s\t%s\t%s\n' "$family" "$depth" "$cls" "$detail" >> "$RESULTS"
+    printf 'CB\t%s\t%s\t%s\t%s\n' "$family" "$depth" "$cls" "$detail" >> "${RESULTS:?}"
     printf '%s' "$AXLINES" | while IFS='|' read -r axis st val; do
         [ -z "$axis" ] && continue
         emit_event "tcd_case" "$cls" "$family" "$depth" "$axis" "axis=$st:$val exp=$expected"

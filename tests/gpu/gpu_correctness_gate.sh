@@ -74,7 +74,7 @@ emit_trace() {  # emit_trace <value> <snippet>
         esnip="\"$esnip\""
     fi
     printf '{"kind":"gpu_execution","name":"gpu_execution_gate","value":"%s","snippet":%s,"confidence":0.95}\n' \
-        "$value" "$esnip" >> "$TRACE_FILE"
+        "$value" "$esnip" >> "${TRACE_FILE:?}"
 }
 
 log()  { printf '%s\n' "$*"; }
@@ -340,7 +340,7 @@ log "Running GPU-enabled binary with dispatch forced..."
 GPU_STDOUT="$WORK_DIR/gpu_stdout.txt"
 GPU_STDERR="$WORK_DIR/gpu_stderr.txt"
 ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=legacy \
-    "$GPU_PAYLOAD" > "$GPU_STDOUT" 2> "$GPU_STDERR"
+    "$GPU_PAYLOAD" > "${GPU_STDOUT:?}" 2> "${GPU_STDERR:?}"
 gpu_run_rc=$?
 [ "$gpu_run_rc" -eq 0 ] || fail "GPU binary crashed/exited $gpu_run_rc — stderr: $(tail -n 40 "$GPU_STDERR")"
 grep -q "^GATE-DONE$" "$GPU_STDOUT" || fail "GPU run did not reach GATE-DONE — output: $(cat "$GPU_STDOUT")"
@@ -355,7 +355,7 @@ fi
 log ""
 log "Running CPU-only reference binary..."
 CPU_STDOUT="$WORK_DIR/cpu_stdout.txt"
-"$CPU_PAYLOAD" > "$CPU_STDOUT" 2>"$WORK_DIR/cpu_stderr.txt"
+"$CPU_PAYLOAD" > "${CPU_STDOUT:?}" 2>"${WORK_DIR:?}/cpu_stderr.txt"
 cpu_run_rc=$?
 [ "$cpu_run_rc" -eq 0 ] || fail "CPU-reference binary crashed/exited $cpu_run_rc"
 grep -q "^GATE-DONE$" "$CPU_STDOUT" || fail "CPU run did not reach GATE-DONE"

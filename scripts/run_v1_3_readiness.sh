@@ -15,7 +15,7 @@ ARCH_MODEL="${ARCH_MODEL:-.icc/architecture-model.yaml}"
 ARCH_TRACE_GLOB="${ARCH_TRACE_GLOB:-.icc/runtime-traces-oracle-view/*architecture-model-verify-*.jsonl}"
 READINESS_JSON="$(mktemp "${TMPDIR:-/tmp}/eshkol-v13-readiness.XXXXXX.json")"
 : "${READINESS_JSON:?READINESS_JSON must be set}"
-trap 'rm -f "$READINESS_JSON"' EXIT
+trap 'rm -f -- "${READINESS_JSON:?}"' EXIT
 
 BUILD_DIR="${BUILD_DIR:-build}" TRACE_DIR="$TRACE_DIR" \
   scripts/run_mono_equiv_ad_taylor_gate.sh
@@ -36,7 +36,7 @@ scripts/run_icc_smoke.sh
   --target v1.3-evolve \
   --trace-dir "$TRACE_DIR" \
   --trace-latest "$ARCH_TRACE_GLOB" \
-  --format json > "$READINESS_JSON"
+  --format json > "${READINESS_JSON:?}"
 
 "$ICC_BIN" readiness \
   --repo "$ICC_REPO" \

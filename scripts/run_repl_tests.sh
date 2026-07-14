@@ -21,7 +21,7 @@ else
 fi
 
 OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/eshkol-repl-test.XXXXXX")"
-trap 'rm -f "$OUTPUT_FILE"' EXIT
+trap 'rm -f -- "${OUTPUT_FILE:?}"' EXIT
 
 
 # Colors for output
@@ -76,11 +76,11 @@ for test_file in tests/repl/*.esk; do
     set +e
     if command -v timeout > /dev/null 2>&1; then
         # Linux has timeout
-        { cat "$test_file"; echo ""; echo ":quit"; } | timeout "$REPL_TEST_TIMEOUT" "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
+        { cat "$test_file"; echo ""; echo ":quit"; } | timeout "$REPL_TEST_TIMEOUT" "$REPL_BIN" > "${OUTPUT_FILE:?}" 2>&1
         EXIT_CODE=$?
     else
         # macOS - run directly (no timeout needed, tests are fast)
-        { cat "$test_file"; echo ""; echo ":quit"; } | "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
+        { cat "$test_file"; echo ""; echo ":quit"; } | "$REPL_BIN" > "${OUTPUT_FILE:?}" 2>&1
         EXIT_CODE=$?
     fi
     set -e
