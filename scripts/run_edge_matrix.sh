@@ -144,7 +144,7 @@ WORK_LIST="$WORK_DIR/worklist"
 shopt -s nullglob
 for f in "$GEN_DIR"/$FILTER; do
     for mode in $MODES; do
-        printf '%s\n%s\n' "$f" "$mode" >> "$WORK_LIST"
+        printf '%s\n%s\n' "$f" "$mode" >> "${WORK_LIST:?}"
     done
 done
 shopt -u nullglob
@@ -161,12 +161,12 @@ xargs -n2 -P "$JOBS" env EDGE_MATRIX_WORKER=1 bash "$0" < "$WORK_LIST"
 # ---------------------------------------------------------------------------
 # Aggregate, emit traces + summary
 # ---------------------------------------------------------------------------
-: > "$TRACE_FILE"
+: > "${TRACE_FILE:?}"
 emit_event() {   # name value snippet
     local esc
     esc=$(printf '%s' "$3" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
     printf '{"kind":"edge_matrix","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$1" "$2" "$esc" >> "$TRACE_FILE"
+        "$1" "$2" "$esc" >> "${TRACE_FILE:?}"
 }
 
 is_known_failure() {  # base mode

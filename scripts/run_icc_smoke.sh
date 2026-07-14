@@ -84,7 +84,7 @@ import json, sys
 print(json.dumps({"kind": "eshkol_smoke", "name": sys.argv[1],
                   "value": sys.argv[2], "snippet": sys.argv[3],
                   "confidence": 0.95}, ensure_ascii=False))
-' "$probe_id" "$status" "$snippet" >> "$TRACE_FILE"
+' "$probe_id" "$status" "$snippet" >> "${TRACE_FILE:?}"
 }
 
 PROBE_TOTAL=0

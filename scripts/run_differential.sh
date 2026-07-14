@@ -103,7 +103,7 @@ json_escape() {
 
 emit_event() { # name value snippet
     printf '{"kind":"differential_smoke","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "$TRACE_FILE"
+        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "${TRACE_FILE:?}"
 }
 
 # Normalize captured stdout: strip harness/compiler noise lines, then drop
