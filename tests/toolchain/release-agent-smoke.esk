@@ -1,0 +1,21 @@
+;; Release-package smoke for the separately shipped agent FFI archive.
+;; A cold `eshkol-run -r` must link this from the package, never from a
+;; build-machine path baked into build_config.h.
+(require stdlib)
+(require agent.regex)
+
+(define pattern (regex-compile "^release-[0-9]+$"))
+(define ok (and (not (= pattern -1))
+                (regex-match? pattern "release-133")
+                (not (regex-match? pattern "release-broken"))))
+(when (not (= pattern -1))
+  (regex-free pattern))
+
+(if ok
+    (begin
+      (display "release agent smoke")
+      (newline))
+    (begin
+      (display "release agent smoke failed")
+      (newline)
+      (exit 1)))

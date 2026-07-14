@@ -21,6 +21,7 @@ from typing import NoReturn
 
 DEFAULT_TIMEOUT_SECONDS = 900
 EXPECTED_SMOKE_OUTPUT = "hello from windows smoke"
+EXPECTED_AGENT_SMOKE_OUTPUT = "release agent smoke"
 
 
 def fail(message: str, *, stdout: str = "", stderr: str = "") -> NoReturn:
@@ -82,6 +83,7 @@ def verify_cache_run(
     env: dict[str, str],
     timeout: int,
     expected_trace: str,
+    expected_output: str,
 ) -> None:
     result = run_checked(
         [str(runner), "-r", str(smoke_source)],
@@ -90,9 +92,9 @@ def verify_cache_run(
         timeout=timeout,
         description=f"package smoke ({expected_trace.strip()})",
     )
-    if EXPECTED_SMOKE_OUTPUT not in result.stdout:
+    if expected_output not in result.stdout:
         fail(
-            f"package smoke did not print {EXPECTED_SMOKE_OUTPUT!r}",
+            f"package smoke did not print {expected_output!r}",
             stdout=result.stdout,
             stderr=result.stderr,
         )
@@ -119,6 +121,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package-dir", required=True, type=Path)
     parser.add_argument("--smoke-source", required=True, type=Path)
+    parser.add_argument("--agent-smoke-source", required=True, type=Path)
     parser.add_argument("--expected-version", required=True)
     parser.add_argument(
         "--timeout-seconds",
@@ -129,28 +132,36 @@ def main() -> int:
 
     package_dir = args.package_dir.resolve()
     smoke_source = args.smoke_source.resolve()
+    agent_smoke_source = args.agent_smoke_source.resolve()
     if not package_dir.is_dir():
         fail(f"package directory does not exist: {package_dir}")
     if not smoke_source.is_file():
         fail(f"smoke source does not exist: {smoke_source}")
+    if not agent_smoke_source.is_file():
+        fail(f"agent smoke source does not exist: {agent_smoke_source}")
     if args.timeout_seconds <= 0:
         fail("--timeout-seconds must be positive")
 
     windows = os.name == "nt"
     runner = package_dir / "bin" / ("eshkol-run.exe" if windows else "eshkol-run")
-    runtime_name = "eshkol-runtime.lib" if windows else "libeshkol-runtime.a"
-    runtime_paths = (
-        package_dir / "lib" / runtime_name,
-        package_dir / "lib" / "eshkol" / runtime_name,
+    archive_names = (
+        ("eshkol-runtime.lib", "eshkol-agent-ffi.lib")
+        if windows
+        else ("libeshkol-runtime.a", "libeshkol-agent-ffi.a")
     )
 
     if not runner.is_file():
         fail(f"packaged runner is missing: {runner}")
-    for runtime_path in runtime_paths:
-        if not runtime_path.is_file() or runtime_path.stat().st_size == 0:
-            fail(f"packaged runtime archive is missing or empty: {runtime_path}")
-    if sha256(runtime_paths[0]) != sha256(runtime_paths[1]):
-        fail("packaged runtime archive copies differ")
+    for archive_name in archive_names:
+        archive_paths = (
+            package_dir / "lib" / archive_name,
+            package_dir / "lib" / "eshkol" / archive_name,
+        )
+        for archive_path in archive_paths:
+            if not archive_path.is_file() or archive_path.stat().st_size == 0:
+                fail(f"packaged archive is missing or empty: {archive_path}")
+        if sha256(archive_paths[0]) != sha256(archive_paths[1]):
+            fail(f"packaged archive copies differ: {archive_name}")
 
     base_env = os.environ.copy()
     version = run_checked(
@@ -188,6 +199,7 @@ def main() -> int:
             env,
             args.timeout_seconds,
             "[jit-cache] store ",
+            EXPECTED_SMOKE_OUTPUT,
         )
         verify_cache_run(
             runner,
@@ -196,10 +208,29 @@ def main() -> int:
             env,
             args.timeout_seconds,
             "[jit-cache] hit ",
+            EXPECTED_SMOKE_OUTPUT,
+        )
+        verify_cache_run(
+            runner,
+            agent_smoke_source,
+            package_dir,
+            env,
+            args.timeout_seconds,
+            "[jit-cache] store ",
+            EXPECTED_AGENT_SMOKE_OUTPUT,
+        )
+        verify_cache_run(
+            runner,
+            agent_smoke_source,
+            package_dir,
+            env,
+            args.timeout_seconds,
+            "[jit-cache] hit ",
+            EXPECTED_AGENT_SMOKE_OUTPUT,
         )
 
     print(
-        "PASS: release package is self-contained; cold run-cache store and warm hit succeeded"
+        "PASS: release package is self-contained; core and agent cold stores and warm hits succeeded"
     )
     return 0
 

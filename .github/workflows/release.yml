@@ -214,9 +214,13 @@ jobs:
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/"
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
           runtime_archive="${{ matrix.build_dir }}/libeshkol-runtime.a"
+          agent_ffi_archive="${{ matrix.build_dir }}/libeshkol-agent-ffi.a"
           test -s "$runtime_archive"
+          test -s "$agent_ffi_archive"
           cp "$runtime_archive" "$pkg_dir/lib/"
           cp "$runtime_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_ffi_archive" "$pkg_dir/lib/"
+          cp "$agent_ffi_archive" "$pkg_dir/lib/eshkol/"
 
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
@@ -239,6 +243,7 @@ jobs:
           python3 scripts/verify_release_package.py \
             --package-dir "$pkg_dir" \
             --smoke-source "tests/toolchain/windows-smoke.esk" \
+            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk" \
             --expected-version "$RELEASE_TAG"
 
           tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
@@ -427,7 +432,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'stdlib')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'eshkol-agent-ffi', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -458,6 +463,7 @@ jobs:
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
           $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
           $runtimeLibrary = Join-Path $binaryDir 'eshkol-runtime.lib'
+          $agentFfiLibrary = Join-Path $binaryDir 'eshkol-agent-ffi.lib'
           if (-not (Test-Path $stdlibObject)) {
             $stdlibCandidate = Join-Path $binaryDir 'stdlib.o'
             if (Test-Path $stdlibCandidate) {
@@ -482,6 +488,14 @@ jobs:
               throw "eshkol-runtime.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
+          if (-not (Test-Path $agentFfiLibrary -PathType Leaf)) {
+            $agentFfiLibraryCandidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-agent-ffi.lib'
+            if (Test-Path $agentFfiLibraryCandidate -PathType Leaf) {
+              $agentFfiLibrary = $agentFfiLibraryCandidate
+            } else {
+              throw "eshkol-agent-ffi.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
@@ -498,6 +512,8 @@ jobs:
           Copy-Item -LiteralPath $stdlibBitcode -Destination $libEshkolDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libDir
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libEshkolDir
+          Copy-Item -LiteralPath $agentFfiLibrary -Destination $libDir
+          Copy-Item -LiteralPath $agentFfiLibrary -Destination $libEshkolDir
 
           Copy-Item -LiteralPath 'lib\stdlib.esk' -Destination $shareDir
           if (Test-Path 'lib\math.esk') {
@@ -524,6 +540,7 @@ jobs:
           python scripts/verify_release_package.py `
             --package-dir "$pkgDir" `
             --smoke-source "tests/toolchain/windows-smoke.esk" `
+            --agent-smoke-source "tests/toolchain/release-agent-smoke.esk" `
             --expected-version "$env:RELEASE_TAG"
           if ($LASTEXITCODE -ne 0) {
             throw "release package smoke failed with exit code $LASTEXITCODE"
