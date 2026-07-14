@@ -44,9 +44,9 @@ Free an AST node created by eshkol_sexp_to_ast. Recursively frees all sub-nodes 
 
 ```c
 typedef struct eshkol_compile_env {
- const char** names; 
- eshkol_tagged_value_t* values; 
- size_t count; 
+ const char** names;
+ eshkol_tagged_value_t* values;
+ size_t count;
 } eshkol_compile_env_t;
 ```
 

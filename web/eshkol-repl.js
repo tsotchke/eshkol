@@ -553,6 +553,14 @@ class EshkolRepl {
                 eshkol_error_object_message:   (_obj, _out) => {},
                 eshkol_error_object_irritants: (_obj, _out) => {},
                 eshkol_unwind_dynamic_wind: () => {},
+                // Promise evaluation rollback accompanies hosted setjmp/
+                // longjmp.  Browser continuations are deliberately degraded,
+                // so these opaque markers are inert like the handler stubs.
+                eshkol_promise_eval_mark: () => 0,
+                eshkol_promise_eval_begin: () => {},
+                eshkol_promise_eval_commit_one: () => {},
+                eshkol_promise_eval_commit_to: () => {},
+                eshkol_promise_eval_unwind_to: () => {},
                 eshkol_jmp_buf_size: () => 64,
                 setjmp: () => 0,
                 longjmp: () => { throw new Error('longjmp (WASM stub) — not supported'); },

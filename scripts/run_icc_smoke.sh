@@ -40,6 +40,16 @@ esac
 BUILD_DIR="$BUILD_DIR_PATH"
 export BUILD_DIR
 
+XLA_BUILD_DIR="${XLA_BUILD_DIR:-}"
+if [ -n "$XLA_BUILD_DIR" ]; then
+    case "$XLA_BUILD_DIR" in
+        /*) XLA_BUILD_DIR_PATH="$XLA_BUILD_DIR" ;;
+        *)  XLA_BUILD_DIR_PATH="$REPO_ROOT/$XLA_BUILD_DIR" ;;
+    esac
+else
+    XLA_BUILD_DIR_PATH=""
+fi
+
 ESHKOL_RUN="$BUILD_DIR_PATH/eshkol-run"
 if [ ! -x "$ESHKOL_RUN" ]; then
     echo "scripts/run_icc_smoke.sh: $ESHKOL_RUN not found — run \`cmake --build $BUILD_DIR_PATH\` first." >&2
@@ -200,6 +210,16 @@ probe aot_binaries_link_agent_ffi "AOT-compiled binary linking agent.http runs" 
 EOF
      "$ESHKOL_RUN" "$tmp" -o "$bin" >/dev/null 2>&1 && "$bin" >/dev/null; rc=$?
      rm -f "$tmp" "$bin"; exit $rc'
+
+# Optional release-readiness evidence from an XLA-enabled build.  The default
+# lite build deliberately omits xla_codegen_test, so release coordinators pass
+# XLA_BUILD_DIR when certifying the full backend surface.  The integration test
+# calls all three target-query functions and checks their mutual consistency.
+if [ -n "$XLA_BUILD_DIR_PATH" ]; then
+    probe xla_compiler_target_queries \
+        "XLACompiler::isTargetAvailable, XLACompiler::getDefaultTarget, and XLACompiler::getAvailableTargets agree" \
+        'test -x "$XLA_BUILD_DIR_PATH/xla_codegen_test" && "$XLA_BUILD_DIR_PATH/xla_codegen_test"'
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # v1.2 release probes

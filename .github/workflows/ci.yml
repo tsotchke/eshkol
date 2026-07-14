@@ -41,7 +41,7 @@ jobs:
     name: quantum-macos (advisory)
     runs-on: macos-14
     continue-on-error: true
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v6
@@ -66,16 +66,19 @@ jobs:
             -DESHKOL_BUILD_TESTS=ON \
             -DESHKOL_BUILD_AGENT_FFI=ON
 
-      - name: Build quantum runner and stdlib
+      - name: Build quantum runtime and test tools
         shell: bash
         run: |
           set -euxo pipefail
-          cmake --build build-quantum --target eshkol-run stdlib --parallel
+          cmake --build build-quantum --parallel
 
       - name: Run quantum integration gates
         shell: bash
+        env:
+          ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR: ${{ runner.temp }}/eshkol-language-coverage/quantum
         run: |
           set -euo pipefail
+          mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
           runner="$PWD/build-quantum/eshkol-run"
           libflag="-L$PWD/build-quantum"
           for test in tests/quantum/*.esk; do
@@ -112,6 +115,19 @@ jobs:
             esac
           done
 
+          # `-r` resolves Moonlab from the already-linked compiler process.
+          # Compile and execute one representative standalone binary as well,
+          # so CI proves that the generated AOT link closure and loader rpath
+          # carry Moonlab without an agent-FFI require or ambient DYLD paths.
+          aot_dir="${RUNNER_TEMP}/eshkol-quantum-aot"
+          aot_bin="${aot_dir}/quantum-smoke${{ runner.os == 'Windows' && '.exe' || '' }}"
+          mkdir -p "$aot_dir"
+          "$runner" tests/quantum/quantum_smoke_test.esk -o "$aot_bin" "$libflag"
+          aot_output="$("$aot_bin" 2>&1)"
+          printf '%s\n' "$aot_output"
+          grep -q 'Bell-pair correlation over 200 shots: 200/200  PASS' <<<"$aot_output"
+          grep -q 'quantum_smoke_test: PASS' <<<"$aot_output"
+
       # The default AD oracle remains Moonlab-free. This opt-in invocation
       # enables its VQE-energy AD-vs-finite-difference probe on the same
       # quantum build that compiled the agent.quantum bridge.
@@ -120,9 +136,43 @@ jobs:
         env:
           BUILD_DIR: build-quantum
           ESHKOL_QUANTUM_ENABLED: 'ON'
+          ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR: ${{ runner.temp }}/eshkol-language-coverage/quantum
         run: |
           set -euxo pipefail
           ./scripts/run_ad_adversarial.sh --quick
+
+      # This advisory lane owns the complete executable-language oracle: the
+      # quantum build can execute both the ordinary deterministic corpus and
+      # the opt-in Moonlab/PQC corpus in one environment, then aggregate fresh
+      # per-process traces. No checked-in/token-only evidence is accepted.
+      - name: Run complete traced core corpus
+        shell: bash
+        env:
+          BUILD_DIR: build-quantum
+          ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR: ${{ runner.temp }}/eshkol-language-coverage/core
+        run: |
+          set -euxo pipefail
+          mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
+          ./scripts/run_all_tests.sh
+
+      - name: Enforce 100 percent executable language coverage
+        shell: bash
+        env:
+          BUILD_DIR: build-quantum
+          LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS: ${{ runner.temp }}/eshkol-language-coverage/core:${{ runner.temp }}/eshkol-language-coverage/quantum
+          LANGUAGE_COVERAGE_TRACE: ${{ runner.temp }}/eshkol-language-coverage/language_surface_coverage.jsonl
+        run: |
+          set -euxo pipefail
+          ./scripts/run_language_coverage.sh \
+            --json "${{ runner.temp }}/eshkol-language-coverage/coverage_run.json"
+
+      - name: Upload executable language-coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eshkol-language-coverage
+          path: ${{ runner.temp }}/eshkol-language-coverage
+          if-no-files-found: error
 
   unix-matrix:
     name: ${{ matrix.name }}

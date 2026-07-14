@@ -1,6 +1,6 @@
 # Eshkol v1.3.3-evolve Release-Candidate Readiness Report
 
-**Candidate branch:** `feat/complete-remaining-hardening`
+**Candidate branch:** `feat/runtime-language-coverage`
 **Release line:** `v1.3.x-evolve`
 **Candidate head:** the commit containing this report
 **Published base tag:** `v1.3.2-evolve` (`8443ddae`)
@@ -26,19 +26,19 @@ created by this campaign.
 
 | Gate | Result |
 |---|---|
-| Aggregate test harness | **44/44 suites, 714/714 tests**, zero failed/skipped suites |
-| CTest | **69/69** |
+| Aggregate test harness | **44/44 suites, 716/716 tests**, zero failed/skipped suites |
+| CTest | **70/70** |
 | SICP full-book | **88/88** JIT+AOT probes, zero xfail/XPASS |
 | Chibi R7RS reference differential | **34/34 AGREE**, zero divergence/error |
-| Generative multi-oracle differential | **31 programs**, Chibi/JIT/AOT-O0/AOT-O2/VM, zero divergence |
+| Generative multi-oracle differential | **127 programs**, Chibi/JIT/AOT-O0/AOT-O2/VM, zero divergence |
 | Native/VM parity | **68/68** source+ESKB probes; unsupported paths fail explicitly |
-| VM extended hosted surface | **52/52** |
+| VM extended hosted surface | **53/53** |
 | Executable language surface | **1056/1056 (100%)**, zero uncovered/high-risk rows |
 | Taylor monomorphization equivalence | **441/441 JIT + 441/441 AOT**, bit-exact through order 8 |
 | Poincare manifold invariant | **17/17** analytic checks |
 | Automatic differentiation | **54/54** aggregate AD suite plus adversarial finite-difference gates |
 | Memory/ownership | **16/16** aggregate memory suite plus C ABI barrier checks |
-| WebAssembly import contract | **100/100 unique imports** provided in both JS runtimes |
+| WebAssembly import contract | **101/101 unique imports** provided in both JS runtimes |
 | ICC architecture model | **8/8 PASS**, zero FAIL/UNCHECKABLE |
 | ICC release readiness | **100/100**, oracle complete, zero contract/fallback gaps |
 | Working-tree hygiene | Only generated, gitignored ICC runtime evidence is untracked |
@@ -70,12 +70,35 @@ image operations, polling, and process environment propagation.
 
 ### Correctness and memory safety
 
-The campaign corrected the Poincare tangent metric convention; exact 64-bit
-time values; proper-list directory walking; hosted port lifecycle/rebinding;
+The campaign locked the Poincare coordinate-tangent metric convention; exact
+64-bit time values; proper-list directory walking; hosted port lifecycle/rebinding;
 image-buffer ownership; rational/bignum region evacuation; parameter write
 barriers; and O2 library-export retention. The large-list sort was replaced by
 a stable memory-bounded vector merge sort, reducing the two-million-element
 stress case from roughly 32 GB to about 362 MiB peak RSS.
+
+Promise forcing now also has a unified native/VM nonlocal-control contract.
+Exceptions and continuation invocations roll back an intrusive O(1)-auxiliary
+evaluation chain before control transfer, so a thunk that does not return
+normally remains retryable while successful `delay-force` chains retain
+iterative path compression. The release corpus covers both handled raises and
+continuation escape/retry on the hosted LLVM and serialized VM paths.
+
+### Independent manifold audit reconciliation
+
+[PR #275](https://github.com/tsotchke/eshkol/pull/275) contributed a
+good-faith independent Poincare/AD audit and reproducible C cross-validation.
+Its final exp-map patch removes the base conformal factor because it interprets
+the input as a normalized tangent whose geodesic length is `||v||`. Eshkol's
+public API instead uses coordinate tangent vectors under
+`g_x = lambda_x^2 I`; therefore the invariant is
+`distance(x, exp_x(v)) = lambda_x ||v||`, and the conformal factor belongs in
+the standard coordinate-tangent exponential map. The matching log map and the
+17 analytic tests lock that convention, including off-origin round trips and
+lengths. The audit is retained as provenance and helped make this convention
+explicit; its unrelated header/backend decompositions require focused PRs and
+the full LLVM/VM/Windows matrix rather than merging the conflicting omnibus
+branch.
 
 ## Architecture Evidence
 

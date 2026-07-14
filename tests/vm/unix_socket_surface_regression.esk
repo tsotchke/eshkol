@@ -70,4 +70,18 @@
              "FAIL"))
 (newline)
 
+;; Hermetic invalid-descriptor probes guarantee exact dispatch evidence even
+;; when no external Unix-domain socket service is configured.
+(display "T6 invalid socket-send returns #f: ")
+(display (if (not (socket-send -1 "invalid")) "PASS" "FAIL"))
+(newline)
+
+(display "T7 invalid socket-recv returns #f: ")
+(display (if (not (socket-recv -1 16)) "PASS" "FAIL"))
+(newline)
+
+(display "T8 invalid socket-close returns #f: ")
+(display (if (not (socket-close -1)) "PASS" "FAIL"))
+(newline)
+
 (display "=== unix socket VM surface complete ===") (newline)

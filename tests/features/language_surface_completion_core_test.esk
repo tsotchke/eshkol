@@ -2,6 +2,7 @@
 ;; Every named operation below is executed and its result is checked.
 
 (require stdlib)
+(include "tests/features/fixtures/language_surface_include.scm")
 (include-ci "tests/features/fixtures/language_surface_include_ci.scm")
 
 (define passed 0)
@@ -34,10 +35,48 @@
 (define-values () (values))
 (check "define-values accepts zero values" #t)
 (check "include-ci executes its case-folded fixture" (= included-surface-value 73))
+(check "include executes its case-sensitive fixture" (= included-case-sensitive-value 79))
+
+;; Sequential multiple-value binding and dynamic parameters.
+(check "let*-values exposes earlier bindings to later producers"
+       (= (let*-values (((x y) (values 2 3))
+                        ((z) (values (+ x y))))
+            (* z y))
+          15))
+(define surface-parameter (make-parameter 5 (lambda (x) (+ x 1))))
+(check "parameterize installs and restores a converted dynamic value"
+       (and (= (surface-parameter) 6)
+            (= (parameterize ((surface-parameter 10))
+                 (surface-parameter))
+               11)
+            (= (surface-parameter) 6)))
+
+;; Lazy promises must execute the delay-force trampoline, not only allocate it.
+(define surface-lazy-evaluations 0)
+(define surface-lazy
+  (delay-force
+    (begin
+      (set! surface-lazy-evaluations (+ surface-lazy-evaluations 1))
+      (+ 20 22))))
+(check "delay-force evaluates once and memoizes"
+       (and (= (force surface-lazy) 42)
+            (= (force surface-lazy) 42)
+            (= surface-lazy-evaluations 1)))
 
 ;; Higher-order/list operations.
 (check "fold-left" (= (fold-left + 0 '(1 2 3 4)) 10))
 (check "remv" (equal? (remv 2 '(1 2 3)) '(1 3)))
+(check "caaar" (= (caaar '(((17)))) 17))
+(check "cdaar" (= (cdaar '(((1 . 2)))) 2))
+(check "cdadr" (= (cdadr '(0 (1 . 2))) 2))
+(check "cddar" (equal? (cddar '((0 1 2))) '(2)))
+
+;; Numeric aliases and tensor/AD entry points execute their distinct dispatch.
+(define surface-complex (make-rectangular 3.0 4.0))
+(check "conjugate" (= (imag-part (conjugate surface-complex)) -4.0))
+(check "exact" (and (exact? (exact 3.0)) (= (exact 3.0) 3)))
+(check "D derivative alias" (< (abs (- (D (lambda (x) (* x x)) 3.0) 6.0)) 1e-9))
+(check "norm" (< (abs (- (norm #(3.0 4.0)) 5.0)) 1e-12))
 
 ;; Bytevector and vector mutation/construction.
 (define bv-dst (make-bytevector 5 0))
@@ -68,6 +107,7 @@
 ;; Case-insensitive and ordering predicates.
 (check "char<=?" (char<=? #\a #\b))
 (check "char>=?" (char>=? #\b #\a))
+(check "char>?" (char>? #\b #\a))
 (check "char-ci<?" (char-ci<? #\A #\b))
 (check "char-ci<=?" (char-ci<=? #\A #\a))
 (check "char-ci>?" (char-ci>? #\B #\a))

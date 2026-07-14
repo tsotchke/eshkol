@@ -6,7 +6,7 @@ Generated from the Doxygen `/** ... */` comment blocks in the public headers und
 python3 scripts/gen_api_docs.py
 ```
 
-**Coverage:** 1925/3366 public symbols documented (57.2%), 1441 undocumented.
+**Coverage:** 1959/3432 public symbols documented (57.1%), 1473 undocumented.
 
 See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
@@ -14,14 +14,14 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### (root headers)
 
-243/516 symbols documented.
+252/550 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`eshkol.h`](eshkol.md) | 281 | 133 |
+| [`eshkol.h`](eshkol.md) | 309 | 142 |
 | [`eshkol_ffi.h`](eshkol_ffi.md) | 44 | 32 |
 | [`http_request_utils.h`](http_request_utils.md) | 6 | 3 |
-| [`llvm_backend.h`](llvm_backend.md) | 73 | 2 |
+| [`llvm_backend.h`](llvm_backend.md) | 79 | 2 |
 | [`logger.h`](logger.md) | 37 | 21 |
 | [`model_io.h`](model_io.md) | 8 | 5 |
 | [`platform_runtime.h`](platform_runtime.md) | 20 | 19 |
@@ -29,12 +29,12 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `backend/`
 
-1106/1870 symbols documented.
+1121/1885 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 46 | 39 |
-| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 159 | 98 |
+| [`backend/arithmetic_codegen.h`](backend/arithmetic_codegen.md) | 48 | 41 |
+| [`backend/autodiff_codegen.h`](backend/autodiff_codegen.md) | 160 | 99 |
 | [`backend/binding_codegen.h`](backend/binding_codegen.md) | 54 | 21 |
 | [`backend/blas_backend.h`](backend/blas_backend.md) | 23 | 23 |
 | [`backend/builtin_declarations.h`](backend/builtin_declarations.md) | 16 | 6 |
@@ -53,11 +53,11 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 | [`backend/memory_codegen.h`](backend/memory_codegen.md) | 87 | 38 |
 | [`backend/parallel_codegen.h`](backend/parallel_codegen.md) | 60 | 19 |
 | [`backend/string_io_codegen.h`](backend/string_io_codegen.md) | 71 | 54 |
-| [`backend/system_codegen.h`](backend/system_codegen.md) | 247 | 235 |
+| [`backend/system_codegen.h`](backend/system_codegen.md) | 255 | 243 |
 | [`backend/tagged_value_codegen.h`](backend/tagged_value_codegen.md) | 49 | 42 |
 | [`backend/tail_call_codegen.h`](backend/tail_call_codegen.md) | 30 | 16 |
 | [`backend/tensor_backward.h`](backend/tensor_backward.md) | 17 | 17 |
-| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 186 | 169 |
+| [`backend/tensor_codegen.h`](backend/tensor_codegen.md) | 190 | 173 |
 | [`backend/thread_pool.h`](backend/thread_pool.md) | 59 | 48 |
 | [`backend/type_system.h`](backend/type_system.md) | 76 | 21 |
 | [`backend/vm.h`](backend/vm.md) | 37 | 0 |
@@ -95,11 +95,11 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 
 ### `core/`
 
-198/376 symbols documented.
+208/393 symbols documented.
 
 | Header | Symbols | Documented |
 |---|---:|---:|
-| [`core/bignum.h`](core/bignum.md) | 41 | 24 |
+| [`core/bignum.h`](core/bignum.md) | 42 | 25 |
 | [`core/config.h`](core/config.md) | 62 | 19 |
 | [`core/eval_bridge.h`](core/eval_bridge.md) | 9 | 4 |
 | [`core/execution_profile.h`](core/execution_profile.md) | 36 | 8 |
@@ -107,9 +107,9 @@ See also [INDEX.md](INDEX.md) for an alphabetical symbol table.
 | [`core/inference.h`](core/inference.md) | 19 | 7 |
 | [`core/introspection.h`](core/introspection.md) | 29 | 28 |
 | [`core/logic.h`](core/logic.md) | 34 | 11 |
-| [`core/rational.h`](core/rational.md) | 22 | 8 |
+| [`core/rational.h`](core/rational.md) | 29 | 8 |
 | [`core/resource_limits.h`](core/resource_limits.md) | 45 | 33 |
-| [`core/runtime.h`](core/runtime.md) | 52 | 40 |
+| [`core/runtime.h`](core/runtime.md) | 61 | 49 |
 | [`core/sexp_to_ast.h`](core/sexp_to_ast.md) | 8 | 8 |
 | [`core/workspace.h`](core/workspace.md) | 15 | 4 |
 

@@ -577,7 +577,8 @@ String or eof-object as tagged value
 *Function* — line 282
 
 ```c
-llvm::Value* openInputFile(const eshkol_operations_t* op);
+llvm::Value* openInputFile(const eshkol_operations_t* op,
+ bool wrapper_uses_first_argument = false);
 ```
 
 Open file for input: (open-input-file filename)
@@ -592,10 +593,11 @@ Port as tagged value
 
 ### `StringIOCodegen::openOutputFile`
 
-*Function* — line 289
+*Function* — line 290
 
 ```c
-llvm::Value* openOutputFile(const eshkol_operations_t* op);
+llvm::Value* openOutputFile(const eshkol_operations_t* op,
+ bool wrapper_uses_first_argument = false);
 ```
 
 Open file for output: (open-output-file filename)
@@ -610,7 +612,7 @@ Port as tagged value
 
 ### `StringIOCodegen::openOutputFileAppend`
 
-*Function* — line 300
+*Function* — line 302
 
 ```c
 llvm::Value* openOutputFileAppend(const eshkol_operations_t* op);
@@ -628,7 +630,7 @@ Port as tagged value
 
 ### `StringIOCodegen::eofObject`
 
-*Function* — line 323
+*Function* — line 326
 
 ```c
 llvm::Value* eofObject(const eshkol_operations_t* op);
@@ -646,7 +648,7 @@ Boolean as tagged value
 
 ### `StringIOCodegen::writeString`
 
-*Function* — line 330
+*Function* — line 333
 
 ```c
 llvm::Value* writeString(const eshkol_operations_t* op);
@@ -664,7 +666,7 @@ Unspecified value
 
 ### `StringIOCodegen::writeLine`
 
-*Function* — line 337
+*Function* — line 340
 
 ```c
 llvm::Value* writeLine(const eshkol_operations_t* op);
@@ -682,7 +684,7 @@ Unspecified value
 
 ### `StringIOCodegen::writeChar`
 
-*Function* — line 344
+*Function* — line 347
 
 ```c
 llvm::Value* writeChar(const eshkol_operations_t* op);
@@ -700,7 +702,7 @@ Unspecified value
 
 ### `StringIOCodegen::flushOutputPort`
 
-*Function* — line 351
+*Function* — line 354
 
 ```c
 llvm::Value* flushOutputPort(const eshkol_operations_t* op);
@@ -718,7 +720,7 @@ Unspecified value
 
 ### `StringIOCodegen::readChar`
 
-*Function* — line 358
+*Function* — line 361
 
 ```c
 llvm::Value* readChar(const eshkol_operations_t* op);
@@ -736,7 +738,7 @@ Character or eof-object as tagged value
 
 ### `StringIOCodegen::peekChar`
 
-*Function* — line 365
+*Function* — line 368
 
 ```c
 llvm::Value* peekChar(const eshkol_operations_t* op);
@@ -754,7 +756,7 @@ Character or eof-object as tagged value
 
 ### `StringIOCodegen::charReady`
 
-*Function* — line 372
+*Function* — line 375
 
 ```c
 llvm::Value* charReady(const eshkol_operations_t* op);
@@ -772,7 +774,7 @@ Boolean as tagged value
 
 ### `StringIOCodegen::openBinaryInputFile`
 
-*Function* — line 381
+*Function* — line 384
 
 ```c
 llvm::Value* openBinaryInputFile(const eshkol_operations_t* op);
@@ -790,7 +792,7 @@ Binary input port as tagged value
 
 ### `StringIOCodegen::openBinaryOutputFile`
 
-*Function* — line 388
+*Function* — line 391
 
 ```c
 llvm::Value* openBinaryOutputFile(const eshkol_operations_t* op);
@@ -808,7 +810,7 @@ Binary output port as tagged value
 
 ### `StringIOCodegen::readU8`
 
-*Function* — line 395
+*Function* — line 398
 
 ```c
 llvm::Value* readU8(const eshkol_operations_t* op);
@@ -826,7 +828,7 @@ Integer (0-255) or eof-object as tagged value
 
 ### `StringIOCodegen::peekU8`
 
-*Function* — line 402
+*Function* — line 405
 
 ```c
 llvm::Value* peekU8(const eshkol_operations_t* op);
@@ -844,7 +846,7 @@ Integer (0-255) or eof-object as tagged value
 
 ### `StringIOCodegen::writeU8`
 
-*Function* — line 409
+*Function* — line 412
 
 ```c
 llvm::Value* writeU8(const eshkol_operations_t* op);
@@ -862,7 +864,7 @@ Unspecified value
 
 ### `StringIOCodegen::readBytevector`
 
-*Function* — line 416
+*Function* — line 419
 
 ```c
 llvm::Value* readBytevector(const eshkol_operations_t* op);
@@ -880,7 +882,7 @@ Bytevector or eof-object as tagged value
 
 ### `StringIOCodegen::writeBytevector`
 
-*Function* — line 423
+*Function* — line 426
 
 ```c
 llvm::Value* writeBytevector(const eshkol_operations_t* op);
@@ -898,7 +900,7 @@ Unspecified value
 
 ### `StringIOCodegen::getPrintf`
 
-*Function* — line 431
+*Function* — line 434
 
 ```c
 llvm::Function* getPrintf();
@@ -912,7 +914,7 @@ LLVM Function for printf
 
 ### `StringIOCodegen::ensureRawInt64`
 
-*Function* — line 446
+*Function* — line 449
 
 ```c
 llvm::Value* ensureRawInt64(llvm::Value* val, const std::string& name = "raw_idx");
@@ -931,7 +933,7 @@ Raw i64 value suitable for GEP indices
 
 ### `StringIOCodegen::substringImpl`
 
-*Function* — line 455
+*Function* — line 458
 
 ```c
 llvm::Value* substringImpl(llvm::Value* str_ptr, llvm::Value* start, llvm::Value* end);
@@ -951,7 +953,7 @@ Fresh string as tagged value.
 
 ### `StringIOCodegen::setDisplayValueFunc`
 
-*Function* — line 491
+*Function* — line 494
 
 ```c
 void setDisplayValueFunc(llvm::Function* func) { ... }
@@ -964,19 +966,19 @@ Set the display value function (C runtime).
 | Symbol | Kind | Line |
 |---|---|---:|
 | `StringIOCodegen::StringIOCodegen` | Function | 30 |
-| `StringIOCodegen::openOutputFileImpl` | Function | 302 |
-| `StringIOCodegen::closePort` | Function | 309 |
-| `StringIOCodegen::ctx_` | Variable | 433 |
-| `StringIOCodegen::tagged_` | Variable | 435 |
-| `StringIOCodegen::nullptr` | Variable | 436 |
-| `StringIOCodegen::nullptr` | Variable | 437 |
-| `StringIOCodegen::CodegenASTFunc` | Typedef | 458 |
-| `StringIOCodegen::CodegenTypedASTFunc` | Typedef | 459 |
-| `StringIOCodegen::TypedToTaggedFunc` | Typedef | 460 |
-| `StringIOCodegen::ConsCreateFunc` | Typedef | 461 |
-| `StringIOCodegen::nullptr` | Variable | 463 |
-| `StringIOCodegen::nullptr` | Variable | 464 |
-| `StringIOCodegen::nullptr` | Variable | 465 |
+| `StringIOCodegen::openOutputFileImpl` | Function | 304 |
+| `StringIOCodegen::closePort` | Function | 312 |
+| `StringIOCodegen::ctx_` | Variable | 436 |
+| `StringIOCodegen::tagged_` | Variable | 438 |
+| `StringIOCodegen::nullptr` | Variable | 439 |
+| `StringIOCodegen::nullptr` | Variable | 440 |
+| `StringIOCodegen::CodegenASTFunc` | Typedef | 461 |
+| `StringIOCodegen::CodegenTypedASTFunc` | Typedef | 462 |
+| `StringIOCodegen::TypedToTaggedFunc` | Typedef | 463 |
+| `StringIOCodegen::ConsCreateFunc` | Typedef | 464 |
 | `StringIOCodegen::nullptr` | Variable | 466 |
 | `StringIOCodegen::nullptr` | Variable | 467 |
-| `StringIOCodegen::setCodegenCallbacks` | Function | 469 |
+| `StringIOCodegen::nullptr` | Variable | 468 |
+| `StringIOCodegen::nullptr` | Variable | 469 |
+| `StringIOCodegen::nullptr` | Variable | 470 |
+| `StringIOCodegen::setCodegenCallbacks` | Function | 472 |

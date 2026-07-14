@@ -490,7 +490,8 @@ static int vm_clone_object_at(VM* worker, VM* main_vm, int32_t idx,
             return !s || dst->opaque.ptr != NULL;
         }
 
-        case HEAP_VECTOR: {
+        case HEAP_VECTOR:
+        case HEAP_PROMISE: {
             VmVector* sv = (VmVector*)src->opaque.ptr;
             if (!sv) { dst->opaque.ptr = NULL; return 1; }
             VmVector* dv = (VmVector*)vm_alloc(&worker->heap.regions, sizeof(VmVector));
@@ -651,6 +652,8 @@ static int vm_opcode_is_worker_safe(Instr instr) {
         case OP_POPN:
         case OP_PACK_REST:
         case OP_VOID:
+        case OP_LANGUAGE_COVERAGE:
+        case OP_LANGUAGE_COVERAGE_CALL:
             return 1;
         case OP_NATIVE_CALL:
             return vm_native_is_worker_safe(instr.operand);
@@ -799,7 +802,8 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
             return !s || dst->opaque.ptr != NULL;
         }
 
-        case HEAP_VECTOR: {
+        case HEAP_VECTOR:
+        case HEAP_PROMISE: {
             VmVector* sv = (VmVector*)src->opaque.ptr;
             if (!sv) { dst->opaque.ptr = NULL; return 1; }
             VmVector* dv = (VmVector*)vm_alloc(&main_vm->heap.regions, sizeof(VmVector));

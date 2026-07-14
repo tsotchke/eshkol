@@ -1303,6 +1303,10 @@ typedef struct eshkol_exception_handler {
     // must run after-thunks for every extent entered after this point before
     // it transfers control with longjmp.
     void* wind_mark;
+    // Innermost promise evaluation active when the handler was installed.
+    // A raise rolls back every later evaluation before longjmp so failed
+    // promise computations remain retryable per R7RS.
+    void* promise_mark;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
 } eshkol_exception_handler_t;
 
@@ -1389,6 +1393,23 @@ void eshkol_push_exception_handler(void* jmp_buf_ptr);
  * @brief Pop the innermost exception handler frame, restoring the previous one.
  */
 void eshkol_pop_exception_handler(void);
+
+/**
+ * @brief Snapshot the current native promise-evaluation chain.
+ * @return Opaque mark accepted by eshkol_promise_eval_commit_to() and
+ *         eshkol_promise_eval_unwind_to().
+ */
+void* eshkol_promise_eval_mark(void);
+/** Begin evaluating an unforced promise (original_state is 0 or 2). */
+void eshkol_promise_eval_begin(void* promise, int64_t original_state);
+/** Commit the current ordinary promise to @p result. */
+void eshkol_promise_eval_commit_one(void* promise,
+                                    const eshkol_tagged_value_t* result);
+/** Commit all pending delay-force promises back to @p mark. */
+void eshkol_promise_eval_commit_to(void* mark,
+                                   const eshkol_tagged_value_t* result);
+/** Roll back all active promise evaluations back to @p mark. */
+void eshkol_promise_eval_unwind_to(void* mark);
 /**
  * @brief Test whether an exception matches a given type code.
  * @param exc Exception to test.
@@ -1428,6 +1449,7 @@ typedef struct eshkol_continuation_state {
     void* jmp_buf_ptr;                  // Points to jmp_buf on the call/cc caller's stack
     eshkol_tagged_value_t value;        // Value passed when continuation is invoked
     void* wind_mark;                    // Dynamic-wind stack marker at capture time
+    void* promise_mark;                 // Promise-evaluation chain marker at capture time
 } eshkol_continuation_state_t;
 
 /**
@@ -2847,6 +2869,9 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream);
  * continuing to accumulate from a previously parsed file/stream.
  */
 extern "C" void eshkol_reset_parse_line_counter(void);
+/** Set/query the diagnostic and coverage source name for the current parser thread. */
+extern "C" void eshkol_set_parse_source_context(const char* source_name);
+extern "C" const char* eshkol_get_parse_source_context(void);
 /** Reset/query the current thread's cumulative parser error state. */
 extern "C" void eshkol_reset_parse_errors(void);
 extern "C" int eshkol_parse_had_error(void);

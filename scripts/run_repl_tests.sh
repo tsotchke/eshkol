@@ -7,6 +7,21 @@ set -e
 
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
+REPL_TEST_TIMEOUT="${REPL_TEST_TIMEOUT:-30}"
+
+if ! [[ "$REPL_TEST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: REPL_TEST_TIMEOUT must be a positive integer number of seconds." >&2
+    exit 2
+fi
+
+if [[ "$BUILD_DIR" = /* ]]; then
+    REPL_BIN="$BUILD_DIR/eshkol-repl"
+else
+    REPL_BIN="./$BUILD_DIR/eshkol-repl"
+fi
+
+OUTPUT_FILE="$(mktemp "${TMPDIR:-/tmp}/eshkol-repl-test.XXXXXX")"
+trap 'rm -f "$OUTPUT_FILE"' EXIT
 
 
 # Colors for output
@@ -28,14 +43,14 @@ echo "========================================="
 echo ""
 
 # Ensure build directory exists
-if [ ! -d "build" ]; then
-    echo -e "${RED}Error: build directory not found. Run cmake first.${NC}"
+if [ ! -d "$BUILD_DIR" ]; then
+    echo -e "${RED}Error: build directory '$BUILD_DIR' not found. Run cmake first.${NC}"
     exit 1
 fi
 
 # Check if REPL exists
-if [ ! -f "$BUILD_DIR/eshkol-repl" ]; then
-    echo -e "${RED}Error: eshkol-repl not found. Run make first.${NC}"
+if [ ! -x "$REPL_BIN" ]; then
+    echo -e "${RED}Error: executable eshkol-repl not found under '$BUILD_DIR'. Run the build first.${NC}"
     exit 1
 fi
 
@@ -58,26 +73,32 @@ for test_file in tests/repl/*.esk; do
 
     # Run the test through REPL (add :quit at the end)
     # Use timeout command if available, otherwise just run directly
+    set +e
     if command -v timeout > /dev/null 2>&1; then
         # Linux has timeout
-        { cat "$test_file"; echo ""; echo ":quit"; } | timeout 10 ./$BUILD_DIR/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
+        { cat "$test_file"; echo ""; echo ":quit"; } | timeout "$REPL_TEST_TIMEOUT" "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
         EXIT_CODE=$?
     else
         # macOS - run directly (no timeout needed, tests are fast)
-        { cat "$test_file"; echo ""; echo ":quit"; } | ./$BUILD_DIR/eshkol-repl > /tmp/repl_test_output.txt 2>&1 || true
+        { cat "$test_file"; echo ""; echo ":quit"; } | "$REPL_BIN" > "$OUTPUT_FILE" 2>&1
         EXIT_CODE=$?
     fi
+    set -e
 
     # Check for errors in output
     if [ $EXIT_CODE -eq 124 ] || [ $EXIT_CODE -eq 142 ]; then
         echo -e "${YELLOW}⚠ TIMEOUT${NC}"
         FAILED_TESTS+=("$test_name (timeout)")
         ((FAIL++)) || true
-    elif grep -q "error:" /tmp/repl_test_output.txt 2>/dev/null; then
+    elif [ $EXIT_CODE -ne 0 ]; then
+        echo -e "${RED}❌ PROCESS FAILURE (exit $EXIT_CODE)${NC}"
+        FAILED_TESTS+=("$test_name (exit $EXIT_CODE)")
+        ((FAIL++)) || true
+    elif grep -q "error:" "$OUTPUT_FILE" 2>/dev/null; then
         echo -e "${RED}❌ RUNTIME ERROR${NC}"
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true
-    elif grep -q "Segmentation fault" /tmp/repl_test_output.txt 2>/dev/null; then
+    elif grep -q "Segmentation fault" "$OUTPUT_FILE" 2>/dev/null; then
         echo -e "${RED}❌ SEGFAULT${NC}"
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true
@@ -112,9 +133,6 @@ if [ $TOTAL -gt 0 ]; then
 fi
 
 echo ""
-
-# Clean up
-rm -f /tmp/repl_test_output.txt
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

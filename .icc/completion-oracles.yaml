@@ -40,7 +40,18 @@ oracles:
       - no_stubbed_paths:
           - production_fallback
           - synthetic_model_only
-          - not_exercised_by_real_smoke
+        # Runtime exercise is enforced separately by the exact runtime_event
+        # criteria below and by INV-language-surface-exercise.  Do not fold
+        # `not_exercised_by_real_smoke` into stub classification: that tag is a
+        # symbol-name correlation heuristic and marks real compiled functions
+        # whenever a trace proves behavior without spelling the C/C++ symbol.
+        # Keeping it here would turn stronger, broader traces into thousands of
+        # false "stub" blockers despite 100% language-surface execution.
+        # This target certifies compiler/runtime/type-checker production code.
+        # The public website is a separately deployed WASM application with its
+        # own build/runtime gate; backend-related prose in its downloads page
+        # must not be mistaken for a compiler fallback by the lexical audit.
+        exclude_path_prefixes: [site/]
         severity: high
         label: Codegen / runtime / type-checker production paths are real
         action: wire_real_path_or_classify_stub

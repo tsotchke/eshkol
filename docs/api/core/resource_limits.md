@@ -22,23 +22,23 @@ Compile-time default resource limits. These seed eshkol_get_default_limits() / m
 
 ```c
 typedef struct eshkol_resource_limits {
- 
- size_t max_heap_bytes; 
- size_t heap_soft_limit_bytes; 
 
- 
- uint64_t max_execution_time_ms; 
+ size_t max_heap_bytes;
+ size_t heap_soft_limit_bytes;
 
- 
- size_t max_stack_depth; 
 
- 
- size_t max_tensor_elements; 
- size_t max_string_length; 
+ uint64_t max_execution_time_ms;
 
- 
- bool enforce_hard_limits; 
- bool enable_warnings; 
+
+ size_t max_stack_depth;
+
+
+ size_t max_tensor_elements;
+ size_t max_string_length;
+
+
+ bool enforce_hard_limits;
+ bool enable_warnings;
 } eshkol_resource_limits_t;
 ```
 
@@ -306,13 +306,13 @@ true if allowed, false if it exceeds `max_string_length`.
 
 ```c
 typedef enum {
- ESHKOL_LIMIT_OK = 0, 
- ESHKOL_LIMIT_HEAP_SOFT, 
- ESHKOL_LIMIT_HEAP_HARD, 
- ESHKOL_LIMIT_TIMEOUT, 
- ESHKOL_LIMIT_STACK_OVERFLOW, 
- ESHKOL_LIMIT_TENSOR_SIZE, 
- ESHKOL_LIMIT_STRING_LENGTH 
+ ESHKOL_LIMIT_OK = 0,
+ ESHKOL_LIMIT_HEAP_SOFT,
+ ESHKOL_LIMIT_HEAP_HARD,
+ ESHKOL_LIMIT_TIMEOUT,
+ ESHKOL_LIMIT_STACK_OVERFLOW,
+ ESHKOL_LIMIT_TENSOR_SIZE,
+ ESHKOL_LIMIT_STRING_LENGTH
 } eshkol_limit_error_t;
 ```
 

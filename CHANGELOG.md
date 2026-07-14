@@ -45,7 +45,7 @@ gate green.  This section describes an **untagged release candidate**; no
   converter-once semantics, unwind-safe push/pop behavior, and region write
   barriers. (#267, #271)
 - **Hosted VM parity is explicit and executable.** The native-vs-VM corpus is
-  now 68/68 across source and ESKB execution; the extended VM surface is 52/52.
+  now 68/68 across source and ESKB execution; the extended VM surface is 53/53.
   Multiple values, empty vectors, closure mutation, parameters, system calls,
   image operations, datum read/write serialization, polling,
   environment-aware process spawning, and other formerly dormant dispatch
@@ -56,16 +56,23 @@ gate green.  This section describes an **untagged release candidate**; no
   preserving order for equal keys. (#266)
 - **Persisted artifacts default to O2**, while JIT execution remains O0 unless
   requested; opt-level behavior is pinned by seven contract checks.
+- **The cross-platform GPU correctness gate now executes on Windows** instead
+  of silently treating Git Bash/MSYS hosts as unsupported. The Windows path
+  uses the production compiler contract (official LLVM SDK ClangCL with Ninja,
+  and MSVC as nvcc's host compiler), resolves multi-config `.exe` layouts, and
+  accepts external build roots. A real RTX 3060 run dispatched through CUDA
+  cuBLAS and matched the CPU reference across 10 probes with maximum relative
+  difference `0`.
 
 ### Verification
 
-- Aggregate suite: **44/44 suites, 714/714 tests**.
-- CTest: **69/69**; SICP full-book gate: **88/88** JIT+AOT probes.
+- Aggregate suite: **44/44 suites, 716/716 tests**.
+- CTest: **70/70**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
-  differential: **31 programs, zero divergences**.
-- VM parity: **68/68**; VM extended surface: **52/52**.
+  differential: **127 programs, zero divergences**.
+- VM parity: **68/68**; VM extended surface: **53/53**.
 - Executable language coverage: **1056/1056 (100%)**; WebAssembly import glue:
-  **100/100 imports provided**.
+  **101/101 imports provided**.
 - Taylor monomorphization equivalence: **441/441 JIT + 441/441 AOT**, bit-exact
   through order eight.
 - ICC architecture model: **8/8 invariants**; ICC release readiness:
@@ -105,6 +112,9 @@ gate green.  This section describes an **untagged release candidate**; no
   portable `C` locale on macOS, and the generative oracle honors `BUILD_DIR`.
   LLVM target intrinsics remain allowed in freestanding objects while all
   undeclared hosted ABI dependencies are still rejected.
+- **Windows hosted-runtime portability.** The region-runtime fallback no longer
+  declares ELF weak functions on PE/COFF. Windows uses the hosted runtime
+  directly, while non-Windows builds retain the weak fallback contract.
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed

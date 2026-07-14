@@ -470,6 +470,67 @@ void eshkol_type_error_with_value(const char* proc_name, const char* expected_ty
                                    const char* actual_type);
 
 // ============================================================================
+// Opt-in executable language-surface coverage
+// ============================================================================
+
+/**
+ * Record that the parser actually dispatched a source form.  These hooks are
+ * inert unless ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR names an output directory.
+ * The parser event is paired with a runtime operation/call event by source
+ * location, so an expression in an untaken branch earns no execution credit.
+ */
+void eshkol_language_coverage_parse(const char* source,
+                                    uint32_t line,
+                                    uint32_t column,
+                                    uint32_t operation,
+                                    const char* name);
+
+/** Record a fully accepted top-level parser result. */
+void eshkol_language_coverage_accept(const char* source,
+                                     uint32_t line,
+                                     uint32_t column,
+                                     uint32_t operation);
+
+/** Record an intentionally rejected negative compile-time form. */
+void eshkol_language_coverage_reject(const char* source,
+                                     uint32_t line,
+                                     uint32_t column,
+                                     uint32_t operation,
+                                     const char* name);
+
+/** Record that code generation reached an AST operation. */
+void eshkol_language_coverage_codegen(const char* source,
+                                      uint32_t line,
+                                      uint32_t column,
+                                      uint32_t operation);
+
+/** Record execution of an AST operation at its original source location. */
+void eshkol_language_coverage_exec_op(const char* source,
+                                      uint32_t line,
+                                      uint32_t column,
+                                      uint32_t operation);
+
+/** Record execution of a direct Scheme call at its original source location. */
+void eshkol_language_coverage_exec_call(const char* source,
+                                        uint32_t line,
+                                        uint32_t column,
+                                        const char* name);
+
+/**
+ * Record an exact bytecode-VM native dispatch. The VM emits this only when
+ * an opt-in coverage marker immediately precedes a matching native call, so
+ * aliases sharing one native ID remain distinguishable after ESKB
+ * serialization without granting credit for merely compiled bytecode.
+ */
+void eshkol_language_coverage_vm_dispatch(const char* name,
+                                          uint32_t native_id);
+/** Record a validated direct Scheme closure call from serialized VM bytecode.
+ * The stable hash is resolved against the manifest with collision rejection. */
+void eshkol_language_coverage_vm_call_hash(uint32_t name_hash);
+/** Flush a pending opt-in language-coverage batch before exec/early exit. */
+void eshkol_language_coverage_flush(void);
+
+// ============================================================================
 // Implementation Details (defined in runtime.cpp)
 // ============================================================================
 
