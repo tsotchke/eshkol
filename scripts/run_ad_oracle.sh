@@ -90,7 +90,7 @@ emit_event() {
     esc_value=$(json_escape "$value")
     esc_snippet=$(json_escape "$snippet")
     printf '{"kind":"ad_oracle","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$esc_name" "$esc_value" "$esc_snippet" >> "$TRACE_FILE"
+        "$esc_name" "$esc_value" "$esc_snippet" >> "${TRACE_FILE:?}"
 }
 
 # classify a completed (non-timeout) run of one probe file

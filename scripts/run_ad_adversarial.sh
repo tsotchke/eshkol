@@ -116,7 +116,7 @@ emit_event() {
     en=$(json_escape "$name"); ev=$(json_escape "$value")
     es=$(json_escape "$snippet")
     printf '{"kind":"ad_adversarial","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$en" "$ev" "$es" >> "$TRACE_FILE"
+        "$en" "$ev" "$es" >> "${TRACE_FILE:?}"
 }
 
 # classify a completed run: args rc out xc -> PASS|FAIL|XKNOWN|CRASH|HANG

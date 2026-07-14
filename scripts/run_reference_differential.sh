@@ -150,7 +150,7 @@ emit_trace() {  # emit_trace <name> <value> <snippet>
     local name="$1" value="$2" snippet="$3"
     local esnip; esnip="$(printf '%s' "$snippet" | json_escape)"
     printf '{"kind":"reference_diff","name":"%s","value":"%s","snippet":%s,"confidence":0.95}\n' \
-        "$name" "$value" "$esnip" >> "$TRACE_FILE"
+        "$name" "$value" "$esnip" >> "${TRACE_FILE:?}"
 }
 
 # ---- run all programs -----------------------------------------------------
@@ -172,7 +172,7 @@ for scm in "$CORPUS_DIR"/*.scm; do
     # Program body (strip our leading ';;' header comment lines? keep them —
     # both engines ignore comments). Build the two engine sources.
     cp "$scm" "$ESK_SRC"
-    { printf '%s\n' "$REF_PROLOGUE"; cat "$scm"; } > "$SCM_SRC"
+    { printf '%s\n' "$REF_PROLOGUE"; cat "$scm"; } > "${SCM_SRC:?}"
 
     # --- reference ---
     ref_out="$(run_guarded "$TIMEOUT_SECS" "$REF_BIN" "$SCM_SRC" 2>/dev/null)"; ref_ec=$?
@@ -183,7 +183,7 @@ for scm in "$CORPUS_DIR"/*.scm; do
     jit_norm="$(printf '%s' "$jit_out" | $NORMALIZE)"
 
     # --- eshkol AOT (single reused binary, deleted after) ---
-    rm -f "$AOT_BIN"
+    rm -f -- "${AOT_BIN:?}"
     aot_comp_err="$(run_guarded "$TIMEOUT_SECS" "$ESHKOL_RUN" -O0 "$ESK_SRC" -o "$AOT_BIN" 2>&1)"; aot_comp_ec=$?
     if [ "$aot_comp_ec" -eq 0 ] && [ -x "$AOT_BIN" ]; then
         aot_out="$(run_guarded "$TIMEOUT_SECS" "$AOT_BIN" 2>/dev/null)"; aot_ec=$?
@@ -191,7 +191,7 @@ for scm in "$CORPUS_DIR"/*.scm; do
         aot_out=""; aot_ec=$aot_comp_ec
     fi
     aot_norm="$(printf '%s' "$aot_out" | $NORMALIZE)"
-    rm -f "$AOT_BIN"
+    rm -f -- "${AOT_BIN:?}"
 
     ref_ok=0; [ "$ref_ec" -eq 0 ] && ref_ok=1
     jit_ok=0; [ "$jit_ec" -eq 0 ] && jit_ok=1

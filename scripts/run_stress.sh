@@ -90,7 +90,7 @@ json_escape() {
 
 emit_event() { # name value snippet
     printf '{"kind":"stress_smoke","name":"%s","value":"%s","snippet":"%s","confidence":0.95}\n' \
-        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "$TRACE_FILE"
+        "$(json_escape "$1")" "$(json_escape "$2")" "$(json_escape "$3")" >> "${TRACE_FILE:?}"
 }
 
 # run_budgeted <timeout_s> <cmd...>
@@ -108,7 +108,7 @@ run_budgeted() {
     # the program output for diagnosis.
     # </dev/null: keep the budgets.tsv read-loop's stdin away from programs.
     /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
-        "$tmo" "$@" > "$RB_OUT_FILE" 2> "$RB_TIME_FILE" < /dev/null
+        "$tmo" "$@" > "${RB_OUT_FILE:?}" 2> "${RB_TIME_FILE:?}" < /dev/null
     RB_RC=$?
     t1=$(perl -MTime::HiRes=time -e 'printf "%.3f", time')
     RB_WALL_S=$(perl -e 'printf "%.2f", $ARGV[1]-$ARGV[0]' "$t0" "$t1")
@@ -117,7 +117,7 @@ run_budgeted() {
     # program stderr (compile errors etc.) is interleaved into time file; keep
     # the non-rusage part with the output for the failure snippet.
     grep -vE 'real .*user .*sys|maximum resident set size|average .* size|page reclaims|page faults|swaps|block .* operations|messages (sent|received)|signals received|context switches|instructions retired|cycles elapsed|peak memory footprint' \
-        "$RB_TIME_FILE" >> "$RB_OUT_FILE" 2>/dev/null || true
+        "$RB_TIME_FILE" >> "${RB_OUT_FILE:?}" 2>/dev/null || true
 }
 
 # classify <rc> <wall_s> <rss_mb> <timeout_s> <rss_ceiling_mb> <expect> <out_file>

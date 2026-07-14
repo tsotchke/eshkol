@@ -117,12 +117,12 @@ chmod +x "$BIN"
 # interior pointer crashes at a 0xCB.. address rather than passing by luck.
 if [ "$TIME_MODE" = "bsd" ]; then
     ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -l perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
-        "$TIMEOUT_S" "$BIN" ) > "$RUN_OUT" 2> "$TIME_LOG"
+        "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk '/maximum resident set size/{printf "%d", $1/1048576}' "$TIME_LOG")
 else
     ( cd "$WORK" && ESHKOL_ARENA_POISON=1 /usr/bin/time -v perl -e 'my $s=shift; alarm $s; exec @ARGV; die "exec failed: $!\n"' \
-        "$TIMEOUT_S" "$BIN" ) > "$RUN_OUT" 2> "$TIME_LOG"
+        "$TIMEOUT_S" "$BIN" ) > "${RUN_OUT:?}" 2> "${TIME_LOG:?}"
     RUN_RC=$?
     RSS_MB=$(awk -F: '/Maximum resident set size/{printf "%d", $2/1024}' "$TIME_LOG")
 fi
