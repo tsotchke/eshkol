@@ -1,33 +1,37 @@
 # Eshkol v1.3.3-evolve Release-Candidate Readiness Report
 
-**Candidate branch:** `feat/runtime-language-coverage`
+**Candidate branch:** `master` plus the release-finalization change set
 **Release line:** `v1.3.x-evolve`
-**Candidate head:** the commit containing this report
+**Verified hardening baseline:** `502b5a17c180a5e0281be2b339049a783b3e4066`
+**Baseline GitHub Actions:** run `29305913676`, **15/15 jobs green**
+**Candidate head:** the final merged master commit containing this report
 **Published base tag:** `v1.3.2-evolve` (`8443ddae`)
-**Candidate date:** 2026-07-13
+**Candidate date:** 2026-07-14
 **Tag status:** **untagged** — publishing any tag remains a maintainer action.
 
 This report is the release contract for the untagged v1.3.3-evolve candidate.
 It supersedes the July 8 readiness snapshot and records gates executed from an
 isolated Release build (`build-hardening`, tests enabled, XLA/GPU disabled with
-their CPU fallbacks still exercised). A public tag must not be created until
-this candidate is merged and the GitHub Actions matrix for the exact master
-head is green.
+their CPU fallbacks still exercised), the final hosted matrix, and dedicated
+mesh evidence. A public tag must not be created until this finalization change
+is merged, the exact master matrix is green, and the non-publishing release
+workflow dry run succeeds.
 
 ## Verdict
 
-The candidate is locally release-ready. All deterministic code, differential,
-coverage, architecture, freestanding, WebAssembly, and full-book gates are
-green. The remaining publication condition is the required GitHub Actions
-matrix on the final merged master head. No release tag is authorized or
-created by this campaign.
+The candidate is release-ready. All deterministic code, differential,
+coverage, architecture, freestanding, WebAssembly, full-book, hosted-matrix,
+and cross-platform mesh gates are green. The verified hardening baseline's
+required GitHub Actions matrix passed 15/15; the finalization commit must repeat
+that exact-master check and complete the manual non-publishing release matrix.
+No release tag is authorized or created by this campaign.
 
 ## Release Gates
 
 | Gate | Result |
 |---|---|
 | Aggregate test harness | **44/44 suites, 716/716 tests**, zero failed/skipped suites |
-| CTest | **70/70** |
+| CTest | **71/71** |
 | SICP full-book | **88/88** JIT+AOT probes, zero xfail/XPASS |
 | Chibi R7RS reference differential | **34/34 AGREE**, zero divergence/error |
 | Generative multi-oracle differential | **127 programs**, Chibi/JIT/AOT-O0/AOT-O2/VM, zero divergence |
@@ -135,6 +139,10 @@ coverage are release blockers.
 
 1. Merge the candidate only after every required pull-request check is green.
 2. Verify the GitHub Actions matrix for the exact merged master head is green.
-3. Re-run the release smoke against that head if packaging inputs change.
+3. Run the complete release workflow manually against that head; it must build,
+   test, package, validate, and checksum all 16 assets while publishing nothing.
 4. Only the maintainer may authorize and create `v1.3.3-evolve` (or another
    version) after reviewing these notes and artifacts.
+5. After the tag workflow succeeds, smoke representative downloaded assets on
+   macOS ARM64, Linux x64/ARM64, and Windows x64 and confirm the Homebrew tap
+   advanced to the exact tag and source-archive checksum.

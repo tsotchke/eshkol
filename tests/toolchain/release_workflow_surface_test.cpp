@@ -87,6 +87,13 @@ int main(int argc, char** argv) {
                          "release workflow is named") &&
          expect_contains(workflow, "tags:\n      - 'v*'",
                          "release workflow only runs for version tags") &&
+         expect_contains(workflow, "workflow_dispatch:",
+                         "release workflow supports a manual dry run") &&
+         expect_contains(workflow, "candidate_tag:",
+                         "manual dry run requires an explicit candidate tag label") &&
+         expect_contains(workflow,
+                         "RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}",
+                         "tag and dry-run asset naming share one release label") &&
          expect_contains(workflow, "permissions:\n  contents: write",
                          "release workflow can publish GitHub releases") &&
          expect_contains(workflow, "cancel-in-progress: false",
@@ -112,37 +119,53 @@ int main(int argc, char** argv) {
                          "release workflow rejects missing or extra assets") &&
          expect_contains(workflow, "sha256sum * > SHA256SUMS.txt",
                          "release workflow writes checksums for all assets") &&
-         expect_contains(workflow, "gh release view \"$GITHUB_REF_NAME\"",
+         expect_contains(workflow, "gh release view \"$RELEASE_TAG\"",
                          "release workflow checks for existing release") &&
          expect_contains(workflow,
                          "refusing to overwrite or append assets",
                          "release workflow refuses to append to existing releases") &&
-         expect_contains(workflow, "gh release create \"$GITHUB_REF_NAME\"",
+         expect_contains(workflow, "gh release create \"$RELEASE_TAG\"",
                          "release workflow creates a tag-named GitHub release") &&
          expect_contains(workflow, "--verify-tag",
                          "release workflow verifies that the release tag exists") &&
+         expect_contains(workflow, "Prepare Curated Release Notes",
+                         "release workflow extracts the current curated notes") &&
+         expect_contains(workflow,
+                         "--notes-file \"$RUNNER_TEMP/release-notes.md\"",
+                         "GitHub release body uses curated release notes") &&
+         expect_contains(workflow, "Upload Validated Dry-Run Assets",
+                         "manual dry run preserves its validated asset set") &&
+         expect_contains(workflow,
+                         "if: github.event_name == 'workflow_dispatch'",
+                         "dry-run artifact upload is dispatch-only") &&
          expect_contains(workflow, "dist/*",
                          "release workflow uploads the complete dist directory");
 
     ok = ok &&
          expect_contains(workflow,
-                         "archive_root=\"eshkol-${{ github.ref_name }}-${{ matrix.name }}\"",
+                         "archive_root=\"eshkol-${RELEASE_TAG}-${{ matrix.name }}\"",
                          "Unix release archives include the tag and platform name") &&
          expect_contains(workflow,
                          "tar -czf \"$RUNNER_TEMP/$archive_root.tar.gz\"",
                          "Unix release matrix produces tar.gz assets") &&
          expect_contains(workflow,
-                         "path: ${{ runner.temp }}/eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz",
+                         "path: ${{ runner.temp }}/eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.tar.gz",
                          "Unix upload path includes the tag and platform name") &&
          expect_contains(workflow,
-                         "$archiveRoot = \"eshkol-${{ github.ref_name }}-${{ matrix.name }}\"",
+                         "$archiveRoot = \"eshkol-$env:RELEASE_TAG-${{ matrix.name }}\"",
                          "Windows release archives include the tag and platform name") &&
          expect_contains(workflow,
                          "$archivePath = Join-Path $env:RUNNER_TEMP \"$archiveRoot.zip\"",
                          "Windows release matrix produces zip assets") &&
          expect_contains(workflow,
-                         "path: ${{ runner.temp }}\\eshkol-${{ github.ref_name }}-${{ matrix.name }}.zip",
-                         "Windows upload path includes the tag and platform name");
+                         "path: ${{ runner.temp }}\\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.zip",
+                         "Windows upload path includes the tag and platform name") &&
+         expect_contains(workflow,
+                         "for doc in README.md LICENSE CHANGELOG.md RELEASE_NOTES.md; do",
+                         "Unix archives include release notes") &&
+         expect_contains(workflow,
+                         "foreach ($doc in @('README.md', 'LICENSE', 'CHANGELOG.md', 'RELEASE_NOTES.md'))",
+                         "Windows archives include release notes");
 
     const std::vector<ReleaseAsset> expected_assets = {
         {"linux-x64-lite", "tar.gz"},
@@ -166,7 +189,7 @@ int main(int argc, char** argv) {
     for (const ReleaseAsset& asset : expected_assets) {
         const std::string matrix_name = std::string("- name: ") + asset.name;
         const std::string expected_filename =
-            std::string("\"eshkol-${GITHUB_REF_NAME}-") + asset.name + "." +
+            std::string("\"eshkol-${RELEASE_TAG}-") + asset.name + "." +
             asset.extension + "\"";
         ok = ok &&
              expect_contains(workflow, matrix_name,
@@ -175,8 +198,19 @@ int main(int argc, char** argv) {
                              std::string("validated asset list includes ") + asset.name);
     }
 
+    const std::size_t expected_block_begin = workflow.find("          expected=(\n");
+    const std::size_t expected_block_end =
+        expected_block_begin == std::string::npos
+            ? std::string::npos
+            : workflow.find("\n          )", expected_block_begin);
+    const std::string expected_block =
+        expected_block_begin == std::string::npos ||
+                expected_block_end == std::string::npos
+            ? std::string()
+            : workflow.substr(expected_block_begin,
+                              expected_block_end - expected_block_begin);
     const std::size_t validated_asset_count =
-        count_occurrences(workflow, "\"eshkol-${GITHUB_REF_NAME}-");
+        count_occurrences(expected_block, "\"eshkol-${RELEASE_TAG}-");
     if (validated_asset_count != expected_assets.size()) {
         std::cerr << "expected " << expected_assets.size()
                   << " validated release asset names, found "
@@ -187,10 +221,24 @@ int main(int argc, char** argv) {
     ok = ok &&
          expect_not_contains(workflow, "gh release upload",
                              "release workflow should not append assets to an existing release") &&
+         expect_not_contains(workflow, "--generate-notes",
+                             "release workflow should not replace curated notes with generated notes") &&
          expect_not_contains(workflow, "--clobber",
                              "release workflow should not overwrite release assets") &&
          expect_not_contains(workflow, "cancel-in-progress: true",
                              "release workflow should not cancel active tag builds");
+
+    if (count_occurrences(workflow, "if: github.event_name == 'push'") < 2) {
+        std::cerr << "publish and Homebrew jobs must both be disabled during manual dry runs"
+                  << std::endl;
+        ok = false;
+    }
+
+    if (count_occurrences(workflow, "uses: actions/checkout@v6") < 3) {
+        std::cerr << "all build matrices and the publish job must checkout the tagged source"
+                  << std::endl;
+        ok = false;
+    }
 
     if (!ok) {
         return 1;

@@ -63,11 +63,20 @@ gate green.  This section describes an **untagged release candidate**; no
   accepts external build roots. A real RTX 3060 run dispatched through CUDA
   cuBLAS and matched the CPU reference across 10 probes with maximum relative
   difference `0`.
+- **Release shell entry points reject unsafe paths before cleanup.** Shared
+  guards enforce isolated build roots, reject symlink escapes and repository
+  roots, and keep Bash, Git Bash, and constrained ARM64 behavior aligned.
+  (#278)
+- **The tag workflow can execute as a non-publishing dry run.** Manual runs
+  build, test, package, validate, and checksum the complete 16-asset matrix,
+  but cannot publish a GitHub release or update Homebrew. Packaged archives
+  include the curated release notes, and the published release body is taken
+  from the current release section rather than generated commit summaries.
 
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **70/70**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **71/71**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
@@ -115,6 +124,12 @@ gate green.  This section describes an **untagged release candidate**; no
 - **Windows hosted-runtime portability.** The region-runtime fallback no longer
   declares ELF weak functions on PE/COFF. Windows uses the hosted runtime
   directly, while non-Windows builds retain the weak fallback contract.
+- **Generated ELF AOT binaries retain their dependency search paths.** Linux
+  AOT linking now derives RUNPATH entries from linked `-L` directories,
+  absolute shared-library inputs, and the selected host C++ compiler. Generated
+  programs therefore find LLVM, the C++ runtime, curl, SQLite, ncurses,
+  OpenSSL, and Nix-store dependencies without a custom `LD_LIBRARY_PATH`.
+  (#279)
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed

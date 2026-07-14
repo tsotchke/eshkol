@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      candidate_tag:
+        description: Candidate tag label used only for dry-run asset names
+        required: true
+        default: v1.3.3-evolve
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -15,6 +22,9 @@ permissions:
 env:
   LLVM_MAJOR: '21'
   WINDOWS_LLVM_SDK_VERSION: '21.1.8'
+  # A manual dispatch is always non-publishing. Its explicit candidate label
+  # lets the dry-run archives use the exact names the later tag run will use.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
 
 jobs:
   unix-release-matrix:
@@ -87,6 +97,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Validate release tag label
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Invalid release tag label: $RELEASE_TAG" >&2
+            exit 1
+          fi
 
       - name: Add LLVM Repository (Linux)
         if: runner.os == 'Linux'
@@ -184,7 +203,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          archive_root="eshkol-${{ github.ref_name }}-${{ matrix.name }}"
+          archive_root="eshkol-${RELEASE_TAG}-${{ matrix.name }}"
           pkg_dir="$RUNNER_TEMP/$archive_root"
           mkdir -p "$pkg_dir/bin" "$pkg_dir/lib/eshkol" "$pkg_dir/share/eshkol/lib"
 
@@ -207,7 +226,7 @@ jobs:
             cp "$source_file" "$dest_path"
           done < <(find lib -type f -name '*.esk' -print0)
 
-          for doc in README.md LICENSE CHANGELOG.md; do
+          for doc in README.md LICENSE CHANGELOG.md RELEASE_NOTES.md; do
             if [[ -f "$doc" ]]; then
               cp "$doc" "$pkg_dir/"
             fi
@@ -219,7 +238,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-asset-${{ matrix.name }}
-          path: ${{ runner.temp }}/eshkol-${{ github.ref_name }}-${{ matrix.name }}.tar.gz
+          path: ${{ runner.temp }}/eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.tar.gz
           if-no-files-found: error
 
   windows-release-matrix:
@@ -281,6 +300,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+
+      - name: Validate release tag label
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            throw "Invalid release tag label: $env:RELEASE_TAG"
+          }
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
@@ -411,7 +438,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $archiveRoot = "eshkol-${{ github.ref_name }}-${{ matrix.name }}"
+          $archiveRoot = "eshkol-$env:RELEASE_TAG-${{ matrix.name }}"
           $pkgDir = Join-Path $env:RUNNER_TEMP $archiveRoot
           $binDir = Join-Path $pkgDir 'bin'
           $libDir = Join-Path $pkgDir 'lib'
@@ -468,7 +495,7 @@ jobs:
             Copy-Item -LiteralPath $_.FullName -Destination $destinationPath
           }
 
-          foreach ($doc in @('README.md', 'LICENSE', 'CHANGELOG.md')) {
+          foreach ($doc in @('README.md', 'LICENSE', 'CHANGELOG.md', 'RELEASE_NOTES.md')) {
             if (Test-Path $doc) {
               Copy-Item -LiteralPath $doc -Destination $pkgDir
             }
@@ -484,7 +511,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: release-asset-${{ matrix.name }}
-          path: ${{ runner.temp }}\eshkol-${{ github.ref_name }}-${{ matrix.name }}.zip
+          path: ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.zip
           if-no-files-found: error
 
   publish-release:
@@ -495,6 +522,8 @@ jobs:
       - windows-release-matrix
 
     steps:
+      - uses: actions/checkout@v6
+
       - name: Download Packaged Assets
         uses: actions/download-artifact@v8
         with:
@@ -508,22 +537,22 @@ jobs:
           set -euo pipefail
 
           expected=(
-            "eshkol-${GITHUB_REF_NAME}-linux-x64-lite.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-linux-arm64-lite.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-linux-x64-xla.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-linux-arm64-xla.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-linux-x64-cuda.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-linux-arm64-cuda.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-macos-arm64-lite.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-macos-x64-lite.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-macos-arm64-xla.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-macos-x64-xla.tar.gz"
-            "eshkol-${GITHUB_REF_NAME}-windows-x64-lite.zip"
-            "eshkol-${GITHUB_REF_NAME}-windows-arm64-lite.zip"
-            "eshkol-${GITHUB_REF_NAME}-windows-x64-xla.zip"
-            "eshkol-${GITHUB_REF_NAME}-windows-arm64-xla.zip"
-            "eshkol-${GITHUB_REF_NAME}-windows-x64-cuda.zip"
-            "eshkol-${GITHUB_REF_NAME}-windows-arm64-cuda.zip"
+            "eshkol-${RELEASE_TAG}-linux-x64-lite.tar.gz"
+            "eshkol-${RELEASE_TAG}-linux-arm64-lite.tar.gz"
+            "eshkol-${RELEASE_TAG}-linux-x64-xla.tar.gz"
+            "eshkol-${RELEASE_TAG}-linux-arm64-xla.tar.gz"
+            "eshkol-${RELEASE_TAG}-linux-x64-cuda.tar.gz"
+            "eshkol-${RELEASE_TAG}-linux-arm64-cuda.tar.gz"
+            "eshkol-${RELEASE_TAG}-macos-arm64-lite.tar.gz"
+            "eshkol-${RELEASE_TAG}-macos-x64-lite.tar.gz"
+            "eshkol-${RELEASE_TAG}-macos-arm64-xla.tar.gz"
+            "eshkol-${RELEASE_TAG}-macos-x64-xla.tar.gz"
+            "eshkol-${RELEASE_TAG}-windows-x64-lite.zip"
+            "eshkol-${RELEASE_TAG}-windows-arm64-lite.zip"
+            "eshkol-${RELEASE_TAG}-windows-x64-xla.zip"
+            "eshkol-${RELEASE_TAG}-windows-arm64-xla.zip"
+            "eshkol-${RELEASE_TAG}-windows-x64-cuda.zip"
+            "eshkol-${RELEASE_TAG}-windows-arm64-cuda.zip"
           )
 
           cd dist
@@ -551,39 +580,65 @@ jobs:
           cd dist
           sha256sum * > SHA256SUMS.txt
 
+      - name: Prepare Curated Release Notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_heading="# Eshkol ${RELEASE_TAG} — Release Notes"
+          actual_heading="$(head -n 1 RELEASE_NOTES.md)"
+          if [[ "$actual_heading" != "$expected_heading" ]]; then
+            echo "Release-notes heading mismatch" >&2
+            echo "expected: $expected_heading" >&2
+            echo "actual:   $actual_heading" >&2
+            exit 1
+          fi
+          awk 'NR == 1 { print; next } /^---$/ { exit } { print }' \
+            RELEASE_NOTES.md > "$RUNNER_TEMP/release-notes.md"
+          test -s "$RUNNER_TEMP/release-notes.md"
+
+      - name: Upload Validated Dry-Run Assets
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-dry-run-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+
       - name: Publish GitHub Release
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euxo pipefail
 
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::Release $GITHUB_REF_NAME already exists; refusing to overwrite or append assets."
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $RELEASE_TAG already exists; refusing to overwrite or append assets."
             echo "Delete the failed draft/release manually before rerunning this tag workflow."
             exit 1
           fi
 
           prerelease_flags=()
-          if [[ "$GITHUB_REF_NAME" == *alpha* ||
-                "$GITHUB_REF_NAME" == *beta* ||
-                "$GITHUB_REF_NAME" == *rc* ]]; then
+          if [[ "$RELEASE_TAG" == *alpha* ||
+                "$RELEASE_TAG" == *beta* ||
+                "$RELEASE_TAG" == *rc* ]]; then
             prerelease_flags+=(--prerelease)
           fi
 
           # gh creates the release as a draft, uploads assets, then publishes it.
           # That avoids a public partial release if the upload is interrupted.
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
-            --title "Eshkol $GITHUB_REF_NAME" \
-            --generate-notes \
+            --title "Eshkol $RELEASE_TAG" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" \
             "${prerelease_flags[@]}" \
             dist/*
 
   bump-homebrew-tap:
     name: bump-homebrew-tap
     runs-on: ubuntu-22.04
+    if: github.event_name == 'push'
     needs:
       - publish-release
     steps:
@@ -600,13 +655,13 @@ jobs:
             exit 0
           fi
 
-          case "$GITHUB_REF_NAME" in
+          case "$RELEASE_TAG" in
             *alpha*|*beta*|*rc*)
-              echo "::notice::Prerelease tag $GITHUB_REF_NAME; not bumping the tap."
+              echo "::notice::Prerelease tag $RELEASE_TAG; not bumping the tap."
               exit 0;;
           esac
 
-          tag="$GITHUB_REF_NAME"
+          tag="$RELEASE_TAG"
           tarball_url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${tag}.tar.gz"
 
           # GitHub source archives are generated on demand; fetch and hash.
