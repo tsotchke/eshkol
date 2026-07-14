@@ -685,6 +685,93 @@ function(eshkol_resolve_host_link_arg item out_var)
     set(${out_var} "${_eshkol_host_link_arg}" PARENT_SCOPE)
 endfunction()
 
+# AOT-generated ELF executables must be runnable without inheriting the build
+# shell's LD_LIBRARY_PATH. CMake/llvm-config can express shared dependencies
+# either as `-L<dir> -l<name>` pairs or as absolute `.so[.N]` paths. The
+# compiler driver records only the dependency SONAME in DT_NEEDED, so preserve
+# every corresponding directory as a DT_RUNPATH entry. This is especially
+# important for immutable Nix-store paths, but is equally correct for ordinary
+# non-system dependency prefixes. Mach-O libraries carry install names and
+# Windows resolves DLLs through PATH, so this is deliberately ELF-only.
+function(eshkol_append_elf_runtime_search_paths list_var)
+    if(APPLE OR WIN32 OR ESHKOL_USING_MSVC)
+        set(${list_var} "${${list_var}}" PARENT_SCOPE)
+        return()
+    endif()
+
+    set(_eshkol_link_args ${${list_var}})
+    set(_eshkol_runtime_dirs "")
+    foreach(_eshkol_link_arg IN LISTS _eshkol_link_args)
+        set(_eshkol_runtime_dir "")
+        if(_eshkol_link_arg MATCHES "^-L(.+)$")
+            set(_eshkol_runtime_dir "${CMAKE_MATCH_1}")
+        elseif(IS_ABSOLUTE "${_eshkol_link_arg}")
+            if(_eshkol_link_arg MATCHES "\\.so(\\.[0-9]+)*$")
+                get_filename_component(_eshkol_runtime_dir
+                    "${_eshkol_link_arg}" DIRECTORY)
+            endif()
+        endif()
+
+        if(NOT "${_eshkol_runtime_dir}" STREQUAL "")
+            file(TO_CMAKE_PATH "${_eshkol_runtime_dir}" _eshkol_runtime_dir)
+            list(APPEND _eshkol_runtime_dirs "${_eshkol_runtime_dir}")
+        endif()
+    endforeach()
+
+    list(REMOVE_DUPLICATES _eshkol_runtime_dirs)
+    foreach(_eshkol_runtime_dir IN LISTS _eshkol_runtime_dirs)
+        set(_eshkol_rpath_arg "-Wl,-rpath,${_eshkol_runtime_dir}")
+        list(FIND _eshkol_link_args "${_eshkol_rpath_arg}" _eshkol_rpath_index)
+        if(_eshkol_rpath_index EQUAL -1)
+            list(APPEND _eshkol_link_args "${_eshkol_rpath_arg}")
+        endif()
+    endforeach()
+
+    set(${list_var} "${_eshkol_link_args}" PARENT_SCOPE)
+endfunction()
+
+# The compiler driver also injects its C++ ABI/runtime libraries implicitly;
+# those paths never appear in llvm-config or target_link_libraries. Raw Nix
+# clang installations rely on their development shell's LD_LIBRARY_PATH for
+# libstdc++, which makes an otherwise valid generated binary non-relocatable.
+# Ask the exact host driver used for AOT links where its shared runtimes live
+# and preserve those directories beside the explicit dependency RUNPATHs.
+function(eshkol_append_host_cxx_runtime_search_paths list_var)
+    if(APPLE OR WIN32 OR ESHKOL_USING_MSVC)
+        set(${list_var} "${${list_var}}" PARENT_SCOPE)
+        return()
+    endif()
+
+    set(_eshkol_link_args ${${list_var}})
+    foreach(_eshkol_runtime_name IN ITEMS
+            libstdc++.so.6
+            libc++.so.1
+            libgcc_s.so.1)
+        execute_process(
+            COMMAND "${ESHKOL_HOST_CXX_COMPILER}"
+                    "-print-file-name=${_eshkol_runtime_name}"
+            RESULT_VARIABLE _eshkol_runtime_probe_rc
+            OUTPUT_VARIABLE _eshkol_runtime_file
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET)
+        if(_eshkol_runtime_probe_rc EQUAL 0 AND
+           IS_ABSOLUTE "${_eshkol_runtime_file}" AND
+           EXISTS "${_eshkol_runtime_file}")
+            get_filename_component(_eshkol_runtime_dir
+                "${_eshkol_runtime_file}" DIRECTORY)
+            file(TO_CMAKE_PATH "${_eshkol_runtime_dir}" _eshkol_runtime_dir)
+            set(_eshkol_rpath_arg "-Wl,-rpath,${_eshkol_runtime_dir}")
+            list(FIND _eshkol_link_args
+                "${_eshkol_rpath_arg}" _eshkol_rpath_index)
+            if(_eshkol_rpath_index EQUAL -1)
+                list(APPEND _eshkol_link_args "${_eshkol_rpath_arg}")
+            endif()
+        endif()
+    endforeach()
+
+    set(${list_var} "${_eshkol_link_args}" PARENT_SCOPE)
+endfunction()
+
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 foreach(_llvm_lib_dir IN LISTS LLVM_LIBRARY_DIRS)
     list(APPEND ESHKOL_HOST_LLVM_LINK_ARGS "-L${_llvm_lib_dir}")
@@ -734,6 +821,8 @@ foreach(_llvm_link_arg IN LISTS LLVM_LDFLAGS_LIST LLVM_LIBS_LIST LLVM_SYSTEM_LIB
         endif()
     endif()
 endforeach()
+eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
+eshkol_append_host_cxx_runtime_search_paths(ESHKOL_HOST_LLVM_LINK_ARGS)
 
 # Keep LLVM's defines and unwind flags, but let the project control language mode
 # and exception support.
@@ -1402,6 +1491,8 @@ endif()
 if(ESHKOL_ENABLE_MSAN)
     eshkol_append_host_runtime_link_arg("-fsanitize=memory")
 endif()
+
+eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_RUNTIME_LINK_ARGS)
 
 if(DEFINED ESHKOL_GENERATED_INCLUDE_DIR)
     configure_file(
@@ -2494,6 +2585,20 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: static_link_getenv_capability_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT APPLE AND NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_elf_rpath_config_test.sh")
+        add_test(
+            NAME aot_elf_rpath_config_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/aot_elf_rpath_config_test.sh"
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(aot_elf_rpath_config_test
+            PROPERTIES
+                TIMEOUT 30
+                PASS_REGULAR_EXPRESSION "PASS: aot_elf_rpath_config_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_shutdown_hooks_test.cpp")
@@ -3543,6 +3648,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
                 list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-lssl" "-lcrypto")
             endif()
         endif()
+
+        eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_AGENT_FFI_LINK_ARGS)
 
         # The CMake variable carries semicolons as list separators; for
         # build_config.h.in's @VAR@ substitution we want the args
