@@ -213,6 +213,10 @@ jobs:
           cp "${{ matrix.build_dir }}/stdlib.o" "$pkg_dir/lib/eshkol/"
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/"
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
+          runtime_archive="${{ matrix.build_dir }}/libeshkol-runtime.a"
+          test -s "$runtime_archive"
+          cp "$runtime_archive" "$pkg_dir/lib/"
+          cp "$runtime_archive" "$pkg_dir/lib/eshkol/"
 
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
@@ -231,6 +235,11 @@ jobs:
               cp "$doc" "$pkg_dir/"
             fi
           done
+
+          python3 scripts/verify_release_package.py \
+            --package-dir "$pkg_dir" \
+            --smoke-source "tests/toolchain/windows-smoke.esk" \
+            --expected-version "$RELEASE_TAG"
 
           tar -czf "$RUNNER_TEMP/$archive_root.tar.gz" -C "$RUNNER_TEMP" "$archive_root"
 
@@ -418,7 +427,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'stdlib')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -448,6 +457,7 @@ jobs:
           $binaryDir = Join-Path '${{ matrix.build_dir }}' 'Release'
           $stdlibObject = Join-Path '${{ matrix.build_dir }}' 'stdlib.o'
           $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
+          $runtimeLibrary = Join-Path $binaryDir 'eshkol-runtime.lib'
           if (-not (Test-Path $stdlibObject)) {
             $stdlibCandidate = Join-Path $binaryDir 'stdlib.o'
             if (Test-Path $stdlibCandidate) {
@@ -464,6 +474,14 @@ jobs:
               throw "stdlib.bc was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
+          if (-not (Test-Path $runtimeLibrary -PathType Leaf)) {
+            $runtimeLibraryCandidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-runtime.lib'
+            if (Test-Path $runtimeLibraryCandidate -PathType Leaf) {
+              $runtimeLibrary = $runtimeLibraryCandidate
+            } else {
+              throw "eshkol-runtime.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
@@ -478,6 +496,8 @@ jobs:
           Copy-Item -LiteralPath $stdlibObject -Destination $libEshkolDir
           Copy-Item -LiteralPath $stdlibBitcode -Destination $libDir
           Copy-Item -LiteralPath $stdlibBitcode -Destination $libEshkolDir
+          Copy-Item -LiteralPath $runtimeLibrary -Destination $libDir
+          Copy-Item -LiteralPath $runtimeLibrary -Destination $libEshkolDir
 
           Copy-Item -LiteralPath 'lib\stdlib.esk' -Destination $shareDir
           if (Test-Path 'lib\math.esk') {
@@ -499,6 +519,14 @@ jobs:
             if (Test-Path $doc) {
               Copy-Item -LiteralPath $doc -Destination $pkgDir
             }
+          }
+
+          python scripts/verify_release_package.py `
+            --package-dir "$pkgDir" `
+            --smoke-source "tests/toolchain/windows-smoke.esk" `
+            --expected-version "$env:RELEASE_TAG"
+          if ($LASTEXITCODE -ne 0) {
+            throw "release package smoke failed with exit code $LASTEXITCODE"
           }
 
           $archivePath = Join-Path $env:RUNNER_TEMP "$archiveRoot.zip"
