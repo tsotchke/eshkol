@@ -1,6 +1,6 @@
 # Eshkol v1.3.3-evolve — Release Notes
 
-**Candidate Date**: July 13, 2026
+**Candidate Date**: July 14, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
 
 Eshkol v1.3.3-evolve combines the completed Moonlab quantum stack with a
@@ -11,7 +11,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 70/70; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 71/71; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1056/1056 (100%); WebAssembly imports
@@ -79,6 +79,15 @@ upstream macOS weak-import linker fix and builds without a local override.
   through CUDA cuBLAS and matched 10 CPU-reference probes with maximum relative
   difference `0`. PE/COFF hosted-runtime linkage no longer relies on ELF weak
   functions.
+- Release and verification shell entry points now reject unsafe build roots,
+  symlink escapes, and destructive cleanup targets before operating. The same
+  path contract is exercised across Bash, Git Bash, and constrained ARM64
+  shells. (#278)
+- Generated Linux AOT executables now preserve the runtime search paths of
+  every linked dependency, including indirect LLVM, C++ runtime, curl,
+  SQLite, ncurses, OpenSSL, and Nix-store libraries. The linker derives these
+  paths from actual `-L` and shared-library inputs and from the selected host
+  compiler instead of requiring a custom `LD_LIBRARY_PATH`. (#279)
 - Exact numeric and automatic-differentiation fixes cover bignums, rationals,
   tensors, forward-over-reverse composition, Hessians, and explicit
   unsupported-op errors instead of silent zero gradients.
@@ -87,8 +96,10 @@ upstream macOS weak-import linker fix and builds without a local override.
 
 The full suite uses an isolated requested build directory; reference and
 generative oracles execute portably on macOS; freestanding object checks allow
-only target intrinsics (never undeclared hosted ABI calls); and every required
-WebAssembly environment import is present in both JavaScript runtimes.
+only target intrinsics (never undeclared hosted ABI calls); every required
+WebAssembly environment import is present in both JavaScript runtimes; and the
+tag workflow supports a non-publishing manual dry run of the complete release
+matrix before any immutable release tag is created.
 
 ---
 
