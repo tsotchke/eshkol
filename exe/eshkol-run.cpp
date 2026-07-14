@@ -2152,6 +2152,7 @@ static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t
     // Reset cumulative line/column counter so this file's first AST is at
     // line 1.  Without this, a file loaded after some other file would
     // start counting at the previous file's last line.
+    eshkol_set_parse_source_context(filepath.c_str());
     eshkol_reset_parse_line_counter();
 
     eshkol_ast_t ast = eshkol_parse_next_ast(read_file);
@@ -2873,6 +2874,8 @@ static void collect_all_submodules(const std::string& module_name,
     std::ifstream file(module_path);
     if (!file.is_open()) return;
 
+    eshkol_set_parse_source_context(module_path.c_str());
+    eshkol_reset_parse_line_counter();
     eshkol_ast_t ast = eshkol_parse_next_ast(file);
     while (ast.type != ESHKOL_INVALID) {
         if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
@@ -2881,6 +2884,7 @@ static void collect_all_submodules(const std::string& module_name,
                 collect_all_submodules(sub, out, lib_dir);
             }
         }
+        eshkol_set_parse_source_context(module_path.c_str());
         ast = eshkol_parse_next_ast(file);
     }
 }
@@ -4079,14 +4083,21 @@ int main(int argc, char **argv)
             print_help(1);
         }
 
-        if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir) {
+        const char* language_coverage_trace_dir =
+            std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
+        const bool language_coverage_tracing =
+            language_coverage_trace_dir && *language_coverage_trace_dir;
+        if (argc - optind == 1 && !debug_mode && !dump_ast && !dump_ir &&
+            !language_coverage_tracing) {
             if (auto cached_status = tryRunFromPersistentJitCache(
                     argv[0], argv[optind], no_stdlib, strict_types, unsafe_mode,
                     opt_level, target_triple, linked_libs, lib_paths, include_paths)) {
                 return *cached_status;
             }
         } else {
-            jitCacheTrace("bypass", "multi-file-or-debug");
+            jitCacheTrace("bypass", language_coverage_tracing
+                                        ? "language-coverage-tracing"
+                                        : "multi-file-or-debug");
         }
 
         // Initialize runtime system

@@ -276,6 +276,12 @@ echo "vm-parity: $pass passed, $fail failed"
 if [ $fail -eq 0 ]; then
     gate_summary="$pass checks green (audit + corpus + oos)"
     emit_event "vm_parity_gate" "PASS" "$gate_summary"
+    # Name the production dispatcher explicitly so ICC can bind this full
+    # source+serialized-bytecode parity run to the implementation boundary it
+    # exercises, rather than heuristically classifying the dispatcher as an
+    # untested backend-shaped path.
+    emit_event "vm_dispatch_native" "PASS" \
+        "vm_dispatch_native exercised by $gate_summary"
     emit_test_result "vm_parity_gate" "PASS" "$gate_summary"
     echo "Trace written: $TRACE_FILE"
     exit 0

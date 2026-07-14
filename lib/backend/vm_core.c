@@ -94,7 +94,15 @@ typedef enum {
     OP_WIND_POP = 62,     /* pop from wind stack */
     OP_VOID = 63,         /* push unspecified void value (return of display/newline) */
 
-    OP_COUNT = 64
+    /* Opt-in metadata immediately preceding OP_NATIVE_CALL. Its operand is a
+     * BUILTINS[] index. The native-call handler validates that the named
+     * builtin and native ID agree before emitting exact VM dispatch evidence.
+     * Normal compilation never emits this opcode. */
+    OP_LANGUAGE_COVERAGE = 64,
+    /* Stable-hash marker immediately preceding a direct Scheme CALL/TCALL. */
+    OP_LANGUAGE_COVERAGE_CALL = 65,
+
+    OP_COUNT = 66
 } OpCode;
 
 typedef struct { uint8_t op; int32_t operand; } Instr;
@@ -310,6 +318,7 @@ typedef struct VM {
         int frame_count;
         int n_winds;
         int n_parameter_bindings;
+        Value promise_mark;
     } handler_stack[16];
     int n_handlers;
     Value current_exception;
@@ -328,6 +337,23 @@ typedef struct VM {
     int halted;
     int error;
     int native_policy;
+
+    /* Promise evaluation is an intrusive chain stored in each evaluating
+     * promise's cached slot.  Nonlocal control rolls this chain back to the
+     * mark captured by its handler/continuation, keeping failed promises
+     * retryable without allocating an auxiliary stack. */
+    Value promise_eval_head;
+
+    /* Scheme closures invoked by a C native recursively enter vm_run().
+     * A handled raise or continuation transfer must escape every intervening
+     * C helper frame and resume the owning interpreter loop at the restored
+     * VM state, rather than letting the nested loop consume the handler. */
+    int native_call_depth;
+    int native_escape_ready;
+    jmp_buf native_escape_jmp;
+
+    uint32_t language_coverage_call_hash;
+    int32_t language_coverage_call_pc;
 
     /* Reverse-mode AD tracing context.
      * When active_tape != NULL, arithmetic operations (+,-,*,/,sin,cos,...)
@@ -826,6 +852,7 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     int32_t saved_sp = vm->sp;
     int saved_frame_count = vm->frame_count;
     int saved_halted = vm->halted;
+    int saved_error = vm->error;
 
     /* Push closure below args (calling convention: func at sp-argc-1) */
     vm_push(vm, closure);
@@ -843,9 +870,14 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->fp = vm->sp - argc;
     vm->pc = cl->closure.func_pc;
     vm->halted = 0;
+    vm->error = 0;
 
     /* Run VM loop — will stop when OP_RETURN hits our sentinel frame */
+    vm->native_call_depth++;
     vm_run(vm);
+    vm->native_call_depth--;
+
+    const int callee_error = vm->error;
 
     /* Capture result (should be on stack) */
     Value result = NIL_VAL;
@@ -859,7 +891,7 @@ static Value vm_call_closure_from_native(VM* vm, Value closure, Value* args, int
     vm->sp = saved_sp;
     vm->frame_count = saved_frame_count;
     vm->halted = saved_halted;
-    vm->error = 0;
+    vm->error = saved_error || callee_error;
 
     return result;
 }
@@ -895,6 +927,7 @@ static int vm_extract_shape(VM* vm, Value shape_val, int64_t* shape, int max_dim
 /* Continuation: saved VM state for call/cc */
 typedef struct {
     int pc, fp, sp, frame_count, n_handlers, n_winds, n_parameter_bindings;
+    Value promise_mark;
     Value* saved_stack;
     CallFrame* saved_frames;
     Value* saved_wind_befores;

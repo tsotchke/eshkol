@@ -30,7 +30,21 @@
 #                   ~6 significant digits, not full round-trip precision —
 #                   see the comment in gpu_correctness_gate.esk)
 #   LLVM_CONFIG     path to llvm-config (auto-detected via `brew --prefix
-#                   llvm@21` on macOS, or llvm-config-21 on Linux, if unset)
+#                   llvm@21` on macOS, or llvm-config-21/llvm-config on
+#                   Linux and Git Bash/MSYS2 Windows, if unset)
+#   LLVM_DIR        Windows LLVM SDK CMake directory containing LLVMConfig.cmake.
+#   ESHKOL_HOST_CXX_COMPILER
+#                   Windows LLVM SDK clang++.exe used for generated AOT links.
+#   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
+#                   Optional generator overrides. On macOS/Linux the default
+#                   prefers Ninja when installed and otherwise uses Unix
+#                   Makefiles. On Windows the default prefers Ninja with the
+#                   LLVM SDK's clang-cl and MSVC as nvcc's host compiler from
+#                   an active VsDevCmd environment. This does not require
+#                   CUDA's optional Visual Studio integration; otherwise it
+#                   selects the newest installed VS 2022+ generator. Set
+#                   GPU_GATE_CMAKE_TOOLSET=ClangCL only when that optional
+#                   Visual Studio component is installed.
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -72,6 +86,7 @@ fail() { log "FAIL: $*"; emit_trace FAIL "$*"; exit 1; }
 # full build if neither Metal nor a CUDA toolchain is present at all.
 # ─────────────────────────────────────────────────────────────────
 UNAME_S="$(uname -s)"
+WINDOWS_POSIX=0
 HAVE_GPU_FRAMEWORK=0
 case "$UNAME_S" in
     Darwin)
@@ -83,7 +98,8 @@ case "$UNAME_S" in
             HAVE_GPU_FRAMEWORK=1
         fi
         ;;
-    Linux)
+    Linux|MINGW*|MSYS*|CYGWIN*)
+        case "$UNAME_S" in MINGW*|MSYS*|CYGWIN*) WINDOWS_POSIX=1 ;; esac
         if command -v nvidia-smi >/dev/null 2>&1 || command -v nvcc >/dev/null 2>&1; then
             HAVE_GPU_FRAMEWORK=1
         fi
@@ -97,20 +113,32 @@ if [ "$HAVE_GPU_FRAMEWORK" -ne 1 ]; then
     skip "no GPU build framework detected on $UNAME_S (no Metal SDK / no nvidia-smi or nvcc) — nothing to execute"
 fi
 
-if [ "$UNAME_S" = "Linux" ] && ! command -v nvidia-smi >/dev/null 2>&1; then
-    skip "nvcc present but nvidia-smi is not — CUDA toolchain without a driver/GPU (e.g. a hosted CI compile-only runner)"
-fi
-if [ "$UNAME_S" = "Linux" ] && command -v nvidia-smi >/dev/null 2>&1; then
-    if ! nvidia-smi -L >/dev/null 2>&1 || [ -z "$(nvidia-smi -L 2>/dev/null)" ]; then
-        skip "nvidia-smi present but reports no GPU device"
+case "$UNAME_S" in
+Linux|MINGW*|MSYS*|CYGWIN*)
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        if ! nvidia-smi -L >/dev/null 2>&1 || [ -z "$(nvidia-smi -L 2>/dev/null)" ]; then
+            skip "nvidia-smi present but reports no GPU device"
+        fi
+    elif [ -e /dev/nvhost-gpu ] || [ -e /dev/nvidiactl ] || [ -e /dev/nvidia0 ]; then
+        # Jetson/L4T exposes the integrated GPU through nvhost device nodes
+        # and intentionally does not ship the datacenter-oriented nvidia-smi
+        # utility.  Treat this only as a coarse device hint: step 4 still
+        # requires an actual Eshkol [GPU] dispatch record before issuing PASS.
+        log "CUDA device node detected without nvidia-smi (Jetson/L4T path); runtime dispatch proof remains required"
+    else
+        skip "nvcc present but no NVIDIA device node or nvidia-smi GPU was found — CUDA toolchain without a runtime device (e.g. hosted compile-only CI)"
     fi
-fi
+    ;;
+esac
 
 # ─────────────────────────────────────────────────────────────────
 # Step 2: resolve LLVM (mirrors CMakeLists.txt / nix/jetson/build.sh's
 # lite-build LLVM discovery).
 # ─────────────────────────────────────────────────────────────────
-if [ -z "${LLVM_CONFIG:-}" ]; then
+if [ "$WINDOWS_POSIX" -eq 1 ] && [ -n "${LLVM_DIR:-}" ]; then
+    [ -f "$LLVM_DIR/LLVMConfig.cmake" ] \
+        || fail "LLVM_DIR=$LLVM_DIR does not contain LLVMConfig.cmake"
+elif [ -z "${LLVM_CONFIG:-}" ]; then
     if [ "$UNAME_S" = "Darwin" ] && command -v brew >/dev/null 2>&1 && brew --prefix llvm@21 >/dev/null 2>&1; then
         LLVM_CONFIG="$(brew --prefix llvm@21)/bin/llvm-config"
     elif command -v llvm-config-21 >/dev/null 2>&1; then
@@ -121,23 +149,126 @@ if [ -z "${LLVM_CONFIG:-}" ]; then
         fail "could not locate llvm-config (LLVM 21) — set LLVM_CONFIG explicitly"
     fi
 fi
-[ -x "$LLVM_CONFIG" ] || fail "LLVM_CONFIG=$LLVM_CONFIG is not executable"
+if [ -n "${LLVM_CONFIG:-}" ]; then
+    [ -x "$LLVM_CONFIG" ] || fail "LLVM_CONFIG=$LLVM_CONFIG is not executable"
+fi
+
+runner_path() {
+    local build_dir="$1" candidate
+    for candidate in \
+        "$build_dir/eshkol-run" \
+        "$build_dir/eshkol-run.exe" \
+        "$build_dir/Release/eshkol-run.exe"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
 
 configure_and_build() {
     local build_dir="$1" gpu_flag="$2"
-    if [ "$REUSE_BUILDS" = "1" ] && [ -x "$build_dir/eshkol-run" ]; then
-        log "  reusing $build_dir/eshkol-run (REUSE_BUILDS=1)"
+    local runner=""
+    mkdir -p "$(dirname "$build_dir")" \
+        || fail "could not create build root parent for $build_dir"
+    runner="$(runner_path "$build_dir" 2>/dev/null || true)"
+    if [ "$REUSE_BUILDS" = "1" ] && [ -n "$runner" ]; then
+        log "  reusing $runner (REUSE_BUILDS=1)"
         return 0
     fi
     log "  configuring $build_dir (ESHKOL_GPU_ENABLED=$gpu_flag)..."
-    cmake -S "$REPO_ROOT" -B "$build_dir" -G Ninja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DESHKOL_REQUIRED_LLVM_MAJOR=21 \
-        -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
-        -DESHKOL_XLA_ENABLED=OFF \
-        -DESHKOL_GPU_ENABLED="$gpu_flag" \
-        -DESHKOL_BUILD_TESTS=OFF \
-        > "$build_dir.configure.log" 2>&1 || { tail -n 60 "$build_dir.configure.log"; return 1; }
+    local -a cmake_args=(
+        -S "$REPO_ROOT"
+        -B "$build_dir"
+        -DCMAKE_BUILD_TYPE=Release
+        -DESHKOL_REQUIRED_LLVM_MAJOR=21
+        -DESHKOL_XLA_ENABLED=OFF
+        -DESHKOL_GPU_ENABLED="$gpu_flag"
+        -DESHKOL_BUILD_TESTS=OFF
+    )
+
+    if [ "$WINDOWS_POSIX" -eq 1 ]; then
+        local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
+        local msvc_cl=""
+        local windows_cc=""
+        msvc_cl="$(command -v cl.exe 2>/dev/null \
+            || command -v cl 2>/dev/null || true)"
+        if [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ]; then
+            windows_cc="$(dirname "$ESHKOL_HOST_CXX_COMPILER")/clang-cl.exe"
+            [ -x "$windows_cc" ] || windows_cc=""
+        fi
+        if [ -z "$windows_cc" ]; then
+            windows_cc="$(command -v clang-cl.exe 2>/dev/null \
+                || command -v clang-cl 2>/dev/null || true)"
+        fi
+        [ -n "$windows_cc" ] || windows_cc="$msvc_cl"
+        if [ -z "$generator" ] && command -v ninja >/dev/null 2>&1 \
+            && [ -n "$windows_cc" ] && [ -n "$msvc_cl" ]; then
+            generator='Ninja'
+        fi
+        if [ -z "$generator" ]; then
+            local vswhere='/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe'
+            local candidate version_range install
+            [ -x "$vswhere" ] \
+                || fail "vswhere.exe not found; set GPU_GATE_CMAKE_GENERATOR to an installed Visual Studio 2022+ generator"
+            while IFS='|' read -r candidate version_range; do
+                cmake --help 2>/dev/null | grep -qF "$candidate" || continue
+                install="$("$vswhere" -latest -products '*' \
+                    -requires Microsoft.Component.MSBuild \
+                    -version "$version_range" -property installationPath \
+                    2>/dev/null || true)"
+                if [ -n "$install" ]; then
+                    generator="$candidate"
+                    break
+                fi
+            done <<'EOF'
+Visual Studio 18 2026|[18.0,19.0)
+Visual Studio 17 2022|[17.0,18.0)
+EOF
+            [ -n "$generator" ] \
+                || fail "no installed Visual Studio 2022+ CMake generator with MSBuild found"
+        fi
+        if [ "$generator" = 'Ninja' ]; then
+            cmake_args+=(
+                -G Ninja
+                -DCMAKE_C_COMPILER="$windows_cc"
+                -DCMAKE_CXX_COMPILER="$windows_cc"
+                -DCMAKE_CUDA_HOST_COMPILER="$msvc_cl"
+            )
+            if command -v rc.exe >/dev/null 2>&1; then
+                cmake_args+=(-DCMAKE_RC_COMPILER="$(command -v rc.exe)")
+            fi
+        else
+            cmake_args+=(
+                -G "$generator"
+                -A "${GPU_GATE_CMAKE_PLATFORM:-x64}"
+            )
+            [ -n "${GPU_GATE_CMAKE_TOOLSET:-}" ] \
+                && cmake_args+=(-T "$GPU_GATE_CMAKE_TOOLSET")
+        fi
+        [ -n "${LLVM_DIR:-}" ] && cmake_args+=(-DLLVM_DIR="$LLVM_DIR")
+        [ -n "${ESHKOL_HOST_CXX_COMPILER:-}" ] \
+            && cmake_args+=(-DESHKOL_HOST_CXX_COMPILER="$ESHKOL_HOST_CXX_COMPILER")
+        [ -n "${LLVM_CONFIG:-}" ] \
+            && cmake_args+=(-DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG")
+    else
+        local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
+        if [ -z "$generator" ]; then
+            if command -v ninja >/dev/null 2>&1; then
+                generator='Ninja'
+            else
+                generator='Unix Makefiles'
+            fi
+        fi
+        cmake_args+=(
+            -G "$generator"
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG"
+        )
+    fi
+
+    cmake "${cmake_args[@]}" > "$build_dir.configure.log" 2>&1 \
+        || { tail -n 60 "$build_dir.configure.log"; return 1; }
 
     if [ "$gpu_flag" = "ON" ] && ! grep -q "GPU acceleration: ENABLED" "$build_dir.configure.log"; then
         # Framework check in step 1 said yes, but CMake's own probe (which
@@ -147,7 +278,9 @@ configure_and_build() {
     fi
 
     log "  building $build_dir..."
-    ninja -C "$build_dir" eshkol-run > "$build_dir.build.log" 2>&1 || { tail -n 80 "$build_dir.build.log"; return 1; }
+    cmake --build "$build_dir" --config Release --target eshkol-run --parallel \
+        > "$build_dir.build.log" 2>&1 \
+        || { tail -n 80 "$build_dir.build.log"; return 1; }
 }
 
 log "=== Eshkol GPU execution correctness gate ==="
@@ -164,8 +297,10 @@ fi
 log "Building CPU-only reference ($BUILD_DIR_CPU)..."
 configure_and_build "$BUILD_DIR_CPU" OFF || fail "CPU-only reference build failed — see $BUILD_DIR_CPU.build.log"
 
-GPU_RUN="$REPO_ROOT/$BUILD_DIR_GPU/eshkol-run"
-CPU_RUN="$REPO_ROOT/$BUILD_DIR_CPU/eshkol-run"
+GPU_RUN="$(runner_path "$BUILD_DIR_GPU" 2>/dev/null || true)"
+CPU_RUN="$(runner_path "$BUILD_DIR_CPU" 2>/dev/null || true)"
+case "$GPU_RUN" in ""|/*|[A-Za-z]:/*) ;; *) GPU_RUN="$REPO_ROOT/$GPU_RUN" ;; esac
+case "$CPU_RUN" in ""|/*|[A-Za-z]:/*) ;; *) CPU_RUN="$REPO_ROOT/$CPU_RUN" ;; esac
 [ -x "$GPU_RUN" ] || fail "$GPU_RUN missing after build"
 [ -x "$CPU_RUN" ] || fail "$CPU_RUN missing after build"
 
@@ -181,6 +316,13 @@ log "Compiling gate payload with both binaries..."
     || fail "GPU binary failed to compile $GATE_ESK — $(tail -n 20 "$WORK_DIR/gpu_compile.log")"
 "$CPU_RUN" "$GATE_ESK" -o "$WORK_DIR/gate_cpu.bin" > "$WORK_DIR/cpu_compile.log" 2>&1 \
     || fail "CPU-reference binary failed to compile $GATE_ESK — $(tail -n 20 "$WORK_DIR/cpu_compile.log")"
+
+GPU_PAYLOAD="$WORK_DIR/gate_gpu.bin"
+CPU_PAYLOAD="$WORK_DIR/gate_cpu.bin"
+[ -x "$GPU_PAYLOAD" ] || GPU_PAYLOAD="$GPU_PAYLOAD.exe"
+[ -x "$CPU_PAYLOAD" ] || CPU_PAYLOAD="$CPU_PAYLOAD.exe"
+[ -x "$GPU_PAYLOAD" ] || fail "GPU gate payload missing after successful compile"
+[ -x "$CPU_PAYLOAD" ] || fail "CPU-reference gate payload missing after successful compile"
 
 # ─────────────────────────────────────────────────────────────────
 # Step 4: runtime GPU-presence check + forced-dispatch run. Verbose GPU
@@ -198,7 +340,7 @@ log "Running GPU-enabled binary with dispatch forced..."
 GPU_STDOUT="$WORK_DIR/gpu_stdout.txt"
 GPU_STDERR="$WORK_DIR/gpu_stderr.txt"
 ESHKOL_VERBOSE=1 ESHKOL_GPU_VERBOSE=1 ESHKOL_GPU_THRESHOLD=1 ESHKOL_SF64_KERNEL=legacy \
-    "$WORK_DIR/gate_gpu.bin" > "$GPU_STDOUT" 2> "$GPU_STDERR"
+    "$GPU_PAYLOAD" > "$GPU_STDOUT" 2> "$GPU_STDERR"
 gpu_run_rc=$?
 [ "$gpu_run_rc" -eq 0 ] || fail "GPU binary crashed/exited $gpu_run_rc — stderr: $(tail -n 40 "$GPU_STDERR")"
 grep -q "^GATE-DONE$" "$GPU_STDOUT" || fail "GPU run did not reach GATE-DONE — output: $(cat "$GPU_STDOUT")"
@@ -213,7 +355,7 @@ fi
 log ""
 log "Running CPU-only reference binary..."
 CPU_STDOUT="$WORK_DIR/cpu_stdout.txt"
-"$WORK_DIR/gate_cpu.bin" > "$CPU_STDOUT" 2>"$WORK_DIR/cpu_stderr.txt"
+"$CPU_PAYLOAD" > "$CPU_STDOUT" 2>"$WORK_DIR/cpu_stderr.txt"
 cpu_run_rc=$?
 [ "$cpu_run_rc" -eq 0 ] || fail "CPU-reference binary crashed/exited $cpu_run_rc"
 grep -q "^GATE-DONE$" "$CPU_STDOUT" || fail "CPU run did not reach GATE-DONE"

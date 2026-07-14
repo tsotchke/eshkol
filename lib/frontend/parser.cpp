@@ -6,12 +6,14 @@
  */
 #include <eshkol/eshkol.h>
 #include <eshkol/core/logic.h>
+#include <eshkol/core/runtime.h>
 #include <eshkol/logger.h>
 
 #include <string.h>
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <limits>
 #include <sstream>
@@ -22,7 +24,7 @@
 #endif
 
 /* ── Parse context for diagnostic messages ── */
-static thread_local const char* g_parse_filename = "<unknown>";
+static thread_local std::string g_parse_filename = "<unknown>";
 static thread_local const char* g_parse_source = NULL;
 /* Cumulative file line across successive eshkol_parse_next_ast_from_stream
  * calls.  Each call advances the counter by however many newlines it
@@ -38,7 +40,7 @@ static thread_local bool g_parse_had_error = false;
 #define PARSE_ERROR_AT(tok, ...) do { \
     g_parse_had_error = true; \
     if (g_parse_source) { \
-        eshkol_error_at(g_parse_filename, (tok).line, (tok).column, \
+        eshkol_error_at(g_parse_filename.c_str(), (tok).line, (tok).column, \
                         g_parse_source, __VA_ARGS__); \
     } else { \
         eshkol_error(__VA_ARGS__); \
@@ -47,7 +49,7 @@ static thread_local bool g_parse_had_error = false;
 
 #define PARSE_WARN_AT(tok, ...) do { \
     if (g_parse_source) { \
-        eshkol_warn_at(g_parse_filename, (tok).line, (tok).column, \
+        eshkol_warn_at(g_parse_filename.c_str(), (tok).line, (tok).column, \
                        g_parse_source, __VA_ARGS__); \
     } else { \
         eshkol_warn(__VA_ARGS__); \
@@ -129,6 +131,40 @@ struct Token {
     uint32_t line;    // 1-based line number
     uint32_t column;  // 1-based column number
 };
+
+static bool parser_language_coverage_enabled() {
+    static const bool enabled = [] {
+        const char* dir = std::getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
+        return dir && *dir;
+    }();
+    return enabled;
+}
+
+static void trace_parser_dispatch(uint32_t line,
+                                  uint32_t column,
+                                  uint32_t operation,
+                                  const char* name) {
+    if (!parser_language_coverage_enabled()) return;
+    eshkol_language_coverage_parse(
+        g_parse_filename.c_str(), line, column, operation, name);
+}
+
+static void trace_parser_accept(uint32_t line,
+                                uint32_t column,
+                                uint32_t operation) {
+    if (!parser_language_coverage_enabled()) return;
+    eshkol_language_coverage_accept(
+        g_parse_filename.c_str(), line, column, operation);
+}
+
+static void trace_parser_reject(uint32_t line,
+                                uint32_t column,
+                                uint32_t operation,
+                                const char* name) {
+    if (!parser_language_coverage_enabled()) return;
+    eshkol_language_coverage_reject(
+        g_parse_filename.c_str(), line, column, operation, name);
+}
 
 static constexpr char kStringInterpolationStart = '\x1e';
 static constexpr char kStringInterpolationEnd = '\x1f';
@@ -2502,9 +2538,14 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         // we'd parse any other expression — `parse_quasiquoted_data` would
         // instead treat `(* y 2)` as literal data, producing a
         // (list * y 2) form rather than a multiplication.
+        trace_parser_dispatch(token.line, token.column,
+                              static_cast<uint32_t>(ESHKOL_UNQUOTE_OP),
+                              "unquote");
         eshkol_ast_t inner = parse_expression(tokenizer);
-        eshkol_ast_t ast;
+        eshkol_ast_t ast = {};
         ast.type = ESHKOL_OP;
+        ast.line = token.line;
+        ast.column = token.column;
         ast.operation.op = ESHKOL_UNQUOTE_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
@@ -2513,9 +2554,14 @@ static eshkol_ast_t parse_quasiquoted_data_with_token(SchemeTokenizer& tokenizer
         return ast;
     } else if (token.type == TOKEN_COMMA_AT) {
         // Unquote-splicing: ,@expr — same escape-to-expression rule as comma.
+        trace_parser_dispatch(token.line, token.column,
+                              static_cast<uint32_t>(ESHKOL_UNQUOTE_SPLICING_OP),
+                              "unquote-splicing");
         eshkol_ast_t inner = parse_expression(tokenizer);
-        eshkol_ast_t ast;
+        eshkol_ast_t ast = {};
         ast.type = ESHKOL_OP;
+        ast.line = token.line;
+        ast.column = token.column;
         ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
         ast.operation.call_op.func = nullptr;
         ast.operation.call_op.num_vars = 1;
@@ -2582,17 +2628,26 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
         if (head.type == TOKEN_SYMBOL &&
             (head.value == "unquote" || head.value == "unquote-splicing" ||
              head.value == "quasiquote" || head.value == "quote")) {
-            eshkol_ast_t ast;
+            eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
+            ast.line = head.line;
+            ast.column = head.column;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
             ast.operation.call_op.variables = new eshkol_ast_t[1];
             if (head.value == "unquote") {
                 // Active unquote — its body is evaluated (same as ,expr).
                 ast.operation.op = ESHKOL_UNQUOTE_OP;
+                trace_parser_dispatch(
+                    head.line, head.column,
+                    static_cast<uint32_t>(ESHKOL_UNQUOTE_OP), "unquote");
                 ast.operation.call_op.variables[0] = parse_expression(tokenizer);
             } else if (head.value == "unquote-splicing") {
                 ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
+                trace_parser_dispatch(
+                    head.line, head.column,
+                    static_cast<uint32_t>(ESHKOL_UNQUOTE_SPLICING_OP),
+                    "unquote-splicing");
                 ast.operation.call_op.variables[0] = parse_expression(tokenizer);
             } else if (head.value == "quasiquote") {
                 // Nested quasiquote — keep parsing as quasiquoted data (same
@@ -4588,6 +4643,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
     // Handle type annotation: (: name type)
     if (token.type == TOKEN_COLON) {
+        trace_parser_dispatch(token.line, token.column,
+                              static_cast<uint32_t>(ESHKOL_TYPE_ANNOTATION_OP),
+                              ":");
         // Parse: (: name type-expression)
         Token name_token = tokenizer.nextToken();
         if (name_token.type != TOKEN_SYMBOL) {
@@ -4626,6 +4684,15 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
     if (token.type == TOKEN_SYMBOL) {
         std::string first_symbol = token.value;  // Store the function name
         ast.operation.op = get_operator_type(token.value);
+        trace_parser_dispatch(token.line, token.column,
+                              static_cast<uint32_t>(ast.operation.op),
+                              first_symbol.c_str());
+
+        if (first_symbol == "let" && tokenizer.peekToken().type == TOKEN_SYMBOL) {
+            trace_parser_dispatch(token.line, token.column,
+                                  static_cast<uint32_t>(ESHKOL_LET_OP),
+                                  "named-let");
+        }
 
         if (first_symbol == "let-match") {
             return parse_let_match_form(tokenizer, token);
@@ -6972,6 +7039,10 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                 }
                 error_msg += " ";
             }
+            trace_parser_reject(
+                ast.line, ast.column,
+                static_cast<uint32_t>(ESHKOL_SYNTAX_ERROR_OP),
+                "syntax-error");
             PARSE_ERROR_AT(token, "%s", error_msg.c_str());
             ast.type = ESHKOL_INVALID;
             return ast;
@@ -7092,6 +7163,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
             if (!matched || matched_body.empty()) {
                 // No matching clause or empty body — return void/null
+                trace_parser_accept(
+                    ast.line, ast.column,
+                    static_cast<uint32_t>(ESHKOL_COND_EXPAND_OP));
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_SEQUENCE_OP;
                 ast.operation.sequence_op.num_expressions = 0;
@@ -7100,6 +7174,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (matched_body.size() == 1) {
+                trace_parser_accept(
+                    ast.line, ast.column,
+                    static_cast<uint32_t>(ESHKOL_COND_EXPAND_OP));
                 return matched_body[0];
             }
 
@@ -7111,6 +7188,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             for (size_t i = 0; i < matched_body.size(); i++) {
                 ast.operation.sequence_op.expressions[i] = matched_body[i];
             }
+            trace_parser_accept(
+                ast.line, ast.column,
+                static_cast<uint32_t>(ESHKOL_COND_EXPAND_OP));
             return ast;
         }
 
@@ -7135,7 +7215,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
-                // Read and parse the included file
+                // Read and parse the included file. Preserve the including
+                // source name so coverage and diagnostics remain attributable
+                // after the nested parse returns.
                 std::string filename = token.value;
                 std::ifstream inc_file(filename);
                 if (!inc_file.is_open()) {
@@ -7144,6 +7226,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     return ast;
                 }
 
+                const std::string including_source = g_parse_filename;
+                g_parse_filename = filename;
                 if (case_insensitive) {
                     std::ostringstream buffer;
                     buffer << inc_file.rdbuf();
@@ -7162,10 +7246,14 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                         all_exprs.push_back(file_ast);
                     }
                 }
+                g_parse_filename = including_source;
                 inc_file.close();
             }
 
             if (all_exprs.empty()) {
+                trace_parser_accept(
+                    ast.line, ast.column,
+                    static_cast<uint32_t>(ESHKOL_INCLUDE_OP));
                 ast.type = ESHKOL_OP;
                 ast.operation.op = ESHKOL_SEQUENCE_OP;
                 ast.operation.sequence_op.num_expressions = 0;
@@ -7174,6 +7262,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             }
 
             if (all_exprs.size() == 1) {
+                trace_parser_accept(
+                    ast.line, ast.column,
+                    static_cast<uint32_t>(ESHKOL_INCLUDE_OP));
                 return all_exprs[0];
             }
 
@@ -7184,6 +7275,9 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             for (size_t i = 0; i < all_exprs.size(); i++) {
                 ast.operation.sequence_op.expressions[i] = all_exprs[i];
             }
+            trace_parser_accept(
+                ast.line, ast.column,
+                static_cast<uint32_t>(ESHKOL_INCLUDE_OP));
             return ast;
         }
 
@@ -7869,6 +7963,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         //       (param0 __saved0) (param1 __saved1) ...
         //       __result))
         if (ast.operation.op == ESHKOL_PARAMETERIZE_OP) {
+            const uint32_t parameterize_line = ast.line;
+            const uint32_t parameterize_column = ast.column;
             // Parse bindings list
             token = tokenizer.nextToken();
             if (token.type != TOKEN_LPAREN) {
@@ -7962,6 +8058,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             size_t n = params.size();
 
             if (n == 0) {
+                body.line = parameterize_line;
+                body.column = parameterize_column;
                 return body;
             }
 
@@ -8097,6 +8195,8 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
             *wind.operation.dynamic_wind_op.after = pmMakeLambda(pmMakeSequence(pop_expressions));
 
             ast = pmMakeLet(evaluated_bindings, pmMakeLet(converted_bindings, wind));
+            ast.line = parameterize_line;
+            ast.column = parameterize_column;
             return ast;
         }
 
@@ -10401,12 +10501,22 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         case TOKEN_LPAREN:
             return parse_list(tokenizer);
 
-        case TOKEN_VECTOR_START:
+        case TOKEN_VECTOR_START: {
             // Handle vector literal: #(element1 element2 ...)
             // Supports nested vectors: #(#(1 2) #(3 4)) → 2D tensor
-            return parse_vector_body(tokenizer);
+            trace_parser_dispatch(token.line, token.column,
+                                  static_cast<uint32_t>(ESHKOL_TENSOR_OP),
+                                  "vector");
+            eshkol_ast_t ast = parse_vector_body(tokenizer);
+            ast.line = token.line;
+            ast.column = token.column;
+            return ast;
+        }
 
         case TOKEN_QUOTE: {
+            trace_parser_dispatch(token.line, token.column,
+                                  static_cast<uint32_t>(ESHKOL_QUOTE_OP),
+                                  "quote");
             // Handle quoted expressions - use parse_quoted_data for proper data list handling
             eshkol_ast_t quoted_expr = parse_quoted_data(tokenizer);
             if (quoted_expr.type == ESHKOL_INVALID) {
@@ -10414,8 +10524,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             }
 
             // Create a quote operation
-            eshkol_ast_t ast;
+            eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
+            ast.line = token.line;
+            ast.column = token.column;
             ast.operation.op = ESHKOL_QUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10425,6 +10537,9 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         }
 
         case TOKEN_BACKQUOTE: {
+            trace_parser_dispatch(token.line, token.column,
+                                  static_cast<uint32_t>(ESHKOL_QUASIQUOTE_OP),
+                                  "quasiquote");
             // Handle quasiquoted expressions - `expr becomes (quasiquote expr).
             //
             // Previously this used parse_expression, which parses `(a ,x b)`
@@ -10441,8 +10556,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             }
 
             // Create a quasiquote operation
-            eshkol_ast_t ast;
+            eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
+            ast.line = token.line;
+            ast.column = token.column;
             ast.operation.op = ESHKOL_QUASIQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10452,6 +10569,9 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         }
 
         case TOKEN_COMMA: {
+            trace_parser_dispatch(token.line, token.column,
+                                  static_cast<uint32_t>(ESHKOL_UNQUOTE_OP),
+                                  "unquote");
             // Handle unquote - ,expr becomes (unquote expr)
             eshkol_ast_t inner_expr = parse_expression(tokenizer);
             if (inner_expr.type == ESHKOL_INVALID) {
@@ -10459,8 +10579,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             }
 
             // Create an unquote operation
-            eshkol_ast_t ast;
+            eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
+            ast.line = token.line;
+            ast.column = token.column;
             ast.operation.op = ESHKOL_UNQUOTE_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10470,6 +10592,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
         }
 
         case TOKEN_COMMA_AT: {
+            trace_parser_dispatch(
+                token.line, token.column,
+                static_cast<uint32_t>(ESHKOL_UNQUOTE_SPLICING_OP),
+                "unquote-splicing");
             // Handle unquote-splicing - ,@expr becomes (unquote-splicing expr)
             eshkol_ast_t inner_expr = parse_expression(tokenizer);
             if (inner_expr.type == ESHKOL_INVALID) {
@@ -10477,8 +10603,10 @@ static eshkol_ast_t parse_expression(SchemeTokenizer& tokenizer) {
             }
 
             // Create an unquote-splicing operation
-            eshkol_ast_t ast;
+            eshkol_ast_t ast = {};
             ast.type = ESHKOL_OP;
+            ast.line = token.line;
+            ast.column = token.column;
             ast.operation.op = ESHKOL_UNQUOTE_SPLICING_OP;
             ast.operation.call_op.func = nullptr;
             ast.operation.call_op.num_vars = 1;
@@ -10659,6 +10787,14 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             eshkol_ast_t result = parse_expression(tokenizer);
             g_parse_source = NULL;
 
+            if (result.type == ESHKOL_OP && parser_language_coverage_enabled()) {
+                eshkol_language_coverage_accept(
+                    g_parse_filename.c_str(),
+                    result.line,
+                    result.column,
+                    static_cast<uint32_t>(result.operation.op));
+            }
+
             // Advance the cumulative counter by the full input we
             // consumed (including leading skip and trailing junk), so the
             // next form starts on the right line/column.
@@ -10701,6 +10837,14 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
 extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_line = 1;
     g_stream_column = 1;
+}
+
+extern "C" void eshkol_set_parse_source_context(const char* source_name) {
+    g_parse_filename = (source_name && *source_name) ? source_name : "<unknown>";
+}
+
+extern "C" const char* eshkol_get_parse_source_context(void) {
+    return g_parse_filename.c_str();
 }
 
 extern "C" void eshkol_reset_parse_errors(void) {

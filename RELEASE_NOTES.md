@@ -11,11 +11,11 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 714/714 tests; CTest 69/69; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 70/70; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
-31 programs with zero divergences; VM parity 68/68; VM extended surface
-52/52; executable language coverage 1056/1056 (100%); WebAssembly imports
-100/100 provided; Taylor monomorphization equivalence 441/441 under both JIT
+127 programs with zero divergences; VM parity 68/68; VM extended surface
+53/53; executable language coverage 1056/1056 (100%); WebAssembly imports
+101/101 provided; Taylor monomorphization equivalence 441/441 under both JIT
 and AOT; ICC architecture model 8/8; ICC readiness 100/100.
 
 ## Highlights
@@ -53,7 +53,7 @@ upstream macOS weak-import linker fix and builds without a local override.
   multiple values, vectors, closures, parameters, include forms, numeric
   boundaries, full datum read/write round trips, and ESKB execution.
   Unsupported features fail explicitly rather than fabricating values.
-- The formerly dormant hosted VM surface is now executed by **52/52 tests**,
+- The formerly dormant hosted VM surface is now executed by **53/53 tests**,
   covering I/O, system, image, polling, process, concurrency, crypto, format,
   networking, and layout operations.
 - `make-parameter`/`parameterize` now use real dynamic parameter objects on
@@ -73,6 +73,12 @@ upstream macOS weak-import linker fix and builds without a local override.
 - Large-list sort is now a stable bottom-up vector merge sort: the two-million
   element stress case drops from roughly 32 GB peak RSS to about 362 MiB.
   (#266)
+- The GPU correctness gate now runs on Windows instead of silently skipping
+  Git Bash/MSYS hosts. It uses the supported official-SDK ClangCL + Ninja
+  compiler path with MSVC as nvcc's host compiler; a real RTX 3060 dispatched
+  through CUDA cuBLAS and matched 10 CPU-reference probes with maximum relative
+  difference `0`. PE/COFF hosted-runtime linkage no longer relies on ELF weak
+  functions.
 - Exact numeric and automatic-differentiation fixes cover bignums, rationals,
   tensors, forward-over-reverse composition, Hessians, and explicit
   unsupported-op errors instead of silent zero gradients.

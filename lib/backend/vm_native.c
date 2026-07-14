@@ -5457,6 +5457,189 @@ static Value vm_reader_from_port(VM* vm, VmPort* port) {
     return ok ? result : NIL_VAL;
 }
 
+static int vm_is_promise_value(VM* vm, Value value, VmVector** out) {
+    if (value.type != VAL_VECTOR || !is_valid_heap_ptr(vm, value.as.ptr)) return 0;
+    HeapObject* object = vm->heap.objects[value.as.ptr];
+    if (!object || object->type != HEAP_PROMISE || !object->opaque.ptr) return 0;
+    VmVector* promise = (VmVector*)object->opaque.ptr;
+    if (promise->len != 3) return 0;
+    if (out) *out = promise;
+    return 1;
+}
+
+static int vm_promise_state(const VmVector* promise) {
+    if (!promise || promise->len != 3) return -1;
+    if (promise->items[0].type == VAL_INT)
+        return (int)promise->items[0].as.i;
+    if (promise->items[0].type == VAL_BOOL)
+        return promise->items[0].as.b ? 1 : 0;
+    return -1;
+}
+
+static int vm_promise_mark_equal(Value a, Value b) {
+    if (a.type != b.type) return 0;
+    switch (a.type) {
+    case VAL_NIL:
+        return 1;
+    case VAL_VECTOR:
+        return a.as.ptr == b.as.ptr;
+    default:
+        return 0;
+    }
+}
+
+static int vm_promise_mark_reachable(VM* vm, Value mark) {
+    Value cursor = vm->promise_eval_head;
+    while (!vm_promise_mark_equal(cursor, mark)) {
+        VmVector* promise = NULL;
+        if (!vm_is_promise_value(vm, cursor, &promise)) return 0;
+        int state = vm_promise_state(promise);
+        if (state != 3 && state != 4) return 0;
+        cursor = promise->items[2];
+    }
+    return 1;
+}
+
+static int vm_promise_eval_begin(VM* vm, Value value, int original_state) {
+    VmVector* promise = NULL;
+    if ((original_state != 0 && original_state != 2) ||
+        !vm_is_promise_value(vm, value, &promise)) {
+        vm->error = 1;
+        return 0;
+    }
+    promise->items[2] = vm->promise_eval_head;
+    promise->items[0] = INT_VAL(original_state == 0 ? 3 : 4);
+    vm->promise_eval_head = value;
+    return 1;
+}
+
+static int vm_promise_eval_commit_one(VM* vm, Value value, Value result) {
+    VmVector* promise = NULL;
+    if (!vm_promise_mark_equal(vm->promise_eval_head, value) ||
+        !vm_is_promise_value(vm, value, &promise)) {
+        vm->error = 1;
+        return 0;
+    }
+    const int state = vm_promise_state(promise);
+    if (state != 3 && state != 4) {
+        vm->error = 1;
+        return 0;
+    }
+    Value previous = promise->items[2];
+    promise->items[1] = NIL_VAL;
+    promise->items[2] = result;
+    promise->items[0] = INT_VAL(1);
+    vm->promise_eval_head = previous;
+    return 1;
+}
+
+static int vm_promise_eval_commit_to(VM* vm, Value mark, Value result) {
+    if (!vm_promise_mark_reachable(vm, mark)) {
+        vm->error = 1;
+        return 0;
+    }
+    while (!vm_promise_mark_equal(vm->promise_eval_head, mark)) {
+        Value promise_value = vm->promise_eval_head;
+        if (!vm_promise_eval_commit_one(vm, promise_value, result)) return 0;
+    }
+    return 1;
+}
+
+static void vm_promise_eval_unwind_to(VM* vm, Value mark) {
+    /* A continuation captured inside a force whose evaluation has since
+     * completed cannot recreate that expired dynamic extent.  Match the
+     * hosted runtime: only roll back when the saved mark is still active. */
+    if (!vm_promise_mark_reachable(vm, mark)) return;
+    while (!vm_promise_mark_equal(vm->promise_eval_head, mark)) {
+        Value promise_value = vm->promise_eval_head;
+        VmVector* promise = NULL;
+        if (!vm_is_promise_value(vm, promise_value, &promise)) return;
+        const int state = vm_promise_state(promise);
+        Value previous = promise->items[2];
+        promise->items[0] = INT_VAL(state == 4 ? 2 : 0);
+        promise->items[2] = NIL_VAL;
+        vm->promise_eval_head = previous;
+    }
+}
+
+static void vm_escape_native_control(VM* vm) {
+    if (vm->native_call_depth > 0 && vm->native_escape_ready) {
+        longjmp(vm->native_escape_jmp, 1);
+    }
+}
+
+/* R7RS delay-force trampoline.  Both ordinary and delay-force evaluations
+ * join the VM-wide intrusive chain so exceptions and continuations can roll
+ * them back in O(1) auxiliary memory.  Successful delay-force chains are
+ * path-compressed to the final value. */
+static Value vm_force_promise_value(VM* vm, Value initial) {
+    const Value mark = vm->promise_eval_head;
+    Value current = initial;
+    Value final = initial;
+
+    for (;;) {
+        VmVector* promise = NULL;
+        if (!vm_is_promise_value(vm, current, &promise)) {
+            final = current;
+            break;
+        }
+
+        const int state = vm_promise_state(promise);
+        if (state == 1) {
+            final = promise->items[2];
+            break;
+        }
+        if (state == 3 || state == 4) {
+            fprintf(stderr, "ERROR: re-entrant force of an evaluating promise\n");
+            vm->error = 1;
+            final = NIL_VAL;
+            break;
+        }
+        if (state != 0 && state != 2) {
+            fprintf(stderr, "ERROR: invalid promise state %d\n", state);
+            vm->error = 1;
+            final = NIL_VAL;
+            break;
+        }
+
+        Value thunk = promise->items[1];
+        if (thunk.type != VAL_CLOSURE) {
+            fprintf(stderr, "ERROR: unforced promise has no callable thunk\n");
+            vm->error = 1;
+            final = NIL_VAL;
+            break;
+        }
+
+        if (!vm_promise_eval_begin(vm, current, state)) {
+            final = NIL_VAL;
+            break;
+        }
+        Value result = vm_call_closure_from_native(vm, thunk, NULL, 0);
+        if (vm->error) {
+            final = NIL_VAL;
+            break;
+        }
+
+        if (state == 0) {
+            if (!vm_promise_eval_commit_one(vm, current, result)) {
+                final = NIL_VAL;
+                break;
+            }
+            final = result;
+            break;
+        }
+
+        current = result;
+    }
+
+    if (!vm->error) {
+        (void)vm_promise_eval_commit_to(vm, mark, final);
+    } else {
+        vm_promise_eval_unwind_to(vm, mark);
+    }
+    return final;
+}
+
 static void vm_dispatch_native(VM* vm, int fid) {
     vm_timers_poll_due(vm);
     if (fid >= ESHKOL_VM_HOST_NATIVE_BASE) {
@@ -11330,10 +11513,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
             }
             vm_unwind_parameter_bindings(
                 vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
+            vm_promise_eval_unwind_to(
+                vm, vm->handler_stack[vm->n_handlers].promise_mark);
             vm->sp = vm->handler_stack[vm->n_handlers].sp;
             vm->fp = vm->handler_stack[vm->n_handlers].fp;
             vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
             vm->pc = vm->handler_stack[vm->n_handlers].pc;
+            vm_escape_native_control(vm);
         } else {
             fprintf(stderr, "ERROR: unhandled exception: ");
             print_value(vm, exn);
@@ -11354,25 +11540,37 @@ static void vm_dispatch_native(VM* vm, int fid) {
             break;
         }
 #endif
-        if (promise.type == VAL_VECTOR) {
-            /* Promise is a vector: #(forced? thunk result) */
-            VmVector* v = (VmVector*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
-            if (v && v->len >= 3) {
-                if (is_truthy(v->items[0])) {
-                    vm_push(vm, v->items[2]); /* already forced: return cached */
-                } else {
-                    /* Call thunk, cache result */
-                    Value thunk = v->items[1];
-                    Value result = vm_call_closure_from_native(vm, thunk, NULL, 0);
-                    v->items[0] = BOOL_VAL(1); /* mark forced */
-                    v->items[2] = result;
-                    vm_push(vm, result);
-                }
-                break;
-            }
+        vm_push(vm, vm_force_promise_value(vm, promise));
+        break;
+    }
+
+    case VM_NATIVE_PROMISE_CREATE: {
+        Value promise = vm_pop(vm);
+        if (promise.type != VAL_VECTOR ||
+            !is_valid_heap_ptr(vm, promise.as.ptr) ||
+            !vm->heap.objects[promise.as.ptr] ||
+            vm->heap.objects[promise.as.ptr]->type != HEAP_VECTOR) {
+            fprintf(stderr, "ERROR: promise constructor received invalid storage\n");
+            vm->error = 1;
+            vm_push(vm, NIL_VAL);
+            break;
         }
-        /* Fallback: non-promise, return as-is */
+        VmVector* slots =
+            (VmVector*)vm->heap.objects[promise.as.ptr]->opaque.ptr;
+        if (!slots || slots->len != 3) {
+            fprintf(stderr, "ERROR: promise constructor requires three slots\n");
+            vm->error = 1;
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        vm->heap.objects[promise.as.ptr]->type = HEAP_PROMISE;
         vm_push(vm, promise);
+        break;
+    }
+
+    case VM_NATIVE_PROMISE_P: {
+        Value value = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(vm_is_promise_value(vm, value, NULL)));
         break;
     }
 

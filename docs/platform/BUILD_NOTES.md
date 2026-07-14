@@ -95,7 +95,7 @@ runtime gotchas: force the gcc14 libdir to the front of `libstdc++` search; put
 `/run/opengl-driver/lib` first on `LD_LIBRARY_PATH` (else `cudaErrorStubLibrary`
 / error 34 from the stub `libcuda.so.1`); use L4T-native cuBLAS 11.6. Verified
 GEMM ~21 GFLOPS on GPU vs ~1.7 on CPU (~12×) via
-`tests/gpu/jetson_gemm_bench.esk`.
+`nix/jetson/jetson_gemm_bench.esk`.
 
 ## GPU / backend selection at runtime
 

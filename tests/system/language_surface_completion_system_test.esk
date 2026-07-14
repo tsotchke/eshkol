@@ -23,6 +23,9 @@
 
 (check-true "current-jiffy exact" (exact? (current-jiffy)))
 (check-true "current-second inexact" (inexact? (current-second)))
+(check-true "current-time positive fractional Unix time"
+            (let ((now (current-time)))
+              (and (number? now) (> now 0.0))))
 (check "time returns expression value" 42 (time (+ 40 2)))
 (sleep 0)
 (check-true "sleep returns" #t)

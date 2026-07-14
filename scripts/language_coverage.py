@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""language_coverage.py — dynamic language-surface coverage for the exposure engines.
+"""language_coverage.py — execution-backed language-surface coverage.
 
 Runs the generative exposure engines plus the opt-in quantum test corpus,
-collects the set of BUILTINS and
-SPECIAL FORMS their generated (and executed) programs actually contain, diffs
+collects the BUILTINS and SPECIAL FORMS that generated code actually executes,
+diffs
 that against the ground-truth manifest (tests/coverage/language_surface.json),
 and reports covered% plus the categorised list of UNCOVERED constructs — the
 constructs no engine exercises today.
@@ -20,7 +20,8 @@ Engines measured:
   * tests/quantum/*.esk                     (quantum-macos CI lane)
 
 Usage:
-  python3 scripts/language_coverage.py [--json OUT] [--emit-runtime-event]
+  python3 scripts/language_coverage.py --runtime-trace-dir DIR [DIR ...]
+      [--json OUT] [--emit-runtime-event]
 """
 
 import argparse
@@ -38,12 +39,11 @@ sys.path.insert(0, os.path.join(REPO, "tests", "ad_adversarial"))
 MANIFEST = os.path.join(REPO, "tests", "coverage", "language_surface.json")
 POLICY = os.path.join(REPO, "tests", "coverage", "coverage_policy.json")
 
-# Scheme test roots exercised by scripts/run_all_tests.sh.  Keep this list in
-# the same order as that suite's TEST_SCRIPTS array.  Source-scanning here is
-# legitimate coverage evidence because those files are self-checking and the
-# complete CI suite executes the corresponding directories; unlike a blanket
-# tests/**/*.esk glob this deliberately excludes filed divergences, minimized
-# crashers, and other diagnostic artifacts that are not run as gates.
+# Scheme test roots exercised by scripts/run_all_tests.sh. Keep this list in
+# the same order as that suite's TEST_SCRIPTS array. The text scan is diagnostic
+# only: it explains which constructs appear in the committed corpus, but earns
+# no coverage credit. Release credit comes exclusively from P/A/G/O/C/R/V runtime
+# traces, so an untaken branch or dead helper remains uncovered.
 CI_TEST_GLOBS = (
     "tests/features/*.esk", "tests/stdlib/*.esk", "tests/lists/*.esk",
     "tests/memory/*.esk", "tests/modules/*.esk", "tests/types/*.esk",
@@ -97,6 +97,202 @@ READER_MACROS = {
     ",@": "unquote-splicing",
     ",": "unquote",
 }
+
+# Forms whose complete behavior occurs while parsing or generating a module,
+# rather than by evaluating an expression in the generated program. These earn
+# credit only when an exact source location has both a parser-dispatch event and
+# a successful top-level-accept/codegen event. Ordinary calls and runtime forms
+# must have an execution event; merely appearing in generated IR is not enough.
+COMPILE_TIME_FORMS = {
+    "define", "define-values", "define-type", "define-syntax",
+    "define-record-type", "define-library", "extern", "extern-var",
+    "import", "require", "load", "provide", "include", "include-ci",
+    "cond-expand", "let-syntax", "letrec-syntax", "syntax-error",
+}
+
+NEGATIVE_COMPILE_TIME_FORMS = {"syntax-error"}
+
+
+def vm_call_name_hash(name):
+    """Match the VM compiler's stable non-negative 31-bit FNV-1a hash."""
+    value = 2166136261
+    for byte in name.encode("utf-8"):
+        value ^= byte
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value & 0x7FFFFFFF
+
+
+def normalize_trace_source(source):
+    """Return a stable repo-relative identity for a trace source path."""
+    source = source.replace("\\", "/")
+    if source in ("", "<unknown>", "unknown"):
+        return "<unknown>"
+    absolute = os.path.abspath(source)
+    try:
+        if os.path.commonpath((REPO, absolute)) == REPO:
+            return os.path.relpath(absolute, REPO).replace("\\", "/")
+    except ValueError:
+        pass
+    for marker in ("/tests/", "/lib/", "/examples/", "/benchmarks/"):
+        if marker in source:
+            return marker.strip("/") + "/" + source.split(marker, 1)[1]
+    return source
+
+
+def repo_relative_or_absolute(path):
+    """Return a repo-relative path when possible, otherwise an absolute path.
+
+    os.path.commonpath raises ValueError when paths live on different Windows
+    drives. Keep sidecar generation portable instead of letting an external
+    trace directory make the coverage gate crash.
+    """
+    absolute = os.path.abspath(path)
+    try:
+        if os.path.commonpath((REPO, absolute)) == REPO:
+            return os.path.relpath(absolute, REPO).replace("\\", "/")
+    except ValueError:
+        pass
+    return absolute.replace("\\", "/")
+
+
+def load_runtime_evidence(trace_dirs):
+    """Parse strict TSV traces and return execution-backed surface names.
+
+    P records identify exact source spelling. O/C records prove evaluation at
+    the source location. A/G records are accepted only for the explicit
+    compile-time-form allowlist. This is what excludes calls in untaken
+    branches: they have P and G records but no O/C record. V records are exact
+    bytecode-VM native dispatches whose alias marker survived ESKB
+    serialization and was validated against the dispatched native ID.
+    """
+    trace_paths = []
+    for trace_dir in trace_dirs:
+        trace_paths.extend(glob.glob(os.path.join(trace_dir, "**", "*.tsv"),
+                                     recursive=True))
+    trace_paths = sorted(set(trace_paths))
+    if not trace_paths:
+        raise RuntimeError("no runtime language-coverage TSV files found in: %s"
+                           % ", ".join(trace_dirs))
+
+    parsed = []
+    executed_locations = set()
+    executed_positions = set()
+    accepted_locations = set()
+    accepted_positions = set()
+    generated_locations = set()
+    generated_positions = set()
+    direct_calls = set()
+    vm_calls = set()
+    vm_call_hashes = set()
+    rejected_forms = set()
+    counts = {kind: 0 for kind in ("P", "A", "G", "O", "C", "R", "V")}
+
+    for path in trace_paths:
+        with open(path, encoding="utf-8", errors="strict") as fh:
+            for line_number, raw in enumerate(fh, 1):
+                raw = raw.rstrip("\n")
+                if not raw:
+                    continue
+                fields = raw.split("\t")
+                kind = fields[0]
+                expected = 6 if kind in ("P", "R", "V") else 5
+                if kind not in counts or len(fields) != expected:
+                    raise RuntimeError("malformed runtime trace %s:%d: %r"
+                                       % (path, line_number, raw))
+                try:
+                    source = normalize_trace_source(fields[1])
+                    line = int(fields[2])
+                    column = int(fields[3])
+                    operation = int(fields[4]) if kind != "C" else None
+                    location = (source, line, column, operation)
+                except ValueError as exc:
+                    raise RuntimeError("invalid runtime trace %s:%d: %s"
+                                       % (path, line_number, exc)) from exc
+                counts[kind] += 1
+                if kind == "P":
+                    parsed.append((location, fields[5]))
+                elif kind == "V":
+                    if fields[5] == "@call":
+                        vm_call_hashes.add(operation)
+                    else:
+                        vm_calls.add(fields[5])
+                elif kind == "R":
+                    if fields[5] in NEGATIVE_COMPILE_TIME_FORMS:
+                        rejected_forms.add(fields[5])
+                elif kind == "C":
+                    direct_calls.add(fields[4])
+                elif kind == "O":
+                    executed_locations.add(location)
+                    executed_positions.add(location[:3])
+                elif kind == "A":
+                    accepted_locations.add(location)
+                    accepted_positions.add(location[:3])
+                elif kind == "G":
+                    generated_locations.add(location)
+                    generated_positions.add(location[:3])
+
+    # Resolve executed direct Scheme callsites only against the checked-in
+    # language manifest.  Refuse manifest collisions: an ambiguous marker can
+    # never grant credit.  Non-surface helper/user-function hashes are ignored.
+    manifest = load_manifest()
+    manifest_names = {
+        item["name"]
+        for section in ("builtins", "special_forms", "prelude")
+        for item in manifest[section]
+        if not item["name"].startswith("_")
+    }
+    names_by_hash = {}
+    for name in manifest_names:
+        names_by_hash.setdefault(vm_call_name_hash(name), set()).add(name)
+    for name_hash in vm_call_hashes:
+        candidates = names_by_hash.get(name_hash, set())
+        if len(candidates) > 1:
+            raise RuntimeError(
+                "ambiguous serialized-VM call hash %d maps to: %s"
+                % (name_hash, ", ".join(sorted(candidates)))
+            )
+        if len(candidates) == 1:
+            vm_calls.update(candidates)
+
+    covered = set(direct_calls) | set(vm_calls) | set(rejected_forms)
+    runtime_spelling_matches = set()
+    compile_time_matches = set()
+    spellings_by_position = {}
+    for location, name in parsed:
+        spellings_by_position.setdefault(location[:3], set()).add(name)
+    for location, name in parsed:
+        if location[0] == "<unknown>":
+            continue
+        position = location[:3]
+        unambiguous_position = len(spellings_by_position[position]) == 1
+        if (location in executed_locations or
+                (unambiguous_position and position in executed_positions)):
+            covered.add(name)
+            runtime_spelling_matches.add(name)
+        elif (name in COMPILE_TIME_FORMS and
+              (location in accepted_locations or location in generated_locations or
+               (unambiguous_position and
+                (position in accepted_positions or position in generated_positions)))):
+            covered.add(name)
+            compile_time_matches.add(name)
+
+    # These helpers are compiler-generated by the corresponding executed
+    # promise forms and have no user-spelled call site of their own.
+    if "delay" in covered:
+        covered.add("%make-lazy-promise")
+    if "delay-force" in covered:
+        covered.add("%make-lazy-promise-force")
+
+    return {
+        "covered_names": covered,
+        "direct_call_names": direct_calls,
+        "vm_dispatch_names": vm_calls,
+        "rejected_compile_time_names": rejected_forms,
+        "runtime_spelling_matches": runtime_spelling_matches,
+        "compile_time_matches": compile_time_matches,
+        "trace_paths": trace_paths,
+        "event_counts": counts,
+    }
 
 
 def collect_heads(text):
@@ -176,10 +372,8 @@ def gen_ad_adversarial_text():
 def quantum_test_text():
     """Return the exact quantum-enabled test corpus exercised by CI.
 
-    These tests require Moonlab and therefore run only in the separate opt-in
-    macOS lane. Their source still participates in this manifest calculation:
-    every file is self-checking and is executed by that lane, matching the
-    source-scan contract used for the deterministic generative engines.
+    This source is reported only as diagnostic exposure. The corresponding
+    quantum runtime trace is what earns coverage credit.
     """
     paths = sorted(glob.glob(os.path.join(REPO, "tests", "quantum", "*.esk")))
     if not paths:
@@ -207,8 +401,8 @@ def complete_ci_test_text():
 
     Paths are de-duplicated because a recursive and a direct glob may overlap.
     Empty roots are tolerated across feature-gated checkouts, but the complete
-    corpus itself must be non-empty so a broken path list cannot manufacture a
-    plausible zero-coverage result.
+    corpus itself must be non-empty. This text is diagnostic only; runtime
+    traces, not source presence, determine release coverage.
     """
     paths = set()
     for pattern in CI_TEST_GLOBS:
@@ -261,6 +455,8 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", default=os.path.join(REPO, "tests", "coverage",
                                                    "coverage_run.json"))
+    ap.add_argument("--runtime-trace-dir", action="append", required=True,
+                    help="directory containing execution TSV traces (repeatable)")
     ap.add_argument("--emit-runtime-event", action="store_true",
                     help="print ICC runtime_event JSON lines to stdout")
     ap.add_argument("--trace", default=None,
@@ -304,18 +500,12 @@ def main():
     }
     heads_by_engine = {name: collect_heads(text)
                        for name, text in engine_text.items()}
-    heads = set().union(*heads_by_engine.values())
-    # Parser-lowered promise helpers are genuinely executed even though the
-    # source corpus contains their public syntax rather than the internal call
-    # heads.  Record the lowering explicitly so the manifest measures runtime
-    # exposure rather than merely lexical spelling.
-    if "delay" in heads:
-        heads.add("%make-lazy-promise")
-    if "delay-force" in heads:
-        heads.add("%make-lazy-promise-force")
+    source_heads = set().union(*heads_by_engine.values())
+    runtime_evidence = load_runtime_evidence(args.runtime_trace_dir)
+    runtime_names = runtime_evidence["covered_names"]
 
-    covered = {k: v for k, v in surface.items() if k in heads}
-    uncovered = {k: v for k, v in surface.items() if k not in heads}
+    covered = {k: v for k, v in surface.items() if k in runtime_names}
+    uncovered = {k: v for k, v in surface.items() if k not in runtime_names}
 
     total = len(surface)
     frac = len(covered) / total if total else 0.0
@@ -369,22 +559,35 @@ def main():
         "covered_by_category": {k: len(v) for k, v in sorted(cov_by_cat.items())},
         "uncovered_by_category": {k: sorted(v) for k, v in ranked},
         "covered_names": sorted(covered),
-        "engines": list(engine_text),
-        "covered_by_engine": {
+        "evidence_mode": "runtime-execution",
+        "runtime_trace_dirs": args.runtime_trace_dir,
+        "runtime_trace_files": [repo_relative_or_absolute(path)
+                                for path in runtime_evidence["trace_paths"]],
+        "runtime_event_counts": runtime_evidence["event_counts"],
+        "runtime_direct_call_names": sorted(runtime_evidence["direct_call_names"]),
+        "runtime_vm_dispatch_names": sorted(runtime_evidence["vm_dispatch_names"]),
+        "runtime_rejected_compile_time_names": sorted(
+            runtime_evidence["rejected_compile_time_names"]),
+        "runtime_spelling_matches": sorted(runtime_evidence["runtime_spelling_matches"]),
+        "compile_time_spelling_matches": sorted(runtime_evidence["compile_time_matches"]),
+        "source_exposed_names": sorted(set(surface) & source_heads),
+        "source_exposed_only_names": sorted((set(surface) & source_heads) - set(covered)),
+        "source_engines": list(engine_text),
+        "source_exposed_by_engine": {
             name: len(set(surface) & engine_heads)
             for name, engine_heads in heads_by_engine.items()
         },
         "quantum_test_paths": quantum_paths,
         "complete_ci_test_paths": ci_test_paths,
-        "exercised_by_quantum_tests": sorted(set(surface) &
-                                              heads_by_engine["tests/quantum/*.esk (quantum-enabled CI)"]),
+        "source_exposed_by_quantum_tests": sorted(set(surface) &
+                                                   heads_by_engine["tests/quantum/*.esk (quantum-enabled CI)"]),
     }
     os.makedirs(os.path.dirname(args.json), exist_ok=True)
     with open(args.json, "w") as fh:
         json.dump(out, fh, indent=2)
         fh.write("\n")
 
-    print("Language-surface coverage (exposure engines)")
+    print("Language-surface coverage (runtime execution evidence)")
     print("  surface constructs : %d" % total)
     print("  covered            : %d (%.1f%%)" % (len(covered), 100 * frac))
     print("  uncovered          : %d" % len(uncovered))
@@ -394,6 +597,11 @@ def main():
     print("  high-risk uncovered: %d — %s"
           % (len(uncovered_high_risk), "COMPLETE" if high_risk_pass else "OPEN"))
     print("  sidecar            : %s" % args.json)
+    print("  trace files        : %d" % len(runtime_evidence["trace_paths"]))
+    print("  runtime events     : %s" % ", ".join(
+        "%s=%d" % item for item in sorted(runtime_evidence["event_counts"].items())))
+    print("  source-only names  : %d (diagnostic; zero release credit)"
+          % len((set(surface) & source_heads) - set(covered)))
     print("\nUncovered by category (highest silent-wrong risk first):")
     for cat, names in ranked:
         cov_n = len(cov_by_cat.get(cat, []))

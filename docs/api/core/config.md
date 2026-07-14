@@ -28,8 +28,8 @@ Logging verbosity levels, ordered from most to least verbose. Any log message wi
 
 ```c
 typedef enum {
- ESHKOL_LOG_FORMAT_TEXT = 0, 
- ESHKOL_LOG_FORMAT_JSON 
+ ESHKOL_LOG_FORMAT_TEXT = 0,
+ ESHKOL_LOG_FORMAT_JSON
 } eshkol_log_format_t;
 ```
 
@@ -41,10 +41,10 @@ Output format used for emitted log messages.
 
 ```c
 typedef enum {
- ESHKOL_OPT_LEVEL_0 = 0, 
- ESHKOL_OPT_LEVEL_1, 
- ESHKOL_OPT_LEVEL_2, 
- ESHKOL_OPT_LEVEL_3 
+ ESHKOL_OPT_LEVEL_0 = 0,
+ ESHKOL_OPT_LEVEL_1,
+ ESHKOL_OPT_LEVEL_2,
+ ESHKOL_OPT_LEVEL_3
 } eshkol_opt_level_t;
 ```
 
@@ -56,41 +56,41 @@ LLVM code generation optimization level, analogous to -O0..-O3.
 
 ```c
 typedef struct eshkol_config {
- 
- size_t max_heap_bytes; 
- uint64_t timeout_ms; 
- size_t max_stack_depth; 
- size_t max_tensor_elements; 
- size_t max_string_length; 
 
- 
- eshkol_log_level_t log_level; 
- eshkol_log_format_t log_format; 
- const char* log_file; 
+ size_t max_heap_bytes;
+ uint64_t timeout_ms;
+ size_t max_stack_depth;
+ size_t max_tensor_elements;
+ size_t max_string_length;
 
- 
- eshkol_opt_level_t llvm_opt_level; 
- bool enable_simd; 
- bool enable_xla; 
- bool enable_gpu; 
 
- 
- bool dump_ast; 
- bool dump_ir; 
- bool debug_mode; 
+ eshkol_log_level_t log_level;
+ eshkol_log_format_t log_format;
+ const char* log_file;
 
- 
- const char** lib_paths; 
- size_t lib_path_count; 
 
- 
- bool strict_mode; 
- bool enable_warnings; 
- bool color_output; 
+ eshkol_opt_level_t llvm_opt_level;
+ bool enable_simd;
+ bool enable_xla;
+ bool enable_gpu;
 
- 
- bool strict_types; 
- bool unsafe_mode; 
+
+ bool dump_ast;
+ bool dump_ir;
+ bool debug_mode;
+
+
+ const char** lib_paths;
+ size_t lib_path_count;
+
+
+ bool strict_mode;
+ bool enable_warnings;
+ bool color_output;
+
+
+ bool strict_types;
+ bool unsafe_mode;
 } eshkol_config_t;
 ```
 
@@ -102,10 +102,10 @@ Complete runtime/compiler configuration, assembled from defaults, an optional co
 
 ```c
 typedef enum {
- ESHKOL_CONFIG_SRC_DEFAULT = 0, 
- ESHKOL_CONFIG_SRC_FILE, 
- ESHKOL_CONFIG_SRC_ENV, 
- ESHKOL_CONFIG_SRC_CMDLINE 
+ ESHKOL_CONFIG_SRC_DEFAULT = 0,
+ ESHKOL_CONFIG_SRC_FILE,
+ ESHKOL_CONFIG_SRC_ENV,
+ ESHKOL_CONFIG_SRC_CMDLINE
 } eshkol_config_source_t;
 ```
 

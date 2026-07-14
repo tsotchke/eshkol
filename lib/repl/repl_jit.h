@@ -142,9 +142,13 @@ public:
      *
      * @param asts Vector of ASTs to compile and execute together
      * @param silent If true, suppress output (for module loading)
+     * @param source_path Optional exact source path for diagnostics/coverage
+     * @param source_text Optional source text paired with source_path
      * @return Pointer to result of last expression, or nullptr
      */
-    void* executeBatch(std::vector<eshkol_ast_t>& asts, bool silent = true);
+    void* executeBatch(std::vector<eshkol_ast_t>& asts, bool silent = true,
+                       const std::string& source_path = {},
+                       const std::string& source_text = {});
 
     /**
      * Check if a symbol (variable or function) is already defined in the JIT.

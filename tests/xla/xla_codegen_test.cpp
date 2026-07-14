@@ -12,10 +12,13 @@
 #include <cmath>
 #include <cstring>
 #include <cassert>
+#include <algorithm>
+#include <iterator>
 #include <vector>
 
 // XLA headers
 #include "eshkol/backend/xla/xla_codegen.h"
+#include "eshkol/backend/xla/xla_compiler.h"
 #include "eshkol/backend/xla/xla_runtime.h"
 
 // Test utilities
@@ -89,6 +92,38 @@ bool test_xla_runtime_description() {
     TEST_ASSERT(desc.find("XLA") != std::string::npos, "Description should contain 'XLA'");
 
     std::cout << "PASS (" << desc << ")" << std::endl;
+    return true;
+}
+
+// ===== Test: XLA Target Query Contract =====
+bool test_xla_target_queries() {
+    using eshkol::xla::Target;
+    using eshkol::xla::XLACompiler;
+
+    std::cout << "Test: XLA Compiler Target Queries... ";
+
+    TEST_ASSERT(XLACompiler::isTargetAvailable(Target::CPU),
+        "CPU target must always be available");
+
+    const auto targets = XLACompiler::getAvailableTargets();
+    TEST_ASSERT(!targets.empty(), "Available target list must not be empty");
+    TEST_ASSERT(std::find(targets.begin(), targets.end(), Target::CPU) != targets.end(),
+        "Available target list must contain CPU");
+
+    const Target default_target = XLACompiler::getDefaultTarget();
+    TEST_ASSERT(std::find(targets.begin(), targets.end(), default_target) != targets.end(),
+        "Default target must appear in the available target list");
+    TEST_ASSERT(XLACompiler::isTargetAvailable(default_target),
+        "Default target must report as available");
+
+    for (auto it = targets.begin(); it != targets.end(); ++it) {
+        TEST_ASSERT(XLACompiler::isTargetAvailable(*it),
+            "Every advertised target must report as available");
+        TEST_ASSERT(std::find(std::next(it), targets.end(), *it) == targets.end(),
+            "Available target list must not contain duplicates");
+    }
+
+    std::cout << "PASS" << std::endl;
     return true;
 }
 
@@ -309,6 +344,7 @@ int main() {
     // Runtime tests
     run_test(test_xla_runtime_init);
     run_test(test_xla_runtime_description);
+    run_test(test_xla_target_queries);
 
     // Matmul tests
     run_test(test_xla_matmul_2x2);

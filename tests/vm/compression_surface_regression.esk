@@ -36,4 +36,14 @@
              (list "FAIL got " gzipped " " gunzipped)))
 (newline)
 
+;; Always dispatch the decode primitives even when the optional compression
+;; library is unavailable.  Invalid input has a deterministic #f contract.
+(display "T4 inflate rejects invalid input: ")
+(display (if (not (inflate #f)) "PASS" "FAIL"))
+(newline)
+
+(display "T5 gunzip rejects invalid input: ")
+(display (if (not (gunzip #f)) "PASS" "FAIL"))
+(newline)
+
 (display "=== compression VM surface complete ===") (newline)

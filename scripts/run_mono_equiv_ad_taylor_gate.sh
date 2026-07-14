@@ -48,10 +48,10 @@ aot_bin="$tmp_dir/taylor_tower_mono_test"
 run_and_check aot "$aot_bin"
 
 mkdir -p "$TRACE_DIR"
-cat > "$TRACE_FILE" <<'EOF'
-{"kind":"mono_equiv","name":"ad_taylor_p2_monomorphization","value":"PASS","snippet":"JIT+AOT literal-K Taylor towers are bit-exact with runtime towers: 441/441 checks","confidence":1.0}
-{"kind":"mono_equiv","name":"ad_taylor_p3_jet8_subsumed","value":"PASS","snippet":"JIT+AOT tagged Taylor towers preserve exact behavior through order 8: 441/441 checks","confidence":1.0}
-EOF
+printf '%s\n' \
+  '{"kind":"mono_equiv","name":"ad_taylor_p2_monomorphization","value":"PASS","snippet":"JIT+AOT literal-K Taylor towers are bit-exact with runtime towers: 441/441 checks","confidence":1.0}' \
+  '{"kind":"mono_equiv","name":"ad_taylor_p3_jet8_subsumed","value":"PASS","snippet":"JIT+AOT tagged Taylor towers preserve exact behavior through order 8: 441/441 checks","confidence":1.0}' \
+  | tee "$TRACE_FILE" >/dev/null
 
 echo "PASS: JIT+AOT monomorphized/runtime Taylor equivalence (441 checks each)"
 echo "$TRACE_FILE written"

@@ -39,6 +39,16 @@ LLVMModuleRef eshkol_generate_llvm_ir(const eshkol_ast_t* asts, size_t num_asts,
 LLVMModuleRef eshkol_generate_llvm_ir_library(const eshkol_ast_t* asts, size_t num_asts, const char* module_name);
 
 /*
+ * Generate a module with an explicit, call-scoped source context. This is the
+ * provenance-safe entry point for nested JIT module/import compilation: the
+ * same backend translation unit establishes the context and emits the IR,
+ * then restores the prior context before returning.
+ */
+LLVMModuleRef eshkol_generate_llvm_ir_with_source(
+    const eshkol_ast_t* asts, size_t num_asts, const char* module_name,
+    const char* source_path, const char* source_text);
+
+/*
  * Register external function declarations from ASTs (for linking with pre-compiled libraries)
  * This extracts function signatures from the ASTs and registers them as external declarations
  * so the compiler knows about them, but doesn't generate code (code comes from linked library).
@@ -81,6 +91,14 @@ void eshkol_set_optimization_level(int level);
  * @param source_text Full source text (for caret display in error messages)
  */
 void eshkol_set_source_context(const char* filepath, const char* source_text);
+
+/*
+ * Return the current source context. The returned pointers remain valid until
+ * the next eshkol_set_source_context() call. Nested JIT module loads use these
+ * accessors to restore the caller's diagnostics and coverage provenance.
+ */
+const char* eshkol_get_source_context_path(void);
+const char* eshkol_get_source_context_text(void);
 
 /*
  * Get current LLVM optimization level
@@ -343,11 +361,14 @@ void eshkol_repl_clear_last_value(void);
 // Stub implementations when LLVM backend is disabled
 #define eshkol_generate_llvm_ir(asts, num_asts, module_name) (NULL)
 #define eshkol_generate_llvm_ir_library(asts, num_asts, module_name) (NULL)
+#define eshkol_generate_llvm_ir_with_source(asts, num_asts, module_name, source_path, source_text) (NULL)
 #define eshkol_register_external_functions(asts, num_asts) do {} while(0)
 #define eshkol_enable_debug_info(source_filename) do {} while(0)
 #define eshkol_disable_debug_info() do {} while(0)
 #define eshkol_set_optimization_level(level) do {} while(0)
 #define eshkol_set_source_context(filepath, source_text) do {} while(0)
+#define eshkol_get_source_context_path() ("")
+#define eshkol_get_source_context_text() ("")
 #define eshkol_get_optimization_level() (0)
 #define eshkol_set_freestanding_codegen(enabled) do {} while(0)
 #define eshkol_get_freestanding_codegen() (0)

@@ -327,7 +327,14 @@ void arena_merge_to_parent(arena_t* dest, arena_t* src) {
     if (dest->thread_safe) arena_unlock(dest);
 }
 
+#if defined(_WIN32)
+// The native Windows runtime always links ESHKOL_RUNTIME_HOSTED_SRC, which
+// contains thread_pool.cpp. PE/COFF has no ELF-style weak function reference,
+// so use the required hosted-runtime symbol directly on Windows.
+extern "C" int eshkol_thread_pool_is_worker(void);
+#else
 extern "C" int eshkol_thread_pool_is_worker(void) __attribute__((weak));
+#endif
 
 /**
  * @brief Report whether the calling thread is a thread-pool worker (e.g. a parallel-map worker).
@@ -339,10 +346,14 @@ extern "C" int eshkol_thread_pool_is_worker(void) __attribute__((weak));
  * @return Non-zero if running on a thread-pool worker thread, 0 otherwise.
  */
 int arena_is_worker_thread(void) {
+#if defined(_WIN32)
+    return eshkol_thread_pool_is_worker();
+#else
     if (eshkol_thread_pool_is_worker) {
         return eshkol_thread_pool_is_worker();
     }
     return 0;
+#endif
 }
 
 eshkol_region_t* region_create(const char* name, size_t size_hint) {

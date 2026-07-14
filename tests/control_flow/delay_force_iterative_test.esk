@@ -1,0 +1,119 @@
+;; Production regression for R7RS promise identity, memoization, and the
+;; iterative delay-force trampoline. A recursive implementation overflows at
+;; this depth; the native and VM backends must path-compress the chain.
+
+(display "=== iterative delay-force regression ===") (newline)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name condition)
+  (display name) (display ": ")
+  (if condition
+      (begin (set! passed (+ passed 1)) (display "PASS"))
+      (begin (set! failed (+ failed 1)) (display "FAIL")))
+  (newline))
+
+(define evaluations 0)
+(define ordinary
+  (delay
+    (begin
+      (set! evaluations (+ evaluations 1))
+      42)))
+
+(check "promise? rejects vectors and accepts promises"
+       (and (promise? ordinary) (not (promise? #(0 1 2)))))
+(check "ordinary delay memoizes once"
+       (and (= (force ordinary) 42)
+            (= (force ordinary) 42)
+            (= evaluations 1)))
+
+(define nested (delay (delay 9)))
+(define nested-result (force nested))
+(check "ordinary delay preserves a nested promise"
+       (and (promise? nested-result) (= (force nested-result) 9)))
+
+(define ready (make-promise 73))
+(check "make-promise is already forced"
+       (and (promise? ready) (= (force ready) 73)))
+
+;; R7RS only memoizes a promise after its computation returns normally.  An
+;; exception therefore leaves the promise unforced so a later force can retry
+;; the thunk rather than observing a stale "evaluating" sentinel.
+(define retry-evaluations 0)
+(define retryable
+  (delay
+    (begin
+      (set! retry-evaluations (+ retry-evaluations 1))
+      (if (= retry-evaluations 1)
+          (raise 'retry-promise)
+          91))))
+(define first-force-raised
+  (guard (condition (#t #t))
+    (begin (force retryable) #f)))
+(check "failed promise evaluation remains retryable"
+       (and first-force-raised
+            (= (force retryable) 91)
+            (= retry-evaluations 2)))
+
+;; Invoking a continuation from inside a thunk abandons that evaluation just
+;; as a handled exception does.  The promise must be rolled back before the
+;; nonlocal transfer so a later force can run the thunk again and memoize its
+;; normal result.
+(define promise-escape-state (vector 0 #f #f))
+(define promise-escape-result
+  (call/cc
+    (lambda (k)
+      (vector-set! promise-escape-state 1 k)
+      'captured)))
+(if (equal? promise-escape-result 'captured)
+    (begin
+      (vector-set!
+        promise-escape-state 2
+        (delay
+          (begin
+            (vector-set! promise-escape-state 0
+                         (+ (vector-ref promise-escape-state 0) 1))
+            ((vector-ref promise-escape-state 1) 'escaped)
+            137)))
+      (force (vector-ref promise-escape-state 2)))
+    (begin
+      (vector-set! promise-escape-state 1 (lambda (value) value))
+      (check "continuation escape leaves promise retryable"
+             (and (= (force (vector-ref promise-escape-state 2)) 137)
+                  (= (force (vector-ref promise-escape-state 2)) 137)
+                  (= (vector-ref promise-escape-state 0) 2)))))
+
+(define (lazy-countdown n)
+  (if (= n 0)
+      (delay 17)
+      (delay-force (lazy-countdown (- n 1)))))
+
+(define deep (lazy-countdown 20000))
+(check "delay-force flattens 20000 links iteratively"
+       (and (= (force deep) 17) (= (force deep) 17)))
+
+;; Eshkol extends force to lazy futures. The delay-force dispatcher must route
+;; a produced future through the same force machine without reading an arena
+;; header from the future's raw allocation.
+(define raw-future (future (+ 1 1)))
+(check "promise? safely rejects futures"
+       (and (not (promise? raw-future)) (= (force raw-future) 2)))
+
+(define delayed-future (delay-force (future (+ 20 22))))
+(check "delay-force composes with futures"
+       (= (force delayed-future) 42))
+
+;; A self-referential delay-force graph must diagnose the cycle instead of
+;; consuming the native stack indefinitely.
+(define cyclic #f)
+(set! cyclic (delay-force cyclic))
+(check "cyclic promise is diagnosed"
+       (guard (condition (#t #t))
+         (begin (force cyclic) #f)))
+
+(display "Passed: ") (display passed) (newline)
+(display "Failed: ") (display failed) (newline)
+(display "=== iterative delay-force complete ===") (newline)
+
+(if (= failed 0) 0 (error "iterative delay-force regression" failed))

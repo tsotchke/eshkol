@@ -44,4 +44,18 @@
              "FAIL"))
 (newline)
 
+;; Handle zero is never allocated.  These probes are service-independent and
+;; guarantee that all three operations really reach the VM dispatcher.
+(display "T5 invalid websocket-send returns #f: ")
+(display (if (not (websocket-send 0 "invalid")) "PASS" "FAIL"))
+(newline)
+
+(display "T6 invalid websocket-receive returns #f: ")
+(display (if (not (websocket-receive 0 0)) "PASS" "FAIL"))
+(newline)
+
+(display "T7 invalid websocket-close returns #f: ")
+(display (if (not (websocket-close 0)) "PASS" "FAIL"))
+(newline)
+
 (display "=== websocket VM surface complete ===") (newline)

@@ -81,6 +81,9 @@
 
 #include "eshkol/backend/vm_limits.h"
 #include "eshkol/backend/vm.h"
+#ifndef ESHKOL_VM_WASM
+#include "eshkol/core/runtime.h"
+#endif
 
 /* quantum-random / -int / -range (vm_native.c dispatch cases 1860-1862) route
  * through the SAME eshkol_qrng_* entry points the LLVM AOT/JIT backend uses
@@ -144,6 +147,19 @@ typedef void regex_t;
 
 /* VM core: types, heap, stack operations */
 #include "vm_core.c"
+
+/* Implemented after BUILTINS[] is defined. vm_run.c calls this at the exact
+ * OP_NATIVE_CALL dispatch point so serialized bytecode retains alias-level
+ * execution evidence. */
+static void vm_language_coverage_native_dispatch(VM* vm, int native_id);
+static int vm_language_coverage_compilation_enabled(void);
+static uint32_t vm_language_coverage_name_hash(const char* name);
+static void vm_language_coverage_named_call(VM* vm, Value func);
+
+/* Compiler-only promise helpers.  They intentionally have no BUILTINS[]
+ * spelling: public delay/force/make-promise/promise? forms lower to them. */
+#define VM_NATIVE_PROMISE_CREATE 2098
+#define VM_NATIVE_PROMISE_P      2099
 
 /* Model serialization helpers */
 #include "vm_model_io.c"
@@ -672,6 +688,70 @@ static const BuiltinDef BUILTINS[] = {
     {NULL, 0, 0}
 };
 
+static int vm_language_coverage_compilation_enabled(void) {
+#ifdef ESHKOL_VM_WASM
+    return 0;
+#else
+    const char* trace_dir = getenv("ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR");
+    return trace_dir && *trace_dir;
+#endif
+}
+
+/* Stable across processes, architectures, and ESKB serialization.  The
+ * coverage gate maps the 31-bit FNV-1a value to the manifest and rejects any
+ * collision rather than risking attribution to the wrong public spelling. */
+static uint32_t vm_language_coverage_name_hash(const char* name) {
+    uint32_t hash = UINT32_C(2166136261);
+    if (!name) return 0;
+    for (const unsigned char* p = (const unsigned char*)name; *p; ++p) {
+        hash ^= (uint32_t)*p;
+        hash *= UINT32_C(16777619);
+    }
+    return hash & UINT32_C(0x7fffffff);
+}
+
+static int vm_builtin_count(void) {
+    int count = 0;
+    while (BUILTINS[count].name) count++;
+    return count;
+}
+
+static void vm_language_coverage_native_dispatch(VM* vm, int native_id) {
+#ifndef ESHKOL_VM_WASM
+    if (!vm || vm->pc < 2 || vm->pc > vm->code_len) return;
+    const Instr marker = vm->code[vm->pc - 2];
+    if (marker.op != OP_LANGUAGE_COVERAGE || marker.operand < 0) return;
+
+    const int builtin_index = marker.operand;
+    const int builtin_count = vm_builtin_count();
+    if (builtin_index >= builtin_count) return;
+
+    const BuiltinDef* def = &BUILTINS[builtin_index];
+    if (def->native_id != native_id) return;
+    eshkol_language_coverage_vm_dispatch(def->name, (uint32_t)native_id);
+#else
+    (void)vm;
+    (void)native_id;
+#endif
+}
+
+static void vm_language_coverage_named_call(VM* vm, Value func) {
+#ifndef ESHKOL_VM_WASM
+    if (!vm || func.type != VAL_CLOSURE || vm->pc < 2 || vm->pc > vm->code_len)
+        return;
+    const Instr marker = vm->code[vm->pc - 2];
+    if (marker.op != OP_LANGUAGE_COVERAGE_CALL || marker.operand < 0 ||
+        vm->language_coverage_call_pc != vm->pc - 1 ||
+        vm->language_coverage_call_hash != (uint32_t)marker.operand) {
+        return;
+    }
+    eshkol_language_coverage_vm_call_hash((uint32_t)marker.operand);
+#else
+    (void)vm;
+    (void)func;
+#endif
+}
+
 /* Emit preamble: define all builtins as first-class closures.
  * Each builtin becomes a closure that calls NATIVE_CALL with the right ID.
  * This makes builtins passable as arguments: (map even? lst) just works. */
@@ -690,6 +770,9 @@ static void emit_builtin_preamble(FuncChunk* c) {
         /* Function body: load args from local slots, call native, return */
         for (int a = 0; a < def->arity; a++) {
             chunk_emit(c, OP_GET_LOCAL, a);
+        }
+        if (vm_language_coverage_compilation_enabled()) {
+            chunk_emit(c, OP_LANGUAGE_COVERAGE, b);
         }
         chunk_emit(c, OP_NATIVE_CALL, def->native_id);
         chunk_emit(c, OP_RETURN, 0);
@@ -945,7 +1028,7 @@ static void compile_and_run(const char* source) {
         "STRRF","STRLN",
         "PAIRP","NUMP","STRP","BOOLP","PROCP","VECP",
         "SETCR","SETCD","POPN","OCLOS","CCALL","IVCC",
-        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID"
+        "GUARD","UNGRD","GETXN","PKRST","WNDPS","WNDPP","VOID","LCOV","LCAL"
     };
     const size_t opn_count = sizeof(opn) / sizeof(opn[0]);
     for (int i = 0; i < main_chunk.code_len; i++) {
@@ -1558,6 +1641,22 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
         case OP_NATIVE_CALL:
             if (operand < 0) return -1;
             break;
+        case OP_LANGUAGE_COVERAGE:
+            if (operand < 0 || operand >= vm_builtin_count()) return -1;
+            if (pc + 1 >= mod->code_len ||
+                mod->opcodes[pc + 1] != OP_NATIVE_CALL ||
+                mod->operands[pc + 1] != BUILTINS[operand].native_id) {
+                return -1;
+            }
+            break;
+        case OP_LANGUAGE_COVERAGE_CALL:
+            if (operand < 0) return -1;
+            if (pc + 1 >= mod->code_len ||
+                (mod->opcodes[pc + 1] != OP_CALL &&
+                 mod->opcodes[pc + 1] != OP_TAIL_CALL)) {
+                return -1;
+            }
+            break;
         default:
             break;
         }
@@ -1732,6 +1831,9 @@ static void eshkol_vm_prepare_entry(EshkolVmHandle* h, int function_index) {
     vm->error = 0;
     vm->n_handlers = 0;
     vm->n_winds = 0;
+    vm->promise_eval_head = NIL_VAL;
+    vm->native_call_depth = 0;
+    vm->native_escape_ready = 0;
     vm->current_exception = NIL_VAL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
 }

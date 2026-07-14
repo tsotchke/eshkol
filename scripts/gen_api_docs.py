@@ -671,7 +671,13 @@ def render_header_page(header: Path, symbols: list[Symbol], file_brief: str = ""
         for sym in documented:
             out.append(f"### `{sym.name}`\n")
             out.append(f"*{KIND_LABEL.get(sym.kind, sym.kind)}* — line {sym.line}\n")
-            out.append(f"```c\n{sym.signature}\n```\n")
+            # Comment stripping preserves source columns with spaces; never
+            # carry those padding bytes into generated Markdown where they
+            # become trailing-whitespace churn and fail the release diff gate.
+            clean_signature = "\n".join(
+                line.rstrip() for line in sym.signature.splitlines()
+            )
+            out.append(f"```c\n{clean_signature}\n```\n")
             if sym.brief:
                 out.append(f"{sym.brief}\n")
             if sym.params:

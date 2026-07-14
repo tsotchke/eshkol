@@ -14,16 +14,24 @@ generative exposure engines actually exercise, names the gap, and turns
 | `coverage_run.json` | `scripts/language_coverage.py` | Per-run sidecar: covered / total, covered fraction, covered + uncovered names by category. |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
 
-Regenerate everything:
+Collect evidence and regenerate everything:
 
 ```sh
 python3 scripts/gen_language_surface.py     # -> language_surface.json
-python3 scripts/language_coverage.py        # -> coverage_run.json  (+ prints summary)
-./scripts/run_language_coverage.sh          # check manifest + policy; write ICC JSONL
+# With both a default test build and an opt-in quantum build present, this
+# creates fresh isolated traces, runs the complete deterministic corpus, and
+# proves the 100% policy without reusing evidence from an earlier shell:
+BUILD_DIR=build QUANTUM_BUILD_DIR=build-quantum \
+  ./scripts/run_language_coverage.sh
+
+# Existing trace directories may still be aggregated explicitly for forensic
+# comparison or CI artifact replay:
+LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS=/tmp/core-trace:/tmp/quantum-trace \
+  BUILD_DIR=build ./scripts/run_language_coverage.sh
 ```
 
-Both scripts are pure functions of the source tree and the (deterministic,
-seeded) generators, so output is reproducible and diffable in CI.
+The corpus and instrumentation are deterministic; the trace is per-process TSV
+so concurrent test workers can append evidence without sharing mutable state.
 
 ## How the manifest is built (ground truth)
 
@@ -52,40 +60,36 @@ Each builtin records which backend(s) register it (`native`, `vm`,
 
 `language_coverage.py` is the "ICC tracks the language dynamically" mechanism:
 
-1. Import both generative engines in-process, and read the complete deterministic
-   CI corpus (including the quantum acceptance corpus and explicit VM/AOT
-   extension suites) that the workflow compiles and runs:
-   `gen_generative_corpus.generate_programs()` and
-   `gen_ad_adversarial.Gen().generate()` (plus their in-language preludes,
-   which are compiled and executed as part of every program), the complete
-   `run_all_tests.sh` Scheme corpus, and the opt-in `tests/quantum/*.esk` files.
-2. Scan the concatenated generated source with a small s-expression head
-   collector: the symbol immediately following each `(` is an
-   application/operator head, and the reader macros `'` `` ` `` `,` `,@` and
-   `#(` are mapped to `quote`/`quasiquote`/`unquote`/`unquote-splicing`/
-   `vector`. This yields the exact set of constructs the corpus *invokes*.
-3. Intersect with the manifest surface → **covered**; the complement →
-   **uncovered**. Emit `coverage_run.json` and a ranked summary.
+1. The parser records exact source spelling and location (`P`) only when
+   `ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR` is set before compilation. It also
+   records fully accepted top-level forms (`A`) and expected compile-time
+   rejections (`R`, currently `syntax-error`).
+2. LLVM code generation records reached AST nodes (`G`) and injects lightweight
+   runtime hooks into that instrumented module. Executed operations (`O`) and
+   direct calls (`C`) are emitted by the running JIT/AOT program.
+3. The bytecode compiler serializes two exact dispatch witnesses. Native calls
+   carry their native-ID alias marker (`V name`), while direct Scheme closure
+   calls carry a stable 31-bit FNV-1a marker (`V hash @call`). The VM validates
+   each marker immediately beside the actual `CALL`/`TAIL_CALL` dispatch;
+   `language_coverage.py` resolves hashes only against the checked-in manifest
+   and rejects collisions rather than granting ambiguous credit.
+4. `language_coverage.py` grants ordinary builtins and runtime forms credit only
+   from `O`/`C`/validated `V`. A parser spelling is joined to execution by normalized
+   source+line+column, so aliases and reader forms remain auditable after parser
+   lowering. `A`/`G` can credit only an explicit allowlist of forms whose
+   semantics are compile-time (for example `define`, `require`, and
+   `define-syntax`); negative forms require an `R` event.
+5. The source-head collector remains as a diagnostic. Its
+   `source_exposed_only_names` receive **zero release credit**. A call in an
+   untaken branch has `P` and `G`, but no `O`/`C`, and is therefore uncovered.
+6. The regression test `scripts/test_runtime_language_coverage.py` exercises a
+   real untaken branch, exact ESKB native aliases, exact serialized direct
+   Scheme calls, collision rejection, and an unset trace environment.
 
-### Why source-scan rather than runtime instrumentation
-
-The head-collector reads the generated *source*, which for these engines is
-exactly what gets compiled and run (the generators emit closed, total programs;
-nothing is dead). This needs no compiler changes and no execution, so it runs
-in CI in milliseconds and is engine-agnostic — any new generator is measured by
-adding one source accessor. The sidecar records `exercised_by_quantum_tests`
-separately so Moonlab-only coverage remains auditable.
-
-### Upgrade path: true execution-time instrumentation
-
-For engines whose generated programs branch (so that "contains `X`" overstates
-"executed `X`"), the same sidecar shape is produced by a runtime pass instead:
-each `NATIVE_CALL`/intrinsic emission records its builtin id, the VM/AOT runtime
-appends the exercised ids to a per-program coverage log, and
-`language_coverage.py` unions those logs instead of scanning source. The
-manifest already keys builtins by `native_id`, so the log→name join is direct.
-The JSON contract (`covered`, `surface_total`, `covered_fraction`,
-`uncovered_by_category`) is identical, so downstream ICC wiring does not change.
+Normal generated programs contain no hooks unless tracing was enabled in the
+compiler process. Parser dispatch has one cached false branch in production;
+trace formatting/allocation occurs only in an opt-in run. Trace writes are
+deduplicated per process and flushed in batches.
 
 ## Wiring into the ICC completion-oracle
 
@@ -97,7 +101,7 @@ criterion. `--trace PATH` writes them as fresh JSONL evidence:
 ```json
 {"kind": "runtime_event", "event": "language_surface_coverage",
  "name": "language_surface_coverage", "value": "PASS",
- "covered_fraction": 0.7661, "covered": 809, "surface_total": 1056,
+ "covered_fraction": 1.0, "covered": 1056, "surface_total": 1056,
  "status": "PASSED"}
 ```
 
