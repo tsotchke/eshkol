@@ -116,6 +116,25 @@ static void append_space_separated_link_args(const char* raw_args,
     }
 }
 
+static void append_host_agent_ffi_dependency_link_args(
+    std::vector<std::string>& link_args) {
+    std::vector<std::string> configured_args;
+    append_space_separated_link_args(
+        ESHKOL_HOST_AGENT_FFI_LINK_ARGS, configured_args);
+
+    for (const auto& item : configured_args) {
+        // The packaged/build-tree archive is resolved relative to the runtime
+        // archive below. Do not replay CMake's build-machine archive path or
+        // its force/whole-archive wrapper; retain only its dependency closure.
+        if (item == "-Wl,--whole-archive" ||
+            item == "-Wl,--no-whole-archive" ||
+            item.find("eshkol-agent-ffi") != std::string::npos) {
+            continue;
+        }
+        link_args.emplace_back(item);
+    }
+}
+
 // Noesis bug report #2 (2026-07-04), part (b): a standalone `eshkol-run -r`
 // AOT link that races a *concurrent* rebuild of one of the static runtime
 // archives (libeshkol-runtime.a / libeshkol-agent-ffi.a — e.g. a `cmake
@@ -4910,6 +4929,20 @@ int main(int argc, char **argv)
             return 1;
         }
 
+        if (needs_agent_ffi) {
+            const auto agent_ffi_path =
+                std::filesystem::path(runtime_lib).parent_path() /
+                eshkol::platform::static_library_name("eshkol-agent-ffi");
+            if (!std::filesystem::is_regular_file(agent_ffi_path)) {
+                eshkol_error("Agent module requires %s, but the archive is missing",
+                             agent_ffi_path.string().c_str());
+                eshkol_error("Reinstall Eshkol with its complete lib directory");
+                return 1;
+            }
+            link_args.emplace_back(agent_ffi_path.generic_string());
+            append_host_agent_ffi_dependency_link_args(link_args);
+        }
+
         // Add linked libraries
         for (const auto &linked_lib : linked_libs) {
             link_args.emplace_back("-l" + std::string(linked_lib));
@@ -4969,31 +5002,6 @@ int main(int argc, char **argv)
 
         append_host_runtime_link_args(link_args);
         append_host_llvm_link_args(link_args);
-
-        // #248: Splice agent-FFI link args when the user's source has
-        // any (require agent.…). Empty when the build wasn't
-        // configured with libcurl / sqlite3 / pcre2 — in that case
-        // calls to qllm_http_get / etc. would still hit the existing
-        // "explicit unavailable" stubs at runtime, same as before.
-        // Splitting on whitespace is safe because we constructed
-        // ESHKOL_HOST_AGENT_FFI_LINK_ARGS from pkg-config and CMake
-        // path lookups; user paths with spaces would be a problem,
-        // but pkg-config produces system-style absolute paths which
-        // are never spaced in practice.
-        if (needs_agent_ffi) {
-            std::string raw = ESHKOL_HOST_AGENT_FFI_LINK_ARGS;
-            if (!raw.empty()) {
-                size_t pos = 0;
-                while (pos < raw.size()) {
-                    size_t end = raw.find(' ', pos);
-                    if (end == std::string::npos) end = raw.size();
-                    if (end > pos) {
-                        link_args.emplace_back(raw.substr(pos, end - pos));
-                    }
-                    pos = end + 1;
-                }
-            }
-        }
 
 // Set 512 MB main-thread stack so deeply recursive Scheme code
 // (e.g. nested letrec / non-tail-recursive helpers in
