@@ -36,13 +36,15 @@
 #   ESHKOL_HOST_CXX_COMPILER
 #                   Windows LLVM SDK clang++.exe used for generated AOT links.
 #   GPU_GATE_CMAKE_GENERATOR / GPU_GATE_CMAKE_PLATFORM / GPU_GATE_CMAKE_TOOLSET
-#                   Optional Windows generator overrides. The default prefers
-#                   Ninja with the LLVM SDK's clang-cl and MSVC as nvcc's host
-#                   compiler from an active VsDevCmd environment. This does not
-#                   require CUDA's optional Visual Studio integration;
-#                   otherwise it selects the newest installed VS 2022+
-#                   generator. Set GPU_GATE_CMAKE_TOOLSET=ClangCL only when
-#                   that optional Visual Studio component is installed.
+#                   Optional generator overrides. On macOS/Linux the default
+#                   prefers Ninja when installed and otherwise uses Unix
+#                   Makefiles. On Windows the default prefers Ninja with the
+#                   LLVM SDK's clang-cl and MSVC as nvcc's host compiler from
+#                   an active VsDevCmd environment. This does not require
+#                   CUDA's optional Visual Studio integration; otherwise it
+#                   selects the newest installed VS 2022+ generator. Set
+#                   GPU_GATE_CMAKE_TOOLSET=ClangCL only when that optional
+#                   Visual Studio component is installed.
 set -u
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$(pwd)"
@@ -251,7 +253,18 @@ EOF
         [ -n "${LLVM_CONFIG:-}" ] \
             && cmake_args+=(-DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG")
     else
-        cmake_args+=(-G Ninja -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG")
+        local generator="${GPU_GATE_CMAKE_GENERATOR:-}"
+        if [ -z "$generator" ]; then
+            if command -v ninja >/dev/null 2>&1; then
+                generator='Ninja'
+            else
+                generator='Unix Makefiles'
+            fi
+        fi
+        cmake_args+=(
+            -G "$generator"
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG"
+        )
     fi
 
     cmake "${cmake_args[@]}" > "$build_dir.configure.log" 2>&1 \
