@@ -24,6 +24,7 @@
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
+#include "jit_target_config.h"  // Windows ARM64 external-data import indirection
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -91,9 +92,12 @@ static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
  * the generated prologue can contain 28 bytes while its `.seh_*` directives
  * describe only 24.  LLVM's assembler correctly rejects that object, and
  * accepting it would be unsafe because Eshkol exceptions unwind through SEH.
- * Keep the correct Small model on Windows ARM64 and rely on per-function/data
- * COFF sections plus Branch26RangeExtensionPlugin's same-section veneers for
- * unlimited call reach.  Other targets preserve the existing Large model.
+ * Keep the SEH-correct Small model on Windows ARM64. RuntimeDyldCOFFAArch64
+ * supplies absolute branch stubs for external calls, the JITLink plugin below
+ * handles intra-object far calls whenever that object layer is available, and
+ * prepare_jit_module_for_target() lowers external data through COFF import
+ * address cells so host/JIT address separation has no +/-4 GiB limit. Other
+ * targets preserve the existing Large model.
  *
  * AArch64 ELF also needs function/data sections because its Large model is
  * incomplete for intra-object Branch26 calls; the same JITLink veneer handles
@@ -1967,6 +1971,11 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
         }
     }
 
+    // Windows ARM64 Small-model code must reach data exported by the host
+    // executable through RuntimeDyld's nearby COFF import cells. Apply this to
+    // every live REPL module before validation and ConcurrentIRCompiler.
+    eshkol::prepare_jit_module_for_target(*module, jit_->getTargetTriple());
+
     // Verify the module
     std::string error_msg;
     raw_string_ostream error_stream(error_msg);
@@ -2526,11 +2535,12 @@ bool ReplJITContext::loadStdlib() {
                     if (c == '/' || c == '\\' || c == ':') c = '_';
                 std::filesystem::path bc_fs(bc_path);
                 // Bump the version tag whenever the emit config below changes
-                // (code model, sections, opt level) so an existing cached object
-                // built with a different config is not reused.
+                // (code model, sections, opt level, or external-data import
+                // lowering) so an existing cached object built with a different
+                // contract is not reused.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-v3-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
 
                 std::error_code ec;
                 bool have_obj = std::filesystem::exists(cache_o, ec);
@@ -2547,6 +2557,8 @@ bool ReplJITContext::loadStdlib() {
                                     (*emit_tm)->createDataLayout());
                                 (*emit_mod)->setTargetTriple(
                                     (*emit_tm)->getTargetTriple());
+                                eshkol::prepare_jit_module_for_target(
+                                    **emit_mod, (*emit_tm)->getTargetTriple());
                                 std::filesystem::path tmp_o = cache_o;
                                 tmp_o += ".tmp";
                                 std::error_code wec;
@@ -2613,6 +2625,8 @@ bool ReplJITContext::loadStdlib() {
                 if (stdlib_module->getDataLayout().isDefault()) {
                     stdlib_module->setDataLayout(jit_->getDataLayout());
                 }
+                eshkol::prepare_jit_module_for_target(
+                    *stdlib_module, jit_->getTargetTriple());
 
                 auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
                 auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
