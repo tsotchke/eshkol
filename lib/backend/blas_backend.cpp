@@ -220,6 +220,8 @@ const char* getBackendName() {
     return "Apple Accelerate";
 #elif defined(ESHKOL_BLAS_OPENBLAS)
     return "OpenBLAS";
+#elif defined(ESHKOL_BLAS_EIGEN)
+    return "Eigen native kernels";
 #else
     return "Generic CBLAS";
 #endif

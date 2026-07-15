@@ -83,11 +83,7 @@ static void* arena_calloc(arena_t* arena, size_t size) {
 }
 
 #ifdef ESHKOL_BLAS_ENABLED
-#ifdef __APPLE__
-#include <Accelerate/Accelerate.h>
-#else
-#include <cblas.h>
-#endif
+#include <eshkol/backend/cblas_compat.h>
 #endif
 
 /* Forward declaration: bridge backward dispatch from lib/bridge/tensor_backward.cpp */

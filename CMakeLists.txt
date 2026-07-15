@@ -372,6 +372,7 @@ set(ESHKOL_BUILD_BACKEND ON)
 set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
+set(ESHKOL_HOST_BLAS_LINK_ARGS "")
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
 configure_file(
@@ -487,32 +488,55 @@ else()
         eshkol_validate_llvm_major("${LLVM_PACKAGE_VERSION}" "${LLVM_DIR}")
 
         if(TARGET LLVMDebugInfoPDB)
-            set(_eshkol_diaguids_lib_amd64 "")
-            set(_eshkol_diaguids_lib_arm64 "")
-            foreach(_eshkol_dia_arch IN ITEMS amd64 arm64)
-                file(GLOB _eshkol_dia_sdk_libs LIST_DIRECTORIES FALSE
-                    "C:/Program Files/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
-                    "C:/Program Files (x86)/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
-                )
-                list(LENGTH _eshkol_dia_sdk_libs _eshkol_dia_sdk_count)
-                if(_eshkol_dia_sdk_count GREATER 0)
-                    list(GET _eshkol_dia_sdk_libs 0 _eshkol_diaguids_lib)
-                    if(_eshkol_dia_arch STREQUAL "amd64")
-                        set(_eshkol_diaguids_lib_amd64 "${_eshkol_diaguids_lib}")
-                    else()
-                        set(_eshkol_diaguids_lib_arm64 "${_eshkol_diaguids_lib}")
-                    endif()
-                endif()
-            endforeach()
-
             get_target_property(_eshkol_pdb_link_libs LLVMDebugInfoPDB INTERFACE_LINK_LIBRARIES)
             if(_eshkol_pdb_link_libs)
                 set(_eshkol_pdb_link_libs_patched "")
                 foreach(_llvm_dep IN LISTS _eshkol_pdb_link_libs)
-                    if(_llvm_dep MATCHES "DIA SDK/lib/amd64/diaguids\\.lib$" AND _eshkol_diaguids_lib_amd64)
-                        list(APPEND _eshkol_pdb_link_libs_patched "${_eshkol_diaguids_lib_amd64}")
-                    elseif(_llvm_dep MATCHES "DIA SDK/lib/arm64/diaguids\\.lib$" AND _eshkol_diaguids_lib_arm64)
-                        list(APPEND _eshkol_pdb_link_libs_patched "${_eshkol_diaguids_lib_arm64}")
+                    if(_llvm_dep MATCHES "[/\\\\]DIA SDK[/\\\\]lib[/\\\\](amd64|arm64)[/\\\\]diaguids\\.lib$" AND
+                       NOT EXISTS "${_llvm_dep}")
+                        set(_eshkol_dia_arch "${CMAKE_MATCH_1}")
+                        set(_eshkol_dia_sdk_libs "")
+
+                        # LLVM's official Windows SDK has historically embedded
+                        # the absolute DIA SDK path from the machine that produced
+                        # LLVMExports.cmake.  Imported targets must remain relocatable:
+                        # resolve the same architecture's GUID definitions from the
+                        # active Visual Studio instance instead of retaining a stale
+                        # VS edition/year path.
+                        foreach(_eshkol_vs_root IN ITEMS
+                                "${CMAKE_GENERATOR_INSTANCE}"
+                                "$ENV{VSINSTALLDIR}")
+                            if(NOT "${_eshkol_vs_root}" STREQUAL "")
+                                file(TO_CMAKE_PATH "${_eshkol_vs_root}" _eshkol_vs_root_normalized)
+                                list(APPEND _eshkol_dia_sdk_libs
+                                    "${_eshkol_vs_root_normalized}/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib")
+                            endif()
+                        endforeach()
+                        file(GLOB _eshkol_dia_sdk_globbed LIST_DIRECTORIES FALSE
+                            "C:/Program Files/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
+                            "C:/Program Files (x86)/Microsoft Visual Studio/*/*/DIA SDK/lib/${_eshkol_dia_arch}/diaguids.lib"
+                        )
+                        list(APPEND _eshkol_dia_sdk_libs ${_eshkol_dia_sdk_globbed})
+
+                        set(_eshkol_diaguids_replacement "")
+                        foreach(_eshkol_dia_candidate IN LISTS _eshkol_dia_sdk_libs)
+                            if(EXISTS "${_eshkol_dia_candidate}")
+                                set(_eshkol_diaguids_replacement "${_eshkol_dia_candidate}")
+                                break()
+                            endif()
+                        endforeach()
+
+                        if(NOT _eshkol_diaguids_replacement)
+                            message(FATAL_ERROR
+                                "LLVM ${LLVM_PACKAGE_VERSION} references missing DIA library '${_llvm_dep}', "
+                                "and no ${_eshkol_dia_arch} diaguids.lib was found in the active Visual Studio "
+                                "instance '${CMAKE_GENERATOR_INSTANCE}'. Install the Visual Studio DIA SDK component.")
+                        endif()
+
+                        message(STATUS
+                            "LLVM DIA SDK: replacing non-relocatable '${_llvm_dep}' with "
+                            "'${_eshkol_diaguids_replacement}'")
+                        list(APPEND _eshkol_pdb_link_libs_patched "${_eshkol_diaguids_replacement}")
                     else()
                         list(APPEND _eshkol_pdb_link_libs_patched "${_llvm_dep}")
                     endif()
@@ -933,6 +957,58 @@ function(eshkol_windows_export_runtime target_name)
     target_link_options(${target_name} PRIVATE "${_def_file}")
 endfunction()
 
+# Publish the bounded agent capability ABI from executables that host the
+# standalone VM.  vm_native.c resolves optional production capabilities from
+# the current process so one bytecode runtime works with or without the agent
+# archive.  Force-loading the archive is necessary but not sufficient: ELF
+# needs --export-dynamic, Mach-O needs -export_dynamic, and PE needs an explicit
+# export table for GetProcAddress(GetModuleHandle(NULL), ...).
+function(eshkol_export_host_agent_api target_name)
+    if(NOT TARGET ${target_name})
+        message(FATAL_ERROR
+            "eshkol_export_host_agent_api called for missing target '${target_name}'")
+    endif()
+
+    if(WIN32)
+        file(STRINGS
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc/eshkol/agent_capabilities.h"
+            _eshkol_agent_api_declarations
+            REGEX "^ESHKOL_AGENT_API.*eshkol_[A-Za-z0-9_]+\\(")
+        set(_eshkol_agent_exports "")
+        foreach(_eshkol_agent_declaration IN LISTS _eshkol_agent_api_declarations)
+            string(REGEX MATCH "eshkol_[A-Za-z0-9_]+"
+                _eshkol_agent_symbol "${_eshkol_agent_declaration}")
+            if(NOT "${_eshkol_agent_symbol}" STREQUAL "")
+                list(APPEND _eshkol_agent_exports "${_eshkol_agent_symbol}")
+            endif()
+        endforeach()
+        list(REMOVE_DUPLICATES _eshkol_agent_exports)
+        list(SORT _eshkol_agent_exports)
+        if(NOT _eshkol_agent_exports)
+            message(FATAL_ERROR "No host agent API symbols found for ${target_name}")
+        endif()
+
+        set(_eshkol_agent_def
+            "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_agent_exports.def")
+        file(WRITE "${_eshkol_agent_def}"
+            "; Generated from inc/eshkol/agent_capabilities.h\nEXPORTS\n")
+        foreach(_eshkol_agent_symbol IN LISTS _eshkol_agent_exports)
+            file(APPEND "${_eshkol_agent_def}" "    ${_eshkol_agent_symbol}\n")
+        endforeach()
+        if(MSVC)
+            target_link_options(${target_name} PRIVATE
+                "/DEF:${_eshkol_agent_def}")
+        else()
+            target_link_options(${target_name} PRIVATE
+                "${_eshkol_agent_def}")
+        endif()
+    elseif(APPLE)
+        target_link_options(${target_name} PRIVATE "-Wl,-export_dynamic")
+    else()
+        target_link_options(${target_name} PRIVATE "-Wl,--export-dynamic")
+    endif()
+endfunction()
+
 # Debug output for troubleshooting
 if(ESHKOL_LLVM_USE_CMAKE_PACKAGE)
     message(STATUS "LLVM Package: ${LLVM_DIR}")
@@ -1136,8 +1212,37 @@ option(ESHKOL_BLAS_ENABLED "Enable BLAS acceleration for matrix operations" ON)
 if(ESHKOL_BLAS_ENABLED)
     set(BLAS_FOUND FALSE)
     set(BLAS_LIBRARIES "")
+    set(ESHKOL_BLAS_USAGE_TARGET "")
+    set(ESHKOL_HOST_BLAS_LINK_ARGS "")
 
-    if(APPLE)
+    if(WIN32 AND ESHKOL_USING_MSVC)
+        # A MinGW OpenBLAS archive is not ABI-compatible with ClangCL/MSVC:
+        # it brings MinGW CRT and GNU OpenMP dependencies into a COFF link.
+        # Use Eigen's native, vectorized kernels instead. This pinned,
+        # header-only provider needs no extra runtime DLL or raw AOT link
+        # argument and supports both Windows x64 and ARM64.
+        include(FetchContent)
+        set(EIGEN_BUILD_TESTING OFF CACHE BOOL "Build Eigen tests" FORCE)
+        set(EIGEN_BUILD_BLAS OFF CACHE BOOL "Build Eigen BLAS library" FORCE)
+        set(EIGEN_BUILD_LAPACK OFF CACHE BOOL "Build Eigen LAPACK library" FORCE)
+        set(EIGEN_BUILD_DOC OFF CACHE BOOL "Build Eigen documentation" FORCE)
+        set(EIGEN_BUILD_DEMOS OFF CACHE BOOL "Build Eigen demos" FORCE)
+        set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
+        set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
+        FetchContent_Declare(eshkol_eigen
+            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+            GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
+            GIT_SHALLOW FALSE
+        )
+        FetchContent_MakeAvailable(eshkol_eigen)
+        if(NOT TARGET Eigen3::Eigen)
+            message(FATAL_ERROR "Pinned Eigen 5.0.1 did not define Eigen3::Eigen")
+        endif()
+        set(BLAS_FOUND TRUE)
+        set(ESHKOL_BLAS_USAGE_TARGET Eigen3::Eigen)
+        add_compile_definitions(ESHKOL_BLAS_EIGEN)
+        message(STATUS "BLAS: pinned Eigen 5.0.1 native Windows kernels")
+    elseif(APPLE)
         # Use Apple Accelerate framework (built into macOS)
         # Provides highly optimized BLAS for Apple Silicon (NEON, AMX)
         find_library(ACCELERATE_FRAMEWORK Accelerate)
@@ -1151,14 +1256,38 @@ if(ESHKOL_BLAS_ENABLED)
         # Try OpenBLAS on Linux/other platforms
         find_package(BLAS QUIET)
         if(BLAS_FOUND)
+            # FindBLAS exposes the concrete driver arguments separately from
+            # its convenient BLAS::BLAS target.  Preserve that raw closure for
+            # eshkol-run's generated-program link: imported INTERFACE targets
+            # do not necessarily have an IMPORTED_LOCATION, so reducing
+            # BLAS::BLAS through eshkol_append_host_runtime_link_arg() can
+            # silently emit no BLAS argument at all.
+            if(BLAS_LINKER_FLAGS)
+                separate_arguments(_eshkol_blas_linker_flags
+                    NATIVE_COMMAND "${BLAS_LINKER_FLAGS}")
+                list(APPEND ESHKOL_HOST_BLAS_LINK_ARGS
+                    ${_eshkol_blas_linker_flags})
+            endif()
+            list(APPEND ESHKOL_HOST_BLAS_LINK_ARGS ${BLAS_LIBRARIES})
+            if(TARGET BLAS::BLAS)
+                set(BLAS_LIBRARIES BLAS::BLAS)
+                set(ESHKOL_BLAS_USAGE_TARGET BLAS::BLAS)
+            endif()
             add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
             message(STATUS "BLAS: ${BLAS_LIBRARIES}")
         else()
-            # Try pkg-config for OpenBLAS
-            pkg_check_modules(OPENBLAS QUIET openblas)
+            # Try pkg-config for OpenBLAS. Keep the imported target rather than
+            # reducing pkg-config's result to a bare library name: the target
+            # preserves include paths, concrete archives, and transitive flags.
+            pkg_check_modules(OPENBLAS QUIET IMPORTED_TARGET GLOBAL openblas)
             if(OPENBLAS_FOUND)
                 set(BLAS_FOUND TRUE)
-                set(BLAS_LIBRARIES ${OPENBLAS_LIBRARIES})
+                set(BLAS_LIBRARIES PkgConfig::OPENBLAS)
+                set(ESHKOL_BLAS_USAGE_TARGET PkgConfig::OPENBLAS)
+                # OPENBLAS_LDFLAGS is the concrete, transitive driver closure
+                # represented by the imported pkg-config target above.  It is
+                # what packaged/raw AOT links need after libeshkol-runtime.a.
+                set(ESHKOL_HOST_BLAS_LINK_ARGS ${OPENBLAS_LDFLAGS})
                 add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
                 message(STATUS "BLAS: OpenBLAS via pkg-config")
             endif()
@@ -1421,8 +1550,8 @@ if(NOT APPLE)
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
 
-    if(BLAS_FOUND AND BLAS_LIBRARIES)
-        foreach(_blas_lib IN LISTS BLAS_LIBRARIES)
+    if(BLAS_FOUND AND ESHKOL_HOST_BLAS_LINK_ARGS)
+        foreach(_blas_lib IN LISTS ESHKOL_HOST_BLAS_LINK_ARGS)
             eshkol_append_host_runtime_link_arg("${_blas_lib}")
         endforeach()
     endif()
@@ -1772,6 +1901,7 @@ set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
 set(ESHKOL_BACKEND_RUNTIME_SRC
   lib/backend/blas_backend.cpp
   lib/backend/cpu_features.cpp
+  lib/backend/eigen_cblas_compat.cpp
   lib/backend/parallel_codegen.cpp
   lib/backend/tensor_backward.cpp
   # Shared conv2d forward kernel (eshkol_rt_conv2d) the generated code calls;
@@ -1884,6 +2014,13 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
+# Object-library sources are compiled before eshkol-runtime/eshkol-static link
+# interfaces are evaluated.  Apply BLAS usage requirements to the object that
+# includes cblas.h as well as to the final archives below.
+if(ESHKOL_BLAS_USAGE_TARGET)
+    target_link_libraries(eshkol-backend-runtime-obj PRIVATE
+        ${ESHKOL_BLAS_USAGE_TARGET})
+endif()
 if(TARGET eshkol-vm-unity-obj)
     eshkol_apply_common_compile_settings(eshkol-vm-unity-obj)
     eshkol_apply_vm_limit_definitions(eshkol-vm-unity-obj)
@@ -1984,6 +2121,18 @@ endif()
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-runtime PUBLIC ${BLAS_LIBRARIES})
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
+    add_executable(eshkol-blas-provider-test
+        tests/backend/blas_provider_test.cpp)
+    target_include_directories(eshkol-blas-provider-test PRIVATE
+        ${CMAKE_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-blas-provider-test PRIVATE eshkol-runtime)
+    if(BUILD_TESTING)
+        add_test(NAME blas-provider COMMAND eshkol-blas-provider-test)
+        set_tests_properties(blas-provider PROPERTIES TIMEOUT 30)
+    endif()
 endif()
 
 # Link MLIR and StableHLO libraries if available (for full XLA backend)
@@ -3361,16 +3510,12 @@ endif()
 
 # ===== Agent FFI Modules =====
 # C bridge libraries for the Eshkol agent (terminal, regex, sqlite, crypto).
-# The Unix implementations use POSIX-only APIs (termios, pthread, fork/exec,
-# /dev/tty); the Windows ports (ConPTY, CreateProcess+pipes, Windows
-# Credential Manager) are slated for v1.4-platform. Default to OFF on
-# Windows so the rest of the toolchain (LLVM backend, REPL, codegen,
-# stdlib) builds and tests cleanly there in the meantime.
-if(WIN32)
-    option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules (POSIX-only)" OFF)
-else()
-    option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
-endif()
+# The agent runtime is a supported release component on every host. POSIX uses
+# termios/poll/posix_spawn/kqueue-or-inotify/libcurl; Windows uses the Console
+# API, CreateProcessW + inherited pipes, ReadDirectoryChangesW, Winsock, and
+# WinHTTP. Keep the option for embedders that intentionally want a smaller
+# runtime, but never silently disable or reduce it merely because of the host.
+option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
 
 if(ESHKOL_BUILD_AGENT_FFI)
     set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
@@ -3387,18 +3532,17 @@ if(ESHKOL_BUILD_AGENT_FFI)
         set(AGENT_FFI_SOURCES
             ${AGENT_FFI_DIR}/agent_terminal.c
             ${AGENT_FFI_DIR}/agent_subprocess.c
+            ${AGENT_FFI_DIR}/agent_sse.c
         )
 
-        # HTTP server / WebSocket / Unix domain socket primitives.
-        # POSIX-only (uses sockets, poll, accept) — already gated by the
-        # surrounding ESHKOL_BUILD_AGENT_FFI=OFF on Windows.
+        # HTTP server / WebSocket / local-socket primitives.  The C source
+        # selects Winsock/AF_UNIX or POSIX sockets at compile time.
         if(EXISTS "${AGENT_FFI_DIR}/agent_http_server.c")
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_server.c)
         endif()
 
-        # Additional agent FFI primitives — all POSIX-only and gated above.
-        # Each module is independent and gracefully degrades when its
-        # optional system library is absent (HAS_* compile defines).
+        # Additional agent FFI primitives.  Each source owns its platform
+        # implementation; Windows is not a reduced/stub build.
         #
         # NOTE: agent_concurrency.c is intentionally OMITTED — it duplicates
         # eshkol_mutex_* / eshkol_condvar_* / etc. already defined by
@@ -3408,48 +3552,306 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # re-enabling.  See agent's own eshkol-side wrappers — they use
         # the core.threads primitives directly.
         foreach(_agent_extra_src
-                agent_compression.c     # zlib / gzip — compiles to stub w/o HAS_ZLIB
+                agent_compression.c     # bundled zlib / gzip
                 agent_eagle_training.c  # native EAGLE linear-head train step
                 agent_kb_io.c           # KB JSON persistence
                 agent_platform.c        # filesystem, time, mmap, glob, base64url, uuid
                 agent_poll.c            # IO multiplexing (poll/select)
                 agent_signal.c          # SIGINT/SIGTERM/SIGHUP + atexit
+                agent_system_builtins.c # tagged adapters for real zlib/tree-sitter/Yoga builtins
                 agent_tensor_io.c       # tensor save/load
-                agent_treesitter.c      # tree-sitter — stubs w/o HAS_TREE_SITTER
+                agent_treesitter.c      # bundled tree-sitter + ten grammars
                 agent_watch.c           # kqueue/inotify file watch
-                agent_yoga.c            # Facebook Yoga flexbox — stubs w/o HAS_YOGA
+                agent_yoga.c            # bundled Facebook Yoga flexbox
         )
             if(EXISTS "${AGENT_FFI_DIR}/${_agent_extra_src}")
                 list(APPEND AGENT_FFI_SOURCES "${AGENT_FFI_DIR}/${_agent_extra_src}")
             endif()
         endforeach()
 
-        # Optional: PCRE2 for regex. Homebrew ships the .pc file as
-        # libpcre2-8.pc, some distros (Debian) as pcre2-8.pc — try
-        # the homebrew-style name first, fall back to the bare one
-        # so Linux distros continue to build.
-        pkg_check_modules(PCRE2_AGENT libpcre2-8)
-        if(NOT PCRE2_AGENT_FOUND)
-            pkg_check_modules(PCRE2_AGENT pcre2-8)
-        endif()
-        if(PCRE2_AGENT_FOUND)
-            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_regex.c)
+        # The release archive must be dependency-closed and reproducible. Do
+        # not inherit PCRE2/SQLite/curl paths or feature sets from Homebrew,
+        # MSYS, vcpkg, a distro pkg-config database, or the release runner.
+        # Build immutable upstream revisions on every host and package the
+        # resulting static archives next to eshkol-agent-ffi.
+        include(FetchContent)
+        set(_eshkol_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
+        set(_eshkol_saved_build_testing "${BUILD_TESTING}")
+        set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+        set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+
+        set(PCRE2_BUILD_PCRE2_8 ON CACHE BOOL "" FORCE)
+        set(PCRE2_BUILD_PCRE2_16 OFF CACHE BOOL "" FORCE)
+        set(PCRE2_BUILD_PCRE2_32 OFF CACHE BOOL "" FORCE)
+        set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+        set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
+        set(PCRE2_BUILD_PCRE2TEST OFF CACHE BOOL "" FORCE)
+        set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
+        set(PCRE2_STATIC_PIC ON CACHE BOOL "" FORCE)
+        set(PCRE2_INSTALL OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(eshkol_pcre2
+            GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
+            GIT_TAG f454e231fe5006dd7ff8f4693fd2b8eb94333429
+            GIT_SHALLOW FALSE
+        )
+        FetchContent_MakeAvailable(eshkol_pcre2)
+        if(NOT TARGET pcre2-8-static)
+            message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
         endif()
 
-        # Optional: SQLite3
-        pkg_check_modules(SQLITE3_AGENT sqlite3)
-        if(SQLITE3_AGENT_FOUND)
-            list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_sqlite.c)
+        FetchContent_Declare(eshkol_sqlite_amalgamation
+            URL https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
+            URL_HASH SHA3_256=d45c688a8cb23f68611a894a756a12d7eb6ab6e9e2468ca70adbeab3808b5ab9
+            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        )
+        FetchContent_MakeAvailable(eshkol_sqlite_amalgamation)
+        add_library(eshkol-agent-sqlite3 STATIC
+            "${eshkol_sqlite_amalgamation_SOURCE_DIR}/sqlite3.c")
+        set_target_properties(eshkol-agent-sqlite3 PROPERTIES
+            POSITION_INDEPENDENT_CODE ON)
+        target_include_directories(eshkol-agent-sqlite3 PUBLIC
+            "${eshkol_sqlite_amalgamation_SOURCE_DIR}")
+        target_compile_definitions(eshkol-agent-sqlite3 PRIVATE
+            SQLITE_THREADSAFE=1
+            SQLITE_DEFAULT_MEMSTATUS=0
+            SQLITE_DQS=0
+            SQLITE_OMIT_LOAD_EXTENSION=1)
+
+        # Compression is a declared language surface, not an optional hint.
+        # Build the immutable upstream zlib release and fail configuration if
+        # its static target is unavailable.  The shared target exists in
+        # zlib's upstream CMake project but is excluded from the default build;
+        # Eshkol ships and links only the static archive.
+        set(ZLIB_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+        FetchContent_Declare(eshkol_zlib
+            GIT_REPOSITORY https://github.com/madler/zlib.git
+            GIT_TAG 51b7f2abdade71cd9bb0e7a373ef2610ec6f9daf
+            GIT_SHALLOW FALSE
+        )
+        FetchContent_MakeAvailable(eshkol_zlib)
+        if(NOT TARGET zlibstatic)
+            message(FATAL_ERROR "Pinned zlib did not define zlibstatic")
+        endif()
+        if(TARGET zlib)
+            set_target_properties(zlib PROPERTIES EXCLUDE_FROM_ALL TRUE)
         endif()
 
-        # Optional: libcurl for native HTTP client (Anthropic API,
-        # WebFetch, OAuth, generic HTTPS). Without this the agent's
-        # http.esk falls back to qLLM symbols (returns "explicit
-        # unavailable error") — see plans/note-for-eshkol-agent.md.
-        pkg_check_modules(LIBCURL_AGENT libcurl)
-        if(LIBCURL_AGENT_FOUND AND EXISTS "${AGENT_FFI_DIR}/agent_http_client.c")
+        # Tree-sitter is likewise a production agent capability.  Build the
+        # immutable runtime and aggregate the generated C parsers for every
+        # language advertised by agent_treesitter.c.  Grammar projects are
+        # populated as source only: their upstream CMake files depend on a
+        # separately installed tree-sitter CLI to regenerate already-checked-
+        # in parser.c files, which would make release builds host-dependent.
+        set(TREE_SITTER_FEATURE_WASM OFF CACHE BOOL "" FORCE)
+        set(AMALGAMATED ON CACHE BOOL "" FORCE)
+        FetchContent_Declare(eshkol_tree_sitter
+            GIT_REPOSITORY https://github.com/tree-sitter/tree-sitter.git
+            GIT_TAG cd5b087cd9f45ca6d93ab1954f6b7c8534f324d2
+            GIT_SHALLOW FALSE
+        )
+        FetchContent_MakeAvailable(eshkol_tree_sitter)
+        if(NOT TARGET tree-sitter)
+            message(FATAL_ERROR "Pinned tree-sitter did not define tree-sitter")
+        endif()
+
+        function(eshkol_fetch_tree_sitter_grammar dependency repository revision)
+            if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
+                FetchContent_Declare(${dependency}
+                    GIT_REPOSITORY "${repository}"
+                    GIT_TAG "${revision}"
+                    GIT_SHALLOW FALSE
+                    SOURCE_SUBDIR "eshkol-source-only-no-cmakelists"
+                )
+                FetchContent_MakeAvailable(${dependency})
+            else()
+                # CMake 3.14-3.17 predates SOURCE_SUBDIR. Populate is the
+                # supported source-only API in those releases.
+                FetchContent_Declare(${dependency}
+                    GIT_REPOSITORY "${repository}"
+                    GIT_TAG "${revision}"
+                    GIT_SHALLOW FALSE
+                )
+                FetchContent_GetProperties(${dependency})
+                if(NOT ${dependency}_POPULATED)
+                    FetchContent_Populate(${dependency})
+                endif()
+            endif()
+            set(${dependency}_SOURCE_DIR "${${dependency}_SOURCE_DIR}" PARENT_SCOPE)
+        endfunction()
+
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_javascript
+            https://github.com/tree-sitter/tree-sitter-javascript.git
+            58404d8cf191d69f2674a8fd507bd5776f46cb11)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_typescript
+            https://github.com/tree-sitter/tree-sitter-typescript.git
+            75b3874edb2dc714fb1fd77a32013d0f8699989f)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_python
+            https://github.com/tree-sitter/tree-sitter-python.git
+            26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_rust
+            https://github.com/tree-sitter/tree-sitter-rust.git
+            77a3747266f4d621d0757825e6b11edcbf991ca5)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_go
+            https://github.com/tree-sitter/tree-sitter-go.git
+            2346a3ab1bb3857b48b29d779a1ef9799a248cd7)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_c
+            https://github.com/tree-sitter/tree-sitter-c.git
+            b780e47fc780ddc8da13afa35a3f4ed5c157823d)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_cpp
+            https://github.com/tree-sitter/tree-sitter-cpp.git
+            8b5b49eb196bec7040441bee33b2c9a4838d6967)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_java
+            https://github.com/tree-sitter/tree-sitter-java.git
+            e10607b45ff745f5f876bfa3e94fbcc6b44bdc11)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_ruby
+            https://github.com/tree-sitter/tree-sitter-ruby.git
+            ad907a69da0c8a4f7a943a7fe012712208da6dee)
+        eshkol_fetch_tree_sitter_grammar(eshkol_ts_bash
+            https://github.com/tree-sitter/tree-sitter-bash.git
+            a06c2e4415e9bc0346c6b86d401879ffb44058f7)
+
+        set(ESHKOL_TREE_SITTER_GRAMMAR_SOURCES "")
+        function(eshkol_append_tree_sitter_parser source_root parser_subdir)
+            set(_parser_dir "${source_root}/${parser_subdir}/src")
+            if(NOT EXISTS "${_parser_dir}/parser.c")
+                message(FATAL_ERROR "Pinned tree-sitter grammar lacks ${_parser_dir}/parser.c")
+            endif()
+            list(APPEND ESHKOL_TREE_SITTER_GRAMMAR_SOURCES "${_parser_dir}/parser.c")
+            if(EXISTS "${_parser_dir}/scanner.c")
+                list(APPEND ESHKOL_TREE_SITTER_GRAMMAR_SOURCES "${_parser_dir}/scanner.c")
+            endif()
+            if(EXISTS "${_parser_dir}/scanner.cc")
+                list(APPEND ESHKOL_TREE_SITTER_GRAMMAR_SOURCES "${_parser_dir}/scanner.cc")
+            endif()
+            set(ESHKOL_TREE_SITTER_GRAMMAR_SOURCES
+                "${ESHKOL_TREE_SITTER_GRAMMAR_SOURCES}" PARENT_SCOPE)
+        endfunction()
+
+        eshkol_append_tree_sitter_parser("${eshkol_ts_javascript_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_typescript_SOURCE_DIR}" "typescript")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_typescript_SOURCE_DIR}" "tsx")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_python_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_rust_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_go_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_c_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_cpp_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_java_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_ruby_SOURCE_DIR}" ".")
+        eshkol_append_tree_sitter_parser("${eshkol_ts_bash_SOURCE_DIR}" ".")
+        add_library(eshkol-agent-tree-sitter-grammars STATIC
+            ${ESHKOL_TREE_SITTER_GRAMMAR_SOURCES})
+        target_include_directories(eshkol-agent-tree-sitter-grammars PRIVATE
+            "${eshkol_ts_typescript_SOURCE_DIR}/typescript/src"
+            "${eshkol_ts_typescript_SOURCE_DIR}/tsx/src")
+        set_target_properties(eshkol-agent-tree-sitter-grammars PROPERTIES
+            C_STANDARD 11
+            C_STANDARD_REQUIRED ON
+            POSITION_INDEPENDENT_CODE ON)
+
+        # Build only Yoga's production core (not its upstream tests/tools).
+        # v3.2.1 requires C++20 and exposes a stable C ABI through Yoga.h.
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.18")
+            FetchContent_Declare(eshkol_yoga
+                GIT_REPOSITORY https://github.com/facebook/yoga.git
+                GIT_TAG 042f5013152eb81c1552dec945b88f7b95ca350f
+                GIT_SHALLOW FALSE
+                SOURCE_SUBDIR "eshkol-source-only-no-cmakelists"
+            )
+            FetchContent_MakeAvailable(eshkol_yoga)
+        else()
+            FetchContent_Declare(eshkol_yoga
+                GIT_REPOSITORY https://github.com/facebook/yoga.git
+                GIT_TAG 042f5013152eb81c1552dec945b88f7b95ca350f
+                GIT_SHALLOW FALSE
+            )
+            FetchContent_GetProperties(eshkol_yoga)
+            if(NOT eshkol_yoga_POPULATED)
+                FetchContent_Populate(eshkol_yoga)
+            endif()
+        endif()
+        add_subdirectory("${eshkol_yoga_SOURCE_DIR}/yoga"
+            "${eshkol_yoga_BINARY_DIR}/yoga" EXCLUDE_FROM_ALL)
+        if(NOT TARGET yogacore)
+            message(FATAL_ERROR "Pinned Yoga did not define yogacore")
+        endif()
+        # Yoga disables C++ RTTI upstream. That is not ABI-safe when its static
+        # archive is force-loaded into Eshkol's exception-using C++ host on
+        # Mach-O: libc++ inline throwing helpers in Yoga then emit private
+        # std::exception typeinfo (for example std::out_of_range). Those private
+        # definitions can bind the host parser's catch sites while libc++ throws
+        # the canonical dylib type, so a matching catch aborts instead. Keep
+        # Yoga's hidden implementation visibility, but require canonical RTTI
+        # references throughout the process. The public integration remains the
+        # stable Yoga C ABI.
+        if(MSVC)
+            target_compile_options(yogacore PRIVATE /GR)
+        else()
+            target_compile_options(yogacore PRIVATE -frtti)
+        endif()
+
+        set(PCRE2_AGENT_FOUND TRUE)
+        set(SQLITE3_AGENT_FOUND TRUE)
+        list(APPEND AGENT_FFI_SOURCES
+            ${AGENT_FFI_DIR}/agent_regex.c
+            ${AGENT_FFI_DIR}/agent_sqlite.c)
+
+        if(WIN32)
+            set(LIBCURL_AGENT_FOUND FALSE)
+            list(APPEND AGENT_FFI_SOURCES
+                ${AGENT_FFI_DIR}/agent_http_client_winhttp.c)
+        elseif(APPLE)
+            # NSURLSession gives macOS the same native trust-store, proxy,
+            # redirect, timeout, and streaming behavior that WinHTTP provides
+            # on Windows; no Homebrew TLS/curl dependency enters the package.
+            enable_language(OBJC)
+            set(LIBCURL_AGENT_FOUND FALSE)
+            list(APPEND AGENT_FFI_SOURCES
+                ${AGENT_FFI_DIR}/agent_http_client_apple.m)
+        else()
+            # Static, HTTP(S)-only curl. Compression, alternate application
+            # protocols, and optional IDN/PSL/SSH dependencies are disabled so
+            # the packaged archive has a small, auditable closure. TLS remains
+            # native: SecureTransport on macOS, OpenSSL on Linux.
+            set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+            set(BUILD_LIBCURL_DOCS OFF CACHE BOOL "" FORCE)
+            set(BUILD_MISC_DOCS OFF CACHE BOOL "" FORCE)
+            set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+            set(ENABLE_CURL_MANUAL OFF CACHE BOOL "" FORCE)
+            set(CURL_ENABLE_EXPORT_TARGET OFF CACHE BOOL "" FORCE)
+            set(CURL_ZLIB OFF CACHE STRING "" FORCE)
+            set(CURL_BROTLI OFF CACHE STRING "" FORCE)
+            set(CURL_ZSTD OFF CACHE STRING "" FORCE)
+            set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+            set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
+            set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+            set(CURL_USE_GSSAPI OFF CACHE BOOL "" FORCE)
+            foreach(_curl_protocol DICT FILE FTP GOPHER GOPHERS IMAP IMAPS
+                                   LDAP LDAPS MQTT POP3 POP3S RTSP SCP SFTP
+                                   SMB SMBS SMTP SMTPS TELNET TFTP)
+                set(CURL_DISABLE_${_curl_protocol} ON CACHE BOOL "" FORCE)
+            endforeach()
+            set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
+            find_package(OpenSSL REQUIRED)
+            set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)
+            FetchContent_Declare(eshkol_curl
+                GIT_REPOSITORY https://github.com/curl/curl.git
+                GIT_TAG a05f34973e6c4bb629d018f7cb51487be1c904d8
+                GIT_SHALLOW FALSE
+            )
+            FetchContent_MakeAvailable(eshkol_curl)
+            if(TARGET libcurl_static)
+                set(ESHKOL_AGENT_CURL_TARGET libcurl_static)
+            elseif(TARGET CURL::libcurl)
+                set(ESHKOL_AGENT_CURL_TARGET CURL::libcurl)
+            else()
+                message(FATAL_ERROR "Pinned curl did not define a static library target")
+            endif()
+            set(LIBCURL_AGENT_FOUND TRUE)
             list(APPEND AGENT_FFI_SOURCES ${AGENT_FFI_DIR}/agent_http_client.c)
         endif()
+
+        set(BUILD_SHARED_LIBS "${_eshkol_saved_build_shared_libs}" CACHE BOOL "" FORCE)
+        set(BUILD_TESTING "${_eshkol_saved_build_testing}" CACHE BOOL "" FORCE)
 
         # Moonlab quantum state-vector core (Stage S1,
         # docs/design/MOONLAB_INTEGRATION.md). Unlike the pkg-config-optional
@@ -3479,7 +3881,14 @@ if(ESHKOL_BUILD_AGENT_FFI)
 
         add_library(eshkol-agent-ffi STATIC ${AGENT_FFI_SOURCES})
 
+        if(APPLE)
+            target_compile_options(eshkol-agent-ffi PRIVATE
+                "$<$<COMPILE_LANGUAGE:OBJC>:-fobjc-arc>"
+                "$<$<COMPILE_LANGUAGE:OBJC>:-fblocks>")
+        endif()
+
         target_include_directories(eshkol-agent-ffi PRIVATE
+            ${CMAKE_SOURCE_DIR}/inc
             ${CMAKE_SOURCE_DIR}/include
         )
 
@@ -3494,47 +3903,74 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # architecture arm64: _sqlite3_exec, _SecRandomCopyBytes,
         # etc." at eshkol-run's link step.
 
-        # Terminal needs ncurses
-        find_library(NCURSES_AGENT ncurses)
-        if(NCURSES_AGENT)
-            target_link_libraries(eshkol-agent-ffi PUBLIC ${NCURSES_AGENT})
-        endif()
+        # Terminal uses only the Console API on Windows and termios/ANSI on
+        # POSIX; it intentionally has no ncurses runtime dependency.
 
-        if(PCRE2_AGENT_FOUND)
-            target_include_directories(eshkol-agent-ffi PRIVATE ${PCRE2_AGENT_INCLUDE_DIRS})
-            # Use LINK_LIBRARIES (full absolute paths resolved by
-            # pkg_check_modules) instead of LIBRARIES (short names
-            # that also need LIBRARY_DIRS via target_link_directories,
-            # easy to forget). Falls back to the short-name+dirs form
-            # if the installed CMake is too old to populate
-            # *_LINK_LIBRARIES.
-            if(PCRE2_AGENT_LINK_LIBRARIES)
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LINK_LIBRARIES})
-            else()
-                target_link_directories(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARY_DIRS})
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${PCRE2_AGENT_LIBRARIES})
-            endif()
-            target_compile_definitions(eshkol-agent-ffi PRIVATE PCRE2_CODE_UNIT_WIDTH=8)
-        endif()
+        target_compile_definitions(eshkol-agent-ffi PRIVATE
+            ESHKOL_AGENT_BUILD=1
+            PCRE2_CODE_UNIT_WIDTH=8
+            PCRE2_STATIC=1)
+        target_link_libraries(eshkol-agent-ffi PUBLIC
+            pcre2-8-static
+            eshkol-agent-sqlite3
+            zlibstatic
+            eshkol-agent-tree-sitter-grammars
+            tree-sitter
+            yogacore
+            # Agent capability implementations call core allocation/string
+            # helpers (for example eshkol_make_bytevector and
+            # eshkol_string_byte_length).  Declare that archive dependency at
+            # its owner so CMake emits eshkol-runtime after the force-loaded
+            # agent archive.  ELF linkers scan static archives left-to-right;
+            # relying on an earlier eshkol-static occurrence works on Apple
+            # and MSVC but leaves these references unresolved on Linux.
+            eshkol-runtime)
 
-        if(SQLITE3_AGENT_FOUND)
-            if(SQLITE3_AGENT_LINK_LIBRARIES)
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LINK_LIBRARIES})
-            else()
-                target_link_directories(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARY_DIRS})
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${SQLITE3_AGENT_LIBRARIES})
-            endif()
-        endif()
+        if(WIN32)
+            target_compile_definitions(eshkol-agent-ffi PRIVATE
+                ESHKOL_HAVE_WINHTTP=1)
+            target_link_libraries(eshkol-agent-ffi PUBLIC
+                winhttp
+                ws2_32
+                bcrypt
+                shell32
+                ole32
+                advapi32)
 
-        if(LIBCURL_AGENT_FOUND)
-            target_include_directories(eshkol-agent-ffi PRIVATE ${LIBCURL_AGENT_INCLUDE_DIRS})
+        elseif(NOT APPLE)
             target_compile_definitions(eshkol-agent-ffi PRIVATE ESHKOL_HAVE_LIBCURL=1)
-            if(LIBCURL_AGENT_LINK_LIBRARIES)
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LINK_LIBRARIES})
-            else()
-                target_link_directories(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LIBRARY_DIRS})
-                target_link_libraries(eshkol-agent-ffi PUBLIC ${LIBCURL_AGENT_LIBRARIES})
-            endif()
+            target_link_libraries(eshkol-agent-ffi PUBLIC ${ESHKOL_AGENT_CURL_TARGET})
+        endif()
+
+        # Give packaged dependencies stable names independent of upstream
+        # target naming. eshkol-run resolves these relative to the packaged
+        # agent archive; no build-runner path is replayed at AOT link time.
+        add_custom_command(TARGET eshkol-agent-ffi POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:pcre2-8-static>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-pcre2${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:eshkol-agent-sqlite3>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-sqlite3${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:zlibstatic>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-zlib${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:eshkol-agent-tree-sitter-grammars>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-tree-sitter-grammars${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:tree-sitter>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-tree-sitter${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:yogacore>"
+                "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-yoga${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            VERBATIM)
+        if(NOT WIN32 AND NOT APPLE)
+            add_custom_command(TARGET eshkol-agent-ffi POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:${ESHKOL_AGENT_CURL_TARGET}>"
+                    "$<TARGET_FILE_DIR:eshkol-agent-ffi>/eshkol-agent-curl${CMAKE_STATIC_LIBRARY_SUFFIX}"
+                VERBATIM)
         endif()
 
         # Moonlab quantum state-vector core (agent_quantum.c above). quantumsim's
@@ -3549,13 +3985,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             target_link_libraries(eshkol-agent-ffi PUBLIC quantumsim)
         endif()
 
-        # Crypto: CommonCrypto on macOS, OpenSSL on Linux
+        # Platform trust/TLS closure used by the native HTTP backend.
         if(APPLE)
             target_link_libraries(eshkol-agent-ffi PUBLIC
+                "-framework Foundation"
                 "-framework Security"
                 "-framework CoreFoundation"
+                "-framework SystemConfiguration"
             )
-        else()
+        elseif(NOT WIN32)
             find_package(OpenSSL)
             if(OpenSSL_FOUND)
                 target_link_libraries(eshkol-agent-ffi PUBLIC OpenSSL::SSL OpenSSL::Crypto)
@@ -3568,7 +4006,16 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # lib/core/crypto_primitives.c / eshkol-runtime, not gated by this flag.)
         message(STATUS "  Regex:     ${PCRE2_AGENT_FOUND}")
         message(STATUS "  SQLite:    ${SQLITE3_AGENT_FOUND}")
-        message(STATUS "  HTTP/curl: ${LIBCURL_AGENT_FOUND}")
+        message(STATUS "  Compress:  bundled zlib 1.3.1")
+        message(STATUS "  Parse:     bundled tree-sitter 0.26.8 + 10 grammars")
+        message(STATUS "  Layout:    bundled Yoga 3.2.1")
+        if(WIN32)
+            message(STATUS "  HTTP:      WinHTTP")
+        elseif(APPLE)
+            message(STATUS "  HTTP:      NSURLSession")
+        else()
+            message(STATUS "  HTTP:      pinned libcurl (${LIBCURL_AGENT_FOUND})")
+        endif()
         if(ESHKOL_QUANTUM_ENABLED AND TARGET quantumsim)
             message(STATUS "  Quantum:   ENABLED (agent.quantum -> Moonlab quantumsim)")
         else()
@@ -3585,76 +4032,38 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # `(require agent.…)`, otherwise we don't pull in libcurl/etc.
         # for programs that don't need them).
         #
-        # Order matters for static-archive resolution on POSIX
-        # toolchains: agent-ffi.a first (force-loaded so qllm_*
-        # symbols stay live), then deps (libcurl, sqlite3, pcre2,
-        # ncurses, OpenSSL/Security framework). For macOS we also need
-        # -framework Security and -framework CoreFoundation; on Linux,
-        # OpenSSL via OpenSSL::SSL/Crypto if found, otherwise libsecret.
-        # Use the well-known archive output path (CMake creates it as
-        # libeshkol-agent-ffi.a in CMAKE_BINARY_DIR for STATIC libs).
-        # Avoids generator expressions which configure_file can't
-        # evaluate. The path matters at AOT link time, not configure
-        # time, so a string here is fine.
-        set(_agent_ffi_archive
-            "${CMAKE_BINARY_DIR}/${CMAKE_STATIC_LIBRARY_PREFIX}eshkol-agent-ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
-        if(APPLE)
-            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
-                "-Wl,-force_load,${_agent_ffi_archive}")
-        else()
-            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
-                "-Wl,--whole-archive" "${_agent_ffi_archive}" "-Wl,--no-whole-archive")
-        endif()
+        # eshkol-run locates the packaged agent archive beside the packaged
+        # runtime archive and adds it explicitly. This configured list contains
+        # only its dependency closure, using package-relative markers rather
+        # than build-directory paths.
+        list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+            "@agent-lib@/eshkol-agent-pcre2${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            "@agent-lib@/eshkol-agent-sqlite3${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            "@agent-lib@/eshkol-agent-zlib${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            "@agent-lib@/eshkol-agent-tree-sitter-grammars${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            "@agent-lib@/eshkol-agent-tree-sitter${CMAKE_STATIC_LIBRARY_SUFFIX}"
+            "@agent-lib@/eshkol-agent-yoga${CMAKE_STATIC_LIBRARY_SUFFIX}")
 
-        # Transitive deps. Each is gated by the same flag that
-        # determined whether the C source got compiled into agent-ffi.
-        if(LIBCURL_AGENT_FOUND)
-            if(LIBCURL_AGENT_LINK_LIBRARIES)
-                foreach(_lib IN LISTS LIBCURL_AGENT_LINK_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
-                endforeach()
-            else()
-                foreach(_dir IN LISTS LIBCURL_AGENT_LIBRARY_DIRS)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-L${_dir}")
-                endforeach()
-                foreach(_lib IN LISTS LIBCURL_AGENT_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
-                endforeach()
-            endif()
-        endif()
-        if(SQLITE3_AGENT_FOUND)
-            if(SQLITE3_AGENT_LINK_LIBRARIES)
-                foreach(_lib IN LISTS SQLITE3_AGENT_LINK_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
-                endforeach()
-            else()
-                foreach(_lib IN LISTS SQLITE3_AGENT_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
-                endforeach()
-            endif()
-        endif()
-        if(PCRE2_AGENT_FOUND)
-            if(PCRE2_AGENT_LINK_LIBRARIES)
-                foreach(_lib IN LISTS PCRE2_AGENT_LINK_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${_lib}")
-                endforeach()
-            else()
-                foreach(_lib IN LISTS PCRE2_AGENT_LIBRARIES)
-                    list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-l${_lib}")
-                endforeach()
-            endif()
-        endif()
-        if(NCURSES_AGENT)
-            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "${NCURSES_AGENT}")
+        if(WIN32)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "winhttp.lib"
+                "ws2_32.lib"
+                "bcrypt.lib"
+                "shell32.lib"
+                "ole32.lib"
+                "advapi32.lib")
+        elseif(NOT APPLE)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "@agent-lib@/eshkol-agent-curl${CMAKE_STATIC_LIBRARY_SUFFIX}")
         endif()
         if(APPLE)
             list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
                 "-framework" "Security"
-                "-framework" "CoreFoundation")
-        else()
-            if(OpenSSL_FOUND)
-                list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS "-lssl" "-lcrypto")
-            endif()
+                "-framework" "CoreFoundation"
+                "-framework" "SystemConfiguration")
+        elseif(NOT WIN32)
+            list(APPEND ESHKOL_HOST_AGENT_FFI_LINK_ARGS
+                "-lssl" "-lcrypto" "-pthread" "-ldl")
         endif()
 
         eshkol_append_elf_runtime_search_paths(ESHKOL_HOST_AGENT_FFI_LINK_ARGS)
@@ -3687,7 +4096,8 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # FFI modules fail under JIT").
         if(TARGET eshkol-run)
             # Link eshkol-agent-ffi + its transitive PUBLIC deps
-            # (sqlite3, pcre2, Security framework, OpenSSL, ncurses)
+            # (bundled SQLite/PCRE2, native platform HTTP/TLS frameworks,
+            # and pinned libcurl/OpenSSL on Linux).
             # into eshkol-run. MUST happen here, not in the eshkol-run
             # config block above, because agent-ffi is defined here.
             if(APPLE)
@@ -3701,7 +4111,14 @@ if(ESHKOL_BUILD_AGENT_FFI)
                 target_link_libraries(eshkol-run PRIVATE
                     "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
             else()
-                target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
+                if(MSVC)
+                    target_link_libraries(eshkol-run PRIVATE eshkol-agent-ffi)
+                    target_link_options(eshkol-run PRIVATE
+                        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-agent-ffi>")
+                else()
+                    target_link_libraries(eshkol-run PRIVATE
+                        "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+                endif()
             endif()
         endif()
 
@@ -3717,8 +4134,109 @@ if(ESHKOL_BUILD_AGENT_FFI)
                 target_link_libraries(eshkol-repl PRIVATE
                     "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
             else()
-                target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
+                if(MSVC)
+                    target_link_libraries(eshkol-repl PRIVATE eshkol-agent-ffi)
+                    target_link_options(eshkol-repl PRIVATE
+                        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-agent-ffi>")
+                else()
+                    target_link_libraries(eshkol-repl PRIVATE
+                        "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+                endif()
             endif()
+        endif()
+
+        # The standalone hosted-VM executables resolve optional native
+        # capabilities through the same process-wide symbol lookup used by
+        # eshkol-run.  Force-load the production agent archive here as well;
+        # otherwise compression, Tree-sitter, and Yoga silently disappear
+        # from VM execution even though LLVM/JIT and AOT have them.
+        foreach(_eshkol_vm_host_target IN ITEMS
+                eshkol-vm-standalone-test test_vm_c_api)
+            if(TARGET ${_eshkol_vm_host_target})
+                if(APPLE)
+                    target_link_libraries(${_eshkol_vm_host_target} PRIVATE eshkol-agent-ffi)
+                    target_link_options(${_eshkol_vm_host_target} PRIVATE
+                        "-Wl,-force_load,$<TARGET_FILE:eshkol-agent-ffi>")
+                elseif(NOT WIN32)
+                    target_link_libraries(${_eshkol_vm_host_target} PRIVATE
+                        "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+                elseif(MSVC)
+                    target_link_libraries(${_eshkol_vm_host_target} PRIVATE eshkol-agent-ffi)
+                    target_link_options(${_eshkol_vm_host_target} PRIVATE
+                        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-agent-ffi>")
+                else()
+                    target_link_libraries(${_eshkol_vm_host_target} PRIVATE
+                        "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
+                endif()
+                eshkol_export_host_agent_api(${_eshkol_vm_host_target})
+            endif()
+        endforeach()
+
+        if(WIN32)
+            add_executable(eshkol-windows-agent-test
+                tests/agent/windows_native_agent_test.c)
+            target_link_libraries(eshkol-windows-agent-test PRIVATE
+                eshkol-agent-ffi)
+            if(BUILD_TESTING)
+                add_test(NAME windows-native-agent
+                         COMMAND eshkol-windows-agent-test)
+                set_tests_properties(windows-native-agent PROPERTIES
+                    TIMEOUT 90)
+            endif()
+        endif()
+
+        add_executable(eshkol-agent-http-test
+            tests/agent/agent_http_contract_test.c)
+        target_include_directories(eshkol-agent-http-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-agent-http-test PRIVATE eshkol-agent-ffi)
+        if(BUILD_TESTING)
+            add_test(NAME agent-http-contract COMMAND eshkol-agent-http-test)
+            set_tests_properties(agent-http-contract PROPERTIES TIMEOUT 90)
+        endif()
+
+        add_executable(eshkol-agent-sse-test
+            tests/agent/agent_sse_parser_test.c)
+        target_include_directories(eshkol-agent-sse-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/inc
+            ${AGENT_FFI_DIR})
+        target_link_libraries(eshkol-agent-sse-test PRIVATE eshkol-agent-ffi)
+        if(BUILD_TESTING)
+            add_test(NAME agent-sse-parser COMMAND eshkol-agent-sse-test)
+            set_tests_properties(agent-sse-parser PROPERTIES TIMEOUT 30)
+        endif()
+
+        add_executable(eshkol-agent-capabilities-test
+            tests/agent/agent_capabilities_test.c)
+        target_link_libraries(eshkol-agent-capabilities-test PRIVATE
+            eshkol-agent-ffi)
+        if(NOT WIN32)
+            target_link_libraries(eshkol-agent-capabilities-test PRIVATE m)
+        endif()
+        if(BUILD_TESTING)
+            add_test(NAME agent-production-capabilities
+                COMMAND eshkol-agent-capabilities-test)
+            set_tests_properties(agent-production-capabilities PROPERTIES
+                TIMEOUT 90)
+        endif()
+
+        # A force-loaded C++ static dependency must not emit private copies of
+        # libc++ exception RTTI.  Yoga disables RTTI upstream; Eshkol overrides
+        # that above so parser catches and library throws share the canonical
+        # std::exception typeinfo on Mach-O.  This executable deliberately
+        # references Yoga before exercising the exact out_of_range path that
+        # regressed numeric parsing, making the ABI contract observable in CI.
+        add_executable(eshkol-agent-cxx-exception-abi-test
+            tests/agent/agent_cpp_exception_abi_test.cpp)
+        target_include_directories(eshkol-agent-cxx-exception-abi-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-agent-cxx-exception-abi-test PRIVATE
+            eshkol-agent-ffi)
+        if(BUILD_TESTING)
+            add_test(NAME agent-cxx-exception-abi
+                COMMAND eshkol-agent-cxx-exception-abi-test)
+            set_tests_properties(agent-cxx-exception-abi PROPERTIES
+                TIMEOUT 30)
         endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")

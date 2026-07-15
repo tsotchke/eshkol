@@ -208,6 +208,13 @@ convert explicitly with `(ptr->string p)` and check `(null? p)` first):
     (display (ptr->string p)))   ; never rely on (display p) alone
 ```
 
+When the native API supplies an explicit byte length, use
+`(ptr->string-n p length)` instead. It copies exactly `length` bytes and
+therefore preserves embedded NUL bytes; `ptr->string` intentionally uses
+`strlen` and is only correct for NUL-terminated C text. A negative length
+raises an Eshkol error, while a null pointer or zero length produces the empty
+string.
+
 ### Variadic `extern`s corrupt arguments on arm64 — fixed-arity only
 
 Declaring a variadic C function directly, e.g. `(extern void printf char*

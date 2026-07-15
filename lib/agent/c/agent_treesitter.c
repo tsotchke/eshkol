@@ -7,11 +7,10 @@
  * Enables: go-to-definition, find-references, structural rename, code
  * navigation, dead code detection — all WITHOUT external LSP servers.
  *
- * Compile with -DHAS_TREE_SITTER and link against libtree-sitter plus
- * language grammar libraries (tree-sitter-javascript, etc.).
- *
- * Without -DHAS_TREE_SITTER, all functions return graceful errors (-1 or NULL)
- * so the agent degrades to regex-based search without crashing.
+ * Tree-sitter 0.26.8 and all advertised language grammars are immutable,
+ * bundled build dependencies.  There is deliberately no regex fallback or
+ * unavailable stub: release configuration fails if this implementation
+ * cannot be built and linked.
  *
  * Copyright (c) 2025 Eshkol Project — tsotchke
  ******************************************************************************/
@@ -26,12 +25,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
 
-/*******************************************************************************
- * CONDITIONAL COMPILATION: Full implementation vs graceful stubs
- ******************************************************************************/
-
-#ifdef HAS_TREE_SITTER
+#include <eshkol/agent_capabilities.h>
+#include "agent_native_mutex.h"
 
 #include <tree_sitter/api.h>
 
@@ -42,6 +39,7 @@
 /* Language grammar entry points — linked from separate .a/.so files */
 extern const TSLanguage *tree_sitter_javascript(void);
 extern const TSLanguage *tree_sitter_typescript(void);
+extern const TSLanguage *tree_sitter_tsx(void);
 extern const TSLanguage *tree_sitter_python(void);
 extern const TSLanguage *tree_sitter_rust(void);
 extern const TSLanguage *tree_sitter_go(void);
@@ -61,6 +59,7 @@ static const LangEntry g_languages[] = {
     { "js",          tree_sitter_javascript },
     { "typescript",  tree_sitter_typescript },
     { "ts",          tree_sitter_typescript },
+    { "tsx",         tree_sitter_tsx },
     { "python",      tree_sitter_python },
     { "py",          tree_sitter_python },
     { "rust",        tree_sitter_rust },
@@ -99,11 +98,14 @@ static const TSLanguage* find_language(const char* name) {
 #define MAX_QUERIES 32
 
 static TSParser* g_parsers[MAX_PARSERS] = {0};
+static const TSLanguage* g_parser_langs[MAX_PARSERS] = {0};
 static TSTree*   g_trees[MAX_TREES] = {0};
-static const char* g_tree_sources[MAX_TREES] = {0};  /* source text per tree */
+static const TSLanguage* g_tree_langs[MAX_TREES] = {0};
+static char* g_tree_sources[MAX_TREES] = {0};  /* owned source text per tree */
 static uint32_t g_tree_source_lens[MAX_TREES] = {0};
 static TSQuery*  g_queries[MAX_QUERIES] = {0};
 static const TSLanguage* g_query_langs[MAX_QUERIES] = {0};
+static eshkol_agent_mutex_t g_tree_sitter_mutex = ESHKOL_AGENT_MUTEX_INITIALIZER;
 
 /**
  * @brief Finds the first NULL (free) entry in a fixed-size handle table, skipping index 0 so handle 0 is never valid.
@@ -139,19 +141,33 @@ static int alloc_slot(void** table, int max) {
  */
 int64_t eshkol_ts_parser_new(const char* language) {
     if (!language) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     const TSLanguage* lang = find_language(language);
-    if (!lang) return -1;
+    if (!lang) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     TSParser* parser = ts_parser_new();
-    if (!parser) return -1;
+    if (!parser) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     if (!ts_parser_set_language(parser, lang)) {
         ts_parser_delete(parser);
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
         return -1;
     }
 
     int slot = alloc_slot((void**)g_parsers, MAX_PARSERS);
-    if (slot < 0) { ts_parser_delete(parser); return -1; }
+    if (slot < 0) {
+        ts_parser_delete(parser);
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     g_parsers[slot] = parser;
+    g_parser_langs[slot] = lang;
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return (int64_t)slot;
 }
 
@@ -165,10 +181,13 @@ int64_t eshkol_ts_parser_new(const char* language) {
  */
 void eshkol_ts_parser_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_PARSERS) return;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     if (g_parsers[handle]) {
         ts_parser_delete(g_parsers[handle]);
         g_parsers[handle] = NULL;
+        g_parser_langs[handle] = NULL;
     }
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
 }
 
 /*******************************************************************************
@@ -184,30 +203,55 @@ void eshkol_ts_parser_free(int64_t handle) {
  *
  * Returns: tree handle (>= 1), -1 on error
  *
- * The source string is NOT copied — caller must keep it alive while the
- * tree is in use. The handle stores a reference to it.
+ * The source bytes are copied and owned by the tree handle so callers may
+ * release or mutate their input immediately after this function returns.
  */
 /**
  * @brief Parses @p source with the parser at @p parser_handle and stores the resulting syntax tree in the tree handle table.
  *
  * @param parser_handle Parser handle from eshkol_ts_parser_new().
- * @param source Source code bytes; need not be NUL-terminated. Not copied — must remain valid for the lifetime of the returned tree handle, since node-text extraction reads directly from it.
+ * @param source Source code bytes; need not be NUL-terminated. The bytes are copied into handle-owned storage.
  * @param source_len Length of @p source in bytes.
  * @return Tree handle (>= 1) on success, -1 on invalid handle/arguments, parse failure, or if the tree slot table is full.
  */
 int64_t eshkol_ts_parse(int64_t parser_handle, const char* source, int32_t source_len) {
     if (parser_handle < 1 || parser_handle >= MAX_PARSERS) return -1;
+    if (source_len < 0 || (!source && source_len != 0)) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     TSParser* parser = g_parsers[parser_handle];
-    if (!parser || !source || source_len <= 0) return -1;
+    const TSLanguage* language = g_parser_langs[parser_handle];
+    if (!parser || !language) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
-    TSTree* tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)source_len);
-    if (!tree) return -1;
+    char* source_copy = (char*)malloc((size_t)source_len + 1u);
+    if (!source_copy) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
+    if (source_len > 0) memcpy(source_copy, source, (size_t)source_len);
+    source_copy[source_len] = '\0';
+
+    TSTree* tree = ts_parser_parse_string(parser, NULL, source_copy, (uint32_t)source_len);
+    if (!tree) {
+        free(source_copy);
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     int slot = alloc_slot((void**)g_trees, MAX_TREES);
-    if (slot < 0) { ts_tree_delete(tree); return -1; }
+    if (slot < 0) {
+        ts_tree_delete(tree);
+        free(source_copy);
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     g_trees[slot] = tree;
-    g_tree_sources[slot] = source;
+    g_tree_langs[slot] = language;
+    g_tree_sources[slot] = source_copy;
     g_tree_source_lens[slot] = (uint32_t)source_len;
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return (int64_t)slot;
 }
 
@@ -221,12 +265,16 @@ int64_t eshkol_ts_parse(int64_t parser_handle, const char* source, int32_t sourc
  */
 void eshkol_ts_tree_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_TREES) return;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     if (g_trees[handle]) {
         ts_tree_delete(g_trees[handle]);
         g_trees[handle] = NULL;
+        g_tree_langs[handle] = NULL;
+        free(g_tree_sources[handle]);
         g_tree_sources[handle] = NULL;
         g_tree_source_lens[handle] = 0;
     }
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
 }
 
 /*******************************************************************************
@@ -283,12 +331,47 @@ static int serialize_node(TSNode node, char* buf, int buf_size) {
  */
 int32_t eshkol_ts_tree_root(int64_t tree_handle, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if ((!buf && buf_size != 0) || buf_size < 0) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     TSTree* tree = g_trees[tree_handle];
-    if (!tree || !buf || buf_size <= 0) return -1;
+    if (!tree) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     TSNode root = ts_tree_root_node(tree);
     int n = serialize_node(root, buf, buf_size);
-    return (n >= 0 && n < buf_size) ? n : -1;
+    int32_t result = (!buf && buf_size == 0)
+        ? (n >= 0 ? (int32_t)n : -1)
+        : ((n >= 0 && n < buf_size) ? (int32_t)n : -1);
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+    return result;
+}
+
+int32_t eshkol_ts_node_info(int64_t tree_handle, uint32_t start_byte,
+                            uint32_t end_byte, char* buf, int32_t buf_size) {
+    if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if ((!buf && buf_size != 0) || buf_size < 0 || start_byte >= end_byte)
+        return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
+    TSTree* tree = g_trees[tree_handle];
+    uint32_t source_len = g_tree_source_lens[tree_handle];
+    if (!tree || end_byte > source_len) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
+    TSNode root = ts_tree_root_node(tree);
+    TSNode node = ts_node_named_descendant_for_byte_range(root, start_byte, end_byte);
+    if (ts_node_is_null(node)) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
+    int n = serialize_node(node, buf, buf_size);
+    int32_t result = (!buf && buf_size == 0)
+        ? (n >= 0 ? (int32_t)n : -1)
+        : ((n >= 0 && n < buf_size) ? (int32_t)n : -1);
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+    return result;
 }
 
 /*
@@ -324,20 +407,58 @@ int32_t eshkol_ts_node_children(int64_t tree_handle,
                                   uint32_t start_byte, uint32_t end_byte,
                                   char* buf, int32_t buf_size, int32_t* count_out) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if ((!buf && buf_size != 0) || buf_size < 0) return -1;
+    if (count_out) *count_out = 0;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     TSTree* tree = g_trees[tree_handle];
-    if (!tree || !buf || buf_size <= 0) return -1;
+    uint32_t source_len = g_tree_source_lens[tree_handle];
+    if (!tree) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     TSNode target;
     if (start_byte == 0 && end_byte == 0) {
         target = ts_tree_root_node(tree);
     } else {
+        if (start_byte >= end_byte || end_byte > source_len) {
+            eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+            return -1;
+        }
         target = ts_tree_root_node(tree);
         /* Descend to the named node containing this byte range */
         TSNode candidate = ts_node_named_descendant_for_byte_range(target, start_byte, end_byte);
-        if (!ts_node_is_null(candidate)) target = candidate;
+        if (ts_node_is_null(candidate)) {
+            eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+            return -1;
+        }
+        target = candidate;
     }
 
     uint32_t n_children = ts_node_named_child_count(target);
+    int32_t required = 0;
+    int32_t required_count = 0;
+    for (uint32_t i = 0; i < n_children; i++) {
+        TSNode child = ts_node_named_child(target, i);
+        if (ts_node_is_null(child)) continue;
+        int n = serialize_node(child, NULL, 0);
+        if (n < 0 || n > INT32_MAX - required - (required_count > 0 ? 1 : 0)) {
+            eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+            return -1;
+        }
+        required += n + (required_count > 0 ? 1 : 0);
+        required_count++;
+    }
+    if (!buf && buf_size == 0) {
+        if (count_out) *count_out = required_count;
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return required;
+    }
+    if (buf_size <= required) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
+
     int32_t written = 0;
     int32_t count = 0;
 
@@ -350,13 +471,19 @@ int32_t eshkol_ts_node_children(int64_t tree_handle,
         }
 
         int n = serialize_node(child, buf + written, buf_size - written);
-        if (n < 0 || written + n >= buf_size) break;
+        if (n < 0 || written + n >= buf_size) {
+            if (count_out) *count_out = 0;
+            buf[0] = '\0';
+            eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+            return -1;
+        }
         written += n;
         count++;
     }
 
     if (written < buf_size) buf[written] = '\0';
     if (count_out) *count_out = count;
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return written;
 }
 
@@ -378,16 +505,29 @@ int32_t eshkol_ts_node_children(int64_t tree_handle,
 int32_t eshkol_ts_node_text(int64_t tree_handle, uint32_t start_byte,
                               uint32_t end_byte, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if ((!buf && buf_size != 0) || buf_size < 0) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     const char* src = g_tree_sources[tree_handle];
     uint32_t src_len = g_tree_source_lens[tree_handle];
-    if (!src || !buf || buf_size <= 0) return -1;
+    if (!src) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
-    if (start_byte >= src_len || end_byte > src_len || start_byte >= end_byte) return -1;
+    if (start_byte >= src_len || end_byte > src_len || start_byte >= end_byte) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     uint32_t text_len = end_byte - start_byte;
+    if (!buf && buf_size == 0) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return text_len <= INT32_MAX ? (int32_t)text_len : -1;
+    }
     if ((int32_t)text_len >= buf_size) text_len = (uint32_t)(buf_size - 1);
 
     memcpy(buf, src + start_byte, text_len);
     buf[text_len] = '\0';
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return (int32_t)text_len;
 }
 
@@ -414,19 +554,31 @@ int32_t eshkol_ts_node_text(int64_t tree_handle, uint32_t start_byte,
  */
 int64_t eshkol_ts_query_new(const char* language, const char* pattern) {
     if (!language || !pattern) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     const TSLanguage* lang = find_language(language);
-    if (!lang) return -1;
+    if (!lang) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     uint32_t error_offset;
     TSQueryError error_type;
     TSQuery* query = ts_query_new(lang, pattern, (uint32_t)strlen(pattern),
                                    &error_offset, &error_type);
-    if (!query) return -1;
+    if (!query) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     int slot = alloc_slot((void**)g_queries, MAX_QUERIES);
-    if (slot < 0) { ts_query_delete(query); return -1; }
+    if (slot < 0) {
+        ts_query_delete(query);
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     g_queries[slot] = query;
     g_query_langs[slot] = lang;
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return (int64_t)slot;
 }
 
@@ -440,11 +592,13 @@ int64_t eshkol_ts_query_new(const char* language, const char* pattern) {
  */
 void eshkol_ts_query_free(int64_t handle) {
     if (handle < 1 || handle >= MAX_QUERIES) return;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     if (g_queries[handle]) {
         ts_query_delete(g_queries[handle]);
         g_queries[handle] = NULL;
         g_query_langs[handle] = NULL;
     }
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
 }
 
 /*
@@ -481,12 +635,22 @@ int32_t eshkol_ts_query_matches(int64_t query_handle, int64_t tree_handle,
                                   int32_t* count_out) {
     if (query_handle < 1 || query_handle >= MAX_QUERIES) return -1;
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if ((!buf && buf_size != 0) || buf_size < 0 || max_matches < 0) return -1;
+    if (count_out) *count_out = 0;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     TSQuery* query = g_queries[query_handle];
     TSTree* tree = g_trees[tree_handle];
-    if (!query || !tree || !buf || buf_size <= 0) return -1;
+    if (!query || !tree || g_query_langs[query_handle] != g_tree_langs[tree_handle]) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     TSNode root = ts_tree_root_node(tree);
     TSQueryCursor* cursor = ts_query_cursor_new();
+    if (!cursor) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
     ts_query_cursor_exec(cursor, query, root);
 
     int32_t written = 0;
@@ -506,26 +670,47 @@ int32_t eshkol_ts_query_matches(int64_t query_handle, int64_t tree_handle,
             uint32_t sb = ts_node_start_byte(node);
             uint32_t eb = ts_node_end_byte(node);
 
-            if (count > 0 && written < buf_size - 1) {
-                buf[written++] = '\0';
+            int separator = count > 0 ? 1 : 0;
+            if (buf && written + separator >= buf_size) {
+                ts_query_cursor_delete(cursor);
+                if (count_out) *count_out = 0;
+                if (buf_size > 0) buf[0] = '\0';
+                eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+                return -1;
             }
-
-            int n = snprintf(buf + written, (size_t)(buf_size - written),
+            int n = snprintf(buf ? buf + written + separator : NULL,
+                             buf ? (size_t)(buf_size - written - separator) : 0u,
                              "%.*s\t%u\t%u\t%u\t%u\t%u\t%u",
                              (int)name_len, name,
                              sb, eb,
                              start.row, start.column,
                              end.row, end.column);
-            if (n < 0 || written + n >= buf_size) goto done;
-            written += n;
+            if (n < 0 || n > INT32_MAX - written - separator) {
+                ts_query_cursor_delete(cursor);
+                if (count_out) *count_out = 0;
+                if (buf && buf_size > 0) buf[0] = '\0';
+                eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+                return -1;
+            }
+            if (buf) {
+                if (written + separator + n >= buf_size) {
+                    ts_query_cursor_delete(cursor);
+                    if (count_out) *count_out = 0;
+                    buf[0] = '\0';
+                    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+                    return -1;
+                }
+                if (separator) buf[written] = '\0';
+            }
+            written += separator + n;
             count++;
         }
     }
 
-done:
     ts_query_cursor_delete(cursor);
-    if (written < buf_size) buf[written] = '\0';
+    if (buf && written < buf_size) buf[written] = '\0';
     if (count_out) *count_out = count;
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return written;
 }
 
@@ -544,18 +729,27 @@ done:
  */
 int32_t eshkol_ts_tree_sexp(int64_t tree_handle, char* buf, int32_t buf_size) {
     if (tree_handle < 1 || tree_handle >= MAX_TREES) return -1;
+    if (!buf || buf_size <= 0) return -1;
+    eshkol_agent_mutex_lock(&g_tree_sitter_mutex);
     TSTree* tree = g_trees[tree_handle];
-    if (!tree || !buf || buf_size <= 0) return -1;
+    if (!tree) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     TSNode root = ts_tree_root_node(tree);
     char* sexp = ts_node_string(root);
-    if (!sexp) return -1;
+    if (!sexp) {
+        eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
+        return -1;
+    }
 
     int len = (int32_t)strlen(sexp);
     if (len >= buf_size) len = buf_size - 1;
     memcpy(buf, sexp, (size_t)len);
     buf[len] = '\0';
     free(sexp);
+    eshkol_agent_mutex_unlock(&g_tree_sitter_mutex);
     return len;
 }
 
@@ -569,45 +763,3 @@ int32_t eshkol_ts_tree_sexp(int64_t tree_handle, char* buf, int32_t buf_size) {
  * @return 1 when compiled with HAS_TREE_SITTER (this definition).
  */
 int32_t eshkol_ts_available(void) { return 1; }
-
-#else /* !HAS_TREE_SITTER */
-
-/*******************************************************************************
- * Graceful stubs when tree-sitter is not available
- ******************************************************************************/
-
-/** @brief Stub: tree-sitter support was not compiled in, so parser creation always fails. */
-int64_t eshkol_ts_parser_new(const char* language) { (void)language; return -1; }
-/** @brief Stub: no-op since no parsers exist without tree-sitter support. */
-void    eshkol_ts_parser_free(int64_t h) { (void)h; }
-/** @brief Stub: tree-sitter support was not compiled in, so parsing always fails. */
-int64_t eshkol_ts_parse(int64_t p, const char* s, int32_t l) { (void)p;(void)s;(void)l; return -1; }
-/** @brief Stub: no-op since no trees exist without tree-sitter support. */
-void    eshkol_ts_tree_free(int64_t h) { (void)h; }
-/** @brief Stub: always fails since no trees exist without tree-sitter support. */
-int32_t eshkol_ts_tree_root(int64_t h, char* b, int32_t s) { (void)h;(void)b;(void)s; return -1; }
-/** @brief Stub: always fails since no trees exist without tree-sitter support. */
-int32_t eshkol_ts_node_children(int64_t h, uint32_t sb, uint32_t eb, char* b, int32_t bs, int32_t* c) {
-    (void)h;(void)sb;(void)eb;(void)b;(void)bs;(void)c; return -1;
-}
-/** @brief Stub: always fails since no trees exist without tree-sitter support. */
-int32_t eshkol_ts_node_text(int64_t h, uint32_t sb, uint32_t eb, char* b, int32_t bs) {
-    (void)h;(void)sb;(void)eb;(void)b;(void)bs; return -1;
-}
-/** @brief Stub: tree-sitter support was not compiled in, so query compilation always fails. */
-int64_t eshkol_ts_query_new(const char* l, const char* p) { (void)l;(void)p; return -1; }
-/** @brief Stub: no-op since no queries exist without tree-sitter support. */
-void    eshkol_ts_query_free(int64_t h) { (void)h; }
-/** @brief Stub: always fails since no queries or trees exist without tree-sitter support. */
-int32_t eshkol_ts_query_matches(int64_t q, int64_t t, int32_t m, char* b, int32_t bs, int32_t* c) {
-    (void)q;(void)t;(void)m;(void)b;(void)bs;(void)c; return -1;
-}
-/** @brief Stub: always fails since no trees exist without tree-sitter support. */
-int32_t eshkol_ts_tree_sexp(int64_t h, char* b, int32_t s) { (void)h;(void)b;(void)s; return -1; }
-/**
- * @brief Reports whether this build was compiled with tree-sitter support.
- * @return 0 (this build lacks HAS_TREE_SITTER).
- */
-int32_t eshkol_ts_available(void) { return 0; }
-
-#endif /* HAS_TREE_SITTER */

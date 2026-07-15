@@ -478,20 +478,7 @@ typedef struct VM {
         int active;
         int parent;
         int child_count;
-        int children[16];
-        int flex_direction; /* 0 = column, 1 = row */
-        double width;
-        double height;
-        double flex_grow;
-        double flex_shrink;
-        double padding;
-        double margin;
-        double gap;
-        double computed_left;
-        double computed_top;
-        double computed_width;
-        double computed_height;
-    } yoga_nodes[64];
+    } yoga_nodes[512];
 
     struct {
         int active;
@@ -513,32 +500,23 @@ typedef struct VM {
 
     struct {
         int active;
-        char language[32];
-    } ts_parsers[16];
+    } ts_parsers[32];
 
     struct {
         int active;
-        int parser;
-        int root_node;
-        const char* source;
-        int64_t source_len;
-        char language[32];
-    } ts_trees[16];
+    } ts_trees[64];
 
     struct {
         int active;
         int tree;
-        int parent;
-        int64_t start;
-        int64_t end;
-        char type[48];
-    } ts_nodes[128];
+        uint32_t start;
+        uint32_t end;
+        int root;
+        char type[128];
+    } ts_nodes[4096];
 
     struct {
         int active;
-        char language[32];
-        char pattern[256];
-        char capture[64];
     } ts_queries[32];
 } VM;
 

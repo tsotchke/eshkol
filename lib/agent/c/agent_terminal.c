@@ -18,13 +18,13 @@
 #include <sys/ioctl.h>
 #include <errno.h>
 #include <poll.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 /* Forward declarations */
 int eshkol_term_read_key_timeout(int timeout_ms);
-
-#ifndef _WIN32
-/* ───────────────────────── POSIX implementation ───────────────────────── */
 
 /* Key code constants (match Eshkol FFI expectations) */
 #define KEY_UP        1001
@@ -44,6 +44,9 @@ int eshkol_term_read_key_timeout(int timeout_ms);
 #define KEY_F2        1015
 #define KEY_F3        1016
 #define KEY_F4        1017
+
+#ifndef _WIN32
+/* ───────────────────────── POSIX implementation ───────────────────────── */
 
 static struct termios g_orig_termios;
 static int g_raw_mode = 0;
@@ -452,60 +455,216 @@ void eshkol_term_set_title(const char* title) {
 }
 
 #else /* _WIN32 */
-/* ───────────────────────── Windows stubs ─────────────────────────────────
- * Raw-mode terminal control on Windows requires the ConPTY API and a
- * different architecture than POSIX termios. Until that lands (planned for
- * the v1.4-platform window), the Windows build links no-op stubs so the
- * agent FFI library still compiles. Calls succeed silently or return
- * default values; (eshkol_term_init) returns -1 to signal "not available". */
+/* ───────────────────────── Windows console implementation ─────────────── */
 
-/** @brief Windows stub: terminal control is not yet implemented; always reports unavailable. */
-int eshkol_term_init(void)            { return -1; }
-/** @brief Windows stub: no-op (nothing to restore). */
-void eshkol_term_shutdown(void)       { }
-/** @brief Windows stub: no-op (raw mode not implemented). */
-void eshkol_term_raw_mode(void)       { }
-/** @brief Windows stub: no-op. */
-void eshkol_term_cooked_mode(void)    { }
-/** @brief Windows stub: always returns a fixed width of 80 columns. */
-int eshkol_term_width(void)           { return 80; }
-/** @brief Windows stub: always returns a fixed height of 24 rows. */
-int eshkol_term_height(void)          { return 24; }
-/** @brief Windows stub: always reports no resize occurred. */
-int eshkol_term_resized(void)         { return 0; }
-/** @brief Windows stub: always reports no key available. */
-int eshkol_term_read_key(void)        { return -1; }
-/** @brief Windows stub: ignores @p timeout_ms and always reports no key available. */
-int eshkol_term_read_key_timeout(int timeout_ms) { (void)timeout_ms; return -1; }
-/** @brief Windows stub: no-op. */
-void eshkol_term_clear(void)          { }
-/** @brief Windows stub: no-op; ignores @p row and @p col. */
-void eshkol_term_move_to(int row, int col) { (void)row; (void)col; }
-/**
- * @brief Windows stub: cursor position query is not implemented.
- *
- * @param row Out-parameter set to 0 if non-NULL.
- * @param col Out-parameter set to 0 if non-NULL.
- * @return -1 (unavailable).
- */
+static HANDLE g_term_input = INVALID_HANDLE_VALUE;
+static HANDLE g_term_output = INVALID_HANDLE_VALUE;
+static DWORD g_term_input_mode = 0;
+static DWORD g_term_output_mode = 0;
+static int g_term_modes_saved = 0;
+static int g_raw_mode = 0;
+static int g_term_width = 80;
+static int g_term_height = 24;
+
+static void refresh_dimensions(void) {
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (g_term_output != INVALID_HANDLE_VALUE &&
+        GetConsoleScreenBufferInfo(g_term_output, &info)) {
+        g_term_width = (int)(info.srWindow.Right - info.srWindow.Left + 1);
+        g_term_height = (int)(info.srWindow.Bottom - info.srWindow.Top + 1);
+    }
+}
+
+static void restore_terminal(void) {
+    if (g_term_modes_saved) {
+        SetConsoleMode(g_term_input, g_term_input_mode);
+        SetConsoleMode(g_term_output, g_term_output_mode);
+    }
+    g_raw_mode = 0;
+    if (g_term_output != INVALID_HANDLE_VALUE) {
+        CONSOLE_CURSOR_INFO cursor;
+        if (GetConsoleCursorInfo(g_term_output, &cursor)) {
+            cursor.bVisible = TRUE;
+            SetConsoleCursorInfo(g_term_output, &cursor);
+        }
+    }
+}
+
+int eshkol_term_init(void) {
+    g_term_input = GetStdHandle(STD_INPUT_HANDLE);
+    g_term_output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (g_term_input == INVALID_HANDLE_VALUE ||
+        g_term_output == INVALID_HANDLE_VALUE ||
+        !GetConsoleMode(g_term_input, &g_term_input_mode) ||
+        !GetConsoleMode(g_term_output, &g_term_output_mode)) {
+        return 0;
+    }
+    g_term_modes_saved = 1;
+    /* VT output keeps the public terminal behaviour identical in ConPTY,
+       Windows Terminal, and the legacy console host. */
+    SetConsoleMode(g_term_output,
+                   g_term_output_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING |
+                   DISABLE_NEWLINE_AUTO_RETURN);
+    refresh_dimensions();
+    atexit(restore_terminal);
+    return 1;
+}
+
+void eshkol_term_shutdown(void) { restore_terminal(); }
+
+void eshkol_term_raw_mode(void) {
+    if (!g_term_modes_saved || g_raw_mode) return;
+    DWORD mode = g_term_input_mode;
+    mode &= ~(ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT |
+              ENABLE_QUICK_EDIT_MODE);
+    mode |= ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT;
+#ifdef ENABLE_VIRTUAL_TERMINAL_INPUT
+    mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+#endif
+    if (SetConsoleMode(g_term_input, mode)) g_raw_mode = 1;
+}
+
+void eshkol_term_cooked_mode(void) {
+    if (g_term_modes_saved && g_raw_mode) {
+        SetConsoleMode(g_term_input, g_term_input_mode);
+        g_raw_mode = 0;
+    }
+}
+
+int eshkol_term_width(void) { refresh_dimensions(); return g_term_width; }
+int eshkol_term_height(void) { refresh_dimensions(); return g_term_height; }
+
+int eshkol_term_resized(void) {
+    int old_width = g_term_width;
+    int old_height = g_term_height;
+    refresh_dimensions();
+    return old_width != g_term_width || old_height != g_term_height;
+}
+
+static int translate_key(const KEY_EVENT_RECORD* key) {
+    if (!key->bKeyDown) return -1;
+    switch (key->wVirtualKeyCode) {
+        case VK_UP: return KEY_UP;
+        case VK_DOWN: return KEY_DOWN;
+        case VK_LEFT: return KEY_LEFT;
+        case VK_RIGHT: return KEY_RIGHT;
+        case VK_HOME: return KEY_HOME;
+        case VK_END: return KEY_END;
+        case VK_BACK: return KEY_BACKSPACE;
+        case VK_DELETE: return KEY_DELETE;
+        case VK_TAB: return KEY_TAB;
+        case VK_RETURN: return KEY_ENTER;
+        case VK_ESCAPE: return KEY_ESCAPE;
+        case VK_PRIOR: return KEY_PAGE_UP;
+        case VK_NEXT: return KEY_PAGE_DOWN;
+        case VK_F1: return KEY_F1;
+        case VK_F2: return KEY_F2;
+        case VK_F3: return KEY_F3;
+        case VK_F4: return KEY_F4;
+        default: break;
+    }
+    if ((key->dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) &&
+        key->wVirtualKeyCode >= 'A' && key->wVirtualKeyCode <= 'Z') {
+        return (int)(key->wVirtualKeyCode - 'A' + 1);
+    }
+    if (key->uChar.UnicodeChar != 0) return (int)key->uChar.UnicodeChar;
+    return -1;
+}
+
+int eshkol_term_read_key(void) { return eshkol_term_read_key_timeout(-1); }
+
+int eshkol_term_read_key_timeout(int timeout_ms) {
+    if (g_term_input == INVALID_HANDLE_VALUE) return -1;
+    DWORD wait_ms = timeout_ms < 0 ? INFINITE : (DWORD)timeout_ms;
+    ULONGLONG deadline = timeout_ms < 0 ? 0 : GetTickCount64() + wait_ms;
+    for (;;) {
+        DWORD remaining = INFINITE;
+        if (timeout_ms >= 0) {
+            ULONGLONG now = GetTickCount64();
+            if (now >= deadline) return -1;
+            remaining = (DWORD)(deadline - now);
+        }
+        if (WaitForSingleObject(g_term_input, remaining) != WAIT_OBJECT_0) return -1;
+        INPUT_RECORD rec;
+        DWORD count = 0;
+        if (!ReadConsoleInputW(g_term_input, &rec, 1, &count) || count != 1) return -1;
+        if (rec.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            refresh_dimensions();
+            continue;
+        }
+        if (rec.EventType == KEY_EVENT) {
+            int value = translate_key(&rec.Event.KeyEvent);
+            if (value >= 0) return value;
+        }
+    }
+}
+
+void eshkol_term_clear(void) {
+    if (g_term_output == INVALID_HANDLE_VALUE) return;
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(g_term_output, &info)) return;
+    DWORD cells = (DWORD)info.dwSize.X * (DWORD)info.dwSize.Y;
+    DWORD written = 0;
+    COORD origin = {0, 0};
+    FillConsoleOutputCharacterW(g_term_output, L' ', cells, origin, &written);
+    FillConsoleOutputAttribute(g_term_output, info.wAttributes, cells, origin, &written);
+    SetConsoleCursorPosition(g_term_output, origin);
+}
+
+void eshkol_term_move_to(int row, int col) {
+    if (g_term_output == INVALID_HANDLE_VALUE) return;
+    COORD pos = {(SHORT)(col > 0 ? col - 1 : 0), (SHORT)(row > 0 ? row - 1 : 0)};
+    SetConsoleCursorPosition(g_term_output, pos);
+}
+
 int eshkol_term_cursor_pos(int* row, int* col) {
     if (row) *row = 0;
     if (col) *col = 0;
-    return -1;
+    if (!row || !col || g_term_output == INVALID_HANDLE_VALUE) return 0;
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (!GetConsoleScreenBufferInfo(g_term_output, &info)) return 0;
+    *row = (int)info.dwCursorPosition.Y + 1;
+    *col = (int)info.dwCursorPosition.X + 1;
+    return 1;
 }
-/** @brief Windows stub: always returns row 0. */
-int eshkol_term_cursor_row(void)      { return 0; }
-/** @brief Windows stub: always returns column 0. */
-int eshkol_term_cursor_col(void)      { return 0; }
-/** @brief Windows stub: no-op. */
-void eshkol_term_show_cursor(void)    { }
-/** @brief Windows stub: no-op. */
-void eshkol_term_hide_cursor(void)    { }
-/** @brief Windows stub: writes @p s to stdout via fputs(), unlike the POSIX raw write(2) version. */
-void eshkol_term_write(const char* s) { if (s) fputs(s, stdout); }
-/** @brief Flushes stdio's output buffer for stdout. */
-void eshkol_term_flush(void)          { fflush(stdout); }
-/** @brief Windows stub: no-op; ignores @p title (window title not implemented). */
-void eshkol_term_set_title(const char* title) { (void)title; }
+
+int eshkol_term_cursor_row(void) {
+    int row = 0, col = 0;
+    return eshkol_term_cursor_pos(&row, &col) ? row : 0;
+}
+
+int eshkol_term_cursor_col(void) {
+    int row = 0, col = 0;
+    return eshkol_term_cursor_pos(&row, &col) ? col : 0;
+}
+
+static void set_cursor_visibility(BOOL visible) {
+    if (g_term_output == INVALID_HANDLE_VALUE) return;
+    CONSOLE_CURSOR_INFO cursor;
+    if (GetConsoleCursorInfo(g_term_output, &cursor)) {
+        cursor.bVisible = visible;
+        SetConsoleCursorInfo(g_term_output, &cursor);
+    }
+}
+
+void eshkol_term_show_cursor(void) { set_cursor_visibility(TRUE); }
+void eshkol_term_hide_cursor(void) { set_cursor_visibility(FALSE); }
+
+void eshkol_term_write(const char* text) {
+    if (!text) return;
+    DWORD written = 0;
+    if (g_term_output != INVALID_HANDLE_VALUE &&
+        GetFileType(g_term_output) == FILE_TYPE_CHAR) {
+        WriteConsoleA(g_term_output, text, (DWORD)strlen(text), &written, NULL);
+    } else if (g_term_output != INVALID_HANDLE_VALUE) {
+        WriteFile(g_term_output, text, (DWORD)strlen(text), &written, NULL);
+    }
+}
+
+void eshkol_term_flush(void) { fflush(stdout); }
+
+void eshkol_term_set_title(const char* title) {
+    if (title) SetConsoleTitleA(title);
+}
 
 #endif /* _WIN32 */

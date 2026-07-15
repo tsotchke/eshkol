@@ -76,6 +76,8 @@ int main(int argc, char** argv) {
         read_file(source_root / "lib" / "backend" / "llvm_codegen.cpp");
     const std::string parallel_llvm_codegen =
         read_file(source_root / "lib" / "backend" / "parallel_llvm_codegen.cpp");
+    const std::string agent_capabilities_header =
+        read_file(source_root / "inc" / "eshkol" / "agent_capabilities.h");
     bool ok = true;
 
     ok = ok &&
@@ -143,6 +145,35 @@ int main(int argc, char** argv) {
                              "Windows suite should not remove variable paths without the guard helper") &&
          expect_not_contains(script, "$server = Start-Process",
                              "Windows suite should not start the web server without the guard helper");
+
+    ok = ok &&
+         expect_contains(cmake, "if(WIN32 AND ESHKOL_USING_MSVC)",
+                         "Windows native dependency branch is explicit") &&
+         expect_contains(cmake,
+                         "GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d",
+                         "Windows Eigen provider is pinned by immutable commit") &&
+         expect_contains(cmake, "set(ESHKOL_BLAS_USAGE_TARGET Eigen3::Eigen)",
+                         "Windows BLAS compilation uses Eigen's native target") &&
+         expect_contains(cmake, "add_compile_definitions(ESHKOL_BLAS_EIGEN)",
+                         "Windows runtime selects the Eigen CBLAS implementation") &&
+         expect_contains(cmake, "function(eshkol_export_host_agent_api target_name)",
+                         "hosted VM has a cross-platform agent export contract") &&
+         expect_contains(cmake, "${target_name}_agent_exports.def",
+                         "Windows hosted VM uses a bounded agent export table") &&
+         expect_contains(cmake, "eshkol_export_host_agent_api(${_eshkol_vm_host_target})",
+                         "every standalone VM host publishes the agent API") &&
+         expect_not_contains(cmake,
+                             "ClangCL on\n"
+                             "            # Windows needs OpenBLAS",
+                             "Windows must not consume a MinGW OpenBLAS archive");
+
+    ok = ok &&
+         expect_contains(agent_capabilities_header,
+                         "#  if defined(ESHKOL_AGENT_SHARED)",
+                         "Windows DLL decoration is explicitly opt-in") &&
+         expect_contains(agent_capabilities_header,
+                         "#    define ESHKOL_AGENT_API",
+                         "static Windows agent consumers use ordinary COFF symbols");
 
     ok = ok &&
          expect_contains(arena_header, "#if defined(_WIN32)",

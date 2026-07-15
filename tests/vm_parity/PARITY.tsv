@@ -635,6 +635,7 @@ process-spawn-pty	vm-supported
 process-wait	vm-supported	
 promise?	vm-supported	
 ptr->string	native-only-justified	low-level memory/FFI primitive tied to native codegen
+ptr->string-n	native-only-justified	length-aware low-level FFI byte copy tied to native codegen
 ptr->usize	native-only-justified	low-level memory/FFI primitive tied to native codegen
 ptr-add	native-only-justified	low-level memory/FFI primitive tied to native codegen
 quantum-random	vm-supported	

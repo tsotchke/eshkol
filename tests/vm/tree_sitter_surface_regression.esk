@@ -4,7 +4,7 @@
 
 (define source "import os\n\ndef hello(name):\n  return name\n")
 
-(display "T1 ts-available reports fallback runtime: ")
+(display "T1 ts-available reports pinned native runtime: ")
 (display (if (ts-available)
              "PASS"
              "FAIL"))
@@ -38,7 +38,7 @@
 (define fn-node (list-ref children 1))
 (define fn-text (ts-node-text fn-node source))
 
-(display "T5 ts-node-children exposes line-level structural nodes: ")
+(display "T5 ts-node-children exposes grammar-derived structural nodes: ")
 (display (if (and (pair? children)
                   (string=? (ts-node-type fn-node) "function_definition")
                   (string-index-of fn-text "hello" 0))

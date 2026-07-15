@@ -1,10 +1,9 @@
 /*
  * agent_http_client.c — libcurl-backed HTTP client.
  *
- * Provides the qllm_http_* symbols that lib/agent/http.esk binds against,
- * so Eshkol agents can make live HTTP/HTTPS calls without linking the
- * full qLLM library. Built only when libcurl is available; otherwise
- * the agent falls back to error-returning stubs (existing behavior).
+ * Provides Eshkol's stable synchronous and SSE HTTP ABI without linking the
+ * full qLLM library.  Release builds use the pinned, packaged libcurl target;
+ * this file is never replaced by an error-returning compatibility object.
  *
  * ABI mirrors the qLLM client (see header at top of http.esk):
  *   qllm_http_init/shutdown/has_ssl
@@ -13,11 +12,6 @@
  *   qllm_http_post_json(url, body, auth_header, timeout_ms)
  *   qllm_http_response_status/body/body_len/free
  *   qllm_http_error_string(code)
- *
- * SSE streaming (qllm_http_stream_*) is not yet implemented here — the
- * agent's streaming path still requires a follow-up. Callers that need
- * streaming today should keep falling back to the existing weak-stub
- * behavior (returns NULL, surfaces "explicit unavailable error").
  *
  * Threading: libcurl's "easy" interface is per-thread. Each request
  * creates and destroys its own CURL handle so the FFI is safe to call
@@ -32,12 +26,20 @@
 
 #ifdef ESHKOL_HAVE_LIBCURL
 
+#include "eshkol/agent_http.h"
+#include "agent_http_internal.h"
+#include "agent_sse_internal.h"
+
 #include <curl/curl.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+#define ESHKOL_HTTP_MAX_RESPONSE_BYTES ((size_t)256 * 1024 * 1024)
 
 typedef struct qllm_http_response {
     int32_t  status;        /* HTTP status code, 0 if curl couldn't connect */
@@ -53,6 +55,30 @@ typedef struct qllm_http_response {
  * alive past the agent's main shutdown doesn't lose curl access. */
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_init_refs = 0;
+static int g_active_requests = 0;
+static int g_curl_initialized = 0;
+
+static int acquire_curl_global(void) {
+    int ok = 1;
+    pthread_mutex_lock(&g_init_mutex);
+    if (!g_curl_initialized) {
+        if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK) ok = 0;
+        else g_curl_initialized = 1;
+    }
+    if (ok) g_active_requests++;
+    pthread_mutex_unlock(&g_init_mutex);
+    return ok;
+}
+
+static void release_curl_global(void) {
+    pthread_mutex_lock(&g_init_mutex);
+    if (g_active_requests > 0) g_active_requests--;
+    if (g_init_refs == 0 && g_active_requests == 0 && g_curl_initialized) {
+        curl_global_cleanup();
+        g_curl_initialized = 0;
+    }
+    pthread_mutex_unlock(&g_init_mutex);
+}
 
 /**
  * @brief malloc() wrapper that aborts the process on allocation failure.
@@ -109,7 +135,9 @@ typedef struct {
  */
 static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* userdata) {
     body_buf_t* buf = (body_buf_t*)userdata;
+    if (size != 0 && nmemb > SIZE_MAX / size) return 0;
     size_t add = size * nmemb;
+    if (buf->len > ESHKOL_HTTP_MAX_RESPONSE_BYTES - add) return 0;
     if (buf->len + add + 1 > buf->cap) {
         size_t new_cap = buf->cap == 0 ? 4096 : buf->cap * 2;
         while (new_cap < buf->len + add + 1) new_cap *= 2;
@@ -122,6 +150,58 @@ static size_t write_cb(void* ptr, size_t size, size_t nmemb, void* userdata) {
     buf->len += add;
     buf->data[buf->len] = '\0';
     return add;
+}
+
+static struct curl_slist* header_lines_to_slist(const char* lines, int* ok) {
+    struct curl_slist* result = NULL;
+    *ok = 1;
+    if (!lines || !*lines) return NULL;
+    const char* cursor = lines;
+    while (*cursor) {
+        const char* end = strchr(cursor, '\n');
+        size_t length = end ? (size_t)(end - cursor) : strlen(cursor);
+        if (length == 0) {
+            cursor = end ? end + 1 : cursor + length;
+            continue;
+        }
+        const char* colon = memchr(cursor, ':', length);
+        if (!colon) {
+            *ok = 0;
+            curl_slist_free_all(result);
+            return NULL;
+        }
+        size_t name_length = (size_t)(colon - cursor);
+        const char* value = colon + 1;
+        size_t value_length = length - name_length - 1;
+        while (value_length && *value == ' ') {
+            value++;
+            value_length--;
+        }
+        if (!eshkol_http_valid_token(cursor, name_length) ||
+            !eshkol_http_valid_field_value(value, value_length)) {
+            *ok = 0;
+            curl_slist_free_all(result);
+            return NULL;
+        }
+        char* line = xstrdup_n(cursor, length);
+        struct curl_slist* grown = curl_slist_append(result, line);
+        free(line);
+        if (!grown) {
+            *ok = 0;
+            curl_slist_free_all(result);
+            return NULL;
+        }
+        result = grown;
+        cursor = end ? end + 1 : cursor + length;
+    }
+    return result;
+}
+
+static int slist_append_checked(struct curl_slist** list, const char* line) {
+    struct curl_slist* grown = curl_slist_append(*list, line);
+    if (!grown) return 0;
+    *list = grown;
+    return 1;
 }
 
 /* Configure shared curl options for all requests. Centralizing this
@@ -144,6 +224,8 @@ static void apply_common_opts(CURL* curl, body_buf_t* buf, int32_t timeout_ms) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, buf);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);  /* thread-safety: no SIGPIPE handler */
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, (long)(timeout_ms > 0 ? timeout_ms : 30000));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 10000L);
@@ -208,12 +290,13 @@ static qllm_http_response_t* finalize_response(CURL* curl, body_buf_t* buf, CURL
  */
 int32_t qllm_http_init(void) {
     pthread_mutex_lock(&g_init_mutex);
-    if (g_init_refs == 0) {
+    if (!g_curl_initialized) {
         CURLcode rc = curl_global_init(CURL_GLOBAL_DEFAULT);
         if (rc != CURLE_OK) {
             pthread_mutex_unlock(&g_init_mutex);
             return 0;
         }
+        g_curl_initialized = 1;
     }
     g_init_refs++;
     pthread_mutex_unlock(&g_init_mutex);
@@ -229,8 +312,9 @@ void qllm_http_shutdown(void) {
     pthread_mutex_lock(&g_init_mutex);
     if (g_init_refs > 0) {
         g_init_refs--;
-        if (g_init_refs == 0) {
+        if (g_init_refs == 0 && g_active_requests == 0 && g_curl_initialized) {
             curl_global_cleanup();
+            g_curl_initialized = 0;
         }
     }
     pthread_mutex_unlock(&g_init_mutex);
@@ -244,9 +328,11 @@ void qllm_http_shutdown(void) {
 int32_t qllm_http_has_ssl(void) {
     /* libcurl built without TLS would still link; check the feature
      * bitmap to give an accurate answer. */
+    if (!acquire_curl_global()) return 0;
     curl_version_info_data* info = curl_version_info(CURLVERSION_NOW);
-    if (!info) return 0;
-    return (info->features & CURL_VERSION_SSL) ? 1 : 0;
+    int result = info && (info->features & CURL_VERSION_SSL) ? 1 : 0;
+    release_curl_global();
+    return result;
 }
 
 /**
@@ -264,10 +350,13 @@ qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
     if (!url) return NULL;
     /* Lazy-init: the agent may forget to call http-init before its first
      * request. One-shot init+leak is cheaper than a hard error here. */
-    if (g_init_refs == 0) qllm_http_init();
+    if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        release_curl_global();
+        return NULL;
+    }
 
     body_buf_t buf = {0};
     apply_common_opts(curl, &buf, timeout_ms);
@@ -277,6 +366,7 @@ qllm_http_response_t* qllm_http_get(const char* url, int32_t timeout_ms) {
     CURLcode rc = curl_easy_perform(curl);
     qllm_http_response_t* resp = finalize_response(curl, &buf, rc);
     curl_easy_cleanup(curl);
+    release_curl_global();
     return resp;
 }
 
@@ -301,11 +391,14 @@ qllm_http_response_t* qllm_http_post(const char* url,
                                      const char* body,
                                      int64_t body_len,
                                      int32_t timeout_ms) {
-    if (!url) return NULL;
-    if (g_init_refs == 0) qllm_http_init();
+    if (!url || body_len < 0 || (!body && body_len != 0)) return NULL;
+    if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        release_curl_global();
+        return NULL;
+    }
 
     body_buf_t buf = {0};
     apply_common_opts(curl, &buf, timeout_ms);
@@ -320,7 +413,14 @@ qllm_http_response_t* qllm_http_post(const char* url,
 
     struct curl_slist* slist = NULL;
     for (int64_t i = 0; i < header_count && headers; i++) {
-        if (headers[i]) slist = curl_slist_append(slist, headers[i]);
+        if (headers[i] &&
+            (!eshkol_http_valid_header_line(headers[i]) ||
+             !slist_append_checked(&slist, headers[i]))) {
+            curl_slist_free_all(slist);
+            curl_easy_cleanup(curl);
+            release_curl_global();
+            return NULL;
+        }
     }
     if (slist) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
 
@@ -328,6 +428,7 @@ qllm_http_response_t* qllm_http_post(const char* url,
     qllm_http_response_t* resp = finalize_response(curl, &buf, rc);
     if (slist) curl_slist_free_all(slist);
     curl_easy_cleanup(curl);
+    release_curl_global();
     return resp;
 }
 
@@ -349,10 +450,13 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
                                           const char* auth_header,
                                           int32_t timeout_ms) {
     if (!url) return NULL;
-    if (g_init_refs == 0) qllm_http_init();
+    if (!acquire_curl_global()) return NULL;
 
     CURL* curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) {
+        release_curl_global();
+        return NULL;
+    }
 
     body_buf_t buf = {0};
     apply_common_opts(curl, &buf, timeout_ms);
@@ -368,13 +472,14 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
     }
 
     struct curl_slist* slist = NULL;
-    slist = curl_slist_append(slist, "Content-Type: application/json");
-    slist = curl_slist_append(slist, "Accept: application/json");
+    if (!slist_append_checked(&slist, "Content-Type: application/json") ||
+        !slist_append_checked(&slist, "Accept: application/json")) goto post_json_oom;
     /* The agent's http-safe-string check already rejects CRLF/NUL/etc.,
      * so it's safe to inject auth_header verbatim into the slist. We
      * still skip empty/NULL to avoid sending a blank header line. */
     if (auth_header && auth_header[0] != '\0') {
-        slist = curl_slist_append(slist, auth_header);
+        if (!eshkol_http_valid_header_line(auth_header) ||
+            !slist_append_checked(&slist, auth_header)) goto post_json_oom;
     }
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
 
@@ -382,7 +487,68 @@ qllm_http_response_t* qllm_http_post_json(const char* url,
     qllm_http_response_t* resp = finalize_response(curl, &buf, rc);
     curl_slist_free_all(slist);
     curl_easy_cleanup(curl);
+    release_curl_global();
     return resp;
+
+post_json_oom:
+    curl_slist_free_all(slist);
+    curl_easy_cleanup(curl);
+    release_curl_global();
+    return NULL;
+}
+
+qllm_http_response_t* eshkol_http_request(const char* method,
+                                          const char* url,
+                                          const char* header_lines,
+                                          const char* body,
+                                          int32_t timeout_ms) {
+    return eshkol_http_request_bytes(method, url, header_lines, body,
+                                     body ? (int64_t)strlen(body) : 0,
+                                     timeout_ms);
+}
+
+qllm_http_response_t* eshkol_http_request_bytes(const char* method,
+                                                const char* url,
+                                                const char* header_lines,
+                                                const char* body,
+                                                int64_t body_len,
+                                                int32_t timeout_ms) {
+    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+        (!body && body_len != 0)) return NULL;
+    if (!acquire_curl_global()) return NULL;
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        release_curl_global();
+        return NULL;
+    }
+    body_buf_t response = {0};
+    apply_common_opts(curl, &response, timeout_ms);
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    if (strcmp(method, "GET") == 0) {
+        curl_easy_setopt(curl, CURLOPT_HTTPGET, 1L);
+    } else if (strcmp(method, "HEAD") == 0) {
+        curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    } else {
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body ? body : "");
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE, (curl_off_t)body_len);
+    }
+
+    int headers_ok = 0;
+    struct curl_slist* headers = header_lines_to_slist(header_lines, &headers_ok);
+    if (!headers_ok) {
+        curl_easy_cleanup(curl);
+        release_curl_global();
+        return NULL;
+    }
+    if (headers) curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    CURLcode rc = curl_easy_perform(curl);
+    qllm_http_response_t* result = finalize_response(curl, &response, rc);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    release_curl_global();
+    return result;
 }
 
 /**
@@ -415,6 +581,10 @@ int64_t qllm_http_response_body_len(qllm_http_response_t* resp) {
     return resp ? resp->body_len : 0;
 }
 
+const char* qllm_http_response_error(qllm_http_response_t* resp) {
+    return resp ? resp->error : NULL;
+}
+
 /**
  * @brief Frees a response and its owned body/error strings.
  *
@@ -439,67 +609,262 @@ const char* qllm_http_error_string(int32_t code) {
     return curl_easy_strerror((CURLcode)code);
 }
 
-/* qllm_http_request takes a packed request struct in the qLLM ABI;
- * Eshkol's http.esk doesn't currently call this directly (it uses
- * the get/post/post_json convenience entries). Provide a NULL-returning
- * stub so the symbol resolves at link time without crashing. */
-/**
- * @brief Stub for the qLLM packed-request ABI entry point; not implemented.
- *
- * @param req Unused.
- * @return Always NULL.
- */
-void* qllm_http_request(void* req) {
-    (void)req;
+typedef struct eshkol_curl_stream {
+    CURLM* multi;
+    CURL* easy;
+    struct curl_slist* headers;
+    eshkol_sse_parser_t* parser;
+    int running;
+    int done;
+    int global_acquired;
+    int headers_complete;
+    int established;
+    long status;
+    CURLcode result;
+    char error[CURL_ERROR_SIZE];
+} eshkol_curl_stream_t;
+
+static size_t stream_header_cb(char* buffer, size_t size, size_t nmemb,
+                               void* userdata) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)userdata;
+    if (size != 0 && nmemb > SIZE_MAX / size) return 0;
+    size_t count = size * nmemb;
+    if (count >= 5 && memcmp(buffer, "HTTP/", 5) == 0) {
+        const char* space = memchr(buffer, ' ', count);
+        if (space) {
+            char* end = NULL;
+            long status = strtol(space + 1, &end, 10);
+            if (end != space + 1 && status >= 100 && status <= 999) {
+                stream->status = status;
+                stream->headers_complete = 0;
+                stream->established = 0;
+            }
+        }
+    } else if ((count == 2 && buffer[0] == '\r' && buffer[1] == '\n') ||
+               (count == 1 && buffer[0] == '\n')) {
+        stream->headers_complete = 1;
+        if (stream->status >= 200 && stream->status < 300)
+            stream->established = 1;
+    }
+    return count;
+}
+
+static size_t stream_write_cb(void* ptr, size_t size, size_t nmemb, void* userdata) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)userdata;
+    if (size != 0 && nmemb > SIZE_MAX / size) return 0;
+    size_t count = size * nmemb;
+    return eshkol_sse_parser_feed(stream->parser, (const char*)ptr, count) ? count : 0;
+}
+
+static int64_t monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static void stream_update_completion(eshkol_curl_stream_t* stream) {
+    int pending = 0;
+    CURLMsg* message;
+    while ((message = curl_multi_info_read(stream->multi, &pending)) != NULL) {
+        if (message->msg == CURLMSG_DONE && message->easy_handle == stream->easy) {
+            stream->result = message->data.result;
+            stream->running = 0;
+            stream->done = 1;
+        }
+    }
+}
+
+void* eshkol_http_stream_open(const char* method,
+                              const char* url,
+                              const char* header_lines,
+                              const char* body,
+                              int32_t timeout_ms) {
+    return eshkol_http_stream_open_bytes(method, url, header_lines, body,
+                                         body ? (int64_t)strlen(body) : 0,
+                                         timeout_ms);
+}
+
+void* eshkol_http_stream_open_bytes(const char* method,
+                                    const char* url,
+                                    const char* header_lines,
+                                    const char* body,
+                                    int64_t body_len,
+                                    int32_t timeout_ms) {
+    if (!eshkol_http_valid_method(method) || !url || body_len < 0 ||
+        (!body && body_len != 0)) return NULL;
+    if (!acquire_curl_global()) return NULL;
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)calloc(1, sizeof(*stream));
+    if (!stream) {
+        release_curl_global();
+        return NULL;
+    }
+    stream->global_acquired = 1;
+    stream->result = CURLE_OK;
+    stream->parser = eshkol_sse_parser_create();
+    stream->multi = curl_multi_init();
+    stream->easy = curl_easy_init();
+    if (!stream->parser || !stream->multi || !stream->easy) goto failure;
+
+    int headers_ok = 0;
+    stream->headers = header_lines_to_slist(header_lines, &headers_ok);
+    if (!headers_ok) goto failure;
+    if (!slist_append_checked(&stream->headers, "Accept: text/event-stream") ||
+        !slist_append_checked(&stream->headers, "Cache-Control: no-cache"))
+        goto failure;
+
+    curl_easy_setopt(stream->easy, CURLOPT_URL, url);
+    curl_easy_setopt(stream->easy, CURLOPT_WRITEFUNCTION, stream_write_cb);
+    curl_easy_setopt(stream->easy, CURLOPT_WRITEDATA, stream);
+    curl_easy_setopt(stream->easy, CURLOPT_HEADERFUNCTION, stream_header_cb);
+    curl_easy_setopt(stream->easy, CURLOPT_HEADERDATA, stream);
+    curl_easy_setopt(stream->easy, CURLOPT_HTTPHEADER, stream->headers);
+    curl_easy_setopt(stream->easy, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_MAXREDIRS, 10L);
+    curl_easy_setopt(stream->easy, CURLOPT_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(stream->easy, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+    curl_easy_setopt(stream->easy, CURLOPT_SUPPRESS_CONNECT_HEADERS, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_CONNECTTIMEOUT_MS,
+                     (long)(timeout_ms > 0 ? timeout_ms : 10000));
+    curl_easy_setopt(stream->easy, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_LOW_SPEED_TIME, 60L);
+    curl_easy_setopt(stream->easy, CURLOPT_USERAGENT, "eshkol-agent/1.3");
+    curl_easy_setopt(stream->easy, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_SSL_VERIFYHOST, 2L);
+    curl_easy_setopt(stream->easy, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(stream->easy, CURLOPT_ERRORBUFFER, stream->error);
+    if (strcmp(method, "GET") == 0) {
+        curl_easy_setopt(stream->easy, CURLOPT_HTTPGET, 1L);
+    } else {
+        curl_easy_setopt(stream->easy, CURLOPT_CUSTOMREQUEST, method);
+        curl_easy_setopt(stream->easy, CURLOPT_POSTFIELDS, body ? body : "");
+        curl_easy_setopt(stream->easy, CURLOPT_POSTFIELDSIZE_LARGE,
+                         (curl_off_t)body_len);
+    }
+    if (curl_multi_add_handle(stream->multi, stream->easy) != CURLM_OK) goto failure;
+    stream->running = 1;
+    int64_t deadline = monotonic_ms() +
+                       (timeout_ms > 0 ? timeout_ms : 30000);
+    while (!stream->established && !stream->done) {
+        CURLMcode multi_rc = curl_multi_perform(stream->multi, &stream->running);
+        if (multi_rc != CURLM_OK) {
+            snprintf(stream->error, sizeof(stream->error), "%s",
+                     curl_multi_strerror(multi_rc));
+            stream->done = 1;
+            break;
+        }
+        stream_update_completion(stream);
+        if (stream->established || stream->done) break;
+        int64_t remaining = deadline - monotonic_ms();
+        if (remaining <= 0) {
+            snprintf(stream->error, sizeof(stream->error),
+                     "SSE response headers timed out");
+            stream->done = 1;
+            break;
+        }
+        int ready = 0;
+        multi_rc = curl_multi_poll(stream->multi, NULL, 0,
+                                   remaining > 1000 ? 1000 : (int)remaining,
+                                   &ready);
+        if (multi_rc != CURLM_OK) {
+            snprintf(stream->error, sizeof(stream->error), "%s",
+                     curl_multi_strerror(multi_rc));
+            stream->done = 1;
+            break;
+        }
+    }
+    if (!stream->established) {
+        if (!stream->error[0]) {
+            if (stream->status)
+                snprintf(stream->error, sizeof(stream->error),
+                         "SSE endpoint returned HTTP %ld", stream->status);
+            else if (stream->result != CURLE_OK)
+                snprintf(stream->error, sizeof(stream->error), "%s",
+                         curl_easy_strerror(stream->result));
+            else
+                snprintf(stream->error, sizeof(stream->error),
+                         "SSE connection ended before response headers");
+        }
+        goto failure;
+    }
+    return stream;
+
+failure:
+    eshkol_http_stream_close(stream);
     return NULL;
 }
 
-/* SSE streaming entry points: deliberately return NULL/error so the
- * Eshkol fallback path runs. Real implementation needs CURL multi
- * interface or chunked-transfer line parsing; deferred to a follow-up. */
-/**
- * @brief Stub for opening an SSE stream; not implemented, always fails.
- *
- * Deliberately returns NULL so callers fall back to Eshkol's existing non-streaming path.
- *
- * @return Always NULL.
- */
-void* qllm_http_stream_open(const char* url, const char** headers, int64_t hdr_count,
-                            const char* body, int64_t body_len, int32_t timeout_ms,
-                            void* callback) {
-    (void)url; (void)headers; (void)hdr_count;
-    (void)body; (void)body_len; (void)timeout_ms; (void)callback;
+eshkol_sse_event_t* eshkol_http_stream_next(void* opaque, int32_t timeout_ms) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)opaque;
+    if (!stream) return NULL;
+    eshkol_sse_event_t* event = eshkol_sse_parser_next(stream->parser);
+    if (event) return event;
+    if (eshkol_sse_parser_failed(stream->parser)) {
+        snprintf(stream->error, sizeof(stream->error),
+                 "Invalid or oversized SSE event stream");
+        stream->done = 1;
+        return NULL;
+    }
+    int64_t deadline = monotonic_ms() + (timeout_ms > 0 ? timeout_ms : 30000);
+    while (!stream->done) {
+        CURLMcode multi_rc = curl_multi_perform(stream->multi, &stream->running);
+        if (multi_rc != CURLM_OK) {
+            snprintf(stream->error, sizeof(stream->error), "%s",
+                     curl_multi_strerror(multi_rc));
+            stream->done = 1;
+            break;
+        }
+        stream_update_completion(stream);
+        event = eshkol_sse_parser_next(stream->parser);
+        if (event) return event;
+        if (eshkol_sse_parser_failed(stream->parser)) {
+            snprintf(stream->error, sizeof(stream->error),
+                     "Invalid or oversized SSE event stream");
+            stream->done = 1;
+            break;
+        }
+        if (stream->done) break;
+        int64_t remaining = deadline - monotonic_ms();
+        if (remaining <= 0) return NULL;
+        int ready = 0;
+        multi_rc = curl_multi_poll(stream->multi, NULL, 0,
+                                   remaining > 1000 ? 1000 : (int)remaining,
+                                   &ready);
+        if (multi_rc != CURLM_OK) {
+            snprintf(stream->error, sizeof(stream->error), "%s",
+                     curl_multi_strerror(multi_rc));
+            stream->done = 1;
+            break;
+        }
+    }
+    return eshkol_sse_parser_next(stream->parser);
+}
+
+int32_t eshkol_http_stream_done(void* opaque) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)opaque;
+    if (!stream) return 1;
+    return stream->done && !eshkol_sse_parser_has_complete_event(stream->parser);
+}
+
+const char* eshkol_http_stream_error(void* opaque) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)opaque;
+    if (!stream) return "invalid stream";
+    if (stream->error[0]) return stream->error;
+    if (stream->done && stream->result != CURLE_OK)
+        return curl_easy_strerror(stream->result);
     return NULL;
 }
 
-/**
- * @brief Stub for reading the next SSE event; not implemented.
- *
- * @return Always -1 (error/no event).
- */
-int32_t qllm_http_stream_next(void* stream, void* event_out, int32_t timeout_ms) {
-    (void)stream; (void)event_out; (void)timeout_ms;
-    return -1;
-}
-
-/**
- * @brief Stub for checking whether an SSE stream is finished.
- *
- * @return Always 1 (done), since streaming is not implemented.
- */
-int32_t qllm_http_stream_done(void* stream) {
-    (void)stream;
-    return 1;
-}
-
-/** @brief Stub for closing an SSE stream; not implemented (no-op). */
-void qllm_http_stream_close(void* stream) {
-    (void)stream;
-}
-
-/** @brief Stub for freeing an SSE event; not implemented (no-op). */
-void qllm_sse_event_free(void* event) {
-    (void)event;
+void eshkol_http_stream_close(void* opaque) {
+    eshkol_curl_stream_t* stream = (eshkol_curl_stream_t*)opaque;
+    if (!stream) return;
+    if (stream->multi && stream->easy) curl_multi_remove_handle(stream->multi, stream->easy);
+    if (stream->easy) curl_easy_cleanup(stream->easy);
+    if (stream->multi) curl_multi_cleanup(stream->multi);
+    curl_slist_free_all(stream->headers);
+    eshkol_sse_parser_destroy(stream->parser);
+    if (stream->global_acquired) release_curl_global();
+    free(stream);
 }
 
 #endif /* ESHKOL_HAVE_LIBCURL */

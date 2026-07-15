@@ -113,6 +113,22 @@ std::filesystem::path make_temp_path(std::string_view stem, std::string_view ext
 std::string cxx_compiler();
 
 /**
+ * @brief Normalize one library/linker argument for the configured host C++
+ *        compiler driver.
+ *
+ * On Windows Eshkol invokes the GNU-compatible `clang++` driver for generated
+ * programs. A bare MSVC library token such as `winhttp.lib` is interpreted by
+ * that driver as an input file in the current directory; `-lwinhttp` is the
+ * portable driver form that searches the Visual Studio/Windows SDK paths
+ * discovered by Clang. Absolute and relative paths are retained. On other
+ * platforms the argument is returned unchanged.
+ *
+ * @param argument Raw configured link argument.
+ * @return Driver-ready argument.
+ */
+std::string cxx_driver_link_arg(std::string argument);
+
+/**
  * @brief Get the path to the `llc` executable bundled with the LLVM
  *        toolchain used at build time.
  * @return Absolute path baked in at build time (ESHKOL_HOST_LLC_EXECUTABLE).

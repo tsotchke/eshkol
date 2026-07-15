@@ -4,6 +4,7 @@
  * Provides unified access to optimized BLAS operations:
  * - Apple Accelerate on macOS (NEON, AMX optimized)
  * - OpenBLAS on Linux/other platforms
+ * - Pinned Eigen native kernels on ClangCL/MSVC Windows
  *
  * Copyright (C) tsotchke
  * SPDX-License-Identifier: MIT
@@ -17,17 +18,7 @@
 
 #ifdef ESHKOL_BLAS_ENABLED
 
-#ifdef ESHKOL_BLAS_ACCELERATE
-// Apple Accelerate framework
-// Use legacy CBLAS API for compatibility (symbols without $NEWLAPACK suffix)
-// The deprecation warnings are cosmetic - the API is still fully supported
-#include <Accelerate/Accelerate.h>
-#elif defined(ESHKOL_BLAS_OPENBLAS)
-// OpenBLAS
-#include <cblas.h>
-#else
-#error "ESHKOL_BLAS_ENABLED is set but no BLAS backend defined. Define ESHKOL_BLAS_ACCELERATE (macOS) or ESHKOL_BLAS_OPENBLAS (Linux)."
-#endif
+#include <eshkol/backend/cblas_compat.h>
 
 namespace eshkol {
 namespace blas {

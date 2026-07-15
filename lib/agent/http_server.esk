@@ -12,9 +12,9 @@
 ;;     existing TCP fd post-handshake.  Sufficient for MCP over WS
 ;;     and voice streaming.  No permessage-deflate, no fragmentation.
 ;;
-;; This module is OPTIONAL and POSIX-only — agent_http_server.c is
-;; only compiled when ESHKOL_BUILD_AGENT_FFI is on, which itself is
-;; off by default on Windows.
+;; The native server is built with ESHKOL_BUILD_AGENT_FFI on macOS, Linux,
+;; and Windows. It provides the same bounded-request and ownership contract
+;; over POSIX sockets and Winsock.
 
 (require core.capabilities)
 
@@ -48,7 +48,7 @@
 (extern i64 unix-socket-connect-raw   ptr                 :real eshkol_unix_socket_connect)
 
 ;; WebSocket
-(extern i64 ws-wrap-fd-raw            i32                 :real eshkol_ws_wrap_fd)
+(extern i64 ws-wrap-fd-raw            i64                 :real eshkol_ws_wrap_fd)
 (extern i32 ws-send-text-raw          i64 ptr i32         :real eshkol_ws_send_text)
 (extern i32 ws-send-binary-raw        i64 ptr i32         :real eshkol_ws_send_binary)
 (extern i32 ws-receive-raw            i64 ptr i32 ptr i32 :real eshkol_ws_receive)
@@ -112,12 +112,12 @@
 (define (ws-send-text handle data)
   "Send a UTF-8 text frame.  data is a string.  Returns 0 on success,
    -1 on error (closed handle, partial send)."
-  (ws-send-text-raw handle data (string-length data)))
+  (ws-send-text-raw handle data (string-byte-length data)))
 
 (define (ws-send-binary handle data)
   "Send a binary frame.  data is a string (treated as a byte buffer).
    Returns 0 on success, -1 on error."
-  (ws-send-binary-raw handle data (string-length data)))
+  (ws-send-binary-raw handle data (string-byte-length data)))
 
 (define (ws-receive handle buffer-size timeout-ms)
   "Block until a frame arrives or the timeout elapses.  Returns a

@@ -198,6 +198,12 @@ jobs:
           export ESHKOL_REPL_MACHINE_DONE_TIMEOUT="${ESHKOL_REPL_MACHINE_DONE_TIMEOUT:-180}"
           export ESHKOL_EDGE_FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-80}"
           ${{ matrix.test_command }}
+          test -x "$BUILD_DIR/eshkol-agent-http-test"
+          "$BUILD_DIR/eshkol-agent-http-test"
+          test -x "$BUILD_DIR/eshkol-agent-sse-test"
+          "$BUILD_DIR/eshkol-agent-sse-test"
+          test -x "$BUILD_DIR/eshkol-agent-capabilities-test"
+          "$BUILD_DIR/eshkol-agent-capabilities-test"
 
       - name: Package Release Asset
         shell: bash
@@ -215,12 +221,42 @@ jobs:
           cp "${{ matrix.build_dir }}/stdlib.bc" "$pkg_dir/lib/eshkol/"
           runtime_archive="${{ matrix.build_dir }}/libeshkol-runtime.a"
           agent_ffi_archive="${{ matrix.build_dir }}/libeshkol-agent-ffi.a"
+          agent_pcre2_archive="${{ matrix.build_dir }}/eshkol-agent-pcre2.a"
+          agent_sqlite_archive="${{ matrix.build_dir }}/eshkol-agent-sqlite3.a"
+          agent_zlib_archive="${{ matrix.build_dir }}/eshkol-agent-zlib.a"
+          agent_tree_sitter_grammars_archive="${{ matrix.build_dir }}/eshkol-agent-tree-sitter-grammars.a"
+          agent_tree_sitter_archive="${{ matrix.build_dir }}/eshkol-agent-tree-sitter.a"
+          agent_yoga_archive="${{ matrix.build_dir }}/eshkol-agent-yoga.a"
           test -s "$runtime_archive"
           test -s "$agent_ffi_archive"
+          test -s "$agent_pcre2_archive"
+          test -s "$agent_sqlite_archive"
+          test -s "$agent_zlib_archive"
+          test -s "$agent_tree_sitter_grammars_archive"
+          test -s "$agent_tree_sitter_archive"
+          test -s "$agent_yoga_archive"
           cp "$runtime_archive" "$pkg_dir/lib/"
           cp "$runtime_archive" "$pkg_dir/lib/eshkol/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/"
           cp "$agent_ffi_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_pcre2_archive" "$pkg_dir/lib/"
+          cp "$agent_pcre2_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_sqlite_archive" "$pkg_dir/lib/"
+          cp "$agent_sqlite_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_zlib_archive" "$pkg_dir/lib/"
+          cp "$agent_zlib_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_tree_sitter_grammars_archive" "$pkg_dir/lib/"
+          cp "$agent_tree_sitter_grammars_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_tree_sitter_archive" "$pkg_dir/lib/"
+          cp "$agent_tree_sitter_archive" "$pkg_dir/lib/eshkol/"
+          cp "$agent_yoga_archive" "$pkg_dir/lib/"
+          cp "$agent_yoga_archive" "$pkg_dir/lib/eshkol/"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            agent_curl_archive="${{ matrix.build_dir }}/eshkol-agent-curl.a"
+            test -s "$agent_curl_archive"
+            cp "$agent_curl_archive" "$pkg_dir/lib/"
+            cp "$agent_curl_archive" "$pkg_dir/lib/eshkol/"
+          fi
 
           cp "lib/stdlib.esk" "$pkg_dir/share/eshkol/"
           if [[ -f "lib/math.esk" ]]; then
@@ -239,6 +275,10 @@ jobs:
               cp "$doc" "$pkg_dir/"
             fi
           done
+
+          python3 scripts/stage_third_party_licenses.py \
+            --build-dir "${{ matrix.build_dir }}" \
+            --package-dir "$pkg_dir"
 
           python3 scripts/verify_release_package.py \
             --package-dir "$pkg_dir" \
@@ -432,7 +472,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'eshkol-agent-ffi', 'stdlib')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-runtime', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test', 'stdlib')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -445,6 +485,38 @@ jobs:
           & .\scripts\run_all_tests.ps1 -BuildDir ".\${{ matrix.build_dir }}" -SkipConfigureBuild -Mode '${{ matrix.test_mode }}'
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
+          }
+          $agentNativeTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-windows-agent-test.exe'
+          if (-not (Test-Path $agentNativeTest -PathType Leaf)) {
+            throw "Native Windows agent test executable is missing: $agentNativeTest"
+          }
+          & $agentNativeTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native Windows agent test failed (exit $LASTEXITCODE)"
+          }
+          $agentHttpTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-http-test.exe'
+          if (-not (Test-Path $agentHttpTest -PathType Leaf)) {
+            throw "Agent HTTP contract test executable is missing: $agentHttpTest"
+          }
+          & $agentHttpTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent HTTP contract test failed (exit $LASTEXITCODE)"
+          }
+          $agentSseTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-sse-test.exe'
+          if (-not (Test-Path $agentSseTest -PathType Leaf)) {
+            throw "Agent SSE parser test executable is missing: $agentSseTest"
+          }
+          & $agentSseTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent SSE parser test failed (exit $LASTEXITCODE)"
+          }
+          $agentCapabilitiesTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-capabilities-test.exe'
+          if (-not (Test-Path $agentCapabilitiesTest -PathType Leaf)) {
+            throw "Agent production capabilities test executable is missing: $agentCapabilitiesTest"
+          }
+          & $agentCapabilitiesTest
+          if ($LASTEXITCODE -ne 0) {
+            throw "Agent production capabilities test failed (exit $LASTEXITCODE)"
           }
 
       - name: Package Release Asset
@@ -464,6 +536,12 @@ jobs:
           $stdlibBitcode = Join-Path '${{ matrix.build_dir }}' 'stdlib.bc'
           $runtimeLibrary = Join-Path $binaryDir 'eshkol-runtime.lib'
           $agentFfiLibrary = Join-Path $binaryDir 'eshkol-agent-ffi.lib'
+          $agentPcre2Library = Join-Path $binaryDir 'eshkol-agent-pcre2.lib'
+          $agentSqliteLibrary = Join-Path $binaryDir 'eshkol-agent-sqlite3.lib'
+          $agentZlibLibrary = Join-Path $binaryDir 'eshkol-agent-zlib.lib'
+          $agentTreeSitterGrammarsLibrary = Join-Path $binaryDir 'eshkol-agent-tree-sitter-grammars.lib'
+          $agentTreeSitterLibrary = Join-Path $binaryDir 'eshkol-agent-tree-sitter.lib'
+          $agentYogaLibrary = Join-Path $binaryDir 'eshkol-agent-yoga.lib'
           if (-not (Test-Path $stdlibObject)) {
             $stdlibCandidate = Join-Path $binaryDir 'stdlib.o'
             if (Test-Path $stdlibCandidate) {
@@ -496,6 +574,38 @@ jobs:
               throw "eshkol-agent-ffi.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
             }
           }
+          if (-not (Test-Path $agentPcre2Library -PathType Leaf)) {
+            $candidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-agent-pcre2.lib'
+            if (Test-Path $candidate -PathType Leaf) {
+              $agentPcre2Library = $candidate
+            } else {
+              throw "eshkol-agent-pcre2.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
+          if (-not (Test-Path $agentSqliteLibrary -PathType Leaf)) {
+            $candidate = Join-Path '${{ matrix.build_dir }}' 'eshkol-agent-sqlite3.lib'
+            if (Test-Path $candidate -PathType Leaf) {
+              $agentSqliteLibrary = $candidate
+            } else {
+              throw "eshkol-agent-sqlite3.lib was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+            }
+          }
+          $additionalAgentLibraries = @(
+            @{ Name = 'eshkol-agent-zlib.lib'; Path = $agentZlibLibrary },
+            @{ Name = 'eshkol-agent-tree-sitter-grammars.lib'; Path = $agentTreeSitterGrammarsLibrary },
+            @{ Name = 'eshkol-agent-tree-sitter.lib'; Path = $agentTreeSitterLibrary },
+            @{ Name = 'eshkol-agent-yoga.lib'; Path = $agentYogaLibrary }
+          )
+          foreach ($library in $additionalAgentLibraries) {
+            if (-not (Test-Path $library.Path -PathType Leaf)) {
+              $candidate = Join-Path '${{ matrix.build_dir }}' $library.Name
+              if (Test-Path $candidate -PathType Leaf) {
+                $library.Path = $candidate
+              } else {
+                throw "$($library.Name) was not found in '${{ matrix.build_dir }}' or '$binaryDir'"
+              }
+            }
+          }
 
           New-Item -ItemType Directory -Force -Path $binDir, $libDir, $libEshkolDir, $shareDir, $shareLibDir | Out-Null
 
@@ -514,6 +624,14 @@ jobs:
           Copy-Item -LiteralPath $runtimeLibrary -Destination $libEshkolDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libDir
           Copy-Item -LiteralPath $agentFfiLibrary -Destination $libEshkolDir
+          Copy-Item -LiteralPath $agentPcre2Library -Destination $libDir
+          Copy-Item -LiteralPath $agentPcre2Library -Destination $libEshkolDir
+          Copy-Item -LiteralPath $agentSqliteLibrary -Destination $libDir
+          Copy-Item -LiteralPath $agentSqliteLibrary -Destination $libEshkolDir
+          foreach ($library in $additionalAgentLibraries) {
+            Copy-Item -LiteralPath $library.Path -Destination $libDir
+            Copy-Item -LiteralPath $library.Path -Destination $libEshkolDir
+          }
 
           Copy-Item -LiteralPath 'lib\stdlib.esk' -Destination $shareDir
           if (Test-Path 'lib\math.esk') {
@@ -535,6 +653,13 @@ jobs:
             if (Test-Path $doc) {
               Copy-Item -LiteralPath $doc -Destination $pkgDir
             }
+          }
+
+          python scripts/stage_third_party_licenses.py `
+            --build-dir '${{ matrix.build_dir }}' `
+            --package-dir "$pkgDir"
+          if ($LASTEXITCODE -ne 0) {
+            throw "third-party license staging failed with exit code $LASTEXITCODE"
           }
 
           python scripts/verify_release_package.py `

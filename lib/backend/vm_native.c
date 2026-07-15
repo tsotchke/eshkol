@@ -182,7 +182,9 @@ static VmBytevector* vm_value_as_bytevector(VM* vm, Value value) {
     return (VmBytevector*)obj->opaque.ptr;
 }
 
-typedef int32_t (*VmCompressionFn)(const char*, int32_t, char*, int32_t);
+typedef int32_t (*VmCompressionAllocFn)(const char*, int32_t, int32_t,
+                                        char**, int32_t*);
+typedef void (*VmCompressionFreeFn)(void*);
 typedef int (*VmSqliteExecFn)(int64_t, const char*);
 typedef int64_t (*VmSqliteLastInsertIdFn)(int64_t);
 typedef int (*VmSqliteChangesFn)(int64_t);
@@ -2485,10 +2487,17 @@ static void vm_run_exit_handlers(VM* vm) {
 }
 
 /** @brief Look up a symbol by name in the running process's dynamic symbol
- *         table (dlsym RTLD_DEFAULT, or a cached self-handle if RTLD_DEFAULT
- *         isn't available). Always NULL on Windows/WASM. */
+ *         table. POSIX uses dlsym(RTLD_DEFAULT); native Windows resolves the
+ *         explicitly exported agent ABI from the executable module. */
 static void* vm_runtime_symbol(const char* name) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#if defined(ESHKOL_VM_WASM)
+    (void)name;
+    return NULL;
+#elif defined(_WIN32)
+    if (!name) return NULL;
+    HMODULE self = GetModuleHandleW(NULL);
+    return self ? (void*)(uintptr_t)GetProcAddress(self, name) : NULL;
+#else
     if (!name) return NULL;
 #ifdef RTLD_DEFAULT
     return dlsym(RTLD_DEFAULT, name);
@@ -2497,9 +2506,6 @@ static void* vm_runtime_symbol(const char* name) {
     if (!self_handle) self_handle = dlopen(NULL, RTLD_LAZY);
     return self_handle ? dlsym(self_handle, name) : NULL;
 #endif
-#else
-    (void)name;
-    return NULL;
 #endif
 }
 
@@ -2691,94 +2697,35 @@ static int vm_yoga_valid(VM* vm, int handle) {
            vm->yoga_nodes[handle].active;
 }
 
-/** @brief Allocate a new flexbox layout node in a free slot of the VM's
- *         yoga_nodes table, with default flex-shrink 1.0. Returns the
- *         handle, or -1 if none free. */
-static int vm_yoga_alloc(VM* vm) {
-    for (int i = 1; i < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])); i++) {
-        if (!vm->yoga_nodes[i].active) {
-            memset(&vm->yoga_nodes[i], 0, sizeof(vm->yoga_nodes[i]));
-            vm->yoga_nodes[i].active = 1;
-            vm->yoga_nodes[i].parent = 0;
-            vm->yoga_nodes[i].flex_direction = 0;
-            vm->yoga_nodes[i].flex_shrink = 1.0;
-            return i;
-        }
-    }
-    return -1;
-}
-
 /** @brief Compare a VmString against a C string literal for exact equality. */
 static int vm_yoga_string_eq(VmString* s, const char* lit) {
     return s && s->data && lit && s->byte_len == (int64_t)strlen(lit) &&
            memcmp(s->data, lit, (size_t)s->byte_len) == 0;
 }
 
-/** @brief Recursively compute a simplified single-axis flexbox layout for a
- *         node and its children: positions the node at (`left`,`top`) within
- *         `width`x`height` (respecting margin/padding), distributes fixed
- *         and flex-grow children along the main axis (row or column per
- *         `flex_direction`) with `gap` spacing, and stretches children along
- *         the cross axis when unspecified, recursing into each child. */
-static void vm_yoga_layout_node(VM* vm, int handle,
-                                double left, double top,
-                                double width, double height) {
+typedef int64_t (*VmYogaCreateFn)(void);
+typedef void (*VmYogaFreeFn)(int64_t);
+typedef void (*VmYogaSetFloatFn)(int64_t, int32_t, double);
+typedef void (*VmYogaSetIntFn)(int64_t, int32_t, int32_t);
+typedef void (*VmYogaAddChildFn)(int64_t, int64_t, int32_t);
+typedef void (*VmYogaCalculateFn)(int64_t, double, double);
+typedef double (*VmYogaGetComputedFn)(int64_t, int32_t);
+
+static int vm_yoga_enum_value(VmString* value, const char* const* names,
+                              int count, int* out) {
+    for (int i = 0; i < count; ++i) {
+        if (vm_yoga_string_eq(value, names[i])) { *out = i; return 1; }
+    }
+    return 0;
+}
+
+static void vm_yoga_clear_subtree(VM* vm, int handle) {
     if (!vm_yoga_valid(vm, handle)) return;
-    typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
-    if (width <= 0 && node->width > 0) width = node->width;
-    if (height <= 0 && node->height > 0) height = node->height;
-    node->computed_left = left + node->margin;
-    node->computed_top = top + node->margin;
-    node->computed_width = width > 2.0 * node->margin ? width - 2.0 * node->margin : width;
-    node->computed_height = height > 2.0 * node->margin ? height - 2.0 * node->margin : height;
-
-    int n = node->child_count;
-    if (n <= 0) return;
-
-    double pad = node->padding;
-    double gap_total = node->gap * (double)(n > 1 ? n - 1 : 0);
-    double avail_w = node->computed_width - 2.0 * pad;
-    double avail_h = node->computed_height - 2.0 * pad;
-    if (avail_w < 0) avail_w = 0;
-    if (avail_h < 0) avail_h = 0;
-
-    int row = node->flex_direction == 1;
-    double avail_main = (row ? avail_w : avail_h) - gap_total;
-    double avail_cross = row ? avail_h : avail_w;
-    if (avail_main < 0) avail_main = 0;
-    if (avail_cross < 0) avail_cross = 0;
-
-    double fixed = 0.0;
-    double flex = 0.0;
-    for (int i = 0; i < n; i++) {
-        int child_handle = node->children[i];
-        if (!vm_yoga_valid(vm, child_handle)) continue;
-        typeof(vm->yoga_nodes[child_handle])* child = &vm->yoga_nodes[child_handle];
-        double child_main = row ? child->width : child->height;
-        if (child_main > 0) fixed += child_main;
-        else flex += child->flex_grow > 0 ? child->flex_grow : 1.0;
+    for (int i = 1; i < (int)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0])); ++i) {
+        if (vm->yoga_nodes[i].active && vm->yoga_nodes[i].parent == handle)
+            vm_yoga_clear_subtree(vm, i);
     }
-
-    double remaining = avail_main - fixed;
-    if (remaining < 0) remaining = 0;
-    double cursor = row ? node->computed_left + pad : node->computed_top + pad;
-    for (int i = 0; i < n; i++) {
-        int child_handle = node->children[i];
-        if (!vm_yoga_valid(vm, child_handle)) continue;
-        typeof(vm->yoga_nodes[child_handle])* child = &vm->yoga_nodes[child_handle];
-        double specified_main = row ? child->width : child->height;
-        double grow = child->flex_grow > 0 ? child->flex_grow : 1.0;
-        double child_main = specified_main > 0 ? specified_main : (flex > 0 ? remaining * grow / flex : 0);
-        double child_cross = row
-            ? (child->height > 0 ? child->height : avail_cross)
-            : (child->width > 0 ? child->width : avail_cross);
-        double child_left = row ? cursor : node->computed_left + pad;
-        double child_top = row ? node->computed_top + pad : cursor;
-        double child_width = row ? child_main : child_cross;
-        double child_height = row ? child_cross : child_main;
-        vm_yoga_layout_node(vm, child_handle, child_left, child_top, child_width, child_height);
-        cursor += child_main + node->gap;
-    }
+    memset(&vm->yoga_nodes[handle], 0, sizeof(vm->yoga_nodes[handle]));
 }
 
 /** @brief True if `handle` refers to an active listening HTTP server socket. */
@@ -2979,112 +2926,94 @@ static int vm_ws_send_frame(int fd, int opcode, const void* data, size_t len) {
            (len == 0 || vm_ws_send_all(fd, data, len));
 }
 
-/** @brief True if `language` is one of the names recognized by the built-in
- *         line-heuristic "tree-sitter-lite" source parser. */
-static int vm_ts_language_supported(const char* language) {
-    static const char* names[] = {
-        "javascript", "js", "typescript", "ts", "python", "py", "rust", "rs",
-        "go", "c", "cpp", "c++", "java", "ruby", "rb", "bash", "sh",
-        "scheme", "scm", "lisp", NULL
-    };
-    if (!language || !*language) return 0;
-    for (int i = 0; names[i]; i++) {
-        if (strcmp(language, names[i]) == 0) return 1;
+typedef int32_t (*VmTsAvailableFn)(void);
+typedef int64_t (*VmTsParserNewFn)(const char*);
+typedef void (*VmTsParserFreeFn)(int64_t);
+typedef int64_t (*VmTsParseFn)(int64_t, const char*, int32_t);
+typedef void (*VmTsTreeFreeFn)(int64_t);
+typedef int32_t (*VmTsTreeRootFn)(int64_t, char*, int32_t);
+typedef int32_t (*VmTsNodeInfoFn)(int64_t, uint32_t, uint32_t, char*, int32_t);
+typedef int32_t (*VmTsNodeChildrenFn)(int64_t, uint32_t, uint32_t,
+                                     char*, int32_t, int32_t*);
+typedef int32_t (*VmTsNodeTextFn)(int64_t, uint32_t, uint32_t, char*, int32_t);
+typedef int64_t (*VmTsQueryNewFn)(const char*, const char*);
+typedef void (*VmTsQueryFreeFn)(int64_t);
+typedef int32_t (*VmTsQueryMatchesFn)(int64_t, int64_t, int32_t,
+                                     char*, int32_t, int32_t*);
+
+/** The VM deliberately resolves the same pinned native Tree-sitter bridge as
+ * LLVM/JIT and AOT.  There is no line-oriented approximation: if the real
+ * capability is not linked, ts-available reports false and constructors fail. */
+static void* vm_ts_symbol(const char* name) {
+    return vm_runtime_symbol(name);
+}
+
+static char* vm_ts_string_copy(const VmString* string) {
+    if (!string || !string->data || string->byte_len < 0 ||
+        string->byte_len > INT32_MAX)
+        return NULL;
+    char* copy = (char*)malloc((size_t)string->byte_len + 1u);
+    if (!copy) return NULL;
+    if (string->byte_len > 0)
+        memcpy(copy, string->data, (size_t)string->byte_len);
+    copy[string->byte_len] = '\0';
+    return copy;
+}
+
+static int vm_ts_split_tabs(char* record, char** fields, int capacity) {
+    int count = 0;
+    if (!record || !fields || capacity <= 0) return 0;
+    fields[count++] = record;
+    for (char* cursor = record; *cursor && count < capacity; ++cursor) {
+        if (*cursor == '\t') {
+            *cursor = '\0';
+            fields[count++] = cursor + 1;
+        }
     }
-    return 0;
+    return count;
 }
 
-/** @brief Return the conventional root-node type name for a language's
- *         syntax tree ("module", "program", "translation_unit", or the
- *         generic "source_file" fallback). */
-static const char* vm_ts_root_type(const char* language) {
-    if (!language) return "source_file";
-    if (strcmp(language, "python") == 0 || strcmp(language, "py") == 0)
-        return "module";
-    if (strcmp(language, "javascript") == 0 || strcmp(language, "js") == 0 ||
-        strcmp(language, "typescript") == 0 || strcmp(language, "ts") == 0)
-        return "program";
-    if (strcmp(language, "c") == 0 || strcmp(language, "cpp") == 0 ||
-        strcmp(language, "c++") == 0)
-        return "translation_unit";
-    return "source_file";
+static int vm_ts_parse_node_record(char* record, int tree, int root,
+                                   uint32_t* start_out, uint32_t* end_out,
+                                   char* type_out, size_t type_capacity) {
+    char* fields[9];
+    (void)tree;
+    (void)root;
+    if (!record || !start_out || !end_out || !type_out || type_capacity == 0 ||
+        vm_ts_split_tabs(record, fields, 9) != 9)
+        return 0;
+    char* endptr = NULL;
+    unsigned long start = strtoul(fields[5], &endptr, 10);
+    if (!endptr || *endptr) return 0;
+    unsigned long finish = strtoul(fields[6], &endptr, 10);
+    size_t type_len = strlen(fields[0]);
+    if (!endptr || *endptr || start > UINT32_MAX || finish > UINT32_MAX ||
+        start > finish || type_len == 0 || type_len >= type_capacity)
+        return 0;
+    *start_out = (uint32_t)start;
+    *end_out = (uint32_t)finish;
+    memcpy(type_out, fields[0], type_len + 1u);
+    return 1;
 }
 
-/** @brief True if the length-delimited span `s[0..len)` starts with `prefix`. */
-static int vm_ts_starts_with(const char* s, int64_t len, const char* prefix) {
-    size_t n = prefix ? strlen(prefix) : 0;
-    return s && prefix && len >= (int64_t)n && memcmp(s, prefix, n) == 0;
-}
-
-/** @brief True if the length-delimited span `s[0..len)` contains `needle` as a substring. */
-static int vm_ts_contains(const char* s, int64_t len, const char* needle) {
-    size_t n = needle ? strlen(needle) : 0;
-    if (!s || !needle || n == 0 || len < (int64_t)n) return 0;
-    for (int64_t i = 0; i <= len - (int64_t)n; i++) {
-        if (memcmp(s + i, needle, n) == 0) return 1;
-    }
-    return 0;
-}
-
-/** @brief Line-heuristic syntax classifier used by the lightweight built-in
- *         "tree-sitter-lite" parser: after trimming leading whitespace,
- *         recognizes common per-language top-level constructs (function/class
- *         definitions, import statements, `#include`, Scheme `(define ...)`)
- *         by simple prefix/substring matching. Returns a node-type string, or
- *         the generic "line" fallback, or NULL for a blank line. */
-static const char* vm_ts_classify_line(const char* language, const char* line, int64_t len) {
-    while (len > 0 && isspace((unsigned char)*line)) {
-        line++;
-        len--;
-    }
-    if (len <= 0) return NULL;
-    if (language && (strcmp(language, "python") == 0 || strcmp(language, "py") == 0)) {
-        if (vm_ts_starts_with(line, len, "def ") || vm_ts_starts_with(line, len, "async def "))
-            return "function_definition";
-        if (vm_ts_starts_with(line, len, "class "))
-            return "class_definition";
-        if (vm_ts_starts_with(line, len, "import ") || vm_ts_starts_with(line, len, "from "))
-            return "import_statement";
-    } else if (language && (strcmp(language, "javascript") == 0 || strcmp(language, "js") == 0 ||
-                            strcmp(language, "typescript") == 0 || strcmp(language, "ts") == 0)) {
-        if (vm_ts_starts_with(line, len, "function ") || vm_ts_contains(line, len, "=>"))
-            return "function_declaration";
-        if (vm_ts_starts_with(line, len, "class "))
-            return "class_declaration";
-        if (vm_ts_starts_with(line, len, "import "))
-            return "import_statement";
-    } else if (language && (strcmp(language, "c") == 0 || strcmp(language, "cpp") == 0 ||
-                            strcmp(language, "c++") == 0)) {
-        if (vm_ts_starts_with(line, len, "#include"))
-            return "preproc_include";
-        if (vm_ts_contains(line, len, "(") && vm_ts_contains(line, len, ")") &&
-            vm_ts_contains(line, len, "{"))
-            return "function_definition";
-    } else if (language && (strcmp(language, "scheme") == 0 || strcmp(language, "scm") == 0 ||
-                            strcmp(language, "lisp") == 0)) {
-        if (vm_ts_starts_with(line, len, "(define "))
-            return "definition";
-        if (vm_ts_starts_with(line, len, "(lambda"))
-            return "lambda_expression";
-    }
-    return "line";
-}
-
-/** @brief Allocate a new syntax-tree node (byte range `[start,end)`, `type`
- *         tag) as a child of `parent` within `tree`, in a free slot of the
- *         VM's ts_nodes table (slots 0-15 reserved). Returns the handle, or
- *         -1 if none free. */
-static int vm_ts_alloc_node(VM* vm, int tree, int parent, int64_t start,
-                            int64_t end, const char* type) {
-    if (!vm || !type) return -1;
-    for (int i = 16; i < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])); i++) {
+static int vm_ts_store_node(VM* vm, int tree, int root, char* record) {
+    if (!vm || tree <= 0 || tree >= (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) ||
+        !vm->ts_trees[tree].active)
+        return -1;
+    uint32_t start = 0;
+    uint32_t end = 0;
+    char type[128];
+    if (!vm_ts_parse_node_record(record, tree, root, &start, &end,
+                                 type, sizeof(type)))
+        return -1;
+    for (int i = 1; i < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])); ++i) {
         if (!vm->ts_nodes[i].active) {
             vm->ts_nodes[i].active = 1;
             vm->ts_nodes[i].tree = tree;
-            vm->ts_nodes[i].parent = parent;
             vm->ts_nodes[i].start = start;
             vm->ts_nodes[i].end = end;
-            snprintf(vm->ts_nodes[i].type, sizeof(vm->ts_nodes[i].type), "%s", type);
+            vm->ts_nodes[i].root = root;
+            memcpy(vm->ts_nodes[i].type, type, strlen(type) + 1u);
             return i;
         }
     }
@@ -3104,10 +3033,7 @@ static Value vm_reverse_list(VM* vm, Value list) {
     return out;
 }
 
-/** @brief For the root node of a "tree-sitter-lite" tree, split the source
- *         into lines and lazily materialize one child node per non-blank
- *         line (classified via vm_ts_classify_line()), returning them as a
- *         list. Non-root nodes currently have no children (returns '()). */
+/** Return the named children reported by the real pinned Tree-sitter runtime. */
 static Value vm_ts_node_children_value(VM* vm, int node_handle) {
     if (!vm || node_handle <= 0 ||
         node_handle >= (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) ||
@@ -3120,84 +3046,139 @@ static Value vm_ts_node_children_value(VM* vm, int node_handle) {
         !vm->ts_trees[tree_handle].active)
         return BOOL_VAL(0);
 
-    const char* src = vm->ts_trees[tree_handle].source;
-    int64_t len = vm->ts_trees[tree_handle].source_len;
-    if (!src || len < 0) return BOOL_VAL(0);
-    if (vm->ts_nodes[node_handle].parent != 0)
-        return NIL_VAL;
-
+    VmTsNodeChildrenFn children_fn = (VmTsNodeChildrenFn)(uintptr_t)
+        vm_ts_symbol("eshkol_ts_node_children");
+    if (!children_fn) return BOOL_VAL(0);
+    uint32_t start = vm->ts_nodes[node_handle].root ? 0u : vm->ts_nodes[node_handle].start;
+    uint32_t end = vm->ts_nodes[node_handle].root ? 0u : vm->ts_nodes[node_handle].end;
+    int32_t count = 0;
+    int32_t required = children_fn(tree_handle, start, end, NULL, 0, &count);
+    if (required < 0 || count < 0) return BOOL_VAL(0);
+    if (count == 0) return NIL_VAL;
+    char* buffer = (char*)malloc((size_t)required + 1u);
+    int* allocated = (int*)calloc((size_t)count, sizeof(int));
+    if (!buffer || !allocated) {
+        free(buffer);
+        free(allocated);
+        return BOOL_VAL(0);
+    }
+    int32_t written = children_fn(tree_handle, start, end, buffer,
+                                  required + 1, &count);
+    if (written != required) {
+        free(buffer);
+        free(allocated);
+        return BOOL_VAL(0);
+    }
     Value result = NIL_VAL;
-    int64_t line_start = 0;
-    for (int64_t i = 0; i <= len; i++) {
-        if (i == len || src[i] == '\n') {
-            int64_t line_end = i;
-            const char* type = vm_ts_classify_line(vm->ts_trees[tree_handle].language,
-                                                   src + line_start, line_end - line_start);
-            if (type) {
-                int child = vm_ts_alloc_node(vm, tree_handle, node_handle, line_start, line_end, type);
-                if (child > 0)
-                    result = vm_cons_value(vm, INT_VAL((int64_t)child), result);
-            }
-            line_start = i + 1;
-        }
+    char* record = buffer;
+    int ok = 1;
+    int32_t stored = 0;
+    for (int32_t i = 0; i < count; ++i) {
+        size_t record_length = strlen(record);
+        int child = vm_ts_store_node(vm, tree_handle, 0, record);
+        if (child <= 0) { ok = 0; break; }
+        allocated[stored++] = child;
+        result = vm_cons_value(vm, INT_VAL((int64_t)child), result);
+        if (vm->error) { ok = 0; break; }
+        record += record_length + 1u;
     }
-    return vm_reverse_list(vm, result);
-}
-
-/** @brief Extract a tree-sitter-style `@capture-name` from a query pattern
- *         string into `out`, defaulting to "match" if no `@name` is present. */
-static void vm_ts_capture_name(const char* pattern, char* out, size_t out_cap) {
-    if (!out || out_cap == 0) return;
-    snprintf(out, out_cap, "match");
-    const char* at = pattern ? strchr(pattern, '@') : NULL;
-    if (!at) return;
-    at++;
-    size_t n = 0;
-    while (at[n] && (isalnum((unsigned char)at[n]) || at[n] == '_' || at[n] == '-' || at[n] == '.'))
-        n++;
-    if (n == 0) return;
-    if (n >= out_cap) n = out_cap - 1;
-    memcpy(out, at, n);
-    out[n] = '\0';
-}
-
-/** @brief Heuristically test whether a simplified query `pattern` matches a
- *         classified line: matches on node-type keywords
- *         (function/definition/class/import) requiring `type` to contain the
- *         same keyword, an "identifier" pattern requiring an alphabetic/`_`
- *         character in the text, or otherwise a plain substring match of
- *         `pattern` against the line text. */
-static int vm_ts_query_matches_text(const char* pattern, const char* type,
-                                    const char* text, int64_t text_len) {
-    if (!pattern || !*pattern) return 1;
-    if (type && strstr(pattern, type)) return 1;
-    int wants_structural = strstr(pattern, "function") || strstr(pattern, "definition") ||
-                           strstr(pattern, "class") || strstr(pattern, "import");
-    if (strstr(pattern, "function")) return type && strstr(type, "function");
-    if (strstr(pattern, "definition")) return type && strstr(type, "definition");
-    if (strstr(pattern, "class")) return type && strstr(type, "class");
-    if (strstr(pattern, "import")) return type && strstr(type, "import");
-    if (wants_structural) return 0;
-    if (strstr(pattern, "identifier")) {
-        for (int64_t i = 0; i < text_len; i++) {
-            if (isalpha((unsigned char)text[i]) || text[i] == '_') return 1;
-        }
+    if (!ok) {
+        for (int32_t i = 0; i < stored; ++i)
+            memset(&vm->ts_nodes[allocated[i]], 0, sizeof(vm->ts_nodes[allocated[i]]));
     }
-    return vm_ts_contains(text, text_len, pattern);
+    free(buffer);
+    free(allocated);
+    return ok ? vm_reverse_list(vm, result) : BOOL_VAL(0);
 }
 
-/** @brief Build an association list describing one query match: capture
- *         name, node type, byte start/end, and matched text. */
-static Value vm_ts_match_value(VM* vm, const char* capture, const char* type,
-                               int64_t start, int64_t end, const char* text,
-                               int64_t text_len) {
+/** Build an association list for one exact Tree-sitter query capture. */
+static Value vm_ts_match_value(VM* vm, int tree, char* record) {
+    char* fields[7];
+    if (vm_ts_split_tabs(record, fields, 7) != 7) return BOOL_VAL(0);
+    char* endptr = NULL;
+    unsigned long start_ul = strtoul(fields[1], &endptr, 10);
+    if (!endptr || *endptr) return BOOL_VAL(0);
+    unsigned long end_ul = strtoul(fields[2], &endptr, 10);
+    if (!endptr || *endptr || start_ul > UINT32_MAX || end_ul > UINT32_MAX ||
+        start_ul >= end_ul)
+        return BOOL_VAL(0);
+    uint32_t start = (uint32_t)start_ul;
+    uint32_t end = (uint32_t)end_ul;
+    VmTsNodeInfoFn info_fn = (VmTsNodeInfoFn)(uintptr_t)
+        vm_ts_symbol("eshkol_ts_node_info");
+    VmTsNodeTextFn text_fn = (VmTsNodeTextFn)(uintptr_t)
+        vm_ts_symbol("eshkol_ts_node_text");
+    if (!info_fn || !text_fn) return BOOL_VAL(0);
+
+    int32_t info_required = info_fn(tree, start, end, NULL, 0);
+    int32_t text_required = text_fn(tree, start, end, NULL, 0);
+    if (info_required < 0 || text_required < 0) return BOOL_VAL(0);
+    char* info = (char*)malloc((size_t)info_required + 1u);
+    char* text = (char*)malloc((size_t)text_required + 1u);
+    if (!info || !text) {
+        free(info);
+        free(text);
+        return BOOL_VAL(0);
+    }
+    if (info_fn(tree, start, end, info, info_required + 1) != info_required ||
+        text_fn(tree, start, end, text, text_required + 1) != text_required) {
+        free(info);
+        free(text);
+        return BOOL_VAL(0);
+    }
+    uint32_t node_start = 0;
+    uint32_t node_end = 0;
+    char type[128];
+    if (!vm_ts_parse_node_record(info, tree, 0, &node_start, &node_end,
+                                 type, sizeof(type))) {
+        free(info);
+        free(text);
+        return BOOL_VAL(0);
+    }
     Value match = NIL_VAL;
-    match = vm_cons_value(vm, vm_alist_entry(vm, "text", vm_string_value(vm, text, text_len)), match);
-    match = vm_cons_value(vm, vm_alist_entry(vm, "end", INT_VAL(end)), match);
-    match = vm_cons_value(vm, vm_alist_entry(vm, "start", INT_VAL(start)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "text", vm_string_value(vm, text, text_required)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "end", INT_VAL((int64_t)end)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "start", INT_VAL((int64_t)start)), match);
     match = vm_cons_value(vm, vm_alist_entry(vm, "type", vm_string_value(vm, type, -1)), match);
-    match = vm_cons_value(vm, vm_alist_entry(vm, "capture", vm_string_value(vm, capture, -1)), match);
+    match = vm_cons_value(vm, vm_alist_entry(vm, "capture", vm_string_value(vm, fields[0], -1)), match);
+    free(info);
+    free(text);
     return match;
+}
+
+static Value vm_ts_query_matches_value(VM* vm, int query, int tree) {
+    if (!vm || query <= 0 ||
+        query >= (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])) ||
+        tree <= 0 || tree >= (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) ||
+        !vm->ts_queries[query].active || !vm->ts_trees[tree].active)
+        return BOOL_VAL(0);
+    VmTsQueryMatchesFn matches_fn = (VmTsQueryMatchesFn)(uintptr_t)
+        vm_ts_symbol("eshkol_ts_query_matches");
+    if (!matches_fn) return BOOL_VAL(0);
+    int32_t count = 0;
+    int32_t required = matches_fn(query, tree, 0, NULL, 0, &count);
+    if (required < 0 || count < 0) return BOOL_VAL(0);
+    if (count == 0) return NIL_VAL;
+    char* buffer = (char*)malloc((size_t)required + 1u);
+    if (!buffer) return BOOL_VAL(0);
+    int32_t written = matches_fn(query, tree, 0, buffer, required + 1, &count);
+    if (written != required) {
+        free(buffer);
+        return BOOL_VAL(0);
+    }
+    Value result = NIL_VAL;
+    char* record = buffer;
+    int ok = 1;
+    for (int32_t i = 0; i < count; ++i) {
+        size_t record_length = strlen(record);
+        Value match = vm_ts_match_value(vm, tree, record);
+        if (match.type == VAL_BOOL && !match.as.b) { ok = 0; break; }
+        result = vm_cons_value(vm, match, result);
+        if (vm->error) { ok = 0; break; }
+        record += record_length + 1u;
+    }
+    free(buffer);
+    return ok ? vm_reverse_list(vm, result) : BOOL_VAL(0);
 }
 
 /** @brief Look up `key` (by deep equality) in an association-list-shaped
@@ -3538,8 +3519,8 @@ static Value vm_json_stringify_pretty_value(VM* vm, Value value, int indent) {
 
 /** @brief Resolve a named optional compression runtime hook (e.g. a
  *         gzip/zlib bridge), if the host binary links one. */
-static VmCompressionFn vm_compression_symbol(const char* name) {
-    return (VmCompressionFn)(uintptr_t)vm_runtime_symbol(name);
+static VmCompressionAllocFn vm_compression_symbol(const char* name) {
+    return (VmCompressionAllocFn)(uintptr_t)vm_runtime_symbol(name);
 }
 
 /** @brief True if the optional `eshkol_compression_available` runtime hook is
@@ -3570,47 +3551,31 @@ static int vm_compression_input(VM* vm, Value value, const char** data, int32_t*
     return 0;
 }
 
-/** @brief Invoke an optional compression/decompression runtime hook `fn` on
- *         `input`'s bytes into a heap output buffer, sized heuristically
- *         (larger for `inflate_like` since decompressed size is unknown) and
- *         retried once at 8MB if the call signals insufficient space.
- *         Returns #f if compression support isn't linked or the call fails. */
+/** @brief Invoke the production allocating compression hook. The native zlib
+ *         implementation grows decompression storage exactly as required and
+ *         enforces the same 256 MiB bomb limit as the LLVM builtin adapter. */
 static Value vm_compression_call(VM* vm, Value input,
-                                 VmCompressionFn fn,
-                                 int inflate_like) {
+                                 VmCompressionAllocFn fn) {
     const char* data = NULL;
     int32_t len = 0;
+    VmCompressionFreeFn free_fn = (VmCompressionFreeFn)(uintptr_t)
+        vm_runtime_symbol("eshkol_compression_free");
     if (!fn || !vm_compression_available() ||
-        !vm_compression_input(vm, input, &data, &len) || len <= 0)
+        !free_fn || !vm_compression_input(vm, input, &data, &len))
         return BOOL_VAL(0);
-
-    int32_t cap = inflate_like ? len * 16 + 4096 : len * 2 + 1024;
-    if (cap < 4096) cap = 4096;
-    if (cap > 1024 * 1024) cap = 1024 * 1024;
-    char* buf = (char*)malloc((size_t)cap);
-    if (!buf) return BOOL_VAL(0);
-
-    int32_t n = fn(data, len, buf, cap);
-    if (n < 0 && inflate_like && cap < 8 * 1024 * 1024) {
-        cap = 8 * 1024 * 1024;
-        char* bigger = (char*)realloc(buf, (size_t)cap);
-        if (bigger) {
-            buf = bigger;
-            n = fn(data, len, buf, cap);
-        }
-    }
-
-    if (n < 0) {
-        free(buf);
+    char* buf = NULL;
+    int32_t n = 0;
+    if (fn(data, len, 256 * 1024 * 1024, &buf, &n) != 0 || n < 0 || !buf) {
+        if (buf) free_fn(buf);
         return BOOL_VAL(0);
     }
     VmBytevector* bv = vm_bv_make(&vm->heap.regions, n, 0);
     if (!bv) {
-        free(buf);
+        free_fn(buf);
         return BOOL_VAL(0);
     }
-    memcpy(bv->data, buf, (size_t)n);
-    free(buf);
+    if (n > 0) memcpy(bv->data, buf, (size_t)n);
+    free_fn(buf);
     int32_t ptr = heap_alloc(&vm->heap);
     if (ptr < 0) {
         vm->error = 1;
@@ -8780,10 +8745,12 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmSqliteChangesFn fn = vm_sqlite_changes_symbol();
         if (fn) {
             int changes = fn((int64_t)as_number(db_val));
-            vm_push(vm, INT_VAL((int64_t)changes));
-        } else {
-            vm_push(vm, BOOL_VAL(0));
+            if (changes >= 0) {
+                vm_push(vm, INT_VAL((int64_t)changes));
+                break;
+            }
         }
+        vm_push(vm, BOOL_VAL(0));
         break;
     }
     case 2031: { /* at-exit(thunk) → bool */
@@ -8851,113 +8818,174 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 2036: { /* yoga-node-create() → node or #f */
-        int handle = vm_yoga_alloc(vm);
-        if (handle > 0) vm_push(vm, INT_VAL((int64_t)handle));
-        else vm_push(vm, BOOL_VAL(0));
+        VmYogaCreateFn fn = (VmYogaCreateFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_create");
+        int64_t handle = fn ? fn() : -1;
+        if (handle > 0 && handle < (int64_t)(sizeof(vm->yoga_nodes) / sizeof(vm->yoga_nodes[0]))) {
+            memset(&vm->yoga_nodes[handle], 0, sizeof(vm->yoga_nodes[handle]));
+            vm->yoga_nodes[handle].active = 1;
+            vm_push(vm, INT_VAL(handle));
+        } else {
+            vm_push(vm, BOOL_VAL(0));
+        }
         break;
     }
     case 2037: { /* yoga-node-set!(node, prop, value) → bool */
         Value value_val = vm_pop(vm), prop_val = vm_pop(vm), node_val = vm_pop(vm);
         int handle = (int)as_number(node_val);
         VmString* prop = vm_value_as_string(vm, prop_val);
-        if (vm_yoga_valid(vm, handle) && prop && prop->data) {
-            typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
-            if (vm_yoga_string_eq(prop, "flex-direction")) {
-                VmString* direction = vm_value_as_string(vm, value_val);
-                if (vm_yoga_string_eq(direction, "row")) {
-                    node->flex_direction = 1;
-                    vm_push(vm, BOOL_VAL(1));
-                    break;
-                }
-                if (vm_yoga_string_eq(direction, "column")) {
-                    node->flex_direction = 0;
-                    vm_push(vm, BOOL_VAL(1));
-                    break;
-                }
-            } else {
-                double value = as_number(value_val);
-                if (vm_yoga_string_eq(prop, "width")) node->width = value;
-                else if (vm_yoga_string_eq(prop, "height")) node->height = value;
-                else if (vm_yoga_string_eq(prop, "flex-grow")) node->flex_grow = value;
-                else if (vm_yoga_string_eq(prop, "flex-shrink")) node->flex_shrink = value;
-                else if (vm_yoga_string_eq(prop, "padding")) node->padding = value;
-                else if (vm_yoga_string_eq(prop, "margin")) node->margin = value;
-                else if (vm_yoga_string_eq(prop, "gap")) node->gap = value;
-                else {
-                    vm_push(vm, BOOL_VAL(0));
-                    break;
-                }
-                vm_push(vm, BOOL_VAL(1));
-                break;
+        VmYogaSetFloatFn set_float = (VmYogaSetFloatFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_set_float");
+        VmYogaSetIntFn set_int = (VmYogaSetIntFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_set_int");
+        int ok = vm_yoga_valid(vm, handle) && prop && prop->data && set_float && set_int;
+        int float_prop = -1;
+        int all_start = -1;
+        if (ok && vm_yoga_string_eq(prop, "width")) float_prop = 0;
+        else if (ok && vm_yoga_string_eq(prop, "height")) float_prop = 1;
+        else if (ok && vm_yoga_string_eq(prop, "min-width")) float_prop = 2;
+        else if (ok && vm_yoga_string_eq(prop, "min-height")) float_prop = 3;
+        else if (ok && vm_yoga_string_eq(prop, "max-width")) float_prop = 4;
+        else if (ok && vm_yoga_string_eq(prop, "max-height")) float_prop = 5;
+        else if (ok && vm_yoga_string_eq(prop, "flex-grow")) float_prop = 6;
+        else if (ok && vm_yoga_string_eq(prop, "flex-shrink")) float_prop = 7;
+        else if (ok && vm_yoga_string_eq(prop, "flex-basis")) float_prop = 8;
+        else if (ok && vm_yoga_string_eq(prop, "gap")) float_prop = 9;
+        else if (ok && vm_yoga_string_eq(prop, "padding")) all_start = 10;
+        else if (ok && vm_yoga_string_eq(prop, "padding-left")) float_prop = 10;
+        else if (ok && vm_yoga_string_eq(prop, "padding-right")) float_prop = 11;
+        else if (ok && vm_yoga_string_eq(prop, "padding-top")) float_prop = 12;
+        else if (ok && vm_yoga_string_eq(prop, "padding-bottom")) float_prop = 13;
+        else if (ok && vm_yoga_string_eq(prop, "margin")) all_start = 14;
+        else if (ok && vm_yoga_string_eq(prop, "margin-left")) float_prop = 14;
+        else if (ok && vm_yoga_string_eq(prop, "margin-right")) float_prop = 15;
+        else if (ok && vm_yoga_string_eq(prop, "margin-top")) float_prop = 16;
+        else if (ok && vm_yoga_string_eq(prop, "margin-bottom")) float_prop = 17;
+        else if (ok && vm_yoga_string_eq(prop, "border")) all_start = 18;
+        else if (ok && vm_yoga_string_eq(prop, "border-left")) float_prop = 18;
+        else if (ok && vm_yoga_string_eq(prop, "border-right")) float_prop = 19;
+        else if (ok && vm_yoga_string_eq(prop, "border-top")) float_prop = 20;
+        else if (ok && vm_yoga_string_eq(prop, "border-bottom")) float_prop = 21;
+        if (float_prop >= 0 || all_start >= 0) {
+            double number = as_number(value_val);
+            ok = isfinite(number);
+            if (ok && all_start >= 0) {
+                for (int i = 0; i < 4; ++i) set_float(handle, all_start + i, number);
+            } else if (ok) {
+                set_float(handle, float_prop, number);
             }
+            vm_push(vm, BOOL_VAL(ok));
+            break;
         }
-        vm_push(vm, BOOL_VAL(0));
+        static const char* const flex_direction[] = {"column", "column-reverse", "row", "row-reverse"};
+        static const char* const justify[] = {"flex-start", "center", "flex-end", "space-between", "space-around", "space-evenly"};
+        static const char* const align[] = {"auto", "flex-start", "center", "flex-end", "stretch", "baseline", "space-between", "space-around", "space-evenly"};
+        static const char* const position[] = {"static", "relative", "absolute"};
+        static const char* const overflow[] = {"visible", "hidden", "scroll"};
+        static const char* const display[] = {"flex", "none", "contents"};
+        VmString* enum_string = vm_value_as_string(vm, value_val);
+        int int_prop = -1;
+        int enum_value = -1;
+        if (ok && vm_yoga_string_eq(prop, "flex-direction")) {
+            int_prop = 0; ok = vm_yoga_enum_value(enum_string, flex_direction, 4, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "justify-content")) {
+            int_prop = 1; ok = vm_yoga_enum_value(enum_string, justify, 6, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "align-items")) {
+            int_prop = 2; ok = vm_yoga_enum_value(enum_string, align, 9, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "align-self")) {
+            int_prop = 3; ok = vm_yoga_enum_value(enum_string, align, 9, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "align-content")) {
+            int_prop = 4; ok = vm_yoga_enum_value(enum_string, align, 9, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "position-type")) {
+            int_prop = 5; ok = vm_yoga_enum_value(enum_string, position, 3, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "overflow")) {
+            int_prop = 6; ok = vm_yoga_enum_value(enum_string, overflow, 3, &enum_value);
+        } else if (ok && vm_yoga_string_eq(prop, "display")) {
+            int_prop = 7; ok = vm_yoga_enum_value(enum_string, display, 3, &enum_value);
+        } else {
+            ok = 0;
+        }
+        if (ok) set_int(handle, int_prop, enum_value);
+        vm_push(vm, BOOL_VAL(ok));
         break;
     }
     case 2038: { /* yoga-node-add-child!(parent, child) → bool */
         Value child_val = vm_pop(vm), parent_val = vm_pop(vm);
         int parent = (int)as_number(parent_val);
         int child = (int)as_number(child_val);
-        if (vm_yoga_valid(vm, parent) && vm_yoga_valid(vm, child) &&
-            parent != child && vm->yoga_nodes[parent].child_count < 16) {
-            int already_child = 0;
-            for (int i = 0; i < vm->yoga_nodes[parent].child_count; i++) {
-                if (vm->yoga_nodes[parent].children[i] == child) already_child = 1;
+        VmYogaAddChildFn fn = (VmYogaAddChildFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_add_child");
+        int ok = fn && vm_yoga_valid(vm, parent) && vm_yoga_valid(vm, child) &&
+                 parent != child && vm->yoga_nodes[child].parent == 0 &&
+                 vm->yoga_nodes[parent].child_count < 511;
+        if (ok) {
+            for (int ancestor = parent; ancestor != 0;
+                 ancestor = vm->yoga_nodes[ancestor].parent) {
+                if (ancestor == child) { ok = 0; break; }
             }
-            if (!already_child) {
-                vm->yoga_nodes[parent].children[vm->yoga_nodes[parent].child_count++] = child;
-                vm->yoga_nodes[child].parent = parent;
-            }
-            vm_push(vm, BOOL_VAL(1));
-            break;
         }
-        vm_push(vm, BOOL_VAL(0));
+        if (ok) {
+            int index = vm->yoga_nodes[parent].child_count;
+            fn(parent, child, index);
+            vm->yoga_nodes[parent].child_count++;
+            vm->yoga_nodes[child].parent = parent;
+        }
+        vm_push(vm, BOOL_VAL(ok));
         break;
     }
     case 2039: { /* yoga-node-calculate!(root, width, height) → bool */
         Value height_val = vm_pop(vm), width_val = vm_pop(vm), root_val = vm_pop(vm);
         int root = (int)as_number(root_val);
-        if (vm_yoga_valid(vm, root)) {
-            vm_yoga_layout_node(vm, root, 0.0, 0.0, as_number(width_val), as_number(height_val));
-            vm_push(vm, BOOL_VAL(1));
-            break;
-        }
-        vm_push(vm, BOOL_VAL(0));
+        VmYogaCalculateFn fn = (VmYogaCalculateFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_calculate");
+        double width = as_number(width_val);
+        double height = as_number(height_val);
+        int ok = fn && vm_yoga_valid(vm, root) && isfinite(width) && isfinite(height) &&
+                 width >= 0.0 && height >= 0.0;
+        if (ok) fn(root, width, height);
+        vm_push(vm, BOOL_VAL(ok));
         break;
     }
     case 2040: { /* yoga-node-get-computed(node, prop) → number or #f */
         Value prop_val = vm_pop(vm), node_val = vm_pop(vm);
         int handle = (int)as_number(node_val);
         VmString* prop = vm_value_as_string(vm, prop_val);
-        if (vm_yoga_valid(vm, handle) && prop && prop->data) {
-            typeof(vm->yoga_nodes[handle])* node = &vm->yoga_nodes[handle];
-            if (vm_yoga_string_eq(prop, "left")) vm_push(vm, FLOAT_VAL(node->computed_left));
-            else if (vm_yoga_string_eq(prop, "top")) vm_push(vm, FLOAT_VAL(node->computed_top));
-            else if (vm_yoga_string_eq(prop, "width")) vm_push(vm, FLOAT_VAL(node->computed_width));
-            else if (vm_yoga_string_eq(prop, "height")) vm_push(vm, FLOAT_VAL(node->computed_height));
-            else {
-                vm_push(vm, BOOL_VAL(0));
-                break;
-            }
-            break;
-        }
-        vm_push(vm, BOOL_VAL(0));
+        VmYogaGetComputedFn fn = (VmYogaGetComputedFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_get_computed");
+        int computed_prop = -1;
+        if (vm_yoga_string_eq(prop, "left")) computed_prop = 0;
+        else if (vm_yoga_string_eq(prop, "top")) computed_prop = 1;
+        else if (vm_yoga_string_eq(prop, "width")) computed_prop = 2;
+        else if (vm_yoga_string_eq(prop, "height")) computed_prop = 3;
+        else if (vm_yoga_string_eq(prop, "padding-left")) computed_prop = 4;
+        else if (vm_yoga_string_eq(prop, "padding-top")) computed_prop = 5;
+        else if (vm_yoga_string_eq(prop, "padding-right")) computed_prop = 6;
+        else if (vm_yoga_string_eq(prop, "padding-bottom")) computed_prop = 7;
+        else if (vm_yoga_string_eq(prop, "margin-left")) computed_prop = 8;
+        else if (vm_yoga_string_eq(prop, "margin-top")) computed_prop = 9;
+        else if (vm_yoga_string_eq(prop, "margin-right")) computed_prop = 10;
+        else if (vm_yoga_string_eq(prop, "margin-bottom")) computed_prop = 11;
+        else if (vm_yoga_string_eq(prop, "border-left")) computed_prop = 12;
+        else if (vm_yoga_string_eq(prop, "border-top")) computed_prop = 13;
+        else if (vm_yoga_string_eq(prop, "border-right")) computed_prop = 14;
+        else if (vm_yoga_string_eq(prop, "border-bottom")) computed_prop = 15;
+        if (fn && vm_yoga_valid(vm, handle) && computed_prop >= 0)
+            vm_push(vm, FLOAT_VAL(fn(handle, computed_prop)));
+        else
+            vm_push(vm, BOOL_VAL(0));
         break;
     }
     case 2041: { /* yoga-node-free!(node) → bool */
         Value node_val = vm_pop(vm);
         int handle = (int)as_number(node_val);
-        if (vm_yoga_valid(vm, handle)) {
+        VmYogaFreeFn fn = (VmYogaFreeFn)(uintptr_t)
+            vm_runtime_symbol("eshkol_yoga_node_free");
+        if (fn && vm_yoga_valid(vm, handle)) {
             int parent = vm->yoga_nodes[handle].parent;
-            if (vm_yoga_valid(vm, parent)) {
-                int out = 0;
-                for (int i = 0; i < vm->yoga_nodes[parent].child_count; i++) {
-                    int child = vm->yoga_nodes[parent].children[i];
-                    if (child != handle) vm->yoga_nodes[parent].children[out++] = child;
-                }
-                vm->yoga_nodes[parent].child_count = out;
-            }
-            memset(&vm->yoga_nodes[handle], 0, sizeof(vm->yoga_nodes[handle]));
+            if (vm_yoga_valid(vm, parent) && vm->yoga_nodes[parent].child_count > 0)
+                vm->yoga_nodes[parent].child_count--;
+            vm_yoga_clear_subtree(vm, handle);
+            fn(handle);
             vm_push(vm, BOOL_VAL(1));
             break;
         }
@@ -9351,19 +9379,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2053: { /* ts-parser-new(language) → parser or #f */
         Value language_val = vm_pop(vm);
         VmString* language = vm_value_as_string(vm, language_val);
-        if (language && language->data && vm_ts_language_supported(language->data)) {
-            int pushed = 0;
-            for (int i = 1; i < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])); i++) {
-                if (!vm->ts_parsers[i].active) {
-                    vm->ts_parsers[i].active = 1;
-                    snprintf(vm->ts_parsers[i].language, sizeof(vm->ts_parsers[i].language),
-                             "%.*s", (int)language->byte_len, language->data);
-                    vm_push(vm, INT_VAL((int64_t)i));
-                    pushed = 1;
-                    break;
-                }
+        VmTsParserNewFn new_fn = (VmTsParserNewFn)(uintptr_t)
+            vm_ts_symbol("eshkol_ts_parser_new");
+        char* language_copy = vm_ts_string_copy(language);
+        if (new_fn && language_copy) {
+            int64_t handle = new_fn(language_copy);
+            free(language_copy);
+            if (handle > 0 &&
+                handle < (int64_t)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0]))) {
+                vm->ts_parsers[handle].active = 1;
+                vm_push(vm, INT_VAL(handle));
+                break;
             }
-            if (pushed) break;
+            if (handle > 0) {
+                VmTsParserFreeFn free_fn = (VmTsParserFreeFn)(uintptr_t)
+                    vm_ts_symbol("eshkol_ts_parser_free");
+                if (free_fn) free_fn(handle);
+            }
+        } else {
+            free(language_copy);
         }
         vm_push(vm, BOOL_VAL(0));
         break;
@@ -9373,6 +9407,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int handle = (int)as_number(parser_val);
         if (handle > 0 && handle < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])) &&
             vm->ts_parsers[handle].active) {
+            VmTsParserFreeFn free_fn = (VmTsParserFreeFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_parser_free");
+            if (!free_fn) { vm_push(vm, BOOL_VAL(0)); break; }
+            free_fn(handle);
             memset(&vm->ts_parsers[handle], 0, sizeof(vm->ts_parsers[handle]));
             vm_push(vm, BOOL_VAL(1));
             break;
@@ -9386,30 +9424,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
         VmString* source = vm_value_as_string(vm, source_val);
         if (parser > 0 && parser < (int)(sizeof(vm->ts_parsers) / sizeof(vm->ts_parsers[0])) &&
             vm->ts_parsers[parser].active && source && source->data) {
-            int pushed = 0;
-            for (int i = 1; i < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])); i++) {
-                if (!vm->ts_trees[i].active) {
-                    vm->ts_trees[i].active = 1;
-                    vm->ts_trees[i].parser = parser;
-                    vm->ts_trees[i].root_node = i;
-                    vm->ts_trees[i].source = source->data;
-                    vm->ts_trees[i].source_len = source->byte_len;
-                    snprintf(vm->ts_trees[i].language, sizeof(vm->ts_trees[i].language),
-                             "%s", vm->ts_parsers[parser].language);
-                    memset(&vm->ts_nodes[i], 0, sizeof(vm->ts_nodes[i]));
-                    vm->ts_nodes[i].active = 1;
-                    vm->ts_nodes[i].tree = i;
-                    vm->ts_nodes[i].parent = 0;
-                    vm->ts_nodes[i].start = 0;
-                    vm->ts_nodes[i].end = source->byte_len;
-                    snprintf(vm->ts_nodes[i].type, sizeof(vm->ts_nodes[i].type),
-                             "%s", vm_ts_root_type(vm->ts_trees[i].language));
-                    vm_push(vm, INT_VAL((int64_t)i));
-                    pushed = 1;
+            VmTsParseFn parse_fn = (VmTsParseFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_parse");
+            if (parse_fn && source->byte_len <= INT32_MAX) {
+                int64_t tree = parse_fn(parser, source->data, (int32_t)source->byte_len);
+                if (tree > 0 &&
+                    tree < (int64_t)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0]))) {
+                    vm->ts_trees[tree].active = 1;
+                    vm_push(vm, INT_VAL(tree));
                     break;
                 }
+                if (tree > 0) {
+                    VmTsTreeFreeFn free_fn = (VmTsTreeFreeFn)(uintptr_t)
+                        vm_ts_symbol("eshkol_ts_tree_free");
+                    if (free_fn) free_fn(tree);
+                }
             }
-            if (pushed) break;
         }
         vm_push(vm, BOOL_VAL(0));
         break;
@@ -9419,6 +9449,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int handle = (int)as_number(tree_val);
         if (handle > 0 && handle < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
             vm->ts_trees[handle].active) {
+            VmTsTreeFreeFn free_fn = (VmTsTreeFreeFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_tree_free");
+            if (!free_fn) { vm_push(vm, BOOL_VAL(0)); break; }
+            free_fn(handle);
             for (int i = 0; i < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])); i++) {
                 if (vm->ts_nodes[i].active && vm->ts_nodes[i].tree == handle)
                     memset(&vm->ts_nodes[i], 0, sizeof(vm->ts_nodes[i]));
@@ -9443,29 +9477,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 2058: { /* ts-node-text(node, source) → string or #f */
         Value source_val = vm_pop(vm), node_val = vm_pop(vm);
+        (void)source_val;
         int node = (int)as_number(node_val);
-        const char* source = NULL;
-        int64_t source_len = 0;
         if (node > 0 && node < (int)(sizeof(vm->ts_nodes) / sizeof(vm->ts_nodes[0])) &&
             vm->ts_nodes[node].active) {
+            VmTsNodeTextFn text_fn = (VmTsNodeTextFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_node_text");
+            uint32_t start = vm->ts_nodes[node].start;
+            uint32_t end = vm->ts_nodes[node].end;
             int tree = vm->ts_nodes[node].tree;
-            if (tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
-                vm->ts_trees[tree].active) {
-                source = vm->ts_trees[tree].source;
-                source_len = vm->ts_trees[tree].source_len;
-            }
-            if (!source) {
-                VmString* fallback = vm_value_as_string(vm, source_val);
-                if (fallback && fallback->data) {
-                    source = fallback->data;
-                    source_len = fallback->byte_len;
+            int32_t required = text_fn ? text_fn(tree, start, end, NULL, 0) : -1;
+            if (required >= 0) {
+                char* buffer = (char*)malloc((size_t)required + 1u);
+                if (buffer && text_fn(tree, start, end, buffer, required + 1) == required) {
+                    Value text_value = vm_string_value(vm, buffer, required);
+                    free(buffer);
+                    vm_push(vm, text_value);
+                    break;
                 }
-            }
-            if (source && vm->ts_nodes[node].start >= 0 && vm->ts_nodes[node].end <= source_len &&
-                vm->ts_nodes[node].start <= vm->ts_nodes[node].end) {
-                vm_push(vm, vm_string_value(vm, source + vm->ts_nodes[node].start,
-                                            vm->ts_nodes[node].end - vm->ts_nodes[node].start));
-                break;
+                free(buffer);
             }
         }
         vm_push(vm, BOOL_VAL(0));
@@ -9480,24 +9510,28 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value pattern_val = vm_pop(vm), language_val = vm_pop(vm);
         VmString* language = vm_value_as_string(vm, language_val);
         VmString* pattern = vm_value_as_string(vm, pattern_val);
-        if (language && language->data && pattern && pattern->data &&
-            vm_ts_language_supported(language->data)) {
-            int pushed = 0;
-            for (int i = 1; i < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])); i++) {
-                if (!vm->ts_queries[i].active) {
-                    vm->ts_queries[i].active = 1;
-                    snprintf(vm->ts_queries[i].language, sizeof(vm->ts_queries[i].language),
-                             "%.*s", (int)language->byte_len, language->data);
-                    snprintf(vm->ts_queries[i].pattern, sizeof(vm->ts_queries[i].pattern),
-                             "%.*s", (int)pattern->byte_len, pattern->data);
-                    vm_ts_capture_name(vm->ts_queries[i].pattern, vm->ts_queries[i].capture,
-                                       sizeof(vm->ts_queries[i].capture));
-                    vm_push(vm, INT_VAL((int64_t)i));
-                    pushed = 1;
-                    break;
-                }
+        VmTsQueryNewFn new_fn = (VmTsQueryNewFn)(uintptr_t)
+            vm_ts_symbol("eshkol_ts_query_new");
+        char* language_copy = vm_ts_string_copy(language);
+        char* pattern_copy = vm_ts_string_copy(pattern);
+        if (new_fn && language_copy && pattern_copy) {
+            int64_t query = new_fn(language_copy, pattern_copy);
+            free(language_copy);
+            free(pattern_copy);
+            if (query > 0 &&
+                query < (int64_t)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0]))) {
+                vm->ts_queries[query].active = 1;
+                vm_push(vm, INT_VAL(query));
+                break;
             }
-            if (pushed) break;
+            if (query > 0) {
+                VmTsQueryFreeFn free_fn = (VmTsQueryFreeFn)(uintptr_t)
+                    vm_ts_symbol("eshkol_ts_query_free");
+                if (free_fn) free_fn(query);
+            }
+        } else {
+            free(language_copy);
+            free(pattern_copy);
         }
         vm_push(vm, BOOL_VAL(0));
         break;
@@ -9507,32 +9541,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         (void)source_val;
         int query = (int)as_number(query_val);
         int tree = (int)as_number(tree_val);
-        if (query > 0 && query < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])) &&
-            tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
-            vm->ts_queries[query].active && vm->ts_trees[tree].active) {
-            const char* src = vm->ts_trees[tree].source;
-            int64_t len = vm->ts_trees[tree].source_len;
-            Value result = NIL_VAL;
-            int64_t line_start = 0;
-            for (int64_t i = 0; i <= len; i++) {
-                if (i == len || src[i] == '\n') {
-                    int64_t line_end = i;
-                    const char* type = vm_ts_classify_line(vm->ts_trees[tree].language,
-                                                           src + line_start, line_end - line_start);
-                    if (type && vm_ts_query_matches_text(vm->ts_queries[query].pattern, type,
-                                                         src + line_start, line_end - line_start)) {
-                        Value match = vm_ts_match_value(vm, vm->ts_queries[query].capture, type,
-                                                        line_start, line_end, src + line_start,
-                                                        line_end - line_start);
-                        result = vm_cons_value(vm, match, result);
-                    }
-                    line_start = i + 1;
-                }
-            }
-            vm_push(vm, vm_reverse_list(vm, result));
-            break;
-        }
-        vm_push(vm, BOOL_VAL(0));
+        vm_push(vm, vm_ts_query_matches_value(vm, query, tree));
         break;
     }
     case 2062: { /* ts-query-free(query) → bool */
@@ -9540,6 +9549,10 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int handle = (int)as_number(query_val);
         if (handle > 0 && handle < (int)(sizeof(vm->ts_queries) / sizeof(vm->ts_queries[0])) &&
             vm->ts_queries[handle].active) {
+            VmTsQueryFreeFn free_fn = (VmTsQueryFreeFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_query_free");
+            if (!free_fn) { vm_push(vm, BOOL_VAL(0)); break; }
+            free_fn(handle);
             memset(&vm->ts_queries[handle], 0, sizeof(vm->ts_queries[handle]));
             vm_push(vm, BOOL_VAL(1));
             break;
@@ -9548,7 +9561,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     case 2063: { /* ts-available() → bool */
-        vm_push(vm, BOOL_VAL(1));
+        VmTsAvailableFn available_fn = (VmTsAvailableFn)(uintptr_t)
+            vm_ts_symbol("eshkol_ts_available");
+        vm_push(vm, BOOL_VAL(available_fn && available_fn() != 0));
         break;
     }
     case 2064: { /* ts-tree-root(tree) → node or #f */
@@ -9556,8 +9571,22 @@ static void vm_dispatch_native(VM* vm, int fid) {
         int tree = (int)as_number(tree_val);
         if (tree > 0 && tree < (int)(sizeof(vm->ts_trees) / sizeof(vm->ts_trees[0])) &&
             vm->ts_trees[tree].active) {
-            vm_push(vm, INT_VAL((int64_t)vm->ts_trees[tree].root_node));
-            break;
+            VmTsTreeRootFn root_fn = (VmTsTreeRootFn)(uintptr_t)
+                vm_ts_symbol("eshkol_ts_tree_root");
+            int32_t required = root_fn ? root_fn(tree, NULL, 0) : -1;
+            if (required >= 0) {
+                char* record = (char*)malloc((size_t)required + 1u);
+                if (record && root_fn(tree, record, required + 1) == required) {
+                    int node = vm_ts_store_node(vm, tree, 1, record);
+                    free(record);
+                    if (node > 0) {
+                        vm_push(vm, INT_VAL((int64_t)node));
+                        break;
+                    }
+                } else {
+                    free(record);
+                }
+            }
         }
         vm_push(vm, BOOL_VAL(0));
         break;
@@ -9689,25 +9718,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 2018: { /* deflate(data) → bytevector or #f */
         Value input_val = vm_pop(vm);
         vm_push(vm, vm_compression_call(vm, input_val,
-                                        vm_compression_symbol("eshkol_deflate"), 0));
+                                        vm_compression_symbol("eshkol_deflate_alloc")));
         break;
     }
     case 2019: { /* inflate(data) → bytevector or #f */
         Value input_val = vm_pop(vm);
         vm_push(vm, vm_compression_call(vm, input_val,
-                                        vm_compression_symbol("eshkol_inflate_data"), 1));
+                                        vm_compression_symbol("eshkol_inflate_alloc")));
         break;
     }
     case 2020: { /* gzip(data) → bytevector or #f */
         Value input_val = vm_pop(vm);
         vm_push(vm, vm_compression_call(vm, input_val,
-                                        vm_compression_symbol("eshkol_gzip"), 0));
+                                        vm_compression_symbol("eshkol_gzip_alloc")));
         break;
     }
     case 2021: { /* gunzip(data) → bytevector or #f */
         Value input_val = vm_pop(vm);
         vm_push(vm, vm_compression_call(vm, input_val,
-                                        vm_compression_symbol("eshkol_gunzip"), 1));
+                                        vm_compression_symbol("eshkol_gunzip_alloc")));
         break;
     }
     case 1956: { /* string-ends-with?(str, suffix) → bool */
