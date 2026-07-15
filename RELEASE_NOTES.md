@@ -110,7 +110,12 @@ generative oracles execute portably on macOS; freestanding object checks allow
 only target intrinsics (never undeclared hosted ABI calls); every required
 WebAssembly environment import is present in both JavaScript runtimes; and the
 tag workflow supports a non-publishing manual dry run of the complete release
-matrix before any immutable release tag is created.
+matrix before any immutable release tag is created. Installed package module
+resolution is also exercised with the persistent cache disabled: agent modules
+must resolve from the executable-relative source tree, and a missing explicit
+`require` is a hard failure rather than a diagnostic followed by execution.
+Native Windows hosts retain that bounded JIT ABI through the generated PE
+export table without mixing static LLVM target archives with `LLVM-C.dll`.
 
 ---
 

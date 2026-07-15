@@ -78,8 +78,14 @@ int main(int argc, char** argv) {
     if (!fs::exists(workflow_path)) {
         return fail("release.yml not found under source root");
     }
+    const fs::path package_verifier_path =
+        source_root / "scripts" / "verify_release_package.py";
+    if (!fs::exists(package_verifier_path)) {
+        return fail("verify_release_package.py not found under source root");
+    }
 
     const std::string workflow = read_file(workflow_path);
+    const std::string package_verifier = read_file(package_verifier_path);
     bool ok = true;
 
     ok = ok &&
@@ -187,6 +193,17 @@ int main(int argc, char** argv) {
          expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
                          "Windows archives stage pinned third-party licenses");
+
+    ok = ok &&
+         expect_contains(package_verifier,
+                         "jit_env[\"ESHKOL_JIT_CACHE\"] = \"0\"",
+                         "package verifier exercises cache-disabled JIT") &&
+         expect_contains(package_verifier,
+                         "Module not found:",
+                         "package verifier rejects missing installed modules") &&
+         expect_contains(package_verifier,
+                         "cache-disabled package JIT reported a module-loading failure",
+                         "package verifier fails closed on JIT module diagnostics");
 
     const std::vector<ReleaseAsset> expected_assets = {
         {"linux-x64-lite", "tar.gz"},
