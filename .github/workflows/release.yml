@@ -185,6 +185,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_STDLIB_TARGET_CPU=generic \
+            -DESHKOL_STDLIB_TARGET_FEATURES= \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
 
@@ -193,6 +195,22 @@ jobs:
         run: |
           set -euxo pipefail
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Verify portable standard library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            LLVM_DIS="$(brew --prefix llvm@${LLVM_MAJOR})/bin/llvm-dis"
+          else
+            LLVM_DIS="/usr/bin/llvm-dis-${LLVM_MAJOR}"
+          fi
+          test -x "$LLVM_DIS"
+          python3 scripts/verify_portable_stdlib.py \
+            --bitcode "${{ matrix.build_dir }}/stdlib.bc" \
+            --llvm-dis "$LLVM_DIS" \
+            --cmake-cache "${{ matrix.build_dir }}/CMakeCache.txt" \
+            --expected-cpu generic
 
       - name: Check WASM env imports
         if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
@@ -486,6 +504,8 @@ jobs:
             -DESHKOL_BUILD_TESTS=OFF `
             -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
             -DESHKOL_HOST_CXX_COMPILER="$hostCxx" `
+            -DESHKOL_STDLIB_TARGET_CPU=generic `
+            -DESHKOL_STDLIB_TARGET_FEATURES= `
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
             -DLLVM_DIR="$env:LLVM_DIR"
@@ -499,6 +519,20 @@ jobs:
             $targets += 'xla_codegen_test'
           }
           cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
+
+      - name: Verify portable standard library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmDis = "$env:LLVM_HOME\bin\llvm-dis.exe"
+          if (-not (Test-Path $llvmDis -PathType Leaf)) {
+            throw "llvm-dis.exe not found in LLVM SDK at $llvmDis"
+          }
+          python scripts/verify_portable_stdlib.py `
+            --bitcode '${{ matrix.build_dir }}\stdlib.bc' `
+            --llvm-dis "$llvmDis" `
+            --cmake-cache '${{ matrix.build_dir }}\CMakeCache.txt' `
+            --expected-cpu generic
 
       - name: Run Tests
         shell: pwsh

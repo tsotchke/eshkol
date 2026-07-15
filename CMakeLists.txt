@@ -2210,10 +2210,24 @@ endforeach ()
 
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o/stdlib.bc for faster loading of user programs
+set(ESHKOL_STDLIB_TARGET_CPU "" CACHE STRING
+    "CPU used only for precompiled stdlib artifacts; empty keeps host-specialized development builds")
+set(ESHKOL_STDLIB_TARGET_FEATURES "" CACHE STRING
+    "LLVM target features used only for precompiled stdlib artifacts")
 set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 set(STDLIB_BITCODE "${CMAKE_CURRENT_BINARY_DIR}/stdlib.bc")
 set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set(STDLIB_CODEGEN_ENV "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+
+if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
+  list(APPEND STDLIB_CODEGEN_ENV
+       "ESHKOL_TARGET_CPU=${ESHKOL_STDLIB_TARGET_CPU}"
+       "ESHKOL_TARGET_FEATURES=${ESHKOL_STDLIB_TARGET_FEATURES}")
+elseif(NOT "${ESHKOL_STDLIB_TARGET_FEATURES}" STREQUAL "")
+  list(APPEND STDLIB_CODEGEN_ENV
+       "ESHKOL_TARGET_FEATURES=${ESHKOL_STDLIB_TARGET_FEATURES}")
+endif()
 
 # stdlib.esk is a thin top-level that (require)s every module in
 # lib/core/, lib/math/, lib/signal/, etc.  CMake's DEPENDS list must
@@ -2237,7 +2251,7 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
-  COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+  COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
@@ -2253,6 +2267,10 @@ add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
 message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT} and ${STDLIB_BITCODE}")
+if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
+  message(STATUS
+      "Precompiled standard library target: CPU=${ESHKOL_STDLIB_TARGET_CPU}, features='${ESHKOL_STDLIB_TARGET_FEATURES}'")
+endif()
 
 # ===== REPL Support =====
 # Optional REPL with JIT execution
