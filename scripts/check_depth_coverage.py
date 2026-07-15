@@ -99,6 +99,34 @@ def check_entry(name, entry, errors):
     return (True, False)
 
 
+def write_depth_coverage_trace(
+    trace_dir, *, passed, swept, composables, pct, gap_count, error_count
+):
+    """Write the bounded depth-coverage runtime contract and return its path."""
+    os.makedirs(trace_dir, exist_ok=True)
+    trace_path = os.path.join(trace_dir, "depth_coverage.jsonl")
+    rec = {
+        "kind": "depth_coverage",
+        "name": "depth_coverage_gate",
+        "value": "PASS" if passed else "FAIL",
+        "snippet": (
+            f"{swept}/{composables} composables swept ({pct:.1f}%), "
+            f"{gap_count} tracked gaps, {error_count} errors"
+        ),
+        "confidence": 0.95,
+    }
+    with open(trace_path, "w", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+        f.write(json.dumps({
+            "kind": "depth_coverage",
+            "name": "depth_coverage_pct",
+            "value": f"{pct:.1f}",
+            "snippet": f"{swept}/{composables} composables have a pillar sweep",
+            "confidence": 0.95,
+        }) + "\n")
+    return trace_path
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-root", default=repo_root_default())
@@ -189,26 +217,15 @@ def main():
 
     if not args.no_trace:
         trace_dir = os.path.join(root, "scripts", "icc_traces")
-        os.makedirs(trace_dir, exist_ok=True)
-        rec = {
-            "kind": "depth_coverage",
-            "name": "depth_coverage_gate",
-            "value": "PASS" if passed else "FAIL",
-            "snippet": (f"{swept}/{composables} composables swept ({pct:.1f}%), "
-                        f"{len(gaps)} tracked gaps, {len(errors)} errors"),
-            "confidence": 0.95,
-        }
-        with open(os.path.join(trace_dir, "depth_coverage.jsonl"), "w",
-                  encoding="utf-8") as f:
-            f.write(json.dumps(rec) + "\n")
-            # Also emit the coverage percentage as a numeric-carrying event.
-            f.write(json.dumps({
-                "kind": "depth_coverage",
-                "name": "depth_coverage_pct",
-                "value": f"{pct:.1f}",
-                "snippet": f"{swept}/{composables} composables have a pillar sweep",
-                "confidence": 0.95,
-            }) + "\n")
+        write_depth_coverage_trace(
+            trace_dir,
+            passed=passed,
+            swept=swept,
+            composables=composables,
+            pct=pct,
+            gap_count=len(gaps),
+            error_count=len(errors),
+        )
 
     return 0 if passed else 1
 
