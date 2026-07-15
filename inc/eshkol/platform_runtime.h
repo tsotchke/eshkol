@@ -117,6 +117,23 @@ std::filesystem::path make_temp_path(std::string_view stem, std::string_view ext
 std::string cxx_compiler();
 
 /**
+ * @brief Resolve the compiler-rt builtins archive belonging to the selected
+ *        Windows C++ driver.
+ *
+ * ClangCL/MSVC builds use a GNU-compatible clang++ driver for generated
+ * executables.  Unlike a complete compiler-driver link, that path does not
+ * reliably inject compiler-rt when Eshkol's static runtime introduces
+ * 128-bit division helpers.  The archive must therefore be selected from the
+ * consumer toolchain at runtime rather than recorded as an absolute path from
+ * the build host.
+ *
+ * @return Canonical path to clang_rt.builtins-x86_64.lib or
+ *         clang_rt.builtins-aarch64.lib on native ClangCL/MSVC Windows;
+ *         empty on non-Windows/MinGW or when no matching archive is present.
+ */
+std::string compiler_rt_builtins_library();
+
+/**
  * @brief Normalize one library/linker argument for the configured host C++
  *        compiler driver.
  *

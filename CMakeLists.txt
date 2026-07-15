@@ -1571,12 +1571,13 @@ endif()
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
         # The ClangCL-built Eshkol executables need the build toolchain's
-        # compiler-rt archive, but generated programs are linked through the
-        # GNU-compatible clang++ driver.  That driver supplies its own matching
-        # builtins automatically.  Replaying this absolute build-host path in
-        # ESHKOL_HOST_RUNTIME_LINK_ARGS makes installed Windows packages depend
-        # on the runner image's Visual Studio layout (and can mix Clang major
-        # versions).  Keep it on CMake target link lines only.
+        # compiler-rt archive, but generated programs are linked later through
+        # the selected consumer clang++ driver. platform_runtime resolves that
+        # driver's matching compiler-rt archive at runtime. Replaying this
+        # absolute build-host path in ESHKOL_HOST_RUNTIME_LINK_ARGS makes
+        # installed Windows packages depend on the runner image's Visual Studio
+        # layout (and can mix Clang major versions). Keep it on CMake target
+        # link lines only.
         if(ESHKOL_CLANG_BUILTINS_LIB AND
            "${_extra_runtime_lib}" STREQUAL "${ESHKOL_CLANG_BUILTINS_LIB}")
             continue()

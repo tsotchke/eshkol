@@ -61,7 +61,7 @@ unsigned int link_subprocess_timeout_seconds() {
     return 300;
 }
 
-void append_host_runtime_link_args(std::vector<std::string>& link_args) {
+bool append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
     for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(std::move(runtime_arg));
@@ -83,11 +83,28 @@ void append_host_runtime_link_args(std::vector<std::string>& link_args) {
             }
         }
     }
+
+#ifndef __MINGW32__
+    const std::string compiler_rt =
+        eshkol::platform::compiler_rt_builtins_library();
+    if (compiler_rt.empty()) {
+        eshkol_error(
+            "Generated Windows links require the compiler-rt builtins archive "
+            "from the selected C++ driver '%s', but no LLVM %d "
+            "clang_rt.builtins-{x86_64|aarch64}.lib was found. Set "
+            "ESHKOL_CXX_COMPILER or LLVM_HOME to a complete matching LLVM "
+            "toolchain.",
+            eshkol::platform::cxx_compiler().c_str(), ESHKOL_HOST_LLVM_MAJOR);
+        return false;
+    }
+    link_args.emplace_back(compiler_rt);
+#endif
 #else
     for (const auto& runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(runtime_arg);
     }
 #endif
+    return true;
 }
 
 void append_configured_link_args(const char* raw_args,
@@ -38876,7 +38893,10 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // libraries. This used to be skipped on Apple, leaving standalone
         // quantum AOT binaries with unresolved moonlab_* symbols even though
         // the JIT and compiler process were linked correctly.
-        append_host_runtime_link_args(link_args);
+        if (!append_host_runtime_link_args(link_args)) {
+            std::filesystem::remove(temp_obj);
+            return -1;
+        }
 
         // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
 #ifdef __APPLE__
