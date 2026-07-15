@@ -1,6 +1,6 @@
 # Eshkol v1.3.3-evolve — Release Notes
 
-**Candidate Date**: July 14, 2026
+**Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
 
 Eshkol v1.3.3-evolve combines the completed Moonlab quantum stack with a
@@ -11,10 +11,10 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 71/71; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 77/77; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
-53/53; executable language coverage 1056/1056 (100%); WebAssembly imports
+53/53; executable language coverage 1057/1057 (100%); WebAssembly imports
 101/101 provided; Taylor monomorphization equivalence 441/441 under both JIT
 and AOT; ICC architecture model 8/8; ICC readiness 100/100.
 
@@ -46,7 +46,7 @@ upstream macOS weak-import linker fix and builds without a local override.
 
 ### Complete executable language coverage
 
-- The coverage manifest now has **1,056/1,056 executable rows**. Credit
+- The coverage manifest now has **1,057/1,057 executable rows**. Credit
   requires a deterministic reachable execution trace; tokens, declarations,
   and dead code do not count.
 - Native and bytecode backends agree on **68/68 parity probes**, including
