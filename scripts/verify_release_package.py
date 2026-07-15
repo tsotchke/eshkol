@@ -198,6 +198,8 @@ def main() -> int:
     license_names = list(COMMON_LICENSE_FILES)
     if platform.system() == "Linux":
         license_names.append("curl-COPYING.txt")
+    if windows:
+        license_names.append("eigen-COPYING.MPL2.txt")
     licenses_dir = package_dir / "licenses"
     if licenses_dir.is_symlink() or not licenses_dir.is_dir():
         fail(f"third-party license directory is missing or symlinked: {licenses_dir}")

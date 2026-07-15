@@ -23,6 +23,7 @@ artifact verifier.
 | tree-sitter-bash | `a06c2e4415e9bc0346c6b86d401879ffb44058f7` | MIT |
 | Yoga 3.2.1 | `042f5013152eb81c1552dec945b88f7b95ca350f` | MIT |
 | curl (Linux packages only) | `a05f34973e6c4bb629d018f7cb51487be1c904d8` | curl license |
+| Eigen 5.0.1 (native Windows BLAS provider) | `bc3b39870ecb690a623a3f49149a358b95c5781d` | MPL-2.0 |
 
 Linux packages link against the platform OpenSSL libraries at final AOT link
 time; they do not redistribute OpenSSL binaries. Windows system libraries and

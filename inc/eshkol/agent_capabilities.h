@@ -4,10 +4,16 @@
 #include <stdint.h>
 
 #if defined(_WIN32)
-#  if defined(ESHKOL_AGENT_BUILD)
-#    define ESHKOL_AGENT_API __declspec(dllexport)
+#  if defined(ESHKOL_AGENT_SHARED)
+#    if defined(ESHKOL_AGENT_BUILD)
+#      define ESHKOL_AGENT_API __declspec(dllexport)
+#    else
+#      define ESHKOL_AGENT_API __declspec(dllimport)
+#    endif
 #  else
-#    define ESHKOL_AGENT_API __declspec(dllimport)
+     /* The production agent library is static. Static consumers must resolve
+      * ordinary COFF symbols, not __imp_* DLL import thunks. */
+#    define ESHKOL_AGENT_API
 #  endif
 #else
 #  define ESHKOL_AGENT_API __attribute__((visibility("default")))
@@ -35,6 +41,11 @@ ESHKOL_AGENT_API int32_t eshkol_gzip_alloc(const char*, int32_t, int32_t,
 ESHKOL_AGENT_API int32_t eshkol_gunzip_alloc(const char*, int32_t, int32_t,
                                               char**, int32_t*);
 ESHKOL_AGENT_API void eshkol_compression_free(void*);
+
+/* Hosted-VM SQLite hooks resolved from the same bounded capability ABI. */
+ESHKOL_AGENT_API int eshkol_sqlite_exec(int64_t handle, const char* sql);
+ESHKOL_AGENT_API int64_t eshkol_sqlite_last_insert_rowid(int64_t handle);
+ESHKOL_AGENT_API int eshkol_sqlite_changes(int64_t handle);
 
 ESHKOL_AGENT_API int32_t eshkol_ts_available(void);
 ESHKOL_AGENT_API int64_t eshkol_ts_parser_new(const char*);

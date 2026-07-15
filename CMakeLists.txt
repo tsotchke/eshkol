@@ -956,6 +956,58 @@ function(eshkol_windows_export_runtime target_name)
     target_link_options(${target_name} PRIVATE "${_def_file}")
 endfunction()
 
+# Publish the bounded agent capability ABI from executables that host the
+# standalone VM.  vm_native.c resolves optional production capabilities from
+# the current process so one bytecode runtime works with or without the agent
+# archive.  Force-loading the archive is necessary but not sufficient: ELF
+# needs --export-dynamic, Mach-O needs -export_dynamic, and PE needs an explicit
+# export table for GetProcAddress(GetModuleHandle(NULL), ...).
+function(eshkol_export_host_agent_api target_name)
+    if(NOT TARGET ${target_name})
+        message(FATAL_ERROR
+            "eshkol_export_host_agent_api called for missing target '${target_name}'")
+    endif()
+
+    if(WIN32)
+        file(STRINGS
+            "${CMAKE_CURRENT_SOURCE_DIR}/inc/eshkol/agent_capabilities.h"
+            _eshkol_agent_api_declarations
+            REGEX "^ESHKOL_AGENT_API.*eshkol_[A-Za-z0-9_]+\\(")
+        set(_eshkol_agent_exports "")
+        foreach(_eshkol_agent_declaration IN LISTS _eshkol_agent_api_declarations)
+            string(REGEX MATCH "eshkol_[A-Za-z0-9_]+"
+                _eshkol_agent_symbol "${_eshkol_agent_declaration}")
+            if(NOT "${_eshkol_agent_symbol}" STREQUAL "")
+                list(APPEND _eshkol_agent_exports "${_eshkol_agent_symbol}")
+            endif()
+        endforeach()
+        list(REMOVE_DUPLICATES _eshkol_agent_exports)
+        list(SORT _eshkol_agent_exports)
+        if(NOT _eshkol_agent_exports)
+            message(FATAL_ERROR "No host agent API symbols found for ${target_name}")
+        endif()
+
+        set(_eshkol_agent_def
+            "${CMAKE_CURRENT_BINARY_DIR}/${target_name}_agent_exports.def")
+        file(WRITE "${_eshkol_agent_def}"
+            "; Generated from inc/eshkol/agent_capabilities.h\nEXPORTS\n")
+        foreach(_eshkol_agent_symbol IN LISTS _eshkol_agent_exports)
+            file(APPEND "${_eshkol_agent_def}" "    ${_eshkol_agent_symbol}\n")
+        endforeach()
+        if(MSVC)
+            target_link_options(${target_name} PRIVATE
+                "/DEF:${_eshkol_agent_def}")
+        else()
+            target_link_options(${target_name} PRIVATE
+                "${_eshkol_agent_def}")
+        endif()
+    elseif(APPLE)
+        target_link_options(${target_name} PRIVATE "-Wl,-export_dynamic")
+    else()
+        target_link_options(${target_name} PRIVATE "-Wl,--export-dynamic")
+    endif()
+endfunction()
+
 # Debug output for troubleshooting
 if(ESHKOL_LLVM_USE_CMAKE_PACKAGE)
     message(STATUS "LLVM Package: ${LLVM_DIR}")
@@ -1159,8 +1211,36 @@ option(ESHKOL_BLAS_ENABLED "Enable BLAS acceleration for matrix operations" ON)
 if(ESHKOL_BLAS_ENABLED)
     set(BLAS_FOUND FALSE)
     set(BLAS_LIBRARIES "")
+    set(ESHKOL_BLAS_USAGE_TARGET "")
 
-    if(APPLE)
+    if(WIN32 AND ESHKOL_USING_MSVC)
+        # A MinGW OpenBLAS archive is not ABI-compatible with ClangCL/MSVC:
+        # it brings MinGW CRT and GNU OpenMP dependencies into a COFF link.
+        # Use Eigen's native, vectorized kernels instead. This pinned,
+        # header-only provider needs no extra runtime DLL or raw AOT link
+        # argument and supports both Windows x64 and ARM64.
+        include(FetchContent)
+        set(EIGEN_BUILD_TESTING OFF CACHE BOOL "Build Eigen tests" FORCE)
+        set(EIGEN_BUILD_BLAS OFF CACHE BOOL "Build Eigen BLAS library" FORCE)
+        set(EIGEN_BUILD_LAPACK OFF CACHE BOOL "Build Eigen LAPACK library" FORCE)
+        set(EIGEN_BUILD_DOC OFF CACHE BOOL "Build Eigen documentation" FORCE)
+        set(EIGEN_BUILD_DEMOS OFF CACHE BOOL "Build Eigen demos" FORCE)
+        set(EIGEN_BUILD_PKGCONFIG OFF CACHE BOOL "Build Eigen pkg-config metadata" FORCE)
+        set(EIGEN_BUILD_CMAKE_PACKAGE OFF CACHE BOOL "Build Eigen CMake package metadata" FORCE)
+        FetchContent_Declare(eshkol_eigen
+            GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+            GIT_TAG bc3b39870ecb690a623a3f49149a358b95c5781d
+            GIT_SHALLOW FALSE
+        )
+        FetchContent_MakeAvailable(eshkol_eigen)
+        if(NOT TARGET Eigen3::Eigen)
+            message(FATAL_ERROR "Pinned Eigen 5.0.1 did not define Eigen3::Eigen")
+        endif()
+        set(BLAS_FOUND TRUE)
+        set(ESHKOL_BLAS_USAGE_TARGET Eigen3::Eigen)
+        add_compile_definitions(ESHKOL_BLAS_EIGEN)
+        message(STATUS "BLAS: pinned Eigen 5.0.1 native Windows kernels")
+    elseif(APPLE)
         # Use Apple Accelerate framework (built into macOS)
         # Provides highly optimized BLAS for Apple Silicon (NEON, AMX)
         find_library(ACCELERATE_FRAMEWORK Accelerate)
@@ -1174,14 +1254,21 @@ if(ESHKOL_BLAS_ENABLED)
         # Try OpenBLAS on Linux/other platforms
         find_package(BLAS QUIET)
         if(BLAS_FOUND)
+            if(TARGET BLAS::BLAS)
+                set(BLAS_LIBRARIES BLAS::BLAS)
+                set(ESHKOL_BLAS_USAGE_TARGET BLAS::BLAS)
+            endif()
             add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
             message(STATUS "BLAS: ${BLAS_LIBRARIES}")
         else()
-            # Try pkg-config for OpenBLAS
-            pkg_check_modules(OPENBLAS QUIET openblas)
+            # Try pkg-config for OpenBLAS. Keep the imported target rather than
+            # reducing pkg-config's result to a bare library name: the target
+            # preserves include paths, concrete archives, and transitive flags.
+            pkg_check_modules(OPENBLAS QUIET IMPORTED_TARGET GLOBAL openblas)
             if(OPENBLAS_FOUND)
                 set(BLAS_FOUND TRUE)
-                set(BLAS_LIBRARIES ${OPENBLAS_LIBRARIES})
+                set(BLAS_LIBRARIES PkgConfig::OPENBLAS)
+                set(ESHKOL_BLAS_USAGE_TARGET PkgConfig::OPENBLAS)
                 add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
                 message(STATUS "BLAS: OpenBLAS via pkg-config")
             endif()
@@ -1795,6 +1882,7 @@ set(ESHKOL_NON_RUNTIME_SRC ${LIB_SRC})
 set(ESHKOL_BACKEND_RUNTIME_SRC
   lib/backend/blas_backend.cpp
   lib/backend/cpu_features.cpp
+  lib/backend/eigen_cblas_compat.cpp
   lib/backend/parallel_codegen.cpp
   lib/backend/tensor_backward.cpp
   # Shared conv2d forward kernel (eshkol_rt_conv2d) the generated code calls;
@@ -1907,6 +1995,13 @@ foreach(_eshkol_runtime_obj_target IN ITEMS
 )
     eshkol_apply_common_compile_settings(${_eshkol_runtime_obj_target})
 endforeach()
+# Object-library sources are compiled before eshkol-runtime/eshkol-static link
+# interfaces are evaluated.  Apply BLAS usage requirements to the object that
+# includes cblas.h as well as to the final archives below.
+if(ESHKOL_BLAS_USAGE_TARGET)
+    target_link_libraries(eshkol-backend-runtime-obj PRIVATE
+        ${ESHKOL_BLAS_USAGE_TARGET})
+endif()
 if(TARGET eshkol-vm-unity-obj)
     eshkol_apply_common_compile_settings(eshkol-vm-unity-obj)
     eshkol_apply_vm_limit_definitions(eshkol-vm-unity-obj)
@@ -2007,6 +2102,18 @@ endif()
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-runtime PUBLIC ${BLAS_LIBRARIES})
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
+    add_executable(eshkol-blas-provider-test
+        tests/backend/blas_provider_test.cpp)
+    target_include_directories(eshkol-blas-provider-test PRIVATE
+        ${CMAKE_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-blas-provider-test PRIVATE eshkol-runtime)
+    if(BUILD_TESTING)
+        add_test(NAME blas-provider COMMAND eshkol-blas-provider-test)
+        set_tests_properties(blas-provider PROPERTIES TIMEOUT 30)
+    endif()
 endif()
 
 # Link MLIR and StableHLO libraries if available (for full XLA backend)
@@ -3648,6 +3755,20 @@ if(ESHKOL_BUILD_AGENT_FFI)
         if(NOT TARGET yogacore)
             message(FATAL_ERROR "Pinned Yoga did not define yogacore")
         endif()
+        # Yoga disables C++ RTTI upstream. That is not ABI-safe when its static
+        # archive is force-loaded into Eshkol's exception-using C++ host on
+        # Mach-O: libc++ inline throwing helpers in Yoga then emit private
+        # std::exception typeinfo (for example std::out_of_range). Those private
+        # definitions can bind the host parser's catch sites while libc++ throws
+        # the canonical dylib type, so a matching catch aborts instead. Keep
+        # Yoga's hidden implementation visibility, but require canonical RTTI
+        # references throughout the process. The public integration remains the
+        # stable Yoga C ABI.
+        if(MSVC)
+            target_compile_options(yogacore PRIVATE /GR)
+        else()
+            target_compile_options(yogacore PRIVATE -frtti)
+        endif()
 
         set(PCRE2_AGENT_FOUND TRUE)
         set(SQLITE3_AGENT_FOUND TRUE)
@@ -4028,6 +4149,7 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     target_link_libraries(${_eshkol_vm_host_target} PRIVATE
                         "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
                 endif()
+                eshkol_export_host_agent_api(${_eshkol_vm_host_target})
             endif()
         endforeach()
 
@@ -4077,6 +4199,25 @@ if(ESHKOL_BUILD_AGENT_FFI)
                 COMMAND eshkol-agent-capabilities-test)
             set_tests_properties(agent-production-capabilities PROPERTIES
                 TIMEOUT 90)
+        endif()
+
+        # A force-loaded C++ static dependency must not emit private copies of
+        # libc++ exception RTTI.  Yoga disables RTTI upstream; Eshkol overrides
+        # that above so parser catches and library throws share the canonical
+        # std::exception typeinfo on Mach-O.  This executable deliberately
+        # references Yoga before exercising the exact out_of_range path that
+        # regressed numeric parsing, making the ABI contract observable in CI.
+        add_executable(eshkol-agent-cxx-exception-abi-test
+            tests/agent/agent_cpp_exception_abi_test.cpp)
+        target_include_directories(eshkol-agent-cxx-exception-abi-test PRIVATE
+            ${CMAKE_SOURCE_DIR}/inc)
+        target_link_libraries(eshkol-agent-cxx-exception-abi-test PRIVATE
+            eshkol-agent-ffi)
+        if(BUILD_TESTING)
+            add_test(NAME agent-cxx-exception-abi
+                COMMAND eshkol-agent-cxx-exception-abi-test)
+            set_tests_properties(agent-cxx-exception-abi PROPERTIES
+                TIMEOUT 30)
         endif()
     else()
         message(STATUS "Agent FFI modules: lib/agent/c/ not found, skipping")

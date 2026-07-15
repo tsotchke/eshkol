@@ -42,6 +42,10 @@ REQUIRED_LICENSES = (
     LicenseSpec("yoga-LICENSE.txt", "eshkol_yoga-src/LICENSE"),
 )
 
+WINDOWS_EIGEN_LICENSE = LicenseSpec(
+    "eigen-COPYING.MPL2.txt", "eshkol_eigen-src/COPYING.MPL2"
+)
+
 CURL_LICENSE = LicenseSpec("curl-COPYING.txt", "eshkol_curl-src/COPYING")
 
 SQLITE_PUBLIC_DOMAIN_NOTICE = """SQLite public-domain notice
@@ -103,6 +107,15 @@ def stage_licenses(
         _regular_nonempty(source, "curl license")
         target = licenses_dir / CURL_LICENSE.output_name
         shutil.copyfile(source, target)
+        staged.append(target)
+
+    # Native ClangCL/MSVC packages compile Eigen's vectorized kernels into the
+    # runtime. Other platforms use their system BLAS and do not fetch Eigen.
+    eigen_source = deps_dir / WINDOWS_EIGEN_LICENSE.source_relative
+    if eigen_source.is_file():
+        _regular_nonempty(eigen_source, "Eigen MPL-2.0 license")
+        target = licenses_dir / WINDOWS_EIGEN_LICENSE.output_name
+        shutil.copyfile(eigen_source, target)
         staged.append(target)
 
     for path in staged:

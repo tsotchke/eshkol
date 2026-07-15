@@ -39,6 +39,12 @@ class GeneratedArtifactValidatorTest(unittest.TestCase):
             )
             curl_source.parent.mkdir(parents=True, exist_ok=True)
             curl_source.write_text("curl license\n")
+            eigen_source = (
+                build_dir / "_deps" /
+                stage_third_party_licenses.WINDOWS_EIGEN_LICENSE.source_relative
+            )
+            eigen_source.parent.mkdir(parents=True, exist_ok=True)
+            eigen_source.write_text("Eigen MPL-2.0 license\n")
             package_lib = package_dir / "lib"
             package_lib.mkdir(parents=True)
             (package_lib / "eshkol-agent-curl.a").write_bytes(b"archive")
@@ -47,11 +53,14 @@ class GeneratedArtifactValidatorTest(unittest.TestCase):
             )
             self.assertEqual(
                 len(staged),
-                len(stage_third_party_licenses.REQUIRED_LICENSES) + 3,
+                len(stage_third_party_licenses.REQUIRED_LICENSES) + 4,
             )
             self.assertTrue((package_dir / "THIRD_PARTY_NOTICES.md").is_file())
             self.assertTrue((package_dir / "licenses" / "sqlite-PUBLIC-DOMAIN.txt").is_file())
             self.assertTrue((package_dir / "licenses" / "curl-COPYING.txt").is_file())
+            self.assertTrue(
+                (package_dir / "licenses" / "eigen-COPYING.MPL2.txt").is_file()
+            )
 
     def test_third_party_license_staging_rejects_missing_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
