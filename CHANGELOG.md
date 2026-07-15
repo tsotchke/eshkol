@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.3-evolve] - 2026-07-13 (release candidate; untagged)
+## [1.3.3-evolve] - 2026-07-15 (release candidate; untagged)
 
 An evolve release over v1.3.2-evolve that completes the Moonlab quantum
 trajectory, closes native/VM semantic gaps, makes every declared language
@@ -29,8 +29,8 @@ gate green.  This section describes an **untagged release candidate**; no
   200/200, H2 VQE agrees with the exact energy to `4.4e-16`, and the CHSH gate
   measures `S ~= 2.86`. (#261, #268-#270, #272-#273)
 - **Executable language-surface completion.** Deterministic native and VM
-  probes now execute every one of the 1,056 declared language-surface rows.
-  The coverage policy is ratcheted to **1056/1056 (100%)**, with no token-only,
+  probes now execute every one of the 1,057 declared language-surface rows.
+  The coverage policy is ratcheted to **1057/1057 (100%)**, with no token-only,
   unreachable, or dead-code credit and zero uncovered high-risk rows. (#258,
   #274 and this release candidate)
 - **Production architecture evidence.** The ICC architecture model now checks
@@ -76,11 +76,11 @@ gate green.  This section describes an **untagged release candidate**; no
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **71/71**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **77/77**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
-- Executable language coverage: **1056/1056 (100%)**; WebAssembly import glue:
+- Executable language coverage: **1057/1057 (100%)**; WebAssembly import glue:
   **101/101 imports provided**.
 - Taylor monomorphization equivalence: **441/441 JIT + 441/441 AOT**, bit-exact
   through order eight.
