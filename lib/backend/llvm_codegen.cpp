@@ -13486,6 +13486,7 @@ private:
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
         if (func_name == "ptr->string") return codegenPtrToString(op);
+        if (func_name == "ptr->string-n") return codegenPtrToStringN(op);
         if (func_name == "make-string") return strio_->makeString(op);
         // R7RS: (string char ...) — construct string from character arguments
         if (func_name == "string" && op->call_op.num_vars > 0) {
@@ -22782,6 +22783,106 @@ private:
         result->addIncoming(empty_str, null_bb);
         result->addIncoming(new_str, valid_bb);
 
+        return tagged_->packHeapPtr(result);
+    }
+
+    // ptr->string-n: Copy exactly N bytes from a raw C pointer into an Eshkol
+    // string. Unlike ptr->string, this does not call strlen(), so embedded NUL
+    // bytes are preserved. This is the required boundary for binary-safe FFI
+    // APIs such as HTTP responses that return a pointer and an explicit length.
+    Value* codegenPtrToStringN(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_warn("ptr->string-n requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue length_tv = codegenTypedAST(&op->call_op.variables[1]);
+        if (!ptr_tv.llvm_value || !length_tv.llvm_value) return nullptr;
+
+        Value* ptr_tagged = typedValueToTaggedValue(ptr_tv);
+        Value* length_tagged = typedValueToTaggedValue(length_tv);
+        Value* ptr_int = unpackInt64FromTaggedValue(ptr_tagged);
+        Value* raw_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* length = unpackInt64FromTaggedValue(length_tagged);
+
+        Function* current_fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* negative_bb =
+            BasicBlock::Create(*context, "ptr_n_negative", current_fn);
+        BasicBlock* dispatch_bb =
+            BasicBlock::Create(*context, "ptr_n_dispatch", current_fn);
+        BasicBlock* empty_bb =
+            BasicBlock::Create(*context, "ptr_n_empty", current_fn);
+        BasicBlock* valid_bb =
+            BasicBlock::Create(*context, "ptr_n_valid", current_fn);
+        BasicBlock* merge_bb =
+            BasicBlock::Create(*context, "ptr_n_merge", current_fn);
+
+        Value* is_negative = builder->CreateICmpSLT(
+            length, ConstantInt::get(int64_type, 0), "ptr_n_is_negative");
+        builder->CreateCondBr(is_negative, negative_bb, dispatch_bb);
+
+        builder->SetInsertPoint(negative_bb);
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                                          "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+        Function* make_exc_func =
+            module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(
+                builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(
+                make_type, Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", module.get());
+        }
+        Value* error_msg =
+            codegenString("ptr->string-n: length must be nonnegative");
+        Value* exc_type = ConstantInt::get(
+            builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        Value* exception =
+            builder->CreateCall(make_exc_func, {exc_type, error_msg});
+        builder->CreateCall(raise_func, {exception});
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(dispatch_bb);
+        Value* is_null = builder->CreateICmpEQ(
+            ptr_int, ConstantInt::get(int64_type, 0), "ptr_n_is_null");
+        Value* is_empty = builder->CreateICmpEQ(
+            length, ConstantInt::get(int64_type, 0), "ptr_n_is_empty");
+        builder->CreateCondBr(builder->CreateOr(is_null, is_empty),
+                              empty_bb, valid_bb);
+
+        builder->SetInsertPoint(empty_bb);
+        Value* empty_arena =
+            builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* empty_str = builder->CreateCall(
+            mem->getArenaAllocateStringWithHeader(),
+            {empty_arena, ConstantInt::get(int64_type, 0)});
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(valid_bb);
+        Value* arena_ptr =
+            builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* new_str = builder->CreateCall(
+            mem->getArenaAllocateStringWithHeader(), {arena_ptr, length});
+        builder->CreateMemCpy(new_str, MaybeAlign(1), raw_ptr,
+                              MaybeAlign(1), length);
+        Value* terminator = builder->CreateGEP(
+            builder->getInt8Ty(), new_str, length, "ptr_n_terminator");
+        builder->CreateStore(ConstantInt::get(builder->getInt8Ty(), 0),
+                             terminator);
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(builder->getPtrTy(), 2);
+        result->addIncoming(empty_str, empty_bb);
+        result->addIncoming(new_str, valid_bb);
         return tagged_->packHeapPtr(result);
     }
 

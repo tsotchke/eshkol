@@ -27,6 +27,11 @@ const char* eshkol_runtime_ffi_surface_cstring(void) {
     return "ffi-surface";
 }
 
+const char* eshkol_runtime_ffi_surface_bytes(void) {
+    static const char bytes[] = {'a', '\0', 'b', '\0'};
+    return bytes;
+}
+
 extern void* arena_allocate_string_with_header(void* arena, uint64_t byte_len);
 
 /** Copy a temporary C buffer into Eshkol's canonical header-tagged string shape. */

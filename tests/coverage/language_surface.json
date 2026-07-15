@@ -14,18 +14,18 @@
     }
   },
   "counts": {
-    "builtins_total": 988,
+    "builtins_total": 989,
     "builtins_in_native_closure_table": 427,
     "builtins_in_vm_table": 660,
-    "builtins_in_llvm_aot_dispatch": 749,
-    "builtins_aot_only": 283,
+    "builtins_in_llvm_aot_dispatch": 750,
+    "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 112,
     "prelude": 16
   },
   "builtins_by_category": {
-    "ffi_system": 292,
+    "ffi_system": 293,
     "tensor_ad": 221,
     "numeric": 86,
     "predicate": 70,
@@ -7435,6 +7435,15 @@
     },
     {
       "name": "ptr->string",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "ffi_system"
+    },
+    {
+      "name": "ptr->string-n",
       "ids": [],
       "arity": null,
       "backends": [

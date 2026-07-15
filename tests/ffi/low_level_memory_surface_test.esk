@@ -4,6 +4,7 @@
 
 (extern-var i64 ffi-probe :extern-symbol eshkol_runtime_ffi_surface_probe)
 (extern ptr ffi-cstring :real eshkol_runtime_ffi_surface_cstring)
+(extern ptr ffi-bytes :real eshkol_runtime_ffi_surface_bytes)
 
 (define passed 0)
 (define failed 0)
@@ -23,6 +24,18 @@
        (ptr->usize (usize->ptr (ptr->usize probe-ptr))))
 (check "ptr-add zero" (ptr->usize probe-ptr) (ptr->usize (ptr-add probe-ptr 0)))
 (check "ptr->string copies C text" "ffi-surface" (ptr->string (ffi-cstring)))
+(define embedded-nul (ptr->string-n (ffi-bytes) 3))
+(check "ptr->string-n preserves explicit byte length"
+       3 (string-byte-length embedded-nul))
+(check "ptr->string-n preserves embedded NUL"
+       0 (char->integer (string-ref embedded-nul 1)))
+(check "ptr->string-n preserves bytes after embedded NUL"
+       #\b (string-ref embedded-nul 2))
+(check "ptr->string-n rejects negative lengths"
+       #t
+       (guard (exception (#t #t))
+         (ptr->string-n (ffi-bytes) -1)
+         #f))
 
 (volatile-store! i64 probe-ptr 10)
 (check "volatile load/store" 10 (volatile-load i64 probe-ptr))
