@@ -2,11 +2,11 @@
 
 **Candidate branch:** `master` plus the release-finalization change set
 **Release line:** `v1.3.x-evolve`
-**Verified hardening baseline:** `502b5a17c180a5e0281be2b339049a783b3e4066`
-**Baseline GitHub Actions:** run `29305913676`, **15/15 jobs green**
+**Verified hardening baseline:** `4055ff0314eb6d39fc72116d85a10ba2ac995ecd`
+**Baseline GitHub Actions:** run `29410550798`, **15/15 jobs green**
 **Candidate head:** the final merged master commit containing this report
 **Published base tag:** `v1.3.2-evolve` (`8443ddae`)
-**Candidate date:** 2026-07-14
+**Candidate date:** 2026-07-15
 **Tag status:** **untagged** — publishing any tag remains a maintainer action.
 
 This report is the release contract for the untagged v1.3.3-evolve candidate.
@@ -31,13 +31,13 @@ No release tag is authorized or created by this campaign.
 | Gate | Result |
 |---|---|
 | Aggregate test harness | **44/44 suites, 716/716 tests**, zero failed/skipped suites |
-| CTest | **71/71** |
+| CTest | **77/77** |
 | SICP full-book | **88/88** JIT+AOT probes, zero xfail/XPASS |
 | Chibi R7RS reference differential | **34/34 AGREE**, zero divergence/error |
 | Generative multi-oracle differential | **127 programs**, Chibi/JIT/AOT-O0/AOT-O2/VM, zero divergence |
 | Native/VM parity | **68/68** source+ESKB probes; unsupported paths fail explicitly |
 | VM extended hosted surface | **53/53** |
-| Executable language surface | **1056/1056 (100%)**, zero uncovered/high-risk rows |
+| Executable language surface | **1057/1057 (100%)**, zero uncovered/high-risk rows |
 | Taylor monomorphization equivalence | **441/441 JIT + 441/441 AOT**, bit-exact through order 8 |
 | Poincare manifold invariant | **17/17** analytic checks |
 | Automatic differentiation | **54/54** aggregate AD suite plus adversarial finite-difference gates |
@@ -62,7 +62,7 @@ default build remains dependency-light.
 The language manifest is no longer aspirational. Every declared row must be
 executed by a deterministic test and runtime trace. Token sightings, parser
 recognition, unreachable branches, and dead code earn no credit. The resulting
-ratchet is 1056/1056 and cannot silently regress below 100%.
+ratchet is 1057/1057 and cannot silently regress below 100%.
 
 ### Honest backend parity
 
