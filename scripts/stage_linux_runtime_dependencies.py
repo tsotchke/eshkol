@@ -155,11 +155,22 @@ def _package_copyright(package: str) -> Path:
     fail(f"Debian package copyright file is unavailable: {package}")
 
 
-def _assert_packaged_runpath(binary: Path) -> None:
+def _ensure_packaged_runpath(binary: Path) -> None:
+    existing = _run(
+        ["patchelf", "--print-rpath", str(binary)],
+        f"read existing RUNPATH for {binary}",
+    ).strip()
+    entries = [entry for entry in existing.split(":") if entry and entry != REQUIRED_RUNPATH]
+    runpath = ":".join((REQUIRED_RUNPATH, *entries))
+    _run(
+        ["patchelf", "--set-rpath", runpath, str(binary)],
+        f"set relocatable RUNPATH on {binary}",
+    )
     dynamic = _run(["readelf", "-d", str(binary)], f"inspect RUNPATH for {binary}")
-    if REQUIRED_RUNPATH not in dynamic:
+    runpath_match = re.search(r"\((?:RUNPATH|RPATH)\).*\[(.*?)\]", dynamic)
+    if not runpath_match or runpath_match.group(1).split(":")[0] != REQUIRED_RUNPATH:
         fail(
-            f"packaged binary lacks relocatable codec RUNPATH {REQUIRED_RUNPATH}: "
+            f"packaged binary does not prefer relocatable codec RUNPATH {REQUIRED_RUNPATH}: "
             f"{binary}"
         )
 
@@ -183,7 +194,7 @@ def stage_runtime_dependencies(build_dir: Path, package_dir: Path) -> dict[str, 
     for binary in binaries:
         if binary.is_symlink() or not binary.is_file() or binary.stat().st_size == 0:
             fail(f"packaged Linux executable is missing, empty, or symlinked: {binary}")
-        _assert_packaged_runpath(binary)
+        _ensure_packaged_runpath(binary)
 
     all_dependencies: dict[str, Path] = {}
     for binary in binaries:
