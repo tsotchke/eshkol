@@ -83,9 +83,25 @@ int main(int argc, char** argv) {
     if (!fs::exists(package_verifier_path)) {
         return fail("verify_release_package.py not found under source root");
     }
+    const fs::path repl_jit_path =
+        source_root / "lib" / "repl" / "repl_jit.cpp";
+    if (!fs::exists(repl_jit_path)) {
+        return fail("repl_jit.cpp not found under source root");
+    }
+    const fs::path runtime_def_path =
+        source_root / "cmake" / "gen_runtime_def.cmake";
+    const fs::path windows_export_verifier_path =
+        source_root / "scripts" / "verify_windows_runtime_exports.py";
+    if (!fs::exists(runtime_def_path) || !fs::exists(windows_export_verifier_path)) {
+        return fail("Windows runtime export contracts not found under source root");
+    }
 
     const std::string workflow = read_file(workflow_path);
     const std::string package_verifier = read_file(package_verifier_path);
+    const std::string repl_jit = read_file(repl_jit_path);
+    const std::string runtime_def = read_file(runtime_def_path);
+    const std::string windows_export_verifier =
+        read_file(windows_export_verifier_path);
     bool ok = true;
 
     ok = ok &&
@@ -204,6 +220,44 @@ int main(int argc, char** argv) {
          expect_contains(package_verifier,
                          "cache-disabled package JIT reported a module-loading failure",
                          "package verifier fails closed on JIT module diagnostics");
+
+    ok = ok &&
+         expect_contains(repl_jit,
+                         "static void configure_jit_target_machine_builder(",
+                         "LLJIT and cached stdlib emission share one target configuration") &&
+         expect_contains(repl_jit,
+                         "? llvm::CodeModel::Small\n                             : llvm::CodeModel::Large",
+                         "Windows ARM64 selects the SEH-correct Small code model") &&
+         expect_contains(repl_jit,
+                         "triple.getObjectFormat() == llvm::Triple::COFF",
+                         "JIT code-model exception is restricted to COFF") &&
+         expect_contains(repl_jit,
+                         "builder.getOptions().FunctionSections = true;",
+                         "AArch64 JIT emission isolates functions for same-section veneers") &&
+         expect_contains(repl_jit,
+                         "builder.getOptions().DataSections = true;",
+                         "AArch64 JIT emission isolates data for safe pruning") &&
+         expect_contains(repl_jit, "stdlib-jit-v3-",
+                         "stdlib JIT object cache version changes with target configuration");
+
+    if (count_occurrences(repl_jit,
+                          "configure_jit_target_machine_builder(*") != 2) {
+        std::cerr << "LLJIT and cached stdlib object emission must both use the shared target configuration"
+                  << std::endl;
+        ok = false;
+    }
+
+    ok = ok &&
+         expect_contains(repl_jit, "ADD_DATA_SYMBOL(__ad_tower_active);",
+                         "JIT explicitly registers Taylor-tower active state") &&
+         expect_contains(repl_jit, "ADD_DATA_SYMBOL(__ad_tower_order);",
+                         "JIT explicitly registers Taylor-tower order state") &&
+         expect_contains(runtime_def, "__ad_tower_(active|order)$",
+                         "bounded PE export generator includes Taylor-tower data") &&
+         expect_contains(windows_export_verifier, "\"__ad_tower_active\"",
+                         "Windows package export verifier requires Taylor active state") &&
+         expect_contains(windows_export_verifier, "\"__ad_tower_order\"",
+                         "Windows package export verifier requires Taylor order state");
 
     const std::vector<ReleaseAsset> expected_assets = {
         {"linux-x64-lite", "tar.gz"},

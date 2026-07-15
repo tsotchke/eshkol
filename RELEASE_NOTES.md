@@ -1,5 +1,12 @@
 # Eshkol v1.3.3-evolve — Release Notes
 
+Windows ARM64 packages now use a single platform-correct JIT target contract
+for both live LLJIT compilation and the persistent stdlib object cache. This
+avoids LLVM 21's invalid AArch64-COFF Large-model SEH metadata while preserving
+unbounded call reach through per-function sections and JITLink veneers.
+Windows packages also publish and explicitly register the Taylor-tower AD state
+globals required by relocated cache-disabled JIT modules.
+
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
 
@@ -11,7 +18,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 77/77; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 73/73; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports
