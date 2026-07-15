@@ -17,7 +17,7 @@
     "builtins_total": 988,
     "builtins_in_native_closure_table": 427,
     "builtins_in_vm_table": 660,
-    "builtins_in_llvm_aot_dispatch": 738,
+    "builtins_in_llvm_aot_dispatch": 749,
     "builtins_aot_only": 283,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -2222,7 +2222,8 @@
       "arity": 0,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -2726,7 +2727,8 @@
       "arity": 1,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -4422,7 +4424,8 @@
       "arity": 1,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -4434,7 +4437,8 @@
       "arity": 1,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -5046,7 +5050,8 @@
       "arity": 1,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11080,7 +11085,8 @@
       "arity": 2,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11092,7 +11098,8 @@
       "arity": 3,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11104,7 +11111,8 @@
       "arity": 0,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11116,7 +11124,8 @@
       "arity": 1,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11128,7 +11137,8 @@
       "arity": 2,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
@@ -11140,7 +11150,8 @@
       "arity": 3,
       "backends": [
         "native",
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "ffi_system"
     },
