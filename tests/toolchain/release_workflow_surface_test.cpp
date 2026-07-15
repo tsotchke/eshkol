@@ -85,8 +85,10 @@ int main(int argc, char** argv) {
     }
     const fs::path repl_jit_path =
         source_root / "lib" / "repl" / "repl_jit.cpp";
-    if (!fs::exists(repl_jit_path)) {
-        return fail("repl_jit.cpp not found under source root");
+    const fs::path jit_target_config_path =
+        source_root / "lib" / "repl" / "jit_target_config.h";
+    if (!fs::exists(repl_jit_path) || !fs::exists(jit_target_config_path)) {
+        return fail("JIT target configuration sources not found under source root");
     }
     const fs::path runtime_def_path =
         source_root / "cmake" / "gen_runtime_def.cmake";
@@ -99,6 +101,7 @@ int main(int argc, char** argv) {
     const std::string workflow = read_file(workflow_path);
     const std::string package_verifier = read_file(package_verifier_path);
     const std::string repl_jit = read_file(repl_jit_path);
+    const std::string jit_target_config = read_file(jit_target_config_path);
     const std::string runtime_def = read_file(runtime_def_path);
     const std::string windows_export_verifier =
         read_file(windows_export_verifier_path);
@@ -237,8 +240,23 @@ int main(int argc, char** argv) {
          expect_contains(repl_jit,
                          "builder.getOptions().DataSections = true;",
                          "AArch64 JIT emission isolates data for safe pruning") &&
-         expect_contains(repl_jit, "stdlib-jit-v3-",
-                         "stdlib JIT object cache version changes with target configuration");
+         expect_contains(repl_jit, "stdlib-jit-v4-",
+                         "stdlib JIT object cache version changes with external-data lowering") &&
+         expect_contains(repl_jit,
+                         "prepare_jit_module_for_target(*module, jit_->getTargetTriple());",
+                         "live REPL modules receive the Windows ARM64 data-reach contract") &&
+         expect_contains(repl_jit,
+                         "prepare_jit_module_for_target(\n                                    **emit_mod, (*emit_tm)->getTargetTriple());",
+                         "cached stdlib object emission receives the data-reach contract") &&
+         expect_contains(repl_jit,
+                         "prepare_jit_module_for_target(\n                    *stdlib_module, jit_->getTargetTriple());",
+                         "IR stdlib loading receives the data-reach contract") &&
+         expect_contains(jit_target_config,
+                         "global.setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);",
+                         "Windows ARM64 external data uses RuntimeDyld COFF import cells") &&
+         expect_contains(jit_target_config,
+                         "if (!global.isDeclaration()",
+                         "JIT-owned data definitions are not rewritten as imports");
 
     if (count_occurrences(repl_jit,
                           "configure_jit_target_machine_builder(*") != 2) {

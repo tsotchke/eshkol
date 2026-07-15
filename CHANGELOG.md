@@ -76,7 +76,7 @@ gate green.  This section describes an **untagged release candidate**; no
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **73/73**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **74/74**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
@@ -94,12 +94,16 @@ gate green.  This section describes an **untagged release candidate**; no
   through the bounded PE runtime table, and required by the package validator.
   This prevents cache-disabled x64/ARM64 package runs from failing module
   materialization and cascading into duplicate initializer diagnostics.
-- **Windows ARM64 package JIT unwind metadata is valid.** Live LLJIT and the
-  persistent stdlib object cache now share one target-machine contract: the
-  SEH-correct Small code model, per-function/data COFF sections, and Eshkol's
-  Branch26 JITLink veneers. LLVM 21's AArch64-COFF Large model emitted invalid
-  unwind metadata and rejected large stdlib initializer chunks during release
-  package verification.
+- **Windows ARM64 package JIT unwind metadata and external-data reach are
+  correct.** Live LLJIT and the persistent stdlib object cache now share one
+  target-machine contract: the SEH-correct Small code model, per-function/data
+  COFF sections, absolute RuntimeDyld call stubs, and import-address cells for
+  host data. LLVM 21's AArch64-COFF Large model emitted invalid unwind metadata
+  for probed frames, while direct Small-model `PAGEBASE_REL21` references could
+  truncate when host globals and JIT allocations were more than 4 GiB apart.
+  External declarations are now lowered through `__imp_` cells before every
+  live and cached-module codegen path, preserving stack probing, exceptions,
+  cacheability, and full 64-bit data reach.
 
 - **Windows release-package links are relocatable.** AOT and persistent-cache
   links no longer replay the build runner's absolute compiler-rt or LLVM archive

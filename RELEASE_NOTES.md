@@ -3,7 +3,11 @@
 Windows ARM64 packages now use a single platform-correct JIT target contract
 for both live LLJIT compilation and the persistent stdlib object cache. This
 avoids LLVM 21's invalid AArch64-COFF Large-model SEH metadata while preserving
-unbounded call reach through per-function sections and JITLink veneers.
+unbounded call reach through RuntimeDyld stubs and full host-data reach through
+nearby COFF import-address cells. External data declarations are lowered
+through `__imp_` before live and cached-module codegen, preventing truncated
+Small-model `PAGEBASE_REL21` references without weakening stack probing,
+exceptions, or cacheability.
 Windows packages also publish and explicitly register the Taylor-tower AD state
 globals required by relocated cache-disabled JIT modules.
 
@@ -18,7 +22,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 73/73; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 74/74; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports

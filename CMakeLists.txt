@@ -3220,6 +3220,25 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ta
     add_test(NAME target_intrinsic_test COMMAND target_intrinsic_test)
 endif()
 
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/jit_aarch64_coff_target_config_test.cpp")
+    add_executable(jit_aarch64_coff_target_config_test
+        tests/toolchain/jit_aarch64_coff_target_config_test.cpp)
+    target_compile_features(jit_aarch64_coff_target_config_test PRIVATE cxx_std_17)
+    target_include_directories(jit_aarch64_coff_target_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_aarch64_coff_target_config_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_aarch64_coff_target_config_test PRIVATE
+            ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_aarch64_coff_target_config_test PRIVATE
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME jit_aarch64_coff_target_config_test
+        COMMAND jit_aarch64_coff_target_config_test)
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/decl_attribute_test.cpp")
     add_executable(decl_attribute_test tests/toolchain/decl_attribute_test.cpp)
     target_compile_features(decl_attribute_test PRIVATE cxx_std_17)
