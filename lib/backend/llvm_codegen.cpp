@@ -38844,7 +38844,16 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
         }
 
-        append_host_llvm_link_args(link_args);
+        // The split runtime archive intentionally has no LLVM dependencies.
+        // Keep the compiler's LLVM closure only for the legacy monolithic
+        // eshkol-static fallback; otherwise installed packages inherit
+        // absolute build-machine SDK paths and are not relocatable.
+        const bool uses_legacy_compiler_archive =
+            runtime_lib_path.filename() ==
+            eshkol::platform::static_library_name("eshkol-static");
+        if (uses_legacy_compiler_archive) {
+            append_host_llvm_link_args(link_args);
+        }
 
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {

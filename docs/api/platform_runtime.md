@@ -163,11 +163,14 @@ Candidate temporary file path.
 std::string cxx_compiler();
 ```
 
-Get the path to the C++ compiler used to build the host toolchain.
+Resolve the C++ compiler used to link generated programs.
 
 **Returns**
 
-Absolute path to the compiler executable baked in at build time (ESHKOL_HOST_CXX_COMPILER), with forward slashes normalized to backslashes on Windows when the path is drive-letter rooted.
+Resolution uses the runtime `ESHKOL_CXX_COMPILER` override first, then the
+build-time compiler when it still exists, PATH, and platform-standard LLVM
+installation roots. The result is a driver path or the platform's default
+`clang++`/`c++` command name.
 
 ### `llc_executable`
 

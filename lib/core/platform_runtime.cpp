@@ -55,6 +55,72 @@ std::filesystem::path canonical_if_exists(const std::filesystem::path& path) {
     return canonical;
 }
 
+/** @brief Resolve a regular executable without trusting builder-only paths. */
+std::filesystem::path executable_if_available(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) {
+        return {};
+    }
+#ifndef _WIN32
+    if (access(path.c_str(), X_OK) != 0) {
+        return {};
+    }
+#endif
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    return ec ? path : canonical;
+}
+
+/** @brief Search PATH for an executable name. */
+std::filesystem::path executable_on_path(std::string_view name) {
+    const char* raw_path = std::getenv("PATH");
+    if (!raw_path || !*raw_path || name.empty()) {
+        return {};
+    }
+
+    std::stringstream entries(raw_path);
+    std::string entry;
+    constexpr char separator =
+#ifdef _WIN32
+        ';';
+#else
+        ':';
+#endif
+    while (std::getline(entries, entry, separator)) {
+        if (entry.size() >= 2 && entry.front() == '"' && entry.back() == '"') {
+            entry = entry.substr(1, entry.size() - 2);
+        }
+        std::filesystem::path directory =
+            entry.empty() ? current_directory() : std::filesystem::path(entry);
+        auto candidate = executable_if_available(directory / std::string(name));
+        if (!candidate.empty()) {
+            return candidate;
+        }
+#ifdef _WIN32
+        if (std::filesystem::path(name).extension().empty()) {
+            candidate = executable_if_available(directory / (std::string(name) + ".exe"));
+            if (!candidate.empty()) {
+                return candidate;
+            }
+        }
+#endif
+    }
+    return {};
+}
+
+std::string normalize_cxx_driver_path(std::string compiler) {
+#ifdef _WIN32
+    if (compiler.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(compiler[0])) &&
+        compiler[1] == ':' && compiler[2] == '/') {
+        std::replace(compiler.begin(), compiler.end(), '/', '\\');
+    }
+#endif
+    return compiler;
+}
+
 #ifdef _WIN32
 /** @brief (Windows) Convert a UTF-8 string to UTF-16 for Win32 wide APIs.
  *
@@ -351,22 +417,55 @@ std::filesystem::path make_temp_path(std::string_view stem, std::string_view ext
     return temp_dir / (std::string(stem) + std::string(extension));
 }
 
-/** @brief Return the configured host C++ compiler path (ESHKOL_HOST_CXX_COMPILER).
+/** @brief Resolve the C++ driver used to link generated programs.
  *
- * On Windows, converts a leading drive-letter forward-slash path
- * (e.g. "C:/...") to backslashes for native tool compatibility. */
+ * An explicit ESHKOL_CXX_COMPILER runtime override wins. Otherwise the exact
+ * build-time compiler is retained when it still exists, then PATH and standard
+ * LLVM installation roots are searched. This keeps installed packages
+ * relocatable without weakening reproducible build-tree links. */
 std::string cxx_compiler() {
-#ifdef _WIN32
-    std::string compiler = ESHKOL_HOST_CXX_COMPILER;
-    if (compiler.size() >= 3 &&
-        std::isalpha(static_cast<unsigned char>(compiler[0])) &&
-        compiler[1] == ':' &&
-        compiler[2] == '/') {
-        std::replace(compiler.begin(), compiler.end(), '/', '\\');
+    if (const char* override_compiler = std::getenv("ESHKOL_CXX_COMPILER")) {
+        if (*override_compiler) {
+            return normalize_cxx_driver_path(override_compiler);
+        }
     }
-    return compiler;
+
+    const std::string configured = normalize_cxx_driver_path(ESHKOL_HOST_CXX_COMPILER);
+    if (auto compiler = executable_if_available(configured); !compiler.empty()) {
+        return compiler.string();
+    }
+
+#ifdef _WIN32
+    for (const std::string_view name : {"clang++-21.exe", "clang++.exe"}) {
+        if (auto compiler = executable_on_path(name); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    for (const char* root_name : {"LLVM_HOME", "LLVM_ROOT"}) {
+        if (const char* root = std::getenv(root_name); root && *root) {
+            candidates.emplace_back(std::filesystem::path(root) / "bin" / "clang++.exe");
+        }
+    }
+    if (const char* program_files = std::getenv("ProgramFiles"); program_files && *program_files) {
+        candidates.emplace_back(
+            std::filesystem::path(program_files) / "LLVM" / "bin" / "clang++.exe");
+    }
+    for (const auto& candidate : candidates) {
+        if (auto compiler = executable_if_available(candidate); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+    return "clang++.exe";
 #else
-    return ESHKOL_HOST_CXX_COMPILER;
+    const std::string versioned = "clang++-" + std::to_string(ESHKOL_HOST_LLVM_MAJOR);
+    for (const auto& name : {versioned, std::string("clang++"), std::string("c++")}) {
+        if (auto compiler = executable_on_path(name); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+    return "c++";
 #endif
 }
 

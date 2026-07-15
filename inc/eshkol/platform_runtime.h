@@ -105,10 +105,14 @@ bool stdout_supports_utf8();
 std::filesystem::path make_temp_path(std::string_view stem, std::string_view extension = ".tmp");
 
 /**
- * @brief Get the path to the C++ compiler used to build the host toolchain.
- * @return Absolute path to the compiler executable baked in at build time
- *         (ESHKOL_HOST_CXX_COMPILER), with forward slashes normalized to
- *         backslashes on Windows when the path is drive-letter rooted.
+ * @brief Resolve the C++ compiler used to link generated programs.
+ *
+ * Resolution order is the runtime `ESHKOL_CXX_COMPILER` override, the
+ * build-time compiler when it still exists, PATH, and platform-standard LLVM
+ * installation roots. This makes installed packages independent of the build
+ * machine's filesystem while retaining exact build-tree toolchains.
+ *
+ * @return Driver path or the platform's default clang++/c++ command name.
  */
 std::string cxx_compiler();
 
