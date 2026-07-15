@@ -560,6 +560,91 @@ function Invoke-ProcessCapture {
     }
 }
 
+function Invoke-JitCacheSuite {
+    Write-Section "Eshkol Persistent JIT Cache Test"
+    $suite = New-SuiteState "jit_cache"
+    $testRoot = Join-Path $script:TempRoot ("jit-cache-" + [Guid]::NewGuid().ToString("N"))
+    $cacheDir = Join-Path $testRoot "cache"
+    $sourcePath = Join-Path $testRoot "cache-smoke.esk"
+
+    New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+    '(display "jit-cache-windows") (newline)' |
+        Set-Content -LiteralPath $sourcePath -Encoding ASCII
+
+    $savedCacheDir = [Environment]::GetEnvironmentVariable("ESHKOL_JIT_CACHE_DIR", "Process")
+    $savedCacheTrace = [Environment]::GetEnvironmentVariable("ESHKOL_JIT_CACHE_TRACE", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ESHKOL_JIT_CACHE_DIR", $cacheDir, "Process")
+        [Environment]::SetEnvironmentVariable("ESHKOL_JIT_CACHE_TRACE", "1", "Process")
+
+        $cold = Invoke-ProcessCapture `
+            -FilePath $script:EshkolRun `
+            -Arguments @("-r", $sourcePath) `
+            -WorkingDirectory $script:BuildDir `
+            -TimeoutSec $script:CompileTimeoutSec
+        $coldFailed = $cold.Output -match '\[jit-cache\] (compile-failed|compile-timeout|store-failed)'
+        if ($cold.ExitCode -eq 0 -and
+            $cold.StdOut.Trim() -eq "jit-cache-windows" -and
+            $cold.StdErr -match '\[jit-cache\] miss ' -and
+            $cold.StdErr -match '\[jit-cache\] store ' -and
+            -not $coldFailed) {
+            Format-TestStatus "cold cache store" "PASS" Green
+            Add-Pass $suite
+        } else {
+            Format-TestStatus "cold cache store" "FAIL" Red
+            Show-ProcessFailureDetails -TestName "cold cache store" -Phase "runtime" -Result $cold
+            Add-Fail $suite "cold cache store"
+        }
+
+        $warm = Invoke-ProcessCapture `
+            -FilePath $script:EshkolRun `
+            -Arguments @("-r", $sourcePath) `
+            -WorkingDirectory $script:BuildDir `
+            -TimeoutSec $script:CompileTimeoutSec
+        $warmFailed = $warm.Output -match '\[jit-cache\] (compile-failed|compile-timeout|store-failed)'
+        if ($warm.ExitCode -eq 0 -and
+            $warm.StdOut.Trim() -eq "jit-cache-windows" -and
+            $warm.StdErr -match '\[jit-cache\] hit ' -and
+            -not $warmFailed) {
+            Format-TestStatus "warm cache hit" "PASS" Green
+            Add-Pass $suite
+        } else {
+            Format-TestStatus "warm cache hit" "FAIL" Red
+            Show-ProcessFailureDetails -TestName "warm cache hit" -Phase "runtime" -Result $warm
+            Add-Fail $suite "warm cache hit"
+        }
+
+        $cacheExecutables = @(
+            Get-ChildItem -LiteralPath $cacheDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '^run-[0-9a-f]+\.exe$' }
+        )
+        $orphanTemps = @(
+            Get-ChildItem -LiteralPath $cacheDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match '\.tmp-' }
+        )
+        if ($cacheExecutables.Count -eq 1 -and $orphanTemps.Count -eq 0) {
+            Format-TestStatus "cache artifact publication" "PASS" Green
+            Add-Pass $suite
+        } else {
+            Format-TestStatus "cache artifact publication" "FAIL" Red
+            $entryNames = @(
+                Get-ChildItem -LiteralPath $cacheDir -File -ErrorAction SilentlyContinue |
+                    ForEach-Object { $_.Name }
+            )
+            Add-Fail $suite ("expected one final .exe and no temporary artifacts; final={0}, temp={1}, entries={2}" -f $cacheExecutables.Count, $orphanTemps.Count, ($entryNames -join ','))
+        }
+    } finally {
+        [Environment]::SetEnvironmentVariable("ESHKOL_JIT_CACHE_DIR", $savedCacheDir, "Process")
+        [Environment]::SetEnvironmentVariable("ESHKOL_JIT_CACHE_TRACE", $savedCacheTrace, "Process")
+        if ([System.IO.Directory]::Exists($testRoot)) {
+            Remove-Item -LiteralPath $testRoot -Recurse -Force
+        }
+    }
+
+    Show-SuiteSummary $suite
+    return $suite
+}
+
 function Invoke-EshkolCompile {
     param(
         [string]$EshkolRun,
@@ -1493,6 +1578,7 @@ Write-Host ""
 $suiteResults = @()
 switch ($Mode) {
     "all" {
+        $suiteResults += Invoke-JitCacheSuite
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Features Test Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:"
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "stdlib" -Title "Eshkol Stdlib Test Suite" -Patterns @("tests/stdlib/*.esk") -RuntimeErrorRegex "error:"
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "list" -Title "Eshkol List Test Suite" -Patterns @("tests/list/*.esk") -RuntimeErrorRegex "error:"
@@ -1544,6 +1630,7 @@ switch ($Mode) {
         # normal 120-second compile limit.  Keep the bound, but give each
         # Windows smoke-test compile five minutes before declaring a timeout.
         $script:CompileTimeoutSec = 300
+        $suiteResults += Invoke-JitCacheSuite
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "features" -Title "Eshkol Windows Feature Smoke Suite" -Patterns @("tests/features/*.esk") -RuntimeErrorRegex "error:" -IncludeNames @(
             "bitwise_ops_test.esk",
             "bytevector_test.esk",
