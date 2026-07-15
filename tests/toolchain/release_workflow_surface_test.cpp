@@ -172,6 +172,10 @@ int main(int argc, char** argv) {
          expect_contains(workflow,
                          "python3 scripts/stage_linux_runtime_dependencies.py",
                          "Linux archives stage their relocatable image-codec closure") &&
+         expect_contains(workflow, "apt_install() {",
+                         "Linux release dependency installation is retryable") &&
+         expect_contains(workflow, "apt-get install -y -o Acquire::Retries=5",
+                         "Linux release dependency downloads retry transient failures") &&
          expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
                          "Windows archives stage pinned third-party licenses");
