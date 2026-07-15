@@ -134,7 +134,7 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build \
             llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
-            libreadline-dev pkg-config \
+            libreadline-dev pkg-config patchelf \
             libssl-dev libncurses-dev \
             libpcre2-dev libsqlite3-dev \
             libpng-dev libjpeg-dev libwebp-dev \
@@ -275,6 +275,12 @@ jobs:
               cp "$doc" "$pkg_dir/"
             fi
           done
+
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            python3 scripts/stage_linux_runtime_dependencies.py \
+              --build-dir "${{ matrix.build_dir }}" \
+              --package-dir "$pkg_dir"
+          fi
 
           python3 scripts/stage_third_party_licenses.py \
             --build-dir "${{ matrix.build_dir }}" \

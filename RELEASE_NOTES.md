@@ -88,6 +88,11 @@ upstream macOS weak-import linker fix and builds without a local override.
   SQLite, ncurses, OpenSSL, and Nix-store libraries. The linker derives these
   paths from actual `-L` and shared-library inputs and from the selected host
   compiler instead of requiring a custom `LD_LIBRARY_PATH`. (#279)
+- Linux binary archives now carry a hashed, licensed libpng/libjpeg/libwebp/
+  zlib runtime closure under `lib/eshkol/runtime-deps`. Both packaged tools and
+  generated run-cache/AOT executables resolve that relocatable closure, so
+  image I/O remains enabled without requiring matching codec development
+  packages—or the release builder's absolute library paths—on the target host.
 - Exact numeric and automatic-differentiation fixes cover bignums, rationals,
   tensors, forward-over-reverse composition, Hessians, and explicit
   unsupported-op errors instead of silent zero gradients.

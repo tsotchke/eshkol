@@ -429,8 +429,57 @@ std::vector<std::string> host_runtime_link_args() {
     std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
     std::string item;
 
+#ifdef __linux__
+    // Binary Linux releases carry the native image-codec closure beside the
+    // executables.  CMake records the builder's concrete PNG/JPEG locations
+    // (and -lwebp) in build_config.h so source-tree/Nix builds remain exact;
+    // those absolute development paths are not valid after relocating a
+    // release archive.  Prefer the package-local regular-file aliases when
+    // the bundle exists, while leaving ordinary source builds unchanged.
+    const auto executable_dir = executable_directory();
+    const auto dependency_dir = executable_dir.empty()
+        ? std::filesystem::path{}
+        : canonical_if_exists(executable_dir.parent_path() / "lib" / "eshkol" /
+                              "runtime-deps");
+    std::error_code dependency_dir_error;
+    const bool has_packaged_dependency_dir =
+        !dependency_dir.empty() &&
+        std::filesystem::is_directory(dependency_dir, dependency_dir_error) &&
+        !dependency_dir_error;
+    if (has_packaged_dependency_dir) {
+        const std::string directory = dependency_dir.generic_string();
+        args.push_back("-L" + directory);
+        args.push_back("-Wl,-rpath," + directory);
+        args.push_back("-Wl,-rpath-link," + directory);
+    }
+#endif
+
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
+#ifdef __linux__
+            if (has_packaged_dependency_dir && std::filesystem::path(item).is_absolute()) {
+                const std::string filename = std::filesystem::path(item).filename().string();
+                const char* alias = nullptr;
+                if (filename.rfind("libpng", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libpng.so";
+                } else if (filename.rfind("libjpeg", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libjpeg.so";
+                } else if (filename.rfind("libwebp", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libwebp.so";
+                } else if (filename.rfind("libsharpyuv", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libsharpyuv.so";
+                } else if (filename.rfind("libz", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libz.so";
+                }
+                if (alias != nullptr) {
+                    const auto packaged = dependency_dir / alias;
+                    std::error_code ec;
+                    if (std::filesystem::is_regular_file(packaged, ec)) {
+                        item = packaged.generic_string();
+                    }
+                }
+            }
+#endif
             args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }

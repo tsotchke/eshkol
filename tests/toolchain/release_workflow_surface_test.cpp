@@ -170,6 +170,9 @@ int main(int argc, char** argv) {
                          "python3 scripts/stage_third_party_licenses.py",
                          "Unix archives stage pinned third-party licenses") &&
          expect_contains(workflow,
+                         "python3 scripts/stage_linux_runtime_dependencies.py",
+                         "Linux archives stage their relocatable image-codec closure") &&
+         expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
                          "Windows archives stage pinned third-party licenses");
 

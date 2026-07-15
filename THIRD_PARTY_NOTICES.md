@@ -24,11 +24,20 @@ artifact verifier.
 | Yoga 3.2.1 | `042f5013152eb81c1552dec945b88f7b95ca350f` | MIT |
 | curl (Linux packages only) | `a05f34973e6c4bb629d018f7cb51487be1c904d8` | curl license |
 | Eigen 5.0.1 (native Windows BLAS provider) | `bc3b39870ecb690a623a3f49149a358b95c5781d` | MPL-2.0 |
+| libpng (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | libpng license |
+| libjpeg-turbo (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | IJG/BSD-3-Clause/zlib licenses as distributed upstream |
+| libwebp (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | BSD-3-Clause |
+| zlib runtime (Linux binary packages only) | Exact Ubuntu release-build package recorded in `lib/eshkol/runtime-deps/manifest.json` | Zlib |
 
-Linux packages link against the platform OpenSSL libraries at final AOT link
-time; they do not redistribute OpenSSL binaries. Windows system libraries and
-Apple frameworks are likewise supplied by their operating-system SDKs and are
-not redistributed by Eshkol.
+Linux binary packages redistribute the exact image-codec shared-object closure
+used by the release build so image I/O and generated-program linking remain
+relocatable without target-host development packages. The package manifest
+records every object's SHA-256, source package, and source version; the exact
+distribution copyright files are shipped in `licenses/`. Linux packages still
+link against the platform OpenSSL libraries at final AOT link time and do not
+redistribute OpenSSL binaries. Windows system libraries and Apple frameworks
+are likewise supplied by their operating-system SDKs and are not redistributed
+by Eshkol.
 
 SQLite has been dedicated to the public domain by its authors. The staged
 SQLite notice records the public-domain declaration and the canonical upstream
