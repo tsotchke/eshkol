@@ -3414,6 +3414,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/re
     )
 endif()
 
+if(ESHKOL_BUILD_TESTS AND UNIX AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/sanitizer_build_dir_contract_test.sh")
+    find_program(ESHKOL_BASH_EXECUTABLE bash)
+    if(ESHKOL_BASH_EXECUTABLE)
+        add_test(
+            NAME sanitizer_build_dir_contract_test
+            COMMAND "${ESHKOL_BASH_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/sanitizer_build_dir_contract_test.sh"
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+    endif()
+endif()
+
 # ===== SDNC Paper Artifact: weight_matrices ===================================
 # The paper "The Self-Differentiating Neural Computer: Computable Transformers
 # via Analytical Weight Construction" (tsotchke 2026) reports a 2.8M-parameter
