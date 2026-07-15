@@ -131,14 +131,30 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
-            libreadline-dev pkg-config patchelf \
-            libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
+          packages=(
+            cmake ninja-build
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR}
+            libreadline-dev pkg-config patchelf
+            libssl-dev libncurses-dev
+            libpcre2-dev libsqlite3-dev
+            libpng-dev libjpeg-dev libwebp-dev
             git python3
+          )
+          apt_install() {
+            for attempt in 1 2 3; do
+              if sudo env DEBIAN_FRONTEND=noninteractive \
+                  apt-get install -y -o Acquire::Retries=5 "${packages[@]}"; then
+                return 0
+              fi
+              if (( attempt == 3 )); then
+                echo "apt dependency installation failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              sleep $((attempt * 15))
+              sudo apt-get update -o Acquire::Retries=5
+            done
+          }
+          apt_install
           # Keep release builds aligned with CI: generated AArch64
           # executables use -fuse-ld=lld, which resolves unversioned
           # ld.lld from PATH.
