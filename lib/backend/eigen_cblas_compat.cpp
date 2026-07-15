@@ -6,9 +6,9 @@
  * tested CBLAS path across platforms while ClangCL/MSVC stays entirely within
  * the native Windows ABI.
  */
-#include <eshkol/backend/cblas_compat.h>
-
 #if defined(ESHKOL_BLAS_EIGEN)
+
+#include <eshkol/backend/cblas_compat.h>
 
 #include <Eigen/Core>
 
