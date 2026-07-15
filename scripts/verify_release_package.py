@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -144,11 +145,30 @@ def main() -> int:
 
     windows = os.name == "nt"
     runner = package_dir / "bin" / ("eshkol-run.exe" if windows else "eshkol-run")
-    archive_names = (
-        ("eshkol-runtime.lib", "eshkol-agent-ffi.lib")
-        if windows
-        else ("libeshkol-runtime.a", "libeshkol-agent-ffi.a")
-    )
+    if windows:
+        archive_names = (
+            "eshkol-runtime.lib",
+            "eshkol-agent-ffi.lib",
+            "eshkol-agent-pcre2.lib",
+            "eshkol-agent-sqlite3.lib",
+            "eshkol-agent-zlib.lib",
+            "eshkol-agent-tree-sitter-grammars.lib",
+            "eshkol-agent-tree-sitter.lib",
+            "eshkol-agent-yoga.lib",
+        )
+    else:
+        archive_names = (
+            "libeshkol-runtime.a",
+            "libeshkol-agent-ffi.a",
+            "eshkol-agent-pcre2.a",
+            "eshkol-agent-sqlite3.a",
+            "eshkol-agent-zlib.a",
+            "eshkol-agent-tree-sitter-grammars.a",
+            "eshkol-agent-tree-sitter.a",
+            "eshkol-agent-yoga.a",
+        )
+        if platform.system() == "Linux":
+            archive_names += ("eshkol-agent-curl.a",)
 
     if not runner.is_file():
         fail(f"packaged runner is missing: {runner}")

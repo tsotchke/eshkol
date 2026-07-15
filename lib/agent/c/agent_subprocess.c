@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <signal.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -33,6 +34,9 @@
 #endif
 #else
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <wchar.h>
 #endif
 
 /* ── Subprocess handle ──
@@ -51,9 +55,13 @@ typedef struct {
     int stderr_fd;  /* parent reads from child's stderr */
 #else
     HANDLE hProcess;
+    HANDLE hJob;
     HANDLE stdin_write;
     HANDLE stdout_read;
     HANDLE stderr_read;
+    int stdin_fd;
+    int stdout_fd;
+    int stderr_fd;
 #endif
     int exited;
     int exit_code;
@@ -352,9 +360,11 @@ static void eshkol_unset_env_injection_vars(void) {
  * environ after the cache is warmed, we'd use stale pointers. Eshkol
  * doesn't mutate environ during spawn paths, so this is safe; if that
  * changes, guard with an atomic-generation counter. */
+#ifndef _WIN32
 static pthread_mutex_t g_env_cache_mu = PTHREAD_MUTEX_INITIALIZER;
 static char** g_env_cache = NULL;
 static char** g_env_cache_source = NULL;  /* the environ ptr we scrubbed */
+#endif
 
 /**
  * @brief Return a copy of `environ` with dynamic-linker injection variables
@@ -437,6 +447,231 @@ static char** eshkol_scrub_environ(void) {
     return filtered;
 #endif
 }
+
+#ifdef _WIN32
+static wchar_t* utf8_to_wide(const char* value) {
+    if (!value) return NULL;
+    int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                     value, -1, NULL, 0);
+    if (needed <= 0) return NULL;
+    wchar_t* wide = (wchar_t*)calloc((size_t)needed, sizeof(wchar_t));
+    if (!wide) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            value, -1, wide, needed) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+
+static int wide_append(wchar_t** out, size_t* len, size_t* cap,
+                       const wchar_t* text, size_t count) {
+    if (!out || !len || !cap || (!text && count != 0)) return 0;
+    if (*len + count + 1 > *cap) {
+        size_t next = *cap ? *cap : 128;
+        while (next < *len + count + 1) {
+            if (next > SIZE_MAX / 2) return 0;
+            next *= 2;
+        }
+        wchar_t* grown = (wchar_t*)realloc(*out, next * sizeof(wchar_t));
+        if (!grown) return 0;
+        *out = grown;
+        *cap = next;
+    }
+    if (count) memcpy(*out + *len, text, count * sizeof(wchar_t));
+    *len += count;
+    (*out)[*len] = L'\0';
+    return 1;
+}
+
+/* Quote one argv element using CommandLineToArgvW's inverse rules. */
+static int append_windows_arg(wchar_t** out, size_t* len, size_t* cap,
+                              const wchar_t* arg) {
+    size_t n = wcslen(arg);
+    int quote = n == 0 || wcspbrk(arg, L" \t\n\v\"") != NULL;
+    if (!quote) return wide_append(out, len, cap, arg, n);
+    if (!wide_append(out, len, cap, L"\"", 1)) return 0;
+    size_t slashes = 0;
+    for (size_t i = 0; i < n; ++i) {
+        if (arg[i] == L'\\') {
+            ++slashes;
+            continue;
+        }
+        if (arg[i] == L'\"') {
+            for (size_t j = 0; j < slashes * 2 + 1; ++j) {
+                if (!wide_append(out, len, cap, L"\\", 1)) return 0;
+            }
+            slashes = 0;
+            if (!wide_append(out, len, cap, L"\"", 1)) return 0;
+            continue;
+        }
+        for (size_t j = 0; j < slashes; ++j) {
+            if (!wide_append(out, len, cap, L"\\", 1)) return 0;
+        }
+        slashes = 0;
+        if (!wide_append(out, len, cap, &arg[i], 1)) return 0;
+    }
+    for (size_t j = 0; j < slashes * 2; ++j) {
+        if (!wide_append(out, len, cap, L"\\", 1)) return 0;
+    }
+    return wide_append(out, len, cap, L"\"", 1);
+}
+
+static wchar_t* build_windows_argv_command_line(const char* packed) {
+    if (!packed || !*packed) return NULL;
+    wchar_t* command_line = NULL;
+    size_t len = 0, cap = 0;
+    const char* start = packed;
+    for (;;) {
+        const char* end = strchr(start, '\t');
+        size_t bytes = end ? (size_t)(end - start) : strlen(start);
+        char* utf8 = (char*)malloc(bytes + 1);
+        if (!utf8) { free(command_line); return NULL; }
+        memcpy(utf8, start, bytes);
+        utf8[bytes] = '\0';
+        wchar_t* arg = utf8_to_wide(utf8);
+        free(utf8);
+        if (!arg) { free(command_line); return NULL; }
+        if (len && !wide_append(&command_line, &len, &cap, L" ", 1)) {
+            free(arg); free(command_line); return NULL;
+        }
+        if (!append_windows_arg(&command_line, &len, &cap, arg)) {
+            free(arg); free(command_line); return NULL;
+        }
+        free(arg);
+        if (!end) break;
+        start = end + 1;
+    }
+    if (len >= 32767) { free(command_line); return NULL; }
+    return command_line;
+}
+
+static int duplicate_pipe_fd(HANDLE source, int flags) {
+    HANDLE current = GetCurrentProcess();
+    HANDLE duplicate = NULL;
+    if (!DuplicateHandle(current, source, current, &duplicate, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS)) return -1;
+    int fd = _open_osfhandle((intptr_t)duplicate, flags | _O_BINARY);
+    if (fd < 0) CloseHandle(duplicate);
+    return fd;
+}
+
+static eshkol_subprocess_t* spawn_windows_command_line(
+    eshkol_subprocess_t* proc, const wchar_t* application,
+    wchar_t* command_line, const char* cwd_arg, int64_t flags) {
+    if (!proc || !command_line) return NULL;
+    int stdin_null = (flags & ESHKOL_SPAWN_STDIN_NULL) != 0;
+    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
+    HANDLE stdin_read = INVALID_HANDLE_VALUE;
+    HANDLE stdin_write = NULL;
+    HANDLE stdout_read = NULL, stdout_write = NULL;
+    HANDLE stderr_read = NULL, stderr_write = NULL;
+
+    if (stdin_null) {
+        stdin_read = CreateFileW(L"NUL", GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 &sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    } else if (!CreatePipe(&stdin_read, &stdin_write, &sa, 65536)) {
+        return NULL;
+    }
+    if (stdin_read == INVALID_HANDLE_VALUE ||
+        !CreatePipe(&stdout_read, &stdout_write, &sa, 65536) ||
+        !CreatePipe(&stderr_read, &stderr_write, &sa, 65536)) {
+        if (stdin_read != INVALID_HANDLE_VALUE) CloseHandle(stdin_read);
+        if (stdin_write) CloseHandle(stdin_write);
+        if (stdout_read) CloseHandle(stdout_read);
+        if (stdout_write) CloseHandle(stdout_write);
+        if (stderr_read) CloseHandle(stderr_read);
+        if (stderr_write) CloseHandle(stderr_write);
+        return NULL;
+    }
+
+    if (stdin_write) SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    memset(&pi, 0, sizeof(pi));
+    si.cb = sizeof(si);
+    si.hStdInput = stdin_read;
+    si.hStdOutput = stdout_write;
+    si.hStdError = stderr_write;
+    si.dwFlags = STARTF_USESTDHANDLES;
+    wchar_t* cwd = (cwd_arg && cwd_arg[0] && strcmp(cwd_arg, ".") != 0)
+        ? utf8_to_wide(cwd_arg) : NULL;
+    if (cwd_arg && cwd_arg[0] && strcmp(cwd_arg, ".") != 0 && !cwd) {
+        CloseHandle(stdin_read); if (stdin_write) CloseHandle(stdin_write);
+        CloseHandle(stdout_read); CloseHandle(stdout_write);
+        CloseHandle(stderr_read); CloseHandle(stderr_write);
+        return NULL;
+    }
+
+    DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT |
+                           CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED;
+    BOOL created = CreateProcessW(application, command_line, NULL, NULL, TRUE,
+                                  creation_flags, NULL, cwd, &si, &pi);
+    free(cwd);
+    CloseHandle(stdin_read);
+    CloseHandle(stdout_write);
+    CloseHandle(stderr_write);
+    if (!created) {
+        if (stdin_write) CloseHandle(stdin_write);
+        CloseHandle(stdout_read);
+        CloseHandle(stderr_read);
+        return NULL;
+    }
+
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+        memset(&limits, 0, sizeof(limits));
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation,
+                                     &limits, sizeof(limits)) ||
+            !AssignProcessToJobObject(job, pi.hProcess)) {
+            CloseHandle(job);
+            job = NULL;
+        }
+    }
+    if (ResumeThread(pi.hThread) == (DWORD)-1) {
+        TerminateProcess(pi.hProcess, 1);
+        if (job) CloseHandle(job);
+        CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+        if (stdin_write) CloseHandle(stdin_write);
+        CloseHandle(stdout_read); CloseHandle(stderr_read);
+        return NULL;
+    }
+    CloseHandle(pi.hThread);
+
+    proc->pid = (int64_t)pi.dwProcessId;
+    proc->hProcess = pi.hProcess;
+    proc->hJob = job;
+    proc->stdin_write = stdin_write;
+    proc->stdout_read = stdout_read;
+    proc->stderr_read = stderr_read;
+    proc->stdin_fd = stdin_write ? duplicate_pipe_fd(stdin_write, _O_WRONLY) : -1;
+    proc->stdout_fd = duplicate_pipe_fd(stdout_read, _O_RDONLY);
+    proc->stderr_fd = duplicate_pipe_fd(stderr_read, _O_RDONLY);
+    if (proc->stdout_fd < 0 || proc->stderr_fd < 0 ||
+        (stdin_write && proc->stdin_fd < 0)) {
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        if (proc->stdin_fd >= 0) _close(proc->stdin_fd);
+        if (proc->stdout_fd >= 0) _close(proc->stdout_fd);
+        if (proc->stderr_fd >= 0) _close(proc->stderr_fd);
+        if (stdin_write) CloseHandle(stdin_write);
+        CloseHandle(stdout_read); CloseHandle(stderr_read);
+        if (job) CloseHandle(job);
+        CloseHandle(pi.hProcess);
+        return NULL;
+    }
+    proc->exited = 0;
+    proc->exit_code = -1;
+    return proc;
+}
+#endif
 
 /**
  * @brief Shared implementation behind qllm_process_spawn() and
@@ -645,85 +880,22 @@ static eshkol_subprocess_t* qllm_process_spawn_command_impl(const char* command,
     return proc;
 #else
     (void)force_shell;
-    /* Windows: CreateProcess with pipes */
-    SECURITY_ATTRIBUTES sa = {sizeof(SECURITY_ATTRIBUTES), NULL, TRUE};
-    HANDLE stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write;
-
-    if (!CreatePipe(&stdin_read, &stdin_write, &sa, 0) ||
-        !CreatePipe(&stdout_read, &stdout_write, &sa, 0) ||
-        !CreatePipe(&stderr_read, &stderr_write, &sa, 0)) {
-        free(proc);
-        return NULL;
-    }
-
-    SetHandleInformation(stdin_write, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
-    SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si = {0};
-    si.cb = sizeof(si);
-    si.hStdInput = stdin_read;
-    si.hStdOutput = stdout_write;
-    si.hStdError = stderr_write;
-    si.dwFlags |= STARTF_USESTDHANDLES;
-
-    PROCESS_INFORMATION pi = {0};
-
-    /* Windows cmdline: CreateProcessA mutates the buffer in place, so
-     * it must be on the heap (not a string-literal) and sized for the
-     * full command. Previous code used a fixed 4096-byte stack buffer
-     * and snprintf-silently-truncated anything longer, producing a
-     * valid-looking but malformed command (#193 HIGH). Now we:
-     *   - Measure "cmd /c " + command length ahead of time.
-     *   - Reject if it would exceed Windows' 32768 cmdline limit.
-     *   - Heap-allocate exactly the right size so CreateProcessA can
-     *     mutate without corrupting anything outside the buffer.
-     */
-    size_t cmd_len = command ? strlen(command) : 0;
-    size_t prefix_len = 7;  /* "cmd /c " */
-    if (cmd_len + prefix_len + 1 > 32768) {
-        CloseHandle(stdin_read); CloseHandle(stdin_write);
-        CloseHandle(stdout_read); CloseHandle(stdout_write);
-        CloseHandle(stderr_read); CloseHandle(stderr_write);
-        free(proc);
-        return NULL;
-    }
-    char* cmdline = (char*)malloc(cmd_len + prefix_len + 1);
-    if (!cmdline) {
-        CloseHandle(stdin_read); CloseHandle(stdin_write);
-        CloseHandle(stdout_read); CloseHandle(stdout_write);
-        CloseHandle(stderr_read); CloseHandle(stderr_write);
-        free(proc);
-        return NULL;
-    }
-    memcpy(cmdline, "cmd /c ", prefix_len);
-    memcpy(cmdline + prefix_len, command ? command : "", cmd_len);
-    cmdline[prefix_len + cmd_len] = '\0';
-
-    BOOL created = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, cwd, &si, &pi);
+    wchar_t comspec[MAX_PATH];
+    DWORD got = GetEnvironmentVariableW(L"ComSpec", comspec, MAX_PATH);
+    if (got == 0 || got >= MAX_PATH) wcscpy(comspec, L"C:\\Windows\\System32\\cmd.exe");
+    wchar_t* wide_command = utf8_to_wide(command ? command : "");
+    if (!wide_command) { free(proc); return NULL; }
+    size_t needed = wcslen(comspec) + wcslen(wide_command) + 16;
+    wchar_t* cmdline = (wchar_t*)calloc(needed, sizeof(wchar_t));
+    if (!cmdline) { free(wide_command); free(proc); return NULL; }
+    swprintf(cmdline, needed, L"\"%ls\" /d /s /c %ls", comspec, wide_command);
+    free(wide_command);
+    if (wcslen(cmdline) >= 32767) { free(cmdline); free(proc); return NULL; }
+    eshkol_subprocess_t* result = spawn_windows_command_line(
+        proc, comspec, cmdline, cwd_arg, flags);
     free(cmdline);
-    if (!created) {
-        CloseHandle(stdin_read); CloseHandle(stdin_write);
-        CloseHandle(stdout_read); CloseHandle(stdout_write);
-        CloseHandle(stderr_read); CloseHandle(stderr_write);
-        free(proc);
-        return NULL;
-    }
-
-    CloseHandle(stdin_read);
-    CloseHandle(stdout_write);
-    CloseHandle(stderr_write);
-    CloseHandle(pi.hThread);
-
-    proc->pid = (int64_t)pi.dwProcessId;
-    proc->hProcess = pi.hProcess;
-    proc->stdin_write = stdin_write;
-    proc->stdout_read = stdout_read;
-    proc->stderr_read = stderr_read;
-    proc->exited = 0;
-    proc->exit_code = -1;
-    set_pipes_nonblocking(proc);
-    return proc;
+    if (!result) free(proc);
+    return result;
 #endif
 }
 
@@ -1021,10 +1193,13 @@ eshkol_subprocess_t* qllm_process_spawn_argv_flags(const char* tab_packed_argv,
     set_pipes_nonblocking(proc);
     return proc;
 #else
-    /* Windows stub — see #193 comment. */
-    (void)cwd_arg; (void)flags;
-    free(proc);
-    return NULL;
+    wchar_t* cmdline = build_windows_argv_command_line(tab_packed_argv);
+    if (!cmdline) { free(proc); return NULL; }
+    eshkol_subprocess_t* result = spawn_windows_command_line(
+        proc, NULL, cmdline, cwd_arg, flags);
+    free(cmdline);
+    if (!result) free(proc);
+    return result;
 #endif
 }
 
@@ -1092,8 +1267,91 @@ void qllm_process_close_stdin(eshkol_subprocess_t* proc) {
     if (proc->stdin_fd >= 0) { close(proc->stdin_fd); proc->stdin_fd = -1; }
 #else
     if (proc->stdin_write) { CloseHandle(proc->stdin_write); proc->stdin_write = NULL; }
+    if (proc->stdin_fd >= 0) { _close(proc->stdin_fd); proc->stdin_fd = -1; }
 #endif
 }
+
+#ifdef _WIN32
+static int64_t read_pipe_available(HANDLE pipe, char* buf, int64_t buf_size,
+                                   int* eof_flag) {
+    if (!pipe || pipe == INVALID_HANDLE_VALUE || !buf || buf_size <= 0) return -1;
+    DWORD available = 0;
+    if (!PeekNamedPipe(pipe, NULL, 0, NULL, &available, NULL)) {
+        DWORD error = GetLastError();
+        if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
+            if (eof_flag) *eof_flag = 1;
+        }
+        return error == ERROR_NO_DATA ? 0 : -1;
+    }
+    if (available == 0) return 0;
+    DWORD request = available;
+    if ((uint64_t)request > (uint64_t)buf_size) request = (DWORD)buf_size;
+    DWORD got = 0;
+    if (!ReadFile(pipe, buf, request, &got, NULL)) {
+        DWORD error = GetLastError();
+        if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
+            if (eof_flag) *eof_flag = 1;
+        }
+        return -1;
+    }
+    return (int64_t)got;
+}
+
+static int append_pipe_available(HANDLE pipe, char** buffer, size_t* length,
+                                 size_t* capacity, size_t retain_limit,
+                                 int* eof_flag) {
+    char chunk[8192];
+    int read_any = 0;
+    for (;;) {
+        int64_t got = read_pipe_available(pipe, chunk, sizeof(chunk), eof_flag);
+        if (got <= 0) break;
+        read_any = 1;
+        size_t keep = (size_t)got;
+        if (retain_limit && *length + keep > retain_limit) {
+            keep = *length < retain_limit ? retain_limit - *length : 0;
+        }
+        if (keep) {
+            if (*length + keep + 1 > *capacity) {
+                size_t next = *capacity ? *capacity * 2 : 4096;
+                while (next < *length + keep + 1) next *= 2;
+                if (retain_limit && next > retain_limit + 1) next = retain_limit + 1;
+                char* grown = (char*)realloc(*buffer, next);
+                if (!grown) return read_any;
+                *buffer = grown;
+                *capacity = next;
+            }
+            memcpy(*buffer + *length, chunk, keep);
+            *length += keep;
+            (*buffer)[*length] = '\0';
+        }
+    }
+    return read_any;
+}
+
+static char* read_all_stream_windows(HANDLE pipe,
+                                     char** inline_buffer,
+                                     size_t* inline_length,
+                                     size_t* inline_capacity,
+                                     int* eof_flag,
+                                     int64_t max_size,
+                                     int64_t* out_len) {
+    if (max_size <= 0) return NULL;
+    size_t limit = (size_t)max_size;
+    append_pipe_available(pipe, inline_buffer, inline_length, inline_capacity,
+                          limit, eof_flag);
+    size_t count = *inline_length < limit ? *inline_length : limit;
+    char* result = (char*)malloc(count + 1);
+    if (!result) return NULL;
+    if (count) memcpy(result, *inline_buffer, count);
+    result[count] = '\0';
+    if (out_len) *out_len = (int64_t)count;
+    free(*inline_buffer);
+    *inline_buffer = NULL;
+    *inline_length = 0;
+    *inline_capacity = 0;
+    return result;
+}
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Stdout / Stderr Read
@@ -1114,9 +1372,7 @@ int64_t qllm_process_read_stdout(eshkol_subprocess_t* proc, char* buf, int64_t b
     if (n < 0 && errno == EAGAIN) return 0; /* non-blocking: no data */
     return (int64_t)n;
 #else
-    DWORD n = 0;
-    if (!ReadFile(proc->stdout_read, buf, (DWORD)buf_size, &n, NULL)) return -1;
-    return (int64_t)n;
+    return read_pipe_available(proc->stdout_read, buf, buf_size, &proc->stdout_eof);
 #endif
 }
 
@@ -1135,9 +1391,7 @@ int64_t qllm_process_read_stderr(eshkol_subprocess_t* proc, char* buf, int64_t b
     if (n < 0 && errno == EAGAIN) return 0;
     return (int64_t)n;
 #else
-    DWORD n = 0;
-    if (!ReadFile(proc->stderr_read, buf, (DWORD)buf_size, &n, NULL)) return -1;
-    return (int64_t)n;
+    return read_pipe_available(proc->stderr_read, buf, buf_size, &proc->stderr_eof);
 #endif
 }
 
@@ -1247,7 +1501,10 @@ char* qllm_process_read_all_stdout(eshkol_subprocess_t* proc, int64_t max_size, 
                                  &proc->stdout_eof,
                                  max_size, out_len);
 #else
-    return NULL;
+    return read_all_stream_windows(proc->stdout_read,
+                                   &proc->stdout_buf, &proc->stdout_len,
+                                   &proc->stdout_cap, &proc->stdout_eof,
+                                   max_size, out_len);
 #endif
 }
 
@@ -1269,7 +1526,10 @@ char* qllm_process_read_all_stderr(eshkol_subprocess_t* proc, int64_t max_size, 
                                  &proc->stderr_eof,
                                  max_size, out_len);
 #else
-    return NULL;
+    return read_all_stream_windows(proc->stderr_read,
+                                   &proc->stderr_buf, &proc->stderr_len,
+                                   &proc->stderr_cap, &proc->stderr_eof,
+                                   max_size, out_len);
 #endif
 }
 
@@ -1778,11 +2038,39 @@ int32_t qllm_process_wait(eshkol_subprocess_t* proc, int32_t timeout_ms) {
 #endif
     return result;
 #else
-    DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
-    DWORD res = WaitForSingleObject(proc->hProcess, wait_ms);
-    check_exit_status(proc);
-    if (proc->exited) return 0;
-    return (res == WAIT_TIMEOUT) ? 1 : -1;
+    const size_t drain_cap = 16UL * 1024UL * 1024UL;
+    ULONGLONG start = GetTickCount64();
+    for (;;) {
+        append_pipe_available(proc->stdout_read, &proc->stdout_buf,
+                              &proc->stdout_len, &proc->stdout_cap,
+                              drain_cap, &proc->stdout_eof);
+        append_pipe_available(proc->stderr_read, &proc->stderr_buf,
+                              &proc->stderr_len, &proc->stderr_cap,
+                              drain_cap, &proc->stderr_eof);
+        check_exit_status(proc);
+        if (proc->exited) {
+            /* A final drain captures bytes written immediately before exit. */
+            for (int i = 0; i < 4; ++i) {
+                int out = append_pipe_available(proc->stdout_read, &proc->stdout_buf,
+                                                &proc->stdout_len, &proc->stdout_cap,
+                                                drain_cap, &proc->stdout_eof);
+                int err = append_pipe_available(proc->stderr_read, &proc->stderr_buf,
+                                                &proc->stderr_len, &proc->stderr_cap,
+                                                drain_cap, &proc->stderr_eof);
+                if (!out && !err) break;
+            }
+            return 0;
+        }
+        DWORD slice = 10;
+        if (timeout_ms >= 0) {
+            ULONGLONG elapsed = GetTickCount64() - start;
+            if (elapsed >= (ULONGLONG)timeout_ms) return 1;
+            ULONGLONG remaining = (ULONGLONG)timeout_ms - elapsed;
+            if (remaining < slice) slice = (DWORD)remaining;
+        }
+        DWORD res = WaitForSingleObject(proc->hProcess, slice);
+        if (res == WAIT_FAILED) return -1;
+    }
 #endif
 }
 
@@ -1828,7 +2116,13 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
 #ifndef _WIN32
     kill((pid_t)proc->pid, signal);
 #else
-    TerminateProcess(proc->hProcess, 1);
+    if (signal == SIGINT || signal == SIGTERM) {
+        if (!GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, (DWORD)proc->pid)) {
+            TerminateProcess(proc->hProcess, (UINT)(128 + signal));
+        }
+    } else {
+        TerminateProcess(proc->hProcess, (UINT)(signal > 0 ? 128 + signal : 1));
+    }
 #endif
 }
 
@@ -1856,6 +2150,14 @@ void qllm_process_kill(eshkol_subprocess_t* proc, int32_t signal) {
 int64_t qllm_process_pid(eshkol_subprocess_t* proc) {
     if (!proc) return 0;
     return proc->pid;
+}
+
+int32_t qllm_process_stdout_fd(eshkol_subprocess_t* proc) {
+    return proc ? proc->stdout_fd : -1;
+}
+
+int32_t qllm_process_stderr_fd(eshkol_subprocess_t* proc) {
+    return proc ? proc->stderr_fd : -1;
 }
 
 /**
@@ -1930,6 +2232,12 @@ void qllm_process_destroy(eshkol_subprocess_t* proc) {
     if (proc->stdout_read) CloseHandle(proc->stdout_read);
     if (proc->stderr_read) CloseHandle(proc->stderr_read);
     if (proc->hProcess) CloseHandle(proc->hProcess);
+    if (proc->stdin_fd >= 0) _close(proc->stdin_fd);
+    if (proc->stdout_fd >= 0) _close(proc->stdout_fd);
+    if (proc->stderr_fd >= 0) _close(proc->stderr_fd);
+    if (proc->hJob) CloseHandle(proc->hJob);
+    if (proc->stdout_buf) free(proc->stdout_buf);
+    if (proc->stderr_buf) free(proc->stderr_buf);
 #endif
     free(proc);
 }

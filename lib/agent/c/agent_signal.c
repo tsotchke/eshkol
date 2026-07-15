@@ -12,9 +12,9 @@
  * Copyright (c) 2025 Eshkol Project — tsotchke
  ******************************************************************************/
 
-#ifdef __APPLE__
+#if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
-#else
+#elif !defined(_WIN32)
 #define _GNU_SOURCE
 #endif
 
@@ -23,6 +23,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <tlhelp32.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <errno.h>
@@ -31,6 +36,7 @@
 #if defined(__linux__)
 #  include <dirent.h>
 #endif
+#endif
 
 /*******************************************************************************
  * Signal Flag Table
@@ -38,6 +44,143 @@
  * We track the last received signal via a volatile flag. The agent polls
  * this between operations.
  ******************************************************************************/
+
+#ifdef _WIN32
+
+static volatile LONG g_last_signal = 0;
+static volatile LONG g_signal_count = 0;
+static volatile LONG g_installed_mask = 0;
+static volatile LONG g_ignored_mask = 0;
+static int g_atexit_registered = 0;
+
+static LONG signal_bit(int signum) {
+    if (signum == SIGINT) return 1L << 0;
+    if (signum == SIGTERM) return 1L << 1;
+#ifdef SIGBREAK
+    if (signum == SIGBREAK) return 1L << 2;
+#endif
+    return 0;
+}
+
+static BOOL WINAPI console_control_handler(DWORD event) {
+    int signum = 0;
+    switch (event) {
+        case CTRL_C_EVENT: signum = SIGINT; break;
+        case CTRL_BREAK_EVENT:
+#ifdef SIGBREAK
+            signum = SIGBREAK;
+#else
+            signum = SIGTERM;
+#endif
+            break;
+        case CTRL_CLOSE_EVENT:
+        case CTRL_LOGOFF_EVENT:
+        case CTRL_SHUTDOWN_EVENT: signum = SIGTERM; break;
+        default: return FALSE;
+    }
+    LONG bit = signal_bit(signum);
+    if (bit == 0 || !(InterlockedCompareExchange(&g_installed_mask, 0, 0) & bit)) {
+        return FALSE;
+    }
+    if (!(InterlockedCompareExchange(&g_ignored_mask, 0, 0) & bit)) {
+        InterlockedExchange(&g_last_signal, signum);
+        InterlockedIncrement(&g_signal_count);
+    }
+    return TRUE;
+}
+
+int32_t eshkol_signal_handler_install(int32_t signum) {
+    LONG bit = signal_bit(signum);
+    if (bit == 0) return -1;
+    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) return -1;
+    InterlockedOr(&g_installed_mask, bit);
+    InterlockedAnd(&g_ignored_mask, ~bit);
+    return 0;
+}
+
+int32_t eshkol_signal_check(void) {
+    return (int32_t)InterlockedExchange(&g_last_signal, 0);
+}
+
+int32_t eshkol_signal_total_count(void) {
+    return (int32_t)InterlockedCompareExchange(&g_signal_count, 0, 0);
+}
+
+int32_t eshkol_signal_handler_reset(int32_t signum) {
+    LONG bit = signal_bit(signum);
+    if (bit == 0) return -1;
+    InterlockedAnd(&g_installed_mask, ~bit);
+    InterlockedAnd(&g_ignored_mask, ~bit);
+    if (InterlockedCompareExchange(&g_installed_mask, 0, 0) == 0) {
+        SetConsoleCtrlHandler(console_control_handler, FALSE);
+    }
+    return 0;
+}
+
+int32_t eshkol_signal_ignore(int32_t signum) {
+    LONG bit = signal_bit(signum);
+    if (bit == 0) return -1;
+    if (!SetConsoleCtrlHandler(console_control_handler, TRUE)) return -1;
+    InterlockedOr(&g_installed_mask, bit);
+    InterlockedOr(&g_ignored_mask, bit);
+    return 0;
+}
+
+static void eshkol_atexit_handler(void) {
+    fflush(stderr);
+    fflush(stdout);
+}
+
+int32_t eshkol_atexit_init(void) {
+    if (!g_atexit_registered) {
+        if (atexit(eshkol_atexit_handler) != 0) return -1;
+        g_atexit_registered = 1;
+    }
+    return 0;
+}
+
+static int terminate_process_tree(DWORD root_pid, DWORD exit_code) {
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return -1;
+
+    DWORD children[1024];
+    size_t child_count = 0;
+    PROCESSENTRY32 entry;
+    memset(&entry, 0, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (Process32First(snapshot, &entry)) {
+        do {
+            if (entry.th32ParentProcessID == root_pid && child_count < 1024) {
+                children[child_count++] = entry.th32ProcessID;
+            }
+        } while (Process32Next(snapshot, &entry));
+    }
+    CloseHandle(snapshot);
+
+    int result = 0;
+    for (size_t i = 0; i < child_count; ++i) {
+        if (terminate_process_tree(children[i], exit_code) != 0) result = -1;
+    }
+
+    HANDLE process = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, root_pid);
+    if (!process) return -1;
+    if (!TerminateProcess(process, exit_code)) {
+        DWORD error = GetLastError();
+        if (error != ERROR_ACCESS_DENIED || WaitForSingleObject(process, 0) != WAIT_OBJECT_0) {
+            result = -1;
+        }
+    }
+    CloseHandle(process);
+    return result;
+}
+
+int32_t eshkol_process_kill_tree(int32_t pid, int32_t sig) {
+    if (pid <= 0) return -1;
+    DWORD exit_code = sig > 0 ? (DWORD)(128 + sig) : 1;
+    return terminate_process_tree((DWORD)pid, exit_code);
+}
+
+#else
 
 static volatile sig_atomic_t g_last_signal = 0;
 static volatile sig_atomic_t g_signal_count = 0;
@@ -387,3 +530,5 @@ int32_t eshkol_process_kill_tree(int32_t pid, int32_t sig) {
     kill_tree_recursive((pid_t)pid, sig);
     return 0;
 }
+
+#endif

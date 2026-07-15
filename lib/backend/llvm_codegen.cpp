@@ -63,22 +63,8 @@ unsigned int link_subprocess_timeout_seconds() {
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
-    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
-    std::string item;
-
-    while (std::getline(stream, item, ';')) {
-        if (item.empty()) {
-            continue;
-        }
-
-        if (item.size() >= 3 &&
-            std::isalpha(static_cast<unsigned char>(item[0])) &&
-            item[1] == ':' &&
-            item[2] == '/') {
-            std::replace(item.begin(), item.end(), '/', '\\');
-        }
-
-        link_args.emplace_back(item);
+    for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
+        link_args.emplace_back(std::move(runtime_arg));
     }
 
     const auto has_cudadevrt = std::any_of(link_args.begin(), link_args.end(), [](const std::string& arg) {
@@ -119,15 +105,25 @@ void append_configured_link_args(const char* raw_args,
             continue;
         }
 #endif
-        link_args.emplace_back(item);
+        link_args.emplace_back(
+            eshkol::platform::cxx_driver_link_arg(std::move(item)));
     }
 }
 
-void append_host_agent_ffi_dependency_link_args(std::vector<std::string>& link_args) {
+void append_host_agent_ffi_dependency_link_args(
+    std::vector<std::string>& link_args,
+    const std::filesystem::path& agent_library_dir) {
     std::vector<std::string> configured_args;
     append_configured_link_args(ESHKOL_HOST_AGENT_FFI_LINK_ARGS, configured_args);
 
     for (const auto& item : configured_args) {
+        static constexpr const char* kAgentLibMarker = "@agent-lib@/";
+        if (item.rfind(kAgentLibMarker, 0) == 0) {
+            const auto package_dependency =
+                agent_library_dir / item.substr(std::strlen(kAgentLibMarker));
+            link_args.emplace_back(package_dependency.generic_string());
+            continue;
+        }
         // This AOT path has already resolved and appended the relocatable
         // agent archive beside libeshkol-runtime.  The configured string also
         // contains the build-tree archive and its force/whole-archive wrapper
@@ -2038,6 +2034,17 @@ public:
         function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
         function_return_types["websocket-receive"] = BuiltinTypes::Value;
         function_return_types["websocket-close"] = BuiltinTypes::Boolean;
+        function_return_types["compression-available"] = BuiltinTypes::Boolean;
+        function_return_types["deflate"] = BuiltinTypes::Value;
+        function_return_types["inflate"] = BuiltinTypes::Value;
+        function_return_types["gzip"] = BuiltinTypes::Value;
+        function_return_types["gunzip"] = BuiltinTypes::Value;
+        function_return_types["yoga-node-create"] = BuiltinTypes::Integer;
+        function_return_types["yoga-node-set!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-add-child!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-calculate!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-get-computed"] = BuiltinTypes::Float64;
+        function_return_types["yoga-node-free!"] = BuiltinTypes::Boolean;
         function_return_types["ts-parser-new"] = BuiltinTypes::Integer;
         function_return_types["ts-parser-free"] = BuiltinTypes::Boolean;
         function_return_types["ts-parse"] = BuiltinTypes::Integer;
@@ -14555,6 +14562,17 @@ private:
         if (func_name == "websocket-send-binary") return system_->websocketSendBinary(op);
         if (func_name == "websocket-receive") return system_->websocketReceive(op);
         if (func_name == "websocket-close") return system_->websocketClose(op);
+        if (func_name == "compression-available") return system_->compressionAvailable(op);
+        if (func_name == "deflate") return system_->deflateBuiltin(op);
+        if (func_name == "inflate") return system_->inflateBuiltin(op);
+        if (func_name == "gzip") return system_->gzipBuiltin(op);
+        if (func_name == "gunzip") return system_->gunzipBuiltin(op);
+        if (func_name == "yoga-node-create") return system_->yogaNodeCreate(op);
+        if (func_name == "yoga-node-set!") return system_->yogaNodeSet(op);
+        if (func_name == "yoga-node-add-child!") return system_->yogaNodeAddChild(op);
+        if (func_name == "yoga-node-calculate!") return system_->yogaNodeCalculate(op);
+        if (func_name == "yoga-node-get-computed") return system_->yogaNodeGetComputed(op);
+        if (func_name == "yoga-node-free!") return system_->yogaNodeFree(op);
         if (func_name == "ts-parser-new") return system_->tsParserNew(op);
         if (func_name == "ts-parser-free") return system_->tsParserFree(op);
         if (func_name == "ts-parse") return system_->tsParse(op);
@@ -23960,6 +23978,9 @@ private:
             "http-server-respond", "http-server-close", "http-request",
             "websocket-connect", "websocket-send", "websocket-send-binary",
             "websocket-receive", "websocket-close",
+            "compression-available", "deflate", "inflate", "gzip", "gunzip",
+            "yoga-node-create", "yoga-node-set!", "yoga-node-add-child!",
+            "yoga-node-calculate!", "yoga-node-get-computed", "yoga-node-free!",
             "ts-parser-new", "ts-parser-free", "ts-parse", "ts-tree-free",
             "ts-node-type", "ts-node-text", "ts-node-children",
             "ts-query-new", "ts-query-matches", "ts-query-free",
@@ -38693,7 +38714,8 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
                 // SQLite short names: runtime-only hosts may intentionally
                 // omit their development-link symlinks, and in that case the
                 // corresponding agent modules were not compiled at all.
-                append_host_agent_ffi_dependency_link_args(link_args);
+                append_host_agent_ffi_dependency_link_args(
+                    link_args, agent_ffi_path.parent_path());
             }
         } else {
             link_args.emplace_back(

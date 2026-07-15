@@ -56,22 +56,8 @@ static constexpr char eshkol_path_separator =
 
 static void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
-    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
-    std::string item;
-
-    while (std::getline(stream, item, ';')) {
-        if (item.empty()) {
-            continue;
-        }
-
-        if (item.size() >= 3 &&
-            std::isalpha(static_cast<unsigned char>(item[0])) &&
-            item[1] == ':' &&
-            item[2] == '/') {
-            std::replace(item.begin(), item.end(), '/', '\\');
-        }
-
-        link_args.emplace_back(item);
+    for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
+        link_args.emplace_back(std::move(runtime_arg));
     }
 
     const auto has_cudadevrt = std::any_of(link_args.begin(), link_args.end(), [](const std::string& arg) {
@@ -112,17 +98,26 @@ static void append_space_separated_link_args(const char* raw_args,
             continue;
         }
 #endif
-        link_args.emplace_back(item);
+        link_args.emplace_back(
+            eshkol::platform::cxx_driver_link_arg(std::move(item)));
     }
 }
 
 static void append_host_agent_ffi_dependency_link_args(
-    std::vector<std::string>& link_args) {
+    std::vector<std::string>& link_args,
+    const std::filesystem::path& agent_library_dir) {
     std::vector<std::string> configured_args;
     append_space_separated_link_args(
         ESHKOL_HOST_AGENT_FFI_LINK_ARGS, configured_args);
 
     for (const auto& item : configured_args) {
+        static constexpr const char* kAgentLibMarker = "@agent-lib@/";
+        if (item.rfind(kAgentLibMarker, 0) == 0) {
+            const auto package_dependency =
+                agent_library_dir / item.substr(std::strlen(kAgentLibMarker));
+            link_args.emplace_back(package_dependency.generic_string());
+            continue;
+        }
         // The packaged/build-tree archive is resolved relative to the runtime
         // archive below. Do not replay CMake's build-machine archive path or
         // its force/whole-archive wrapper; retain only its dependency closure.
@@ -2593,6 +2588,44 @@ static bool agent_module_needs_ffi_archive(const std::string& module_name)
     return module_name.rfind("agent.", 0) == 0 && module_name != "agent.crypto";
 }
 
+static bool agent_runtime_identifier_char(char c)
+{
+    const unsigned char u = static_cast<unsigned char>(c);
+    return std::isalnum(u) || c == '-' || c == '_' || c == '!' || c == '?' ||
+           c == '*' || c == '+' || c == '/' || c == '<' || c == '>' ||
+           c == '=' || c == ':';
+}
+
+/* These language-level builtins are implemented by the production agent
+ * archive even when no `(require agent.*)` form appears in the source.  AOT
+ * must therefore splice the same immutable dependency closure as an agent
+ * module.  The scan is deliberately conservative: a name in a comment or
+ * string only adds harmless libraries; missing one would create an unresolved
+ * or, worse, reduced runtime. */
+static bool source_mentions_agent_runtime_builtin(const std::string& text)
+{
+    static const char* names[] = {
+        "compression-available", "deflate", "inflate", "gzip", "gunzip",
+        "yoga-node-create", "yoga-node-set!", "yoga-node-add-child!",
+        "yoga-node-calculate!", "yoga-node-get-computed", "yoga-node-free!",
+        "ts-parser-new", "ts-parser-free", "ts-parse", "ts-tree-free",
+        "ts-node-type", "ts-node-text", "ts-node-children", "ts-query-new",
+        "ts-query-matches", "ts-query-free", "ts-available", "ts-tree-root",
+    };
+    for (const char* name : names) {
+        const size_t length = std::strlen(name);
+        size_t pos = 0;
+        while ((pos = text.find(name, pos)) != std::string::npos) {
+            const bool left_ok = pos == 0 || !agent_runtime_identifier_char(text[pos - 1]);
+            const size_t end = pos + length;
+            const bool right_ok = end == text.size() || !agent_runtime_identifier_char(text[end]);
+            if (left_ok && right_ok) return true;
+            pos = end;
+        }
+    }
+    return false;
+}
+
 // Does a module source file (or anything it transitively `require`s) pull in an
 // agent.* module? Text-scans `(require …)` clauses and recurses into resolved
 // module files. This is how a faculty like core.memory — which uses sha256 via
@@ -2609,6 +2642,7 @@ static bool file_requires_agent_ffi(const std::string& path,
 
     std::string text = readFileBytes(std::filesystem::path(path));
     if (text.empty()) return false;
+    if (source_mentions_agent_runtime_builtin(text)) return true;
     std::string base_dir = std::filesystem::path(path).parent_path().string();
     if (base_dir.empty()) base_dir = ".";
 
@@ -4517,6 +4551,13 @@ int main(int argc, char **argv)
         if (!p.empty()) agent_scan_base_dir = p;
     }
     bool needs_agent_ffi = requires_agent_ffi(asts, agent_scan_base_dir);
+    for (const auto& source_file : source_files) {
+        std::set<std::string> agent_scan_visited;
+        if (file_requires_agent_ffi(source_file, agent_scan_visited)) {
+            needs_agent_ffi = true;
+            break;
+        }
+    }
 
     for (const auto &source_file : source_files) {
         std::filesystem::path source_path(source_file);
@@ -4940,7 +4981,8 @@ int main(int argc, char **argv)
                 return 1;
             }
             link_args.emplace_back(agent_ffi_path.generic_string());
-            append_host_agent_ffi_dependency_link_args(link_args);
+            append_host_agent_ffi_dependency_link_args(
+                link_args, agent_ffi_path.parent_path());
         }
 
         // Add linked libraries

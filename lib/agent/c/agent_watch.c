@@ -10,9 +10,9 @@
  * Copyright (c) 2025 Eshkol Project — tsotchke
  ******************************************************************************/
 
-#ifdef __APPLE__
+#if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
-#else
+#elif !defined(_WIN32)
 #define _GNU_SOURCE
 #endif
 
@@ -20,11 +20,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <limits.h>
+
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#ifndef PATH_MAX
+#define PATH_MAX 32768
+#endif
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <dirent.h>
-#include <limits.h>
+#endif
 
 #ifdef __APPLE__
 #include <sys/event.h>
@@ -33,6 +42,8 @@
 #elif defined(__linux__)
 #include <sys/inotify.h>
 #define USE_INOTIFY 1
+#elif defined(_WIN32)
+#define USE_READ_DIRECTORY_CHANGES 1
 #endif
 
 #define MAX_WATCHERS 16
@@ -50,6 +61,13 @@ typedef struct {
     int kq;
 #elif defined(USE_INOTIFY)
     int inotify_fd;
+#elif defined(USE_READ_DIRECTORY_CHANGES)
+    HANDLE directory;
+    HANDLE event;
+    OVERLAPPED overlap;
+    unsigned char change_buffer[65536];
+    wchar_t root[PATH_MAX];
+    int request_pending;
 #endif
     WatchEntry entries[MAX_WATCH_FDS];
     int n_entries;
@@ -62,6 +80,73 @@ typedef struct {
 } Watcher;
 
 static Watcher* g_watchers[MAX_WATCHERS] = {0};
+static void push_event(Watcher* w, const char* type, const char* path);
+
+#ifdef USE_READ_DIRECTORY_CHANGES
+static wchar_t* watch_utf8_to_wide(const char* value) {
+    int needed = value ? MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                              value, -1, NULL, 0) : 0;
+    if (needed <= 0) return NULL;
+    wchar_t* wide = (wchar_t*)calloc((size_t)needed, sizeof(wchar_t));
+    if (!wide) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            value, -1, wide, needed) <= 0) {
+        free(wide); return NULL;
+    }
+    for (wchar_t* p = wide; *p; ++p) if (*p == L'/') *p = L'\\';
+    return wide;
+}
+
+static int issue_watch_request(Watcher* watcher) {
+    ResetEvent(watcher->event);
+    memset(&watcher->overlap, 0, sizeof(watcher->overlap));
+    watcher->overlap.hEvent = watcher->event;
+    DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME |
+                   FILE_NOTIFY_CHANGE_DIR_NAME |
+                   FILE_NOTIFY_CHANGE_ATTRIBUTES |
+                   FILE_NOTIFY_CHANGE_SIZE |
+                   FILE_NOTIFY_CHANGE_LAST_WRITE |
+                   FILE_NOTIFY_CHANGE_CREATION |
+                   FILE_NOTIFY_CHANGE_SECURITY;
+    if (!ReadDirectoryChangesW(watcher->directory, watcher->change_buffer,
+                               sizeof(watcher->change_buffer),
+                               watcher->recursive ? TRUE : FALSE,
+                               filter, NULL, &watcher->overlap, NULL)) {
+        watcher->request_pending = 0;
+        return -1;
+    }
+    watcher->request_pending = 1;
+    return 0;
+}
+
+static void push_windows_event(Watcher* watcher, DWORD action,
+                               const wchar_t* relative, size_t relative_chars) {
+    size_t root_chars = wcslen(watcher->root);
+    int separator = root_chars && watcher->root[root_chars - 1] != L'\\';
+    size_t total = root_chars + (size_t)separator + relative_chars;
+    wchar_t* full = (wchar_t*)malloc((total + 1) * sizeof(wchar_t));
+    if (!full) return;
+    memcpy(full, watcher->root, root_chars * sizeof(wchar_t));
+    size_t cursor = root_chars;
+    if (separator) full[cursor++] = L'\\';
+    memcpy(full + cursor, relative, relative_chars * sizeof(wchar_t));
+    full[total] = L'\0';
+    int needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                     full, -1, NULL, 0, NULL, NULL);
+    char* utf8 = needed > 0 ? (char*)malloc((size_t)needed) : NULL;
+    if (utf8 && WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                    full, -1, utf8, needed, NULL, NULL) > 0) {
+        for (char* p = utf8; *p; ++p) if (*p == '\\') *p = '/';
+        const char* type = "change";
+        if (action == FILE_ACTION_ADDED) type = "create";
+        else if (action == FILE_ACTION_REMOVED) type = "delete";
+        else if (action == FILE_ACTION_RENAMED_OLD_NAME ||
+                 action == FILE_ACTION_RENAMED_NEW_NAME) type = "rename";
+        push_event(watcher, type, utf8);
+    }
+    free(utf8); free(full);
+}
+#endif
 
 /**
  * @brief Appends an event to a watcher's ring buffer of pending events.
@@ -228,6 +313,27 @@ int64_t eshkol_watch_start(const char* path, int32_t recursive) {
     if (w->inotify_fd < 0) { free(w); return -1; }
     if (recursive) add_recursive(w, path);
     else add_inotify_watch(w, path);
+#elif defined(USE_READ_DIRECTORY_CHANGES)
+    wchar_t* wide = watch_utf8_to_wide(path);
+    if (!wide) { free(w); return -1; }
+    DWORD attrs = GetFileAttributesW(wide);
+    if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        free(wide); free(w); return -1;
+    }
+    wcsncpy(w->root, wide, PATH_MAX - 1);
+    w->root[PATH_MAX - 1] = L'\0';
+    w->directory = CreateFileW(wide, FILE_LIST_DIRECTORY,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               NULL, OPEN_EXISTING,
+                               FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
+                               NULL);
+    free(wide);
+    if (w->directory == INVALID_HANDLE_VALUE) { free(w); return -1; }
+    w->event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!w->event) { CloseHandle(w->directory); free(w); return -1; }
+    if (issue_watch_request(w) != 0) {
+        CloseHandle(w->event); CloseHandle(w->directory); free(w); return -1;
+    }
 #else
     free(w);
     return -1;  /* No file watching on this platform */
@@ -319,6 +425,28 @@ int32_t eshkol_watch_poll(int64_t handle, char* buf, int32_t buf_size) {
             ptr += sizeof(struct inotify_event) + ev->len;
         }
     }
+#elif defined(USE_READ_DIRECTORY_CHANGES)
+    if (!w->request_pending && issue_watch_request(w) != 0) return -1;
+    DWORD bytes = 0;
+    if (GetOverlappedResult(w->directory, &w->overlap, &bytes, FALSE)) {
+        w->request_pending = 0;
+        size_t offset = 0;
+        while (offset < bytes) {
+            FILE_NOTIFY_INFORMATION* event =
+                (FILE_NOTIFY_INFORMATION*)(w->change_buffer + offset);
+            push_windows_event(w, event->Action, event->FileName,
+                               event->FileNameLength / sizeof(wchar_t));
+            if (event->NextEntryOffset == 0) break;
+            offset += event->NextEntryOffset;
+        }
+        if (issue_watch_request(w) != 0) return -1;
+    } else {
+        DWORD error = GetLastError();
+        if (error != ERROR_IO_INCOMPLETE) {
+            w->request_pending = 0;
+            if (issue_watch_request(w) != 0) return -1;
+        }
+    }
 #endif
 
     /* Return first buffered event if any */
@@ -360,6 +488,10 @@ void eshkol_watch_stop(int64_t handle) {
         inotify_rm_watch(w->inotify_fd, w->entries[i].wd);
     }
     close(w->inotify_fd);
+#elif defined(USE_READ_DIRECTORY_CHANGES)
+    if (w->request_pending) CancelIoEx(w->directory, &w->overlap);
+    if (w->event) CloseHandle(w->event);
+    if (w->directory && w->directory != INVALID_HANDLE_VALUE) CloseHandle(w->directory);
 #endif
 
     free(w);

@@ -11,9 +11,9 @@
  * Copyright (c) 2025 Eshkol Project — tsotchke
  ******************************************************************************/
 
-#ifdef __APPLE__
+#if defined(__APPLE__)
 #define _DARWIN_C_SOURCE
-#else
+#elif !defined(_WIN32)
 #define _GNU_SOURCE
 #endif
 
@@ -21,10 +21,82 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <errno.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#else
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
-#include <errno.h>
+#endif
+
+#ifdef _WIN32
+static HANDLE handle_from_fd(int32_t fd) {
+    intptr_t raw = _get_osfhandle(fd);
+    return raw == -1 ? INVALID_HANDLE_VALUE : (HANDLE)raw;
+}
+
+/* Anonymous Windows pipe handles are not waitable objects. PeekNamedPipe is
+ * the documented, non-consuming readiness primitive; callers still get the
+ * same 0/1/2/4 result bits as poll(2). */
+static int inspect_fd(int32_t fd, int32_t direction, int32_t* ready) {
+    HANDLE handle = handle_from_fd(fd);
+    if (handle == INVALID_HANDLE_VALUE || !ready) return -1;
+    *ready = 0;
+
+    DWORD type = GetFileType(handle);
+    if (type == FILE_TYPE_UNKNOWN && GetLastError() != NO_ERROR) {
+        *ready = 4;
+        return 0;
+    }
+
+    if (direction & 1) {
+        if (type == FILE_TYPE_PIPE) {
+            DWORD available = 0;
+            if (PeekNamedPipe(handle, NULL, 0, NULL, &available, NULL)) {
+                if (available > 0) *ready |= 1;
+            } else {
+                DWORD error = GetLastError();
+                if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
+                    *ready |= 4;
+                } else if (error != ERROR_NO_DATA) {
+                    *ready |= 4;
+                }
+            }
+        } else if (type == FILE_TYPE_CHAR) {
+            DWORD events = 0;
+            if (GetNumberOfConsoleInputEvents(handle, &events) && events > 0) {
+                *ready |= 1;
+            }
+        } else {
+            /* Disk files are always ready for synchronous reads. */
+            *ready |= 1;
+        }
+    }
+
+    if (direction & 2) {
+        if (type == FILE_TYPE_PIPE) {
+            DWORD flags = 0, outbound = 0;
+            if (GetNamedPipeInfo(handle, &flags, &outbound, NULL, NULL)) {
+                *ready |= 2;
+            } else {
+                DWORD error = GetLastError();
+                if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED) {
+                    *ready |= 4;
+                } else {
+                    *ready |= 2;
+                }
+            }
+        } else {
+            *ready |= 2;
+        }
+    }
+    return 0;
+}
+#endif
 
 /*******************************************************************************
  * Multi-fd Poll
@@ -55,6 +127,30 @@ int32_t eshkol_poll(const int32_t* fds, const int32_t* directions,
                      int32_t nfds, int32_t timeout_ms, int32_t* ready_out) {
     if (!fds || !directions || !ready_out || nfds <= 0 || nfds > 256) return -1;
 
+#ifdef _WIN32
+    ULONGLONG start = GetTickCount64();
+    DWORD sleep_ms = 0;
+    for (;;) {
+        int32_t count = 0;
+        for (int32_t i = 0; i < nfds; ++i) {
+            if (inspect_fd(fds[i], directions[i], &ready_out[i]) != 0) {
+                ready_out[i] = 4;
+            }
+            if (ready_out[i] != 0) ++count;
+        }
+        if (count > 0 || timeout_ms == 0) return count;
+        if (timeout_ms > 0) {
+            ULONGLONG elapsed = GetTickCount64() - start;
+            if (elapsed >= (ULONGLONG)timeout_ms) return 0;
+            DWORD remaining = (DWORD)((ULONGLONG)timeout_ms - elapsed);
+            sleep_ms = sleep_ms == 0 ? 1 : (sleep_ms < 8 ? sleep_ms * 2 : 8);
+            if (sleep_ms > remaining) sleep_ms = remaining;
+        } else {
+            sleep_ms = sleep_ms == 0 ? 1 : (sleep_ms < 8 ? sleep_ms * 2 : 8);
+        }
+        Sleep(sleep_ms);
+    }
+#else
     struct pollfd pfds[256];
     for (int i = 0; i < nfds; i++) {
         pfds[i].fd = fds[i];
@@ -78,6 +174,7 @@ int32_t eshkol_poll(const int32_t* fds, const int32_t* directions,
     }
 
     return (int32_t)ret;
+#endif
 }
 
 /*******************************************************************************
@@ -97,12 +194,21 @@ int32_t eshkol_poll(const int32_t* fds, const int32_t* directions,
  * @return 1 if readable, 0 on timeout (including an interrupting signal), -1 on error, hangup, or invalid fd.
  */
 int32_t eshkol_poll_read(int32_t fd, int32_t timeout_ms) {
+#ifdef _WIN32
+    int32_t direction = 1;
+    int32_t ready = 0;
+    int32_t ret = eshkol_poll(&fd, &direction, 1, timeout_ms, &ready);
+    if (ret <= 0) return ret;
+    if (ready & 4) return -1;
+    return (ready & 1) ? 1 : 0;
+#else
     struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
     int ret = poll(&pfd, 1, timeout_ms);
     if (ret < 0) return (errno == EINTR) ? 0 : -1;
     if (ret == 0) return 0;
     if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) return -1;
     return 1;
+#endif
 }
 
 /*******************************************************************************
@@ -116,9 +222,15 @@ int32_t eshkol_poll_read(int32_t fd, int32_t timeout_ms) {
  * @return 0 on success, -1 if the current flags could not be read or fcntl(F_SETFL) failed.
  */
 int32_t eshkol_fd_set_nonblocking(int32_t fd) {
+#ifdef _WIN32
+    /* Nonblocking semantics are implemented by read_available using
+       PeekNamedPipe. Validate the CRT descriptor here. */
+    return handle_from_fd(fd) == INVALID_HANDLE_VALUE ? -1 : 0;
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 ? 0 : -1;
+#endif
 }
 
 /**
@@ -128,9 +240,13 @@ int32_t eshkol_fd_set_nonblocking(int32_t fd) {
  * @return 0 on success, -1 if the current flags could not be read or fcntl(F_SETFL) failed.
  */
 int32_t eshkol_fd_set_blocking(int32_t fd) {
+#ifdef _WIN32
+    return handle_from_fd(fd) == INVALID_HANDLE_VALUE ? -1 : 0;
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
     return fcntl(fd, F_SETFL, flags & ~O_NONBLOCK) == 0 ? 0 : -1;
+#endif
 }
 
 /*******************************************************************************
@@ -150,11 +266,29 @@ int32_t eshkol_fd_set_blocking(int32_t fd) {
  */
 int32_t eshkol_fd_read_available(int32_t fd, char* buf, int32_t buf_size) {
     if (!buf || buf_size <= 0) return -1;
+#ifdef _WIN32
+    HANDLE handle = handle_from_fd(fd);
+    if (handle == INVALID_HANDLE_VALUE) return -1;
+    if (GetFileType(handle) == FILE_TYPE_PIPE) {
+        DWORD available = 0;
+        if (!PeekNamedPipe(handle, NULL, 0, NULL, &available, NULL)) {
+            DWORD error = GetLastError();
+            return (error == ERROR_NO_DATA) ? 0 : -1;
+        }
+        if (available == 0) return 0;
+        int32_t requested = available < (DWORD)buf_size ? (int32_t)available : buf_size;
+        int n = _read(fd, buf, (unsigned int)requested);
+        return n > 0 ? n : -1;
+    }
+    int n = _read(fd, buf, (unsigned int)buf_size);
+    return n > 0 ? n : -1;
+#else
     ssize_t n = read(fd, buf, (size_t)buf_size);
     if (n > 0) return (int32_t)n;
     if (n == 0) return -1;  /* EOF */
     if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
     return -1;
+#endif
 }
 
 /*******************************************************************************
@@ -174,10 +308,19 @@ int32_t eshkol_fd_read_available(int32_t fd, char* buf, int32_t buf_size) {
  */
 int32_t eshkol_fd_write_available(int32_t fd, const char* data, int32_t len) {
     if (!data || len <= 0) return -1;
+#ifdef _WIN32
+    HANDLE handle = handle_from_fd(fd);
+    if (handle == INVALID_HANDLE_VALUE) return -1;
+    int n = _write(fd, data, (unsigned int)len);
+    if (n >= 0) return n;
+    if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+    return -1;
+#else
     ssize_t n = write(fd, data, (size_t)len);
     if (n >= 0) return (int32_t)n;
     if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
     return -1;
+#endif
 }
 
 /*******************************************************************************
@@ -197,7 +340,11 @@ int32_t eshkol_fd_write_available(int32_t fd, const char* data, int32_t len) {
 int32_t eshkol_make_pipe(int32_t* read_fd, int32_t* write_fd) {
     if (!read_fd || !write_fd) return -1;
     int pipefd[2];
+#ifdef _WIN32
+    if (_pipe(pipefd, 65536, _O_BINARY | _O_NOINHERIT) != 0) return -1;
+#else
     if (pipe(pipefd) != 0) return -1;
+#endif
     *read_fd = pipefd[0];
     *write_fd = pipefd[1];
     return 0;
@@ -321,13 +468,13 @@ int32_t eshkol_line_reader_next(int64_t handle, char* out_buf, int32_t out_size)
 
     /* Try to read more data if not at EOF */
     if (!lr->eof && lr->len < LINE_READER_BUF_SIZE - 1) {
-        ssize_t n = read(lr->fd, lr->buf + lr->len,
-                          (size_t)(LINE_READER_BUF_SIZE - 1 - lr->len));
+        int32_t n = eshkol_fd_read_available(
+            lr->fd, lr->buf + lr->len, LINE_READER_BUF_SIZE - 1 - lr->len);
         if (n > 0) {
             lr->len += (int32_t)n;
         } else if (n == 0) {
             lr->eof = 1;
-        } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+        } else if (n < 0) {
             lr->eof = 1;
         }
     }
@@ -446,10 +593,12 @@ void eshkol_line_reader_close(int64_t handle) {
  * @param proc Pointer to a qllm_process_t; NULL is rejected.
  * @return The stdout file descriptor, or -1 if @p proc is NULL.
  */
+extern int32_t qllm_process_stdout_fd(void* proc);
+extern int32_t qllm_process_stderr_fd(void* proc);
+extern int64_t qllm_process_pid(void* proc);
+
 int32_t eshkol_process_stdout_fd(void* proc) {
-    if (!proc) return -1;
-    const int* fields = (const int*)proc;
-    return fields[2];  /* stdout_fd is the 3rd int field */
+    return qllm_process_stdout_fd(proc);
 }
 
 /**
@@ -461,9 +610,7 @@ int32_t eshkol_process_stdout_fd(void* proc) {
  * @return The stderr file descriptor, or -1 if @p proc is NULL.
  */
 int32_t eshkol_process_stderr_fd(void* proc) {
-    if (!proc) return -1;
-    const int* fields = (const int*)proc;
-    return fields[3];  /* stderr_fd is the 4th int field */
+    return qllm_process_stderr_fd(proc);
 }
 
 /**
@@ -475,7 +622,6 @@ int32_t eshkol_process_stderr_fd(void* proc) {
  * @return The process ID, or -1 if @p proc is NULL.
  */
 int32_t eshkol_process_pid(void* proc) {
-    if (!proc) return -1;
-    const int* fields = (const int*)proc;
-    return fields[0];  /* pid is the 1st int field */
+    int64_t pid = qllm_process_pid(proc);
+    return pid > INT32_MAX ? -1 : (int32_t)pid;
 }

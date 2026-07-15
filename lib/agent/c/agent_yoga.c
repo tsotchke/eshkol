@@ -2,22 +2,38 @@
  * Yoga Layout Engine Bindings for Eshkol Agent (B.21)
  *
  * Full flexbox layout via Facebook's Yoga (libyogacore).
- * Compile with -DHAS_YOGA and link against -lyogacore.
- *
- * Without HAS_YOGA, all functions return graceful errors (-1 / 0.0).
+ * Yoga 3.2.1 is pinned, built, and packaged by the release CMake graph.
+ * There is deliberately no unavailable/no-op branch: a production agent
+ * build must fail if the real layout engine cannot be linked.
  *
  * Copyright (c) 2025 Eshkol Project — tsotchke
  ******************************************************************************/
 
 #include <stdint.h>
-
-#ifdef HAS_YOGA
+#include <math.h>
 
 #include <yoga/Yoga.h>
+#include <eshkol/agent_capabilities.h>
+#include "agent_native_mutex.h"
 
 #define MAX_YOGA_NODES 512
 
 static YGNodeRef g_nodes[MAX_YOGA_NODES] = {0};
+static eshkol_agent_mutex_t g_yoga_mutex = ESHKOL_AGENT_MUTEX_INITIALIZER;
+
+static void clear_subtree_handles(YGNodeRef node) {
+    size_t child_count = YGNodeGetChildCount(node);
+    for (size_t i = 0; i < child_count; ++i) {
+        clear_subtree_handles(YGNodeGetChild(node, i));
+    }
+    for (int i = 1; i < MAX_YOGA_NODES; ++i) {
+        if (g_nodes[i] == node) g_nodes[i] = NULL;
+    }
+}
+
+static int yoga_dimension_valid(double value) {
+    return isnan(value) || (isfinite(value) && value >= 0.0);
+}
 
 /**
  * @brief Finds the first free slot in the @ref g_nodes handle table.
@@ -42,10 +58,16 @@ static int alloc_node(void) {
  *         YGNodeNew() fails.
  */
 int64_t eshkol_yoga_node_create(void) {
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
     int slot = alloc_node();
-    if (slot < 0) return -1;
+    if (slot < 0) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return -1;
+    }
     g_nodes[slot] = YGNodeNew();
-    return g_nodes[slot] ? (int64_t)slot : -1;
+    int64_t result = g_nodes[slot] ? (int64_t)slot : -1;
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
+    return result;
 }
 
 /**
@@ -54,9 +76,16 @@ int64_t eshkol_yoga_node_create(void) {
  * No-op if @p handle is out of range or already freed.
  */
 void eshkol_yoga_node_free(int64_t handle) {
-    if (handle < 1 || handle >= MAX_YOGA_NODES || !g_nodes[handle]) return;
-    YGNodeFreeRecursive(g_nodes[handle]);
-    g_nodes[handle] = NULL;
+    if (handle < 1 || handle >= MAX_YOGA_NODES) return;
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    YGNodeRef node = g_nodes[handle];
+    if (node) {
+        YGNodeRef owner = YGNodeGetOwner(node);
+        if (owner) YGNodeRemoveChild(owner, node);
+        clear_subtree_handles(node);
+        YGNodeFreeRecursive(node);
+    }
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
 }
 
 /**
@@ -74,7 +103,13 @@ void eshkol_yoga_node_free(int64_t handle) {
  */
 /* Float properties: width, height, min/max, flex, padding, margin, border, gap */
 void eshkol_yoga_node_set_float(int64_t handle, int32_t prop, double value) {
-    if (handle < 1 || handle >= MAX_YOGA_NODES || !g_nodes[handle]) return;
+    if (handle < 1 || handle >= MAX_YOGA_NODES || !isfinite(value)) return;
+    if (((prop >= 0 && prop <= 13) || (prop >= 18 && prop <= 21)) && value < 0.0) return;
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    if (!g_nodes[handle]) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return;
+    }
     YGNodeRef node = g_nodes[handle];
     float v = (float)value;
     switch (prop) {
@@ -101,6 +136,7 @@ void eshkol_yoga_node_set_float(int64_t handle, int32_t prop, double value) {
         case 20: YGNodeStyleSetBorder(node, YGEdgeTop, v); break;
         case 21: YGNodeStyleSetBorder(node, YGEdgeBottom, v); break;
     }
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
 }
 
 /**
@@ -115,7 +151,21 @@ void eshkol_yoga_node_set_float(int64_t handle, int32_t prop, double value) {
  */
 /* Integer properties: flex-direction, justify, align, position, overflow, display */
 void eshkol_yoga_node_set_int(int64_t handle, int32_t prop, int32_t value) {
-    if (handle < 1 || handle >= MAX_YOGA_NODES || !g_nodes[handle]) return;
+    if (handle < 1 || handle >= MAX_YOGA_NODES) return;
+    if ((prop == 0 && (value < (int32_t)YGFlexDirectionColumn || value > (int32_t)YGFlexDirectionRowReverse)) ||
+        (prop == 1 && (value < (int32_t)YGJustifyFlexStart || value > (int32_t)YGJustifySpaceEvenly)) ||
+        ((prop == 2 || prop == 3 || prop == 4) &&
+         (value < (int32_t)YGAlignAuto || value > (int32_t)YGAlignSpaceEvenly)) ||
+        (prop == 5 && (value < (int32_t)YGPositionTypeStatic || value > (int32_t)YGPositionTypeAbsolute)) ||
+        (prop == 6 && (value < (int32_t)YGOverflowVisible || value > (int32_t)YGOverflowScroll)) ||
+        (prop == 7 && (value < (int32_t)YGDisplayFlex || value > (int32_t)YGDisplayContents))) {
+        return;
+    }
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    if (!g_nodes[handle]) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return;
+    }
     YGNodeRef node = g_nodes[handle];
     switch (prop) {
         case 0: YGNodeStyleSetFlexDirection(node, (YGFlexDirection)value); break;
@@ -127,6 +177,7 @@ void eshkol_yoga_node_set_int(int64_t handle, int32_t prop, int32_t value) {
         case 6: YGNodeStyleSetOverflow(node, (YGOverflow)value); break;
         case 7: YGNodeStyleSetDisplay(node, (YGDisplay)value); break;
     }
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
 }
 
 /**
@@ -136,9 +187,24 @@ void eshkol_yoga_node_set_int(int64_t handle, int32_t prop, int32_t value) {
  * allocated.
  */
 void eshkol_yoga_node_add_child(int64_t parent, int64_t child, int32_t index) {
-    if (parent < 1 || parent >= MAX_YOGA_NODES || !g_nodes[parent]) return;
-    if (child < 1 || child >= MAX_YOGA_NODES || !g_nodes[child]) return;
-    YGNodeInsertChild(g_nodes[parent], g_nodes[child], (uint32_t)index);
+    if (parent < 1 || parent >= MAX_YOGA_NODES ||
+        child < 1 || child >= MAX_YOGA_NODES || index < 0 || parent == child) return;
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    YGNodeRef parent_node = g_nodes[parent];
+    YGNodeRef child_node = g_nodes[child];
+    if (!parent_node || !child_node || YGNodeGetOwner(child_node) ||
+        (size_t)index > YGNodeGetChildCount(parent_node)) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return;
+    }
+    for (YGNodeRef ancestor = parent_node; ancestor; ancestor = YGNodeGetOwner(ancestor)) {
+        if (ancestor == child_node) {
+            eshkol_agent_mutex_unlock(&g_yoga_mutex);
+            return;
+        }
+    }
+    YGNodeInsertChild(parent_node, child_node, (size_t)index);
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
 }
 
 /**
@@ -153,8 +219,15 @@ void eshkol_yoga_node_add_child(int64_t parent, int64_t child, int32_t index) {
  * No-op if @p root is out of range or not currently allocated.
  */
 void eshkol_yoga_node_calculate(int64_t root, double width, double height) {
-    if (root < 1 || root >= MAX_YOGA_NODES || !g_nodes[root]) return;
+    if (root < 1 || root >= MAX_YOGA_NODES ||
+        !yoga_dimension_valid(width) || !yoga_dimension_valid(height)) return;
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    if (!g_nodes[root]) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return;
+    }
     YGNodeCalculateLayout(g_nodes[root], (float)width, (float)height, YGDirectionLTR);
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
 }
 
 /**
@@ -167,49 +240,36 @@ void eshkol_yoga_node_calculate(int64_t root, double width, double height) {
  *         currently allocated, or @p prop is unrecognized.
  */
 double eshkol_yoga_node_get_computed(int64_t handle, int32_t prop) {
-    if (handle < 1 || handle >= MAX_YOGA_NODES || !g_nodes[handle]) return 0.0;
-    YGNodeRef node = g_nodes[handle];
-    switch (prop) {
-        case 0: return (double)YGNodeLayoutGetLeft(node);
-        case 1: return (double)YGNodeLayoutGetTop(node);
-        case 2: return (double)YGNodeLayoutGetWidth(node);
-        case 3: return (double)YGNodeLayoutGetHeight(node);
-        case 4: return (double)YGNodeLayoutGetPadding(node, YGEdgeLeft);
-        case 5: return (double)YGNodeLayoutGetPadding(node, YGEdgeTop);
-        case 6: return (double)YGNodeLayoutGetPadding(node, YGEdgeRight);
-        case 7: return (double)YGNodeLayoutGetPadding(node, YGEdgeBottom);
-        case 8: return (double)YGNodeLayoutGetMargin(node, YGEdgeLeft);
-        case 9: return (double)YGNodeLayoutGetMargin(node, YGEdgeTop);
-        case 10: return (double)YGNodeLayoutGetMargin(node, YGEdgeRight);
-        case 11: return (double)YGNodeLayoutGetMargin(node, YGEdgeBottom);
-        case 12: return (double)YGNodeLayoutGetBorder(node, YGEdgeLeft);
-        case 13: return (double)YGNodeLayoutGetBorder(node, YGEdgeTop);
-        case 14: return (double)YGNodeLayoutGetBorder(node, YGEdgeRight);
-        case 15: return (double)YGNodeLayoutGetBorder(node, YGEdgeBottom);
-        default: return 0.0;
+    if (handle < 1 || handle >= MAX_YOGA_NODES) return 0.0;
+    eshkol_agent_mutex_lock(&g_yoga_mutex);
+    if (!g_nodes[handle]) {
+        eshkol_agent_mutex_unlock(&g_yoga_mutex);
+        return 0.0;
     }
+    YGNodeRef node = g_nodes[handle];
+    double result = 0.0;
+    switch (prop) {
+        case 0: result = (double)YGNodeLayoutGetLeft(node); break;
+        case 1: result = (double)YGNodeLayoutGetTop(node); break;
+        case 2: result = (double)YGNodeLayoutGetWidth(node); break;
+        case 3: result = (double)YGNodeLayoutGetHeight(node); break;
+        case 4: result = (double)YGNodeLayoutGetPadding(node, YGEdgeLeft); break;
+        case 5: result = (double)YGNodeLayoutGetPadding(node, YGEdgeTop); break;
+        case 6: result = (double)YGNodeLayoutGetPadding(node, YGEdgeRight); break;
+        case 7: result = (double)YGNodeLayoutGetPadding(node, YGEdgeBottom); break;
+        case 8: result = (double)YGNodeLayoutGetMargin(node, YGEdgeLeft); break;
+        case 9: result = (double)YGNodeLayoutGetMargin(node, YGEdgeTop); break;
+        case 10: result = (double)YGNodeLayoutGetMargin(node, YGEdgeRight); break;
+        case 11: result = (double)YGNodeLayoutGetMargin(node, YGEdgeBottom); break;
+        case 12: result = (double)YGNodeLayoutGetBorder(node, YGEdgeLeft); break;
+        case 13: result = (double)YGNodeLayoutGetBorder(node, YGEdgeTop); break;
+        case 14: result = (double)YGNodeLayoutGetBorder(node, YGEdgeRight); break;
+        case 15: result = (double)YGNodeLayoutGetBorder(node, YGEdgeBottom); break;
+        default: break;
+    }
+    eshkol_agent_mutex_unlock(&g_yoga_mutex);
+    return result;
 }
 
 /** @brief Reports that Yoga layout support is compiled in. @return Always 1. */
 int32_t eshkol_yoga_available(void) { return 1; }
-
-#else /* !HAS_YOGA */
-
-/** @brief Stub used when built without HAS_YOGA; no node is created. @return Always -1. */
-int64_t eshkol_yoga_node_create(void) { return -1; }
-/** @brief Stub used when built without HAS_YOGA; no-op. */
-void    eshkol_yoga_node_free(int64_t h) { (void)h; }
-/** @brief Stub used when built without HAS_YOGA; no-op. */
-void    eshkol_yoga_node_set_float(int64_t h, int32_t p, double v) { (void)h;(void)p;(void)v; }
-/** @brief Stub used when built without HAS_YOGA; no-op. */
-void    eshkol_yoga_node_set_int(int64_t h, int32_t p, int32_t v) { (void)h;(void)p;(void)v; }
-/** @brief Stub used when built without HAS_YOGA; no-op. */
-void    eshkol_yoga_node_add_child(int64_t p, int64_t c, int32_t i) { (void)p;(void)c;(void)i; }
-/** @brief Stub used when built without HAS_YOGA; no-op. */
-void    eshkol_yoga_node_calculate(int64_t r, double w, double h) { (void)r;(void)w;(void)h; }
-/** @brief Stub used when built without HAS_YOGA; layout is unavailable. @return Always 0.0. */
-double  eshkol_yoga_node_get_computed(int64_t h, int32_t p) { (void)h;(void)p; return 0.0; }
-/** @brief Reports that Yoga layout support is not compiled in. @return Always 0. */
-int32_t eshkol_yoga_available(void) { return 0; }
-
-#endif
