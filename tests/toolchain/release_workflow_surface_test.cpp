@@ -165,7 +165,13 @@ int main(int argc, char** argv) {
                          "Unix archives include release notes") &&
          expect_contains(workflow,
                          "foreach ($doc in @('README.md', 'LICENSE', 'CHANGELOG.md', 'RELEASE_NOTES.md'))",
-                         "Windows archives include release notes");
+                         "Windows archives include release notes") &&
+         expect_contains(workflow,
+                         "python3 scripts/stage_third_party_licenses.py",
+                         "Unix archives stage pinned third-party licenses") &&
+         expect_contains(workflow,
+                         "python scripts/stage_third_party_licenses.py",
+                         "Windows archives stage pinned third-party licenses");
 
     const std::vector<ReleaseAsset> expected_assets = {
         {"linux-x64-lite", "tar.gz"},

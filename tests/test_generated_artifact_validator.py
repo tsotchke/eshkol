@@ -18,9 +18,52 @@ from scripts import gen_nesting_depth
 from scripts import gen_numeric_depth
 from scripts import gen_recursion_depth
 from scripts import run_generative_differential
+from scripts import stage_third_party_licenses
 
 
 class GeneratedArtifactValidatorTest(unittest.TestCase):
+    def test_third_party_license_staging_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_dir = root / "build"
+            package_dir = root / "package"
+            notice = root / "THIRD_PARTY_NOTICES.md"
+            notice.write_text("notices\n")
+            for spec in stage_third_party_licenses.REQUIRED_LICENSES:
+                source = build_dir / "_deps" / spec.source_relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(f"license: {spec.output_name}\n")
+            curl_source = (
+                build_dir / "_deps" /
+                stage_third_party_licenses.CURL_LICENSE.source_relative
+            )
+            curl_source.parent.mkdir(parents=True, exist_ok=True)
+            curl_source.write_text("curl license\n")
+            package_lib = package_dir / "lib"
+            package_lib.mkdir(parents=True)
+            (package_lib / "eshkol-agent-curl.a").write_bytes(b"archive")
+            staged = stage_third_party_licenses.stage_licenses(
+                build_dir, package_dir, notice_file=notice,
+            )
+            self.assertEqual(
+                len(staged),
+                len(stage_third_party_licenses.REQUIRED_LICENSES) + 3,
+            )
+            self.assertTrue((package_dir / "THIRD_PARTY_NOTICES.md").is_file())
+            self.assertTrue((package_dir / "licenses" / "sqlite-PUBLIC-DOMAIN.txt").is_file())
+            self.assertTrue((package_dir / "licenses" / "curl-COPYING.txt").is_file())
+
+    def test_third_party_license_staging_rejects_missing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build" / "_deps").mkdir(parents=True)
+            notice = root / "THIRD_PARTY_NOTICES.md"
+            notice.write_text("notices\n")
+            with self.assertRaisesRegex(ValueError, "license for"):
+                stage_third_party_licenses.stage_licenses(
+                    root / "build", root / "package", notice_file=notice,
+                )
+
     def test_depth_coverage_trace_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(check_depth_coverage.write_depth_coverage_trace(
