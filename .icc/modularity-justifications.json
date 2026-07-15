@@ -59,6 +59,24 @@
    "task_id": "post-v1.3.1-hardening",
    "reason": "system_codegen.cpp is the cohesive registry of system/OS/FFI builtin codegen (file/process/terminal/HTTP/websocket/tree-sitter/etc.), kept as one facade so the builtin-dispatch table stays co-located. It crossed the 2000-line threshold by 6 lines solely due to the v1.3.1 Doxygen documentation pass (comment-only growth), not new logic.",
    "mitigation": "Any real code growth would be split by extracting per-domain builtin groups (fs/process/net/terminal) behind the existing dispatch facade into focused modules; tracked with the v1.8 modular-boundaries plan. Comment-driven growth needs no split."
-  }
- ]
+   },
+   {
+    "path_patterns": [
+     "lib/agent/c/agent_subprocess.c"
+    ],
+    "status": "accepted",
+    "task_id": "v1.3.3-agent-subprocess-contract",
+    "reason": "agent_subprocess.c owns one cohesive cross-platform subprocess lifecycle state machine: argument validation and quoting, spawn, pipe I/O, timeout-aware wait, termination, and destruction. Keeping that state and its Windows/POSIX parity logic together makes ownership and cleanup invariants auditable; splitting solely at the line threshold would scatter the lifecycle across translation units without creating a stable public boundary.",
+    "mitigation": "Keep the lifecycle behind the existing qllm_process_* API, require the sanitizer/build-directory and hosted Windows/POSIX lanes for changes, and extract a platform backend only when it can share a typed internal process-state contract rather than duplicate cleanup logic."
+   },
+   {
+    "path_patterns": [
+     "lib/agent/c/agent_platform.c"
+    ],
+    "status": "temporary_legacy_boundary",
+    "task_id": "eshkol-v1.4-agent-platform-modularization",
+    "reason": "agent_platform.c is the existing portability facade for filesystem, time, path, text-width, encoding, hashing, and security helpers. Its public surface is stable and fully cross-platform tested, but its domains are broader than one ideal module; a release-time textual split would add linkage and platform risk without changing behavior.",
+    "mitigation": "Do not add new domains to this file. During the v1.4 agent-platform boundary pass, extract filesystem/path, time/identity, terminal-text, and encoding/crypto helpers behind focused internal headers while preserving the current exported ABI and validating every extraction on macOS, Linux, and old-donkey Windows."
+   }
+  ]
 }

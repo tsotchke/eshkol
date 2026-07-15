@@ -18,6 +18,24 @@ mkdir -p "$FAKE_BIN" "$TMP_ROOT/unrelated-cwd"
 cat > "$FAKE_BIN/cmake" <<'FAKE_CMAKE'
 #!/usr/bin/env bash
 set -euo pipefail
+
+require_output_file_path() {
+    local output_path="${1:?output path is required}"
+    case "$output_path" in
+        /*) ;;
+        *)
+            echo "output path must be absolute: $output_path" >&2
+            return 2
+            ;;
+    esac
+    if [ -L "$output_path" ]; then
+        echo "refusing symlinked output path: $output_path" >&2
+        return 2
+    fi
+}
+
+: "${ESHKOL_TEST_CMAKE_LOG:?ESHKOL_TEST_CMAKE_LOG is required}"
+require_output_file_path "$ESHKOL_TEST_CMAKE_LOG"
 printf '%s\n' "$*" >> "$ESHKOL_TEST_CMAKE_LOG"
 FAKE_CMAKE
 chmod +x "$FAKE_BIN/cmake"
