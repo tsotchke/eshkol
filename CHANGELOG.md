@@ -130,6 +130,13 @@ gate green.  This section describes an **untagged release candidate**; no
   programs therefore find LLVM, the C++ runtime, curl, SQLite, ncurses,
   OpenSSL, and Nix-store dependencies without a custom `LD_LIBRARY_PATH`.
   (#279)
+- **Linux release archives carry their image-codec runtime closure.** The
+  packaged compiler, REPL, and generated run-cache/AOT executables resolve
+  hashed and licensed libpng/libjpeg/libwebp/zlib shared objects under
+  `lib/eshkol/runtime-deps`, rather than requiring target-host development
+  packages or retaining release-builder paths. Release dependency installation
+  also uses bounded retries so transient package-mirror failures cannot strand
+  otherwise-valid ARM64 matrix jobs.
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed
