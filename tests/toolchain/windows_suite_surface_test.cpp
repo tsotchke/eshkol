@@ -81,6 +81,16 @@ int main(int argc, char** argv) {
     bool ok = true;
 
     ok = ok &&
+         expect_contains(script, "function Invoke-JitCacheSuite",
+                         "Windows suite declares persistent JIT-cache runtime coverage") &&
+         expect_contains(script, "$cold.StdErr -match '\\[jit-cache\\] store '",
+                         "Windows suite requires a real cold cache store") &&
+         expect_contains(script, "$warm.StdErr -match '\\[jit-cache\\] hit '",
+                         "Windows suite requires a real warm cache hit") &&
+         expect_contains(script, "$orphanTemps.Count -eq 0",
+                         "Windows suite rejects orphaned JIT-cache temporaries") &&
+         expect_contains(script, "$suiteResults += Invoke-JitCacheSuite",
+                         "Windows modes execute persistent JIT-cache coverage") &&
          expect_contains(script, "function Get-RegularFileItem",
                          "Windows suite declares regular-file resolver") &&
          expect_contains(script, "Get-Item -LiteralPath $Path -Force -ErrorAction Stop",

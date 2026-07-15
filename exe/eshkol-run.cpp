@@ -44,8 +44,14 @@
 #include <cstdlib>
 #include <cctype>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <optional>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 static constexpr char eshkol_path_separator =
 #ifdef _WIN32
@@ -736,9 +742,35 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     jitCacheTrace("miss", key);
     pruneJitCache(cache_dir);
 
+    static std::atomic<uint64_t> temp_sequence{0};
     const auto stamp = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
-    const auto temp_binary = cache_dir / (cached_binary.filename().string() + ".tmp-" + stamp);
+#ifdef _WIN32
+    const auto process_id = static_cast<uint64_t>(_getpid());
+#else
+    const auto process_id = static_cast<uint64_t>(getpid());
+#endif
+    const auto sequence = temp_sequence.fetch_add(1, std::memory_order_relaxed);
+    // Keep the native executable suffix at the very end of the temporary
+    // filename.  The AOT output normalizer appends the host suffix whenever
+    // the requested output does not already end in it.  On Windows, placing
+    // `.tmp-<stamp>` after `.exe` therefore caused the compiler to create
+    // `run-<key>.exe.tmp-<stamp>.exe` while the cache publisher still tried
+    // to rename `run-<key>.exe.tmp-<stamp>`, forcing every cold packaged run
+    // through the in-process fallback.  POSIX has an empty executable suffix,
+    // so this preserves its established suffix-free temporary convention.
+    const auto temp_binary = cache_dir /
+        (cached_binary.stem().string() + ".tmp-" +
+         std::to_string(process_id) + "-" + stamp + "-" +
+         std::to_string(sequence) +
+         cached_binary.extension().string());
+    auto temp_object = eshkol::platform::with_executable_suffix(temp_binary);
+    temp_object += ".tmp.o";
+
+    const auto remove_temp_object = [&temp_object]() {
+        std::error_code cleanup_ec;
+        std::filesystem::remove(temp_object, cleanup_ec);
+    };
 
     std::vector<std::string> compile_args;
     compile_args.push_back(self_path.string());
@@ -777,6 +809,11 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     // asked for: a JIT-link problem must never hang, only fall back.
     int compile_status = eshkol::pkg::run_subprocess(
         compile_args, nullptr, link_subprocess_timeout_seconds());
+    // The child compiler normally removes this linker input itself, but a
+    // concurrent cold-cache stress exposed persistent `.tmp.o` sidecars.
+    // The parent owns the cache transaction and therefore performs a final,
+    // idempotent cleanup after the child has exited on every outcome.
+    remove_temp_object();
     if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-timeout", std::to_string(link_subprocess_timeout_seconds()));
@@ -788,11 +825,26 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         return std::nullopt;
     }
 
+    std::error_code temp_ec;
+    if (!std::filesystem::is_regular_file(temp_binary, temp_ec) || temp_ec) {
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("store-failed", key);
+        return std::nullopt;
+    }
+
     std::filesystem::rename(temp_binary, cached_binary, ec);
     if (ec) {
-        std::filesystem::remove(cached_binary, ec);
-        ec.clear();
-        std::filesystem::rename(temp_binary, cached_binary, ec);
+        // Windows rename does not replace an existing target.  If another
+        // process published the immutable content-addressed entry while this
+        // process compiled, keep the winner and discard only our temporary;
+        // deleting the winner here creates a destructive publication race.
+        std::error_code winner_ec;
+        if (std::filesystem::is_regular_file(cached_binary, winner_ec) &&
+            !winner_ec) {
+            std::filesystem::remove(temp_binary, temp_ec);
+            jitCacheTrace("hit", key);
+            return eshkol::pkg::run_subprocess({cached_binary.string()});
+        }
     }
     if (ec) {
         std::filesystem::remove(temp_binary, ec);
