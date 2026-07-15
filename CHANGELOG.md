@@ -137,6 +137,13 @@ gate green.  This section describes an **untagged release candidate**; no
   packages or retaining release-builder paths. Release dependency installation
   also uses bounded retries so transient package-mirror failures cannot strand
   otherwise-valid ARM64 matrix jobs.
+- **Precompiled standard-library artifacts are ISA-portable.** Release builds
+  retain O2 optimization while targeting LLVM's generic architecture baseline
+  for `stdlib.o` and `stdlib.bc`; ordinary compiler/JIT work remains
+  host-specialized. A disassembly gate validates both the CMake target contract
+  and the emitted IR, rejecting scalable-vector and optional wide-vector
+  features inherited from a release builder. This prevents SVE-optimized ARM64
+  stdlib artifacts from crashing on baseline Cortex-A72/ARMv8 consumers.
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed

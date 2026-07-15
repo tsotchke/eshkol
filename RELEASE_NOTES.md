@@ -93,6 +93,12 @@ upstream macOS weak-import linker fix and builds without a local override.
   generated run-cache/AOT executables resolve that relocatable closure, so
   image I/O remains enabled without requiring matching codec development
   packages—or the release builder's absolute library paths—on the target host.
+- Precompiled `stdlib.o` and `stdlib.bc` release artifacts are optimized at O2
+  for LLVM's generic architecture baseline instead of the transient runner's
+  CPU. User and JIT compilation still specialize for the target host, while a
+  release-time LLVM-disassembly gate rejects SVE/SVE2 and other builder-only
+  wide-vector IR before packaging. This keeps ARM64 archives runnable on
+  baseline ARMv8 systems such as Cortex-A72 rather than only on SVE builders.
 - Exact numeric and automatic-differentiation fixes cover bignums, rationals,
   tensors, forward-over-reverse composition, Hessians, and explicit
   unsupported-op errors instead of silent zero gradients.

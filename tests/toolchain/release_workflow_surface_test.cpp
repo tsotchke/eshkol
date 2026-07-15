@@ -176,6 +176,10 @@ int main(int argc, char** argv) {
                          "Linux release dependency installation is retryable") &&
          expect_contains(workflow, "apt-get install -y -o Acquire::Retries=5",
                          "Linux release dependency downloads retry transient failures") &&
+         expect_contains(workflow, "-DESHKOL_STDLIB_TARGET_CPU=generic",
+                         "release stdlib is compiled for the portable baseline CPU") &&
+         expect_contains(workflow, "scripts/verify_portable_stdlib.py",
+                         "release matrices reject builder-specific stdlib bitcode") &&
          expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
                          "Windows archives stage pinned third-party licenses");
@@ -249,6 +253,24 @@ int main(int argc, char** argv) {
 
     if (count_occurrences(workflow, "uses: actions/checkout@v6") < 3) {
         std::cerr << "all build matrices and the publish job must checkout the tagged source"
+                  << std::endl;
+        ok = false;
+    }
+
+    if (count_occurrences(workflow, "-DESHKOL_STDLIB_TARGET_CPU=generic") != 2) {
+        std::cerr << "Unix and Windows release matrices must both select the generic stdlib CPU"
+                  << std::endl;
+        ok = false;
+    }
+
+    if (count_occurrences(workflow, "-DESHKOL_STDLIB_TARGET_FEATURES=") != 2) {
+        std::cerr << "Unix and Windows release matrices must both clear builder CPU features"
+                  << std::endl;
+        ok = false;
+    }
+
+    if (count_occurrences(workflow, "scripts/verify_portable_stdlib.py") != 2) {
+        std::cerr << "Unix and Windows release matrices must both verify stdlib portability"
                   << std::endl;
         ok = false;
     }

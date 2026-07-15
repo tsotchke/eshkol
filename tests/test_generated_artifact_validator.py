@@ -20,9 +20,48 @@ from scripts import gen_recursion_depth
 from scripts import run_generative_differential
 from scripts import stage_linux_runtime_dependencies
 from scripts import stage_third_party_licenses
+from scripts import verify_portable_stdlib
 
 
 class GeneratedArtifactValidatorTest(unittest.TestCase):
+    def test_portable_stdlib_validator_accepts_generic_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "CMakeCache.txt"
+            cache.write_text(
+                "ESHKOL_STDLIB_TARGET_CPU:STRING=generic\n"
+                "ESHKOL_STDLIB_TARGET_FEATURES:STRING=\n"
+            )
+            verify_portable_stdlib.validate_cmake_cache(cache, "generic")
+            self.assertEqual(
+                verify_portable_stdlib.scan_ir(
+                    [
+                        'target triple = "aarch64-unknown-linux-gnu"\n',
+                        "%v = load <2 x i64>, ptr %p\n",
+                    ]
+                ),
+                [],
+            )
+
+    def test_portable_stdlib_validator_rejects_builder_only_vectors(self) -> None:
+        failures = verify_portable_stdlib.scan_ir(
+            [
+                "%scale = call i64 @llvm.vscale.i64()\n",
+                "%wide = load <vscale x 2 x i64>, ptr %p\n",
+                'attributes #0 = { "target-features"="+neon,+sve2" }\n',
+            ]
+        )
+        self.assertEqual(len(failures), 3)
+
+    def test_portable_stdlib_validator_rejects_nonbaseline_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "CMakeCache.txt"
+            cache.write_text(
+                "ESHKOL_STDLIB_TARGET_CPU:STRING=native\n"
+                "ESHKOL_STDLIB_TARGET_FEATURES:STRING=+sve\n"
+            )
+            with self.assertRaisesRegex(ValueError, "must be 'generic'"):
+                verify_portable_stdlib.validate_cmake_cache(cache, "generic")
+
     def test_linux_runtime_dependency_ldd_parser_and_families(self) -> None:
         parsed = stage_linux_runtime_dependencies.parse_ldd_output(
             """
