@@ -1002,7 +1002,9 @@ if [ "$SELF_TEST_ONLY" -eq 1 ]; then
 fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
-    CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" scripts/build-sanitizer.sh asan+ubsan
+    BUILD_DIR="$BUILD_DIR_ABS" \
+        CMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE:-RelWithDebInfo}" \
+        scripts/build-sanitizer.sh asan+ubsan
 fi
 
 if [ ! -x "$ESHKOL_RUN" ]; then
