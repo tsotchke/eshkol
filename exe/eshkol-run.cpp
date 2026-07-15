@@ -4291,7 +4291,14 @@ int main(int argc, char **argv)
                     (ast.operation.op == ESHKOL_REQUIRE_OP ||
                      ast.operation.op == ESHKOL_IMPORT_OP));
                 if (is_load) {
-                    try { jit_ctx.execute(&ast); } catch (...) { /* continue */ }
+                    try {
+                        jit_ctx.execute(&ast);
+                    } catch (const std::exception& e) {
+                        eshkol_error("JIT dependency load failed: %s", e.what());
+                        file.close();
+                        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                        return 1;
+                    }
                 } else {
                     batch.push_back(ast);
                 }

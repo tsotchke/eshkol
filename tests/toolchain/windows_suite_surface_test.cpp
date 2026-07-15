@@ -187,8 +187,14 @@ int main(int argc, char** argv) {
                          "if(TARGET eshkol-agent-ffi)\n        list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)",
                          "one bounded runtime export table includes the production agent archive") &&
          expect_contains(cmake,
-                         "\"/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>\"\n      \"/WHOLEARCHIVE:$<TARGET_FILE:eshkol-repl-lib>\")",
-                         "ClangCL/MSVC runner retains the cache-disabled JIT closure") &&
+                         "lld-link treats those exports as references and extracts the",
+                         "ClangCL/MSVC runtime retention is driven by the bounded export table") &&
+         expect_not_contains(cmake,
+                             "\"/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>\"",
+                             "ClangCL/MSVC hosts must not force-load the LLVM-bearing compiler archive") &&
+         expect_not_contains(cmake,
+                             "target_link_options(eshkol-repl PRIVATE \"/WHOLEARCHIVE:${_llvm_repl_lib_path}\")",
+                             "Windows REPL must not mix static target archives with LLVM-C") &&
          expect_contains(cmake,
                          "if(TARGET eshkol-run)\n                eshkol_windows_export_runtime(eshkol-run)",
                          "runtime export generation is deferred until agent targets exist") &&

@@ -101,6 +101,18 @@ gate green.  This section describes an **untagged release candidate**; no
   and ESH-0214d/e million-iteration AOT harnesses now pass their source library
   path explicitly, so they exercise the persistent-mutation evacuation proof
   from clean shells instead of depending on an ambient `ESHKOL_PATH`.
+- **Installed source modules resolve in cache-disabled JIT mode.** The REPL/JIT
+  module search now selects the executable-relative source tree containing
+  `stdlib.esk`, rather than mistaking the package's native-archive `lib/`
+  directory for a module root. Missing explicit `require` forms fail the run
+  instead of printing a diagnostic and continuing, and the release-package
+  verifier now runs core and agent smokes with `ESHKOL_JIT_CACHE=0` and rejects
+  module-loading diagnostics even if a lower layer returns zero.
+- **Windows hosts avoid overlapping LLVM target retention.** ClangCL release binaries retain
+  and publish the bounded cache-disabled-JIT ABI through their generated PE
+  export table. They no longer force-load static X86/AArch64 LLVM target
+  archives alongside `LLVM-C.dll`, which defined the `LLVMInitialize*` entry
+  points twice and broke every native Windows link.
 
 - **Correct Poincare-ball exponential-map convention.** Tangent vectors now
   use the Riemannian norm induced by `g_x = lambda_x^2 I`; off-origin

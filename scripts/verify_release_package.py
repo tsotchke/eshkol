@@ -25,6 +25,12 @@ from typing import NoReturn
 DEFAULT_TIMEOUT_SECONDS = 900
 EXPECTED_SMOKE_OUTPUT = "hello from windows smoke"
 EXPECTED_AGENT_SMOKE_OUTPUT = "release agent smoke"
+FORBIDDEN_SMOKE_DIAGNOSTICS = (
+    "Module not found:",
+    "Cannot open module:",
+    "required module could not be loaded:",
+    "JIT dependency load failed:",
+)
 COMMON_LICENSE_FILES = (
     "pcre2-LICENCE.md",
     "pcre2-sljit-LICENSE.txt",
@@ -240,6 +246,12 @@ def verify_cache_run(
             stdout=result.stdout,
             stderr=result.stderr,
         )
+    if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
+        fail(
+            "package smoke reported a module-loading failure despite exiting zero",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
     forbidden = (
         "[jit-cache] compile-failed",
         "[jit-cache] compile-timeout",
@@ -254,6 +266,37 @@ def verify_cache_run(
     if expected_trace not in result.stderr:
         fail(
             f"package smoke did not report required trace {expected_trace!r}",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
+def verify_cache_disabled_run(
+    runner: Path,
+    smoke_source: Path,
+    package_dir: Path,
+    env: dict[str, str],
+    timeout: int,
+    expected_output: str,
+) -> None:
+    jit_env = env.copy()
+    jit_env["ESHKOL_JIT_CACHE"] = "0"
+    result = run_checked(
+        [str(runner), "-r", str(smoke_source)],
+        cwd=package_dir,
+        env=jit_env,
+        timeout=timeout,
+        description="cache-disabled package JIT smoke",
+    )
+    if expected_output not in result.stdout:
+        fail(
+            f"cache-disabled package JIT did not print {expected_output!r}",
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+    if any(marker in result.stderr for marker in FORBIDDEN_SMOKE_DIAGNOSTICS):
+        fail(
+            "cache-disabled package JIT reported a module-loading failure",
             stdout=result.stdout,
             stderr=result.stderr,
         )
@@ -401,6 +444,22 @@ def main() -> int:
             env,
             args.timeout_seconds,
             "[jit-cache] store ",
+            EXPECTED_AGENT_SMOKE_OUTPUT,
+        )
+        verify_cache_disabled_run(
+            runner,
+            smoke_source,
+            package_dir,
+            env,
+            args.timeout_seconds,
+            EXPECTED_SMOKE_OUTPUT,
+        )
+        verify_cache_disabled_run(
+            runner,
+            agent_smoke_source,
+            package_dir,
+            env,
+            args.timeout_seconds,
             EXPECTED_AGENT_SMOKE_OUTPUT,
         )
         verify_cache_run(

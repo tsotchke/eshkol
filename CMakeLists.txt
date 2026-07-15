@@ -2372,36 +2372,13 @@ if(REPL_SRC)
         )
       endif()
 
-      set(_eshkol_repl_target_libs
-        LLVMTarget
-        LLVMTargetParser
-        LLVMAsmPrinter
-        LLVMCodeGen
-      )
-      if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64" OR
-         CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|AARCH64|aarch64)$")
-        list(APPEND _eshkol_repl_target_libs
-          LLVMAArch64CodeGen
-          LLVMAArch64AsmParser
-          LLVMAArch64Desc
-          LLVMAArch64Info
-          LLVMAArch64Disassembler
-        )
-      else()
-        list(APPEND _eshkol_repl_target_libs
-          LLVMX86CodeGen
-          LLVMX86AsmParser
-          LLVMX86Desc
-          LLVMX86Info
-          LLVMX86Disassembler
-        )
-      endif()
-      foreach(_llvm_repl_lib IN LISTS _eshkol_repl_target_libs)
-        set(_llvm_repl_lib_path "${ESHKOL_LLVM_ROOT}/lib/${_llvm_repl_lib}.lib")
-        if(EXISTS "${_llvm_repl_lib_path}")
-          target_link_options(eshkol-repl PRIVATE "/WHOLEARCHIVE:${_llvm_repl_lib_path}")
-        endif()
-      endforeach()
+      # LLVM target initialization is supplied by the LLVM linkage selected by
+      # LLVMConfig.cmake.  The official Windows SDK exposes those entry points
+      # through LLVM-C.dll while also listing static C++ components. Explicitly
+      # force-loading the overlapping LLVMX86*/LLVMAArch64* target archives
+      # defines LLVMInitialize* twice. The bounded Eshkol runtime .def below
+      # retains and exports the JIT host ABI; it must not be conflated with LLVM
+      # component retention.
     endif()
 
     # Force-load ALL symbols from eshkol-static into the REPL binary.
@@ -2413,13 +2390,10 @@ if(REPL_SRC)
       target_link_options(eshkol-repl PRIVATE
         "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
     elseif(WIN32 AND ESHKOL_USING_MSVC)
-      # ClangCL/MSVC also needs the complete JIT-only runtime closure in the
-      # executable.  Ordinary archive extraction retains only symbols reached
-      # by host C++ code, leaving generated Scheme calls unresolved when the
-      # persistent cache is disabled.
-      target_link_options(eshkol-repl PRIVATE
-        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>"
-        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-repl-lib>")
+      # The generated /DEF table names every bounded JIT-visible runtime
+      # symbol. lld-link treats those exports as references and extracts the
+      # defining archive members, so force-loading the LLVM-bearing compiler
+      # archive is both unnecessary and incorrect.
     elseif(WIN32)
       # MSYS2/MinGW GNU driver: whole-archive the runtime so every object
       # (incl. JIT-only-referenced runtime helpers) is pulled into the exe,
@@ -2490,12 +2464,10 @@ if(REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
     target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
   elseif(WIN32 AND ESHKOL_USING_MSVC)
-    # Force-load and explicitly export the bounded runtime namespace.  PE/COFF
-    # does not expose executable symbols by default, so ORC's current-process
-    # resolver otherwise fails when ESHKOL_JIT_CACHE=0.
-    target_link_options(eshkol-run PRIVATE
-      "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>"
-      "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-repl-lib>")
+    # The bounded /DEF table attached after the agent target exists performs
+    # both precise archive retention and PE export.  Do not /WHOLEARCHIVE the
+    # compiler archives: that defeats the bounded design and can pull static
+    # LLVM target definitions that overlap LLVM-C.dll.
   elseif(WIN32)
     # MSYS2/MinGW GNU driver: mirror the macOS/Linux path so the in-process
     # JIT (used by `-r` and -e/--eval) can resolve every host runtime symbol.

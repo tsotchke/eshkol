@@ -3011,19 +3011,33 @@ static std::string findLibDir() {
     auto cwd = platform::current_directory();
     auto exe_dir = platform::executable_directory();
 
+    // Prefer the Eshkol installation that actually owns stdlib.esk.  A
+    // release package also contains ../lib for native archives; accepting the
+    // first existing directory therefore selects the archive directory and
+    // makes installed source modules such as agent.regex invisible to the
+    // cache-disabled JIT.  Keep this order aligned with eshkol-run.cpp: the
+    // executable-relative installed source tree wins over a downstream
+    // project's unrelated lib/ directory.
     std::vector<std::filesystem::path> candidates = {
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
         exe_dir / "lib",
         exe_dir / "../lib",
         exe_dir / "../share/eshkol/lib",
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
     };
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/share/eshkol/lib");
     candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate / "stdlib.esk", ec)) {
+            return candidate.string();
+        }
+    }
 
     return platform::find_first_existing(candidates);
 }
@@ -3649,11 +3663,13 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
-                if (loadModule(module_name)) {
-                    auto exports_it = module_exports_.find(module_name);
-                    if (exports_it != module_exports_.end()) {
-                        append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
-                    }
+                if (!loadModule(module_name)) {
+                    throw std::runtime_error("required module could not be loaded: " +
+                                             module_name);
+                }
+                auto exports_it = module_exports_.find(module_name);
+                if (exports_it != module_exports_.end()) {
+                    append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
                 }
             }
             if (!alias_asts.empty()) {
