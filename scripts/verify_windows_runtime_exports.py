@@ -15,6 +15,7 @@ RUNTIME_PREFIXES = (
     "arena_",
     "__eshkol",
     "__repl_shared_arena",
+    "__ad_tower_",
     "g_eshkol",
     "g_current_exception",
     "g_exception_handler_stack",
@@ -28,6 +29,8 @@ REQUIRED_EXPORTS = {
     "eshkol_make_parameter_ptr",
     "eshkol_raise",
     "eshkol_repl_capture_last_value",
+    "__ad_tower_active",
+    "__ad_tower_order",
 }
 
 

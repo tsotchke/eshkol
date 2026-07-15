@@ -84,6 +84,53 @@ static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
 }
 
 /**
+ * @brief Applies the one authoritative TargetMachine configuration used by
+ * both LLJIT and the persistent stdlib JIT-object cache.
+ *
+ * LLVM 21's AArch64-COFF Large code model emits invalid Windows unwind data:
+ * the generated prologue can contain 28 bytes while its `.seh_*` directives
+ * describe only 24.  LLVM's assembler correctly rejects that object, and
+ * accepting it would be unsafe because Eshkol exceptions unwind through SEH.
+ * Keep the correct Small model on Windows ARM64 and rely on per-function/data
+ * COFF sections plus Branch26RangeExtensionPlugin's same-section veneers for
+ * unlimited call reach.  Other targets preserve the existing Large model.
+ *
+ * AArch64 ELF also needs function/data sections because its Large model is
+ * incomplete for intra-object Branch26 calls; the same JITLink veneer handles
+ * those calls.  Mach-O's complete Large model and native linker stubs remain
+ * unchanged.
+ */
+static void configure_jit_target_machine_builder(
+    llvm::orc::JITTargetMachineBuilder& builder
+) {
+    builder.setRelocationModel(llvm::Reloc::PIC_);
+
+    const llvm::Triple& triple = builder.getTargetTriple();
+    const bool windows_aarch64_coff =
+        triple.getArch() == llvm::Triple::aarch64 &&
+        triple.isOSWindows() &&
+        triple.getObjectFormat() == llvm::Triple::COFF;
+    builder.setCodeModel(windows_aarch64_coff
+                             ? llvm::CodeModel::Small
+                             : llvm::CodeModel::Large);
+
+    const bool needs_branch26_sections =
+        triple.getArch() == llvm::Triple::aarch64 &&
+        (triple.getObjectFormat() == llvm::Triple::COFF ||
+         triple.getObjectFormat() == llvm::Triple::ELF);
+    if (needs_branch26_sections) {
+        builder.getOptions().FunctionSections = true;
+        builder.getOptions().DataSections = true;
+    }
+
+#if LLVM_VERSION_MAJOR >= 18
+    builder.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+#else
+    builder.setCodeGenOptLevel(llvm::CodeGenOpt::None);
+#endif
+}
+
+/**
  * @brief Heap-allocates a NUL-terminated copy of @p value for embedding into a synthesized eshkol_ast_t.
  *
  * The caller (and ultimately the AST it is attached to) owns the returned buffer.
@@ -710,10 +757,10 @@ ReplJITContext::~ReplJITContext() {
  * Initializes all LLVM targets, loads the current process's symbols into the
  * dynamic-library search path, and builds a JITTargetMachineBuilder from the
  * detected host CPU/features so the JIT's code generation matches the
- * precompiled stdlib.o exactly: PIC relocation, the Large code model (needed
- * so AArch64 Branch26 PC-relative calls can reach across the >128 MB stdlib
- * IR without JITLink range errors), and -O0 codegen (matching stdlib.o's ABI
- * for tagged-value struct arguments). Also installs the AArch64 Branch26
+ * precompiled stdlib.o exactly: PIC relocation, a platform-correct code model
+ * (Small on Windows ARM64 because LLVM's AArch64-COFF Large model emits invalid
+ * SEH, Large elsewhere), and -O0 codegen (matching stdlib.o's ABI for tagged-
+ * value struct arguments). Also installs the AArch64 Branch26
  * range-extension JITLink plugin when applicable, installs an error reporter
  * that filters out benign "became defunct" teardown errors, registers the
  * runtime's manually-exported symbols (registerRuntimeSymbols()), and binds
@@ -742,28 +789,10 @@ void ReplJITContext::initializeJIT() {
         std::cerr << "Failed to detect host for JIT: " << toString(jtmb.takeError()) << std::endl;
         std::exit(1);
     }
-    // Ensure PIC relocation model (matches stdlib.o compilation)
-    jtmb->setRelocationModel(Reloc::PIC_);
-    // CRITICAL (ARM64 -r at scale): stdlib.bc is large (~58 MB of IR). When JITLink
-    // maps the compiled object it can land >128 MB from the runtime symbols that live
-    // in the main eshkol-run executable (e.g. ___eshkol_init_parallel_workers), which
-    // exceeds the AArch64 Branch26 (±128 MB) PC-relative `bl` range. JITLink then aborts
-    // with "relocation target ... out of range of Branch26PCRel fixup" — even a bare
-    // program that pulls in stdlib fails to materialize. The LARGE code model emits far
-    // calls as absolute movz/movk into a scratch reg + `blr` (no Branch26), so every
-    // call reaches any address regardless of how far apart the JIT places objects.
-    // (Small/Medium only affect data; code branch range needs Large.)
-    jtmb->setCodeModel(CodeModel::Large);
-    // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
-    // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
-    // which causes LLVM to generate different struct argument stack layouts on ARM64.
-    // stdlib.o is compiled at -O0, so the JIT must use the same level to ensure
-    // matching ABI for {i8,i8,i16,i32,i64} tagged value arguments.
-#if LLVM_VERSION_MAJOR >= 18
-    jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
-#else
-    jtmb->setCodeGenOptLevel(CodeGenOpt::None);
-#endif
+    // Keep LLJIT and the persistent stdlib object cache on the exact same
+    // relocation/code-model/section/optimization contract. In particular,
+    // Windows ARM64 must never use LLVM's invalid AArch64-COFF Large model.
+    configure_jit_target_machine_builder(*jtmb);
 
     // Create LLJIT instance with explicit host-matched TM.
     //
@@ -1510,6 +1539,12 @@ void ReplJITContext::registerRuntimeSymbols() {
 
     // AD mode flag (shared so lambdas see AD mode set by other modules)
     ADD_DATA_SYMBOL(__ad_mode_active);
+
+    // Taylor-tower differentiation context. Windows PE hosts do not expose
+    // arbitrary executable data symbols to DynamicLibrarySearchGenerator, so
+    // register these explicitly just like the tape/mode globals above.
+    ADD_DATA_SYMBOL(__ad_tower_active);
+    ADD_DATA_SYMBOL(__ad_tower_order);
 
     // Double-backward / higher-order AD globals (tape stack, outer AD state)
     // These are thread_local — must use ADD_TLS_SYMBOL (mangled name) so the JIT can resolve them.
@@ -2409,9 +2444,9 @@ void ReplJITContext::registerStdlibSymbols() {
  * Idempotent (returns true immediately if already loaded). Tries, in order:
  * (1) a cached, JIT-ABI-matched stdlib object file keyed on a content hash of
  * stdlib.bc plus the target triple — emitted once with the exact
- * TargetMachine configuration (host CPU, PIC, CodeModel::Large,
- * CodeGenOptLevel::None, per-function/data sections for Branch26 range
- * extension) the JIT itself uses, then added via addObjectFile() on every
+ * TargetMachine configuration (host CPU, PIC, platform-correct code model,
+ * CodeGenOptLevel::None, and per-function/data sections where Branch26 range
+ * extension requires them) the JIT itself uses, then added via addObjectFile() on every
  * subsequent run to skip SelectionDAG entirely; (2) parsing stdlib.bc
  * directly and adding it as an ORC IR module, keeping stdlib in the same
  * compilation pipeline as REPL-compiled code so aggregate tagged-value
@@ -2476,7 +2511,7 @@ bool ReplJITContext::loadStdlib() {
     //
     // Why this is ABI-safe where the legacy AOT stdlib.o was not: we emit with
     // the EXACT TargetMachine config the JIT uses for user code (host CPU, PIC,
-    // CodeModel::Large, CodeGenOptLevel::None). The historic 3-arg corruption
+    // the platform-correct code model, and CodeGenOptLevel::None). The historic 3-arg corruption
     // came from an OptLevel/scalarization mismatch vs the JIT — matching it here
     // removes that boundary. And addObjectFile -> JITLink inserts AArch64
     // Branch26 range-extension stubs, the cross-platform fix (Mach-O/ELF/COFF)
@@ -2495,7 +2530,7 @@ bool ReplJITContext::loadStdlib() {
                 // built with a different config is not reused.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-v2-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+                    ("stdlib-jit-v3-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
 
                 std::error_code ec;
                 bool have_obj = std::filesystem::exists(cache_o, ec);
@@ -2506,23 +2541,7 @@ bool ReplJITContext::loadStdlib() {
                     if (emit_mod) {
                         auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
                         if (emit_jtmb) {
-                            emit_jtmb->setRelocationModel(Reloc::PIC_);
-                            emit_jtmb->setCodeModel(CodeModel::Large);
-                            // Emit each function/global into its own section. The
-                            // large code model is incomplete for AArch64 on ELF/COFF
-                            // (it works on Mach-O), so a 100 MB+ stdlib .text still
-                            // emits `bl` (Branch26) for intra-.text calls that exceed
-                            // the ±128 MB range. With per-function sections, JITLink
-                            // places each function independently and inserts Branch26
-                            // range-extension stubs for out-of-range calls — the
-                            // format-agnostic Branch26 fix (ELF/COFF/Mach-O alike).
-                            emit_jtmb->getOptions().FunctionSections = true;
-                            emit_jtmb->getOptions().DataSections = true;
-#if LLVM_VERSION_MAJOR >= 18
-                            emit_jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
-#else
-                            emit_jtmb->setCodeGenOptLevel(CodeGenOpt::None);
-#endif
+                            configure_jit_target_machine_builder(*emit_jtmb);
                             if (auto emit_tm = emit_jtmb->createTargetMachine()) {
                                 (*emit_mod)->setDataLayout(
                                     (*emit_tm)->createDataLayout());

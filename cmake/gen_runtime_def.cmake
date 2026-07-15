@@ -54,7 +54,7 @@ foreach(_archive IN LISTS ARCHIVES)
         # The selected compiler-rt archive is part of ARCHIVES. Export only the
         # stack-probe spelling actually defined for this architecture instead
         # of assuming the x86 helper exists on Windows ARM64.
-        if(_sym MATCHES "^(eshkol_|arena_|__eshkol|__repl_shared_arena|g_eshkol|g_current_exception|g_exception_handler_stack|g_lambda_registry)" OR
+        if(_sym MATCHES "^(eshkol_|arena_|__eshkol|__repl_shared_arena|__ad_tower_(active|order)$|g_eshkol|g_current_exception|g_exception_handler_stack|g_lambda_registry)" OR
            _sym MATCHES "^(___chkstk_ms|___chkstk|__chkstk_ms|__chkstk)$")
             list(APPEND _exports "${_sym}")
         endif()

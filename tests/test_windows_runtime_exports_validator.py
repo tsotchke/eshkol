@@ -48,6 +48,16 @@ Export {
         self.assertIn("missing required runtime exports", errors[0])
         self.assertIn("found 0", errors[1])
 
+    def test_requires_taylor_tower_data_exports(self) -> None:
+        exports = {f"eshkol_generated_{index}" for index in range(800)}
+        exports.update(MODULE.REQUIRED_EXPORTS)
+        exports.remove("__ad_tower_active")
+        exports.remove("__ad_tower_order")
+        errors = MODULE.verify_exports(exports, 800)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("__ad_tower_active", errors[0])
+        self.assertIn("__ad_tower_order", errors[0])
+
 
 if __name__ == "__main__":
     unittest.main()

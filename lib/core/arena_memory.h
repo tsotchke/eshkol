@@ -424,6 +424,10 @@ extern thread_local uint64_t __region_stack_depth;
 extern thread_local ad_tape_t* __ad_tape_stack[ESHKOL_ARENA_MAX_TAPE_DEPTH];
 extern thread_local uint64_t __ad_tape_depth;
 extern thread_local uint64_t __ad_pert_level;  // ESH-0070 forward-mode perturbation level
+// ESH-0190 Taylor-tower context. These are process globals rather than TLS;
+// generated REPL modules resolve them through registerRuntimeSymbols().
+extern uint64_t __ad_tower_active;
+extern uint64_t __ad_tower_order;
 extern thread_local void* __outer_ad_node_storage;
 extern thread_local void* __outer_ad_node_to_inner;
 extern thread_local void* __outer_grad_accumulator;
