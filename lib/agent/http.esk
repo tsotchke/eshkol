@@ -88,6 +88,35 @@
   "Check if HTTPS is available."
   (= (http-has-ssl-raw) 1))
 
+;; A native NULL `ptr` crosses the Eshkol FFI as the empty list, not #f.
+;; Keep that ABI rule centralized here so every sync and streaming wrapper
+;; performs the same ownership-safe check.
+(define (http-null-ptr? ptr)
+  (null? ptr))
+
+(define (http-native-c-string ptr default)
+  (if (http-null-ptr? ptr) default (ptr->string ptr)))
+
+(define (http-response->result response)
+  "Convert and release an owned native response.
+   Returns (status-code . body-string) or #f on transport error."
+  (if (http-null-ptr? response)
+      #f
+      (let ((error-ptr (http-response-error response)))
+        (if (not (http-null-ptr? error-ptr))
+            (begin
+              (http-response-free response)
+              #f)
+            (let* ((status (http-response-status response))
+                   (body-ptr (http-response-body response))
+                   (body-len (http-response-body-len response))
+                   (body (if (http-null-ptr? body-ptr)
+                             ""
+                             (ptr->string-n body-ptr body-len)))
+                   (result (cons status body)))
+              (http-response-free response)
+              result)))))
+
 ;; #195 MEDIUM: URL / header sanitization before dispatch.
 ;;
 ;; CRLF injection in a request URL or header value lets an attacker
@@ -162,14 +191,7 @@
   (http-check-url url)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
          (resp (http-request-raw "GET" url "" "" 0 timeout-ms)))
-    (if (not resp) #f
-        (if (http-response-error resp)
-            (begin (http-response-free resp) #f)
-            (let* ((status (http-response-status resp))
-                   (body (http-response-body resp))
-                   (result (cons status (if body body ""))))
-              (http-response-free resp)
-              result)))))
+    (http-response->result resp)))
 
 (define (http-post url headers body . timeout)
   "Perform HTTP POST with custom headers.
@@ -191,14 +213,7 @@
          (header-block (http-headers->block headers))
          (resp (http-request-raw method url header-block body
                                  (string-byte-length body) timeout-ms)))
-    (if (not resp) #f
-        (if (http-response-error resp)
-            (begin (http-response-free resp) #f)
-            (let* ((status (http-response-status resp))
-                   (resp-body (http-response-body resp))
-                   (result (cons status (if resp-body resp-body ""))))
-              (http-response-free resp)
-              result)))))
+    (http-response->result resp)))
 
 ;; ============================================================================
 ;; SSE Streaming
@@ -212,19 +227,28 @@
   (http-check-headers headers)
   (let ((timeout-ms (if (null? timeout) 30000 (car timeout)))
         (method (if (string=? body "") "GET" "POST")))
-    (stream-open-raw method url (http-headers->block headers) body
-                     (string-byte-length body) timeout-ms)))
+    (let ((stream
+            (stream-open-raw method url (http-headers->block headers) body
+                             (string-byte-length body) timeout-ms)))
+      (if (http-null-ptr? stream) #f stream))))
 
 (define (http-stream-next stream . timeout)
   "Read next SSE event from stream.
    Returns: (event-type . data-string) or #f if done/error."
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
          (native-event (stream-next-raw stream timeout-ms)))
-    (if (not native-event)
+    (if (http-null-ptr? native-event)
         #f
-        (let ((event (list (cons "type" (sse-event-type-raw native-event))
-                           (cons "data" (sse-event-data-raw native-event))
-                           (cons "id" (sse-event-id-raw native-event))
+        (let ((event (list
+                      (cons "type"
+                            (http-native-c-string
+                             (sse-event-type-raw native-event) "message"))
+                      (cons "data"
+                            (http-native-c-string
+                             (sse-event-data-raw native-event) ""))
+                      (cons "id"
+                            (http-native-c-string
+                             (sse-event-id-raw native-event) ""))
                            (cons "retry-ms" (sse-event-retry-raw native-event)))))
           (sse-event-free-raw native-event)
           event))))
@@ -235,7 +259,8 @@
 
 (define (http-stream-error stream)
   "Return the stream's transport/parser error string, or #f when none."
-  (stream-error-raw stream))
+  (let ((error-ptr (stream-error-raw stream)))
+    (if (http-null-ptr? error-ptr) #f (ptr->string error-ptr))))
 
 (define (http-stream-close stream)
   "Close SSE stream."
