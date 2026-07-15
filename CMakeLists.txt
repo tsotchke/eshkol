@@ -3776,7 +3776,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             zlibstatic
             eshkol-agent-tree-sitter-grammars
             tree-sitter
-            yogacore)
+            yogacore
+            # Agent capability implementations call core allocation/string
+            # helpers (for example eshkol_make_bytevector and
+            # eshkol_string_byte_length).  Declare that archive dependency at
+            # its owner so CMake emits eshkol-runtime after the force-loaded
+            # agent archive.  ELF linkers scan static archives left-to-right;
+            # relying on an earlier eshkol-static occurrence works on Apple
+            # and MSVC but leaves these references unresolved on Linux.
+            eshkol-runtime)
 
         if(WIN32)
             target_compile_definitions(eshkol-agent-ffi PRIVATE

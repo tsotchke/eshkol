@@ -4959,11 +4959,14 @@ int main(int argc, char **argv)
             link_args.emplace_back("-L" + std::string(lib_path));
         }
 
-        // Add libeshkol-runtime.a (or legacy libeshkol-static.a) for runtime functions.
+        // Locate libeshkol-runtime.a (or legacy libeshkol-static.a).  Append it
+        // after the optional agent archive below: agent capability objects call
+        // core runtime helpers, and ELF static archives are resolved in a
+        // single left-to-right pass.  The old runtime-before-agent order was
+        // accepted by Apple/MSVC but left those helper references unresolved
+        // in Linux AOT executables.
         std::string runtime_lib = find_runtime_library(lib_paths);
-        if (!runtime_lib.empty()) {
-            link_args.emplace_back(runtime_lib);
-        } else {
+        if (runtime_lib.empty()) {
             eshkol_error("Could not find libeshkol-runtime.a or legacy libeshkol-static.a");
             eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
             eshkol_error("Please install Eshkol properly or build from source");
@@ -4984,6 +4987,12 @@ int main(int argc, char **argv)
             append_host_agent_ffi_dependency_link_args(
                 link_args, agent_ffi_path.parent_path());
         }
+
+        // Core runtime is a dependency of both the generated object(s) and
+        // eshkol-agent-ffi.  Keeping it after the agent dependency closure is
+        // the portable static-link order; no archive repetition or linker-
+        // specific rescan group is required.
+        link_args.emplace_back(runtime_lib);
 
         // Add linked libraries
         for (const auto &linked_lib : linked_libs) {
