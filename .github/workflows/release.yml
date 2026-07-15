@@ -534,6 +534,18 @@ jobs:
             --cmake-cache '${{ matrix.build_dir }}\CMakeCache.txt' `
             --expected-cpu generic
 
+      - name: Verify Windows cache-disabled JIT exports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmReadobj = "$env:LLVM_HOME\bin\llvm-readobj.exe"
+          if (-not (Test-Path $llvmReadobj -PathType Leaf)) {
+            throw "llvm-readobj.exe not found in LLVM SDK at $llvmReadobj"
+          }
+          python scripts/verify_windows_runtime_exports.py `
+            --binary '${{ matrix.build_dir }}\Release\eshkol-run.exe' `
+            --llvm-readobj "$llvmReadobj"
+
       - name: Run Tests
         shell: pwsh
         run: |

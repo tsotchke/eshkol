@@ -89,6 +89,19 @@ gate green.  This section describes an **untagged release candidate**; no
 
 ### Fixed
 
+- **Windows release-package links are relocatable.** AOT and persistent-cache
+  links no longer replay the build runner's absolute compiler-rt or LLVM archive
+  paths. Split-runtime programs link only their actual runtime dependency
+  closure, while legacy `eshkol-static` consumers retain LLVM linkage. The
+  native compiler driver is resolved relocatably at runtime and can be selected
+  explicitly with `ESHKOL_CXX_COMPILER`. ClangCL/MSVC hosts now also retain and
+  publish the bounded runtime symbol closure required by cache-disabled ORC JIT
+  execution, matching the existing MinGW, Linux, and macOS behavior.
+- **The poisoned region-evacuation RSS gates are self-contained.** The ESH-0214c
+  and ESH-0214d/e million-iteration AOT harnesses now pass their source library
+  path explicitly, so they exercise the persistent-mutation evacuation proof
+  from clean shells instead of depending on an ambient `ESHKOL_PATH`.
+
 - **Correct Poincare-ball exponential-map convention.** Tangent vectors now
   use the Riemannian norm induced by `g_x = lambda_x^2 I`; off-origin
   exp/log round trips and geodesic lengths are locked against analytic

@@ -5104,7 +5104,17 @@ int main(int argc, char **argv)
 #endif
 
         append_host_runtime_link_args(link_args);
-        append_host_llvm_link_args(link_args);
+
+        // libeshkol-runtime is a generated-program-only archive and has no
+        // LLVM dependencies. Replaying the compiler process's LLVM closure
+        // here pins installed packages to the builder's SDK paths. Only the
+        // legacy monolithic eshkol-static fallback needs those libraries.
+        const bool uses_legacy_compiler_archive =
+            std::filesystem::path(runtime_lib).filename() ==
+            eshkol::platform::static_library_name("eshkol-static");
+        if (uses_legacy_compiler_archive) {
+            append_host_llvm_link_args(link_args);
+        }
 
 // Set 512 MB main-thread stack so deeply recursive Scheme code
 // (e.g. nested letrec / non-tail-recursive helpers in

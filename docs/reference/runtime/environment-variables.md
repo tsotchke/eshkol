@@ -58,6 +58,7 @@ See [parallelism & threading](parallelism.md).
 
 | Variable | Effect | Default |
 |----------|--------|---------|
+| `ESHKOL_CXX_COMPILER` | C++ driver used for AOT and persistent-cache native links. Useful when LLVM is installed outside PATH or the package builder's original prefix. | build-time driver if present; otherwise `clang++`/`c++` discovery |
 | `ESHKOL_LINK_TIMEOUT_SECONDS` | AOT native-link timeout (`0` = unbounded). | 300 |
 | `ESHKOL_OBJECT_EMIT_TIMEOUT_SECONDS` | Object-emit timeout. | 0 (unbounded) |
 

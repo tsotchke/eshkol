@@ -180,6 +180,10 @@ int main(int argc, char** argv) {
                          "release stdlib is compiled for the portable baseline CPU") &&
          expect_contains(workflow, "scripts/verify_portable_stdlib.py",
                          "release matrices reject builder-specific stdlib bitcode") &&
+         expect_contains(workflow, "Verify Windows cache-disabled JIT exports",
+                         "Windows release matrix verifies its PE runtime export table") &&
+         expect_contains(workflow, "scripts/verify_windows_runtime_exports.py",
+                         "Windows release matrix runs the bounded-runtime export verifier") &&
          expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
                          "Windows archives stage pinned third-party licenses");

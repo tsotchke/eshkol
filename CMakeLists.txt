@@ -919,7 +919,7 @@ endfunction()
 # (the PE equivalent of --export-dynamic). See cmake/gen_runtime_def.cmake for
 # the rationale (PE 65535-export cap rules out --export-all-symbols).
 function(eshkol_windows_export_runtime target_name)
-    if(NOT WIN32 OR ESHKOL_USING_MSVC)
+    if(NOT WIN32)
         return()
     endif()
 
@@ -936,15 +936,33 @@ function(eshkol_windows_export_runtime target_name)
         return()
     endif()
 
+    set(_eshkol_runtime_export_targets
+        eshkol-static
+        eshkol-runtime
+        eshkol-repl-lib)
+    if(TARGET eshkol-agent-ffi)
+        list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)
+    endif()
+    set(_eshkol_runtime_export_archives "")
+    foreach(_eshkol_runtime_export_target IN LISTS _eshkol_runtime_export_targets)
+        list(APPEND _eshkol_runtime_export_archives
+            "$<TARGET_FILE:${_eshkol_runtime_export_target}>")
+    endforeach()
+    if(ESHKOL_CLANG_BUILTINS_LIB)
+        list(APPEND _eshkol_runtime_export_archives
+            "${ESHKOL_CLANG_BUILTINS_LIB}")
+    endif()
+
     set(_def_file "${CMAKE_BINARY_DIR}/${target_name}_runtime_exports.def")
     add_custom_command(
         OUTPUT "${_def_file}"
         COMMAND "${CMAKE_COMMAND}"
-                "-DARCHIVES=$<TARGET_FILE:eshkol-static>;$<TARGET_FILE:eshkol-runtime>;$<TARGET_FILE:eshkol-repl-lib>"
+                "-DARCHIVES=${_eshkol_runtime_export_archives}"
                 "-DNM=${ESHKOL_RUNTIME_DEF_NM}"
                 "-DOUTPUT=${_def_file}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
-        DEPENDS eshkol-static eshkol-runtime eshkol-repl-lib
+        DEPENDS ${_eshkol_runtime_export_targets}
+                ${ESHKOL_CLANG_BUILTINS_LIB}
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
         COMMENT "Generating Eshkol runtime export .def for ${target_name}"
         VERBATIM)
@@ -952,9 +970,14 @@ function(eshkol_windows_export_runtime target_name)
     add_custom_target(${target_name}_runtime_def DEPENDS "${_def_file}")
     add_dependencies(${target_name} ${target_name}_runtime_def)
 
-    # Passing a .def as a linker input makes the GNU driver export exactly its
-    # EXPORTS list (and nothing else).
-    target_link_options(${target_name} PRIVATE "${_def_file}")
+    # Publish exactly the bounded Eshkol namespace on both supported Windows
+    # driver families.  ClangCL/MSVC requires /DEF; the GNU driver accepts the
+    # module-definition file as a direct linker input.
+    if(ESHKOL_USING_MSVC)
+        target_link_options(${target_name} PRIVATE "/DEF:${_def_file}")
+    else()
+        target_link_options(${target_name} PRIVATE "${_def_file}")
+    endif()
 endfunction()
 
 # Publish the bounded agent capability ABI from executables that host the
@@ -1547,6 +1570,17 @@ endif()
 
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
+        # The ClangCL-built Eshkol executables need the build toolchain's
+        # compiler-rt archive, but generated programs are linked through the
+        # GNU-compatible clang++ driver.  That driver supplies its own matching
+        # builtins automatically.  Replaying this absolute build-host path in
+        # ESHKOL_HOST_RUNTIME_LINK_ARGS makes installed Windows packages depend
+        # on the runner image's Visual Studio layout (and can mix Clang major
+        # versions).  Keep it on CMake target link lines only.
+        if(ESHKOL_CLANG_BUILTINS_LIB AND
+           "${_extra_runtime_lib}" STREQUAL "${ESHKOL_CLANG_BUILTINS_LIB}")
+            continue()
+        endif()
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
 
@@ -2379,8 +2413,13 @@ if(REPL_SRC)
       target_link_options(eshkol-repl PRIVATE
         "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
     elseif(WIN32 AND ESHKOL_USING_MSVC)
-      # ClangCL/MSVC links the needed runtime objects directly via
-      # eshkol-repl-lib's references and explicit JIT symbol registration.
+      # ClangCL/MSVC also needs the complete JIT-only runtime closure in the
+      # executable.  Ordinary archive extraction retains only symbols reached
+      # by host C++ code, leaving generated Scheme calls unresolved when the
+      # persistent cache is disabled.
+      target_link_options(eshkol-repl PRIVATE
+        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>"
+        "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-repl-lib>")
     elseif(WIN32)
       # MSYS2/MinGW GNU driver: whole-archive the runtime so every object
       # (incl. JIT-only-referenced runtime helpers) is pulled into the exe,
@@ -2397,7 +2436,8 @@ if(REPL_SRC)
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
     elseif(WIN32 AND ESHKOL_USING_MSVC)
-      # No export-dynamic equivalent is required for the ClangCL/MSVC REPL path.
+      # The bounded export table is attached after eshkol-agent-ffi exists, so
+      # generated agent modules and core runtime calls share one PE namespace.
     elseif(WIN32)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
@@ -2450,8 +2490,12 @@ if(REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
     target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
   elseif(WIN32 AND ESHKOL_USING_MSVC)
-    # ClangCL/MSVC uses the REPL/JIT symbol registration path and does not
-    # accept GNU ld options here.
+    # Force-load and explicitly export the bounded runtime namespace.  PE/COFF
+    # does not expose executable symbols by default, so ORC's current-process
+    # resolver otherwise fails when ESHKOL_JIT_CACHE=0.
+    target_link_options(eshkol-run PRIVATE
+      "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>"
+      "/WHOLEARCHIVE:$<TARGET_FILE:eshkol-repl-lib>")
   elseif(WIN32)
     # MSYS2/MinGW GNU driver: mirror the macOS/Linux path so the in-process
     # JIT (used by `-r` and -e/--eval) can resolve every host runtime symbol.
@@ -3067,6 +3111,14 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_generated_artifact_validator.py"
         )
         set_tests_properties(generated_artifact_validator_test PROPERTIES TIMEOUT 120)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py")
+        add_test(
+            NAME windows_runtime_exports_validator_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py"
+        )
+        set_tests_properties(windows_runtime_exports_validator_test PROPERTIES TIMEOUT 120)
     endif()
     # Native Windows builds intentionally omit the bytecode VM.  Do not
     # register a test whose generator expression names that absent target;
@@ -4193,6 +4245,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     target_link_libraries(eshkol-repl PRIVATE
                         "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
                 endif()
+            endif()
+        endif()
+
+        # Build one bounded PE export table after the optional agent archive is
+        # defined. This avoids competing /DEF files and makes both core and
+        # agent-generated calls resolvable in cache-disabled ORC JIT sessions.
+        if(WIN32)
+            if(TARGET eshkol-run)
+                eshkol_windows_export_runtime(eshkol-run)
+            endif()
+            if(TARGET eshkol-repl)
+                eshkol_windows_export_runtime(eshkol-repl)
             endif()
         endif()
 
