@@ -116,6 +116,10 @@ must resolve from the executable-relative source tree, and a missing explicit
 `require` is a hard failure rather than a diagnostic followed by execution.
 Native Windows hosts retain that bounded JIT ABI through the generated PE
 export table without mixing static LLVM target archives with `LLVM-C.dll`.
+Generated Windows AOT/cache links also resolve the selected consumer LLVM 21
+toolchain's architecture-matched compiler-rt builtins archive at runtime, so
+128-bit bignum/rational division links on both x64 and ARM64 without embedding
+the release runner's absolute SDK path.
 
 ---
 

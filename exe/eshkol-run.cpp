@@ -60,7 +60,7 @@ static constexpr char eshkol_path_separator =
     ':';
 #endif
 
-static void append_host_runtime_link_args(std::vector<std::string>& link_args) {
+static bool append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
     for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(std::move(runtime_arg));
@@ -82,11 +82,28 @@ static void append_host_runtime_link_args(std::vector<std::string>& link_args) {
             }
         }
     }
+
+#ifndef __MINGW32__
+    const std::string compiler_rt =
+        eshkol::platform::compiler_rt_builtins_library();
+    if (compiler_rt.empty()) {
+        eshkol_error(
+            "Generated Windows links require the compiler-rt builtins archive "
+            "from the selected C++ driver '%s', but no LLVM %d "
+            "clang_rt.builtins-{x86_64|aarch64}.lib was found. Set "
+            "ESHKOL_CXX_COMPILER or LLVM_HOME to a complete matching LLVM "
+            "toolchain.",
+            eshkol::platform::cxx_compiler().c_str(), ESHKOL_HOST_LLVM_MAJOR);
+        return false;
+    }
+    link_args.emplace_back(compiler_rt);
+#endif
 #else
     for (const auto& runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(runtime_arg);
     }
 #endif
+    return true;
 }
 
 static void append_space_separated_link_args(const char* raw_args,
@@ -5110,7 +5127,9 @@ int main(int argc, char **argv)
         link_args.emplace_back("Security");
 #endif
 
-        append_host_runtime_link_args(link_args);
+        if (!append_host_runtime_link_args(link_args)) {
+            return 1;
+        }
 
         // libeshkol-runtime is a generated-program-only archive and has no
         // LLVM dependencies. Replaying the compiler process's LLVM closure

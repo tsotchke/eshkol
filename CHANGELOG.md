@@ -94,9 +94,12 @@ gate green.  This section describes an **untagged release candidate**; no
   paths. Split-runtime programs link only their actual runtime dependency
   closure, while legacy `eshkol-static` consumers retain LLVM linkage. The
   native compiler driver is resolved relocatably at runtime and can be selected
-  explicitly with `ESHKOL_CXX_COMPILER`. ClangCL/MSVC hosts now also retain and
-  publish the bounded runtime symbol closure required by cache-disabled ORC JIT
-  execution, matching the existing MinGW, Linux, and macOS behavior.
+  explicitly with `ESHKOL_CXX_COMPILER`; generated ClangCL/MSVC links resolve
+  that consumer toolchain's architecture-matched LLVM 21 compiler-rt builtins
+  archive, rather than assuming the driver will inject it or restoring a
+  builder-only path. ClangCL/MSVC hosts now also retain and publish the bounded
+  runtime symbol closure required by cache-disabled ORC JIT execution, matching
+  the existing MinGW, Linux, and macOS behavior.
 - **The poisoned region-evacuation RSS gates are self-contained.** The ESH-0214c
   and ESH-0214d/e million-iteration AOT harnesses now pass their source library
   path explicitly, so they exercise the persistent-mutation evacuation proof

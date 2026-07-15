@@ -268,6 +268,24 @@ int main(int argc, char** argv) {
                          "installed toolchain supports an explicit runtime compiler override") &&
          expect_contains(platform_runtime, "executable_on_path",
                          "installed toolchain discovers a relocated compiler through PATH") &&
+         expect_contains(platform_runtime,
+                         "std::string compiler_rt_builtins_library()",
+                         "Windows generated links resolve consumer compiler-rt at runtime") &&
+         expect_contains(platform_runtime,
+                         "clang_rt.builtins-\" + std::string(architecture) + \".lib",
+                         "consumer compiler-rt resolver selects the native architecture") &&
+         expect_contains(platform_runtime,
+                         "version.rfind(required_major + \".\", 0) == 0",
+                         "consumer compiler-rt resolver rejects a different LLVM major") &&
+         expect_contains(eshkol_run,
+                         "eshkol::platform::compiler_rt_builtins_library()",
+                         "driver AOT path appends consumer compiler-rt") &&
+         expect_contains(llvm_codegen,
+                         "eshkol::platform::compiler_rt_builtins_library()",
+                         "LLVM AOT path appends consumer compiler-rt") &&
+         expect_contains(eshkol_run,
+                         "ESHKOL_CXX_COMPILER or LLVM_HOME",
+                         "missing consumer compiler-rt fails with an actionable diagnostic") &&
          expect_contains(llvm_codegen,
                          "arena_use_external_only = true;",
                          "LLVM codegen uses runtime-owned arena globals on Windows") &&

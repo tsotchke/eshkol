@@ -8,6 +8,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/build_config.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cerrno>
@@ -467,6 +468,117 @@ std::string cxx_compiler() {
     }
     return "c++";
 #endif
+}
+
+std::string compiler_rt_builtins_library() {
+#if defined(_WIN32) && !defined(__MINGW32__)
+#  if defined(_M_ARM64) || defined(__aarch64__) || defined(__arm64__)
+    constexpr std::string_view architecture = "aarch64";
+#  elif defined(_M_X64) || defined(__x86_64__) || defined(__amd64__)
+    constexpr std::string_view architecture = "x86_64";
+#  else
+    return {};
+#  endif
+
+    std::vector<std::filesystem::path> toolchain_roots;
+    const auto append_root = [&toolchain_roots](std::filesystem::path root) {
+        if (root.empty()) {
+            return;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec) || ec) {
+            return;
+        }
+        auto canonical = std::filesystem::weakly_canonical(root, ec);
+        if (!ec) {
+            root = std::move(canonical);
+        }
+        if (std::find(toolchain_roots.begin(), toolchain_roots.end(), root) ==
+            toolchain_roots.end()) {
+            toolchain_roots.emplace_back(std::move(root));
+        }
+    };
+
+    // The selected driver is authoritative.  Resolve a bare override through
+    // PATH before deriving LLVM's stable <root>/lib/clang layout.
+    std::filesystem::path compiler_path = cxx_compiler();
+    auto compiler = executable_if_available(compiler_path);
+    if (compiler.empty() && !compiler_path.has_parent_path()) {
+        compiler = executable_on_path(compiler_path.string());
+    }
+    if (!compiler.empty()) {
+        append_root(compiler.parent_path().parent_path());
+    }
+
+    // Environment roots are consumer-side fallbacks for installations whose
+    // compiler launcher lives outside the SDK root. LLVM_DIR commonly names
+    // <root>/lib/cmake/llvm, whereas LLVM_HOME/LLVM_ROOT name <root>.
+    for (const char* variable : {"LLVM_HOME", "LLVM_ROOT"}) {
+        if (const char* value = std::getenv(variable); value && *value) {
+            append_root(value);
+        }
+    }
+    if (const char* llvm_dir = std::getenv("LLVM_DIR"); llvm_dir && *llvm_dir) {
+        auto root = std::filesystem::path(llvm_dir);
+        if (root.filename() == "llvm" && root.parent_path().filename() == "cmake") {
+            root = root.parent_path().parent_path().parent_path();
+        }
+        append_root(std::move(root));
+    }
+    for (const char* variable : {"ProgramFiles", "ProgramFiles(x86)"}) {
+        if (const char* value = std::getenv(variable); value && *value) {
+            append_root(std::filesystem::path(value) / "LLVM");
+        }
+    }
+
+    const std::string archive_name =
+        "clang_rt.builtins-" + std::string(architecture) + ".lib";
+    const std::string required_major = std::to_string(ESHKOL_HOST_LLVM_MAJOR);
+
+    const auto regular_archive = [](const std::filesystem::path& candidate) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(candidate, ec) || ec) {
+            return std::string{};
+        }
+        auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+        return (ec ? candidate : canonical).string();
+    };
+
+    // Official LLVM packages use lib/clang/<major>/lib/windows. Check that
+    // exact ABI-compatible major first, then accept a patch-qualified folder
+    // of the same major for downstream LLVM distributions.
+    for (const auto& root : toolchain_roots) {
+        const auto clang_root = root / "lib" / "clang";
+        if (auto archive = regular_archive(
+                clang_root / required_major / "lib" / "windows" / archive_name);
+            !archive.empty()) {
+            return archive;
+        }
+
+        std::error_code ec;
+        std::vector<std::filesystem::path> matching_versions;
+        for (std::filesystem::directory_iterator it(clang_root, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (!it->is_directory(ec) || ec) {
+                continue;
+            }
+            const std::string version = it->path().filename().string();
+            if (version == required_major ||
+                version.rfind(required_major + ".", 0) == 0) {
+                matching_versions.push_back(it->path());
+            }
+        }
+        std::sort(matching_versions.rbegin(), matching_versions.rend());
+        for (const auto& version_dir : matching_versions) {
+            if (auto archive = regular_archive(
+                    version_dir / "lib" / "windows" / archive_name);
+                !archive.empty()) {
+                return archive;
+            }
+        }
+    }
+#endif
+    return {};
 }
 
 std::string cxx_driver_link_arg(std::string argument) {
