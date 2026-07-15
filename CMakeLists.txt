@@ -372,6 +372,7 @@ set(ESHKOL_BUILD_BACKEND ON)
 set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
+set(ESHKOL_HOST_BLAS_LINK_ARGS "")
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
 configure_file(
@@ -1212,6 +1213,7 @@ if(ESHKOL_BLAS_ENABLED)
     set(BLAS_FOUND FALSE)
     set(BLAS_LIBRARIES "")
     set(ESHKOL_BLAS_USAGE_TARGET "")
+    set(ESHKOL_HOST_BLAS_LINK_ARGS "")
 
     if(WIN32 AND ESHKOL_USING_MSVC)
         # A MinGW OpenBLAS archive is not ABI-compatible with ClangCL/MSVC:
@@ -1254,6 +1256,19 @@ if(ESHKOL_BLAS_ENABLED)
         # Try OpenBLAS on Linux/other platforms
         find_package(BLAS QUIET)
         if(BLAS_FOUND)
+            # FindBLAS exposes the concrete driver arguments separately from
+            # its convenient BLAS::BLAS target.  Preserve that raw closure for
+            # eshkol-run's generated-program link: imported INTERFACE targets
+            # do not necessarily have an IMPORTED_LOCATION, so reducing
+            # BLAS::BLAS through eshkol_append_host_runtime_link_arg() can
+            # silently emit no BLAS argument at all.
+            if(BLAS_LINKER_FLAGS)
+                separate_arguments(_eshkol_blas_linker_flags
+                    NATIVE_COMMAND "${BLAS_LINKER_FLAGS}")
+                list(APPEND ESHKOL_HOST_BLAS_LINK_ARGS
+                    ${_eshkol_blas_linker_flags})
+            endif()
+            list(APPEND ESHKOL_HOST_BLAS_LINK_ARGS ${BLAS_LIBRARIES})
             if(TARGET BLAS::BLAS)
                 set(BLAS_LIBRARIES BLAS::BLAS)
                 set(ESHKOL_BLAS_USAGE_TARGET BLAS::BLAS)
@@ -1269,6 +1284,10 @@ if(ESHKOL_BLAS_ENABLED)
                 set(BLAS_FOUND TRUE)
                 set(BLAS_LIBRARIES PkgConfig::OPENBLAS)
                 set(ESHKOL_BLAS_USAGE_TARGET PkgConfig::OPENBLAS)
+                # OPENBLAS_LDFLAGS is the concrete, transitive driver closure
+                # represented by the imported pkg-config target above.  It is
+                # what packaged/raw AOT links need after libeshkol-runtime.a.
+                set(ESHKOL_HOST_BLAS_LINK_ARGS ${OPENBLAS_LDFLAGS})
                 add_compile_definitions(ESHKOL_BLAS_OPENBLAS)
                 message(STATUS "BLAS: OpenBLAS via pkg-config")
             endif()
@@ -1531,8 +1550,8 @@ if(NOT APPLE)
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
 
-    if(BLAS_FOUND AND BLAS_LIBRARIES)
-        foreach(_blas_lib IN LISTS BLAS_LIBRARIES)
+    if(BLAS_FOUND AND ESHKOL_HOST_BLAS_LINK_ARGS)
+        foreach(_blas_lib IN LISTS ESHKOL_HOST_BLAS_LINK_ARGS)
             eshkol_append_host_runtime_link_arg("${_blas_lib}")
         endforeach()
     endif()

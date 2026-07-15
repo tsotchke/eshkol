@@ -1,4 +1,5 @@
 #include <eshkol/backend/blas_backend.h>
+#include <eshkol/build_config.h>
 
 #include <cmath>
 #include <cstdio>
@@ -27,6 +28,17 @@ bool expect_vector(const char* name, const double* actual,
 int main() {
     using namespace eshkol::blas;
     bool ok = isAvailable() && std::strlen(getBackendName()) > 0;
+
+#if defined(ESHKOL_BLAS_OPENBLAS) && !defined(__APPLE__) && !defined(_WIN32)
+    // CMake target links and raw AOT links are distinct contracts.  The
+    // provider test must fail if a Linux BLAS build cannot replay a concrete
+    // BLAS closure after libeshkol-runtime.a in generated executables.
+    if (std::strlen(ESHKOL_HOST_BLAS_LINK_ARGS) == 0) {
+        std::fprintf(stderr,
+                     "BLAS provider is enabled but the AOT link closure is empty\n");
+        ok = false;
+    }
+#endif
 
     const double a[] = {1, 2, 3, 4, 5, 6};
     const double b[] = {7, 8, 9, 10, 11, 12};
