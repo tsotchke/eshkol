@@ -492,6 +492,28 @@ public:
     llvm::Value* websocketReceive(const eshkol_operations_t* op);
     /** @brief (websocket-close ws) — close a WebSocket connection. @return Unspecified value. */
     llvm::Value* websocketClose(const eshkol_operations_t* op);
+    /** @brief Whether the bundled zlib runtime is available (always true in production builds). */
+    llvm::Value* compressionAvailable(const eshkol_operations_t* op);
+    /** @brief Compress bytes as an RFC 1950 zlib stream. */
+    llvm::Value* deflateBuiltin(const eshkol_operations_t* op);
+    /** @brief Expand an RFC 1950 zlib stream. */
+    llvm::Value* inflateBuiltin(const eshkol_operations_t* op);
+    /** @brief Compress bytes as an RFC 1952 gzip stream. */
+    llvm::Value* gzipBuiltin(const eshkol_operations_t* op);
+    /** @brief Expand an RFC 1952 gzip stream. */
+    llvm::Value* gunzipBuiltin(const eshkol_operations_t* op);
+    /** @brief Create a production Yoga layout node. */
+    llvm::Value* yogaNodeCreate(const eshkol_operations_t* op);
+    /** @brief Set a Yoga style property. */
+    llvm::Value* yogaNodeSet(const eshkol_operations_t* op);
+    /** @brief Attach a child to a Yoga node. */
+    llvm::Value* yogaNodeAddChild(const eshkol_operations_t* op);
+    /** @brief Calculate a Yoga layout tree. */
+    llvm::Value* yogaNodeCalculate(const eshkol_operations_t* op);
+    /** @brief Read a computed Yoga layout property. */
+    llvm::Value* yogaNodeGetComputed(const eshkol_operations_t* op);
+    /** @brief Free a Yoga node/subtree. */
+    llvm::Value* yogaNodeFree(const eshkol_operations_t* op);
     /** @brief (ts-parser-new lang) — create a tree-sitter parser for a language. */
     llvm::Value* tsParserNew(const eshkol_operations_t* op);
     /** @brief (ts-parser-free parser) — release a tree-sitter parser. @return Unspecified value. */

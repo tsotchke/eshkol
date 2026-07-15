@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -22,6 +23,25 @@ from typing import NoReturn
 DEFAULT_TIMEOUT_SECONDS = 900
 EXPECTED_SMOKE_OUTPUT = "hello from windows smoke"
 EXPECTED_AGENT_SMOKE_OUTPUT = "release agent smoke"
+COMMON_LICENSE_FILES = (
+    "pcre2-LICENCE.md",
+    "pcre2-sljit-LICENSE.txt",
+    "sqlite-PUBLIC-DOMAIN.txt",
+    "zlib-LICENSE.txt",
+    "tree-sitter-LICENSE.txt",
+    "tree-sitter-unicode-LICENSE.txt",
+    "tree-sitter-javascript-LICENSE.txt",
+    "tree-sitter-typescript-LICENSE.txt",
+    "tree-sitter-python-LICENSE.txt",
+    "tree-sitter-rust-LICENSE.txt",
+    "tree-sitter-go-LICENSE.txt",
+    "tree-sitter-c-LICENSE.txt",
+    "tree-sitter-cpp-LICENSE.txt",
+    "tree-sitter-java-LICENSE.txt",
+    "tree-sitter-ruby-LICENSE.txt",
+    "tree-sitter-bash-LICENSE.txt",
+    "yoga-LICENSE.txt",
+)
 
 
 def fail(message: str, *, stdout: str = "", stderr: str = "") -> NoReturn:
@@ -144,14 +164,50 @@ def main() -> int:
 
     windows = os.name == "nt"
     runner = package_dir / "bin" / ("eshkol-run.exe" if windows else "eshkol-run")
-    archive_names = (
-        ("eshkol-runtime.lib", "eshkol-agent-ffi.lib")
-        if windows
-        else ("libeshkol-runtime.a", "libeshkol-agent-ffi.a")
-    )
+    if windows:
+        archive_names = (
+            "eshkol-runtime.lib",
+            "eshkol-agent-ffi.lib",
+            "eshkol-agent-pcre2.lib",
+            "eshkol-agent-sqlite3.lib",
+            "eshkol-agent-zlib.lib",
+            "eshkol-agent-tree-sitter-grammars.lib",
+            "eshkol-agent-tree-sitter.lib",
+            "eshkol-agent-yoga.lib",
+        )
+    else:
+        archive_names = (
+            "libeshkol-runtime.a",
+            "libeshkol-agent-ffi.a",
+            "eshkol-agent-pcre2.a",
+            "eshkol-agent-sqlite3.a",
+            "eshkol-agent-zlib.a",
+            "eshkol-agent-tree-sitter-grammars.a",
+            "eshkol-agent-tree-sitter.a",
+            "eshkol-agent-yoga.a",
+        )
+        if platform.system() == "Linux":
+            archive_names += ("eshkol-agent-curl.a",)
 
     if not runner.is_file():
         fail(f"packaged runner is missing: {runner}")
+
+    notice_file = package_dir / "THIRD_PARTY_NOTICES.md"
+    if notice_file.is_symlink() or not notice_file.is_file() or notice_file.stat().st_size == 0:
+        fail(f"third-party notice index is missing, empty, or symlinked: {notice_file}")
+    license_names = list(COMMON_LICENSE_FILES)
+    if platform.system() == "Linux":
+        license_names.append("curl-COPYING.txt")
+    if windows:
+        license_names.append("eigen-COPYING.MPL2.txt")
+    licenses_dir = package_dir / "licenses"
+    if licenses_dir.is_symlink() or not licenses_dir.is_dir():
+        fail(f"third-party license directory is missing or symlinked: {licenses_dir}")
+    for license_name in license_names:
+        license_path = licenses_dir / license_name
+        if license_path.is_symlink() or not license_path.is_file() or license_path.stat().st_size == 0:
+            fail(f"third-party license is missing, empty, or symlinked: {license_path}")
+
     for archive_name in archive_names:
         archive_paths = (
             package_dir / "lib" / archive_name,

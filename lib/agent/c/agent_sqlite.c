@@ -489,10 +489,11 @@ int64_t eshkol_sqlite_last_insert_rowid(int64_t db_handle) {
  * @brief Returns the number of rows changed by the most recent INSERT/UPDATE/DELETE.
  *
  * @param db_handle Database handle from eshkol_sqlite_open().
- * @return The row-change count, or 0 if @p db_handle is invalid.
+ * @return The row-change count (which may legitimately be zero), or -1 if
+ *         @p db_handle is invalid.
  */
 int eshkol_sqlite_changes(int64_t db_handle) {
     sqlite3* db = get_db(db_handle);
-    if (!db) return 0;
+    if (!db) return -1;
     return sqlite3_changes(db);
 }

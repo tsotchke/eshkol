@@ -63,22 +63,8 @@ unsigned int link_subprocess_timeout_seconds() {
 
 void append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
-    std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
-    std::string item;
-
-    while (std::getline(stream, item, ';')) {
-        if (item.empty()) {
-            continue;
-        }
-
-        if (item.size() >= 3 &&
-            std::isalpha(static_cast<unsigned char>(item[0])) &&
-            item[1] == ':' &&
-            item[2] == '/') {
-            std::replace(item.begin(), item.end(), '/', '\\');
-        }
-
-        link_args.emplace_back(item);
+    for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
+        link_args.emplace_back(std::move(runtime_arg));
     }
 
     const auto has_cudadevrt = std::any_of(link_args.begin(), link_args.end(), [](const std::string& arg) {
@@ -119,15 +105,25 @@ void append_configured_link_args(const char* raw_args,
             continue;
         }
 #endif
-        link_args.emplace_back(item);
+        link_args.emplace_back(
+            eshkol::platform::cxx_driver_link_arg(std::move(item)));
     }
 }
 
-void append_host_agent_ffi_dependency_link_args(std::vector<std::string>& link_args) {
+void append_host_agent_ffi_dependency_link_args(
+    std::vector<std::string>& link_args,
+    const std::filesystem::path& agent_library_dir) {
     std::vector<std::string> configured_args;
     append_configured_link_args(ESHKOL_HOST_AGENT_FFI_LINK_ARGS, configured_args);
 
     for (const auto& item : configured_args) {
+        static constexpr const char* kAgentLibMarker = "@agent-lib@/";
+        if (item.rfind(kAgentLibMarker, 0) == 0) {
+            const auto package_dependency =
+                agent_library_dir / item.substr(std::strlen(kAgentLibMarker));
+            link_args.emplace_back(package_dependency.generic_string());
+            continue;
+        }
         // This AOT path has already resolved and appended the relocatable
         // agent archive beside libeshkol-runtime.  The configured string also
         // contains the build-tree archive and its force/whole-archive wrapper
@@ -2038,6 +2034,17 @@ public:
         function_return_types["websocket-send-binary"] = BuiltinTypes::Boolean;
         function_return_types["websocket-receive"] = BuiltinTypes::Value;
         function_return_types["websocket-close"] = BuiltinTypes::Boolean;
+        function_return_types["compression-available"] = BuiltinTypes::Boolean;
+        function_return_types["deflate"] = BuiltinTypes::Value;
+        function_return_types["inflate"] = BuiltinTypes::Value;
+        function_return_types["gzip"] = BuiltinTypes::Value;
+        function_return_types["gunzip"] = BuiltinTypes::Value;
+        function_return_types["yoga-node-create"] = BuiltinTypes::Integer;
+        function_return_types["yoga-node-set!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-add-child!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-calculate!"] = BuiltinTypes::Boolean;
+        function_return_types["yoga-node-get-computed"] = BuiltinTypes::Float64;
+        function_return_types["yoga-node-free!"] = BuiltinTypes::Boolean;
         function_return_types["ts-parser-new"] = BuiltinTypes::Integer;
         function_return_types["ts-parser-free"] = BuiltinTypes::Boolean;
         function_return_types["ts-parse"] = BuiltinTypes::Integer;
@@ -13479,6 +13486,7 @@ private:
         if (func_name == "symbol->string") return codegenSymbolToString(op);
         if (func_name == "string->symbol") return codegenStringToSymbol(op);
         if (func_name == "ptr->string") return codegenPtrToString(op);
+        if (func_name == "ptr->string-n") return codegenPtrToStringN(op);
         if (func_name == "make-string") return strio_->makeString(op);
         // R7RS: (string char ...) — construct string from character arguments
         if (func_name == "string" && op->call_op.num_vars > 0) {
@@ -14555,6 +14563,17 @@ private:
         if (func_name == "websocket-send-binary") return system_->websocketSendBinary(op);
         if (func_name == "websocket-receive") return system_->websocketReceive(op);
         if (func_name == "websocket-close") return system_->websocketClose(op);
+        if (func_name == "compression-available") return system_->compressionAvailable(op);
+        if (func_name == "deflate") return system_->deflateBuiltin(op);
+        if (func_name == "inflate") return system_->inflateBuiltin(op);
+        if (func_name == "gzip") return system_->gzipBuiltin(op);
+        if (func_name == "gunzip") return system_->gunzipBuiltin(op);
+        if (func_name == "yoga-node-create") return system_->yogaNodeCreate(op);
+        if (func_name == "yoga-node-set!") return system_->yogaNodeSet(op);
+        if (func_name == "yoga-node-add-child!") return system_->yogaNodeAddChild(op);
+        if (func_name == "yoga-node-calculate!") return system_->yogaNodeCalculate(op);
+        if (func_name == "yoga-node-get-computed") return system_->yogaNodeGetComputed(op);
+        if (func_name == "yoga-node-free!") return system_->yogaNodeFree(op);
         if (func_name == "ts-parser-new") return system_->tsParserNew(op);
         if (func_name == "ts-parser-free") return system_->tsParserFree(op);
         if (func_name == "ts-parse") return system_->tsParse(op);
@@ -22767,6 +22786,106 @@ private:
         return tagged_->packHeapPtr(result);
     }
 
+    // ptr->string-n: Copy exactly N bytes from a raw C pointer into an Eshkol
+    // string. Unlike ptr->string, this does not call strlen(), so embedded NUL
+    // bytes are preserved. This is the required boundary for binary-safe FFI
+    // APIs such as HTTP responses that return a pointer and an explicit length.
+    Value* codegenPtrToStringN(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 2) {
+            eshkol_warn("ptr->string-n requires exactly 2 arguments");
+            return nullptr;
+        }
+
+        TypedValue ptr_tv = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue length_tv = codegenTypedAST(&op->call_op.variables[1]);
+        if (!ptr_tv.llvm_value || !length_tv.llvm_value) return nullptr;
+
+        Value* ptr_tagged = typedValueToTaggedValue(ptr_tv);
+        Value* length_tagged = typedValueToTaggedValue(length_tv);
+        Value* ptr_int = unpackInt64FromTaggedValue(ptr_tagged);
+        Value* raw_ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
+        Value* length = unpackInt64FromTaggedValue(length_tagged);
+
+        Function* current_fn = builder->GetInsertBlock()->getParent();
+        BasicBlock* negative_bb =
+            BasicBlock::Create(*context, "ptr_n_negative", current_fn);
+        BasicBlock* dispatch_bb =
+            BasicBlock::Create(*context, "ptr_n_dispatch", current_fn);
+        BasicBlock* empty_bb =
+            BasicBlock::Create(*context, "ptr_n_empty", current_fn);
+        BasicBlock* valid_bb =
+            BasicBlock::Create(*context, "ptr_n_valid", current_fn);
+        BasicBlock* merge_bb =
+            BasicBlock::Create(*context, "ptr_n_merge", current_fn);
+
+        Value* is_negative = builder->CreateICmpSLT(
+            length, ConstantInt::get(int64_type, 0), "ptr_n_is_negative");
+        builder->CreateCondBr(is_negative, negative_bb, dispatch_bb);
+
+        builder->SetInsertPoint(negative_bb);
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(
+                builder->getVoidTy(), {builder->getPtrTy()}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                                          "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+        Function* make_exc_func =
+            module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            FunctionType* make_type = FunctionType::get(
+                builder->getPtrTy(),
+                {builder->getInt32Ty(), builder->getPtrTy()}, false);
+            make_exc_func = Function::Create(
+                make_type, Function::ExternalLinkage,
+                "eshkol_make_exception_with_header", module.get());
+        }
+        Value* error_msg =
+            codegenString("ptr->string-n: length must be nonnegative");
+        Value* exc_type = ConstantInt::get(
+            builder->getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+        Value* exception =
+            builder->CreateCall(make_exc_func, {exc_type, error_msg});
+        builder->CreateCall(raise_func, {exception});
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(dispatch_bb);
+        Value* is_null = builder->CreateICmpEQ(
+            ptr_int, ConstantInt::get(int64_type, 0), "ptr_n_is_null");
+        Value* is_empty = builder->CreateICmpEQ(
+            length, ConstantInt::get(int64_type, 0), "ptr_n_is_empty");
+        builder->CreateCondBr(builder->CreateOr(is_null, is_empty),
+                              empty_bb, valid_bb);
+
+        builder->SetInsertPoint(empty_bb);
+        Value* empty_arena =
+            builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* empty_str = builder->CreateCall(
+            mem->getArenaAllocateStringWithHeader(),
+            {empty_arena, ConstantInt::get(int64_type, 0)});
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(valid_bb);
+        Value* arena_ptr =
+            builder->CreateLoad(builder->getPtrTy(), global_arena);
+        Value* new_str = builder->CreateCall(
+            mem->getArenaAllocateStringWithHeader(), {arena_ptr, length});
+        builder->CreateMemCpy(new_str, MaybeAlign(1), raw_ptr,
+                              MaybeAlign(1), length);
+        Value* terminator = builder->CreateGEP(
+            builder->getInt8Ty(), new_str, length, "ptr_n_terminator");
+        builder->CreateStore(ConstantInt::get(builder->getInt8Ty(), 0),
+                             terminator);
+        builder->CreateBr(merge_bb);
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* result = builder->CreatePHI(builder->getPtrTy(), 2);
+        result->addIncoming(empty_str, empty_bb);
+        result->addIncoming(new_str, valid_bb);
+        return tagged_->packHeapPtr(result);
+    }
+
     // ============================================================================
     // CHARACTER FUNCTIONS
     // ============================================================================
@@ -23960,6 +24079,9 @@ private:
             "http-server-respond", "http-server-close", "http-request",
             "websocket-connect", "websocket-send", "websocket-send-binary",
             "websocket-receive", "websocket-close",
+            "compression-available", "deflate", "inflate", "gzip", "gunzip",
+            "yoga-node-create", "yoga-node-set!", "yoga-node-add-child!",
+            "yoga-node-calculate!", "yoga-node-get-computed", "yoga-node-free!",
             "ts-parser-new", "ts-parser-free", "ts-parse", "ts-tree-free",
             "ts-node-type", "ts-node-text", "ts-node-children",
             "ts-query-new", "ts-query-matches", "ts-query-free",
@@ -38693,7 +38815,8 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
                 // SQLite short names: runtime-only hosts may intentionally
                 // omit their development-link symlinks, and in that case the
                 // corresponding agent modules were not compiled at all.
-                append_host_agent_ffi_dependency_link_args(link_args);
+                append_host_agent_ffi_dependency_link_args(
+                    link_args, agent_ffi_path.parent_path());
             }
         } else {
             link_args.emplace_back(

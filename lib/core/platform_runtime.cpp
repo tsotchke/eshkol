@@ -370,6 +370,34 @@ std::string cxx_compiler() {
 #endif
 }
 
+std::string cxx_driver_link_arg(std::string argument) {
+#ifdef _WIN32
+    if (argument.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(argument[0])) &&
+        argument[1] == ':' &&
+        argument[2] == '/') {
+        std::replace(argument.begin(), argument.end(), '/', '\\');
+    }
+
+    const bool is_path =
+        argument.find('/') != std::string::npos ||
+        argument.find('\\') != std::string::npos;
+    if (!is_path && argument.size() > 4) {
+        const auto suffix_offset = argument.size() - 4;
+        const bool is_bare_msvc_library =
+            argument[suffix_offset] == '.' &&
+            std::tolower(static_cast<unsigned char>(argument[suffix_offset + 1])) == 'l' &&
+            std::tolower(static_cast<unsigned char>(argument[suffix_offset + 2])) == 'i' &&
+            std::tolower(static_cast<unsigned char>(argument[suffix_offset + 3])) == 'b';
+        if (is_bare_msvc_library) {
+            argument.resize(suffix_offset);
+            return "-l" + argument;
+        }
+    }
+#endif
+    return argument;
+}
+
 /** Return the configured host `llc` executable path (ESHKOL_HOST_LLC_EXECUTABLE). */
 std::string llc_executable() {
     return ESHKOL_HOST_LLC_EXECUTABLE;
@@ -403,15 +431,7 @@ std::vector<std::string> host_runtime_link_args() {
 
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
-#ifdef _WIN32
-            if (item.size() >= 3 &&
-                std::isalpha(static_cast<unsigned char>(item[0])) &&
-                item[1] == ':' &&
-                item[2] == '/') {
-                std::replace(item.begin(), item.end(), '/', '\\');
-            }
-#endif
-            args.push_back(item);
+            args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }
 

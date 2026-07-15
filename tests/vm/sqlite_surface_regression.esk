@@ -1,6 +1,6 @@
 ;; Standalone VM regression for optional SQLite convenience builtins.
-;; The minimal standalone VM binary does not link agent SQLite hooks, so these
-;; must fail cleanly instead of introducing a sqlite dependency.
+;; Invalid database handles must fail cleanly whether or not the production
+;; agent SQLite bridge is linked into the hosted VM executable.
 
 (display "=== sqlite VM surface regression ===") (newline)
 
@@ -9,25 +9,25 @@
                   (lambda ()
                     42)))
 
-(display "T1 db-transaction cleanly unavailable without SQLite hooks: ")
+(display "T1 db-transaction rejects an invalid handle: ")
 (display (if (not transaction-result)
              "PASS"
              (list "FAIL got " transaction-result)))
 (newline)
 
-(display "T2 db-busy-timeout cleanly unavailable without SQLite hooks: ")
+(display "T2 db-busy-timeout rejects an invalid handle: ")
 (display (if (not (db-busy-timeout 0 100))
              "PASS"
              "FAIL"))
 (newline)
 
-(display "T3 db-last-insert-id cleanly unavailable without SQLite hooks: ")
+(display "T3 db-last-insert-id rejects an invalid handle: ")
 (display (if (not (db-last-insert-id 0))
              "PASS"
              "FAIL"))
 (newline)
 
-(display "T4 db-changes cleanly unavailable without SQLite hooks: ")
+(display "T4 db-changes rejects an invalid handle: ")
 (display (if (not (db-changes 0))
              "PASS"
              "FAIL"))

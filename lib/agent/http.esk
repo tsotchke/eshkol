@@ -1,16 +1,18 @@
 ;;
 ;; http.esk - HTTP client FFI wrapper
 ;;
-;; Eshkol bindings to qLLM's http_client.c for sync requests and SSE streaming.
-;; Links against libsemiclassical_qllm.
+;; Eshkol bindings to native HTTP clients: NSURLSession on macOS, WinHTTP on
+;; Windows, and pinned libcurl/OpenSSL on Linux.  The ABI and behavior are
+;; owned by Eshkol and are identical on every supported host.
 ;;
 
 (require core.capabilities)
 
 (provide http-init http-shutdown http-has-ssl?
          http-get http-post http-request
-         http-stream-open http-stream-next http-stream-done? http-stream-close
-         sse-event-type sse-event-data sse-event-free)
+         http-stream-open http-stream-next http-stream-done? http-stream-error
+         http-stream-close sse-event-type sse-event-data sse-event-id
+         sse-event-retry-ms sse-event-free)
 
 ;; ============================================================================
 ;; FFI Declarations — sync HTTP
@@ -21,8 +23,9 @@
 (extern void http-shutdown-raw :real qllm_http_shutdown)
 (extern i32 http-has-ssl-raw :real qllm_http_has_ssl)
 
-;; Full request (returns pointer to response struct)
-(extern ptr http-request-raw ptr :real qllm_http_request)
+;; Full binary-safe Eshkol request: method, URL, newline-delimited validated
+;; headers, body bytes + exact byte length, timeout.
+(extern ptr http-request-raw ptr ptr ptr ptr i64 i32 :real eshkol_http_request_bytes)
 
 ;; POST with custom headers
 (extern ptr http-post-raw ptr ptr i64 ptr i64 i32 :real qllm_http_post)
@@ -37,6 +40,7 @@
 (extern i32 http-response-status ptr :real qllm_http_response_status)
 (extern ptr http-response-body ptr :real qllm_http_response_body)
 (extern i64 http-response-body-len ptr :real qllm_http_response_body_len)
+(extern ptr http-response-error ptr :real qllm_http_response_error)
 (extern void http-response-free ptr :real qllm_http_response_free)
 
 ;; Error string
@@ -46,20 +50,27 @@
 ;; FFI Declarations — SSE streaming
 ;; ============================================================================
 
-;; Open stream (returns stream handle pointer)
-(extern ptr stream-open-raw ptr ptr i64 ptr i64 i32 ptr :real qllm_http_stream_open)
+;; Open stream (method, URL, header block, body bytes + exact length, timeout).
+(extern ptr stream-open-raw ptr ptr ptr ptr i64 i32 :real eshkol_http_stream_open_bytes)
 
-;; Read next event (fills event struct, returns error code)
-(extern i32 stream-next-raw ptr ptr i32 :real qllm_http_stream_next)
+;; Read next event (returns owned native event pointer or #f).
+(extern ptr stream-next-raw ptr i32 :real eshkol_http_stream_next)
 
 ;; Check if stream is done
-(extern i32 stream-done-raw ptr :real qllm_http_stream_done)
+(extern i32 stream-done-raw ptr :real eshkol_http_stream_done)
+
+;; Last transport/parser error, or #f when none.
+(extern ptr stream-error-raw ptr :real eshkol_http_stream_error)
 
 ;; Close stream
-(extern void stream-close-raw ptr :real qllm_http_stream_close)
+(extern void stream-close-raw ptr :real eshkol_http_stream_close)
 
-;; Free event strings
-(extern void sse-event-free-raw ptr :real qllm_sse_event_free)
+;; Event accessors and ownership.
+(extern ptr sse-event-type-raw ptr :real eshkol_sse_event_type)
+(extern ptr sse-event-data-raw ptr :real eshkol_sse_event_data)
+(extern ptr sse-event-id-raw ptr :real eshkol_sse_event_id)
+(extern i64 sse-event-retry-raw ptr :real eshkol_sse_event_retry_ms)
+(extern void sse-event-free-raw ptr :real eshkol_sse_event_free)
 
 ;; ============================================================================
 ;; High-Level Wrappers
@@ -76,6 +87,35 @@
 (define (http-has-ssl?)
   "Check if HTTPS is available."
   (= (http-has-ssl-raw) 1))
+
+;; A native NULL `ptr` crosses the Eshkol FFI as the empty list, not #f.
+;; Keep that ABI rule centralized here so every sync and streaming wrapper
+;; performs the same ownership-safe check.
+(define (http-null-ptr? ptr)
+  (null? ptr))
+
+(define (http-native-c-string ptr default)
+  (if (http-null-ptr? ptr) default (ptr->string ptr)))
+
+(define (http-response->result response)
+  "Convert and release an owned native response.
+   Returns (status-code . body-string) or #f on transport error."
+  (if (http-null-ptr? response)
+      #f
+      (let ((error-ptr (http-response-error response)))
+        (if (not (http-null-ptr? error-ptr))
+            (begin
+              (http-response-free response)
+              #f)
+            (let* ((status (http-response-status response))
+                   (body-ptr (http-response-body response))
+                   (body-len (http-response-body-len response))
+                   (body (if (http-null-ptr? body-ptr)
+                             ""
+                             (ptr->string-n body-ptr body-len)))
+                   (result (cons status body)))
+              (http-response-free response)
+              result)))))
 
 ;; #195 MEDIUM: URL / header sanitization before dispatch.
 ;;
@@ -102,6 +142,25 @@
        (not (string-contains s "\x7f"))   ;; DEL
        ))
 
+(define (http-token-char? ch)
+  (let ((code (char->integer ch)))
+    (or (and (>= code 48) (<= code 57))
+        (and (>= code 65) (<= code 90))
+        (and (>= code 97) (<= code 122))
+        (char=? ch #\!) (char=? ch #\#) (char=? ch #\$)
+        (char=? ch #\%) (char=? ch #\&) (char=? ch #\')
+        (char=? ch #\*) (char=? ch #\+) (char=? ch #\-)
+        (char=? ch #\.) (char=? ch #\^) (char=? ch #\_)
+        (char=? ch #\`) (char=? ch #\|) (char=? ch #\~))))
+
+(define (http-token-string? s)
+  (and (string? s)
+       (> (string-length s) 0)
+       (let loop ((i 0))
+         (or (= i (string-length s))
+             (and (http-token-char? (string-ref s i))
+                  (loop (+ i 1)))))))
+
 (define (http-check-url url)
   (unless (http-safe-string? url)
     (error "http: URL contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection" url)))
@@ -110,54 +169,51 @@
   (for-each (lambda (pair)
               (let ((name (if (pair? pair) (car pair) ""))
                     (val  (if (pair? pair) (cdr pair) "")))
-                (unless (and (http-safe-string? name)
+                (unless (and (http-token-string? name)
                              (http-safe-string? val))
-                  (error "http: header contains unsafe control byte (CR/LF/NUL/TAB/VT/FF/DEL) — possible injection"
+                  (error "http: invalid RFC 9110 header name or unsafe control byte in value"
                          pair))))
             headers))
+
+(define (http-headers->block headers)
+  "Serialize a validated header alist into the native ABI's line format."
+  (let loop ((rest headers) (result ""))
+    (if (null? rest)
+        result
+        (let ((header (car rest)))
+          (loop (cdr rest)
+                (string-append result
+                               (car header) ": " (cdr header) "\n"))))))
 
 (define (http-get url . timeout)
   "Perform HTTP GET. Returns (status-code . body-string) or #f on error."
   (capability-require! 'network url)
   (http-check-url url)
   (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
-         (resp (http-get-raw url timeout-ms)))
-    (if (not resp) #f
-        (let* ((status (http-response-status resp))
-               (body (http-response-body resp))
-               (result (cons status (if body body ""))))
-          (http-response-free resp)
-          result))))
+         (resp (http-request-raw "GET" url "" "" 0 timeout-ms)))
+    (http-response->result resp)))
 
 (define (http-post url headers body . timeout)
   "Perform HTTP POST with custom headers.
    headers: list of (name . value) pairs
    body: string
    Returns: (status-code . body-string) or #f on error."
-  (capability-require! 'network url)
-  (http-check-url url)
-  (http-check-headers headers)
-  (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
-         ;; For now, use the JSON convenience function with auth header extraction.
-         ;; Tracked as ESH-0231 (.swarm/tasks/ESH-0231.json): once the full
-         ;; header-passing FFI is wired, use http-post-raw instead.
-         (auth-header (let ((h (assoc "Authorization" headers)))
-                        (if h (cdr h)
-                            (let ((h2 (assoc "x-api-key" headers)))
-                              (if h2 (cdr h2) "")))))
-         (resp (http-post-json-raw url body auth-header timeout-ms)))
-    (if (not resp) #f
-        (let* ((status (http-response-status resp))
-               (resp-body (http-response-body resp))
-               (result (cons status (if resp-body resp-body ""))))
-          (http-response-free resp)
-          result))))
+  (apply http-request "POST" url headers body timeout))
 
 (define (http-request method url headers body . timeout)
   "General HTTP request. Returns (status-code . body-string) or #f."
-  (if (string=? method "GET")
-      (apply http-get url timeout)
-      (apply http-post url headers body timeout)))
+  (capability-require! 'network url)
+  (http-check-url url)
+  (unless (http-token-string? method)
+    (error "http: method is not a valid RFC 9110 token" method))
+  (unless (string? body)
+    (error "http: request body must be a byte string" body))
+  (http-check-headers headers)
+  (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
+         (header-block (http-headers->block headers))
+         (resp (http-request-raw method url header-block body
+                                 (string-byte-length body) timeout-ms)))
+    (http-response->result resp)))
 
 ;; ============================================================================
 ;; SSE Streaming
@@ -167,32 +223,55 @@
   "Open an SSE streaming connection.
    Returns: stream handle (opaque pointer) or #f on error."
   (capability-require! 'network url)
-  (let ((timeout-ms (if (null? timeout) 30000 (car timeout))))
-    ;; For now, use curl-based streaming as the FFI requires proper
-    ;; header struct marshaling that isn't available yet
-    (stream-open-raw url #f 0 body (string-length body) timeout-ms #f)))
+  (http-check-url url)
+  (http-check-headers headers)
+  (let ((timeout-ms (if (null? timeout) 30000 (car timeout)))
+        (method (if (string=? body "") "GET" "POST")))
+    (let ((stream
+            (stream-open-raw method url (http-headers->block headers) body
+                             (string-byte-length body) timeout-ms)))
+      (if (http-null-ptr? stream) #f stream))))
 
 (define (http-stream-next stream . timeout)
   "Read next SSE event from stream.
    Returns: (event-type . data-string) or #f if done/error."
-  (let ((timeout-ms (if (null? timeout) 30000 (car timeout))))
-    ;; Read via FFI
-    (let ((result (stream-next-raw stream #f timeout-ms)))
-      (if (= result 0)
-          ;; Success - extract event type and data from the event struct
-          ;; This requires proper struct access which depends on FFI layout
-          (cons "message" "")
-          #f))))
+  (let* ((timeout-ms (if (null? timeout) 30000 (car timeout)))
+         (native-event (stream-next-raw stream timeout-ms)))
+    (if (http-null-ptr? native-event)
+        #f
+        (let ((event (list
+                      (cons "type"
+                            (http-native-c-string
+                             (sse-event-type-raw native-event) "message"))
+                      (cons "data"
+                            (http-native-c-string
+                             (sse-event-data-raw native-event) ""))
+                      (cons "id"
+                            (http-native-c-string
+                             (sse-event-id-raw native-event) ""))
+                           (cons "retry-ms" (sse-event-retry-raw native-event)))))
+          (sse-event-free-raw native-event)
+          event))))
 
 (define (http-stream-done? stream)
   "Check if stream has ended."
   (= (stream-done-raw stream) 1))
 
+(define (http-stream-error stream)
+  "Return the stream's transport/parser error string, or #f when none."
+  (let ((error-ptr (stream-error-raw stream)))
+    (if (http-null-ptr? error-ptr) #f (ptr->string error-ptr))))
+
 (define (http-stream-close stream)
   "Close SSE stream."
   (stream-close-raw stream))
 
-;; SSE event accessors (for use with raw event structs)
-(define (sse-event-type event) (car event))
-(define (sse-event-data event) (cdr event))
-(define (sse-event-free event) #t)  ;; GC handles alist pairs
+;; SSE events are ordinary alists after crossing the native ownership boundary.
+(define (sse-event-field event name default)
+  (let ((entry (assoc name event)))
+    (if entry (cdr entry) default)))
+(define (sse-event-type event) (sse-event-field event "type" "message"))
+(define (sse-event-data event) (sse-event-field event "data" ""))
+(define (sse-event-id event) (sse-event-field event "id" ""))
+(define (sse-event-retry-ms event) (sse-event-field event "retry-ms" -1))
+(define (sse-event-free event) #t)  ;; Native storage is freed by http-stream-next.

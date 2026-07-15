@@ -411,6 +411,12 @@ jobs:
             export UBSAN_OPTIONS="${UBSAN_OPTIONS:-halt_on_error=1:print_stacktrace=1}"
           fi
           ${{ matrix.test_command }} 2>&1 | tee "$RUNNER_TEMP/eshkol-test-logs/${{ matrix.name }}.log"
+          test -x "${{ matrix.build_dir }}/eshkol-agent-http-test"
+          "${{ matrix.build_dir }}/eshkol-agent-http-test"
+          test -x "${{ matrix.build_dir }}/eshkol-agent-sse-test"
+          "${{ matrix.build_dir }}/eshkol-agent-sse-test"
+          test -x "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
+          "${{ matrix.build_dir }}/eshkol-agent-capabilities-test"
 
       - name: Upload Test Logs
         if: failure() || cancelled()
@@ -584,7 +590,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $targets = @('eshkol-run', 'eshkol-repl')
+          $targets = @('eshkol-run', 'eshkol-repl', 'eshkol-agent-ffi', 'eshkol-windows-agent-test', 'eshkol-agent-http-test', 'eshkol-agent-sse-test', 'eshkol-agent-capabilities-test')
           if ('${{ matrix.test_mode }}' -eq 'xla') {
             $targets += 'xla_codegen_test'
           }
@@ -600,6 +606,19 @@ jobs:
             Tee-Object -FilePath "$env:RUNNER_TEMP\eshkol-test-logs\${{ matrix.name }}.log"
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
+          }
+          $agentNativeTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-windows-agent-test.exe'
+          $agentHttpTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-http-test.exe'
+          $agentSseTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-sse-test.exe'
+          $agentCapabilitiesTest = Join-Path '${{ matrix.build_dir }}' 'Release\eshkol-agent-capabilities-test.exe'
+          foreach ($test in @($agentNativeTest, $agentHttpTest, $agentSseTest, $agentCapabilitiesTest)) {
+            if (-not (Test-Path $test -PathType Leaf)) {
+              throw "Required native agent contract test is missing: $test"
+            }
+            & $test
+            if ($LASTEXITCODE -ne 0) {
+              throw "Native agent contract test failed: $test (exit $LASTEXITCODE)"
+            }
           }
 
       - name: Upload Test Logs
