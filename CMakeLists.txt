@@ -2459,6 +2459,27 @@ if(REPL_SRC)
     # Linker hardening: full RELRO + immediate binding
     target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
   endif()
+
+  # Linux binary releases stage libpng/libjpeg/libwebp and their codec-side
+  # closure under lib/eshkol/runtime-deps.  Keep the tools relocatable: the
+  # same binaries continue to use distro libraries in the build tree, then
+  # resolve the packaged SONAMEs through this relative RUNPATH after archive
+  # extraction.  Generated AOT/cache executables receive an absolute path to
+  # the relocated directory at link time via platform_runtime.cpp.
+  if(UNIX AND NOT APPLE)
+    set(_eshkol_packaged_runtime_rpath
+        "\$ORIGIN/../lib/eshkol/runtime-deps")
+    set_property(TARGET eshkol-run APPEND PROPERTY
+        BUILD_RPATH "${_eshkol_packaged_runtime_rpath}")
+    set_property(TARGET eshkol-run APPEND PROPERTY
+        INSTALL_RPATH "${_eshkol_packaged_runtime_rpath}")
+    if(TARGET eshkol-repl)
+      set_property(TARGET eshkol-repl APPEND PROPERTY
+          BUILD_RPATH "${_eshkol_packaged_runtime_rpath}")
+      set_property(TARGET eshkol-repl APPEND PROPERTY
+          INSTALL_RPATH "${_eshkol_packaged_runtime_rpath}")
+    endif()
+  endif()
   message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
 
   # Install compiler executable
