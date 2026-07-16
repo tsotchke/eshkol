@@ -1,7 +1,7 @@
 ;;; main.esk — Eshkol website
 ;;;
 ;;; This entire website is written in Eshkol, compiled to WebAssembly,
-;;; and served via GitHub Pages. Single-page application with hash routing.
+;;; and served via GitHub Pages. Single-page application with pathname routing.
 
 ;; ═══════════════════════════════════════════════════════════
 ;; EXTERN DECLARATIONS
@@ -105,6 +105,34 @@
   (let ((g (create-div parent)))
     (web-add-class g "grid-2")
     g))
+
+;; Top-level helpers are used here instead of locally bound lambdas. The site
+;; targets the minimal WASM runtime, where indirect calls through those local
+;; closures previously reached a null table slot and truncated route renders.
+(define (create-platform-badge parent text badge-class)
+  (let ((badge (create-text "span" text parent)))
+    (web-add-class badge "badge")
+    (web-add-class badge badge-class)
+    badge))
+
+(define (create-learn-link-card parent title desc route)
+  (let ((card (create-div parent)))
+    (web-add-class card "card")
+    (style! card "cursor" "pointer")
+    (let ((h (create-text "h4" title card)))
+      (style! h "color" "#a78bfa")
+      (style! h "fontSize" "1rem")
+      (style! h "marginBottom" "4px"))
+    (let ((p (create-text "p" desc card)))
+      (style! p "color" "#71717a")
+      (style! p "fontSize" "0.85rem"))
+    (let ((a (create-text "a" route card)))
+      (web-set-attribute a "href" route)
+      (style! a "fontSize" "0.75rem")
+      (style! a "color" "#606078")
+      (style! a "marginTop" "8px")
+      (style! a "display" "block"))
+    card))
 
 (define (create-code-block parent code-html)
   (let ((pre (web-create-element "pre")))
@@ -374,7 +402,7 @@
         (let ((title (create-text "h1" "Build systems that think." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive and a 22-builtin neuro-symbolic stack. v1.3.3-evolve carries forward the constructive proof that a six-layer transformer can be an interpreter — the Self-Differentiating Neural Computer — with exact tensor-gradient and region-memory correctness fixes for long-running, resident programs." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive. v1.3.3-evolve completes the Moonlab quantum/VQE/ML-KEM stack, proves every declared executable language surface with 1,057/1,057 deterministic traces, hardens exact AD and resident memory, and ships a clean-host-verified 15-package platform matrix with checksums." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Install command
@@ -549,46 +577,46 @@
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
     (section-heading section "What's new in v1.3.3-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Evolve, hardened.</strong> v1.3.3-evolve builds on the v1.3.0-evolve AD matrix with a campaign of correctness fixes surfaced by generative exposure engines. Automatic differentiation is now exact where it silently returned zeros: gradients at vector-constructed points, jacobian/hessian through inner derivatives, and hessian through tensor ops. The exact numeric tower gained a bignum-capable rational type (no more silent degradation to double), a bignum gcd/quotient/remainder fix, and value-correct rational equality and predicates. Region memory closes out with full escape-evacuator subtype coverage. The bytecode VM's silent divergences from the native compiler were fixed, tail-call optimization now covers cond/case/when/and/or, and the WebAssembly build dead-strips unused stdlib. Two permanent generative harnesses &mdash; an AD-versus-finite-difference adversarial oracle and a multi-oracle differential engine (chibi / JIT / AOT / VM plus metamorphic laws) &mdash; now continuously expose regressions and gate every release.")
+    (body-html section "<strong style='color:#a78bfa'>Evolve, completed and verified.</strong> v1.3.3-evolve combines compiler-native automatic differentiation, the complete Moonlab quantum trajectory, FIPS 203 post-quantum cryptography, exhaustive executable-surface evidence, and portable release packages. Exact AD and numeric-tower defects now fail loudly or compute correctly; long-running region memory is poison-tested; every supported platform archive is exercised outside its builder; and the bytecode VM is reported honestly as a verified subset rather than presented as full native-backend parity.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
-        "SDNC paper artefact"
-        "Constructive proof shipped: a six-layer transformer with 12.22M analytically-constructed parameters is bit-identical to a bounded 83-instruction bytecode VM with reverse-mode AD in the ISA. 82 of 83 opcodes are weight-implemented; the reproducibility harness verifies 126/126 inline and 123/123 traced programs.")
+        "Quantum S1-S5"
+        "Moonlab-backed state preparation, Bell-verified randomness, VQE, custom-VJP differentiation through circuits, FIPS 203 ML-KEM 512/768/1024, and a permanent CHSH gate. H2 VQE agrees with exact energy to 4.4e-16.")
 
       (render-feature-card grid
-        "Complete numeric tower"
-        "int64 to bignum to rational to double to complex, with automatic overflow promotion and demotion. Bignums route through every arithmetic, comparison, abs, min/max, expt, floor/ceil/round/truncate, and number-to-string path; rationals carry exact GCD simplification.")
+        "Complete executable evidence"
+        "1,057/1,057 language-surface rows execute deterministically. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and 127 five-oracle generative programs produce zero divergences.")
 
       (render-feature-card grid
-        "Consciousness engine, production"
-        "22 compiled primitives across logic, active inference, and global workspace. ws-step! drives module competition through real closures, fg-update-cpt! mutates CPTs and reconverges beliefs, free-energy / expected-free-energy run at native speed."))
+        "Portable release packages"
+        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths are exercised on clean Windows, Linux, and macOS hosts."))
 
     (let ((grid2 (create-grid-3 section)))
       (render-feature-card grid2
-        "Agent FFI surfaces"
-        "Native HTTP client over libcurl with live HTTPS verified through both AOT and JIT paths, sqlite-backed session persistence with dynamic column-text sizing, JSON parse with Result-typed errors, and subprocess spawn via posix_spawn (the shell-injection-prone popen path is gone). AOT binaries link the full agent FFI through ESHKOL_HOST_AGENT_FFI_LINK_ARGS.")
+        "Exact AD and numeric tower"
+        "First-class tensor losses, input2 gradients, forward-over-reverse composition, Hessians, bignums, and rationals are exact across the supported paths. Unsupported tensor backward operations now raise an error instead of silently returning zero.")
 
       (render-feature-card grid2
-        "Real parallelism via parallel-map"
-        "Worker tagged-value flags-byte fix: parallel-map now scales 5-12x AOT and 4-9x JIT on 24 cores instead of the prior 1.01x. Per-thread arenas plus per-call captures (not GlobalVariable shuttles) keep nested closures thread-safe under cross-thread parallel-execute.")
+        "Verified VM subset"
+        "The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB; the hosted VM surface passes 53/53. PARITY.tsv explicitly ratchets unsupported or divergent operations, so these results do not claim complete backend parity.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
-        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon (with SF64 soft-float emulation), CUDA + cuBLAS on Linux, or XLA/StableHLO for very large or dynamic shapes. One expression, all backends."))
+        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon, CUDA 12.4 + cuBLAS on Linux x64/ARM64 and Windows x64, or XLA/StableHLO. CUDA-labelled packages fail closed unless the real GPU backend is present."))
 
     (let ((grid3 (create-grid-3 section)))
       (render-feature-card grid3
-        "Model serialisation"
-        ".eshkol-model is an ESKB-extended binary format that round-trips trained networks (architecture, weights, metadata). Train on one box, load on another. Stable C ABI in inc/eshkol/c_abi.h; pip install eshkol gives you pybind11 bindings with NumPy zero-copy interop and gradients across the FFI.")
+        "Resident-memory hardening"
+        "The region evacuator deep-walks every interior-pointer subtype, large stable list sorts stay bounded, and long-running loops reclaim per-iteration arenas. Poison and million-iteration tests make stale region references fail loudly.")
 
       (render-feature-card grid3
-        "REPL --machine warm-worker"
-        "eshkol-repl --machine emits READY/DONE/FAIL framing on stderr for harness-driven interactive use. A persistent JIT worker is about 5x faster than cold eshkol-run -r, with marginal per-form cost approaching zero.")
+        "Relocatable JIT and AOT"
+        "Windows ARM64 uses SEH-correct Small-model code with import cells and bounded JIT arenas. Linux packages carry their codec closure and preserve consumer runtime paths instead of replaying hosted-builder locations.")
 
       (render-feature-card grid3
-        "Actionable diagnostics"
-        "Compile errors now report the exact source line and column with a caret underline. Parser comment-stripping preserves newlines; a cumulative file-line counter threads across every parse-next-ast-from-stream call. The 8 MB Darwin stack default is gone: every binary ships with LC_MAIN.stacksize = 512 MB."))
+        "Permanent release oracles"
+        "CTest 76/76, the 44-suite aggregate, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100/100 are repeatable release gates."))
 
     section))
 
@@ -871,41 +899,23 @@
       (style! links "gap" "16px")
       (style! links "marginBottom" "32px")
 
-      (let ((make-link-card (lambda (title desc route)
-              (let ((card (create-div links)))
-                (web-add-class card "card")
-                (style! card "cursor" "pointer")
-                (let ((h (create-text "h4" title card)))
-                  (style! h "color" "#a78bfa")
-                  (style! h "fontSize" "1rem")
-                  (style! h "marginBottom" "4px"))
-                (let ((p (create-text "p" desc card)))
-                  (style! p "color" "#71717a")
-                  (style! p "fontSize" "0.85rem"))
-                (let ((a (create-text "a" route card)))
-                  (web-set-attribute a "href" route)
-                  (style! a "fontSize" "0.75rem")
-                  (style! a "color" "#606078")
-                  (style! a "marginTop" "8px")
-                  (style! a "display" "block"))
-                card))))
-
-        (make-link-card "First 5 Minutes"
+      (begin
+        (create-learn-link-card links "First 5 Minutes"
           "Install, hello world, 5 wow moments"
           "/tutorials")
-        (make-link-card "Why Eshkol?"
+        (create-learn-link-card links "Why Eshkol?"
           "Side-by-side comparison vs Python and JavaScript"
           "/tutorials")
-        (make-link-card "Cookbook"
+        (create-learn-link-card links "Cookbook"
           "30 copy-paste recipes for common tasks"
           "/tutorials")
-        (make-link-card "Train a Neural Network"
+        (create-learn-link-card links "Train a Neural Network"
           "Complete XOR network trained with autodiff"
           "/tutorials")
-        (make-link-card "Self-Improving Programs"
+        (create-learn-link-card links "Self-Improving Programs"
           "Differentiable self-optimisation + active inference"
           "/tutorials")
-        (make-link-card "All 30 Tutorials"
+        (create-learn-link-card links "All 30 Tutorials"
           "Complete tutorial index with feature + project guides"
           "/tutorials")))
 
@@ -1176,7 +1186,16 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. Every release ships 16 pre-built binaries across 3 platforms, 2 architectures, and 3 acceleration tiers.")
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.3-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
+
+    ;; ── Publication status ──────────────────────────────────────
+    (section-subheading page "v1.3.3-evolve Publication")
+    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and binary downloads will appear here when publication is authorized." page)))
+      (web-set-attribute status "id" "release-status")
+      (style! status "color" "#a1a1aa"))
+    (let ((releases (create-div page)))
+      (web-set-attribute releases "id" "releases-container")
+      (body-text releases "Checking GitHub publication status..."))
 
     ;; ── macOS ──────────────────────────────────────────────────
     (section-subheading page "macOS (Homebrew)")
@@ -1187,9 +1206,9 @@
 
     ;; ── Linux ──────────────────────────────────────────────────
     (section-subheading page "Linux")
-    (body-text page "Download a .tar.gz archive from the latest release, extract, and add to your PATH.")
+    (body-text page "Choose the x64 or ARM64 archive and the Lite, XLA, or CUDA 12.4 tier. Verify it against SHA256SUMS.txt before extraction.")
     (create-code-block page
-      "<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/latest\n<code style='color:#606078'># download the linux-x64-lite or linux-arm64-lite .tar.gz</code>\n<code style='color:#22c55e'>$</code> tar xzf eshkol-*.tar.gz\n<code style='color:#22c55e'>$</code> sudo cp eshkol-run eshkol-repl /usr/local/bin/")
+      "<code style='color:#606078'># Valid after the v1.3.3-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.3-evolve/eshkol-v1.3.3-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.3-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.3-evolve-linux-x64-lite.tar.gz")
 
     ;; ── Windows ────────────────────────────────────────────────
     (section-subheading page "Windows")
@@ -1199,14 +1218,14 @@
 
     ;; ── Release Artifacts Table ────────────────────────────────
     (section-subheading page "Release Artifacts")
-    (body-text page "Each release includes three build tiers per platform. All link to the latest release on GitHub.")
+    (body-text page "The table mirrors the release workflow's exact 15-package contract. Package links open the GitHub release; SHA256SUMS.txt is the sixteenth published file.")
 
     (let ((tbl (web-create-element "table")))
       (web-add-class tbl "comparison-table")
-      (web-set-inner-html tbl "<thead><tr><th>Platform</th><th>Architecture</th><th>Lite</th><th>XLA</th><th>CUDA</th></tr></thead><tbody><tr><td><strong>macOS</strong></td><td>Apple Silicon (arm64)</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td>-</td></tr><tr><td><strong>macOS</strong></td><td>Intel (x86_64)</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td>-</td></tr><tr><td><strong>Linux</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td></tr><tr><td><strong>Linux</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.tar.gz</a></td></tr><tr><td><strong>Windows</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td></tr><tr><td><strong>Windows</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td><td><a href='https://github.com/tsotchke/eshkol/releases/latest' target='_blank'>.zip</a></td></tr><tr><td><strong>WebAssembly</strong></td><td>Any</td><td><a href='#/playground'>Try in Browser</a></td><td>-</td><td>-</td></tr></tbody>")
+      (web-set-inner-html tbl "<thead><tr><th>Platform</th><th>Architecture</th><th>Lite</th><th>XLA</th><th>CUDA</th></tr></thead><tbody><tr><td><strong>macOS</strong></td><td>Apple Silicon (arm64)</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>macos-arm64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>macos-arm64-xla</a></td><td>&mdash;</td></tr><tr><td><strong>macOS</strong></td><td>Intel (x86_64)</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>macos-x64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>macos-x64-xla</a></td><td>&mdash;</td></tr><tr><td><strong>Linux</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-x64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-x64-xla</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-x64-cuda</a></td></tr><tr><td><strong>Linux</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-arm64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-arm64-xla</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>linux-arm64-cuda</a></td></tr><tr><td><strong>Windows</strong></td><td>x86_64</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>windows-x64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>windows-x64-xla</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>windows-x64-cuda</a></td></tr><tr><td><strong>Windows</strong></td><td>ARM64</td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>windows-arm64-lite</a></td><td><a href='https://github.com/tsotchke/eshkol/releases' target='_blank' rel='noopener noreferrer'>windows-arm64-xla</a></td><td><span title='NVIDIA CUDA 12.4 has no supported Windows ARM64 toolkit'>Unsupported</span></td></tr><tr><td><strong>WebAssembly</strong></td><td>Any</td><td><a href='/playground'>Try in Browser</a></td><td>&mdash;</td><td>&mdash;</td></tr></tbody>")
       (web-append-child page tbl))
 
-    (body-html page "<strong>Lite</strong> &mdash; core compiler + REPL + stdlib. No GPU dependencies. Best for most users.<br><strong>XLA</strong> &mdash; adds StableHLO/XLA backend for accelerated tensor operations.<br><strong>CUDA</strong> &mdash; adds NVIDIA GPU acceleration via CUDA + Metal on macOS.")
+    (body-html page "<strong>Lite</strong> &mdash; core compiler, REPL, agent modules, image I/O, JIT, and optimization. Best for most users.<br><strong>XLA</strong> &mdash; adds StableHLO/XLA acceleration.<br><strong>CUDA</strong> &mdash; adds the real NVIDIA CUDA 12.4 + cuBLAS backend on Linux x64/ARM64 and Windows x64. macOS uses Accelerate/Metal rather than CUDA; NVIDIA does not provide the required Windows ARM64 CUDA toolchain.")
 
     ;; ── Build from Source ──────────────────────────────────────
     (section-subheading page "Build from Source")
@@ -1227,18 +1246,13 @@
       (style! badges "gap" "12px")
       (style! badges "flexWrap" "wrap")
 
-      (let ((make-badge (lambda (text badge-class)
-              (let ((badge (create-text "span" text badges)))
-                (web-add-class badge "badge")
-                (web-add-class badge badge-class)
-                badge))))
-        (make-badge "macOS (Apple Silicon)" "badge-stable")
-        (make-badge "macOS (Intel)" "badge-stable")
-        (make-badge "Linux (x86_64)" "badge-stable")
-        (make-badge "Linux (ARM64)" "badge-stable")
-        (make-badge "Windows (x64)" "badge-stable")
-        (make-badge "Windows (ARM64)" "badge-stable")
-        (make-badge "WebAssembly" "badge-pre")))
+      (create-platform-badge badges "macOS (Apple Silicon)" "badge-stable")
+      (create-platform-badge badges "macOS (Intel)" "badge-stable")
+      (create-platform-badge badges "Linux (x86_64)" "badge-stable")
+      (create-platform-badge badges "Linux (ARM64)" "badge-stable")
+      (create-platform-badge badges "Windows (x64)" "badge-stable")
+      (create-platform-badge badges "Windows (ARM64)" "badge-stable")
+      (create-platform-badge badges "WebAssembly" "badge-pre"))
 
     (create-divider page)
 
@@ -1267,13 +1281,13 @@
         (let ((h (create-text "h3" "Runtime" r1)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text r1 "No runtime dependencies. Eshkol compiles to standalone native binaries. The compiled output links only against libc and system libraries (libm, libpthread)."))
+        (body-text r1 "Packages carry the image-codec closure and relocatable Eshkol sources/runtime. Host prerequisites such as LLVM 21, OpenSSL, the C++ runtime, and optional XLA/CUDA libraries remain platform dependencies and are validated before execution."))
 
       (let ((r2 (create-card reqs)))
         (let ((h (create-text "h3" "Build Requirements" r2)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text r2 "LLVM 21+ (for the compiler backend), C++20 compiler (GCC 12+ or Clang 15+), CMake 3.14+. Optional: Metal SDK (GPU on macOS), CUDA toolkit (GPU on Linux).")))
+        (body-text r2 "LLVM 21, a C++20 compiler, and CMake 3.14+. CUDA packages require the CUDA 12 ABI and cuBLAS; Linux ARM64 targets the NVIDIA SBSA toolchain. Windows ARM64 supports Lite and XLA, not CUDA.")))
 
     (render-footer page)))
 
@@ -1537,8 +1551,11 @@
 ;; ROUTER
 ;; ═══════════════════════════════════════════════════════════
 
-;; Route buffer for reading URL hash
-(define route-buf "                                                                                                                                                                                                                                                                ")
+;; This must be mutable storage: web-get-hash writes the current pathname
+;; through the host FFI. A string literal can be treated as immutable/constant
+;; by LLVM, which previously collapsed every route to the landing page and
+;; dead-stripped the other page bodies.
+(define route-buf (make-string 256 #\nul))
 
 (define (route!)
   (let ((content (web-get-element-by-id "content")))
