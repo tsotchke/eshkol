@@ -122,7 +122,10 @@ gate green.  This section describes an **untagged release candidate**; no
   host. This avoids CUDA MSBuild's empty-metadata `MSB4023` failure and retains
   the existing `Release/` test and package layout. The fail-closed backend
   verifier follows Ninja Multi-Config's nested implementation graphs, so it
-  still proves the real CUDA sources are present.
+  still proves the real CUDA sources are present. The selected v142 host path
+  is normalized to CMake's forward-slash form before it becomes nvcc's
+  `-ccbin` argument, preventing native backslashes from being consumed as
+  escapes during CUDA compiler identification.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-

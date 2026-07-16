@@ -567,6 +567,10 @@ jobs:
             if ($cudaHostCxx -notmatch '\\MSVC\\14\.29[^\\]*\\bin\\') {
               throw "CUDA host compiler is not the supported v142 toolset: $cudaHostCxx"
             }
+            # CMake forwards this cache entry to nvcc's -ccbin option. Native
+            # backslashes are consumed as escapes there, so use CMake's
+            # platform-independent forward-slash spelling for the same file.
+            $cudaHostCxxCMake = $cudaHostCxx.Replace('\', '/')
             $clangCl = "$env:LLVM_HOME\bin\clang-cl.exe"
             if (-not (Test-Path $clangCl -PathType Leaf)) {
               throw "clang-cl.exe not found in LLVM SDK at $clangCl"
@@ -584,7 +588,7 @@ jobs:
               "-DCMAKE_C_COMPILER=$clangCl",
               "-DCMAKE_CXX_COMPILER=$clangCl",
               "-DCMAKE_CUDA_COMPILER=$env:CUDA_PATH\bin\nvcc.exe",
-              "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
+              "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxxCMake",
               "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
             )
           } else {
