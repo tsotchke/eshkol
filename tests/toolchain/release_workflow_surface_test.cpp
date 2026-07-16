@@ -272,6 +272,18 @@ int main(int argc, char** argv) {
          expect_contains(ci_workflow,
                          "sub-packages: '[\"cudart\", \"cublas\", \"cublas_dev\", \"nvcc\", \"visual_studio_integration\"]'",
                          "Windows CI installs only CUDA 12.4 subpackage names") &&
+         expect_contains(workflow, "'-G', 'Ninja Multi-Config'",
+                         "release Windows CUDA avoids the incompatible Visual Studio CUDA MSBuild path") &&
+         expect_contains(ci_workflow, "'-G', 'Ninja Multi-Config'",
+                         "CI Windows CUDA avoids the incompatible Visual Studio CUDA MSBuild path") &&
+         expect_contains(workflow, "-vcvars_ver=14.29",
+                         "release Windows CUDA uses an nvcc-supported MSVC host") &&
+         expect_contains(ci_workflow, "-vcvars_ver=14.29",
+                         "CI Windows CUDA uses an nvcc-supported MSVC host") &&
+         expect_contains(workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
+                         "release Windows CUDA binds nvcc to the supported host compiler") &&
+         expect_contains(ci_workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
+                         "CI Windows CUDA binds nvcc to the supported host compiler") &&
          expect_not_contains(workflow, "sub-packages: '[\"crt\",",
                              "release does not pass a newer-toolkit crt subpackage to CUDA 12.4") &&
          expect_not_contains(ci_workflow, "sub-packages: '[\"crt\",",
@@ -280,9 +292,12 @@ int main(int argc, char** argv) {
                              "release lets CUDA 12.4 nvcc supply its NVVM internals") &&
          expect_not_contains(ci_workflow, "\"nvcc\", \"nvvm\",",
                              "CI lets CUDA 12.4 nvcc supply its NVVM internals") &&
-         expect_contains(workflow,
-                         "$toolset = \"ClangCL,cuda=$env:CUDA_PATH\"",
-                         "Windows CUDA generator selects the installed toolkit explicitly") &&
+         expect_not_contains(workflow,
+                             "$toolset = \"ClangCL,cuda=$env:CUDA_PATH\"",
+                             "release does not combine ClangCL with CUDA MSBuild targets") &&
+         expect_not_contains(ci_workflow,
+                             "$toolset = \"ClangCL,cuda=$env:CUDA_PATH\"",
+                             "CI does not combine ClangCL with CUDA MSBuild targets") &&
          expect_contains(workflow,
                          "-DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}",
                          "release CUDA labels fail closed without a real backend") &&
