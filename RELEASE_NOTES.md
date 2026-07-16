@@ -31,6 +31,8 @@ the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather
 than silently substituting CUDA 13. Windows uses native shell-free driver paths
 instead of MSVC STL generic-path conversion, keeping generated links compatible
 with consumer Visual C++ import libraries that predate `__std_replace_copy_2`.
+Its CUDA 12.4 setup also requests only documented Windows subpackages; `nvcc`
+provides its compiler internals without invalid standalone `crt`/`nvvm` names.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.

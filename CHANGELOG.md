@@ -112,6 +112,10 @@ gate green.  This section describes an **untagged release candidate**; no
   MSVC STL `__std_replace_copy_2` helper that current build headers introduce
   for generic-path conversion but older compatible consumer import libraries
   do not provide.
+- **Windows CUDA lanes use the CUDA 12.4 installer vocabulary.** The pinned
+  network installer now receives only documented 12.4 subpackages. Compiler
+  internals remain supplied by `nvcc`; nonexistent standalone `crt`/`nvvm`
+  names from newer toolkit layouts can no longer abort setup before configure.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
