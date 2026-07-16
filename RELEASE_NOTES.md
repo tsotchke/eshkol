@@ -33,6 +33,10 @@ instead of MSVC STL generic-path conversion, keeping generated links compatible
 with consumer Visual C++ import libraries that predate `__std_replace_copy_2`.
 Its CUDA 12.4 setup also requests only documented Windows subpackages; `nvcc`
 provides its compiler internals without invalid standalone `crt`/`nvvm` names.
+The Windows CUDA lane uses Ninja Multi-Config so Eshkol C/C++ remains LLVM 21
+ClangCL while `nvcc` uses the CUDA-supported v142 MSVC host, avoiding the
+Visual Studio CUDA-target `MSB4023` metadata failure without changing the
+release package layout.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.

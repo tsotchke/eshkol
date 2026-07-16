@@ -522,49 +522,95 @@ jobs:
           if (-not (Test-Path $vswhere)) {
             throw "vswhere.exe not found; cannot locate a Visual Studio generator"
           }
-          $cmakeHelp = (cmake --help) -join "`n"
-          $generator = $null
-          foreach ($candidate in @(
-              @{ name = 'Visual Studio 18 2026'; version = '[18.0,19.0)' },
-              @{ name = 'Visual Studio 17 2022'; version = '[17.0,18.0)' }
-            )) {
-            if ($cmakeHelp -notmatch [regex]::Escape($candidate.name)) {
-              continue
-            }
-            $install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -version $candidate.version -property installationPath
-            if ($LASTEXITCODE -eq 0 -and $install) {
-              $generator = $candidate.name
-              Write-Host "Using CMake generator '$generator' from $install"
-              break
-            }
-          }
-          if (-not $generator) {
-            throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
-          }
-          $cudaArgs = @()
-          $toolset = 'ClangCL'
+          $cmakeArgs = @(
+            '-S', '.',
+            '-B', '${{ matrix.build_dir }}',
+            '-DBUILD_REPL=ON',
+            '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
+            "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
+            '-DESHKOL_STDLIB_TARGET_CPU=generic',
+            '-DESHKOL_STDLIB_TARGET_FEATURES=',
+            '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
+            '-DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}',
+            '-DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}',
+            "-DLLVM_DIR=$env:LLVM_DIR"
+          )
           if ('${{ matrix.gpu_enabled }}' -eq 'ON') {
             if (-not $env:CUDA_PATH -or -not (Test-Path "$env:CUDA_PATH\bin\nvcc.exe")) {
               throw "CUDA toolkit action did not provide a usable CUDA_PATH"
             }
-            $cudaArgs += "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
-            $toolset = "ClangCL,cuda=$env:CUDA_PATH"
+            $install = & $vswhere -latest -products * `
+              -requires Microsoft.Component.MSBuild `
+              -version '[17.0,18.0)' -property installationPath
+            if ($LASTEXITCODE -ne 0 -or -not $install) {
+              throw "Visual Studio 2022 is required for the CUDA 12.4 host toolchain"
+            }
+            $devCmd = Join-Path $install 'Common7\Tools\VsDevCmd.bat'
+            if (-not (Test-Path $devCmd -PathType Leaf)) {
+              throw "VsDevCmd.bat not found at $devCmd"
+            }
+            # CUDA 12.4 supports MSVC 19.2x/19.3x, while the hosted image's
+            # default v143 compiler has already advanced to 19.4x. Activate
+            # the installed v142 toolset only for nvcc's host compilation.
+            $devEnvironment = & $env:ComSpec /d /s /c `
+              "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.29 && set"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Visual Studio v142 developer environment activation failed"
+            }
+            foreach ($line in $devEnvironment) {
+              if ($line -match '^([^=]+)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+              }
+            }
+            $cudaHostCxx = (Get-Command cl.exe -ErrorAction Stop).Source
+            if ($cudaHostCxx -notmatch '\\MSVC\\14\.29[^\\]*\\bin\\') {
+              throw "CUDA host compiler is not the supported v142 toolset: $cudaHostCxx"
+            }
+            $clangCl = "$env:LLVM_HOME\bin\clang-cl.exe"
+            if (-not (Test-Path $clangCl -PathType Leaf)) {
+              throw "clang-cl.exe not found in LLVM SDK at $clangCl"
+            }
+            if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+              throw "Ninja is required for the Windows ClangCL + CUDA build"
+            }
+            # Visual Studio generators ignore CMAKE_CUDA_HOST_COMPILER and
+            # CUDA's MSBuild targets reject ClangCL with MSB4023. Ninja Multi-
+            # Config keeps the existing Release/ layout while compiling Eshkol
+            # C/C++ with LLVM 21 and CUDA translation units with nvcc + v142 cl.
+            $cmakeArgs += @(
+              '-G', 'Ninja Multi-Config',
+              '-DCMAKE_CONFIGURATION_TYPES=Release',
+              "-DCMAKE_C_COMPILER=$clangCl",
+              "-DCMAKE_CXX_COMPILER=$clangCl",
+              "-DCMAKE_CUDA_COMPILER=$env:CUDA_PATH\bin\nvcc.exe",
+              "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
+              "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+            )
+          } else {
+            $cmakeHelp = (cmake --help) -join "`n"
+            $generator = $null
+            foreach ($candidate in @(
+                @{ name = 'Visual Studio 18 2026'; version = '[18.0,19.0)' },
+                @{ name = 'Visual Studio 17 2022'; version = '[17.0,18.0)' }
+              )) {
+              if ($cmakeHelp -notmatch [regex]::Escape($candidate.name)) {
+                continue
+              }
+              $install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -version $candidate.version -property installationPath
+              if ($LASTEXITCODE -eq 0 -and $install) {
+                $generator = $candidate.name
+                Write-Host "Using CMake generator '$generator' from $install"
+                break
+              }
+            }
+            if (-not $generator) {
+              throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
+            }
+            $cmakeArgs += @('-G', $generator, '-A', $platform, '-T', 'ClangCL')
           }
-          cmake -S . -B '${{ matrix.build_dir }}' `
-            -G $generator `
-            -A $platform `
-            -T $toolset `
-            -DBUILD_REPL=ON `
-            -DESHKOL_BUILD_TESTS=OFF `
-            -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
-            -DESHKOL_HOST_CXX_COMPILER="$hostCxx" `
-            -DESHKOL_STDLIB_TARGET_CPU=generic `
-            -DESHKOL_STDLIB_TARGET_FEATURES= `
-            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
-            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
-            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} `
-            -DLLVM_DIR="$env:LLVM_DIR" `
-            @cudaArgs
+          & cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify real CUDA build graph
         if: matrix.gpu_enabled == 'ON'

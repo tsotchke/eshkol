@@ -116,6 +116,11 @@ gate green.  This section describes an **untagged release candidate**; no
   network installer now receives only documented 12.4 subpackages. Compiler
   internals remain supplied by `nvcc`; nonexistent standalone `crt`/`nvvm`
   names from newer toolkit layouts can no longer abort setup before configure.
+  CUDA builds use Ninja Multi-Config rather than the incompatible
+  Visual-Studio-generator `ClangCL` CUDA integration: Eshkol C/C++ stays on the
+  LLVM 21 SDK while `nvcc` receives the installed CUDA-supported v142 `cl.exe`
+  host. This avoids CUDA MSBuild's empty-metadata `MSB4023` failure and retains
+  the existing `Release/` test and package layout.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
