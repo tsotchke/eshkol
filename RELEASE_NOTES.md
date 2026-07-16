@@ -36,7 +36,8 @@ provides its compiler internals without invalid standalone `crt`/`nvvm` names.
 The Windows CUDA lane uses Ninja Multi-Config so Eshkol C/C++ remains LLVM 21
 ClangCL while `nvcc` uses the CUDA-supported v142 MSVC host, avoiding the
 Visual Studio CUDA-target `MSB4023` metadata failure without changing the
-release package layout.
+release package layout. Backend validation reads the complete generated
+multi-config Ninja graph before any CUDA-labeled build proceeds.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.

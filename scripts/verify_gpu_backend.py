@@ -21,7 +21,11 @@ def read_cache(path: Path) -> dict[str, str]:
 
 
 def build_graph_text(build_dir: Path) -> str:
-    candidates = [build_dir / "build.ninja"]
+    # Single-config Ninja keeps the graph in build.ninja. Ninja Multi-Config
+    # uses thin build-<Config>.ninja entry points and stores the actual edges
+    # under CMakeFiles/impl-<Config>.ninja, so inspect the complete generated
+    # Ninja graph rather than only the default wrapper.
+    candidates = sorted(build_dir.rglob("*.ninja"))
     candidates.extend(build_dir.rglob("*.vcxproj"))
     texts: list[str] = []
     for candidate in candidates:

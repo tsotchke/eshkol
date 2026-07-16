@@ -33,6 +33,23 @@ class VerifyGpuBackendTests(unittest.TestCase):
         )
         self.assertEqual(verify_gpu_backend.verify(build, "CUDA"), [])
 
+    def test_accepts_ninja_multi_config_graph(self) -> None:
+        build = self.make_build(
+            "ESHKOL_GPU_ENABLED:BOOL=ON\n"
+            "ESHKOL_REQUIRE_GPU_BACKEND:BOOL=ON\n"
+            "ESHKOL_GPU_BACKEND:INTERNAL=CUDA\n"
+            "CMAKE_CUDA_COMPILER:FILEPATH=C:/CUDA/bin/nvcc.exe\n"
+            "CMAKE_CUDA_ARCHITECTURES:STRING=72;75;80;86;89;90\n",
+            "include CMakeFiles/impl-Release.ninja\n",
+        )
+        graph_dir = build / "CMakeFiles"
+        graph_dir.mkdir()
+        (graph_dir / "impl-Release.ninja").write_text(
+            "build gpu.obj: CUDA_COMPILER gpu_memory_cuda.cpp gpu_cuda_kernels.cu\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(verify_gpu_backend.verify(build, "CUDA"), [])
+
     def test_rejects_cpu_stub_mislabeled_as_cuda(self) -> None:
         build = self.make_build(
             "ESHKOL_GPU_ENABLED:BOOL=OFF\n"

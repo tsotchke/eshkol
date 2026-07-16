@@ -120,7 +120,9 @@ gate green.  This section describes an **untagged release candidate**; no
   Visual-Studio-generator `ClangCL` CUDA integration: Eshkol C/C++ stays on the
   LLVM 21 SDK while `nvcc` receives the installed CUDA-supported v142 `cl.exe`
   host. This avoids CUDA MSBuild's empty-metadata `MSB4023` failure and retains
-  the existing `Release/` test and package layout.
+  the existing `Release/` test and package layout. The fail-closed backend
+  verifier follows Ninja Multi-Config's nested implementation graphs, so it
+  still proves the real CUDA sources are present.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
