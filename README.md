@@ -11,10 +11,14 @@ Eshkol is a Scheme-based programming language that unifies functional programmin
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.3--evolve--rc-orange.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
 🧪 **v1.3.3-evolve release candidate prepared (untagged)** — complete quantum
-S1-S5, 100% executable language-surface coverage, and the full release-gate
-record are summarized in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+S1-S5, 100% executable language-surface coverage, and a clean-host-verified
+payload of **15 platform packages plus `SHA256SUMS.txt`** (16 published files).
+The [release workflow](.github/workflows/release.yml) enforces that contract;
+the full release-gate record and exact platform matrix are in
+[RELEASE_NOTES.md](RELEASE_NOTES.md).
 
-📣 **v1.3.0-evolve released** — see [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
+📣 **v1.3.3-evolve announcement prepared** — see
+[ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 
 **[Full documentation index](docs/README.md)** — every guide, reference, and design doc in one place.
 
@@ -652,6 +656,32 @@ Execute: `eshkol-run gradient.esk -o gradient && ./gradient`
 - **Hardening**: subprocess shell-injection fix, Python FFI AST-injection fix, integer-overflow guards (arena/KB/image), path-traversal defence, ReDoS protection, sanitizer-clean ASan/UBSan CI lane
 - **87-test edge/security suite**: regression coverage for symbol consistency, AD tape state, parser line tracking, stdlib symbol resolution, HTTP/server smoke behavior, and every fix in this release
 
+### v1.3.3-evolve Release Candidate
+
+- **Portable 16-file release payload**: 15 platform archives plus
+  `SHA256SUMS.txt`. Linux x64/ARM64 ship Lite, XLA, and CUDA; macOS x64/ARM64
+  ship Lite and XLA; Windows x64 ships Lite, XLA, and CUDA; Windows ARM64
+  ships Lite and XLA. Windows ARM64 CUDA is not advertised because NVIDIA does
+  not provide the required supported toolkit.
+- **Clean-host package execution**: relocated core/agent JITs, persistent AOT
+  cache links, image-codec dependencies, generic ARM64 stdlib code,
+  architecture-matched compiler-rt, and CUDA consumer paths are verified by
+  the release workflow rather than inferred from builder-local success.
+- **Complete executable evidence**: 44/44 suites and 716/716 tests, CTest
+  76/76, SICP 88/88 under JIT and AOT, 1,057/1,057 declared executable
+  language surfaces, and ICC architecture/readiness at 8/8 and 100/100, as
+  recorded in the
+  [release-candidate readiness report](docs/internal/RELEASE_READINESS_REPORT.md).
+- **Explicit VM scope**: the supported shared corpus passes 68/68 across
+  native LLVM, VM source, and emitted ESKB. This is not a claim of complete
+  backend parity: the current 916-row ratchet classifies 540 VM-supported
+  entries, 44 justified native-only entries, and 332 explicit gaps in
+  [`tests/vm_parity/PARITY.tsv`](tests/vm_parity/PARITY.tsv); see
+  [VM Parity](docs/VM_PARITY.md) for the enforced contract.
+
+See [RELEASE_NOTES.md](RELEASE_NOTES.md) for the gate matrix and
+[ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the release narrative.
+
 ### v1.3.0-evolve Features
 
 **Evolve.** An arbitrary-order automatic-differentiation system (Taylor
@@ -932,8 +962,8 @@ Eshkol is released under the **MIT License**. For academic use, please cite:
 - **Memory**: Arena-based allocation with deterministic cleanup
 - **Types**: HoTT-based gradual typing with dependent type support
 - **AD**: Forward/reverse/symbolic modes with nested computation
-- **Testing**: 528 self-reported tests across 37 suites with automated verification
-- **Platform**: macOS (Intel/Apple Silicon), Linux (x86_64/ARM64), Windows (x86_64 and ARM64 via Visual Studio 2022 + LLVM 21). CI is green across all 14 lanes, including windows-arm64.
+- **Testing**: 44/44 suites and 716/716 tests; CTest 76/76; executable language coverage 1,057/1,057
+- **Platform**: macOS x64/ARM64, Linux x64/ARM64, and Windows x64/ARM64 via LLVM 21. CUDA 12.4 packages target Linux x64/ARM64 and Windows x64; Windows ARM64 CUDA is not advertised.
 
 ---
 
