@@ -313,6 +313,8 @@ int main(int argc, char** argv) {
                              "CI configure avoids empty arrays under Bash nounset") &&
          expect_contains(workflow, "scripts/verify_gpu_backend.py",
                          "release matrix verifies the resolved CUDA build graph") &&
+         expect_contains(gpu_backend_verifier, "build_dir.rglob(\"*.ninja\")",
+                         "CUDA verifier follows Ninja Multi-Config implementation graphs") &&
          expect_contains(ci_workflow, "- name: windows-x64-cuda",
                          "CI compiles the supported Windows x64 CUDA target") &&
          expect_not_contains(ci_workflow, "- name: windows-arm64-cuda",
