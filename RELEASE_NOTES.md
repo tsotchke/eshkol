@@ -14,6 +14,15 @@ globals required by relocated cache-disabled JIT modules.
 Generic release stdlib generation now uses the common 128-bit x86-64/AArch64
 tensor-vector baseline regardless of the hosted runner's AVX width; the release
 validator rejects wider fixed vectors as well as scalable or optional-ISA IR.
+CUDA-labeled artifacts now fail closed unless the real NVIDIA backend is
+compiled. Linux x64/ARM64-SBSA and Windows x64 jobs install pinned CUDA 12.4
+toolchains and verify that `nvcc`, cuBLAS, the CUDA runtime, and the CUDA source
+graph are present. The unsupported Windows ARM64 CUDA label has been removed
+rather than shipping its CPU fallback under a GPU name. Explicit
+`sm_72/75/80/86/89/90` code preserves Xavier through current RTX coverage.
+CUDA 12 builds on newer GNU hosts now require a compatible compiler for the
+whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI
+and library search paths.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
@@ -26,7 +35,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 74/74; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 75/75; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports

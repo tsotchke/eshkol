@@ -75,8 +75,14 @@ int main(int argc, char** argv) {
     const fs::path source_root = argv[1];
     const fs::path workflow_path =
         source_root / ".github" / "workflows" / "release.yml";
-    if (!fs::exists(workflow_path)) {
-        return fail("release.yml not found under source root");
+    const fs::path ci_workflow_path =
+        source_root / ".github" / "workflows" / "ci.yml";
+    const fs::path cmake_path = source_root / "CMakeLists.txt";
+    const fs::path gpu_backend_verifier_path =
+        source_root / "scripts" / "verify_gpu_backend.py";
+    if (!fs::exists(workflow_path) || !fs::exists(ci_workflow_path) ||
+        !fs::exists(cmake_path) || !fs::exists(gpu_backend_verifier_path)) {
+        return fail("release/CI GPU contracts not found under source root");
     }
     const fs::path package_verifier_path =
         source_root / "scripts" / "verify_release_package.py";
@@ -109,6 +115,10 @@ int main(int argc, char** argv) {
     }
 
     const std::string workflow = read_file(workflow_path);
+    const std::string ci_workflow = read_file(ci_workflow_path);
+    const std::string cmake = read_file(cmake_path);
+    const std::string gpu_backend_verifier =
+        read_file(gpu_backend_verifier_path);
     const std::string package_verifier = read_file(package_verifier_path);
     const std::string repl_jit = read_file(repl_jit_path);
     const std::string jit_target_config = read_file(jit_target_config_path);
@@ -240,7 +250,47 @@ int main(int argc, char** argv) {
                          "${{ runner.temp }}\\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\\lib\\stdlib-jit-v4-*.o",
                          "Windows failure diagnostics include the emitted stdlib object") &&
          expect_contains(workflow, "if-no-files-found: warn",
-                         "partial Windows failure evidence never masks the root failure");
+                         "partial Windows failure evidence never masks the root failure") &&
+         expect_contains(workflow, "CUDA_VERSION: '12.4.1'",
+                         "release CUDA toolkit version is pinned") &&
+         expect_contains(workflow,
+                         "cuda-nvcc-${CUDA_PACKAGE_SERIES}",
+                         "Linux release CUDA lanes install the NVIDIA compiler") &&
+         expect_contains(workflow,
+                         "libcublas-dev-${CUDA_PACKAGE_SERIES}",
+                         "Linux release CUDA lanes install cuBLAS development files") &&
+         expect_contains(workflow,
+                         "Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76",
+                         "Windows x64 release CUDA setup is commit-pinned") &&
+         expect_contains(workflow,
+                         "$toolset = \"ClangCL,cuda=$env:CUDA_PATH\"",
+                         "Windows CUDA generator selects the installed toolkit explicitly") &&
+         expect_contains(workflow,
+                         "-DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}",
+                         "release CUDA labels fail closed without a real backend") &&
+         expect_contains(workflow, "scripts/verify_gpu_backend.py",
+                         "release matrix verifies the resolved CUDA build graph") &&
+         expect_contains(ci_workflow, "- name: windows-x64-cuda",
+                         "CI compiles the supported Windows x64 CUDA target") &&
+         expect_not_contains(ci_workflow, "- name: windows-arm64-cuda",
+                             "CI does not counterfeit unsupported Windows ARM64 CUDA") &&
+         expect_not_contains(workflow, "- name: windows-arm64-cuda",
+                             "release matrix omits unsupported Windows ARM64 CUDA") &&
+         expect_contains(cmake, "option(ESHKOL_REQUIRE_GPU_BACKEND",
+                         "CMake exposes a fail-closed GPU backend contract") &&
+         expect_contains(cmake,
+                         "Refusing to compile the CPU stub as a GPU-labeled build.",
+                         "CMake rejects CUDA labels that resolve to the CPU stub") &&
+         expect_contains(cmake,
+                         "Selecting only CMAKE_CUDA_HOST_COMPILER is unsafe",
+                         "CUDA rejects mixed GNU host/link toolchains") &&
+         expect_contains(gpu_backend_verifier, "gpu_cuda_kernels.cu",
+                         "GPU verifier requires compiled CUDA kernels") &&
+         expect_contains(gpu_backend_verifier,
+                         "for required_arch in (\"72\", \"86\")",
+                         "CUDA assets cover Xavier and RTX-class GPUs") &&
+         expect_contains(gpu_backend_verifier, "gpu_memory_stub.cpp",
+                         "GPU verifier rejects the fallback stub");
 
     ok = ok &&
          expect_contains(package_verifier,
@@ -349,7 +399,6 @@ int main(int argc, char** argv) {
         {"windows-x64-xla", "zip"},
         {"windows-arm64-xla", "zip"},
         {"windows-x64-cuda", "zip"},
-        {"windows-arm64-cuda", "zip"},
     };
 
     for (const ReleaseAsset& asset : expected_assets) {
