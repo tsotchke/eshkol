@@ -51,17 +51,15 @@ foreach(_archive IN LISTS ARCHIVES)
         # Strip the leading " <type> " to recover the bare symbol name.
         string(REGEX REPLACE "^[ \t][TDBR][ \t]+" "" _sym "${_line}")
         string(STRIP "${_sym}" _sym)
-        if(_sym MATCHES "^(eshkol_|arena_|__eshkol|__repl_shared_arena|g_eshkol|g_current_exception|g_exception_handler_stack|g_lambda_registry)")
+        # The selected compiler-rt archive is part of ARCHIVES. Export only the
+        # stack-probe spelling actually defined for this architecture instead
+        # of assuming the x86 helper exists on Windows ARM64.
+        if(_sym MATCHES "^(eshkol_|arena_|__eshkol|__repl_shared_arena|__ad_tower_(active|order)$|g_eshkol|g_current_exception|g_exception_handler_stack|g_lambda_registry)" OR
+           _sym MATCHES "^(___chkstk_ms|___chkstk|__chkstk_ms|__chkstk)$")
             list(APPEND _exports "${_sym}")
         endif()
     endforeach()
 endforeach()
-
-# Compiler-rt / CRT helpers that ONLY JIT-compiled code references (no host C++
-# code does), so they would not otherwise be reachable through the runtime
-# archives' exported namespace. They ARE defined in the final exe (pulled in by
-# clang's automatic compiler-rt link), so exporting them by name is sufficient.
-list(APPEND _exports "___chkstk_ms" "___chkstk")
 
 list(REMOVE_DUPLICATES _exports)
 list(SORT _exports)

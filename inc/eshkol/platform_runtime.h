@@ -105,12 +105,33 @@ bool stdout_supports_utf8();
 std::filesystem::path make_temp_path(std::string_view stem, std::string_view extension = ".tmp");
 
 /**
- * @brief Get the path to the C++ compiler used to build the host toolchain.
- * @return Absolute path to the compiler executable baked in at build time
- *         (ESHKOL_HOST_CXX_COMPILER), with forward slashes normalized to
- *         backslashes on Windows when the path is drive-letter rooted.
+ * @brief Resolve the C++ compiler used to link generated programs.
+ *
+ * Resolution order is the runtime `ESHKOL_CXX_COMPILER` override, the
+ * build-time compiler when it still exists, PATH, and platform-standard LLVM
+ * installation roots. This makes installed packages independent of the build
+ * machine's filesystem while retaining exact build-tree toolchains.
+ *
+ * @return Driver path or the platform's default clang++/c++ command name.
  */
 std::string cxx_compiler();
+
+/**
+ * @brief Resolve the compiler-rt builtins archive belonging to the selected
+ *        Windows C++ driver.
+ *
+ * ClangCL/MSVC builds use a GNU-compatible clang++ driver for generated
+ * executables.  Unlike a complete compiler-driver link, that path does not
+ * reliably inject compiler-rt when Eshkol's static runtime introduces
+ * 128-bit division helpers.  The archive must therefore be selected from the
+ * consumer toolchain at runtime rather than recorded as an absolute path from
+ * the build host.
+ *
+ * @return Canonical path to clang_rt.builtins-x86_64.lib or
+ *         clang_rt.builtins-aarch64.lib on native ClangCL/MSVC Windows;
+ *         empty on non-Windows/MinGW or when no matching archive is present.
+ */
+std::string compiler_rt_builtins_library();
 
 /**
  * @brief Normalize one library/linker argument for the configured host C++
@@ -151,6 +172,23 @@ std::string executable_suffix();
  *         systems or "eshkol.lib" on Windows.
  */
 std::string static_library_name(std::string_view stem);
+
+/**
+ * @brief Resolve logical CUDA library names against the consumer toolkit.
+ *
+ * Build-host CUDA imported targets contain absolute SDK paths that are not
+ * portable to generated AOT or persistent-cache links. This routine locates a
+ * single consumer-side development-library directory from explicit CUDA root
+ * variables, nvcc, and platform-standard layouts, then returns driver-ready
+ * search/RUNPATH and `-l` arguments. If no directory is found, driver-search
+ * names are retained (ABI-major-exact on Linux) so the compiler driver's
+ * normal search remains authoritative and produces the final diagnostic.
+ *
+ * @param libraries Logical names such as `cudart`, `cublas`, and `cublasLt`.
+ * @return Consumer-resolved C++ driver link arguments.
+ */
+std::vector<std::string> cuda_runtime_link_args(
+    const std::vector<std::string>& libraries);
 
 /**
  * @brief Get the linker arguments required to link against the host

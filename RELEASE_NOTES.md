@@ -1,5 +1,47 @@
 # Eshkol v1.3.3-evolve — Release Notes
 
+Windows ARM64 packages now use a single platform-correct JIT target contract
+for both live LLJIT compilation and the persistent stdlib object cache. This
+avoids LLVM 21's invalid AArch64-COFF Large-model SEH metadata while preserving
+external call reach through RuntimeDyld stubs and full host-data reach through
+nearby COFF import-address cells. A co-located per-object arena keeps JIT-owned
+code, read-only data, and writable data inside Small-model relocation reach;
+explicit Branch26 and ADRP span guards fail safely if a future object outgrows
+that contract. This prevents layout-sensitive `PAGEBASE_REL21` truncation
+without weakening stack probing, exceptions, or cacheability.
+Windows packages also publish and explicitly register the Taylor-tower AD state
+globals required by relocated cache-disabled JIT modules.
+Generic release stdlib generation now uses the common 128-bit x86-64/AArch64
+tensor-vector baseline regardless of the hosted runner's AVX width; the release
+validator rejects wider fixed vectors as well as scalable or optional-ISA IR.
+CUDA-labeled artifacts now fail closed unless the real NVIDIA backend is
+compiled. Linux x64/ARM64-SBSA and Windows x64 jobs install pinned CUDA 12.4
+toolchains and verify that `nvcc`, cuBLAS, the CUDA runtime, and the CUDA source
+graph are present. The unsupported Windows ARM64 CUDA label has been removed
+rather than shipping its CPU fallback under a GPU name. Explicit
+`sm_72/75/80/86/89/90` code preserves Xavier through current RTX coverage.
+CUDA 12 builds on newer GNU hosts now require a compatible compiler for the
+whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI
+and library search paths. Unix workflow configuration uses a scalar toolkit
+hint so non-CUDA macOS lanes remain compatible with Bash 3.2 under `set -u`.
+Generated AOT and persistent-cache links now resolve CUDA runtime/cuBLAS names
+from the consumer's explicit toolkit roots, `nvcc`, and standard multiarch
+layouts instead of replaying hosted-runner absolute paths. Linux links require
+the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather
+than silently substituting CUDA 13. Windows uses native shell-free driver paths
+instead of MSVC STL generic-path conversion, keeping generated links compatible
+with consumer Visual C++ import libraries that predate `__std_replace_copy_2`.
+Its CUDA 12.4 setup also requests only documented Windows subpackages; `nvcc`
+provides its compiler internals without invalid standalone `crt`/`nvvm` names.
+The Windows CUDA lane uses Ninja Multi-Config so Eshkol C/C++ remains LLVM 21
+ClangCL while `nvcc` uses the CUDA-supported v142 MSVC host, avoiding the
+Visual Studio CUDA-target `MSB4023` metadata failure without changing the
+release package layout. Backend validation reads the complete generated
+multi-config Ninja graph before any CUDA-labeled build proceeds. The v142
+host compiler cache entry uses CMake's forward-slash path form so nvcc receives
+an intact `-ccbin` value even when Visual Studio is installed below a path with
+spaces.
+
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
 
@@ -11,7 +53,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 77/77; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 76/76; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports
@@ -88,6 +130,17 @@ upstream macOS weak-import linker fix and builds without a local override.
   SQLite, ncurses, OpenSSL, and Nix-store libraries. The linker derives these
   paths from actual `-L` and shared-library inputs and from the selected host
   compiler instead of requiring a custom `LD_LIBRARY_PATH`. (#279)
+- Linux binary archives now carry a hashed, licensed libpng/libjpeg/libwebp/
+  zlib runtime closure under `lib/eshkol/runtime-deps`. Both packaged tools and
+  generated run-cache/AOT executables resolve that relocatable closure, so
+  image I/O remains enabled without requiring matching codec development
+  packages—or the release builder's absolute library paths—on the target host.
+- Precompiled `stdlib.o` and `stdlib.bc` release artifacts are optimized at O2
+  for LLVM's generic architecture baseline instead of the transient runner's
+  CPU. User and JIT compilation still specialize for the target host, while a
+  release-time LLVM-disassembly gate rejects SVE/SVE2 and other builder-only
+  wide-vector IR before packaging. This keeps ARM64 archives runnable on
+  baseline ARMv8 systems such as Cortex-A72 rather than only on SVE builders.
 - Exact numeric and automatic-differentiation fixes cover bignums, rationals,
   tensors, forward-over-reverse composition, Hessians, and explicit
   unsupported-op errors instead of silent zero gradients.
@@ -99,7 +152,16 @@ generative oracles execute portably on macOS; freestanding object checks allow
 only target intrinsics (never undeclared hosted ABI calls); every required
 WebAssembly environment import is present in both JavaScript runtimes; and the
 tag workflow supports a non-publishing manual dry run of the complete release
-matrix before any immutable release tag is created.
+matrix before any immutable release tag is created. Installed package module
+resolution is also exercised with the persistent cache disabled: agent modules
+must resolve from the executable-relative source tree, and a missing explicit
+`require` is a hard failure rather than a diagnostic followed by execution.
+Native Windows hosts retain that bounded JIT ABI through the generated PE
+export table without mixing static LLVM target archives with `LLVM-C.dll`.
+Generated Windows AOT/cache links also resolve the selected consumer LLVM 21
+toolchain's architecture-matched compiler-rt builtins archive at runtime, so
+128-bit bignum/rational division links on both x64 and ARM64 without embedding
+the release runner's absolute SDK path.
 
 ---
 

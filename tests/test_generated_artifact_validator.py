@@ -18,10 +18,87 @@ from scripts import gen_nesting_depth
 from scripts import gen_numeric_depth
 from scripts import gen_recursion_depth
 from scripts import run_generative_differential
+from scripts import stage_linux_runtime_dependencies
 from scripts import stage_third_party_licenses
+from scripts import verify_portable_stdlib
 
 
 class GeneratedArtifactValidatorTest(unittest.TestCase):
+    def test_portable_stdlib_validator_accepts_generic_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "CMakeCache.txt"
+            cache.write_text(
+                "ESHKOL_STDLIB_TARGET_CPU:STRING=generic\n"
+                "ESHKOL_STDLIB_TARGET_FEATURES:STRING=\n"
+            )
+            verify_portable_stdlib.validate_cmake_cache(cache, "generic")
+            self.assertEqual(
+                verify_portable_stdlib.scan_ir(
+                    [
+                        'target triple = "aarch64-unknown-linux-gnu"\n',
+                        "%v = load <2 x i64>, ptr %p\n",
+                        "%d = load <2 x double>, ptr %q\n",
+                    ]
+                ),
+                [],
+            )
+
+    def test_portable_stdlib_validator_rejects_builder_only_vectors(self) -> None:
+        failures = verify_portable_stdlib.scan_ir(
+            [
+                "%scale = call i64 @llvm.vscale.i64()\n",
+                "%wide = load <vscale x 2 x i64>, ptr %p\n",
+                "%avx = load <4 x double>, ptr %q\n",
+                "%avx512 = load <8 x double>, ptr %r\n",
+                'attributes #0 = { "target-features"="+neon,+sve2" }\n',
+            ]
+        )
+        self.assertEqual(len(failures), 5)
+
+    def test_portable_stdlib_validator_rejects_nonbaseline_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "CMakeCache.txt"
+            cache.write_text(
+                "ESHKOL_STDLIB_TARGET_CPU:STRING=native\n"
+                "ESHKOL_STDLIB_TARGET_FEATURES:STRING=+sve\n"
+            )
+            with self.assertRaisesRegex(ValueError, "must be 'generic'"):
+                verify_portable_stdlib.validate_cmake_cache(cache, "generic")
+
+    def test_linux_runtime_dependency_ldd_parser_and_families(self) -> None:
+        parsed = stage_linux_runtime_dependencies.parse_ldd_output(
+            """
+            linux-vdso.so.1 (0x0000)
+            libpng16.so.16 => /usr/lib/libpng16.so.16 (0x0001)
+            libjpeg.so.8 => /usr/lib/libjpeg.so.8 (0x0002)
+            libwebp.so.7 => /usr/lib/libwebp.so.7 (0x0003)
+            libz.so.1 => /lib/libz.so.1 (0x0004)
+            """
+        )
+        self.assertEqual(parsed["libpng16.so.16"], Path("/usr/lib/libpng16.so.16"))
+        self.assertEqual(
+            stage_linux_runtime_dependencies.family_for_soname("libpng16.so.16"),
+            "libpng",
+        )
+        self.assertEqual(
+            stage_linux_runtime_dependencies.family_for_soname("libjpeg.so.8"),
+            "libjpeg",
+        )
+        self.assertEqual(
+            stage_linux_runtime_dependencies.family_for_soname("libwebp.so.7"),
+            "libwebp",
+        )
+        self.assertEqual(
+            stage_linux_runtime_dependencies.family_for_soname("libz.so.1"),
+            "zlib",
+        )
+
+    def test_linux_runtime_dependency_parser_rejects_unresolved_library(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unresolved shared-library"):
+            stage_linux_runtime_dependencies.parse_ldd_output(
+                "libwebp.so.7 => not found\n"
+            )
+
     def test_third_party_license_staging_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

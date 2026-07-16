@@ -1,6 +1,6 @@
 # CI/CD Pipelines
 
-**Status:** Production (v1.2.1-scale)
+**Status:** Production (v1.3.3-evolve)
 **Applies to:** Eshkol compiler v1.2.0-scale and later
 
 ---
@@ -45,24 +45,23 @@ The CI runs as two matrix jobs: one Unix matrix and one Windows matrix.
 
 #### Windows matrix
 
-Routine CI runs hosted Windows ARM64 lanes only. Windows x86-64 smoke
-validation runs on Jack's local Windows machine with:
-`scripts/remote_windows_verify.sh jack-blupc --build-dir build-jack-msys-ucrt --suite-only`.
-The release workflow still builds hosted Windows x86-64 packages.
+Routine CI runs the portable Windows ARM64 lite/XLA lanes plus a hosted
+Windows x86-64 CUDA compilation lane. NVIDIA does not provide a native Windows
+ARM64 CUDA toolkit, so that unsupported combination is never labeled CUDA.
 
 | Job | Runner | Variant |
 |-----|--------|---------|
 | `windows-arm64-lite` | `windows-11-arm` | Lite |
 | `windows-arm64-xla` | `windows-11-arm` | XLA |
-| `windows-arm64-cuda` | `windows-11-arm` | CUDA |
+| `windows-x64-cuda` | `windows-2022` | CUDA |
 
 ### Steps (per job)
 
 1. **Checkout** the repository
 2. **Install dependencies:**
-   - Linux: LLVM 21 from apt.llvm.org, CMake, Ninja, readline, pkg-config, libpng/libjpeg/libwebp
+   - Linux: LLVM 21 from apt.llvm.org, CMake, Ninja, readline, pkg-config, libpng/libjpeg/libwebp; CUDA lanes additionally install the pinned NVIDIA CUDA 12.4 compiler/runtime/cuBLAS packages
    - macOS: LLVM 21, CMake, Ninja, readline via Homebrew; image I/O uses ImageIO/CoreGraphics
-   - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake; image I/O uses GDI+
+   - Windows: Visual Studio 2022 + ClangCL, official LLVM 21 SDK archive, native CMake; the x64 CUDA lane installs pinned CUDA 12.4 components; image I/O uses GDI+
 3. **Configure** with CMake (Ninja on Linux/macOS, Visual Studio generator on Windows)
 4. **Build** in parallel
 5. **Run tests** via the lane-appropriate suite:
@@ -89,7 +88,8 @@ Release builds upload platform-specific artifacts:
 
 ### Trigger
 
-Push of an annotated or lightweight tag matching `v*` (for example `v1.1.13` or `v1.2.0-rc.1`).
+Either a tag push matching `v*` or a manual dispatch with a candidate label.
+Manual dispatch is always nonpublishing and exists for exact release dry runs.
 
 ### How to Trigger It
 
@@ -102,21 +102,16 @@ git tag -a v1.1.13 -m "Eshkol v1.1.13"
 git push origin v1.1.13
 ```
 
-For a dry run on a fork, push the tag to the fork remote instead:
+For a nonpublishing dry run, dispatch the workflow against the candidate branch:
 
 ```bash
-git tag -a v1.1.13-rc.1 -m "Eshkol v1.1.13-rc.1"
-git push fork v1.1.13-rc.1
+gh workflow run release.yml --ref <candidate-branch> \
+  -f candidate_tag=v1.3.3-evolve
 ```
 
-The workflow runs against the exact commit the tag points at. It is not manually dispatched and it does not wait for branch pushes. If you need to rerun it after changing `release.yml`, delete the tag locally and remotely, recreate it on the fixed commit, and push it again.
-
-```bash
-git tag -d v1.1.13-rc.1
-git push --delete fork v1.1.13-rc.1
-git tag -a v1.1.13-rc.1 -m "Eshkol v1.1.13-rc.1"
-git push fork v1.1.13-rc.1
-```
+The workflow always runs against the exact dispatched branch head or tag
+commit. A manual run validates and uploads one consolidated dry-run artifact;
+only a tag-triggered run may create a GitHub Release.
 
 Tags containing `alpha`, `beta`, or `rc` are published as GitHub pre-releases automatically.
 
@@ -150,13 +145,14 @@ Builds, tests, packages, and uploads release archives for:
 - `windows-x64-xla`
 - `windows-arm64-xla`
 - `windows-x64-cuda`
-- `windows-arm64-cuda`
 
 Each Windows lane produces `eshkol-<tag>-<lane>.zip`.
 
 #### 3. `publish-release`
 
-Downloads all packaged artifacts, generates `SHA256SUMS.txt`, and publishes a GitHub Release with auto-generated release notes.
+Downloads exactly 15 packaged artifacts and generates `SHA256SUMS.txt`. Manual
+runs upload the validated consolidated dry-run set; tag runs publish a GitHub
+Release with curated notes.
 
 ### Release Artifacts Summary
 
@@ -181,8 +177,11 @@ Each packaged artifact contains:
 
 - The release workflow rebuilds and retests artifacts on the tag; it does not download artifacts from the CI workflow.
 - Windows release lanes reuse the same per-architecture LLVM SDK cache keys as CI.
+- Every CUDA-labeled lane fails configuration unless a real CUDA backend and
+  kernel sources are present in the generated build graph; the CPU stub cannot
+  satisfy this contract.
 - A failed lane prevents `publish-release` from creating or updating the GitHub Release.
-- Because the trigger is tag-based, changing `release.yml` alone does nothing until a matching tag is pushed.
+- Changing `release.yml` is exercised by the next branch dry run or tag run.
 
 ---
 

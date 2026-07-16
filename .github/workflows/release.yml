@@ -22,6 +22,8 @@ permissions:
 env:
   LLVM_MAJOR: '21'
   WINDOWS_LLVM_SDK_VERSION: '21.1.8'
+  CUDA_VERSION: '12.4.1'
+  CUDA_PACKAGE_SERIES: '12-4'
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
@@ -126,24 +128,69 @@ jobs:
           }
           apt_update
 
+      - name: Add NVIDIA CUDA Repository (Linux CUDA)
+        if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "$(uname -m)" in
+            x86_64) cuda_repo_arch=x86_64 ;;
+            aarch64) cuda_repo_arch=sbsa ;;
+            *) echo "Unsupported native CUDA architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          keyring="$RUNNER_TEMP/cuda-keyring.deb"
+          wget -O "$keyring" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/${cuda_repo_arch}/cuda-keyring_1.1-1_all.deb"
+          sudo dpkg -i "$keyring"
+          sudo apt-get update -o Acquire::Retries=5
+
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euxo pipefail
-          sudo apt-get install -y \
-            cmake ninja-build \
-            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
-            libreadline-dev pkg-config \
-            libssl-dev libncurses-dev \
-            libpcre2-dev libsqlite3-dev \
-            libpng-dev libjpeg-dev libwebp-dev \
+          packages=(
+            cmake ninja-build
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR}
+            libreadline-dev pkg-config patchelf
+            libssl-dev libncurses-dev
+            libpcre2-dev libsqlite3-dev
+            libpng-dev libjpeg-dev libwebp-dev
             git python3
+          )
+          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
+            packages+=(
+              "cuda-nvcc-${CUDA_PACKAGE_SERIES}"
+              "cuda-cudart-dev-${CUDA_PACKAGE_SERIES}"
+              "libcublas-dev-${CUDA_PACKAGE_SERIES}"
+            )
+          fi
+          apt_install() {
+            for attempt in 1 2 3; do
+              if sudo env DEBIAN_FRONTEND=noninteractive \
+                  apt-get install -y -o Acquire::Retries=5 "${packages[@]}"; then
+                return 0
+              fi
+              if (( attempt == 3 )); then
+                echo "apt dependency installation failed after ${attempt} attempts" >&2
+                return 1
+              fi
+              sleep $((attempt * 15))
+              sudo apt-get update -o Acquire::Retries=5
+            done
+          }
+          apt_install
           # Keep release builds aligned with CI: generated AArch64
           # executables use -fuse-ld=lld, which resolves unversioned
           # ld.lld from PATH.
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
           ld.lld --version
+          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
+            echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+            echo "CUDAToolkit_ROOT=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+            /usr/local/cuda-12.4/bin/nvcc --version
+          fi
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
@@ -169,14 +216,43 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
             -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_STDLIB_TARGET_CPU=generic \
+            -DESHKOL_STDLIB_TARGET_FEATURES= \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
-            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
+            -DCUDAToolkit_ROOT=/usr/local/cuda-12.4
+
+      - name: Verify real CUDA build graph
+        if: matrix.gpu_enabled == 'ON'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/verify_gpu_backend.py \
+            --build-dir "${{ matrix.build_dir }}" \
+            --expected CUDA
 
       - name: Build
         shell: bash
         run: |
           set -euxo pipefail
           cmake --build "${{ matrix.build_dir }}" --parallel
+
+      - name: Verify portable standard library
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            LLVM_DIS="$(brew --prefix llvm@${LLVM_MAJOR})/bin/llvm-dis"
+          else
+            LLVM_DIS="/usr/bin/llvm-dis-${LLVM_MAJOR}"
+          fi
+          test -x "$LLVM_DIS"
+          python3 scripts/verify_portable_stdlib.py \
+            --bitcode "${{ matrix.build_dir }}/stdlib.bc" \
+            --llvm-dis "$LLVM_DIS" \
+            --cmake-cache "${{ matrix.build_dir }}/CMakeCache.txt" \
+            --expected-cpu generic
 
       - name: Check WASM env imports
         if: matrix.xla_enabled == 'OFF' && matrix.gpu_enabled == 'OFF' && matrix.build_dir == 'build'
@@ -276,6 +352,12 @@ jobs:
             fi
           done
 
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            python3 scripts/stage_linux_runtime_dependencies.py \
+              --build-dir "${{ matrix.build_dir }}" \
+              --package-dir "$pkg_dir"
+          fi
+
           python3 scripts/stage_third_party_licenses.py \
             --build-dir "${{ matrix.build_dir }}" \
             --package-dir "$pkg_dir"
@@ -336,22 +418,13 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: xla
           - name: windows-x64-cuda
-            runner: windows-latest
+            runner: windows-2022
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_mode: gpu
-          - name: windows-arm64-cuda
-            runner: windows-11-arm
-            arch: arm64
-            llvm_suffix: aarch64
-            build_dir: build-cuda
-            xla_enabled: 'OFF'
-            gpu_enabled: 'ON'
-            test_mode: gpu
-
     steps:
       - uses: actions/checkout@v6
 
@@ -362,6 +435,18 @@ jobs:
           if ($env:RELEASE_TAG -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
             throw "Invalid release tag label: $env:RELEASE_TAG"
           }
+
+      - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
+        if: matrix.gpu_enabled == 'ON'
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          # CUDA 12.4's Windows installer has no standalone `crt` or `nvvm`
+          # subpackages; nvcc carries those compiler internals. Passing names
+          # from newer toolkit layouts makes NVIDIA exit with 3772776473.
+          sub-packages: '["cudart", "cublas", "cublas_dev", "nvcc", "visual_studio_integration"]'
+          log-file-suffix: release-${{ matrix.name }}
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
@@ -437,36 +522,110 @@ jobs:
           if (-not (Test-Path $vswhere)) {
             throw "vswhere.exe not found; cannot locate a Visual Studio generator"
           }
-          $cmakeHelp = (cmake --help) -join "`n"
-          $generator = $null
-          foreach ($candidate in @(
-              @{ name = 'Visual Studio 18 2026'; version = '[18.0,19.0)' },
-              @{ name = 'Visual Studio 17 2022'; version = '[17.0,18.0)' }
-            )) {
-            if ($cmakeHelp -notmatch [regex]::Escape($candidate.name)) {
-              continue
+          $cmakeArgs = @(
+            '-S', '.',
+            '-B', '${{ matrix.build_dir }}',
+            '-DBUILD_REPL=ON',
+            '-DESHKOL_BUILD_TESTS=OFF',
+            '-DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }}',
+            "-DESHKOL_HOST_CXX_COMPILER=$hostCxx",
+            '-DESHKOL_STDLIB_TARGET_CPU=generic',
+            '-DESHKOL_STDLIB_TARGET_FEATURES=',
+            '-DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }}',
+            '-DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}',
+            '-DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}',
+            "-DLLVM_DIR=$env:LLVM_DIR"
+          )
+          if ('${{ matrix.gpu_enabled }}' -eq 'ON') {
+            if (-not $env:CUDA_PATH -or -not (Test-Path "$env:CUDA_PATH\bin\nvcc.exe")) {
+              throw "CUDA toolkit action did not provide a usable CUDA_PATH"
             }
-            $install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -version $candidate.version -property installationPath
-            if ($LASTEXITCODE -eq 0 -and $install) {
-              $generator = $candidate.name
-              Write-Host "Using CMake generator '$generator' from $install"
-              break
+            $install = & $vswhere -latest -products * `
+              -requires Microsoft.Component.MSBuild `
+              -version '[17.0,18.0)' -property installationPath
+            if ($LASTEXITCODE -ne 0 -or -not $install) {
+              throw "Visual Studio 2022 is required for the CUDA 12.4 host toolchain"
             }
+            $devCmd = Join-Path $install 'Common7\Tools\VsDevCmd.bat'
+            if (-not (Test-Path $devCmd -PathType Leaf)) {
+              throw "VsDevCmd.bat not found at $devCmd"
+            }
+            # CUDA 12.4 supports MSVC 19.2x/19.3x, while the hosted image's
+            # default v143 compiler has already advanced to 19.4x. Activate
+            # the installed v142 toolset only for nvcc's host compilation.
+            $devEnvironment = & $env:ComSpec /d /s /c `
+              "`"$devCmd`" -no_logo -arch=x64 -host_arch=x64 -vcvars_ver=14.29 && set"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Visual Studio v142 developer environment activation failed"
+            }
+            foreach ($line in $devEnvironment) {
+              if ($line -match '^([^=]+)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+              }
+            }
+            $cudaHostCxx = (Get-Command cl.exe -ErrorAction Stop).Source
+            if ($cudaHostCxx -notmatch '\\MSVC\\14\.29[^\\]*\\bin\\') {
+              throw "CUDA host compiler is not the supported v142 toolset: $cudaHostCxx"
+            }
+            # CMake forwards this cache entry to nvcc's -ccbin option. Native
+            # backslashes are consumed as escapes there, so use CMake's
+            # platform-independent forward-slash spelling for the same file.
+            $cudaHostCxxCMake = $cudaHostCxx.Replace('\', '/')
+            $clangCl = "$env:LLVM_HOME\bin\clang-cl.exe"
+            if (-not (Test-Path $clangCl -PathType Leaf)) {
+              throw "clang-cl.exe not found in LLVM SDK at $clangCl"
+            }
+            if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+              throw "Ninja is required for the Windows ClangCL + CUDA build"
+            }
+            # Visual Studio generators ignore CMAKE_CUDA_HOST_COMPILER and
+            # CUDA's MSBuild targets reject ClangCL with MSB4023. Ninja Multi-
+            # Config keeps the existing Release/ layout while compiling Eshkol
+            # C/C++ with LLVM 21 and CUDA translation units with nvcc + v142 cl.
+            $cmakeArgs += @(
+              '-G', 'Ninja Multi-Config',
+              '-DCMAKE_CONFIGURATION_TYPES=Release',
+              "-DCMAKE_C_COMPILER=$clangCl",
+              "-DCMAKE_CXX_COMPILER=$clangCl",
+              "-DCMAKE_CUDA_COMPILER=$env:CUDA_PATH\bin\nvcc.exe",
+              "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxxCMake",
+              "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+            )
+          } else {
+            $cmakeHelp = (cmake --help) -join "`n"
+            $generator = $null
+            foreach ($candidate in @(
+                @{ name = 'Visual Studio 18 2026'; version = '[18.0,19.0)' },
+                @{ name = 'Visual Studio 17 2022'; version = '[17.0,18.0)' }
+              )) {
+              if ($cmakeHelp -notmatch [regex]::Escape($candidate.name)) {
+                continue
+              }
+              $install = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -version $candidate.version -property installationPath
+              if ($LASTEXITCODE -eq 0 -and $install) {
+                $generator = $candidate.name
+                Write-Host "Using CMake generator '$generator' from $install"
+                break
+              }
+            }
+            if (-not $generator) {
+              throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
+            }
+            $cmakeArgs += @('-G', $generator, '-A', $platform, '-T', 'ClangCL')
           }
-          if (-not $generator) {
-            throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
-          }
-          cmake -S . -B '${{ matrix.build_dir }}' `
-            -G $generator `
-            -A $platform `
-            -T ClangCL `
-            -DBUILD_REPL=ON `
-            -DESHKOL_BUILD_TESTS=OFF `
-            -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
-            -DESHKOL_HOST_CXX_COMPILER="$hostCxx" `
-            -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
-            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
-            -DLLVM_DIR="$env:LLVM_DIR"
+          & cmake @cmakeArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify real CUDA build graph
+        if: matrix.gpu_enabled == 'ON'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:CUDA_PATH\bin\nvcc.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "nvcc version probe failed" }
+          python scripts/verify_gpu_backend.py `
+            --build-dir '${{ matrix.build_dir }}' `
+            --expected CUDA
 
       - name: Build
         shell: pwsh
@@ -477,6 +636,32 @@ jobs:
             $targets += 'xla_codegen_test'
           }
           cmake --build '${{ matrix.build_dir }}' --config Release --target @($targets) --parallel
+
+      - name: Verify portable standard library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmDis = "$env:LLVM_HOME\bin\llvm-dis.exe"
+          if (-not (Test-Path $llvmDis -PathType Leaf)) {
+            throw "llvm-dis.exe not found in LLVM SDK at $llvmDis"
+          }
+          python scripts/verify_portable_stdlib.py `
+            --bitcode '${{ matrix.build_dir }}\stdlib.bc' `
+            --llvm-dis "$llvmDis" `
+            --cmake-cache '${{ matrix.build_dir }}\CMakeCache.txt' `
+            --expected-cpu generic
+
+      - name: Verify Windows cache-disabled JIT exports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $llvmReadobj = "$env:LLVM_HOME\bin\llvm-readobj.exe"
+          if (-not (Test-Path $llvmReadobj -PathType Leaf)) {
+            throw "llvm-readobj.exe not found in LLVM SDK at $llvmReadobj"
+          }
+          python scripts/verify_windows_runtime_exports.py `
+            --binary '${{ matrix.build_dir }}\Release\eshkol-run.exe' `
+            --llvm-readobj "$llvmReadobj"
 
       - name: Run Tests
         shell: pwsh
@@ -662,6 +847,16 @@ jobs:
             throw "third-party license staging failed with exit code $LASTEXITCODE"
           }
 
+          # Preserve a full user-mode dump if the relocated package smoke
+          # faults inside generated JIT code. This is failure-only evidence;
+          # WER still returns the original nonzero process status.
+          $dumpDir = Join-Path $env:RUNNER_TEMP "eshkol-crash-dumps-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+          $dumpKey = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\eshkol-run.exe'
+          New-Item -Path $dumpKey -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpFolder -PropertyType ExpandString -Value $dumpDir -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+
           python scripts/verify_release_package.py `
             --package-dir "$pkgDir" `
             --smoke-source "tests/toolchain/windows-smoke.esk" `
@@ -676,6 +871,23 @@ jobs:
             Remove-Item -LiteralPath $archivePath -Force
           }
           Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal
+
+      - name: Upload Windows Package Failure Diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-diagnostics-${{ matrix.name }}
+          path: |
+            ${{ matrix.build_dir }}\stdlib.bc
+            ${{ matrix.build_dir }}\stdlib.o
+            ${{ matrix.build_dir }}\CMakeCache.txt
+            ${{ matrix.build_dir }}\Release\eshkol-run.exe
+            ${{ matrix.build_dir }}\Release\eshkol-run.pdb
+            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\bin\eshkol-run.exe
+            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\lib\stdlib-jit-v4-*.o
+            ${{ runner.temp }}\eshkol-crash-dumps-${{ matrix.name }}\*.dmp
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload Packaged Asset
         uses: actions/upload-artifact@v7
@@ -722,7 +934,6 @@ jobs:
             "eshkol-${RELEASE_TAG}-windows-x64-xla.zip"
             "eshkol-${RELEASE_TAG}-windows-arm64-xla.zip"
             "eshkol-${RELEASE_TAG}-windows-x64-cuda.zip"
-            "eshkol-${RELEASE_TAG}-windows-arm64-cuda.zip"
           )
 
           cd dist

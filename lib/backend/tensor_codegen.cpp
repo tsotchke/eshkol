@@ -20,6 +20,9 @@
 #include <llvm/IR/Constants.h>
 #include <llvm/Config/llvm-config.h>
 
+#include <cstdlib>
+#include <cstring>
+
 // LLVM VERSION COMPATIBILITY
 #if LLVM_VERSION_MAJOR >= 21
 #define ESHKOL_GET_INTRINSIC(mod, id, types) llvm::Intrinsic::getOrInsertDeclaration(mod, id, types)
@@ -100,10 +103,23 @@ bool TensorCodegen::shouldUseXLA(size_t num_elements) const {
 // Destructor must be defined where XLACodegen is complete
 TensorCodegen::~TensorCodegen() = default;
 
-/** @brief Report the host's SIMD vector width (in doubles) as detected by
- *         CPUCapabilities. */
+/** @brief Report the SIMD vector width (in doubles) for the active target.
+ *
+ * Normal compiler/JIT invocations retain host specialization. Release stdlib
+ * generation sets ESHKOL_TARGET_CPU=generic; in that mode the generated IR
+ * must use the shared x86-64/AArch64 128-bit baseline rather than whichever
+ * AVX width happens to be available on the hosted builder.
+ */
 unsigned TensorCodegen::getSIMDWidth() const {
-    return CPUCapabilities::instance().getVectorWidth();
+    const unsigned host_width =
+        CPUCapabilities::instance().getVectorWidth();
+    const char* target_cpu = std::getenv("ESHKOL_TARGET_CPU");
+    if (target_cpu && std::strcmp(target_cpu, "generic") == 0) {
+        // x86-64 and AArch64 both guarantee 128-bit SIMD (SSE2/NEON), which
+        // makes two doubles the deterministic baseline for every release lane.
+        return 2;
+    }
+    return host_width;
 }
 
 /** @brief Return the LLVM vector type matching getSIMDWidth() (double2/4/8),

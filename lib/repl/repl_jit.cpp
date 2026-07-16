@@ -23,7 +23,9 @@
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
+#include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
+#include "jit_target_config.h"  // Windows ARM64 external-data import indirection
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/IRBuilder.h>
@@ -81,6 +83,55 @@ std::unique_ptr<LLVMContext> eshkol_extract_module_context_for_jit(LLVMModuleRef
  */
 static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
     return reinterpret_cast<llvm::Module*>(module_ref);
+}
+
+/**
+ * @brief Applies the one authoritative TargetMachine configuration used by
+ * both LLJIT and the persistent stdlib JIT-object cache.
+ *
+ * LLVM 21's AArch64-COFF Large code model emits invalid Windows unwind data:
+ * the generated prologue can contain 28 bytes while its `.seh_*` directives
+ * describe only 24.  LLVM's assembler correctly rejects that object, and
+ * accepting it would be unsafe because Eshkol exceptions unwind through SEH.
+ * Keep the SEH-correct Small model on Windows ARM64. RuntimeDyldCOFFAArch64
+ * supplies absolute branch stubs for external calls, Eshkol's co-located
+ * per-object arena keeps internal code/data within Small-model reach, and
+ * prepare_jit_module_for_target() lowers external host data through nearby
+ * COFF import-address cells. Other targets preserve the existing Large model.
+ *
+ * AArch64 ELF also needs function/data sections because its Large model is
+ * incomplete for intra-object Branch26 calls; the same JITLink veneer handles
+ * those calls.  Mach-O's complete Large model and native linker stubs remain
+ * unchanged.
+ */
+static void configure_jit_target_machine_builder(
+    llvm::orc::JITTargetMachineBuilder& builder
+) {
+    builder.setRelocationModel(llvm::Reloc::PIC_);
+
+    const llvm::Triple& triple = builder.getTargetTriple();
+    const bool windows_aarch64_coff =
+        triple.getArch() == llvm::Triple::aarch64 &&
+        triple.isOSWindows() &&
+        triple.getObjectFormat() == llvm::Triple::COFF;
+    builder.setCodeModel(windows_aarch64_coff
+                             ? llvm::CodeModel::Small
+                             : llvm::CodeModel::Large);
+
+    const bool needs_branch26_sections =
+        triple.getArch() == llvm::Triple::aarch64 &&
+        (triple.getObjectFormat() == llvm::Triple::COFF ||
+         triple.getObjectFormat() == llvm::Triple::ELF);
+    if (needs_branch26_sections) {
+        builder.getOptions().FunctionSections = true;
+        builder.getOptions().DataSections = true;
+    }
+
+#if LLVM_VERSION_MAJOR >= 18
+    builder.setCodeGenOptLevel(llvm::CodeGenOptLevel::None);
+#else
+    builder.setCodeGenOptLevel(llvm::CodeGenOpt::None);
+#endif
 }
 
 /**
@@ -710,10 +761,10 @@ ReplJITContext::~ReplJITContext() {
  * Initializes all LLVM targets, loads the current process's symbols into the
  * dynamic-library search path, and builds a JITTargetMachineBuilder from the
  * detected host CPU/features so the JIT's code generation matches the
- * precompiled stdlib.o exactly: PIC relocation, the Large code model (needed
- * so AArch64 Branch26 PC-relative calls can reach across the >128 MB stdlib
- * IR without JITLink range errors), and -O0 codegen (matching stdlib.o's ABI
- * for tagged-value struct arguments). Also installs the AArch64 Branch26
+ * precompiled stdlib.o exactly: PIC relocation, a platform-correct code model
+ * (Small on Windows ARM64 because LLVM's AArch64-COFF Large model emits invalid
+ * SEH, Large elsewhere), and -O0 codegen (matching stdlib.o's ABI for tagged-
+ * value struct arguments). Also installs the AArch64 Branch26
  * range-extension JITLink plugin when applicable, installs an error reporter
  * that filters out benign "became defunct" teardown errors, registers the
  * runtime's manually-exported symbols (registerRuntimeSymbols()), and binds
@@ -742,28 +793,10 @@ void ReplJITContext::initializeJIT() {
         std::cerr << "Failed to detect host for JIT: " << toString(jtmb.takeError()) << std::endl;
         std::exit(1);
     }
-    // Ensure PIC relocation model (matches stdlib.o compilation)
-    jtmb->setRelocationModel(Reloc::PIC_);
-    // CRITICAL (ARM64 -r at scale): stdlib.bc is large (~58 MB of IR). When JITLink
-    // maps the compiled object it can land >128 MB from the runtime symbols that live
-    // in the main eshkol-run executable (e.g. ___eshkol_init_parallel_workers), which
-    // exceeds the AArch64 Branch26 (±128 MB) PC-relative `bl` range. JITLink then aborts
-    // with "relocation target ... out of range of Branch26PCRel fixup" — even a bare
-    // program that pulls in stdlib fails to materialize. The LARGE code model emits far
-    // calls as absolute movz/movk into a scratch reg + `blr` (no Branch26), so every
-    // call reaches any address regardless of how far apart the JIT places objects.
-    // (Small/Medium only affect data; code branch range needs Large.)
-    jtmb->setCodeModel(CodeModel::Large);
-    // CRITICAL: Match the batch compiler's optimization level (CodeGenOptLevel::None = -O0).
-    // JITTargetMachineBuilder::detectHost() defaults to CodeGenOptLevel::Default (-O2),
-    // which causes LLVM to generate different struct argument stack layouts on ARM64.
-    // stdlib.o is compiled at -O0, so the JIT must use the same level to ensure
-    // matching ABI for {i8,i8,i16,i32,i64} tagged value arguments.
-#if LLVM_VERSION_MAJOR >= 18
-    jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
-#else
-    jtmb->setCodeGenOptLevel(CodeGenOpt::None);
-#endif
+    // Keep LLJIT and the persistent stdlib object cache on the exact same
+    // relocation/code-model/section/optimization contract. In particular,
+    // Windows ARM64 must never use LLVM's invalid AArch64-COFF Large model.
+    configure_jit_target_machine_builder(*jtmb);
 
     // Create LLJIT instance with explicit host-matched TM.
     //
@@ -786,10 +819,40 @@ void ReplJITContext::initializeJIT() {
         long v = std::strtol(env, nullptr, 10);
         if (v > 0 && v <= 64) compile_threads = static_cast<unsigned>(v);
     }
-    auto jit_or_err = LLJITBuilder()
+    const bool windows_aarch64_coff =
+        eshkol::is_windows_aarch64_coff(jtmb->getTargetTriple());
+    LLJITBuilder jit_builder;
+    jit_builder
         .setJITTargetMachineBuilder(std::move(*jtmb))
-        .setNumCompileThreads(compile_threads)
-        .create();
+        .setNumCompileThreads(compile_threads);
+
+    if (windows_aarch64_coff) {
+        // LLVM 21 selects RuntimeDyld rather than JITLink for AArch64 COFF.
+        // Its default SectionMemoryManager uses three independent OS mapping
+        // pools, so Small-model PAGEBASE/PAGEOFFSET relocations between JIT-
+        // owned code and data can truncate when ASLR places those pools more
+        // than 4 GiB apart. Reserve all sections for each object in one bounded
+        // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
+        jit_builder.setObjectLinkingLayerCreator(
+            [](orc::ExecutionSession& execution_session)
+                -> Expected<std::unique_ptr<orc::ObjectLayer>> {
+                auto layer =
+                    std::make_unique<orc::RTDyldObjectLinkingLayer>(
+                        execution_session,
+                        [](const MemoryBuffer&)
+                            -> std::unique_ptr<RuntimeDyld::MemoryManager> {
+                            return std::make_unique<
+                                eshkol::CoLocatedSectionMemoryManager>();
+                        });
+                layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
+                layer->setAutoClaimResponsibilityForObjectSymbols(true);
+                std::unique_ptr<orc::ObjectLayer> object_layer =
+                    std::move(layer);
+                return std::move(object_layer);
+            });
+    }
+
+    auto jit_or_err = jit_builder.create();
 
     if (!jit_or_err) {
         auto err = jit_or_err.takeError();
@@ -802,16 +865,11 @@ void ReplJITContext::initializeJIT() {
 
     jit_ = std::move(*jit_or_err);
 
-    // AArch64 Branch26 range-extension (cross-platform far-call fix for the
-    // in-process JIT path used by eval/compile). When the >128 MB stdlib is
-    // JIT-linked on arm64-ELF/COFF, intra-object `bl`/`b` (Branch26PCRel,
-    // +/-128 MB) can land out of range; LLVM 21 JITLink has no automatic branch
-    // range extension for aarch64 and the AArch64 large code model is incomplete
-    // outside Mach-O. This plugin veneers every Branch26 edge through an inline
-    // absolute-jump stub placed in the caller's own section. No-op off aarch64.
-    // The default LLJIT object layer on aarch64 IS the JITLink ObjectLinkingLayer
-    // (the Branch26 error is a JITLink diagnostic); guard the cast for safety on
-    // platforms/configs that fall back to RTDyld (where this fix is unnecessary).
+    // AArch64 Branch26 range-extension for JITLink-backed object formats.
+    // LLVM 21 uses RuntimeDyld for AArch64 COFF, so Windows instead relies on
+    // RuntimeDyld's external stubs plus the bounded co-located arena above.
+    // Where JITLink is active, this plugin veneers every Branch26 edge through
+    // an inline absolute-jump stub placed in the caller's own section.
     if (auto *OLL = llvm::dyn_cast<llvm::orc::ObjectLinkingLayer>(
             &jit_->getObjLinkingLayer())) {
         OLL->addPlugin(std::make_shared<eshkol::Branch26RangeExtensionPlugin>());
@@ -1511,6 +1569,12 @@ void ReplJITContext::registerRuntimeSymbols() {
     // AD mode flag (shared so lambdas see AD mode set by other modules)
     ADD_DATA_SYMBOL(__ad_mode_active);
 
+    // Taylor-tower differentiation context. Windows PE hosts do not expose
+    // arbitrary executable data symbols to DynamicLibrarySearchGenerator, so
+    // register these explicitly just like the tape/mode globals above.
+    ADD_DATA_SYMBOL(__ad_tower_active);
+    ADD_DATA_SYMBOL(__ad_tower_order);
+
     // Double-backward / higher-order AD globals (tape stack, outer AD state)
     // These are thread_local — must use ADD_TLS_SYMBOL (mangled name) so the JIT can resolve them.
     ADD_TLS_SYMBOL(__ad_tape_stack);
@@ -1931,6 +1995,11 @@ void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<L
             registered_lambdas_.erase(name);
         }
     }
+
+    // Windows ARM64 Small-model code must reach data exported by the host
+    // executable through RuntimeDyld's nearby COFF import cells. Apply this to
+    // every live REPL module before validation and ConcurrentIRCompiler.
+    eshkol::prepare_jit_module_for_target(*module, jit_->getTargetTriple());
 
     // Verify the module
     std::string error_msg;
@@ -2409,9 +2478,9 @@ void ReplJITContext::registerStdlibSymbols() {
  * Idempotent (returns true immediately if already loaded). Tries, in order:
  * (1) a cached, JIT-ABI-matched stdlib object file keyed on a content hash of
  * stdlib.bc plus the target triple — emitted once with the exact
- * TargetMachine configuration (host CPU, PIC, CodeModel::Large,
- * CodeGenOptLevel::None, per-function/data sections for Branch26 range
- * extension) the JIT itself uses, then added via addObjectFile() on every
+ * TargetMachine configuration (host CPU, PIC, platform-correct code model,
+ * CodeGenOptLevel::None, and per-function/data sections where Branch26 range
+ * extension requires them) the JIT itself uses, then added via addObjectFile() on every
  * subsequent run to skip SelectionDAG entirely; (2) parsing stdlib.bc
  * directly and adding it as an ORC IR module, keeping stdlib in the same
  * compilation pipeline as REPL-compiled code so aggregate tagged-value
@@ -2476,7 +2545,7 @@ bool ReplJITContext::loadStdlib() {
     //
     // Why this is ABI-safe where the legacy AOT stdlib.o was not: we emit with
     // the EXACT TargetMachine config the JIT uses for user code (host CPU, PIC,
-    // CodeModel::Large, CodeGenOptLevel::None). The historic 3-arg corruption
+    // the platform-correct code model, and CodeGenOptLevel::None). The historic 3-arg corruption
     // came from an OptLevel/scalarization mismatch vs the JIT — matching it here
     // removes that boundary. And addObjectFile -> JITLink inserts AArch64
     // Branch26 range-extension stubs, the cross-platform fix (Mach-O/ELF/COFF)
@@ -2491,11 +2560,12 @@ bool ReplJITContext::loadStdlib() {
                     if (c == '/' || c == '\\' || c == ':') c = '_';
                 std::filesystem::path bc_fs(bc_path);
                 // Bump the version tag whenever the emit config below changes
-                // (code model, sections, opt level) so an existing cached object
-                // built with a different config is not reused.
+                // (code model, sections, opt level, or external-data import
+                // lowering) so an existing cached object built with a different
+                // contract is not reused.
                 std::filesystem::path cache_o =
                     bc_fs.parent_path() /
-                    ("stdlib-jit-v2-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
+                    ("stdlib-jit-v4-" + llvm::utohexstr(content_hash) + "-" + triple + ".o");
 
                 std::error_code ec;
                 bool have_obj = std::filesystem::exists(cache_o, ec);
@@ -2506,28 +2576,14 @@ bool ReplJITContext::loadStdlib() {
                     if (emit_mod) {
                         auto emit_jtmb = orc::JITTargetMachineBuilder::detectHost();
                         if (emit_jtmb) {
-                            emit_jtmb->setRelocationModel(Reloc::PIC_);
-                            emit_jtmb->setCodeModel(CodeModel::Large);
-                            // Emit each function/global into its own section. The
-                            // large code model is incomplete for AArch64 on ELF/COFF
-                            // (it works on Mach-O), so a 100 MB+ stdlib .text still
-                            // emits `bl` (Branch26) for intra-.text calls that exceed
-                            // the ±128 MB range. With per-function sections, JITLink
-                            // places each function independently and inserts Branch26
-                            // range-extension stubs for out-of-range calls — the
-                            // format-agnostic Branch26 fix (ELF/COFF/Mach-O alike).
-                            emit_jtmb->getOptions().FunctionSections = true;
-                            emit_jtmb->getOptions().DataSections = true;
-#if LLVM_VERSION_MAJOR >= 18
-                            emit_jtmb->setCodeGenOptLevel(CodeGenOptLevel::None);
-#else
-                            emit_jtmb->setCodeGenOptLevel(CodeGenOpt::None);
-#endif
+                            configure_jit_target_machine_builder(*emit_jtmb);
                             if (auto emit_tm = emit_jtmb->createTargetMachine()) {
                                 (*emit_mod)->setDataLayout(
                                     (*emit_tm)->createDataLayout());
                                 (*emit_mod)->setTargetTriple(
                                     (*emit_tm)->getTargetTriple());
+                                eshkol::prepare_jit_module_for_target(
+                                    **emit_mod, (*emit_tm)->getTargetTriple());
                                 std::filesystem::path tmp_o = cache_o;
                                 tmp_o += ".tmp";
                                 std::error_code wec;
@@ -2594,6 +2650,8 @@ bool ReplJITContext::loadStdlib() {
                 if (stdlib_module->getDataLayout().isDefault()) {
                     stdlib_module->setDataLayout(jit_->getDataLayout());
                 }
+                eshkol::prepare_jit_module_for_target(
+                    *stdlib_module, jit_->getTargetTriple());
 
                 auto ts_ctx = orc::ThreadSafeContext(std::move(module_context));
                 auto tsm = ThreadSafeModule(std::move(stdlib_module), ts_ctx);
@@ -3011,19 +3069,33 @@ static std::string findLibDir() {
     auto cwd = platform::current_directory();
     auto exe_dir = platform::executable_directory();
 
+    // Prefer the Eshkol installation that actually owns stdlib.esk.  A
+    // release package also contains ../lib for native archives; accepting the
+    // first existing directory therefore selects the archive directory and
+    // makes installed source modules such as agent.regex invisible to the
+    // cache-disabled JIT.  Keep this order aligned with eshkol-run.cpp: the
+    // executable-relative installed source tree wins over a downstream
+    // project's unrelated lib/ directory.
     std::vector<std::filesystem::path> candidates = {
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
         exe_dir / "lib",
         exe_dir / "../lib",
         exe_dir / "../share/eshkol/lib",
+        cwd / "lib",
+        cwd.parent_path() / "lib",
+        cwd / "share/eshkol/lib",
     };
 
 #ifndef _WIN32
     candidates.emplace_back("/usr/local/share/eshkol/lib");
     candidates.emplace_back("/usr/share/eshkol/lib");
 #endif
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate / "stdlib.esk", ec)) {
+            return candidate.string();
+        }
+    }
 
     return platform::find_first_existing(candidates);
 }
@@ -3649,11 +3721,13 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
             std::vector<eshkol_ast_t> alias_asts;
             for (size_t i = 0; i < ast->operation.require_op.num_modules; i++) {
                 std::string module_name = ast->operation.require_op.module_names[i];
-                if (loadModule(module_name)) {
-                    auto exports_it = module_exports_.find(module_name);
-                    if (exports_it != module_exports_.end()) {
-                        append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
-                    }
+                if (!loadModule(module_name)) {
+                    throw std::runtime_error("required module could not be loaded: " +
+                                             module_name);
+                }
+                auto exports_it = module_exports_.find(module_name);
+                if (exports_it != module_exports_.end()) {
+                    append_repl_r7rs_prefix_aliases(*ast, i, exports_it->second, alias_asts);
                 }
             }
             if (!alias_asts.empty()) {

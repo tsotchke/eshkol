@@ -163,11 +163,38 @@ Candidate temporary file path.
 std::string cxx_compiler();
 ```
 
-Get the path to the C++ compiler used to build the host toolchain.
+Resolve the C++ compiler used to link generated programs.
 
 **Returns**
 
-Absolute path to the compiler executable baked in at build time (ESHKOL_HOST_CXX_COMPILER), with forward slashes normalized to backslashes on Windows when the path is drive-letter rooted.
+Resolution uses the runtime `ESHKOL_CXX_COMPILER` override first, then the
+build-time compiler when it still exists, PATH, and platform-standard LLVM
+installation roots. The result is a driver path or the platform's default
+`clang++`/`c++` command name.
+
+### `compiler_rt_builtins_library`
+
+*Function*
+
+```c
+std::string compiler_rt_builtins_library();
+```
+
+Resolve the architecture-matched compiler-rt builtins archive from the
+selected consumer LLVM toolchain for generated ClangCL/MSVC links. The
+resolver derives the toolchain root from `cxx_compiler()` first, then checks
+consumer-side `LLVM_HOME`, `LLVM_ROOT`, `LLVM_DIR`, and standard Windows LLVM
+roots. It accepts only the configured LLVM major and the running Eshkol
+binary's native architecture (`x86_64` or `aarch64`); it never returns the
+absolute compiler-rt path captured from the package builder.
+
+**Returns**
+
+The canonical `clang_rt.builtins-x86_64.lib` or
+`clang_rt.builtins-aarch64.lib` path on native ClangCL/MSVC Windows. Returns an
+empty string on non-Windows and MinGW, or if the selected Windows toolchain is
+incomplete. Generated native links treat the latter Windows case as a hard,
+actionable configuration error.
 
 ### `llc_executable`
 
