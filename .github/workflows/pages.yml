@@ -40,6 +40,7 @@ on:
       - 'CMakeLists.txt'
       - 'ROADMAP.md'
       - 'CONTRIBUTING.md'
+      - 'ANNOUNCEMENT.md'
       - 'docs/ESHKOL_LANGUAGE_GUIDE.md'
       - 'docs/ESHKOL_QUICK_REFERENCE.md'
       - 'docs/COMPLETE_LANGUAGE_SPECIFICATION.md'
@@ -48,6 +49,7 @@ on:
       - 'docs/QUICKSTART.md'
       - 'scripts/build-site.sh'
       - 'scripts/build-site-content.sh'
+      - 'scripts/verify_site_release.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -103,12 +105,25 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          python3 scripts/verify_site_release.py
           test -s site/static/eshkol-site.wasm
           test -s site/static/eshkol-vm.wasm
           test -s site/static/eshkol-runtime.js
           test -s site/static/index.html
           node <<'NODE'
           const fs = require('fs');
+          const html = fs.readFileSync('site/static/index.html', 'utf8');
+          const jsonLd = html.match(
+            /<script type="application\/ld\+json">([\s\S]*?)<\/script>/
+          );
+          if (!jsonLd) throw new Error('site metadata is missing JSON-LD');
+          JSON.parse(jsonLd[1]);
+          const scripts = [...html.matchAll(
+            /<script(?![^>]*type="application\/ld\+json")[^>]*>([\s\S]*?)<\/script>/g
+          )];
+          for (const script of scripts) new Function(script[1]);
+          console.log(`site metadata and ${scripts.length} inline script(s) parse`);
+
           const path = 'site/static/eshkol-site.wasm';
           const wasm = fs.readFileSync(path);
           const maxBytes = 5 * 1024 * 1024;

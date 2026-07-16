@@ -1751,13 +1751,18 @@ ESH-0095)</td>
 <td>Quantum random</td>
 <td>✅</td>
 <td><code>quantum-random</code></td>
-<td>ANU QRNG API</td>
+<td>Classical software PRNG fallback (NOT the ANU QRNG API, NOT real
+quantum hardware, NOT Bell-verified). Real quantum entropy (Moonlab,
+Bell-verified) is opt-in via <code>-DESHKOL_QUANTUM_ENABLED=ON</code>;
+see <code>docs/design/MOONLAB_INTEGRATION.md</code>. Check the active
+source at runtime via <code>eshkol_qrng_source_label()</code>.</td>
 </tr>
 <tr>
 <td>Integer ranges</td>
 <td>✅</td>
 <td><code>quantum-random-range</code></td>
-<td>Uniform distribution</td>
+<td>Uniform distribution (same classical-fallback-by-default caveat as
+above)</td>
 </tr>
 </tbody>
 </table>
