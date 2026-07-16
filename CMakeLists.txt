@@ -373,6 +373,7 @@ set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
 set(ESHKOL_HOST_BLAS_LINK_ARGS "")
+set(ESHKOL_HOST_CUDA_MAJOR 0)
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
 configure_file(
@@ -1351,6 +1352,7 @@ if(ESHKOL_GPU_ENABLED)
     set(GPU_FOUND FALSE)
     set(GPU_LIBRARIES "")
     set(GPU_SOURCES "")
+    set(ESHKOL_CUDA_RUNTIME_LINK_NAMES "")
 
     if(APPLE)
         # Use Apple Metal framework (macOS/iOS)
@@ -1394,6 +1396,7 @@ if(ESHKOL_GPU_ENABLED)
         # Try CUDA on Linux/Windows
         find_package(CUDAToolkit QUIET)
         if(CUDAToolkit_FOUND)
+            set(ESHKOL_HOST_CUDA_MAJOR "${CUDAToolkit_VERSION_MAJOR}")
             if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
                "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
                 set(CMAKE_CUDA_ARCHITECTURES "${ESHKOL_CUDA_ARCHITECTURES}"
@@ -1414,10 +1417,13 @@ if(ESHKOL_GPU_ENABLED)
             set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
                 "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
+            set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart cublas)
             if(TARGET CUDA::cublasLt)
                 list(APPEND GPU_LIBRARIES CUDA::cublasLt)
+                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
             elseif(CUDA_cublasLt_LIBRARY)
                 list(APPEND GPU_LIBRARIES "${CUDA_cublasLt_LIBRARY}")
+                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
             endif()
 
             if(WIN32)
@@ -1430,6 +1436,9 @@ if(ESHKOL_GPU_ENABLED)
                         "${CUDAToolkit_BIN_DIR}/../lib/x64"
                     NO_DEFAULT_PATH
                 )
+                if(ESHKOL_CUDA_DEVICE_RUNTIME)
+                    list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cudadevrt)
+                endif()
             endif()
 
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
@@ -1610,14 +1619,21 @@ if(NOT APPLE)
         endforeach()
     endif()
 
-    if(GPU_FOUND AND GPU_LIBRARIES)
+    if(ESHKOL_GPU_BACKEND STREQUAL "CUDA" AND
+       ESHKOL_CUDA_RUNTIME_LINK_NAMES)
+        # Imported CUDA targets resolve to absolute build-host paths. Generated
+        # AOT and persistent-cache links run on the consumer, whose valid CUDA
+        # installation may use a distro multiarch directory or a different
+        # toolkit root. Preserve stable logical names and let platform_runtime
+        # resolve one consumer-side library directory at link time.
+        foreach(_cuda_runtime_name IN LISTS ESHKOL_CUDA_RUNTIME_LINK_NAMES)
+            list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS
+                "__ESHKOL_CUDA_LIB__/${_cuda_runtime_name}")
+        endforeach()
+    elseif(GPU_FOUND AND GPU_LIBRARIES)
         foreach(_gpu_lib IN LISTS GPU_LIBRARIES)
             eshkol_append_host_runtime_link_arg("${_gpu_lib}")
         endforeach()
-    endif()
-
-    if(WIN32 AND ESHKOL_CUDA_DEVICE_RUNTIME)
-        eshkol_append_host_runtime_link_arg("${ESHKOL_CUDA_DEVICE_RUNTIME}")
     endif()
 
     # Crypto system lib for lib/core/crypto_primitives.c — see comment above.
@@ -3265,6 +3281,18 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ji
     )
     add_test(NAME jit_aarch64_coff_target_config_test
         COMMAND jit_aarch64_coff_target_config_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
+    add_executable(cuda_runtime_link_args_test
+        tests/toolchain/cuda_runtime_link_args_test.cpp
+        lib/core/platform_runtime.cpp)
+    target_compile_features(cuda_runtime_link_args_test PRIVATE cxx_std_17)
+    target_include_directories(cuda_runtime_link_args_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${ESHKOL_GENERATED_INCLUDE_DIR})
+    add_test(NAME cuda_runtime_link_args_test
+        COMMAND cuda_runtime_link_args_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/decl_attribute_test.cpp")

@@ -24,6 +24,11 @@ CUDA 12 builds on newer GNU hosts now require a compatible compiler for the
 whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI
 and library search paths. Unix workflow configuration uses a scalar toolkit
 hint so non-CUDA macOS lanes remain compatible with Bash 3.2 under `set -u`.
+Generated AOT and persistent-cache links now resolve CUDA runtime/cuBLAS names
+from the consumer's explicit toolkit roots, `nvcc`, and standard multiarch
+layouts instead of replaying hosted-runner absolute paths. Linux links require
+the configured CUDA ABI-major sonames, so CUDA 12 artifacts fail closed rather
+than silently substituting CUDA 13.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
@@ -36,7 +41,7 @@ full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
 
-**Release gates**: 44/44 suites and 716/716 tests; CTest 75/75; SICP 88/88
+**Release gates**: 44/44 suites and 716/716 tests; CTest 76/76; SICP 88/88
 JIT+AOT probes; Chibi Scheme 34/34 AGREE; five-oracle generative differential
 127 programs with zero divergences; VM parity 68/68; VM extended surface
 53/53; executable language coverage 1057/1057 (100%); WebAssembly imports

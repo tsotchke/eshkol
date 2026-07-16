@@ -97,12 +97,15 @@ int main(int argc, char** argv) {
         source_root / "lib" / "repl" / "jit_coff_memory_manager.cpp";
     const fs::path tensor_codegen_path =
         source_root / "lib" / "backend" / "tensor_codegen.cpp";
+    const fs::path platform_runtime_path =
+        source_root / "lib" / "core" / "platform_runtime.cpp";
     const fs::path portable_stdlib_verifier_path =
         source_root / "scripts" / "verify_portable_stdlib.py";
     if (!fs::exists(repl_jit_path) ||
         !fs::exists(jit_target_config_path) ||
         !fs::exists(jit_coff_memory_manager_path) ||
         !fs::exists(tensor_codegen_path) ||
+        !fs::exists(platform_runtime_path) ||
         !fs::exists(portable_stdlib_verifier_path)) {
         return fail("release target configuration sources not found under source root");
     }
@@ -125,6 +128,7 @@ int main(int argc, char** argv) {
     const std::string jit_coff_memory_manager =
         read_file(jit_coff_memory_manager_path);
     const std::string tensor_codegen = read_file(tensor_codegen_path);
+    const std::string platform_runtime = read_file(platform_runtime_path);
     const std::string portable_stdlib_verifier =
         read_file(portable_stdlib_verifier_path);
     const std::string runtime_def = read_file(runtime_def_path);
@@ -294,6 +298,24 @@ int main(int argc, char** argv) {
          expect_contains(cmake,
                          "Selecting only CMAKE_CUDA_HOST_COMPILER is unsafe",
                          "CUDA rejects mixed GNU host/link toolchains") &&
+         expect_contains(cmake,
+                         "__ESHKOL_CUDA_LIB__/${_cuda_runtime_name}",
+                         "generated links store CUDA logical names, not builder paths") &&
+         expect_contains(platform_runtime,
+                         "cuda_runtime_link_args(cuda_libraries)",
+                         "CUDA logical names resolve against the consumer toolkit") &&
+         expect_contains(platform_runtime,
+                         "CUDAToolkit_ROOT\", \"CUDA_HOME\", \"CUDA_PATH",
+                         "consumer CUDA resolution honors standard root overrides") &&
+         expect_contains(platform_runtime,
+                         "root / \"lib\" / \"x86_64-linux-gnu\"",
+                         "consumer CUDA resolution supports distro multiarch layouts") &&
+         expect_contains(platform_runtime,
+                         "\"-l:lib\" + library + \".so.\"",
+                         "Linux CUDA links require the configured ABI-major soname") &&
+         expect_contains(platform_runtime,
+                         "major != ESHKOL_HOST_CUDA_MAJOR",
+                         "Windows rejects discovered toolkits with the wrong major") &&
          expect_contains(gpu_backend_verifier, "gpu_cuda_kernels.cu",
                          "GPU verifier requires compiled CUDA kernels") &&
          expect_contains(gpu_backend_verifier,
