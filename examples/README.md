@@ -89,4 +89,4 @@ Exact arithmetic, the numeric tower, category-theoretic models.
 
 ## Try it in the browser
 
-Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol without installing anything. The website itself is a 1,500-line Eshkol program compiled to a 502 KB WebAssembly binary.
+Visit **[eshkol.ai](https://eshkol.ai)** to run Eshkol without installing anything. The website itself is a 1,500-line Eshkol program compiled to a 220,306-byte (about 215 KiB) WebAssembly binary.
