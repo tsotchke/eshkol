@@ -99,7 +99,9 @@ gate green.  This section describes an **untagged release candidate**; no
   Xavier and current RTX/datacenter GPUs in the 15 honest artifacts. CUDA 12
   builds on newer GNU hosts also fail early unless the whole build uses a
   supported compiler, preventing nvcc-only host overrides from mixing
-  libstdc++ ABI and search paths at final link time.
+  libstdc++ ABI and search paths at final link time. Unix configure steps pass
+  the toolkit root as a scalar CMake definition, retaining compatibility with
+  the Bash 3.2 `set -u` environment on hosted macOS runners.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-

@@ -22,7 +22,8 @@ rather than shipping its CPU fallback under a GPU name. Explicit
 `sm_72/75/80/86/89/90` code preserves Xavier through current RTX coverage.
 CUDA 12 builds on newer GNU hosts now require a compatible compiler for the
 whole build, avoiding unsafe nvcc-only host overrides that mix libstdc++ ABI
-and library search paths.
+and library search paths. Unix workflow configuration uses a scalar toolkit
+hint so non-CUDA macOS lanes remain compatible with Bash 3.2 under `set -u`.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
