@@ -130,7 +130,7 @@ This is transparent to user code — the same expression compiles to different b
 
 - macOS (Apple Silicon ARM64, Intel x86_64)
 - Linux (x86_64, ARM64)
-- Windows (native x86_64 via Visual Studio 2022 + LLVM 21)
+- Windows (native x86_64 and ARM64 via Visual Studio 2022 + LLVM 21; CUDA packages are x86_64-only)
 - WebAssembly (browser)
 
 ### Can I deploy Eshkol programs as standalone binaries?
@@ -143,4 +143,4 @@ eshkol-run program.esk -o program
 
 ### Can Eshkol run in the browser?
 
-Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,500+ lines compiled to a 502KB WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.
+Yes. Eshkol compiles to WebAssembly. The project website ([eshkol.ai](https://eshkol.ai)) is itself written in Eshkol — 1,500+ lines compiled to a 220,306-byte (about 215 KiB) WASM binary. A bytecode VM REPL also runs in the browser for interactive evaluation.

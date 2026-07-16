@@ -14,10 +14,10 @@ but not the VM, and nothing recorded which shared behaviors silently diverged.
 The **VM parity ratchet** makes the subset explicit and makes drift impossible
 to miss.
 
-> Status: the ratchet, manifest, and gate ship with the v1.3.0-evolve release
-> (PR #118 — `scripts/run_vm_parity.sh`, `scripts/vm_parity_audit.py`,
-> `tests/vm_parity/`). The numbers below are from the seeded manifest on the
-> release SHA.
+> Status: the ratchet, manifest, and gate shipped with the v1.3.0-evolve
+> release (PR #118 — `scripts/run_vm_parity.sh`,
+> `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The counts below are from
+> the current v1.3.3-evolve candidate audit.
 
 ## The manifest
 
@@ -30,10 +30,11 @@ statuses:
 | `native-only-justified` | conscious, permanent waiver (FFI, OALR regions, static type syntax, OS/process, parallel runtime, front-end module machinery) — justification mandatory |
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
-Seeded 2026-07-03 from the live extraction and hand-verified with probe runs on
-`eshkol-vm-standalone-test` vs native `-r`: **912 rows — 520 `vm-supported`,
-41 `native-only-justified`, 351 `gap`** (the gaps include 27 documented
-bytecode-VM behavioral divergences).
+Seeded 2026-07-03 from the live extraction and continuously re-audited with
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **916 rows — 540
+`vm-supported`, 44 `native-only-justified`, 332 `gap`**. Verified behavioral
+divergences remain explicit `gap` rows with reproducible programs under
+`tests/vm_parity/found/`.
 
 ## The ratchet workflow
 
