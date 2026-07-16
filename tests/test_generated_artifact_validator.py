@@ -37,6 +37,7 @@ class GeneratedArtifactValidatorTest(unittest.TestCase):
                     [
                         'target triple = "aarch64-unknown-linux-gnu"\n',
                         "%v = load <2 x i64>, ptr %p\n",
+                        "%d = load <2 x double>, ptr %q\n",
                     ]
                 ),
                 [],
@@ -47,10 +48,12 @@ class GeneratedArtifactValidatorTest(unittest.TestCase):
             [
                 "%scale = call i64 @llvm.vscale.i64()\n",
                 "%wide = load <vscale x 2 x i64>, ptr %p\n",
+                "%avx = load <4 x double>, ptr %q\n",
+                "%avx512 = load <8 x double>, ptr %r\n",
                 'attributes #0 = { "target-features"="+neon,+sve2" }\n',
             ]
         )
-        self.assertEqual(len(failures), 3)
+        self.assertEqual(len(failures), 5)
 
     def test_portable_stdlib_validator_rejects_nonbaseline_cache(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -89,21 +89,28 @@ gate green.  This section describes an **untagged release candidate**; no
 
 ### Fixed
 
+- **Generic release stdlibs no longer inherit the builder's AVX width.**
+  `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
+  x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
+  specialized. The bitcode portability gate rejects fixed double vectors wider
+  than two lanes in addition to scalable vectors and optional ISA attributes.
 - **Relocated Windows package JITs publish their complete AD data ABI.** The
   Taylor-tower state globals are now explicitly registered with ORC, exported
   through the bounded PE runtime table, and required by the package validator.
   This prevents cache-disabled x64/ARM64 package runs from failing module
   materialization and cascading into duplicate initializer diagnostics.
-- **Windows ARM64 package JIT unwind metadata and external-data reach are
+- **Windows ARM64 package JIT unwind metadata and complete data reach are
   correct.** Live LLJIT and the persistent stdlib object cache now share one
   target-machine contract: the SEH-correct Small code model, per-function/data
   COFF sections, absolute RuntimeDyld call stubs, and import-address cells for
   host data. LLVM 21's AArch64-COFF Large model emitted invalid unwind metadata
-  for probed frames, while direct Small-model `PAGEBASE_REL21` references could
-  truncate when host globals and JIT allocations were more than 4 GiB apart.
-  External declarations are now lowered through `__imp_` cells before every
-  live and cached-module codegen path, preserving stack probing, exceptions,
-  cacheability, and full 64-bit data reach.
+  for probed frames. Small-model `PAGEBASE_REL21` references could then truncate
+  because RuntimeDyld allocated JIT-owned code, read-only data, and writable
+  data in unrelated address ranges. External declarations are lowered through
+  `__imp_` cells, while a per-object RuntimeDyld memory manager now reserves all
+  internal sections in one bounded arena. Explicit 120 MiB code and 2 GiB total
+  span guards fail safely before either Branch26 or ADRP reach is exceeded,
+  preserving stack probing, exceptions, cacheability, and full host-data reach.
 
 - **Windows release-package links are relocatable.** AOT and persistent-cache
   links no longer replay the build runner's absolute compiler-rt or LLVM archive

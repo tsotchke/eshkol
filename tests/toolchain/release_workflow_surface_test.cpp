@@ -87,8 +87,18 @@ int main(int argc, char** argv) {
         source_root / "lib" / "repl" / "repl_jit.cpp";
     const fs::path jit_target_config_path =
         source_root / "lib" / "repl" / "jit_target_config.h";
-    if (!fs::exists(repl_jit_path) || !fs::exists(jit_target_config_path)) {
-        return fail("JIT target configuration sources not found under source root");
+    const fs::path jit_coff_memory_manager_path =
+        source_root / "lib" / "repl" / "jit_coff_memory_manager.cpp";
+    const fs::path tensor_codegen_path =
+        source_root / "lib" / "backend" / "tensor_codegen.cpp";
+    const fs::path portable_stdlib_verifier_path =
+        source_root / "scripts" / "verify_portable_stdlib.py";
+    if (!fs::exists(repl_jit_path) ||
+        !fs::exists(jit_target_config_path) ||
+        !fs::exists(jit_coff_memory_manager_path) ||
+        !fs::exists(tensor_codegen_path) ||
+        !fs::exists(portable_stdlib_verifier_path)) {
+        return fail("release target configuration sources not found under source root");
     }
     const fs::path runtime_def_path =
         source_root / "cmake" / "gen_runtime_def.cmake";
@@ -102,6 +112,11 @@ int main(int argc, char** argv) {
     const std::string package_verifier = read_file(package_verifier_path);
     const std::string repl_jit = read_file(repl_jit_path);
     const std::string jit_target_config = read_file(jit_target_config_path);
+    const std::string jit_coff_memory_manager =
+        read_file(jit_coff_memory_manager_path);
+    const std::string tensor_codegen = read_file(tensor_codegen_path);
+    const std::string portable_stdlib_verifier =
+        read_file(portable_stdlib_verifier_path);
     const std::string runtime_def = read_file(runtime_def_path);
     const std::string windows_export_verifier =
         read_file(windows_export_verifier_path);
@@ -270,7 +285,34 @@ int main(int argc, char** argv) {
                          "Windows ARM64 external data uses RuntimeDyld COFF import cells") &&
          expect_contains(jit_target_config,
                          "if (!global.isDeclaration()",
-                         "JIT-owned data definitions are not rewritten as imports");
+                         "JIT-owned data definitions are not rewritten as imports") &&
+         expect_contains(repl_jit,
+                         "std::make_unique<\n                                eshkol::CoLocatedSectionMemoryManager>()",
+                         "Windows ARM64 LLJIT installs the co-located RuntimeDyld arena") &&
+         expect_contains(repl_jit,
+                         "setOverrideObjectFlagsWithResponsibilityFlags(true);",
+                         "custom COFF object layer preserves responsibility flags") &&
+         expect_contains(repl_jit,
+                         "setAutoClaimResponsibilityForObjectSymbols(true);",
+                         "custom COFF object layer preserves automatic symbol claims") &&
+         expect_contains(jit_coff_memory_manager,
+                         "needsToReserveAllocationSpace()",
+                         "RuntimeDyld computes complete per-object section sizes") &&
+         expect_contains(jit_coff_memory_manager,
+                         "kMaximumCodeSpan",
+                         "co-located arena enforces the Branch26 code bound") &&
+         expect_contains(jit_coff_memory_manager,
+                         "kMaximumArenaSpan",
+                         "co-located arena enforces the Small-model data bound") &&
+         expect_contains(tensor_codegen,
+                         "std::strcmp(target_cpu, \"generic\") == 0",
+                         "generic stdlib codegen does not inherit the builder CPU") &&
+         expect_contains(tensor_codegen,
+                         "return 2;",
+                         "generic stdlib tensor vectors use the 128-bit baseline") &&
+         expect_contains(portable_stdlib_verifier,
+                         "fixed double vector wider than the 128-bit release baseline",
+                         "portable stdlib validator rejects builder-wide fixed vectors");
 
     if (count_occurrences(repl_jit,
                           "configure_jit_target_machine_builder(*") != 2) {

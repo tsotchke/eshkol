@@ -3222,7 +3222,8 @@ endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/jit_aarch64_coff_target_config_test.cpp")
     add_executable(jit_aarch64_coff_target_config_test
-        tests/toolchain/jit_aarch64_coff_target_config_test.cpp)
+        tests/toolchain/jit_aarch64_coff_target_config_test.cpp
+        lib/repl/jit_coff_memory_manager.cpp)
     target_compile_features(jit_aarch64_coff_target_config_test PRIVATE cxx_std_17)
     target_include_directories(jit_aarch64_coff_target_config_test PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
