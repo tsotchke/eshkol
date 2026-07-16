@@ -373,6 +373,7 @@ set(ESHKOL_HOST_RUNTIME_LINK_ARGS "")
 set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
 set(ESHKOL_HOST_BLAS_LINK_ARGS "")
+set(ESHKOL_HOST_CUDA_MAJOR 0)
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
 configure_file(
@@ -919,7 +920,7 @@ endfunction()
 # (the PE equivalent of --export-dynamic). See cmake/gen_runtime_def.cmake for
 # the rationale (PE 65535-export cap rules out --export-all-symbols).
 function(eshkol_windows_export_runtime target_name)
-    if(NOT WIN32 OR ESHKOL_USING_MSVC)
+    if(NOT WIN32)
         return()
     endif()
 
@@ -936,15 +937,33 @@ function(eshkol_windows_export_runtime target_name)
         return()
     endif()
 
+    set(_eshkol_runtime_export_targets
+        eshkol-static
+        eshkol-runtime
+        eshkol-repl-lib)
+    if(TARGET eshkol-agent-ffi)
+        list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)
+    endif()
+    set(_eshkol_runtime_export_archives "")
+    foreach(_eshkol_runtime_export_target IN LISTS _eshkol_runtime_export_targets)
+        list(APPEND _eshkol_runtime_export_archives
+            "$<TARGET_FILE:${_eshkol_runtime_export_target}>")
+    endforeach()
+    if(ESHKOL_CLANG_BUILTINS_LIB)
+        list(APPEND _eshkol_runtime_export_archives
+            "${ESHKOL_CLANG_BUILTINS_LIB}")
+    endif()
+
     set(_def_file "${CMAKE_BINARY_DIR}/${target_name}_runtime_exports.def")
     add_custom_command(
         OUTPUT "${_def_file}"
         COMMAND "${CMAKE_COMMAND}"
-                "-DARCHIVES=$<TARGET_FILE:eshkol-static>;$<TARGET_FILE:eshkol-runtime>;$<TARGET_FILE:eshkol-repl-lib>"
+                "-DARCHIVES=${_eshkol_runtime_export_archives}"
                 "-DNM=${ESHKOL_RUNTIME_DEF_NM}"
                 "-DOUTPUT=${_def_file}"
                 -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
-        DEPENDS eshkol-static eshkol-runtime eshkol-repl-lib
+        DEPENDS ${_eshkol_runtime_export_targets}
+                ${ESHKOL_CLANG_BUILTINS_LIB}
                 "${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_runtime_def.cmake"
         COMMENT "Generating Eshkol runtime export .def for ${target_name}"
         VERBATIM)
@@ -952,9 +971,14 @@ function(eshkol_windows_export_runtime target_name)
     add_custom_target(${target_name}_runtime_def DEPENDS "${_def_file}")
     add_dependencies(${target_name} ${target_name}_runtime_def)
 
-    # Passing a .def as a linker input makes the GNU driver export exactly its
-    # EXPORTS list (and nothing else).
-    target_link_options(${target_name} PRIVATE "${_def_file}")
+    # Publish exactly the bounded Eshkol namespace on both supported Windows
+    # driver families.  ClangCL/MSVC requires /DEF; the GNU driver accepts the
+    # module-definition file as a direct linker input.
+    if(ESHKOL_USING_MSVC)
+        target_link_options(${target_name} PRIVATE "/DEF:${_def_file}")
+    else()
+        target_link_options(${target_name} PRIVATE "${_def_file}")
+    endif()
 endfunction()
 
 # Publish the bounded agent capability ABI from executables that host the
@@ -1311,11 +1335,24 @@ endif()
 # ===== GPU Acceleration (Platform-specific) =====
 # Provides GPU-accelerated tensor operations via Metal (macOS) or CUDA (Linux/Windows)
 option(ESHKOL_GPU_ENABLED "Enable GPU acceleration for tensor operations" ON)
+option(ESHKOL_REQUIRE_GPU_BACKEND
+    "Fail configuration when GPU acceleration is requested but no real backend is available"
+    OFF)
+set(ESHKOL_CUDA_ARCHITECTURES "72;75;80;86;89;90" CACHE STRING
+    "CUDA architectures for portable Eshkol GPU binaries")
+set(ESHKOL_GPU_BACKEND "NONE" CACHE INTERNAL
+    "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+
+if(ESHKOL_REQUIRE_GPU_BACKEND AND NOT ESHKOL_GPU_ENABLED)
+    message(FATAL_ERROR
+        "ESHKOL_REQUIRE_GPU_BACKEND=ON requires ESHKOL_GPU_ENABLED=ON")
+endif()
 
 if(ESHKOL_GPU_ENABLED)
     set(GPU_FOUND FALSE)
     set(GPU_LIBRARIES "")
     set(GPU_SOURCES "")
+    set(ESHKOL_CUDA_RUNTIME_LINK_NAMES "")
 
     if(APPLE)
         # Use Apple Metal framework (macOS/iOS)
@@ -1325,6 +1362,8 @@ if(ESHKOL_GPU_ENABLED)
 
         if(METAL_FRAMEWORK AND MPS_FRAMEWORK)
             set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "METAL" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
             set(GPU_LIBRARIES ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
             add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
             message(STATUS "GPU: Apple Metal (unified memory)")
@@ -1357,31 +1396,34 @@ if(ESHKOL_GPU_ENABLED)
         # Try CUDA on Linux/Windows
         find_package(CUDAToolkit QUIET)
         if(CUDAToolkit_FOUND)
-            if((NOT DEFINED CMAKE_CUDA_HOST_COMPILER OR "${CMAKE_CUDA_HOST_COMPILER}" STREQUAL "") AND
-               CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-               CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
-                find_program(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE
-                    NAMES g++-14 gcc-14 g++-13 gcc-13 g++-12 gcc-12
-                )
-                if(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE)
-                    set(CMAKE_CUDA_HOST_COMPILER "${ESHKOL_CUDA_HOST_COMPILER_CANDIDATE}"
-                        CACHE FILEPATH "Host compiler used by nvcc" FORCE)
-                    message(STATUS
-                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} detected; "
-                        "using host compiler ${CMAKE_CUDA_HOST_COMPILER}")
-                else()
-                    message(WARNING
-                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} may be unsupported by nvcc; "
-                        "install gcc-14/g++-14 or set CMAKE_CUDA_HOST_COMPILER explicitly.")
-                endif()
+            set(ESHKOL_HOST_CUDA_MAJOR "${CUDAToolkit_VERSION_MAJOR}")
+            if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
+               "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+                set(CMAKE_CUDA_ARCHITECTURES "${ESHKOL_CUDA_ARCHITECTURES}"
+                    CACHE STRING "CUDA architectures" FORCE)
+            endif()
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+               CUDAToolkit_VERSION VERSION_LESS 13.0 AND
+               CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+                message(FATAL_ERROR
+                    "CUDA ${CUDAToolkit_VERSION} does not support GNU "
+                    "${CMAKE_CXX_COMPILER_VERSION}. Reconfigure the entire build with "
+                    "a compatible compiler (for example CC=gcc-13 CXX=g++-13). "
+                    "Selecting only CMAKE_CUDA_HOST_COMPILER is unsafe because it can "
+                    "mix libstdc++ ABI/library search paths at the final link.")
             endif()
 
             set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
+            set(ESHKOL_CUDA_RUNTIME_LINK_NAMES cudart cublas)
             if(TARGET CUDA::cublasLt)
                 list(APPEND GPU_LIBRARIES CUDA::cublasLt)
+                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
             elseif(CUDA_cublasLt_LIBRARY)
                 list(APPEND GPU_LIBRARIES "${CUDA_cublasLt_LIBRARY}")
+                list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cublasLt)
             endif()
 
             if(WIN32)
@@ -1394,6 +1436,9 @@ if(ESHKOL_GPU_ENABLED)
                         "${CUDAToolkit_BIN_DIR}/../lib/x64"
                     NO_DEFAULT_PATH
                 )
+                if(ESHKOL_CUDA_DEVICE_RUNTIME)
+                    list(APPEND ESHKOL_CUDA_RUNTIME_LINK_NAMES cudadevrt)
+                endif()
             endif()
 
             add_compile_definitions(ESHKOL_GPU_CUDA_ENABLED)
@@ -1444,7 +1489,8 @@ if(ESHKOL_GPU_ENABLED)
                 endif()
             endif()
             enable_language(CUDA)
-            message(STATUS "GPU: NVIDIA CUDA")
+            message(STATUS
+                "GPU: NVIDIA CUDA (architectures: ${CMAKE_CUDA_ARCHITECTURES})")
 
             # CUDA backend — .cpp host code + .cu kernels
             set(GPU_SOURCES
@@ -1459,6 +1505,11 @@ if(ESHKOL_GPU_ENABLED)
         add_compile_definitions(ESHKOL_GPU_ENABLED)
         message(STATUS "GPU acceleration: ENABLED")
     else()
+        if(ESHKOL_REQUIRE_GPU_BACKEND)
+            message(FATAL_ERROR
+                "A real GPU backend was required, but neither Metal nor CUDA was found. "
+                "Refusing to compile the CPU stub as a GPU-labeled build.")
+        endif()
         message(STATUS "GPU acceleration: DISABLED (no GPU framework found)")
         # Still compile the stub so GPU API symbols resolve at link time
         set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
@@ -1547,6 +1598,18 @@ endif()
 
 if(NOT APPLE)
     foreach(_extra_runtime_lib IN LISTS ESHKOL_EXTRA_LINK_LIBS)
+        # The ClangCL-built Eshkol executables need the build toolchain's
+        # compiler-rt archive, but generated programs are linked later through
+        # the selected consumer clang++ driver. platform_runtime resolves that
+        # driver's matching compiler-rt archive at runtime. Replaying this
+        # absolute build-host path in ESHKOL_HOST_RUNTIME_LINK_ARGS makes
+        # installed Windows packages depend on the runner image's Visual Studio
+        # layout (and can mix Clang major versions). Keep it on CMake target
+        # link lines only.
+        if(ESHKOL_CLANG_BUILTINS_LIB AND
+           "${_extra_runtime_lib}" STREQUAL "${ESHKOL_CLANG_BUILTINS_LIB}")
+            continue()
+        endif()
         eshkol_append_host_runtime_link_arg("${_extra_runtime_lib}")
     endforeach()
 
@@ -1556,14 +1619,21 @@ if(NOT APPLE)
         endforeach()
     endif()
 
-    if(GPU_FOUND AND GPU_LIBRARIES)
+    if(ESHKOL_GPU_BACKEND STREQUAL "CUDA" AND
+       ESHKOL_CUDA_RUNTIME_LINK_NAMES)
+        # Imported CUDA targets resolve to absolute build-host paths. Generated
+        # AOT and persistent-cache links run on the consumer, whose valid CUDA
+        # installation may use a distro multiarch directory or a different
+        # toolkit root. Preserve stable logical names and let platform_runtime
+        # resolve one consumer-side library directory at link time.
+        foreach(_cuda_runtime_name IN LISTS ESHKOL_CUDA_RUNTIME_LINK_NAMES)
+            list(APPEND ESHKOL_HOST_RUNTIME_LINK_ARGS
+                "__ESHKOL_CUDA_LIB__/${_cuda_runtime_name}")
+        endforeach()
+    elseif(GPU_FOUND AND GPU_LIBRARIES)
         foreach(_gpu_lib IN LISTS GPU_LIBRARIES)
             eshkol_append_host_runtime_link_arg("${_gpu_lib}")
         endforeach()
-    endif()
-
-    if(WIN32 AND ESHKOL_CUDA_DEVICE_RUNTIME)
-        eshkol_append_host_runtime_link_arg("${ESHKOL_CUDA_DEVICE_RUNTIME}")
     endif()
 
     # Crypto system lib for lib/core/crypto_primitives.c — see comment above.
@@ -2210,10 +2280,24 @@ endforeach ()
 
 # ===== Pre-compiled Standard Library =====
 # Compile stdlib.esk to stdlib.o/stdlib.bc for faster loading of user programs
+set(ESHKOL_STDLIB_TARGET_CPU "" CACHE STRING
+    "CPU used only for precompiled stdlib artifacts; empty keeps host-specialized development builds")
+set(ESHKOL_STDLIB_TARGET_FEATURES "" CACHE STRING
+    "LLVM target features used only for precompiled stdlib artifacts")
 set(STDLIB_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/lib/stdlib.esk")
 set(STDLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/stdlib.o")
 set(STDLIB_BITCODE "${CMAKE_CURRENT_BINARY_DIR}/stdlib.bc")
 set(STDLIB_WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+set(STDLIB_CODEGEN_ENV "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib")
+
+if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
+  list(APPEND STDLIB_CODEGEN_ENV
+       "ESHKOL_TARGET_CPU=${ESHKOL_STDLIB_TARGET_CPU}"
+       "ESHKOL_TARGET_FEATURES=${ESHKOL_STDLIB_TARGET_FEATURES}")
+elseif(NOT "${ESHKOL_STDLIB_TARGET_FEATURES}" STREQUAL "")
+  list(APPEND STDLIB_CODEGEN_ENV
+       "ESHKOL_TARGET_FEATURES=${ESHKOL_STDLIB_TARGET_FEATURES}")
+endif()
 
 # stdlib.esk is a thin top-level that (require)s every module in
 # lib/core/, lib/math/, lib/signal/, etc.  CMake's DEPENDS list must
@@ -2237,7 +2321,7 @@ file(GLOB_RECURSE STDLIB_TRANSITIVE_SOURCES CONFIGURE_DEPENDS
 add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
-  COMMAND ${CMAKE_COMMAND} -E env "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib"
+  COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
           $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
@@ -2253,6 +2337,10 @@ add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
 
 message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT} and ${STDLIB_BITCODE}")
+if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
+  message(STATUS
+      "Precompiled standard library target: CPU=${ESHKOL_STDLIB_TARGET_CPU}, features='${ESHKOL_STDLIB_TARGET_FEATURES}'")
+endif()
 
 # ===== REPL Support =====
 # Optional REPL with JIT execution
@@ -2320,36 +2408,13 @@ if(REPL_SRC)
         )
       endif()
 
-      set(_eshkol_repl_target_libs
-        LLVMTarget
-        LLVMTargetParser
-        LLVMAsmPrinter
-        LLVMCodeGen
-      )
-      if(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64" OR
-         CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|AARCH64|aarch64)$")
-        list(APPEND _eshkol_repl_target_libs
-          LLVMAArch64CodeGen
-          LLVMAArch64AsmParser
-          LLVMAArch64Desc
-          LLVMAArch64Info
-          LLVMAArch64Disassembler
-        )
-      else()
-        list(APPEND _eshkol_repl_target_libs
-          LLVMX86CodeGen
-          LLVMX86AsmParser
-          LLVMX86Desc
-          LLVMX86Info
-          LLVMX86Disassembler
-        )
-      endif()
-      foreach(_llvm_repl_lib IN LISTS _eshkol_repl_target_libs)
-        set(_llvm_repl_lib_path "${ESHKOL_LLVM_ROOT}/lib/${_llvm_repl_lib}.lib")
-        if(EXISTS "${_llvm_repl_lib_path}")
-          target_link_options(eshkol-repl PRIVATE "/WHOLEARCHIVE:${_llvm_repl_lib_path}")
-        endif()
-      endforeach()
+      # LLVM target initialization is supplied by the LLVM linkage selected by
+      # LLVMConfig.cmake.  The official Windows SDK exposes those entry points
+      # through LLVM-C.dll while also listing static C++ components. Explicitly
+      # force-loading the overlapping LLVMX86*/LLVMAArch64* target archives
+      # defines LLVMInitialize* twice. The bounded Eshkol runtime .def below
+      # retains and exports the JIT host ABI; it must not be conflated with LLVM
+      # component retention.
     endif()
 
     # Force-load ALL symbols from eshkol-static into the REPL binary.
@@ -2361,8 +2426,10 @@ if(REPL_SRC)
       target_link_options(eshkol-repl PRIVATE
         "-Wl,-force_load" "$<TARGET_FILE:eshkol-static>")
     elseif(WIN32 AND ESHKOL_USING_MSVC)
-      # ClangCL/MSVC links the needed runtime objects directly via
-      # eshkol-repl-lib's references and explicit JIT symbol registration.
+      # The generated /DEF table names every bounded JIT-visible runtime
+      # symbol. lld-link treats those exports as references and extracts the
+      # defining archive members, so force-loading the LLVM-bearing compiler
+      # archive is both unnecessary and incorrect.
     elseif(WIN32)
       # MSYS2/MinGW GNU driver: whole-archive the runtime so every object
       # (incl. JIT-only-referenced runtime helpers) is pulled into the exe,
@@ -2379,7 +2446,8 @@ if(REPL_SRC)
     if(APPLE)
       target_link_options(eshkol-repl PRIVATE "-Wl,-export_dynamic")
     elseif(WIN32 AND ESHKOL_USING_MSVC)
-      # No export-dynamic equivalent is required for the ClangCL/MSVC REPL path.
+      # The bounded export table is attached after eshkol-agent-ffi exists, so
+      # generated agent modules and core runtime calls share one PE namespace.
     elseif(WIN32)
       # PE/COFF: export only the bounded Eshkol runtime namespace via a
       # generated .def (--export-all-symbols overflows the 65535 PE export
@@ -2432,8 +2500,10 @@ if(REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,-stack_size,0x20000000")
     target_link_options(eshkol-run PRIVATE "-Wl,-bind_at_load")
   elseif(WIN32 AND ESHKOL_USING_MSVC)
-    # ClangCL/MSVC uses the REPL/JIT symbol registration path and does not
-    # accept GNU ld options here.
+    # The bounded /DEF table attached after the agent target exists performs
+    # both precise archive retention and PE export.  Do not /WHOLEARCHIVE the
+    # compiler archives: that defeats the bounded design and can pull static
+    # LLVM target definitions that overlap LLVM-C.dll.
   elseif(WIN32)
     # MSYS2/MinGW GNU driver: mirror the macOS/Linux path so the in-process
     # JIT (used by `-r` and -e/--eval) can resolve every host runtime symbol.
@@ -2458,6 +2528,27 @@ if(REPL_SRC)
     target_link_options(eshkol-run PRIVATE "-Wl,-z,stack-size=536870912")
     # Linker hardening: full RELRO + immediate binding
     target_link_options(eshkol-run PRIVATE "-Wl,-z,relro" "-Wl,-z,now")
+  endif()
+
+  # Linux binary releases stage libpng/libjpeg/libwebp and their codec-side
+  # closure under lib/eshkol/runtime-deps.  Keep the tools relocatable: the
+  # same binaries continue to use distro libraries in the build tree, then
+  # resolve the packaged SONAMEs through this relative RUNPATH after archive
+  # extraction.  Generated AOT/cache executables receive an absolute path to
+  # the relocated directory at link time via platform_runtime.cpp.
+  if(UNIX AND NOT APPLE)
+    set(_eshkol_packaged_runtime_rpath
+        "\$ORIGIN/../lib/eshkol/runtime-deps")
+    set_property(TARGET eshkol-run APPEND PROPERTY
+        BUILD_RPATH "${_eshkol_packaged_runtime_rpath}")
+    set_property(TARGET eshkol-run APPEND PROPERTY
+        INSTALL_RPATH "${_eshkol_packaged_runtime_rpath}")
+    if(TARGET eshkol-repl)
+      set_property(TARGET eshkol-repl APPEND PROPERTY
+          BUILD_RPATH "${_eshkol_packaged_runtime_rpath}")
+      set_property(TARGET eshkol-repl APPEND PROPERTY
+          INSTALL_RPATH "${_eshkol_packaged_runtime_rpath}")
+    endif()
   endif()
   message(STATUS "eshkol-run linked with REPL JIT for -e/--eval support")
 
@@ -3029,6 +3120,22 @@ if(ESHKOL_BUILD_TESTS)
         )
         set_tests_properties(generated_artifact_validator_test PROPERTIES TIMEOUT 120)
     endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py")
+        add_test(
+            NAME windows_runtime_exports_validator_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py"
+        )
+        set_tests_properties(windows_runtime_exports_validator_test PROPERTIES TIMEOUT 120)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py")
+        add_test(
+            NAME verify_gpu_backend_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py"
+        )
+        set_tests_properties(verify_gpu_backend_test PROPERTIES TIMEOUT 120)
+    endif()
     # Native Windows builds intentionally omit the bytecode VM.  Do not
     # register a test whose generator expression names that absent target;
     # CMake evaluates TARGET_FILE expressions during generation and would
@@ -3154,6 +3261,38 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ta
         ${LLVM_SYSTEM_LIBS_LIST}
     )
     add_test(NAME target_intrinsic_test COMMAND target_intrinsic_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/jit_aarch64_coff_target_config_test.cpp")
+    add_executable(jit_aarch64_coff_target_config_test
+        tests/toolchain/jit_aarch64_coff_target_config_test.cpp
+        lib/repl/jit_coff_memory_manager.cpp)
+    target_compile_features(jit_aarch64_coff_target_config_test PRIVATE cxx_std_17)
+    target_include_directories(jit_aarch64_coff_target_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/repl)
+    eshkol_target_llvm_includes(jit_aarch64_coff_target_config_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(jit_aarch64_coff_target_config_test PRIVATE
+            ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(jit_aarch64_coff_target_config_test PRIVATE
+        ${LLVM_LIBS_LIST}
+        ${LLVM_SYSTEM_LIBS_LIST}
+    )
+    add_test(NAME jit_aarch64_coff_target_config_test
+        COMMAND jit_aarch64_coff_target_config_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/cuda_runtime_link_args_test.cpp")
+    add_executable(cuda_runtime_link_args_test
+        tests/toolchain/cuda_runtime_link_args_test.cpp
+        lib/core/platform_runtime.cpp)
+    target_compile_features(cuda_runtime_link_args_test PRIVATE cxx_std_17)
+    target_include_directories(cuda_runtime_link_args_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${ESHKOL_GENERATED_INCLUDE_DIR})
+    add_test(NAME cuda_runtime_link_args_test
+        COMMAND cuda_runtime_link_args_test)
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/decl_attribute_test.cpp")
@@ -4154,6 +4293,18 @@ if(ESHKOL_BUILD_AGENT_FFI)
                     target_link_libraries(eshkol-repl PRIVATE
                         "-Wl,--whole-archive" eshkol-agent-ffi "-Wl,--no-whole-archive")
                 endif()
+            endif()
+        endif()
+
+        # Build one bounded PE export table after the optional agent archive is
+        # defined. This avoids competing /DEF files and makes both core and
+        # agent-generated calls resolvable in cache-disabled ORC JIT sessions.
+        if(WIN32)
+            if(TARGET eshkol-run)
+                eshkol_windows_export_runtime(eshkol-run)
+            endif()
+            if(TARGET eshkol-repl)
+                eshkol_windows_export_runtime(eshkol-repl)
             endif()
         endif()
 

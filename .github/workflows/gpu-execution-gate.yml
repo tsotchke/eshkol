@@ -2,10 +2,10 @@ name: GPU Execution Gate
 
 # WHY THIS WORKFLOW EXISTS (read before touching runs-on below)
 #
-# The `linux-x64-cuda` / `linux-arm64-cuda` / `windows-arm64-cuda` jobs in
+# The `linux-x64-cuda` / `linux-arm64-cuda` / `windows-x64-cuda` jobs in
 # ci.yml build Eshkol with -DESHKOL_GPU_ENABLED=ON and run
 # scripts/run_gpu_tests.sh against that build. Those jobs run on
-# GitHub-hosted runners (ubuntu-22.04, ubuntu-22.04-arm, windows-11-arm),
+# GitHub-hosted runners (ubuntu-22.04, ubuntu-22.04-arm, windows-2022),
 # and hosted runners have NO GPU. nvcc/the CUDA toolkit compiles the
 # .cu kernels fine, and vm_gpu_dispatch.h's `eshkol_gpu_init()` returns 0
 # devices, so every "GPU" tensor op in that lane silently falls through to

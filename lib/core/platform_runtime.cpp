@@ -8,6 +8,7 @@
 #include <eshkol/platform_runtime.h>
 #include <eshkol/build_config.h>
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cerrno>
@@ -53,6 +54,260 @@ std::filesystem::path canonical_if_exists(const std::filesystem::path& path) {
         return std::filesystem::absolute(path, ec);
     }
     return canonical;
+}
+
+/** @brief Resolve a regular executable without trusting builder-only paths. */
+std::filesystem::path executable_if_available(const std::filesystem::path& path) {
+    if (path.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec) || ec) {
+        return {};
+    }
+#ifndef _WIN32
+    if (access(path.c_str(), X_OK) != 0) {
+        return {};
+    }
+#endif
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    return ec ? path : canonical;
+}
+
+/** @brief Search PATH for an executable name. */
+std::filesystem::path executable_on_path(std::string_view name) {
+    const char* raw_path = std::getenv("PATH");
+    if (!raw_path || !*raw_path || name.empty()) {
+        return {};
+    }
+
+    std::stringstream entries(raw_path);
+    std::string entry;
+    constexpr char separator =
+#ifdef _WIN32
+        ';';
+#else
+        ':';
+#endif
+    while (std::getline(entries, entry, separator)) {
+        if (entry.size() >= 2 && entry.front() == '"' && entry.back() == '"') {
+            entry = entry.substr(1, entry.size() - 2);
+        }
+        std::filesystem::path directory =
+            entry.empty() ? current_directory() : std::filesystem::path(entry);
+        auto candidate = executable_if_available(directory / std::string(name));
+        if (!candidate.empty()) {
+            return candidate;
+        }
+#ifdef _WIN32
+        if (std::filesystem::path(name).extension().empty()) {
+            candidate = executable_if_available(directory / (std::string(name) + ".exe"));
+            if (!candidate.empty()) {
+                return candidate;
+            }
+        }
+#endif
+    }
+    return {};
+}
+
+void append_unique_directory(
+    std::vector<std::filesystem::path>& directories,
+    std::filesystem::path directory
+) {
+    if (directory.empty()) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        return;
+    }
+    auto canonical = std::filesystem::weakly_canonical(directory, ec);
+    if (!ec) {
+        directory = std::move(canonical);
+    }
+    if (std::find(directories.begin(), directories.end(), directory) ==
+        directories.end()) {
+        directories.emplace_back(std::move(directory));
+    }
+}
+
+void append_cuda_root_library_directories(
+    std::vector<std::filesystem::path>& directories,
+    const std::filesystem::path& root
+) {
+    if (root.empty()) {
+        return;
+    }
+#ifdef _WIN32
+    append_unique_directory(directories, root / "lib" / "x64");
+#elif defined(__linux__)
+    append_unique_directory(directories, root / "lib64");
+    append_unique_directory(directories, root / "lib");
+#  if defined(__x86_64__) || defined(__amd64__)
+    append_unique_directory(directories, root / "lib" / "x86_64-linux-gnu");
+    append_unique_directory(
+        directories, root / "targets" / "x86_64-linux" / "lib");
+#  elif defined(__aarch64__) || defined(__arm64__)
+    append_unique_directory(directories, root / "lib" / "aarch64-linux-gnu");
+    append_unique_directory(
+        directories, root / "targets" / "aarch64-linux" / "lib");
+    append_unique_directory(
+        directories, root / "targets" / "sbsa-linux" / "lib");
+#  endif
+#else
+    append_unique_directory(directories, root / "lib64");
+    append_unique_directory(directories, root / "lib");
+#endif
+}
+
+void append_environment_library_directories(
+    std::vector<std::filesystem::path>& directories,
+    const char* variable
+) {
+    const char* raw = std::getenv(variable);
+    if (!raw || !*raw) {
+        return;
+    }
+    std::stringstream entries(raw);
+    std::string entry;
+    constexpr char separator =
+#ifdef _WIN32
+        ';';
+#else
+        ':';
+#endif
+    while (std::getline(entries, entry, separator)) {
+        if (!entry.empty()) {
+            append_unique_directory(directories, entry);
+        }
+    }
+}
+
+std::vector<std::filesystem::path> cuda_library_directories() {
+    std::vector<std::filesystem::path> directories;
+
+    append_environment_library_directories(
+        directories, "ESHKOL_CUDA_LIBRARY_PATH");
+    for (const char* variable : {
+             "CUDAToolkit_ROOT", "CUDA_HOME", "CUDA_PATH"}) {
+        if (const char* root = std::getenv(variable); root && *root) {
+            append_cuda_root_library_directories(directories, root);
+        }
+    }
+
+#ifdef _WIN32
+    auto nvcc = executable_on_path("nvcc.exe");
+#else
+    auto nvcc = executable_on_path("nvcc");
+#endif
+    if (!nvcc.empty()) {
+        append_cuda_root_library_directories(
+            directories, nvcc.parent_path().parent_path());
+    }
+
+    append_environment_library_directories(directories, "LIBRARY_PATH");
+#ifndef _WIN32
+    append_environment_library_directories(directories, "LD_LIBRARY_PATH");
+#endif
+
+#ifdef _WIN32
+    for (const char* variable : {"ProgramFiles", "ProgramFiles(x86)"}) {
+        const char* program_files = std::getenv(variable);
+        if (!program_files || !*program_files) {
+            continue;
+        }
+        const auto cuda_parent = std::filesystem::path(program_files) /
+            "NVIDIA GPU Computing Toolkit" / "CUDA";
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(cuda_parent, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (it->is_directory(ec) && !ec) {
+                append_cuda_root_library_directories(directories, it->path());
+            }
+        }
+    }
+#elif defined(__linux__)
+    // Distro CUDA packages put development symlinks in the ordinary
+    // multiarch directory under /usr, while NVIDIA's repository uses
+    // /usr/local/cuda[-M.m]/targets/<arch>-linux/lib.
+    append_cuda_root_library_directories(directories, "/usr");
+    append_cuda_root_library_directories(directories, "/usr/local/cuda");
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it("/usr/local", ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_directory(ec) || ec) {
+            continue;
+        }
+        const std::string name = it->path().filename().string();
+        if (name.rfind("cuda-", 0) == 0) {
+            append_cuda_root_library_directories(directories, it->path());
+        }
+    }
+#endif
+    return directories;
+}
+
+bool cuda_directory_has_libraries(
+    const std::filesystem::path& directory,
+    const std::vector<std::string>& libraries
+) {
+#ifdef _WIN32
+    if (ESHKOL_HOST_CUDA_MAJOR > 0) {
+        // Standard Windows toolkit roots contain a version component such as
+        // `v12.4`. Reject a discovered v13.x installation for a CUDA 12
+        // package. An explicitly supplied unversioned directory remains a
+        // valid escape hatch for custom toolkit layouts.
+        for (const auto& component : directory) {
+            const std::string text = component.string();
+            if (text.size() < 2 ||
+                (text.front() != 'v' && text.front() != 'V') ||
+                !std::isdigit(static_cast<unsigned char>(text[1]))) {
+                continue;
+            }
+            char* end = nullptr;
+            const long major = std::strtol(text.c_str() + 1, &end, 10);
+            if (end != text.c_str() + 1 &&
+                (*end == '\0' || *end == '.') &&
+                major != ESHKOL_HOST_CUDA_MAJOR) {
+                return false;
+            }
+        }
+    }
+#endif
+    for (const auto& library : libraries) {
+#ifdef _WIN32
+        const auto development_file = directory / (library + ".lib");
+#else
+        const auto development_file = directory / ("lib" + library + ".so");
+#endif
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(development_file, ec) || ec) {
+            return false;
+        }
+#if defined(__linux__)
+        if (ESHKOL_HOST_CUDA_MAJOR > 0 && library != "cudadevrt") {
+            const auto versioned_file = directory /
+                ("lib" + library + ".so." +
+                 std::to_string(ESHKOL_HOST_CUDA_MAJOR));
+            if (!std::filesystem::is_regular_file(versioned_file, ec) || ec) {
+                return false;
+            }
+        }
+#endif
+    }
+    return true;
+}
+
+std::string normalize_cxx_driver_path(std::string compiler) {
+#ifdef _WIN32
+    if (compiler.size() >= 3 &&
+        std::isalpha(static_cast<unsigned char>(compiler[0])) &&
+        compiler[1] == ':' && compiler[2] == '/') {
+        std::replace(compiler.begin(), compiler.end(), '/', '\\');
+    }
+#endif
+    return compiler;
 }
 
 #ifdef _WIN32
@@ -351,23 +606,167 @@ std::filesystem::path make_temp_path(std::string_view stem, std::string_view ext
     return temp_dir / (std::string(stem) + std::string(extension));
 }
 
-/** @brief Return the configured host C++ compiler path (ESHKOL_HOST_CXX_COMPILER).
+/** @brief Resolve the C++ driver used to link generated programs.
  *
- * On Windows, converts a leading drive-letter forward-slash path
- * (e.g. "C:/...") to backslashes for native tool compatibility. */
+ * An explicit ESHKOL_CXX_COMPILER runtime override wins. Otherwise the exact
+ * build-time compiler is retained when it still exists, then PATH and standard
+ * LLVM installation roots are searched. This keeps installed packages
+ * relocatable without weakening reproducible build-tree links. */
 std::string cxx_compiler() {
-#ifdef _WIN32
-    std::string compiler = ESHKOL_HOST_CXX_COMPILER;
-    if (compiler.size() >= 3 &&
-        std::isalpha(static_cast<unsigned char>(compiler[0])) &&
-        compiler[1] == ':' &&
-        compiler[2] == '/') {
-        std::replace(compiler.begin(), compiler.end(), '/', '\\');
+    if (const char* override_compiler = std::getenv("ESHKOL_CXX_COMPILER")) {
+        if (*override_compiler) {
+            return normalize_cxx_driver_path(override_compiler);
+        }
     }
-    return compiler;
+
+    const std::string configured = normalize_cxx_driver_path(ESHKOL_HOST_CXX_COMPILER);
+    if (auto compiler = executable_if_available(configured); !compiler.empty()) {
+        return compiler.string();
+    }
+
+#ifdef _WIN32
+    for (const std::string_view name : {"clang++-21.exe", "clang++.exe"}) {
+        if (auto compiler = executable_on_path(name); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    for (const char* root_name : {"LLVM_HOME", "LLVM_ROOT"}) {
+        if (const char* root = std::getenv(root_name); root && *root) {
+            candidates.emplace_back(std::filesystem::path(root) / "bin" / "clang++.exe");
+        }
+    }
+    if (const char* program_files = std::getenv("ProgramFiles"); program_files && *program_files) {
+        candidates.emplace_back(
+            std::filesystem::path(program_files) / "LLVM" / "bin" / "clang++.exe");
+    }
+    for (const auto& candidate : candidates) {
+        if (auto compiler = executable_if_available(candidate); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+    return "clang++.exe";
 #else
-    return ESHKOL_HOST_CXX_COMPILER;
+    const std::string versioned = "clang++-" + std::to_string(ESHKOL_HOST_LLVM_MAJOR);
+    for (const auto& name : {versioned, std::string("clang++"), std::string("c++")}) {
+        if (auto compiler = executable_on_path(name); !compiler.empty()) {
+            return compiler.string();
+        }
+    }
+    return "c++";
 #endif
+}
+
+std::string compiler_rt_builtins_library() {
+#if defined(_WIN32) && !defined(__MINGW32__)
+#  if defined(_M_ARM64) || defined(__aarch64__) || defined(__arm64__)
+    constexpr std::string_view architecture = "aarch64";
+#  elif defined(_M_X64) || defined(__x86_64__) || defined(__amd64__)
+    constexpr std::string_view architecture = "x86_64";
+#  else
+    return {};
+#  endif
+
+    std::vector<std::filesystem::path> toolchain_roots;
+    const auto append_root = [&toolchain_roots](std::filesystem::path root) {
+        if (root.empty()) {
+            return;
+        }
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec) || ec) {
+            return;
+        }
+        auto canonical = std::filesystem::weakly_canonical(root, ec);
+        if (!ec) {
+            root = std::move(canonical);
+        }
+        if (std::find(toolchain_roots.begin(), toolchain_roots.end(), root) ==
+            toolchain_roots.end()) {
+            toolchain_roots.emplace_back(std::move(root));
+        }
+    };
+
+    // The selected driver is authoritative.  Resolve a bare override through
+    // PATH before deriving LLVM's stable <root>/lib/clang layout.
+    std::filesystem::path compiler_path = cxx_compiler();
+    auto compiler = executable_if_available(compiler_path);
+    if (compiler.empty() && !compiler_path.has_parent_path()) {
+        compiler = executable_on_path(compiler_path.string());
+    }
+    if (!compiler.empty()) {
+        append_root(compiler.parent_path().parent_path());
+    }
+
+    // Environment roots are consumer-side fallbacks for installations whose
+    // compiler launcher lives outside the SDK root. LLVM_DIR commonly names
+    // <root>/lib/cmake/llvm, whereas LLVM_HOME/LLVM_ROOT name <root>.
+    for (const char* variable : {"LLVM_HOME", "LLVM_ROOT"}) {
+        if (const char* value = std::getenv(variable); value && *value) {
+            append_root(value);
+        }
+    }
+    if (const char* llvm_dir = std::getenv("LLVM_DIR"); llvm_dir && *llvm_dir) {
+        auto root = std::filesystem::path(llvm_dir);
+        if (root.filename() == "llvm" && root.parent_path().filename() == "cmake") {
+            root = root.parent_path().parent_path().parent_path();
+        }
+        append_root(std::move(root));
+    }
+    for (const char* variable : {"ProgramFiles", "ProgramFiles(x86)"}) {
+        if (const char* value = std::getenv(variable); value && *value) {
+            append_root(std::filesystem::path(value) / "LLVM");
+        }
+    }
+
+    const std::string archive_name =
+        "clang_rt.builtins-" + std::string(architecture) + ".lib";
+    const std::string required_major = std::to_string(ESHKOL_HOST_LLVM_MAJOR);
+
+    const auto regular_archive = [](const std::filesystem::path& candidate) {
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(candidate, ec) || ec) {
+            return std::string{};
+        }
+        auto canonical = std::filesystem::weakly_canonical(candidate, ec);
+        return (ec ? candidate : canonical).string();
+    };
+
+    // Official LLVM packages use lib/clang/<major>/lib/windows. Check that
+    // exact ABI-compatible major first, then accept a patch-qualified folder
+    // of the same major for downstream LLVM distributions.
+    for (const auto& root : toolchain_roots) {
+        const auto clang_root = root / "lib" / "clang";
+        if (auto archive = regular_archive(
+                clang_root / required_major / "lib" / "windows" / archive_name);
+            !archive.empty()) {
+            return archive;
+        }
+
+        std::error_code ec;
+        std::vector<std::filesystem::path> matching_versions;
+        for (std::filesystem::directory_iterator it(clang_root, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (!it->is_directory(ec) || ec) {
+                continue;
+            }
+            const std::string version = it->path().filename().string();
+            if (version == required_major ||
+                version.rfind(required_major + ".", 0) == 0) {
+                matching_versions.push_back(it->path());
+            }
+        }
+        std::sort(matching_versions.rbegin(), matching_versions.rend());
+        for (const auto& version_dir : matching_versions) {
+            if (auto archive = regular_archive(
+                    version_dir / "lib" / "windows" / archive_name);
+                !archive.empty()) {
+                return archive;
+            }
+        }
+    }
+#endif
+    return {};
 }
 
 std::string cxx_driver_link_arg(std::string argument) {
@@ -418,6 +817,54 @@ std::string static_library_name(std::string_view stem) {
            std::string(ESHKOL_HOST_STATIC_LIBRARY_SUFFIX);
 }
 
+std::vector<std::string> cuda_runtime_link_args(
+    const std::vector<std::string>& libraries
+) {
+    std::vector<std::string> args;
+    if (libraries.empty()) {
+        return args;
+    }
+
+    for (const auto& directory : cuda_library_directories()) {
+        if (!cuda_directory_has_libraries(directory, libraries)) {
+            continue;
+        }
+        // Generated links are launched shell-free, so the native Windows path
+        // form is the correct driver argument. Avoid generic_string<char>()
+        // here: current MSVC STL headers lower its slash conversion through
+        // __std_replace_copy_2, an evolving STL helper that is absent from
+        // older (but otherwise compatible) consumer import libraries. That
+        // made relocated ClangCL packages fail cache/AOT links before CUDA was
+        // even consulted. On POSIX, string() already uses '/' separators.
+        const std::string native_directory = directory.string();
+        args.push_back("-L" + native_directory);
+#if defined(__linux__)
+        args.push_back("-Wl,-rpath," + native_directory);
+        args.push_back("-Wl,-rpath-link," + native_directory);
+#endif
+        break;
+    }
+
+    for (const auto& library : libraries) {
+        if (library.empty()) {
+            continue;
+        }
+#if defined(__linux__)
+        if (ESHKOL_HOST_CUDA_MAJOR > 0 && library != "cudadevrt") {
+            // Fail closed on ABI-major drift. A CUDA 12 release must not bind
+            // an ambient CUDA 13 development symlink merely because no CUDA
+            // 12 directory was found above. GNU-compatible drivers accept the
+            // exact-filename -l: form and still search their standard paths.
+            args.push_back("-l:lib" + library + ".so." +
+                           std::to_string(ESHKOL_HOST_CUDA_MAJOR));
+            continue;
+        }
+#endif
+        args.push_back("-l" + library);
+    }
+    return args;
+}
+
 /** @brief Parse the configured ESHKOL_HOST_RUNTIME_LINK_ARGS (a
  *  semicolon-separated list) into individual linker argument strings.
  *
@@ -426,14 +873,73 @@ std::string static_library_name(std::string_view stem) {
  * @return The parsed list of linker arguments. */
 std::vector<std::string> host_runtime_link_args() {
     std::vector<std::string> args;
+    std::vector<std::string> cuda_libraries;
     std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
     std::string item;
 
+#ifdef __linux__
+    // Binary Linux releases carry the native image-codec closure beside the
+    // executables.  CMake records the builder's concrete PNG/JPEG locations
+    // (and -lwebp) in build_config.h so source-tree/Nix builds remain exact;
+    // those absolute development paths are not valid after relocating a
+    // release archive.  Prefer the package-local regular-file aliases when
+    // the bundle exists, while leaving ordinary source builds unchanged.
+    const auto executable_dir = executable_directory();
+    const auto dependency_dir = executable_dir.empty()
+        ? std::filesystem::path{}
+        : canonical_if_exists(executable_dir.parent_path() / "lib" / "eshkol" /
+                              "runtime-deps");
+    std::error_code dependency_dir_error;
+    const bool has_packaged_dependency_dir =
+        !dependency_dir.empty() &&
+        std::filesystem::is_directory(dependency_dir, dependency_dir_error) &&
+        !dependency_dir_error;
+    if (has_packaged_dependency_dir) {
+        const std::string directory = dependency_dir.generic_string();
+        args.push_back("-L" + directory);
+        args.push_back("-Wl,-rpath," + directory);
+        args.push_back("-Wl,-rpath-link," + directory);
+    }
+#endif
+
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
+            static constexpr std::string_view cuda_marker =
+                "__ESHKOL_CUDA_LIB__/";
+            if (item.rfind(cuda_marker, 0) == 0) {
+                cuda_libraries.emplace_back(item.substr(cuda_marker.size()));
+                continue;
+            }
+#ifdef __linux__
+            if (has_packaged_dependency_dir && std::filesystem::path(item).is_absolute()) {
+                const std::string filename = std::filesystem::path(item).filename().string();
+                const char* alias = nullptr;
+                if (filename.rfind("libpng", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libpng.so";
+                } else if (filename.rfind("libjpeg", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libjpeg.so";
+                } else if (filename.rfind("libwebp", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libwebp.so";
+                } else if (filename.rfind("libsharpyuv", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libsharpyuv.so";
+                } else if (filename.rfind("libz", 0) == 0 && filename.find(".so") != std::string::npos) {
+                    alias = "libz.so";
+                }
+                if (alias != nullptr) {
+                    const auto packaged = dependency_dir / alias;
+                    std::error_code ec;
+                    if (std::filesystem::is_regular_file(packaged, ec)) {
+                        item = packaged.generic_string();
+                    }
+                }
+            }
+#endif
             args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }
+
+    auto cuda_args = cuda_runtime_link_args(cuda_libraries);
+    args.insert(args.end(), cuda_args.begin(), cuda_args.end());
 
     return args;
 }

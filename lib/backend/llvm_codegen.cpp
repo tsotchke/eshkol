@@ -61,7 +61,7 @@ unsigned int link_subprocess_timeout_seconds() {
     return 300;
 }
 
-void append_host_runtime_link_args(std::vector<std::string>& link_args) {
+bool append_host_runtime_link_args(std::vector<std::string>& link_args) {
 #ifdef _WIN32
     for (auto runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(std::move(runtime_arg));
@@ -83,11 +83,28 @@ void append_host_runtime_link_args(std::vector<std::string>& link_args) {
             }
         }
     }
+
+#ifndef __MINGW32__
+    const std::string compiler_rt =
+        eshkol::platform::compiler_rt_builtins_library();
+    if (compiler_rt.empty()) {
+        eshkol_error(
+            "Generated Windows links require the compiler-rt builtins archive "
+            "from the selected C++ driver '%s', but no LLVM %d "
+            "clang_rt.builtins-{x86_64|aarch64}.lib was found. Set "
+            "ESHKOL_CXX_COMPILER or LLVM_HOME to a complete matching LLVM "
+            "toolchain.",
+            eshkol::platform::cxx_compiler().c_str(), ESHKOL_HOST_LLVM_MAJOR);
+        return false;
+    }
+    link_args.emplace_back(compiler_rt);
+#endif
 #else
     for (const auto& runtime_arg : eshkol::platform::host_runtime_link_args()) {
         link_args.emplace_back(runtime_arg);
     }
 #endif
+    return true;
 }
 
 void append_configured_link_args(const char* raw_args,
@@ -976,6 +993,52 @@ namespace {
     std::string g_cached_cpu_name;
     std::string g_cached_features;
     bool g_freestanding_codegen = false;
+
+    // Initialize the native target description once per compiler process.
+    // Normal compiler and JIT processes retain host-specialized codegen.  The
+    // stdlib build may set ESHKOL_TARGET_CPU/ESHKOL_TARGET_FEATURES through
+    // CMake so release artifacts are optimized for a portable baseline rather
+    // than inheriting builder-only ISA extensions (for example AArch64 SVE).
+    void initializeCachedTargetInfo() {
+        if (g_target_info_cached) {
+            return;
+        }
+
+        g_cached_target_triple = sys::getDefaultTargetTriple();
+
+        const char* cpu_override = std::getenv("ESHKOL_TARGET_CPU");
+        const char* features_override = std::getenv("ESHKOL_TARGET_FEATURES");
+        const bool has_cpu_override = cpu_override && cpu_override[0] != '\0';
+        const bool has_features_override = features_override != nullptr;
+
+        g_cached_cpu_name = has_cpu_override
+            ? std::string(cpu_override)
+            : sys::getHostCPUName().str();
+
+        if (has_features_override) {
+            // Presence is significant: an explicitly empty value means the
+            // target baseline, not the current host's feature set.
+            g_cached_features = features_override;
+        } else if (has_cpu_override) {
+            // Never combine an overridden CPU (especially "generic") with
+            // extensions detected from the release builder.
+            g_cached_features.clear();
+        } else {
+            SubtargetFeatures features;
+#if LLVM_VERSION_MAJOR >= 21
+            auto host_features = sys::getHostCPUFeatures();
+#else
+            llvm::StringMap<bool> host_features;
+            sys::getHostCPUFeatures(host_features);
+#endif
+            for (auto& feature : host_features) {
+                features.AddFeature(feature.first(), feature.second);
+            }
+            g_cached_features = features.getString();
+        }
+
+        g_target_info_cached = true;
+    }
 }
 
 // TypedValue structure to carry both LLVM value and type information
@@ -1700,24 +1763,10 @@ public:
 
         // CRITICAL: Set DataLayout early so getTypeAllocSize returns correct values
         // This must be done before any allocations that depend on struct sizes
-        // Use actual host CPU (not "generic") to match stdlib.o and LLJIT's TargetMachine.
-        // Mismatch causes struct scalarization differences → broken 3+ arg calls.
-        if (!g_target_info_cached) {
-            g_cached_target_triple = sys::getDefaultTargetTriple();
-            g_cached_cpu_name = sys::getHostCPUName().str();
-            SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 21
-            auto host_features = sys::getHostCPUFeatures();
-#else
-            llvm::StringMap<bool> host_features;
-            sys::getHostCPUFeatures(host_features);
-#endif
-            for (auto& f : host_features) {
-                features.AddFeature(f.first(), f.second);
-            }
-            g_cached_features = features.getString();
-            g_target_info_cached = true;
-        }
+        // Use the process target configuration for the module's data layout.
+        // This is host-specialized by default; the isolated stdlib compiler
+        // process can request a baseline CPU for redistributable artifacts.
+        initializeCachedTargetInfo();
 
         std::string error;
 #if LLVM_VERSION_MAJOR >= 21
@@ -38404,23 +38453,10 @@ int eshkol_compile_llvm_ir_to_object(LLVMModuleRef module_ref, const char* filen
         }
         #endif
 
-        // Initialize target (use cached values for speed)
-        if (!g_target_info_cached) {
-            g_cached_target_triple = sys::getDefaultTargetTriple();
-            g_cached_cpu_name = sys::getHostCPUName().str();
-            SubtargetFeatures features;
-#if LLVM_VERSION_MAJOR >= 21
-            auto host_features = sys::getHostCPUFeatures();
-#else
-            llvm::StringMap<bool> host_features;
-            sys::getHostCPUFeatures(host_features);
-#endif
-            for (auto& f : host_features) {
-                features.AddFeature(f.first(), f.second);
-            }
-            g_cached_features = features.getString();
-            g_target_info_cached = true;
-        }
+        // Initialize target (use cached values for speed).  Release stdlib
+        // subprocesses may select a portable CPU/features pair via the
+        // internal environment contract described above.
+        initializeCachedTargetInfo();
 
 #if LLVM_VERSION_MAJOR >= 21
         Triple current_module_triple = module->getTargetTriple();
@@ -38825,7 +38861,16 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             eshkol_debug("WARNING: Could not resolve runtime library path, falling back to build directory");
         }
 
-        append_host_llvm_link_args(link_args);
+        // The split runtime archive intentionally has no LLVM dependencies.
+        // Keep the compiler's LLVM closure only for the legacy monolithic
+        // eshkol-static fallback; otherwise installed packages inherit
+        // absolute build-machine SDK paths and are not relocatable.
+        const bool uses_legacy_compiler_archive =
+            runtime_lib_path.filename() ==
+            eshkol::platform::static_library_name("eshkol-static");
+        if (uses_legacy_compiler_archive) {
+            append_host_llvm_link_args(link_args);
+        }
 
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {
@@ -38848,7 +38893,10 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         // libraries. This used to be skipped on Apple, leaving standalone
         // quantum AOT binaries with unresolved moonlab_* symbols even though
         // the JIT and compiler process were linked correctly.
-        append_host_runtime_link_args(link_args);
+        if (!append_host_runtime_link_args(link_args)) {
+            std::filesystem::remove(temp_obj);
+            return -1;
+        }
 
         // Add GPU frameworks/libraries (for GPU-accelerated tensor operations)
 #ifdef __APPLE__

@@ -90,7 +90,7 @@ RUN_OUT="$WORK/run.out"
 TIME_LOG="$WORK/time.log"
 : "${COMPILE_LOG:?}" "${RUN_OUT:?}" "${TIME_LOG:?}"
 
-( cd "$WORK" && "$ESHKOL_RUN" "$SRC" -o "$BIN" ) > "$COMPILE_LOG" 2>&1
+( cd "$WORK" && ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$SRC" -o "$BIN" ) > "$COMPILE_LOG" 2>&1
 COMPILE_RC=$?
 if [ "$COMPILE_RC" -ne 0 ]; then
     echo "FAIL: AOT compile failed (exit=$COMPILE_RC). Output:"

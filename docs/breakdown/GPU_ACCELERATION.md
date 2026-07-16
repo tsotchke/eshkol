@@ -889,11 +889,17 @@ Metal and CUDA coexist via compile-time guards and runtime detection:
 Two separate things are gated, and it matters which one you're looking at:
 
 - **Compilation** (`.github/workflows/ci.yml`, the `linux-x64-cuda`,
-  `linux-arm64-cuda`, and `windows-arm64-cuda` jobs): builds with
-  `-DESHKOL_GPU_ENABLED=ON` and runs `scripts/run_gpu_tests.sh` against
-  the result. These jobs run on GitHub-hosted runners, which have no
-  GPU. `nvcc` compiles `gpu_cuda_kernels.cu` and `gpu_memory_cuda.cpp`
-  fine, but at runtime `eshkol_gpu_init()` finds zero CUDA devices, so
+  `linux-arm64-cuda`, and `windows-x64-cuda` jobs): installs a pinned NVIDIA
+  CUDA toolkit, configures with both `ESHKOL_GPU_ENABLED=ON` and
+  `ESHKOL_REQUIRE_GPU_BACKEND=ON`, and runs `scripts/verify_gpu_backend.py`
+  before `scripts/run_gpu_tests.sh`. The verifier requires `nvcc`, CUDA runtime,
+  cuBLAS, and both real CUDA sources and rejects the CPU stub. NVIDIA does not
+  provide a native Windows ARM64 CUDA toolkit, so no such artifact is labeled
+  or shipped. CUDA 12 builds on newer GNU hosts must select a supported
+  compiler for the whole build (for example `CC=gcc-13 CXX=g++-13 cmake ...`);
+  overriding only `CMAKE_CUDA_HOST_COMPILER` can mix libstdc++ ABI and search
+  paths at final link time. These jobs run on GitHub-hosted runners, which have no GPU. The
+  real backend compiles, but at runtime `eshkol_gpu_init()` finds zero devices, so
   `tests/gpu/*.esk` all execute their CPU fallback path. These lanes
   prove the GPU backend *builds*; they do not exercise a single GPU
   kernel.

@@ -68,7 +68,7 @@ gate green.  This section describes an **untagged release candidate**; no
   roots, and keep Bash, Git Bash, and constrained ARM64 behavior aligned.
   (#278)
 - **The tag workflow can execute as a non-publishing dry run.** Manual runs
-  build, test, package, validate, and checksum the complete 16-asset matrix,
+  build, test, package, validate, and checksum the complete 15-asset matrix,
   but cannot publish a GitHub release or update Homebrew. Packaged archives
   include the curated release notes, and the published release body is taken
   from the current release section rather than generated commit summaries.
@@ -76,7 +76,7 @@ gate green.  This section describes an **untagged release candidate**; no
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **77/77**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **76/76**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
@@ -88,6 +88,94 @@ gate green.  This section describes an **untagged release candidate**; no
   **100/100, oracle complete** (recorded in the readiness report).
 
 ### Fixed
+
+- **CUDA-labeled release assets contain the real CUDA backend.** Linux x64 and
+  ARM64-SBSA lanes install a pinned NVIDIA CUDA 12.4 toolkit; Windows x64 uses the
+  matching NVIDIA network installer. CMake now fails closed when a required GPU
+  backend is absent, and a build-graph gate requires `nvcc`, the CUDA runtime,
+  cuBLAS, and both real CUDA sources while rejecting `gpu_memory_stub.cpp`.
+  NVIDIA does not ship a native Windows ARM64 CUDA toolkit, so that unsupported
+  archive is no longer advertised. Portable `sm_72/75/80/86/89/90` code keeps
+  Xavier and current RTX/datacenter GPUs in the 15 honest artifacts. CUDA 12
+  builds on newer GNU hosts also fail early unless the whole build uses a
+  supported compiler, preventing nvcc-only host overrides from mixing
+  libstdc++ ABI and search paths at final link time. Unix configure steps pass
+  the toolkit root as a scalar CMake definition, retaining compatibility with
+  the Bash 3.2 `set -u` environment on hosted macOS runners.
+- **Generated CUDA links resolve the consumer toolkit.** Release packages no
+  longer serialize hosted-runner `CUDA::cudart`/cuBLAS absolute paths into AOT
+  and persistent-cache commands. Logical CUDA library names are resolved from
+  explicit roots, `nvcc`, and standard Linux multiarch/toolkit layouts on the
+  consumer, with the configured ABI major required in each selected directory
+  and exact-major ELF link names preventing silent CUDA 12/13 substitution.
+  Windows driver arguments retain native path separators, avoiding the newer
+  MSVC STL `__std_replace_copy_2` helper that current build headers introduce
+  for generic-path conversion but older compatible consumer import libraries
+  do not provide.
+- **Windows CUDA lanes use the CUDA 12.4 installer vocabulary.** The pinned
+  network installer now receives only documented 12.4 subpackages. Compiler
+  internals remain supplied by `nvcc`; nonexistent standalone `crt`/`nvvm`
+  names from newer toolkit layouts can no longer abort setup before configure.
+  CUDA builds use Ninja Multi-Config rather than the incompatible
+  Visual-Studio-generator `ClangCL` CUDA integration: Eshkol C/C++ stays on the
+  LLVM 21 SDK while `nvcc` receives the installed CUDA-supported v142 `cl.exe`
+  host. This avoids CUDA MSBuild's empty-metadata `MSB4023` failure and retains
+  the existing `Release/` test and package layout. The fail-closed backend
+  verifier follows Ninja Multi-Config's nested implementation graphs, so it
+  still proves the real CUDA sources are present. The selected v142 host path
+  is normalized to CMake's forward-slash form before it becomes nvcc's
+  `-ccbin` argument, preventing native backslashes from being consumed as
+  escapes during CUDA compiler identification.
+- **Generic release stdlibs no longer inherit the builder's AVX width.**
+  `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
+  x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
+  specialized. The bitcode portability gate rejects fixed double vectors wider
+  than two lanes in addition to scalable vectors and optional ISA attributes.
+- **Relocated Windows package JITs publish their complete AD data ABI.** The
+  Taylor-tower state globals are now explicitly registered with ORC, exported
+  through the bounded PE runtime table, and required by the package validator.
+  This prevents cache-disabled x64/ARM64 package runs from failing module
+  materialization and cascading into duplicate initializer diagnostics.
+- **Windows ARM64 package JIT unwind metadata and complete data reach are
+  correct.** Live LLJIT and the persistent stdlib object cache now share one
+  target-machine contract: the SEH-correct Small code model, per-function/data
+  COFF sections, absolute RuntimeDyld call stubs, and import-address cells for
+  host data. LLVM 21's AArch64-COFF Large model emitted invalid unwind metadata
+  for probed frames. Small-model `PAGEBASE_REL21` references could then truncate
+  because RuntimeDyld allocated JIT-owned code, read-only data, and writable
+  data in unrelated address ranges. External declarations are lowered through
+  `__imp_` cells, while a per-object RuntimeDyld memory manager now reserves all
+  internal sections in one bounded arena. Explicit 120 MiB code and 2 GiB total
+  span guards fail safely before either Branch26 or ADRP reach is exceeded,
+  preserving stack probing, exceptions, cacheability, and full host-data reach.
+
+- **Windows release-package links are relocatable.** AOT and persistent-cache
+  links no longer replay the build runner's absolute compiler-rt or LLVM archive
+  paths. Split-runtime programs link only their actual runtime dependency
+  closure, while legacy `eshkol-static` consumers retain LLVM linkage. The
+  native compiler driver is resolved relocatably at runtime and can be selected
+  explicitly with `ESHKOL_CXX_COMPILER`; generated ClangCL/MSVC links resolve
+  that consumer toolchain's architecture-matched LLVM 21 compiler-rt builtins
+  archive, rather than assuming the driver will inject it or restoring a
+  builder-only path. ClangCL/MSVC hosts now also retain and publish the bounded
+  runtime symbol closure required by cache-disabled ORC JIT execution, matching
+  the existing MinGW, Linux, and macOS behavior.
+- **The poisoned region-evacuation RSS gates are self-contained.** The ESH-0214c
+  and ESH-0214d/e million-iteration AOT harnesses now pass their source library
+  path explicitly, so they exercise the persistent-mutation evacuation proof
+  from clean shells instead of depending on an ambient `ESHKOL_PATH`.
+- **Installed source modules resolve in cache-disabled JIT mode.** The REPL/JIT
+  module search now selects the executable-relative source tree containing
+  `stdlib.esk`, rather than mistaking the package's native-archive `lib/`
+  directory for a module root. Missing explicit `require` forms fail the run
+  instead of printing a diagnostic and continuing, and the release-package
+  verifier now runs core and agent smokes with `ESHKOL_JIT_CACHE=0` and rejects
+  module-loading diagnostics even if a lower layer returns zero.
+- **Windows hosts avoid overlapping LLVM target retention.** ClangCL release binaries retain
+  and publish the bounded cache-disabled-JIT ABI through their generated PE
+  export table. They no longer force-load static X86/AArch64 LLVM target
+  archives alongside `LLVM-C.dll`, which defined the `LLVMInitialize*` entry
+  points twice and broke every native Windows link.
 
 - **Correct Poincare-ball exponential-map convention.** Tangent vectors now
   use the Riemannian norm induced by `g_x = lambda_x^2 I`; off-origin
@@ -130,6 +218,20 @@ gate green.  This section describes an **untagged release candidate**; no
   programs therefore find LLVM, the C++ runtime, curl, SQLite, ncurses,
   OpenSSL, and Nix-store dependencies without a custom `LD_LIBRARY_PATH`.
   (#279)
+- **Linux release archives carry their image-codec runtime closure.** The
+  packaged compiler, REPL, and generated run-cache/AOT executables resolve
+  hashed and licensed libpng/libjpeg/libwebp/zlib shared objects under
+  `lib/eshkol/runtime-deps`, rather than requiring target-host development
+  packages or retaining release-builder paths. Release dependency installation
+  also uses bounded retries so transient package-mirror failures cannot strand
+  otherwise-valid ARM64 matrix jobs.
+- **Precompiled standard-library artifacts are ISA-portable.** Release builds
+  retain O2 optimization while targeting LLVM's generic architecture baseline
+  for `stdlib.o` and `stdlib.bc`; ordinary compiler/JIT work remains
+  host-specialized. A disassembly gate validates both the CMake target contract
+  and the emitted IR, rejecting scalable-vector and optional wide-vector
+  features inherited from a release builder. This prevents SVE-optimized ARM64
+  stdlib artifacts from crashing on baseline Cortex-A72/ARMv8 consumers.
 - **Exact tensor AD gradients for first-class losses and vector/learnable
   gamma; silent-zero backward paths now error instead of returning zero.**
   This corrects the v1.3.2-evolve CHANGELOG entry for #212, which claimed

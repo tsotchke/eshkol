@@ -140,7 +140,9 @@ coverage are release blockers.
 1. Merge the candidate only after every required pull-request check is green.
 2. Verify the GitHub Actions matrix for the exact merged master head is green.
 3. Run the complete release workflow manually against that head; it must build,
-   test, package, validate, and checksum all 16 assets while publishing nothing.
+   test, package, validate, and checksum all 15 supported assets while
+   publishing nothing. Every CUDA-labeled lane must prove the real CUDA backend
+   and kernel build graph rather than the CPU fallback stub.
 4. Only the maintainer may authorize and create `v1.3.3-evolve` (or another
    version) after reviewing these notes and artifacts.
 5. After the tag workflow succeeds, smoke representative downloaded assets on

@@ -76,6 +76,8 @@ int main(int argc, char** argv) {
         read_file(source_root / "lib" / "backend" / "llvm_codegen.cpp");
     const std::string parallel_llvm_codegen =
         read_file(source_root / "lib" / "backend" / "parallel_llvm_codegen.cpp");
+    const std::string platform_runtime =
+        read_file(source_root / "lib" / "core" / "platform_runtime.cpp");
     const std::string agent_capabilities_header =
         read_file(source_root / "inc" / "eshkol" / "agent_capabilities.h");
     bool ok = true;
@@ -172,6 +174,30 @@ int main(int argc, char** argv) {
                          "Windows hosted VM uses a bounded agent export table") &&
          expect_contains(cmake, "eshkol_export_host_agent_api(${_eshkol_vm_host_target})",
                          "every standalone VM host publishes the agent API") &&
+         expect_contains(cmake,
+                         "if(ESHKOL_CLANG_BUILTINS_LIB AND",
+                         "generated links exclude the build-host compiler-rt archive") &&
+         expect_contains(cmake,
+                         "continue()\n        endif()\n        eshkol_append_host_runtime_link_arg",
+                         "compiler-rt exclusion precedes generated runtime metadata") &&
+         expect_contains(cmake,
+                         "if(ESHKOL_USING_MSVC)\n        target_link_options(${target_name} PRIVATE \"/DEF:${_def_file}\")",
+                         "ClangCL/MSVC hosts publish the bounded runtime export table") &&
+         expect_contains(cmake,
+                         "if(TARGET eshkol-agent-ffi)\n        list(APPEND _eshkol_runtime_export_targets eshkol-agent-ffi)",
+                         "one bounded runtime export table includes the production agent archive") &&
+         expect_contains(cmake,
+                         "lld-link treats those exports as references and extracts the",
+                         "ClangCL/MSVC runtime retention is driven by the bounded export table") &&
+         expect_not_contains(cmake,
+                             "\"/WHOLEARCHIVE:$<TARGET_FILE:eshkol-static>\"",
+                             "ClangCL/MSVC hosts must not force-load the LLVM-bearing compiler archive") &&
+         expect_not_contains(cmake,
+                             "target_link_options(eshkol-repl PRIVATE \"/WHOLEARCHIVE:${_llvm_repl_lib_path}\")",
+                             "Windows REPL must not mix static target archives with LLVM-C") &&
+         expect_contains(cmake,
+                         "if(TARGET eshkol-run)\n                eshkol_windows_export_runtime(eshkol-run)",
+                         "runtime export generation is deferred until agent targets exist") &&
          expect_not_contains(cmake,
                              "ClangCL on\n"
                              "            # Windows needs OpenBLAS",
@@ -232,6 +258,34 @@ int main(int argc, char** argv) {
                          "LLVM executable link path preserves MSVC stack flag") &&
          expect_contains(llvm_codegen, "link_args.emplace_back(runtime_lib_path.generic_string());",
                          "LLVM executable link path links Windows runtime archive selectively") &&
+         expect_contains(llvm_codegen,
+                         "const bool uses_legacy_compiler_archive =",
+                         "LLVM executable link path distinguishes the split runtime archive") &&
+         expect_contains(eshkol_run,
+                         "if (uses_legacy_compiler_archive) {\n            append_host_llvm_link_args(link_args);",
+                         "driver link path replays LLVM only for the legacy compiler archive") &&
+         expect_contains(platform_runtime, "std::getenv(\"ESHKOL_CXX_COMPILER\")",
+                         "installed toolchain supports an explicit runtime compiler override") &&
+         expect_contains(platform_runtime, "executable_on_path",
+                         "installed toolchain discovers a relocated compiler through PATH") &&
+         expect_contains(platform_runtime,
+                         "std::string compiler_rt_builtins_library()",
+                         "Windows generated links resolve consumer compiler-rt at runtime") &&
+         expect_contains(platform_runtime,
+                         "clang_rt.builtins-\" + std::string(architecture) + \".lib",
+                         "consumer compiler-rt resolver selects the native architecture") &&
+         expect_contains(platform_runtime,
+                         "version.rfind(required_major + \".\", 0) == 0",
+                         "consumer compiler-rt resolver rejects a different LLVM major") &&
+         expect_contains(eshkol_run,
+                         "eshkol::platform::compiler_rt_builtins_library()",
+                         "driver AOT path appends consumer compiler-rt") &&
+         expect_contains(llvm_codegen,
+                         "eshkol::platform::compiler_rt_builtins_library()",
+                         "LLVM AOT path appends consumer compiler-rt") &&
+         expect_contains(eshkol_run,
+                         "ESHKOL_CXX_COMPILER or LLVM_HOME",
+                         "missing consumer compiler-rt fails with an actionable diagnostic") &&
          expect_contains(llvm_codegen,
                          "arena_use_external_only = true;",
                          "LLVM codegen uses runtime-owned arena globals on Windows") &&
