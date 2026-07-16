@@ -316,6 +316,12 @@ int main(int argc, char** argv) {
          expect_contains(platform_runtime,
                          "major != ESHKOL_HOST_CUDA_MAJOR",
                          "Windows rejects discovered toolkits with the wrong major") &&
+         expect_contains(platform_runtime,
+                         "const std::string native_directory = directory.string();",
+                         "Windows CUDA resolution avoids version-coupled generic-path STL helpers") &&
+         expect_not_contains(platform_runtime,
+                             "const std::string native_directory = directory.generic_string();",
+                             "generated links do not inherit new MSVC generic-path helper imports") &&
          expect_contains(gpu_backend_verifier, "gpu_cuda_kernels.cu",
                          "GPU verifier requires compiled CUDA kernels") &&
          expect_contains(gpu_backend_verifier,

@@ -90,7 +90,7 @@ int main() {
     const std::vector<std::string> libraries = {
         "cudart", "cublas", "cublasLt"};
     const auto args = eshkol::platform::cuda_runtime_link_args(libraries);
-    const std::string canonical = fs::weakly_canonical(fixture).generic_string();
+    const std::string canonical = fs::weakly_canonical(fixture).string();
 
     ok &= expect(contains(args, "-L" + canonical),
                  "consumer CUDA development directory is selected");
@@ -123,7 +123,7 @@ int main() {
         const auto rejected = eshkol::platform::cuda_runtime_link_args(
             {"eshkolCudaVersionProbe"});
         const std::string incompatible_canonical =
-            fs::weakly_canonical(incompatible).generic_string();
+            fs::weakly_canonical(incompatible).string();
         ok &= expect(!contains(rejected, "-L" + incompatible_canonical),
                      "Windows rejects an incompatible versioned CUDA root");
         set_cuda_library_path(fixture.string());

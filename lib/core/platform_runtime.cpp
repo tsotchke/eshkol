@@ -829,7 +829,14 @@ std::vector<std::string> cuda_runtime_link_args(
         if (!cuda_directory_has_libraries(directory, libraries)) {
             continue;
         }
-        const std::string native_directory = directory.generic_string();
+        // Generated links are launched shell-free, so the native Windows path
+        // form is the correct driver argument. Avoid generic_string<char>()
+        // here: current MSVC STL headers lower its slash conversion through
+        // __std_replace_copy_2, an evolving STL helper that is absent from
+        // older (but otherwise compatible) consumer import libraries. That
+        // made relocated ClangCL packages fail cache/AOT links before CUDA was
+        // even consulted. On POSIX, string() already uses '/' separators.
+        const std::string native_directory = directory.string();
         args.push_back("-L" + native_directory);
 #if defined(__linux__)
         args.push_back("-Wl,-rpath," + native_directory);
