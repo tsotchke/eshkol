@@ -74,7 +74,7 @@ Eshkol brings **mathematical computing to Lisp** and delivers what other languag
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 11 complete programs you can run instantly (AD, neural networks, ODE solving, logic programming)
 
-The website itself is written in Eshkol (1,500+ lines) compiled to a 502KB WASM binary. Automatic differentiation works in the browser:
+The website itself is written in Eshkol (1,500+ lines) and compiles to a 220,306-byte (about 215 KiB) WASM binary. Automatic differentiation works in the browser:
 
 ```scheme
 (derivative (lambda (x) (* x x x)) 2.0)  ;; => 12.0 (3x² at x=2)
