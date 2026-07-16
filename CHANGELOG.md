@@ -7,14 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.3-evolve] - 2026-07-15 (release candidate; untagged)
+## [1.3.3-evolve] - 2026-07-16
 
 An evolve release over v1.3.2-evolve that completes the Moonlab quantum
 trajectory, closes native/VM semantic gaps, makes every declared language
 surface executable under deterministic coverage, and incorporates the
 correctness and memory-safety defects exposed while driving every release
-gate green.  This section describes an **untagged release candidate**; no
-`v1.3.3-evolve` tag has been published.
+gate green.
 
 ### Added
 
@@ -32,7 +31,7 @@ gate green.  This section describes an **untagged release candidate**; no
   probes now execute every one of the 1,057 declared language-surface rows.
   The coverage policy is ratcheted to **1057/1057 (100%)**, with no token-only,
   unreachable, or dead-code credit and zero uncovered high-risk rows. (#258,
-  #274 and this release candidate)
+  #274 and this release)
 - **Production architecture evidence.** The ICC architecture model now checks
   eight static/runtime invariants, including honest VM dispatch, quantum QRNG
   provenance, WebAssembly import glue, executable coverage, and the corrected

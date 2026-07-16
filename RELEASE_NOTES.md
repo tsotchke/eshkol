@@ -42,13 +42,12 @@ host compiler cache entry uses CMake's forward-slash path form so nvcc receives
 an intact `-ccbin` value even when Visual Studio is installed below a path with
 spaces.
 
-**Candidate Date**: July 15, 2026
-**Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.
+**Release Date**: July 16, 2026
 
 Eshkol v1.3.3-evolve combines the completed Moonlab quantum stack with a
 language-wide correctness and evidence campaign. Every declared language
 surface now has deterministic executable evidence, native and VM behavior is
-cross-checked, and the release candidate is green across the aggregate,
+cross-checked, and the release is green across the aggregate,
 full-book SICP, external-reference, generative, WebAssembly, CTest, and ICC
 architecture gates. Full technical detail lives in
 [CHANGELOG.md](CHANGELOG.md).
