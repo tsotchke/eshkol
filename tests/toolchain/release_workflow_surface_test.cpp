@@ -267,6 +267,20 @@ int main(int argc, char** argv) {
                          "Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76",
                          "Windows x64 release CUDA setup is commit-pinned") &&
          expect_contains(workflow,
+                         "sub-packages: '[\"cudart\", \"cublas\", \"cublas_dev\", \"nvcc\", \"visual_studio_integration\"]'",
+                         "Windows release installs only CUDA 12.4 subpackage names") &&
+         expect_contains(ci_workflow,
+                         "sub-packages: '[\"cudart\", \"cublas\", \"cublas_dev\", \"nvcc\", \"visual_studio_integration\"]'",
+                         "Windows CI installs only CUDA 12.4 subpackage names") &&
+         expect_not_contains(workflow, "sub-packages: '[\"crt\",",
+                             "release does not pass a newer-toolkit crt subpackage to CUDA 12.4") &&
+         expect_not_contains(ci_workflow, "sub-packages: '[\"crt\",",
+                             "CI does not pass a newer-toolkit crt subpackage to CUDA 12.4") &&
+         expect_not_contains(workflow, "\"nvcc\", \"nvvm\",",
+                             "release lets CUDA 12.4 nvcc supply its NVVM internals") &&
+         expect_not_contains(ci_workflow, "\"nvcc\", \"nvvm\",",
+                             "CI lets CUDA 12.4 nvcc supply its NVVM internals") &&
+         expect_contains(workflow,
                          "$toolset = \"ClangCL,cuda=$env:CUDA_PATH\"",
                          "Windows CUDA generator selects the installed toolkit explicitly") &&
          expect_contains(workflow,

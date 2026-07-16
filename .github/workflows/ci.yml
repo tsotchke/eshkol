@@ -527,7 +527,10 @@ jobs:
         with:
           cuda: ${{ env.CUDA_VERSION }}
           method: network
-          sub-packages: '["crt", "cudart", "cublas", "cublas_dev", "nvcc", "nvvm", "visual_studio_integration"]'
+          # CUDA 12.4's Windows installer has no standalone `crt` or `nvvm`
+          # subpackages; nvcc carries those compiler internals. Passing names
+          # from newer toolkit layouts makes NVIDIA exit with 3772776473.
+          sub-packages: '["cudart", "cublas", "cublas_dev", "nvcc", "visual_studio_integration"]'
           log-file-suffix: ci-${{ matrix.name }}
 
       - name: Restore LLVM SDK Cache
