@@ -1334,6 +1334,18 @@ endif()
 # ===== GPU Acceleration (Platform-specific) =====
 # Provides GPU-accelerated tensor operations via Metal (macOS) or CUDA (Linux/Windows)
 option(ESHKOL_GPU_ENABLED "Enable GPU acceleration for tensor operations" ON)
+option(ESHKOL_REQUIRE_GPU_BACKEND
+    "Fail configuration when GPU acceleration is requested but no real backend is available"
+    OFF)
+set(ESHKOL_CUDA_ARCHITECTURES "72;75;80;86;89;90" CACHE STRING
+    "CUDA architectures for portable Eshkol GPU binaries")
+set(ESHKOL_GPU_BACKEND "NONE" CACHE INTERNAL
+    "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
+
+if(ESHKOL_REQUIRE_GPU_BACKEND AND NOT ESHKOL_GPU_ENABLED)
+    message(FATAL_ERROR
+        "ESHKOL_REQUIRE_GPU_BACKEND=ON requires ESHKOL_GPU_ENABLED=ON")
+endif()
 
 if(ESHKOL_GPU_ENABLED)
     set(GPU_FOUND FALSE)
@@ -1348,6 +1360,8 @@ if(ESHKOL_GPU_ENABLED)
 
         if(METAL_FRAMEWORK AND MPS_FRAMEWORK)
             set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "METAL" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
             set(GPU_LIBRARIES ${METAL_FRAMEWORK} ${MPS_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
             add_compile_definitions(ESHKOL_GPU_METAL_ENABLED)
             message(STATUS "GPU: Apple Metal (unified memory)")
@@ -1380,26 +1394,25 @@ if(ESHKOL_GPU_ENABLED)
         # Try CUDA on Linux/Windows
         find_package(CUDAToolkit QUIET)
         if(CUDAToolkit_FOUND)
-            if((NOT DEFINED CMAKE_CUDA_HOST_COMPILER OR "${CMAKE_CUDA_HOST_COMPILER}" STREQUAL "") AND
-               CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
-               CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15)
-                find_program(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE
-                    NAMES g++-14 gcc-14 g++-13 gcc-13 g++-12 gcc-12
-                )
-                if(ESHKOL_CUDA_HOST_COMPILER_CANDIDATE)
-                    set(CMAKE_CUDA_HOST_COMPILER "${ESHKOL_CUDA_HOST_COMPILER_CANDIDATE}"
-                        CACHE FILEPATH "Host compiler used by nvcc" FORCE)
-                    message(STATUS
-                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} detected; "
-                        "using host compiler ${CMAKE_CUDA_HOST_COMPILER}")
-                else()
-                    message(WARNING
-                        "CUDA: system GNU ${CMAKE_CXX_COMPILER_VERSION} may be unsupported by nvcc; "
-                        "install gcc-14/g++-14 or set CMAKE_CUDA_HOST_COMPILER explicitly.")
-                endif()
+            if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
+               "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+                set(CMAKE_CUDA_ARCHITECTURES "${ESHKOL_CUDA_ARCHITECTURES}"
+                    CACHE STRING "CUDA architectures" FORCE)
+            endif()
+            if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND
+               CUDAToolkit_VERSION VERSION_LESS 13.0 AND
+               CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+                message(FATAL_ERROR
+                    "CUDA ${CUDAToolkit_VERSION} does not support GNU "
+                    "${CMAKE_CXX_COMPILER_VERSION}. Reconfigure the entire build with "
+                    "a compatible compiler (for example CC=gcc-13 CXX=g++-13). "
+                    "Selecting only CMAKE_CUDA_HOST_COMPILER is unsafe because it can "
+                    "mix libstdc++ ABI/library search paths at the final link.")
             endif()
 
             set(GPU_FOUND TRUE)
+            set(ESHKOL_GPU_BACKEND "CUDA" CACHE INTERNAL
+                "Resolved Eshkol GPU backend (NONE, METAL, or CUDA)" FORCE)
             set(GPU_LIBRARIES CUDA::cudart CUDA::cublas)
             if(TARGET CUDA::cublasLt)
                 list(APPEND GPU_LIBRARIES CUDA::cublasLt)
@@ -1467,7 +1480,8 @@ if(ESHKOL_GPU_ENABLED)
                 endif()
             endif()
             enable_language(CUDA)
-            message(STATUS "GPU: NVIDIA CUDA")
+            message(STATUS
+                "GPU: NVIDIA CUDA (architectures: ${CMAKE_CUDA_ARCHITECTURES})")
 
             # CUDA backend — .cpp host code + .cu kernels
             set(GPU_SOURCES
@@ -1482,6 +1496,11 @@ if(ESHKOL_GPU_ENABLED)
         add_compile_definitions(ESHKOL_GPU_ENABLED)
         message(STATUS "GPU acceleration: ENABLED")
     else()
+        if(ESHKOL_REQUIRE_GPU_BACKEND)
+            message(FATAL_ERROR
+                "A real GPU backend was required, but neither Metal nor CUDA was found. "
+                "Refusing to compile the CPU stub as a GPU-labeled build.")
+        endif()
         message(STATUS "GPU acceleration: DISABLED (no GPU framework found)")
         # Still compile the stub so GPU API symbols resolve at link time
         set(GPU_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/gpu/gpu_memory_stub.cpp")
@@ -3092,6 +3111,14 @@ if(ESHKOL_BUILD_TESTS)
                     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_exports_validator.py"
         )
         set_tests_properties(windows_runtime_exports_validator_test PROPERTIES TIMEOUT 120)
+    endif()
+    if(ESHKOL_PYTHON3_EXECUTABLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py")
+        add_test(
+            NAME verify_gpu_backend_test
+            COMMAND "${ESHKOL_PYTHON3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_verify_gpu_backend.py"
+        )
+        set_tests_properties(verify_gpu_backend_test PROPERTIES TIMEOUT 120)
     endif()
     # Native Windows builds intentionally omit the bytecode VM.  Do not
     # register a test whose generator expression names that absent target;

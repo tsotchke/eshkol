@@ -22,6 +22,8 @@ permissions:
 env:
   LLVM_MAJOR: '21'
   WINDOWS_LLVM_SDK_VERSION: '21.1.8'
+  CUDA_VERSION: '12.4.1'
+  CUDA_PACKAGE_SERIES: '12-4'
   # A manual dispatch is always non-publishing. Its explicit candidate label
   # lets the dry-run archives use the exact names the later tag run will use.
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.candidate_tag || github.ref_name }}
@@ -126,6 +128,22 @@ jobs:
           }
           apt_update
 
+      - name: Add NVIDIA CUDA Repository (Linux CUDA)
+        if: runner.os == 'Linux' && matrix.gpu_enabled == 'ON'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          case "$(uname -m)" in
+            x86_64) cuda_repo_arch=x86_64 ;;
+            aarch64) cuda_repo_arch=sbsa ;;
+            *) echo "Unsupported native CUDA architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+          keyring="$RUNNER_TEMP/cuda-keyring.deb"
+          wget -O "$keyring" \
+            "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/${cuda_repo_arch}/cuda-keyring_1.1-1_all.deb"
+          sudo dpkg -i "$keyring"
+          sudo apt-get update -o Acquire::Retries=5
+
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
         shell: bash
@@ -140,6 +158,13 @@ jobs:
             libpng-dev libjpeg-dev libwebp-dev
             git python3
           )
+          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
+            packages+=(
+              "cuda-nvcc-${CUDA_PACKAGE_SERIES}"
+              "cuda-cudart-dev-${CUDA_PACKAGE_SERIES}"
+              "libcublas-dev-${CUDA_PACKAGE_SERIES}"
+            )
+          fi
           apt_install() {
             for attempt in 1 2 3; do
               if sudo env DEBIAN_FRONTEND=noninteractive \
@@ -160,6 +185,12 @@ jobs:
           # ld.lld from PATH.
           sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
           ld.lld --version
+          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
+            echo "/usr/local/cuda-12.4/bin" >> "$GITHUB_PATH"
+            echo "CUDAToolkit_ROOT=/usr/local/cuda-12.4" >> "$GITHUB_ENV"
+            echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+            /usr/local/cuda-12.4/bin/nvcc --version
+          fi
 
       - name: Install Dependencies (macOS)
         if: runner.os == 'macOS'
@@ -181,6 +212,11 @@ jobs:
             LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           fi
 
+          CUDA_FLAGS=()
+          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
+            CUDA_FLAGS+=("-DCUDAToolkit_ROOT=/usr/local/cuda-12.4")
+          fi
+
           cmake -S . -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
@@ -188,7 +224,18 @@ jobs:
             -DESHKOL_STDLIB_TARGET_CPU=generic \
             -DESHKOL_STDLIB_TARGET_FEATURES= \
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
-            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }}
+            -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
+            "${CUDA_FLAGS[@]}"
+
+      - name: Verify real CUDA build graph
+        if: matrix.gpu_enabled == 'ON'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 scripts/verify_gpu_backend.py \
+            --build-dir "${{ matrix.build_dir }}" \
+            --expected CUDA
 
       - name: Build
         shell: bash
@@ -376,22 +423,13 @@ jobs:
             gpu_enabled: 'OFF'
             test_mode: xla
           - name: windows-x64-cuda
-            runner: windows-latest
+            runner: windows-2022
             arch: x64
             llvm_suffix: x86_64
             build_dir: build-cuda
             xla_enabled: 'OFF'
             gpu_enabled: 'ON'
             test_mode: gpu
-          - name: windows-arm64-cuda
-            runner: windows-11-arm
-            arch: arm64
-            llvm_suffix: aarch64
-            build_dir: build-cuda
-            xla_enabled: 'OFF'
-            gpu_enabled: 'ON'
-            test_mode: gpu
-
     steps:
       - uses: actions/checkout@v6
 
@@ -402,6 +440,15 @@ jobs:
           if ($env:RELEASE_TAG -notmatch '^v[0-9A-Za-z][0-9A-Za-z._-]*$') {
             throw "Invalid release tag label: $env:RELEASE_TAG"
           }
+
+      - name: Install NVIDIA CUDA Toolkit (Windows x64 CUDA)
+        if: matrix.gpu_enabled == 'ON'
+        uses: Jimver/cuda-toolkit@3d45d157f327c09c04b50ee6ccdea2d9d017ec76
+        with:
+          cuda: ${{ env.CUDA_VERSION }}
+          method: network
+          sub-packages: '["crt", "cudart", "cublas", "cublas_dev", "nvcc", "nvvm", "visual_studio_integration"]'
+          log-file-suffix: release-${{ matrix.name }}
 
       - name: Restore LLVM SDK Cache
         id: llvm-cache
@@ -496,10 +543,19 @@ jobs:
           if (-not $generator) {
             throw "No supported Visual Studio CMake generator found. Install VS 2022+ with MSBuild, or update the generator candidate list."
           }
+          $cudaArgs = @()
+          $toolset = 'ClangCL'
+          if ('${{ matrix.gpu_enabled }}' -eq 'ON') {
+            if (-not $env:CUDA_PATH -or -not (Test-Path "$env:CUDA_PATH\bin\nvcc.exe")) {
+              throw "CUDA toolkit action did not provide a usable CUDA_PATH"
+            }
+            $cudaArgs += "-DCUDAToolkit_ROOT=$env:CUDA_PATH"
+            $toolset = "ClangCL,cuda=$env:CUDA_PATH"
+          }
           cmake -S . -B '${{ matrix.build_dir }}' `
             -G $generator `
             -A $platform `
-            -T ClangCL `
+            -T $toolset `
             -DBUILD_REPL=ON `
             -DESHKOL_BUILD_TESTS=OFF `
             -DESHKOL_REQUIRED_LLVM_MAJOR=${{ env.LLVM_MAJOR }} `
@@ -508,7 +564,20 @@ jobs:
             -DESHKOL_STDLIB_TARGET_FEATURES= `
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} `
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} `
-            -DLLVM_DIR="$env:LLVM_DIR"
+            -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} `
+            -DLLVM_DIR="$env:LLVM_DIR" `
+            @cudaArgs
+
+      - name: Verify real CUDA build graph
+        if: matrix.gpu_enabled == 'ON'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:CUDA_PATH\bin\nvcc.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "nvcc version probe failed" }
+          python scripts/verify_gpu_backend.py `
+            --build-dir '${{ matrix.build_dir }}' `
+            --expected CUDA
 
       - name: Build
         shell: pwsh
@@ -817,7 +886,6 @@ jobs:
             "eshkol-${RELEASE_TAG}-windows-x64-xla.zip"
             "eshkol-${RELEASE_TAG}-windows-arm64-xla.zip"
             "eshkol-${RELEASE_TAG}-windows-x64-cuda.zip"
-            "eshkol-${RELEASE_TAG}-windows-arm64-cuda.zip"
           )
 
           cd dist

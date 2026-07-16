@@ -68,7 +68,7 @@ gate green.  This section describes an **untagged release candidate**; no
   roots, and keep Bash, Git Bash, and constrained ARM64 behavior aligned.
   (#278)
 - **The tag workflow can execute as a non-publishing dry run.** Manual runs
-  build, test, package, validate, and checksum the complete 16-asset matrix,
+  build, test, package, validate, and checksum the complete 15-asset matrix,
   but cannot publish a GitHub release or update Homebrew. Packaged archives
   include the curated release notes, and the published release body is taken
   from the current release section rather than generated commit summaries.
@@ -76,7 +76,7 @@ gate green.  This section describes an **untagged release candidate**; no
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **74/74**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **75/75**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
@@ -89,6 +89,17 @@ gate green.  This section describes an **untagged release candidate**; no
 
 ### Fixed
 
+- **CUDA-labeled release assets contain the real CUDA backend.** Linux x64 and
+  ARM64-SBSA lanes install a pinned NVIDIA CUDA 12.4 toolkit; Windows x64 uses the
+  matching NVIDIA network installer. CMake now fails closed when a required GPU
+  backend is absent, and a build-graph gate requires `nvcc`, the CUDA runtime,
+  cuBLAS, and both real CUDA sources while rejecting `gpu_memory_stub.cpp`.
+  NVIDIA does not ship a native Windows ARM64 CUDA toolkit, so that unsupported
+  archive is no longer advertised. Portable `sm_72/75/80/86/89/90` code keeps
+  Xavier and current RTX/datacenter GPUs in the 15 honest artifacts. CUDA 12
+  builds on newer GNU hosts also fail early unless the whole build uses a
+  supported compiler, preventing nvcc-only host overrides from mixing
+  libstdc++ ABI and search paths at final link time.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-

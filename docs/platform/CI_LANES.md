@@ -20,7 +20,7 @@ at `WINDOWS_LLVM_SDK_VERSION=21.1.8`.
 | 11 | `linux-x64-asan-ubsan` | ubuntu-22.04 | `build-asan` | off | off | ASan+UBSan build, `run_v1_2_edge_cases_tests.sh` (TSan/MSan deferred) |
 | 12 | `windows-arm64-lite` | windows-11-arm | `build` | off | off | VS2022 `-A ARM64 -T ClangCL`, `run_all_tests.ps1 -Mode windows-lite`, uploads `eshkol-windows-arm64` |
 | 13 | `windows-arm64-xla` | windows-11-arm | `build-xla` | on | off | builds `xla_codegen_test`, `-Mode xla` |
-| 14 | `windows-arm64-cuda` | windows-11-arm | `build-cuda` | off | on | `-Mode gpu` |
+| 14 | `windows-x64-cuda` | windows-2022 (x64) | `build-cuda` | off | on | installs CUDA 12.4, verifies real CUDA sources, then runs `-Mode gpu` |
 
 ## Lane groups
 
@@ -33,14 +33,14 @@ at `WINDOWS_LLVM_SDK_VERSION=21.1.8`.
 
 ## Notes and gotchas
 
-- **Windows x86_64 is not a hosted CI lane.** It is validated off-runner on a
-  developer's machine via `scripts/remote_windows_verify.sh --suite-only`
-  against a cached MSYS/UCRT build (`windows-lite` mode). Release packaging still
-  builds hosted x64.
-- The `windows-matrix` runs `max-parallel: 2`; all Windows lanes download the
-  official LLVM 21.1.8 aarch64 Windows SDK (cached under
-  `C:\src\clang+llvm-...-aarch64-pc-windows-msvc`) and build with
-  `ESHKOL_BUILD_TESTS=OFF`.
+- Windows ARM64 covers lite/XLA. NVIDIA's native Windows toolkit is x86-64, so
+  the CUDA compile lane uses hosted Windows x64 and no Windows ARM64 artifact is
+  labeled CUDA.
+- The `windows-matrix` runs `max-parallel: 2`; every lane downloads the matching
+  official LLVM 21.1.8 SDK and builds with `ESHKOL_BUILD_TESTS=OFF`.
+- CUDA lanes pin CUDA 12.4, require `ESHKOL_GPU_BACKEND=CUDA`, and reject any
+  generated graph containing `gpu_memory_stub.cpp` or omitting the CUDA kernel
+  sources. Linux artifacts target SM 72/75/80/86/89/90.
 - Linux lanes symlink `ld.lld-21` → `ld.lld` because codegen passes
   `-fuse-ld=lld` for AArch64 Linux links.
 - Concurrency **does not cancel on `master`** — the release gate wants the full
