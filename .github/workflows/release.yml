@@ -730,6 +730,16 @@ jobs:
             throw "third-party license staging failed with exit code $LASTEXITCODE"
           }
 
+          # Preserve a full user-mode dump if the relocated package smoke
+          # faults inside generated JIT code. This is failure-only evidence;
+          # WER still returns the original nonzero process status.
+          $dumpDir = Join-Path $env:RUNNER_TEMP "eshkol-crash-dumps-${{ matrix.name }}"
+          New-Item -ItemType Directory -Force -Path $dumpDir | Out-Null
+          $dumpKey = 'HKCU:\Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\eshkol-run.exe'
+          New-Item -Path $dumpKey -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpFolder -PropertyType ExpandString -Value $dumpDir -Force | Out-Null
+          New-ItemProperty -Path $dumpKey -Name DumpType -PropertyType DWord -Value 2 -Force | Out-Null
+
           python scripts/verify_release_package.py `
             --package-dir "$pkgDir" `
             --smoke-source "tests/toolchain/windows-smoke.esk" `
@@ -744,6 +754,23 @@ jobs:
             Remove-Item -LiteralPath $archivePath -Force
           }
           Compress-Archive -Path $pkgDir -DestinationPath $archivePath -CompressionLevel Optimal
+
+      - name: Upload Windows Package Failure Diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-diagnostics-${{ matrix.name }}
+          path: |
+            ${{ matrix.build_dir }}\stdlib.bc
+            ${{ matrix.build_dir }}\stdlib.o
+            ${{ matrix.build_dir }}\CMakeCache.txt
+            ${{ matrix.build_dir }}\Release\eshkol-run.exe
+            ${{ matrix.build_dir }}\Release\eshkol-run.pdb
+            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\bin\eshkol-run.exe
+            ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\lib\stdlib-jit-v4-*.o
+            ${{ runner.temp }}\eshkol-crash-dumps-${{ matrix.name }}\*.dmp
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload Packaged Asset
         uses: actions/upload-artifact@v7

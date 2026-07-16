@@ -211,7 +211,21 @@ int main(int argc, char** argv) {
                          "Windows release matrix runs the bounded-runtime export verifier") &&
          expect_contains(workflow,
                          "python scripts/stage_third_party_licenses.py",
-                         "Windows archives stage pinned third-party licenses");
+                         "Windows archives stage pinned third-party licenses") &&
+         expect_contains(workflow,
+                         "Windows Error Reporting\\LocalDumps\\eshkol-run.exe",
+                         "Windows package faults produce user-mode crash dumps") &&
+         expect_contains(workflow,
+                         "name: release-diagnostics-${{ matrix.name }}",
+                         "Windows package failures retain target-specific diagnostics") &&
+         expect_contains(workflow,
+                         "${{ runner.temp }}\\eshkol-crash-dumps-${{ matrix.name }}\\*.dmp",
+                         "Windows failure diagnostics include crash dumps") &&
+         expect_contains(workflow,
+                         "${{ runner.temp }}\\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}\\lib\\stdlib-jit-v4-*.o",
+                         "Windows failure diagnostics include the emitted stdlib object") &&
+         expect_contains(workflow, "if-no-files-found: warn",
+                         "partial Windows failure evidence never masks the root failure");
 
     ok = ok &&
          expect_contains(package_verifier,
