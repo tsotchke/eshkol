@@ -111,6 +111,194 @@ std::filesystem::path executable_on_path(std::string_view name) {
     return {};
 }
 
+void append_unique_directory(
+    std::vector<std::filesystem::path>& directories,
+    std::filesystem::path directory
+) {
+    if (directory.empty()) {
+        return;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_directory(directory, ec) || ec) {
+        return;
+    }
+    auto canonical = std::filesystem::weakly_canonical(directory, ec);
+    if (!ec) {
+        directory = std::move(canonical);
+    }
+    if (std::find(directories.begin(), directories.end(), directory) ==
+        directories.end()) {
+        directories.emplace_back(std::move(directory));
+    }
+}
+
+void append_cuda_root_library_directories(
+    std::vector<std::filesystem::path>& directories,
+    const std::filesystem::path& root
+) {
+    if (root.empty()) {
+        return;
+    }
+#ifdef _WIN32
+    append_unique_directory(directories, root / "lib" / "x64");
+#elif defined(__linux__)
+    append_unique_directory(directories, root / "lib64");
+    append_unique_directory(directories, root / "lib");
+#  if defined(__x86_64__) || defined(__amd64__)
+    append_unique_directory(directories, root / "lib" / "x86_64-linux-gnu");
+    append_unique_directory(
+        directories, root / "targets" / "x86_64-linux" / "lib");
+#  elif defined(__aarch64__) || defined(__arm64__)
+    append_unique_directory(directories, root / "lib" / "aarch64-linux-gnu");
+    append_unique_directory(
+        directories, root / "targets" / "aarch64-linux" / "lib");
+    append_unique_directory(
+        directories, root / "targets" / "sbsa-linux" / "lib");
+#  endif
+#else
+    append_unique_directory(directories, root / "lib64");
+    append_unique_directory(directories, root / "lib");
+#endif
+}
+
+void append_environment_library_directories(
+    std::vector<std::filesystem::path>& directories,
+    const char* variable
+) {
+    const char* raw = std::getenv(variable);
+    if (!raw || !*raw) {
+        return;
+    }
+    std::stringstream entries(raw);
+    std::string entry;
+    constexpr char separator =
+#ifdef _WIN32
+        ';';
+#else
+        ':';
+#endif
+    while (std::getline(entries, entry, separator)) {
+        if (!entry.empty()) {
+            append_unique_directory(directories, entry);
+        }
+    }
+}
+
+std::vector<std::filesystem::path> cuda_library_directories() {
+    std::vector<std::filesystem::path> directories;
+
+    append_environment_library_directories(
+        directories, "ESHKOL_CUDA_LIBRARY_PATH");
+    for (const char* variable : {
+             "CUDAToolkit_ROOT", "CUDA_HOME", "CUDA_PATH"}) {
+        if (const char* root = std::getenv(variable); root && *root) {
+            append_cuda_root_library_directories(directories, root);
+        }
+    }
+
+#ifdef _WIN32
+    auto nvcc = executable_on_path("nvcc.exe");
+#else
+    auto nvcc = executable_on_path("nvcc");
+#endif
+    if (!nvcc.empty()) {
+        append_cuda_root_library_directories(
+            directories, nvcc.parent_path().parent_path());
+    }
+
+    append_environment_library_directories(directories, "LIBRARY_PATH");
+#ifndef _WIN32
+    append_environment_library_directories(directories, "LD_LIBRARY_PATH");
+#endif
+
+#ifdef _WIN32
+    for (const char* variable : {"ProgramFiles", "ProgramFiles(x86)"}) {
+        const char* program_files = std::getenv(variable);
+        if (!program_files || !*program_files) {
+            continue;
+        }
+        const auto cuda_parent = std::filesystem::path(program_files) /
+            "NVIDIA GPU Computing Toolkit" / "CUDA";
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(cuda_parent, ec), end;
+             !ec && it != end; it.increment(ec)) {
+            if (it->is_directory(ec) && !ec) {
+                append_cuda_root_library_directories(directories, it->path());
+            }
+        }
+    }
+#elif defined(__linux__)
+    // Distro CUDA packages put development symlinks in the ordinary
+    // multiarch directory under /usr, while NVIDIA's repository uses
+    // /usr/local/cuda[-M.m]/targets/<arch>-linux/lib.
+    append_cuda_root_library_directories(directories, "/usr");
+    append_cuda_root_library_directories(directories, "/usr/local/cuda");
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it("/usr/local", ec), end;
+         !ec && it != end; it.increment(ec)) {
+        if (!it->is_directory(ec) || ec) {
+            continue;
+        }
+        const std::string name = it->path().filename().string();
+        if (name.rfind("cuda-", 0) == 0) {
+            append_cuda_root_library_directories(directories, it->path());
+        }
+    }
+#endif
+    return directories;
+}
+
+bool cuda_directory_has_libraries(
+    const std::filesystem::path& directory,
+    const std::vector<std::string>& libraries
+) {
+#ifdef _WIN32
+    if (ESHKOL_HOST_CUDA_MAJOR > 0) {
+        // Standard Windows toolkit roots contain a version component such as
+        // `v12.4`. Reject a discovered v13.x installation for a CUDA 12
+        // package. An explicitly supplied unversioned directory remains a
+        // valid escape hatch for custom toolkit layouts.
+        for (const auto& component : directory) {
+            const std::string text = component.string();
+            if (text.size() < 2 ||
+                (text.front() != 'v' && text.front() != 'V') ||
+                !std::isdigit(static_cast<unsigned char>(text[1]))) {
+                continue;
+            }
+            char* end = nullptr;
+            const long major = std::strtol(text.c_str() + 1, &end, 10);
+            if (end != text.c_str() + 1 &&
+                (*end == '\0' || *end == '.') &&
+                major != ESHKOL_HOST_CUDA_MAJOR) {
+                return false;
+            }
+        }
+    }
+#endif
+    for (const auto& library : libraries) {
+#ifdef _WIN32
+        const auto development_file = directory / (library + ".lib");
+#else
+        const auto development_file = directory / ("lib" + library + ".so");
+#endif
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(development_file, ec) || ec) {
+            return false;
+        }
+#if defined(__linux__)
+        if (ESHKOL_HOST_CUDA_MAJOR > 0 && library != "cudadevrt") {
+            const auto versioned_file = directory /
+                ("lib" + library + ".so." +
+                 std::to_string(ESHKOL_HOST_CUDA_MAJOR));
+            if (!std::filesystem::is_regular_file(versioned_file, ec) || ec) {
+                return false;
+            }
+        }
+#endif
+    }
+    return true;
+}
+
 std::string normalize_cxx_driver_path(std::string compiler) {
 #ifdef _WIN32
     if (compiler.size() >= 3 &&
@@ -629,6 +817,47 @@ std::string static_library_name(std::string_view stem) {
            std::string(ESHKOL_HOST_STATIC_LIBRARY_SUFFIX);
 }
 
+std::vector<std::string> cuda_runtime_link_args(
+    const std::vector<std::string>& libraries
+) {
+    std::vector<std::string> args;
+    if (libraries.empty()) {
+        return args;
+    }
+
+    for (const auto& directory : cuda_library_directories()) {
+        if (!cuda_directory_has_libraries(directory, libraries)) {
+            continue;
+        }
+        const std::string native_directory = directory.generic_string();
+        args.push_back("-L" + native_directory);
+#if defined(__linux__)
+        args.push_back("-Wl,-rpath," + native_directory);
+        args.push_back("-Wl,-rpath-link," + native_directory);
+#endif
+        break;
+    }
+
+    for (const auto& library : libraries) {
+        if (library.empty()) {
+            continue;
+        }
+#if defined(__linux__)
+        if (ESHKOL_HOST_CUDA_MAJOR > 0 && library != "cudadevrt") {
+            // Fail closed on ABI-major drift. A CUDA 12 release must not bind
+            // an ambient CUDA 13 development symlink merely because no CUDA
+            // 12 directory was found above. GNU-compatible drivers accept the
+            // exact-filename -l: form and still search their standard paths.
+            args.push_back("-l:lib" + library + ".so." +
+                           std::to_string(ESHKOL_HOST_CUDA_MAJOR));
+            continue;
+        }
+#endif
+        args.push_back("-l" + library);
+    }
+    return args;
+}
+
 /** @brief Parse the configured ESHKOL_HOST_RUNTIME_LINK_ARGS (a
  *  semicolon-separated list) into individual linker argument strings.
  *
@@ -637,6 +866,7 @@ std::string static_library_name(std::string_view stem) {
  * @return The parsed list of linker arguments. */
 std::vector<std::string> host_runtime_link_args() {
     std::vector<std::string> args;
+    std::vector<std::string> cuda_libraries;
     std::stringstream stream(ESHKOL_HOST_RUNTIME_LINK_ARGS);
     std::string item;
 
@@ -667,6 +897,12 @@ std::vector<std::string> host_runtime_link_args() {
 
     while (std::getline(stream, item, ';')) {
         if (!item.empty()) {
+            static constexpr std::string_view cuda_marker =
+                "__ESHKOL_CUDA_LIB__/";
+            if (item.rfind(cuda_marker, 0) == 0) {
+                cuda_libraries.emplace_back(item.substr(cuda_marker.size()));
+                continue;
+            }
 #ifdef __linux__
             if (has_packaged_dependency_dir && std::filesystem::path(item).is_absolute()) {
                 const std::string filename = std::filesystem::path(item).filename().string();
@@ -694,6 +930,9 @@ std::vector<std::string> host_runtime_link_args() {
             args.push_back(cxx_driver_link_arg(std::move(item)));
         }
     }
+
+    auto cuda_args = cuda_runtime_link_args(cuda_libraries);
+    args.insert(args.end(), cuda_args.begin(), cuda_args.end());
 
     return args;
 }

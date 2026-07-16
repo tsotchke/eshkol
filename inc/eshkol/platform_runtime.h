@@ -174,6 +174,23 @@ std::string executable_suffix();
 std::string static_library_name(std::string_view stem);
 
 /**
+ * @brief Resolve logical CUDA library names against the consumer toolkit.
+ *
+ * Build-host CUDA imported targets contain absolute SDK paths that are not
+ * portable to generated AOT or persistent-cache links. This routine locates a
+ * single consumer-side development-library directory from explicit CUDA root
+ * variables, nvcc, and platform-standard layouts, then returns driver-ready
+ * search/RUNPATH and `-l` arguments. If no directory is found, driver-search
+ * names are retained (ABI-major-exact on Linux) so the compiler driver's
+ * normal search remains authoritative and produces the final diagnostic.
+ *
+ * @param libraries Logical names such as `cudart`, `cublas`, and `cublasLt`.
+ * @return Consumer-resolved C++ driver link arguments.
+ */
+std::vector<std::string> cuda_runtime_link_args(
+    const std::vector<std::string>& libraries);
+
+/**
  * @brief Get the linker arguments required to link against the host
  *        runtime libraries.
  * @return Arguments parsed from the build-time

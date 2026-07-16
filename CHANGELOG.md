@@ -76,7 +76,7 @@ gate green.  This section describes an **untagged release candidate**; no
 ### Verification
 
 - Aggregate suite: **44/44 suites, 716/716 tests**.
-- CTest: **75/75**; SICP full-book gate: **88/88** JIT+AOT probes.
+- CTest: **76/76**; SICP full-book gate: **88/88** JIT+AOT probes.
 - Chibi Scheme reference differential: **34/34 AGREE**; generative five-oracle
   differential: **127 programs, zero divergences**.
 - VM parity: **68/68**; VM extended surface: **53/53**.
@@ -102,6 +102,12 @@ gate green.  This section describes an **untagged release candidate**; no
   libstdc++ ABI and search paths at final link time. Unix configure steps pass
   the toolkit root as a scalar CMake definition, retaining compatibility with
   the Bash 3.2 `set -u` environment on hosted macOS runners.
+- **Generated CUDA links resolve the consumer toolkit.** Release packages no
+  longer serialize hosted-runner `CUDA::cudart`/cuBLAS absolute paths into AOT
+  and persistent-cache commands. Logical CUDA library names are resolved from
+  explicit roots, `nvcc`, and standard Linux multiarch/toolkit layouts on the
+  consumer, with the configured ABI major required in each selected directory
+  and exact-major ELF link names preventing silent CUDA 12/13 substitution.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
