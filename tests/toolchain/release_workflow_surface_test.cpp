@@ -280,10 +280,14 @@ int main(int argc, char** argv) {
                          "release Windows CUDA uses an nvcc-supported MSVC host") &&
          expect_contains(ci_workflow, "-vcvars_ver=14.29",
                          "CI Windows CUDA uses an nvcc-supported MSVC host") &&
-         expect_contains(workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
-                         "release Windows CUDA binds nvcc to the supported host compiler") &&
-         expect_contains(ci_workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxx",
-                         "CI Windows CUDA binds nvcc to the supported host compiler") &&
+         expect_contains(workflow, "$cudaHostCxx.Replace('\\', '/')",
+                         "release normalizes the CUDA host path before CMake forwards it to nvcc") &&
+         expect_contains(ci_workflow, "$cudaHostCxx.Replace('\\', '/')",
+                         "CI normalizes the CUDA host path before CMake forwards it to nvcc") &&
+         expect_contains(workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxxCMake",
+                         "release Windows CUDA binds nvcc to the normalized supported host compiler") &&
+         expect_contains(ci_workflow, "-DCMAKE_CUDA_HOST_COMPILER=$cudaHostCxxCMake",
+                         "CI Windows CUDA binds nvcc to the normalized supported host compiler") &&
          expect_not_contains(workflow, "sub-packages: '[\"crt\",",
                              "release does not pass a newer-toolkit crt subpackage to CUDA 12.4") &&
          expect_not_contains(ci_workflow, "sub-packages: '[\"crt\",",
