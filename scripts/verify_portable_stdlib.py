@@ -23,6 +23,10 @@ FORBIDDEN_IR_PATTERNS = (
     (re.compile(r"@llvm\.vscale(?:\.|\()"), "LLVM scalable-vector intrinsic"),
     (re.compile(r"<vscale\s+x\s+"), "LLVM scalable-vector type"),
     (
+        re.compile(r"<(?:[3-9]|[1-9][0-9]+)\s+x\s+double>"),
+        "fixed double vector wider than the 128-bit release baseline",
+    ),
+    (
         re.compile(
             r'"target-features"="[^"]*\+(?:sve|sme|avx|amx)[^"]*"',
             re.IGNORECASE,
@@ -123,7 +127,7 @@ def main() -> int:
 
     print(
         "PASS: precompiled stdlib uses the configured generic CPU and contains "
-        "no builder-only scalable/wide-vector IR"
+        "no builder-only scalable or over-wide fixed-vector IR"
     )
     return 0
 

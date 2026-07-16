@@ -23,6 +23,7 @@
 #include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>  // JITLink-based layer (for Branch26 plugin)
 #include <llvm/ExecutionEngine/SectionMemoryManager.h>
+#include "jit_coff_memory_manager.h"  // Co-located Windows ARM64 RuntimeDyld arena
 #include "jitlink_branch26_range_extension.h"  // AArch64 Branch26 range-extension plugin
 #include "jit_target_config.h"  // Windows ARM64 external-data import indirection
 #include <llvm/IR/LLVMContext.h>
@@ -93,11 +94,10 @@ static llvm::Module* module_from_ref(LLVMModuleRef module_ref) {
  * describe only 24.  LLVM's assembler correctly rejects that object, and
  * accepting it would be unsafe because Eshkol exceptions unwind through SEH.
  * Keep the SEH-correct Small model on Windows ARM64. RuntimeDyldCOFFAArch64
- * supplies absolute branch stubs for external calls, the JITLink plugin below
- * handles intra-object far calls whenever that object layer is available, and
- * prepare_jit_module_for_target() lowers external data through COFF import
- * address cells so host/JIT address separation has no +/-4 GiB limit. Other
- * targets preserve the existing Large model.
+ * supplies absolute branch stubs for external calls, Eshkol's co-located
+ * per-object arena keeps internal code/data within Small-model reach, and
+ * prepare_jit_module_for_target() lowers external host data through nearby
+ * COFF import-address cells. Other targets preserve the existing Large model.
  *
  * AArch64 ELF also needs function/data sections because its Large model is
  * incomplete for intra-object Branch26 calls; the same JITLink veneer handles
@@ -819,10 +819,40 @@ void ReplJITContext::initializeJIT() {
         long v = std::strtol(env, nullptr, 10);
         if (v > 0 && v <= 64) compile_threads = static_cast<unsigned>(v);
     }
-    auto jit_or_err = LLJITBuilder()
+    const bool windows_aarch64_coff =
+        eshkol::is_windows_aarch64_coff(jtmb->getTargetTriple());
+    LLJITBuilder jit_builder;
+    jit_builder
         .setJITTargetMachineBuilder(std::move(*jtmb))
-        .setNumCompileThreads(compile_threads)
-        .create();
+        .setNumCompileThreads(compile_threads);
+
+    if (windows_aarch64_coff) {
+        // LLVM 21 selects RuntimeDyld rather than JITLink for AArch64 COFF.
+        // Its default SectionMemoryManager uses three independent OS mapping
+        // pools, so Small-model PAGEBASE/PAGEOFFSET relocations between JIT-
+        // owned code and data can truncate when ASLR places those pools more
+        // than 4 GiB apart. Reserve all sections for each object in one bounded
+        // arena while retaining LLJIT's normal COFF symbol-claiming behavior.
+        jit_builder.setObjectLinkingLayerCreator(
+            [](orc::ExecutionSession& execution_session)
+                -> Expected<std::unique_ptr<orc::ObjectLayer>> {
+                auto layer =
+                    std::make_unique<orc::RTDyldObjectLinkingLayer>(
+                        execution_session,
+                        [](const MemoryBuffer&)
+                            -> std::unique_ptr<RuntimeDyld::MemoryManager> {
+                            return std::make_unique<
+                                eshkol::CoLocatedSectionMemoryManager>();
+                        });
+                layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
+                layer->setAutoClaimResponsibilityForObjectSymbols(true);
+                std::unique_ptr<orc::ObjectLayer> object_layer =
+                    std::move(layer);
+                return std::move(object_layer);
+            });
+    }
+
+    auto jit_or_err = jit_builder.create();
 
     if (!jit_or_err) {
         auto err = jit_or_err.takeError();
@@ -835,16 +865,11 @@ void ReplJITContext::initializeJIT() {
 
     jit_ = std::move(*jit_or_err);
 
-    // AArch64 Branch26 range-extension (cross-platform far-call fix for the
-    // in-process JIT path used by eval/compile). When the >128 MB stdlib is
-    // JIT-linked on arm64-ELF/COFF, intra-object `bl`/`b` (Branch26PCRel,
-    // +/-128 MB) can land out of range; LLVM 21 JITLink has no automatic branch
-    // range extension for aarch64 and the AArch64 large code model is incomplete
-    // outside Mach-O. This plugin veneers every Branch26 edge through an inline
-    // absolute-jump stub placed in the caller's own section. No-op off aarch64.
-    // The default LLJIT object layer on aarch64 IS the JITLink ObjectLinkingLayer
-    // (the Branch26 error is a JITLink diagnostic); guard the cast for safety on
-    // platforms/configs that fall back to RTDyld (where this fix is unnecessary).
+    // AArch64 Branch26 range-extension for JITLink-backed object formats.
+    // LLVM 21 uses RuntimeDyld for AArch64 COFF, so Windows instead relies on
+    // RuntimeDyld's external stubs plus the bounded co-located arena above.
+    // Where JITLink is active, this plugin veneers every Branch26 edge through
+    // an inline absolute-jump stub placed in the caller's own section.
     if (auto *OLL = llvm::dyn_cast<llvm::orc::ObjectLinkingLayer>(
             &jit_->getObjLinkingLayer())) {
         OLL->addPlugin(std::make_shared<eshkol::Branch26RangeExtensionPlugin>());

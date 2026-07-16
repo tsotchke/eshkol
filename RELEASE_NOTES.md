@@ -3,13 +3,17 @@
 Windows ARM64 packages now use a single platform-correct JIT target contract
 for both live LLJIT compilation and the persistent stdlib object cache. This
 avoids LLVM 21's invalid AArch64-COFF Large-model SEH metadata while preserving
-unbounded call reach through RuntimeDyld stubs and full host-data reach through
-nearby COFF import-address cells. External data declarations are lowered
-through `__imp_` before live and cached-module codegen, preventing truncated
-Small-model `PAGEBASE_REL21` references without weakening stack probing,
-exceptions, or cacheability.
+external call reach through RuntimeDyld stubs and full host-data reach through
+nearby COFF import-address cells. A co-located per-object arena keeps JIT-owned
+code, read-only data, and writable data inside Small-model relocation reach;
+explicit Branch26 and ADRP span guards fail safely if a future object outgrows
+that contract. This prevents layout-sensitive `PAGEBASE_REL21` truncation
+without weakening stack probing, exceptions, or cacheability.
 Windows packages also publish and explicitly register the Taylor-tower AD state
 globals required by relocated cache-disabled JIT modules.
+Generic release stdlib generation now uses the common 128-bit x86-64/AArch64
+tensor-vector baseline regardless of the hosted runner's AVX width; the release
+validator rejects wider fixed vectors as well as scalable or optional-ISA IR.
 
 **Candidate Date**: July 15, 2026
 **Status**: untagged release candidate; no public `v1.3.3-evolve` tag exists.

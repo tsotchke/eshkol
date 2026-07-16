@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 //
 
+#include "jit_coff_memory_manager.h"
 #include "jit_target_config.h"
 
 #include <llvm/ADT/SmallVector.h>
@@ -20,6 +21,8 @@
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Target/TargetMachine.h>
 
+#include <algorithm>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -118,6 +121,63 @@ int main() {
     ok &= expect(linux_external->getDLLStorageClass() ==
                      llvm::GlobalValue::DefaultStorageClass,
                  "Linux external data keeps its native relocation contract");
+
+    // Exercise the RuntimeDyld arena independently of COFF execution. All
+    // section classes must come from one allocation and remain inside the
+    // explicit Small-model addressability bound.
+    eshkol::CoLocatedSectionMemoryManager memory_manager;
+    ok &= expect(memory_manager.needsToReserveAllocationSpace(),
+                 "co-located memory manager requests the object size up front");
+    memory_manager.reserveAllocationSpace(
+        2 * 1024 * 1024, llvm::Align(64),
+        1024 * 1024, llvm::Align(32),
+        1024 * 1024, llvm::Align(32));
+    std::uint8_t* code = memory_manager.allocateCodeSection(
+        4096, 64, 0, ".text.contract");
+    std::uint8_t* code_tail = memory_manager.allocateCodeSection(
+        4096, 64, 1, ".text.contract.tail");
+    std::uint8_t* read_only = memory_manager.allocateDataSection(
+        4096, 32, 2, ".rdata.contract", true);
+    std::uint8_t* writable = memory_manager.allocateDataSection(
+        4096, 32, 3, ".data.contract", false);
+    ok &= expect(code && code_tail && read_only && writable,
+                 "code and data sections allocate from reserved pools");
+    if (code && code_tail && read_only && writable) {
+        ok &= expect(
+            reinterpret_cast<std::uintptr_t>(code) <
+                    reinterpret_cast<std::uintptr_t>(code_tail) &&
+                reinterpret_cast<std::uintptr_t>(code_tail) <
+                    reinterpret_cast<std::uintptr_t>(read_only) &&
+                reinterpret_cast<std::uintptr_t>(read_only) <
+                    reinterpret_cast<std::uintptr_t>(writable),
+                     "section pools are ordered inside one contiguous arena");
+        const std::uintptr_t lowest = std::min({
+            reinterpret_cast<std::uintptr_t>(code),
+            reinterpret_cast<std::uintptr_t>(code_tail),
+            reinterpret_cast<std::uintptr_t>(read_only),
+            reinterpret_cast<std::uintptr_t>(writable)});
+        const std::uintptr_t highest = std::max({
+            reinterpret_cast<std::uintptr_t>(code) + 4096,
+            reinterpret_cast<std::uintptr_t>(code_tail) + 4096,
+            reinterpret_cast<std::uintptr_t>(read_only) + 4096,
+            reinterpret_cast<std::uintptr_t>(writable) + 4096});
+        ok &= expect(
+            highest - lowest <
+                eshkol::CoLocatedSectionMemoryManager::kMaximumArenaSpan,
+            "all JIT-owned code and data remain within Small-model reach");
+    }
+    std::string finalize_error;
+    ok &= expect(!memory_manager.finalizeMemory(&finalize_error),
+                 "co-located pools accept final code/data page permissions");
+
+    eshkol::CoLocatedSectionMemoryManager oversized_memory_manager;
+    oversized_memory_manager.reserveAllocationSpace(
+        eshkol::CoLocatedSectionMemoryManager::kMaximumCodeSpan,
+        llvm::Align(16), 0, llvm::Align(1), 0, llvm::Align(1));
+    ok &= expect(
+        oversized_memory_manager.allocateCodeSection(
+            16, 16, 0, ".text.too-large") == nullptr,
+        "an object outside the Branch26 code bound fails allocation safely");
 
     // Force both contracts that matter in the emitted object: an external data
     // reference must use __imp_, and an 8 KiB frame must retain valid Small-
