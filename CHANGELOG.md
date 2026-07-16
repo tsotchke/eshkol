@@ -108,6 +108,10 @@ gate green.  This section describes an **untagged release candidate**; no
   explicit roots, `nvcc`, and standard Linux multiarch/toolkit layouts on the
   consumer, with the configured ABI major required in each selected directory
   and exact-major ELF link names preventing silent CUDA 12/13 substitution.
+  Windows driver arguments retain native path separators, avoiding the newer
+  MSVC STL `__std_replace_copy_2` helper that current build headers introduce
+  for generic-path conversion but older compatible consumer import libraries
+  do not provide.
 - **Generic release stdlibs no longer inherit the builder's AVX width.**
   `ESHKOL_TARGET_CPU=generic` now caps tensor codegen at the common 128-bit
   x86-64/AArch64 baseline while normal compiler and JIT runs remain host-
