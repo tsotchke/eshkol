@@ -1,12 +1,15 @@
 # Eshkol v1.3.3-evolve Release-Candidate Readiness Report
 
-**Candidate branch:** `master` plus the release-finalization change set
+**Candidate branch:** `master`
 **Release line:** `v1.3.x-evolve`
-**Verified hardening baseline:** `4055ff0314eb6d39fc72116d85a10ba2ac995ecd`
-**Baseline GitHub Actions:** run `29410550798`, **15/15 jobs green**
-**Candidate head:** the final merged master commit containing this report
+**Candidate head:** `bb22e9704db8831c951ea787af87f7fc14b8c960`
+**Exact-head GitHub Actions:** run `29506084897`, **15/15 jobs green**
+**Exact-head Pages deployment:** run `29506084923`, **2/2 jobs green**
+**Code-exact nonpublishing release dry run:** run `29486554508` at
+`af71aaf99b1b36da9a2b358c82d19fd27a9e4232`, **15/15 package jobs plus
+checksum aggregation green**
 **Published base tag:** `v1.3.2-evolve` (`8443ddae`)
-**Candidate date:** 2026-07-15
+**Candidate date:** 2026-07-16
 **Tag status:** **untagged** — publishing any tag remains a maintainer action.
 
 This report is the release contract for the untagged v1.3.3-evolve candidate.
@@ -14,24 +17,28 @@ It supersedes the July 8 readiness snapshot and records gates executed from an
 isolated Release build (`build-hardening`, tests enabled, XLA/GPU disabled with
 their CPU fallbacks still exercised), the final hosted matrix, and dedicated
 mesh evidence. A public tag must not be created until this finalization change
-is merged, the exact master matrix is green, and the non-publishing release
-workflow dry run succeeds.
+is merged, the exact master matrix is green, and a final nonpublishing release
+workflow dry run succeeds on the exact pre-tag head. The successful code-exact
+dry run predates only the documentation/site merge and this readiness-report
+correction; it did not create or move a tag.
 
 ## Verdict
 
-The candidate is release-ready. All deterministic code, differential,
+The candidate code and deployed site are release-ready. All deterministic code, differential,
 coverage, architecture, freestanding, WebAssembly, full-book, hosted-matrix,
-and cross-platform mesh gates are green. The verified hardening baseline's
-required GitHub Actions matrix passed 15/15; the finalization commit must repeat
-that exact-master check and complete the manual non-publishing release matrix.
-No release tag is authorized or created by this campaign.
+and cross-platform mesh gates are green. Exact-master GitHub Actions passed
+15/15 and the Pages deployment passed 2/2. The code-exact nonpublishing release
+run built and validated all 15 supported packages and the checksum aggregation.
+The remaining pre-tag gate is a final nonpublishing packaging replay on the
+exact head after this documentation correction merges. No release tag is
+authorized or created by this campaign.
 
 ## Release Gates
 
 | Gate | Result |
 |---|---|
 | Aggregate test harness | **44/44 suites, 716/716 tests**, zero failed/skipped suites |
-| CTest | **77/77** |
+| CTest | **76/76** |
 | SICP full-book | **88/88** JIT+AOT probes, zero xfail/XPASS |
 | Chibi R7RS reference differential | **34/34 AGREE**, zero divergence/error |
 | Generative multi-oracle differential | **127 programs**, Chibi/JIT/AOT-O0/AOT-O2/VM, zero divergence |
@@ -45,7 +52,7 @@ No release tag is authorized or created by this campaign.
 | WebAssembly import contract | **101/101 unique imports** provided in both JS runtimes |
 | ICC architecture model | **8/8 PASS**, zero FAIL/UNCHECKABLE |
 | ICC release readiness | **100/100**, oracle complete, zero contract/fallback gaps |
-| Working-tree hygiene | Only generated, gitignored ICC runtime evidence is untracked |
+| Working-tree hygiene | Clean exact-source audit; ICC runtime evidence generated outside the audited worktree |
 
 ## What This Candidate Delivers
 
