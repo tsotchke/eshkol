@@ -370,11 +370,6 @@ jobs:
             LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
           fi
 
-          CUDA_FLAGS=()
-          if [[ "${{ matrix.gpu_enabled }}" == "ON" ]]; then
-            CUDA_FLAGS+=("-DCUDAToolkit_ROOT=/usr/local/cuda-12.4")
-          fi
-
           cmake -S . -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
@@ -382,7 +377,7 @@ jobs:
             -DESHKOL_XLA_ENABLED=${{ matrix.xla_enabled }} \
             -DESHKOL_GPU_ENABLED=${{ matrix.gpu_enabled }} \
             -DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }} \
-            "${CUDA_FLAGS[@]}" \
+            -DCUDAToolkit_ROOT=/usr/local/cuda-12.4 \
             ${{ matrix.sanitizer_flags }}
 
       - name: Verify real CUDA build graph

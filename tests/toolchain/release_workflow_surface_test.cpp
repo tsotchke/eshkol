@@ -268,6 +268,16 @@ int main(int argc, char** argv) {
          expect_contains(workflow,
                          "-DESHKOL_REQUIRE_GPU_BACKEND=${{ matrix.gpu_enabled }}",
                          "release CUDA labels fail closed without a real backend") &&
+         expect_contains(workflow,
+                         "-DCUDAToolkit_ROOT=/usr/local/cuda-12.4",
+                         "release configure passes a Bash-3-safe CUDA toolkit hint") &&
+         expect_contains(ci_workflow,
+                         "-DCUDAToolkit_ROOT=/usr/local/cuda-12.4",
+                         "CI configure passes a Bash-3-safe CUDA toolkit hint") &&
+         expect_not_contains(workflow, "CUDA_FLAGS=()",
+                             "release configure avoids empty arrays under Bash nounset") &&
+         expect_not_contains(ci_workflow, "CUDA_FLAGS=()",
+                             "CI configure avoids empty arrays under Bash nounset") &&
          expect_contains(workflow, "scripts/verify_gpu_backend.py",
                          "release matrix verifies the resolved CUDA build graph") &&
          expect_contains(ci_workflow, "- name: windows-x64-cuda",
