@@ -1,85 +1,77 @@
 <h1
-id="eshkol-v1.3.3-evolve-exact-ad-gradients-for-first-class-losses-and-the-region-evacuator-closeout">Eshkol
-v1.3.3-evolve — exact AD gradients for first-class losses, and the
-region-evacuator closeout</h1>
-<p><strong>Eshkol v1.3.3-evolve corrects an overstated
-automatic-differentiation claim from v1.3.2-evolve with the real fix —
-exact gradients through the <code>input2</code> path for first-class
-losses and vector/learnable gamma — and completes the region-escape
-evacuator series (ESH-0214) by covering the last heap subtype,
-<code>PROMISE</code>.</strong></p>
-<p>Eshkol is Scheme (R7RS) compiled to native code via LLVM, with
-automatic differentiation as a compiler primitive rather than a library.
-v1.3.2-evolve’s CHANGELOG entry for issue #212 claimed the
-<code>input2</code> gradient path — the second operand of
-<code>conv2d</code>/<code>batchnorm</code>/<code>layernorm</code>/<code>attention</code>
-(kernel / gamma / K / V) — was complete. An adversarial audit run during
-this cycle found that claim was wrong: the v1.3.2 change landed a test
-and a roadmap update, but no gradient code. v1.3.3-evolve ships the
-actual fix, corrects the record in CHANGELOG.md, and — separately —
-finishes the region-evacuator hardening that v1.3.1-evolve and
-v1.3.2-evolve had been closing out one heap subtype at a time.</p>
+id="eshkol-v1.3.3-evolve-quantum-exact-differentiation-complete-executable-evidence-and-portable-packages">Eshkol
+v1.3.3-evolve — quantum, exact differentiation, complete executable
+evidence, and portable packages</h1>
+<p><strong>Eshkol v1.3.3-evolve completes the Moonlab quantum
+trajectory, makes VQE differentiable through ordinary Eshkol functions,
+adds FIPS 203 ML-KEM, closes exact-AD and resident-memory correctness
+gaps, proves every declared executable language surface, and delivers a
+clean-host-verified cross-platform package set.</strong></p>
+<p>Eshkol is R7RS Scheme compiled to native code through LLVM 21, with
+automatic differentiation as a compiler primitive rather than a tracing
+library. This release combines the completed S1-S5 quantum campaign with
+the adversarial correctness work that began after v1.3.2-evolve:
+first-class tensor-loss gradients, exact numeric-tower repairs, complete
+region evacuation, VM/native differential tests, WebAssembly import
+equality, and relocatable JIT/AOT packages.</p>
 <p>Full engineering detail lives in <a
-href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary is <a
-href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the complete AD
-walkthrough is the <a
+href="CHANGELOG.md">CHANGELOG.md</a>; the gate matrix and platform
+contract are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the
+complete AD walkthrough is the <a
 href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
-guide</a>. This document is the release announcement — quotable, and
-every claim below is grounded in shipped code and a real, run
-command.</p>
+guide</a>. Every claim below is tied to shipped code and an executable
+gate.</p>
 <hr />
-<h2 id="whats-new-since-v1.3.1-evolve">What’s new since
-v1.3.1-evolve</h2>
-<h3
-id="v1.3.3-evolve-exact-ad-gradients-and-the-region-evacuator-series-closes-out">v1.3.3-evolve:
-exact AD gradients, and the region-evacuator series closes out</h3>
+<h2 id="whats-new-in-v1.3.3-evolve">What’s new in v1.3.3-evolve</h2>
 <ul>
-<li><strong>Exact tensor AD gradients for first-class losses and
-vector/learnable gamma; silent-zero backward paths now error instead of
-returning zero</strong> (#229). The real <code>input2</code> fix, in
-three parts: (1) a loss with no compile-time <code>Function*</code> — a
-first-class/higher-order loss — fell to the forward-mode-dual closure
-path, which loses the tangent for tensor ops and silently returned a
-zero gradient; a reverse-mode tensor path was added to the closure
-branch of <code>AutodiffCodegen::gradient</code> to close that. (2)
-Batch-norm/layer-norm now wire per-feature gamma/beta as individual AD
-nodes instead of a single scalar, so vector/learnable gamma
-differentiates correctly rather than only a scalar approximation. (3)
-Any remaining unsupported tensor-op backward path now raises an explicit
-unsupported-op error instead of silently returning zero, honoring
-exact-AD-or-error rather than exact-AD-or-silently-wrong.
-Finite-difference-verified exact in both literal and first-class forms
-across matmul/conv2d/attention-K-V/vector-gamma; autodiff suite 54/54,
-the <code>input2</code> gradient gate 24/24 under both JIT and AOT.</li>
-<li><strong>Region escape evacuator now covers the <code>PROMISE</code>
-heap subtype</strong> (ESH-0214e, #230). Adversarial-audit follow-up to
-ESH-0214d: <code>PROMISE</code> was left a shallow-copied leaf despite
-carrying interior pointers (a thunk and a cached value). A
-<code>delay</code>/<code>make-promise</code> created inside
-<code>with-region</code> that escaped outward dangled after
-<code>region_pop</code>, observable as a segfault or
-<code>car: not a pair</code> under <code>ESHKOL_ARENA_POISON=1</code>
-when the promise was later forced. Fixed by adding an evacuation case
-that walks both interior slots; verified flat at ~116 MB under poison
-over escape-then-force for both <code>delay</code> and
-<code>make-promise</code>. This closes out the ESH-0214 region-evacuator
-series (ESH-0214a through e) that started with
-named-let/<code>define</code>-loop arena reclamation in
-v1.3.1-evolve.</li>
-<li><strong>ICC release-oracle hardening</strong> (#232): the completion
-oracle now checks region-evacuator poison coverage and the corrected
-<code>input2</code> gradient gate, so both fixes above are load-bearing
-release gates going forward, not one-off verifications.</li>
-<li><strong>Subprocess <code>process-wait</code> kqueue lost-wakeup race
-— documented.</strong> The fix itself shipped in v1.3.2-evolve (commit
-<code>8443ddae</code>) but was never recorded in the CHANGELOG until
-now: on macOS, a child that exited before its <code>kevent</code>
-<code>EVFILT_PROC</code> filter was registered could make
-<code>process-wait</code> block for the full timeout and misreport a
-dead process as still running. The fix probes once with
-<code>waitpid(WNOHANG)</code> right after registering the filter (and
-again on the timeout branch) so an already-dead child is reaped
-immediately instead of falling through to a spurious timeout.</li>
+<li><strong>Quantum S1-S5 is complete.</strong>
+<code>agent.quantum</code> exposes Moonlab-backed state preparation,
+gates, measurement, Bell-verified randomness, Hamiltonians, exact and
+variational energy, native gradients, and custom VJPs for
+differentiating through circuits. H2 VQE agrees with exact energy to
+<code>4.4e-16</code>; the permanent 16K-shot CHSH gate measures beyond
+the classical bound.</li>
+<li><strong>Post-quantum cryptography is part of the language.</strong>
+<code>agent.pqc</code> provides FIPS 203 ML-KEM 512/768/1024 key
+generation, encapsulation, and decapsulation, seeded from the same
+Bell-verified QRNG and checked against deterministic KATs and round
+trips.</li>
+<li><strong>Every declared executable surface has evidence.</strong> The
+manifest is <strong>1,057/1,057</strong>. The release gates include
+44/44 suites and 716/716 tests, CTest 76/76, SICP 88/88 under JIT and
+AOT, Chibi Scheme 34/34 agreement, 127 five-oracle generative programs
+with zero divergence, WebAssembly imports 101/101, and Taylor
+equivalence 441/441 under both JIT and AOT.</li>
+<li><strong>VM results are explicit, not overstated.</strong> The
+supported shared subset passes <strong>68/68</strong> across native
+LLVM, VM source, and emitted ESKB, and the hosted VM surface passes
+53/53. This is not a claim of complete backend parity:
+<code>PARITY.tsv</code> separately ratchets intentionally native-only
+facilities and known VM gaps so unsupported behavior cannot masquerade
+as success.</li>
+<li><strong>Exact AD means exact or an error.</strong> First-class
+tensor losses and the <code>input2</code> path now propagate real
+reverse-mode gradients; vector/learnable gamma is differentiated per
+feature; forward-over-reverse and Hessian tensor paths are corrected;
+and an unsupported backward operation raises an explicit error instead
+of silently returning zero.</li>
+<li><strong>Resident memory is hardened.</strong> The region evacuator
+deep-walks every interior-pointer heap subtype, including promises;
+large stable list sorts stay bounded; and million-iteration plus
+poison-enabled tests exercise escaping state instead of relying on
+shallow smoke tests.</li>
+<li><strong>Release packages are portable and honestly
+labelled.</strong> The release payload is <strong>15 platform packages
+plus <code>SHA256SUMS.txt</code></strong>: 16 published files. Linux and
+Windows x64/ARM64 plus macOS x64/ARM64 cover Lite and XLA; real CUDA
+12.4 packages cover Linux x64/ARM64 and Windows x64. Windows ARM64 CUDA
+is not advertised because NVIDIA does not provide the required supported
+toolkit. Relocated core/agent JITs, cached AOT links, image codecs,
+generic ARM64 stdlib code, compiler-rt, and CUDA consumer paths are all
+checked outside their builders.</li>
+<li><strong>ICC is a blocking release oracle.</strong> Runtime evidence
+is failure-free, architecture invariants pass 8/8, and readiness is
+100/100 with no contract gaps or unmarked production stubs.</li>
 </ul>
 <h3
 id="v1.3.2-evolve-thread-safe-regions-deeper-evacuation-and-new-tooling">v1.3.2-evolve:

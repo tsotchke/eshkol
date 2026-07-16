@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Eshkol — R7RS Scheme on LLVM 21 with AD as a compiler primitive</title>
-  <meta name="description" content="Eshkol is R7RS Scheme compiled to native code via LLVM 21, with automatic differentiation as a compiler primitive and a 22-builtin neuro-symbolic stack. v1.3.3-evolve carries the Self-Differentiating Neural Computer constructive proof forward with exact tensor-gradient and region-memory correctness fixes for long-running, resident programs.">
+  <meta name="description" content="Eshkol v1.3.3-evolve is R7RS Scheme on LLVM 21 with compiler-native automatic differentiation, Moonlab quantum/VQE, FIPS 203 ML-KEM, complete executable-surface evidence, and verified cross-platform release packages.">
   <meta property="og:title" content="Eshkol — R7RS Scheme with AD as a compiler primitive">
-  <meta property="og:description" content="Compiler-native automatic differentiation, zero garbage collection, heterogeneous GPU dispatch, and the SDNC constructive proof. v1.3.3-evolve.">
+  <meta property="og:description" content="Compiler-native AD, quantum/VQE, ML-KEM, 1,057/1,057 executable language traces, and 15 verified platform packages plus checksums. v1.3.3-evolve.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://eshkol.ai">
   <meta property="og:image" content="https://eshkol.ai/img/og-image.png">
@@ -15,9 +15,10 @@
   <meta property="og:image:alt" content="Eshkol logo — a stylized grape cluster">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="Eshkol — R7RS Scheme with AD as a compiler primitive">
-  <meta name="twitter:description" content="Compiler-native automatic differentiation, zero garbage collection, heterogeneous GPU dispatch, and the SDNC constructive proof. v1.3.3-evolve.">
+  <meta name="twitter:description" content="Compiler-native AD, quantum/VQE, ML-KEM, complete executable-surface evidence, and verified cross-platform packages. v1.3.3-evolve.">
   <meta name="twitter:image" content="https://eshkol.ai/img/og-image.png">
   <meta name="theme-color" content="#7c3aed">
+  <link rel="canonical" href="https://eshkol.ai/">
   <link rel="icon" href="img/favicon.ico" sizes="any">
   <link rel="icon" type="image/png" sizes="16x16" href="img/favicon-16.png">
   <link rel="icon" type="image/png" sizes="32x32" href="img/favicon-32.png">
@@ -30,6 +31,18 @@
   <link rel="stylesheet" href="style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Eshkol",
+    "softwareVersion": "1.3.3-evolve",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows, WebAssembly",
+    "downloadUrl": "https://github.com/tsotchke/eshkol/releases",
+    "license": "https://opensource.org/license/mit"
+  }
+  </script>
 </head>
 <body>
   <div id="loading">
@@ -251,33 +264,51 @@
         // ─── GitHub Releases API ───────────────────────────────────────
         const loadReleases = () => {
           const container = document.getElementById('releases-container');
+          const status = document.getElementById('release-status');
           if (!container) return;
+          const expectedTag = 'v1.3.3-evolve';
+          const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (ch) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+          })[ch]);
           fetch('https://api.github.com/repos/tsotchke/eshkol/releases')
-            .then(r => r.json())
+            .then(r => {
+              if (!r.ok) throw new Error('GitHub API returned HTTP ' + r.status);
+              return r.json();
+            })
             .then(releases => {
-              if (!releases.length) { container.innerHTML = '<p style="color:#a1a1aa">No releases found.</p>'; return; }
-              let html = '';
-              releases.forEach(rel => {
-                const badge = rel.prerelease
-                  ? '<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">PRE-RELEASE</span>'
-                  : '<span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">STABLE</span>';
-                html += '<div style="background:#111113;border:1px solid #27272a;border-radius:12px;padding:20px;margin-bottom:16px">';
-                html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
-                html += '<strong style="color:#fafafa;font-size:1.1rem">' + rel.tag_name + '</strong>' + badge;
-                html += '<span style="color:#71717a;font-size:0.85rem;margin-left:auto">' + new Date(rel.published_at).toLocaleDateString() + '</span>';
+              if (!Array.isArray(releases)) throw new Error('Unexpected GitHub API response');
+              const rel = releases.find((candidate) => candidate.tag_name === expectedTag);
+              if (!rel) {
+                container.innerHTML = '<p style="color:#a1a1aa">The verified package set will become downloadable when <code>' + expectedTag + '</code> is published. <a href="https://github.com/tsotchke/eshkol/releases">View release history on GitHub</a>.</p>';
+                return;
+              }
+              const assets = Array.isArray(rel.assets) ? rel.assets : [];
+              if (status) {
+                status.textContent = expectedTag + ' published ' + new Date(rel.published_at).toLocaleDateString() + ' with ' + assets.length + ' files.';
+                status.style.color = '#22c55e';
+              }
+              const badge = rel.prerelease
+                ? '<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">PRE-RELEASE</span>'
+                : '<span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:100px;font-size:0.7rem;font-weight:600;margin-left:8px">STABLE</span>';
+              let html = '<div style="background:#111113;border:1px solid #27272a;border-radius:12px;padding:20px;margin-bottom:16px">';
+              html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">';
+              html += '<a href="' + escapeHtml(rel.html_url) + '" style="color:#fafafa;font-size:1.1rem;font-weight:700">' + escapeHtml(rel.tag_name) + '</a>' + badge;
+              html += '<span style="color:#71717a;font-size:0.85rem;margin-left:auto">' + new Date(rel.published_at).toLocaleDateString() + '</span>';
+              html += '</div>';
+              if (assets.length) {
+                html += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
+                assets.forEach(a => {
+                  html += '<a href="' + escapeHtml(a.browser_download_url) + '" rel="noopener noreferrer" style="display:inline-block;padding:6px 14px;background:#18181b;border:1px solid #27272a;border-radius:6px;color:#a78bfa;font-size:0.8rem;font-family:JetBrains Mono,monospace;text-decoration:none">' + escapeHtml(a.name) + '</a>';
+                });
                 html += '</div>';
-                if (rel.assets && rel.assets.length) {
-                  html += '<div style="display:flex;flex-wrap:wrap;gap:8px">';
-                  rel.assets.forEach(a => {
-                    html += '<a href="' + a.browser_download_url + '" style="display:inline-block;padding:6px 14px;background:#18181b;border:1px solid #27272a;border-radius:6px;color:#a78bfa;font-size:0.8rem;font-family:JetBrains Mono,monospace;text-decoration:none">' + a.name + '</a>';
-                  });
-                  html += '</div>';
-                }
-                html += '</div>';
-              });
+              }
+              html += '</div>';
               container.innerHTML = html;
             })
-            .catch(err => { container.innerHTML = '<p style="color:#71717a">Could not load releases. <a href="https://github.com/tsotchke/eshkol/releases">View on GitHub</a></p>'; });
+            .catch(err => {
+              console.warn('Release status unavailable:', err.message);
+              container.innerHTML = '<p style="color:#71717a">Could not load publication status. <a href="https://github.com/tsotchke/eshkol/releases">View releases on GitHub</a>.</p>';
+            });
         };
         // Load releases on initial page load (if on /downloads)
         if (window.location.pathname === '/downloads' ||
