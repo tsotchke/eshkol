@@ -6215,7 +6215,15 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 // temp slot; only a genuine pointer storage is packed via ptrtoint.
                 if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
                     if (arg->getType()->isPointerTy() &&
-                        arg->getName() == (var_name + "_cap")) {
+                        (arg->getName() == (var_name + "_cap") ||
+                         arg->getName() == ("captured_" + var_name))) {
+                        // #296: transitive capture — the free variable is the
+                        // enclosing function's own `captured_<var>` slot,
+                        // already in the callee's single-load convention.
+                        // Packing its ADDRESS below handed the differentiated
+                        // lambda the slot address as its value; a custom-VJP
+                        // callee (vqe-energy) unpacked it as the Hamiltonian
+                        // handle and the gradient silently zeroed.
                         grad_call_args.push_back(storage);
                         continue;
                     }
@@ -9941,7 +9949,13 @@ std::vector<llvm::Value*> AutodiffCodegen::loadCapturesForAutodiff(
             // resolveGradientCaptures.
             if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
                 if (arg->getType()->isPointerTy() &&
-                    arg->getName() == (var_name + "_cap")) {
+                    (arg->getName() == (var_name + "_cap") ||
+                     arg->getName() == ("captured_" + var_name))) {
+                    // #296: when the free variable is itself a capture of the
+                    // ENCLOSING function (a transitive capture), `storage` is
+                    // that function's own `captured_<var>` slot. Forward it
+                    // as-is — re-wrapping it in the pointer-marker below hands
+                    // the callee the slot's ADDRESS as its value.
                     capture_args.push_back(storage);
                     continue;
                 }
@@ -10107,7 +10121,18 @@ void AutodiffCodegen::resolveGradientCaptures(
             // When storage IS that carry pointer, forward it as-is.
             if (auto* arg = llvm::dyn_cast<llvm::Argument>(storage)) {
                 if (arg->getType()->isPointerTy() &&
-                    arg->getName() == (var_name + "_cap")) {
+                    (arg->getName() == (var_name + "_cap") ||
+                     arg->getName() == ("captured_" + var_name))) {
+                    // #296: a TRANSITIVE capture — the free variable is itself
+                    // a capture of the enclosing function, so `storage` is that
+                    // function's own pointer-typed `captured_<var>` slot,
+                    // already in the callee's expected single-load convention.
+                    // Forward it as-is. The default pointer-marker packing
+                    // below would hand the differentiated lambda the slot's
+                    // ADDRESS as its value: a custom-VJP callee (vqe-energy)
+                    // then unpacked that address as its Hamiltonian handle,
+                    // its AD-prepare failed, and the gradient silently zeroed
+                    // (issue #296).
                     call_args.push_back(storage);
                     continue;
                 }

@@ -96,7 +96,7 @@ jobs:
                 grep -q 'VQE H2: PASS' <<<"$output"
                 ;;
               vqe_ad_test.esk)
-                grep -q 'vqe_ad_test: PASS (3/3)' <<<"$output"
+                grep -q 'vqe_ad_test: PASS (5/5)' <<<"$output"
                 ;;
               pqc_mlkem_test.esk)
                 grep -q 'pqc_mlkem_test: PASS (9/9)' <<<"$output"

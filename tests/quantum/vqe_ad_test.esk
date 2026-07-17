@@ -88,9 +88,28 @@
      (check "custom VJP matches central finite difference (< 1e-4)"
             (< fd-error 1e-4))
      (check "VQE energy composes through Eshkol chain rule (< 1e-6)"
-            (< compose-error 1e-6)))))
+            (< compose-error 1e-6))
+
+     ;; Issue #296 regression: the custom-VJP gradient must not depend on the
+     ;; lexical nesting of the call site. A helper whose differentiated lambda
+     ;; reaches `ham` as a TRANSITIVE capture (through the helper's own
+     ;; closure) silently returned an all-zero gradient: the reverse-mode
+     ;; capture resolver re-wrapped the enclosing function's `captured_ham`
+     ;; slot as a pointer-marker, so vqe-energy unpacked the slot's ADDRESS as
+     ;; its Hamiltonian handle.
+     (define (nested-vqe-grad v)
+       (gradient (lambda (q) (vqe-energy ham q)) v))
+     (let ((helper (lambda (v) (gradient (lambda (q) (vqe-energy ham q)) v))))
+       (let ((g-nested (nested-vqe-grad params0))
+             (g-let-helper (helper params0)))
+         (display "g_nested_define: ") (display g-nested) (newline)
+         (display "g_let_helper: ") (display g-let-helper) (newline)
+         (check "custom VJP gradient inside nested define matches enclosing scope (#296)"
+                (< (max-abs-diff g-nested g-eshkol) 1e-12))
+         (check "custom VJP gradient inside let-bound helper matches enclosing scope (#296)"
+                (< (max-abs-diff g-let-helper g-eshkol) 1e-12)))))))
 
 (display "vqe_ad_test: ")
 (if (= fail 0)
-    (begin (display "PASS (") (display pass) (display "/3)") (newline) (exit 0))
+    (begin (display "PASS (") (display pass) (display "/5)") (newline) (exit 0))
     (begin (display "FAIL (") (display fail) (display " failed)") (newline) (exit 1)))

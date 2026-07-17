@@ -803,9 +803,20 @@ void* eshkol_vqe_ad_prepare(int64_t handle, const eshkol_tagged_value_t* params)
 
     ctx->hamiltonian_handle = handle;
     ctx->parameter_count = n;
+    if (!get_hamiltonian(handle)) {
+        fprintf(stderr,
+                "eshkol: vqe-energy AD error: invalid Hamiltonian handle %lld "
+                "inside gradient — the gradient would silently be zero\n",
+                (long long)handle);
+        set_last_error("vqe-energy AD: invalid Hamiltonian handle");
+        return NULL;
+    }
     for (int i = 0; i < n; ++i) {
         ad_node_t* input = (ad_node_t*)(uintptr_t)tensor->elements[i];
         if (!input) {
+            fprintf(stderr,
+                    "eshkol: vqe-energy AD error: parameter tensor contains a "
+                    "non-AD value — the gradient would silently be zero\n");
             set_last_error("vqe-energy AD: parameter tensor contains a non-AD value");
             return NULL;
         }
