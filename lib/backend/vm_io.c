@@ -457,13 +457,6 @@ static int vm_port_delete_file(const char* path) {
 
 /* ── Display / Write (Scheme-style) ── */
 
-/** @brief Native call 598: `(display str port)` — write a string's raw
- *         contents without quoting (the display/write distinction is
- *         handled by the caller choosing a pre-formatted string). */
-static void vm_port_display(VmPort* port, const VmString* str) {
-    vm_port_write_string(port, str);
-}
-
 /** @brief Native call 599: `(newline port)`. */
 static void vm_port_newline(VmPort* port) {
     vm_port_write_char(port, '\n');

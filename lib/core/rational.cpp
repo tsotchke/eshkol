@@ -212,11 +212,6 @@ extern "C" void* eshkol_rational_create(void* arena, int64_t num, int64_t denom)
     return rational_alloc_small(arena, num, denom);
 }
 
-/* Is a rational operand a big (bignum-path) rational? */
-static inline bool rat_is_big(const void* r) {
-    return ((const eshkol_rational_t*)r)->is_big != 0;
-}
-
 /* Bignum-path add/sub/mul: exact, never lossy. sub == 0, add == 1 selector via
  * caller. */
 static void* rat_add_sub_big(void* arena_v, const eshkol_rational_t* ra,

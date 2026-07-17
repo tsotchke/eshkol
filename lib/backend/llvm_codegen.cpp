@@ -1085,22 +1085,6 @@ struct TypedValue {
     bool hasKnownType() const { return hott_type != eshkol::hott::BuiltinTypes::Value; }
     bool isHottInt64() const { return hott_type == eshkol::hott::BuiltinTypes::Int64; }
     bool isHottFloat64() const { return hott_type == eshkol::hott::BuiltinTypes::Float64; }
-    bool isHottNumeric() const {
-        return hott_type == eshkol::hott::BuiltinTypes::Int8 ||
-               hott_type == eshkol::hott::BuiltinTypes::Int16 ||
-               hott_type == eshkol::hott::BuiltinTypes::Int32 ||
-               hott_type == eshkol::hott::BuiltinTypes::Int64 ||
-               hott_type == eshkol::hott::BuiltinTypes::ISize ||
-               hott_type == eshkol::hott::BuiltinTypes::UInt8 ||
-               hott_type == eshkol::hott::BuiltinTypes::UInt16 ||
-               hott_type == eshkol::hott::BuiltinTypes::UInt32 ||
-               hott_type == eshkol::hott::BuiltinTypes::UInt64 ||
-               hott_type == eshkol::hott::BuiltinTypes::USize ||
-               hott_type == eshkol::hott::BuiltinTypes::Float64 ||
-               hott_type == eshkol::hott::BuiltinTypes::Integer ||
-               hott_type == eshkol::hott::BuiltinTypes::Real ||
-               hott_type == eshkol::hott::BuiltinTypes::Number;
-    }
 
     // HoTT parameterized type helpers
     bool hasParameterizedType() const { return param_type.has_value(); }
@@ -1118,11 +1102,6 @@ struct TypedValue {
     bool isLinear() const { return (flags & FLAG_LINEAR) != 0; }
     bool isProof() const { return (flags & FLAG_PROOF) != 0; }
     bool shouldErase() const { return isProof(); }  // Proofs are erased at runtime
-
-    // Create an erased value (for proof types that don't exist at runtime)
-    static TypedValue makeErased(eshkol::hott::TypeId proof_type) {
-        return TypedValue(nullptr, ESHKOL_VALUE_NULL, proof_type, true, FLAG_PROOF);
-    }
 
     // Create an erased value with a unit placeholder (for contexts that need a valid LLVM value)
     static TypedValue makeErasedWithPlaceholder(llvm::Value* unit_value, eshkol::hott::TypeId proof_type) {
@@ -1535,15 +1514,6 @@ private:
     // Helper: create an intptr_t constant (target-dependent width)
     Value* intPtrConst(uint64_t n) {
         return ConstantInt::get(intptr_type, n);
-    }
-
-    // Helper: truncate or extend a value to size_t width
-    Value* toSize(Value* v) {
-        if (v->getType() == size_type) return v;
-        if (v->getType()->isIntegerTy()) {
-            return builder->CreateIntCast(v, size_type, false);
-        }
-        return v;
     }
 
     // Helper: truncate or extend a value to intptr_t width
@@ -5710,45 +5680,6 @@ private:
         return builder->CreateCall(current_arena_fn, {}, "cur_arena");
     }
     
-    // Production-grade arena scope tracking helpers
-    void arenaTrackedPushScope() {
-        Value* arena_ptr = getArenaPtr();
-        if (arena_ptr) {
-            builder->CreateCall(getArenaPushScopeFunc(), {arena_ptr});
-            arena_scope_depth++;
-            eshkol_debug("Arena scope pushed (depth: %zu)", arena_scope_depth);
-        } else {
-            eshkol_error("Arena not initialized: cannot push scope");
-        }
-    }
-    
-    void arenaTrackedPopScope() {
-        if (arena_scope_depth > 0) {
-            Value* arena_ptr = getArenaPtr();
-            if (arena_ptr) {
-                builder->CreateCall(getArenaPopScopeFunc(), {arena_ptr});
-                arena_scope_depth--;
-                eshkol_debug("Arena scope popped (depth: %zu)", arena_scope_depth);
-            }
-        } else {
-            eshkol_warn("Attempted to pop arena scope with depth 0");
-        }
-    }
-    
-    void arenaForceCleanup() {
-        if (arena_scope_depth > 0) {
-            eshkol_debug("Force cleaning %zu arena scopes", arena_scope_depth);
-            Value* arena_ptr = getArenaPtr();
-            if (arena_ptr) {
-                while (arena_scope_depth > 0) {
-                    builder->CreateCall(getArenaPopScopeFunc(), {arena_ptr});
-                    arena_scope_depth--;
-                }
-            }
-            eshkol_debug("Arena scope cleanup complete (depth: %zu)", arena_scope_depth);
-        }
-    }
-    
     // Mixed type arithmetic helper functions
     TypedValue promoteInt64ToDouble(const TypedValue& int64_val) {
         if (!int64_val.isInt64()) return int64_val;
@@ -5795,48 +5726,6 @@ private:
         // Error case: unsupported type combination
         eshkol_error("Unsupported type combination in arithmetic: %d and %d", left.type, right.type);
         return {left, right};
-    }
-    
-    TypedValue generateMixedArithmetic(const std::string& operation, const TypedValue& left, const TypedValue& right) {
-        auto [promoted_left, promoted_right] = promoteToCommonType(left, right);
-        
-        Value* result_val = nullptr;
-        bool result_exact = promoted_left.is_exact && promoted_right.is_exact;
-        
-        if (promoted_left.isInt64() && promoted_right.isInt64()) {
-            // Pure integer arithmetic
-            if (operation == "add") {
-                result_val = builder->CreateAdd(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "sub") {
-                result_val = builder->CreateSub(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "mul") {
-                result_val = builder->CreateMul(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "div") {
-                // Division always promotes to double in Scheme
-                auto double_left = promoteInt64ToDouble(promoted_left);
-                auto double_right = promoteInt64ToDouble(promoted_right);
-                result_val = builder->CreateFDiv(double_left.llvm_value, double_right.llvm_value);
-                return TypedValue(result_val, ESHKOL_VALUE_DOUBLE, false); // Division is inexact
-            }
-            return TypedValue(result_val, ESHKOL_VALUE_INT64, result_exact);
-        } else {
-            // Floating-point arithmetic (both operands are now double)
-            if (operation == "add") {
-                result_val = builder->CreateFAdd(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "sub") {
-                result_val = builder->CreateFSub(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "mul") {
-                result_val = builder->CreateFMul(promoted_left.llvm_value, promoted_right.llvm_value);
-            } else if (operation == "div") {
-                result_val = builder->CreateFDiv(promoted_left.llvm_value, promoted_right.llvm_value);
-            }
-            return TypedValue(result_val, ESHKOL_VALUE_DOUBLE, false); // Mixed arithmetic is inexact
-        }
-    }
-    
-    // Convert TypedValue back to raw Value* for compatibility
-    Value* typedValueToLLVM(const TypedValue& typed_val) {
-        return typed_val.llvm_value;
     }
     
     // Read the HoTT type inferred for an AST node during the type-checking phase
@@ -7050,11 +6939,6 @@ private:
     }
 
     // MIGRATED: Delegates to TaggedValueCodegen
-    Value* packInt64ToTaggedValueWithTypeAndFlags(Value* int64_val, Value* type_val, Value* flags_val) {
-        return tagged_->packInt64WithTypeAndFlags(int64_val, type_val, flags_val);
-    }
-
-    // MIGRATED: Delegates to TaggedValueCodegen
     Value* packDoubleToTaggedValue(Value* double_val) {
         return tagged_->packDouble(double_val);
     }
@@ -7969,11 +7853,6 @@ private:
     }
 
     // MIGRATED: Delegates to TaggedValueCodegen
-    Value* getTaggedValueFlags(Value* tagged_val) {
-        return tagged_->getFlags(tagged_val);
-    }
-
-    // MIGRATED: Delegates to TaggedValueCodegen
     Value* unpackInt64FromTaggedValue(Value* tagged_val) {
         return tagged_->unpackInt64(tagged_val);
     }
@@ -8619,26 +8498,12 @@ private:
         return car_tagged_phi;
     }
 
-    // ========== HoTT PROOF ERASURE HELPERS ==========
-    // Check if a HoTT type should be erased at runtime (proof types have no runtime representation)
-    bool shouldEraseType(eshkol::hott::TypeId type_id) {
-        // Query the TypeEnvironment to check if this type has RuntimeRep::Erased
-        auto rep = ctx_->hottTypes().getRuntimeRep(type_id);
-        return rep == eshkol::hott::RuntimeRep::Erased;
-    }
-
     // Create a unit value for erased types (when we need a valid LLVM value but the type is erased)
     // Returns null tagged_value which is our "unit" type
     Value* createErasedPlaceholder() {
         // Create a null tagged_value as a unit placeholder
         // This is for cases where the type system requires a value but the proof is erased
         return tagged_->packNull();
-    }
-
-    // Create TypedValue for an erased proof type
-    TypedValue makeErasedTypedValue(eshkol::hott::TypeId proof_type) {
-        Value* placeholder = createErasedPlaceholder();
-        return TypedValue::makeErasedWithPlaceholder(placeholder, proof_type);
     }
 
     bool isImmediateIntegerHottType(eshkol::hott::TypeId type_id) const {
@@ -20325,47 +20190,6 @@ private:
         return arith_->extractAsDouble(tagged);
     }
 
-    // Extract string pointer from tagged value
-    // Returns i8* pointer to the string, or null if not a string
-    Value* extractStringFromTagged(Value* tagged) {
-        if (!tagged) return nullptr;
-
-        // Check if it's a string pointer type
-        Value* type_val = getTaggedValueType(tagged);
-        Value* base_type = getBaseType(type_val);
-        Value* is_string = builder->CreateICmpEQ(base_type,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-
-        // Create branches to handle string vs non-string
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* string_block = BasicBlock::Create(*context, "is_string", current_func);
-        BasicBlock* not_string_block = BasicBlock::Create(*context, "not_string", current_func);
-        BasicBlock* merge_block = BasicBlock::Create(*context, "merge_string_extract", current_func);
-
-        builder->CreateCondBr(is_string, string_block, not_string_block);
-
-        // String path: extract pointer
-        builder->SetInsertPoint(string_block);
-        Value* str_int = unpackInt64FromTaggedValue(tagged);
-        Value* str_ptr = builder->CreateIntToPtr(str_int, builder->getPtrTy());
-        builder->CreateBr(merge_block);
-        BasicBlock* string_exit = builder->GetInsertBlock();
-
-        // Not string path: return null
-        builder->SetInsertPoint(not_string_block);
-        Value* null_ptr = ConstantPointerNull::get(builder->getPtrTy());
-        builder->CreateBr(merge_block);
-        BasicBlock* not_string_exit = builder->GetInsertBlock();
-
-        // Merge
-        builder->SetInsertPoint(merge_block);
-        PHINode* result = builder->CreatePHI(builder->getPtrTy(), 2, "str_result");
-        result->addIncoming(str_ptr, string_exit);
-        result->addIncoming(null_ptr, not_string_exit);
-
-        return result;
-    }
-
     // MIGRATED: Delegates to ControlFlowCodegen
     // Helper to check if a tagged value is "truthy" (non-false, non-null, non-zero)
     Value* isTruthy(Value* val) {
@@ -22671,20 +22495,6 @@ private:
         return packBoolToTaggedValue(matches);
     }
 
-    Value* codegenCallableSubtypePredicate(const eshkol_operations_t* op, uint8_t expected_subtype) {
-        if (op->call_op.num_vars != 1) {
-            eshkol_warn("Type predicate requires exactly 1 argument");
-            return nullptr;
-        }
-
-        TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
-        if (!tv.llvm_value) return nullptr;
-        Value* arg = typedValueToTaggedValue(tv);
-
-        Value* matches = isCallableSubtype(arg, expected_subtype);
-        return packBoolToTaggedValue(matches);
-    }
-
     // ============================================================================
     // STRING FUNCTIONS
     // ============================================================================
@@ -23019,75 +22829,6 @@ private:
         // Consolidated pointer: HEAP_PTR with HEAP_SUBTYPE_VECTOR in header
         return packPtrToTaggedValue(vec_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
-
-    // vector-ref: Get element at index
-    Value* codegenSchemeVectorRef(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 2) {
-            eshkol_warn("vector-ref requires exactly 2 arguments");
-            return nullptr;
-        }
-
-        Value* vec_arg = codegenAST(&op->call_op.variables[0]);
-        TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
-        if (!vec_arg || !idx_tv.llvm_value) return nullptr;
-
-        // Extract vector pointer
-        Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
-        Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, builder->getPtrTy());
-
-        // Get pointer to elements (after length field)
-        Value* elem_base = builder->CreateGEP(int8_type, vec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* elem_base_typed = builder->CreateBitCast(elem_base, PointerType::getUnqual(*context));
-
-        // Get element at index
-        Value* idx = idx_tv.llvm_value;
-        Value* elem_ptr = builder->CreateGEP(tagged_value_type, elem_base_typed, idx);
-        return builder->CreateLoad(tagged_value_type, elem_ptr);
-    }
-
-    // vector-set!: Set element at index
-    Value* codegenSchemeVectorSet(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 3) {
-            eshkol_warn("vector-set! requires exactly 3 arguments");
-            return nullptr;
-        }
-
-        Value* vec_arg = codegenAST(&op->call_op.variables[0]);
-        TypedValue idx_tv = codegenTypedAST(&op->call_op.variables[1]);
-        TypedValue val_tv = codegenTypedAST(&op->call_op.variables[2]);
-        if (!vec_arg || !idx_tv.llvm_value || !val_tv.llvm_value) return nullptr;
-
-        // Extract vector pointer
-        Value* vec_ptr_int = unpackInt64FromTaggedValue(vec_arg);
-        Value* vec_ptr = builder->CreateIntToPtr(vec_ptr_int, builder->getPtrTy());
-
-        // Get pointer to elements (after length field)
-        Value* elem_base = builder->CreateGEP(int8_type, vec_ptr,
-            ConstantInt::get(int64_type, 8));
-        Value* elem_base_typed = builder->CreateBitCast(elem_base, PointerType::getUnqual(*context));
-
-        // Convert value to tagged value for storage
-        Value* tagged_val = typedValueToTaggedValue(val_tv);
-
-        // Set element at index - CRITICAL FIX: convert tagged_value to i64
-        Value* idx = idx_tv.llvm_value;
-        if (idx->getType() == tagged_value_type) {
-            idx = unpackInt64FromTaggedValue(idx);
-        } else if (idx->getType() != int64_type) {
-            if (idx->getType()->isIntegerTy()) {
-                idx = builder->CreateSExtOrTrunc(idx, int64_type);
-            } else if (idx->getType()->isFloatingPointTy()) {
-                idx = builder->CreateFPToSI(idx, int64_type);
-            }
-        }
-        Value* elem_ptr = builder->CreateGEP(tagged_value_type, elem_base_typed, idx);
-        builder->CreateStore(tagged_val, elem_ptr);
-
-        // Return unspecified (void) - return the vector
-        return vec_arg;
-    }
-
 
     // Numeric predicates
     Value* codegenNumericPredicate(const eshkol_operations_t* op, const std::string& pred) {
@@ -29560,15 +29301,6 @@ private:
         }
     }
     
-    // Helper: Create type-appropriate constant (int64 or double)
-    Value* createTypedConstant(double value, const eshkol_ast_t* reference_expr) {
-        if (isDoubleExpression(reference_expr)) {
-            return ConstantFP::get(double_type, value);
-        } else {
-            return ConstantInt::get(int64_type, static_cast<int64_t>(value));
-        }
-    }
-    
     // Helper: Type-aware multiplication for derivatives
     Value* createTypedMul(Value* a, Value* b, const eshkol_ast_t* reference_expr) {
         if (isDoubleExpression(reference_expr)) {
@@ -29912,20 +29644,6 @@ private:
 
     // ===== HIGHER-ORDER SYMBOLIC DERIVATIVES =====
     // Apply differentiation n times with simplification after each step
-
-    eshkol_ast_t* buildNthSymbolicDerivative(const eshkol_ast_t* expr, const char* var, int n) {
-        if (n <= 0 || !expr || !var) return eshkol_copy_ast(expr);
-
-        eshkol_ast_t* result = eshkol_copy_ast(expr);
-        for (int i = 0; i < n; i++) {
-            eshkol_ast_t* deriv = buildSymbolicDerivative(result, var);
-            eshkol_ast_t* simplified = simplifySymbolicAST(deriv);
-            // Intermediate AST nodes are arena-allocated — do not free().
-            // The arena owns their lifetime.
-            result = simplified;
-        }
-        return result;
-    }
 
     // Core symbolic differentiation function (AST → AST transformation)
     eshkol_ast_t* buildSymbolicDerivative(const eshkol_ast_t* expr, const char* var) {
@@ -31142,11 +30860,6 @@ private:
     // ===== END AD NODE HELPERS =====
     // ===== PHASE 3: BACKWARD PASS IMPLEMENTATION =====
     // Backpropagation through computational graph (delegated to AutodiffCodegen)
-
-    // Main backward pass function - delegates to AutodiffCodegen
-    void codegenBackward(Value* output_node_ptr, Value* tape_ptr) {
-        autodiff_->backpropagate(tape_ptr, output_node_ptr);
-    }
 
     // ===== END BACKWARD PASS =====
     
@@ -34484,72 +34197,6 @@ private:
     // codegenRange removed - now in stdlib.esk (core/list/generate.esk)
     // codegenZip removed - now in stdlib.esk (core/list/generate.esk)
 
-    // Helper: Iteratively reverse a list (takes int64 list pointer, returns int64 list pointer)
-    // This is used internally by functions like unzip that build lists in reverse
-    Value* codegenIterativeReverse(Value* list_ptr) {
-        Function* current_func = builder->GetInsertBlock()->getParent();
-        BasicBlock* loop_condition = BasicBlock::Create(*context, "rev_loop_cond", current_func);
-        BasicBlock* loop_body = BasicBlock::Create(*context, "rev_loop_body", current_func);
-        BasicBlock* loop_exit = BasicBlock::Create(*context, "rev_loop_exit", current_func);
-
-        // Initialize result (accumulator) and current pointer
-        Value* result = builder->CreateAlloca(int64_type, nullptr, "rev_result");
-        builder->CreateStore(ConstantInt::get(int64_type, 0), result); // Start with empty list
-
-        Value* current_ptr = builder->CreateAlloca(int64_type, nullptr, "rev_current");
-        builder->CreateStore(list_ptr, current_ptr);
-
-        // Jump to loop condition
-        builder->CreateBr(loop_condition);
-
-        // Loop condition: check if current != null
-        builder->SetInsertPoint(loop_condition);
-        Value* current_val = builder->CreateLoad(int64_type, current_ptr);
-        Value* is_not_null = builder->CreateICmpNE(current_val, ConstantInt::get(int64_type, 0));
-        builder->CreateCondBr(is_not_null, loop_body, loop_exit);
-
-        // Loop body: cons car onto result and move to cdr
-        builder->SetInsertPoint(loop_body);
-
-        Value* cons_ptr = builder->CreateIntToPtr(current_val, builder->getPtrTy());
-
-        // Extract car as tagged_value
-        Value* car_tagged = extractCarAsTaggedValue(current_val);
-
-        // Get result as tagged value - check if NULL or CONS_PTR
-        Value* result_val = builder->CreateLoad(int64_type, result);
-        Value* result_is_null = builder->CreateICmpEQ(result_val,
-            ConstantInt::get(int64_type, 0));
-
-        // Pack result correctly based on whether it's null or cons pointer
-        // M1 Migration: Use consolidated HEAP_PTR
-        Value* null_tagged_result = packNullToTaggedValue();
-        Value* ptr_tagged_result = packPtrToTaggedValue(
-            builder->CreateIntToPtr(result_val, builder->getPtrTy()),
-            ESHKOL_VALUE_HEAP_PTR);
-        Value* result_tagged = builder->CreateSelect(result_is_null,
-            null_tagged_result, ptr_tagged_result);
-
-        // Create new cons cell directly from tagged values (preserves types!)
-        Value* new_result = codegenTaggedArenaConsCellFromTaggedValue(
-            car_tagged, result_tagged);
-        builder->CreateStore(new_result, result);
-
-        // Move to cdr using tagged helper
-        Value* is_cdr_get = ConstantInt::get(int1_type, 1);
-        Value* cdr_val = builder->CreateCall(getTaggedConsGetPtrFunc(),
-            {cons_ptr, is_cdr_get});
-        builder->CreateStore(cdr_val, current_ptr);
-
-        // Jump back to condition
-        builder->CreateBr(loop_condition);
-
-        // Loop exit: return result (as int64)
-        builder->SetInsertPoint(loop_exit);
-        return builder->CreateLoad(int64_type, result);
-    }
-
-
     // sort is now implemented in stdlib.esk
 
 
@@ -34918,57 +34565,6 @@ private:
         }
         Value* arity = builder->CreateCall(fn, {ptr});
         return packInt64ToTaggedValue(arity);
-    }
-
-    Value* codegenProcedureName(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 1) {
-            eshkol_warn("procedure-name requires exactly 1 argument");
-            return nullptr;
-        }
-        Value* val = codegenAST(&op->call_op.variables[0]);
-        if (!val) return nullptr;
-        Value* tagged = ensureTaggedValue(val);
-        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-
-        Function* fn = function_table["eshkol_closure_get_name"];
-        if (!fn) {
-            FunctionType* ft = FunctionType::get(builder->getPtrTy(),
-                                                  {builder->getPtrTy()}, false);
-            fn = Function::Create(ft, GlobalValue::ExternalLinkage,
-                                  "eshkol_closure_get_name", module.get());
-            function_table["eshkol_closure_get_name"] = fn;
-        }
-        Value* name_ptr = builder->CreateCall(fn, {ptr});
-        // Wrap as a HEAP_PTR-typed string. The runtime returns a const char*
-        // that points into the closure struct's `name` field — same lifetime
-        // as the closure itself, which is arena-allocated.
-        return packPtrToTaggedValue(name_ptr, ESHKOL_VALUE_HEAP_PTR);
-    }
-
-    Value* codegenProcedureVariadicP(const eshkol_operations_t* op) {
-        if (op->call_op.num_vars != 1) {
-            eshkol_warn("procedure-variadic? requires exactly 1 argument");
-            return nullptr;
-        }
-        Value* val = codegenAST(&op->call_op.variables[0]);
-        if (!val) return nullptr;
-        Value* tagged = ensureTaggedValue(val);
-        Value* ptr_int = unpackInt64FromTaggedValue(tagged);
-        Value* ptr = builder->CreateIntToPtr(ptr_int, builder->getPtrTy());
-
-        Function* fn = function_table["eshkol_closure_is_variadic_fn"];
-        if (!fn) {
-            FunctionType* ft = FunctionType::get(int32_type,
-                                                  {builder->getPtrTy()}, false);
-            fn = Function::Create(ft, GlobalValue::ExternalLinkage,
-                                  "eshkol_closure_is_variadic_fn", module.get());
-            function_table["eshkol_closure_is_variadic_fn"] = fn;
-        }
-        Value* result_int = builder->CreateCall(fn, {ptr});
-        Value* is_var = builder->CreateICmpNE(result_int,
-            ConstantInt::get(int32_type, 0));
-        return packBoolToTaggedValue(is_var);
     }
 
     // Production implementation: Set car (mutable)

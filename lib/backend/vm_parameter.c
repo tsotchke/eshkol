@@ -134,28 +134,6 @@ int vm_param_is_parameter(void* obj) {
  * Dispatch
  ******************************************************************************/
 
-/** @brief Native-call dispatcher for the dynamic-parameter primitives (IDs
- *         700-704). */
-void* vm_param_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
-    switch (id) {
-    case 700: return vm_param_make(rs, nargs >= 1 ? args[0] : NULL,
-                                        nargs >= 2 ? args[1] : NULL);
-    case 701: {
-        /* Kept useful for embedders that use this standalone dispatcher;
-         * the interpreter's native dispatcher copies Value objects directly. */
-        static VmParameterValue result;
-        vm_param_ref(nargs >= 1 ? (VmParameter*)args[0] : NULL, &result);
-        return &result;
-    }
-    case 702: vm_param_push(rs, (VmParameter*)args[0], args[1]); return NULL;
-    case 703: vm_param_pop((VmParameter*)args[0]); return NULL;
-    case 704: { static int r; r = vm_param_is_parameter(args[0]); return &r; }
-    default:
-        fprintf(stderr, "ERROR: unknown parameter native ID %d\n", id);
-        return NULL;
-    }
-}
-
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/

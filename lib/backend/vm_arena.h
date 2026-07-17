@@ -245,21 +245,6 @@ static inline void vm_region_pop(VmRegionStack* rs) {
     free(r);
 }
 
-/* Escape a value from current region to parent (copy to parent's arena) */
-static inline void* vm_region_escape(VmRegionStack* rs, const void* src, size_t size) {
-    if (rs->depth <= 0) return NULL; /* can't escape from global */
-
-    VmRegion* current = rs->stack[rs->depth - 1];
-    VmArena* target = current->parent ? &current->parent->arena : &rs->global_arena;
-
-    void* dst = vm_arena_alloc(target, size);
-    if (dst) {
-        memcpy(dst, src, size);
-        current->escape_count++;
-    }
-    return dst;
-}
-
 /* Allocate in the active region (or global arena) */
 static inline void* vm_alloc(VmRegionStack* rs, size_t size) {
     VmArena* a = vm_active_arena(rs);

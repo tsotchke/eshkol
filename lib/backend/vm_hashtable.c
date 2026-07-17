@@ -259,27 +259,6 @@ int vm_ht_is_hashtable(void* obj) {
  * Dispatch
  ******************************************************************************/
 
-/** @brief Native-call dispatcher for the hash-table primitives (IDs
- *         660-669). */
-void* vm_ht_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
-    switch (id) {
-    case 660: return vm_ht_make(rs);
-    case 661: return (nargs >= 3) ? vm_ht_ref((VmHashTable*)args[0], args[1], args[2])
-                                  : vm_ht_ref((VmHashTable*)args[0], args[1], NULL);
-    case 662: vm_ht_set(rs, (VmHashTable*)args[0], args[1], args[2]); return NULL;
-    case 663: { static int r; r = vm_ht_has_key((VmHashTable*)args[0], args[1]); return &r; }
-    case 664: vm_ht_remove((VmHashTable*)args[0], args[1]); return NULL;
-    case 665: { int n; void** k = vm_ht_keys(rs, (VmHashTable*)args[0], &n); (void)n; return k; }
-    case 666: { int n; void** v = vm_ht_values(rs, (VmHashTable*)args[0], &n); (void)n; return v; }
-    case 667: { static int r; r = vm_ht_count((VmHashTable*)args[0]); return &r; }
-    case 668: vm_ht_clear((VmHashTable*)args[0]); return NULL;
-    case 669: { static int r; r = vm_ht_is_hashtable(args[0]); return &r; }
-    default:
-        fprintf(stderr, "ERROR: unknown hash-table native ID %d\n", id);
-        return NULL;
-    }
-}
-
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/

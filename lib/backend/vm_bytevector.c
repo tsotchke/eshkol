@@ -206,38 +206,6 @@ VmBytevector* vm_bv_string_to_utf8(VmRegionStack* rs, const VmString* s, int sta
  * Dispatch
  ******************************************************************************/
 
-/** @brief Native-call dispatcher for the bytevector primitives (IDs
- *         680-699). */
-void* vm_bv_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
-    switch (id) {
-    case 680: return vm_bv_make(rs, nargs >= 1 ? (int)(intptr_t)args[0] : 0,
-                                     nargs >= 2 ? (int)(intptr_t)args[1] : 0);
-    case 681: { static int r; r = vm_bv_length((VmBytevector*)args[0]); return &r; }
-    case 682: { static int r; r = vm_bv_u8_ref((VmBytevector*)args[0], (int)(intptr_t)args[1]); return &r; }
-    case 683: vm_bv_u8_set((VmBytevector*)args[0], (int)(intptr_t)args[1], (int)(intptr_t)args[2]); return NULL;
-    case 684: return vm_bv_copy(rs, (VmBytevector*)args[0],
-                                nargs >= 2 ? (int)(intptr_t)args[1] : 0,
-                                nargs >= 3 ? (int)(intptr_t)args[2] : -1);
-    case 685: vm_bv_copy_to((VmBytevector*)args[0], (int)(intptr_t)args[1],
-                            (VmBytevector*)args[2],
-                            nargs >= 4 ? (int)(intptr_t)args[3] : 0,
-                            nargs >= 5 ? (int)(intptr_t)args[4] : -1);
-              return NULL;
-    case 686: return vm_bv_append(rs, (VmBytevector*)args[0],
-                                       nargs >= 2 ? (VmBytevector*)args[1] : NULL);
-    case 687: { static int r; r = vm_bv_is_bytevector(args[0]); return &r; }
-    case 689: return vm_bv_utf8_to_string(rs, (VmBytevector*)args[0],
-                                          nargs >= 2 ? (int)(intptr_t)args[1] : 0,
-                                          nargs >= 3 ? (int)(intptr_t)args[2] : -1);
-    case 690: return vm_bv_string_to_utf8(rs, (VmString*)args[0],
-                                          nargs >= 2 ? (int)(intptr_t)args[1] : 0,
-                                          nargs >= 3 ? (int)(intptr_t)args[2] : -1);
-    default:
-        fprintf(stderr, "ERROR: unknown bytevector native ID %d\n", id);
-        return NULL;
-    }
-}
-
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/

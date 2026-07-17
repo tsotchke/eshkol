@@ -89,38 +89,6 @@ typedef struct {
     float dim_weights[D];
 } QllmLossConfig;
 
-static void qllm_loss_config_default(QllmLossConfig* cfg) {
-    for (int i = 0; i < D; i++) cfg->dim_weights[i] = 1.0f;
-    cfg->dim_weights[0] = 2.0f;   /* PC */
-    cfg->dim_weights[1] = 2.0f;   /* TOS */
-    cfg->dim_weights[2] = 2.0f;   /* SOS */
-    cfg->dim_weights[6] = 2.0f;   /* OUTPUT */
-    cfg->dim_weights[7] = 5.0f;   /* HALT */
-    cfg->dim_weights[14] = 3.0f;  /* HAS_OUT */
-    cfg->dim_weights[28] = 3.0f;  /* IS_CALL */
-    cfg->dim_weights[29] = 3.0f;  /* IS_RET */
-    cfg->dim_weights[30] = 3.0f;  /* IS_NATIVE */
-}
-
-static float qllm_compute_loss(const float pred[D], const float target[D],
-                                 const QllmLossConfig* cfg) {
-    float loss = 0, wsum = 0;
-    for (int i = 0; i < D; i++) {
-        float d = pred[i] - target[i];
-        loss += cfg->dim_weights[i] * d * d;
-        wsum += cfg->dim_weights[i];
-    }
-    return loss / wsum;
-}
-
-static void qllm_compute_loss_grad(const float pred[D], const float target[D],
-                                     const QllmLossConfig* cfg, float grad[D]) {
-    float wsum = 0;
-    for (int i = 0; i < D; i++) wsum += cfg->dim_weights[i];
-    for (int i = 0; i < D; i++)
-        grad[i] = 2.0f * cfg->dim_weights[i] * (pred[i] - target[i]) / wsum;
-}
-
 /*******************************************************************************
  * Backward Through FFN Type 1 (SQUARE activation)
  * Forward: h = x @ W_up + b_up; a = h^2; fo = a @ W_down + b_down
@@ -254,41 +222,6 @@ typedef struct {
     int t;  /* timestep */
 } QllmAdamWConfig;
 
-static void qllm_adamw_config_default(QllmAdamWConfig* cfg) {
-    cfg->lr = 1e-4f;
-    cfg->beta1 = 0.9f;
-    cfg->beta2 = 0.999f;
-    cfg->epsilon = 1e-8f;
-    cfg->weight_decay = 0.01f;
-    cfg->grad_clip_norm = 1.0f;
-    cfg->t = 0;
-}
-
-/* Apply one AdamW update to a single parameter array */
-static void qllm_adamw_update(float* param, float* grad,
-                                float* m, float* v,
-                                int n, QllmAdamWConfig* cfg) {
-    float bc1 = 1.0f - powf(cfg->beta1, (float)cfg->t);
-    float bc2 = 1.0f - powf(cfg->beta2, (float)cfg->t);
-
-    for (int i = 0; i < n; i++) {
-        m[i] = cfg->beta1 * m[i] + (1.0f - cfg->beta1) * grad[i];
-        v[i] = cfg->beta2 * v[i] + (1.0f - cfg->beta2) * grad[i] * grad[i];
-        float m_hat = m[i] / bc1;
-        float v_hat = v[i] / bc2;
-        param[i] = param[i] * (1.0f - cfg->lr * cfg->weight_decay)
-                   - cfg->lr * m_hat / (sqrtf(v_hat) + cfg->epsilon);
-    }
-}
-
-/* Cosine LR schedule with warmup */
-static float qllm_lr_schedule(int step, int warmup, int total,
-                                float base_lr, float min_lr) {
-    if (step < warmup) return base_lr * (float)step / (float)warmup;
-    float progress = (float)(step - warmup) / (float)(total - warmup);
-    return min_lr + 0.5f * (base_lr - min_lr) * (1.0f + cosf(3.14159265f * progress));
-}
-
 /*******************************************************************************
  * Training Result
  ******************************************************************************/
@@ -418,87 +351,6 @@ static float qllm_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
  * Cached Forward Pass — saves all activations for backward
  ******************************************************************************/
 
-static void qllm_forward_cached(const QllmWeights* w, const float state[D],
-                                  const float pe[][D], int np,
-                                  float next[D], QllmForwardCache* cache) {
-    float x[D]; memcpy(x, state, sizeof(float) * D);
-    cache->np = np;
-
-    for (int L = 0; L < N_LAYERS - 1; L++) {
-        memcpy(cache->x_in[L], x, sizeof(float) * D);
-
-        /* Attention (layer 0 only) */
-        float ao[D]; memset(ao, 0, sizeof(ao));
-        if (L == 0 && np > 0) {
-            memset(cache->Q, 0, sizeof(cache->Q));
-            for (int i = 0; i < D; i++)
-                for (int j = 0; j < D; j++)
-                    cache->Q[i] += w->wq[L][i * D + j] * x[j];
-            for (int i = 0; i < D; i++) cache->Q[i] += w->bq[L][i];
-
-            float mx = -1e30f;
-            for (int p = 0; p < np && p < 256; p++) {
-                float K[D]; memset(K, 0, sizeof(K));
-                memset(cache->V_all[p], 0, sizeof(cache->V_all[p]));
-                memset(cache->K_all[p], 0, sizeof(cache->K_all[p]));
-                for (int i = 0; i < D; i++)
-                    for (int j = 0; j < D; j++) {
-                        cache->K_all[p][i] += w->wk[L][i * D + j] * pe[p][j];
-                        cache->V_all[p][i] += w->wv[L][i * D + j] * pe[p][j];
-                    }
-                cache->scores_raw[p] = (cache->Q[0] * cache->K_all[p][0] +
-                                         cache->Q[1] * cache->K_all[p][1]) / sqrtf((float)HD);
-                if (cache->scores_raw[p] > mx) mx = cache->scores_raw[p];
-            }
-            float sum = 0;
-            for (int p = 0; p < np; p++) {
-                cache->attn_weights[p] = expf(cache->scores_raw[p] - mx);
-                sum += cache->attn_weights[p];
-            }
-            for (int p = 0; p < np; p++) cache->attn_weights[p] /= sum;
-
-            memset(cache->hout, 0, sizeof(cache->hout));
-            for (int p = 0; p < np; p++)
-                for (int d = 0; d < HD; d++)
-                    cache->hout[d] += cache->attn_weights[p] * cache->V_all[p][d];
-
-            for (int i = 0; i < D; i++)
-                for (int j = 0; j < D; j++)
-                    ao[i] += w->wo[L][i * D + j] * cache->hout[j];
-        }
-        for (int i = 0; i < D; i++) x[i] += ao[i];
-
-        /* FFN */
-        float fo[D]; memset(fo, 0, sizeof(fo));
-        if (w->ff_type[L] == 1) {
-            /* Type 1: SQUARE */
-            qllm_matvec(x, w->ff_up[L], cache->ffn_pre_act[L], D, FFN_DIM);
-            for (int i = 0; i < FFN_DIM; i++)
-                cache->ffn_pre_act[L][i] += w->ff_up_b[L][i];
-            /* h^2 */
-            for (int i = 0; i < FFN_DIM; i++)
-                cache->ffn_h[L][i] = cache->ffn_pre_act[L][i] * cache->ffn_pre_act[L][i];
-            qllm_matvec(cache->ffn_h[L], w->ff_down[L], fo, FFN_DIM, D);
-            for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
-        } else if (w->ff_type[L] == 2) {
-            /* Type 2: Gated */
-            qllm_matvec(x, w->ff_gate[L], cache->ffn_gate_pre[L], D, FFN_DIM);
-            for (int i = 0; i < FFN_DIM; i++)
-                cache->ffn_gate_post[L][i] = qllm_sigmoidf(cache->ffn_gate_pre[L][i] + w->ff_gate_b[L][i]);
-            qllm_matvec(x, w->ff_up[L], cache->ffn_up_post[L], D, FFN_DIM);
-            for (int i = 0; i < FFN_DIM; i++)
-                cache->ffn_up_post[L][i] += w->ff_up_b[L][i];
-            for (int i = 0; i < FFN_DIM; i++)
-                cache->ffn_h[L][i] = cache->ffn_gate_post[L][i] * cache->ffn_up_post[L][i];
-            qllm_matvec(cache->ffn_h[L], w->ff_down[L], fo, FFN_DIM, D);
-            for (int i = 0; i < D; i++) fo[i] += w->ff_down_b[L][i];
-        }
-        memcpy(cache->ffn_out[L], fo, sizeof(float) * D);
-        for (int i = 0; i < D; i++) x[i] += fo[i];
-    }
-    memcpy(next, x, sizeof(float) * D);
-}
-
 static void qllm_backward(
     const QllmWeights* w,
     const QllmForwardCache* cache,
@@ -561,28 +413,9 @@ static void qllm_backward(
  * Gradient Clipping
  ******************************************************************************/
 
-static void qllm_clip_gradients(QllmWeightGradients* grads, float max_norm) {
-    /* Compute global gradient L2 norm */
-    float norm_sq = 0;
-    float* g = (float*)grads;
-    int n = sizeof(QllmWeightGradients) / sizeof(float);
-    for (int i = 0; i < n; i++)
-        norm_sq += g[i] * g[i];
-    float norm = sqrtf(norm_sq);
-    if (norm > max_norm) {
-        float scale = max_norm / norm;
-        for (int i = 0; i < n; i++)
-            g[i] *= scale;
-    }
-}
-
 /*******************************************************************************
  * Zero Gradients
  ******************************************************************************/
-
-static void qllm_zero_gradients(QllmWeightGradients* grads) {
-    memset(grads, 0, sizeof(QllmWeightGradients));
-}
 
 /*******************************************************************************
  * Checkpoint I/O — QLMW v4 format
@@ -603,57 +436,4 @@ typedef struct {
     uint32_t optimizer_step;
     uint32_t flags;
 } QlmwHeaderV4;
-
-static int qllm_save_checkpoint(const char* path,
-                                  const void* weights, size_t weights_size,
-                                  const QllmAdamWConfig* opt_cfg) {
-    FILE* f = fopen(path, "wb");
-    if (!f) return -1;
-
-    QlmwHeaderV4 hdr = {0};
-    hdr.magic = QLMW_MAGIC;
-    hdr.version = QLMW_VERSION_CHECKPOINT;
-    hdr.d_model = D;
-    hdr.n_layers = N_LAYERS;
-    hdr.ffn_dim = FFN_DIM;
-    hdr.n_heads = H;
-    hdr.head_dim = HD;
-    hdr.optimizer_step = opt_cfg ? opt_cfg->t : 0;
-    hdr.flags = opt_cfg ? 1 : 0;
-
-    fwrite(&hdr, sizeof(hdr), 1, f);
-    fwrite(weights, weights_size, 1, f);
-
-    if (opt_cfg) {
-        fwrite(opt_cfg, sizeof(QllmAdamWConfig), 1, f);
-    }
-
-    fclose(f);
-    return 0;
-}
-
-static int qllm_load_checkpoint(const char* path,
-                                  void* weights, size_t weights_size,
-                                  QllmAdamWConfig* opt_cfg) {
-    FILE* f = fopen(path, "rb");
-    if (!f) return -1;
-
-    QlmwHeaderV4 hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1 || hdr.magic != QLMW_MAGIC) {
-        fclose(f); return -1;
-    }
-
-    if (fread(weights, weights_size, 1, f) != 1) {
-        fclose(f); return -1;
-    }
-
-    if (opt_cfg && hdr.flags & 1) {
-        if (fread(opt_cfg, sizeof(QllmAdamWConfig), 1, f) != 1) {
-            fclose(f); return -1;
-        }
-    }
-
-    fclose(f);
-    return 0;
-}
 

@@ -112,17 +112,6 @@ static inline void dnc_alloc_weights(const double *usage, int N, double beta, do
     dnc_softmax(w, N, w);
 }
 
-/* Loss-only forward for finite-diff parity (mirror loss_only). target length W. */
-static inline double dnc_loss_only(const double *mem, int N, int W,
-                                   const double *key, const double *target, double beta,
-                                   double *w_scratch, double *rd_scratch) {
-    dnc_content_weights(mem, N, W, key, beta, w_scratch);
-    dnc_read_mem(mem, N, W, w_scratch, rd_scratch);
-    double L = 0.0;
-    for (int j = 0; j < W; j++) { double e = rd_scratch[j]-target[j]; L += 0.5*e*e; }
-    return L;
-}
-
 /* Backprop through L = 0.5 * sum_j (read_j - target_j)^2, read = sum_i w_i M_i,
  * w = softmax(beta * cosine(key, M_i)). Fills grad_key[W] = dL/dkey and the full
  * grad_mem[N*W] = dL/dM (row-major). Returns L. Mirror loss_and_grads, extended
