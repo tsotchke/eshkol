@@ -1,0 +1,18 @@
+(require tensorcore)
+
+(define adapter-available? (tc-adapter-available?))
+
+(display (tc-adapter-status))
+(newline)
+(if adapter-available?
+    (let ((ctx (tc-init)))
+      (display (= (tc-runtime-capabilities-status
+                    ctx (tc-runtime-capabilities-abi-version))
+                  0))
+      (newline)
+      (tc-shutdown ctx))
+    (begin
+      (display #t)
+      (newline)))
+(display adapter-available?)
+(newline)

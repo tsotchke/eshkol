@@ -1,0 +1,166 @@
+;;
+;; Canonical Eshkol language surface for TensorCore's installed public ABI.
+;;
+;; The C++ adapter is owned by Eshkol and deliberately has a distinct
+;; eshkol_tc_* namespace. TensorCore's historical tc_eshkol_* shim remains a
+;; compatibility path during the migration window, not compiler authority.
+;;
+(provide tc-adapter-available? tc-adapter-status
+         tc-runtime-capabilities-abi-version
+         tc-runtime-capabilities-status tc-runtime-capabilities
+         tc-last-status
+         tc-init tc-shutdown tc-device-info tc-device-name
+         tc-buffer-alloc tc-buffer-free tc-buffer-map tc-buffer-size
+         tc-gemm tc-gemm-fp16 tc-gemm-fp32 tc-gemm-bf16
+         tc-attention-forward
+         tc-last-backend tc-last-backend-name
+         tc-version tc-status-string)
+
+(extern i32 __tc-adapter-available :real eshkol_tc_adapter_available)
+(extern i32 __tc-adapter-status :real eshkol_tc_adapter_status)
+(extern i32 __tc-last-status :real eshkol_tc_last_status)
+
+(extern i32 __tc-runtime-capabilities-abi-version
+        :real eshkol_tc_runtime_capabilities_abi_version)
+(extern i32 __tc-runtime-capabilities-status ptr i32
+        :real eshkol_tc_runtime_capabilities_status)
+(extern i64 __tc-known-capability-mask ptr
+        :real eshkol_tc_known_capability_mask)
+(extern i64 __tc-available-capability-mask ptr
+        :real eshkol_tc_available_capability_mask)
+(extern i64 __tc-compiled-backend-mask ptr
+        :real eshkol_tc_compiled_backend_mask)
+(extern i64 __tc-available-backend-mask ptr
+        :real eshkol_tc_available_backend_mask)
+
+(extern ptr __tc-init :real eshkol_tc_init)
+(extern i32 __tc-shutdown ptr :real eshkol_tc_shutdown)
+
+(extern ptr __tc-device-name ptr :real eshkol_tc_device_name)
+(extern i32 __tc-device-family ptr :real eshkol_tc_device_family)
+(extern i32 __tc-device-unified-memory ptr :real eshkol_tc_device_unified_memory)
+(extern i32 __tc-device-supports-bf16 ptr :real eshkol_tc_device_supports_bf16)
+(extern i32 __tc-device-supports-i8 ptr :real eshkol_tc_device_supports_i8)
+(extern i32 __tc-device-supports-tensorops-m5 ptr :real eshkol_tc_device_supports_tensorops_m5)
+
+(extern ptr __tc-buffer-alloc ptr i64 :real eshkol_tc_buffer_alloc)
+(extern i32 __tc-buffer-free ptr ptr :real eshkol_tc_buffer_free)
+(extern ptr __tc-buffer-map ptr :real eshkol_tc_buffer_map)
+(extern i64 __tc-buffer-size ptr :real eshkol_tc_buffer_size)
+
+;; These accessors are compiled from TensorCore's installed public dtype.h.
+;; No TensorCore enum ordinal is copied into this module.
+(extern i32 __tc-dtype-f16 :real eshkol_tc_dtype_f16)
+(extern i32 __tc-dtype-bf16 :real eshkol_tc_dtype_bf16)
+(extern i32 __tc-dtype-f32 :real eshkol_tc_dtype_f32)
+(extern i32 __tc-dtype-i8 :real eshkol_tc_dtype_i8)
+
+(extern i32 __tc-gemm ptr i32 ptr ptr ptr i32 i32 i32 double double i32 i32
+        :real eshkol_tc_gemm)
+(extern i32 __tc-attention-forward ptr ptr ptr ptr ptr
+        i32 i32 i32 i32 i32 double i32
+        :real eshkol_tc_attention_forward)
+
+(extern i32 __tc-last-backend-code :real eshkol_tc_last_backend_code)
+(extern ptr __tc-last-backend-name :real eshkol_tc_last_backend_name)
+(extern ptr __tc-version :real eshkol_tc_version)
+(extern ptr __tc-status-string i32 :real eshkol_tc_status_string)
+
+(define (tc-adapter-available?)
+  (= (__tc-adapter-available) 1))
+
+(define (tc-adapter-status)
+  (__tc-adapter-status))
+
+(define (tc-runtime-capabilities-abi-version)
+  (__tc-runtime-capabilities-abi-version))
+
+(define (tc-runtime-capabilities-status ctx requested-abi-version)
+  (__tc-runtime-capabilities-status ctx requested-abi-version))
+
+(define (tc-runtime-capabilities ctx)
+  "Return TensorCore's authoritative v1 masks. Eshkol does not redefine the
+   feature or backend bits; unsupported versions and unknown bits fail closed."
+  (let ((abi (tc-runtime-capabilities-abi-version)))
+    (if (= (tc-runtime-capabilities-status ctx abi) 0)
+        (list (cons 'abi-version abi)
+              (cons 'known-capabilities (__tc-known-capability-mask ctx))
+              (cons 'available-capabilities (__tc-available-capability-mask ctx))
+              (cons 'compiled-backends (__tc-compiled-backend-mask ctx))
+              (cons 'available-backends (__tc-available-backend-mask ctx)))
+        '())))
+
+(define (tc-last-status)
+  (__tc-last-status))
+
+(define (tc-init)
+  "Initialize TensorCore. Returns an opaque context or null; tc-last-status
+   distinguishes unavailable, ABI mismatch, and TensorCore runtime failures."
+  (__tc-init))
+
+(define (tc-shutdown ctx)
+  (__tc-shutdown ctx))
+
+(define (tc-device-name ctx)
+  (__tc-device-name ctx))
+
+(define (tc-device-info ctx)
+  "Return public device capability values without granting backend authority."
+  (list (cons 'family (__tc-device-family ctx))
+        (cons 'name (tc-device-name ctx))
+        (cons 'unified-memory? (= (__tc-device-unified-memory ctx) 1))
+        (cons 'bf16? (= (__tc-device-supports-bf16 ctx) 1))
+        (cons 'i8? (= (__tc-device-supports-i8 ctx) 1))
+        (cons 'tensorops-m5? (= (__tc-device-supports-tensorops-m5 ctx) 1))))
+
+(define (tc-buffer-alloc ctx bytes)
+  (__tc-buffer-alloc ctx bytes))
+
+(define (tc-buffer-free ctx buffer)
+  (__tc-buffer-free ctx buffer))
+
+(define (tc-buffer-map buffer)
+  (__tc-buffer-map buffer))
+
+(define (tc-buffer-size buffer)
+  (__tc-buffer-size buffer))
+
+(define (tc-dtype-code dtype)
+  (cond ((eq? dtype 'f16) (__tc-dtype-f16))
+        ((eq? dtype 'bf16) (__tc-dtype-bf16))
+        ((eq? dtype 'f32) (__tc-dtype-f32))
+        ((eq? dtype 'i8) (__tc-dtype-i8))
+        (else -1)))
+
+(define (tc-gemm ctx dtype a b c m n k alpha beta transpose-a transpose-b)
+  (__tc-gemm ctx (tc-dtype-code dtype) a b c m n k alpha beta
+             (if transpose-a 1 0)
+             (if transpose-b 1 0)))
+
+(define (tc-gemm-fp16 ctx a b c m n k)
+  (tc-gemm ctx 'f16 a b c m n k 1.0 0.0 #f #f))
+
+(define (tc-gemm-fp32 ctx a b c m n k)
+  (tc-gemm ctx 'f32 a b c m n k 1.0 0.0 #f #f))
+
+(define (tc-gemm-bf16 ctx a b c m n k)
+  (tc-gemm ctx 'bf16 a b c m n k 1.0 0.0 #f #f))
+
+(define (tc-attention-forward ctx q k v output
+                              batch heads seq-q seq-kv head-dim
+                              softmax-scale causal?)
+  (__tc-attention-forward ctx q k v output
+                          batch heads seq-q seq-kv head-dim
+                          softmax-scale (if causal? 1 0)))
+
+(define (tc-last-backend)
+  (__tc-last-backend-code))
+
+(define (tc-last-backend-name)
+  (__tc-last-backend-name))
+
+(define (tc-version)
+  (__tc-version))
+
+(define (tc-status-string status)
+  (__tc-status-string status))

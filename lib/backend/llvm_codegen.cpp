@@ -28,6 +28,7 @@
 #include <eshkol/backend/hash_codegen.h>
 #include <eshkol/backend/logic_workspace_codegen.h>
 #include <eshkol/backend/parallel_codegen.h>
+#include <eshkol/backend/tensorcore_codegen.h>
 #include <eshkol/types/type_checker.h>
 #include <eshkol/frontend/macro_expander.h>
 #include <eshkol/build_config.h>
@@ -41,9 +42,6 @@
 #include <cstdlib>
 
 #ifdef ESHKOL_LLVM_BACKEND_ENABLED
-
-namespace eshkol { class CodegenContext; }
-extern "C" void eshkol_register_tensorcore_builtins(eshkol::CodegenContext*);
 
 namespace {
 
@@ -160,6 +158,10 @@ void append_host_agent_ffi_dependency_link_args(
 
 void append_host_llvm_link_args(std::vector<std::string>& link_args) {
     append_configured_link_args(ESHKOL_HOST_LLVM_LINK_ARGS, link_args);
+}
+
+void append_host_tensorcore_link_args(std::vector<std::string>& link_args) {
+    append_configured_link_args(ESHKOL_HOST_TENSORCORE_LINK_ARGS, link_args);
 }
 
 } // namespace
@@ -4022,14 +4024,12 @@ private:
         eshkol_lambda_registry_lookup_func = builtins_->getLambdaRegistryLookup();
         eshkol_debug("Created BuiltinDeclarations");
 
-        // tensorcore — opt-in via ESHKOL_ENABLE_TENSORCORE=1. Drops the 14
-        // tc_* C ABI symbols into the LLVM module as ExternalLinkage; link-time
-        // resolution requires the consumer binary to link against libtensorcore.a.
-        if (const char* tc_on = std::getenv("ESHKOL_ENABLE_TENSORCORE")) {
-            if (tc_on[0] == '1') {
-                eshkol_register_tensorcore_builtins(ctx_.get());
-                eshkol_debug("tensorcore: registered 14 external builtins");
-            }
+        // Every frontend shares the canonical Eshkol-owned adapter ABI. Builds
+        // without an installed TensorCore package resolve these declarations to
+        // explicit-unavailable runtime stubs; no ambient environment toggle can
+        // silently change compiler lowering.
+        if (eshkol_register_tensorcore_builtins(ctx_.get()) < 0) {
+            eshkol_error("tensorcore: canonical adapter registration failed");
         }
 
         // Initialize TensorCodegen - tensor operations (needed by ArithmeticCodegen)
@@ -38467,6 +38467,7 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
         if (uses_legacy_compiler_archive) {
             append_host_llvm_link_args(link_args);
         }
+        append_host_tensorcore_link_args(link_args);
 
         // Add linked libraries
         if (linked_libs && num_linked_libs > 0) {
