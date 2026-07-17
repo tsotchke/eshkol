@@ -49,6 +49,88 @@ def matrix_name(asset: str) -> str:
     raise AssertionError("unreachable")
 
 
+def read_varuint(data: bytes, i: int) -> tuple[int, int]:
+    result = shift = 0
+    while True:
+        byte = data[i]
+        i += 1
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not byte & 0x80:
+            return result, i
+
+
+def wasm_export_param_counts(wasm: bytes) -> dict[str, int]:
+    """Map exported function names to their parameter counts."""
+    i = 8
+    func_types: list[int] = []
+    type_params: list[int] = []
+    imported_funcs = 0
+    exports: dict[str, int] = {}
+    while i < len(wasm):
+        section_id = wasm[i]
+        i += 1
+        size, i = read_varuint(wasm, i)
+        end = i + size
+        j = i
+        if section_id == 1:  # type section
+            count, j = read_varuint(wasm, j)
+            for _ in range(count):
+                if wasm[j] != 0x60:
+                    fail("unexpected wasm type-section entry")
+                j += 1
+                nparams, j = read_varuint(wasm, j)
+                j += nparams
+                nresults, j = read_varuint(wasm, j)
+                j += nresults
+                type_params.append(nparams)
+        elif section_id == 2:  # import section
+            count, j = read_varuint(wasm, j)
+            for _ in range(count):
+                mlen, j = read_varuint(wasm, j)
+                j += mlen
+                nlen, j = read_varuint(wasm, j)
+                j += nlen
+                kind = wasm[j]
+                j += 1
+                if kind == 0:
+                    _, j = read_varuint(wasm, j)
+                    imported_funcs += 1
+                elif kind == 1:
+                    j += 1
+                    flags, j = read_varuint(wasm, j)
+                    _, j = read_varuint(wasm, j)
+                    if flags & 1:
+                        _, j = read_varuint(wasm, j)
+                elif kind == 2:
+                    flags, j = read_varuint(wasm, j)
+                    _, j = read_varuint(wasm, j)
+                    if flags & 1:
+                        _, j = read_varuint(wasm, j)
+                elif kind == 3:
+                    j += 2
+        elif section_id == 3:  # function section
+            count, j = read_varuint(wasm, j)
+            for _ in range(count):
+                type_idx, j = read_varuint(wasm, j)
+                func_types.append(type_idx)
+        elif section_id == 7:  # export section
+            count, j = read_varuint(wasm, j)
+            for _ in range(count):
+                nlen, j = read_varuint(wasm, j)
+                name = wasm[j : j + nlen].decode()
+                j += nlen
+                kind = wasm[j]
+                j += 1
+                idx, j = read_varuint(wasm, j)
+                if kind == 0:
+                    local_idx = idx - imported_funcs
+                    if 0 <= local_idx < len(func_types):
+                        exports[name] = type_params[func_types[local_idx]]
+        i = end
+    return exports
+
+
 def main() -> int:
     workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
     site_source = (ROOT / "site/src/main.esk").read_text(encoding="utf-8")
@@ -117,6 +199,43 @@ def main() -> int:
         "15 platform packages plus SHA256SUMS.txt",
         "generated announcement HTML",
     )
+
+    # The exported scheme_main must take no parameters. The underlying Scheme
+    # main returns a tagged value that the wasm ABI demotes to an sret
+    # out-pointer; exporting that demoted signature let JS glue calling
+    # scheme_main(0) write the return value through address 0 and corrupt the
+    # first data globals (the SPA router broke on the second navigation).
+    exports = wasm_export_param_counts(site_wasm)
+    if "scheme_main" not in exports:
+        fail("committed site WASM does not export scheme_main")
+    if exports["scheme_main"] != 0:
+        fail(
+            "exported scheme_main takes "
+            f"{exports['scheme_main']} parameter(s); it must be a zero-argument "
+            "shim so JS re-entry cannot alias linear memory"
+        )
+
+    # The playground statistics must match the committed artifacts so the
+    # public numbers cannot silently go stale.
+    stat_claims = {
+        slot: int(value)
+        for value, slot in re.findall(
+            r'\(create-text "div" "(\d+)KB" (s\d)\)', site_source
+        )
+    }
+    for label, slot, artifact in (
+        ("Site WASM", "s1", "site/static/eshkol-site.wasm"),
+        ("VM WASM", "s2", "site/static/eshkol-vm.wasm"),
+    ):
+        actual_kb = round((ROOT / artifact).stat().st_size / 1000)
+        claimed = stat_claims.get(slot)
+        if claimed is None:
+            fail(f"could not find the {label} statistic in site/src/main.esk")
+        if abs(claimed - actual_kb) > 1:
+            fail(
+                f"{label} statistic says {claimed}KB but {artifact} is "
+                f"{actual_kb}KB; update the playground stats"
+            )
 
     for needle in (
         VERSION.encode(),
