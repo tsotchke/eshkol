@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ozaki-II exact DGEMM correctness (Metal).** The opt-in CRT matmul
+  (`ESHKOL_SF64_KERNEL=ozaki`) silently produced 5-30% numerical errors on any
+  non-integer input, and returned NaN/garbage when asked for more than 16
+  moduli. Three defects, all in `lib/backend/gpu/gpu_memory.mm`: (A) the
+  modulus product `P` was formed in `__int128`, which overflows for N>=17 —
+  poisoning every CRT constant while the count cap allowed up to 49; N is now
+  hard-capped at 16 (the exact-f64 limit for K~=4096) and any larger request is
+  clamped loudly; (B) adaptive-N minimised the moduli count subject only to a
+  non-negative scaling exponent, driving the exponent toward 0 and truncating
+  fractional inputs to near-integers — it now targets full f64 precision
+  (E=52), and fixed N=16 is the shipped default; (C) the exponent used to scale
+  inputs dropped the `frac_A/frac_B` terms the CRT uniqueness bound requires,
+  so the scale overshot the bound on fractional data — it now matches the
+  validated bound. Adds `tests/gpu/ozaki_correctness_gate.sh` /
+  `ozaki_correctness_test.esk` (Ozaki vs an independent CPU f64 reference across
+  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, plus a
+  moduli-sweep) and the `ozaki-ii-correctness` ICC oracle.
+
 ## [1.3.3-evolve] - 2026-07-16
 
 An evolve release over v1.3.2-evolve that completes the Moonlab quantum

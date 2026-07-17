@@ -1984,3 +1984,30 @@ oracles:
         severity: medium
         label: GPU-accelerated tensor ops (matmul, elementwise, transpose, reduce) match the CPU reference within tolerance on a real GPU device
         action: ./tests/gpu/gpu_correctness_gate.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # Ozaki-II exact-DGEMM correctness. The opt-in Ozaki-II CRT matmul
+  # (ESHKOL_SF64_KERNEL=ozaki) shipped with NO correctness coverage, and
+  # the general gpu-execution gate above uses integer/identity data and a
+  # GPU-vs-GPU diff — blind to three CRT defects (fixed 2026-07-17):
+  #   A) modulus product P overflowed __int128 for N>16 -> NaN/garbage,
+  #   B) adaptive-N minimised precision -> truncated fractional inputs,
+  #   C) the input-scaling exponent E dropped the frac_A/frac_B terms the
+  #      CRT uniqueness bound requires.
+  # tests/gpu/ozaki_correctness_gate.sh drives the real Metal Ozaki kernel
+  # against an independent in-process CPU f64 reference across integer /
+  # fractional / pi-e / wide-magnitude regimes at K up to 4096, and asserts
+  # the default (fixed N=16) and adaptive paths are bit-exact and that an
+  # out-of-range moduli request fails loudly instead of returning garbage.
+  # Metal-only + real-GPU-only, so it SKIPS (no trace) on GPU-less hosts.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ozaki-ii-correctness
+    aliases: [ozaki-correctness, ozaki-ii, p-ozaki-correctness]
+    requires:
+      - runtime_event:
+          event_kinds: [ozaki_correctness]
+          event_names: ["ozaki_correctness_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Ozaki-II CRT exact DGEMM (shipped fixed N=16) is bit-exact vs an independent CPU f64 reference across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with out-of-range moduli clamped loudly and opt-in adaptive free of gross CRT error
+        action: ./tests/gpu/ozaki_correctness_gate.sh
