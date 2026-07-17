@@ -2732,44 +2732,6 @@ static eshkol_ast_t parse_quasiquoted_list_internal(SchemeTokenizer& tokenizer) 
     return ast;
 }
 
-// Forward declaration for scope tracking
-class ScopeTracker {
-private:
-    std::vector<std::set<std::string>> scope_stack;
-    
-public:
-    ScopeTracker() {
-        // Push global scope
-        scope_stack.push_back(std::set<std::string>());
-    }
-    
-    void pushScope() {
-        scope_stack.push_back(std::set<std::string>());
-    }
-    
-    void popScope() {
-        if (scope_stack.size() > 1) {  // Keep global scope
-            scope_stack.pop_back();
-        }
-    }
-    
-    void addVariable(const std::string& var) {
-        if (!scope_stack.empty()) {
-            scope_stack.back().insert(var);
-        }
-    }
-    
-    bool isInCurrentScope(const std::string& var) const {
-        if (scope_stack.empty()) return false;
-        return scope_stack.back().count(var) > 0;
-    }
-    
-};
-
-// Global scope tracker (will be reset for each file)
-static ScopeTracker g_scope_tracker;
-
-
 // ===== CLOSURE CAPTURE ANALYSIS =====
 // Static AST analysis for closure capture detection
 

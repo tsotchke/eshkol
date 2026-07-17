@@ -106,8 +106,6 @@ namespace color {
     inline const char* bright_magenta() { return supports_color() ? "\033[95m" : ""; }
     /** @brief Returns the ANSI escape code for bright cyan text, or "" if color output is disabled/unsupported. */
     inline const char* bright_cyan()    { return supports_color() ? "\033[96m" : ""; }
-    /** @brief Returns the ANSI escape code for bright white text, or "" if color output is disabled/unsupported. */
-    inline const char* bright_white()   { return supports_color() ? "\033[97m" : ""; }
 
     // Styles
     /** @brief Returns the ANSI escape code for bold text, or "" if color output is disabled/unsupported. */
@@ -130,8 +128,6 @@ namespace color {
     inline const char* keyword()   { return bright_magenta(); }   // Keywords (define, lambda, etc.)
     /** @brief Semantic color for function names in REPL output (bright blue). */
     inline const char* function()  { return bright_blue(); }      // Function names
-    /** @brief Semantic color for arithmetic operators such as +, -, *, / in REPL output (yellow). */
-    inline const char* operator_() { return yellow(); }           // Operators (+, -, *, /)
     /** @brief Semantic color for comments in REPL output (bright black). */
     inline const char* comment()   { return bright_black(); }     // Comments
     /** @brief Semantic color for error messages in REPL output (bright red). */
@@ -339,30 +335,6 @@ inline std::string get_history_file_path() {
 // ============================================================================
 // Pretty Printing Utilities
 // ============================================================================
-
-// Format a number with appropriate precision
-/**
- * @brief Formats a double for REPL display, printing it without a decimal point when it represents an exact integer.
- *
- * Values that equal their int64_t truncation and fall within
- * [-1e15, 1e15] are printed as plain integers; all other values are
- * formatted with `%.15g` precision.
- *
- * @param value The number to format.
- * @return The formatted string representation of @p value.
- */
-inline std::string format_number(double value) {
-    // Check if it's effectively an integer
-    if (value == static_cast<int64_t>(value) &&
-        value >= -1e15 && value <= 1e15) {
-        return std::to_string(static_cast<int64_t>(value));
-    }
-
-    // Format with appropriate precision
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%.15g", value);
-    return buf;
-}
 
 // Truncate long strings with ellipsis
 /**
@@ -952,17 +924,6 @@ inline void print_error(const std::string& message, const std::string& detail = 
         std::cerr << "\n" << dim() << "  " << detail << reset();
     }
     std::cerr << "\n";
-}
-
-/**
- * @brief Prints a formatted warning message to stderr.
- *
- * @param message The warning text.
- */
-inline void print_warning(const std::string& message) {
-    using namespace color;
-    std::cerr << bold() << yellow() << "Warning: " << reset();
-    std::cerr << message << "\n";
 }
 
 /**
