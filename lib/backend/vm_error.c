@@ -115,29 +115,6 @@ const char* vm_error_type(const VmError* e) {
  * Dispatch
  ******************************************************************************/
 
-/** @brief Native-call dispatcher for the error-object primitives (IDs
- *         710-714): routes to vm_error_make()/vm_error_is_error()/
- *         vm_error_message()/vm_error_irritants()/vm_error_type(). */
-void* vm_error_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
-    switch (id) {
-    case 710: {
-        /* error(type, message, irritant1, irritant2, ...) */
-        const char* type = (nargs >= 1) ? (const char*)args[0] : NULL;
-        const char* msg  = (nargs >= 2) ? (const char*)args[1] : NULL;
-        int nirr = (nargs > 2) ? nargs - 2 : 0;
-        void** irritants = (nirr > 0) ? &args[2] : NULL;
-        return vm_error_make(rs, type, msg, irritants, nirr);
-    }
-    case 711: { static int r; r = vm_error_is_error(args[0]); return &r; }
-    case 712: return (void*)vm_error_message((VmError*)args[0]);
-    case 713: return vm_error_irritants((VmError*)args[0]);
-    case 714: return (void*)vm_error_type((VmError*)args[0]);
-    default:
-        fprintf(stderr, "ERROR: unknown error native ID %d\n", id);
-        return NULL;
-    }
-}
-
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/
