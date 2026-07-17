@@ -79,26 +79,6 @@ void** vm_mv_unpack(const VmMultiValue* mv, int* out_count) {
  * Dispatch
  ******************************************************************************/
 
-/** @brief Native-call dispatcher for the multi-value primitives (IDs
- *         650-654). */
-void* vm_mv_dispatch(VmRegionStack* rs, int id, void** args, int nargs) {
-    switch (id) {
-    case 650: return vm_mv_values(rs, args, nargs);
-    case 651: return vm_mv_ref((VmMultiValue*)args[0], (int)(intptr_t)args[1]);
-    case 652: { static int r; r = vm_mv_count((VmMultiValue*)args[0]); return &r; }
-    case 653: { static int r; r = vm_mv_is_multivalue(args[0]); return &r; }
-    case 654: {
-        int cnt;
-        void** unpacked = vm_mv_unpack((VmMultiValue*)args[0], &cnt);
-        (void)cnt;
-        return unpacked;
-    }
-    default:
-        fprintf(stderr, "ERROR: unknown multi-value native ID %d\n", id);
-        return NULL;
-    }
-}
-
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/

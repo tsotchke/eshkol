@@ -1184,20 +1184,6 @@ public:
         module_exports[module_name] = exports;
     }
 
-    // Check if a symbol is exported by a module
-    bool isExported(const std::string& module_name, const std::string& symbol) const {
-        auto it = module_exports.find(module_name);
-        if (it == module_exports.end()) {
-            // No exports registered = everything is visible (backward compatibility)
-            return true;
-        }
-        if (it->second.empty()) {
-            // Empty export list = nothing explicitly provided = all visible
-            return true;
-        }
-        return it->second.count(symbol) > 0;
-    }
-
     std::set<std::string> exportsFor(const std::string& module_name) const {
         auto it = module_exports.find(module_name);
         if (it == module_exports.end()) {
@@ -1707,21 +1693,6 @@ public:
         return true;  // Escape analysis is informational, doesn't fail
     }
 
-    // Get escape info for a variable
-    const EscapeNode* getEscapeInfo(const std::string& name) const {
-        auto it = escape_graph_.find(name);
-        return (it != escape_graph_.end()) ? &it->second : nullptr;
-    }
-
-    // Get allocation strategy for a variable
-    AllocationStrategy getAllocationStrategy(const std::string& name) const {
-        auto it = escape_graph_.find(name);
-        if (it != escape_graph_.end()) {
-            return it->second.strategy;
-        }
-        return AllocationStrategy::STACK;  // Default to stack
-    }
-
     // Print escape analysis results (for debugging)
     void printAnalysis() const {
         eshkol_debug("=== Escape Analysis Results ===");
@@ -1827,9 +1798,6 @@ private:
 
     // Generate unique name for anonymous values
     int anon_counter_ = 0;
-    std::string genAnonName() {
-        return "$anon" + std::to_string(anon_counter_++);
-    }
 
     void analyzeAST(const eshkol_ast_t* ast) {
         if (!ast) return;

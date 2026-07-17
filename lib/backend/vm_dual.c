@@ -34,16 +34,6 @@ VmDual* vm_dual_make(VmRegionStack* rs, double primal, double tangent) {
     return vm_dual_new(rs, primal, tangent);
 }
 
-/** @brief Native call 371: extract @p d's primal (value) component. */
-double vm_dual_primal(const VmDual* d) {
-    return d->primal;
-}
-
-/** @brief Native call 372: extract @p d's tangent (derivative) component. */
-double vm_dual_tangent(const VmDual* d) {
-    return d->tangent;
-}
-
 /** @brief Native call 373: dual addition, (a+a'e)+(b+b'e) = (a+b)+(a'+b')e. */
 VmDual* vm_dual_add(VmRegionStack* rs, const VmDual* a, const VmDual* b) {
     return vm_dual_new(rs, a->primal + b->primal, a->tangent + b->tangent);
