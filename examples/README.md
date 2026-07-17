@@ -1,6 +1,6 @@
 # Eshkol Examples
 
-Thirteen runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
+Fourteen runnable programs spanning the language's load-bearing capabilities — automatic differentiation, parallel work-stealing, symbolic computation, the consciousness engine, real-time streaming, and physical simulation. Every example in this directory compiles cleanly, runs in well under a minute, and produces output you can actually inspect.
 
 ```bash
 # Compile and run any example in one command:
@@ -36,6 +36,7 @@ The compiler differentiates through arbitrary Eshkol code — no framework, no g
 | **[symbolic_diff.esk](symbolic_diff.esk)** | Three modes of AD (`diff` / `derivative` / `gradient`) agree to machine precision on `sin(x²) + 3x`. The symbolic mode prints its rewritten AST | 87 |
 | **[differentiable_physics.esk](differentiable_physics.esk)** | Optimise a projectile launch angle by differentiating *through* a recursive Euler integrator with linear drag. Converges to the high-arc 68° solution in 200 steps with final error 1.3e-8 | 95 |
 | **[neural_xor.esk](neural_xor.esk)** | Two-layer MLP (2 → 4 hidden tanh → 1 sigmoid) learns XOR by full-batch gradient descent in 1,500 epochs. Loss 1.10 → <0.001 | 123 |
+| **[h2_vibrational.esk](h2_vibrational.esk)** | Molecular vibrational frequency from *arbitrary-order* AD: build an STO-3G H₂ potential-energy surface in pure Eshkol, take the force constant k = d²E/dR² with `derivative-n`, and recover ω = 5003 cm⁻¹ — matching the reference value | 121 |
 
 ## Parallelism and performance
 
