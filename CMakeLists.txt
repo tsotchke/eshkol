@@ -2316,6 +2316,18 @@ if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
 endif()
 
+if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
+    add_executable(eshkol-blas-provider-test
+        tests/backend/blas_provider_test.cpp)
+    target_include_directories(eshkol-blas-provider-test PRIVATE
+        ${CMAKE_SOURCE_DIR}/inc)
+    target_link_libraries(eshkol-blas-provider-test PRIVATE eshkol-runtime)
+    if(BUILD_TESTING)
+        add_test(NAME blas-provider COMMAND eshkol-blas-provider-test)
+        set_tests_properties(blas-provider PROPERTIES TIMEOUT 30)
+    endif()
+endif()
+
 # Link MLIR and StableHLO libraries if available (for full XLA backend)
 if(ESHKOL_XLA_ENABLED AND MLIR_AVAILABLE AND MLIR_LIBRARIES)
     target_link_libraries(eshkol-static PUBLIC ${MLIR_LIBRARIES})
