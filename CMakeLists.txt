@@ -3750,10 +3750,15 @@ if(ESHKOL_BUILD_AGENT_FFI)
             message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
         endif()
 
+        if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
+            set(_sqlite_extract DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        else()
+            set(_sqlite_extract)
+        endif()
         FetchContent_Declare(eshkol_sqlite_amalgamation
             URL https://www.sqlite.org/2026/sqlite-amalgamation-3530300.zip
             URL_HASH SHA3_256=d45c688a8cb23f68611a894a756a12d7eb6ab6e9e2468ca70adbeab3808b5ab9
-            DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+            ${_sqlite_extract}
         )
         FetchContent_MakeAvailable(eshkol_sqlite_amalgamation)
         add_library(eshkol-agent-sqlite3 STATIC
