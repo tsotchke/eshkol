@@ -81,10 +81,21 @@
 
         // ─── Navigation helper ─────────────────────────────────────────
         // Calls scheme_main which re-reads pathname and renders the page.
+        // Scroll to the URL fragment if its anchor is in the DOM. Content
+        // rendered synchronously by scheme_main anchors immediately; content
+        // fetched asynchronously scrolls from its own load callback.
+        const scrollToFragment = () => {
+          const fragment = decodeURIComponent(window.location.hash.slice(1));
+          if (!fragment) return;
+          const anchor = document.getElementById(fragment);
+          if (anchor) anchor.scrollIntoView();
+        };
+
         const navigate = () => {
           if (instance.exports.scheme_main) {
             instance.exports.scheme_main(0);
           }
+          scrollToFragment();
           if (window.location.pathname === '/downloads' ||
               window.location.pathname === '/download') {
             setTimeout(loadReleases, 100);
@@ -95,6 +106,7 @@
         if (instance.exports.main) {
           instance.exports.main(0, 0);
         }
+        scrollToFragment();
 
         // Back / forward
         window.addEventListener('popstate', navigate);
@@ -166,6 +178,11 @@
               }).then(md => {
                 area.innerHTML = runtime.renderMarkdown(md);
                 area.scrollTop = 0;
+                const fragment = decodeURIComponent(window.location.hash.slice(1));
+                if (fragment) {
+                  const anchor = document.getElementById(fragment);
+                  if (anchor) anchor.scrollIntoView();
+                }
               }).catch(err => {
                 area.innerHTML = '<p style="color:#ff4444">Failed to load: ' + err.message + '</p>';
               });
