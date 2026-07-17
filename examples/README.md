@@ -47,6 +47,18 @@ Work-stealing thread pool, Chase-Lev deques, per-worker arenas, no GC pauses.
 | **[monte_carlo_pi.esk](monte_carlo_pi.esk)** | Estimate π by parallel Monte Carlo: 1.6M samples across 8 independent PRNG streams in ~45 ms (≈35M samples/sec on M2 Ultra) | 63 |
 | **[streaming_stats.esk](streaming_stats.esk)** | Welford's online algorithm for running mean, variance, min, max. 200,000 samples processed without ever storing the stream | 90 |
 
+
+## Quantum chemistry
+
+Eshkol's automatic differentiation driving [Moonlab](https://github.com/tsotchke/moonlab)'s VQE — built only when `-DESHKOL_QUANTUM_ENABLED=ON`.
+
+| Example | What it shows | LOC |
+|---------|--------------|----:|
+| **[vqe_h2.esk](vqe_h2.esk)** | Gradient-descend *through* `vqe-energy` to the H₂ ground state, −1.14217 Ha; the gradient is Eshkol's, flowing through the Moonlab energy call | 60 |
+| **[h2_vibrational_quantum.esk](h2_vibrational_quantum.esk)** | Vibrational frequency from Moonlab's exact ground energy, finite-differenced over bond length: ω ≈ 4936 cm⁻¹ | 70 |
+| **[h2_vibrational_full.esk](h2_vibrational_full.esk)** | The deep weld: Eshkol Taylor-towers the Pauli coefficients while Moonlab supplies ⟨Pᵢ⟩, the parameter Hessian, and the response gradient via auxiliary Hamiltonians — the Born-Oppenheimer response formula gives ω = 5003 cm⁻¹, matching the pure-AD answer exactly | 175 |
+| **[qng_vqe.esk](qng_vqe.esk)** | Quantum Natural Gradient in Scheme: θ ← θ − lr·(g+εI)⁻¹∇E with the Fubini-Study metric g = `vqe-qgt`; reaches the ground state in ~⅓ the steps of vanilla GD | 96 |
+
 ## Cognitive computing
 
 The consciousness engine: logic programming, active inference, global workspace.
