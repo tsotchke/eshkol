@@ -242,7 +242,18 @@ struct OzakiCRTConstants {
 };
 
 static OzakiCRTConstants g_ozaki_crt;
-static int g_ozaki_num_moduli = 16;
+
+// Maximum usable moduli count. precompute_ozaki_constants() forms the modulus
+// product P in a signed __int128 (~127 usable bits). log2(product of the first
+// 16 moduli) = 125.4 < 127, so N=16 is the largest count whose P (and the derived
+// s_l = (P/p_l)*q_l < P) fit exactly; N>=17 overflows __int128, wrapping P to a
+// bogus/negative value and silently poisoning every CRT constant (P1/P2/Pinv/s_l).
+// 16 moduli already admit the full-precision scaling exponent E=52 (exact f64) for
+// K up to ~4096, so this cap costs no accuracy in the supported regime. Lifting it
+// past 16 requires a P representation wider than __int128 (or Garner mixed-radix
+// reconstruction that never forms the full product).
+static const int OZAKI_MAX_MODULI = 16;
+static int g_ozaki_num_moduli = OZAKI_MAX_MODULI;
 static id<MTLComputePipelineState> g_matmul_ozaki_gemm_pipeline = nil;
 
 // Cumulative log2 of moduli products: OZAKI_LOG2_CUMUL[n] = sum(log2(OZAKI_MODULI[0..n-1]))
@@ -319,7 +330,14 @@ static void precompute_ozaki_constants(int N, OzakiCRTConstants* crt) {
 // Get CRT constants for a given N, caching to avoid recomputation
 static const OzakiCRTConstants& get_ozaki_crt(int N) {
     if (N < 2) N = 2;
-    if (N > 49) N = 49;
+    // Hard cap: N>OZAKI_MAX_MODULI overflows the __int128 modulus product in
+    // precompute_ozaki_constants() and returns silent garbage. Clamp loudly rather
+    // than ever hand back poisoned constants.
+    if (N > OZAKI_MAX_MODULI) {
+        fprintf(stderr, "[GPU] Ozaki-II: requested N=%d exceeds max %d (would overflow "
+                        "__int128 P); clamping to %d\n", N, OZAKI_MAX_MODULI, OZAKI_MAX_MODULI);
+        N = OZAKI_MAX_MODULI;
+    }
     if (!g_ozaki_crt_cached[N]) {
         precompute_ozaki_constants(N, &g_ozaki_crt_cache[N]);
         g_ozaki_crt_cached[N] = true;
@@ -335,25 +353,18 @@ static void init_ozaki_log2_table() {
     }
 }
 
-// Adaptive N selection: compute minimum number of moduli for correct CRT reconstruction.
-//
-// CRT uniqueness condition: |C'_ij| < P/2 for all i,j, where C' = A' * B'.
-// After scaling with E(N), mu_i = E - floor(log2(r_i)), where r_i = max_h|A_ih|:
-//   |A'_ij| ≤ r_i * 2^(E - floor(log2(r_i))) = 2^(E + frac(log2(r_i)))
-// So max|A'_ij| = 2^(E + frac_A) where frac_A = max_i frac(log2(r_i)).
-//
-// For exact powers of 2 (ones, identity): frac=0, |A'|=2^E (tightest).
-// For arbitrary data: frac→1, |A'|<2^(E+1) (worst case adds 2 bits to P needed).
-//
-// CRT condition: log2(K) + 2*E + frac_A + frac_B < log2(P) - 1
-static int ozaki_compute_adaptive_N(const double* A, const double* B,
-                                     uint64_t M, uint64_t K, uint64_t N_cols,
-                                     int max_moduli) {
-    // Compute infinity norms of input matrices (unscaled)
-    double A_inf = 0.0, B_inf = 0.0;
-
-    // Parallel row max-abs for A
+// Shared frac-bound computation: the max fractional part of log2 of the per-row / per-col
+// infinity norms of A and B. These terms enter the CRT uniqueness bound
+//   log2(K) + 2*E + frac_A + frac_B < log2(P) - 1
+// and MUST be applied identically in BOTH moduli selection and the exponent E used to
+// scale the inputs. When they are dropped from the E used for scaling (the historical
+// bug), the scale overshoots the bound by up to ~1 bit and CRT reconstruction overflows,
+// silently corrupting results on any data with fractional log2 magnitudes.
+static void ozaki_compute_frac_bounds(const double* A, const double* B,
+                                      uint64_t M, uint64_t K, uint64_t N_cols,
+                                      double* frac_A_out, double* frac_B_out) {
     dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+
     std::vector<double> row_maxes(M, 0.0);
     double* rm_p = row_maxes.data();
     dispatch_apply(M, q, ^(size_t i) {
@@ -364,7 +375,7 @@ static int ozaki_compute_adaptive_N(const double* A, const double* B,
         }
         rm_p[i] = mx;
     });
-    // Parallel col max-abs for B
+
     std::vector<double> col_maxes(N_cols, 0.0);
     double* cm_p = col_maxes.data();
     dispatch_apply(N_cols, q, ^(size_t j) {
@@ -376,12 +387,9 @@ static int ozaki_compute_adaptive_N(const double* A, const double* B,
         cm_p[j] = mx;
     });
 
-    // Compute max fractional parts of log2(norms)
     double frac_A = 0.0, frac_B = 0.0;
-    bool all_zero_A = true, all_zero_B = true;
     for (size_t i = 0; i < M; i++) {
         if (row_maxes[i] > 0.0) {
-            all_zero_A = false;
             double lg = log2(row_maxes[i]);
             double frac = lg - floor(lg);
             if (frac > frac_A) frac_A = frac;
@@ -389,34 +397,45 @@ static int ozaki_compute_adaptive_N(const double* A, const double* B,
     }
     for (size_t j = 0; j < N_cols; j++) {
         if (col_maxes[j] > 0.0) {
-            all_zero_B = false;
             double lg = log2(col_maxes[j]);
             double frac = lg - floor(lg);
             if (frac > frac_B) frac_B = frac;
         }
     }
+    *frac_A_out = frac_A;
+    *frac_B_out = frac_B;
+}
 
-    if (all_zero_A || all_zero_B) return 2;
+// Adaptive N selection: choose the SMALLEST moduli count whose CRT range still admits the
+// FULL-PRECISION scaling exponent E_target (=52 — every 52-bit input mantissa is preserved,
+// i.e. bit-exact f64).
+//
+// The previous logic minimised N subject only to E>=0. Because E is the precision knob
+// (E=0 truncates inputs to integers, E=52 is full f64), that drove E toward 0 and truncated
+// inputs to near-integers: on real fractional / mixed-magnitude data it returned N=2 and
+// wrong results. Targeting E=52 keeps the result exact; for K<=~4096 it lands at N=16.
+//
+// CRT uniqueness bound: log2(K) + 2*E + frac_A + frac_B < log2(P) - 1
+//   => E_max(N) = floor((log2P(N) - 1 - log2K - frac_A - frac_B) / 2)
+static int ozaki_compute_adaptive_N(const double* A, const double* B,
+                                     uint64_t M, uint64_t K, uint64_t N_cols,
+                                     int max_moduli) {
+    if (max_moduli > OZAKI_MAX_MODULI) max_moduli = OZAKI_MAX_MODULI;
+    if (max_moduli < 2) max_moduli = 2;
 
-    double log2K = log2((double)K);
+    double frac_A = 0.0, frac_B = 0.0;
+    ozaki_compute_frac_bounds(A, B, M, K, N_cols, &frac_A, &frac_B);
 
-    // For each candidate N, compute E_max accounting for actual data frac.
-    // E_max = floor((log2P - 1 - log2K - frac_A - frac_B) / 2)
-    // CRT is satisfied iff E_max >= 0 (there exists a valid scaling exponent).
-    //
-    // Note: E controls precision — E=0 means integer truncation, E=52 means full f64.
-    // For ones-matrices (frac=0), even E=1 gives exact results.
-    // For general data, lower E means more truncation error in the input scaling,
-    // but the CRT reconstruction is still exact for the truncated values.
+    const double log2K = log2((double)K);
+    const double E_target = 52.0;  // full f64 mantissa preserved => exact reconstruction
+
     for (int N = 2; N <= max_moduli; N++) {
         double log2P = OZAKI_LOG2_CUMUL[N];
-        // E_max: largest scaling exponent where CRT uniqueness holds
         double E_max = floor((log2P - 1.0 - log2K - frac_A - frac_B) / 2.0);
-        if (E_max >= 0.0) {
-            return N;
-        }
+        if (E_max >= E_target) return N;
     }
-
+    // No count within the cap reaches full precision (e.g. very large K): use the most
+    // precise available. get_ozaki_crt() caps this safely at OZAKI_MAX_MODULI.
     return max_moduli;
 }
 
@@ -1256,8 +1275,9 @@ static int metal_init(void) {
         init_ozaki_log2_table();
         if (const char* nmod_env = std::getenv("ESHKOL_OZAKI_NUM_MODULI")) {
             int n = atoi(nmod_env);
-            if (n >= 2 && n <= 49) g_ozaki_num_moduli = n;
-            else fprintf(stderr, "[GPU] ESHKOL_OZAKI_NUM_MODULI=%d out of range [2,49], using default %d\n", n, g_ozaki_num_moduli);
+            if (n >= 2 && n <= OZAKI_MAX_MODULI) g_ozaki_num_moduli = n;
+            else fprintf(stderr, "[GPU] ESHKOL_OZAKI_NUM_MODULI=%d out of range [2,%d] (N>%d overflows __int128 P), using default %d\n",
+                         n, OZAKI_MAX_MODULI, OZAKI_MAX_MODULI, g_ozaki_num_moduli);
         }
         precompute_ozaki_constants(g_ozaki_num_moduli, &g_ozaki_crt);
         fprintf(stderr, "[GPU] Ozaki-II: N=%d moduli, log2(P)=%.1f\n", g_ozaki_num_moduli, g_ozaki_crt.log2P);
@@ -2400,21 +2420,32 @@ static int ozaki_ii_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBu
         const double* b_data = (const double*)B->host_ptr;
         dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
 
-        // --- Adaptive N: choose minimum moduli for this input's data range ---
+        // --- frac bounds: needed for BOTH moduli selection and the E used to scale
+        // inputs, so the CRT uniqueness bound is enforced consistently (Defect C fix). ---
+        double frac_A = 0.0, frac_B = 0.0;
+        ozaki_compute_frac_bounds(a_data, b_data, M, K, N_cols, &frac_A, &frac_B);
+
+        // --- Moduli count. Default: fixed g_ozaki_num_moduli (=16), which is provably
+        // exact for f64 at K<=~4096 and needs no per-input reasoning. Opt in to adaptive
+        // (full-precision-targeted) selection only via ESHKOL_OZAKI_ADAPTIVE=1. ---
         int max_N = g_ozaki_num_moduli;
         const char* adapt_env = std::getenv("ESHKOL_OZAKI_ADAPTIVE");
-        bool adaptive = !adapt_env || strcmp(adapt_env, "0") != 0;
+        bool adaptive = adapt_env && strcmp(adapt_env, "1") == 0;
         int num_moduli = adaptive
             ? ozaki_compute_adaptive_N(a_data, b_data, M, K, N_cols, max_N)
             : max_N;
 
         const OzakiCRTConstants& crt = get_ozaki_crt(num_moduli);
+        num_moduli = crt.num_moduli;  // reflect any clamp get_ozaki_crt applied
 
         fprintf(stderr, "[GPU] Ozaki-II: N=%d%s, log2(P)=%.1f\n",
                 num_moduli, adaptive ? " (adaptive)" : "", crt.log2P);
 
         // --- CPU Step 1: Compute scaling vectors (parallel by row/col) ---
-        int E = (int)floor((crt.log2P - 1.0 - log2((double)K)) / 2.0);
+        // E must include frac_A/frac_B so log2K + 2E + frac_A + frac_B < log2P - 1 holds
+        // (same bound ozaki_compute_adaptive_N validates); dropping them overshoots the
+        // CRT range on fractional data and corrupts the reconstruction (Defect C).
+        int E = (int)floor((crt.log2P - 1.0 - log2((double)K) - frac_A - frac_B) / 2.0);
         if (E > 52) E = 52;
         if (E < 0) E = 0;
 
