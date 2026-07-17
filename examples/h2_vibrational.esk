@@ -1,0 +1,134 @@
+;; ============================================================
+;; H2 vibrational frequency from arbitrary-order AD (Taylor tower)
+;; ============================================================
+;;
+;; The STO-3G H2 Born-Oppenheimer energy E(R) is written as ordinary
+;; Eshkol code (own Boys/erf + Gaussian integrals + the 2x2 full-CI
+;; eigenvalue).  Eshkol then differentiates it to SECOND order with
+;; `derivative-n`, giving the exact harmonic force constant
+;; k = d^2E/dR^2 -- and hence the vibrational frequency -- with no
+;; finite differences.  This is a molecular Hessian from a compiled
+;; Scheme's automatic differentiation.
+;;
+;; Run:  ./build/eshkol-run -r examples/h2_vibrational.esk
+
+(define pi 3.141592653589793)
+
+;; STO-3G hydrogen 1s (exponents already encode the zeta scaling).
+(define exps  (list 3.42525091 0.62391373 0.16885540))
+(define coefs (list 0.15432897 0.53532814 0.44463454))
+(define (nprim a) (expt (/ (* 2.0 a) pi) 0.75))
+(define dn (map (lambda (a d) (* d (nprim a))) exps coefs))
+
+;; erf via Abramowitz-Stegun 7.1.26 -- a single smooth closed form (x >= 0,
+;; which holds for every Boys argument sqrt(u) here), accurate to ~1.5e-7 and
+;; differentiable everywhere (no branch to put a kink in the AD).
+(define (my-erf x)
+  (let* ((t (/ 1.0 (+ 1.0 (* 0.3275911 x))))
+         (poly (* t (+ 0.254829592
+                    (* t (+ -0.284496736
+                         (* t (+ 1.421413741
+                              (* t (+ -1.453152027
+                                   (* t 1.061405429)))))))))))
+    (- 1.0 (* poly (exp (- (* x x)))))))
+
+;; Boys F0(u) = (sqrt(pi)/2) erf(sqrt u)/sqrt u ; F0(0)=1 (same-center, R-independent).
+(define (boys0 u)
+  (if (< u 1.0e-12) 1.0
+      (let ((su (sqrt u)))
+        (* (/ (sqrt pi) 2.0) (/ (my-erf su) su)))))
+
+(define (zc c R) (if (= c 0) 0.0 R))
+(define (d2c ci cj R) (if (= ci cj) 0.0 (* R R)))
+
+;; primitive geometric factors (normalisation folded in at contraction)
+(define (p-overlap a b ci cj R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p)))
+    (* (expt (/ pi p) 1.5) (exp (* (- mu) (d2c ci cj R))))))
+(define (p-kinetic a b ci cj R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p)) (d2 (d2c ci cj R)))
+    (* (expt (/ pi p) 1.5) (exp (* (- mu) d2)) mu (- 3.0 (* 2.0 mu d2)))))
+(define (p-nuclear a b ci cj cc R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p))
+         (pz (/ (+ (* a (zc ci R)) (* b (zc cj R))) p))
+         (dd (- pz (zc cc R))) (pc2 (* dd dd)))
+    (* (- (/ (* 2.0 pi) p)) (exp (* (- mu) (d2c ci cj R))) (boys0 (* p pc2)))))
+(define (p-eri a b c d ca cb cc cd R)
+  (let* ((p (+ a b)) (q (+ c d)) (muab (/ (* a b) p)) (mucd (/ (* c d) q))
+         (pz (/ (+ (* a (zc ca R)) (* b (zc cb R))) p))
+         (qz (/ (+ (* c (zc cc R)) (* d (zc cd R))) q))
+         (e (- pz qz)) (pq2 (* e e)))
+    (* (/ (* 2.0 (expt pi 2.5)) (* p q (sqrt (+ p q))))
+       (exp (* (- muab) (d2c ca cb R))) (exp (* (- mucd) (d2c cc cd R)))
+       (boys0 (* (/ (* p q) (+ p q)) pq2)))))
+
+;; sum f(i) for i in 0..n-1 (fixed range -> differentiable)
+(define (sum-range n f)
+  (let loop ((i 0) (acc 0.0))
+    (if (>= i n) acc (loop (+ i 1) (+ acc (f i))))))
+
+;; contract STO-3G primitives -> AO integrals
+(define (ao-1e fn ci cj R)
+  (sum-range 3 (lambda (i)
+    (sum-range 3 (lambda (j)
+      (* (list-ref dn i) (list-ref dn j)
+         (fn (list-ref exps i) (list-ref exps j) ci cj R)))))))
+(define (ao-nuclear ci cj R)
+  (+ (ao-1e (lambda (a b ci cj R) (p-nuclear a b ci cj 0 R)) ci cj R)
+     (ao-1e (lambda (a b ci cj R) (p-nuclear a b ci cj 1 R)) ci cj R)))
+(define (ao-eri ca cb cc cd R)
+  (sum-range 3 (lambda (i)
+    (sum-range 3 (lambda (j)
+      (sum-range 3 (lambda (k)
+        (sum-range 3 (lambda (l)
+          (* (list-ref dn i) (list-ref dn j) (list-ref dn k) (list-ref dn l)
+             (p-eri (list-ref exps i) (list-ref exps j) (list-ref exps k) (list-ref exps l)
+                    ca cb cc cd R)))))))))))
+
+;; MO two-electron integral: cvecN = (c_center0 c_center1) per orbital
+(define (mo-eri v1 v2 v3 v4 R)
+  (sum-range 2 (lambda (a)
+    (sum-range 2 (lambda (b)
+      (sum-range 2 (lambda (c)
+        (sum-range 2 (lambda (d)
+          (* (list-ref v1 a) (list-ref v2 b) (list-ref v3 c) (list-ref v4 d)
+             (ao-eri a b c d R)))))))))))
+
+;; H2 seniority-zero full-CI ground energy E(R)
+(define (energy R)
+  (let* ((s   (ao-1e p-overlap 0 1 R))
+         (hAA (+ (ao-1e p-kinetic 0 0 R) (ao-nuclear 0 0 R)))
+         (hAB (+ (ao-1e p-kinetic 0 1 R) (ao-nuclear 0 1 R)))
+         (hgg (/ (+ hAA hAB) (+ 1.0 s)))
+         (huu (/ (- hAA hAB) (- 1.0 s)))
+         (cg (/ 1.0 (sqrt (* 2.0 (+ 1.0 s)))))
+         (cu (/ 1.0 (sqrt (* 2.0 (- 1.0 s)))))
+         (gv (list cg cg)) (uv (list cu (- cu)))
+         (gggg (mo-eri gv gv gv gv R))
+         (uuuu (mo-eri uv uv uv uv R))
+         (gugu (mo-eri gv uv gv uv R))
+         (h11 (+ (* 2.0 hgg) gggg))
+         (h22 (+ (* 2.0 huu) uuuu))
+         (h12 gugu)
+         (m (/ (+ h11 h22) 2.0))
+         (dd (/ (- h11 h22) 2.0)))
+    (+ (- m (sqrt (+ (* dd dd) (* h12 h12)))) (/ 1.0 R))))
+
+;; Equilibrium bond length: Newton on E'(R) = 0, using first- and second-order
+;; derivatives from the SAME AD machinery.
+(define R-eq
+  (let loop ((R 1.40) (i 0))
+    (if (>= i 8) R
+        (loop (- R (/ (derivative-n energy R 1) (derivative-n energy R 2))) (+ i 1)))))
+
+;; Harmonic force constant k = d^2E/dR^2 at equilibrium -- exact, via Taylor tower.
+(define k  (derivative-n energy R-eq 2))
+(define mu (/ 1836.15267343 2.0))              ;; H2 reduced mass (electron masses)
+(define omega-cm (* (sqrt (/ k mu)) 219474.6313702))
+
+(display "=== H2 vibrational frequency from arbitrary-order AD ===") (newline)
+(display "equilibrium R*        = ") (display R-eq)          (display " bohr")       (newline)
+(display "E(R*)                 = ") (display (energy R-eq)) (display " Ha")         (newline)
+(display "force constant d2E/dR2 = ") (display k)           (display " Ha/bohr^2")  (newline)
+(display "vibrational frequency = ") (display omega-cm)     (display " cm^-1")       (newline)
+(display "  (exact 2nd derivative via Eshkol's Taylor tower; STO-3G, exp. ~4401)") (newline)
