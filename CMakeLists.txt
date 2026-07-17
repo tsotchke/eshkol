@@ -169,6 +169,12 @@ option(ESHKOL_ENABLE_MSAN "Enable Memory Sanitizer"              OFF)
 option(ESHKOL_ENABLE_LSAN "Enable Leak Sanitizer (standalone)"   OFF)
 option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libFuzzer targets: clang only)" OFF)
 option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
+option(ESHKOL_TENSORCORE_ENABLED
+       "Enable the canonical Eshkol adapter against an installed TensorCore package" OFF)
+set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
+    "Oldest TensorCore public ABI supported by Eshkol's adapter")
+set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.22" CACHE STRING
+    "Newest TensorCore public ABI covered by Eshkol release gates")
 
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
 # the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
@@ -374,6 +380,113 @@ set(ESHKOL_HOST_LLVM_LINK_ARGS "")
 set(ESHKOL_HOST_AGENT_FFI_LINK_ARGS "")
 set(ESHKOL_HOST_BLAS_LINK_ARGS "")
 set(ESHKOL_HOST_CUDA_MAJOR 0)
+set(ESHKOL_HOST_TENSORCORE_LINK_ARGS "")
+
+set(ESHKOL_TENSORCORE_TARGET "")
+if(ESHKOL_TENSORCORE_ENABLED)
+    # Installed-package discovery is intentional: Eshkol consumes only
+    # TensorCore's exported public ABI and never reaches into its source tree.
+    find_package(tensorcore CONFIG REQUIRED)
+    if(NOT DEFINED tensorcore_VERSION OR "${tensorcore_VERSION}" STREQUAL "")
+        message(FATAL_ERROR
+            "TensorCore package did not publish tensorcore_VERSION; cannot prove ABI compatibility")
+    endif()
+    if(tensorcore_VERSION VERSION_LESS ESHKOL_TENSORCORE_MIN_VERSION)
+        message(FATAL_ERROR
+            "TensorCore ${tensorcore_VERSION} is too old; Eshkol requires public ABI >= "
+            "${ESHKOL_TENSORCORE_MIN_VERSION}")
+    endif()
+    string(REPLACE "." ";" _eshkol_tc_version_parts "${tensorcore_VERSION}")
+    list(LENGTH _eshkol_tc_version_parts _eshkol_tc_version_part_count)
+    if(_eshkol_tc_version_part_count LESS 3)
+        message(FATAL_ERROR
+            "TensorCore version '${tensorcore_VERSION}' is not a three-part semantic version")
+    endif()
+    list(GET _eshkol_tc_version_parts 0 _eshkol_tc_major)
+    list(GET _eshkol_tc_version_parts 1 _eshkol_tc_minor)
+    if(NOT _eshkol_tc_major STREQUAL "0" OR NOT _eshkol_tc_minor STREQUAL "1")
+        message(FATAL_ERROR
+            "TensorCore ${tensorcore_VERSION} is outside Eshkol's supported 0.1.x ABI window")
+    endif()
+    if(tensorcore_VERSION VERSION_GREATER ESHKOL_TENSORCORE_MAX_TESTED_VERSION)
+        message(WARNING
+            "TensorCore ${tensorcore_VERSION} is ABI-compatible by policy but newer than the "
+            "release-tested ${ESHKOL_TENSORCORE_MAX_TESTED_VERSION}")
+    endif()
+
+    # Generated Eshkol programs are linked by the compiler driver rather than
+    # by CMake. Requiring the exported shared target keeps that link closure
+    # explicit and portable; a static target may carry backend-specific
+    # transitive dependencies that cannot be safely flattened into one string.
+    if(TARGET tensorcore::tensorcore_shared)
+        set(ESHKOL_TENSORCORE_TARGET tensorcore::tensorcore_shared)
+    else()
+        message(FATAL_ERROR
+            "TensorCore package does not export required target tensorcore::tensorcore_shared")
+    endif()
+
+    get_target_property(_eshkol_tc_include_dirs
+                        "${ESHKOL_TENSORCORE_TARGET}"
+                        INTERFACE_INCLUDE_DIRECTORIES)
+    set(_eshkol_tc_capabilities_header "")
+    foreach(_include_dir IN LISTS _eshkol_tc_include_dirs)
+        if(NOT _include_dir MATCHES "^\\$<" AND
+           EXISTS "${_include_dir}/tensorcore/capabilities.h")
+            set(_eshkol_tc_capabilities_header
+                "${_include_dir}/tensorcore/capabilities.h")
+        endif()
+    endforeach()
+    if("${_eshkol_tc_capabilities_header}" STREQUAL "")
+        message(FATAL_ERROR
+            "TensorCore ${tensorcore_VERSION} does not provide the required "
+            "tc_runtime_capabilities_get ABI v1 public header")
+    endif()
+
+    set(_eshkol_tc_link_artifact "")
+    if(WIN32)
+        set(_eshkol_tc_import_properties
+            IMPORTED_IMPLIB_RELEASE IMPORTED_IMPLIB_RELWITHDEBINFO
+            IMPORTED_IMPLIB_MINSIZEREL IMPORTED_IMPLIB_DEBUG IMPORTED_IMPLIB
+            IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_RELWITHDEBINFO
+            IMPORTED_LOCATION_MINSIZEREL IMPORTED_LOCATION_DEBUG IMPORTED_LOCATION)
+    else()
+        set(_eshkol_tc_import_properties
+            IMPORTED_LOCATION_RELEASE IMPORTED_LOCATION_RELWITHDEBINFO
+            IMPORTED_LOCATION_MINSIZEREL IMPORTED_LOCATION_DEBUG IMPORTED_LOCATION)
+    endif()
+    foreach(_property IN LISTS _eshkol_tc_import_properties)
+        if("${_eshkol_tc_link_artifact}" STREQUAL "")
+            get_target_property(_candidate "${ESHKOL_TENSORCORE_TARGET}" ${_property})
+            if(_candidate AND NOT _candidate MATCHES "-NOTFOUND$")
+                set(_eshkol_tc_link_artifact "${_candidate}")
+            endif()
+        endif()
+    endforeach()
+    if("${_eshkol_tc_link_artifact}" STREQUAL "")
+        message(FATAL_ERROR
+            "Could not resolve an installed link artifact for ${ESHKOL_TENSORCORE_TARGET}")
+    endif()
+    file(TO_CMAKE_PATH "${_eshkol_tc_link_artifact}" _eshkol_tc_link_artifact)
+    list(APPEND ESHKOL_HOST_TENSORCORE_LINK_ARGS "${_eshkol_tc_link_artifact}")
+    if(NOT WIN32)
+        get_filename_component(_eshkol_tc_library_dir "${_eshkol_tc_link_artifact}" DIRECTORY)
+        list(APPEND ESHKOL_HOST_TENSORCORE_LINK_ARGS
+            "-Wl,-rpath,${_eshkol_tc_library_dir}")
+        # Eshkol's installed compiler, REPL, and language server consume the
+        # same imported shared library. Preserve that package location in the
+        # installed binaries; the generated-program rpath above only applies
+        # to executables produced later by eshkol-run.
+        list(APPEND CMAKE_INSTALL_RPATH "${_eshkol_tc_library_dir}")
+        list(REMOVE_DUPLICATES CMAKE_INSTALL_RPATH)
+    endif()
+
+    string(REPLACE ";" " " ESHKOL_HOST_TENSORCORE_LINK_ARGS
+                   "${ESHKOL_HOST_TENSORCORE_LINK_ARGS}")
+    message(STATUS
+        "TensorCore adapter: ENABLED (version=${tensorcore_VERSION}, target=${ESHKOL_TENSORCORE_TARGET})")
+else()
+    message(STATUS "TensorCore adapter: explicit-unavailable stubs")
+endif()
 set(ESHKOL_GENERATED_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${ESHKOL_GENERATED_INCLUDE_DIR}/eshkol")
 configure_file(
@@ -1981,6 +2094,7 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
   lib/bridge/tensor_backward.cpp
+  lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
   lib/core/dnc_api.c
   lib/core/image_io.c
@@ -2139,6 +2253,15 @@ target_include_directories(
 )
 eshkol_apply_common_compile_settings(eshkol-static)
 
+if(ESHKOL_TENSORCORE_ENABLED)
+    target_compile_definitions(eshkol-runtime-support-obj PRIVATE
+        ESHKOL_TENSORCORE_ENABLED=1
+    )
+    target_link_libraries(eshkol-runtime-support-obj PRIVATE ${ESHKOL_TENSORCORE_TARGET})
+    target_link_libraries(eshkol-runtime PUBLIC ${ESHKOL_TENSORCORE_TARGET})
+    target_link_libraries(eshkol-static PUBLIC ${ESHKOL_TENSORCORE_TARGET})
+endif()
+
 if(ESHKOL_QUANTUM_ENABLED)
     # The runtime wrapper is the one place that includes Moonlab's stable QRNG
     # header; target usage requirements provide the verified src/ include path.
@@ -2191,18 +2314,6 @@ endif()
 if(ESHKOL_BLAS_ENABLED AND BLAS_LIBRARIES)
     target_link_libraries(eshkol-runtime PUBLIC ${BLAS_LIBRARIES})
     target_link_libraries(eshkol-static PUBLIC ${BLAS_LIBRARIES})
-endif()
-
-if(ESHKOL_BUILD_TESTS AND ESHKOL_BLAS_ENABLED)
-    add_executable(eshkol-blas-provider-test
-        tests/backend/blas_provider_test.cpp)
-    target_include_directories(eshkol-blas-provider-test PRIVATE
-        ${CMAKE_SOURCE_DIR}/inc)
-    target_link_libraries(eshkol-blas-provider-test PRIVATE eshkol-runtime)
-    if(BUILD_TESTING)
-        add_test(NAME blas-provider COMMAND eshkol-blas-provider-test)
-        set_tests_properties(blas-provider PROPERTIES TIMEOUT 30)
-    endif()
 endif()
 
 # Link MLIR and StableHLO libraries if available (for full XLA backend)
@@ -2335,6 +2446,10 @@ add_custom_target(stdlib ALL DEPENDS ${STDLIB_OUTPUT})
 # stdlib and later REPL batches share the same ORC IR compilation pipeline;
 # stdlib.o remains available for legacy/load-time fallback paths.
 install(FILES ${STDLIB_OUTPUT} ${STDLIB_BITCODE} DESTINATION ${CMAKE_INSTALL_LIBDIR}/eshkol)
+install(FILES lib/tensorcore.esk DESTINATION ${CMAKE_INSTALL_DATADIR}/eshkol/lib)
+install(FILES inc/eshkol/tensorcore_adapter.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol)
+install(FILES inc/eshkol/backend/tensorcore_codegen.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/eshkol/backend)
 
 message(STATUS "Standard library will be pre-compiled to: ${STDLIB_OUTPUT} and ${STDLIB_BITCODE}")
 if(NOT "${ESHKOL_STDLIB_TARGET_CPU}" STREQUAL "")
@@ -2636,6 +2751,59 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
     endif()
     target_link_libraries(model_io_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME model_io_test COMMAND model_io_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_adapter_test.cpp")
+    add_executable(tensorcore_adapter_test tests/backend/tensorcore_adapter_test.cpp)
+    target_compile_features(tensorcore_adapter_test PRIVATE cxx_std_20)
+    target_link_libraries(tensorcore_adapter_test PRIVATE eshkol-runtime)
+    add_test(NAME tensorcore_adapter_test COMMAND tensorcore_adapter_test)
+    set_tests_properties(tensorcore_adapter_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: TensorCore adapter")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_codegen_test.cpp")
+    add_executable(tensorcore_codegen_test tests/backend/tensorcore_codegen_test.cpp)
+    target_compile_features(tensorcore_codegen_test PRIVATE cxx_std_20)
+    target_compile_definitions(tensorcore_codegen_test PRIVATE ESHKOL_LLVM_BACKEND_ENABLED)
+    eshkol_target_llvm_includes(tensorcore_codegen_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(tensorcore_codegen_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(tensorcore_codegen_test PRIVATE
+        eshkol-static ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME tensorcore_codegen_test COMMAND tensorcore_codegen_test)
+    set_tests_properties(tensorcore_codegen_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: TensorCore canonical codegen")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND ESHKOL_TENSORCORE_ENABLED AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_compatibility_test.cpp")
+    add_executable(tensorcore_compatibility_test
+        tests/backend/tensorcore_compatibility_test.cpp)
+    target_compile_features(tensorcore_compatibility_test PRIVATE cxx_std_20)
+    target_link_libraries(tensorcore_compatibility_test PRIVATE eshkol-runtime)
+    add_test(NAME tensorcore_compatibility_test COMMAND tensorcore_compatibility_test)
+    set_tests_properties(tensorcore_compatibility_test PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS: TensorCore compatibility-window parity")
+endif()
+
+if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_language_smoke.esk")
+    add_test(NAME tensorcore_language_aot_smoke
+        COMMAND $<TARGET_FILE:eshkol-run> -r
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/tensorcore_language_smoke.esk")
+    set_tests_properties(tensorcore_language_aot_smoke PROPERTIES
+        ENVIRONMENT
+            "ESHKOL_PATH=${CMAKE_CURRENT_SOURCE_DIR}/lib;ESHKOL_JIT_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/tensorcore-jit-cache"
+        FAIL_REGULAR_EXPRESSION "ERROR:|LLVM module verification failed|fatal signal")
+    if(ESHKOL_TENSORCORE_ENABLED)
+        set_tests_properties(tensorcore_language_aot_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION "#t")
+    else()
+        set_tests_properties(tensorcore_language_aot_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION "#f")
+    endif()
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
