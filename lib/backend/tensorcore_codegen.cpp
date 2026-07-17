@@ -1,191 +1,200 @@
 /*
- * tensorcore_codegen.cpp - Eshkol LLVM-codegen bridge for tensorcore.
+ * Copyright (C) tsotchke
  *
- * Declares the tensorcore C ABI as ExternalLinkage functions in generated
- * LLVM modules. Registration is opt-in through ESHKOL_ENABLE_TENSORCORE=1 so
- * normal builds do not emit references that require a tensorcore runtime.
+ * SPDX-License-Identifier: MIT
+ *
+ * Canonical LLVM declaration and registration path for Eshkol's TensorCore
+ * adapter. TensorCore compiler internals do not participate in this lowering.
  */
+
+#include <eshkol/backend/tensorcore_codegen.h>
+
+#ifdef ESHKOL_LLVM_BACKEND_ENABLED
 
 #include <eshkol/backend/codegen_context.h>
 #include <eshkol/logger.h>
 
-#ifdef ESHKOL_LLVM_BACKEND_ENABLED
-
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Type.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/Support/raw_ostream.h>
+
+#include <array>
+#include <utility>
 
 namespace eshkol {
+namespace {
 
-/* ====================================================================== *
- *  Tensorcore LLVM declarations                                           *
- *  Mirror of include/tensorcore/tensorcore.h. Order matches the C ABI    *
- *  symbol layout so the linker can resolve each name unambiguously.      *
- * ====================================================================== */
-class TensorcoreDeclarations {
-public:
-    explicit TensorcoreDeclarations(CodegenContext& ctx) : ctx_(ctx) {
-        declareLifecycle();
-        declareBuffers();
-        declareGemm();
-        declareAttention();
-        declareDiagnostics();
+constexpr std::array<const char*, 34> adapter_symbols = {{
+    "eshkol_tc_adapter_available",
+    "eshkol_tc_adapter_status",
+    "eshkol_tc_check_abi_version",
+    "eshkol_tc_last_status",
+    "eshkol_tc_runtime_capabilities_abi_version",
+    "eshkol_tc_runtime_capabilities_status",
+    "eshkol_tc_validate_runtime_capabilities",
+    "eshkol_tc_known_capability_mask",
+    "eshkol_tc_available_capability_mask",
+    "eshkol_tc_compiled_backend_mask",
+    "eshkol_tc_available_backend_mask",
+    "eshkol_tc_init",
+    "eshkol_tc_shutdown",
+    "eshkol_tc_device_name",
+    "eshkol_tc_device_family",
+    "eshkol_tc_device_unified_memory",
+    "eshkol_tc_device_supports_bf16",
+    "eshkol_tc_device_supports_i8",
+    "eshkol_tc_device_supports_tensorops_m5",
+    "eshkol_tc_buffer_alloc",
+    "eshkol_tc_buffer_free",
+    "eshkol_tc_buffer_map",
+    "eshkol_tc_buffer_size",
+    "eshkol_tc_dtype_f16",
+    "eshkol_tc_dtype_bf16",
+    "eshkol_tc_dtype_f32",
+    "eshkol_tc_dtype_i8",
+    "eshkol_tc_dtype_i32",
+    "eshkol_tc_gemm",
+    "eshkol_tc_attention_forward",
+    "eshkol_tc_last_backend_code",
+    "eshkol_tc_last_backend_name",
+    "eshkol_tc_version",
+    "eshkol_tc_status_string",
+}};
 
-        eshkol_debug("TensorcoreDeclarations: declared %d external functions",
-                     14);
-    }
-
-    llvm::Function* tc_init           = nullptr;
-    llvm::Function* tc_shutdown       = nullptr;
-    llvm::Function* tc_device_info    = nullptr;
-    llvm::Function* tc_buffer_alloc   = nullptr;
-    llvm::Function* tc_buffer_free    = nullptr;
-    llvm::Function* tc_buffer_map     = nullptr;
-    llvm::Function* tc_buffer_size    = nullptr;
-    llvm::Function* tc_gemm           = nullptr;
-    llvm::Function* tc_attention_fwd  = nullptr;
-    llvm::Function* tc_attention_bwd  = nullptr;
-    llvm::Function* tc_last_backend   = nullptr;
-    llvm::Function* tc_status_string  = nullptr;
-    llvm::Function* tc_dtype_size     = nullptr;
-    llvm::Function* tc_version        = nullptr;
-
-private:
-    CodegenContext& ctx_;
-
-    void declareLifecycle() {
-        /* tc_status_t tc_init(tc_context** out_ctx)
-         * tc_status_t tc_shutdown(tc_context* ctx)
-         * tc_status_t tc_device_info_get(tc_context*, tc_device_info* out) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(), { ctx_.ptrType() }, false);
-            tc_init = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                              "tc_init", &ctx_.module());
-        }
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(), { ctx_.ptrType() }, false);
-            tc_shutdown = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                  "tc_shutdown", &ctx_.module());
-        }
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.ptrType() }, false);
-            tc_device_info = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                     "tc_device_info_get", &ctx_.module());
-        }
-    }
-
-    void declareBuffers() {
-        /* tc_status_t tc_buffer_alloc(tc_context*, size_t, tc_buffer**) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType() }, false);
-            tc_buffer_alloc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                      "tc_buffer_alloc", &ctx_.module());
-        }
-        /* tc_status_t tc_buffer_free(tc_context*, tc_buffer*) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.ptrType() }, false);
-            tc_buffer_free = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                     "tc_buffer_free", &ctx_.module());
-        }
-        /* tc_status_t tc_buffer_map(tc_buffer*, void**) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.ptrType() }, false);
-            tc_buffer_map = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                    "tc_buffer_map", &ctx_.module());
-        }
-        /* size_t tc_buffer_size(const tc_buffer*) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int64Type(), { ctx_.ptrType() }, false);
-            tc_buffer_size = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                     "tc_buffer_size", &ctx_.module());
-        }
-    }
-
-    void declareGemm() {
-        /* tc_status_t tc_gemm(tc_context*, const tc_gemm_desc*,
-         *                     const tc_buffer*, const tc_buffer*, tc_buffer*) */
-        auto* ft = llvm::FunctionType::get(
-            ctx_.int32Type(),
-            { ctx_.ptrType(), ctx_.ptrType(),
-              ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType() },
-            false);
-        tc_gemm = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                          "tc_gemm", &ctx_.module());
-    }
-
-    void declareAttention() {
-        /* tc_status_t tc_attention_forward(tc_context*, const tc_attention_desc*,
-         *                                  Q, K, V, O, LSE) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.ptrType(),
-                  ctx_.ptrType(), ctx_.ptrType(),
-                  ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType() },
-                false);
-            tc_attention_fwd = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                       "tc_attention_forward", &ctx_.module());
-        }
-        /* tc_status_t tc_attention_backward(ctx, desc, Q,K,V,O,dO,LSE, dQ,dK,dV) */
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int32Type(),
-                { ctx_.ptrType(), ctx_.ptrType(),
-                  ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(),
-                  ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType(),
-                  ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType() },
-                false);
-            tc_attention_bwd = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                       "tc_attention_backward", &ctx_.module());
-        }
-    }
-
-    void declareDiagnostics() {
-        {
-            auto* ft = llvm::FunctionType::get(ctx_.int32Type(), {}, false);
-            tc_last_backend = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                      "tc_last_backend", &ctx_.module());
-        }
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.ptrType(), { ctx_.int32Type() }, false);
-            tc_status_string = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                      "tc_status_string", &ctx_.module());
-        }
-        {
-            auto* ft = llvm::FunctionType::get(
-                ctx_.int64Type(), { ctx_.int32Type() }, false);
-            tc_dtype_size = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                   "tc_dtype_size", &ctx_.module());
-        }
-        {
-            auto* ft = llvm::FunctionType::get(ctx_.ptrType(), {}, false);
-            tc_version = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                                 "tc_version", &ctx_.module());
-        }
-    }
-};
-
-/* ====================================================================== *
- *  Public entry point - call from CodegenContext init.                    *
- * ====================================================================== */
-extern "C" void eshkol_register_tensorcore_builtins(CodegenContext* ctx) {
-    if (!ctx) return;
-    TensorcoreDeclarations declarations(*ctx);
-    eshkol_info("tensorcore: %d external declarations registered", 14);
+bool set_error(std::string* error, const std::string& message) {
+    if (error) *error = message;
+    return false;
 }
 
-}  /* namespace eshkol */
+}  // namespace
+
+std::size_t declareTensorcoreAdapterAbi(llvm::Module& module,
+                                        llvm::IntegerType* size_type,
+                                        std::string* error) {
+    if (error) error->clear();
+    if (!size_type || !size_type->isIntegerTy(64)) {
+        set_error(error, "tensorcore adapter ABI requires a 64-bit size type");
+        return 0;
+    }
+
+    llvm::LLVMContext& llvm_context = module.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(llvm_context);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(llvm_context);
+    llvm::Type* dbl = llvm::Type::getDoubleTy(llvm_context);
+    llvm::Type* ptr = llvm::PointerType::get(llvm_context, 0);
+
+    std::size_t declared = 0;
+    auto add = [&](const char* name, llvm::Type* result,
+                   std::initializer_list<llvm::Type*> arguments) -> bool {
+        auto* function_type = llvm::FunctionType::get(result, arguments, false);
+        llvm::Function* function = module.getFunction(name);
+        if (function) {
+            if (function->getFunctionType() != function_type) {
+                return set_error(error,
+                    std::string("tensorcore adapter ABI conflict for '") + name + "'");
+            }
+        } else {
+            function = llvm::Function::Create(function_type,
+                                              llvm::Function::ExternalLinkage,
+                                              name,
+                                              module);
+        }
+        ++declared;
+        return true;
+    };
+
+    if (!add("eshkol_tc_adapter_available", i32, {}) ||
+        !add("eshkol_tc_adapter_status", i32, {}) ||
+        !add("eshkol_tc_check_abi_version", i32, {i32, i32, i32}) ||
+        !add("eshkol_tc_last_status", i32, {}) ||
+        !add("eshkol_tc_runtime_capabilities_abi_version", i32, {}) ||
+        !add("eshkol_tc_runtime_capabilities_status", i32, {ptr, i32}) ||
+        !add("eshkol_tc_validate_runtime_capabilities", i32,
+             {i32, i64, i64, i64, i64}) ||
+        !add("eshkol_tc_known_capability_mask", i64, {ptr}) ||
+        !add("eshkol_tc_available_capability_mask", i64, {ptr}) ||
+        !add("eshkol_tc_compiled_backend_mask", i64, {ptr}) ||
+        !add("eshkol_tc_available_backend_mask", i64, {ptr}) ||
+        !add("eshkol_tc_init", ptr, {}) ||
+        !add("eshkol_tc_shutdown", i32, {ptr}) ||
+        !add("eshkol_tc_device_name", ptr, {ptr}) ||
+        !add("eshkol_tc_device_family", i32, {ptr}) ||
+        !add("eshkol_tc_device_unified_memory", i32, {ptr}) ||
+        !add("eshkol_tc_device_supports_bf16", i32, {ptr}) ||
+        !add("eshkol_tc_device_supports_i8", i32, {ptr}) ||
+        !add("eshkol_tc_device_supports_tensorops_m5", i32, {ptr}) ||
+        !add("eshkol_tc_buffer_alloc", ptr, {ptr, size_type}) ||
+        !add("eshkol_tc_buffer_free", i32, {ptr, ptr}) ||
+        !add("eshkol_tc_buffer_map", ptr, {ptr}) ||
+        !add("eshkol_tc_buffer_size", size_type, {ptr}) ||
+        !add("eshkol_tc_dtype_f16", i32, {}) ||
+        !add("eshkol_tc_dtype_bf16", i32, {}) ||
+        !add("eshkol_tc_dtype_f32", i32, {}) ||
+        !add("eshkol_tc_dtype_i8", i32, {}) ||
+        !add("eshkol_tc_dtype_i32", i32, {}) ||
+        !add("eshkol_tc_gemm", i32,
+             {ptr, i32, ptr, ptr, ptr, i32, i32, i32, dbl, dbl, i32, i32}) ||
+        !add("eshkol_tc_attention_forward", i32,
+             {ptr, ptr, ptr, ptr, ptr, i32, i32, i32, i32, i32, dbl, i32}) ||
+        !add("eshkol_tc_last_backend_code", i32, {}) ||
+        !add("eshkol_tc_last_backend_name", ptr, {}) ||
+        !add("eshkol_tc_version", ptr, {}) ||
+        !add("eshkol_tc_status_string", ptr, {i32})) {
+        return 0;
+    }
+
+    if (declared != adapter_symbols.size()) {
+        set_error(error, "tensorcore adapter declaration count drift");
+        return 0;
+    }
+    return declared;
+}
+
+std::size_t registerTensorcoreBuiltins(CodegenContext& ctx,
+                                       std::string* error) {
+    const std::size_t declared =
+        declareTensorcoreAdapterAbi(ctx.module(), ctx.sizeType(), error);
+    if (declared != adapter_symbols.size()) return 0;
+
+    for (const char* name : adapter_symbols) {
+        llvm::Function* function = ctx.module().getFunction(name);
+        if (!function) {
+            set_error(error,
+                      std::string("tensorcore adapter declaration missing after lowering: ") + name);
+            return 0;
+        }
+        ctx.defineFunction(name, function);
+    }
+    return declared;
+}
+
+bool verifyTensorcoreAdapterModule(const llvm::Module& module,
+                                   std::string* error) {
+    std::string verifier_output;
+    llvm::raw_string_ostream stream(verifier_output);
+    if (llvm::verifyModule(module, &stream)) {
+        stream.flush();
+        return set_error(error, "tensorcore adapter LLVM verification failed: " + verifier_output);
+    }
+    if (error) error->clear();
+    return true;
+}
+
+}  // namespace eshkol
+
+extern "C" int eshkol_register_tensorcore_builtins(eshkol::CodegenContext* ctx) {
+    if (!ctx) return -1;
+    std::string error;
+    const std::size_t count = eshkol::registerTensorcoreBuiltins(*ctx, &error);
+    if (count == 0) {
+        eshkol_error("%s", error.empty() ?
+                     "tensorcore adapter declaration failed" : error.c_str());
+        return -1;
+    }
+    eshkol_debug("tensorcore: registered %zu canonical adapter declarations", count);
+    return static_cast<int>(count);
+}
 
 #endif  /* ESHKOL_LLVM_BACKEND_ENABLED */

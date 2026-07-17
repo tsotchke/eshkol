@@ -5098,6 +5098,7 @@ int main(int argc, char **argv)
         if (!append_host_runtime_link_args(link_args)) {
             return 1;
         }
+        append_space_separated_link_args(ESHKOL_HOST_TENSORCORE_LINK_ARGS, link_args);
 
         // libeshkol-runtime is a generated-program-only archive and has no
         // LLVM dependencies. Replaying the compiler process's LLVM closure
