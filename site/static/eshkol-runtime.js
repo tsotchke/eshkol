@@ -225,19 +225,43 @@ class EshkolRuntime {
         });
         // Inline code
         html = html.replace(/`([^`]+)`/g, '<code style="background:#0d0d15;padding:2px 6px;border-radius:4px;font-size:0.85em;color:#a78bfa">$1</code>');
-        // Headers
-        html = html.replace(/^######\s+(.+)$/gm, '<h6 style="margin-top:1.5em;margin-bottom:0.3em;font-size:0.85rem;color:#a0a0b8">$1</h6>');
-        html = html.replace(/^#####\s+(.+)$/gm, '<h5 style="margin-top:1.5em;margin-bottom:0.3em;font-size:0.9rem;color:#a0a0b8">$1</h5>');
-        html = html.replace(/^####\s+(.+)$/gm, '<h4 style="margin-top:1.8em;margin-bottom:0.4em;font-size:1rem;color:#a0a0b8">$1</h4>');
-        html = html.replace(/^###\s+(.+)$/gm, '<h3 style="margin-top:2em;margin-bottom:0.5em;font-size:1.2rem;color:#e8e8f0">$1</h3>');
-        html = html.replace(/^##\s+(.+)$/gm, '<h2 style="margin-top:2.5em;margin-bottom:0.5em;font-size:1.5rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em">$1</h2>');
-        html = html.replace(/^#\s+(.+)$/gm, '<h1 style="margin-top:2em;margin-bottom:0.5em;font-size:2rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em">$1</h1>');
+        // Headers — each carries a GitHub-style slug id so in-document TOC
+        // links and /docs#section deep links have anchors to land on.
+        const usedSlugs = new Map();
+        const headingId = (text) => {
+            let slug = text
+                .replace(/<[^>]+>/g, '')
+                .toLowerCase()
+                .replace(/[^a-z0-9\s_-]/g, '')
+                .trim()
+                .replace(/[\s_]+/g, '-');
+            const seen = usedSlugs.get(slug);
+            usedSlugs.set(slug, (seen || 0) + 1);
+            if (seen) slug = `${slug}-${seen}`;
+            return slug;
+        };
+        const HEADING_STYLES = {
+            1: 'margin-top:2em;margin-bottom:0.5em;font-size:2rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em',
+            2: 'margin-top:2.5em;margin-bottom:0.5em;font-size:1.5rem;color:#e8e8f0;border-bottom:1px solid #2a2a3a;padding-bottom:0.3em',
+            3: 'margin-top:2em;margin-bottom:0.5em;font-size:1.2rem;color:#e8e8f0',
+            4: 'margin-top:1.8em;margin-bottom:0.4em;font-size:1rem;color:#a0a0b8',
+            5: 'margin-top:1.5em;margin-bottom:0.3em;font-size:0.9rem;color:#a0a0b8',
+            6: 'margin-top:1.5em;margin-bottom:0.3em;font-size:0.85rem;color:#a0a0b8',
+        };
+        for (let level = 6; level >= 1; level--) {
+            const re = new RegExp(`^#{${level}}\\s+(.+)$`, 'gm');
+            html = html.replace(re, (_, text) =>
+                `<h${level} id="${headingId(text)}" style="${HEADING_STYLES[level]}">${text}</h${level}>`);
+        }
         // Bold and italic
         html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
         html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
         html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
         // Links
-        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:#a78bfa">$1</a>');
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) =>
+            href.startsWith('#')
+                ? `<a href="${href}" style="color:#a78bfa">${text}</a>`
+                : `<a href="${href}" target="_blank" style="color:#a78bfa">${text}</a>`);
         // Images (just show as links)
         html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<em>[$1]</em>');
         // Blockquotes
@@ -991,6 +1015,13 @@ class EshkolRuntime {
                         }).then(text => {
                             // Render markdown to HTML with syntax highlighting
                             target.innerHTML = rt.renderMarkdown(text);
+                            // Deep links (/docs#section): the anchor only
+                            // exists after this async load, so scroll now.
+                            const fragment = decodeURIComponent(window.location.hash.slice(1));
+                            if (fragment) {
+                                const anchor = document.getElementById(fragment);
+                                if (anchor) anchor.scrollIntoView();
+                            }
                         }).catch(e => {
                             target.innerHTML = '<p style="color:#ff4444">Failed to load: ' + e.message + '</p>';
                         });
