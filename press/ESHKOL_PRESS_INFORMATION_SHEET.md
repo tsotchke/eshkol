@@ -2,8 +2,9 @@
 
 For trade-press and academic readers preparing coverage of the v1.3 release
 line — arbitrary-order automatic differentiation, full R7RS conformance,
-and resident/daemon-workload robustness — and the SDNC paper artefact it
-carries.
+resident/daemon-workload robustness, and, as of v1.3.3-evolve, opt-in
+differentiable quantum computing with post-quantum cryptography — and the
+SDNC paper artefact it carries.
 
 ---
 
@@ -14,7 +15,7 @@ carries.
 | Project | Eshkol |
 | Version | v1.3.3-evolve |
 | Builds on | v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 10 July 2026 |
+| Release date | 16 July 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -43,10 +44,21 @@ persisted state — that makes an Eshkol program safe to run unattended as a
 daemon, plus a comprehensive documentation pass across the public embedding
 API. v1.3.2-evolve extended that memory-safety work to the logic/workspace
 heap subtypes and made region scoping thread-safe under `parallel-map`.
-v1.3.3-evolve closes out that series with the last heap subtype, `PROMISE`,
-and — separately — replaces an overstated v1.3.2-evolve automatic-differentiation
-claim with the real fix: exact gradients through the `input2` path for
-first-class losses and vector/learnable gamma.
+v1.3.3-evolve is the largest step in the line: an opt-in quantum computing
+stack — Moonlab state-vector simulation, a variational quantum eigensolver
+whose gradients flow through Eshkol's own automatic differentiation via new
+custom-VJP tape nodes, a CHSH Bell-inequality gate, Bell-verified quantum
+randomness, and ML-KEM (FIPS 203) post-quantum cryptography — alongside real
+`make-parameter`/`parameterize` dynamic parameters, the `core.dbsp`
+incremental-dataflow module, bignum-capable exact rationals, and one-pass
+reverse-mode gradients. The same release ran a silent-wrong-answer
+correctness campaign driven by two new generative exposure engines, closing
+several bytecode-VM silent-miscompile classes, tail-call gaps in six special
+forms, and a 26x `--wasm` size regression; it also closes out the
+region-evacuator series with the last heap subtype, `PROMISE`, and replaces
+an overstated v1.3.2-evolve automatic-differentiation claim with the real
+fix: exact gradients through the `input2` path for first-class losses and
+vector/learnable gamma.
 
 ---
 
@@ -107,10 +119,10 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 |:---|---:|:---|
 | Main LLVM codegen | 33,962 | *lib/backend/llvm_codegen.cpp* |
 | Total LLVM backend (main + ~30 modules) | ≈85,500 | *lib/backend/* |
-| Autodiff codegen (order ≤ 2) | 9,205 | *lib/backend/autodiff_codegen.cpp* |
+| Autodiff codegen (order ≤ 2, incl. custom-VJP) | ≈12,600 | *lib/backend/autodiff_codegen.cpp* |
 | Taylor-tower runtime (arbitrary order) | ≈1,460 | *lib/core/runtime_taylor.c*, *lib/core/taylor_recurrences.def* |
 | Taylor-tower stdlib modules (GUW, tensor towers, models, checkpointing, numerics, sparse) | ≈2,270 | *lib/core/ad/{guw,tensor_tower,taylor_models,checkpoint,taylor_numerics,sparse_guw,interval}.esk* |
-| Backward-mode kernels | 1,321 | *lib/backend/tensor_backward.cpp* |
+| Backward-mode kernels | ≈1,400 | *lib/backend/tensor_backward.cpp* |
 | String / I/O / JSON / CSV | 3,293 | *lib/backend/string_io_codegen.cpp* |
 | Work-stealing parallel codegen | 2,601 | *lib/backend/parallel_llvm_codegen.cpp* |
 | Arithmetic (incl. bignum/rational/complex) | 2,491 | *lib/backend/arithmetic_codegen.cpp* |
@@ -118,15 +130,18 @@ See *lib/frontend/parser.cpp*, *lib/frontend/macro_expander.cpp*, and
 | Parser | 8,354 | *lib/frontend/parser.cpp* |
 | Macro expander | 861 | *lib/frontend/macro_expander.cpp* |
 | Type checker | 1,999 | *lib/types/type_checker.cpp* |
-| Arena memory | 6,186 | *lib/core/arena_memory.cpp* |
+| Arena memory | ≈1,535 | *lib/core/arena_memory.h* and *lib/core/runtime_arena_\*.cpp* |
 | S-expression reader (iterative as of v1.3.1-evolve) | 555 | *lib/core/runtime_reader_hosted.cpp* |
-| Logic engine | 805 | *lib/core/logic.cpp* |
-| Active-inference engine | 912 | *lib/core/inference.cpp* |
-| Global workspace | 308 | *lib/core/workspace.cpp* |
-| Weight-matrix transformer | ≈6,800 | *lib/backend/weight_matrices.c* |
+| Logic engine | ≈1,180 | *lib/core/logic.cpp* |
+| Active-inference engine | ≈1,200 | *lib/core/inference.cpp* |
+| Global workspace | 354 | *lib/core/workspace.cpp* |
+| Quantum FFI (opt-in, v1.3.3-evolve) | ≈1,450 | *lib/agent/quantum.esk*, *lib/agent/c/agent_quantum.c* |
+| ML-KEM post-quantum KEM (opt-in, v1.3.3-evolve) | ≈520 | *lib/agent/pqc.esk*, *lib/agent/c/agent_pqc.c* |
+| Incremental dataflow (v1.3.3-evolve) | 448 | *lib/core/dbsp.esk* |
+| Weight-matrix transformer | ≈7,500 | *lib/backend/weight_matrices.c* |
 | Bytecode VM + runtime libs | ≈41,000 | *lib/backend/eshkol_vm.c* and runtime |
 
-Total compiler infrastructure is approximately 232,000 lines of C17 and C++20
+Total compiler infrastructure is approximately 286,000 lines of C17 and C++20
 across more than 130 files (*docs/DESIGN.md §Implementation Scale*). v1.3.1-evolve
 added roughly 12,600 lines of Doxygen-format documentation across 116 files —
 50 of the 64 public headers under `inc/eshkol/` (≈4,650 lines) and 56
@@ -148,8 +163,11 @@ Targets currently supported:
 - WebAssembly, via `eshkol-run --wasm` (self-contained module, does not fall
   through to a native link step)
 
-CI is green across all 14 lanes, including windows-arm64 (lite, XLA, and
-CUDA variants) (*README.md §Platform*).
+CI is green across all 14 lanes: Linux and macOS (x64/ARM64) each cover
+lite/XLA/CUDA-capable variants, Windows x64 ships lite, XLA, and CUDA, and
+Windows ARM64 ships lite and XLA. Windows ARM64 CUDA is not offered because
+NVIDIA does not provide the required toolkit for that target
+(*README.md §Platform*).
 
 ### Positioning
 
@@ -236,7 +254,7 @@ consists of:
   `WORKSPACE`) in v1.3.2-evolve, and `PROMISE` in v1.3.3-evolve, which closes
   the series. `ESHKOL_ARENA_POISON=1` poisons `arena_destroy`'d memory so any
   remaining gap in that coverage crashes loudly instead of corrupting
-  silently. See *lib/core/arena_memory.cpp* and *lib/backend/llvm_codegen.cpp*.
+  silently. See *lib/core/runtime_regions.cpp* and *lib/backend/llvm_codegen.cpp*.
 - Optional linear types via `(owned ...)`, `(borrow value body)`, and
   `(shared ...)`; the third activates reference counting against the
   header's 16-bit `ref_count` field (*README.md §Memory architecture*).
@@ -257,8 +275,13 @@ byte on each tagged value.
 - **bignum**: Arbitrary-precision integers as `HEAP_PTR` with subtype 11.
   Automatic promotion on int64 overflow and demotion when the result fits
   in 64 bits again.
-- **rational**: Exact fractions as bignum pairs (subtype 19), always reduced
-  via GCD.
+- **rational**: Exact fractions (subtype 19), always reduced via GCD. As of
+  v1.3.3-evolve the representation is a canonical discriminated union: a
+  zero-allocation int64 numerator/denominator fast path, with a bignum
+  numerator/denominator pair taken only on overflow — so exact rationals no
+  longer degrade to double at bignum magnitudes, and bignum-magnitude
+  rational literals parse. Verified byte-identical against Python
+  `Fraction`.
 - **double**: IEEE 754 64-bit floats (inexact).
 - **complex**: Heap-allocated `{real:f64, imag:f64}` with Smith's-formula
   division.
@@ -292,8 +315,27 @@ activations) recorded onto a Wengert tape during the forward pass. The tape
 is topologically sorted and walked in reverse during gradient construction.
 A 32-level tape stack enables nested gradients for Hessians, natural
 gradient, and meta-learning constructions. See
-*lib/backend/autodiff_codegen.cpp* (9,205 lines) and
-*lib/backend/tensor_backward.cpp* (1,321 lines).
+*lib/backend/autodiff_codegen.cpp* (≈12,600 lines) and
+*lib/backend/tensor_backward.cpp* (≈1,400 lines).
+
+**Custom-VJP tape nodes (new in v1.3.3-evolve).** A new reverse-mode tape
+node (`AD_NODE_CUSTOM`) carries an externally supplied vector-Jacobian
+product, so a foreign/FFI computation with a known adjoint participates
+exactly in reverse-mode AD rather than through a finite-difference
+approximation. First user: Moonlab's VQE gradient is bridged into the tape,
+making `(vqe-energy ...)` differentiable through ordinary `gradient` code —
+the release gate requires the bridged adjoint to match Moonlab's native
+adjoint to within `1e-8` and a central finite difference to within `1e-4`,
+and a VQE custom-VJP probe now sits permanently in the AD adversarial
+oracle.
+
+**One-pass reverse gradients and AD introspection (staged-kernel Phase A,
+new in v1.3.3-evolve).** The per-component gradient replay is collapsed into
+one primal plus one reverse pass reading every input gradient from the tape
+(N primal calls become one, verified at N=4 and N=64), with a runtime
+mixed-record guard keeping mixed-mode reverse-over-forward on the proven
+per-component path. New `(ad-counters)`/`(ad-primal-calls)` builtins expose
+primal-call/reverse-pass/tape counters to Scheme.
 
 **Arbitrary-order mode (Taylor towers, new in v1.3.0-evolve).** A closed-recurrence
 engine (`lib/core/taylor_recurrences.def`, `lib/core/runtime_taylor.c`)
@@ -392,7 +434,7 @@ logic-var?  substitution?  kb?  fact?
 Logic variables use the `?x` syntax, which the parser transforms into
 `ESHKOL_LOGIC_VAR_OP` AST nodes. The leading `?` is a valid R7RS identifier
 start character, so the syntax requires no grammar change. Implementation:
-*lib/core/logic.cpp* (805 lines).
+*lib/core/logic.cpp* (≈1,180 lines).
 
 **Active inference (Friston's free-energy principle, 2010)**
 
@@ -405,7 +447,7 @@ factor-graph?
 The runtime supports belief propagation, CPT updates (which enable real
 learning by mutating the CPT and resetting messages so beliefs reconverge),
 and both variational free energy and expected free energy. Implementation:
-*lib/core/inference.cpp* (912 lines).
+*lib/core/inference.cpp* (≈1,200 lines).
 
 **Global workspace theory (Baars 1988; Bengio 2017 computational formulation)**
 
@@ -417,7 +459,7 @@ make-workspace  ws-register!  ws-step!  workspace?
 registered closures via the closure dispatcher, and C runtime helpers
 (`eshkol_ws_make_content_tensor`, `eshkol_ws_step_finalize`) handle
 content-tensor wrapping and softmax broadcast.
-Implementation: *lib/core/workspace.cpp* (308 lines).
+Implementation: *lib/core/workspace.cpp* (354 lines).
 
 Heap subtypes assigned to these objects:
 `HEAP_SUBTYPE_SUBSTITUTION = 12`, `HEAP_SUBTYPE_FACT = 13`,
@@ -562,11 +604,20 @@ Coverage:
   feed-forward, embedding)
 - 6 data-loading ops (make-dataloader, dataloader-next, dataloader-reset!,
   dataloader-length, dataloader-has-next?, train-test-split)
+- `agent.quantum` builtins (opt-in, built with `-DESHKOL_QUANTUM_ENABLED=ON`):
+  state creation/teardown, Hadamard/Pauli/CNOT/rotation gates,
+  `measure`/`expectation-z`, H2/LiH/H2O molecular Hamiltonians, VQE
+  energy/gradient/optimise, the `bell-chsh` CHSH experiment, and
+  `with-quantum-state`/`with-hamiltonian` helpers — plus `agent.pqc`'s
+  ML-KEM `mlkem-keygen`/`mlkem-encaps`/`mlkem-decaps` builtins
 
 All ML builtins integrate with reverse-mode AD: calling `gradient` on any
 composition produces an exact gradient, and — since v1.3.0-evolve —
 tensor-valued Taylor towers (`core.ad.tensor_tower`) extend arbitrary-order
-differentiation through `matmul`/`conv2d`/activations as well. The conv2d
+differentiation through `matmul`/`conv2d`/activations as well. As of
+v1.3.3-evolve that includes the quantum VQE energy: Moonlab's exact adjoint
+gradient enters the reverse tape through a custom-VJP node, so a variational
+quantum circuit differentiates like any other composition. The conv2d
 backward pass uses stride-based scatter/gather indexing that doesn't map
 cleanly to GEMM, and LayerNorm/BatchNorm backward are inherently sequential
 reductions; see *docs/KNOWN_ISSUES.md* for the current, itemized state of
@@ -629,7 +680,10 @@ added Doxygen documentation across every agent-FFI implementation file in
   events; recognises `runtime_event` compact dict form and explicit
   `kind` JSON records). Hardened in v1.3.3-evolve (#232) to also check
   region-evacuator poison coverage and the corrected `input2` gradient
-  gate. ICC readiness oracle reports 100/100, trace-verified.
+  gate, and extended with the release's two generative exposure engines
+  (the multi-oracle differential harness and the AD-vs-finite-difference
+  adversarial oracle) as permanent release gates. ICC readiness oracle
+  reports 100/100, trace-verified.
 
 ---
 
@@ -670,19 +724,44 @@ change.
 
 ## Hardening and robustness posture
 
-**v1.3.3-evolve (current release).** Corrects an overstated AD claim and
-finishes the region-evacuator series:
+**v1.3.3-evolve (current release).** Alongside the quantum, post-quantum,
+dynamic-parameter, incremental-dataflow, and exact-rational features
+described elsewhere in this sheet, the release ran a silent-wrong-answer
+correctness campaign driven by two new generative exposure engines, both
+wired permanently into the ICC release oracle:
 
+- **Generative multi-oracle differential harness**: deterministically grown
+  R7RS-subset programs cross-checked against chibi-scheme, JIT, AOT at
+  O0/O2, and the bytecode VM, plus metamorphic invariants. It exposed
+  several VM silent-miscompile classes — all fixed, including real
+  bignum-aware VM arithmetic and comparisons and exact large-integer
+  literals.
+- **Generative AD-vs-finite-difference adversarial oracle**: 147 probes /
+  436 component checks across 21 generated files under JIT and AOT, where a
+  zero AD gradient at a point where finite differences are nonzero is a
+  hard failure. It drove root fixes for every known silent-zero
+  gradient/Hessian path found by the harness.
+- **TCO for `cond`/`case`/`when`/`unless`/`and`/`or`** (#254):
+  self-tail-recursion in all six forms now compiles to real loop back-edges
+  (previously SIGBUS around 2M iterations unless written with `if`);
+  verified to 2,000,000 iterations, JIT and AOT.
+- **Scalable, stable `sort`/`filter`** (#244, #266): both are now
+  accumulator tail loops, and the list merge sort was replaced with a
+  stable bottom-up vector merge sort — 2M elements at ~362 MiB peak instead
+  of ~32 GB retained.
 - **Exact `input2` gradients for first-class losses and vector/learnable
   gamma** (#229): the real fix for a v1.3.2-evolve CHANGELOG claim that an
   adversarial audit found to be a no-op. See *Automatic differentiation*
   above for the full description.
-- **Region-escape evacuator covers `PROMISE`** (ESH-0214e, #230): closes
-  the ESH-0214 series (a through e). Verified flat at ~116 MB under
-  `ESHKOL_ARENA_POISON=1` over escape-then-force for both `delay` and
-  `make-promise`.
-- **ICC oracle hardening** (#232): the two fixes above are now load-bearing
-  release gates, not one-off verifications.
+- **Region-escape evacuator covers `PROMISE`** (ESH-0214e, #230) and the
+  bignum-rational and parameter-object write-barrier follow-ups (#265,
+  #267): closes the ESH-0214 series (a through e). Verified flat at
+  ~116 MB under `ESHKOL_ARENA_POISON=1` over escape-then-force for both
+  `delay` and `make-promise`.
+- **ICC oracle hardening** (#232): the `input2` and evacuator fixes above
+  are now load-bearing release gates, not one-off verifications — and, with
+  quantum enabled, Bell-pair (200/200), CHSH (S ≈ 2.86, gate 2.4 < S ≤ 2.95),
+  VQE-vs-exact-energy, and ML-KEM NIST-KAT gates join the matrix.
 
 **v1.3.2-evolve.** Deepened the memory-safety and concurrency work:
 
@@ -741,6 +820,10 @@ itemized table with severities and resolutions.
 
 Eshkol compiles to WebAssembly via `eshkol-run --wasm`, producing a
 self-contained module that does not fall through to a native link step.
+As of v1.3.3-evolve, `--wasm` output dead-strips unused stdlib, closing a
+26x size regression on a small program that genuinely uses the stdlib:
+5.57 MB → 60 KB (635 → 21 functions), with first-class functions and native
+homoiconic display preserved, and a CI size gate now guards the bound.
 
 The project website at https://eshkol.ai is itself an Eshkol program,
 compiled to WebAssembly and served by GitHub Pages. The site embeds a
@@ -763,14 +846,18 @@ independent value representations:
 
 - **LLVM native** (primary). 16-byte tagged values, ~30 codegen modules,
   ~85,500 lines, the default for `eshkol-run`.
-- **Bytecode VM** (*lib/backend/eshkol_vm.c*). A register-plus-stack
-  interpreter with 250+ native call IDs, ESKB binary file format
-  (section-based, LEB128, CRC32). Invoked via `eshkol-run input.esk -B
+- **Bytecode VM** (*lib/backend/eshkol_vm.c* plus its 32 *vm_\*.c* modules). A
+  register-plus-stack interpreter with 250+ native call IDs, ESKB binary file
+  format (section-based, LEB128, CRC32). Invoked via `eshkol-run input.esk -B
   output.eskb`. Coverage: arithmetic, closures, continuations, exception
   handling, tensors, complex / rational / bignum, logic / inference /
-  workspace, hash tables, bytevectors, parameters, I/O.
+  workspace, hash tables, bytevectors, parameters, I/O. As of v1.3.3-evolve,
+  `make-parameter`/`parameterize` are genuine runtime dynamic parameter
+  objects — converters, a dynamic binding stack, correct unwinding — on both
+  the native and VM execution paths, replacing a parser-level closure
+  rewrite.
 
-The weight-matrix transformer (*lib/backend/weight_matrices.c*, ~6,800
+The weight-matrix transformer (*lib/backend/weight_matrices.c*, ~7,500
 lines) is a third execution surface that exists for the SDNC paper and
 the qLLM/transformer weight-loading pipeline. The strict-artefact contract
 is 123 of 123 traced programs verified three ways (reference interpreter =
@@ -802,7 +889,10 @@ Namespaces:
 - `ml.*` — Adam, AdamW, L-BFGS, conjugate gradient, learning-rate
   schedulers
 - `random.*` — PRNG with explicit seeding (`seed-prng!`), per-stream
-  isolation, quantum-inspired RNG
+  isolation; as of v1.3.3-evolve `quantum-random` and friends draw from
+  Moonlab's Bell-verified QRNG when the opt-in quantum build is enabled,
+  and are honestly labeled as a classical fallback when it is not
+  (`eshkol_qrng_source_label()` reports which source is active)
 - `web.*` — WASM / DOM API, HTTP fetch
 - `tensor.*` — shape manipulation, stacking, broadcasting helpers
 - `core.blc` — Binary Lambda Calculus, added in v1.3.2-evolve. A pure-Eshkol
@@ -812,6 +902,22 @@ Namespaces:
   232-bit universal machine (`blc-U`), BLC8 byte I/O, and ASCII lambda
   diagrams. Loaded on demand via `(require core.blc)`. See
   *docs/guide/BINARY_LAMBDA_CALCULUS.md*.
+- `core.dbsp` — incremental dataflow, added in v1.3.3-evolve: Z-sets
+  (weighted multisets) as a commutative group, the `z^-1`/`D`/`I` stream
+  operators, incremental relational operators (including the three-term
+  incremental join and multiplicity-correct `distinct`), and the generic
+  incrementalizer `Q^Δ = D ∘ lift(Q) ∘ I`, in pure Eshkol. Acceptance gate
+  27/27 under JIT and AOT. See *lib/core/dbsp.esk*.
+- `agent.quantum` — Moonlab quantum state-vector simulation, added in
+  v1.3.3-evolve: state creation, gates, measurement, expectation values,
+  VQE with molecular Hamiltonians, and the `bell-chsh` CHSH experiment.
+  Opt-in: built when the compiler is configured with
+  `-DESHKOL_QUANTUM_ENABLED=ON`. See *lib/agent/quantum.esk*.
+- `agent.pqc` — ML-KEM (FIPS 203) post-quantum key encapsulation, added in
+  v1.3.3-evolve: `mlkem-keygen`/`mlkem-encaps`/`mlkem-decaps` at the
+  512/768/1024 security levels over R7RS bytevectors, NIST-KAT-verified.
+  Opt-in via `ESHKOL_QUANTUM_ENABLED`, with honest not-enabled stubs
+  otherwise. See *lib/agent/pqc.esk*.
 
 The stdlib uses `LinkOnceODR` linkage so user redefinitions cleanly
 shadow stdlib functions without the historical "duplicate symbol"
