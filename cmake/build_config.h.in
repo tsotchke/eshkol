@@ -10,6 +10,7 @@
 #define ESHKOL_HOST_RUNTIME_LINK_ARGS "@ESHKOL_HOST_RUNTIME_LINK_ARGS@"
 #define ESHKOL_HOST_BLAS_LINK_ARGS "@ESHKOL_HOST_BLAS_LINK_ARGS@"
 #define ESHKOL_HOST_LLVM_LINK_ARGS "@ESHKOL_HOST_LLVM_LINK_ARGS@"
+#define ESHKOL_HOST_TENSORCORE_LINK_ARGS "@ESHKOL_HOST_TENSORCORE_LINK_ARGS@"
 
 /* Agent-FFI link arguments. When the user's source contains any
  * (require agent.…) form, the AOT link step splices these into the
