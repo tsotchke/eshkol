@@ -34,6 +34,34 @@ brew install eshkol
 sudo dpkg -i eshkol_*.deb
 ```
 
+### Linux (from source, any distribution)
+
+Eshkol requires LLVM 21, which most distributions do not ship by default.
+The universal build script detects your distro family, provisions LLVM 21
+and the build dependencies for it, and then configures and builds:
+
+```bash
+git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+scripts/build-linux.sh            # deps + configure + build
+scripts/build-linux.sh --ctest    # also run the test suite
+```
+
+Supported families:
+
+| Family | Distributions | LLVM 21 source |
+|---|---|---|
+| debian | Debian, Ubuntu, Linux Mint, LMDE, Pop!_OS, elementary, Kali | apt.llvm.org (base codename resolved automatically; Mint's own codename is never used) |
+| arch | Arch, Manjaro, EndeavourOS, CachyOS | pacman (current llvm when it is major 21, else the versioned llvm21 legacy packages) |
+| fedora | Fedora, RHEL, CentOS Stream, Rocky, Alma | dnf (default LLVM when it is 21, else the versioned llvm21 packages) |
+| suse | openSUSE Tumbleweed, Leap | zypper (versioned llvm21 packages) |
+| alpine | Alpine | apk (musl libc; experimental, not a release platform; run `apk add bash` first) |
+
+Mint users can equivalently run `scripts/build-linux-mint.sh` (a shim for
+the same script). If a Debian-derivative's apt.llvm.org suite cannot be
+resolved automatically, set `ESHKOL_BASE_CODENAME=jammy` (or
+`noble`/`bookworm`) and rerun.
+
 ### Windows (Visual Studio 2022 + LLVM 21)
 
 ```powershell
