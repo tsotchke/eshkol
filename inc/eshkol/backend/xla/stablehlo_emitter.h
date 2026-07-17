@@ -32,6 +32,7 @@ enum class StableHLOOp {
     ADD,       // Element-wise addition
     SUBTRACT,  // Element-wise subtraction
     MULTIPLY,  // Element-wise multiplication
+    /** Element-wise division. */
     DIVIDE,    // Element-wise division
     NEGATE,    // Element-wise negation
     ABS,       // Element-wise absolute value
@@ -49,8 +50,10 @@ enum class StableHLOOp {
 
     // Shape
     RESHAPE,     // Change tensor shape without changing data
+    /** Expand a tensor along new/size-1 dimensions. */
     BROADCAST,   // Expand a tensor along new/size-1 dimensions
     SLICE,       // Extract a sub-tensor
+    /** Join tensors along an axis. */
     CONCATENATE, // Join tensors along an axis
 
     // Reduction

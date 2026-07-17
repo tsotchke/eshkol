@@ -26,6 +26,7 @@ enum class SIMDLevel {
     NEON = 2,       // 128-bit: 2 doubles (ARM64)
     AVX = 3,        // 256-bit: 4 doubles (x86)
     AVX2 = 4,       // 256-bit: 4 doubles + more ops (x86)
+    /** 512-bit vector width: 8 doubles per vector (x86 AVX-512). */
     AVX512 = 5      // 512-bit: 8 doubles (x86)
 };
 

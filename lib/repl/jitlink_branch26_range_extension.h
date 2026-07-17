@@ -201,6 +201,9 @@ private:
     // Collect the work first. Re-pointing existing edges in place is fine, but
     // we also create new blocks/symbols which can perturb iteration, so snapshot
     // the (block, edge-index, target, addend) tuples to act on.
+    /** Snapshot of one out-of-range Branch26PCRel edge (block, edge index,
+     *  target symbol, addend) to act on after the full graph scan below,
+     *  since re-pointing edges in place while iterating would be unsafe. */
     struct EdgeRef {
       Block *B;
       std::size_t EdgeIdx; // index into the block's edge list at snapshot time

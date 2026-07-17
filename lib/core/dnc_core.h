@@ -30,20 +30,21 @@
 #include <stddef.h>
 #include <math.h>
 
-/* sigmoid (double) mirroring diff_memory_prototype.c's sigmoidd saturation. */
+/** Sigmoid (double), saturating outside [-40, 40] to avoid exp() overflow;
+ *  mirrors diff_memory_prototype.c's sigmoidd(). */
 static inline double dnc_sigmoidd(double x) {
     if (x > 40.0) return 1.0;
     if (x < -40.0) return 0.0;
     return 1.0 / (1.0 + exp(-x));
 }
 
-/* Generalized indicator bump at integer address k, evaluated at x.
- * Identical in form to diff_memory_prototype.c's indicator(); beta plays SCALE. */
+/** Generalized indicator bump at integer address k, evaluated at x.
+ *  Identical in form to diff_memory_prototype.c's indicator(); beta plays SCALE. */
 static inline double dnc_indicator(double x, double k, double beta) {
     return dnc_sigmoidd(beta * (x - k + 0.5)) - dnc_sigmoidd(beta * (x - k - 0.5));
 }
 
-/* Numerically stable softmax of logits[n] into out[n] (mirror softmax). */
+/** Numerically stable softmax of logits[n] into out[n] (mirror softmax). */
 static inline void dnc_softmax(const double *logits, int n, double *out) {
     double m = logits[0];
     for (int i = 1; i < n; i++) if (logits[i] > m) m = logits[i];
@@ -52,7 +53,7 @@ static inline void dnc_softmax(const double *logits, int n, double *out) {
     for (int i = 0; i < n; i++) out[i] /= s;
 }
 
-/* Location addressing: indicator bump over N rows, normalized (mirror loc_weights). */
+/** Location addressing: indicator bump over N rows, normalized (mirror loc_weights). */
 static inline void dnc_loc_weights(double addr, double beta, int N, double *w) {
     for (int i = 0; i < N; i++) w[i] = dnc_indicator(addr, (double)i, beta);
     double s = 0.0;
@@ -60,7 +61,7 @@ static inline void dnc_loc_weights(double addr, double beta, int N, double *w) {
     if (s > 1e-300) for (int i = 0; i < N; i++) w[i] /= s;
 }
 
-/* cosine_sim over n dims (mirror cosine_sim). */
+/** Cosine similarity between vectors a and b over n dims (mirror cosine_sim). */
 static inline double dnc_cosine_sim(const double *a, const double *b, int n) {
     double dot = 0.0, na = 0.0, nb = 0.0;
     for (int i = 0; i < n; i++) { dot += a[i]*b[i]; na += a[i]*a[i]; nb += b[i]*b[i]; }
@@ -68,8 +69,8 @@ static inline double dnc_cosine_sim(const double *a, const double *b, int n) {
     return dot / denom;
 }
 
-/* Content addressing: softmax(beta * cosine(key, row_i)) over N rows
- * (mirror content_weights). mem is row-major N x W. */
+/** Content addressing: softmax(beta * cosine(key, row_i)) over N rows
+ *  (mirror content_weights). mem is row-major N x W. */
 static inline void dnc_content_weights(const double *mem, int N, int W,
                                        const double *key, double beta, double *w) {
     /* logits buffer is caller-free: compute into w then softmax in place via tmp. */
@@ -83,7 +84,7 @@ static inline void dnc_content_weights(const double *mem, int N, int W,
     for (int i = 0; i < N; i++) w[i] /= s;
 }
 
-/* read = sum_i w_i * mem[i] (mirror read_mem). out length W. */
+/** Weighted read: out = sum_i w_i * mem[i] (mirror read_mem). out length W. */
 static inline void dnc_read_mem(const double *mem, int N, int W,
                                 const double *w, double *out) {
     for (int j = 0; j < W; j++) {
@@ -93,8 +94,8 @@ static inline void dnc_read_mem(const double *mem, int N, int W,
     }
 }
 
-/* NTM erase/add: mem[i] = mem[i]*(1 - w_i*erase) + w_i*add; usage[i]+=w_i
- * (mirror write_mem). */
+/** NTM erase/add: mem[i] = mem[i]*(1 - w_i*erase) + w_i*add; usage[i]+=w_i
+ *  (mirror write_mem). */
 static inline void dnc_write_mem(double *mem, double *usage, int N, int W,
                                  const double *w, const double *erase, const double *add) {
     for (int i = 0; i < N; i++) {
@@ -106,20 +107,21 @@ static inline void dnc_write_mem(double *mem, double *usage, int N, int W,
     }
 }
 
-/* Allocation: softmax(-beta * usage) (mirror alloc_weights). */
+/** Allocation weighting: softmax(-beta * usage), favoring least-used rows
+ *  (mirror alloc_weights). */
 static inline void dnc_alloc_weights(const double *usage, int N, double beta, double *w) {
     for (int i = 0; i < N; i++) w[i] = -beta * usage[i];
     dnc_softmax(w, N, w);
 }
 
-/* Backprop through L = 0.5 * sum_j (read_j - target_j)^2, read = sum_i w_i M_i,
- * w = softmax(beta * cosine(key, M_i)). Fills grad_key[W] = dL/dkey and the full
- * grad_mem[N*W] = dL/dM (row-major). Returns L. Mirror loss_and_grads, extended
- * from the prototype's single-row grad_row to the full memory gradient (each row
- * enters BOTH the read and its own similarity term — identical per-row formula).
+/** Backprop through L = 0.5 * sum_j (read_j - target_j)^2, read = sum_i w_i M_i,
+ *  w = softmax(beta * cosine(key, M_i)). Fills grad_key[W] = dL/dkey and the full
+ *  grad_mem[N*W] = dL/dM (row-major). Returns L. Mirror loss_and_grads, extended
+ *  from the prototype's single-row grad_row to the full memory gradient (each row
+ *  enters BOTH the read and its own similarity term — identical per-row formula).
  *
- * Scratch arrays (caller-allocated, never freed here): s[N], wv[N], rd[W],
- * dread[W], dw[N], ds[N]. */
+ *  Scratch arrays (caller-allocated, never freed here): s[N], wv[N], rd[W],
+ *  dread[W], dw[N], ds[N]. */
 static inline double dnc_loss_and_grads(const double *mem, int N, int W,
                                         const double *key, const double *target, double beta,
                                         double *grad_key, double *grad_mem,

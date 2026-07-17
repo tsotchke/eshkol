@@ -3792,6 +3792,11 @@ extern "C" {
 #endif
 
 #ifdef ESHKOL_HAS_ASAN
+/**
+ * LeakSanitizer options hook, picked up automatically by the LSan runtime.
+ * Disables the nonzero exit code on leaks and suppression-list printing so
+ * CI/sanitizer runs of eshkol-run don't fail on informational leak reports.
+ */
 extern "C" const char* __lsan_default_options(void) {
     return "exitcode=0:print_suppressions=0:report_objects=1";
 }

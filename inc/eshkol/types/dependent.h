@@ -151,6 +151,12 @@ public:
     }
 
     // Comparison operations for dimension checking
+    /**
+     * Three-valued result of a compile-time comparison between two
+     * CTValue instances: definitely true/false, or Unknown when at
+     * least one side depends on a runtime value and can't be
+     * statically resolved.
+     */
     enum class CompareResult {
         True,      // Definitely true
         False,     // Definitely false

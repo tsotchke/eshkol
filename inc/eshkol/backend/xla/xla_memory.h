@@ -36,6 +36,7 @@ struct TensorType;
 enum class MemoryStrategy {
     ZERO_COPY,      // Use arena memory directly (CPU only)
     PINNED,         // Pin arena memory for efficient GPU transfer
+    /** Allocate a dedicated device-side buffer with explicit host<->device transfer. */
     DEVICE_ALLOC,   // Allocate on device, explicit transfer
     UNIFIED         // Unified memory (CPU/GPU share address space)
 };
