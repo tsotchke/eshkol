@@ -254,15 +254,21 @@ configure_build() {
     if ! llvm_config="$(first_executable \
         "llvm-config-${LLVM_VERSION}" \
         "/usr/lib/llvm-${LLVM_VERSION}/bin/llvm-config" \
+        "/usr/lib64/llvm${LLVM_VERSION}/bin/llvm-config" \
+        "/usr/lib/llvm${LLVM_VERSION}/bin/llvm-config" \
         llvm-config)"; then
         echo "unable to find llvm-config; rerun with --install-deps or install llvm-dev" >&2
         exit 5
     fi
-    if ! cc="$(first_executable "clang-${LLVM_VERSION}" clang cc)"; then
+    if ! cc="$(first_executable "clang-${LLVM_VERSION}" \
+        "/usr/lib64/llvm${LLVM_VERSION}/bin/clang" \
+        "/usr/lib/llvm${LLVM_VERSION}/bin/clang" clang cc)"; then
         echo "unable to find a C compiler; rerun with --install-deps or install clang" >&2
         exit 5
     fi
-    if ! cxx="$(first_executable "clang++-${LLVM_VERSION}" clang++ c++)"; then
+    if ! cxx="$(first_executable "clang++-${LLVM_VERSION}" \
+        "/usr/lib64/llvm${LLVM_VERSION}/bin/clang++" \
+        "/usr/lib/llvm${LLVM_VERSION}/bin/clang++" clang++ c++)"; then
         echo "unable to find a C++ compiler; rerun with --install-deps or install clang++" >&2
         exit 5
     fi
