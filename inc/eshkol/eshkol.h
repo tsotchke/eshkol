@@ -228,6 +228,15 @@ ESHKOL_STATIC_ASSERT(sizeof(eshkol_dual_number_t) == 16,
 // (order_k + 1) doubles. `flags` reserves a coefficient-type field and a
 // perturbation-confusion EPOCH tag so nested `derivative` levels never mix
 // (§5a). Differentiating the variable seeds {x0, 1, 0, ...}.
+/**
+ * @brief Arbitrary-order forward-mode AD Taylor series (Taylor tower).
+ *
+ * A flexible-array struct storing the truncated Taylor coefficients
+ * c[0..order_k] of f(x0 + t) around a base point. Allocated behind a
+ * tagged HEAP_PTR with subtype HEAP_SUBTYPE_TAYLOR; f^(n)(x0) = n! * c[n].
+ * See docs/design/AD_TAYLOR_TOWER.md and the ESH_TAYLOR_* flag accessors
+ * below for the packed `flags` bitfield layout.
+ */
 typedef struct esh_taylor {
     uint32_t order_k;   // highest coefficient index K (series has K+1 entries)
     uint32_t flags;     // packed: COEFF_MASK[0..7] | RESERVED0[8..15] | EPOCH_TAG[16..31]

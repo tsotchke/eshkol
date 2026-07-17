@@ -30,19 +30,30 @@
 #include <vector>
 
 // Forward declarations for real CUDA kernel launchers (in gpu_cuda_kernels.cu)
+/** Launch the elementwise unary/binary op kernel (add/sub/mul/.../sigmoid,
+ *  selected by `op`) over `n` device-resident doubles; returns 0 on success. */
 extern "C" int cuda_launch_elementwise_f64(const double* a, const double* b, double* out,
                                             int64_t n, int op, void* stream);
+/** Launch the full-array reduction kernel (sum/mean/prod/min/max, selected by
+ *  `op`) over `n` device-resident doubles, writing the scalar result to `out`. */
 extern "C" int cuda_launch_reduce_f64(const double* in, double* out, int64_t n, int op,
                                        void* stream);
+/** Launch the axis-reduction kernel, reducing the `rank`-dimensional tensor
+ *  `in` (shape `dims`) along `axis` with reduction op `op` into `out`. */
 extern "C" int cuda_launch_reduce_axis_f64(const double* in, double* out,
                                             uint64_t rank, const uint64_t* dims,
                                             uint64_t axis, int op, uint64_t out_size,
                                             void* stream);
+/** Launch the 2D matrix transpose kernel: `in` (rows x cols) -> `out` (cols x rows). */
 extern "C" int cuda_launch_transpose_f64(const double* in, double* out,
                                           uint64_t rows, uint64_t cols, void* stream);
+/** Launch the softmax kernel, normalizing each of `num_slices` contiguous
+ *  runs of `slice_len` doubles independently. */
 extern "C" int cuda_launch_softmax_f64(const double* in, double* out,
                                         uint64_t num_slices, uint64_t slice_len,
                                         void* stream);
+/** Launch the normalization kernel (batch/layer-norm forward), applying
+ *  scale `gamma`/shift `beta` with variance floor `epsilon` per slice. */
 extern "C" int cuda_launch_normalize_f64(const double* in, double* out,
                                           uint64_t num_slices, uint64_t slice_len,
                                           double gamma, double beta, double epsilon,
@@ -1074,15 +1085,23 @@ int eshkol_gpu_normalize_f64(EshkolGPUBuffer* in, EshkolGPUBuffer* out,
 // ===== Backward Pass GPU — CUDA kernel dispatch =====
 
 // Forward declarations of CUDA kernel launchers (in gpu_cuda_kernels.cu)
+/** Launch the CUDA conv2D input-gradient kernel; computes grad_input from
+ *  grad_out and the kernel weights. */
 extern int cuda_conv2d_backward_input_f64(
     const double*, const double*, double*,
     int, int, int, int, int, int, int, int, int, int, int, cudaStream_t);
+/** Launch the CUDA conv2D kernel-gradient kernel; computes grad_kernel from
+ *  grad_out and the saved input. */
 extern int cuda_conv2d_backward_kernel_f64(
     const double*, const double*, double*,
     int, int, int, int, int, int, int, int, int, int, int, cudaStream_t);
+/** Launch the CUDA batch-normalization backward kernel; computes
+ *  grad_input/grad_gamma/grad_beta from the saved forward statistics. */
 extern int cuda_batchnorm_backward_f64(
     const double*, const double*, const double*, const double*, const double*,
     double*, double*, double*, int, int, cudaStream_t);
+/** Launch the CUDA layer-normalization backward kernel; computes grad_input
+ *  from the saved forward statistics. */
 extern int cuda_layernorm_backward_f64(
     const double*, const double*, const double*, const double*, const double*,
     double*, int, int, cudaStream_t);

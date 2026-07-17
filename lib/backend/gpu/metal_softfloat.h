@@ -178,6 +178,8 @@ inline sf64 shr64_jam(sf64 x, int n) {
     return sf64(x.x >> n, ((x.y >> n) | (x.x << (32 - n))) | select(0u, 1u, lost_bits != 0));
 }
 
+/** 64-bit unsigned addition of two sf64 limb-pairs (a + b), discarding any
+ *  overflow out of the top word. */
 inline sf64 add64(sf64 a, sf64 b) {
     uint lo = a.y + b.y;
     uint carry = select(0u, 1u, lo < a.y);
@@ -185,6 +187,8 @@ inline sf64 add64(sf64 a, sf64 b) {
     return sf64(hi, lo);
 }
 
+/** 64-bit unsigned addition of two sf64 limb-pairs (a + b), reporting the
+ *  final carry-out via @p carry_out for chaining into wider additions. */
 inline sf64 add64_carry(sf64 a, sf64 b, thread bool& carry_out) {
     uint lo = a.y + b.y;
     uint c1 = select(0u, 1u, lo < a.y);
@@ -200,7 +204,7 @@ inline sf64 sub64(sf64 a, sf64 b) {
     return sf64(hi, lo);
 }
 
-// Compare magnitudes: returns -1 if a<b, 0 if a==b, 1 if a>b
+/** Compare 64-bit magnitudes: returns -1 if a<b, 0 if a==b, 1 if a>b. */
 inline int cmp64(sf64 a, sf64 b) {
     if (a.x != b.x) return (a.x < b.x) ? -1 : 1;
     if (a.y != b.y) return (a.y < b.y) ? -1 : 1;
@@ -306,6 +310,8 @@ inline sf128 sub128(sf128 a, sf128 b) {
     return sf128{sf64(w3, w2), sf64(w1, w0)};
 }
 
+/** Compare 128-bit magnitudes: returns -1 if a<b, 0 if a==b, 1 if a>b
+ *  (compares high halves first, then low halves on a tie). */
 inline int cmp128(sf128 a, sf128 b) {
     int cmp_hi = cmp64(a.hi, b.hi);
     if (cmp_hi != 0) return cmp_hi;
@@ -1640,6 +1646,8 @@ inline sf64 sf64_fma_matmul(sf64 a, sf64 b, sf64 c) {
     expP += int(overflow);
 
     // Prepare addend C: inline shl64(sigC, 10) — no branch checks (5 ops)
+    /** 128-bit addend `c`, left-shifted into alignment with the 128-bit
+     *  product `P` ahead of the fused add/subtract below. */
     sf128 C128 = sf128{sf64((sigC.x << 10) | (sigC.y >> 22), sigC.y << 10), SF64_ZERO};
 
     // Branchless alignment — one shr128_jam call, select-based routing
@@ -2207,7 +2215,8 @@ inline df64 sf64_to_df64(sf64 x) {
     return df64{hi, lo};
 }
 
-// Convert df64 → sf64 (reconstruct IEEE f64 from two f32)
+/** Convert df64 -> sf64: reconstruct an IEEE f64 (as sf64 limb-pair) from
+ *  the double-float pair `x` (x.hi + x.lo) via Knuth TwoSum reconstruction. */
 inline sf64 df64_to_sf64(df64 x) {
     // Quick path: if lo is zero, just convert hi
     if (x.hi == 0.0f && x.lo == 0.0f) return SF64_ZERO;
@@ -2297,6 +2306,13 @@ inline df64 df64_add(df64 a, df64 b) {
 // ============================================================================
 // df64 Constants — Hardware-adaptive via #define injection from host
 // ============================================================================
+/**
+ * Default tile-size parameters for the blocked df64 (double-float) matmul
+ * kernel below, used when the host build does not inject hardware-tuned
+ * values via -D flags. DF64_BM/DF64_BN: output tile rows/cols per
+ * threadgroup; DF64_BK: K-dimension tile depth; DF64_TG: threads per tile
+ * edge; DF64_TT: per-thread micro-tile size; DF64_THREADS: threadgroup size.
+ */
 #ifndef DF64_BM
 #define DF64_BM 64
 #define DF64_BN 64
@@ -2316,6 +2332,9 @@ constant uint DF64_SB_SIZE = DF64_BK * DF64_BN;
 // df64 Conversion Kernels — f64 ↔ df64 on GPU
 // ============================================================================
 
+/** GPU kernel: convert `count` f64 values (packed as uint2, buffer 0) to
+ *  df64 double-float pairs (packed as float2, buffer 1), one element per
+ *  thread. */
 kernel void convert_f64_to_df64(
     device const uint2* input [[buffer(0)]],
     device float2* output [[buffer(1)]],
@@ -2328,6 +2347,9 @@ kernel void convert_f64_to_df64(
     output[tid] = float2(d.hi, d.lo);
 }
 
+/** GPU kernel: convert `count` df64 double-float pairs (packed as float2,
+ *  buffer 0) back to f64 values (packed as uint2, buffer 1), one element
+ *  per thread. */
 kernel void convert_df64_to_f64(
     device const float2* input [[buffer(0)]],
     device uint2* output [[buffer(1)]],
@@ -3189,6 +3211,8 @@ kernel void matmul_f32_simd_128(
 // Used by MPS and f32_simd_pure paths to convert between f64 and f32 formats.
 // Each thread converts one element.
 
+/** GPU kernel: convert `count` f64 values (packed as uint2, buffer 0) to
+ *  native f32 (buffer 1), one element per thread. */
 kernel void convert_f64_to_f32(
     device const uint2* src [[buffer(0)]],
     device float* dst [[buffer(1)]],
@@ -3199,6 +3223,8 @@ kernel void convert_f64_to_f32(
     dst[tid] = f64_to_f32_native(src[tid]);
 }
 
+/** GPU kernel: convert `count` native f32 values (buffer 0) to f64 (packed
+ *  as uint2, buffer 1), one element per thread. */
 kernel void convert_f32_to_f64(
     device const float* src [[buffer(0)]],
     device uint2* dst [[buffer(1)]],
@@ -4078,7 +4104,9 @@ kernel void matmul_ozaki_gemm(
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Conv2d backward — compute grad_input and grad_kernel from grad_out
-// One thread per (batch, channel_in, height, width) output element
+/** GPU kernel (sf64 exact precision): computes conv2D grad_input from
+ *  grad_out and kernel_weights. One thread per (batch, channel_in, height,
+ *  width) input element. */
 kernel void conv2d_backward_input_sf64(
     device const uint2* grad_out [[buffer(0)]],
     device const uint2* kernel_weights [[buffer(1)]],
@@ -4134,7 +4162,9 @@ kernel void conv2d_backward_input_sf64(
 }
 
 // Conv2d backward — compute grad_kernel
-// One thread per (co, ci, kh, kw) kernel element
+/** GPU kernel (sf64 exact precision): computes conv2D grad_kernel from
+ *  grad_out and the saved forward input. One thread per (co, ci, kh, kw)
+ *  kernel weight element. */
 kernel void conv2d_backward_kernel_sf64(
     device const uint2* grad_out [[buffer(0)]],
     device const uint2* saved_input [[buffer(1)]],
@@ -4186,7 +4216,9 @@ kernel void conv2d_backward_kernel_sf64(
 }
 
 // BatchNorm backward — compute grad_input, grad_gamma, grad_beta
-// One thread per feature dimension
+/** GPU kernel (sf64 exact precision): computes batch-norm grad_input,
+ *  grad_gamma, and grad_beta from the saved forward mean/inv_std/gamma.
+ *  One thread per feature dimension. */
 kernel void batchnorm_backward_sf64(
     device const uint2* grad_out [[buffer(0)]],
     device const uint2* saved_input [[buffer(1)]],

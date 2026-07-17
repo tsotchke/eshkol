@@ -18,6 +18,9 @@
 
 extern "C" {
 
+/** Freestanding-safe forward declaration of arena_memory.h's
+ *  arena_tagged_cons_get_tagged_value(): reads the complete tagged value
+ *  from the car (or cdr, if @p is_cdr) of the tagged cons @p cell. */
 extern eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(
     const void* cell, bool is_cdr);
 

@@ -2,6 +2,7 @@
 ;;; Only 'double-it' and 'square' are exported
 ;;; 'helper' is private and won't be visible outside this module
 
+;; Export double-it and square; helper stays module-private.
 (provide double-it square)
 
 ;;; Private helper function - not exported

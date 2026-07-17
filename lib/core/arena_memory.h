@@ -115,6 +115,8 @@ void arena_reset(arena_t* arena);
 // can point into it (bounded-RSS reclamation) and commits it otherwise
 // (correctness fallback). See runtime_arena_core.cpp for full semantics.
 void arena_commit_scope(arena_t* arena);
+/** True if @p ptr points into memory allocated after the innermost scope
+ *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
 void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
 
@@ -153,7 +155,11 @@ size_t arena_get_used_memory(const arena_t* arena);
 size_t arena_get_total_memory(const arena_t* arena);
 size_t arena_get_block_count(const arena_t* arena);
 
-// Cons cell structure optimized for arena allocation
+/**
+ * Legacy cons cell structure optimized for arena allocation, storing both
+ * car and cdr as raw int64 (untagged). Superseded by arena_tagged_cons_cell_t
+ * for new code that needs type information; kept for compatibility.
+ */
 typedef struct arena_cons_cell {
     int64_t car;           // Car value (as int64 for compatibility)
     int64_t cdr;           // Cdr value (as int64 for compatibility)
@@ -213,28 +219,39 @@ arena_tagged_cons_cell_t* arena_create_mixed_cons(arena_t* arena,
 
 // Type-safe data access functions
 int64_t arena_tagged_cons_get_int64(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+/** Read the car (or cdr, if @p is_cdr) of @p cell reinterpreted as a double. */
 double arena_tagged_cons_get_double(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+/** Read the car (or cdr, if @p is_cdr) of @p cell reinterpreted as a raw pointer value. */
 uint64_t arena_tagged_cons_get_ptr(const arena_tagged_cons_cell_t* cell, bool is_cdr);
 
 // Type-safe data setting functions
+/** Set the car (or cdr, if @p is_cdr) of @p cell to an int64 @p value tagged with @p type. */
 void arena_tagged_cons_set_int64(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                   int64_t value, uint8_t type);
+/** Set the car (or cdr, if @p is_cdr) of @p cell to a double @p value tagged with @p type. */
 void arena_tagged_cons_set_double(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                    double value, uint8_t type);
+/** Set the car (or cdr, if @p is_cdr) of @p cell to a pointer @p value tagged with @p type. */
 void arena_tagged_cons_set_ptr(arena_tagged_cons_cell_t* cell, bool is_cdr,
                                 uint64_t value, uint8_t type);
+/** Set the car (or cdr, if @p is_cdr) of @p cell to the null/empty-list value. */
 void arena_tagged_cons_set_null(arena_tagged_cons_cell_t* cell, bool is_cdr);
 
 // Type query functions
+/** Get the type tag of the car (or cdr, if @p is_cdr) of @p cell. */
 uint8_t arena_tagged_cons_get_type(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+/** Get the flags byte of the car (or cdr, if @p is_cdr) of @p cell. */
 uint8_t arena_tagged_cons_get_flags(const arena_tagged_cons_cell_t* cell, bool is_cdr);
+/** True if the car (or cdr, if @p is_cdr) of @p cell has the given @p type tag. */
 bool arena_tagged_cons_is_type(const arena_tagged_cons_cell_t* cell, bool is_cdr, uint8_t type);
 
 // Direct tagged value access functions (NEW in Phase 3B)
 // These functions enable direct storage and retrieval of complete tagged_value structs
+/** Store the complete tagged @p value into the car (or cdr, if @p is_cdr) of @p cell. */
 void arena_tagged_cons_set_tagged_value(arena_tagged_cons_cell_t* cell,
                                          bool is_cdr,
                                          const eshkol_tagged_value_t* value);
+/** Read the complete tagged value from the car (or cdr, if @p is_cdr) of @p cell. */
 eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons_cell_t* cell,
                                                           bool is_cdr);
 
@@ -269,10 +286,13 @@ extern ad_tape_t* __current_ad_tape;
 // Global AD mode flag (shared across JIT modules in REPL).
 extern bool __ad_mode_active;
 
-// Debug helper to print AD mode state
+/** Debug helper: logs the current AD mode (`__ad_mode_active`) to stderr,
+ *  tagged with @p context. Has no effect on program behavior beyond the
+ *  diagnostic print. */
 void debug_print_ad_mode(const char* context);
 
-// Debug helper to print pointer value
+/** Debug helper: logs @p ptr to stderr, tagged with @p context. Has no
+ *  effect on program behavior beyond the diagnostic print. */
 void debug_print_ptr(const char* context, void* ptr);
 
 // Global shared arena for REPL mode (persistent across evaluations)
@@ -351,14 +371,22 @@ typedef struct {
 void eshkol_ad_counters_reset(void);
 void eshkol_ad_counters_get(EshkolADCounters* out);
 // Increment hooks invoked from emitted IR at the real event sites.
+/** Increment the primal-call counter; invoked from emitted IR each time a
+ *  user function is evaluated during a gradient computation. */
 void eshkol_ad_count_primal(void);
+/** Increment the reverse-pass counter; invoked from emitted IR each time a
+ *  backward sweep is executed. */
 void eshkol_ad_count_reverse(void);
+/** Increment the finite-difference counter; invoked from emitted IR each
+ *  time a finite-difference evaluation runs on an AD path. */
 void eshkol_ad_count_fd(void);
 // Individual readers (Scheme-builtin backends).
 uint64_t eshkol_ad_counter_primal_calls(void);
 uint64_t eshkol_ad_counter_reverse_passes(void);
 uint64_t eshkol_ad_counter_tape_allocations(void);
 uint64_t eshkol_ad_counter_tape_nodes(void);
+/** Read the total count of finite-difference evaluations performed on any
+ *  AD path since the last eshkol_ad_counters_reset(). */
 uint64_t eshkol_ad_counter_finite_difference_evals(void);
 
 // One-pass gradient support.

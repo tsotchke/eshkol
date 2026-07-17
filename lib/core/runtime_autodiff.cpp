@@ -43,8 +43,11 @@ void eshkol_ad_counters_reset(void) {
 void eshkol_ad_counters_get(EshkolADCounters* out) {
     if (out) *out = __eshkol_ad_counters;
 }
+/** Increment the primal-call counter (see eshkol_ad_counter_primal_calls()). */
 void eshkol_ad_count_primal(void)  { __eshkol_ad_counters.primal_calls++; }
+/** Increment the reverse-pass counter (see eshkol_ad_counter_reverse_passes()). */
 void eshkol_ad_count_reverse(void) { __eshkol_ad_counters.reverse_passes++; }
+/** Increment the finite-difference-eval counter (see eshkol_ad_counter_finite_difference_evals()). */
 void eshkol_ad_count_fd(void)      { __eshkol_ad_counters.finite_difference_evals++; }
 uint64_t eshkol_ad_counter_primal_calls(void)  { return __eshkol_ad_counters.primal_calls; }
 uint64_t eshkol_ad_counter_reverse_passes(void){ return __eshkol_ad_counters.reverse_passes; }

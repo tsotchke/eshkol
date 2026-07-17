@@ -3,6 +3,11 @@
 ;; mneme / episode pattern. Pairs with cross_file_symbol_eq_test.esk
 ;; to probe Noesis Quirk 3 (cross-file eq? on same-name symbols).
 
+;; Exports for the cross-file eq? probe: literal-symbol producers
+;; (make-sigma-literal, sigma-in-list), eq? comparators (check-sigma,
+;; check-eq-with-caller-symbol), episode-vector helpers (make-episode-vec,
+;; episode-winner-vec, build-episode-store), and the Noesis-shaped filter
+;; (winner-filter-from-foreign) used by cross_file_symbol_eq_test.esk.
 (provide make-sigma-literal
          sigma-in-list
          check-sigma
@@ -35,6 +40,7 @@
     (vector-set! e 2 winner)
     e))
 
+;; Extract the winner symbol (index 2) from an episode vector.
 (define (episode-winner-vec e) (vector-ref e 2))
 
 ;; Build a store of episodes with literal 'sigma winners from THIS file.
