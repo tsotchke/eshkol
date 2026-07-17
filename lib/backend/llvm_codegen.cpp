@@ -39189,6 +39189,49 @@ int eshkol_compile_llvm_ir_to_wasm(LLVMModuleRef module_ref, uint8_t** output_bu
         // Set data layout for WASM
         module->setDataLayout(target_machine->createDataLayout());
 
+        // JS-safe re-entry export. scheme_main returns an eshkol_tagged_value
+        // by value; the wasm ABI demotes that aggregate return to a caller-
+        // allocated sret out-pointer parameter. Exporting the demoted function
+        // directly hands that raw ABI to JavaScript, and glue code calling
+        // scheme_main(0) makes the epilogue write the return value through
+        // address 0 — silently clobbering the first data globals (the site's
+        // route buffer lived at address 8, so the SPA router died on the
+        // second in-page navigation). Export a zero-argument shim that owns
+        // the call instead; the backend gives its call site a shadow-stack
+        // return slot, so no JS argument can alias linear memory.
+        if (Function* impl = module->getFunction("scheme_main")) {
+            if (!impl->isDeclaration() && impl->arg_empty()) {
+                impl->setName("scheme_main_impl");
+                FunctionType* shim_type =
+                    FunctionType::get(Type::getVoidTy(module->getContext()), false);
+                Function* shim = Function::Create(
+                    shim_type, Function::ExternalLinkage, "scheme_main", module);
+                BasicBlock* shim_entry =
+                    BasicBlock::Create(module->getContext(), "entry", shim);
+                IRBuilder<> shim_builder(shim_entry);
+                shim_builder.CreateCall(impl, {});
+                shim_builder.CreateRetVoid();
+            }
+        }
+
+        // Null-guard the bottom of linear memory. The module is emitted as a
+        // standalone object with data addresses assigned from 0, so a stray
+        // null-pointer store lands on the first data globals and corrupts
+        // them without trapping. Reserve the first bytes with a guard global
+        // ordered ahead of every other definition; wild null writes land in
+        // the guard instead of live program state.
+        {
+            LLVMContext& guard_ctx = module->getContext();
+            ArrayType* guard_type = ArrayType::get(Type::getInt8Ty(guard_ctx), 1024);
+            auto* guard = new GlobalVariable(
+                *module, guard_type, false, GlobalValue::ExternalLinkage,
+                Constant::getNullValue(guard_type), "__eshkol_wasm_null_guard");
+            guard->setAlignment(Align(16));
+            module->removeGlobalVariable(guard);
+            module->insertGlobalVariable(module->globals().begin(), guard);
+            appendToUsed(*module, {guard});
+        }
+
         // Export main() and scheme_main() for WASM — required for browser instantiation
         for (auto& func : *module) {
             if (func.getName() == "main" || func.getName() == "scheme_main" ||
