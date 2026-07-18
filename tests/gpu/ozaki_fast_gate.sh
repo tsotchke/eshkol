@@ -83,26 +83,52 @@ OUT="$(cat "$OUT_F")"
 printf '%s\n' "$OUT"
 
 overall=0
+require_exact_fast_markers() {
+    local file="$1" label="$2" expected="$3" pattern="$4"
+    local count sample poison
+
+    count="$(grep -E "$pattern" "$file" | wc -l | tr -d ' ')"
+    if [ -z "$count" ]; then count=0; fi
+
+    if [ "$count" -ne "$expected" ]; then
+        overall=1
+        log "  -> ${label}: expected ${expected} fast dispatch marker lines, got ${count}"
+        log "     pattern: ${pattern}"
+        sample="$(grep -E "$pattern" "$file" | head -n 3 | sed 's/^/       /')"
+        if [ -n "$sample" ]; then
+            log "     sample dispatch lines:"
+            while IFS= read -r line; do log "$line"; done <<< "$sample"
+        fi
+    fi
+
+    poison="$(grep -E '^\[GPU\] Ozaki-II FAST:' "$file" | grep -Ev "$pattern" || true)"
+    if [ -n "$poison" ]; then
+        overall=1
+        log "  -> ${label}: non-dispatch FAST marker lines detected (poison guard)"
+        while IFS= read -r line; do log "       $line"; done <<< "$(echo "$poison" | head -n 3)"
+    fi
+}
 
 # (1) accuracy: no FAIL verdicts, total_fail=0 (all probes <= 1e-7)
 printf '%s\n' "$OUT" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> fast tier exceeded the 1e-7 bound on some regime"; }
 printf '%s\n' "$OUT" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> fast tier has a FAIL verdict"; }
 
 # (2) the fast path actually engaged (marker present)…
-if ! grep -q "\[GPU\] Ozaki-II FAST" "$ERR_F"; then
-    overall=1; log "  -> fast-tier marker '[GPU] Ozaki-II FAST' NOT seen — path did not engage"
-fi
+# ...with exactly sixteen explicit dispatch markers.
+FAST_DISPATCH_PATTERN='^\[GPU\] Ozaki-II FAST: n_mod='
+require_exact_fast_markers "$ERR_F" "fast run" 16 "$FAST_DISPATCH_PATTERN"
+
 # …and never silently fell back to the exact tier (which would be near-bit-exact)
 if grep -q "falling back to exact tier" "$ERR_F"; then
     overall=1; log "  -> fast dispatch fell back to the exact tier (not a genuine fast-path run)"
 fi
 
-MODULI="$(grep -o "Ozaki-II FAST tier ENABLED: N=[0-9]* moduli" "$ERR_F" | head -1)"
+FAST_MODULI="$(grep -E "${FAST_DISPATCH_PATTERN}[0-9]+" "$ERR_F" | head -n 1 | tr ' ' '\n' | grep -m1 '^n_mod=' | cut -d= -f2)"
 SNIP="$(printf '%s\n' "$OUT" | grep -E 'REGIME=|SUMMARY' | head -20)"
 rm -f "$OUT_F" "$ERR_F"
 
 if [ "$overall" -eq 0 ]; then
-    pass "Ozaki-II fast tier (${MODULI:-fast}) within 1e-7 across integer/fractional/pi_e/wide at K<=4096; GPU split + df32 CRT reconstruction engaged"
+    pass "Ozaki-II fast tier (${FAST_MODULI:-fast}) within 1e-7 across integer/fractional/pi_e/wide at K<=4096; GPU split + df32 CRT reconstruction engaged"
 else
     fail "Ozaki-II fast-tier gate failed; output:\n$SNIP"
 fi
