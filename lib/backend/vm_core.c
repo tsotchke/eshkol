@@ -199,6 +199,7 @@ typedef enum {
     HEAP_HYPER_DUAL = 24,
     HEAP_RIEMANNIAN_ADAM_STATE = 25,
     HEAP_FUTURE = 26,
+    HEAP_I128 = 27,
 } HeapType;
 
 typedef struct {
@@ -751,6 +752,16 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
                 if (s) printf("%s", s);
                 else printf("<bignum>");
             } else printf("<bignum>");
+            break;
+        }
+        case VAL_I128: {
+            HeapObject* obj = vm->heap.objects[v.as.ptr];
+            if (obj && obj->opaque.ptr) {
+                char buf[ESHKOL_I128_STR_MAX];
+                __int128 x = eshkol_i128_from_abi(*(eshkol_i128_abi*)obj->opaque.ptr);
+                eshkol_i128_format(x, buf);
+                printf("%s", buf);
+            } else printf("<i128>");
             break;
         }
         case VAL_DUAL: printf("<dual>"); break;

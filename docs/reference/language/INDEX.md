@@ -35,6 +35,7 @@ it is called out explicitly.
 | 13 | Characters, strings, symbols, string interpolation `~{}` | [strings-chars-symbols.md](strings-chars-symbols.md) |
 | 14 | Numeric tower: exact/inexact/rational/bignum/complex | [numeric-tower.md](numeric-tower.md) |
 | 15 | Capability policy (`core.capabilities`) | [capabilities.md](capabilities.md) |
+| 16 | Native 128-bit integers (`i128`): distinct wrapping fixed-width type | [i128.md](i128.md) |
 
 ## Known-issue conventions
 

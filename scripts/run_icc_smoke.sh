@@ -489,6 +489,8 @@ probe language_surface_coverage_floor 'exposure-engine language coverage meets t
 # -- fix-campaign regression gates (2026-07-10): exact-oracle-verified fixes --
 probe numeric_exactness_oracle 'exact gcd bignum path + bignum divmod identity (a=q*b+r) + rational/complex eqv?/equal? (ESH-0124/0125/0114)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/numeric/bignum_rational_exactness_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "^PASS:" || exit 1; echo "$out" | grep -qE "(^| )FAIL" && exit 1; exit 0'
+probe i128_native_type_oracle 'native i128: wrapping add/sub/mul/neg at +-2^127, min/max decimal round-trip (incl -2^127), shifts 0/64/127, compares, truncated quotient/remainder, i128->int range' \
+    'cd "$REPO_ROOT"; out=$("$ESHKOL_RUN" -r tests/types/i128_test.esk 2>&1) || exit 1; echo "$out" | grep -q "ALL i128 TESTS PASSED" || exit 1; echo "$out" | grep -qE ": FAIL" && exit 1; exit 0'
 probe closure_set_tco_loop_oracle 'closure created in a named-let/TCO loop that set!s a captured global keeps the mutation (ESH-0094)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/closures/closure_set_in_tco_loop_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail-recursive and correct vs reference (ESH-0098/0108)' \

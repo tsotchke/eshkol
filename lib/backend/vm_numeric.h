@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <math.h>
 #include "vm_arena.h"
+#include "eshkol/core/i128.h"   /* shared pure i128 math (same core as native runtime) */
 
 /* ── Extended Value Types (beyond base VM's VAL_INT/FLOAT/BOOL/PAIR/CLOSURE) ──
  *
@@ -49,6 +50,7 @@
 #define VAL_MULTI_VALUE 30   /* opaque R7RS multiple-values packet            */
 #define VAL_SYMBOL      31   /* heap-backed internable Scheme symbol spelling */
 #define VAL_EOF         32   /* distinct end-of-file object                    */
+#define VAL_I128        33   /* heap-allocated native 128-bit integer (opaque) */
 
 /* ── Heap Subtypes ── */
 #define VM_SUBTYPE_COMPLEX   5
@@ -71,6 +73,7 @@
 #define VM_SUBTYPE_PARAMETER 23
 #define VM_SUBTYPE_MULTI_VAL 4
 #define VM_SUBTYPE_FUTURE    26
+#define VM_SUBTYPE_I128      27
 
 /* ── Complex Number ── */
 typedef struct {
@@ -143,5 +146,6 @@ typedef struct {
 #define VM_NATIVE_BYTEVEC_BASE   680
 #define VM_NATIVE_PARAM_BASE     700
 #define VM_NATIVE_ERROR_BASE     710
+#define VM_NATIVE_I128_BASE      2100  /* native fixed-width 128-bit integer (2100-2118) */
 
 #endif /* VM_NUMERIC_H */

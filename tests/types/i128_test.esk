@@ -1,0 +1,130 @@
+;;
+;; Native 128-bit Integer (i128) — behavioral test suite.
+;;
+;; i128 is a DISTINCT, fixed-width, two's-complement signed integer type that
+;; lives OFF the exact numeric tower. Unlike bignum (which never overflows),
+;; i128 arithmetic WRAPS modulo 2^128. There is no auto-promotion; every
+;; crossing to/from the tower is an explicit conversion builtin.
+;;
+;; This file exercises ONLY well-defined, non-error behavior so it passes
+;; identically on the native codegen path (build-i128/eshkol-run) AND the
+;; bytecode VM (build-i128/eshkol-vm-standalone-test). Error conditions
+;; (div-by-zero, out-of-range shift, i128->int overflow, bad literal) are
+;; covered separately in i128_error_test.esk against the native path, whose
+;; raises are catchable by `guard`; on the VM those conditions are fatal,
+;; matching the VM's own integer division-by-zero convention.
+;;
+;; Boundary constants:
+;;   I128_MAX =  2^127 - 1 = 170141183460469231731687303715884105727
+;;   I128_MIN = -2^127     = -170141183460469231731687303715884105728
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (write expected) (display " got ") (write actual) (display "\n"))))
+
+(display "=== i128: constructor / predicate ===\n")
+(check "i128? on i128"        #t (i128? (i128 5)))
+(check "i128? on fixnum"      #f (i128? 5))
+(check "i128? on string"      #f (i128? "5"))
+(check "i128 small roundtrip" "42" (i128->string (i128 42)))
+(check "int->i128 alias"      "42" (i128->string (int->i128 42)))
+(check "i128 negative"        "-42" (i128->string (i128 -42)))
+(check "i128 zero"            "0" (i128->string (i128 0)))
+
+(display "=== i128: full-range string round-trip (incl -2^127) ===\n")
+(define I128-MAX (string->i128 "170141183460469231731687303715884105727"))
+(define I128-MIN (string->i128 "-170141183460469231731687303715884105728"))
+(check "I128_MAX roundtrip"
+       "170141183460469231731687303715884105727"
+       (i128->string I128-MAX))
+(check "I128_MIN roundtrip (-2^127, no positive counterpart)"
+       "-170141183460469231731687303715884105728"
+       (i128->string I128-MIN))
+(check "string->i128 with leading +"
+       "12345" (i128->string (string->i128 "+12345")))
+
+(display "=== i128: wrapping arithmetic at the boundary ===\n")
+(check "I128_MAX + 1 wraps to I128_MIN"
+       "-170141183460469231731687303715884105728"
+       (i128->string (i128-add I128-MAX (i128 1))))
+(check "I128_MIN - 1 wraps to I128_MAX"
+       "170141183460469231731687303715884105727"
+       (i128->string (i128-sub I128-MIN (i128 1))))
+(check "I128_MAX * 2 wraps to -2"
+       "-2"
+       (i128->string (i128-mul I128-MAX (i128 2))))
+(check "neg(I128_MIN) wraps to I128_MIN"
+       "-170141183460469231731687303715884105728"
+       (i128->string (i128-neg I128-MIN)))
+(check "neg small" "-7" (i128->string (i128-neg (i128 7))))
+
+(display "=== i128: basic arithmetic ===\n")
+(check "add" "300" (i128->string (i128-add (i128 100) (i128 200))))
+(check "sub" "-100" (i128->string (i128-sub (i128 100) (i128 200))))
+(check "mul" "20000" (i128->string (i128-mul (i128 100) (i128 200))))
+;; 10^18 * 10^18 = 10^36 — exceeds int64 (and even 2^64) but fits in i128.
+(check "1e18 * 1e18 = 1e36 (exact, no overflow)"
+       "1000000000000000000000000000000000000"
+       (i128->string (i128-mul (string->i128 "1000000000000000000")
+                               (string->i128 "1000000000000000000"))))
+
+(display "=== i128: shifts (counts 0, 64, 127) ===\n")
+(check "shl by 0 is identity" "5" (i128->string (i128-shl (i128 5) 0)))
+(check "shl 1 by 64" "18446744073709551616"
+       (i128->string (i128-shl (i128 1) 64)))
+(check "shl 1 by 127 == I128_MIN"
+       "-170141183460469231731687303715884105728"
+       (i128->string (i128-shl (i128 1) 127)))
+(check "lshr I128_MIN by 127 == 1 (zero-fill)"
+       "1" (i128->string (i128-lshr I128-MIN 127)))
+(check "ashr I128_MIN by 127 == -1 (sign-fill)"
+       "-1" (i128->string (i128-ashr I128-MIN 127)))
+(check "ashr -8 by 2 == -2" "-2" (i128->string (i128-ashr (i128 -8) 2)))
+(check "lshr round-trips shl 64" "1"
+       (i128->string (i128-lshr (i128-shl (i128 1) 64) 64)))
+
+(display "=== i128: comparisons ===\n")
+(check "=? equal"        #t (i128=? (i128 5) (i128 5)))
+(check "=? unequal"      #f (i128=? (i128 5) (i128 6)))
+(check "<? true"         #t (i128<? I128-MIN I128-MAX))
+(check "<? false"        #f (i128<? I128-MAX I128-MIN))
+(check ">? true"         #t (i128>? I128-MAX I128-MIN))
+(check "<? across sign"  #t (i128<? (i128 -1) (i128 1)))
+(check "<=? equal"       #t (i128<=? (i128 5) (i128 5)))
+(check "<=? less"        #t (i128<=? (i128 4) (i128 5)))
+(check ">=? equal"       #t (i128>=? (i128 5) (i128 5)))
+(check ">=? greater"     #t (i128>=? (i128 6) (i128 5)))
+
+(display "=== i128: truncated quotient / remainder (C sign semantics) ===\n")
+(check "quot  7  2 =  3" "3"  (i128->string (i128-quotient (i128 7) (i128 2))))
+(check "quot -7  2 = -3" "-3" (i128->string (i128-quotient (i128 -7) (i128 2))))
+(check "quot  7 -2 = -3" "-3" (i128->string (i128-quotient (i128 7) (i128 -2))))
+(check "quot -7 -2 =  3" "3"  (i128->string (i128-quotient (i128 -7) (i128 -2))))
+(check "rem   7  2 =  1" "1"  (i128->string (i128-remainder (i128 7) (i128 2))))
+(check "rem  -7  2 = -1" "-1" (i128->string (i128-remainder (i128 -7) (i128 2))))
+(check "rem   7 -2 =  1" "1"  (i128->string (i128-remainder (i128 7) (i128 -2))))
+
+(display "=== i128: i128->int (in fixnum range) ===\n")
+(check "i128->int positive" 12345 (i128->int (i128 12345)))
+(check "i128->int negative" -999 (i128->int (i128 -999)))
+(check "i128->int zero"     0 (i128->int (i128 0)))
+
+(display "=== i128: display / write render decimal ===\n")
+(display "  display I128_MAX -> ") (display I128-MAX) (newline)
+(display "  write   I128_MIN -> ") (write I128-MIN) (newline)
+
+(display "\n================ i128 SUMMARY ================\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+(if (= tests-failed 0)
+    (display "ALL i128 TESTS PASSED\n")
+    (display "SOME i128 TESTS FAILED\n"))

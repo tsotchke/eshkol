@@ -990,8 +990,11 @@ static EvacKind evac_kind_for(const eshkol_tagged_value_t& v, const void* old_da
         // logic/workspace subtypes. Always dispatched through EVAC_RATIONAL;
         // the is_big==0 case is a cheap no-op there (nothing to walk).
         case HEAP_SUBTYPE_RATIONAL:       return EVAC_RATIONAL;
-        // STRING / SYMBOL / BIGNUM / BYTEVECTOR: self-contained payloads ->
-        // a contiguous leaf copy fully preserves them.
+        // STRING / SYMBOL / BIGNUM / BYTEVECTOR / I128: self-contained payloads
+        // -> a contiguous leaf copy fully preserves them. I128 in particular is
+        // a flat 16-byte {lo,hi} POD with no interior pointers, so the default
+        // EVAC_LEAF path (a straight memcpy of header+payload) is correct and
+        // complete — no deep walk is needed (confirmed against ESH-0214d).
         //
         // Deliberately kept EVAC_LEAF (no interior region pointers, or their
         // interior graph is not confidently/safely traversable here, AND they
