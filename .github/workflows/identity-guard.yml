@@ -1,0 +1,53 @@
+name: identity-guard
+
+# Rejects any NEW commit whose author or committer identity matches a
+# denylisted entry. The denylist holds SHA-256 digests of lowercased
+# addresses, so no address ever appears in this file or in job logs.
+# Scans only the incoming range, never historical commits.
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: forbid denylisted identities in new commits
+        shell: bash
+        run: |
+          set -euo pipefail
+          # SHA-256 digests of lowercased denylisted addresses.
+          DENY="f359faa2406f6a972f0321518d7004c58778afd5c7f120ce08b3bc959928b905"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            BEFORE="${{ github.event.before }}"
+            if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              RANGE="${{ github.sha }} -n 20"
+            else
+              RANGE="$BEFORE..${{ github.sha }}"
+            fi
+          fi
+          echo "scanning range: $RANGE"
+          bad_shas=""
+          while read -r sha ae ce; do
+            for e in "$ae" "$ce"; do
+              h=$(printf '%s' "$e" | tr '[:upper:]' '[:lower:]' | sha256sum | cut -d' ' -f1)
+              for d in $DENY; do
+                if [ "$h" = "$d" ]; then bad_shas="$bad_shas $sha"; fi
+              done
+            done
+          done < <(git log $RANGE --format='%H %ae %ce')
+          if [ -n "$bad_shas" ]; then
+            echo "::error::These commits carry a denylisted identity and must be re-authored:$bad_shas"
+            exit 1
+          fi
+          echo "identity-guard: clean"
