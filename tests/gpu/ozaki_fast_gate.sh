@@ -84,7 +84,7 @@ printf '%s\n' "$OUT"
 
 overall=0
 require_exact_fast_markers() {
-    local file="$1" label="$2" expected="$3" pattern="$4"
+    local file="$1" label="$2" expected="$3" pattern="$4" init_pattern="$5"
     local count sample poison
 
     count="$(grep -E "$pattern" "$file" | wc -l | tr -d ' ')"
@@ -102,6 +102,9 @@ require_exact_fast_markers() {
     fi
 
     poison="$(grep -E '^\[GPU\] Ozaki-II FAST:' "$file" | grep -Ev "$pattern" || true)"
+    if [ -n "$init_pattern" ]; then
+        poison="$(printf '%s' "$poison" | grep -Ev "$init_pattern" || true)"
+    fi
     if [ -n "$poison" ]; then
         overall=1
         log "  -> ${label}: non-dispatch FAST marker lines detected (poison guard)"
@@ -116,7 +119,8 @@ printf '%s\n' "$OUT" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> fast tie
 # (2) the fast path actually engaged (marker present)…
 # ...with exactly sixteen explicit dispatch markers.
 FAST_DISPATCH_PATTERN='^\[GPU\] Ozaki-II FAST: n_mod='
-require_exact_fast_markers "$ERR_F" "fast run" 16 "$FAST_DISPATCH_PATTERN"
+FAST_INIT_PATTERN='^\[GPU\] Ozaki-II FAST: N=[0-9]+ moduli'
+require_exact_fast_markers "$ERR_F" "fast run" 16 "$FAST_DISPATCH_PATTERN" "$FAST_INIT_PATTERN"
 
 # …and never silently fell back to the exact tier (which would be near-bit-exact)
 if grep -q "falling back to exact tier" "$ERR_F"; then

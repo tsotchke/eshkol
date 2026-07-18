@@ -95,7 +95,7 @@ run_case() {  # run_case <extra-env...>; stdout -> $OUT_F, stderr -> $ERR_F (par
 ALL_OUT=""
 overall=0
 require_exact_ozaki_markers() {  # require_exact_ozaki_markers <stderr-file> <label> <count> <pattern>
-    local file="$1" label="$2" expected="$3" pattern="$4"
+    local file="$1" label="$2" expected="$3" pattern="$4" init_pattern="$5"
     local count sample poison
 
     count="$(grep -E "$pattern" "$file" | wc -l | tr -d ' ')"
@@ -113,12 +113,17 @@ require_exact_ozaki_markers() {  # require_exact_ozaki_markers <stderr-file> <la
     fi
 
     poison="$(grep -E '^\[GPU\] Ozaki-II:' "$file" | grep -Ev "$pattern" || true)"
+    if [ -n "$init_pattern" ]; then
+        poison="$(printf '%s' "$poison" | grep -Ev "$init_pattern" || true)"
+    fi
     if [ -n "$poison" ]; then
         overall=1
         log "  -> ${label}: non-dispatch Ozaki marker lines detected (poison guard)"
         while IFS= read -r line; do log "       $line"; done <<< "$(echo "$poison" | head -n 3)"
     fi
 }
+
+OZAKI_INIT_PATTERN='^\[GPU\] Ozaki-II: N=[0-9]+ moduli, log2\(P\)='
 
 # ── Case 1: DEFAULT / SHIPPED Ozaki config (fixed N=16). This is the exactness
 #    contract — HARD assertion: bit-exact vs the CPU reference on every regime. ──
@@ -127,7 +132,7 @@ run_case; OUT1="$(cat "$OUT_F")"; ALL_OUT="$OUT1"
 printf '%s\n' "$OUT1"
 printf '%s\n' "$OUT1" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> default config produced failures"; }
 printf '%s\n' "$OUT1" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> default config has a FAIL verdict"; }
-require_exact_ozaki_markers "$ERR_F" "case 1" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)='
+require_exact_ozaki_markers "$ERR_F" "case 1" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)=' "$OZAKI_INIT_PATTERN"
 
 # ── Case 2: adaptive moduli (ESHKOL_OZAKI_ADAPTIVE=1) — OPT-IN / INFORMATIONAL.
 #    Adaptive can reduce the moduli count below the tuned N=16 point; the
@@ -138,7 +143,7 @@ require_exact_ozaki_markers "$ERR_F" "case 1" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \
 log "=== Case 2: adaptive moduli (opt-in, approximate) — informational ==="
 run_case ESHKOL_OZAKI_ADAPTIVE=1; OUT2="$(cat "$OUT_F")"
 printf '%s\n' "$OUT2"
-require_exact_ozaki_markers "$ERR_F" "case 2" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)='
+require_exact_ozaki_markers "$ERR_F" "case 2" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)=' "$OZAKI_INIT_PATTERN"
 if printf '%s\n' "$OUT2" | grep -q "SUMMARY total_fail=0"; then
     log "  -> adaptive is bit-exact on this run"
 else
@@ -156,7 +161,7 @@ log "=== Case 3: out-of-range ESHKOL_OZAKI_NUM_MODULI=32 -> loud clamp, still co
 run_case ESHKOL_OZAKI_NUM_MODULI=32; OUT3="$(cat "$OUT_F")"
 printf '%s\n' "$OUT3"
 grep -qi "out of range" "$ERR_F" || { overall=1; log "  -> expected a loud out-of-range warning on stderr, none seen"; }
-require_exact_ozaki_markers "$ERR_F" "case 3" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)='
+require_exact_ozaki_markers "$ERR_F" "case 3" 16 '^\[GPU\] Ozaki-II: N=[0-9]+( \(adaptive\))?, log2\(P\)=' "$OZAKI_INIT_PATTERN"
 printf '%s\n' "$OUT3" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> clamped run still incorrect"; }
 
 # ── verdict ─────────────────────────────────────────────────────────────────
