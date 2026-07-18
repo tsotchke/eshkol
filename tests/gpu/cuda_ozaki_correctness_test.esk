@@ -1,0 +1,90 @@
+;; cuda_ozaki_correctness_test.esk — INT8 tensor-core Ozaki f64 GEMM probe (CUDA).
+;;
+;; Runs a GPU matmul (the gate forces the INT8-Ozaki path via
+;; ESHKOL_CUDA_F64_KERNEL=ozaki-int8 + a low GPU dispatch threshold) and checks
+;; each result against an INDEPENDENT in-process CPU f64 triple-loop reference at
+;; a 5x5 grid of probe positions, across four data regimes and K up to 4096.
+;;
+;; INT8-Ozaki recovers FP64-accurate C = A*B from the INT8 (IMMA) tensor cores by
+;; per-row/col-scaled 7-bit integer slicing. The int32 accumulation is exact; the
+;; only error source is dropping slice-pairs with p+q>T. The standard GEMM
+;; accuracy metric is the NORMWISE (Frobenius) relative error — a single
+;; near-zero output entry (cancellation) inflates the per-element relative error
+;; without meaning anything, so we gate on the normwise error over the probe grid
+;; and only report the per-element max for visibility (same convention the 3090
+;; and Blackwell prototypes use). At T=6 (default, full f64) the normwise error is
+;; ~1e-15; at T=4 (~1e-11). A layout/scaling bug is O(1e-2..1), so a single
+;; conservative normwise TOL cleanly separates correct from broken across T.
+;;
+;; NOTE (mirrors the Metal Ozaki-II test): the matmul and its `tensor-data` read
+;; are done at TOP-LEVEL scope and only PLAIN VECTORS are handed to the checker —
+;; reading a `matmul` tensor from inside a `define`d function currently reads
+;; zeros (a separate compiler-scope issue), so the probe must not touch the
+;; tensor object itself.
+
+(define TOL 1e-6)          ;; normwise Frobenius rel-err gate; correct Ozaki is 1e-11..1e-15
+(define total-fail 0)
+
+(define (fillA regime i)
+  (cond ((= regime 0) (exact->inexact (- (modulo i 7) 3)))                                  ;; integer (incl. negatives)
+        ((= regime 1) (+ 1.0 (* 0.5 (exact->inexact (modulo i 7)))))                        ;; fractional O(1)
+        ((= regime 2) (* 3.141592653589793 (+ 1.0 (exact->inexact (modulo i 11)))))         ;; pi multiples
+        (else (* (expt 2.0 (exact->inexact (- (modulo i 20) 10)))                           ;; wide magnitude 2^[-10,9]
+                 (+ 1.0 (* 0.1 (exact->inexact (modulo i 3))))))))
+(define (fillB regime i)
+  (cond ((= regime 0) (exact->inexact (- (modulo i 5) 2)))
+        ((= regime 1) (+ 0.5 (* 0.25 (exact->inexact (modulo i 5)))))
+        ((= regime 2) (* 2.718281828459045 (- (exact->inexact (modulo i 9)) 4.0)))          ;; e multiples (incl. negatives)
+        (else (* (expt 2.0 (exact->inexact (- (modulo i 18) 9)))
+                 (+ 1.0 (* 0.1 (exact->inexact (modulo i 4))))))))
+(define (rname regime)
+  (cond ((= regime 0) "integer") ((= regime 1) "fractional") ((= regime 2) "pi_e") (else "wide_range")))
+
+;; Probe a 5x5 grid of output positions against an independent CPU f64 reference.
+;; Gate metric = normwise Frobenius rel error over the grid; also report per-elem
+;; max rel error. Operates purely on plain vectors (Ad, Bd, Cd) — no tensor objects.
+(define (check regime N Ad Bd Cd)
+  (let ((maxrel 0.0) (sum-num 0.0) (sum-den 0.0))
+    (do ((pr 0 (+ pr 1))) ((>= pr 5))
+      (do ((pc 0 (+ pc 1))) ((>= pc 5))
+        (let ((ii (quotient (* pr (- N 1)) 4))
+              (jj (quotient (* pc (- N 1)) 4))
+              (ref 0.0))
+          (do ((k 0 (+ k 1))) ((>= k N))
+            (set! ref (+ ref (* (vector-ref Ad (+ (* ii N) k))
+                                (vector-ref Bd (+ (* k N) jj))))))
+          (let* ((cij (vector-ref Cd (+ (* ii N) jj)))
+                 (diff (- cij ref))
+                 (denom (if (> (abs ref) 1e-9) (abs ref) 1.0))
+                 (rel (/ (abs diff) denom)))
+            (set! sum-num (+ sum-num (* diff diff)))
+            (set! sum-den (+ sum-den (* ref ref)))
+            (when (> rel maxrel) (set! maxrel rel))))))
+    (let* ((normwise (/ (sqrt sum-num) (if (> sum-den 1e-24) (sqrt sum-den) 1.0)))
+           (pass (< normwise TOL)))
+      (when (not pass) (set! total-fail (+ total-fail 1)))
+      (display "REGIME=") (display (rname regime))
+      (display " N=") (display N)
+      (display " MAXREL=") (display maxrel)
+      (display " NORMWISE=") (display normwise)
+      (display " VERDICT=") (display (if pass "PASS" "FAIL"))
+      (newline))))
+
+(define sizes (vector 512 1024 2048 4096))
+(do ((r 0 (+ r 1))) ((>= r 4))
+  (do ((si 0 (+ si 1))) ((>= si 4))
+    (let* ((N (vector-ref sizes si))
+           (size (* N N))
+           (Ad (make-vector size 0.0))
+           (Bd (make-vector size 0.0)))
+      (do ((i 0 (+ i 1))) ((>= i size))
+        (vector-set! Ad i (fillA r i))
+        (vector-set! Bd i (fillB r i)))
+      ;; matmul + tensor-data at TOP-LEVEL scope; hand only plain vectors to check
+      (let* ((A (reshape Ad N N))
+             (B (reshape Bd N N))
+             (C (matmul A B))
+             (Cd (tensor-data C)))
+        (check r N Ad Bd Cd)))))
+
+(display "SUMMARY total_fail=") (display total-fail) (newline)

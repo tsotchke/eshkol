@@ -635,3 +635,166 @@ extern "C" int cuda_layernorm_backward_f64(
 }
 
 } // extern "C"
+
+// ============================================================================
+// INT8 Tensor-Core Ozaki f64 GEMM kernels (opt-in high-throughput DGEMM)
+// ============================================================================
+// Recover FP64-accurate C = A*B from the INT8 (IMMA) tensor cores, which run
+// ~500x faster than the crippled native FP64 pipeline on consumer/prosumer
+// NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32). Ootomo-Ozaki-Yokota per-row/col
+// scaled 7-bit integer slicing. The cuBLAS orchestration (INT8 GEMMs +
+// diagonal-fused reconstruction) lives in gpu_memory_cuda.cpp; these are the
+// scale/slice/reconstruct device kernels. See docs/breakdown/GPU_ACCELERATION.md.
+//
+// Row-major (Eshkol) convention: A is MxK, B is KxN, C is MxN.
+//   r_i = max_k|A[i,k]| (per row of A),  c_j = max_k|B[k,j]| (per col of B)
+//   Abar = A/r in [-1,1] sliced into s int8 slices A_p (base 128, |A_p|<=127)
+//   Bbar = B/c in [-1,1] sliced into s int8 slices B_q (base 128, |B_q|<=127)
+//   G_{p,q}[i,j] = sum_k A_p[i,k]*B_q[k,j]   (one INT8->INT32 tensor-core GEMM)
+//   C[i,j] = r_i c_j * sum_{p+q<=T} 128^{-(p+q+2)} G_{p,q}[i,j]
+//
+// A_p slices are stored in natural row-major order (which is exactly col-major
+// KxM A_p^T); B_q slices are stored TRANSPOSED to col-major KxN. With those
+// stores the per-pair GEMM issued as cublasGemmEx(OP_T, OP_N, m=N,n=M,k=K,
+// B_q, A_p) computes col-major NxM G^T (== row-major MxN G) and lands on the
+// fast IMMA "TN" path — mandatory on sm_86 (3.7x cliff otherwise; Blackwell is
+// layout-indifferent so TN is safe everywhere).
+
+// per-row max of |A|, A row-major MxK -> rmax[M]
+__global__ void ozaki_rowmax_f64_kernel(const double* A, uint64_t M, uint64_t K,
+                                        double* rmax) {
+    for (uint64_t i = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         i < M; i += (uint64_t)blockDim.x * gridDim.x) {
+        double m = 0.0;
+        const double* row = A + i * K;
+        for (uint64_t k = 0; k < K; k++) { double v = fabs(row[k]); if (v > m) m = v; }
+        rmax[i] = (m > 0.0) ? m : 1.0;
+    }
+}
+
+// per-col max of |B|, B row-major KxN -> cmax[N]
+__global__ void ozaki_colmax_f64_kernel(const double* B, uint64_t K, uint64_t N,
+                                        double* cmax) {
+    for (uint64_t j = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         j < N; j += (uint64_t)blockDim.x * gridDim.x) {
+        double m = 0.0;
+        for (uint64_t k = 0; k < K; k++) { double v = fabs(B[k * N + j]); if (v > m) m = v; }
+        cmax[j] = (m > 0.0) ? m : 1.0;
+    }
+}
+
+// Split A (row-major MxK) into s int8 slices, scaled per-row by rmax.
+// Slice p stored at slices[p*M*K + (i*K+k)] (natural == col-major KxM A_p^T).
+__global__ void ozaki_split_a_f64_kernel(const double* A, uint64_t M, uint64_t K,
+                                         const double* rmax, int s, int8_t* slices) {
+    uint64_t tot = M * K;
+    for (uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         idx < tot; idx += (uint64_t)blockDim.x * gridDim.x) {
+        uint64_t i = idx / K;
+        double res = A[idx] / rmax[i];        // in [-1,1]
+        for (int p = 0; p < s; p++) {
+            res *= 128.0;
+            double a = rint(res);
+            if (a > 127.0) a = 127.0; else if (a < -127.0) a = -127.0;
+            slices[(uint64_t)p * tot + idx] = (int8_t)a;
+            res -= a;
+        }
+    }
+}
+
+// Split B (row-major KxN) into s int8 slices, scaled per-col by cmax.
+// Slice q stored TRANSPOSED at slices[q*K*N + (k + j*K)] (col-major KxN).
+__global__ void ozaki_split_b_f64_kernel(const double* B, uint64_t K, uint64_t N,
+                                         const double* cmax, int s, int8_t* slices) {
+    uint64_t tot = K * N;
+    for (uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         idx < tot; idx += (uint64_t)blockDim.x * gridDim.x) {
+        uint64_t k = idx / N, j = idx % N;
+        uint64_t tidx = k + j * K;            // transposed store -> col-major KxN
+        double res = B[idx] / cmax[j];
+        for (int q = 0; q < s; q++) {
+            res *= 128.0;
+            double b = rint(res);
+            if (b > 127.0) b = 127.0; else if (b < -127.0) b = -127.0;
+            slices[(uint64_t)q * tot + tidx] = (int8_t)b;
+            res -= b;
+        }
+    }
+}
+
+// Reconstruct C (row-major MxN) from nbuf int32 diagonal buffers (each MxN, in
+// col-major NxM G^T layout == row-major MxN), applying the per-buffer weight,
+// summing in FP64, and scaling by r_i*c_j.
+__global__ void ozaki_reconstruct_f64_kernel(double* C, const int32_t* Gall,
+                                             const double* weights, int nbuf,
+                                             const double* rmax, const double* cmax,
+                                             uint64_t M, uint64_t N) {
+    uint64_t tot = M * N;
+    for (uint64_t idx = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+         idx < tot; idx += (uint64_t)blockDim.x * gridDim.x) {
+        uint64_t i = idx / N, j = idx % N;
+        double acc = 0.0;
+        for (int b = 0; b < nbuf; b++)
+            acc += weights[b] * (double)Gall[(uint64_t)b * tot + idx];
+        C[idx] = acc * rmax[i] * cmax[j];
+    }
+}
+
+extern "C" {
+
+// Compute per-row max of A then split A into `s` int8 slices (natural layout).
+int cuda_ozaki_split_a_f64(const double* A, uint64_t M, uint64_t K, int s,
+                           double* rmax, int8_t* slices, void* stream) {
+    cudaStream_t st = static_cast<cudaStream_t>(stream);
+    int bs = 256;
+    int g1 = (int)((M + bs - 1) / bs); if (g1 > 65535) g1 = 65535; if (g1 < 1) g1 = 1;
+    ozaki_rowmax_f64_kernel<<<g1, bs, 0, st>>>(A, M, K, rmax);
+    if (cudaGetLastError() != cudaSuccess) return -1;
+    uint64_t tot = M * K;
+    int g2 = (int)((tot + bs - 1) / bs); if (g2 > 65535) g2 = 65535; if (g2 < 1) g2 = 1;
+    ozaki_split_a_f64_kernel<<<g2, bs, 0, st>>>(A, M, K, rmax, s, slices);
+    if (cudaGetLastError() != cudaSuccess) return -1;
+    cudaStreamSynchronize(st);
+    return 0;
+}
+
+// Compute per-col max of B then split B into `s` int8 slices (transposed layout).
+int cuda_ozaki_split_b_f64(const double* B, uint64_t K, uint64_t N, int s,
+                           double* cmax, int8_t* slices, void* stream) {
+    cudaStream_t st = static_cast<cudaStream_t>(stream);
+    int bs = 256;
+    int g1 = (int)((N + bs - 1) / bs); if (g1 > 65535) g1 = 65535; if (g1 < 1) g1 = 1;
+    ozaki_colmax_f64_kernel<<<g1, bs, 0, st>>>(B, K, N, cmax);
+    if (cudaGetLastError() != cudaSuccess) return -1;
+    uint64_t tot = K * N;
+    int g2 = (int)((tot + bs - 1) / bs); if (g2 > 65535) g2 = 65535; if (g2 < 1) g2 = 1;
+    ozaki_split_b_f64_kernel<<<g2, bs, 0, st>>>(B, K, N, cmax, s, slices);
+    if (cudaGetLastError() != cudaSuccess) return -1;
+    cudaStreamSynchronize(st);
+    return 0;
+}
+
+// Reconstruct C from the diagonal-fused int32 buffers. `h_weights` is a host
+// array of nbuf per-buffer weights; it is staged to the device internally.
+int cuda_ozaki_reconstruct_f64(double* C, const int32_t* Gall,
+                               const double* h_weights, int nbuf,
+                               const double* rmax, const double* cmax,
+                               uint64_t M, uint64_t N, void* stream) {
+    cudaStream_t st = static_cast<cudaStream_t>(stream);
+    double* d_w = nullptr;
+    if (cudaMalloc(&d_w, (size_t)nbuf * sizeof(double)) != cudaSuccess) return -1;
+    if (cudaMemcpyAsync(d_w, h_weights, (size_t)nbuf * sizeof(double),
+                        cudaMemcpyHostToDevice, st) != cudaSuccess) {
+        cudaFree(d_w); return -1;
+    }
+    uint64_t tot = M * N;
+    int bs = 256;
+    int g = (int)((tot + bs - 1) / bs); if (g > 65535) g = 65535; if (g < 1) g = 1;
+    ozaki_reconstruct_f64_kernel<<<g, bs, 0, st>>>(C, Gall, d_w, nbuf, rmax, cmax, M, N);
+    cudaError_t err = cudaGetLastError();
+    cudaStreamSynchronize(st);
+    cudaFree(d_w);
+    return (err == cudaSuccess) ? 0 : -1;
+}
+
+} // extern "C"

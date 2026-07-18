@@ -28,6 +28,8 @@
 #include <cublas_v2.h>
 #include <cuda_fp16.h>
 #include <vector>
+#include <cstdint>
+#include <utility>
 
 // Forward declarations for real CUDA kernel launchers (in gpu_cuda_kernels.cu)
 /** Launch the elementwise unary/binary op kernel (add/sub/mul/.../sigmoid,
@@ -58,6 +60,25 @@ extern "C" int cuda_launch_normalize_f64(const double* in, double* out,
                                           uint64_t num_slices, uint64_t slice_len,
                                           double gamma, double beta, double epsilon,
                                           void* stream);
+
+// INT8-Ozaki f64 GEMM device kernels (gpu_cuda_kernels.cu). Split the f64
+// operands into per-row/col-scaled int8 slices, then reconstruct the f64 result
+// from the diagonal-fused int32 tensor-core GEMM outputs. See
+// cuda_matmul_ozaki_int8_f64 below for the cuBLAS orchestration.
+/** Per-row max of A (row-major MxK), then split A into `s` int8 slices (natural
+ *  layout == col-major KxM A^T). Writes rmax[M] and slices[s*M*K]. */
+extern "C" int cuda_ozaki_split_a_f64(const double* A, uint64_t M, uint64_t K, int s,
+                                      double* rmax, int8_t* slices, void* stream);
+/** Per-col max of B (row-major KxN), then split B into `s` int8 slices stored
+ *  transposed to col-major KxN. Writes cmax[N] and slices[s*K*N]. */
+extern "C" int cuda_ozaki_split_b_f64(const double* B, uint64_t K, uint64_t N, int s,
+                                      double* cmax, int8_t* slices, void* stream);
+/** Reconstruct C (row-major MxN) from `nbuf` int32 diagonal buffers with
+ *  host-supplied per-buffer weights, scaling each entry by rmax[i]*cmax[j]. */
+extern "C" int cuda_ozaki_reconstruct_f64(double* C, const int32_t* Gall,
+                                          const double* h_weights, int nbuf,
+                                          const double* rmax, const double* cmax,
+                                          uint64_t M, uint64_t N, void* stream);
 #endif
 
 // ============================================================================
@@ -244,11 +265,198 @@ static int cuda_sync(EshkolGPUBuffer* buffer, EshkolSyncDirection direction) {
     return 0;
 }
 
+// ============================================================================
+// INT8 tensor-core Ozaki f64 GEMM (opt-in) — ESHKOL_CUDA_F64_KERNEL=ozaki-int8
+// ============================================================================
+// Recover FP64-accurate C = A*B from the INT8 (IMMA) tensor cores, which run
+// ~500x faster than the crippled native FP64 pipeline on consumer/prosumer
+// NVIDIA GPUs. Measured on an RTX 3090 (sm_86): 4.74 TFLOP/s-eq at full f64
+// accuracy (normwise err 2.7e-15) = 8.8x native cublasDgemm; up to 16.6x at
+// ~1e-11. On an RTX PRO 6000 Blackwell: ~30 TFLOP/s (20x native f64).
+//
+// Default OFF: the f64 GPU matmul path stays cublasDgemm unless
+// ESHKOL_CUDA_F64_KERNEL=ozaki-int8 is set. The accuracy/throughput knob is
+// ESHKOL_OZAKI_CUDA_T (default 6 = full f64; T=4 ~1e-11 and ~2x faster). This
+// mirrors the Metal Ozaki-II env handling (ESHKOL_SF64_KERNEL / ESHKOL_OZAKI_*)
+// in gpu_memory.mm. See docs/breakdown/GPU_ACCELERATION.md and gpu_cuda_kernels.cu.
+
+static bool g_cuda_ozaki_enabled = false;
+static bool g_cuda_ozaki_checked = false;
+static int  g_cuda_ozaki_T = 6;
+
+/** @brief Parse (once, cached) the INT8-Ozaki env selection: enabled iff
+ *         ESHKOL_CUDA_F64_KERNEL=ozaki-int8; the accuracy knob T comes from
+ *         ESHKOL_OZAKI_CUDA_T (default 6, clamped to [1,8] with a loud note on
+ *         an out-of-range request, mirroring #307's loud-clamp philosophy). */
+static void cuda_ozaki_check_env(void) {
+    if (g_cuda_ozaki_checked) return;
+    const char* k = std::getenv("ESHKOL_CUDA_F64_KERNEL");
+    g_cuda_ozaki_enabled = (k && strcmp(k, "ozaki-int8") == 0);
+    int T = 6;
+    if (const char* t = std::getenv("ESHKOL_OZAKI_CUDA_T")) {
+        int v = atoi(t);
+        if (v >= 1 && v <= 8) T = v;
+        else fprintf(stderr,
+            "[GPU] ESHKOL_OZAKI_CUDA_T=%d out of range [1,8] (T=6 is full f64, "
+            "T=4 ~1e-11); using default 6\n", v);
+    }
+    g_cuda_ozaki_T = T;
+    g_cuda_ozaki_checked = true;
+    if (g_cuda_ozaki_enabled)
+        eshkol_info("CUDA: INT8-Ozaki f64 GEMM enabled (T=%d)", g_cuda_ozaki_T);
+}
+
+/** @brief INT8 tensor-core Ozaki f64 GEMM: C = A*B (row-major MxK, KxN, MxN) via
+ *         per-row/col-scaled 7-bit integer slicing, INT8->INT32 cublasGemmEx on
+ *         the fast TN/IMMA path, and diagonal-fused FP64 reconstruction. All
+ *         operands are device pointers (A,B read; C written). T is the accuracy
+ *         knob (kept slice-pair diagonal); s=T+1 slices/operand participate.
+ *
+ *         Returns 0 on success. Returns -1 (caller falls back to cublasDgemm) on
+ *         any allocation/cuBLAS failure, or when K exceeds the int32-exact bound
+ *         (~133,000) — the latter emits a one-time loud stderr note, since K-panel
+ *         splitting is not implemented. The INT32 accumulation is exact; the only
+ *         error source is dropping slice-pairs with p+q>T. */
+static int cuda_matmul_ozaki_int8_f64(const double* dA, const double* dB, double* dC,
+                                      uint64_t M, uint64_t K, uint64_t N, int T) {
+    if (!g_cublas_handle || !dA || !dB || !dC) return -1;
+    if (M == 0 || K == 0 || N == 0) return -1;
+    // cuBLAS int GEMM dims/leading dims are int; reject sizes that would truncate.
+    if (M > (uint64_t)0x7fffffff || K > (uint64_t)0x7fffffff || N > (uint64_t)0x7fffffff)
+        return -1;
+
+    // INT32-exactness guard: one INT8 GEMM accumulates |G| <= K*127^2 = K*16129,
+    // exact in int32 only while K*16129 < 2^31 -> K < 133,151. Beyond that a
+    // single pair already overflows and K-panel splitting is not implemented, so
+    // fall back LOUDLY to cublasDgemm (mirrors #307's loud-clamp philosophy).
+    static std::atomic<bool> warned_k{false};
+    const uint64_t K_MAX_INT32_EXACT = 133000;  // conservative; K*16129 < 2^31
+    if (K > K_MAX_INT32_EXACT) {
+        if (!warned_k.exchange(true))
+            fprintf(stderr,
+                "[GPU] INT8-Ozaki: K=%llu exceeds the int32-exact bound %llu; "
+                "falling back to cublasDgemm for this and future GEMMs at this K "
+                "(unset ESHKOL_CUDA_F64_KERNEL or reduce K)\n",
+                (unsigned long long)K, (unsigned long long)K_MAX_INT32_EXACT);
+        return -1;
+    }
+
+    const int s = T + 1;  // slice indices 0..T participate (pairs with p+q<=T)
+
+    // int32-exact cap: max same-weight pairs per diagonal buffer so that the
+    // beta=1 accumulation count*K*16129 stays < 2^31.
+    long long cap = (long long)(2147483647.0 / ((double)K * 16129.0));
+    if (cap < 1) return -1;  // defensive; already covered by the K guard above
+
+    // Plan the diagonal-fused buffers: pairs (p,q) with p+q=d share the weight
+    // 128^-(d+2). A diagonal with more than `cap` pairs is split across multiple
+    // same-weight int32 buffers (provably int32-exact at any N). Mirrors the
+    // measured Blackwell fused reconstruction (ozaki_fused2.cu).
+    struct Buf { double w; std::vector<std::pair<int,int>> pairs; };
+    std::vector<Buf> bufs;
+    try {
+        for (int d = 0; d <= T; d++) {
+            std::vector<std::pair<int,int>> ps;
+            for (int p = 0; p < s; p++) { int q = d - p; if (q >= 0 && q < s) ps.emplace_back(p, q); }
+            double w = pow(2.0, -7.0 * (d + 2));
+            for (size_t off = 0; off < ps.size(); off += (size_t)cap) {
+                Buf b; b.w = w;
+                for (size_t t2 = off; t2 < ps.size() && t2 < off + (size_t)cap; t2++)
+                    b.pairs.push_back(ps[t2]);
+                bufs.push_back(std::move(b));
+            }
+        }
+    } catch (...) { return -1; }
+    const int nbuf = (int)bufs.size();
+
+    const size_t totA = (size_t)M * K, totB = (size_t)K * N, totC = (size_t)M * N;
+
+    int8_t*  dAs   = nullptr;
+    int8_t*  dBs   = nullptr;
+    int32_t* dGall = nullptr;
+    double*  dr    = nullptr;
+    double*  dc    = nullptr;
+    int rc = -1;
+    do {
+        if (cudaMalloc(&dAs,   (size_t)s * totA * sizeof(int8_t))  != cudaSuccess) break;
+        if (cudaMalloc(&dBs,   (size_t)s * totB * sizeof(int8_t))  != cudaSuccess) break;
+        if (cudaMalloc(&dGall, (size_t)nbuf * totC * sizeof(int32_t)) != cudaSuccess) break;
+        if (cudaMalloc(&dr,    (size_t)M * sizeof(double))         != cudaSuccess) break;
+        if (cudaMalloc(&dc,    (size_t)N * sizeof(double))         != cudaSuccess) break;
+
+        if (cuda_ozaki_split_a_f64(dA, M, K, s, dr, dAs, g_cuda_stream) != 0) break;
+        if (cuda_ozaki_split_b_f64(dB, K, N, s, dc, dBs, g_cuda_stream) != 0) break;
+
+        // Per-pair INT8->INT32 GEMMs. TN layout (OP_T on the B-slice, OP_N on the
+        // A-slice) is MANDATORY for the fast IMMA path on sm_86. Diagonal fusion:
+        // all pairs of one buffer accumulate in int32 via beta=1 (stays on the
+        // tensor path, exact). alpha/beta are int32 for CUBLAS_COMPUTE_32I.
+        const int ialpha = 1;
+        bool gemm_ok = true;
+        for (int b = 0; b < nbuf && gemm_ok; b++) {
+            int32_t* Gd = dGall + (size_t)b * totC;
+            bool first = true;
+            for (const auto& pq : bufs[b].pairs) {
+                const int ibeta = first ? 0 : 1;
+                first = false;
+                const int8_t* Ap = dAs + (size_t)pq.first  * totA;  // col-major KxM (A_p^T bytes)
+                const int8_t* Bq = dBs + (size_t)pq.second * totB;  // col-major KxN (transposed)
+                cublasStatus_t st = cublasGemmEx(
+                    g_cublas_handle, CUBLAS_OP_T, CUBLAS_OP_N,
+                    (int)N, (int)M, (int)K,
+                    &ialpha,
+                    Bq, CUDA_R_8I, (int)K,
+                    Ap, CUDA_R_8I, (int)K,
+                    &ibeta,
+                    Gd, CUDA_R_32I, (int)N,
+                    CUBLAS_COMPUTE_32I, CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+                if (st != CUBLAS_STATUS_SUCCESS) { gemm_ok = false; break; }
+            }
+        }
+        if (!gemm_ok) break;
+
+        std::vector<double> hw;
+        try { hw.resize((size_t)nbuf); } catch (...) { break; }
+        for (int b = 0; b < nbuf; b++) hw[b] = bufs[b].w;
+        if (cuda_ozaki_reconstruct_f64(dC, dGall, hw.data(), nbuf, dr, dc, M, N,
+                                       g_cuda_stream) != 0) break;
+
+        rc = 0;
+    } while (0);
+
+    if (dAs)   cudaFree(dAs);
+    if (dBs)   cudaFree(dBs);
+    if (dGall) cudaFree(dGall);
+    if (dr)    cudaFree(dr);
+    if (dc)    cudaFree(dc);
+    return rc;
+}
+
 /** @brief Double-precision matmul via cuBLAS DGEMM, exploiting the
  *         column-major/row-major duality (computing C^T = B*A in cuBLAS
- *         terms yields row-major C = A*B without an explicit transpose). */
+ *         terms yields row-major C = A*B without an explicit transpose).
+ *         When ESHKOL_CUDA_F64_KERNEL=ozaki-int8 is set, the INT8 tensor-core
+ *         Ozaki path is tried first and cublasDgemm is the fallback. */
 static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
+    cuda_ozaki_check_env();
+    if (g_cuda_ozaki_enabled) {
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> CUDA INT8-Ozaki (T=%d)",
+                (unsigned long long)M, (unsigned long long)K,
+                (unsigned long long)K, (unsigned long long)N, g_cuda_ozaki_T);
+        int rc = cuda_matmul_ozaki_int8_f64(
+            (const double*)A->device_ptr, (const double*)B->device_ptr,
+            (double*)C->device_ptr, M, K, N, g_cuda_ozaki_T);
+        if (rc == 0) {
+            cudaStreamSynchronize(g_cuda_stream);
+            return 0;
+        }
+        // Any failure / K-guard -> fall through to cublasDgemm below.
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> INT8-Ozaki fell back to cublasDgemm",
+                (unsigned long long)M, (unsigned long long)K,
+                (unsigned long long)K, (unsigned long long)N);
+    }
+
     const double alpha = 1.0;
     const double beta = 0.0;
 
