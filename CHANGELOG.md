@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
+  recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
+  ~500x faster than the deliberately crippled native FP64 pipeline on
+  consumer/prosumer NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32). Following the
+  Ootomo-Ozaki-Yokota scheme, each f64 operand is scaled per-row (A) / per-col
+  (B) into `[-1,1]`, sliced into `T+1` signed 7-bit integer slices, multiplied
+  as INT8->INT32 GEMMs via `cublasGemmEx` on the fast **TN/IMMA** layout
+  (transposed B-slices — mandatory on sm_86, a 3.7x cliff otherwise; Blackwell
+  is layout-indifferent so TN is safe everywhere), and reconstructed to f64 with
+  a **diagonal-fused** int32 reconstruction (same-weight slice-pairs on a
+  diagonal `d=p+q` accumulate via `beta=1` into int32-safe grouped buffers, then
+  a single fused kernel), provably int32-exact at any N. The int32 accumulation
+  is exact; the only error source is dropping slice-pairs with `p+q>T`. Measured
+  on an RTX 3090 (sm_86): **4.74 TFLOP/s-eq at full f64** (normwise error
+  2.7e-15) = **8.8x native cublasDgemm**, up to 16.6x at ~1e-11; on an RTX PRO
+  6000 Blackwell: **~30 TFLOP/s** (20x native f64). Opt-in and default OFF —
+  select via `ESHKOL_CUDA_F64_KERNEL=ozaki-int8` (the f64 GPU matmul otherwise
+  stays `cublasDgemm`). The accuracy/throughput knob is `ESHKOL_OZAKI_CUDA_T`
+  (default 6 = full f64 ~1e-15; T=4 ~1e-11 and ~2x faster), mirroring the Metal
+  Ozaki-II env conventions. `K` is guarded below 133,000 for int32 exactness;
+  out of range it falls back loudly to `cublasDgemm`. Wide-dynamic-range inputs
+  stay accurate via the per-row/col scaling (7.5e-15 on 1e-3..1e3 data). Adds
+  `tests/gpu/cuda_ozaki_correctness_gate.sh` / `cuda_ozaki_correctness_test.esk`
+  (INT8-Ozaki vs an independent CPU f64 reference across
+  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, a T=4/6 sweep,
+  and an out-of-range-knob loud-clamp check) and the
+  `cuda-ozaki-int8-correctness` ICC oracle.
+  (`lib/backend/gpu/gpu_memory_cuda.cpp`, `lib/backend/gpu/gpu_cuda_kernels.cu`)
+
 ### Fixed
 
 - **Ozaki-II exact DGEMM correctness (Metal).** The opt-in CRT matmul

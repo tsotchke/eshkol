@@ -198,6 +198,57 @@ cublasDgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N,
 ```
 Both `cublasDgemm` (f64) and `cublasSgemm` (f32) are supported.
 
+### INT8 Tensor-Core Ozaki f64 GEMM (opt-in, `gpu_memory_cuda.cpp`)
+
+An opt-in f64 matmul path recovers FP64-accurate `C = A*B` from the INT8 (IMMA)
+tensor cores, which run ~500x faster than the deliberately crippled native FP64
+pipeline on consumer/prosumer NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32).
+Enable with `ESHKOL_CUDA_F64_KERNEL=ozaki-int8`; the default f64 GPU matmul
+stays `cublasDgemm`.
+
+Scheme (Ootomo-Ozaki-Yokota, per-row/col scaled 7-bit integer slicing), for
+row-major `A` (MxK), `B` (KxN):
+
+1. Scale into `[-1,1]`: `r_i = max_k|A[i,k]|`, `c_j = max_k|B[k,j]|`.
+2. Slice `A/r` and `B/c` into `s = T+1` signed 7-bit int8 slices, base 128
+   (`|slice| <= 127`). A-slices are stored in natural layout, B-slices are
+   stored **transposed** so each pair GEMM issues as
+   `cublasGemmEx(OP_T, OP_N, CUDA_R_8I -> CUDA_R_32I, COMPUTE_32I)` on the fast
+   IMMA **TN** layout — mandatory on sm_86 (a 3.7x throughput cliff vs NN);
+   Blackwell (sm_120) is layout-indifferent, so TN is safe everywhere.
+3. `C[i,j] = r_i c_j * sum_{p+q<=T} 128^{-(p+q+2)} (A_p x B_q)[i,j]`. Each
+   `A_p x B_q` is one INT8->INT32 GEMM; the int32 accumulation is **exact** (no
+   rounding) — the only error source is dropping slice-pairs with `p+q > T`.
+4. **Diagonal-fused reconstruction**: all slice-pairs on a diagonal `d = p+q`
+   carry the same weight `128^-(d+2)`, so they accumulate into one int32 buffer
+   via `cublasGemmEx` `beta=1` (staying on the tensor path), then a single fused
+   FP64 kernel streams the diagonal buffers, applies the weight, and scales by
+   `r_i c_j`. Buffers are capped at `floor((2^31-1)/(K*127^2))` pairs so the
+   accumulation stays int32-exact at any N; the split/reconstruct kernels are in
+   `gpu_cuda_kernels.cu`.
+
+The accuracy/throughput knob is `ESHKOL_OZAKI_CUDA_T` (default 6 = full f64
+~1e-15, 28 GEMMs; T=4 ~1e-11, 15 GEMMs, ~2x faster). `#GEMMs = (T+1)(T+2)/2`;
+relative error `~2^{-7(T+1)}`. `K` is guarded below 133,000 (`K*127^2 < 2^31`);
+out of range it falls back **loudly** to `cublasDgemm` (K-panel splitting is not
+implemented). Best throughput needs M, K, N multiples of 4; any `cublasGemmEx`
+`NOT_SUPPORTED` (e.g. unaligned dims) falls back quietly to `cublasDgemm`.
+
+Measured (normwise Frobenius error is the accuracy metric — a single near-zero
+output entry inflates per-element error meaninglessly):
+
+| GPU | f64-accurate INT8-Ozaki | native `cublasDgemm` | speedup |
+|-----|-------------------------|----------------------|---------|
+| RTX 3090 (sm_86), N=4096 | 4.74 TFLOP/s-eq @ err 2.7e-15 | 0.54 TFLOP/s | **8.8x** |
+| RTX PRO 6000 Blackwell (sm_120), N=16384 | ~30 TFLOP/s @ err <8.4e-15 (fused) | 1.50 TFLOP/s | **20x** |
+
+Per-row/col scaling keeps wide-dynamic-range data accurate (7.5e-15 on 1e-3..1e3
+inputs on the 3090). FP8-Ozaki was measured but is 2x slower than INT8 on
+Blackwell (identical tensor throughput, fewer exact bits/slice), so INT8 is the
+f64-accurate path. Correctness is gated by
+`tests/gpu/cuda_ozaki_correctness_gate.sh` (ICC oracle
+`cuda-ozaki-int8-correctness`).
+
 ### Custom Kernels (`gpu_cuda_kernels.cu`)
 
 All kernels use 256 threads/block with grid-stride loops, grid capped at 65535.
@@ -221,7 +272,7 @@ All kernels use 256 threads/block with grid-stride loops, grid capped at 65535.
 | Matmul (df64) | `matmul_df64`, `matmul_df64_pure` | -- | O(MKN) |
 | Matmul (f32) | `matmul_f32_simd`, `matmul_f32_simd_128` | `cublasSgemm` | O(MKN) |
 | Matmul (fp24/fp53) | `matmul_fp24`, `matmul_fp53` | -- | O(MKN) |
-| Matmul (Ozaki-II) | `matmul_ozaki_gemm` | -- | O(N_mod*MKN) |
+| Matmul (Ozaki-II) | `matmul_ozaki_gemm` | INT8-Ozaki `cublasGemmEx` (opt-in) | O(T^2*MKN) |
 | Elementwise | `elementwise_sf64` | `elementwise_f64_kernel` | O(N) |
 | Reduce (full/axis) | `reduce_sf64`, `reduce_axis_sf64` | `reduce_f64_kernel` | O(N) |
 | Softmax | `softmax_sf64` | `softmax_f64_kernel` | O(N) |
@@ -292,6 +343,13 @@ bit 0 prevents deallocation of externally-owned memory.
 |----------|---------|--------|
 | `ESHKOL_BLAS_PEAK_GFLOPS` | 1100 | `blas_backend.cpp` |
 | `ESHKOL_GPU_PEAK_GFLOPS` | 200 | `blas_backend.cpp` |
+
+**CUDA INT8-Ozaki f64 GEMM (opt-in):**
+
+| Variable | Values | Meaning |
+|----------|--------|---------|
+| `ESHKOL_CUDA_F64_KERNEL` | `ozaki-int8` | Select the INT8 tensor-core Ozaki f64 matmul (default: `cublasDgemm`) |
+| `ESHKOL_OZAKI_CUDA_T` | 1..8 (default 6) | Accuracy/throughput knob: T=6 full f64 (~1e-15), T=4 ~1e-11 (~2x faster) |
 
 **Metal kernel tuning:**
 
