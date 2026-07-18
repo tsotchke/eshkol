@@ -69,6 +69,8 @@ log "using eshkol-run: $BIN"
 # moduli = the documented ~1e-8 tier).
 FORCE_FAST=(
   ESHKOL_GPU_MATMUL_THRESHOLD=0
+  ESHKOL_GPU_THRESHOLD=1
+  ESHKOL_GPU_VERBOSE=1
   ESHKOL_BLAS_PEAK_GFLOPS=0.001
   ESHKOL_GPU_PEAK_GFLOPS=1000000
   ESHKOL_GPU_WAIT_TIMEOUT=300
@@ -87,7 +89,7 @@ printf '%s\n' "$OUT" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> 
 printf '%s\n' "$OUT" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> fast tier has a FAIL verdict"; }
 
 # (2) the fast path actually engaged (marker present)…
-if ! grep -q "Ozaki-II FAST" "$ERR_F"; then
+if ! grep -q "\[GPU\] Ozaki-II FAST" "$ERR_F"; then
     overall=1; log "  -> fast-tier marker '[GPU] Ozaki-II FAST' NOT seen — path did not engage"
 fi
 # …and never silently fell back to the exact tier (which would be near-bit-exact)

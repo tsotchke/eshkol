@@ -78,6 +78,8 @@ log "using eshkol-run: $BIN"
 # Force the GPU Ozaki-II path for every matmul regardless of size.
 FORCE_GPU=(
   ESHKOL_GPU_MATMUL_THRESHOLD=0
+  ESHKOL_GPU_THRESHOLD=1
+  ESHKOL_GPU_VERBOSE=1
   ESHKOL_BLAS_PEAK_GFLOPS=0.001
   ESHKOL_GPU_PEAK_GFLOPS=1000000
   ESHKOL_GPU_WAIT_TIMEOUT=300
@@ -92,6 +94,13 @@ run_case() {  # run_case <extra-env...>; stdout -> $OUT_F, stderr -> $ERR_F (par
 
 ALL_OUT=""
 overall=0
+require_ozaki_marker() {  # require_ozaki_marker <stderr-file> <label>
+    local file="$1" label="$2"
+    if ! grep -q "\\[GPU\\] Ozaki-II:" "$file"; then
+        overall=1
+        log "  -> ${label}: expected Ozaki-GPU marker '[GPU] Ozaki-II:' is missing from stderr"
+    fi
+}
 
 # ── Case 1: DEFAULT / SHIPPED Ozaki config (fixed N=16). This is the exactness
 #    contract — HARD assertion: bit-exact vs the CPU reference on every regime. ──
@@ -100,6 +109,7 @@ run_case; OUT1="$(cat "$OUT_F")"; ALL_OUT="$OUT1"
 printf '%s\n' "$OUT1"
 printf '%s\n' "$OUT1" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> default config produced failures"; }
 printf '%s\n' "$OUT1" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> default config has a FAIL verdict"; }
+require_ozaki_marker "$ERR_F" "case 1"
 
 # ── Case 2: adaptive moduli (ESHKOL_OZAKI_ADAPTIVE=1) — OPT-IN / INFORMATIONAL.
 #    Adaptive can reduce the moduli count below the tuned N=16 point; the
@@ -110,6 +120,7 @@ printf '%s\n' "$OUT1" | grep -q "VERDICT=FAIL" && { overall=1; log "  -> default
 log "=== Case 2: adaptive moduli (opt-in, approximate) — informational ==="
 run_case ESHKOL_OZAKI_ADAPTIVE=1; OUT2="$(cat "$OUT_F")"
 printf '%s\n' "$OUT2"
+require_ozaki_marker "$ERR_F" "case 2"
 if printf '%s\n' "$OUT2" | grep -q "SUMMARY total_fail=0"; then
     log "  -> adaptive is bit-exact on this run"
 else
@@ -127,6 +138,7 @@ log "=== Case 3: out-of-range ESHKOL_OZAKI_NUM_MODULI=32 -> loud clamp, still co
 run_case ESHKOL_OZAKI_NUM_MODULI=32; OUT3="$(cat "$OUT_F")"
 printf '%s\n' "$OUT3"
 grep -qi "out of range" "$ERR_F" || { overall=1; log "  -> expected a loud out-of-range warning on stderr, none seen"; }
+require_ozaki_marker "$ERR_F" "case 3"
 printf '%s\n' "$OUT3" | grep -q "SUMMARY total_fail=0" || { overall=1; log "  -> clamped run still incorrect"; }
 
 # ── verdict ─────────────────────────────────────────────────────────────────
