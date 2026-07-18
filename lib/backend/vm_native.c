@@ -4778,6 +4778,11 @@ static int vm_deep_equal(VM* vm, Value a, Value b) {
             VmRational* br = (bo && bo->opaque.ptr) ? (VmRational*)bo->opaque.ptr : NULL;
             return ar && br && ar->num == br->num && ar->denom == br->denom;
         }
+        case VAL_I128: {
+            eshkol_i128_abi* ap = (eshkol_i128_abi*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            eshkol_i128_abi* bp = (eshkol_i128_abi*)vm->heap.objects[b.as.ptr]->opaque.ptr;
+            return ap && bp && ap->lo == bp->lo && ap->hi == bp->hi;
+        }
         case VAL_TENSOR: {
             /* Numeric vector literals compile to tensors in this VM, so
              * structural tensor equality is needed for equal? on such
@@ -4904,6 +4909,47 @@ static int vm_bignum_compare_vals(VM* vm, Value a, Value b) {
     return bignum_compare(ab, bb);
 }
 
+/* ── i128 (native fixed-width 128-bit integer) VM helpers ──────────────────
+ *
+ * i128 is a DISTINCT wrapping fixed-width type off the numeric tower. The VM
+ * boxes the {lo,hi} payload as a HEAP_I128 opaque on its region heap and shares
+ * the exact arithmetic core in <eshkol/core/i128.h> with the native runtime, so
+ * both substrates compute bit-identical results. Error policy matches the base
+ * VM's own integer arithmetic (fatal vm->error on div-by-zero / bad operand /
+ * out-of-range shift), rather than the native path's catchable raise. */
+static int32_t vm_box_i128(VM* vm, __int128 value) {
+    eshkol_i128_abi* pl =
+        (eshkol_i128_abi*)vm_alloc(&vm->heap.regions, sizeof(eshkol_i128_abi));
+    if (!pl) { vm->error = 1; return -1; }
+    *pl = eshkol_i128_to_abi(value);
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return -1; }
+    vm->heap.objects[ptr]->type = HEAP_I128;
+    vm->heap.objects[ptr]->opaque.ptr = pl;
+    return ptr;
+}
+
+static __int128 vm_unbox_i128(VM* vm, Value v) {
+    return eshkol_i128_from_abi(
+        *(eshkol_i128_abi*)vm->heap.objects[v.as.ptr]->opaque.ptr);
+}
+
+/* Coerce an operand to a native __int128. i128 unboxes; an exact fixnum widens
+ * (the value, NOT a tower promotion). Anything else sets *ok = 0. */
+static __int128 vm_coerce_i128(VM* vm, Value v, int* ok) {
+    if (v.type == VAL_I128) { *ok = 1; return vm_unbox_i128(vm, v); }
+    if (v.type == VAL_INT)  { *ok = 1; return (__int128)v.as.i; }
+    *ok = 0;
+    return 0;
+}
+
+/* Box and push a computed __int128 result. */
+static void vm_push_i128(VM* vm, __int128 value) {
+    int32_t ptr = vm_box_i128(vm, value);
+    if (ptr < 0) return;   /* vm->error already set */
+    vm_push(vm, (Value){.type = VAL_I128, .as.ptr = ptr});
+}
+
 /** Write one value to an arbitrary VM output port using either display or
  * R7RS external-representation syntax.  Keeping this port-aware serializer
  * beside native dispatch lets `(write value port)` work for file and string
@@ -4995,6 +5041,14 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
         VmBignum* bignum = (VmBignum*)vm->heap.objects[value.as.ptr]->opaque.ptr;
         char* text = bignum ? bignum_to_string(&vm->heap.regions, bignum) : NULL;
         vm_port_write_cstr(port, text ? text : "#<bignum>");
+        break;
+    }
+    case VAL_I128: {
+        eshkol_i128_abi* pl = (eshkol_i128_abi*)vm->heap.objects[value.as.ptr]->opaque.ptr;
+        if (!pl) { vm_port_write_cstr(port, "#<i128>"); break; }
+        char text[ESHKOL_I128_STR_MAX];
+        eshkol_i128_format(eshkol_i128_from_abi(*pl), text);
+        vm_port_write_cstr(port, text);
         break;
     }
     case VAL_EOF: vm_port_write_cstr(port, "#<eof>"); break;
@@ -5950,6 +6004,132 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 }
             }
         }
+        break;
+    }
+
+    /* ══════════════════════════════════════════════════════════════════════
+     * Native 128-bit Integer Operations (2100-2118)
+     *
+     * Distinct wrapping fixed-width type OFF the numeric tower. Shares the pure
+     * arithmetic core in <eshkol/core/i128.h> with the native runtime. Fatal
+     * vm->error on bad operand / div-by-zero / out-of-range shift, matching the
+     * base VM's own integer-arithmetic error convention.
+     * ══════════════════════════════════════════════════════════════════════ */
+    case 2100: { /* (i128 x) / (int->i128 x): construct from a fixnum */
+        Value x = vm_pop(vm);
+        if (x.type == VAL_I128) { vm_push(vm, x); break; }
+        if (x.type != VAL_INT) {
+            fprintf(stderr, "ERROR: i128: argument must be an exact integer\n");
+            vm->error = 1; break;
+        }
+        vm_push_i128(vm, (__int128)x.as.i);
+        break;
+    }
+    case 2101: { /* (string->i128 s) */
+        Value s = vm_pop(vm);
+        VmString* str = vm_value_as_string(vm, s);
+        __int128 v;
+        if (!str || !eshkol_i128_parse(str->data, (size_t)str->byte_len, &v)) {
+            fprintf(stderr, "ERROR: string->i128: not a valid 128-bit integer\n");
+            vm->error = 1; break;
+        }
+        vm_push_i128(vm, v);
+        break;
+    }
+    case 2102: { /* (i128? x) */
+        Value x = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(x.type == VAL_I128));
+        break;
+    }
+    case 2103: case 2104: case 2105: case 2106: case 2107: { /* add/sub/mul/quot/rem */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        int oka = 0, okb = 0;
+        __int128 x = vm_coerce_i128(vm, a, &oka);
+        __int128 y = vm_coerce_i128(vm, b, &okb);
+        if (!oka || !okb) {
+            fprintf(stderr, "ERROR: i128 arithmetic: argument must be an i128\n");
+            vm->error = 1; break;
+        }
+        __int128 r;
+        switch (fid) {
+            case 2103: r = eshkol_i128_add(x, y); break;
+            case 2104: r = eshkol_i128_sub(x, y); break;
+            case 2105: r = eshkol_i128_mul(x, y); break;
+            case 2106:
+                if (y == 0) { fprintf(stderr, "ERROR: i128-quotient: division by zero\n"); vm->error = 1; goto i128_arith_done; }
+                r = eshkol_i128_quotient(x, y); break;
+            default: /* 2107 */
+                if (y == 0) { fprintf(stderr, "ERROR: i128-remainder: division by zero\n"); vm->error = 1; goto i128_arith_done; }
+                r = eshkol_i128_remainder(x, y); break;
+        }
+        vm_push_i128(vm, r);
+    i128_arith_done:
+        break;
+    }
+    case 2108: { /* (i128-neg n) */
+        Value a = vm_pop(vm);
+        int ok = 0;
+        __int128 x = vm_coerce_i128(vm, a, &ok);
+        if (!ok) { fprintf(stderr, "ERROR: i128-neg: argument must be an i128\n"); vm->error = 1; break; }
+        vm_push_i128(vm, eshkol_i128_neg(x));
+        break;
+    }
+    case 2109: case 2110: case 2111: { /* shl / ashr / lshr */
+        Value cnt = vm_pop(vm), a = vm_pop(vm);
+        int ok = 0;
+        __int128 x = vm_coerce_i128(vm, a, &ok);
+        if (!ok) { fprintf(stderr, "ERROR: i128 shift: value must be an i128\n"); vm->error = 1; break; }
+        if (cnt.type != VAL_INT || cnt.as.i < 0 || cnt.as.i > 127) {
+            fprintf(stderr, "ERROR: i128 shift: count out of range [0,127]\n");
+            vm->error = 1; break;
+        }
+        unsigned c = (unsigned)cnt.as.i;
+        __int128 r = (fid == 2109) ? eshkol_i128_shl(x, c)
+                   : (fid == 2110) ? eshkol_i128_ashr(x, c)
+                                   : eshkol_i128_lshr(x, c);
+        vm_push_i128(vm, r);
+        break;
+    }
+    case 2112: case 2113: case 2114: case 2115: case 2116: { /* = < > <= >= */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        int oka = 0, okb = 0;
+        __int128 x = vm_coerce_i128(vm, a, &oka);
+        __int128 y = vm_coerce_i128(vm, b, &okb);
+        if (!oka || !okb) {
+            fprintf(stderr, "ERROR: i128 compare: argument must be an i128\n");
+            vm->error = 1; break;
+        }
+        int c = eshkol_i128_cmp(x, y);
+        int r = (fid == 2112) ? (c == 0)
+              : (fid == 2113) ? (c < 0)
+              : (fid == 2114) ? (c > 0)
+              : (fid == 2115) ? (c <= 0)
+                              : (c >= 0);
+        vm_push(vm, BOOL_VAL(r));
+        break;
+    }
+    case 2117: { /* (i128->string n) */
+        Value a = vm_pop(vm);
+        int ok = 0;
+        __int128 x = vm_coerce_i128(vm, a, &ok);
+        if (!ok) { fprintf(stderr, "ERROR: i128->string: argument must be an i128\n"); vm->error = 1; break; }
+        char buf[ESHKOL_I128_STR_MAX];
+        size_t len = eshkol_i128_format(x, buf);
+        VmString* str = vm_string_new(&vm->heap.regions, buf, (int)len);
+        if (!str) { vm->error = 1; break; }
+        VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, str);
+        break;
+    }
+    case 2118: { /* (i128->int n): narrow to fixnum, fatal if out of range */
+        Value a = vm_pop(vm);
+        int ok = 0;
+        __int128 x = vm_coerce_i128(vm, a, &ok);
+        if (!ok) { fprintf(stderr, "ERROR: i128->int: argument must be an i128\n"); vm->error = 1; break; }
+        if (x < (__int128)INT64_MIN || x > (__int128)INT64_MAX) {
+            fprintf(stderr, "ERROR: i128->int: value does not fit in a fixnum\n");
+            vm->error = 1; break;
+        }
+        vm_push(vm, INT_VAL((int64_t)x));
         break;
     }
 

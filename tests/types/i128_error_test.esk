@@ -1,0 +1,59 @@
+;;
+;; Native 128-bit Integer (i128) — error-condition tests (native path).
+;;
+;; i128 error conditions raise catchable R7RS exceptions on the native codegen
+;; / JIT / AOT runtime (via eshkol_raise), so `guard` observes them here. On the
+;; bytecode VM these same conditions are fatal (they halt with a diagnostic),
+;; exactly matching the VM's existing behavior for integer division-by-zero and
+;; (error ...). This file therefore targets the native runtime.
+;;
+;; Run: build-i128/eshkol-run tests/types/i128_error_test.esk
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display name) (display ": PASS\n"))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display name) (display ": FAIL - expected ")
+        (write expected) (display " got ") (write actual) (display "\n"))))
+
+;; #t if THUNK raised any condition, #f if it returned normally.
+(define (raises? thunk)
+  (guard (e (#t #t))
+    (thunk)
+    #f))
+
+(display "=== i128: error conditions raise (caught by guard) ===\n")
+(check "quotient by zero raises"
+       #t (raises? (lambda () (i128-quotient (i128 1) (i128 0)))))
+(check "remainder by zero raises"
+       #t (raises? (lambda () (i128-remainder (i128 1) (i128 0)))))
+(check "shift count 128 (too large) raises"
+       #t (raises? (lambda () (i128-shl (i128 1) 128))))
+(check "shift count -1 (negative) raises"
+       #t (raises? (lambda () (i128-ashr (i128 1) -1))))
+(check "i128->int out-of-fixnum-range raises"
+       #t (raises? (lambda ()
+                     (i128->int (string->i128
+                                 "170141183460469231731687303715884105727")))))
+(check "string->i128 on garbage raises"
+       #t (raises? (lambda () (string->i128 "not-a-number"))))
+(check "string->i128 out-of-range (2^127) raises"
+       #t (raises? (lambda () (string->i128
+                               "170141183460469231731687303715884105728"))))
+
+;; A caught error must not perturb subsequent evaluation.
+(check "recovery after catch"
+       "3" (i128->string (i128-add (i128 1) (i128 2))))
+
+(display "\n============ i128 ERROR SUMMARY ============\n")
+(display "Passed: ") (display tests-passed) (newline)
+(display "Failed: ") (display tests-failed) (newline)
+(if (= tests-failed 0)
+    (display "ALL i128 ERROR TESTS PASSED\n")
+    (display "SOME i128 ERROR TESTS FAILED\n"))

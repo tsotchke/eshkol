@@ -146,6 +146,13 @@ oracles:
         action: ./scripts/run_icc_smoke.sh
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["i128_native_type_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Native 128-bit integer: distinct wrapping fixed-width type off the tower — two''s-complement wrap at +-2^127, full-range string round-trip including -2^127, shifts (0/64/127, out-of-range raises), compares, truncated quotient/remainder, i128->int range check'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["closure_set_tco_loop_oracle"]
           event_values: ["PASS"]
         severity: high

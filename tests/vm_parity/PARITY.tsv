@@ -348,7 +348,25 @@ http-server-respond	vm-supported
 http-set-proxy	vm-supported	
 http-set-tls-client-cert	vm-supported	
 huber-loss	gap	ml faculty has no VM fid coverage
-if	vm-supported	
+i128	vm-supported	native fid + VM BUILTINS 2100; construct i128 from a fixnum
+i128->int	vm-supported	native fid + VM BUILTINS 2118; narrow to fixnum (raises out of range)
+i128->string	vm-supported	native fid + VM BUILTINS 2117; decimal render
+i128-add	vm-supported	native fid + VM BUILTINS 2103; wrapping add
+i128-ashr	vm-supported	native fid + VM BUILTINS 2110; arithmetic (sign-fill) right shift
+i128-lshr	vm-supported	native fid + VM BUILTINS 2111; logical (zero-fill) right shift
+i128-mul	vm-supported	native fid + VM BUILTINS 2105; wrapping multiply
+i128-neg	vm-supported	native fid + VM BUILTINS 2108; wrapping negate
+i128-quotient	vm-supported	native fid + VM BUILTINS 2106; truncated quotient (raises on /0)
+i128-remainder	vm-supported	native fid + VM BUILTINS 2107; truncated remainder (raises on /0)
+i128-shl	vm-supported	native fid + VM BUILTINS 2109; left shift (count 0..127)
+i128-sub	vm-supported	native fid + VM BUILTINS 2104; wrapping subtract
+i128<=?	vm-supported	native fid + VM BUILTINS 2115
+i128<?	vm-supported	native fid + VM BUILTINS 2113
+i128=?	vm-supported	native fid + VM BUILTINS 2112
+i128>=?	vm-supported	native fid + VM BUILTINS 2116
+i128>?	vm-supported	native fid + VM BUILTINS 2114
+i128?	vm-supported	native fid + VM BUILTINS 2102; type predicate
+if	vm-supported
 ifft	gap	signal faculty has no VM fid coverage
 iir-filter	gap	signal faculty has no VM fid coverage
 imag-part	vm-supported	

@@ -37,6 +37,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and an out-of-range-knob loud-clamp check) and the
   `cuda-ozaki-int8-correctness` ICC oracle.
   (`lib/backend/gpu/gpu_memory_cuda.cpp`, `lib/backend/gpu/gpu_cuda_kernels.cu`)
+- **Native 128-bit integer type (`i128`).** A first-class, fixed-width,
+  two's-complement signed integer (range −2¹²⁷…2¹²⁷−1) that lives **off** the
+  numeric tower: unlike bignum (which grows), i128 arithmetic **wraps** modulo
+  2¹²⁸, and it never auto-promotes — every crossing to/from the tower is an
+  explicit conversion. Heap-boxed under a new subtype `HEAP_SUBTYPE_I128` (25)
+  with a 16-byte little-endian `{lo, hi}` payload whose layout matches the
+  planned two-u64 FFI ABI. Full surface on **both** the native codegen path and
+  the bytecode VM: constructors/predicate `i128` / `int->i128` / `string->i128`
+  (full range incl. −2¹²⁷) / `i128?`; wrapping arithmetic `i128-add` / `-sub` /
+  `-mul` / `-neg`; shifts `i128-shl` / `-ashr` / `-lshr` (count 0…127, out of
+  range raises); comparisons `i128=?` / `<?` / `>?` / `<=?` / `>=?`; truncated
+  `i128-quotient` / `i128-remainder` (C sign semantics; divide-by-zero raises);
+  conversions `i128->string` / `i128->int` (raises out of fixnum range); and
+  decimal `display`/`write`. The pure arithmetic core (`inc/eshkol/core/i128.h`)
+  is shared verbatim by the native runtime (`lib/core/i128_runtime.cpp`,
+  arena-boxed, `eshkol_raise`) and the VM (`lib/backend/vm_native.c`, region-heap
+  boxed) so both compute bit-identical results. Docs:
+  `docs/reference/language/i128.md`; tests: `tests/types/i128_test.esk`
+  (native + VM parity) and `tests/types/i128_error_test.esk`.
 
 ### Fixed
 
