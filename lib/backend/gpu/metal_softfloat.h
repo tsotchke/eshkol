@@ -4099,6 +4099,152 @@ kernel void matmul_ozaki_gemm(
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Ozaki-II REDUCED-PRECISION fast tier — fully-GPU LINEAR CRT over MPS f32 GEMMs
+//
+// Ported from the measured standalone prototype (pathA_gpu.mm): the per-modulus
+// GEMM is a near-peak MPS f32 GEMM (host code in gpu_memory.mm), and these three
+// kernels do the residue split and the double-float (df32) fractional CRT
+// reconstruction entirely on the GPU. The host only uploads A,B once, does one
+// O(N^2) exponent pass, and downloads C — no per-modulus CPU work, no per-modulus
+// download.
+//
+// MPS f32 is INTEGER-EXACT for this scheme: with centered residues in
+// [-p/2, p/2) and moduli chosen so K·(p/2)² < 2^24, every f32 accumulation of K
+// products is exact (verified in the prototype to f64). The moduli are therefore
+// cap-limited prime powers (cap derived from K in gpu_memory.mm), NOT the exact
+// tier's ≤256 set — this is what lets a single MPS GEMM stay exact for the full K.
+//
+// Load-bearing (both enforced in gpu_memory.mm): the library is compiled with
+// fast-math OFF (fast-math zeroes the TwoSum/TwoProduct compensation below,
+// collapsing accuracy to plain f32); and the descale is `ldexp` (exact powers of
+// two) — `exp2` is a polynomial approximation that injects a uniform ~1e-7 error.
+// Metal has no f64, so df32 caps this tier's accuracy at ~1e-11.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Double-float (2×f32) helpers, TwoSum / TwoProduct (survive only with fast-math OFF).
+inline void ozfast_df_add(float ahi, float alo, float bhi, float blo,
+                          thread float& rhi, thread float& rlo) {
+    float s = ahi + bhi;
+    float bb = s - ahi;
+    float err = (ahi - (s - bb)) + (bhi - bb);
+    float lo = alo + blo + err;
+    float t = s + lo;
+    rlo = lo - (t - s);
+    rhi = t;
+}
+inline void ozfast_df_mul(float ahi, float alo, float bhi, float blo,
+                          thread float& rhi, thread float& rlo) {
+    float p = ahi * bhi;
+    float e = fma(ahi, bhi, -p);
+    e += ahi * blo + alo * bhi;
+    float t = p + e;
+    rlo = e - (t - p);
+    rhi = t;
+}
+
+// ozaki_fast_split: reads each operand element as an f64 bit-pattern, extracts
+// the 53-bit integer significand, applies the E-scaling as an exact right-shift-
+// with-round (E<=52 ⇒ the shift is always <=0, no left-shift needed), reduces
+// mod p via 64-bit-limb arithmetic, and centers to [-p/2, p/2). Zero host f64 math.
+kernel void ozaki_fast_split(
+    device const uint2* Abits         [[buffer(0)]],  // operand f64 bit-patterns (lo,hi)
+    device const int*   escale        [[buffer(1)]],  // per-row (A) or per-col (B) frexp exponent
+    device float*       out           [[buffer(2)]],  // centered residue (f32)
+    constant int&       stride        [[buffer(3)]],  // K for A (M×K); N for B (K×N)
+    constant int&       perRow        [[buffer(4)]],  // 1: escale idx = gid/stride; 0: gid%stride
+    constant int&       E             [[buffer(5)]],
+    constant int&       p             [[buffer(6)]],
+    constant int&       pow2_32_mod_p [[buffer(7)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint2 bits = Abits[gid];
+    uint lo = bits.x, hi = bits.y;
+    uint sign = hi >> 31;
+    int exp = (int)((hi >> 20) & 0x7ffu);
+    if (exp == 0) { out[gid] = 0.0f; return; }         // zero / subnormal -> 0
+    uint Mhi = (hi & 0xfffffu) | 0x100000u;            // implicit leading 1 (normal)
+    uint Mlo = lo;
+    int es = perRow ? escale[gid / (uint)stride] : escale[gid % (uint)stride];
+    int sh = (exp - 1075) + E - es;                    // <= 0
+    int s = -sh;
+    if (s > 53) { out[gid] = 0.0f; return; }
+    if (s < 0) s = 0;
+    if (s >= 1) {                                      // round half up: M += 2^(s-1)
+        int rb = s - 1;
+        if (rb < 32) { uint old = Mlo; Mlo += (1u << rb); if (Mlo < old) Mhi++; }
+        else { Mhi += (1u << (rb - 32)); }
+    }
+    uint Arhi, Arlo;
+    if (s == 0) { Arhi = Mhi; Arlo = Mlo; }
+    else if (s < 32) { Arlo = (Mlo >> s) | (Mhi << (32 - s)); Arhi = Mhi >> s; }
+    else { Arlo = Mhi >> (s - 32); Arhi = 0; }
+    // Ar = Arhi·2^32 + Arlo, Ar < 2^53 so Arhi < 2^21
+    uint r = ((Arhi % (uint)p) * (uint)pow2_32_mod_p + (Arlo % (uint)p)) % (uint)p;
+    if (sign) r = ((uint)p - r) % (uint)p;
+    int ph = p >> 1;
+    int ri = (int)r;
+    out[gid] = (float)(ri > ph ? ri - p : ri);
+}
+
+// ozaki_fast_accum: incremental fractional-CRT accumulate, one modulus per call,
+// S += ((G mod p)·q mod p)/p in df32 (fractional Garner — touches only small values).
+kernel void ozaki_fast_accum(
+    device const float* G   [[buffer(0)]],  // MPS f32 GEMM output for this modulus
+    device float*       Shi [[buffer(1)]],
+    device float*       Slo [[buffer(2)]],
+    constant int&       p   [[buffer(3)]],
+    constant int&       q   [[buffer(4)]],  // (P/p)^{-1} mod p
+    uint gid [[thread_position_in_grid]])
+{
+    float g = G[gid];
+    int Gi = (int)rint(g);
+    int gg = ((Gi % p) + p) % p;
+    int u  = (gg * q) % p;
+    float pf = (float)p;
+    float thi = (float)u / pf;
+    float tlo = fma(-thi, pf, (float)u) / pf;          // exact u/p residual via fma
+    float rhi, rlo;
+    ozfast_df_add(Shi[gid], Slo[gid], thi, tlo, rhi, rlo);
+    // Reduce mod 1 each step so the accumulator stays in [0,1). Only frac(S)
+    // matters; holding S near magnitude 1 instead of ~n_mod keeps ~4 extra df32
+    // bits exactly where a heavily-cancelled (pi/e-style) result consumes them.
+    float fl = floor(rhi);
+    if (fl != 0.0f) ozfast_df_add(rhi, rlo, -fl, 0.0f, rhi, rlo);
+    Shi[gid] = rhi; Slo[gid] = rlo;
+}
+
+// ozaki_fast_finalize: frac(S) -> centered -> × (P·2^(e_i+f_j-2E)) -> C df32 (hi,lo).
+kernel void ozaki_fast_finalize(
+    device const float* Shi  [[buffer(0)]],
+    device const float* Slo  [[buffer(1)]],
+    device const int*   erow [[buffer(2)]],
+    device const int*   ecol [[buffer(3)]],
+    device float*       Chi  [[buffer(4)]],
+    device float*       Clo  [[buffer(5)]],
+    constant int&       Ncols[[buffer(6)]],  // output column count (row stride)
+    constant int&       E    [[buffer(7)]],
+    constant float&     Phi  [[buffer(8)]],  // P as df32 (hi,lo)
+    constant float&     Plo  [[buffer(9)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    int i = gid.y, j = gid.x;
+    uint idx = (uint)i * (uint)Ncols + (uint)j;
+    float shi = Shi[idx], slo = Slo[idx];
+    float fl = floor(shi);                             // integer part (S ∈ [0, n_mod))
+    float fhi, flo;
+    ozfast_df_add(shi, slo, -fl, 0.0f, fhi, flo);
+    float fl2 = floor(fhi);
+    if (fl2 != 0.0f) { ozfast_df_add(fhi, flo, -fl2, 0.0f, fhi, flo); }
+    if (fhi >= 0.5f) { ozfast_df_add(fhi, flo, -1.0f, 0.0f, fhi, flo); }  // center to [-0.5,0.5)
+    int scale = erow[i] + ecol[j] - 2 * E;
+    float w = ldexp(1.0f, scale);                      // EXACT 2^scale (never exp2)
+    float Whi = Phi * w, Wlo = Plo * w;
+    float chi, clo;
+    ozfast_df_mul(fhi, flo, Whi, Wlo, chi, clo);
+    Chi[idx] = chi; Clo[idx] = clo;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Backward Pass Kernels — GPU-accelerated gradient computation
 // ═══════════════════════════════════════════════════════════════════════════
