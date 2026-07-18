@@ -16413,6 +16413,7 @@ private:
         if (func_name == "tensor-det") return tensor_->tensorDet(op);
         if (func_name == "tensor-inverse") return tensor_->tensorInverse(op);
         if (func_name == "tensor-solve") return tensor_->tensorSolve(op);
+        if (func_name == "linear-solve") return tensor_->tensorLinearSolve(op);
         if (func_name == "tensor-cholesky") return tensor_->tensorCholesky(op);
         if (func_name == "tensor-qr") return tensor_->tensorQR(op);
         if (func_name == "tensor-svd") return tensor_->tensorSVD(op);

@@ -56,6 +56,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boxed) so both compute bit-identical results. Docs:
   `docs/reference/language/i128.md`; tests: `tests/types/i128_test.esk`
   (native + VM parity) and `tests/types/i128_error_test.esk`.
+- **`linear-solve` — full-f64 dense linear solver with a mixed-precision fast
+  path.** `(linear-solve A b)` solves `A x = b` for a square `N×N` tensor `A`
+  and length-`N` `b` with a full-f64 accuracy guarantee. On Apple/Accelerate it
+  factorizes `A` in fp32 (the `O(n³)` cost, ~2–3× faster than f64 on the AMX
+  units) and polishes the result back to full f64 by iterative refinement
+  (Langou/Baboulin/Dongarra): the residual is recomputed in f64 and a fp32
+  back-solve corrects `x` until the relative backward residual is certified at
+  ~`1e-13`. When refinement cannot certify a full-f64 result (ill-conditioned
+  systems) it silently falls back to a plain-f64 LAPACK `dgesv`, so the caller
+  always gets a correct f64 answer — the speedup is opportunistic, the
+  correctness is not. Non-Apple builds use a direct f64 LU. Singular,
+  non-square, and dimension-mismatch inputs raise catchable conditions.
+  Measured on an M2 Ultra: ~1.15–1.4× faster than the forced-`dgesv` path at
+  `N = 2048–4096` at `~1e-15` residual. Implemented in `lib/core/linear_solve.cpp`
+  with native-codegen and bytecode-VM surfaces (native call id 472) and an
+  `linear-solve-full-f64` ICC oracle; see
+  `tests/features/linear_solve_test.esk` and
+  [docs/reference/tensors/operations.md](docs/reference/tensors/operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path).
 
 ### Fixed
 

@@ -2036,6 +2036,7 @@ set(ESHKOL_RUNTIME_CORE_SRC
   lib/core/runtime_deep_equal.cpp
   lib/core/runtime_hash_table.cpp
   lib/core/runtime_list_helpers.cpp
+  lib/core/linear_solve.cpp
   lib/core/runtime_object_alloc.cpp
   lib/core/runtime_regions.cpp
   lib/core/runtime_shared_memory.cpp
