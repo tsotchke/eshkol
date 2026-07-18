@@ -18,6 +18,24 @@
 #include <atomic>
 #include <mutex>
 
+// ----------------------------------------------------------------------------
+// Verbose diagnostics (defined before all GPU_LOG uses in this TU)
+// ----------------------------------------------------------------------------
+static bool g_gpu_verbose = false;
+static bool g_gpu_verbose_checked = false;
+
+/** @brief True if `ESHKOL_GPU_VERBOSE` is set in the environment (checked
+ *         once and cached), enabling GPU_LOG diagnostic output. */
+static bool gpu_verbose(void) {
+    if (!g_gpu_verbose_checked) {
+        g_gpu_verbose = (getenv("ESHKOL_GPU_VERBOSE") != nullptr);
+        g_gpu_verbose_checked = true;
+    }
+    return g_gpu_verbose;
+}
+
+#define GPU_LOG(fmt, ...) do { if (gpu_verbose()) fprintf(stderr, "[GPU] " fmt "\n", ##__VA_ARGS__); } while(0)
+
 // ============================================================================
 // Platform Detection
 // ============================================================================
@@ -651,21 +669,6 @@ static int cuda_wrap_host(void* host_ptr, size_t size_bytes, EshkolGPUBuffer* ou
 // ============================================================================
 // GPU Dispatch Logging
 // ============================================================================
-
-static bool g_gpu_verbose = false;
-static bool g_gpu_verbose_checked = false;
-
-/** @brief True if `ESHKOL_GPU_VERBOSE` is set in the environment (checked
- *         once and cached), enabling GPU_LOG diagnostic output. */
-static bool gpu_verbose(void) {
-    if (!g_gpu_verbose_checked) {
-        g_gpu_verbose = (getenv("ESHKOL_GPU_VERBOSE") != nullptr);
-        g_gpu_verbose_checked = true;
-    }
-    return g_gpu_verbose;
-}
-
-#define GPU_LOG(fmt, ...) do { if (gpu_verbose()) fprintf(stderr, "[GPU] " fmt "\n", ##__VA_ARGS__); } while(0)
 
 // ============================================================================
 // Public API Implementation
