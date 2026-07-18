@@ -49,6 +49,10 @@ echo ""
 # Run each test
 for test_file in tests/gpu/*.esk; do
     test_name=$(basename "$test_file")
+    if [ "$test_name" = "ozaki_certification_test.esk" ]; then
+        echo -e "${YELLOW}SKIP: Metal-only ozaki certification fixture${NC}"
+        continue
+    fi
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test

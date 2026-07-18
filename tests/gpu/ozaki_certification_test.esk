@@ -1,0 +1,115 @@
+;; tests/gpu/ozaki_certification_test.esk — Metal exact Ozaki certificate witness.
+;;
+;; This fixture uses a single deterministic 512x512 problem with integer-valued
+;; f64 matrices (explicitly built from `i128` then converted with
+;; `exact->inexact`) to make every controlled conversion visible. Entries are
+;; bounded by 16,777,472, so each 512-term dot-product is < 2^58.
+;;
+;; There are two execution modes (selected by `ESHKOL_OZAKI_CERT_MODE`):
+;; - exact (default): force Metal exact Ozaki and require every sampled cell to
+;;   match an independent native i128 reference.
+;; - blas: force the CPU BLAS/CPU fallback path and require at least one sampled
+;;   mismatch against the same i128 oracle on the identical input.
+
+(define N 512)
+(define K 512)
+(define SIZE (* N N))
+(define max-dot-bits 58)
+
+(define sample-points (vector 0 128 256 384 511))
+(define sample-count 5)
+(define total-samples 25)
+
+(define mode (or (getenv "ESHKOL_OZAKI_CERT_MODE") "exact"))
+(define is-exact? (string=? mode "exact"))
+(define is-blas? (string=? mode "blas"))
+
+(define (sample-point idx)
+  (vector-ref sample-points idx))
+
+(define (a-value row col)
+  (let* ((mag (+ 16777216 (modulo (+ (* row 97) (* col 53)) 257)))
+         (sign (if (= (modulo (+ (* row 131) (* col 13)) 2) 0) 1 -1)))
+    (* sign mag)))
+
+(define (b-value row col)
+  (let* ((mag (+ 16777216 (modulo (+ (* row 71) (* col 29) (* row col)) 257)))
+         (sign (if (= (modulo (+ (* row 73) (* col 23)) 2) 0) 1 -1)))
+    (* sign mag)))
+
+(define Ad (make-vector SIZE 0.0))
+(define Bd (make-vector SIZE 0.0))
+(define Ai (make-vector SIZE (i128 0)))
+(define Bi (make-vector SIZE (i128 0)))
+
+;; Populate top-level vectors first (#309 posture): matrix assembly + tensor-data are
+;; deterministic and live at top level.
+(do ((idx 0 (+ idx 1)))
+    ((>= idx SIZE))
+  (let* ((r (quotient idx N))
+         (c (modulo idx N))
+         (av (a-value r c))
+         (bv (b-value r c)))
+    (vector-set! Ad idx (exact->inexact av))
+    (vector-set! Bd idx (exact->inexact bv))
+    (vector-set! Ai idx (i128 av))
+    (vector-set! Bi idx (i128 bv))))
+
+;; Real matmul + plain-vector read exactly once at top-level (single tensor-data touch).
+(define A (reshape Ad N K))
+(define B (reshape Bd K N))
+(define C (matmul A B))
+(define Cd (tensor-data C))
+
+(define total-fail 0)
+
+(define (sample-ref row col)
+  ;; Independent reference in native i128 arithmetic only.
+  (let ((acc (i128 0)))
+    (do ((k 0 (+ k 1)))
+        ((>= k K) acc)
+      (set! acc
+            (i128-add acc
+                      (i128-mul (vector-ref Ai (+ (* row K) k))
+                                (vector-ref Bi (+ (* k N) col))))))))
+
+(define (check-sample row col)
+  (let* ((idx (+ (* row N) col))
+         (ref (sample-ref row col))
+         ;; Expected is computed with the required exact cast path.
+         (expected (exact->inexact (i128->int ref)))
+         (got (vector-ref Cd idx)))
+    (if (not (= got expected))
+        (begin
+          (set! total-fail (+ total-fail 1))
+          (display "MISMATCH row=") (display row)
+          (display " col=") (display col)
+          (display " ref(i128)=") (display ref)
+          (display " got(f64)=") (display got)
+          (display " expected(f64)=") (display expected)
+          (display "\n")))))
+
+(do ((ri 0 (+ ri 1)))
+    ((>= ri sample-count))
+  (let ((r (sample-point ri)))
+    (do ((ci 0 (+ ci 1)))
+        ((>= ci sample-count))
+      (let ((c (sample-point ci)))
+        (check-sample r c)))))
+
+;; K=512 and |entry| <= 16,777,472 imply signed dot magnitude < 2^58.
+(define mode-ok?
+  (or (and is-blas? (> total-fail 0))
+      (and is-exact? (= total-fail 0))))
+
+(define verdict (if mode-ok? "PASS" "FAIL"))
+(display "SUMMARY mode=") (display mode)
+(display " total_samples=") (display total-samples)
+(display " mismatches=") (display total-fail)
+(display " max_dot_bits=") (display max-dot-bits)
+(display " verdict=") (display verdict)
+(display "\n")
+
+(if mode-ok?
+    (exit 0)
+    (exit 1))
