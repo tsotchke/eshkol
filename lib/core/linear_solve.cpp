@@ -106,7 +106,7 @@ static int64_t linsolve_ir_accelerate(const double* A, const double* b,
     }
 
     if (n == 0) return ESHKOL_LINSOLVE_OK;
-    
+
     double bnorm = cblas_dnrm2(n, b, 1);
     double denom = (bnorm > 0.0) ? bnorm : 1.0;
 
