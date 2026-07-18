@@ -656,7 +656,6 @@ llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
                    a_elems, b_elems, res_elems});
 
     // Nonzero status => raise the corresponding catchable error and stop.
-    llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
     llvm::Value* is_err = builder.CreateICmpNE(
         status, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "linsolve_err", cur_fn);
