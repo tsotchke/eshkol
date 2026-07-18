@@ -14,10 +14,10 @@
     }
   },
   "counts": {
-    "builtins_total": 1009,
+    "builtins_total": 1010,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 680,
-    "builtins_in_llvm_aot_dispatch": 770,
+    "builtins_in_vm_table": 681,
+    "builtins_in_llvm_aot_dispatch": 771,
     "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -34,7 +34,7 @@
     "string_char": 42,
     "list_pair": 38,
     "consciousness": 37,
-    "misc": 26,
+    "misc": 27,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
@@ -5721,6 +5721,18 @@
         "native_llvm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "linear-solve",
+      "ids": [
+        472
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "linear-warmup-lr",
