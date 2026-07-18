@@ -553,6 +553,86 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
     return tagged_.packHeapPtr(result_ptr);
 }
 
+llvm::Value* TensorCodegen::tensorLinearSolve(const eshkol_operations_t* op) {
+    // linear-solve: (linear-solve A b) -> x where A x = b, with a full-f64
+    // guarantee. The heavy lifting (mixed-precision iterative refinement plus
+    // the plain-f64 fallback) lives in the runtime; codegen just marshals the
+    // tensor buffers, calls eshkol_linear_solve(), and raises on a nonzero
+    // status. A's elements are f64 bit patterns (never modified by the
+    // solver), so they alias a double* directly — no working copy needed.
+    if (op->call_op.num_vars != 2) {
+        eshkol_error("linear-solve requires 2 arguments: matrix A, vector b");
+        return nullptr;
+    }
+
+    llvm::IRBuilder<>& builder = ctx_.builder();
+    llvm::Value* a_tagged = codegenAST(&op->call_op.variables[0]);
+    llvm::Value* b_tagged = codegenAST(&op->call_op.variables[1]);
+    if (!a_tagged || !b_tagged) return nullptr;
+
+    llvm::StructType* tensor_type = ctx_.tensorType();
+    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+
+    // A: dims pointer (idx 0), rank (idx 1), elements (idx 2).
+    llvm::Value* a_dims_ptr = builder.CreateLoad(
+        ctx_.ptrType(), builder.CreateStructGEP(tensor_type, a_ptr, 0));
+    llvm::Value* a_ndim = builder.CreateLoad(
+        ctx_.int64Type(), builder.CreateStructGEP(tensor_type, a_ptr, 1));
+    llvm::Value* a_elems = builder.CreateLoad(
+        ctx_.ptrType(), builder.CreateStructGEP(tensor_type, a_ptr, 2));
+    // N = A's first dimension (the solution length). Valid for any rank>=1;
+    // the runtime rejects non-square / rank!=2 shapes before touching it.
+    llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), a_dims_ptr);
+
+    // b: dims pointer (idx 0), rank (idx 1), elements (idx 2).
+    llvm::Value* b_dims_ptr = builder.CreateLoad(
+        ctx_.ptrType(), builder.CreateStructGEP(tensor_type, b_ptr, 0));
+    llvm::Value* b_ndim = builder.CreateLoad(
+        ctx_.int64Type(), builder.CreateStructGEP(tensor_type, b_ptr, 1));
+    llvm::Value* b_elems = builder.CreateLoad(
+        ctx_.ptrType(), builder.CreateStructGEP(tensor_type, b_ptr, 2));
+
+    // Result: a 1-D tensor of length N. Its elements buffer is the solver's
+    // output x (f64 bit patterns == doubles).
+    std::vector<llvm::Value*> dims = {n};
+    llvm::Value* result_ptr = createTensorWithDims(dims);
+    if (!result_ptr) return nullptr;
+    llvm::Value* res_elems = builder.CreateLoad(
+        ctx_.ptrType(), builder.CreateStructGEP(tensor_type, result_ptr, 2));
+
+    // status = eshkol_linear_solve(a_ndim, a_dims, b_ndim, b_dims, A, b, x)
+    llvm::FunctionType* solve_ft = llvm::FunctionType::get(
+        ctx_.int64Type(),
+        {ctx_.int64Type(), ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(),
+         ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()},
+        false);
+    llvm::Function* solve_fn = getOrDeclareRuntimeFunc(
+        ctx_.module(), ctx_.context(), "eshkol_linear_solve", solve_ft);
+    llvm::Value* status = builder.CreateCall(
+        solve_fn, {a_ndim, a_dims_ptr, b_ndim, b_dims_ptr,
+                   a_elems, b_elems, res_elems});
+
+    // Nonzero status => raise the corresponding catchable error and stop.
+    llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
+    llvm::Value* is_err = builder.CreateICmpNE(
+        status, llvm::ConstantInt::get(ctx_.int64Type(), 0));
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "linsolve_err", cur_fn);
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "linsolve_ok", cur_fn);
+    builder.CreateCondBr(is_err, err_bb, ok_bb);
+
+    builder.SetInsertPoint(err_bb);
+    llvm::FunctionType* raise_ft = llvm::FunctionType::get(
+        ctx_.voidType(), {ctx_.int64Type()}, false);
+    llvm::Function* raise_fn = getOrDeclareRuntimeFunc(
+        ctx_.module(), ctx_.context(), "eshkol_linear_solve_raise", raise_ft);
+    builder.CreateCall(raise_fn, {status});
+    builder.CreateUnreachable();
+
+    builder.SetInsertPoint(ok_bb);
+    return tagged_.packHeapPtr(result_ptr);
+}
+
 llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {
     // tensor-cholesky: (tensor-cholesky A) -> L where A = L @ L^T
     if (op->call_op.num_vars != 1) {

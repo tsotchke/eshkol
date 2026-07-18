@@ -1,3 +1,10 @@
+/* Dense linear solver (lib/core/linear_solve.cpp): full-f64 Ax=b, row-major
+ * f64 buffers, returns 0 on success or a nonzero catchable status code. */
+extern int64_t eshkol_linear_solve(
+    int64_t a_ndim, const int64_t* a_dims,
+    int64_t b_ndim, const int64_t* b_dims,
+    const double* A, const double* b, double* x);
+
 /* Heap pointer validation — prevent OOB heap access from untrusted values.
  * Used before any vm->heap.objects[val.as.ptr] dereference. */
 #define VM_VALIDATE_HEAP(vm, val) \
@@ -5501,6 +5508,39 @@ static void vm_escape_native_control(VM* vm) {
     }
 }
 
+/* Raise `exn` as the current exception and transfer control to the innermost
+ * installed handler (unwinding dynamic-wind after-thunks, parameter bindings
+ * and pending promises on the way), exactly like the `raise` native (fid 130).
+ * With no handler on the stack this reports an unhandled exception and flags
+ * vm->error. Shared by `raise` and by native builtins (e.g. linear-solve) that
+ * need to signal a catchable condition. */
+static void vm_dispatch_exception(VM* vm, Value exn) {
+    vm->current_exception = exn;
+    if (vm->n_handlers > 0) {
+        vm->n_handlers--;
+        int target_winds = vm->handler_stack[vm->n_handlers].n_winds;
+        while (vm->n_winds > target_winds) {
+            vm->n_winds--;
+            Value after = vm->wind_stack[vm->n_winds].after;
+            vm_run_wind_after(vm, after);
+        }
+        vm_unwind_parameter_bindings(
+            vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
+        vm_promise_eval_unwind_to(
+            vm, vm->handler_stack[vm->n_handlers].promise_mark);
+        vm->sp = vm->handler_stack[vm->n_handlers].sp;
+        vm->fp = vm->handler_stack[vm->n_handlers].fp;
+        vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
+        vm->pc = vm->handler_stack[vm->n_handlers].pc;
+        vm_escape_native_control(vm);
+    } else {
+        fprintf(stderr, "ERROR: unhandled exception: ");
+        print_value(vm, exn);
+        fprintf(stderr, "\n");
+        vm->error = 1;
+    }
+}
+
 /* R7RS delay-force trampoline.  Both ordinary and delay-force evaluations
  * join the VM-wide intrusive chain so exceptions and continuations can roll
  * them back in O(1) auxiliary memory.  Successful delay-force chains are
@@ -7026,6 +7066,53 @@ static void vm_dispatch_native(VM* vm, int fid) {
         vm_push(vm, t);
         vm_push(vm, INT_VAL(-1));
         vm_dispatch_native(vm, target);
+        break;
+    }
+
+    case 472: { /* linear-solve(A, b) -> x, full-f64 Ax=b (mixed-precision IR) */
+        Value b_val = vm_pop(vm), a_val = vm_pop(vm);
+        VmTensor* A = vm_tensor_operand(vm, a_val, "linear-solve");
+        VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
+        if (!A || !b) { vm_push(vm, NIL_VAL); break; }
+
+        int64_t a_dims[VM_TENSOR_MAX_DIMS], b_dims[VM_TENSOR_MAX_DIMS];
+        for (int i = 0; i < A->n_dims && i < VM_TENSOR_MAX_DIMS; i++) a_dims[i] = A->shape[i];
+        for (int i = 0; i < b->n_dims && i < VM_TENSOR_MAX_DIMS; i++) b_dims[i] = b->shape[i];
+
+        /* Solution length is A's leading dimension; the runtime validates that
+         * A is a square 2-D matrix and that b's length matches before use. */
+        int64_t n = (A->n_dims >= 1 && A->shape[0] > 0) ? A->shape[0] : 0;
+        double* x = (n > 0)
+            ? (double*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(double))
+            : NULL;
+        if (n > 0 && !x) { vm_push(vm, NIL_VAL); break; }
+
+        int64_t status = eshkol_linear_solve(
+            A->n_dims, a_dims, b->n_dims, b_dims, A->data, b->data, x);
+
+        if (status != 0) {
+            const char* msg =
+                (status == 1) ? "linear-solve: matrix is singular" :
+                (status == 2) ? "linear-solve: A must be a square 2-D matrix" :
+                                "linear-solve: dimension mismatch (b length must equal N)";
+            VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
+            Value exn = NIL_VAL;
+            if (e) {
+                int32_t ep = heap_alloc(&vm->heap);
+                if (ep >= 0) {
+                    vm->heap.objects[ep]->type = HEAP_ERROR;
+                    vm->heap.objects[ep]->opaque.ptr = e;
+                    exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
+                }
+            }
+            vm_dispatch_exception(vm, exn);
+            break;
+        }
+
+        int64_t shape[1] = { n };
+        VmTensor* out = vm_tensor_from_data(&vm->heap.regions, x, shape, 1);
+        if (!out) { vm_push(vm, NIL_VAL); break; }
+        VM_PUSH_TENSOR(vm, out);
         break;
     }
 
@@ -11624,31 +11711,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 
     case 130: { /* raise: dispatch to handler or error */
         Value exn = vm_pop(vm);
-        vm->current_exception = exn;
-        if (vm->n_handlers > 0) {
-            vm->n_handlers--;
-            /* Unwind dynamic-wind after-thunks */
-            int target_winds = vm->handler_stack[vm->n_handlers].n_winds;
-            while (vm->n_winds > target_winds) {
-                vm->n_winds--;
-                Value after = vm->wind_stack[vm->n_winds].after;
-                vm_run_wind_after(vm, after);
-            }
-            vm_unwind_parameter_bindings(
-                vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
-            vm_promise_eval_unwind_to(
-                vm, vm->handler_stack[vm->n_handlers].promise_mark);
-            vm->sp = vm->handler_stack[vm->n_handlers].sp;
-            vm->fp = vm->handler_stack[vm->n_handlers].fp;
-            vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
-            vm->pc = vm->handler_stack[vm->n_handlers].pc;
-            vm_escape_native_control(vm);
-        } else {
-            fprintf(stderr, "ERROR: unhandled exception: ");
-            print_value(vm, exn);
-            fprintf(stderr, "\n");
-            vm->error = 1;
-        }
+        vm_dispatch_exception(vm, exn);
         break;
     }
 

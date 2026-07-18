@@ -1,0 +1,120 @@
+;; linear_solve_test.esk
+;;
+;; Mixed-precision iterative-refinement dense linear solver: (linear-solve A b).
+;;
+;; Verifies the full-f64 accuracy guarantee across the native JIT/AOT backends
+;; and the bytecode VM. Every well-conditioned case computes the relative
+;; backward residual ||A x - b|| / ||b|| *in this test* (never trusting the
+;; solver's own certificate) and requires it below 1e-12. Also checks an
+;; identity solve, a singular system (must raise, caught by guard), and a
+;; dimension mismatch (must raise).
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (report name ok)
+  (if ok
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+;; Build a 1-D tensor of length n from a list of numbers.
+(define (make-vec lst n)
+  (let ((t (make-tensor (list n) 0.0)))
+    (let loop ((i 0) (l lst))
+      (if (null? l) t
+          (begin (tensor-set! t i (car l)) (loop (+ i 1) (cdr l)))))))
+
+;; Euclidean norm of a length-n 1-D tensor.
+(define (vec-norm v n)
+  (let loop ((i 0) (acc 0.0))
+    (if (= i n) (sqrt acc)
+        (let ((e (tensor-ref v i)))
+          (loop (+ i 1) (+ acc (* e e)))))))
+
+;; ||A x - b|| with A a flat 1-D tensor (row-major n*n), x and b length-n.
+(define (residual-norm aflat x b n)
+  (let loop ((i 0) (acc 0.0))
+    (if (= i n) (sqrt acc)
+        (let inner ((j 0) (s 0.0))
+          (if (= j n)
+              (let ((d (- s (tensor-ref b i))))
+                (loop (+ i 1) (+ acc (* d d))))
+              (inner (+ j 1)
+                     (+ s (* (tensor-ref aflat (+ (* i n) j))
+                             (tensor-ref x j)))))))))
+
+;; Well-conditioned solve: build A/b, solve, verify the residual computed here.
+(define (well-conditioned-case name flat bl n tol)
+  (let* ((aflat (make-vec flat (* n n)))
+         (A (reshape aflat (list n n)))
+         (b (make-vec bl n))
+         (x (linear-solve A b))
+         (rr (/ (residual-norm aflat x b n) (vec-norm b n))))
+    (display "  ") (display name) (display " rel-residual = ") (display rr) (newline)
+    (report name (< rr tol))))
+
+;; --- Well-conditioned solves at several N (residual verified in-test). ---
+
+;; n=3, SPD tridiagonal [1,4,1]; xtrue = [1,2,3] => b = [6,12,14].
+(well-conditioned-case "solve-n3"
+  (list 4.0 1.0 0.0
+        1.0 4.0 1.0
+        0.0 1.0 4.0)
+  (list 6.0 12.0 14.0) 3 1e-12)
+
+;; n=4, diagonally dominant tridiagonal [1,10,1]; xtrue = [1,-1,1,-1].
+(well-conditioned-case "solve-n4"
+  (list 10.0  1.0  0.0  0.0
+         1.0 10.0  1.0  0.0
+         0.0  1.0 10.0  1.0
+         0.0  0.0  1.0 10.0)
+  (list 9.0 -8.0 8.0 -9.0) 4 1e-12)
+
+;; n=8, SPD tridiagonal [1,4,1]; xtrue = all ones => b = [5,6,6,6,6,6,6,5].
+(well-conditioned-case "solve-n8"
+  (list 4.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0
+        1.0 4.0 1.0 0.0 0.0 0.0 0.0 0.0
+        0.0 1.0 4.0 1.0 0.0 0.0 0.0 0.0
+        0.0 0.0 1.0 4.0 1.0 0.0 0.0 0.0
+        0.0 0.0 0.0 1.0 4.0 1.0 0.0 0.0
+        0.0 0.0 0.0 0.0 1.0 4.0 1.0 0.0
+        0.0 0.0 0.0 0.0 0.0 1.0 4.0 1.0
+        0.0 0.0 0.0 0.0 0.0 0.0 1.0 4.0)
+  (list 5.0 6.0 6.0 6.0 6.0 6.0 6.0 5.0) 8 1e-12)
+
+;; --- Identity solve: A = I(3), b = [7,-3,5] => x = b exactly. ---
+(let* ((aflat (make-vec (list 1.0 0.0 0.0
+                              0.0 1.0 0.0
+                              0.0 0.0 1.0) 9))
+       (A (reshape aflat (list 3 3)))
+       (b (make-vec (list 7.0 -3.0 5.0) 3))
+       (x (linear-solve A b))
+       (err (max (abs (- (tensor-ref x 0) 7.0))
+                 (max (abs (- (tensor-ref x 1) -3.0))
+                      (abs (- (tensor-ref x 2) 5.0))))))
+  (display "  identity-exact max|x-b| = ") (display err) (newline)
+  (report "identity-exact" (< err 1e-13)))
+
+;; --- Singular system A = [[1,2],[2,4]] (rank 1) must raise a catchable error. ---
+(let* ((A (reshape (make-vec (list 1.0 2.0 2.0 4.0) 4) (list 2 2)))
+       (b (make-vec (list 1.0 1.0) 2))
+       (result (guard (e (#t 'raised))
+                 (begin (linear-solve A b) 'no-raise))))
+  (report "singular-raises" (eq? result 'raised)))
+
+;; --- Dimension mismatch: A is 3x3, b length 2 must raise. ---
+(let* ((A (reshape (make-vec (list 1.0 0.0 0.0
+                                   0.0 1.0 0.0
+                                   0.0 0.0 1.0) 9) (list 3 3)))
+       (b (make-vec (list 1.0 2.0) 2))
+       (result (guard (e (#t 'raised))
+                 (begin (linear-solve A b) 'no-raise))))
+  (report "dim-mismatch-raises" (eq? result 'raised)))
+
+;; --- Summary ---
+(display "=== linear-solve: ")
+(display pass-count) (display " passed, ")
+(display fail-count) (display " failed ===")
+(newline)

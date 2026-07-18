@@ -390,6 +390,7 @@ static const BuiltinDef BUILTINS[] = {
     {"_tensor-reduce-sum", 457, 2}, {"_tensor-reduce-mean", 458, 2},
     {"_tensor-reduce-max", 459, 2}, {"_tensor-reduce-min", 460, 2},
     {"gpu-elementwise", 470, 3}, {"gpu-reduce", 471, 2},
+    {"linear-solve", 472, 2},
     {"gpu-transpose", 416, 1},
     {"relu", 462, 1}, {"softmax", 463, 1}, {"gpu-softmax", 463, 1}, {"sigmoid", 464, 1},
     {"eye", 745, 1}, {"linspace", 746, 3},
