@@ -125,6 +125,93 @@ residue pair, then reconstruct via CRT. Constants are precomputed using
 `__int128` for exact arithmetic (`gpu_memory.mm:188`). Adaptive N selection
 (`gpu_memory.mm:260`) minimizes moduli count based on actual input magnitudes.
 
+The default exact tier (`ESHKOL_SF64_KERNEL=ozaki`, fixed N=16 moduli) does the
+per-modulus residue split and the double-double CRT reconstruction on the CPU —
+`O(num_moduli · N^2)` host passes that download every per-modulus `W_l` plane and
+dominate wall time.
+
+### Ozaki-II reduced-precision FAST tier (opt-in, fully-GPU)
+
+`ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`) selects a
+reduced-precision tier that moves both O(N^2)-per-modulus CPU passes onto the GPU
+and trades exactness for throughput. The **default path is unchanged** — the fast
+tier is strictly opt-in.
+
+Three differences from the exact tier:
+
+1. **Fewer moduli** (`ESHKOL_OZAKI_FAST_MODULI`, default 10, clamped to
+   `[2, 12]`) — this is the accuracy knob. Fewer moduli = fewer f32 GEMMs =
+   faster and coarser. The cap of 12 keeps the scale exponent `E < 46` so the
+   two-limb residue split stays exact.
+2. **GPU residue split** (`ozaki_split` kernel, `metal_softfloat.h`). The scaled
+   integers are uploaded ONCE as two signed base-2^24 limbs; the kernel computes
+   `X mod p = ((X_hi mod p)·(2^24 mod p) + X_lo mod p) mod p` — every intermediate
+   `< p^2 < 2^16`, hence bit-exact in f32. No per-modulus CPU mod-reduce, no
+   per-modulus upload.
+3. **GPU df32 CRT reconstruction** (`ozaki_reconstruct_df32` kernel). Uses the
+   fractional-Garner form (mathematically equivalent mod P to the huge-integer
+   sum): `a_l = (W_l·q_l) mod p_l`, `frac = Σ a_l/p_l` accumulated in df32
+   (double-single, two f32) reduced mod 1 each step, then `Cs/P = frac −
+   round(frac)`. The `W_l` planes never leave the device; the host only collapses
+   the returned df32 centered fraction into `C = r·P·2^-(mu+nu)`.
+
+**df32 is the accuracy ceiling of this tier.** Metal has no f64, so the
+reconstruction runs in df32 (~48-bit). Two load-bearing constraints (both
+verified on hardware):
+
+- The SoftFloat library is compiled with `MTLCompileOptions.fastMathEnabled = NO`
+  (`gpu_memory.mm`). Fast-math annihilates the TwoSum/TwoProduct compensation in
+  `df64_add` / `df64_fma`, collapsing the df32 reconstruction to plain f32
+  (~1e-7). Fast-math OFF is mandatory.
+- Power-of-two scaling uses `ldexp` (exact), never `exp2`.
+
+#### Accuracy vs moduli (measured, M2 Ultra, worst case over the four gate regimes
+integer / fractional / pi-e / wide-magnitude, K up to 4096)
+
+| `ESHKOL_OZAKI_FAST_MODULI` | worst-case rel err | typical rel err | tier          |
+|---------------------------|--------------------|-----------------|---------------|
+| 8                         | ~6e-6 (FAILS gate) | ~1e-7           | too coarse    |
+| **10 (default)**          | **~7e-8**          | ~1e-9           | ~1e-8         |
+| 11                        | ~2e-9              | ~5e-11          | ~1e-9         |
+| 12                        | ~3e-9             | ~7e-12 (wide)   | ~1e-11 (well-conditioned) |
+| 16 (exact tier, `ozaki`)  | bit-exact          | 0               | exact f64     |
+
+The cancellation-heavy pi/e regime is the binding constraint: it needs ~10 moduli
+to stay under 1e-7 because its near-zero-mean products amplify the `2^-E` input
+truncation. Well-conditioned data (fractional, wide-magnitude) reaches the df32
+reconstruction floor (~1e-11 to ~1e-13) at far fewer moduli.
+
+#### Throughput (measured, M2 Ultra, internal GPU pipeline, best-of-4, loaded machine)
+
+Ratios are contention-robust; absolutes vary with machine load (report emphasises
+ratios). All figures are the full CRT pipeline (host scale + limb split, GPU
+split + per-modulus GEMMs + df32 reconstruction, host collapse), effective
+`2·N^3` GFLOP/s.
+
+| tier    | N=4096 (GF) | N=8192 (GF) | vs exact tier |
+|---------|-------------|-------------|---------------|
+| fast, 10 moduli | ~229    | ~244        | **1.6–1.7x faster** |
+| fast, 11 moduli | ~210    | ~223        | 1.5x          |
+| fast, 12 moduli | ~194    | ~202        | 1.4x          |
+| exact, 16 moduli| ~141    | ~143        | 1.0x (baseline) |
+
+(fast10 vs exact16: 974/600 = 1.62x at N=4096, 7670/4513 = 1.70x at N=8192.)
+
+At N=8192 the exact tier's 16-modulus buffer set exceeds its 4 GB batch cap and
+falls to the slow serial path (one modulus per command buffer); the fast tier
+raises the cap to half the device working-set size (M2 Ultra: ~73 GB) so it stays
+batched, widening the gap to ~1.7x.
+
+The fast tier is faster than the exact Ozaki tier and than Accelerate as invoked
+through Eshkol's tensor path, but on this machine it does not beat a *raw*
+`cblas_dgemm` call (~1.1 TF AMX f64) in absolute terms: the per-modulus GEMM uses
+the custom `matmul_ozaki_gemm` kernel (K-extraction modular GEMM, ~2–9 TF f32
+depending on load) rather than a near-peak vendor GEMM. Reaching the raw-AMX
+crossover would require K-tiled MPS f32 GEMMs per modulus (a follow-up).
+
+Set `ESHKOL_OZAKI_PROFILE=1` to print the per-matmul internal pipeline ms and
+effective GFLOP/s for both the exact and fast tiers.
+
 ---
 
 ## 4. SF64 Software Float64
@@ -361,6 +448,20 @@ bit 0 prevents deallocation of externally-owned memory.
 | `ESHKOL_F32S_WM` | 1,2,4 | `ESHKOL_F32S_WN` | 1,2,4 |
 | `ESHKOL_F32S_BK` | 8,16,32 | `ESHKOL_F32S128_WM` | 1,2,4 |
 | `ESHKOL_F32S128_WN` | 1,2,4 | `ESHKOL_F32S128_BK` | 8,16,32 |
+
+**Ozaki-II exact/fast DGEMM (Metal, tier 0):**
+
+| Variable | Values | Effect |
+|----------|--------|--------|
+| `ESHKOL_SF64_KERNEL` | `ozaki` / `ozaki-fast` / `fp53` / `legacy` | selects the exact CRT tier, the opt-in reduced-precision fast tier, or the fp53/legacy exact kernels |
+| `ESHKOL_OZAKI_FAST` | `1` | enables the fast tier (equivalent to `ESHKOL_SF64_KERNEL=ozaki-fast`) |
+| `ESHKOL_OZAKI_FAST_MODULI` | 2–12 (default 10) | fast-tier accuracy knob; out-of-range clamps loudly to `[2,12]` |
+| `ESHKOL_OZAKI_NUM_MODULI` | 2–16 (default 16) | exact-tier moduli count; out-of-range clamps loudly |
+| `ESHKOL_OZAKI_ADAPTIVE` | `1` | exact tier: adaptive (approximate) moduli minimisation |
+| `ESHKOL_OZAKI_PROFILE` | `1` | prints per-matmul internal pipeline ms + effective GFLOP/s (exact and fast tiers) |
+
+The default DGEMM tier is unchanged; both `ozaki` and `ozaki-fast` are opt-in.
+See section 3 (Ozaki-II CRT DGEMM) for the accuracy/throughput tables.
 
 **Diagnostic:** `ESHKOL_GPU_VERBOSE` enables dispatch logging to stderr.
 

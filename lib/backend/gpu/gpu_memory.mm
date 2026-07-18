@@ -256,6 +256,17 @@ static const int OZAKI_MAX_MODULI = 16;
 static int g_ozaki_num_moduli = OZAKI_MAX_MODULI;
 static id<MTLComputePipelineState> g_matmul_ozaki_gemm_pipeline = nil;
 
+// Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU residue split + df32
+// CRT reconstruction. num_moduli is the accuracy knob; fewer moduli = fewer f32
+// GEMMs = faster + coarser. Default 9 targets ~1e-8 (see docs table). Capped at
+// OZAKI_FAST_MAX_MODULI so the scale exponent keeps the two-limb split exact.
+static const int OZAKI_FAST_MAX_MODULI = 12;   // E stays < 46 → |scaled| < 2^48
+static const int OZAKI_FAST_DEFAULT_MODULI = 10;  // ~1e-8 tier (<=1e-7 on all 4 gate regimes)
+static int g_ozaki_fast_num_moduli = OZAKI_FAST_DEFAULT_MODULI;
+static bool g_ozaki_fast_enabled = false;
+static id<MTLComputePipelineState> g_ozaki_split_pipeline = nil;
+static id<MTLComputePipelineState> g_ozaki_reconstruct_pipeline = nil;
+
 // Cumulative log2 of moduli products: OZAKI_LOG2_CUMUL[n] = sum(log2(OZAKI_MODULI[0..n-1]))
 // Used for adaptive N selection without overflow.
 static double OZAKI_LOG2_CUMUL[50];  // [0]=0, [1]=log2(256), [2]=log2(256*255), ...
@@ -1271,6 +1282,20 @@ static int metal_init(void) {
             fprintf(stderr, "[GPU] matmul_ozaki_gemm function not found (will use fp53 for exact tier)\n");
         }
 
+        // Ozaki-II fast-tier kernels: GPU residue split + df32 CRT reconstruction
+        if (id<MTLFunction> split_func = [g_metal_library newFunctionWithName:@"ozaki_split"]) {
+            g_ozaki_split_pipeline = [g_metal_device newComputePipelineStateWithFunction:split_func error:&error];
+            if (!g_ozaki_split_pipeline)
+                fprintf(stderr, "[GPU] ozaki_split pipeline creation FAILED: %s\n",
+                    error ? [[error localizedDescription] UTF8String] : "unknown");
+        }
+        if (id<MTLFunction> recon_func = [g_metal_library newFunctionWithName:@"ozaki_reconstruct_df32"]) {
+            g_ozaki_reconstruct_pipeline = [g_metal_device newComputePipelineStateWithFunction:recon_func error:&error];
+            if (!g_ozaki_reconstruct_pipeline)
+                fprintf(stderr, "[GPU] ozaki_reconstruct_df32 pipeline creation FAILED: %s\n",
+                    error ? [[error localizedDescription] UTF8String] : "unknown");
+        }
+
         // Initialize Ozaki-II tables and CRT constants
         init_ozaki_log2_table();
         if (const char* nmod_env = std::getenv("ESHKOL_OZAKI_NUM_MODULI")) {
@@ -1281,6 +1306,34 @@ static int metal_init(void) {
         }
         precompute_ozaki_constants(g_ozaki_num_moduli, &g_ozaki_crt);
         fprintf(stderr, "[GPU] Ozaki-II: N=%d moduli, log2(P)=%.1f\n", g_ozaki_num_moduli, g_ozaki_crt.log2P);
+
+        // Ozaki-II reduced-precision FAST tier (opt-in, DEFAULT UNCHANGED).
+        // Selected by ESHKOL_OZAKI_FAST=1 or ESHKOL_SF64_KERNEL=ozaki-fast.
+        // ESHKOL_OZAKI_FAST_MODULI sets the accuracy knob (loud clamp per #307).
+        if (const char* fenv = std::getenv("ESHKOL_OZAKI_FAST")) {
+            if (strcmp(fenv, "0") != 0) g_ozaki_fast_enabled = true;
+        }
+        if (const char* kenv = std::getenv("ESHKOL_SF64_KERNEL")) {
+            if (strcmp(kenv, "ozaki-fast") == 0) g_ozaki_fast_enabled = true;
+        }
+        if (const char* fmod = std::getenv("ESHKOL_OZAKI_FAST_MODULI")) {
+            int n = atoi(fmod);
+            if (n >= 2 && n <= OZAKI_FAST_MAX_MODULI) {
+                g_ozaki_fast_num_moduli = n;
+            } else {
+                fprintf(stderr, "[GPU] ESHKOL_OZAKI_FAST_MODULI=%d out of range [2,%d]; "
+                                "clamping to %d (default %d). Fewer moduli = faster/coarser.\n",
+                        n, OZAKI_FAST_MAX_MODULI,
+                        (n < 2 ? 2 : OZAKI_FAST_MAX_MODULI), g_ozaki_fast_num_moduli);
+                g_ozaki_fast_num_moduli = (n < 2) ? 2 : OZAKI_FAST_MAX_MODULI;
+            }
+        }
+        if (g_ozaki_fast_enabled) {
+            const OzakiCRTConstants& fcrt = get_ozaki_crt(g_ozaki_fast_num_moduli);
+            fprintf(stderr, "[GPU] Ozaki-II FAST tier ENABLED: N=%d moduli (accuracy knob), "
+                            "log2(P)=%.1f, GPU split + df32 CRT reconstruction\n",
+                    g_ozaki_fast_num_moduli, fcrt.log2P);
+        }
 
         // Read precision tier from env var
         if (const char* env = std::getenv("ESHKOL_GPU_PRECISION")) {
@@ -2416,6 +2469,8 @@ static int ozaki_ii_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBu
     if (!g_matmul_ozaki_gemm_pipeline) return -1;
 
     @autoreleasepool {
+        const bool prof = std::getenv("ESHKOL_OZAKI_PROFILE") != nullptr;
+        struct timespec _t0; if (prof) clock_gettime(CLOCK_MONOTONIC, &_t0);
         const double* a_data = (const double*)A->host_ptr;
         const double* b_data = (const double*)B->host_ptr;
         dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
@@ -2593,6 +2648,13 @@ static int ozaki_ii_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBu
                 });
 
                 pool_release(all_al); pool_release(all_bl); pool_release(all_wl);
+                if (prof) {
+                    struct timespec _t1; clock_gettime(CLOCK_MONOTONIC, &_t1);
+                    double ms = (_t1.tv_sec - _t0.tv_sec) * 1e3 + (_t1.tv_nsec - _t0.tv_nsec) / 1e6;
+                    fprintf(stderr, "[OZAKI_PROFILE] exact M=%llu K=%llu N=%llu moduli=%d ms=%.2f GFLOPS=%.1f\n",
+                            (unsigned long long)M, (unsigned long long)K, (unsigned long long)N_cols,
+                            num_moduli, ms, 2.0*(double)M*(double)K*(double)N_cols/(ms*1e6));
+                }
                 return 0;
             }
         }
@@ -2690,7 +2752,281 @@ static int ozaki_ii_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBu
         }
 
         pool_release(al_buf); pool_release(bl_buf); pool_release(wl_buf);
+        if (prof && result == 0) {
+            struct timespec _t1; clock_gettime(CLOCK_MONOTONIC, &_t1);
+            double ms = (_t1.tv_sec - _t0.tv_sec) * 1e3 + (_t1.tv_nsec - _t0.tv_nsec) / 1e6;
+            fprintf(stderr, "[OZAKI_PROFILE] exact-serial M=%llu K=%llu N=%llu moduli=%d ms=%.2f GFLOPS=%.1f\n",
+                    (unsigned long long)M, (unsigned long long)K, (unsigned long long)N_cols,
+                    num_moduli, ms, 2.0*(double)M*(double)K*(double)N_cols/(ms*1e6));
+        }
         return result;
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Ozaki-II REDUCED-PRECISION FAST tier — fully-GPU pipeline.
+//
+// Differs from the exact ozaki_ii_dispatch above in three ways:
+//   1. Fewer moduli (g_ozaki_fast_num_moduli, the accuracy knob).
+//   2. The per-modulus residue split runs on the GPU (ozaki_split kernel) from
+//      limb-encoded A,B uploaded ONCE — not a per-modulus CPU pass.
+//   3. The CRT reconstruction runs on the GPU in df32 (ozaki_reconstruct_df32,
+//      fractional-Garner) — the W_l planes never leave the device. The host only
+//      collapses the returned centered-fraction df32 pair into C.
+// Accuracy is min(2^-E truncation, ~1e-11 df32 floor); see docs table.
+// Returns 0 on success, negative on failure (caller falls back to exact tier).
+static int ozaki_ii_fast_dispatch(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
+                                   uint64_t M, uint64_t K, uint64_t N_cols) {
+    if (!g_matmul_ozaki_gemm_pipeline || !g_ozaki_split_pipeline || !g_ozaki_reconstruct_pipeline)
+        return -1;
+
+    @autoreleasepool {
+        const bool prof = std::getenv("ESHKOL_OZAKI_PROFILE") != nullptr;
+        struct timespec _t0; if (prof) clock_gettime(CLOCK_MONOTONIC, &_t0);
+        const double* a_data = (const double*)A->host_ptr;
+        const double* b_data = (const double*)B->host_ptr;
+        dispatch_queue_t q = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+
+        double frac_A = 0.0, frac_B = 0.0;
+        ozaki_compute_frac_bounds(a_data, b_data, M, K, N_cols, &frac_A, &frac_B);
+
+        int num_moduli = g_ozaki_fast_num_moduli;
+        if (num_moduli > OZAKI_FAST_MAX_MODULI) num_moduli = OZAKI_FAST_MAX_MODULI;
+        if (num_moduli < 2) num_moduli = 2;
+        const OzakiCRTConstants& crt = get_ozaki_crt(num_moduli);
+        num_moduli = crt.num_moduli;
+
+        // Scale exponent E (same CRT uniqueness bound as the exact tier). The
+        // two-limb base-2^24 split in ozaki_split is exact only while |scaled|
+        // < 2^48, i.e. E <= 46; OZAKI_FAST_MAX_MODULI keeps E well under that.
+        int E = (int)floor((crt.log2P - 1.0 - log2((double)K) - frac_A - frac_B) / 2.0);
+        if (E > 46) E = 46;   // preserve two-limb split exactness
+        if (E < 0)  E = 0;
+
+        fprintf(stderr, "[GPU] Ozaki-II FAST: N=%d moduli, log2(P)=%.1f, E=%d (GPU split+df32 CRT)\n",
+                num_moduli, crt.log2P, E);
+
+        // --- Host: per-row/col scale exponents (one O(N^2) pass) ---
+        std::vector<int> mu(M), nu(N_cols);
+        int* mu_p = mu.data();
+        int* nu_p = nu.data();
+        dispatch_apply(M, q, ^(size_t i) {
+            double max_abs = 0.0;
+            for (size_t j = 0; j < K; j++) { double v = fabs(a_data[i * K + j]); if (v > max_abs) max_abs = v; }
+            mu_p[i] = (max_abs == 0.0) ? 0 : E - (int)floor(log2(max_abs));
+        });
+        dispatch_apply(N_cols, q, ^(size_t j) {
+            double max_abs = 0.0;
+            for (size_t h = 0; h < K; h++) { double v = fabs(b_data[h * N_cols + j]); if (v > max_abs) max_abs = v; }
+            nu_p[j] = (max_abs == 0.0) ? 0 : E - (int)floor(log2(max_abs));
+        });
+
+        // --- Host: scale + two-limb (base 2^24) split, uploaded ONCE ---
+        // scaled = trunc(x·2^exp), an exact integer with |scaled| < 2^48. Split
+        // into signed 24-bit limbs (both exact in f32): scaled = hi·2^24 + lo.
+        const size_t ak = M * K, bk = K * N_cols, mn = M * N_cols;
+        id<MTLBuffer> a_hi = pool_alloc(ak * sizeof(float));
+        id<MTLBuffer> a_lo = pool_alloc(ak * sizeof(float));
+        id<MTLBuffer> b_hi = pool_alloc(bk * sizeof(float));
+        id<MTLBuffer> b_lo = pool_alloc(bk * sizeof(float));
+        if (!a_hi || !a_lo || !b_hi || !b_lo) {
+            if (a_hi) pool_release(a_hi); if (a_lo) pool_release(a_lo);
+            if (b_hi) pool_release(b_hi); if (b_lo) pool_release(b_lo);
+            return -2;
+        }
+        float* a_hi_p = (float*)[a_hi contents];
+        float* a_lo_p = (float*)[a_lo contents];
+        float* b_hi_p = (float*)[b_hi contents];
+        float* b_lo_p = (float*)[b_lo contents];
+        const double TWO24 = 16777216.0;      // 2^24
+        const double INV24 = 1.0 / TWO24;
+        dispatch_apply(M, q, ^(size_t i) {
+            double scale = ldexp(1.0, mu_p[i]);
+            for (size_t j = 0; j < K; j++) {
+                double s = trunc(a_data[i * K + j] * scale);
+                double sgn = (s < 0.0) ? -1.0 : 1.0;
+                double av = fabs(s);
+                double hi = floor(av * INV24);
+                double lo = av - hi * TWO24;
+                a_hi_p[i * K + j] = (float)(sgn * hi);
+                a_lo_p[i * K + j] = (float)(sgn * lo);
+            }
+        });
+        dispatch_apply(N_cols, q, ^(size_t j) {
+            double scale = ldexp(1.0, nu_p[j]);
+            for (size_t h = 0; h < K; h++) {
+                double s = trunc(b_data[h * N_cols + j] * scale);
+                double sgn = (s < 0.0) ? -1.0 : 1.0;
+                double av = fabs(s);
+                double hi = floor(av * INV24);
+                double lo = av - hi * TWO24;
+                b_hi_p[h * N_cols + j] = (float)(sgn * hi);
+                b_lo_p[h * N_cols + j] = (float)(sgn * lo);
+            }
+        });
+
+        // --- Small per-modulus constant buffers for the GPU kernels ---
+        std::vector<float> p_arr(num_moduli), q_arr(num_moduli);
+        std::vector<float> ra_arr(num_moduli);                 // 2^24 mod p (for split)
+        std::vector<float> pinv_pairs(2 * num_moduli);         // 1/p as df32 (hi,lo)
+        for (int l = 0; l < num_moduli; l++) {
+            int p = OZAKI_MODULI[l];
+            p_arr[l] = (float)p;
+            q_arr[l] = (float)crt.q[l];
+            ra_arr[l] = (float)((1 << 24) % p);
+            double pinv = 1.0 / (double)p;
+            float hi = (float)pinv;
+            pinv_pairs[2 * l + 0] = hi;
+            pinv_pairs[2 * l + 1] = (float)(pinv - (double)hi);
+        }
+
+        // --- Batched GPU buffers (residues + modular products) ---
+        size_t al_bytes = ak * sizeof(float);
+        size_t bl_bytes = bk * sizeof(float);
+        size_t wl_bytes = mn * sizeof(float);
+        size_t total_batch = (size_t)num_moduli * (al_bytes + bl_bytes + wl_bytes);
+        // Unified memory is large; allow batching up to half the working-set size.
+        size_t batch_cap = (size_t)(g_hw.device_mem ? g_hw.device_mem / 2 : (size_t)4 * 1024 * 1024 * 1024);
+        if (total_batch >= batch_cap) {
+            fprintf(stderr, "[GPU] Ozaki-II FAST: batch %.1fGB exceeds cap %.1fGB; "
+                            "falling back to exact tier\n",
+                    total_batch / 1e9, batch_cap / 1e9);
+            pool_release(a_hi); pool_release(a_lo); pool_release(b_hi); pool_release(b_lo);
+            return -4;
+        }
+
+        id<MTLBuffer> all_al = pool_alloc(al_bytes * num_moduli);
+        id<MTLBuffer> all_bl = pool_alloc(bl_bytes * num_moduli);
+        id<MTLBuffer> all_wl = pool_alloc(wl_bytes * num_moduli);
+        id<MTLBuffer> r_hi   = pool_alloc(wl_bytes);
+        id<MTLBuffer> r_lo   = pool_alloc(wl_bytes);
+        if (!all_al || !all_bl || !all_wl || !r_hi || !r_lo) {
+            if (all_al) pool_release(all_al); if (all_bl) pool_release(all_bl);
+            if (all_wl) pool_release(all_wl); if (r_hi) pool_release(r_hi); if (r_lo) pool_release(r_lo);
+            pool_release(a_hi); pool_release(a_lo); pool_release(b_hi); pool_release(b_lo);
+            return -2;
+        }
+
+        uint32_t M32 = (uint32_t)M, K32 = (uint32_t)K, N32 = (uint32_t)N_cols;
+        uint32_t ak32 = (uint32_t)ak, bk32 = (uint32_t)bk, mn32 = (uint32_t)mn;
+        uint32_t nmod32 = (uint32_t)num_moduli, wl_stride = mn32;
+
+        id<MTLCommandBuffer> cmd = [g_metal_queue commandBuffer];
+
+        // Stage 1 — GPU residue split (all moduli, both operands).
+        const NSUInteger split_tg = 256;
+        for (int l = 0; l < num_moduli; l++) {
+            float p = p_arr[l], ra = ra_arr[l];
+            // A_l
+            id<MTLComputeCommandEncoder> es = [cmd computeCommandEncoder];
+            [es setComputePipelineState:g_ozaki_split_pipeline];
+            [es setBuffer:a_hi offset:0 atIndex:0];
+            [es setBuffer:a_lo offset:0 atIndex:1];
+            [es setBuffer:all_al offset:(NSUInteger)l * al_bytes atIndex:2];
+            [es setBytes:&ak32 length:4 atIndex:3];
+            [es setBytes:&p length:4 atIndex:4];
+            [es setBytes:&ra length:4 atIndex:5];
+            [es dispatchThreads:MTLSizeMake(ak, 1, 1) threadsPerThreadgroup:MTLSizeMake(split_tg, 1, 1)];
+            [es endEncoding];
+            // B_l
+            id<MTLComputeCommandEncoder> eb = [cmd computeCommandEncoder];
+            [eb setComputePipelineState:g_ozaki_split_pipeline];
+            [eb setBuffer:b_hi offset:0 atIndex:0];
+            [eb setBuffer:b_lo offset:0 atIndex:1];
+            [eb setBuffer:all_bl offset:(NSUInteger)l * bl_bytes atIndex:2];
+            [eb setBytes:&bk32 length:4 atIndex:3];
+            [eb setBytes:&p length:4 atIndex:4];
+            [eb setBytes:&ra length:4 atIndex:5];
+            [eb dispatchThreads:MTLSizeMake(bk, 1, 1) threadsPerThreadgroup:MTLSizeMake(split_tg, 1, 1)];
+            [eb endEncoding];
+        }
+
+        // Stage 2 — per-modulus exact modular GEMM (reuse matmul_ozaki_gemm).
+        MTLSize tg_size = MTLSizeMake(g_cfg_f32s.threads, 1, 1);
+        NSUInteger grid_x = (N32 + g_cfg_f32s.bn - 1) / g_cfg_f32s.bn;
+        NSUInteger grid_y = (M32 + g_cfg_f32s.bm - 1) / g_cfg_f32s.bm;
+        for (int l = 0; l < num_moduli; l++) {
+            uint32_t p32 = (uint32_t)OZAKI_MODULI[l];
+            id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+            [enc setComputePipelineState:g_matmul_ozaki_gemm_pipeline];
+            [enc setBuffer:all_al offset:(NSUInteger)l * al_bytes atIndex:0];
+            [enc setBuffer:all_bl offset:(NSUInteger)l * bl_bytes atIndex:1];
+            [enc setBuffer:all_wl offset:(NSUInteger)l * wl_bytes atIndex:2];
+            [enc setBytes:&M32 length:4 atIndex:3];
+            [enc setBytes:&K32 length:4 atIndex:4];
+            [enc setBytes:&N32 length:4 atIndex:5];
+            [enc setBytes:&p32 length:4 atIndex:6];
+            [enc dispatchThreadgroups:MTLSizeMake(grid_x, grid_y, 1) threadsPerThreadgroup:tg_size];
+            [enc endEncoding];
+        }
+
+        // Stage 3 — GPU df32 fractional-Garner CRT reconstruction.
+        id<MTLBuffer> p_buf   = pool_alloc(num_moduli * sizeof(float));
+        id<MTLBuffer> q_buf   = pool_alloc(num_moduli * sizeof(float));
+        id<MTLBuffer> pv_buf  = pool_alloc(2 * num_moduli * sizeof(float));
+        if (!p_buf || !q_buf || !pv_buf) {
+            if (p_buf) pool_release(p_buf); if (q_buf) pool_release(q_buf); if (pv_buf) pool_release(pv_buf);
+            pool_release(all_al); pool_release(all_bl); pool_release(all_wl);
+            pool_release(r_hi); pool_release(r_lo);
+            pool_release(a_hi); pool_release(a_lo); pool_release(b_hi); pool_release(b_lo);
+            return -2;
+        }
+        memcpy([p_buf contents],  p_arr.data(),      num_moduli * sizeof(float));
+        memcpy([q_buf contents],  q_arr.data(),      num_moduli * sizeof(float));
+        memcpy([pv_buf contents], pinv_pairs.data(), 2 * num_moduli * sizeof(float));
+
+        id<MTLComputeCommandEncoder> er = [cmd computeCommandEncoder];
+        [er setComputePipelineState:g_ozaki_reconstruct_pipeline];
+        [er setBuffer:all_wl offset:0 atIndex:0];
+        [er setBuffer:r_hi offset:0 atIndex:1];
+        [er setBuffer:r_lo offset:0 atIndex:2];
+        [er setBytes:&mn32 length:4 atIndex:3];
+        [er setBytes:&nmod32 length:4 atIndex:4];
+        [er setBytes:&wl_stride length:4 atIndex:5];
+        [er setBuffer:p_buf offset:0 atIndex:6];
+        [er setBuffer:q_buf offset:0 atIndex:7];
+        [er setBuffer:pv_buf offset:0 atIndex:8];
+        [er dispatchThreads:MTLSizeMake(mn, 1, 1) threadsPerThreadgroup:MTLSizeMake(split_tg, 1, 1)];
+        [er endEncoding];
+
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        int rc = 0;
+        if ([cmd status] != MTLCommandBufferStatusCompleted) {
+            NSError* err = [cmd error];
+            fprintf(stderr, "[GPU] Ozaki-II FAST pipeline error (code=%ld): %s\n",
+                    (long)[err code], err ? [[err localizedDescription] UTF8String] : "unknown");
+            rc = -3;
+        } else {
+            // --- Host: collapse centered df32 fraction into C = r·P·2^-(mu+nu) ---
+            // P as f64 (crt.P1) is accurate to 2^-53 — far below this tier's floor.
+            double* c_data = (double*)C->host_ptr;
+            const float* rhi = (const float*)[r_hi contents];
+            const float* rlo = (const float*)[r_lo contents];
+            double Pd = crt.P1;
+            dispatch_apply(M, q, ^(size_t i) {
+                double mu_inv = ldexp(1.0, -mu_p[i]);
+                for (size_t j = 0; j < N_cols; j++) {
+                    size_t idx = i * N_cols + j;
+                    double r = (double)rhi[idx] + (double)rlo[idx];
+                    c_data[idx] = r * Pd * mu_inv * ldexp(1.0, -nu_p[j]);
+                }
+            });
+        }
+
+        pool_release(p_buf); pool_release(q_buf); pool_release(pv_buf);
+        pool_release(all_al); pool_release(all_bl); pool_release(all_wl);
+        pool_release(r_hi); pool_release(r_lo);
+        pool_release(a_hi); pool_release(a_lo); pool_release(b_hi); pool_release(b_lo);
+        if (prof && rc == 0) {
+            struct timespec _t1; clock_gettime(CLOCK_MONOTONIC, &_t1);
+            double ms = (_t1.tv_sec - _t0.tv_sec) * 1e3 + (_t1.tv_nsec - _t0.tv_nsec) / 1e6;
+            double gf = 2.0 * (double)M * (double)K * (double)N_cols / (ms * 1e6);
+            fprintf(stderr, "[OZAKI_PROFILE] fast M=%llu K=%llu N=%llu moduli=%d ms=%.2f GFLOPS=%.1f\n",
+                    (unsigned long long)M, (unsigned long long)K, (unsigned long long)N_cols, num_moduli, ms, gf);
+        }
+        return rc;
     }
 }
 
@@ -2714,9 +3050,23 @@ static int metal_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuf
             bool use_legacy = sf64_env && (strcmp(sf64_env, "legacy") == 0 || strcmp(sf64_env, "v2") == 0);
             bool use_fp53 = sf64_env && strcmp(sf64_env, "fp53") == 0;
             bool force_ozaki = sf64_env && strcmp(sf64_env, "ozaki") == 0;
-            // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in)
-            if (force_ozaki && g_matmul_ozaki_gemm_pipeline
-                && M >= 512 && K >= 512 && N >= 512)
+            bool ozaki_size_ok = (M >= 512 && K >= 512 && N >= 512);
+
+            // Ozaki-II reduced-precision FAST tier (opt-in): fully-GPU split +
+            // df32 CRT reconstruction. On any failure it falls through to the
+            // exact tier below, so a fast-tier miss never corrupts a result.
+            if (g_ozaki_fast_enabled && g_ozaki_split_pipeline
+                && g_ozaki_reconstruct_pipeline && g_matmul_ozaki_gemm_pipeline
+                && ozaki_size_ok) {
+                int fr = ozaki_ii_fast_dispatch(A, B, C, M, K, N);
+                if (fr == 0) return 0;
+                fprintf(stderr, "[GPU] Ozaki-II FAST dispatch returned %d; "
+                                "falling back to exact tier\n", fr);
+            }
+
+            // Ozaki-II: CRT-based exact f64 via N f32 GEMMs (opt-in / fast fallback)
+            if ((force_ozaki || g_ozaki_fast_enabled) && g_matmul_ozaki_gemm_pipeline
+                && ozaki_size_ok)
                 return ozaki_ii_dispatch(A, B, C, M, K, N);
             if (!use_legacy && g_matmul_fp53_pipeline)
                 return metal_matmul_fp53_dispatch(A, B, C, M, K, N);

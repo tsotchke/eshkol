@@ -74,6 +74,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `linear-solve-full-f64` ICC oracle; see
   `tests/features/linear_solve_test.esk` and
   [docs/reference/tensors/operations.md](docs/reference/tensors/operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path).
+- **Ozaki-II reduced-precision fast tier (Metal, opt-in).** A fully-GPU
+  reduced-precision DGEMM tier alongside the bit-exact CRT path, selected with
+  `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`). It moves both
+  `O(num_moduli · N^2)` CPU passes of the exact tier onto the GPU: (1) the
+  per-modulus residue split runs in a Metal kernel (`ozaki_split`) from
+  two-limb-encoded operands uploaded once, and (2) the CRT reconstruction runs
+  in df32 on the GPU (`ozaki_reconstruct_df32`, fractional-Garner) so the
+  per-modulus `W_l` planes never leave the device. The accuracy knob is the
+  moduli count (`ESHKOL_OZAKI_FAST_MODULI`, default 10, clamped loudly to
+  `[2,12]`); the default targets ~1e-8 (worst-case rel err ~7e-8 over the four
+  correctness regimes), and df32 caps this tier at ~1e-11 for well-conditioned
+  data. Measured ~1.6–1.7x faster than the exact 16-modulus tier at N=4096/8192
+  on an M2 Ultra (the exact tier falls to its serial path at N=8192 while the
+  fast tier stays batched). Requires fast-math OFF (already enforced) — Metal
+  fast-math annihilates the df32 TwoSum compensation and collapses accuracy to
+  f32. The **default DGEMM path is unchanged**; the fast tier is strictly
+  opt-in and the existing exact `ozaki-ii-correctness` gate is untouched. Adds
+  `tests/gpu/ozaki_fast_gate.sh` / `ozaki_fast_test.esk` (rel err <= 1e-7 across
+  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, asserting the
+  fast path engages with no silent fallback) and the `ozaki-ii-fast` ICC oracle.
+  `ESHKOL_OZAKI_PROFILE=1` reports per-matmul internal pipeline GFLOP/s.
+  (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
 
 ### Fixed
 

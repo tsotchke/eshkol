@@ -4099,6 +4099,99 @@ kernel void matmul_ozaki_gemm(
     }
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Ozaki-II REDUCED-PRECISION fast tier — fully-GPU residue split + df32 CRT
+//
+// The exact tier (matmul_ozaki_gemm above) does the per-modulus mod-reduce
+// (residue split) and the huge-integer double-double CRT reconstruction on the
+// CPU — O(num_moduli · N²) host passes that dominate wall time and force every
+// per-modulus W_l array to be downloaded. These two kernels move BOTH to the
+// GPU so the host only uploads A,B (once, as limbs) and downloads the final C.
+//
+// Both kernels rely on the SoftFloat library being compiled with fast-math OFF
+// (MTLCompileOptions.fastMathEnabled = NO — see gpu_memory.mm). The df64 (two
+// native f32, i.e. df32 double-single) TwoSum/TwoProduct compensation in
+// df64_add / df64_fma is annihilated by fast-math; without it the reconstruction
+// collapses to plain f32 (~1e-7) instead of the ~1e-11 df32 floor.
+// ───────────────────────────────────────────────────────────────────────────
+
+// ozaki_split: mod-reduce a scaled-integer operand for ONE modulus.
+//
+// The scaled integer X (|X| < 2^48, an exact product trunc(x·2^exp)) is uploaded
+// as two SIGNED base-2^24 limbs Xhi, Xlo (|Xhi|,|Xlo| < 2^24, exact in f32) with
+// X = Xhi·2^24 + Xlo. The residue X mod p (centered to (-p/2, p/2]) is then
+//   X mod p = ((Xhi mod p)·(2^24 mod p) + (Xlo mod p)) mod p,
+// every intermediate of which is < p² < 2^16 and therefore EXACT in f32. This is
+// bit-exact for any |X| < 2^48 (the fast tier caps the scale exponent so it holds).
+kernel void ozaki_split(
+    device const float* Xhi     [[buffer(0)]],  // signed hi limb, |.| < 2^24
+    device const float* Xlo     [[buffer(1)]],  // signed lo limb, |.| < 2^24
+    device float*       Xl      [[buffer(2)]],  // out: residue in (-p/2, p/2]
+    constant uint&      n       [[buffer(3)]],  // element count (M*K or K*N)
+    constant float&     p       [[buffer(4)]],  // modulus p_l (<= 256)
+    constant float&     R24     [[buffer(5)]],  // 2^24 mod p  (< p)
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= n) return;
+    const float pinv = 1.0f / p;
+    const float hi = Xhi[gid];
+    const float lo = Xlo[gid];
+    const float him = hi - p * rint(hi * pinv);     // Xhi mod p   (exact)
+    const float lom = lo - p * rint(lo * pinv);     // Xlo mod p   (exact)
+    const float t   = him * R24 + lom;              // |t| < 2^16  (exact)
+    Xl[gid] = t - p * rint(t * pinv);               // (X mod p) centered
+}
+
+// ozaki_reconstruct_df32: fractional-Garner CRT reconstruction in df32.
+//
+// Given the per-modulus modular products W_l (integers in (-p_l/2, p_l/2]), the
+// exact scaled result is  Cs = (Σ_l s_l·W_l) mod P  with s_l = (P/p_l)·q_l. The
+// naive form accumulates ~125-bit numbers; instead we use the mathematically
+// equivalent (mod P) fractional Garner form, which touches ONLY small values:
+//   a_l  = (W_l · q_l) mod p_l               ∈ [0, p_l)   (exact f32)
+//   frac = Σ_l a_l / p_l                     ∈ [0, num_moduli)   (df32)
+//   Cs/P = frac − round(frac)                ∈ (−1/2, 1/2]
+// so Cs = P·(frac − round(frac)). The centered fraction r = frac − round(frac)
+// is written back as a df32 pair (Rhi, Rlo); the host forms C = r·P·2^-(mu+nu).
+// Accuracy is df32-limited (~1e-11), which is this tier's documented ceiling.
+kernel void ozaki_reconstruct_df32(
+    device const float*  Wl        [[buffer(0)]],  // all W_l, laid out l*wl_stride + idx
+    device float*        Rhi       [[buffer(1)]],  // out: centered-fraction hi
+    device float*        Rlo       [[buffer(2)]],  // out: centered-fraction lo
+    constant uint&       MN        [[buffer(3)]],  // output element count (M*N)
+    constant uint&       num_moduli[[buffer(4)]],
+    constant uint&       wl_stride [[buffer(5)]],  // floats between successive W_l planes
+    device const float*  p_arr     [[buffer(6)]],  // p_l
+    device const float*  q_arr     [[buffer(7)]],  // q_l = (P/p_l)^{-1} mod p_l
+    device const float2* pinv_arr  [[buffer(8)]],  // 1/p_l as df32 (hi, lo)
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= MN) return;
+    // Accumulate Σ a_l/p_l but keep the running sum in [0,1) by peeling off the
+    // integer part each step. The final result Cs/P is the fractional part of the
+    // full sum, and it can be a heavily-cancelled small value; holding the
+    // accumulator near magnitude 1 (instead of ~num_moduli) preserves ~4 extra
+    // df32 bits exactly where the cancellation consumes them (pi/e-style regimes).
+    df64 frac = df64{0.0f, 0.0f};
+    for (uint l = 0; l < num_moduli; l++) {
+        const float w = Wl[l * wl_stride + gid];
+        const float p = p_arr[l];
+        const float q = q_arr[l];
+        const float wp = (w < 0.0f) ? (w + p) : w;   // W_l mod p_l  ∈ [0, p)
+        const float t  = wp * q;                     // < 2^16, exact
+        const float a  = t - p * floor(t / p);       // (W_l·q_l) mod p_l ∈ [0, p)
+        const float2 pv = pinv_arr[l];
+        frac = df64_fma(df64{a, 0.0f}, df64{pv.x, pv.y}, frac);  // frac += a/p (df32)
+        const float fl = floor(frac.hi);             // reduce mod 1 (exact df64 sub)
+        frac = df64_add(frac, df64{-fl, 0.0f});
+    }
+    // Center the fraction into (-1/2, 1/2] — safe since |Cs| < P/2 strictly.
+    df64 r = frac;
+    if (frac.hi + frac.lo > 0.5f) r = df64_add(frac, df64{-1.0f, 0.0f});
+    Rhi[gid] = r.hi;
+    Rlo[gid] = r.lo;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Backward Pass Kernels — GPU-accelerated gradient computation
 // ═══════════════════════════════════════════════════════════════════════════
