@@ -26,7 +26,9 @@ against their behavior, not hidden.
 ## What works, what to avoid
 
 **Solid:** all shape ops, elementwise/unary math, linear algebra incl.
-LU/QR/SVD/Cholesky/solve/inverse/det, reductions, `conv1d`/`conv2d`/`conv3d`,
+LU/QR/SVD/Cholesky/solve/inverse/det plus `linear-solve` (full-f64
+mixed-precision iterative refinement — see [operations.md](operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path)),
+reductions, `conv1d`/`conv2d`/`conv3d`,
 `max-pool2d`/`avg-pool2d`, `multi-head-attention` (forward), `embedding`,
 `positional-encoding`, `dropout`, `softmax`, tensor-only activations, dtype
 casts, rect/disk pixel fills, and all three library modules.

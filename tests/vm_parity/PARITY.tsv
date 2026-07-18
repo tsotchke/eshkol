@@ -411,6 +411,7 @@ length	vm-supported
 line-reader-close	vm-supported	
 line-reader-poll	vm-supported	
 line-search	gap	ml faculty has no VM fid coverage
+linear-solve	vm-supported
 linear-warmup-lr	gap	ml faculty has no VM fid coverage
 linspace	vm-supported	
 list	vm-supported	

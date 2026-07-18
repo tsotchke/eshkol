@@ -497,6 +497,23 @@ probe stdlib_sort_filter_scale_oracle 'stdlib sort (2M) and filter (1M) are tail
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/stdlib/sort_filter_scale_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
 probe ad_forward_over_reverse_oracle 'jacobian/hessian differentiating through an inner forward-mode derivative is exact, not silent-zero (ESH-0120/0121)' \
     'cd "$REPO_ROOT"; out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r tests/ad/forward_over_reverse_test.esk 2>&1) || exit 1; echo "$out" | grep -qE "Failed:[[:space:]]+0" || exit 1'
+probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solver reaches full-f64 residual (<=1e-12, computed in-test) on well-conditioned/identity systems and raises catchably on singular/dimension-mismatch — verified on JIT, AOT, and the VM' \
+    'cd "$REPO_ROOT"; t=tests/features/linear_solve_test.esk;
+     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
+     [ "$(printf "%s" "$out" | grep -c "PASS:")" -eq 6 ] || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     [ "$(printf "%s" "$out" | grep -c "PASS:")" -eq 6 ] || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     if [ -x "$vm" ]; then
+       out=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$REPO_ROOT/lib" "$vm" "$t" 2>/dev/null) || exit 1;
+       [ "$(printf "%s" "$out" | grep -c "PASS:")" -eq 6 ] || exit 1;
+       printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     fi;
+     exit 0'
 
 echo
 echo "Trace written: $TRACE_FILE"

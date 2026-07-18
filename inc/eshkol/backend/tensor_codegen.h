@@ -406,6 +406,9 @@ public:
     llvm::Value* tensorInverse(const eshkol_operations_t* op);
     /** Solve linear system Ax=b via LU decomposition */
     llvm::Value* tensorSolve(const eshkol_operations_t* op);
+    /** Solve Ax=b with a full-f64 guarantee via mixed-precision iterative
+     *  refinement (Apple/Accelerate) with a plain-f64 LAPACK fallback. */
+    llvm::Value* tensorLinearSolve(const eshkol_operations_t* op);
     /** Cholesky decomposition for SPD matrices: A = L @ L^T */
     llvm::Value* tensorCholesky(const eshkol_operations_t* op);
     /** QR decomposition via Householder reflections: A = Q @ R */

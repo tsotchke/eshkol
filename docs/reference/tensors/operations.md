@@ -78,6 +78,7 @@ Scalar-broadcast and unary:
 | `tensor-inverse` | `(tensor-inverse A)` | 2×2 inverse |
 | `tensor-det` | `(tensor-det A)` | → `10` |
 | `tensor-solve` | `(tensor-solve A b)` | solves `Ax=b` → `#(2 3)` |
+| `linear-solve` | `(linear-solve A b)` | full-f64 `Ax=b`, mixed-precision IR (see below) |
 | `tensor-cholesky` | `(tensor-cholesky A)` | lower-triangular `L` |
 | `tensor-lu` | `(tensor-lu A)` | **list** `(LU pivot sign)` |
 | `tensor-qr` | `(tensor-qr A)` | **list** `(Q R)` |
@@ -88,6 +89,49 @@ The three decompositions return **lists of tensors**, e.g.
 `(tensor-svd A)` → `(U S V)`. `matmul` (and `gpu-matmul`) route through the
 cost-model dispatch and may run on the GPU (see [gpu.md](gpu.md));
 `batch-matmul` is a separate CPU path.
+
+### `linear-solve` — full-f64 solve with a mixed-precision fast path
+
+`(linear-solve A b)` solves the dense system `A x = b` for a square `N×N`
+tensor `A` and a length-`N` tensor `b`, returning `x` as a length-`N` tensor.
+Unlike `tensor-solve` (a plain f64 LU), `linear-solve` carries a **full-f64
+accuracy guarantee with an opportunistic speedup**:
+
+- On Apple/Accelerate it factorizes `A` in **fp32** (the `O(n³)` cost) and then
+  polishes the solution back to full f64 by **iterative refinement** — the
+  residual `r = b − A x` is recomputed in f64 (an `O(n²)` GEMV) and a fp32
+  back-solve corrects `x`, looping until the relative backward residual
+  `‖b − A x‖ / ‖b‖` is certified at or below ~`1e-13`. Because the fp32
+  factorization runs ~2–3× faster than an f64 one on the AMX units while the
+  refinement tail is asymptotically free, a well-conditioned solve reaches the
+  same f64 residual as `dgesv` at a fraction of the cost.
+- When refinement cannot certify a full-f64 result within its iteration cap —
+  an **ill-conditioned** system where `κ·ε_fp32 ≳ 1` — it **silently falls
+  back to a plain-f64 LAPACK `dgesv`**. Either way the caller always receives a
+  genuine full-precision f64 solution; the speedup is opportunistic, the
+  correctness is not.
+- Non-Apple builds use a direct f64 LU with partial pivoting (correct
+  everywhere; the fp32 IR speedup is Apple-first for now).
+
+Measured on an M2 Ultra, the mixed-precision path is ~1.1–1.4× faster than the
+forced-`dgesv` fallback at `N = 2048–4096` (well-conditioned), at a residual of
+`~1e-15` — the win grows with `N`.
+
+Errors are catchable with `guard`: a **singular** `A`, a **non-square** `A`, or
+a **length mismatch** between `A` and `b` raise a condition rather than
+returning a wrong answer.
+
+```scheme
+;; A = [[4 1 0] [1 4 1] [0 1 4]], b = [6 12 14]  =>  x = [1 2 3]
+(define A (reshape (make-vec (list 4.0 1.0 0.0
+                                   1.0 4.0 1.0
+                                   0.0 1.0 4.0) 9) (list 3 3)))
+(linear-solve A (make-vec (list 6.0 12.0 14.0) 3))   ;; => #(1 2 3)
+
+(guard (e (#t 'singular))
+  (linear-solve (reshape (make-vec (list 1.0 2.0 2.0 4.0) 4) (list 2 2))
+                (make-vec (list 1.0 1.0) 2)))         ;; => singular  (raises)
+```
 
 ```scheme
 (tensor-matmul (reshape (tensor 1.0 2.0 3.0 4.0) (list 2 2))
