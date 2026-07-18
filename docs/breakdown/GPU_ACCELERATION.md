@@ -133,81 +133,84 @@ dominate wall time.
 ### Ozaki-II reduced-precision FAST tier (opt-in, fully-GPU)
 
 `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`) selects a
-reduced-precision tier that moves both O(N^2)-per-modulus CPU passes onto the GPU
-and trades exactness for throughput. The **default path is unchanged** — the fast
-tier is strictly opt-in.
+reduced-precision LINEAR-CRT tier built on **near-peak MPS f32 GEMMs**, with the
+residue split and CRT reconstruction fully on the GPU. It is a port of a measured
+standalone prototype. The **default path is unchanged** — the tier is opt-in.
 
-Three differences from the exact tier:
+The pipeline (host does only: upload A,B once; one O(N^2) exponent pass; download C):
 
-1. **Fewer moduli** (`ESHKOL_OZAKI_FAST_MODULI`, default 10, clamped to
-   `[2, 12]`) — this is the accuracy knob. Fewer moduli = fewer f32 GEMMs =
-   faster and coarser. The cap of 12 keeps the scale exponent `E < 46` so the
-   two-limb residue split stays exact.
-2. **GPU residue split** (`ozaki_split` kernel, `metal_softfloat.h`). The scaled
-   integers are uploaded ONCE as two signed base-2^24 limbs; the kernel computes
-   `X mod p = ((X_hi mod p)·(2^24 mod p) + X_lo mod p) mod p` — every intermediate
-   `< p^2 < 2^16`, hence bit-exact in f32. No per-modulus CPU mod-reduce, no
-   per-modulus upload.
-3. **GPU df32 CRT reconstruction** (`ozaki_reconstruct_df32` kernel). Uses the
-   fractional-Garner form (mathematically equivalent mod P to the huge-integer
-   sum): `a_l = (W_l·q_l) mod p_l`, `frac = Σ a_l/p_l` accumulated in df32
-   (double-single, two f32) reduced mod 1 each step, then `Cs/P = frac −
-   round(frac)`. The `W_l` planes never leave the device; the host only collapses
-   the returned df32 centered fraction into `C = r·P·2^-(mu+nu)`.
+1. **Cap-limited prime-power moduli.** `ESHKOL_OZAKI_FAST_MODULI` (default 11,
+   clamped to `[2,16]`) is the accuracy knob. The moduli are the largest
+   pairwise-coprime prime powers `≤ cap`, where `cap` is chosen from K so that
+   `K·(p/2)² < 2²⁴`. Under that bound a **single MPS f32 GEMM of centered residues
+   is integer-exact** (the prototype verified this to f64) — so each modulus is one
+   MPS GEMM at the GPU's ~20 TF f32 ceiling, no K-tiling. This is the entire
+   performance story vs the exact tier's custom modular kernel.
+2. **GPU residue split** (`ozaki_fast_split`): reads each operand element as an f64
+   bit-pattern, extracts the 53-bit significand, applies the `E`-scaling as an
+   exact right-shift-with-round (`E≤52` ⇒ shift ≤ 0), reduces `mod p`, centers to
+   `[-p/2, p/2)`. Zero host f64 math.
+3. **GPU df32 fractional-CRT reconstruction** (`ozaki_fast_accum` +
+   `ozaki_fast_finalize`): `a_l = (G_l·q_l) mod p_l`, `S += a_l/p_l` accumulated in
+   df32 (double-single) reduced mod 1 each step, then `Cs/P = frac(S) − round`,
+   `C = frac·P·2^(e_i+f_j−2E)`, output as a df32 pair the host widens to f64.
 
-**df32 is the accuracy ceiling of this tier.** Metal has no f64, so the
-reconstruction runs in df32 (~48-bit). Two load-bearing constraints (both
-verified on hardware):
+All moduli run in **one command buffer with a single CPU-GPU sync** (per-modulus
+`waitUntilCompleted` starves the GPU under CPU load — a prototype finding).
 
-- The SoftFloat library is compiled with `MTLCompileOptions.fastMathEnabled = NO`
-  (`gpu_memory.mm`). Fast-math annihilates the TwoSum/TwoProduct compensation in
-  `df64_add` / `df64_fma`, collapsing the df32 reconstruction to plain f32
-  (~1e-7). Fast-math OFF is mandatory.
-- Power-of-two scaling uses `ldexp` (exact), never `exp2`.
+**df32 is the accuracy ceiling of this tier.** Metal has no f64, so reconstruction
+is df32 (~48-bit → ~1e-11 floor). Two load-bearing constraints (verified on hardware):
+
+- The library is compiled with `fastMathEnabled = NO` / `MTLMathModeSafe`
+  (`gpu_memory.mm`). Fast-math annihilates the TwoSum/TwoProduct compensation and
+  collapses the reconstruction to plain f32 (~1e-7). Mandatory.
+- Power-of-two descale uses `ldexp` (exact), never `exp2` (a polynomial
+  approximation that injects a uniform ~1e-7 error).
 
 #### Accuracy vs moduli (measured, M2 Ultra, worst case over the four gate regimes
 integer / fractional / pi-e / wide-magnitude, K up to 4096)
 
-| `ESHKOL_OZAKI_FAST_MODULI` | worst-case rel err | typical rel err | tier          |
-|---------------------------|--------------------|-----------------|---------------|
-| 8                         | ~6e-6 (FAILS gate) | ~1e-7           | too coarse    |
-| **10 (default)**          | **~7e-8**          | ~1e-9           | ~1e-8         |
-| 11                        | ~2e-9              | ~5e-11          | ~1e-9         |
-| 12                        | ~3e-9             | ~7e-12 (wide)   | ~1e-11 (well-conditioned) |
-| 16 (exact tier, `ozaki`)  | bit-exact          | 0               | exact f64     |
+| `ESHKOL_OZAKI_FAST_MODULI` | worst-case rel err | tier          |
+|---------------------------|--------------------|---------------|
+| 10                        | ~2.2e-7 (FAILS gate on pi/e) | ~1e-8 well-conditioned only |
+| **11 (default)**          | **~2.4e-8**        | ~1e-8         |
+| 12                        | ~4.0e-8            | ~1e-8         |
+| 14                        | ~6e-11 (df32 floor)| ~1e-11        |
+| 16 (exact tier, `ozaki`)  | bit-exact          | exact f64     |
 
-The cancellation-heavy pi/e regime is the binding constraint: it needs ~10 moduli
-to stay under 1e-7 because its near-zero-mean products amplify the `2^-E` input
-truncation. Well-conditioned data (fractional, wide-magnitude) reaches the df32
-reconstruction floor (~1e-11 to ~1e-13) at far fewer moduli.
+The cancellation-heavy pi/e regime is binding: its near-zero-mean products amplify
+both the `2^-E` truncation and the df32 reconstruction floor. Accuracy is NOT
+monotone in moduli count — beyond ~12 the df32 accumulator grows and the pi/e floor
+rises again; ~14 is the practical df32 floor (~1e-11). Well-conditioned data
+(fractional, wide-magnitude) reaches ~1e-11..1e-13 at far fewer moduli.
 
-#### Throughput (measured, M2 Ultra, internal GPU pipeline, best-of-4, loaded machine)
+#### Throughput (measured, M2 Ultra, internal GPU pipeline, best-of-5, `ESHKOL_OZAKI_PROFILE=1`)
 
-Ratios are contention-robust; absolutes vary with machine load (report emphasises
-ratios). All figures are the full CRT pipeline (host scale + limb split, GPU
-split + per-modulus GEMMs + df32 reconstruction, host collapse), effective
-`2·N^3` GFLOP/s.
+Effective `2·N^3` GFLOP/s of the full pipeline. Raw `cblas_dgemm` (AMX f64) was
+measured in the same session and was NOT depressed (N=8192 = 1099 GF ≈ the clean
+1088 peak), so the AMX ratios below are fair, not overstated.
 
-| tier    | N=4096 (GF) | N=8192 (GF) | vs exact tier |
-|---------|-------------|-------------|---------------|
-| fast, 10 moduli | ~229    | ~244        | **1.6–1.7x faster** |
-| fast, 11 moduli | ~210    | ~223        | 1.5x          |
-| fast, 12 moduli | ~194    | ~202        | 1.4x          |
-| exact, 16 moduli| ~141    | ~143        | 1.0x (baseline) |
+| tier                | N=4096 (GF) | N=8192 (GF) | vs AMX dgemm (N=8192) |
+|---------------------|-------------|-------------|-----------------------|
+| fast, 10 moduli     | ~1080       | **~1448**   | **1.32x** (fails pi/e gate; max-speed opt-in) |
+| **fast, 11 (default)** | ~1081    | **~1384**   | **1.26x** |
+| fast, 12 moduli     | ~1022       | ~1278       | 1.16x     |
+| exact, 16 moduli    | ~140        | ~143        | 0.13x     |
+| `cblas_dgemm` (AMX f64) | ~1080   | ~1099       | 1.00x (reference) |
 
-(fast10 vs exact16: 974/600 = 1.62x at N=4096, 7670/4513 = 1.70x at N=8192.)
+- **N=8192: the fast tier beats clean AMX f64 dgemm — 1.26x at the default 11
+  moduli (~2.4e-8), up to 1.32x at 10 moduli (~1e-8 on well-conditioned data).**
+  This matches the prototype's ~1400 GF / ~1.3x-clean-AMX at ~1e-8.
+- **N=4096: a tie with AMX (~1.0x).** Smaller N is overhead-bound (MPS f32 is not
+  yet at its large-N ceiling and the host readback is a larger fraction) — the
+  prototype documented the same (N=4096 does not win; the crossover is N=8192).
+- **vs the exact Ozaki tier: 7.7x (N=4096) to ~9.7x (N=8192) faster** — the exact
+  tier at N=8192 also falls to its serial path (16-modulus buffers exceed its 4 GB
+  batch cap), so the e2e gap is largest there.
 
-At N=8192 the exact tier's 16-modulus buffer set exceeds its 4 GB batch cap and
-falls to the slow serial path (one modulus per command buffer); the fast tier
-raises the cap to half the device working-set size (M2 Ultra: ~73 GB) so it stays
-batched, widening the gap to ~1.7x.
-
-The fast tier is faster than the exact Ozaki tier and than Accelerate as invoked
-through Eshkol's tensor path, but on this machine it does not beat a *raw*
-`cblas_dgemm` call (~1.1 TF AMX f64) in absolute terms: the per-modulus GEMM uses
-the custom `matmul_ozaki_gemm` kernel (K-extraction modular GEMM, ~2–9 TF f32
-depending on load) rather than a near-peak vendor GEMM. Reaching the raw-AMX
-crossover would require K-tiled MPS f32 GEMMs per modulus (a follow-up).
+For genuine full f64 (~1e-14) AMX remains the right tool: full f64 needs ~19–22
+moduli (GEMM count ≈ AMX) and df32 reconstruction cannot reach 1e-14 anyway
+(~1e-11 floor). The GPU wins only at reduced precision (≳1e-11) and large N.
 
 Set `ESHKOL_OZAKI_PROFILE=1` to print the per-matmul internal pipeline ms and
 effective GFLOP/s for both the exact and fast tiers.
@@ -453,9 +456,9 @@ bit 0 prevents deallocation of externally-owned memory.
 
 | Variable | Values | Effect |
 |----------|--------|--------|
-| `ESHKOL_SF64_KERNEL` | `ozaki` / `ozaki-fast` / `fp53` / `legacy` | selects the exact CRT tier, the opt-in reduced-precision fast tier, or the fp53/legacy exact kernels |
+| `ESHKOL_SF64_KERNEL` | `ozaki` / `ozaki-fast` / `fp53` / `legacy` | selects the exact CRT tier, the opt-in reduced-precision fast tier (MPS f32 GEMMs), or the fp53/legacy exact kernels |
 | `ESHKOL_OZAKI_FAST` | `1` | enables the fast tier (equivalent to `ESHKOL_SF64_KERNEL=ozaki-fast`) |
-| `ESHKOL_OZAKI_FAST_MODULI` | 2–12 (default 10) | fast-tier accuracy knob; out-of-range clamps loudly to `[2,12]` |
+| `ESHKOL_OZAKI_FAST_MODULI` | 2–16 (default 11) | fast-tier accuracy knob; out-of-range clamps loudly to `[2,16]` |
 | `ESHKOL_OZAKI_NUM_MODULI` | 2–16 (default 16) | exact-tier moduli count; out-of-range clamps loudly |
 | `ESHKOL_OZAKI_ADAPTIVE` | `1` | exact tier: adaptive (approximate) moduli minimisation |
 | `ESHKOL_OZAKI_PROFILE` | `1` | prints per-matmul internal pipeline ms + effective GFLOP/s (exact and fast tiers) |

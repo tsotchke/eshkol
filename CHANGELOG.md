@@ -95,6 +95,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, asserting the
   fast path engages with no silent fallback) and the `ozaki-ii-fast` ICC oracle.
   `ESHKOL_OZAKI_PROFILE=1` reports per-matmul internal pipeline GFLOP/s.
+- **Ozaki-II reduced-precision fast tier (Metal, opt-in) — beats AMX f64 at
+  large N.** A fully-GPU reduced-precision DGEMM tier alongside the bit-exact CRT
+  path, selected with `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`).
+  A linear CRT over **near-peak MPS f32 GEMMs**: the moduli are cap-limited
+  pairwise-coprime prime powers chosen so that a single MPS f32 GEMM of centered
+  residues is integer-exact (`K·(p/2)² < 2²⁴`), running each modulus at the GPU's
+  ~20 TF f32 ceiling. The residue split (`ozaki_fast_split`, straight from the f64
+  bit-pattern) and the df32 fractional-CRT reconstruction (`ozaki_fast_accum` +
+  `ozaki_fast_finalize`) run entirely on the GPU; the host only uploads A,B once,
+  does one O(N^2) exponent pass, and downloads C. All moduli run in one command
+  buffer with a single CPU-GPU sync. The accuracy knob is the moduli count
+  (`ESHKOL_OZAKI_FAST_MODULI`, default 11, clamped loudly to `[2,16]`); the
+  default targets ~1e-8 (worst-case rel err ~2.4e-8 over the four correctness
+  regimes), and df32 caps this tier at ~1e-11. **Measured on an M2 Ultra
+  (best-of-5, internal pipeline): N=8192 = ~1384 GF at 11 moduli = 1.26x clean
+  AMX `cblas_dgemm` (1099 GF), up to ~1448 GF (1.32x) at 10 moduli; ~7.7–9.7x
+  faster than the exact 16-modulus tier.** N=4096 ties AMX (overhead-bound at
+  smaller N). Requires fast-math OFF (already enforced) and `ldexp` not `exp2` —
+  both annihilate/inject ~1e-7 errors otherwise. The **default DGEMM path is
+  unchanged**; the tier is strictly opt-in and the existing exact
+  `ozaki-ii-correctness` gate is untouched. Adds `tests/gpu/ozaki_fast_gate.sh` /
+  `ozaki_fast_test.esk` (rel err <= 1e-7 across integer/fractional/pi-e/wide
+  regimes at K up to 4096, asserting the fast path engages with no silent
+  fallback) and the `ozaki-ii-fast` ICC oracle. `ESHKOL_OZAKI_PROFILE=1` reports
+  per-matmul internal pipeline GFLOP/s.
   (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
 
 ### Fixed
