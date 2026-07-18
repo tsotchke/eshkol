@@ -9,6 +9,12 @@ arithmetic automatically promotes between:
 - **inexact reals** — IEEE-754 doubles (written `1.5`, `3.0`),
 - **complex** — `a+bi` (type tag 7, heap-allocated `{real, imag}`).
 
+> **Off the tower: `i128`.** Eshkol also provides a native fixed-width 128-bit
+> integer, [`i128`](i128.md). It is a *distinct type* that is **not** part of
+> this tower: it does not auto-promote, and its arithmetic **wraps** at ±2¹²⁷
+> (two's complement) instead of growing to a bignum. Use it for deterministic
+> machine-word semantics; use the tower for ordinary exact arithmetic.
+
 ## Exactness
 
 `exact?` and `inexact?` classify a number. Integers and rationals are exact;

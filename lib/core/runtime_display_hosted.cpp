@@ -13,6 +13,9 @@
 #include "../../inc/eshkol/core/workspace.h"
 #include "../../inc/eshkol/core/rational.h"
 
+// Native i128 decimal renderer (lib/core/i128_runtime.cpp).
+extern "C" void eshkol_i128_display(const void* payload, void* stream);
+
 #include <cstdio>
 #include <cstring>
 #include <cmath>
@@ -324,6 +327,10 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     break;
                 case HEAP_SUBTYPE_BIGNUM:
                     eshkol_bignum_display((const eshkol_bignum_t*)data_ptr, get_output(opts));
+                    break;
+                case HEAP_SUBTYPE_I128:
+                    // Fixed-width i128: display/write both show plain decimal.
+                    eshkol_i128_display(data_ptr, get_output(opts));
                     break;
                 case HEAP_SUBTYPE_SUBSTITUTION:
                     eshkol_display_substitution((const eshkol_substitution_t*)data_ptr, get_output(opts));

@@ -15258,6 +15258,47 @@ private:
         if (func_name == "complex?") return codegenComplexPredicate(op);
         if (func_name == "conjugate") return codegenConjugate(op);
 
+        // Native 128-bit integer (i128) — distinct wrapping fixed-width type.
+        // signature: (op, fn_name, nargs, needs_arena, has_op, op_code)
+        if (func_name == "i128" || func_name == "int->i128")
+            return codegenI128Runtime(op, "eshkol_i128_from_int_tagged", 1, true, false, 0);
+        if (func_name == "string->i128")
+            return codegenI128Runtime(op, "eshkol_i128_from_string_tagged", 1, true, false, 0);
+        if (func_name == "i128?")
+            return codegenI128Runtime(op, "eshkol_i128_predicate_tagged", 1, false, false, 0);
+        if (func_name == "i128-add")
+            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 0);
+        if (func_name == "i128-sub")
+            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 1);
+        if (func_name == "i128-mul")
+            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 2);
+        if (func_name == "i128-quotient")
+            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 3);
+        if (func_name == "i128-remainder")
+            return codegenI128Runtime(op, "eshkol_i128_binary_tagged", 2, true, true, 4);
+        if (func_name == "i128-neg")
+            return codegenI128Runtime(op, "eshkol_i128_neg_tagged", 1, true, false, 0);
+        if (func_name == "i128-shl")
+            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 0);
+        if (func_name == "i128-ashr")
+            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 1);
+        if (func_name == "i128-lshr")
+            return codegenI128Runtime(op, "eshkol_i128_shift_tagged", 2, true, true, 2);
+        if (func_name == "i128=?")
+            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 0);
+        if (func_name == "i128<?")
+            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 1);
+        if (func_name == "i128>?")
+            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 2);
+        if (func_name == "i128<=?")
+            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 3);
+        if (func_name == "i128>=?")
+            return codegenI128Runtime(op, "eshkol_i128_compare_tagged", 2, false, true, 4);
+        if (func_name == "i128->string")
+            return codegenI128Runtime(op, "eshkol_i128_to_string_tagged", 1, true, false, 0);
+        if (func_name == "i128->int")
+            return codegenI128Runtime(op, "eshkol_i128_to_int_tagged", 1, false, false, 0);
+
         // Handle HoTT sum type operations (discriminated unions)
         if (func_name == "inject-left") return codegenSumInject(op, 0);
         if (func_name == "inject-right") return codegenSumInject(op, 1);
@@ -33181,6 +33222,72 @@ private:
     // Helper: Extract imaginary part from complex struct
     Value* getComplexImag(Value* complex_struct) {
         return builder->CreateExtractValue(complex_struct, {1}, "imag");
+    }
+
+    // ── Native 128-bit integer (i128) builtins ──────────────────────────────
+    //
+    // i128 is a distinct fixed-width, wrapping type that lives OFF the numeric
+    // tower. Every builtin lowers to a runtime call in lib/core/i128_runtime.cpp
+    // (which delegates the actual arithmetic to the pure header core shared with
+    // the VM). Following the bignum tagged-in/tagged-out dispatch pattern, all
+    // args and the result are marshalled through entry-block allocas so the call
+    // never grows the stack inside a loop (preserving TCO), mirroring
+    // ArithmeticCodegen::emitBignumBinaryCall.
+    //
+    // Correctness first: this PR intentionally boxes on the arena and does NOT
+    // attempt an unboxed LLVM-i128 hot path (noted as future work in the docs).
+    Value* codegenI128Runtime(const eshkol_operations_t* op, const char* fn_name,
+                              int expected_args, bool needs_arena,
+                              bool has_op, int op_code) {
+        if ((int)op->call_op.num_vars != expected_args) {
+            eshkol_error("%s: wrong number of arguments", fn_name);
+            return nullptr;
+        }
+
+        Function* parent = builder->GetInsertBlock()->getParent();
+        IRBuilder<> entry_builder(&parent->getEntryBlock(),
+                                  parent->getEntryBlock().begin());
+
+        // Evaluate each argument to a tagged value and spill to an entry alloca.
+        std::vector<Value*> arg_allocas;
+        arg_allocas.reserve(expected_args);
+        for (int i = 0; i < expected_args; i++) {
+            Value* tv = codegenAST(&op->call_op.variables[i]);
+            if (!tv) return nullptr;
+            // codegenAST returns a RAW i64/double for primitive literals (e.g. a
+            // fixnum arg or a shift count) and a tagged struct for everything
+            // else; box the raw form so the runtime always sees a full 16-byte
+            // tagged value (opaque pointers no longer catch the mismatch).
+            tv = ensureTaggedValue(tv);
+            Value* slot = entry_builder.CreateAlloca(tagged_value_type, nullptr, "i128_arg");
+            builder->CreateStore(tv, slot);
+            arg_allocas.push_back(slot);
+        }
+        Value* result_alloca = entry_builder.CreateAlloca(tagged_value_type, nullptr, "i128_res");
+
+        Type* ptr_ty = PointerType::getUnqual(*context);
+        std::vector<Type*>  param_types;
+        std::vector<Value*> call_args;
+        if (needs_arena) {
+            Value* arena_ptr = builder->CreateLoad(ptr_ty, global_arena, "i128_arena");
+            param_types.push_back(ptr_ty);
+            call_args.push_back(arena_ptr);
+        }
+        for (Value* slot : arg_allocas) {
+            param_types.push_back(ptr_ty);
+            call_args.push_back(slot);
+        }
+        if (has_op) {
+            param_types.push_back(int32_type);
+            call_args.push_back(ConstantInt::get(int32_type, op_code));
+        }
+        param_types.push_back(ptr_ty);            // result*
+        call_args.push_back(result_alloca);
+
+        FunctionType* ft = FunctionType::get(Type::getVoidTy(*context), param_types, false);
+        auto* callee = module->getOrInsertFunction(fn_name, ft).getCallee();
+        builder->CreateCall(ft, callee, call_args);
+        return builder->CreateLoad(tagged_value_type, result_alloca, "i128_result");
     }
 
     // (make-rectangular real imag) - Create complex from rectangular coordinates

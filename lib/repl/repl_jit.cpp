@@ -11,6 +11,7 @@
 #include <eshkol/runtime_exports.h>
 #include <eshkol/model_io.h>
 #include <eshkol/core/bignum.h>
+#include <eshkol/core/i128_runtime.h>
 #include <eshkol/core/rational.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/types/hott_types.h>  // For TypeId decoding and BuiltinTypes
@@ -1457,6 +1458,18 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_bignum_is_zero);
     ADD_SYMBOL(eshkol_bignum_is_even);
     ADD_SYMBOL(eshkol_bignum_is_odd);
+
+    // ===== NATIVE 128-BIT INTEGER (i128) =====
+    ADD_SYMBOL(eshkol_i128_from_int_tagged);
+    ADD_SYMBOL(eshkol_i128_from_string_tagged);
+    ADD_SYMBOL(eshkol_i128_predicate_tagged);
+    ADD_SYMBOL(eshkol_i128_binary_tagged);
+    ADD_SYMBOL(eshkol_i128_neg_tagged);
+    ADD_SYMBOL(eshkol_i128_shift_tagged);
+    ADD_SYMBOL(eshkol_i128_compare_tagged);
+    ADD_SYMBOL(eshkol_i128_to_string_tagged);
+    ADD_SYMBOL(eshkol_i128_to_int_tagged);
+    ADD_SYMBOL(eshkol_i128_display);
     ADD_SYMBOL(eshkol_string_to_number_tagged);
     ADD_SYMBOL(eshkol_string_to_number_radix_tagged);
     ADD_SYMBOL(eshkol_rational_create);

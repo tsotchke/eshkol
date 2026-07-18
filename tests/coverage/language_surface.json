@@ -14,10 +14,10 @@
     }
   },
   "counts": {
-    "builtins_total": 989,
+    "builtins_total": 1009,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 660,
-    "builtins_in_llvm_aot_dispatch": 750,
+    "builtins_in_vm_table": 680,
+    "builtins_in_llvm_aot_dispatch": 770,
     "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -28,16 +28,16 @@
     "ffi_system": 293,
     "tensor_ad": 221,
     "numeric": 86,
-    "predicate": 70,
+    "predicate": 76,
     "geometry": 61,
     "io_port": 52,
-    "string_char": 41,
+    "string_char": 42,
     "list_pair": 38,
     "consciousness": 37,
+    "misc": 26,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
-    "misc": 13,
     "misc_core": 13,
     "control_flow": 5
   },
@@ -4921,6 +4921,222 @@
       "category": "geometry"
     },
     {
+      "name": "i128",
+      "ids": [
+        2100
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128->int",
+      "ids": [
+        2118
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128->string",
+      "ids": [
+        2117
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-add",
+      "ids": [
+        2103
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-ashr",
+      "ids": [
+        2110
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-lshr",
+      "ids": [
+        2111
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-mul",
+      "ids": [
+        2105
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-neg",
+      "ids": [
+        2108
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-quotient",
+      "ids": [
+        2106
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-remainder",
+      "ids": [
+        2107
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-shl",
+      "ids": [
+        2109
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128-sub",
+      "ids": [
+        2104
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "i128<=?",
+      "ids": [
+        2115
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
+      "name": "i128<?",
+      "ids": [
+        2113
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
+      "name": "i128=?",
+      "ids": [
+        2112
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
+      "name": "i128>=?",
+      "ids": [
+        2116
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
+      "name": "i128>?",
+      "ids": [
+        2114
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
+      "name": "i128?",
+      "ids": [
+        2102
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "predicate"
+    },
+    {
       "name": "ifft",
       "ids": [],
       "arity": null,
@@ -5094,6 +5310,18 @@
         "native_llvm"
       ],
       "category": "io_port"
+    },
+    {
+      "name": "int->i128",
+      "ids": [
+        2100
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "misc"
     },
     {
       "name": "integer->char",
@@ -8616,6 +8844,18 @@
       "ids": [],
       "arity": null,
       "backends": [
+        "native_llvm"
+      ],
+      "category": "string_char"
+    },
+    {
+      "name": "string->i128",
+      "ids": [
+        2101
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
         "native_llvm"
       ],
       "category": "string_char"
