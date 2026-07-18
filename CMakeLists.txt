@@ -2072,6 +2072,7 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/runtime_shutdown_hooks_hosted.cpp
   lib/core/runtime_signals_hosted.cpp
   lib/core/runtime_stack_hosted.cpp
+  lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
 )
@@ -3045,6 +3046,30 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/resourc
     endif()
     target_link_libraries(resource_limits_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
     add_test(NAME resource_limits_test COMMAND resource_limits_test)
+endif()
+
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/linear_solve_hosted_control_test.cpp")
+    add_executable(linear_solve_hosted_control_test
+        tests/core/linear_solve_hosted_control_test.cpp)
+    target_compile_features(linear_solve_hosted_control_test PRIVATE cxx_std_17)
+    target_include_directories(linear_solve_hosted_control_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(linear_solve_hosted_control_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(linear_solve_hosted_control_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(linear_solve_hosted_control_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS}
+        ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME linear_solve_hosted_control_unset
+        COMMAND linear_solve_hosted_control_test unset)
+    add_test(NAME linear_solve_hosted_control_zero
+        COMMAND linear_solve_hosted_control_test zero)
+    add_test(NAME linear_solve_hosted_control_one
+        COMMAND linear_solve_hosted_control_test one)
+    set_tests_properties(linear_solve_hosted_control_zero PROPERTIES
+        ENVIRONMENT "ESHKOL_LINSOLVE_FORCE_DGESV=0")
+    set_tests_properties(linear_solve_hosted_control_one PROPERTIES
+        ENVIRONMENT "ESHKOL_LINSOLVE_FORCE_DGESV=1")
 endif()
 
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_signal_handlers_test.cpp")
