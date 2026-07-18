@@ -32,26 +32,12 @@
  */
 
 #include <eshkol/eshkol.h>
+#include <eshkol/core/linear_solve.h>
 
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
-
-// eshkol_runtime_fatal is defined in runtime_errors_hosted.cpp; it builds a
-// catchable exception and raises it (or exits if unhandled). No public header
-// declares it, so forward-declare it here for the native raise helper.
-extern "C" void eshkol_runtime_fatal(eshkol_exception_type_t type,
-                                     const char* fmt, ...);
-
-// Status codes returned by eshkol_linear_solve(). 0 = a full-f64 solution was
-// produced (via IR or the dgesv fallback); the rest are catchable errors.
-enum {
-    ESHKOL_LINSOLVE_OK          = 0,
-    ESHKOL_LINSOLVE_SINGULAR    = 1,  // A is singular / no unique solution
-    ESHKOL_LINSOLVE_NOT_SQUARE  = 2,  // A is not a square 2-D matrix
-    ESHKOL_LINSOLVE_DIM_MISMATCH = 3  // b length != N
-};
+#include <cstdlib>
 
 // Refinement acceptance: certify the IR solution only once its relative
 // backward residual ||b - Ax|| / ||b|| is at or below this. Well-conditioned
@@ -114,16 +100,13 @@ static int64_t linsolve_dgesv_fallback(const double* A, const double* b,
 
 // Mixed-precision iterative refinement, Apple/Accelerate path.
 static int64_t linsolve_ir_accelerate(const double* A, const double* b,
-                                      double* x, int n) {
-    if (n == 0) return ESHKOL_LINSOLVE_OK;
-
-    // Benchmark hook: force the plain-f64 path so the IR speedup can be
-    // measured against the same-machine dgesv baseline in-tree.
-    if (const char* force = std::getenv("ESHKOL_LINSOLVE_FORCE_DGESV")) {
-        if (force[0] && force[0] != '0')
-            return linsolve_dgesv_fallback(A, b, x, n);
+                                      double* x, int n, uint32_t options) {
+    if ((options & ESHKOL_LINSOLVE_FORCE_DGESV) != 0) {
+        return linsolve_dgesv_fallback(A, b, x, n);
     }
 
+    if (n == 0) return ESHKOL_LINSOLVE_OK;
+    
     double bnorm = cblas_dnrm2(n, b, 1);
     double denom = (bnorm > 0.0) ? bnorm : 1.0;
 
@@ -246,10 +229,10 @@ static int64_t linsolve_lu_f64(const double* A, const double* b,
  * @param x      Length-N f64 output solution (caller-allocated).
  * @return       ESHKOL_LINSOLVE_OK, or a nonzero catchable error code.
  */
-extern "C" int64_t eshkol_linear_solve(
+extern "C" int64_t eshkol_linear_solve_with_options(
     int64_t a_ndim, const int64_t* a_dims,
     int64_t b_ndim, const int64_t* b_dims,
-    const double* A, const double* b, double* x) {
+    const double* A, const double* b, double* x, uint32_t options) {
 
     if (a_ndim != 2 || !a_dims || a_dims[0] != a_dims[1] || a_dims[0] < 0)
         return ESHKOL_LINSOLVE_NOT_SQUARE;
@@ -266,28 +249,9 @@ extern "C" int64_t eshkol_linear_solve(
     if (n == 0) return ESHKOL_LINSOLVE_OK;
 
 #if defined(ESHKOL_BLAS_ACCELERATE)
-    return linsolve_ir_accelerate(A, b, x, (int)n);
+    return linsolve_ir_accelerate(A, b, x, (int)n, options);
 #else
+    (void)options;
     return linsolve_lu_f64(A, b, x, (int)n);
 #endif
-}
-
-/**
- * @brief Raise the catchable exception for a nonzero eshkol_linear_solve()
- *        status. Called only from LLVM-generated native code (the VM raises
- *        through its own condition machinery). Never returns.
- */
-extern "C" void eshkol_linear_solve_raise(int64_t status) {
-    const char* msg;
-    switch (status) {
-        case ESHKOL_LINSOLVE_SINGULAR:
-            msg = "linear-solve: matrix is singular"; break;
-        case ESHKOL_LINSOLVE_NOT_SQUARE:
-            msg = "linear-solve: A must be a square 2-D matrix"; break;
-        case ESHKOL_LINSOLVE_DIM_MISMATCH:
-            msg = "linear-solve: dimension mismatch (b length must equal N)"; break;
-        default:
-            msg = "linear-solve: error"; break;
-    }
-    eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s", msg);
 }
