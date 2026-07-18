@@ -1603,7 +1603,7 @@ switch ($Mode) {
         $suiteResults += Invoke-TimedCompileRunSuite -SuiteName "optimization" -Title "Eshkol Optimization Algorithms Tests" -Patterns @("tests/ml/*optimization*.esk") -TimeoutSec 60 -FailRegex "FAIL:"
         $suiteResults += Invoke-ExamplesSuite
         $suiteResults += Invoke-XlaSuite
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]" -ExcludeNames @("ozaki_certification_test.esk")
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "error_handling" -Title "Eshkol Error Handling Tests" -Patterns @("tests/error_handling/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
         $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "macros" -Title "Eshkol Macros Tests" -Patterns @("tests/macros/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
         $suiteResults += Invoke-ReplSuite
@@ -1619,7 +1619,7 @@ switch ($Mode) {
         $suiteResults += Invoke-XlaSuite
     }
     "gpu" {
-        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]"
+        $suiteResults += Invoke-SimpleCompileRunSuite -SuiteName "gpu" -Title "Eshkol GPU Test Suite" -Patterns @("tests/gpu/*.esk") -FailRegex "^FAIL:|Failed:\s+[1-9]" -ExcludeNames @("ozaki_certification_test.esk")
     }
     "windows-lite" {
         # This mode is intentionally a bounded hosted-runner smoke suite.

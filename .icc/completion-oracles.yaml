@@ -2026,6 +2026,24 @@ oracles:
         label: Ozaki-II CRT exact DGEMM (shipped fixed N=16) is bit-exact vs an independent CPU f64 reference across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with out-of-range moduli clamped loudly and opt-in adaptive free of gross CRT error
         action: ./tests/gpu/ozaki_correctness_gate.sh
 
+  # Ozaki-II certification. This gate validates a deterministic integer witness
+  # on real Metal fixed-N16 dispatch, sampling 512x512 output tiles and checking
+  # every sample against an independent native-i128 reference with signed
+  # magnitude < 2^58. It also explicitly requires both cached JIT and AOT execution to pass,
+  # verifies Apple Accelerate disagrees with the identical witness on at least one
+  # sampled output, and asserts no CPU fallback path was used.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ozaki-certification
+    aliases: [ozaki-exact-reference, exact-reference-certification, p-ozaki-certification]
+    requires:
+      - runtime_event:
+          event_kinds: [ozaki_certification]
+          event_names: ["ozaki_certification_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Metal fixed-N16 exact Ozaki dispatch certification checks that every sampled deterministic 512x512 integer-witness output matches an independent native-i128 reference with signed magnitude < 2^58, where the native-i128 reference is converted to correctly rounded f64 before equality comparison, that both cached JIT and AOT execute successfully, that Apple Accelerate on the identical witness disagrees on at least one sampled output, and that no CPU fallback path is used
+        action: ./tests/gpu/ozaki_certification_gate.sh
+
   # ─────────────────────────────────────────────────────────────────
   # INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in). Recovers FP64-accurate
   # C = A*B from the INT8 (IMMA) tensor cores via per-row/col-scaled 7-bit

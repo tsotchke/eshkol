@@ -463,6 +463,10 @@ bit 0 prevents deallocation of externally-owned memory.
 | `ESHKOL_OZAKI_ADAPTIVE` | `1` | exact tier: adaptive (approximate) moduli minimisation |
 | `ESHKOL_OZAKI_PROFILE` | `1` | prints per-matmul internal pipeline ms + effective GFLOP/s (exact and fast tiers) |
 
+#### Exact-reference certification gate (opt-in)
+
+`tests/gpu/ozaki_certification_gate.sh` runs a deterministic `512x512` integer-valued f64 witness. It uses an independent sampled native-`i128` dot-product oracle with a proven bound below `2^58`, then converts oracle sums to correctly rounded f64. On the identical witness, Apple Accelerate must differ on at least one sample while fixed-`N16` Metal exact Ozaki (`ozaki`) must match every sampled reference. The script exercises both default cached-JIT and AOT and requires real fixed-`N16` Metal dispatch markers, explicitly rejecting CPU fallback. ICC oracle name is `ozaki-certification`. This is a correctness-only certification witness: no default-dispatch change and no performance claim.
+
 The default DGEMM tier is unchanged; both `ozaki` and `ozaki-fast` are opt-in.
 See section 3 (Ozaki-II CRT DGEMM) for the accuracy/throughput tables.
 
