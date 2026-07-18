@@ -1,0 +1,70 @@
+;; ozaki_fast_test.esk — Ozaki-II REDUCED-PRECISION fast-tier accuracy probe.
+;;
+;; Companion to ozaki_correctness_test.esk, but for the opt-in fully-GPU fast
+;; tier (ESHKOL_OZAKI_FAST=1 / ESHKOL_SF64_KERNEL=ozaki-fast): GPU residue split
+;; + df32 CRT reconstruction. This tier is REDUCED precision — its accuracy knob
+;; is the moduli count — so the threshold here is the documented fast-tier bound
+;; (rel err <= 1e-7 for the default ~1e-8 config), NOT the exact tier's ~1e-9.
+;;
+;; Same shape as the exact probe: an independent in-process CPU f64 triple-loop
+;; reference at a 5x5 grid of probe positions, across four data regimes and K up
+;; to 4096. Verdict is decided here so it does not depend on display precision.
+
+(define TOL 1e-7)          ;; reduced-precision fast tier: documented ~1e-8 bound, gate at 1e-7
+(define total-fail 0)
+
+(define (fillA regime i)
+  (cond ((= regime 0) (exact->inexact (- (modulo i 7) 3)))                                  ;; integer (incl. negatives)
+        ((= regime 1) (+ 1.0 (* 0.5 (exact->inexact (modulo i 7)))))                        ;; fractional O(1)
+        ((= regime 2) (* 3.141592653589793 (+ 1.0 (exact->inexact (modulo i 11)))))         ;; pi multiples
+        (else (* (expt 2.0 (exact->inexact (- (modulo i 20) 10)))                           ;; wide magnitude 2^[-10,9]
+                 (+ 1.0 (* 0.1 (exact->inexact (modulo i 3))))))))
+(define (fillB regime i)
+  (cond ((= regime 0) (exact->inexact (- (modulo i 5) 2)))
+        ((= regime 1) (+ 0.5 (* 0.25 (exact->inexact (modulo i 5)))))
+        ((= regime 2) (* 2.718281828459045 (- (exact->inexact (modulo i 9)) 4.0)))          ;; e multiples (incl. negatives)
+        (else (* (expt 2.0 (exact->inexact (- (modulo i 18) 9)))
+                 (+ 1.0 (* 0.1 (exact->inexact (modulo i 4))))))))
+(define (rname regime)
+  (cond ((= regime 0) "integer") ((= regime 1) "fractional") ((= regime 2) "pi_e") (else "wide_range")))
+
+;; Probe a 5x5 grid of output positions against an independent CPU f64 reference.
+(define (check regime N Ad Bd Cd)
+  (let ((maxrel 0.0))
+    (do ((pr 0 (+ pr 1))) ((>= pr 5))
+      (do ((pc 0 (+ pc 1))) ((>= pc 5))
+        (let ((ii (quotient (* pr (- N 1)) 4))
+              (jj (quotient (* pc (- N 1)) 4))
+              (ref 0.0))
+          (do ((k 0 (+ k 1))) ((>= k N))
+            (set! ref (+ ref (* (vector-ref Ad (+ (* ii N) k))
+                                (vector-ref Bd (+ (* k N) jj))))))
+          (let* ((cij (vector-ref Cd (+ (* ii N) jj)))
+                 (denom (if (> (abs ref) 1e-9) (abs ref) 1.0))
+                 (rel (/ (abs (- cij ref)) denom)))
+            (when (> rel maxrel) (set! maxrel rel))))))
+    (let ((pass (< maxrel TOL)))
+      (when (not pass) (set! total-fail (+ total-fail 1)))
+      (display "REGIME=") (display (rname regime))
+      (display " N=") (display N)
+      (display " MAXREL=") (display maxrel)
+      (display " VERDICT=") (display (if pass "PASS" "FAIL"))
+      (newline))))
+
+(define sizes (vector 512 1024 2048 4096))
+(do ((r 0 (+ r 1))) ((>= r 4))
+  (do ((si 0 (+ si 1))) ((>= si 4))
+    (let* ((N (vector-ref sizes si))
+           (size (* N N))
+           (Ad (make-vector size 0.0))
+           (Bd (make-vector size 0.0)))
+      (do ((i 0 (+ i 1))) ((>= i size))
+        (vector-set! Ad i (fillA r i))
+        (vector-set! Bd i (fillB r i)))
+      (let* ((A (reshape Ad N N))
+             (B (reshape Bd N N))
+             (C (matmul A B))
+             (Cd (tensor-data C)))
+        (check r N Ad Bd Cd)))))
+
+(display "SUMMARY total_fail=") (display total-fail) (newline)

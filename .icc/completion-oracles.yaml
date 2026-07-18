@@ -2052,3 +2052,24 @@ oracles:
         severity: high
         label: INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in ESHKOL_CUDA_F64_KERNEL=ozaki-int8) recovers full f64 (normwise < 1e-9 at T=6) vs an independent CPU f64 reference across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with the T=4 fast tier correct and the out-of-range accuracy knob clamped loudly
         action: ./tests/gpu/cuda_ozaki_correctness_gate.sh
+  # Ozaki-II REDUCED-PRECISION fast tier (opt-in). ESHKOL_SF64_KERNEL=
+  # ozaki-fast selects a fully-GPU pipeline: GPU residue split + df32
+  # CRT reconstruction over FEWER moduli (the accuracy knob), which
+  # eliminates the exact tier's O(num_moduli·N^2) CPU reconstruction.
+  # Being reduced precision, it is gated at the documented ~1e-8 bound
+  # (rel err <= 1e-7 across the same four regimes), NOT bit-exactness —
+  # and the gate also asserts the fast path genuinely engages (marker +
+  # no silent fallback to the exact tier). The DEFAULT path is untouched
+  # and stays covered by ozaki-ii-correctness above. Metal-only; SKIPS
+  # (no trace) on GPU-less hosts.
+  # ─────────────────────────────────────────────────────────────────
+  - name: ozaki-ii-fast
+    aliases: [ozaki-fast, ozaki-fast-tier, p-ozaki-fast]
+    requires:
+      - runtime_event:
+          event_kinds: [ozaki_fast]
+          event_names: ["ozaki_fast_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: Ozaki-II reduced-precision fast tier (opt-in ozaki-fast, GPU residue split + df32 CRT reconstruction) is within the documented ~1e-8 bound (rel err <= 1e-7) across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with the fully-GPU fast path verified to engage (no silent fallback to the exact tier)
+        action: ./tests/gpu/ozaki_fast_gate.sh
