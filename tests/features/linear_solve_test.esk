@@ -113,6 +113,19 @@
                  (begin (linear-solve A b) 'no-raise))))
   (report "dim-mismatch-raises" (eq? result 'raised)))
 
+;; --- Operand validation regressions ---
+;; Wrong-type operand must raise and be catchable.
+(let* ((result (guard (e (#t 'raised))
+               (begin (linear-solve 1 (make-vec (list 1.0) 1)) 'no-raise))))
+  (report "wrong-type-raises" (eq? result 'raised)))
+
+;; Non-2D A must raise and be catchable.
+(let* ((A (make-vec (list 1.0 2.0 3.0) 3))
+       (b (make-vec (list 1.0 2.0 3.0) 3))
+       (result (guard (e (#t 'raised))
+                 (begin (linear-solve A b) 'no-raise))))
+  (report "non-2d-raises" (eq? result 'raised)))
+
 ;; --- Summary ---
 (display "=== linear-solve: ")
 (display pass-count) (display " passed, ")
