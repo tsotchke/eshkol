@@ -2011,3 +2011,30 @@ oracles:
         severity: high
         label: Ozaki-II CRT exact DGEMM (shipped fixed N=16) is bit-exact vs an independent CPU f64 reference across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with out-of-range moduli clamped loudly and opt-in adaptive free of gross CRT error
         action: ./tests/gpu/ozaki_correctness_gate.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in). Recovers FP64-accurate
+  # C = A*B from the INT8 (IMMA) tensor cores via per-row/col-scaled 7-bit
+  # integer slicing + diagonal-fused int32 reconstruction — measured 4.74
+  # TFLOP/s-eq (8.8x native cublasDgemm) at full f64 on an RTX 3090, ~30 TF
+  # (20x native f64) on RTX PRO 6000 Blackwell. Opt-in via
+  # ESHKOL_CUDA_F64_KERNEL=ozaki-int8; the accuracy/throughput knob is
+  # ESHKOL_OZAKI_CUDA_T (default 6 = full f64, T=4 ~1e-11). Guarded K<133000
+  # for int32 exactness (loud fallback to cublasDgemm out of range).
+  # tests/gpu/cuda_ozaki_correctness_gate.sh drives the real CUDA kernel vs an
+  # independent in-process CPU f64 reference across integer / fractional / pi-e /
+  # wide-magnitude regimes at K up to 4096, asserting T=6 is machine-precision
+  # (normwise < 1e-9), T=4 correct, and the out-of-range knob clamps loudly and
+  # stays correct. CUDA-only + real-GPU-only, so it SKIPS (no trace) on Metal or
+  # GPU-less hosts.
+  # ─────────────────────────────────────────────────────────────────
+  - name: cuda-ozaki-int8-correctness
+    aliases: [cuda-ozaki-correctness, cuda-ozaki-int8, int8-ozaki, p-cuda-ozaki-correctness]
+    requires:
+      - runtime_event:
+          event_kinds: [cuda_ozaki_correctness]
+          event_names: ["cuda_ozaki_correctness_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in ESHKOL_CUDA_F64_KERNEL=ozaki-int8) recovers full f64 (normwise < 1e-9 at T=6) vs an independent CPU f64 reference across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with the T=4 fast tier correct and the out-of-range accuracy knob clamped loudly
+        action: ./tests/gpu/cuda_ozaki_correctness_gate.sh
