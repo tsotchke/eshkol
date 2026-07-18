@@ -7073,7 +7073,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* A = vm_tensor_operand(vm, a_val, "linear-solve");
         VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
-        if (!A || !b) { vm_push(vm, NIL_VAL); break; }
+        if (!A || !b) {
+            vm->error = 0;
+            VmError* e = vm_error_make(
+                &vm->heap.regions, "error",
+                "linear-solve: expected tensor operands for A and b", NULL, 0);
+            Value exn = NIL_VAL;
+            if (e) {
+                int32_t ep = heap_alloc(&vm->heap);
+                if (ep >= 0) {
+                    vm->heap.objects[ep]->type = HEAP_ERROR;
+                    vm->heap.objects[ep]->opaque.ptr = e;
+                    exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
+                }
+            }
+            vm_dispatch_exception(vm, exn);
+            break;
+        }
 
         int64_t a_dims[VM_TENSOR_MAX_DIMS], b_dims[VM_TENSOR_MAX_DIMS];
         for (int i = 0; i < A->n_dims && i < VM_TENSOR_MAX_DIMS; i++) a_dims[i] = A->shape[i];

@@ -127,7 +127,7 @@
   (report "non-2d-raises" (eq? result 'raised)))
 
 ;; --- Summary ---
-(display "=== linear-solve: ")
-(display pass-count) (display " passed, ")
-(display fail-count) (display " failed ===")
+(display (string-append
+  "=== linear-solve: " (number->string pass-count) " passed, "
+  (number->string fail-count) " failed ==="))
 (newline)
