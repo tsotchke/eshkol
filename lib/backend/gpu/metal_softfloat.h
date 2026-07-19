@@ -2229,21 +2229,28 @@ inline df64 sf64_to_df64(sf64 x) {
         return df64{hi, 0.0f};
     }
 
-    // Count leading zeros in the remaining mantissa to normalize
-    int lo_lz = clz(lo_mant_raw) - 3;  // 32-bit clz minus 3 (since only 29 bits)
-    if (lo_lz < 0) lo_lz = 0;
-
-    int lo_exp_unbiased = exp_unbiased - 23 - lo_lz;  // 23 bits already consumed by hi
-    int lo_exp_f32 = lo_exp_unbiased + 127;
+    // The residual low bits are exactly  lo_mant_raw * 2^(exp_unbiased - 52).
+    // Reconstruct that as an f32 from the true position of its MSB.
+    //
+    // NOTE: the previous version used exp_unbiased-23 for the low exponent
+    // (off by one -> lo came out 2x too large) and left the implicit-1 bit in
+    // the stored mantissa (>>6 kept bit p instead of the 23 bits below it).
+    // Both errors compounded so that hi+lo disagreed with x at the ~2^-24
+    // level: the "lo" limb was effectively noise and the whole df64 (HIGH)
+    // tier delivered fp32-grade precision (~1e-7 rel error) instead of the
+    // advertised ~48-bit. See lib/backend/gpu/metal_softfloat.h df64 header.
+    int p = 31 - clz(lo_mant_raw);              // MSB index of residual, 0..28
+    int lo_exp_f32 = (exp_unbiased - 52 + p) + 127;
 
     float lo;
     if (lo_exp_f32 <= 0) {
-        lo = 0.0f;  // Underflow — too small for f32
+        lo = 0.0f;  // Underflow — too small for a normal f32
     } else {
-        // Normalize: shift left by lo_lz, then take top 23 bits
-        uint lo_shifted = lo_mant_raw << lo_lz;
-        uint lo_mant_23 = (lo_shifted >> 6) & 0x007FFFFFu;  // top 23 of 29 bits
-        uint lo_bits = sign_bit | (uint(lo_exp_f32 & 0xFF) << 23) | lo_mant_23;
+        // 23 fraction bits below the MSB (implicit 1 = bit p, not stored)
+        uint frac = (p >= 23) ? (lo_mant_raw >> uint(p - 23))
+                              : (lo_mant_raw << uint(23 - p));
+        frac &= 0x007FFFFFu;
+        uint lo_bits = sign_bit | (uint(lo_exp_f32 & 0xFF) << 23) | frac;
         lo = as_type<float>(lo_bits);
     }
 
