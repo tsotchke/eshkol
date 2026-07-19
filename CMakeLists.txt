@@ -171,9 +171,8 @@ option(ESHKOL_ENABLE_FUZZ "Build fuzz harnesses (reader_fuzz: any compiler; libF
 option(ESHKOL_FUZZ_ASAN "Build reader_fuzz (and the runtime it exercises) with ASan+UBSan" OFF)
 
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
-# the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
-# SHA (rather than the mutable v1.1.0-rc name) for reproducible builds.  At the
-# upstream repository this annotated object peels to commit 572c3940faf8e275a0e3730f2947411eefb1fa19.
+# the simulator.  Pin the immutable commit behind v1.2.0 so the smooth molecular
+# PES and frozen vqe_compute_qgt ABI used by agent.quantum are reproducible.
 option(ESHKOL_QUANTUM_ENABLED "Enable the opt-in Moonlab quantum simulator integration" OFF)
 set(ESHKOL_MOONLAB_REPO "https://github.com/tsotchke/moonlab.git" CACHE STRING
     "Moonlab git repository used when ESHKOL_QUANTUM_ENABLED is ON")
@@ -200,7 +199,7 @@ if(ESHKOL_QUANTUM_ENABLED)
 
     FetchContent_Declare(moonlab
         GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
-        GIT_TAG d2503460246da893c28b59845bb32689aa9602fc
+        GIT_TAG e441957b22698ce93ad4868d585ac7ca3baa281f
         GIT_SHALLOW FALSE
     )
     FetchContent_MakeAvailable(moonlab)
@@ -2255,6 +2254,19 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/model_i
 endif()
 
 if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
+    if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_quantum_chemistry_examples_gate.sh")
+        add_test(
+            NAME quantum_chemistry_examples_gate
+            COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/run_quantum_chemistry_examples_gate.sh"
+        )
+        set_tests_properties(quantum_chemistry_examples_gate
+            PROPERTIES
+                TIMEOUT 1800
+                ENVIRONMENT "BUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+                PASS_REGULAR_EXPRESSION "GitHub #297 differentiable quantum chemistry gate: PASS"
+                FAIL_REGULAR_EXPRESSION "FAIL|fatal signal|LLVM module verification failed")
+    endif()
     add_test(
         NAME tensor_integer_vector_literal_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run> -e "(display (tensor 1 2 3))"

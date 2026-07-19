@@ -56,6 +56,7 @@
 #include <string.h>
 #include <float.h>
 #include <limits.h>
+#include <math.h>
 
 /* The VQE AD bridge needs Eshkol's arena-owned tape nodes. Do not include
  * arena_memory.h here: it exposes C++ thread_local declarations and this shim
@@ -121,6 +122,21 @@ typedef struct {
 } vqe_gradient_context_t;
 static vqe_gradient_context_t* g_vqe_gradient_contexts[MAX_VQE_GRADIENT_CONTEXTS] = {0};
 static int g_next_vqe_gradient_context = 1;
+
+/* QGT results use their own scoped handle rather than a process-global matrix.
+ * This keeps concurrent/nested callers isolated and supports every parameter
+ * count exposed by Moonlab's default hardware-efficient ansatz. */
+#define MAX_VQE_QGT_CONTEXTS 64
+typedef struct {
+    vqe_solver_t* solver;
+    vqe_ansatz_t* ansatz;
+    vqe_optimizer_t* optimizer;
+    double* parameters;
+    double* matrix;
+    size_t parameter_count;
+} vqe_qgt_context_t;
+static vqe_qgt_context_t* g_vqe_qgt_contexts[MAX_VQE_QGT_CONTEXTS] = {0};
+static int g_next_vqe_qgt_context = 1;
 
 /** @brief Human-readable last-error message, mirrored via eshkol_quantum_last_error(). */
 static char g_quantum_last_error[256] = {0};
@@ -200,9 +216,42 @@ static vqe_gradient_context_t* get_vqe_gradient_context(int64_t h) {
     return g_vqe_gradient_contexts[h];
 }
 
+static int alloc_vqe_qgt_context(vqe_qgt_context_t* context) {
+    for (int i = g_next_vqe_qgt_context; i < MAX_VQE_QGT_CONTEXTS; i++) {
+        if (!g_vqe_qgt_contexts[i]) {
+            g_vqe_qgt_contexts[i] = context;
+            g_next_vqe_qgt_context = i + 1;
+            return i;
+        }
+    }
+    for (int i = 1; i < g_next_vqe_qgt_context; i++) {
+        if (!g_vqe_qgt_contexts[i]) {
+            g_vqe_qgt_contexts[i] = context;
+            g_next_vqe_qgt_context = i + 1;
+            return i;
+        }
+    }
+    return -1;
+}
+
+static vqe_qgt_context_t* get_vqe_qgt_context(int64_t h) {
+    if (h < 1 || h >= MAX_VQE_QGT_CONTEXTS) return NULL;
+    return g_vqe_qgt_contexts[h];
+}
+
 static void free_vqe_gradient_context(vqe_gradient_context_t* context) {
     if (!context) return;
     free(context->gradient);
+    vqe_solver_free(context->solver);
+    vqe_ansatz_free(context->ansatz);
+    vqe_optimizer_free(context->optimizer);
+    free(context);
+}
+
+static void free_vqe_qgt_context(vqe_qgt_context_t* context) {
+    if (!context) return;
+    free(context->parameters);
+    free(context->matrix);
     vqe_solver_free(context->solver);
     vqe_ansatz_free(context->ansatz);
     vqe_optimizer_free(context->optimizer);
@@ -214,6 +263,10 @@ static void free_vqe_gradient_context(vqe_gradient_context_t* context) {
  * including handles abandoned by a non-local exit.  Contexts go first because
  * their solvers borrow the Hamiltonians. */
 static void teardown_vqe_handles(void) {
+    for (int i = 1; i < MAX_VQE_QGT_CONTEXTS; i++) {
+        free_vqe_qgt_context(g_vqe_qgt_contexts[i]);
+        g_vqe_qgt_contexts[i] = NULL;
+    }
     for (int i = 1; i < MAX_VQE_GRADIENT_CONTEXTS; i++) {
         free_vqe_gradient_context(g_vqe_gradient_contexts[i]);
         g_vqe_gradient_contexts[i] = NULL;
@@ -495,6 +548,48 @@ int64_t eshkol_vqe_make_h2o_hamiltonian(void) {
                              "make-h2o-hamiltonian: Moonlab allocation failed");
 }
 
+/** Create an arbitrary Pauli-sum Hamiltonian behind an Eshkol handle. */
+int64_t eshkol_vqe_pauli_hamiltonian_create(int32_t num_qubits,
+                                             int32_t num_terms,
+                                             double nuclear_repulsion,
+                                             int64_t hf_reference) {
+    if (num_qubits <= 0 || num_terms <= 0 || !isfinite(nuclear_repulsion) ||
+        hf_reference < 0 ||
+        (num_qubits < 63 && (uint64_t)hf_reference >= (UINT64_C(1) << num_qubits))) {
+        set_last_error("make-pauli-hamiltonian: invalid dimensions or metadata");
+        return -1;
+    }
+    pauli_hamiltonian_t* hamiltonian = pauli_hamiltonian_create(
+        (size_t)num_qubits, (size_t)num_terms);
+    if (!hamiltonian) {
+        set_last_error("make-pauli-hamiltonian: Moonlab allocation failed");
+        return -1;
+    }
+    hamiltonian->nuclear_repulsion = nuclear_repulsion;
+    hamiltonian->hf_reference = (uint64_t)hf_reference;
+    return store_hamiltonian(hamiltonian,
+                             "make-pauli-hamiltonian: Moonlab allocation failed");
+}
+
+/** Add one validated Pauli term to a Hamiltonian created above. */
+int32_t eshkol_vqe_pauli_hamiltonian_add_term(int64_t handle,
+                                               double coefficient,
+                                               const char* pauli_string,
+                                               int32_t term_index) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    if (!hamiltonian || !pauli_string || term_index < 0 ||
+        !isfinite(coefficient)) {
+        set_last_error("make-pauli-hamiltonian: invalid term");
+        return -1;
+    }
+    if (pauli_hamiltonian_add_term(hamiltonian, coefficient, pauli_string,
+                                   (size_t)term_index) != 0) {
+        set_last_error("make-pauli-hamiltonian: Moonlab rejected a Pauli term");
+        return -1;
+    }
+    return 0;
+}
+
 /** Release a Hamiltonian handle. Safe on an already-released handle. */
 void eshkol_vqe_hamiltonian_destroy(int64_t handle) {
     if (handle < 1 || handle >= MAX_HAMILTONIAN_HANDLES) return;
@@ -574,6 +669,94 @@ static vqe_solver_t* create_default_vqe_solver(pauli_hamiltonian_t* hamiltonian,
     *ansatz_out = ansatz;
     *optimizer_out = optimizer;
     return solver;
+}
+
+/** Allocate a scoped QGT calculation for the default ansatz. */
+int64_t eshkol_vqe_qgt_context_create(int64_t handle) {
+    pauli_hamiltonian_t* hamiltonian = get_hamiltonian(handle);
+    if (!hamiltonian) {
+        set_last_error("vqe-qgt: invalid Hamiltonian handle");
+        return -1;
+    }
+
+    vqe_qgt_context_t* context = calloc(1, sizeof(*context));
+    if (!context) {
+        set_last_error("vqe-qgt: allocation failed");
+        return -1;
+    }
+    context->solver = create_default_vqe_solver(hamiltonian, 1,
+                                                 &context->ansatz,
+                                                 &context->optimizer);
+    if (!context->solver) {
+        free_vqe_qgt_context(context);
+        return -1;
+    }
+    context->parameter_count = context->ansatz->num_parameters;
+    const size_t n = context->parameter_count;
+    if (n == 0 || n > SIZE_MAX / n || n * n > SIZE_MAX / sizeof(double)) {
+        set_last_error("vqe-qgt: invalid parameter count");
+        free_vqe_qgt_context(context);
+        return -1;
+    }
+    context->parameters = calloc(n, sizeof(double));
+    context->matrix = calloc(n * n, sizeof(double));
+    if (!context->parameters || !context->matrix) {
+        set_last_error("vqe-qgt: allocation failed");
+        free_vqe_qgt_context(context);
+        return -1;
+    }
+
+    ensure_vqe_handle_cleanup();
+    int context_handle = alloc_vqe_qgt_context(context);
+    if (context_handle < 0) {
+        set_last_error("vqe-qgt context table exhausted");
+        free_vqe_qgt_context(context);
+        return -1;
+    }
+    return (int64_t)context_handle;
+}
+
+void eshkol_vqe_qgt_context_destroy(int64_t handle) {
+    if (handle < 1 || handle >= MAX_VQE_QGT_CONTEXTS) return;
+    free_vqe_qgt_context(g_vqe_qgt_contexts[handle]);
+    g_vqe_qgt_contexts[handle] = NULL;
+}
+
+int64_t eshkol_vqe_qgt_parameter_count(int64_t handle) {
+    vqe_qgt_context_t* context = get_vqe_qgt_context(handle);
+    return context ? (int64_t)context->parameter_count : -1;
+}
+
+int32_t eshkol_vqe_qgt_set_parameter(int64_t handle, int32_t index,
+                                      double value) {
+    vqe_qgt_context_t* context = get_vqe_qgt_context(handle);
+    if (!context || index < 0 || (size_t)index >= context->parameter_count ||
+        !isfinite(value)) {
+        set_last_error("vqe-qgt: invalid parameter");
+        return -1;
+    }
+    context->parameters[index] = value;
+    return 0;
+}
+
+int32_t eshkol_vqe_qgt_compute(int64_t handle) {
+    vqe_qgt_context_t* context = get_vqe_qgt_context(handle);
+    if (!context || vqe_compute_qgt(context->solver, context->parameters,
+                                    context->matrix) != 0) {
+        set_last_error("vqe-qgt: Moonlab computation failed");
+        return -1;
+    }
+    return 0;
+}
+
+double eshkol_vqe_qgt_get(int64_t handle, int32_t row, int32_t column) {
+    vqe_qgt_context_t* context = get_vqe_qgt_context(handle);
+    if (!context || row < 0 || column < 0 ||
+        (size_t)row >= context->parameter_count ||
+        (size_t)column >= context->parameter_count) {
+        return unavailable_double("vqe-qgt: matrix index out of range");
+    }
+    return context->matrix[(size_t)row * context->parameter_count + (size_t)column];
 }
 
 /**
@@ -1066,6 +1249,19 @@ double eshkol_quantum_bell_chsh(int32_t num_trials) {
 int64_t eshkol_vqe_make_h2_hamiltonian(double bond_distance) { (void)bond_distance; return -1; }
 int64_t eshkol_vqe_make_lih_hamiltonian(double bond_distance) { (void)bond_distance; return -1; }
 int64_t eshkol_vqe_make_h2o_hamiltonian(void) { return -1; }
+int64_t eshkol_vqe_pauli_hamiltonian_create(int32_t num_qubits,
+                                             int32_t num_terms,
+                                             double nuclear_repulsion,
+                                             int64_t hf_reference) {
+    (void)num_qubits; (void)num_terms; (void)nuclear_repulsion;
+    (void)hf_reference; return -1;
+}
+int32_t eshkol_vqe_pauli_hamiltonian_add_term(int64_t handle,
+                                               double coefficient,
+                                               const char* pauli_string,
+                                               int32_t term_index) {
+    (void)handle; (void)coefficient; (void)pauli_string; (void)term_index; return -1;
+}
 void eshkol_vqe_hamiltonian_destroy(int64_t handle) { (void)handle; }
 double eshkol_vqe_hamiltonian_exact_ground_energy(int64_t handle) {
     (void)handle;
@@ -1107,6 +1303,18 @@ int32_t eshkol_vqe_gradient_set_parameter(int64_t handle, int32_t index, double 
 int32_t eshkol_vqe_gradient_compute(int64_t handle) { (void)handle; return -1; }
 double eshkol_vqe_gradient_get(int64_t handle, int32_t index) {
     (void)handle; (void)index;
+    volatile double zero = 0.0;
+    return zero / zero;
+}
+int64_t eshkol_vqe_qgt_context_create(int64_t handle) { (void)handle; return -1; }
+void eshkol_vqe_qgt_context_destroy(int64_t handle) { (void)handle; }
+int64_t eshkol_vqe_qgt_parameter_count(int64_t handle) { (void)handle; return -1; }
+int32_t eshkol_vqe_qgt_set_parameter(int64_t handle, int32_t index, double value) {
+    (void)handle; (void)index; (void)value; return -1;
+}
+int32_t eshkol_vqe_qgt_compute(int64_t handle) { (void)handle; return -1; }
+double eshkol_vqe_qgt_get(int64_t handle, int32_t row, int32_t column) {
+    (void)handle; (void)row; (void)column;
     volatile double zero = 0.0;
     return zero / zero;
 }

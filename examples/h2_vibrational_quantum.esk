@@ -1,0 +1,27 @@
+;; H2 vibrational frequency from Moonlab's smooth potential-energy surface.
+;; Requires -DESHKOL_QUANTUM_ENABLED=ON and Moonlab v1.2.0.
+
+(require agent.quantum)
+
+(define angstrom-per-bohr 0.52917721067)
+
+(define (ground-energy r-angstrom)
+  (with-hamiltonian
+   (make-h2-hamiltonian r-angstrom)
+   (lambda (ham) (hamiltonian-exact-ground-energy ham))))
+
+(define R0 0.740)
+(define delta 0.02)
+(define Ep (ground-energy (+ R0 delta)))
+(define E0 (ground-energy R0))
+(define Em (ground-energy (- R0 delta)))
+(define k-angstrom (/ (+ Ep (* -2.0 E0) Em) (* delta delta)))
+(define k-bohr (* k-angstrom angstrom-per-bohr angstrom-per-bohr))
+(define mu (/ 1836.15267343 2.0))
+(define omega (* (sqrt (/ k-bohr mu)) 219474.6313702))
+
+(display "Moonlab H2 vibrational frequency (finite difference over geometry):") (newline)
+(display "  E(0.72, 0.74, 0.76 A) = ")
+(display Em) (display " ") (display E0) (display " ") (display Ep) (newline)
+(display "  force constant = ") (display k-bohr) (display " Ha/bohr^2") (newline)
+(display "  omega          = ") (display omega) (display " cm^-1") (newline)
