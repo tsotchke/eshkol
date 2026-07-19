@@ -1,0 +1,41 @@
+;; Differentiable H2 VQE: Eshkol reverse-mode AD through Moonlab.
+;; Requires a build configured with -DESHKOL_QUANTUM_ENABLED=ON.
+;; Run: ./build-quantum/eshkol-run -r examples/vqe_h2.esk
+
+(require agent.quantum)
+
+(define bond 0.7414)
+(define learning-rate 0.2)
+(define steps 200)
+
+(with-hamiltonian
+ (make-h2-hamiltonian bond)
+ (lambda (ham)
+   (define exact (hamiltonian-exact-ground-energy ham))
+   ;; #296 makes this nested helper safe: the custom VJP captures `ham` and
+   ;; propagates a non-zero gradient through the lexical scope.
+   (define (energy-at params) (vqe-energy ham params))
+
+   (display "=== Differentiable VQE: H2 ground state ===") (newline)
+   (display "Bond length:               ") (display bond) (display " Angstrom") (newline)
+   (display "Exact ground-state energy: ") (display exact) (display " Ha") (newline)
+
+   (let loop ((params (vector 0.1 0.2 0.3 0.4)) (step 0))
+     (if (> step steps)
+         (begin
+           (display "Final VQE energy:          ")
+           (display (energy-at params)) (display " Ha") (newline))
+         (begin
+           (if (= 0 (modulo step 20))
+               (begin
+                 (display "  step ") (display step)
+                 (display "   E = ") (display (energy-at params))
+                 (display " Ha") (newline))
+               #f)
+           (let ((g (gradient energy-at params)))
+             (loop
+              (vector (- (vector-ref params 0) (* learning-rate (vector-ref g 0)))
+                      (- (vector-ref params 1) (* learning-rate (vector-ref g 1)))
+                      (- (vector-ref params 2) (* learning-rate (vector-ref g 2)))
+                      (- (vector-ref params 3) (* learning-rate (vector-ref g 3))))
+              (+ step 1))))))))

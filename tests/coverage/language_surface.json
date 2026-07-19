@@ -14,19 +14,19 @@
     }
   },
   "counts": {
-    "builtins_total": 984,
+    "builtins_total": 986,
     "builtins_in_native_closure_table": 427,
     "builtins_in_vm_table": 639,
     "builtins_in_llvm_aot_dispatch": 736,
     "builtins_aot_only": 301,
-    "quantum_agent_ffi_builtins": 22,
+    "quantum_agent_ffi_builtins": 24,
     "special_forms": 116,
     "ast_ops": 112,
     "prelude": 16
   },
   "builtins_by_category": {
-    "ffi_system": 292,
-    "tensor_ad": 221,
+    "ffi_system": 293,
+    "tensor_ad": 222,
     "numeric": 86,
     "predicate": 70,
     "geometry": 61,
@@ -11219,6 +11219,16 @@
       "source": "lib/agent/quantum.esk"
     },
     {
+      "name": "make-pauli-hamiltonian",
+      "ids": [],
+      "arity": 4,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "ffi_system",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
       "name": "make-quantum-state",
       "ids": [],
       "arity": 1,
@@ -11290,6 +11300,16 @@
     },
     {
       "name": "vqe-optimize",
+      "ids": [],
+      "arity": 2,
+      "backends": [
+        "agent_ffi"
+      ],
+      "category": "tensor_ad",
+      "source": "lib/agent/quantum.esk"
+    },
+    {
+      "name": "vqe-qgt",
       "ids": [],
       "arity": 2,
       "backends": [

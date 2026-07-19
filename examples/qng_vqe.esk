@@ -1,0 +1,116 @@
+;; Quantum Natural Gradient VQE: Moonlab metric, Eshkol linear solve.
+;; Requires -DESHKOL_QUANTUM_ENABLED=ON and Moonlab v1.2.0.
+;; Moonlab owns the production QNG optimizer; this example deliberately uses
+;; the expert-level vqe-qgt accessor to show the geometry in Scheme.
+
+(require agent.quantum)
+
+(define learning-rate 0.3)
+(define regularization 0.001)
+(define steps 40)
+
+(define (vsub u v)
+  (vector (- (vector-ref u 0) (vector-ref v 0))
+          (- (vector-ref u 1) (vector-ref v 1))
+          (- (vector-ref u 2) (vector-ref v 2))
+          (- (vector-ref u 3) (vector-ref v 3))))
+(define (vscale scalar v)
+  (vector (* scalar (vector-ref v 0)) (* scalar (vector-ref v 1))
+          (* scalar (vector-ref v 2)) (* scalar (vector-ref v 3))))
+(define (copy4 v)
+  (vector (vector-ref v 0) (vector-ref v 1)
+          (vector-ref v 2) (vector-ref v 3)))
+
+(define (regularized-metric metric epsilon)
+  (let ((out (vector (make-vector 4 0.0) (make-vector 4 0.0)
+                     (make-vector 4 0.0) (make-vector 4 0.0))))
+    (let rows ((i 0))
+      (if (< i 4)
+          (begin
+            (let columns ((j 0))
+              (if (< j 4)
+                  (begin
+                    (vector-set! (vector-ref out i) j
+                                 (+ (vector-ref (vector-ref metric i) j)
+                                    (if (= i j) epsilon 0.0)))
+                    (columns (+ j 1)))
+                  #f))
+            (rows (+ i 1)))
+          #f))
+    out))
+
+(define (solve4 A b)
+  (let ((x (make-vector 4 0.0)))
+    (let columns ((column 0))
+      (if (< column 4)
+          (let ((diagonal (vector-ref (vector-ref A column) column)))
+            (let rows ((row (+ column 1)))
+              (if (< row 4)
+                  (let ((factor (/ (vector-ref (vector-ref A row) column)
+                                   diagonal)))
+                    (let entries ((entry column))
+                      (if (< entry 4)
+                          (begin
+                            (vector-set!
+                             (vector-ref A row) entry
+                             (- (vector-ref (vector-ref A row) entry)
+                                (* factor
+                                   (vector-ref (vector-ref A column) entry))))
+                            (entries (+ entry 1)))
+                          #f))
+                    (vector-set! b row
+                                 (- (vector-ref b row)
+                                    (* factor (vector-ref b column))))
+                    (rows (+ row 1)))
+                  #f))
+            (columns (+ column 1)))
+          #f))
+    (let back ((i 3))
+      (if (>= i 0)
+          (let ((sum (vector-ref b i)))
+            (let entries ((j (+ i 1)))
+              (if (< j 4)
+                  (begin
+                    (set! sum
+                          (- sum (* (vector-ref (vector-ref A i) j)
+                                    (vector-ref x j))))
+                    (entries (+ j 1)))
+                  #f))
+            (vector-set! x i (/ sum (vector-ref (vector-ref A i) i)))
+            (back (- i 1)))
+          #f))
+    x))
+
+(with-hamiltonian
+ (make-h2-hamiltonian 0.7414)
+ (lambda (ham)
+   (define exact (hamiltonian-exact-ground-energy ham))
+   (define initial (vector 0.1 0.2 0.3 0.4))
+   (display "=== Quantum Natural Gradient VQE (H2) ===") (newline)
+   (display "exact ground state: ") (display exact) (display " Ha") (newline)
+   (display "  step   E(QNG)        E(vanilla GD)") (newline)
+   (let loop ((qng-params initial) (gd-params initial) (step 0))
+     (if (> step steps)
+         (begin
+           (display "final QNG:     ") (display (vqe-energy ham qng-params))
+           (display " Ha") (newline)
+           (display "final vanilla: ") (display (vqe-energy ham gd-params))
+           (display " Ha") (newline))
+         (begin
+           (if (= 0 (modulo step 5))
+               (begin
+                 (display "   ") (display step) (display "    ")
+                 (display (vqe-energy ham qng-params)) (display "   ")
+                 (display (vqe-energy ham gd-params)) (newline))
+               #f)
+           (let ((qng-direction
+                  (solve4
+                   (regularized-metric
+                    (vqe-qgt ham qng-params) regularization)
+                   (copy4 (vqe-gradient ham qng-params))))
+                 (plain-gradient (vqe-gradient ham gd-params)))
+             (loop (vsub qng-params
+                         (vscale learning-rate qng-direction))
+                   (vsub gd-params
+                         (vscale learning-rate plain-gradient))
+                   (+ step 1))))))))

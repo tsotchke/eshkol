@@ -35,6 +35,8 @@
          make-h2-hamiltonian
          make-lih-hamiltonian
          make-h2o-hamiltonian
+         make-pauli-hamiltonian
+         vqe-qgt
          hamiltonian-destroy!
          hamiltonian-exact-ground-energy
          vqe-optimize
@@ -65,6 +67,8 @@
 (extern i64    vqe-make-h2-hamiltonian-raw  double        :real eshkol_vqe_make_h2_hamiltonian)
 (extern i64    vqe-make-lih-hamiltonian-raw double        :real eshkol_vqe_make_lih_hamiltonian)
 (extern i64    vqe-make-h2o-hamiltonian-raw              :real eshkol_vqe_make_h2o_hamiltonian)
+(extern i64    vqe-pauli-hamiltonian-create-raw i32 i32 double i64 :real eshkol_vqe_pauli_hamiltonian_create)
+(extern i32    vqe-pauli-hamiltonian-add-term-raw i64 double ptr i32 :real eshkol_vqe_pauli_hamiltonian_add_term)
 (extern void   hamiltonian-destroy-raw      i64           :real eshkol_vqe_hamiltonian_destroy)
 (extern double hamiltonian-exact-energy-raw i64           :real eshkol_vqe_hamiltonian_exact_ground_energy)
 (extern double vqe-optimize-raw             i64 i32       :real eshkol_vqe_optimize)
@@ -74,6 +78,12 @@
 (extern i32    vqe-gradient-set-parameter-raw i64 i32 double :real eshkol_vqe_gradient_set_parameter)
 (extern i32    vqe-gradient-compute-raw     i64           :real eshkol_vqe_gradient_compute)
 (extern double vqe-gradient-get-raw         i64 i32       :real eshkol_vqe_gradient_get)
+(extern i64    vqe-qgt-context-create-raw   i64           :real eshkol_vqe_qgt_context_create)
+(extern void   vqe-qgt-context-destroy-raw  i64           :real eshkol_vqe_qgt_context_destroy)
+(extern i64    vqe-qgt-parameter-count-raw  i64           :real eshkol_vqe_qgt_parameter_count)
+(extern i32    vqe-qgt-set-parameter-raw    i64 i32 double :real eshkol_vqe_qgt_set_parameter)
+(extern i32    vqe-qgt-compute-raw          i64           :real eshkol_vqe_qgt_compute)
+(extern double vqe-qgt-get-raw              i64 i32 i32   :real eshkol_vqe_qgt_get)
 
 ;; ---------------------------------------------------------------------------
 ;; Internal: honest error surface. Moonlab/the shim signal failure with a
@@ -232,7 +242,76 @@
   "Create Moonlab's fixed-geometry H2O/STO-3G Pauli Hamiltonian."
   (capability-require! 'ffi 'make-h2o-hamiltonian)
   (check-hamiltonian-handle! "make-h2o-hamiltonian"
-                            (vqe-make-h2o-hamiltonian-raw)))
+                             (vqe-make-h2o-hamiltonian-raw)))
+
+(define (make-pauli-hamiltonian coefficients pauli-strings . maybe-nuclear-repulsion)
+  "Create a Moonlab Pauli-sum Hamiltonian.
+
+   `coefficients` and `pauli-strings` are equal-length vectors. Every operator
+   string has the same non-zero length and contains Moonlab Pauli symbols
+   (I, X, Y, or Z). Optional nuclear-repulsion and Hartree-Fock-reference
+   metadata default to 0.0 and bitstring 0.
+   Returns an opaque Hamiltonian handle; release it with hamiltonian-destroy! or
+   use with-hamiltonian."
+  (capability-require! 'ffi 'make-pauli-hamiltonian)
+  (if (not (vector? coefficients))
+      (error "agent.quantum: make-pauli-hamiltonian coefficients must be a vector")
+      (if (not (vector? pauli-strings))
+          (error "agent.quantum: make-pauli-hamiltonian operators must be a vector")
+          (if (and (not (null? maybe-nuclear-repulsion))
+                   (not (null? (cdr maybe-nuclear-repulsion)))
+                   (not (null? (cddr maybe-nuclear-repulsion))))
+              (error "agent.quantum: make-pauli-hamiltonian accepts nuclear-repulsion and HF-reference metadata")
+              (let ((term-count (vector-length coefficients)))
+                (if (= term-count 0)
+                    (error "agent.quantum: make-pauli-hamiltonian requires at least one term")
+                    (if (not (= term-count (vector-length pauli-strings)))
+                        (error "agent.quantum: coefficient and operator vectors must have equal length")
+                        (let ((first-op (vector-ref pauli-strings 0)))
+                          (if (not (string? first-op))
+                              (error "agent.quantum: Pauli operators must be strings")
+                              (let ((num-qubits (string-length first-op)))
+                                (if (= num-qubits 0)
+                                    (error "agent.quantum: Pauli strings must be non-empty")
+                                    (begin
+                                      (let validate ((i 0))
+                                        (if (< i term-count)
+                                            (let ((op (vector-ref pauli-strings i)))
+                                              (if (not (string? op))
+                                                  (error "agent.quantum: Pauli operators must be strings")
+                                                  (if (not (= (string-length op) num-qubits))
+                                                      (error "agent.quantum: all Pauli strings must have the same length")
+                                                      (validate (+ i 1)))))
+                                            #t))
+                                      (let ((ham
+                                             (check-hamiltonian-handle!
+                                              "make-pauli-hamiltonian"
+                                              (vqe-pauli-hamiltonian-create-raw
+                                               num-qubits term-count
+                                               (if (null? maybe-nuclear-repulsion)
+                                                   0.0
+                                                   (car maybe-nuclear-repulsion))
+                                               (if (or (null? maybe-nuclear-repulsion)
+                                                       (null? (cdr maybe-nuclear-repulsion)))
+                                                   0
+                                                   (cadr maybe-nuclear-repulsion))))))
+                                        (let add ((i 0))
+                                          (if (< i term-count)
+                                              (let ((rc
+                                                     (vqe-pauli-hamiltonian-add-term-raw
+                                                      ham
+                                                      (vector-ref coefficients i)
+                                                      (vector-ref pauli-strings i)
+                                                      i)))
+                                                (if (< rc 0)
+                                                    (begin
+                                                      (hamiltonian-destroy-raw ham)
+                                                      (error
+                                                       (string-append
+                                                        "agent.quantum: make-pauli-hamiltonian failed: "
+                                                        (quantum-last-error))))
+                                                    (add (+ i 1))))
+                                              ham)))))))))))))))
 
 (define (hamiltonian-destroy! ham)
   "Free an opaque Hamiltonian handle. Safe to call once; an invalid or already
@@ -241,7 +320,7 @@
 
 (define (with-hamiltonian ham fn)
   "Call (fn ham) and release `ham` on every exit path.  Construct `ham` with
-   one of make-h2-hamiltonian, make-lih-hamiltonian, or make-h2o-hamiltonian."
+   a built-in molecular constructor or make-pauli-hamiltonian."
   (dynamic-wind (lambda () #f)
                 (lambda () (fn ham))
                 (lambda () (hamiltonian-destroy! ham))))
@@ -320,3 +399,52 @@
                                      (collect (+ i 1)))
                                    gradient))))))))
              (lambda () (vqe-gradient-context-destroy-raw context)))))))
+
+(define (vqe-qgt ham params)
+  "Return Moonlab's quantum geometric (Fubini-Study) tensor for the default
+   hardware-efficient ansatz at `params`. The result is a vector of row vectors.
+   Moonlab owns the metric implementation and QNG optimizer; this is the thin
+   expert-level matrix accessor used by Scheme-side geometry demonstrations."
+  (if (not (vector? params))
+      (error "agent.quantum: vqe-qgt params must be a vector")
+      (let ((context (vqe-qgt-context-create-raw ham)))
+        (if (< context 0)
+            (error (string-append "agent.quantum: vqe-qgt failed: " (quantum-last-error)))
+            (dynamic-wind
+             (lambda () #f)
+             (lambda ()
+               (let ((count (vqe-qgt-parameter-count-raw context)))
+                 (if (< count 0)
+                     (error (string-append "agent.quantum: vqe-qgt failed: " (quantum-last-error)))
+                     (if (not (= (vector-length params) count))
+                         (error "agent.quantum: vqe-qgt parameter vector has the wrong length")
+                         (begin
+                           (let set-params ((i 0))
+                             (if (< i count)
+                                 (begin
+                                   (check-gate-result!
+                                    "vqe-qgt"
+                                    (vqe-qgt-set-parameter-raw
+                                     context i (vector-ref params i)))
+                                   (set-params (+ i 1)))
+                                 #t))
+                           (check-gate-result! "vqe-qgt"
+                                               (vqe-qgt-compute-raw context))
+                           (let ((matrix (make-vector count #f)))
+                             (let rows ((i 0))
+                               (if (< i count)
+                                   (let ((row (make-vector count 0.0)))
+                                     (let columns ((j 0))
+                                       (if (< j count)
+                                           (begin
+                                             (vector-set!
+                                              row j
+                                              (check-quantum-real!
+                                               "vqe-qgt"
+                                               (vqe-qgt-get-raw context i j)))
+                                             (columns (+ j 1)))
+                                           #t))
+                                     (vector-set! matrix i row)
+                                     (rows (+ i 1)))
+                                   matrix))))))))
+             (lambda () (vqe-qgt-context-destroy-raw context)))))))

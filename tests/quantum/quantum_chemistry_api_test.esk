@@ -1,0 +1,46 @@
+;; Deterministic GH #297 gate for the generic Pauli constructor and QGT seam.
+;; Requires -DESHKOL_QUANTUM_ENABLED=ON.
+
+(require agent.quantum)
+
+(define passed 0)
+(define failed 0)
+
+(define (check name condition)
+  (display name)
+  (if condition
+      (begin (set! passed (+ passed 1)) (display ": PASS"))
+      (begin (set! failed (+ failed 1)) (display ": FAIL")))
+  (newline))
+
+(define (close? actual expected tolerance)
+  (< (abs (- actual expected)) tolerance))
+
+(with-hamiltonian
+ (make-pauli-hamiltonian
+  (vector 0.5 -1.25)
+  (vector "I" "Z")
+  0.1)
+ (lambda (ham)
+   (check "generic-pauli-ground-energy"
+          (close? (hamiltonian-exact-ground-energy ham) -0.65 1.0e-8))
+   (let* ((metric (vqe-qgt ham (vector 0.1 0.2)))
+          (row0 (vector-ref metric 0))
+          (row1 (vector-ref metric 1)))
+     (check "qgt-dimension"
+            (and (= (vector-length metric) 2)
+                 (= (vector-length row0) 2)
+                 (= (vector-length row1) 2)))
+     (check "qgt-symmetry"
+            (close? (vector-ref row0 1) (vector-ref row1 0) 1.0e-9))
+     (check "qgt-nonnegative-diagonal"
+            (and (>= (vector-ref row0 0) -1.0e-8)
+                 (>= (vector-ref row1 1) -1.0e-8))))))
+
+(display "quantum-chemistry-api: ")
+(display passed) (display " passed, ") (display failed) (display " failed") (newline)
+
+(if (= failed 0)
+    (display "QUANTUM_CHEMISTRY_API_PASS")
+    (error "quantum chemistry API regression"))
+(newline)
