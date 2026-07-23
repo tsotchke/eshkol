@@ -1,0 +1,12 @@
+;; Type System Test: a qubit threaded through gates (used once) type-checks clean
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+
+;; A single-qubit gate consumes a qubit and yields a fresh one. Threading each
+;; qubit through gates, using it exactly once, is linearly valid — no cloning,
+;; no dropping — so it type-checks with no linearity errors even in strict mode.
+(define (h (q : Qubit)) : Qubit q)
+
+(define (circuit (q : Qubit)) : Qubit
+  (h (h q)))

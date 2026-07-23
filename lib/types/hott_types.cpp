@@ -212,6 +212,11 @@ void TypeEnvironment::initializeBuiltinTypes() {
                        RuntimeRep::Pointer);
     types_[Stream.id].id.flags |= TYPE_FLAG_LINEAR;
 
+    // Qubit — a linear quantum resource (no-cloning). Runtime is an integer
+    // index into a Moonlab state; the type system forbids using it twice.
+    registerBuiltinType(Qubit.id, "Qubit", Universe::U0, TYPE_FLAG_LINEAR,
+                        RuntimeRep::Int64);
+
     // ===== Proposition types (U2, Proof - erased at runtime) =====
     registerBuiltinType(Eq.id, "Eq", Universe::U2, TYPE_FLAG_PROOF,
                         RuntimeRep::Erased);
