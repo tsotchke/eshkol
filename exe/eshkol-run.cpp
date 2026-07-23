@@ -832,14 +832,36 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     // idempotent cleanup after the child has exited on every outcome.
     remove_temp_object();
     if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
+        // A timed-out AOT compile+link leaves NO valid native build. Historically
+        // this fell back (return nullopt) to the in-process interpreter and exited
+        // 0 — the same trust violation as an outright link failure below: a run
+        // that never produced a linked binary was certified as success. Treat a
+        // link/compile timeout as fatal (see the compile-failed branch).
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-timeout", std::to_string(link_subprocess_timeout_seconds()));
-        return std::nullopt;
+        eshkol_error("-r: native build of '%s' timed out after %u seconds; "
+                     "refusing to fall back to a reduced in-process run "
+                     "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust).",
+                     filepath.c_str(), link_subprocess_timeout_seconds());
+        return eshkol::pkg::SUBPROCESS_TIMEOUT;
     }
     if (compile_status != 0) {
+        // Trust-critical (transitive-FFI-link audit): the child ran the full AOT
+        // compile + native link of the REAL program. If it failed, the program
+        // has no valid native build. Falling back to the in-process interpreter
+        // here — the historical `return std::nullopt` — would run a semantically
+        // reduced program (e.g. one whose omitted agent-FFI symbols happen to
+        // resolve inside eshkol-run itself) and exit 0, certifying a build that
+        // never linked. The child already streamed the compiler/linker
+        // diagnostic to this process's stderr; surface a terminal error and
+        // propagate its nonzero status. A link/compile failure under -r is FATAL.
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-failed", std::to_string(compile_status));
-        return std::nullopt;
+        eshkol_error("-r: native build of '%s' failed (exit %d); refusing to "
+                     "fall back to a reduced in-process run. See the "
+                     "compiler/linker diagnostics above.",
+                     filepath.c_str(), compile_status);
+        return compile_status != 0 ? compile_status : 1;
     }
 
     std::error_code temp_ec;
@@ -2434,15 +2456,22 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
     return false;
 }
 
-// Check if any AST requires an agent.* module (#248). When true the
-// AOT link step splices ESHKOL_HOST_AGENT_FFI_LINK_ARGS into the
-// link command so symbols like qllm_http_get / eshkol_sqlite_* /
-// qllm_process_* resolve in the produced binary. Programs that don't
-// touch agent.* don't pay the libcurl/sqlite/pcre2 link cost.
-// Defined after resolve_module_path / g_lib_dir (it now follows transitive
-// requires through resolved module files, so it needs both).
-static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
-                               const std::string& base_dir);
+// Agent-FFI native-link discovery (#248 / transitive-load fix).
+//
+// When a program (transitively) needs an agent.* module, the AOT link step
+// splices ESHKOL_HOST_AGENT_FFI_LINK_ARGS into the link command so symbols like
+// qllm_http_get / eshkol_sqlite_* / qllm_process_* resolve in the produced
+// binary; programs that don't touch agent.* don't pay the libcurl/sqlite/pcre2
+// link cost.
+//
+// The requirement is discovered by walking the SAME canonical transitive source
+// closure the compiler splices at build time — (load "path"), (import "path"),
+// and (require module), nested, at any depth — via collectTransitiveSources().
+// See transitiveClosureRequiresAgentFfi() (defined just below that walker).
+// The single-traversal design closes the class of bug where a helper reached
+// only through (load ...)/(import ...) — not a top-level (require agent.*) —
+// silently dropped its agent-FFI link requirement, producing an executable with
+// unresolved qllm_process_* / eshkol_sqlite_* symbols.
 
 // Find the library base directory (lib/)
 static std::string find_lib_dir()
@@ -2663,63 +2692,64 @@ static bool source_mentions_agent_runtime_builtin(const std::string& text)
     return false;
 }
 
-// Does a module source file (or anything it transitively `require`s) pull in an
-// agent.* module? Text-scans `(require …)` clauses and recurses into resolved
-// module files. This is how a faculty like core.memory — which uses sha256 via
-// (require agent.crypto) INTERNALLY — gets the agent-FFI link args spliced into
-// an AOT build of a program that only requires core.memory (not agent.* directly).
-// A false positive merely links a few extra libs; correctness is preserved.
-static bool file_requires_agent_ffi(const std::string& path,
-                                    std::set<std::string>& visited)
+// A path-style `(load "lib/agent/subprocess.esk")` / `(import "…")` does not
+// carry the dotted `agent.subprocess` name that agent_module_needs_ffi_archive()
+// matches. Recognise a resolved source PATH that lives in an `agent/` module
+// directory (the archive's module home), excluding `agent/crypto.esk` whose
+// native symbols now ship in the always-linked core runtime (see
+// agent_module_needs_ffi_archive()). A false positive merely links a few extra
+// libs; a false negative would leave qllm_process_* unresolved.
+static bool agent_module_path_needs_ffi_archive(const std::string& resolved_path)
 {
     std::error_code ec;
-    std::string canon = std::filesystem::weakly_canonical(path, ec).string();
-    if (canon.empty()) canon = path;
-    if (!visited.insert(canon).second) return false;
+    std::filesystem::path p = std::filesystem::weakly_canonical(resolved_path, ec);
+    if (p.empty()) p = std::filesystem::path(resolved_path);
+    if (p.parent_path().filename() != "agent") return false;
+    return p.stem() != "crypto";
+}
 
-    std::string text = readFileBytes(std::filesystem::path(path));
+// Per-file agent-FFI predicate (NON-recursive). The transitive recursion is
+// owned by collectTransitiveSources(), which already walks the full
+// load/import/require closure; this only answers "does THIS one file, on its
+// own, pull the agent-FFI archive in?" — via a bare agent-runtime builtin, a
+// `(require agent.*)` clause, or a path-style `(load "…/agent/…")`. It is
+// invoked once per file in the collected closure by
+// transitiveClosureRequiresAgentFfi(), so no per-file recursion (the old
+// "third scanner") is needed. A false positive merely links a few extra libs;
+// correctness is preserved.
+static bool fileTextRequiresAgentFfi(const std::string& text,
+                                     const std::string& path)
+{
     if (text.empty()) return false;
     if (source_mentions_agent_runtime_builtin(text)) return true;
     std::string base_dir = std::filesystem::path(path).parent_path().string();
     if (base_dir.empty()) base_dir = ".";
 
-    size_t pos = 0;
-    while ((pos = text.find("(require", pos)) != std::string::npos) {
-        pos += 8;  // past "(require"
-        size_t close = text.find(')', pos);
-        if (close == std::string::npos) break;
-        std::string clause = text.substr(pos, close - pos);
-        pos = close;
-        // Tokenise the require clause on whitespace; strip stray quote/paren chars.
-        std::stringstream ts(clause);
-        std::string tok;
-        while (ts >> tok) {
-            while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
-                                    tok.front() == '"'))
-                tok.erase(tok.begin());
-            while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
-                tok.pop_back();
-            if (tok.empty()) continue;
-            if (agent_module_needs_ffi_archive(tok)) return true;
-            std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
-            if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
-        }
-    }
-    return false;
-}
-
-static bool requires_agent_ffi(const std::vector<eshkol_ast_t>& asts,
-                               const std::string& base_dir)
-{
-    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
-    std::set<std::string> visited;
-    for (const auto& ast : asts) {
-        if (ast.type == ESHKOL_OP && ast.operation.op == ESHKOL_REQUIRE_OP) {
-            for (uint64_t i = 0; i < ast.operation.require_op.num_modules; i++) {
-                std::string module_name = ast.operation.require_op.module_names[i];
-                if (agent_module_needs_ffi_archive(module_name)) return true;
-                std::string mp = resolve_module_path(module_name, base_dir, g_lib_dir);
-                if (!mp.empty() && file_requires_agent_ffi(mp, visited)) return true;
+    // Same source-pulling forms collectTransitiveSources() follows.
+    static const char* kForms[] = {"(load", "(import", "(require"};
+    for (const char* form : kForms) {
+        const size_t form_len = std::strlen(form);
+        size_t pos = 0;
+        while ((pos = text.find(form, pos)) != std::string::npos) {
+            pos += form_len;
+            size_t close = text.find(')', pos);
+            if (close == std::string::npos) break;
+            std::string clause = text.substr(pos, close - pos);
+            pos = close;
+            // Tokenise the clause on whitespace; strip stray quote/paren chars.
+            std::stringstream ts(clause);
+            std::string tok;
+            while (ts >> tok) {
+                while (!tok.empty() && (tok.front() == '(' || tok.front() == '\'' ||
+                                        tok.front() == '"'))
+                    tok.erase(tok.begin());
+                while (!tok.empty() && (tok.back() == ')' || tok.back() == '"'))
+                    tok.pop_back();
+                if (tok.empty()) continue;
+                if (agent_module_needs_ffi_archive(tok)) return true;
+                std::string mp = resolve_module_path(tok, base_dir, g_lib_dir);
+                if (!mp.empty() && agent_module_path_needs_ffi_archive(mp))
+                    return true;
             }
         }
     }
@@ -2809,6 +2839,30 @@ static std::string transitiveSourceDigest(
         hashUpdate(hash, "dep-bytes", entry.second);
     }
     return sha256Hex(hash);
+}
+
+// Native-link requirement discovery, unified with source collection (#248 /
+// transitive-load FFI fix). Walk the SAME canonical transitive source closure
+// as compilation — collectTransitiveSources() already follows (load "path"),
+// (import "path"), and (require module) at every depth — and report whether ANY
+// file in that closure pulls in the agent-FFI archive. Because the one
+// traversal produces both the source list (the map it fills) and the
+// requirement (derived here from that same closure), a dependency reachable
+// only through (load ...)/(import ...) can no longer be seen by the compiler
+// yet missed by the linker-flag discovery. Over-collection only forfeits a few
+// harmless link libraries; under-collection would leave qllm_process_* /
+// eshkol_sqlite_* unresolved in the produced binary.
+static bool transitiveClosureRequiresAgentFfi(
+    const std::filesystem::path& entry_source,
+    const std::vector<char*>& include_paths)
+{
+    if (g_lib_dir.empty()) g_lib_dir = find_lib_dir();
+    std::map<std::string, std::string> sources;  // canonical path -> bytes
+    collectTransitiveSources(entry_source, include_paths, sources);
+    for (const auto& entry : sources) {
+        if (fileTextRequiresAgentFfi(entry.second, entry.first)) return true;
+    }
+    return false;
 }
 
 // ESH-0215: collect the canonical path of the entry file plus every source
@@ -4215,14 +4269,19 @@ int main(int argc, char **argv)
             std::string filepath = argv[i];
 
             if (!std::filesystem::exists(filepath)) {
+                // A missing input under -r must be fatal: `continue`-ing past it
+                // and returning 0 at the end of the loop reported a failed run
+                // as success (same masked-failure class as the link fallback).
                 eshkol_error("File not found: %s", filepath.c_str());
-                continue;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
 
             std::ifstream file(filepath);
             if (!file.is_open()) {
                 eshkol_error("Failed to open file: %s", filepath.c_str());
-                continue;
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
 
             if (debug_mode) {
@@ -4590,19 +4649,18 @@ int main(int argc, char **argv)
     }
 
     // Second pass: Process require statements now that we know about precompiled modules
-    // #248: capture agent-FFI usage BEFORE process_requires expands
-    // (require agent.…) into the inlined module ASTs, after which the
-    // top-level require op is gone and the AST scanner can no longer
-    // tell agent-using programs from plain ones.
-    std::string agent_scan_base_dir = ".";
-    if (!source_files.empty()) {
-        std::string p = std::filesystem::path(source_files[0]).parent_path().string();
-        if (!p.empty()) agent_scan_base_dir = p;
-    }
-    bool needs_agent_ffi = requires_agent_ffi(asts, agent_scan_base_dir);
+    // #248 / transitive-load FFI fix: decide whether the produced binary needs
+    // the agent-FFI archive by walking the SAME transitive source closure the
+    // compiler splices — (load "path"), (import "path"), (require module),
+    // nested at any depth — rather than inspecting only the post-parse top-level
+    // ASTs. Driving detection from the source files (not `asts`) is what lets a
+    // helper reached solely through (load ...)/(import ...) still propagate its
+    // qllm_process_* / eshkol_sqlite_* link requirement. This runs BEFORE
+    // process_requires() inlines the module ASTs, but the walk reads the source
+    // files directly so it is independent of that expansion state.
+    bool needs_agent_ffi = false;
     for (const auto& source_file : source_files) {
-        std::set<std::string> agent_scan_visited;
-        if (file_requires_agent_ffi(source_file, agent_scan_visited)) {
+        if (transitiveClosureRequiresAgentFfi(source_file, include_paths)) {
             needs_agent_ffi = true;
             break;
         }

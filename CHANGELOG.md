@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Driver: agent-FFI link requirements now propagate through the full
+  transitive source closure, and a generated-program link failure under `-r`
+  is fatal instead of silently masked.** Two coupled defects in the
+  compile/link driver:
+  - *(A) Dropped transitive dependency.* Native-link discovery walked a
+    narrower graph than compilation. The compiler splices `(load "…")`,
+    `(import "…")`, and `(require module)` transitively, but the agent-FFI
+    requirement scan only followed top-level `(require …)` — so a helper reached
+    only through `(load …)`/`(import …)` (root loads A, A loads B, B requires
+    `agent.subprocess`) had its requirement lost. The produced binary emitted
+    `qllm_process_*` / `eshkol_sqlite_*` references while the linker omitted
+    `libeshkol-agent-ffi.a`, failing the native link with unresolved symbols.
+    Requirement discovery now walks the **same** canonical transitive source
+    closure as compilation (one traversal via `collectTransitiveSources`
+    produces both the source list and the requirements set), under `-r` and
+    ordinary AOT alike. Programs with no agent-FFI usage still do not link the
+    archive (no over-linking).
+  - *(B) Masked link failure under `-r`.* When the persistent-cache child's AOT
+    compile/link failed, `eshkol-run -r` fell back to a reduced in-process run
+    and exited **0**, certifying a build that never linked — a trust hazard for
+    CI/benchmark harnesses. A generated-program compile/link failure (or link
+    timeout) under `-r` is now **fatal**: the linker diagnostic is surfaced and
+    the process exits nonzero, never running a semantically reduced program.
+    A missing/unopenable input file under `-r` is likewise no longer swallowed
+    with a zero exit. Regression: `tests/toolchain/transitive_ffi_link_test.sh`
+    (multi-level load graph, JIT + AOT, over-linking guard, fatal-link exit
+    status).
+
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
   ESH-0214 memory-management series. ESH-0214b's automatic per-iteration

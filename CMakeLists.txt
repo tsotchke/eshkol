@@ -3018,6 +3018,24 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh")
+        # Generated-program native-dependency discovery must walk the SAME
+        # transitive source closure as compilation (load/import/require, at any
+        # depth), and a link failure under -r must be fatal (never a fallback
+        # that exits zero). See exe/eshkol-run.cpp transitiveClosureRequiresAgentFfi
+        # and tryRunFromPersistentJitCache.
+        add_test(
+            NAME transitive_ffi_link_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(transitive_ffi_link_test
+            PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: transitive_ffi_link_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh")
         add_test(
             NAME static_link_getenv_capability_test
