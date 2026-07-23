@@ -1,0 +1,187 @@
+;; ==================================================================
+;; H2 vibrational frequency: Eshkol geometry-AD + Moonlab quantum response
+;; ==================================================================
+;;
+;; The Born-Oppenheimer force constant is
+;;   k = d2E/dR2 = sum_i g_i''(R) <P_i>  -  E_thetaR^T (E_thetatheta)^-1 E_thetaR  +  1/R''
+;; where the geometry derivatives of the Pauli coefficients g_i(R) come from
+;; Eshkol's Taylor tower (exact AD), and every quantum quantity -- the ground
+;; state |psi(theta*)>, the per-configuration response, and the theta-Hessian --
+;; comes from Moonlab, assembled from vqe-energy / vqe-gradient over AUXILIARY
+;; Hamiltonians H = sum g_i P_i, H' = sum g_i' P_i, H'' = sum g_i'' P_i.
+;;
+;; The second (response) term is NOT a small correction: for H2 it is ~150% of
+;; the frozen term, so leaving it out gives a qualitatively wrong frequency.
+;;
+;; Run:  ./build/eshkol-run -r examples/h2_vibrational_full.esk
+
+(require agent.quantum)
+
+(define pi 3.141592653589793)
+(define exps  (list 3.42525091 0.62391373 0.16885540))
+(define coefs (list 0.15432897 0.53532814 0.44463454))
+(define (nprim a) (expt (/ (* 2.0 a) pi) 0.75))
+(define dn (map (lambda (a d) (* d (nprim a))) exps coefs))
+
+(define (my-erf x)   ;; Abramowitz-Stegun 7.1.26 (smooth, x>=0)
+  (let* ((t (/ 1.0 (+ 1.0 (* 0.3275911 x))))
+         (p (* t (+ 0.254829592 (* t (+ -0.284496736 (* t (+ 1.421413741
+              (* t (+ -1.453152027 (* t 1.061405429)))))))))))
+    (- 1.0 (* p (exp (- (* x x)))))))
+(define (boys0 u) (if (< u 1.0e-12) 1.0 (let ((su (sqrt u))) (* (/ (sqrt pi) 2.0) (/ (my-erf su) su)))))
+(define (zc c R) (if (= c 0) 0.0 R))
+(define (d2c ci cj R) (if (= ci cj) 0.0 (* R R)))
+(define (p-overlap a b ci cj R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p))) (* (expt (/ pi p) 1.5) (exp (* (- mu) (d2c ci cj R))))))
+(define (p-kinetic a b ci cj R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p)) (d2 (d2c ci cj R)))
+    (* (expt (/ pi p) 1.5) (exp (* (- mu) d2)) mu (- 3.0 (* 2.0 mu d2)))))
+(define (p-nuclear a b ci cj cc R)
+  (let* ((p (+ a b)) (mu (/ (* a b) p)) (pz (/ (+ (* a (zc ci R)) (* b (zc cj R))) p))
+         (dd (- pz (zc cc R))) (pc2 (* dd dd)))
+    (* (- (/ (* 2.0 pi) p)) (exp (* (- mu) (d2c ci cj R))) (boys0 (* p pc2)))))
+(define (p-eri a b c d ca cb cc cd R)
+  (let* ((p (+ a b)) (q (+ c d)) (muab (/ (* a b) p)) (mucd (/ (* c d) q))
+         (pz (/ (+ (* a (zc ca R)) (* b (zc cb R))) p)) (qz (/ (+ (* c (zc cc R)) (* d (zc cd R))) q))
+         (e (- pz qz)) (pq2 (* e e)))
+    (* (/ (* 2.0 (expt pi 2.5)) (* p q (sqrt (+ p q))))
+       (exp (* (- muab) (d2c ca cb R))) (exp (* (- mucd) (d2c cc cd R)))
+       (boys0 (* (/ (* p q) (+ p q)) pq2)))))
+(define (sum-range n f) (let loop ((i 0) (acc 0.0)) (if (>= i n) acc (loop (+ i 1) (+ acc (f i))))))
+(define (ao-1e fn ci cj R)
+  (sum-range 9 (lambda (idx)
+    (let ((i (modulo idx 3)) (j (quotient idx 3)))
+      (* (list-ref dn i) (list-ref dn j) (fn (list-ref exps i) (list-ref exps j) ci cj R))))))
+(define (ao-nuclear ci cj R)
+  (+ (ao-1e (lambda (a b ci cj R) (p-nuclear a b ci cj 0 R)) ci cj R)
+     (ao-1e (lambda (a b ci cj R) (p-nuclear a b ci cj 1 R)) ci cj R)))
+(define (ao-eri ca cb cc cd R)
+  (sum-range 81 (lambda (idx)
+    (let ((i (modulo idx 3)) (j (modulo (quotient idx 3) 3))
+          (k (modulo (quotient idx 9) 3)) (l (quotient idx 27)))
+      (* (list-ref dn i) (list-ref dn j) (list-ref dn k) (list-ref dn l)
+         (p-eri (list-ref exps i) (list-ref exps j) (list-ref exps k) (list-ref exps l) ca cb cc cd R))))))
+(define (mo-eri v1 v2 v3 v4 R)
+  (sum-range 16 (lambda (idx)
+    (let ((a (modulo idx 2)) (b (modulo (quotient idx 2) 2))
+          (c (modulo (quotient idx 4) 2)) (d (quotient idx 8)))
+      (* (list-ref v1 a) (list-ref v2 b) (list-ref v3 c) (list-ref v4 d) (ao-eri a b c d R))))))
+
+;; H11,H22,H12,eopen(R) -> the five Pauli coefficients g_i(R)
+(define (Hterms R)
+  (let* ((s (ao-1e p-overlap 0 1 R))
+         (hAA (+ (ao-1e p-kinetic 0 0 R) (ao-nuclear 0 0 R)))
+         (hAB (+ (ao-1e p-kinetic 0 1 R) (ao-nuclear 0 1 R)))
+         (hgg (/ (+ hAA hAB) (+ 1.0 s))) (huu (/ (- hAA hAB) (- 1.0 s)))
+         (cg (/ 1.0 (sqrt (* 2.0 (+ 1.0 s))))) (cu (/ 1.0 (sqrt (* 2.0 (- 1.0 s)))))
+         (gv (list cg cg)) (uv (list cu (- cu))))
+    (list (+ (* 2.0 hgg) (mo-eri gv gv gv gv R))     ; H11
+          (+ (* 2.0 huu) (mo-eri uv uv uv uv R))     ; H22
+          (mo-eri gv uv gv uv R)                     ; H12
+          (+ hgg huu (mo-eri gv gv uv uv R)))))      ; eopen
+(define (g0f R) (let ((h (Hterms R))) (* 0.5 (+ (list-ref h 3) (* 0.5 (+ (list-ref h 0) (list-ref h 1)))))))
+(define (g1f R) (let ((h (Hterms R))) (* 0.25 (- (list-ref h 1) (list-ref h 0)))))
+(define (g2f R) (let ((h (Hterms R))) (* 0.25 (- (list-ref h 0) (list-ref h 1)))))
+(define (g3f R) (let ((h (Hterms R))) (* 0.5 (- (list-ref h 3) (* 0.5 (+ (list-ref h 0) (list-ref h 1)))))))
+(define (g4f R) (list-ref (Hterms R) 2))
+
+;; full-CI energy (for locating the equilibrium)
+(define (energy R)
+  (let ((h (Hterms R)))
+    (let ((m (/ (+ (list-ref h 0) (list-ref h 1)) 2.0)) (dd (/ (- (list-ref h 0) (list-ref h 1)) 2.0)))
+      (+ (- m (sqrt (+ (* dd dd) (* (list-ref h 2) (list-ref h 2))))) (/ 1.0 R)))))
+
+;; ---- vector / linear-solve helpers (4-dim) ----
+(define (vsub u v) (vector (- (vector-ref u 0)(vector-ref v 0)) (- (vector-ref u 1)(vector-ref v 1))
+                           (- (vector-ref u 2)(vector-ref v 2)) (- (vector-ref u 3)(vector-ref v 3))))
+(define (vscale s v) (vector (* s (vector-ref v 0))(* s (vector-ref v 1))(* s (vector-ref v 2))(* s (vector-ref v 3))))
+(define (vdot u v) (+ (* (vector-ref u 0)(vector-ref v 0))(* (vector-ref u 1)(vector-ref v 1))
+                      (* (vector-ref u 2)(vector-ref v 2))(* (vector-ref u 3)(vector-ref v 3))))
+(define (perturb th b e) (let ((o (vector (vector-ref th 0)(vector-ref th 1)(vector-ref th 2)(vector-ref th 3))))
+                           (vector-set! o b (+ (vector-ref th b) e)) o))
+;; solve 4x4 A x = b ; A = vector of 4 row-vectors (mutated), b a 4-vector
+(define (solve4 A b)
+  (let ((x (make-vector 4 0.0)))
+    ;; forward elimination
+    (let cols ((c 0))
+      (if (< c 4)
+          (let ((diag (vector-ref (vector-ref A c) c)))
+            (let rows ((r (+ c 1)))
+              (if (< r 4)
+                  (let ((f (/ (vector-ref (vector-ref A r) c) diag)))
+                    (let cc ((k c))
+                      (if (< k 4)
+                          (begin
+                            (vector-set! (vector-ref A r) k
+                              (- (vector-ref (vector-ref A r) k) (* f (vector-ref (vector-ref A c) k))))
+                            (cc (+ k 1)))
+                          #f))
+                    (vector-set! b r (- (vector-ref b r) (* f (vector-ref b c))))
+                    (rows (+ r 1)))
+                  #f))
+            (cols (+ c 1)))
+          #f))
+    ;; back substitution
+    (let back ((i 3))
+      (if (>= i 0)
+          (let ((s (vector-ref b i)))
+            (let jj ((j (+ i 1)))
+              (if (< j 4)
+                  (begin
+                    (set! s (- s (* (vector-ref (vector-ref A i) j) (vector-ref x j))))
+                    (jj (+ j 1)))
+                  #f))
+            (vector-set! x i (/ s (vector-ref (vector-ref A i) i)))
+            (back (- i 1)))
+          #f))
+    x))
+
+;; ---- assemble the vibrational frequency ----
+(define R*
+  (let loop ((R 1.40) (i 0))
+    (if (>= i 8) R (loop (- R (/ (derivative-n energy R 1) (derivative-n energy R 2))) (+ i 1)))))
+
+(define g0 (g0f R*)) (define g1 (g1f R*)) (define g2 (g2f R*)) (define g3 (g3f R*)) (define g4 (g4f R*))
+(define g0p (derivative-n g0f R* 1)) (define g1p (derivative-n g1f R* 1)) (define g2p (derivative-n g2f R* 1))
+(define g3p (derivative-n g3f R* 1)) (define g4p (derivative-n g4f R* 1))
+(define g0pp (derivative-n g0f R* 2)) (define g1pp (derivative-n g1f R* 2)) (define g2pp (derivative-n g2f R* 2))
+(define g3pp (derivative-n g3f R* 2)) (define g4pp (derivative-n g4f R* 2))
+
+;; the 2-qubit H2 Pauli basis; make-pauli-hamiltonian generalises past this fixed
+;; 5-term form (any qubit count / any Pauli strings), 2 = the |01> HF reference.
+(define pauli-basis (vector "II" "IZ" "ZI" "ZZ" "XX"))
+(define H   (make-pauli-hamiltonian 2 pauli-basis (vector g0   g1   g2   g3   g4)   (/ 1.0 R*) 2))
+(define Hp  (make-pauli-hamiltonian 2 pauli-basis (vector g0p  g1p  g2p  g3p  g4p)  0.0        2))
+(define Hpp (make-pauli-hamiltonian 2 pauli-basis (vector g0pp g1pp g2pp g3pp g4pp) 0.0        2))
+
+;; optimize theta* on H via Moonlab's exact adjoint gradient (FFI call -> works in a loop)
+(define theta*
+  (let loop ((th (vector 0.1 0.2 0.3 0.4)) (i 0))
+    (if (>= i 400) th (loop (vsub th (vscale 0.2 (vqe-gradient H th))) (+ i 1)))))
+
+(define term1 (vqe-energy Hpp theta*))            ;; sum_i g_i'' <P_i>
+(define EtR   (vqe-gradient Hp theta*))           ;; E_thetaR (4-vector)
+(define eps 1.0e-4)
+(define Ett (vector (make-vector 4 0.0) (make-vector 4 0.0) (make-vector 4 0.0) (make-vector 4 0.0)))
+(let cols ((b 0))
+  (if (< b 4)
+      (let ((gp (vqe-gradient H (perturb theta* b eps))) (gm (vqe-gradient H (perturb theta* b (- eps)))))
+        (let rows ((a 0)) (if (< a 4)
+          (begin (vector-set! (vector-ref Ett a) b (/ (- (vector-ref gp a) (vector-ref gm a)) (* 2.0 eps)))
+                 (rows (+ a 1)))))
+        (cols (+ b 1)))))
+
+;; solve4 mutates its b argument, so pass a copy and dot with the original EtR
+(define EtRc (vector (vector-ref EtR 0)(vector-ref EtR 1)(vector-ref EtR 2)(vector-ref EtR 3)))
+(define response (- (vdot EtR (solve4 Ett EtRc))))  ;; - E_tR^T (E_tt)^-1 E_tR
+(define k (+ term1 (/ 2.0 (* R* R* R*)) response))
+(define mu (/ 1836.15267343 2.0))
+(define omega (* (sqrt (/ k mu)) 219474.6313702))
+
+(display "=== H2 vibrational frequency: Eshkol AD + Moonlab quantum response ===") (newline)
+(display "equilibrium R*        = ") (display R*) (display " bohr") (newline)
+(display "frozen term  sum g'' <P>  = ") (display (+ term1 (/ 2.0 (* R* R* R*)))) (display " Ha/bohr^2") (newline)
+(display "quantum response          = ") (display response) (display " Ha/bohr^2") (newline)
+(display "force constant k          = ") (display k) (display " Ha/bohr^2") (newline)
+(display "vibrational frequency     = ") (display omega) (display " cm^-1") (newline)
+(display "  (geometry derivs: Eshkol Taylor tower; <P>, response, Hessian: Moonlab)") (newline)

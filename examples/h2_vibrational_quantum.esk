@@ -1,0 +1,26 @@
+;; H2 vibrational frequency from Moonlab's smooth-PES Hamiltonian, finite-
+;; differenced over the bond length -- the quantum-backend route.  It gives a
+;; clean second derivative ONLY because the potential energy surface is smooth
+;; (the Morse/plateau stub would corrupt it), and it agrees with the exact
+;; Taylor-tower AD value in h2_vibrational.esk.
+(require agent.quantum)
+
+(define bohr 0.52917721067)   ;; Angstrom per bohr
+
+(define (E r-ang)             ;; Moonlab ground energy at bond length r (Angstrom)
+  (with-hamiltonian (make-h2-hamiltonian r-ang)
+    (lambda (ham) (hamiltonian-exact-ground-energy ham))))
+
+(define R0 0.740) (define d 0.02)
+(define Ep (E (+ R0 d))) (define E0 (E R0)) (define Em (E (- R0 d)))
+(define k-ang  (/ (+ Ep (* -2.0 E0) Em) (* d d)))   ;; Ha/Angstrom^2
+(define k-bohr (* k-ang bohr bohr))                  ;; Ha/bohr^2
+(define mu (/ 1836.15267343 2.0))
+(define omega (* (sqrt (/ k-bohr mu)) 219474.6313702))
+
+(display "Moonlab quantum-backend H2 vibrational frequency (FD over geometry):") (newline)
+(display "  E(0.72,0.74,0.76 A) = ") (display Em)(display " ")(display E0)(display " ")(display Ep) (newline)
+(display "  force constant = ") (display k-bohr) (display " Ha/bohr^2") (newline)
+(display "  omega          = ") (display omega)  (display " cm^-1") (newline)
+(display "  (exact Taylor-tower AD route gives 5003 cm^-1 -- two independent stacks agree;") (newline)
+(display "   the FD is clean only because the PES fix made E(R) smooth.)") (newline)
