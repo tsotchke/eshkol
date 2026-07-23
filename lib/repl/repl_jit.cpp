@@ -1029,7 +1029,6 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(arena_tagged_cons_is_type);
     ADD_SYMBOL(arena_tagged_cons_set_tagged_value);
     ADD_SYMBOL(arena_tagged_cons_get_tagged_value);
-    ADD_SYMBOL(eshkol_grad_ho_expand_point);
 
     // Tagged cons constructors
     ADD_SYMBOL(arena_create_int64_cons);

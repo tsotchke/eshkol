@@ -261,16 +261,6 @@ eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons
 // Takes pointers to avoid struct-by-value ABI issues
 bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_value_t* val2);
 
-// ===== HIGHER-ORDER GRADIENT ARGUMENT NORMALIZATION =====
-// Expands a single collection argument to a higher-order gradient closure
-// (grad_f point) into spread scalar coordinates (grad_f x0 x1 ...), so the
-// curried form ((gradient f) point) matches the two-argument (gradient f point)
-// form. Spread scalars and single-scalar calls pass through unchanged. Values
-// are marshalled by pointer to avoid struct-by-value ABI issues on ARM64.
-void eshkol_grad_ho_expand_point(arena_t* arena,
-                                 const eshkol_tagged_value_t* in_args,
-                                 eshkol_tagged_value_t* out_args);
-
 // ===== AD MEMORY MANAGEMENT =====
 // Allocation functions for automatic differentiation structures
 

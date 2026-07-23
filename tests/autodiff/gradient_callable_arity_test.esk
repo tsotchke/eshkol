@@ -27,6 +27,22 @@
         (display " (expected ") (display expected)
         (display ", got ") (display actual) (display ")") (newline))))
 
+;; Strict equality: the two gradient values must match to the last bit (used to
+;; assert an indirect/curried form is byte-identical to the direct exact-AD call,
+;; not merely close — the higher-order path must be exact AD, never a
+;; finite-difference approximation).
+(define (check-exact name direct-val other-val)
+  (if (= direct-val other-val)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (direct ") (display direct-val)
+        (display " != ") (display other-val)
+        (display ", diff ") (display (- other-val direct-val)) (display ")") (newline))))
+
 ;; ---------------------------------------------------------------------------
 ;; Test 1: two-scalar named loss reached through a callable parameter.
 ;; loss(x,y) = (x-3)^2 + (y-5)^2, so grad = (2(x-3), 2(y-5)); at (0,0) => (-6,-10).
@@ -102,6 +118,28 @@
 (define w5b ((gradient loss) 0.0 0.0))
 (check "t5 curried-spread d/dx"  -6.0 (vref w5b 0))
 (check "t5 curried-spread d/dy" -10.0 (vref w5b 1))
+
+;; ---------------------------------------------------------------------------
+;; Test 6: the curried and wrapped forms are EXACT (byte-identical to the direct
+;; call), not finite-difference approximations. A NON-polynomial function is the
+;; discriminating case: central differencing would leave a ~1e-8 residual, so
+;; every diff below must be exactly 0.0. f(x,y) = sin(x)cos(y) + x^3.
+;; ---------------------------------------------------------------------------
+(define (nonpoly x y) (+ (* (sin x) (cos y)) (* x x x)))
+(define (npwrap f p) (gradient f p))
+(define dnp  (gradient nonpoly (vector 0.7 1.3)))
+(define wnp  (npwrap nonpoly (vector 0.7 1.3)))
+(define cnp  ((gradient nonpoly) (vector 0.7 1.3)))
+;; correctness (approximate): df/dx = cos(x)cos(y)+3x^2, df/dy = -sin(x)sin(y)
+(check "t6 nonpoly direct d/dx"
+       (+ (* (cos 0.7) (cos 1.3)) (* 3.0 (* 0.7 0.7))) (vref dnp 0))
+(check "t6 nonpoly direct d/dy"
+       (- (* (sin 0.7) (sin 1.3))) (vref dnp 1))
+;; byte-identical: wrapped == direct, curried == direct (exact AD, diff == 0)
+(check-exact "t6 wrapped==direct d/dx" (vref dnp 0) (vref wnp 0))
+(check-exact "t6 wrapped==direct d/dy" (vref dnp 1) (vref wnp 1))
+(check-exact "t6 curried==direct d/dx" (vref dnp 0) (vref cnp 0))
+(check-exact "t6 curried==direct d/dy" (vref dnp 1) (vref cnp 1))
 
 ;; ---------------------------------------------------------------------------
 (newline)
