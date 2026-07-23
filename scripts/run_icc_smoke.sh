@@ -417,6 +417,12 @@ probe region_evac_subtype_coverage \
      out=$(ESHKOL_ARENA_POISON=1 BUILD_DIR="$BUILD_DIR_PATH" bash tests/memory/region_evac_subtype_coverage_test.sh 2>&1) || exit 1;
      printf "%s" "$out" | grep -q "region_evac_subtype_coverage_test.sh: PASS"'
 
+probe parallel_map_scope_reclaim_race \
+    'parallel-map over a closure using scope-based reclamation (internal named-let loops + memv) is race-free: workers no longer push/pop/rewind the shared arena scope stack concurrently. AOT, repeated under ESHKOL_ARENA_POISON=1' \
+    'cd "$REPO_ROOT";
+     out=$(BUILD_DIR="$BUILD_DIR_PATH" bash tests/parallel/parallel_map_scope_reclaim_test.sh 2>&1) || exit 1;
+     printf "%s" "$out" | grep -q "parallel_map_scope_reclaim_test.sh: PASS"'
+
 probe jit_cache_hit_invalidates 'eshkol-run -r persistent cache hits and source edits invalidate' \
     'bash "$REPO_ROOT/tests/v1_3_edge_cases/jit_cache_test.sh" "$ESHKOL_RUN"'
 
