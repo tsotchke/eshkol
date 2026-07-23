@@ -42,8 +42,11 @@
 (define Ai (make-vector SIZE (i128 0)))
 (define Bi (make-vector SIZE (i128 0)))
 
-;; Populate top-level vectors first (#309 posture): matrix assembly + tensor-data are
-;; deterministic and live at top level.
+;; Populate top-level vectors first: matrix assembly + tensor-data are
+;; deterministic and live at top level. (Historically framed as a "#309 posture"
+;; work-around; #309 — matmul tensor read inside a define reading zeros — was a
+;; mis-attribution of the #307 CRT defect and does not reproduce. In-function
+;; reads are guarded directly by tests/tensor/matmul_read_in_define_test.esk.)
 (do ((idx 0 (+ idx 1)))
     ((>= idx SIZE))
   (let* ((r (quotient idx N))

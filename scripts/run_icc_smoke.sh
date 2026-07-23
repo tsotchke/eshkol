@@ -515,6 +515,18 @@ probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solve
      fi;
      exit 0'
 
+probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
+    'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
+     out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: matmul tensor reads inside defined functions match top-level" || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "PASS: matmul tensor reads inside defined functions match top-level" || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     exit 0'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"

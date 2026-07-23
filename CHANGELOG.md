@@ -124,6 +124,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **matmul tensor reads inside a defined function (#309) — verified resolved
+  and now guarded.** #309 reported that a `matmul` result read back via
+  `tensor-ref`/`tensor-data` from inside a `define`d function returned zeros,
+  while only top-level reads were correct. The symptom was a mis-attribution of
+  the Ozaki-II CRT-overflow/precision defect fixed in #307 (above): once #307
+  landed, in-function reads return the identical correct data as top-level
+  reads. This was reconfirmed by rebuilding at the #307 merge commit and at
+  current master — the tensor read + arena + matmul codegen/runtime path is
+  byte-identical between them — and exercised on JIT, AOT and the forced-GPU
+  Ozaki path across captured-global / argument / in-function-matmul /
+  nested-define / closure-capture / `with-region`-escape / large
+  (GPU/BLAS-dispatched) forms; every in-function read matched the top-level
+  read. Adds `tests/tensor/matmul_read_in_define_test.esk`
+  (`matmul_read_in_define_jit_smoke` + `matmul_read_in_define_aot_smoke` CTests)
+  and the `matmul_tensor_read_scope_oracle` ICC gate so the scope contract can
+  never silently regress, and retires the defensive "read only at top level"
+  work-around comments in the Ozaki correctness/certification fixtures.
 - **Ozaki-II exact DGEMM correctness (Metal).** The opt-in CRT matmul
   (`ESHKOL_SF64_KERNEL=ozaki`) silently produced 5-30% numerical errors on any
   non-integer input, and returned NaN/garbage when asked for more than 16

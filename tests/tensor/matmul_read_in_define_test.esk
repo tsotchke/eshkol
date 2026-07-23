@@ -1,0 +1,137 @@
+;; tests/tensor/matmul_read_in_define_test.esk — regression guard for #309.
+;;
+;; #309 reported that a `matmul` result read back via `tensor-ref`/`tensor-data`
+;; from INSIDE a `define`d function returned zeros, while only TOP-LEVEL reads
+;; returned correct data. That symptom was a mis-attribution of the Ozaki-II
+;; CRT-overflow/precision defect fixed in #307: once #307 landed, in-function
+;; reads return the identical correct data as top-level reads (verified on JIT,
+;; AOT, and the forced-GPU Ozaki path, at both the #307 merge and current master
+;; — the tensor read + arena + matmul codegen path is byte-identical between
+;; them). The Ozaki correctness/certification fixtures still carried a defensive
+;; "read the tensor only at top level, hand plain vectors to the checker"
+;; work-around; this test actively exercises the previously-avoided path so the
+;; work-around can be retired and any real regression of the scope contract turns
+;; the suite red instead of hiding behind a top-level read.
+;;
+;; Contract exercised: for a matmul result C, `(tensor-ref C i j)` and
+;; `(tensor-data C)` return the SAME values whether evaluated at top level or
+;; inside a defined function — as a captured global, as a passed argument, as a
+;; freshly-computed local, through a nested internal define, through a closure,
+;; and after escaping a `with-region`. Every read is compared against the exact
+;; expected product; ANY mismatch (a zero or otherwise) prints FAIL.
+;;
+;; Runs identically under `-r` (JIT) and AOT (compile + run).
+
+;; A (2x3) * B (3x2) = C (2x2):
+;;   A = [[0,1,2],[3,4,5]]  B = [[0,1],[2,3],[4,5]]
+;;   C = [[10,13],[28,40]]
+(define A (reshape (arange 6) 2 3))
+(define B (reshape (arange 6) 3 2))
+(define C (matmul A B))
+
+;; Expected reference values (independent of any tensor read).
+(define e00 10.0) (define e01 13.0) (define e10 28.0) (define e11 40.0)
+
+(define fails 0)
+(define (chk label got want)
+  (if (= got want)
+      (begin (display "  ok   ") (display label) (display " = ") (display got) (newline))
+      (begin
+        (set! fails (+ fails 1))
+        (display "  FAIL ") (display label)
+        (display " got=") (display got) (display " want=") (display want) (newline))))
+
+;; Ground truth: TOP-LEVEL reads (the path #309 said was the only correct one).
+(display "top-level reads:") (newline)
+(chk "top tensor-ref[0][0]" (tensor-ref C 0 0) e00)
+(chk "top tensor-ref[1][1]" (tensor-ref C 1 1) e11)
+(let ((cd (tensor-data C)))
+  (chk "top tensor-data[0]" (vector-ref cd 0) e00)
+  (chk "top tensor-data[3]" (vector-ref cd 3) e11))
+
+;; (1) matmul result read inside a define, captured as a GLOBAL.
+(display "read inside define (captured global):") (newline)
+(define (g-ref) (tensor-ref C 0 1))
+(define (g-data-mid) (vector-ref (tensor-data C) 2))
+(chk "global tensor-ref[0][1]" (g-ref) e01)
+(chk "global tensor-data[2]" (g-data-mid) e10)
+
+;; (2) matmul result PASSED as an argument, read inside the callee.
+(display "read inside define (argument):") (newline)
+(define (a-ref t i j) (tensor-ref t i j))
+(define (a-data-first t) (vector-ref (tensor-data t) 0))
+(chk "arg tensor-ref[1][0]" (a-ref C 1 0) e10)
+(chk "arg tensor-data[0]" (a-data-first C) e00)
+
+;; (3) matmul COMPUTED and read inside the same defined function.
+(display "matmul + read inside the same define:") (newline)
+(define (local-ref) (let ((c (matmul A B))) (tensor-ref c 1 1)))
+(define (local-data) (let ((c (matmul A B))) (vector-ref (tensor-data c) 1)))
+(chk "local tensor-ref[1][1]" (local-ref) e11)
+(chk "local tensor-data[1]" (local-data) e01)
+
+;; (3b) matmul as a DIRECT argument to the reader (no let binding).
+(chk "direct tensor-ref[0][0]" ((lambda () (tensor-ref (matmul A B) 0 0))) e00)
+
+;; (4) NESTED internal define reading the captured result.
+(display "nested internal define:") (newline)
+(define (outer)
+  (let ((c (matmul A B)))
+    (define (inner) (tensor-ref c 1 0))
+    (inner)))
+(chk "nested tensor-ref[1][0]" (outer) e10)
+
+;; (5) CLOSURE capturing a matmul result, read when later invoked.
+(display "closure capture:") (newline)
+(define (make-reader)
+  (let ((c (matmul A B)))
+    (lambda () (tensor-ref c 0 1))))
+(define reader (make-reader))
+(chk "closure tensor-ref[0][1]" (reader) e01)
+
+;; (6) matmul result ESCAPING a with-region, read afterwards (deep-evac path).
+(display "with-region escape:") (newline)
+(define escaped 0)
+(with-region
+  (set! escaped (matmul A B)))
+(define (esc-ref) (tensor-ref escaped 1 1))
+(chk "escaped tensor-ref[1][1]" (esc-ref) e11)
+(chk "escaped tensor-data[0]" (vector-ref (tensor-data escaped) 0) e00)
+
+;; (7) Larger matmul (routes through the GPU/BLAS dispatch), read inside a
+;; define at a few probe positions against an independent scalar reference.
+(display "large matmul read inside define:") (newline)
+(define NN 64)
+(define szz (* NN NN))
+(define Ad (make-vector szz 0.0))
+(define Bd (make-vector szz 0.0))
+(do ((i 0 (+ i 1))) ((>= i szz))
+  (vector-set! Ad i (+ 1.0 (* 0.5 (exact->inexact (modulo i 7)))))
+  (vector-set! Bd i (+ 0.5 (* 0.25 (exact->inexact (modulo i 5))))))
+(define AL (reshape Ad NN NN))
+(define BL (reshape Bd NN NN))
+(define CL (matmul AL BL))
+(define (probe-in-fn ii jj)
+  ;; touch the tensor object inside a defined function (the #309-avoided path)
+  (let ((got (tensor-ref CL ii jj))
+        (ref 0.0))
+    (do ((k 0 (+ k 1))) ((>= k NN))
+      (set! ref (+ ref (* (vector-ref Ad (+ (* ii NN) k))
+                          (vector-ref Bd (+ (* k NN) jj))))))
+    (let ((rel (/ (abs (- got ref)) (if (> (abs ref) 1e-9) (abs ref) 1.0))))
+      (if (< rel 1e-9)
+          (begin (display "  ok   large[") (display ii) (display "][") (display jj)
+                 (display "] rel<1e-9") (newline))
+          (begin (set! fails (+ fails 1))
+                 (display "  FAIL large[") (display ii) (display "][") (display jj)
+                 (display "] got=") (display got) (display " ref=") (display ref) (newline))))))
+(probe-in-fn 0 0)
+(probe-in-fn 31 31)
+(probe-in-fn 63 63)
+(probe-in-fn 17 48)
+
+(newline)
+(if (= fails 0)
+    (begin (display "PASS: matmul tensor reads inside defined functions match top-level (#309)") (newline))
+    (begin (display "FAIL: ") (display fails)
+           (display " in-function matmul read(s) diverged from top-level (#309 regression)") (newline)))
