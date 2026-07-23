@@ -1,0 +1,16 @@
+;; Type System Test: a checked cast still type-checks its wrapped expression, so
+;; nested errors are not hidden by the ascription (item 3 — no soundness loss).
+;;
+;; The ascribed type is string, but the wrapped expression references an unbound
+;; variable, which must still be reported.
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: error
+;; EXPECT-STDERR: no-such-variable
+
+(define (needs-string (s : string)) (string-length s))
+
+(define (broken)
+  (needs-string (the string no-such-variable)))
+
+(display (broken))
+(newline)

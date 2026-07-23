@@ -1,0 +1,60 @@
+;; ============================================================
+;; Differentiable VQE — H2 ground state by reverse-mode gradient
+;; ============================================================
+;;
+;; A hybrid quantum-classical loop: the variational quantum
+;; eigensolver energy E(theta) = <psi(theta)|H|psi(theta)> is an
+;; ordinary differentiable Eshkol function, so the SAME `gradient`
+;; operator that trains a neural net descends the ansatz parameters
+;; to the molecular ground state of H2.
+;;
+;; Why this is interesting:
+;;   - `vqe-energy` runs a real quantum circuit (Moonlab), yet the
+;;     compiler differentiates THROUGH it: (gradient (lambda (p)
+;;     (vqe-energy ham p)) params) returns the exact dE/dtheta via
+;;     Moonlab's adjoint -- no finite differences, no framework.
+;;   - The optimisation loop is a dozen lines of Eshkol with a quantum
+;;     forward model in the middle.
+;;
+;; Build note: quantum support is opt-in. Configure Eshkol with
+;;   -DESHKOL_QUANTUM_ENABLED=ON
+;; then:  ./build/eshkol-run -r examples/vqe_h2.esk
+
+(require agent.quantum)
+
+(define bond 0.7414)   ;; H2 bond length in Angstrom (equilibrium)
+(define lr   0.2)      ;; gradient-descent step size
+(define steps 200)
+
+(with-hamiltonian (make-h2-hamiltonian bond)
+  (lambda (ham)
+    (define exact (hamiltonian-exact-ground-energy ham))
+
+    (display "=== Differentiable VQE: H2 ground state ===") (newline)
+    (display "Bond length:               ") (display bond)  (display " Angstrom") (newline)
+    (display "Exact ground-state energy: ") (display exact) (display " Ha") (newline)
+    (newline)
+
+    ;; Gradient descent, inlined here so the compiler can resolve
+    ;; vqe-energy's custom vector-Jacobian-product node in this scope.
+    (let loop ((p (vector 0.1 0.2 0.3 0.4)) (step 0))
+      (if (> step steps)
+          (begin
+            (newline)
+            (display "Final VQE energy:   ") (display (vqe-energy ham p)) (display " Ha") (newline)
+            (display "Exact ground state: ") (display exact) (display " Ha") (newline)
+            (newline)
+            (display "The compiler took the reverse-mode gradient of a quantum") (newline)
+            (display "expectation value and descended it to the molecule's ground") (newline)
+            (display "state -- no finite differences, no framework, no GC pauses.") (newline))
+          (begin
+            (if (= 0 (modulo step 20))
+                (begin (display "  step ") (display step)
+                       (display "   E = ") (display (vqe-energy ham p)) (display " Ha") (newline))
+                #f)
+            (let ((g (gradient (lambda (q) (vqe-energy ham q)) p)))
+              (loop (vector (- (vector-ref p 0) (* lr (vector-ref g 0)))
+                            (- (vector-ref p 1) (* lr (vector-ref g 1)))
+                            (- (vector-ref p 2) (* lr (vector-ref g 2)))
+                            (- (vector-ref p 3) (* lr (vector-ref g 3))))
+                    (+ step 1))))))))

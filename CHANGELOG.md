@@ -184,6 +184,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/vm_parity/corpus/31_float_precision.esk` and the
   `printer_roundtrip_oracle` ICC gate. (`lib/core/runtime_display_hosted.cpp`,
   `lib/backend/vm_core.c`, `lib/backend/vm_native.c`, `lib/backend/vm_string.c`)
+- **`parallel-map` corrupted results from closures using scope-based
+  reclamation (memory-safety).** A closure mapped in parallel whose body used
+  per-iteration scope reclamation — an internal named-let loop, or a builtin
+  such as `memv` that brackets scratch allocation in a scope push/pop — could
+  return dangling/overlapping structure once the input crossed the parallel
+  threshold, surfacing nondeterministically as `car`/`cdr: argument is not a
+  pair`, `SIGSEGV`/`SIGBUS`, or a hang; serial `map` over the same closure was
+  always correct. Root cause: work-stealing pool workers are all pinned to the
+  single shared thread-safe process arena, but a bump-arena's scope stack
+  (`arena_push_scope`/`arena_pop_scope`/`eshkol_arena_iter_scope_end`) is
+  intrinsically single-threaded — a pop rewinds the arena's shared bump pointer
+  and frees everything allocated since the matching push. Concurrent workers
+  therefore raced that one scope stack, and one worker's pop freed memory
+  another was still using. Fix: on a pool worker operating on a thread-safe
+  (shared) arena, scope operations degrade to **commit-only** (allocations are
+  retained; the shared scope stack is never rewound), which is exactly the
+  established "commit over reclaim = correctness over throughput" fallback.
+  Per-iteration reclamation is deferred for the duration of parallel execution
+  only; single-threaded and per-worker/region arenas keep full reclamation, so
+  the flat-RSS loop behavior is unchanged. Verified with a repeated
+  crash→green AOT/JIT fixture under `ESHKOL_ARENA_POISON=1`, ThreadSanitizer
+  (73 arena data races → 0), and the existing parallel + region-race +
+  per-thread-arena suites. New ICC gate: `parallel_map_scope_reclaim_race`.
+- **Benign data race on the arena-poison diagnostic flag.** The
+  `eshkol_arena_poison_enabled()` env-var cache was a plain function-local
+  `int`, first-touched concurrently by pool workers (identical value, but a
+  real ThreadSanitizer-visible race). Now a relaxed `std::atomic<int>`.
+
 - **matmul tensor reads inside a defined function (#309) — verified resolved
   and now guarded.** #309 reported that a `matmul` result read back via
   `tensor-ref`/`tensor-data` from inside a `define`d function returned zeros,

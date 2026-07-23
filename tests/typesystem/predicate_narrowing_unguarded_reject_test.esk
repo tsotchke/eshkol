@@ -1,0 +1,15 @@
+;; Type System Test: narrowing is guard-scoped — a boolean-typed value used in a
+;; numeric parameter WITHOUT a predicate guard is still rejected (item 2, no
+;; false acceptance).
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: [ERROR]
+;; EXPECT-STDERR: expected Number, got Boolean
+
+(define (needs-number (n : number)) (+ n 1))
+
+;; No (number? c) guard: c stays Boolean, so this must error.
+(define (use-unguarded (c : boolean))
+  (needs-number c))
+
+(display (use-unguarded #f))
+(newline)

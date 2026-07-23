@@ -411,6 +411,16 @@ eshkol_ast_t MacroExpander::expandNode(const eshkol_ast_t& ast) {
                 }
                 break;
 
+            case ESHKOL_THE_OP:
+                // Expand macros inside the wrapped expression of a (the T e)
+                // ascription; the type expression carries no macro calls.
+                if (op->the_op.expr) {
+                    eshkol_ast_t* new_expr = new eshkol_ast_t;
+                    *new_expr = expandNode(*op->the_op.expr);
+                    op->the_op.expr = new_expr;
+                }
+                break;
+
             default:
                 break;
         }
