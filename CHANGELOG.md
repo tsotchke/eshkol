@@ -49,6 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dynamic edge coverage for the v1.3.4 surface (test/infra).** A seeded,
+  bounded, depth-parametric generator (`scripts/gen_edge_v134.py`) and runner
+  (`scripts/run_edge_coverage_v134.sh`) reconcile the generative/adversarial
+  machinery (P2 edge-matrix + P6 depth-parametric + differential oracle) with
+  every new-surface family the v1.3.4 wave added: nursery iter-scope mutating
+  loops (all six barrier channels, escape-set size, nested-loop depth),
+  capturing `parallel-map`/`parallel-execute` returning collections (n at the
+  pool threshold, closure shapes, nesting depth), exact gradient through a
+  callable parameter + curried form (arity 1..5, list/vector points,
+  composition depth), native `i128` boundaries and wraparound
+  (differential native-vs-VM, arithmetic-chain depth), native tensor/`matmul`
+  (arange arities, reshape/arange product, multi-dim ref/set), and low-level
+  `ad-tape`/`ad-pow` on the VM (fractional/negative/zero exponents, tape reuse,
+  1024-node growth). Every probe is self-checking against a generator-computed
+  ground truth and runs across JIT / AOT-O0 / AOT-O2 (and the VM where the
+  surface exists). Gated in ICC by the `v1.3.4-edge-coverage` oracle (one
+  criterion per family) plus a `v1.3-evolve` roll-up; new depth axes registered
+  in `scripts/depth_coverage_registry.json`. The `number->string`∘`string->number`
+  round-trip family is staged pending the shortest-round-trip printer.
 - **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
   recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
   ~500x faster than the deliberately crippled native FP64 pipeline on

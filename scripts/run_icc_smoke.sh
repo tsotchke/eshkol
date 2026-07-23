@@ -543,6 +543,19 @@ probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul resu
      printf "%s" "$out" | grep -q "FAIL:" && exit 1;
      exit 0'
 
+# v1.3.4 DYNAMIC EDGE COVERAGE. Runs the seeded, bounded, depth-parametric
+# edge-case generator (scripts/gen_edge_v134.py) across every applicable
+# execution axis (JIT / AOT-O2 / AOT-O0 / VM) via
+# scripts/run_edge_coverage_v134.sh, which writes the per-family
+# kind:"edge_coverage" events into scripts/icc_traces/edge_coverage_v134.jsonl
+# that the `v1.3.4-edge-coverage` oracle gates on. This probe additionally
+# emits a single eshkol_smoke roll-up so the compiler-readiness harness fails
+# loudly if any family regresses. Reduced depth keeps the smoke run bounded
+# (< ~40s on a 4-core slice); the nightly lane runs the full MAX_DEPTH sweep.
+probe edge_v134_dynamic_coverage 'v1.3.4 edge coverage (nursery iter-scope 6-channel, capturing parallel-map, exact gradient-through-callable + curried, native i128 wraparound, native matmul, VM ad-pow/ad-tape) — generated seeded probes green across JIT/AOT-O0/AOT-O2/VM with no native-vs-VM divergence' \
+    'cd "$REPO_ROOT"; MODES="jit aot aot-O0 vm" JOBS="${JOBS:-4}" MAX_DEPTH="${EDGE_V134_MAX_DEPTH:-4}" \
+        BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_edge_coverage_v134.sh >/dev/null 2>&1'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
