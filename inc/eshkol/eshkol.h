@@ -2206,6 +2206,9 @@ typedef enum {
     ESHKOL_SDNC_SET_PARAMS_OP,      // (sdnc-set-params! θ vec) -> θ
     ESHKOL_SDNC_IMPROVE_OP,         // (sdnc-improve! θ data steps lr) -> θ
     ESHKOL_SDNC_PRED_OP,            // (sdnc? x) -> bool
+    // Expression-level type ascription (checked cast). Appended at the end to
+    // preserve the numeric value of every existing operator.
+    ESHKOL_THE_OP,                  // (the type expr) - ascribe expr's type to the checker; runtime no-op (evaluates expr verbatim)
 } eshkol_op_t;
 
 struct eshkol_ast;
@@ -2404,6 +2407,10 @@ typedef struct eshkol_operation {
             char *name;                     // Name being annotated
             hott_type_expr_t *type_expr;    // The type expression
         } type_annotation_op;
+        struct {
+            hott_type_expr_t *type_expr;    // Ascribed type
+            struct eshkol_ast *expr;        // Wrapped expression (evaluated verbatim at runtime)
+        } the_op;                           // (the type expr) - expression-level checked cast
         struct {
             char **type_vars;               // Quantified type variable names
             uint64_t num_vars;

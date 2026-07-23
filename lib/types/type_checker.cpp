@@ -830,9 +830,20 @@ TypeChecker::TypeChecker(TypeEnvironment& env, bool strict_types, bool unsafe_mo
  * synthesis/checking rule records its result type on the AST node it typed.
  * Failed results pass through without touching @p expr.
  */
-static TypeCheckResult storeAndReturn(eshkol_ast_t* expr, TypeCheckResult result) {
+static TypeCheckResult storeAndReturn(eshkol_ast_t* expr, TypeCheckResult result,
+                                      const TypeEnvironment* env = nullptr) {
     if (result.success && expr) {
-        expr->inferred_hott_type = result.inferred_type.pack();
+        // Sum types are a checker-only refinement with no distinct runtime
+        // representation. Collapse them to their codegen-facing form (Pair)
+        // before writing the AST's inferred type so that adding sum precision
+        // never changes what codegen reads from inferred_hott_type. The
+        // TypeCheckResult itself still carries the true (sum) type upward for
+        // subtype checks.
+        TypeId stored = result.inferred_type;
+        if (env) {
+            stored = env->codegenReprOf(stored);
+        }
+        expr->inferred_hott_type = stored.pack();
     }
     return result;
 }
@@ -963,7 +974,7 @@ TypeCheckResult TypeChecker::synthesize(eshkol_ast_t* expr) {
             return TypeCheckResult::error("Cannot synthesize type for this expression");
     }
 
-    return storeAndReturn(expr, result);
+    return storeAndReturn(expr, result, &env_);
 }
 
 /**
@@ -1147,6 +1158,21 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
 
         case ESHKOL_CALL_OP:
             return synthesizeApplication(expr);
+
+        case ESHKOL_THE_OP: {
+            // Expression-level checked cast (the <type> <expr>): a trusted
+            // ascription. Still synthesize the inner expression so nested type
+            // errors are reported, but the ascribed type is what flows onward,
+            // letting a value recovered from a dynamic container satisfy a typed
+            // context without reconstruction. Runtime is unaffected — codegen
+            // evaluates the inner expression verbatim. This is a gradual-typing
+            // trust boundary (no runtime check), consistent with `--strict-types`
+            // as a whole-program refinement rather than a soundness proof.
+            if (expr->operation.the_op.expr) {
+                synthesize(expr->operation.the_op.expr);
+            }
+            return TypeCheckResult::ok(resolveType(expr->operation.the_op.type_expr));
+        }
 
         case ESHKOL_DEFINE_TYPE_OP: {
             // Type definition - register alias and return null
@@ -1496,6 +1522,14 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
     const bool has_builtin_name = func_expr->type == ESHKOL_VAR && func_expr->variable.id;
     if (has_builtin_name) {
         builtin_name = func_expr->variable.id;
+    }
+
+    // `if` is lowered by the parser to a call to the builtin "if" (func == "if",
+    // args = condition/then/else). Route it to synthesizeIf() BEFORE the generic
+    // argument pre-synthesis below, so the then-branch is synthesized under
+    // predicate-guarded narrowing rather than being eagerly checked without it.
+    if (has_builtin_name && builtin_name == "if" && call.num_vars >= 2) {
+        return synthesizeIf(expr);
     }
 
     const auto should_skip_builtin_designator_arg = [&](size_t index) {
@@ -2619,9 +2653,27 @@ TypeCheckResult TypeChecker::synthesizeApplication(eshkol_ast_t* expr) {
                     // Skip check if either is Value (unknown/top type) or same type
                     if (expected != BuiltinTypes::Value && actual != BuiltinTypes::Value &&
                         expected != actual) {
-                        // Check if types are compatible via LCS
-                        auto lcs = env_.leastCommonSupertype(expected, actual);
-                        if (!lcs || *lcs != expected) {
+                        // The argument is acceptable when it is a subtype of the
+                        // parameter. isSubtype() subsumes the earlier LCS test for
+                        // the ordinary hierarchy and additionally accepts a value
+                        // of any arm of an explicit sum parameter (item 1) —
+                        // e.g. Vector <: (+ boolean (vector any)).
+                        bool compatible = env_.isSubtype(actual, expected);
+
+                        // Numeric-tower join (item 4): a numeric accumulator
+                        // declared/inferred at one rung (e.g. Float64 from a 0.0
+                        // seed) recombined with a value widened to Number through
+                        // heterogeneous records must not error on the recursive
+                        // call — all operands are real and the tower promotes them
+                        // at runtime regardless. Two numeric types are always
+                        // reconcilable to their join, so accept. A non-numeric
+                        // actual (e.g. String) is still rejected below.
+                        if (!compatible &&
+                            isNumericType(env_, expected) && isNumericType(env_, actual)) {
+                            compatible = true;
+                        }
+
+                        if (!compatible) {
                             std::string msg = "argument " + std::to_string(i + 1) + " of '" +
                                 std::string(func_expr->type == ESHKOL_VAR ? func_expr->variable.id : "<lambda>") +
                                 "': expected " + env_.getTypeName(expected) +
@@ -2891,32 +2943,220 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
     return body_result;
 }
 
+// ============================================================================
+// PREDICATE-GUARDED NARROWING (occurrence typing, minimal viable)
+// ============================================================================
+
+/**
+ * @brief Map a type-predicate builtin name to the type it proves in its
+ * true branch. Returns Invalid for names that are not narrowing predicates.
+ *
+ * Deliberately restricted to the eight canonical single-type predicates whose
+ * true-branch refinement is exact and unambiguous. Numeric sub-predicates
+ * (integer?/real?) and disjunctive ones (list?) are intentionally excluded to
+ * keep the refinement sound and conservative.
+ */
+static TypeId narrowTypeForPredicate(const std::string& pred) {
+    if (pred == "number?")    return BuiltinTypes::Number;
+    if (pred == "string?")    return BuiltinTypes::String;
+    if (pred == "vector?")    return BuiltinTypes::Vector;
+    if (pred == "pair?")      return BuiltinTypes::Pair;
+    if (pred == "boolean?")   return BuiltinTypes::Boolean;
+    if (pred == "procedure?") return BuiltinTypes::Function;
+    if (pred == "null?")      return BuiltinTypes::Null;
+    if (pred == "symbol?")    return BuiltinTypes::Symbol;
+    return BuiltinTypes::Invalid;
+}
+
+/**
+ * @brief A single occurrence-typing refinement: variable @c var is known to
+ * have type @c type on the guarded path.
+ */
+struct PredicateNarrowing {
+    std::string var;
+    TypeId type;
+};
+
+/**
+ * @brief True if @p e is a call `(pred? x)` where pred? is a narrowing
+ * predicate and x is a plain variable; on success fills @p out.
+ */
+static bool matchPredicateGuard(const eshkol_ast_t* e, PredicateNarrowing& out) {
+    if (!e || e->type != ESHKOL_OP) return false;
+    if (e->operation.op != ESHKOL_CALL_OP) return false;
+    const auto& call = e->operation.call_op;
+    if (!call.func || call.func->type != ESHKOL_VAR || !call.func->variable.id) return false;
+    if (call.num_vars != 1) return false;
+    const eshkol_ast_t& arg = call.variables[0];
+    if (arg.type != ESHKOL_VAR || !arg.variable.id) return false;
+    TypeId t = narrowTypeForPredicate(call.func->variable.id);
+    if (!t.isValid()) return false;
+    out.var = arg.variable.id;
+    out.type = t;
+    return true;
+}
+
+/**
+ * @brief Collect the occurrence-typing refinements implied on the true path of
+ * a condition @p cond.
+ *
+ * Handles a bare predicate guard `(pred? x)` and an `and` chain
+ * `(and (pred? x) (pred? y) ...)` — every predicate conjunct contributes a
+ * refinement, since the whole `and` being true means each conjunct is true.
+ * Non-predicate conjuncts are simply ignored (they impose no refinement).
+ */
+static std::vector<PredicateNarrowing> collectPredicateNarrowings(const eshkol_ast_t* cond) {
+    std::vector<PredicateNarrowing> result;
+    if (!cond) return result;
+
+    PredicateNarrowing pn;
+    if (matchPredicateGuard(cond, pn)) {
+        result.push_back(pn);
+        return result;
+    }
+
+    if (cond->type == ESHKOL_OP && cond->operation.op == ESHKOL_AND_OP) {
+        const auto& seq = cond->operation.sequence_op;
+        for (uint64_t i = 0; i < seq.num_expressions; ++i) {
+            PredicateNarrowing conj;
+            if (matchPredicateGuard(&seq.expressions[i], conj)) {
+                result.push_back(conj);
+            }
+        }
+    }
+    return result;
+}
+
+/**
+ * @brief True if @p e mutates @p var anywhere within it (a `set!` whose target
+ * is @p var). Recurses through all operation shapes conservatively.
+ *
+ * Used to cancel narrowing: if the guarded branch reassigns the refined
+ * variable, the refinement no longer holds for uses after the assignment, so
+ * (being conservative and not doing full flow analysis) we drop the
+ * refinement for the whole branch.
+ */
+static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var) {
+    if (!e) return false;
+    if (e->type == ESHKOL_OP && e->operation.op == ESHKOL_SET_OP) {
+        if (e->operation.set_op.name && var == e->operation.set_op.name) {
+            return true;
+        }
+        if (exprAssignsVar(e->operation.set_op.value, var)) return true;
+        return false;
+    }
+    if (e->type != ESHKOL_OP) {
+        // cons cells / literals / bare vars cannot contain a set!
+        if (e->type == ESHKOL_CONS) {
+            return exprAssignsVar(e->cons_cell.car, var) ||
+                   exprAssignsVar(e->cons_cell.cdr, var);
+        }
+        return false;
+    }
+
+    // Generic conservative descent: most compound forms are laid out as a
+    // call_op (func + variables) or a sequence_op (expressions). Scanning both
+    // covers if/begin/let-bodies/applications/and/or without enumerating every
+    // op kind. Anything we don't structurally recognise is treated as "might
+    // assign" only if it actually is a set!, handled above; otherwise we scan
+    // the two common child layouts.
+    const auto& op = e->operation;
+    switch (op.op) {
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            for (uint64_t i = 0; i < op.sequence_op.num_expressions; ++i) {
+                if (exprAssignsVar(&op.sequence_op.expressions[i], var)) return true;
+            }
+            return false;
+        case ESHKOL_IF_OP:
+        case ESHKOL_CALL_OP: {
+            if (op.call_op.func && exprAssignsVar(op.call_op.func, var)) return true;
+            for (uint64_t i = 0; i < op.call_op.num_vars; ++i) {
+                if (exprAssignsVar(&op.call_op.variables[i], var)) return true;
+            }
+            return false;
+        }
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP: {
+            const auto& let = op.let_op;
+            for (uint64_t i = 0; i < let.num_bindings; ++i) {
+                if (exprAssignsVar(&let.bindings[i], var)) return true;
+            }
+            if (exprAssignsVar(let.body, var)) return true;
+            return false;
+        }
+        default:
+            // Any other compound form (cond/case/when/unless/do/guard/match, …)
+            // has an op-specific union layout we do not walk here. Rather than
+            // risk missing a `set!` nested inside one — which would make the
+            // narrowing unsound — we conservatively assume such a branch MIGHT
+            // reassign the variable and cancel the refinement. This only forgoes
+            // precision (the branch behaves as it did before narrowing existed);
+            // it never accepts an unsound program.
+            return true;
+    }
+}
+
 /**
  * @brief Synthesis rule for `if` expressions: type is the least common
  * supertype (LCS) of the branch types.
  *
- * Requires at least a condition and a then-branch (error otherwise); the
- * condition itself is not type-checked here. Synthesizes the then-branch
- * type, and if an else-branch is present, synthesizes it too. As a
- * special case for named-let recursive loops (where a recursive call
+ * The condition itself is not type-checked here, but it is inspected for
+ * predicate-guarded narrowing (occurrence typing): when the condition is a
+ * type predicate on a variable — `(number? c)` — or an `and` chain of such
+ * predicates, the guarded variable(s) are refined to the predicted type while
+ * synthesizing the then-branch, so idiomatic `(if (number? c) (+ c 1) …)` on a
+ * value typed number-or-#f checks cleanly. The refinement is conservative:
+ * it is dropped entirely for any variable the then-branch reassigns (`set!`).
+ *
+ * As a special case for named-let recursive loops (where a recursive-call
  * branch often still carries the placeholder BuiltinTypes::Value while the
- * base-case branch has a concrete type), if exactly one branch is Value,
- * the other (concrete) branch's type is preferred outright rather than
- * computing an LCS. Otherwise the result is
- * TypeEnvironment::leastCommonSupertype() of the two branch types. With no
- * else-branch, the then-branch's type is returned directly.
+ * base-case branch has a concrete type), if exactly one branch is Value, the
+ * other (concrete) branch's type is preferred outright rather than computing
+ * an LCS. Otherwise the result is TypeEnvironment::leastCommonSupertype() of
+ * the two branch types. With no else-branch, the then-branch's type is
+ * returned directly.
  * @return The then-branch's TypeCheckResult if there is no else-branch or
  * synthesis of a branch fails; otherwise the LCS (or preferred concrete
  * branch type) of both branches.
  */
 TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     // if has: condition, then-branch, else-branch
-    // For now, just synthesize branches and take LCS
     if (expr->operation.call_op.num_vars < 2) {
         return errorAt(expr, "if requires condition and then-branch");
     }
 
-    auto then_type = synthesize(&expr->operation.call_op.variables[1]);
+    eshkol_ast_t* cond = &expr->operation.call_op.variables[0];
+    eshkol_ast_t* then_branch = &expr->operation.call_op.variables[1];
+
+    // Compute narrowings from the condition's structure *before* synthesizing
+    // it, then synthesize the condition for its side effects (type-checking any
+    // nested expressions and recording their inferred types) — matching the
+    // pre-synthesis the generic application path used to perform.
+    std::vector<PredicateNarrowing> narrowings = collectPredicateNarrowings(cond);
+    synthesize(cond);
+    // Drop any refinement whose variable is reassigned inside the branch.
+    std::vector<PredicateNarrowing> active;
+    for (const auto& n : narrowings) {
+        if (!exprAssignsVar(then_branch, n.var)) {
+            active.push_back(n);
+        }
+    }
+
+    TypeCheckResult then_type;
+    if (!active.empty()) {
+        ctx_.pushScope();
+        for (const auto& n : active) {
+            ctx_.bind(n.var, n.type);
+        }
+        then_type = synthesize(then_branch);
+        ctx_.popScope();
+    } else {
+        then_type = synthesize(then_branch);
+    }
     if (!then_type.success) return then_type;
 
     if (expr->operation.call_op.num_vars >= 3) {
@@ -3093,8 +3333,17 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
         case HOTT_TYPE_PRODUCT:
             return BuiltinTypes::Pair;  // Product types represented as pairs at runtime
 
-        case HOTT_TYPE_SUM:
-            return BuiltinTypes::Pair;  // Sum types represented as tagged cons pairs: (tag . value)
+        case HOTT_TYPE_SUM: {
+            // Honor the explicit sum: resolve both arms and build a synthetic
+            // sum TypeId so a value of either arm is accepted where the sum is
+            // expected (and the sum is accepted only where every arm fits).
+            // Runtime representation is unchanged — sums collapse to Pair for
+            // codegen (see codegenReprOf / storeAndReturn).
+            std::vector<TypeId> arms;
+            if (type_expr->sum.left)  arms.push_back(resolveType(type_expr->sum.left));
+            if (type_expr->sum.right) arms.push_back(resolveType(type_expr->sum.right));
+            return env_.makeSumType(arms);
+        }
 
         case HOTT_TYPE_FORALL:
             // Polymorphic types are erased at runtime — tagged values handle polymorphism

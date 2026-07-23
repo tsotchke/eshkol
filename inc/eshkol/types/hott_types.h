@@ -452,6 +452,22 @@ private:
     // Next pair type ID (allocated dynamically)
     mutable uint16_t next_pair_type_id_ = 300;  // Pair types in range 300-499
 
+    // Sum type member cache: maps a synthetic Sum TypeId → its member arms.
+    // Sum types (written `(+ A B ...)` in annotations) let a single binding
+    // stand for a value that may take any one of several concrete types
+    // (e.g. `(+ boolean (vector any))` for an accumulator that starts #f and
+    // later becomes a vector). They are a compile-time-only refinement: at
+    // runtime every value already carries its own tag, so a sum has no
+    // distinct representation and collapses to Pair for codegen purposes.
+    mutable std::map<uint16_t, std::vector<TypeId>> sum_member_cache_;
+
+    // Next sum type ID. Deliberately placed in a high range that the other
+    // dynamic allocators (pairs 300-499, functions 500-999) and user types
+    // (1000+) do not realistically reach, so ids stay disjoint without
+    // perturbing any existing allocation (which would risk shifting the
+    // TypeIds packed into AST nodes and thus codegen).
+    mutable uint16_t next_sum_type_id_ = 60000;  // Sum types in range 60000+
+
 public:
     /**
      * Construct a TypeEnvironment with all builtin types registered.
@@ -698,6 +714,38 @@ public:
      * Check if a TypeId represents a tracked pair type (with known element types).
      */
     bool isTrackedPairType(TypeId id) const;
+
+    // ========== Sum Type Tracking ==========
+
+    /**
+     * Create or retrieve a synthetic sum type over the given member arms.
+     *
+     * A sum type accepts a value if it fits any one arm, and is itself a
+     * subtype of some T if *every* arm is a subtype of T. Nested sums are
+     * flattened and duplicate arms removed. A degenerate sum with a single
+     * distinct arm collapses to that arm; an empty member list yields Value.
+     */
+    TypeId makeSumType(const std::vector<TypeId>& members) const;
+
+    /**
+     * Get the member arms of a sum TypeId, or nullopt if @p id is not a sum.
+     */
+    std::optional<std::vector<TypeId>> getSumMembers(TypeId id) const;
+
+    /**
+     * Check whether a TypeId represents a synthetic sum type.
+     */
+    bool isSumType(TypeId id) const;
+
+    /**
+     * Collapse a type to its codegen-facing representation. Sum types have no
+     * distinct runtime representation (values are tagged), so they collapse to
+     * Pair — the same TypeId a `(+ ...)` annotation resolved to before sum
+     * tracking existed. Non-sum types are returned unchanged. Used when
+     * writing a node's inferred type into the AST so that adding sum-type
+     * precision to the checker never perturbs generated code.
+     */
+    TypeId codegenReprOf(TypeId id) const;
 
 private:
     /**

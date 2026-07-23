@@ -1,0 +1,20 @@
+;; Type System Test: explicit sum-type annotations are honored on named-let
+;; parameters and through recursive calls (item 1).
+;;
+;; The accumulator `acc` is annotated `(+ boolean (vector any))`: it starts as
+;; #f (the boolean arm) and, on the recursive call, becomes a vector (the vector
+;; arm). Both arms must be accepted — previously the sum collapsed to Pair and
+;; the recursive call reported "expected Pair, got Vector".
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (build n)
+  (let loop ((i 0)
+             (acc : (+ boolean (vector any)) #f))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) (vector 1 2 3)))))
+
+(display (build 0))
+(newline)

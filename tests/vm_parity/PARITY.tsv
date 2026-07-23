@@ -588,6 +588,7 @@ op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
 op:SYNTAX_ERROR	native-only-justified	parse-time form handled by the native front-end
 op:TAYLOR	gap	arbitrary-order Taylor-series AD operator not implemented on VM surface
 op:TENSOR	vm-supported	tensor/make-tensor fids 410+
+op:THE	native-only-justified	expression-level type ascription (the T e); a type-checker-only refinement that lowers to its wrapped operand at codegen (pure passthrough, no distinct runtime effect) — not yet surfaced in the bytecode VM parser
 op:TYPE_ANNOTATION	native-only-justified	static type syntax, erased before codegen
 op:UNIFY	vm-supported	BUILTINS fid 502
 op:UNLESS	vm-supported	vm_compiler special-form dispatch

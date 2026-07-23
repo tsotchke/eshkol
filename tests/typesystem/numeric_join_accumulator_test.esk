@@ -1,0 +1,22 @@
+;; Type System Test: stable numeric subtyping across a recursive accumulator
+;; (item 4).
+;;
+;; `acc` is seeded with 0.0 (Float64). On the recursive call it is replaced by a
+;; value widened to Number (running-total returns Number). Since every operand is
+;; real, the recursive argument must unify with the accumulator at their numeric
+;; join instead of erroring "expected Float64, got Number".
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+;; Both params numeric -> returns Number (the numeric-tower supertype)
+(define (running-total (a : number) (b : number)) (+ a b))
+
+(define (sum-vector (recs : (vector any)))
+  (let loop ((i 0) (acc 0.0))
+    (if (>= i 3)
+        acc
+        (loop (+ i 1) (running-total acc (vector-ref recs i))))))
+
+(display (sum-vector (vector 1.0 2.0 3.0)))   ;; runtime: 0+1+2+3 = 6.0
+(newline)

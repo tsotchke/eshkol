@@ -9,6 +9,7 @@
 #include <eshkol/types/hott_types.h>
 #include <eshkol/eshkol.h>
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 
 namespace eshkol::hott {
@@ -422,6 +423,16 @@ const TypeNode* TypeEnvironment::getTypeNode(TypeId id) const {
  * types; otherwise returns the registered name, or "unknown" if @p id is not registered.
  */
 std::string TypeEnvironment::getTypeName(TypeId id) const {
+    // Check if this is a synthetic sum type
+    auto sum_members = getSumMembers(id);
+    if (sum_members) {
+        std::string result = "(+";
+        for (const auto& m : *sum_members) {
+            result += " " + getTypeName(m);
+        }
+        result += ")";
+        return result;
+    }
     // Check if this is a tracked pair type
     auto pair_elems = getPairElementTypes(id);
     if (pair_elems) {
@@ -461,6 +472,32 @@ bool TypeEnvironment::isSubtype(TypeId sub, TypeId super) const {
 bool TypeEnvironment::isSubtypeUncached(TypeId sub, TypeId super) const {
     // Reflexivity
     if (sub == super) return true;
+
+    // Sum types. `sub <: (+ A B ...)` holds when sub fits any one arm; this is
+    // the rule that lets a value of a concrete arm type (e.g. Vector) satisfy a
+    // parameter declared with an explicit sum annotation. `(+ A B ...) <: super`
+    // holds when *every* arm is a subtype of super (the sum is subsumed only by
+    // a type that covers all its cases, e.g. (+ integer real) <: number).
+    {
+        auto super_members = getSumMembers(super);
+        if (super_members) {
+            for (const auto& arm : *super_members) {
+                if (isSubtype(sub, arm)) return true;
+            }
+            // Fall through so a sum sub can still be checked arm-by-arm below,
+            // but a non-sum sub that matched no arm is not a subtype.
+        }
+        auto sub_members = getSumMembers(sub);
+        if (sub_members) {
+            for (const auto& arm : *sub_members) {
+                if (!isSubtype(arm, super)) return false;
+            }
+            return true;
+        }
+        if (super_members) {
+            return false;  // non-sum sub matched no arm of the sum super
+        }
+    }
 
     // Tracked pair types are subtypes of Pair (and Pair's supertypes)
     if (isTrackedPairType(sub)) {
@@ -1035,6 +1072,91 @@ std::optional<std::pair<TypeId, TypeId>> TypeEnvironment::getPairElementTypes(Ty
  */
 bool TypeEnvironment::isTrackedPairType(TypeId id) const {
     return pair_element_cache_.find(id.id) != pair_element_cache_.end();
+}
+
+// ============================================================================
+// SUM TYPE TRACKING
+// ============================================================================
+
+/**
+ * @brief Create or retrieve a synthetic sum type over @p members.
+ *
+ * Flattens nested sums, de-duplicates arms (by id), and collapses degenerate
+ * cases (empty → Value, single arm → that arm). Otherwise searches the cache
+ * for an existing sum with the same normalized arm set and reuses it, or
+ * allocates a fresh id from next_sum_type_id_.
+ */
+TypeId TypeEnvironment::makeSumType(const std::vector<TypeId>& members) const {
+    // Normalize: flatten nested sums and de-duplicate arms preserving order.
+    std::vector<TypeId> arms;
+    std::function<void(const std::vector<TypeId>&)> flatten =
+        [&](const std::vector<TypeId>& ms) {
+            for (const auto& m : ms) {
+                auto nested = getSumMembers(m);
+                if (nested) {
+                    flatten(*nested);
+                    continue;
+                }
+                bool seen = false;
+                for (const auto& a : arms) {
+                    if (a.id == m.id) { seen = true; break; }
+                }
+                if (!seen) arms.push_back(m);
+            }
+        };
+    flatten(members);
+
+    if (arms.empty()) return BuiltinTypes::Value;
+    if (arms.size() == 1) return arms[0];
+
+    // Reuse an existing sum with the same arm set (order-insensitive).
+    for (const auto& entry : sum_member_cache_) {
+        if (entry.second.size() != arms.size()) continue;
+        bool match = true;
+        for (const auto& a : arms) {
+            bool found = false;
+            for (const auto& b : entry.second) {
+                if (a.id == b.id) { found = true; break; }
+            }
+            if (!found) { match = false; break; }
+        }
+        if (match) {
+            return TypeId{entry.first, Universe::U1, 0};
+        }
+    }
+
+    uint16_t type_id = next_sum_type_id_++;
+    sum_member_cache_[type_id] = arms;
+    return TypeId{type_id, Universe::U1, 0};
+}
+
+/**
+ * @brief Get the member arms of a sum TypeId, or nullopt if not a sum.
+ */
+std::optional<std::vector<TypeId>> TypeEnvironment::getSumMembers(TypeId id) const {
+    auto it = sum_member_cache_.find(id.id);
+    if (it != sum_member_cache_.end()) {
+        return it->second;
+    }
+    return std::nullopt;
+}
+
+/**
+ * @brief Check whether a TypeId represents a synthetic sum type.
+ */
+bool TypeEnvironment::isSumType(TypeId id) const {
+    return sum_member_cache_.find(id.id) != sum_member_cache_.end();
+}
+
+/**
+ * @brief Collapse a sum type to Pair (its historical codegen representation);
+ * pass non-sum types through unchanged.
+ */
+TypeId TypeEnvironment::codegenReprOf(TypeId id) const {
+    if (isSumType(id)) {
+        return BuiltinTypes::Pair;
+    }
+    return id;
 }
 
 } // namespace eshkol::hott
