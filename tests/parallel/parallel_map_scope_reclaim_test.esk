@@ -1,0 +1,96 @@
+;;; tests/parallel/parallel_map_scope_reclaim_test.esk
+;;;
+;;; Concurrency × per-iteration-scope-reclamation regression fixture.
+;;;
+;;; parallel-map runs its mapped function on work-stealing pool threads, all
+;;; pinned to the single shared thread-safe process arena (the parallel-scope
+;;; pin). A bump-arena's SCOPE STACK (arena_push_scope / arena_pop_scope /
+;;; eshkol_arena_iter_scope_end) is intrinsically single-threaded: a pop rewinds
+;;; the arena's shared bump pointer and frees the memory allocated since the
+;;; matching push.
+;;;
+;;; A mapped closure whose body uses scope-based reclamation therefore drives
+;;; concurrent push/pop/rewind of that ONE shared scope stack across workers:
+;;;   - an internal named-let loop (per-iteration scope reclamation), and/or
+;;;   - a builtin such as memv that brackets scratch allocation in a push/pop.
+;;; Pre-fix, worker A's pop rewinds/frees memory worker B is still using, so B
+;;; is handed a dangling / overlapping cons cell: "car/cdr: argument is not a
+;;; pair", SIGSEGV/SIGBUS, or a hang — nondeterministically, only once the input
+;;; crosses the parallel threshold. With scope operations degraded to
+;;; commit-only on pool workers, the shared scope stack is never touched
+;;; concurrently and results are deterministic and correct.
+;;;
+;;; The closure below deliberately uses BOTH triggers (internal named-let loops
+;;; and memv), captures a shared list, allocates nested lists, and sometimes
+;;; returns #f. Each parallel-map result is compared against serial map over the
+;;; same closure; a full deep traversal after completion catches dangling
+;;; interior structure.
+
+(define (iota n)
+  (let loop ((i (- n 1)) (acc '()))
+    (if (< i 0) acc (loop (- i 1) (cons i acc)))))
+
+;; internal named-let loop + memv -> emits per-iteration arena scope push/pop
+(define (count-overlap a b)
+  (let loop ((xs a) (c 0))
+    (if (pair? xs)
+        (loop (cdr xs) (if (memv (car xs) b) (+ c 1) c))
+        c)))
+
+(define (build-syms i)
+  (let loop ((k 0) (acc '()))
+    (if (< k 12) (loop (+ k 1) (cons (modulo (+ i k) 7) acc)) acc)))
+
+(define goal (list 0 1 2 3 4 5))
+
+;; captures goal; allocates nested lists; sometimes returns #f
+(define (score p)
+  (let* ((syms (build-syms p))
+         (ov   (count-overlap goal syms))
+         (co   (count-overlap syms goal)))
+    (if (> ov 0)
+        (list p (list ov co) syms goal)
+        #f)))
+
+(define (deep-checksum x)
+  (cond ((pair? x) (+ (deep-checksum (car x)) (deep-checksum (cdr x))))
+        ((number? x) x)
+        (else 0)))
+
+(define (traverse-sum res)
+  (let loop ((r res) (acc 0))
+    (if (pair? r)
+        (loop (cdr r) (+ acc (if (car r) (deep-checksum (car r)) 0)))
+        acc)))
+
+(define (serial-golden n) (traverse-sum (map score (iota n))))
+
+;; Run parallel-map REPS times per size and require every run to match the
+;; serial golden exactly. The race is probabilistic, so repetition raises the
+;; per-invocation trigger probability.
+(define REPS 40)
+
+(define (check-size n)
+  (let ((golden (serial-golden n)))
+    (let loop ((r 0))
+      (if (< r REPS)
+          (let ((got (traverse-sum (parallel-map score (iota n)))))
+            (if (= got golden)
+                (loop (+ r 1))
+                (begin
+                  (display "FAIL: n=") (display n)
+                  (display " rep=") (display r)
+                  (display " golden=") (display golden)
+                  (display " got=") (display got) (newline)
+                  #f)))
+          #t))))
+
+(define (run sizes)
+  (let loop ((s sizes))
+    (if (pair? s)
+        (if (check-size (car s))
+            (loop (cdr s))
+            (begin (display "RESULT: FAIL") (newline) (exit 1)))
+        (begin (display "RESULT: PASS") (newline) (exit 0)))))
+
+(run (list 16 17 20 24 32 48 64 128))

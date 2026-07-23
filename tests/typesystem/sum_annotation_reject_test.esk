@@ -1,0 +1,18 @@
+;; Type System Test: a value outside every arm of an explicit sum annotation is
+;; still rejected (item 1 — no soundness loss).
+;;
+;; `acc` accepts boolean or vector; passing a string on the recursive call must
+;; error, since string is neither arm.
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: [ERROR]
+;; EXPECT-STDERR: got String
+
+(define (build n)
+  (let loop ((i 0)
+             (acc : (+ boolean (vector any)) #f))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) "not an arm"))))
+
+(display (build 0))
+(newline)

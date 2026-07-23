@@ -340,6 +340,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["parallel_map_scope_reclaim_race"]
+          event_values: ["PASS"]
+        severity: high
+        label: parallel-map closures using scope-based reclamation (internal loops / memv) never race the shared arena scope stack
+        action: run_parallel_map_scope_reclaim_test
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["error_messages_have_source_locations"]
           event_values: ["PASS"]
         severity: medium

@@ -282,9 +282,48 @@ void* arena_allocate_zeroed(arena_t* arena, size_t size) {
     return ptr;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Concurrency invariant for scope-based reclamation
+// ─────────────────────────────────────────────────────────────────────────
+// A bump-allocator arena's scope stack (push mark / pop-rewind / commit) is
+// intrinsically single-threaded: it is one per-arena LIFO of (block, used)
+// marks, and a pop rewinds the arena's shared bump pointer and frees/poisons
+// every block allocated since the matching push.
+//
+// While a work-stealing construct is active (parallel-map/-fold/-filter/
+// -execute and async futures) every pool worker is pinned to the SAME
+// thread-safe process arena (the #217 parallel-scope pin), so concurrent
+// workers would push/pop/rewind that single scope stack simultaneously. That
+// is doubly broken: (a) a data race on current_block / current_block->used /
+// current_scope, and (b) a cross-thread LIFO violation — worker A's pop
+// rewinds (and poisons/frees) memory worker B is still using, handing B a
+// dangling / overlapping cons cell. Symptom: nondeterministic "car/cdr:
+// argument is not a pair", SIGSEGV/SIGBUS, or a hang, but only once the input
+// crosses the parallel threshold and the closure body uses scope-based
+// reclamation (an internal named-let loop's per-iteration scope, or a builtin
+// such as memv that brackets scratch in a push/pop pair). Per-op locking would
+// fix (a) but not (b); the scope stack simply cannot be shared.
+//
+// Fix: on a pool worker operating on a thread-safe (shared) arena, scope
+// operations degrade to COMMIT-ONLY — allocations are retained and the shared
+// scope stack is left untouched. This is exactly ESH-0214b's documented safe
+// fallback ("commit = correctness over reclamation"): per-iteration reclamation
+// is deferred for the duration of parallel execution (the shared arena keeps
+// the memory, released at its normal lifetime), which is correct and bounded by
+// the parallel construct. Single-threaded arenas (main thread; the flat-RSS
+// loop path) and non-thread-safe per-worker/region arenas are unaffected, so
+// ESH-0214b reclamation is preserved everywhere it is actually safe.
+static inline bool arena_scope_ops_are_commit_only(const arena_t* arena) {
+    return arena && arena->thread_safe && arena_is_worker_thread();
+}
+
 // Scope management
 void arena_push_scope(arena_t* arena) {
     if (!arena) return;
+    // Concurrent pool worker on the shared arena: do not touch the shared scope
+    // stack (see arena_scope_ops_are_commit_only). The matching pop/commit is
+    // likewise a no-op, so push/pop stay balanced.
+    if (arena_scope_ops_are_commit_only(arena)) return;
 
     arena_scope_t* scope = (arena_scope_t*)malloc(sizeof(arena_scope_t));
     if (!scope) {
@@ -301,6 +340,13 @@ void arena_push_scope(arena_t* arena) {
 }
 
 void arena_pop_scope(arena_t* arena) {
+    // Concurrent pool worker on the shared arena: commit-only. Retain the
+    // iteration's allocations and leave the shared scope stack/bump pointer
+    // untouched — rewinding here would free/poison memory a sibling worker is
+    // still using (see arena_scope_ops_are_commit_only). Balances the no-op
+    // push above.
+    if (arena_scope_ops_are_commit_only(arena)) return;
+
     if (!arena || !arena->current_scope) {
         eshkol_error("Attempted to pop arena scope with no matching push - "
                      "unbalanced scope operations risk memory corruption");
@@ -368,6 +414,11 @@ void arena_pop_scope(arena_t* arena) {
  * before this feature existed), but the scope stack stays balanced so
  * enclosing push/pop pairs keep their LIFO discipline. */
 void arena_commit_scope(arena_t* arena) {
+    // Concurrent pool worker on the shared arena: the no-op push left nothing on
+    // the shared scope stack, and commit already means "retain allocations", so
+    // there is nothing to do (see arena_scope_ops_are_commit_only).
+    if (arena_scope_ops_are_commit_only(arena)) return;
+
     if (!arena || !arena->current_scope) {
         eshkol_error("Attempted to commit arena scope with no matching push");
         return;
@@ -415,6 +466,12 @@ int arena_top_scope_contains(const arena_t* arena, const void* ptr) {
  * so a shallow per-value span test is sufficient -- no transitive walk. */
 void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n) {
     if (!arena) return;
+    // Concurrent pool worker on the shared arena: commit-only. The loop-entry
+    // arena_push_scope was a no-op, so there is no per-iteration scope to end;
+    // retain this iteration's allocations and never rewind the shared arena
+    // (see arena_scope_ops_are_commit_only). Skips the escape test entirely,
+    // which is the conservative (always-commit) direction anyway.
+    if (arena_scope_ops_are_commit_only(arena)) return;
     if (!arena->current_scope) {
         eshkol_error("iter_scope_end with no active arena scope - unbalanced loop scoping");
         return;
