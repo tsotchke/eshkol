@@ -805,6 +805,46 @@ also work inside a `#(...)` vector literal under quasiquote:
 (define-type (List a) (list a))
 ```
 
+#### 3.6.6 Checked Ascription — `(the <type> expr)`
+**Syntax:**
+```scheme
+(the <type> expr)
+```
+Asserts to the type checker that `expr` has type `<type>`. It is a **trusted
+assertion**: the checker narrows its view of `expr` to `<type>` and does not
+re-derive it. It is a pure **runtime no-op** — the emitted IR is byte-identical
+to `expr` alone (no runtime tag check, no cost), so `(the <type> expr)` evaluates
+to exactly the same value as `expr`.
+
+```scheme
+(the number (car mixed-list))   ; the checker now treats this element as number
+(the (list real) xs)
+```
+
+#### 3.6.7 Predicate-Guarded Narrowing
+Inside a branch guarded by a type predicate, the checker narrows the tested
+value to that type. Narrowing is honored across `if` and `and`, and is
+**cancelled** at a `set!` of the narrowed variable. The narrowing predicates are:
+
+`number?`, `integer?`, `string?`, `symbol?`, `pair?`, `null?`, `vector?`,
+`procedure?`.
+
+```scheme
+(if (number? x) (+ x 1) 0)      ; x : number in the then-branch
+(and (pair? p) (car p))         ; p : pair for (car p)
+```
+
+Additionally: **sum-type annotations are honored on `named-let` parameters**, and
+a **numeric-tower join** gives a recursive accumulator the least-upper-bound of
+the numeric types that flow into it (so an integer accumulator that later takes a
+rational or real value is accepted rather than rejected).
+
+#### 3.6.8 Linear Types — `Qubit`
+`Qubit` is a first-class **linear** type: its values must be used exactly once. A
+`define`d function may declare linear parameters, and the checker enforces the
+use-exactly-once discipline (both double-use and drop are rejected), giving
+quantum-register operations a no-cloning guarantee at the type level.
+
 ### 3.7 Module System
 
 #### 3.7.1 `require` - Import Modules

@@ -1,25 +1,53 @@
-# Known Issues — Eshkol v1.3.0-evolve
+# Known Issues — Eshkol v1.3.4-evolve
 
 **Status**: Production release
 
 ---
 
+## Resolved in v1.3.4-evolve
+
+- **Resident-loop retention with persistent mutation.** A tail-recursive loop
+  that mutates persistent state (a knowledge base, workspace, or growing list)
+  on every iteration used to get no automatic per-iteration reclamation and
+  leaked one iteration's transient garbage forever. It is now lowered with a
+  per-loop nursery region (ESH-0214e), so such a loop is flat at 34 MB —
+  identical to its explicit `with-region` twin. `with-region` is no longer
+  required to get flat RSS in a resident loop. See
+  [memory-model](reference/runtime/memory-model.md#automatic-per-iteration-reclamation-in-resident-loops-esh-0214e).
+- **`parallel-map` corrupted collection-valued results past the parallel
+  threshold.** A closure whose body used per-iteration scope reclamation (an
+  internal named-let loop, or a builtin such as `memv`) could return
+  dangling/overlapping structure. Scope reclamation now degrades to commit-only
+  on pool workers sharing the thread-safe arena, so results are identical to
+  serial `map`.
+- **`gradient` misdispatched when the callable was reached indirectly.**
+  `(gradient f point)` through a function parameter/wrapper, and the curried
+  `((gradient f) point)`, are now byte-identical to the direct call — the
+  operator recovers the callable's arity from its closure metadata. There is no
+  finite-difference fallback anywhere in the gradient path.
+- **Floating-point printing was fixed-precision.** `display`, `write`, and
+  `number->string` now emit the shortest decimal that reads back as the identical
+  `double` (R7RS 6.2.6), byte-identical on the native and VM backends.
+- **Hosted-VM tensor matmul parity was incomplete.** `arange` (1/2/3-arg),
+  nested-literal tensor operands, and multi-dimensional `tensor-ref` /
+  `tensor-set!` now match native codegen on the bytecode VM.
+
 ## Resolved in v1.1 (Previously Listed as Planned)
 
-✅ `eval` — Dynamic code evaluation via REPL JIT
-✅ `call/cc` + `dynamic-wind` — First-class continuations
-✅ Exact arithmetic — Bignums and rational numbers (35 codegen gaps fixed)
-✅ Bytevectors — R7RS bytevector operations
-✅ Package manager — `eshkol-pkg` with registry
-✅ LSP server — `eshkol-lsp` for IDE integration
-✅ GPU acceleration — Metal (Apple Silicon) + CUDA (NVIDIA), forward and backward
-✅ Complex numbers — First-class type with AD support
-✅ Parallel primitives — `parallel-map/fold/filter/execute`, `future`/`force`
-✅ Signal processing — FFT/IFFT, window functions, FIR/IIR, Butterworth
-✅ Optimization algorithms — Gradient descent, Adam, L-BFGS, conjugate gradient
-✅ Records — R7RS `define-record-type`
-✅ Backward pass dispatch — GPU → BLAS/AMX → scalar (mirrors forward hierarchy)
-✅ Windows — Tier 1 native build via Visual Studio 2022 + LLVM 21
+- `eval` — Dynamic code evaluation via REPL JIT
+- `call/cc` + `dynamic-wind` — First-class continuations
+- Exact arithmetic — Bignums and rational numbers (35 codegen gaps fixed)
+- Bytevectors — R7RS bytevector operations
+- Package manager — `eshkol-pkg` with registry
+- LSP server — `eshkol-lsp` for IDE integration
+- GPU acceleration — Metal (Apple Silicon) + CUDA (NVIDIA), forward and backward
+- Complex numbers — First-class type with AD support
+- Parallel primitives — `parallel-map/fold/filter/execute`, `future`/`force`
+- Signal processing — FFT/IFFT, window functions, FIR/IIR, Butterworth
+- Optimization algorithms — Gradient descent, Adam, L-BFGS, conjugate gradient
+- Records — R7RS `define-record-type`
+- Backward pass dispatch — GPU to BLAS/AMX to scalar (mirrors forward hierarchy)
+- Windows — Tier 1 native build via Visual Studio 2022 + LLVM 21
 
 ---
 
@@ -67,12 +95,15 @@ Top-level mutual recursion requires consecutive function defines. Interleaved no
 ### Tensor nested syntax not supported in VM parser
 `#((1 2) (3 4))` nested tensor syntax is not supported in the bytecode VM parser. Use flat tensors with `reshape` in the native compiler instead.
 
-### Gradient limited to single-variable functions in VM
-`gradient` in the VM only handles single-variable functions. Use `derivative` for scalar AD in the REPL.
+### Reverse-mode gradient on the VM — implementation in progress
+The bytecode VM's AD surface is currently scalar `derivative` only; `gradient`
+in the VM handles single-variable functions today. A VM reverse-mode `gradient`
+implementation is in flight, with full native/VM parity targeted for this
+release line. Use `derivative` for scalar AD in the REPL in the meantime.
 
 ---
 
-## Tracked Open Issues (v1.3.0-evolve)
+## Tracked Open Issues
 
 Edge-case findings surfaced by the adversarial-testing harnesses (see
 [TESTING.md](TESTING.md)). Each has a minimal repro and a ledger entry under

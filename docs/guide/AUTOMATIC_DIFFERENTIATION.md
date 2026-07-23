@@ -704,6 +704,24 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 Points are vectors (`#(…)` or `(vector …)`). Exact seeds (integer/rational)
 yield exact `derivative-n`/`taylor` results for polynomial/rational functions.
 
+`gradient` is exact reverse-mode AD **however the callable is reached** — named
+directly, passed in through a function parameter, wrapped, or applied in curried
+form. `(gradient f point)` where `f` arrives through a parameter, and the curried
+`((gradient f) point)`, are byte-identical to the direct call for scalar
+multi-argument, vector, and non-polynomial losses (JIT and AOT). There is no
+finite-difference fallback anywhere in the gradient path.
+
+```scheme
+(define (loss x y) (+ (* x x) (* y y)))
+(define (apply-grad f pt) (gradient f pt))
+(apply-grad loss (vector 3.0 4.0))   ; through a wrapper
+((gradient loss) (vector 3.0 4.0))   ; curried
+;; => #(6 8) — identical to (gradient loss (vector 3.0 4.0))
+```
+
+See [../reference/ad/architecture.md](../reference/ad/architecture.md#callable-arity-recovery--gradient-through-wrappers-and-curried-forms)
+for the arity-recovery mechanism.
+
 ### Library modules (`(require core.ad.<name>)`)
 
 | Module | Public API | Purpose |

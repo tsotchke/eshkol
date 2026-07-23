@@ -1,15 +1,17 @@
-# Eshkol v1.3.0-evolve Test Coverage
+# Eshkol v1.3.4-evolve Test Coverage
 
-**Version**: v1.3.0-evolve
-**Last Updated**: 2026-05-20
-**Status**: 37 orchestrated suites, including the active v1.2 edge/security
-suite, at 100% pass rate on the verified release gates
+**Version**: v1.3.4-evolve
+**Last Updated**: 2026-07-23
+**Status**: orchestrated suites at 100% pass rate on the verified release gates
 
-**Additional verification**: `scripts/run_all_tests.sh` passes 37/37 suites
-and 528/528 self-reported individual tests. The current v1.2 edge/security
-suite passes 87/87, the standalone VM source suite passes 50/50, the VM C API
-suite passes 81/81, CTest passes 15/15, stress tests pass 3/3, and the Noesis
-aggregate smoke exits with `NOESIS_ALL_RC=0`.
+**Additional verification**: `scripts/run_all_tests.sh` passes every suite and
+its self-reported individual tests; the v1.2 edge/security suite, the standalone
+VM source suite, the VM C API suite, CTest, and the stress tests all pass. The
+v1.3.4-evolve cycle adds regression gates for iter-scope partial reclamation
+(`iter_scope_partial_reclaim`), the `parallel-map` scope-reclaim race
+(`parallel_map_scope_reclaim_race`), the 25-check gradient-through-callable
+suite, the Ozaki-II exact/fast GEMM correctness gates, `i128` native+VM parity,
+and the tensor-matmul VM parity corpus (`31_tensor_matmul`).
 
 ---
 

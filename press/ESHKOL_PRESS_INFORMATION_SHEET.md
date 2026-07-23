@@ -1,10 +1,13 @@
-# Eshkol v1.3.3-evolve — Press Information Sheet
+# Eshkol v1.3.4-evolve — Press Information Sheet
 
 For trade-press and academic readers preparing coverage of the v1.3 release
 line — arbitrary-order automatic differentiation, full R7RS conformance,
-resident/daemon-workload robustness, and, as of v1.3.3-evolve, opt-in
-differentiable quantum computing with post-quantum cryptography — and the
-SDNC paper artefact it carries.
+resident/daemon-workload robustness, opt-in differentiable quantum computing
+with post-quantum cryptography, and, as of v1.3.4-evolve, automatic
+per-iteration memory reclamation that matches explicit regions, race-free
+`parallel-map`, exact gradients through every callable form, shortest-round-trip
+float printing, and a high-precision numerics wave — and the SDNC paper artefact
+it carries.
 
 ---
 
@@ -13,9 +16,9 @@ SDNC paper artefact it carries.
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.3-evolve |
-| Builds on | v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
-| Release date | 16 July 2026 |
+| Version | v1.3.4-evolve |
+| Builds on | v1.3.3-evolve (16 July 2026), v1.3.2-evolve (9 July 2026), v1.3.1-evolve, v1.3.0-evolve (7 July 2026) |
+| Release date | 23 July 2026 |
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
@@ -83,10 +86,49 @@ hosts a transformer that has AD as part of its instruction set.
 
 The paper is *The Self-Differentiating Neural Computer: Computable
 Transformers via Analytical Weight Construction* (tsotchke, 2026). The
-companion repository is `noesis`. The artefact directory is
+artefact directory is
 `artifacts/paper/`; reference documentation lives at *docs/SDNC.md*,
 *docs/breakdown/COMPUTABLE_TRANSFORMER.md*, and
 *docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md*.
+
+---
+
+## What is new in v1.3.4-evolve
+
+A resident-correctness release. Every defect below is fixed at the
+architectural root and pinned by an executable gate.
+
+- **Automatic memory reclamation matches explicit regions.** A resident
+  tick/daemon loop that mutates persistent state on every iteration used to get
+  no per-iteration reclamation and leaked one iteration's transient garbage
+  forever (about 3,366 bytes per tick; roughly 355 MB over 100,000 ticks). Such
+  a loop is now lowered with a per-loop nursery whose write barriers promote
+  escapees and whose tail-call back edge resets the nursery, so the loop is flat
+  at 34 MB — byte-for-byte identical to its explicit `with-region` twin. This
+  closes the ESH-0214 memory-management series; `with-region` is no longer
+  required to get flat RSS in a resident loop.
+- **Race-free `parallel-map`.** A closure mapped in parallel whose body used
+  per-iteration scope reclamation could corrupt collection-valued results past
+  the parallel threshold; scope reclamation now degrades to commit-only on pool
+  workers sharing the thread-safe arena, so results are identical to serial
+  `map` (ThreadSanitizer: zero arena data races).
+- **Exact gradients through every callable form.** `(gradient f point)` reached
+  through a wrapper and the curried `((gradient f) point)` are now byte-identical
+  to the direct call; there is no finite-difference fallback anywhere in the
+  gradient path.
+- **Shortest-round-trip float printing (R7RS 6.2.6)**, byte-identical on the
+  native and VM backends.
+- **Strict-mode types that accept idiomatic code**: a checked `(the <type>
+  expr)` ascription (runtime no-op), predicate-guarded narrowing over eight
+  predicates (`if`/`and`, cancelled at `set!`), sum-type annotations honored on
+  named-let parameters, a numeric-tower join for recursive accumulators, and a
+  linear `Qubit` type with use-exactly-once enforcement.
+- **High-precision numerics**: Ozaki-II exact and reduced-precision GEMM tiers
+  (CUDA INT8 and Metal fast tier, both opt-in), a mixed-precision `linear-solve`
+  with a certified full-f64 residual, and a native 128-bit integer type `i128`.
+- **Quantum and VM parity**: Moonlab pinned to v1.2.0 (quantum geometric tensor
+  / quantum natural gradient, smooth first-principles H2/LiH potential-energy
+  surface), and complete hosted-VM tensor-matmul parity.
 
 ---
 

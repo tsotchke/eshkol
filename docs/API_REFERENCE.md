@@ -1768,10 +1768,17 @@ Lexicographic string comparison.
 
 Conversion between numbers and strings.
 
+For inexact (floating-point) numbers, `number->string` — like `display` and
+`write` — emits the **shortest decimal string that reads back as the identical
+`double`** (R7RS 6.2.6): no digits are lost and none are fabricated. Integral
+doubles print without a trailing `.0`. The native compiler and the bytecode VM
+share one conversion routine, so their output is byte-identical.
+
 **Examples**:
 ```scheme
-(number->string 42)     ; => "42"
-(string->number "3.14") ; => 3.14
+(number->string 42)         ; => "42"
+(string->number "3.14")     ; => 3.14
+(number->string (sqrt 2.0)) ; => "1.4142135623730951"
 ```
 
 ---
@@ -2318,6 +2325,12 @@ Like `map`, but distributes work items across the thread pool. Each element is p
 independently — `proc` must be thread-safe (no shared mutable state without synchronization).
 
 Order is preserved: the output list has the same element ordering as the input.
+
+As of v1.3.4, `parallel-map` is safe for closures that **allocate and return
+collections** (including closures whose bodies use an internal named-let loop or a
+builtin such as `memv`): scope reclamation degrades to commit-only on pool workers
+sharing the thread-safe arena, so results are **identical to serial `map`**. See
+[parallelism](reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134).
 
 ```scheme
 (parallel-map (lambda (x) (* x x)) '(1 2 3 4 5))  ; => (1 4 9 16 25)

@@ -8,13 +8,18 @@
 
 Eshkol is a Scheme-based programming language that unifies functional programming with native automatic differentiation, providing a mathematically rigorous foundation for gradient-based optimization, numerical simulation, and machine learning research. Built on Homotopy Type Theory foundations and compiled to native code via LLVM, Eshkol delivers mathematical correctness and deterministic performance without sacrificing the elegance of homoiconic Lisp syntax.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.3--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Version](https://img.shields.io/badge/version-v1.3.4--evolve-blue.svg)](RELEASE_NOTES.md) [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](CMakeLists.txt)
 
-📣 **v1.3.3-evolve released** — complete quantum
-S1-S5, 100% executable language-surface coverage, and a clean-host-verified
-payload of **15 platform packages plus `SHA256SUMS.txt`** (16 published files).
-The [release workflow](.github/workflows/release.yml) enforces that contract;
-the full release-gate record and exact platform matrix are in
+**v1.3.4-evolve** — a resident-correctness release. Automatic per-iteration
+memory reclamation now matches explicit `with-region` even for loops that mutate
+persistent state; `parallel-map` is race-free for collection-valued closures;
+gradients are exact through every callable form (indirect and curried, no
+finite-difference fallback); printed floats round-trip (R7RS 6.2.6); and the
+strict type checker accepts idiomatic dynamic-but-validated code. It also lands
+the high-precision numerics wave (Ozaki-II exact and reduced-precision GEMM
+tiers, a mixed-precision linear solver, and a native 128-bit integer type
+`i128`), a Moonlab v1.2.0 quantum pin, and full hosted-VM tensor-matmul parity.
+The full release-gate record and exact platform matrix are in
 [RELEASE_NOTES.md](RELEASE_NOTES.md); see
 [ANNOUNCEMENT.md](ANNOUNCEMENT.md) for the full release story.
 
@@ -100,6 +105,12 @@ bounds (`taylor-model`) and sparse multivariate recovery
 (taylor (lambda (x) (exp x)) 0.5 4)          ;; => the first 5 Taylor coefficients of exp at x=0.5
 ```
 
+`gradient` is exact reverse-mode AD **however the callable is reached** — named
+directly, passed through a function parameter, wrapped, or applied in curried
+form. `(gradient f pt)` through a wrapper and the curried `((gradient f) pt)` are
+byte-identical to the direct call, with no finite-difference fallback anywhere in
+the gradient path.
+
 See the [Automatic Differentiation guide](docs/guide/AUTOMATIC_DIFFERENTIATION.md)
 for the full walkthrough, or [CHANGELOG.md](CHANGELOG.md) for the phase-by-phase
 (P0-P12) engineering detail.
@@ -169,7 +180,7 @@ Automatic differentiation is not a library feature—it is intrinsic to the lang
 
 ### **2. Deterministic Memory Management**
 
-Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates garbage collection entirely, providing O(1) allocation and deterministic deallocation. This architecture ensures predictable performance characteristics essential for real-time systems and production machine learning deployments.
+Arena-based allocation with Ownership-Aware Lexical Regions (OALR) eliminates garbage collection entirely, providing O(1) allocation and deterministic deallocation. This architecture ensures predictable performance characteristics essential for real-time systems and production machine learning deployments. As of v1.3.4, **automatic per-iteration reclamation matches explicit `with-region`** even in a resident tick/daemon loop that mutates persistent state every iteration: such a loop is lowered with a per-loop nursery whose write barriers promote escapees and whose back edge resets the nursery, so RSS stays flat without any explicit region annotation. `with-region` remains available for scratch regions but is no longer *required* to get flat RSS in a long-running loop.
 
 ```scheme
 ;; Automatic scope-based memory management

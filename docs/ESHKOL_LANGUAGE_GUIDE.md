@@ -1382,6 +1382,45 @@ Eshkol uses a **polymorphic tagged value system** at runtime:
 - **Mixed-type lists**: Heterogeneous data fully supported
 - **Homoiconicity**: Lambda S-expressions preserved for metaprogramming
 
+#### Static type checking (strict mode)
+
+On top of the runtime tagged-value system, Eshkol has an optional static type
+checker (gradual typing: warnings, not errors — programs run regardless). Strict
+mode accepts idiomatic dynamic-but-validated code without escape hatches:
+
+- **Checked ascription `(the <type> expr)`.** Asserts that `expr` has type
+  `<type>` as a **trusted assertion to the checker** — it narrows the checker's
+  view of `expr` to `<type>`. It is a pure **runtime no-op**: the emitted IR is
+  byte-identical to `expr` alone (no runtime tag check, no cost), so `(the <type>
+  expr)` and `expr` compute exactly the same value.
+
+  ```scheme
+  (the number (car mixed-list))   ; tell the checker this element is a number
+  ```
+
+- **Predicate-guarded narrowing.** Inside a branch guarded by one of eight type
+  predicates, the checker narrows the tested value to that type. The eight
+  predicates are `number?`, `integer?`, `string?`, `symbol?`, `pair?`, `null?`,
+  `vector?`, and `procedure?`. Narrowing is honored across both `if` and `and`,
+  and is **cancelled** at a `set!` of the narrowed variable.
+
+  ```scheme
+  (if (number? x) (+ x 1) 0)      ; x is number in the then-branch
+  (and (pair? p) (car p))         ; p is a pair for (car p)
+  ```
+
+- **Sum-type annotations on named-let parameters** are honored, so a `named-let`
+  accumulator declared as a sum type keeps that type across iterations.
+- **Numeric-tower join for recursive accumulators.** A recursive accumulator is
+  given the least-upper-bound (join) of the numeric types that flow into it,
+  rather than being rejected when it widens (e.g. integer accumulator that later
+  takes a rational or real value).
+- **Linear `Qubit` type.** A first-class linear type whose values must be used
+  exactly once; a `define`d function may declare linear parameters and the
+  checker enforces the use-exactly-once discipline (double-use and drop are both
+  rejected), giving quantum-register operations a no-cloning guarantee at the
+  type level.
+
 ---
 
 ## Why Eshkol?
