@@ -251,6 +251,11 @@ namespace BuiltinTypes {
     inline constexpr TypeId Buffer{111, Universe::U1, 0};
     inline constexpr TypeId Stream{112, Universe::U1, TYPE_FLAG_LINEAR};
 
+    // Quantum qubit — a linear resource: the no-cloning theorem as a type.
+    // Runtime is an integer index into a Moonlab state; the type system forbids
+    // using a qubit more than once (a clone) just like Handle/Stream.
+    inline constexpr TypeId Qubit{113, Universe::U0, TYPE_FLAG_LINEAR};
+
     // Proposition types (U2, Proof - erased at runtime)
     inline constexpr TypeId Eq{200, Universe::U2, TYPE_FLAG_PROOF};
     inline constexpr TypeId LessThan{201, Universe::U2, TYPE_FLAG_PROOF};

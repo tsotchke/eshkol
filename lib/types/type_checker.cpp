@@ -2737,7 +2737,12 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
         for (size_t i = 0; i < def.num_params; i++) {
             if (def.parameters && def.parameters[i].type == ESHKOL_VAR &&
                 def.parameters[i].variable.id) {
-                ctx_.bind(def.parameters[i].variable.id, param_types[i]);
+                // Register linear parameters for use-once checking
+                if (param_types[i].flags & TYPE_FLAG_LINEAR) {
+                    ctx_.bindLinear(def.parameters[i].variable.id, param_types[i]);
+                } else {
+                    ctx_.bind(def.parameters[i].variable.id, param_types[i]);
+                }
             }
         }
 
@@ -2754,6 +2759,16 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
                 def.parameters[i].variable.id) {
                 auto narrowed = ctx_.lookup(def.parameters[i].variable.id);
                 narrowed_param_types.push_back(narrowed ? *narrowed : param_types[i]);
+            }
+        }
+
+        // Check linear variable constraints before popping scope
+        if (!ctx_.checkLinearConstraints()) {
+            for (const auto& name : ctx_.getUnusedLinear()) {
+                reportTypeIssue("linear variable '" + name + "' was not consumed", expr);
+            }
+            for (const auto& name : ctx_.getOverusedLinear()) {
+                reportTypeIssue("linear variable '" + name + "' was consumed more than once", expr);
             }
         }
 

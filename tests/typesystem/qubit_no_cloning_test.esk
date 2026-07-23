@@ -1,0 +1,9 @@
+;; Type System Test: a qubit is linear — cloning it is rejected (no-cloning)
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: linear variable 'q' was consumed more than once
+
+;; The Qubit type carries TYPE_FLAG_LINEAR: a qubit must be used exactly once.
+;; Passing the same qubit to both inputs of a two-qubit gate is a clone, which
+;; the no-cloning theorem forbids — caught here at compile time.
+(define (bad-clone (q : Qubit))
+  (cons q q))          ; q used twice -> no-cloning violation
