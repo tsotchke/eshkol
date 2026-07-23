@@ -15,6 +15,7 @@
 #define VM_STRING_C_INCLUDED
 
 #include "vm_numeric.h"
+#include "eshkol/core/dtoa_shortest.h"
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
