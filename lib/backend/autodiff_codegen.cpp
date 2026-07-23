@@ -3999,171 +3999,15 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
  *         tagged AD-node value if nested inside an outer AD pass, or nullptr
  *         on failure (unresolved function, evaluation failure, etc).
  */
-llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+// Shared exact-AD gradient of a runtime closure value at an already-tagged
+// runtime point. See the declaration in autodiff_codegen.h for the contract.
+// Extracted verbatim from the former inline body of gradient()'s runtime
+// function-parameter path so gradientHigherOrder() can reuse the exact same
+// machinery (retiring the finite-difference higher-order path).
+llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_val,
+                                                         llvm::Value* point_val) {
     using namespace llvm;
-    if (!op->gradient_op.function) {
-        eshkol_error("Invalid gradient operation - missing function");
-        return nullptr;
-    }
-
-    // Higher-order form: (gradient f) returns a closure that computes gradients
-    if (!op->gradient_op.point) {
-        return gradientHigherOrder(op);
-    }
-
-    // Resolve function (lambda or function reference)
-    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
-
-    // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
-    // For gradient with runtime function parameters, we need to use a different approach
-    // since gradient requires knowing the function structure at compile time.
-    // For now, we'll check if the function AST is a variable and look it up.
-    if (!func) {
-        const eshkol_ast_t* func_ast = op->gradient_op.function;
-        if (func_ast && func_ast->type == ESHKOL_VAR) {
-            std::string func_name = func_ast->variable.id;
-            eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
-
-            // Check if this is a function parameter or captured value
-            Value* var_value = nullptr;
-
-            // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
-            // This handles nested functions where captures are stored in GlobalVariables
-            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
-            auto gv_it = global_symbol_table_->find(capture_key);
-            if (gv_it != global_symbol_table_->end() && isa<GlobalVariable>(gv_it->second)) {
-                var_value = gv_it->second;
-            }
-
-            // If not found as a capture, try regular symbol_table lookup
-            if (!var_value) {
-                auto local_it = symbol_table_->find(func_name);
-                if (local_it != symbol_table_->end()) {
-                    var_value = local_it->second;
-                } else {
-                    auto global_it = global_symbol_table_->find(func_name);
-                    if (global_it != global_symbol_table_->end()) {
-                        var_value = global_it->second;
-                    }
-                }
-            }
-
-            // REPL MODE: cross-evaluation symbol registry (functions defined in prior JIT modules)
-            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
-                std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto repl_it = repl_symbol_addresses_->find(func_name);
-                if (repl_it != repl_symbol_addresses_->end()) {
-                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
-                    if (!gv) {
-                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
-                                                GlobalValue::ExternalLinkage, nullptr, func_name);
-                    }
-                    var_value = gv;
-                }
-            }
-
-            // ═══════════════════════════════════════════════════════════════
-            // UNIFIED RUNTIME GRADIENT PATH
-            // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
-            // into a single resolution + shared forward-mode computation.
-            // ═══════════════════════════════════════════════════════════════
-
-            // Step 1: Resolve closure value from var_value
-            Value* closure_val = nullptr;
-
-            if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
-                // Direct Argument — may need capture resolution for nested functions
-                Argument* arg = cast<Argument>(var_value);
-                Function* arg_parent = arg->getParent();
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-
-                if (arg_parent != current_func) {
-                    // From different function — find in current function's captures
-                    bool found_in_captures = false;
-                    for (auto& curr_arg : current_func->args()) {
-                        std::string arg_name = curr_arg.getName().str();
-                        if (arg_name == "captured_" + func_name) {
-                            if (curr_arg.getType()->isPointerTy()) {
-                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), &curr_arg);
-                            } else {
-                                closure_val = &curr_arg;
-                            }
-                            found_in_captures = true;
-                            break;
-                        }
-                    }
-                    if (!found_in_captures) {
-                        std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
-                        auto cap_it = global_symbol_table_->find(capture_key);
-                        if (cap_it != global_symbol_table_->end() && isa<GlobalVariable>(cap_it->second)) {
-                            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_it->second);
-                            found_in_captures = true;
-                        } else {
-                            auto var_cap_it = global_symbol_table_->find(func_name);
-                            if (var_cap_it != global_symbol_table_->end() && isa<GlobalVariable>(var_cap_it->second)) {
-                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_cap_it->second);
-                                found_in_captures = true;
-                            }
-                        }
-                    }
-                    if (!found_in_captures) {
-                        eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
-                        return nullptr;
-                    }
-                } else {
-                    closure_val = var_value;
-                }
-            } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
-                // Pointer-type captured Argument — load the tagged value
-                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-            } else if (var_value && isa<GlobalVariable>(var_value)) {
-                // GlobalVariable — may be from a different module (REPL mode), so ensure we
-                // reference the symbol via the CURRENT module with ExternalLinkage if needed.
-                GlobalVariable* gv = cast<GlobalVariable>(var_value);
-                if (gv->getParent() != &ctx_.module()) {
-                    GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
-                    if (!cur_gv) {
-                        cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
-                                                    GlobalValue::ExternalLinkage, nullptr, gv->getName());
-                    }
-                    gv = cur_gv;
-                }
-                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
-            } else if (var_value && isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
-                AllocaInst* alloca = cast<AllocaInst>(var_value);
-                if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
-                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                }
-            } else if (var_value && isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
-                closure_val = var_value;
-            }
-
-            // Step 2: Shared forward-mode gradient computation
-            if (closure_val) {
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-
-                // Get the input point
-                Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
-                if (!point_val) {
-                    eshkol_error("Failed to evaluate gradient point");
-                    return nullptr;
-                }
-
-                // Ensure point is tagged
-                if (point_val->getType() != ctx_.taggedValueType()) {
-                    if (point_val->getType()->isIntegerTy(64)) {
-                        if (op->gradient_op.point->type == ESHKOL_TENSOR) {
-                            point_val = tagged_.packPtr(point_val, ESHKOL_VALUE_HEAP_PTR);
-                        } else {
-                            point_val = tagged_.packInt64(point_val, true);
-                        }
-                    } else if (point_val->getType()->isDoubleTy()) {
-                        point_val = tagged_.packDouble(point_val);
-                    }
-                }
-
-                // Note: current_func already defined above for capture lookup
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
                 // Get arena_allocate for Scheme vector allocation
                 Function* arena_allocate_func = (*function_table_)["arena_allocate"];
@@ -4849,6 +4693,180 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
                 ctx_.builder().SetInsertPoint(grad_rt_done);
                 return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
+}
+
+llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->gradient_op.function) {
+        eshkol_error("Invalid gradient operation - missing function");
+        return nullptr;
+    }
+
+    // Higher-order form: (gradient f) returns a closure that computes gradients
+    if (!op->gradient_op.point) {
+        return gradientHigherOrder(op);
+    }
+
+    // Resolve function (lambda or function reference)
+    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
+
+    // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
+    // For gradient with runtime function parameters, we need to use a different approach
+    // since gradient requires knowing the function structure at compile time.
+    // For now, we'll check if the function AST is a variable and look it up.
+    if (!func) {
+        const eshkol_ast_t* func_ast = op->gradient_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
+
+            // Check if this is a function parameter or captured value
+            Value* var_value = nullptr;
+
+            // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
+            // This handles nested functions where captures are stored in GlobalVariables
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+            auto gv_it = global_symbol_table_->find(capture_key);
+            if (gv_it != global_symbol_table_->end() && isa<GlobalVariable>(gv_it->second)) {
+                var_value = gv_it->second;
+            }
+
+            // If not found as a capture, try regular symbol_table lookup
+            if (!var_value) {
+                auto local_it = symbol_table_->find(func_name);
+                if (local_it != symbol_table_->end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table_->find(func_name);
+                    if (global_it != global_symbol_table_->end()) {
+                        var_value = global_it->second;
+                    }
+                }
+            }
+
+            // REPL MODE: cross-evaluation symbol registry (functions defined in prior JIT modules)
+            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
+                    if (!gv) {
+                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
+                                                GlobalValue::ExternalLinkage, nullptr, func_name);
+                    }
+                    var_value = gv;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // UNIFIED RUNTIME GRADIENT PATH
+            // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
+            // into a single resolution + shared forward-mode computation.
+            // ═══════════════════════════════════════════════════════════════
+
+            // Step 1: Resolve closure value from var_value
+            Value* closure_val = nullptr;
+
+            if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
+                // Direct Argument — may need capture resolution for nested functions
+                Argument* arg = cast<Argument>(var_value);
+                Function* arg_parent = arg->getParent();
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                if (arg_parent != current_func) {
+                    // From different function — find in current function's captures
+                    bool found_in_captures = false;
+                    for (auto& curr_arg : current_func->args()) {
+                        std::string arg_name = curr_arg.getName().str();
+                        if (arg_name == "captured_" + func_name) {
+                            if (curr_arg.getType()->isPointerTy()) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), &curr_arg);
+                            } else {
+                                closure_val = &curr_arg;
+                            }
+                            found_in_captures = true;
+                            break;
+                        }
+                    }
+                    if (!found_in_captures) {
+                        std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+                        auto cap_it = global_symbol_table_->find(capture_key);
+                        if (cap_it != global_symbol_table_->end() && isa<GlobalVariable>(cap_it->second)) {
+                            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_it->second);
+                            found_in_captures = true;
+                        } else {
+                            auto var_cap_it = global_symbol_table_->find(func_name);
+                            if (var_cap_it != global_symbol_table_->end() && isa<GlobalVariable>(var_cap_it->second)) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_cap_it->second);
+                                found_in_captures = true;
+                            }
+                        }
+                    }
+                    if (!found_in_captures) {
+                        eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
+                        return nullptr;
+                    }
+                } else {
+                    closure_val = var_value;
+                }
+            } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                // Pointer-type captured Argument — load the tagged value
+                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+            } else if (var_value && isa<GlobalVariable>(var_value)) {
+                // GlobalVariable — may be from a different module (REPL mode), so ensure we
+                // reference the symbol via the CURRENT module with ExternalLinkage if needed.
+                GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                if (gv->getParent() != &ctx_.module()) {
+                    GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
+                    if (!cur_gv) {
+                        cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
+                                                    GlobalValue::ExternalLinkage, nullptr, gv->getName());
+                    }
+                    gv = cur_gv;
+                }
+                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
+            } else if (var_value && isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
+                AllocaInst* alloca = cast<AllocaInst>(var_value);
+                if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                }
+            } else if (var_value && isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                closure_val = var_value;
+            }
+
+            // Step 2: Shared forward-mode gradient computation
+            if (closure_val) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                // Get the input point
+                Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+                if (!point_val) {
+                    eshkol_error("Failed to evaluate gradient point");
+                    return nullptr;
+                }
+
+                // Ensure point is tagged
+                if (point_val->getType() != ctx_.taggedValueType()) {
+                    if (point_val->getType()->isIntegerTy(64)) {
+                        if (op->gradient_op.point->type == ESHKOL_TENSOR) {
+                            point_val = tagged_.packPtr(point_val, ESHKOL_VALUE_HEAP_PTR);
+                        } else {
+                            point_val = tagged_.packInt64(point_val, true);
+                        }
+                    } else if (point_val->getType()->isDoubleTy()) {
+                        point_val = tagged_.packDouble(point_val);
+                    }
+                }
+
+                // Note: current_func already defined above for capture lookup
+
+                // Delegate to the shared exact-AD runtime-closure gradient so the
+                // wrapped / callable-parameter form uses the identical machinery as
+                // the higher-order closure body (no finite-difference anywhere).
+                Value* rt_grad = emitRuntimeClosureGradient(closure_val, point_val);
+                if (!rt_grad) return nullptr;
+                return rt_grad;
             } // end if (closure_val)
 
         }
