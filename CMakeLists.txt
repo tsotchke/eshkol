@@ -2834,6 +2834,31 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     )
     set_tests_properties(tensor_integer_shaped_literal_runtime_smoke
         PROPERTIES PASS_REGULAR_EXPRESSION "#\\(\\(1 2\\) \\(3 4\\)\\)")
+    # #309 regression guard: a matmul result read via tensor-ref/tensor-data
+    # from INSIDE a defined function (captured global, argument, in-function
+    # matmul, nested define, closure, with-region escape, and a large
+    # GPU/BLAS-dispatched matmul) must return the SAME values as a top-level
+    # read — never zeros. Verified on both -r (JIT) and AOT.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/matmul_read_in_define_test.esk")
+        add_test(
+            NAME matmul_read_in_define_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/matmul_read_in_define_test.esk"
+        )
+        set_tests_properties(matmul_read_in_define_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: matmul tensor reads inside defined functions match top-level"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME matmul_read_in_define_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/matmul_read_in_define_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/matmul_read_in_define_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/matmul_read_in_define_aot'"
+        )
+        set_tests_properties(matmul_read_in_define_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: matmul tensor reads inside defined functions match top-level"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     add_test(
         NAME autodiff_tensor_reductions_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
+  mutates persistent state every tick no longer leaks.** This closes the
+  ESH-0214 memory-management series. ESH-0214b's automatic per-iteration
+  arena reclamation was *all-or-nothing*: the static escape analysis rejected a
+  loop body outright the moment it contained any persistent mutation, because a
+  value the iteration allocates and then stores into outer/persistent state
+  would dangle when the per-iteration arena scope was rewound. So a daemon/tick
+  loop that mutates a knowledge base / workspace / growing list on **every**
+  iteration got **no** reclamation and leaked one iteration's transient garbage
+  forever — measured at ~3,366 bytes/tick (linear, unbounded; ~355 MB at
+  100,000 ticks). ESH-0214e lowers a mutating-but-escape-safe loop with a
+  **per-loop nursery region** instead of rejecting it, reusing — verbatim — the
+  `with-region` deep-transitive escape-promotion path validated over a 48-hour
+  resident run (ESH-0214c/d), not a second evacuator: every iteration allocation
+  lands in the nursery arena, each of the six mutation channels' *existing*
+  write barriers promotes any persistent-mutation escapee out of the nursery at
+  the store, each TCO back edge promotes the loop-carried out-values out and then
+  resets the nursery, and the loop exit escapes the result and tears the nursery
+  down. The reclamation is sound by the same invariant as `with-region`'s
+  `region_pop` (after promotion no surviving object points into the reset span) —
+  textbook deterministic generational minor collection (nursery = young
+  generation, write barrier = remembered set, back-edge recycle = minor
+  collection), with no tracing pause. Admitted mutators are the five *structural*
+  channels barriered unconditionally on the mutated structure pointer
+  (`vector-set!`, `vector-fill!`, `hash-table-set!`, `set-car!`, `set-cdr!`);
+  `set!` is deliberately excluded (its barrier fires only for globals, and
+  proving a `set!` target is global rather than a shadowing enclosing-scope local
+  needs lexical resolution this downward-only analysis lacks). Non-mutating loops
+  keep the exact ESH-0214b arena-scope path (zero change to the
+  `define_loop_flat_rss_aot` gate). After the fix the same tick loop is flat at
+  34 MB — **identical to its explicit `with-region` twin** — with every stored
+  value reading back correct, JIT and AOT, and clean under
+  `ESHKOL_ARENA_POISON=1`. Adds `tests/memory/iter_scope_partial_reclaim_test.esk`
+  / `.sh` (+ the `with-region` baseline twin) and the
+  `iter_scope_partial_reclaim` ICC oracle.
+  (`lib/core/runtime_regions.cpp`, `lib/backend/llvm_codegen.cpp`,
+  `inc/eshkol/backend/binding_codegen.h`)
+
 ### Added
 
 - **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
@@ -144,6 +184,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tests/vm_parity/corpus/31_float_precision.esk` and the
   `printer_roundtrip_oracle` ICC gate. (`lib/core/runtime_display_hosted.cpp`,
   `lib/backend/vm_core.c`, `lib/backend/vm_native.c`, `lib/backend/vm_string.c`)
+- **matmul tensor reads inside a defined function (#309) — verified resolved
+  and now guarded.** #309 reported that a `matmul` result read back via
+  `tensor-ref`/`tensor-data` from inside a `define`d function returned zeros,
+  while only top-level reads were correct. The symptom was a mis-attribution of
+  the Ozaki-II CRT-overflow/precision defect fixed in #307 (above): once #307
+  landed, in-function reads return the identical correct data as top-level
+  reads. This was reconfirmed by rebuilding at the #307 merge commit and at
+  current master — the tensor read + arena + matmul codegen/runtime path is
+  byte-identical between them — and exercised on JIT, AOT and the forced-GPU
+  Ozaki path across captured-global / argument / in-function-matmul /
+  nested-define / closure-capture / `with-region`-escape / large
+  (GPU/BLAS-dispatched) forms; every in-function read matched the top-level
+  read. Adds `tests/tensor/matmul_read_in_define_test.esk`
+  (`matmul_read_in_define_jit_smoke` + `matmul_read_in_define_aot_smoke` CTests)
+  and the `matmul_tensor_read_scope_oracle` ICC gate so the scope contract can
+  never silently regress, and retires the defensive "read only at top level"
+  work-around comments in the Ozaki correctness/certification fixtures.
 - **Ozaki-II exact DGEMM correctness (Metal).** The opt-in CRT matmul
   (`ESHKOL_SF64_KERNEL=ozaki`) silently produced 5-30% numerical errors on any
   non-integer input, and returned NaN/garbage when asked for more than 16

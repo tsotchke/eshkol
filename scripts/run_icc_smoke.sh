@@ -464,6 +464,16 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
+probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
+    'cd "$REPO_ROOT";
+     ## ESH-0214e: iter-scope partial reclamation. A guard-wrapped self-tail
+     ## define loop that hash-table-set!/vector-set!/set-cdr!s persistent state
+     ## every tick used to be REJECTED by the all-or-nothing gate and leaked one
+     ## tick of transient garbage forever; now it runs inside a per-loop nursery
+     ## region that promotes escapees out and resets each tick. The gate also
+     ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
+     bash tests/memory/iter_scope_partial_reclaim_test.sh'
+
 probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
     'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
 
@@ -531,6 +541,16 @@ probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display 
        printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
        printf "%s" "$out" | grep -q "error:" && exit 1;
      fi;
+probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
+    'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
+     out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "PASS: matmul tensor reads inside defined functions match top-level" || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "PASS: matmul tensor reads inside defined functions match top-level" || exit 1;
+     printf "%s" "$out" | grep -q "FAIL:" && exit 1;
      exit 0'
 
 echo

@@ -179,6 +179,13 @@ oracles:
         severity: high
         label: 'linear-solve: mixed-precision iterative-refinement dense solver reaches full-f64 backward residual (<=1e-12, computed independently) on well-conditioned/identity systems and raises catchably on singular/dimension-mismatch — verified on JIT, AOT, and the VM'
         action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["matmul_tensor_read_scope_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from inside a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the same data as a top-level read — never silent zeros; verified on JIT and AOT'
+        action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
   # TOTAL-LANGUAGE completion — unlike the compiler-readiness ratchet above,
@@ -404,6 +411,27 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: 'ESH-0214b v1.3.1: AOT guard-wrapped define loop stays under the 200MB flat-RSS ceiling'
+        action: ./scripts/run_icc_smoke.sh
+
+      # ESH-0214e: closes the ESH-0214 series. ESH-0214b's automatic
+      # per-iteration reclamation was all-or-nothing — it rejected any loop body
+      # that mutated persistent state, so a resident tick loop that mutates every
+      # tick got NO reclamation and leaked one tick's transient garbage forever.
+      # ESH-0214e lowers a mutating-but-escape-safe loop with a per-loop nursery
+      # region that reuses the 48h-validated with-region deep-promotion path: the
+      # write barrier promotes each persistent-mutation escapee out of the
+      # nursery, the loop-carried out-values are promoted at each back edge, then
+      # the nursery is reset. The gate compiles the tick loop AOT (flat RSS +
+      # correct read-back of KB/workspace/list), re-runs it under
+      # ESHKOL_ARENA_POISON=1 (a missed escapee crashes at 0xCB.. instead of
+      # reading recycled memory), checks the JIT path, and A/Bs against the
+      # explicit with-region twin.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["iter_scope_partial_reclaim"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'ESH-0214e: resident tick loop that mutates persistent state every tick (hash-table-set!/vector-set!/set-cdr!) reclaims transient garbage automatically via a nursery region — AOT flat RSS, correct read-back, clean under ESHKOL_ARENA_POISON=1, within 10x of the with-region baseline'
         action: ./scripts/run_icc_smoke.sh
 
       - runtime_event:
