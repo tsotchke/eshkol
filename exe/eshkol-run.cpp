@@ -311,6 +311,42 @@ static unsigned int link_subprocess_timeout_seconds() {
     return 300; // 5 minutes
 }
 
+// `-r` masked-failure classification (transitive-FFI-link audit).
+//
+// Under `-r`, the persistent-cache path spawns a CHILD `eshkol-run` to AOT-build
+// the program, then — historically — fell back to the in-process interpreter on
+// ANY child failure and exited 0, certifying a build that never linked. But the
+// two failure stages are not equivalent:
+//
+//   * A CODEGEN/compile failure (e.g. an undefined function) is shared by the
+//     in-process JIT: falling back lets the JIT reproduce the SAME failure with
+//     its richer runtime diagnostic (the "called undefined function 'x'" named
+//     error, a hard-won contract) and its own nonzero exit. This fallback is
+//     correct and must be preserved — it does NOT mask, it re-diagnoses.
+//
+//   * A LINK failure is the masking vector: the standalone binary could not
+//     resolve a native symbol, but the in-process JIT links eshkol-run's full
+//     native closure (agent-FFI, etc.), so it would run the program anyway and
+//     exit 0 — falsely certifying a build that never linked. This must be FATAL.
+//
+// To let the parent tell the two apart from the child's exit status alone, the
+// parent sets ESHKOL_INTERNAL_CACHE_BUILD=1 for the child, and the child's AOT
+// link-failure / link-timeout paths return this distinct sentinel INSTEAD of 1
+// when that env is present. Direct `eshkol-run file.esk -o out` users (no env)
+// keep the historical exit code 1. The value is observed only by the parent and
+// is chosen to avoid colliding with a codegen failure (1), SUBPROCESS_TIMEOUT
+// (124), or an execvp error (126/127).
+static constexpr int kCacheBuildLinkFailureExit = 3;
+
+static const char* const kCacheBuildEnvVar = "ESHKOL_INTERNAL_CACHE_BUILD";
+
+// True when this process was spawned as the AOT-build child of a `-r` cache
+// miss (see kCacheBuildLinkFailureExit).
+static bool running_as_cache_build_child() {
+    const char* v = std::getenv(kCacheBuildEnvVar);
+    return v && v[0] != '\0';
+}
+
 // Digest of the FULL compilation unit: the entry file plus every source file
 // reachable from it via (load "…") / (import "…") / (require module).  Defined
 // far below (it needs resolve_module_path); forward-declared at file scope here
@@ -819,49 +855,65 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     compile_args.push_back(temp_binary.string());
 
     // Bound the cached-binary build. The child runs the full AOT compile +
-    // native link; if its linker hangs (the child bounds its own link too, but
-    // belt-and-suspenders here covers any other stall), kill it and return
-    // nullopt so the caller fails fast to the interpreter rather than wedging
-    // the whole `-r` invocation. This is the architectural guarantee Noesis
-    // asked for: a JIT-link problem must never hang, only fall back.
+    // native link; if it hangs (the child bounds its own link too, but this is
+    // belt-and-suspenders for any other stall), the parent's bounded wait kills
+    // it and — because the failing stage is then ambiguous — falls back to the
+    // interpreter rather than wedging the whole `-r` invocation (see the
+    // SUBPROCESS_TIMEOUT branch below).
+    //
+    // Ask the child to report a LINK failure with a distinct exit sentinel so we
+    // can tell "the standalone binary could not link a native symbol" (fatal;
+    // the in-process JIT would mask it by running with eshkol-run's own native
+    // closure) apart from "the program failed to compile" (fall back so the JIT
+    // re-diagnoses it, e.g. the named undefined-function runtime error). See
+    // kCacheBuildLinkFailureExit. Scoped to the child spawn and cleared after.
+    ::setenv(kCacheBuildEnvVar, "1", 1);
     int compile_status = eshkol::pkg::run_subprocess(
         compile_args, nullptr, link_subprocess_timeout_seconds());
+    ::unsetenv(kCacheBuildEnvVar);
     // The child compiler normally removes this linker input itself, but a
     // concurrent cold-cache stress exposed persistent `.tmp.o` sidecars.
     // The parent owns the cache transaction and therefore performs a final,
     // idempotent cleanup after the child has exited on every outcome.
     remove_temp_object();
+    if (compile_status == kCacheBuildLinkFailureExit) {
+        // Trust-critical (transitive-FFI-link audit): the child's CODEGEN
+        // succeeded but the native LINK failed — the produced program references
+        // symbols that do not resolve standalone. Falling back to the in-process
+        // interpreter here would run a semantically reduced program (one whose
+        // omitted native symbols happen to resolve inside eshkol-run itself) and
+        // exit 0, certifying a build that never linked. The child already
+        // streamed the linker diagnostic to this process's stderr; surface a
+        // terminal error and exit nonzero. A LINK failure under -r is FATAL and
+        // never runs the reduced program.
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("link-failed", key);
+        eshkol_error("-r: native link of '%s' failed; refusing to fall back to "
+                     "a reduced in-process run. See the linker diagnostics above.",
+                     filepath.c_str());
+        return 1;
+    }
     if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
-        // A timed-out AOT compile+link leaves NO valid native build. Historically
-        // this fell back (return nullopt) to the in-process interpreter and exited
-        // 0 — the same trust violation as an outright link failure below: a run
-        // that never produced a linked binary was certified as success. Treat a
-        // link/compile timeout as fatal (see the compile-failed branch).
+        // The parent's bounded wait killed a hung child. The failing stage is
+        // ambiguous (codegen vs link), so keep the historical anti-hang
+        // behaviour: fall back to the in-process interpreter rather than wedging
+        // the whole `-r` invocation. (A LINK-stage timeout the child detected
+        // itself arrives as kCacheBuildLinkFailureExit above and is fatal.)
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-timeout", std::to_string(link_subprocess_timeout_seconds()));
-        eshkol_error("-r: native build of '%s' timed out after %u seconds; "
-                     "refusing to fall back to a reduced in-process run "
-                     "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust).",
-                     filepath.c_str(), link_subprocess_timeout_seconds());
-        return eshkol::pkg::SUBPROCESS_TIMEOUT;
+        return std::nullopt;
     }
     if (compile_status != 0) {
-        // Trust-critical (transitive-FFI-link audit): the child ran the full AOT
-        // compile + native link of the REAL program. If it failed, the program
-        // has no valid native build. Falling back to the in-process interpreter
-        // here — the historical `return std::nullopt` — would run a semantically
-        // reduced program (e.g. one whose omitted agent-FFI symbols happen to
-        // resolve inside eshkol-run itself) and exit 0, certifying a build that
-        // never linked. The child already streamed the compiler/linker
-        // diagnostic to this process's stderr; surface a terminal error and
-        // propagate its nonzero status. A link/compile failure under -r is FATAL.
+        // A CODEGEN/compile failure (not a link failure). The in-process JIT
+        // shares this failure, so fall back and let it reproduce the error with
+        // its richer runtime diagnostic (e.g. the "called undefined function
+        // 'x' (forward-referenced but never defined)" named error — a hard-won
+        // contract) and its own nonzero exit. This path does NOT mask: a program
+        // that fails to compile also fails in the JIT, so no false certification
+        // results, and the caller's in-process run still exits nonzero.
         std::filesystem::remove(temp_binary, ec);
         jitCacheTrace("compile-failed", std::to_string(compile_status));
-        eshkol_error("-r: native build of '%s' failed (exit %d); refusing to "
-                     "fall back to a reduced in-process run. See the "
-                     "compiler/linker diagnostics above.",
-                     filepath.c_str(), compile_status);
-        return compile_status != 0 ? compile_status : 1;
+        return std::nullopt;
     }
 
     std::error_code temp_ec;
@@ -5243,12 +5295,20 @@ int main(int argc, char **argv)
             }
         }
 
+        // When this process is the AOT-build child of a `-r` cache miss, report
+        // a LINK-stage failure with a distinct sentinel so the parent treats it
+        // as fatal (never masks it with a reduced in-process run) while a
+        // CODEGEN failure — which returns 1 earlier — falls back to the JIT for
+        // its richer diagnostic. Direct users keep exit code 1. See
+        // kCacheBuildLinkFailureExit.
+        const int link_failure_exit =
+            running_as_cache_build_child() ? kCacheBuildLinkFailureExit : 1;
         if (result == eshkol::pkg::SUBPROCESS_TIMEOUT) {
             eshkol_error("Linking timed out after %u seconds and was aborted "
                          "(set ESHKOL_LINK_TIMEOUT_SECONDS to adjust)",
                          link_subprocess_timeout_seconds());
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
-            return 1;
+            return link_failure_exit;
         }
         if (result != 0) {
             eshkol_error("Linking failed with exit code %d", result);
@@ -5257,7 +5317,7 @@ int main(int argc, char **argv)
             // supports it — see warn_if_link_archive_recently_modified().
             warn_if_link_archive_recently_modified(link_args);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
-            return 1;
+            return link_failure_exit;
         }
 
         eshkol_info("Successfully created executable: %s", output);

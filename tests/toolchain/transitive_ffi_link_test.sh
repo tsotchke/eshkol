@@ -177,4 +177,28 @@ if [ "$aot_fault_status" -eq 0 ]; then
     fail "AOT accepted a program whose link could not succeed (should exit nonzero)"
 fi
 
+# ── 5. Codegen failure under -r must fall back and keep the NAMED diagnostic ──
+# The fatal-link path (step 4) must NOT swallow the class of failure that the
+# in-process JIT diagnoses better: an undefined function must still fall back to
+# the JIT so its "called undefined function 'x'" named runtime error fires (the
+# Bug-W contract), while still exiting nonzero. This pins the link-vs-codegen
+# distinction so the fatal-link hardening never regresses the named diagnostic.
+cat > "$tmp/undef.esk" <<'EOF'
+(require stdlib)
+(some-totally-undefined-fn-xyz 42)
+(display "SHOULD_NOT_REACH")
+(newline)
+EOF
+cache3="$tmp/cache3"
+set +e
+ESHKOL_JIT_CACHE_DIR="$cache3" "$ESHKOL_RUN" -r "$tmp/undef.esk" \
+    > "$tmp/undef.out" 2> "$tmp/undef.err"
+undef_status=$?
+set -e 2>/dev/null || true
+if [ "$undef_status" -eq 0 ]; then
+    fail "-r exited 0 for a program calling an undefined function (must be nonzero)"
+fi
+grep -q "called undefined function 'some-totally-undefined-fn-xyz'" "$tmp/undef.err" || \
+    fail "-r lost the named undefined-function diagnostic (Bug-W contract) — the fatal-link path must fall back to the JIT for codegen failures, not swallow them"
+
 echo "PASS: transitive_ffi_link_test"

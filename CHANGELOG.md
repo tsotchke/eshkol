@@ -27,15 +27,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ordinary AOT alike. Programs with no agent-FFI usage still do not link the
     archive (no over-linking).
   - *(B) Masked link failure under `-r`.* When the persistent-cache child's AOT
-    compile/link failed, `eshkol-run -r` fell back to a reduced in-process run
-    and exited **0**, certifying a build that never linked — a trust hazard for
-    CI/benchmark harnesses. A generated-program compile/link failure (or link
-    timeout) under `-r` is now **fatal**: the linker diagnostic is surfaced and
-    the process exits nonzero, never running a semantically reduced program.
-    A missing/unopenable input file under `-r` is likewise no longer swallowed
-    with a zero exit. Regression: `tests/toolchain/transitive_ffi_link_test.sh`
-    (multi-level load graph, JIT + AOT, over-linking guard, fatal-link exit
-    status).
+    build failed, `eshkol-run -r` fell back to a reduced in-process run and
+    exited **0**, certifying a build that never linked — a trust hazard for
+    CI/benchmark harnesses. The fix distinguishes the two failure stages: a
+    native **link** failure (the masking vector — the standalone binary can't
+    resolve a symbol the in-process JIT would satisfy from eshkol-run's own
+    native closure) is now **fatal** under `-r` (linker diagnostic surfaced,
+    nonzero exit, the reduced program never runs); a **codegen/compile** failure
+    still falls back to the in-process JIT, which reproduces the same failure
+    with its richer runtime diagnostic — preserving the "called undefined
+    function 'x' (forward-referenced but never defined)" named error (the Bug-W
+    contract) and its nonzero exit. A missing/unopenable input file under `-r`
+    is likewise no longer swallowed with a zero exit. Regression:
+    `tests/toolchain/transitive_ffi_link_test.sh` (multi-level load graph,
+    JIT + AOT, over-linking guard, fatal-link exit status, and a codegen-failure
+    case asserting the named diagnostic still fires under `-r`).
 
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
