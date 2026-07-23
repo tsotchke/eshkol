@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SDNC weight-matrix backward pass wired into the build with a gradient
+  check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
+  companion to the analytical forward constructor in `weight_matrices.c` — was
+  previously source-only: no build target, every function `static`, zero test
+  coverage. It is now compiled by the normal build (static library
+  `eshkol-qllm-backward`, header `inc/eshkol/backend/qllm_backward.h`), with the
+  two FFN backward passes (SQUARE-activation and gated-sigmoid) exposed as a
+  public surface. The backward math is precision-generic (`qllm_real`, default
+  `float` so the QLMW/`InterpreterWeights` layout is byte-identical). A new
+  gradient-check test (`tests/backend/qllm_backward_gradcheck_test.c`, ctest
+  `qllm_backward_gradcheck`) validates the analytical gradients against a
+  central finite-difference reference — recompiled in double
+  (`-DQLLM_REAL=double`) so the finite-difference floor drops below the
+  documented **1e-6** relative-error bar; achieved SQUARE `3.7e-9`, gated
+  `2.3e-9`. Also wired as the `qllm_backward_gradcheck` ICC smoke probe and a
+  completion-oracle criterion under `sdnc-paper-reproducibility`.
+- **`eshkol-qllm-run` tool.** `lib/backend/qllm_interpreter.c` (previously
+  unbuilt) is now a standalone executable that loads a QLMW v3 weight file and
+  executes Eshkol bytecode through the six-layer transformer forward pass — the
+  weights *are* the interpreter. Default build uses the portable C reference
+  matmul; `-DUSE_QLLM` links the qLLM NEON/Metal backend.
+
+### Changed
+
+- **`docs/SDNC.md` refreshed to verified reality.** Added the two-execution-layer
+  framing — the SDNC weight-matrix layer (83-opcode ISA incl. 19 AD opcodes,
+  127/127 three-way verified) and the production bytecode VM (66-opcode enum +
+  720 native-call IDs spanning 20–2118, AD dispatched at 390–409) as two real,
+  verified layers of one system with a precise opcode-for-capability
+  correspondence; updated counts upward where reality exceeds the doc
+  (three-way verification 127/127 inline, 124/124 traced, 83 opcodes
+  weight-implemented; `weight_matrices.c` now 7,544 lines); corrected
+  `execute_step`/`run_reference`/`forward_with_weights`/`export_weights_binary`
+  line references; documented the native-call ID surface (AD 390–409/1841–1844,
+  tensors 410–461, consciousness 509–547/1800s, i128 2100–2118); and re-pinned
+  the §7.3 SHA-256 checksums at the current verification SHA.
+
 ### Fixed
 
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that

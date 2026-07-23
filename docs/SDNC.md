@@ -19,15 +19,65 @@ parameters reproduces, bit-identically in float32, an 83-instruction
 bytecode VM that includes reverse-mode automatic differentiation as
 part of its ISA. No training. No optimiser. The weights are the
 deterministic closed-form solution to the linear/piecewise-linear
-constraints implied by the small-step semantics.
+constraints implied by the small-step semantics. This is the SDNC
+weight-matrix layer; §0 sets out how it and the production bytecode VM
+are two execution layers of one system, corresponding opcode-for-capability.
 
 **Status.** The current artefact regenerates the weight matrices and
-verifies **126/126 inline programs** and **123/123 traced programs**.
+verifies **127/127 inline programs** (three-way self-test,
+`ctest -R sdnc_paper_weight_tests`) and **124/124 traced programs**.
 The matrix forward path agrees with the reference C interpreter on
-every byte of every step of every traced program. The strict artefact
-covers **82 of the 83 canonical opcodes**; the only opcode left
-outside is `OP_NATIVE_CALL`, the deliberate external boundary for
-host services.
+every byte of every step of every traced program. The artefact
+weight-implements **83 opcodes** — every opcode but `OP_NATIVE_CALL`,
+the deliberate external boundary for host services.
+
+> **Numbers track master.** The counts, line references, and IDs in
+> this document are re-verified against the current `master`; the SDNC
+> *paper* freezes them at a tagged verification SHA (per the companion
+> framing). Where this doc and the frozen paper disagree on a count,
+> the doc is the moving reference and the paper is the historical pin.
+> This revision is verified at commit `401808ef`.
+
+---
+
+## 0. Two execution layers of one system
+
+The SDNC runs on **two execution layers**, and both are built, run, and
+verified today. Numbers in circulation belong to one layer or the other;
+the two are complementary substrates for the same architecture, and they
+correspond opcode-for-capability.
+
+1. **The SDNC weight-matrix layer** (`lib/backend/weight_matrices.c`). A
+   six-layer transformer whose 12,220,422 analytically-constructed weights
+   *are* an **83-opcode ISA**: `OP_NOP=0 … OP_VOID=63` (64 base) +
+   `OP_AD_VAR=64 … OP_AD_COS=82` (**19 reverse-mode AD opcodes**), with a
+   later base stack op `OP_SWAP=83` bringing `OP_COUNT` to 84. Reverse-mode
+   automatic differentiation is a **first-class part of this ISA**:
+   differentiating a program is one extra dispatch state, computed through
+   the same weight matrices as the forward pass. The layer is verified three
+   ways (reference C / simulated transformer / matrix forward) at **127/127
+   inline** and **124/124 traced** programs, bit-identically on the full
+   per-step state, and it weight-implements **83 opcodes** — every opcode but
+   `OP_NATIVE_CALL=37`, the deliberate host boundary.
+
+2. **The production bytecode VM** (`lib/backend/vm_core.c`, `eshkol_vm.c`,
+   `vm_native.c`). The compiler/runtime's executable ISA: a 66-value opcode
+   enum (`OP_NOP=0 … OP_VOID=63`, plus `OP_LANGUAGE_COVERAGE` 64/65 metadata,
+   `OP_COUNT=66`) plus **720 native-call IDs spanning 20–2118** reached
+   through `OP_NATIVE_CALL`. Here the same capabilities run as native calls:
+   reverse-mode AD at **390–409** (+1841–1844), tensors 410–461, the
+   consciousness engine 509–547, i128 2100–2118 (§12).
+
+**The correspondence.** The two layers implement the same semantics on
+different substrates. The weight-matrix layer's AD opcodes `OP_AD_VAR=64 …
+OP_AD_COS=82` are the weight-encoded form of the production VM's AD native
+calls `390–409` — the same reverse-mode tape and rules, one expressed as
+transformer weights and one as C dispatch. The base opcodes `0–63` are
+shared verbatim. `OP_NATIVE_CALL=37` is the seam where the weight-matrix
+layer hands off to the production VM's native surface. When a source says
+"83-opcode ISA" it means layer 1; when an ID map cites "390" it means
+layer 2. §5 onward specifies layer 1; §12 specifies layer 2's native
+surface.
 
 ---
 
@@ -81,14 +131,18 @@ Concretely (constants from `lib/backend/weight_matrices.c §53-86`):
   $H = 16$ attention heads with $\text{HD} = 2$ each, 12,220,422
   parameters. Layer activations: one Gaussian-attention block, one
   square-activation FFN, four gated-sigmoid FFNs.
-- **83-instruction ISA**: 64 base opcodes (`OP_NOP=0` through
-  `OP_VOID=63`; see `lib/backend/vm_core.c §5-92`) plus 19 reverse-mode
-  AD opcodes (`OP_AD_VAR=64` through `OP_AD_COS=82`).
-- **82 opcodes weight-implemented**: arithmetic, comparison, control
-  flow, type predicates, stack housekeeping, bounded pair/vector/string
-  ops, bounded closures and upvalues, bounded escape continuations,
-  bounded integer division/modulus, the forward AD tape (record +
-  saved-derivative table), and the full reverse-mode walk.
+- **83-instruction ISA** (`weight_matrices.c §103-136`): 64 base opcodes
+  (`OP_NOP=0` through `OP_VOID=63`) plus 19 reverse-mode AD opcodes
+  (`OP_AD_VAR=64` through `OP_AD_COS=82`), with a later base stack op
+  `OP_SWAP=83` bringing `OP_COUNT` to **84**. This is the SDNC weight-matrix
+  layer's ISA; the production bytecode VM realises the same semantics as a
+  66-opcode enum plus 720 native calls (AD at 390–409), and the two layers
+  correspond opcode-for-capability (§0).
+- **83 opcodes weight-implemented**: arithmetic, comparison, control
+  flow, type predicates, stack housekeeping (incl. `OP_SWAP`), bounded
+  pair/vector/string ops, bounded closures and upvalues, bounded escape
+  continuations, bounded integer division/modulus, the forward AD tape
+  (record + saved-derivative table), and the full reverse-mode walk.
 - **1 deliberate external boundary**: `OP_NATIVE_CALL` (opcode 37)
   carries a host-runtime ID and bridges to OS services and library
   calls. The transformer correctly threads it through PC, operand,
@@ -151,26 +205,26 @@ the bug history in §6).
 The verification harness ships with three independent runners
 (`lib/backend/weight_matrices.c`):
 
-1. **Reference C interpreter** — `execute_step` at line 411 and
-   `run_reference` near line 1170. A direct C `switch` over the 83
+1. **Reference C interpreter** — `execute_step` at line 441 and
+   `run_reference` near line 1252. A direct C `switch` over the 83
    opcodes; the ground truth.
 2. **Simulated transformer** — `layer0_attention`, `layer1_ffn`,
    `layer2_ffn`, `layer3_ffn`, `layer4_ffn`, plus the backward
-   `ad_backward_step` (lines 1027-1105). C functions that mirror what
-   each weight matrix computes, but implement the operations as plain
-   arithmetic. Lets us isolate a logic bug in the layer functions
-   from an encoding bug in the matrix form.
-3. **Matrix-based forward pass** — `forward_with_weights` (line 5347).
+   `ad_backward_step`. C functions that mirror what each weight matrix
+   computes, but implement the operations as plain arithmetic. Lets us
+   isolate a logic bug in the layer functions from an encoding bug in
+   the matrix form.
+3. **Matrix-based forward pass** — `forward_with_weights` (line 5514).
    The actual `W \cdot x + b` matrix multiplication through the
-   `InterpreterWeights` struct (line 2969). Six layers, plus the
-   second Layer-5 pass for backward.
+   `InterpreterWeights` struct. Six layers, plus the second Layer-5
+   pass for backward.
 
 Agreement across all three modes is the verification chain. Mode 1 is
 the spec by construction; mode 2 confirms the analytical layer
 functions match the spec; mode 3 confirms the weight matrices
 reproduce the layer functions when applied through standard matmul.
 
-For every program in the **123-program traced suite**, every step,
+For every program in the **124-program traced suite**, every step,
 every field of the 256-dimensional state vector is compared
 bit-identically. The agreement report
 (`artifacts/paper/outputs/comparison-report.json`) looks like:
@@ -178,25 +232,25 @@ bit-identically. The agreement report
 ```json
 {
   "status": "ok",
-  "total_programs":          123,
-  "output_agreeing_programs": 123,
-  "fully_agreeing_programs":  123
+  "total_programs":          124,
+  "output_agreeing_programs": 124,
+  "fully_agreeing_programs":  124
 }
 ```
 
 `output_agreeing_programs` = the final `OP_PRINT` output matches.
 `fully_agreeing_programs` = every intermediate step's state vector
 matches bit-identically (PC, SP, TOS, SOS, registers, arena cells,
-tape, flags). **123/123 on both metrics is the contract**: no traced
+tape, flags). **124/124 on both metrics is the contract**: no traced
 program disagrees on its result, no traced program disagrees at any
-step. The inline test count is **126/126** (the three extra programs
-are diagnostics that don't produce traceable sequences).
+step. The inline test count is **127/127** (the three extra inline
+programs are diagnostics that don't produce traceable sequences).
 
 Per-opcode coverage from
 `artifacts/paper/outputs/opcode-coverage.json`:
 
 ```text
-weight_implemented   : 82 opcodes (all of 0..82 except 37)
+weight_implemented   : 83 opcodes (all of 0..83 except 37)
 native_delegated     :  0 opcodes
 transformer_native_assisted : 0 opcodes
 ```
@@ -280,7 +334,7 @@ The five fixes are recorded in commit
 **`7301dc4 fix(paper): bit-identical SDNC agreement — 71/71 full
 per-step state`**. Each one is documented inline in
 `lib/backend/weight_matrices.c` near the lines it touched. The
-subsequent expansion to 123 traced programs (the bounded VM-as-
+subsequent expansion to 124 traced programs (the bounded VM-as-
 transformer memory-ops series) reused the same diagnostic methodology
 and preserved the bit-identical contract.
 
@@ -427,7 +481,7 @@ arena memory-ops series (state vector extended from 128 to 256,
 arena bank added, pair/vector/string/closure/escape-continuation
 opcodes encoded; see
 `docs/breakdown/VM_MEMORY_OPS_AS_WEIGHT_MATRICES.md §8`) expanded
-the suite to 123 traced programs and to 82 weight-encoded opcodes
+the suite to 124 traced programs and to 83 weight-encoded opcodes
 without weakening the bit-identity contract. Each new opcode goes
 through the same three-way verification harness; any per-step
 divergence is treated as a regression to fix, not as documentable
@@ -444,7 +498,7 @@ artifacts/paper/
     ├── weights.qlmw                 # regenerated weight matrices (~48 MB)
     ├── vm-traces.jsonl              # per-step reference-VM traces
     ├── transformer-traces.jsonl     # per-step matrix-forward traces
-    ├── comparison-report.json       # 123/123 fieldwise agreement
+    ├── comparison-report.json       # 124/124 fieldwise agreement
     ├── opcode-coverage.json         # 82-opcode coverage per program
     └── tables/                      # LaTeX tables (params, verification, coverage)
 ```
@@ -462,7 +516,7 @@ script orchestrates four phases (`scripts/paper/run_paper_suite.sh
 1. **Build + regenerate weights.** `export_weights.sh` configures
    CMake against `build-paper/` (hermetic; does not touch the user's
    normal build), builds the `weight_matrices` tool, runs it with
-   the verification suite, and exits non-zero if any of the 126
+   the verification suite, and exits non-zero if any of the 127
    inline tests fails. `ESHKOL_WEIGHTS_OUT` is honoured to put the
    QLMW file where the suite expects it.
 2. **Dump both traces in one run.** A single
@@ -484,15 +538,23 @@ script orchestrates four phases (`scripts/paper/run_paper_suite.sh
    to emit `tab_params.tex`, `tab_verification.tex`, and
    `tab_opcode_coverage.tex` ready for paper insertion.
 
-### 7.3 Current SHA-256 checksums
+### 7.3 SHA-256 checksums (re-pinned at commit `401808ef`)
 
 ```text
-SHA-256  weights.qlmw              381599e7a5607b4047ede0d6c8e6d270cb81dbdebfdb0bf0c0eba38758aa3f0c
-SHA-256  vm-traces.jsonl           4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
-SHA-256  transformer-traces.jsonl  4239cbb91dc9abb9abe80528c5b4ac4c2121a85db5a50dbf43c634a77e304801
-SHA-256  comparison-report.json    80aa6fed4db40bca521217ae8777677173fe7eeb239baa69847111e7ac674105
-SHA-256  opcode-coverage.json      152a4bacc483d8985abeb08bc0d44112144f536ed663274bc7b1eeccbdd2dfe4
+SHA-256  weights.qlmw              77388ac0ae297b1b1276e1a5bdb8d24dccacd964b5adf93b41298a1320e80e7b
+SHA-256  vm-traces.jsonl           49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  transformer-traces.jsonl  49cb2143f4286950362776138958c16920bea904cca15aab56ebae0eb9f07e44
+SHA-256  comparison-report.json    22e28236f192240ed25004d133b34bac0b9b608f4077e8baacdf01f868e1fd70
+SHA-256  opcode-coverage.json      8b1ae62fd9e81f976c75b221924f42f67dabd4487dee42d7550e48cdd48a6812
 ```
+
+These are the current checksums produced by
+`scripts/paper/run_paper_suite.sh` on `master` (commit `401808ef`): the
+QLMW export is **48,881,716 bytes** = 28-byte header + `12,220,422 × 4`,
+matching the parameter headline byte-exactly, and the suite reports
+**124/124** programs agreeing on both output and full per-step state. Re-pin
+these values whenever the suite grows, and freeze them at the verification
+SHA when cutting a paper release (the *paper* pins its own frozen set).
 
 The `vm-traces.jsonl` and `transformer-traces.jsonl` files are
 expected to be bit-identical (same SHA-256) because the matrix path
@@ -522,12 +584,13 @@ Later commits expanded the bounded arena memory-ops; the SHA-256
 values above are the *current* artifact, not the pinned historical
 one. Both are valid: the pin demonstrates the SDNC at its first
 published frozen state; the current artifact demonstrates that the
-contract has held while the weight coverage grew from 57/83 to 82/83.
+contract has held while the weight coverage grew from 57 to 83 opcodes.
 
 ### 7.5 The QLMW binary format
 
 The weight container is a 28-byte header followed by the raw
-`InterpreterWeights` struct (`weight_matrices.c §5462-5478`):
+`InterpreterWeights` struct (written by `export_weights_binary`,
+`weight_matrices.c §5642`; triggered by `ESHKOL_WEIGHTS_OUT`):
 
 ```text
 offset  bytes  field
@@ -541,12 +604,16 @@ offset  bytes  field
  28       …   InterpreterWeights raw struct (12,220,422 floats + 6 ints)
 ```
 
-QLMW v3 is the inference format used by the paper artefact. QLMW v4
-(`qllm_backward.c §588-616`) extends the file with optimiser state
-for training-mode use; v4 is consumed by the training loop but is
-*not* the artifact. The `gen_paper_tables.py` table generator
-verifies the magic and derives the parameter count from
-`stat.st_size - 28` divided by 4
+QLMW v3 is the inference format used by the paper artefact, and it is
+what the `eshkol-qllm-run` tool loads (§13). QLMW v4 is the training-mode
+checkpoint format: `qllm_backward.c` defines its header (`QlmwHeaderV4`,
+magic `0x514C4D57`, version 4, plus optimiser-step and flags fields) that
+the training loop uses to checkpoint weights *and* optimiser state. The
+reverse-mode backward pass the training loop runs is built and
+gradient-checked to relative error < 1e-6 (§13); the AdamW optimiser step
+and v4 checkpoint I/O that consume the format are on the build path. The
+`gen_paper_tables.py` table generator verifies the magic and derives the
+parameter count from `stat.st_size - 28` divided by 4
 (`scripts/paper/gen_paper_tables.py §38-67`).
 
 ### 7.6 Interpreting the agreement metrics
@@ -562,7 +629,7 @@ verifies the magic and derives the parameter count from
   SQUARE FFN), so the reference VM's backward path must use the
   polarisation identity to match (see bug #5 above).
 
-Both metrics currently equal `total_programs = 123`. If a future
+Both metrics currently equal `total_programs = 124`. If a future
 patch ever causes the second to fall, the patch must be reverted or
 the second metric must be raised back: the contract is bit-identity
 on the full state, not just on output.
@@ -570,11 +637,12 @@ on the full state, not just on output.
 ## 8. Per-opcode coverage
 
 `opcode-coverage.json` records, for every opcode in the canonical
-0–82 ISA, which test programs exercise it. The current strict
-artifact weight-covers **82/83 canonical opcodes**:
+0–83 ISA, which test programs exercise it. The current strict
+artifact weight-covers **83 opcodes** (every opcode but
+`OP_NATIVE_CALL=37`):
 
 ```text
-weight_implemented   : 0,1,2,…,36, 38,39,…,82   (82 opcodes)
+weight_implemented   : 0,1,2,…,36, 38,39,…,83   (83 opcodes, incl. OP_SWAP=83)
 native_delegated     : (empty)
 transformer_native_assisted : (empty)
 ```
@@ -640,8 +708,89 @@ Noesis companion repository.
 - `docs/tutorials/03_WEIGHT_MATRIX_TRANSFORMER.md` — shorter,
   user-facing exposition.
 - `lib/backend/weight_matrices.c` — the analytical weight
-  constructor and verifier (6,772 lines).
-- `lib/backend/vm_core.c` — the canonical 83-opcode ISA enum.
+  constructor and verifier (7,544 lines).
+- `lib/backend/vm_core.c` — the production bytecode VM opcode enum
+  (66 values; layer 2, see §0), plus the 720-ID native-call surface.
+- `lib/backend/weight_matrices.c §103-136` — the SDNC weight-matrix
+  layer's 83-opcode ISA enum (`OP_COUNT=84` incl. `OP_SWAP=83`).
+- `lib/backend/qllm_backward.c` + `inc/eshkol/backend/qllm_backward.h`
+  — the weight-matrix backward pass and its public surface (§13).
+- `lib/backend/qllm_interpreter.c` — the `eshkol-qllm-run` tool that
+  executes bytecode through a loaded QLMW file (§13).
 - `scripts/paper/` — the trace-dump, comparison, and
   table-generation pipeline.
 - `artifacts/paper/` — the reproducibility package and outputs.
+
+---
+
+## 12. The production VM native-call surface (layer 2)
+
+The production bytecode VM (layer 2, §0) reaches beyond its 66 opcodes
+through `OP_NATIVE_CALL`. On `master` it dispatches **720 distinct
+native-call IDs, spanning 20–2118** (`lib/backend/vm_native.c`, driven by
+the builtin table in `eshkol_vm.c`). These are host-runtime IDs threaded
+through the single `OP_NATIVE_CALL` boundary. The map below is the verified
+current surface — earlier docs' narrower ranges (e.g. "AD 370–409",
+"consciousness 500–549") understate it.
+
+| Capability | Native-call IDs (current) | Verified behaviour |
+|---|---|---|
+| Reverse-mode AD tape (21 ops) | core **390–409**, plus `ad-tape-release=1841`, `ad-node-value=1842`, `ad-tape-length=1843`, `ad-pow=1844`, counters 2082–2087 | `ad-var/ad-mul/ad-backward/ad-gradient` give `∂(x·y)/∂x=4`, `∂(x·y)/∂y=3`; `d/dx sin(2)=-0.416147`. The tape is arena-backed and **dynamically grown** — the 8-node cap is the *artefact* model's `AD_MAX_TAPE`, not the VM's. |
+| Tensor ops | **410–461** (`matmul/tensor-matmul/gpu-matmul=440`, elementwise 441–461, make/reshape 410–416), plus 802–803, 1820–1821 | `matmul [[1,2],[3,4]]·[[5,6],[7,8]] = [[19,22],[43,50]]`; `tensor-add` correct. |
+| Consciousness engine (logic / inference / workspace) | **509–547** (`make-kb=509`, `kb-assert!=511`, `kb-query=512`, `fg-infer!=523`, `ws-step!=543`), spilling into 1800–1822 | `kb-assert!`+`kb-query` → `((parent alice bob))`; `fg-infer!` prints free energy; `ws-step!` → `#(1 0 0 0)`. All three faculties run through the bytecode VM. |
+| High-level `gradient` | `750` | `(gradient f x)` works on the VM (arity-2 form, verified). Curried application `((gradient f) x)` is on the build path. |
+| 128-bit integers (i128) | **2100–2118** (all 19 IDs: `i128`, add/sub/mul/quotient, …) | Present and dispatched; **previously undocumented** in this file. |
+
+These are layer 2's realisation of the system's capabilities as native
+calls. They correspond to layer 1's weight-encoded ISA: the AD native
+calls `390–409` are the production-VM form of the weight-matrix AD opcodes
+`OP_AD_VAR=64 … OP_AD_COS=82` (§0) — the same reverse-mode tape, one as C
+dispatch and one as transformer weights. Regenerate the full map from
+`eshkol_vm.c`'s builtin table when it drifts.
+
+---
+
+## 13. Wired tooling: `eshkol-qllm-run` and the backward gradient check
+
+Two SDNC source files that were previously source-only (compiled by
+nothing, covered by nothing) are now wired into the build:
+
+**`eshkol-qllm-run`** (`lib/backend/qllm_interpreter.c`). A standalone
+tool that loads a QLMW v3 weight file (default `/tmp/interpreter_weights.bin`,
+produced by the `weight_matrices` tool via `ESHKOL_WEIGHTS_OUT`) and
+executes Eshkol bytecode by running the six-layer transformer forward
+pass — the weights *are* the interpreter. It runs a built-in program
+battery (`3+5`, `(3+5)*2`, recursive `fact(5)=120`, `car(cons 3 4)`, …)
+and can load external `.eskb`/`.bc` files. The default build uses the
+portable C reference matmul (no external dependency); `-DUSE_QLLM`
+additionally links the qLLM NEON/Metal tensor backend for an
+accelerated benchmark. Verified: loads the 48,881,716-byte QLMW v3
+export and passes 9/9 built-in programs.
+
+**`eshkol-qllm-backward`** (`lib/backend/qllm_backward.c` +
+`inc/eshkol/backend/qllm_backward.h`). The reverse-mode backward pass
+through the same six-layer weight matrices — the training-mode companion
+to the analytical forward constructor. The two FFN backward passes
+(SQUARE-activation and gated-sigmoid) are now a public surface, compiled
+into a static library by the normal build. The math is precision-generic
+(`qllm_real`, default `float` so the QLMW/`InterpreterWeights` layout is
+byte-identical).
+
+*Gradient-check contract.* `tests/backend/qllm_backward_gradcheck_test.c`
+(ctest `qllm_backward_gradcheck`) validates the analytical gradients
+against a central finite-difference reference using the aggregate L2
+relative-error statistic
+$\lVert \text{num} - \text{ana} \rVert_2 / (\lVert \text{num} \rVert_2 +
+\lVert \text{ana} \rVert_2)$ over sampled parameter and input
+coordinates. Because a single-precision finite-difference check bottoms
+out near `1e-3`, the test recompiles the backward source with
+`-DQLLM_REAL=double`; the finite-difference floor then drops far below
+the **`1e-6`** bar. Achieved on `master`: **SQUARE `3.7e-9`, gated
+`2.3e-9`** — both roughly 250× inside tolerance. The production
+(float) instantiation is unchanged by the test.
+
+*Training path.* `qllm_backward.c` defines the QLMW v4 checkpoint header
+(weights + optimiser state) that the training loop checkpoints to. The
+reverse-mode backward pass the loop runs is built and certified by the
+gradient check above; the AdamW optimiser step and v4 checkpoint I/O that
+complete the loop are the next items on the build path.
