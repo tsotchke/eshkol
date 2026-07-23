@@ -348,6 +348,22 @@ public:
     /** Higher-order gradient: (gradient f) → closure */
     llvm::Value* gradientHigherOrder(const eshkol_operations_t* op);
 
+    /**
+     * Emit the exact-AD gradient of a RUNTIME closure value at an
+     * already-evaluated, tagged runtime point. Shared by the direct
+     * runtime-parameter path in gradient() and the higher-order closure body
+     * in gradientHigherOrder(), so every surface that accepts a first-class /
+     * wrapped / curried loss computes the identical exact gradient (forward-mode
+     * dual per coordinate for scalar/vector points, reverse-mode tape for tensor
+     * points) rather than a finite-difference approximation. The point is
+     * normalized (cons-list → Scheme vector) internally and dispatched on the
+     * callable's recovered input arity. Returns the tagged gradient value, or
+     * nullptr on failure. Emits into the current insert point and leaves it at
+     * the merge block.
+     */
+    llvm::Value* emitRuntimeClosureGradient(llvm::Value* closure_val,
+                                            llvm::Value* point_val);
+
     /** Higher-order derivative: (derivative f) → closure */
     llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
 

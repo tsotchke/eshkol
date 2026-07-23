@@ -3574,15 +3574,16 @@ static bool adFunctionUsesTensors(llvm::Function* func_ptr) {
  * @brief Build a runtime closure implementing the higher-order form `(gradient f)`.
  *
  * Emits a new variadic wrapper function `gradient_ho_N` that, when later called
- * as `(grad-f x y z ...)`, unpacks its cons-list of arguments into an arena
- * vector and computes each partial derivative by numerical central
- * differencing: `(f(x+h) - f(x-h)) / 2h` with `h = 1e-8`, one call pair per
- * dimension. Dimension counts 1..8 are handled via unrolled switch cases
- * (`MAX_GRADIENT_ARGS`); any larger arity falls through to a default case that
- * zero-fills the result rather than emitting per-dimension code. The result is
- * packed as a 1-D tensor. TCO context is saved/disabled while building the
- * wrapper body since it has its own internal loops, and restored afterward.
- * The returned value is a CALLABLE closure over the original function.
+ * as `(grad-f x y z ...)` or `(grad-f point)`, normalizes its arguments (a
+ * single vector/tensor/list point is expanded into spread coordinates) into a
+ * header'd Scheme vector, then computes the gradient through the shared
+ * exact-AD runtime-closure path (emitRuntimeClosureGradient) — the identical
+ * forward-/reverse-mode machinery the direct and wrapped forms use. This makes
+ * the curried form byte-identical to the two-argument `(gradient f point)`
+ * form (no finite differences). TCO context is saved/disabled while building
+ * the wrapper body since it has its own internal loops, and restored
+ * afterward. The returned value is a CALLABLE closure over the original
+ * function.
  *
  * @param op The `gradient` AST operation node, used only for
  *           `op->gradient_op.function` (the function being differentiated).
@@ -3633,8 +3634,9 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     }
 
     // Create gradient wrapper function
-    // This is VARIADIC: accepts args like (grad-f x y z ...) as a cons list
-    // Computes partial derivatives numerically using central difference
+    // This is VARIADIC: accepts args like (grad-f x y z ...) as a cons list, or
+    // a single vector/tensor/list point. Computes the EXACT gradient via the
+    // shared runtime-closure path (no finite differences).
     std::string grad_func_name = "gradient_ho_" + std::to_string(gradient_ho_counter_++);
 
     // CRITICAL: Save and disable TCO context during gradient function generation
@@ -3669,10 +3671,6 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     captured_f_ptr->setName("captured_f");
 
     Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
-
-    // Constants for numerical differentiation (central difference)
-    Value* h = ConstantFP::get(ctx_.doubleType(), 1e-8);
-    Value* two_h = ConstantFP::get(ctx_.doubleType(), 2e-8);
 
     // Get cons accessor functions - avoid struct-by-value ABI issues on ARM64
     Function* cons_get_double = (*function_table_)["arena_tagged_cons_get_double"];
@@ -3715,17 +3713,43 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     curr_phi->addIncoming(cdr_val, count_body);
     ctx_.builder().CreateBr(count_loop);
 
-    // Count done - dim_val has the list length
+    // Count done - dim_val is the number of ARGUMENTS supplied to grad-f.
     ctx_.builder().SetInsertPoint(count_done);
     Value* dim_val = count_phi;
 
-    // Allocate vector for the point via arena (length + elements) - OALR compliant
+    // Point selection:
+    //   * exactly ONE argument  -> that argument IS the point, passed through
+    //     unchanged. A scalar stays a scalar (so a scalar function is called
+    //     with a scalar and the gradient is that scalar's derivative); a single
+    //     vector/tensor/list point is handed to the callable as-is, so
+    //     ((gradient f) point) matches (gradient f point).
+    //   * two or more arguments -> the spread scalar coordinates are gathered
+    //     into a header'd Scheme vector.
+    // Either way the shared exact-AD path (emitRuntimeClosureGradient) dispatches
+    // on the callable's recovered arity — no finite differences anywhere.
+    BasicBlock* ho_single = BasicBlock::Create(ctx_.context(), "grad_ho_single_arg", grad_func);
+    BasicBlock* ho_multi  = BasicBlock::Create(ctx_.context(), "grad_ho_multi_arg", grad_func);
+    BasicBlock* ho_point_ready = BasicBlock::Create(ctx_.context(), "grad_ho_point_ready", grad_func);
+    Value* is_single = ctx_.builder().CreateICmpEQ(dim_val, ConstantInt::get(ctx_.int64Type(), 1));
+    ctx_.builder().CreateCondBr(is_single, ho_single, ho_multi);
+
+    // Single argument: the car of the (non-null) list head IS the point.
+    ctx_.builder().SetInsertPoint(ho_single);
+    Value* head_cell = ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(args_list),
+        PointerType::getUnqual(ctx_.context()));
+    Value* single_point = ctx_.builder().CreateLoad(ctx_.taggedValueType(), head_cell);  // car at offset 0
+    ctx_.builder().CreateBr(ho_point_ready);
+    BasicBlock* ho_single_exit = ctx_.builder().GetInsertBlock();
+
+    // Two-or-more (or zero) arguments: gather the spread scalars into a header'd
+    // Scheme vector ([length(8)][tagged doubles], HEAP_SUBTYPE_VECTOR).
+    ctx_.builder().SetInsertPoint(ho_multi);
     Value* point_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-    Value* vec_total_size = ctx_.builder().CreateAdd(ConstantInt::get(ctx_.int64Type(), 1), dim_val);
-    Value* vec_bytes = ctx_.builder().CreateMul(vec_total_size, ConstantInt::get(ctx_.int64Type(),
-        ctx_.module().getDataLayout().getTypeAllocSize(ctx_.taggedValueType())));
-    Value* point_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {point_arena_ptr, vec_bytes});
-    ctx_.builder().CreateStore(dim_val, point_ptr);  // Store length
+    Value* point_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateVectorWithHeader(), {point_arena_ptr, dim_val});
+    ctx_.builder().CreateStore(dim_val, point_ptr);  // length at offset 0
+    Value* point_elems = ctx_.builder().CreatePointerCast(
+        ctx_.builder().CreateGEP(ctx_.int8Type(), point_ptr, ConstantInt::get(ctx_.int64Type(), 8)),
+        ctx_.ptrType());
 
     // Copy list elements to vector using simple loop
     BasicBlock* copy_loop = BasicBlock::Create(ctx_.context(), "copy_loop", grad_func);
@@ -3735,9 +3759,9 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     ctx_.builder().CreateBr(copy_loop);
     ctx_.builder().SetInsertPoint(copy_loop);
     PHINode* copy_idx = ctx_.builder().CreatePHI(ctx_.int64Type(), 2, "copy_idx");
-    copy_idx->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), count_done);
+    copy_idx->addIncoming(ConstantInt::get(ctx_.int64Type(), 0), ho_multi);
     PHINode* copy_curr = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "copy_curr");
-    copy_curr->addIncoming(args_list, count_done);
+    copy_curr->addIncoming(args_list, ho_multi);
 
     Value* copy_type = tagged_.getType(copy_curr);
     Value* copy_base = tagged_.getBaseType(copy_type);
@@ -3753,8 +3777,7 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     Value* car_double = ctx_.builder().CreateCall(cons_get_double, {copy_ptr, ConstantInt::get(ctx_.int1Type(), 0)});
     Value* car_val = tagged_.packDouble(car_double);
 
-    Value* vec_elem_offset = ctx_.builder().CreateAdd(ConstantInt::get(ctx_.int64Type(), 1), copy_idx);
-    Value* vec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), point_ptr, vec_elem_offset);
+    Value* vec_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), point_elems, copy_idx);
     ctx_.builder().CreateStore(car_val, vec_elem_ptr);
     Value* copy_idx_next = ctx_.builder().CreateAdd(copy_idx, ConstantInt::get(ctx_.int64Type(), 1));
     // Get cdr type and pointer separately, then pack into tagged_value
@@ -3765,123 +3788,26 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     copy_curr->addIncoming(copy_cdr, copy_body);
     ctx_.builder().CreateBr(copy_loop);
 
-    // Copy done - now point_ptr is a proper vector
     ctx_.builder().SetInsertPoint(copy_done);
+    Value* vec_point = tagged_.packPtr(
+        ctx_.builder().CreatePtrToInt(point_ptr, ctx_.int64Type()), ESHKOL_VALUE_HEAP_PTR);
+    ctx_.builder().CreateBr(ho_point_ready);
+    BasicBlock* ho_multi_exit = ctx_.builder().GetInsertBlock();
 
-    // Allocate result tensor data via arena (OALR compliant - no malloc)
-    Value* result_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-    Value* result_size = ctx_.builder().CreateMul(dim_val, ConstantInt::get(ctx_.int64Type(), 8));
-    Value* result_data = ctx_.builder().CreateCall(mem_.getArenaAllocate(), {result_arena_ptr, result_size});
-
-    // SIMPLIFIED GRADIENT: Use switch-based dispatch like derivative does
-    // Instead of complex loops, generate static code paths for each arg count
-    const int MAX_GRADIENT_ARGS = 8;
-
-    BasicBlock* switch_default = BasicBlock::Create(ctx_.context(), "grad_default", grad_func);
-    BasicBlock* grad_done = BasicBlock::Create(ctx_.context(), "grad_done", grad_func);
-
-    SwitchInst* dim_switch = ctx_.builder().CreateSwitch(dim_val, switch_default, MAX_GRADIENT_ARGS);
-    std::vector<std::pair<BasicBlock*, Value*>> results;
-
-    // Generate a case for each dimension count (1 to MAX_GRADIENT_ARGS)
-    for (int dim_count = 1; dim_count <= MAX_GRADIENT_ARGS; dim_count++) {
-        BasicBlock* case_bb = BasicBlock::Create(ctx_.context(),
-            "grad_dim_" + std::to_string(dim_count), grad_func);
-        dim_switch->addCase(ConstantInt::get(ctx_.int64Type(), dim_count), case_bb);
-        ctx_.builder().SetInsertPoint(case_bb);
-
-        // Load all arguments from point_ptr into a local array
-        std::vector<Value*> base_args;
-        for (int i = 0; i < dim_count; i++) {
-            Value* elem_offset = ConstantInt::get(ctx_.int64Type(), 1 + i);
-            Value* elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), point_ptr, elem_offset);
-            Value* loaded_arg = ctx_.builder().CreateLoad(ctx_.taggedValueType(), elem_ptr);
-            base_args.push_back(loaded_arg);
-        }
-
-        // For each dimension, compute partial derivative using central difference
-        for (int i = 0; i < dim_count; i++) {
-            // Get the original value at dimension i
-            Value* orig_val = tagged_.unpackDouble(base_args[i]);
-            Value* plus_val = ctx_.builder().CreateFAdd(orig_val, h);
-            Value* minus_val = ctx_.builder().CreateFSub(orig_val, h);
-
-            // Build plus args (copy base_args with modified index i)
-            std::vector<Value*> plus_args = base_args;
-            plus_args[i] = tagged_.packDouble(plus_val);
-
-            // Build minus args
-            std::vector<Value*> minus_args = base_args;
-            minus_args[i] = tagged_.packDouble(minus_val);
-
-            // Call f(plus_args) and f(minus_args) using codegenClosureCall
-            Value* f_plus = closure_call_callback_(f_closure, plus_args, "autodiff", callback_context_);
-            Value* f_minus = closure_call_callback_(f_closure, minus_args, "derivative", callback_context_);
-
-            // AD Phase A counter: this is a finite-difference evaluation (NOT
-            // exact AD). Makes hidden FD on any path machine-visible.
-            ctx_.builder().CreateCall(ctx_.module().getOrInsertFunction(
-                "eshkol_ad_count_fd",
-                FunctionType::get(ctx_.voidType(), {}, false)), {});
-            // Compute partial derivative: (f_plus - f_minus) / (2h)
-            Value* f_plus_d = tagged_.unpackDouble(f_plus);
-            Value* f_minus_d = tagged_.unpackDouble(f_minus);
-            Value* diff = ctx_.builder().CreateFSub(f_plus_d, f_minus_d);
-            Value* partial = ctx_.builder().CreateFDiv(diff, two_h);
-
-            // Store in result array
-            Value* result_slot = ctx_.builder().CreateGEP(ctx_.doubleType(), result_data,
-                ConstantInt::get(ctx_.int64Type(), i));
-            ctx_.builder().CreateStore(partial, result_slot);
-        }
-
-        ctx_.builder().CreateBr(grad_done);
-        results.push_back({ctx_.builder().GetInsertBlock(), dim_val});
+    // Compute the EXACT gradient through the shared runtime-closure path — the
+    // identical forward-/reverse-mode machinery the direct and wrapped forms
+    // use — so ((gradient f) point) is byte-identical to (gradient f point).
+    ctx_.builder().SetInsertPoint(ho_point_ready);
+    PHINode* point_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 2, "grad_ho_point");
+    point_phi->addIncoming(single_point, ho_single_exit);
+    point_phi->addIncoming(vec_point, ho_multi_exit);
+    Value* result_tensor = emitRuntimeClosureGradient(f_closure, point_phi);
+    if (!result_tensor) {
+        eshkol_error("higher-order gradient: exact runtime-closure gradient failed");
+        if (saved_bb) ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+        static_cast<eshkol::BindingCodegen*>(binding_opaque_)->getTCOContext() = saved_tco_ctx;
+        return nullptr;
     }
-
-    // Default case: dimension count beyond the switch's handled arities. The
-    // result tensor is still built with total_elements = dim_val below, but the
-    // per-dim cases never ran, so result_data would otherwise be uninitialized
-    // arena bytes (silent garbage). P1: zero-fill it so the returned gradient is
-    // defined (zeros) rather than leaking uninitialized memory.
-    ctx_.builder().SetInsertPoint(switch_default);
-    ctx_.builder().CreateMemSet(result_data, ConstantInt::get(ctx_.int8Type(), 0),
-        result_size, llvm::MaybeAlign(8));
-    ctx_.builder().CreateBr(grad_done);
-    results.push_back({switch_default, ConstantInt::get(ctx_.int64Type(), 0)});
-
-    // Grad done - create result tensor using proper tensor struct format
-    ctx_.builder().SetInsertPoint(grad_done);
-
-    // Tensor struct format:
-    // Field 0: dims (pointer to dimensions array)
-    // Field 1: num_dims (number of dimensions)
-    // Field 2: elements (pointer to double data)
-    // Field 3: total_elements
-
-    // Allocate tensor struct with header via arena (OALR compliant - no malloc)
-    Value* grad_arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-    Value* typed_tensor_ptr = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {grad_arena_ptr});
-
-    // Allocate dimensions array via arena (1 element for 1D tensor)
-    Value* dims_array = ctx_.builder().CreateCall(mem_.getArenaAllocate(),
-        {grad_arena_ptr, ConstantInt::get(ctx_.int64Type(), 8)});  // 1 * sizeof(int64)
-    ctx_.builder().CreateStore(dim_val, dims_array);  // dims[0] = number of gradient components
-
-    // Fill tensor struct fields
-    Value* dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 0);
-    ctx_.builder().CreateStore(dims_array, dims_field_ptr);  // Field 0: dims pointer
-
-    Value* num_dims_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 1);
-    ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), num_dims_field_ptr);  // Field 1: num_dims = 1
-
-    Value* elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 2);
-    ctx_.builder().CreateStore(result_data, elements_field_ptr);  // Field 2: elements pointer
-
-    Value* total_elements_field_ptr = ctx_.builder().CreateStructGEP(ctx_.tensorType(), typed_tensor_ptr, 3);
-    ctx_.builder().CreateStore(dim_val, total_elements_field_ptr);  // Field 3: total_elements = dim_val
-
-    Value* result_tensor = tagged_.packPtr(typed_tensor_ptr, ESHKOL_VALUE_HEAP_PTR);
     ctx_.builder().CreateRet(result_tensor);
 
     // Restore insertion point
@@ -3900,14 +3826,39 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     if (!closure_val && func) {
         // STATIC FUNCTION FIX: Create a proper closure struct for static functions
         // codegenClosureCall expects a closure struct, not a raw function pointer
-        // So we wrap the static function in a 0-capture closure
+        // So we wrap the static function in a 0-capture closure.
+        //
+        // The captured closure MUST carry the function's true input arity: the
+        // shared exact-AD path (emitRuntimeClosureGradient) dispatches on it to
+        // decide whether the point is passed whole (arity 1) or unpacked into N
+        // scalar arguments (arity N). A 0-arity closure would send the entire
+        // point as one tensor argument and misdispatch a multi-scalar loss.
+        // Recover the arity exactly as the direct gradient path does: the arity
+        // table keyed by the function name, reconciled against the concrete LLVM
+        // signature (the source of truth).
+        uint64_t static_arity = 0;
+        if (auto* fp = llvm::dyn_cast<llvm::Function>(func)) {
+            std::string key = fp->getName().str();
+            auto rv_pos = key.rfind("__rv");
+            if (rv_pos != std::string::npos && rv_pos + 4 < key.size() &&
+                key.find_first_not_of("0123456789", rv_pos + 4) == std::string::npos) {
+                key.erase(rv_pos);
+            }
+            if (function_arity_table_) {
+                auto ait = function_arity_table_->find(key);
+                if (ait != function_arity_table_->end()) static_arity = ait->second;
+            }
+            static_arity = adResolveValueArity(fp, static_arity);
+        }
         Value* static_arena = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
         Value* static_func_ptr_int = ctx_.builder().CreatePtrToInt(func, ctx_.int64Type());
-        // packed_info: 0 captures, 0 fixed params, NOT variadic
-        uint64_t static_packed_info = 0;  // No captures, not variadic
+        // packed_info: 0 captures, `static_arity` fixed params, NOT variadic
+        uint64_t static_packed_info = (static_arity & 0xFFFF) << 16;
         Value* static_packed = ConstantInt::get(ctx_.int64Type(), static_packed_info);
         Value* static_sexpr = ConstantInt::get(ctx_.int64Type(), 0);
-        Value* static_return_type = ConstantInt::get(ctx_.int64Type(), 0);  // Default return type
+        // return_type_info: bits 0-7 = return_type, bits 8-15 = input_arity
+        uint64_t static_return_type_info = CLOSURE_RETURN_UNKNOWN | ((static_arity & 0xFF) << 8);
+        Value* static_return_type = ConstantInt::get(ctx_.int64Type(), static_return_type_info);
         Value* static_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
         Value* static_closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
             {static_arena, static_func_ptr_int, static_packed, static_sexpr, static_return_type, static_name});
@@ -3974,171 +3925,15 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
  *         tagged AD-node value if nested inside an outer AD pass, or nullptr
  *         on failure (unresolved function, evaluation failure, etc).
  */
-llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+// Shared exact-AD gradient of a runtime closure value at an already-tagged
+// runtime point. See the declaration in autodiff_codegen.h for the contract.
+// Extracted verbatim from the former inline body of gradient()'s runtime
+// function-parameter path so gradientHigherOrder() can reuse the exact same
+// machinery (retiring the finite-difference higher-order path).
+llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_val,
+                                                         llvm::Value* point_val) {
     using namespace llvm;
-    if (!op->gradient_op.function) {
-        eshkol_error("Invalid gradient operation - missing function");
-        return nullptr;
-    }
-
-    // Higher-order form: (gradient f) returns a closure that computes gradients
-    if (!op->gradient_op.point) {
-        return gradientHigherOrder(op);
-    }
-
-    // Resolve function (lambda or function reference)
-    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
-
-    // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
-    // For gradient with runtime function parameters, we need to use a different approach
-    // since gradient requires knowing the function structure at compile time.
-    // For now, we'll check if the function AST is a variable and look it up.
-    if (!func) {
-        const eshkol_ast_t* func_ast = op->gradient_op.function;
-        if (func_ast && func_ast->type == ESHKOL_VAR) {
-            std::string func_name = func_ast->variable.id;
-            eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
-
-            // Check if this is a function parameter or captured value
-            Value* var_value = nullptr;
-
-            // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
-            // This handles nested functions where captures are stored in GlobalVariables
-            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
-            auto gv_it = global_symbol_table_->find(capture_key);
-            if (gv_it != global_symbol_table_->end() && isa<GlobalVariable>(gv_it->second)) {
-                var_value = gv_it->second;
-            }
-
-            // If not found as a capture, try regular symbol_table lookup
-            if (!var_value) {
-                auto local_it = symbol_table_->find(func_name);
-                if (local_it != symbol_table_->end()) {
-                    var_value = local_it->second;
-                } else {
-                    auto global_it = global_symbol_table_->find(func_name);
-                    if (global_it != global_symbol_table_->end()) {
-                        var_value = global_it->second;
-                    }
-                }
-            }
-
-            // REPL MODE: cross-evaluation symbol registry (functions defined in prior JIT modules)
-            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
-                std::lock_guard<std::mutex> lock(*repl_mutex_);
-                auto repl_it = repl_symbol_addresses_->find(func_name);
-                if (repl_it != repl_symbol_addresses_->end()) {
-                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
-                    if (!gv) {
-                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
-                                                GlobalValue::ExternalLinkage, nullptr, func_name);
-                    }
-                    var_value = gv;
-                }
-            }
-
-            // ═══════════════════════════════════════════════════════════════
-            // UNIFIED RUNTIME GRADIENT PATH
-            // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
-            // into a single resolution + shared forward-mode computation.
-            // ═══════════════════════════════════════════════════════════════
-
-            // Step 1: Resolve closure value from var_value
-            Value* closure_val = nullptr;
-
-            if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
-                // Direct Argument — may need capture resolution for nested functions
-                Argument* arg = cast<Argument>(var_value);
-                Function* arg_parent = arg->getParent();
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-
-                if (arg_parent != current_func) {
-                    // From different function — find in current function's captures
-                    bool found_in_captures = false;
-                    for (auto& curr_arg : current_func->args()) {
-                        std::string arg_name = curr_arg.getName().str();
-                        if (arg_name == "captured_" + func_name) {
-                            if (curr_arg.getType()->isPointerTy()) {
-                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), &curr_arg);
-                            } else {
-                                closure_val = &curr_arg;
-                            }
-                            found_in_captures = true;
-                            break;
-                        }
-                    }
-                    if (!found_in_captures) {
-                        std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
-                        auto cap_it = global_symbol_table_->find(capture_key);
-                        if (cap_it != global_symbol_table_->end() && isa<GlobalVariable>(cap_it->second)) {
-                            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_it->second);
-                            found_in_captures = true;
-                        } else {
-                            auto var_cap_it = global_symbol_table_->find(func_name);
-                            if (var_cap_it != global_symbol_table_->end() && isa<GlobalVariable>(var_cap_it->second)) {
-                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_cap_it->second);
-                                found_in_captures = true;
-                            }
-                        }
-                    }
-                    if (!found_in_captures) {
-                        eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
-                        return nullptr;
-                    }
-                } else {
-                    closure_val = var_value;
-                }
-            } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
-                // Pointer-type captured Argument — load the tagged value
-                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-            } else if (var_value && isa<GlobalVariable>(var_value)) {
-                // GlobalVariable — may be from a different module (REPL mode), so ensure we
-                // reference the symbol via the CURRENT module with ExternalLinkage if needed.
-                GlobalVariable* gv = cast<GlobalVariable>(var_value);
-                if (gv->getParent() != &ctx_.module()) {
-                    GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
-                    if (!cur_gv) {
-                        cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
-                                                    GlobalValue::ExternalLinkage, nullptr, gv->getName());
-                    }
-                    gv = cur_gv;
-                }
-                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
-            } else if (var_value && isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
-                AllocaInst* alloca = cast<AllocaInst>(var_value);
-                if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
-                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                }
-            } else if (var_value && isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
-                closure_val = var_value;
-            }
-
-            // Step 2: Shared forward-mode gradient computation
-            if (closure_val) {
-                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
-
-                // Get the input point
-                Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
-                if (!point_val) {
-                    eshkol_error("Failed to evaluate gradient point");
-                    return nullptr;
-                }
-
-                // Ensure point is tagged
-                if (point_val->getType() != ctx_.taggedValueType()) {
-                    if (point_val->getType()->isIntegerTy(64)) {
-                        if (op->gradient_op.point->type == ESHKOL_TENSOR) {
-                            point_val = tagged_.packPtr(point_val, ESHKOL_VALUE_HEAP_PTR);
-                        } else {
-                            point_val = tagged_.packInt64(point_val, true);
-                        }
-                    } else if (point_val->getType()->isDoubleTy()) {
-                        point_val = tagged_.packDouble(point_val);
-                    }
-                }
-
-                // Note: current_func already defined above for capture lookup
+    Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
 
                 // Get arena_allocate for Scheme vector allocation
                 Function* arena_allocate_func = (*function_table_)["arena_allocate"];
@@ -4211,6 +4006,29 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 Value* rt_point_is_scalar = ctx_.builder().CreateOr(
                     ctx_.builder().CreateOr(rt_point_is_double, rt_point_is_int), rt_point_is_dual);
 
+                // Recover the callable's declared input arity so the point
+                // is expanded to match the function's true signature. The closure
+                // struct carries input_arity at byte offset 33 (see
+                // arena_allocate_closure_with_header / codegenClosureCall). A
+                // multi-parameter SCALAR loss — e.g. (loss x y), arity 2 — must
+                // have its N-element vector/list point UNPACKED into N separate
+                // scalar args (the forward-mode collection path below does this
+                // via its arity switch). Only an arity<=1 callable legitimately
+                // receives the whole point as ONE vector/tensor argument (the
+                // ESH-0235 reverse-mode tensor path). Reading the arity here — in
+                // the dominating entry block — lets us gate BOTH paths on it, so a
+                // first-class multi-arg loss reached through a function parameter
+                // is no longer mis-called with a single tensor argument (which
+                // misdispatched its scalar body to tensor-sub/tensor-mul).
+                Value* clo_arity_val = ctx_.builder().CreateZExt(
+                    ctx_.builder().CreateLoad(ctx_.int8Type(),
+                        ctx_.builder().CreateGEP(ctx_.int8Type(),
+                            ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
+                            ConstantInt::get(ctx_.int64Type(), 33))),
+                    ctx_.int64Type());
+                Value* clo_arity_le1 = ctx_.builder().CreateICmpULE(clo_arity_val,
+                    ConstantInt::get(ctx_.int64Type(), 1));
+
                 BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
                     ctx_.context(), "grad_rt_scalar_fwd", current_func);
                 BasicBlock* grad_rt_collection = BasicBlock::Create(
@@ -4257,7 +4075,16 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     // a tensor op and returns a silent all-zero gradient.
                     Value* rvt_is_vec = b.CreateICmpEQ(rvt_sub,
                         ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-                    Value* rvt_seedable = b.CreateOr(rvt_is_tensor, rvt_is_vec);
+                    // Only take the single-argument reverse-mode tensor path
+                    // when the callable actually accepts the whole point as ONE
+                    // argument (arity <= 1). A multi-parameter scalar loss (arity
+                    // >= 2) must instead fall through to the forward-mode
+                    // collection path, whose arity switch unpacks the point into N
+                    // separate scalar args. Without this gate ESH-0235 captured
+                    // every vector/list/tensor point and called an arity-N loss
+                    // with a single tensor, misdispatching its scalar arithmetic.
+                    Value* rvt_seedable = b.CreateAnd(
+                        b.CreateOr(rvt_is_tensor, rvt_is_vec), clo_arity_le1);
                     llvm::StructType* rvt_tt = ctx_.tensorType();
                     BasicBlock* rvt_norm_vec = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_vec", current_func);
                     BasicBlock* rvt_norm_ten = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_ten", current_func);
@@ -4792,6 +4619,180 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
                 ctx_.builder().SetInsertPoint(grad_rt_done);
                 return ctx_.builder().CreateLoad(ctx_.taggedValueType(), rt_result_slot);
+}
+
+llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
+    using namespace llvm;
+    if (!op->gradient_op.function) {
+        eshkol_error("Invalid gradient operation - missing function");
+        return nullptr;
+    }
+
+    // Higher-order form: (gradient f) returns a closure that computes gradients
+    if (!op->gradient_op.point) {
+        return gradientHigherOrder(op);
+    }
+
+    // Resolve function (lambda or function reference)
+    Value* func = resolve_lambda_callback_(op->gradient_op.function, 0, callback_context_);
+
+    // RUNTIME FUNCTION PARAMETER FIX: Handle functions passed as parameters
+    // For gradient with runtime function parameters, we need to use a different approach
+    // since gradient requires knowing the function structure at compile time.
+    // For now, we'll check if the function AST is a variable and look it up.
+    if (!func) {
+        const eshkol_ast_t* func_ast = op->gradient_op.function;
+        if (func_ast && func_ast->type == ESHKOL_VAR) {
+            std::string func_name = func_ast->variable.id;
+            eshkol_debug("gradient: checking runtime function parameter '%s'", func_name.c_str());
+
+            // Check if this is a function parameter or captured value
+            Value* var_value = nullptr;
+
+            // NESTED FUNCTION FIX: First check if there's a GlobalVariable for this capture
+            // This handles nested functions where captures are stored in GlobalVariables
+            Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+            std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+            auto gv_it = global_symbol_table_->find(capture_key);
+            if (gv_it != global_symbol_table_->end() && isa<GlobalVariable>(gv_it->second)) {
+                var_value = gv_it->second;
+            }
+
+            // If not found as a capture, try regular symbol_table lookup
+            if (!var_value) {
+                auto local_it = symbol_table_->find(func_name);
+                if (local_it != symbol_table_->end()) {
+                    var_value = local_it->second;
+                } else {
+                    auto global_it = global_symbol_table_->find(func_name);
+                    if (global_it != global_symbol_table_->end()) {
+                        var_value = global_it->second;
+                    }
+                }
+            }
+
+            // REPL MODE: cross-evaluation symbol registry (functions defined in prior JIT modules)
+            if (!var_value && repl_mode_enabled_ && *repl_mode_enabled_) {
+                std::lock_guard<std::mutex> lock(*repl_mutex_);
+                auto repl_it = repl_symbol_addresses_->find(func_name);
+                if (repl_it != repl_symbol_addresses_->end()) {
+                    GlobalVariable* gv = ctx_.module().getGlobalVariable(func_name);
+                    if (!gv) {
+                        gv = new GlobalVariable(ctx_.module(), ctx_.taggedValueType(), false,
+                                                GlobalValue::ExternalLinkage, nullptr, func_name);
+                    }
+                    var_value = gv;
+                }
+            }
+
+            // ═══════════════════════════════════════════════════════════════
+            // UNIFIED RUNTIME GRADIENT PATH
+            // Consolidates 3 duplicate paths (Argument, Pointer, GlobalVariable)
+            // into a single resolution + shared forward-mode computation.
+            // ═══════════════════════════════════════════════════════════════
+
+            // Step 1: Resolve closure value from var_value
+            Value* closure_val = nullptr;
+
+            if (var_value && isa<Argument>(var_value) && !var_value->getType()->isPointerTy()) {
+                // Direct Argument — may need capture resolution for nested functions
+                Argument* arg = cast<Argument>(var_value);
+                Function* arg_parent = arg->getParent();
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                if (arg_parent != current_func) {
+                    // From different function — find in current function's captures
+                    bool found_in_captures = false;
+                    for (auto& curr_arg : current_func->args()) {
+                        std::string arg_name = curr_arg.getName().str();
+                        if (arg_name == "captured_" + func_name) {
+                            if (curr_arg.getType()->isPointerTy()) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), &curr_arg);
+                            } else {
+                                closure_val = &curr_arg;
+                            }
+                            found_in_captures = true;
+                            break;
+                        }
+                    }
+                    if (!found_in_captures) {
+                        std::string capture_key = current_func->getName().str() + "_capture_" + func_name;
+                        auto cap_it = global_symbol_table_->find(capture_key);
+                        if (cap_it != global_symbol_table_->end() && isa<GlobalVariable>(cap_it->second)) {
+                            closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), cap_it->second);
+                            found_in_captures = true;
+                        } else {
+                            auto var_cap_it = global_symbol_table_->find(func_name);
+                            if (var_cap_it != global_symbol_table_->end() && isa<GlobalVariable>(var_cap_it->second)) {
+                                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_cap_it->second);
+                                found_in_captures = true;
+                            }
+                        }
+                    }
+                    if (!found_in_captures) {
+                        eshkol_error("gradient: could not find capture for '%s'", func_name.c_str());
+                        return nullptr;
+                    }
+                } else {
+                    closure_val = var_value;
+                }
+            } else if (var_value && isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
+                // Pointer-type captured Argument — load the tagged value
+                closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+            } else if (var_value && isa<GlobalVariable>(var_value)) {
+                // GlobalVariable — may be from a different module (REPL mode), so ensure we
+                // reference the symbol via the CURRENT module with ExternalLinkage if needed.
+                GlobalVariable* gv = cast<GlobalVariable>(var_value);
+                if (gv->getParent() != &ctx_.module()) {
+                    GlobalVariable* cur_gv = ctx_.module().getGlobalVariable(gv->getName());
+                    if (!cur_gv) {
+                        cur_gv = new GlobalVariable(ctx_.module(), gv->getValueType(), false,
+                                                    GlobalValue::ExternalLinkage, nullptr, gv->getName());
+                    }
+                    gv = cur_gv;
+                }
+                closure_val = ctx_.builder().CreateLoad(gv->getValueType(), gv);
+            } else if (var_value && isa<AllocaInst>(var_value) && var_value->getType()->isPointerTy()) {
+                AllocaInst* alloca = cast<AllocaInst>(var_value);
+                if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
+                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
+                }
+            } else if (var_value && isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
+                closure_val = var_value;
+            }
+
+            // Step 2: Shared forward-mode gradient computation
+            if (closure_val) {
+                Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
+
+                // Get the input point
+                Value* point_val = codegen_ast_callback_(op->gradient_op.point, callback_context_);
+                if (!point_val) {
+                    eshkol_error("Failed to evaluate gradient point");
+                    return nullptr;
+                }
+
+                // Ensure point is tagged
+                if (point_val->getType() != ctx_.taggedValueType()) {
+                    if (point_val->getType()->isIntegerTy(64)) {
+                        if (op->gradient_op.point->type == ESHKOL_TENSOR) {
+                            point_val = tagged_.packPtr(point_val, ESHKOL_VALUE_HEAP_PTR);
+                        } else {
+                            point_val = tagged_.packInt64(point_val, true);
+                        }
+                    } else if (point_val->getType()->isDoubleTy()) {
+                        point_val = tagged_.packDouble(point_val);
+                    }
+                }
+
+                // Note: current_func already defined above for capture lookup
+
+                // Delegate to the shared exact-AD runtime-closure gradient so the
+                // wrapped / callable-parameter form uses the identical machinery as
+                // the higher-order closure body (no finite-difference anywhere).
+                Value* rt_grad = emitRuntimeClosureGradient(closure_val, point_val);
+                if (!rt_grad) return nullptr;
+                return rt_grad;
             } // end if (closure_val)
 
         }
