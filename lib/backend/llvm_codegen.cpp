@@ -2137,6 +2137,8 @@ public:
         function_return_types["ad-sub"] = BuiltinTypes::Integer;
         function_return_types["ad-mul"] = BuiltinTypes::Integer;
         function_return_types["ad-div"] = BuiltinTypes::Integer;
+        function_return_types["ad-pow"] = BuiltinTypes::Integer;
+        function_return_types["ad-tape-length"] = BuiltinTypes::Integer;
         function_return_types["ad-sin"] = BuiltinTypes::Integer;
         function_return_types["ad-cos"] = BuiltinTypes::Integer;
         function_return_types["ad-exp"] = BuiltinTypes::Integer;
@@ -2149,8 +2151,10 @@ public:
         function_return_types["ad-tanh"] = BuiltinTypes::Integer;
         function_return_types["ad-backward"] = BuiltinTypes::Null;
         function_return_types["ad-gradient"] = BuiltinTypes::Value;
+        function_return_types["ad-gradient-of"] = BuiltinTypes::Value; // alias
         function_return_types["ad-node-value"] = BuiltinTypes::Value;
         function_return_types["ad-value"] = BuiltinTypes::Value; // user-facing alias
+        function_return_types["ad-value-of"] = BuiltinTypes::Value; // alias
         function_return_types["onnx-export-tensor"] = BuiltinTypes::Boolean;
         // Type predicates
         function_return_types["logic-var?"] = BuiltinTypes::Boolean;
@@ -14576,6 +14580,7 @@ private:
         if (func_name == "ad-sub") return system_->adBinaryOp(op, "eshkol_ad_sub_sret");
         if (func_name == "ad-mul") return system_->adBinaryOp(op, "eshkol_ad_mul_sret");
         if (func_name == "ad-div") return system_->adBinaryOp(op, "eshkol_ad_div_sret");
+        if (func_name == "ad-pow") return system_->adBinaryOp(op, "eshkol_ad_pow_sret");
         if (func_name == "ad-sin") return system_->adUnaryOp(op, "eshkol_ad_sin_sret");
         if (func_name == "ad-cos") return system_->adUnaryOp(op, "eshkol_ad_cos_sret");
         if (func_name == "ad-exp") return system_->adUnaryOp(op, "eshkol_ad_exp_sret");
@@ -14587,9 +14592,12 @@ private:
         if (func_name == "ad-sigmoid") return system_->adUnaryOp(op, "eshkol_ad_sigmoid_sret");
         if (func_name == "ad-tanh") return system_->adUnaryOp(op, "eshkol_ad_tanh_sret");
         if (func_name == "ad-backward") return system_->adBackward(op);
-        if (func_name == "ad-gradient") return system_->adGradient(op);
-        if (func_name == "ad-node-value" || func_name == "ad-value")
+        if (func_name == "ad-gradient" || func_name == "ad-gradient-of")
+            return system_->adGradient(op);
+        if (func_name == "ad-node-value" || func_name == "ad-value" ||
+            func_name == "ad-value-of")
             return system_->adNodeValue(op);
+        if (func_name == "ad-tape-length") return system_->adTapeLength(op);
         if (func_name == "onnx-export-tensor") return system_->onnxExportTensor(op);
         // Type predicates
         if (func_name == "logic-var?") return system_->logicVarPred(op);
@@ -23971,11 +23979,12 @@ private:
             "dnc-memory?",
             "sdnc-program", "sdnc-run", "sdnc-weight-grad", "sdnc-params",
             "sdnc-set-params!", "sdnc-improve!", "sdnc?",
-            "ad-tape-new", "ad-tape-release", "ad-const", "ad-var",
-            "ad-add", "ad-sub", "ad-mul", "ad-div",
+            "ad-tape-new", "ad-tape-release", "ad-tape-length", "ad-const", "ad-var",
+            "ad-add", "ad-sub", "ad-mul", "ad-div", "ad-pow",
             "ad-sin", "ad-cos", "ad-exp", "ad-log", "ad-sqrt",
             "ad-neg", "ad-abs", "ad-relu", "ad-sigmoid", "ad-tanh",
-            "ad-backward", "ad-gradient", "ad-node-value", "ad-value",
+            "ad-backward", "ad-gradient", "ad-gradient-of",
+            "ad-node-value", "ad-value", "ad-value-of",
             "onnx-export-tensor",
             "logic-var?", "substitution?", "fact?", "kb?",
             "factor-graph?", "workspace?", "tensor?", "dual?",
@@ -36818,12 +36827,16 @@ private:
             // Reverse-mode AD tape ops
             {"ad-tape-new",   {"eshkol_ad_tape_new_sret",   0}},
             {"ad-tape-release", {"eshkol_ad_tape_release_sret", 1}},
+            {"ad-tape-length", {"eshkol_ad_tape_length_sret", 1}},
             {"ad-const",      {"eshkol_ad_const_sret",      2}},
             {"ad-var",        {"eshkol_ad_var_sret",        2}},
             {"ad-add",        {"eshkol_ad_add_sret",        3}},
             {"ad-sub",        {"eshkol_ad_sub_sret",        3}},
             {"ad-mul",        {"eshkol_ad_mul_sret",        3}},
             {"ad-div",        {"eshkol_ad_div_sret",        3}},
+            {"ad-pow",        {"eshkol_ad_pow_sret",        3}},
+            {"ad-gradient-of", {"eshkol_ad_gradient_sret",  2}},
+            {"ad-value-of",   {"eshkol_ad_node_value_sret", 2}},
             {"ad-sin",        {"eshkol_ad_sin_sret",        2}},
             {"ad-cos",        {"eshkol_ad_cos_sret",        2}},
             {"ad-exp",        {"eshkol_ad_exp_sret",        2}},

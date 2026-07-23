@@ -350,7 +350,12 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"make-dual", 370, 2}, {"dual-primal", 371, 1}, {"dual-tangent", 372, 1},
     {"dual?", 1849, 1}, {"derivative", 393, 2}, {"diff", 393, 2},
-    {"gradient", 750, 2}, {"jacobian", 751, 2}, {"hessian", 752, 2},
+    /* `gradient` is intercepted by a compiler special form (currying + point
+     * spreading; see compile_expr).  The table entry is kept so a first-class
+     * reference `(map gradient …)` still resolves to the arity-2 primitive,
+     * and so the builtin count is unchanged. */
+    {"gradient", 750, 2},
+    {"jacobian", 751, 2}, {"hessian", 752, 2},
     {"divergence", 753, 2}, {"curl", 754, 2},
     {"laplacian", 755, 2}, {"directional-derivative", 756, 3},
     {"reverse-gradient", 1840, 2},

@@ -4587,6 +4587,154 @@ static Value vm_ad_call_closure(VM* vm, Value closure, Value* args, int argc) {
     return vm_call_closure_from_native(vm, closure, args, argc);
 }
 
+/** @brief Recover a closure's declared fixed-argument arity via the VM's
+ *         func_pc -> arity map (built from the compiled chunk / ESKB module
+ *         function table).  Returns -1 when the callable is not a closure or
+ *         its arity was not recorded (e.g. an anonymous lambda that never
+ *         entered the entry table); callers treat -1 as "spread the point".
+ *         This mirrors the native codegen reading the closure's input_arity so
+ *         `gradient` expands a point to a callable's true signature. */
+static int vm_closure_arity(VM* vm, Value f) {
+    if (!vm || f.type != VAL_CLOSURE || f.as.ptr < 0 || f.as.ptr >= vm->heap.capacity)
+        return -1;
+    HeapObject* cl = vm->heap.objects[f.as.ptr];
+    if (!cl || cl->type != HEAP_CLOSURE) return -1;
+    return cl->closure.arity;   /* -1 when unknown */
+}
+
+/** @brief Allocate a Scheme vector (VAL_VECTOR) holding @p n numbers, each
+ *         wrapped via number_val (integral values collapse to VAL_INT so the
+ *         printed form matches the native `#(-6 -10)` gradient output).  Used
+ *         to return a gradient as a first-class vector rather than a tensor,
+ *         so `vref`/`vector?` behave exactly as on the native path. */
+static Value vm_make_double_vector(VM* vm, const double* data, int n) {
+    int32_t ptr = heap_alloc(&vm->heap);
+    if (ptr < 0) { vm->error = 1; return NIL_VAL; }
+    VmVector* vec = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+    if (!vec) { vm->error = 1; return NIL_VAL; }
+    vec->len = n;
+    vec->cap = n;
+    vec->items = n ? (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value)) : NULL;
+    if (n && !vec->items) { vm->error = 1; return NIL_VAL; }
+    for (int i = 0; i < n; i++) vec->items[i] = number_val(data[i]);
+    vm->heap.objects[ptr]->type = HEAP_VECTOR;
+    vm->heap.objects[ptr]->opaque.ptr = vec;
+    return (Value){ .type = VAL_VECTOR, .as.ptr = ptr };
+}
+
+/** @brief Allocate a forward-mode dual number (primal + tangent*ε) as a
+ *         heap-boxed VAL_DUAL, so gradient's dual passes seed a coordinate. */
+static Value vm_make_dual_val(VM* vm, double primal, double tangent) {
+    VmDual* d = vm_dual_make(&vm->heap.regions, primal, tangent);
+    if (!d) return FLOAT_VAL(0);
+    int32_t dp = heap_alloc(&vm->heap);
+    if (dp < 0) { vm->error = 1; return FLOAT_VAL(0); }
+    vm->heap.objects[dp]->type = HEAP_DUAL;
+    vm->heap.objects[dp]->opaque.ptr = d;
+    return (Value){ .type = VAL_DUAL, .as.ptr = dp };
+}
+
+/** @brief Read the tangent (derivative component) of a dual-number result,
+ *         or 0.0 if the callable returned a constant (non-dual) value. */
+static double vm_dual_tangent_of(VM* vm, Value v) {
+    if (v.type == VAL_DUAL && v.as.ptr >= 0) {
+        VmDual* rd = (VmDual*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return rd ? rd->tangent : 0.0;
+    }
+    return 0.0;
+}
+
+#define VM_GRAD_MAX_VARS 64
+
+/** @brief Exact forward-mode gradient of @p f_val at @p x_val.
+ *
+ * Arity-resolved to mirror the native codegen path exactly:
+ *   - scalar point            -> f'(x), a bare scalar Value
+ *   - collection, arity == 1  -> f receives the whole point as ONE vector
+ *     argument; each of N dual passes seeds one component (a vector of dual
+ *     elements read back via vref inside f)
+ *   - collection, arity != 1  -> f receives N scalar arguments; each of N dual
+ *     passes spreads the components into N scalar duals
+ * Returns a Scheme vector `#(∂f/∂x1 …)` for a collection point (matching the
+ * native `#(...)` return) or a bare scalar for a scalar point.  Forward-mode
+ * dual arithmetic is the same mode the native `-r` path uses for a
+ * multi-argument scalar loss, so the two agree to the last bit. */
+static Value vm_gradient_compute(VM* vm, Value f_val, Value x_val) {
+    int arity = vm_closure_arity(vm, f_val);
+
+    double point[VM_GRAD_MAX_VARS];
+    int n = 0;
+    int is_collection = 0;
+
+    if (x_val.type == VAL_PAIR) {
+        is_collection = 1;
+        Value cur = x_val;
+        while (cur.type == VAL_PAIR && n < VM_GRAD_MAX_VARS) {
+            point[n++] = as_number_vm(vm, vm->heap.objects[cur.as.ptr]->cons.car);
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+    } else if (x_val.type == VAL_VECTOR && x_val.as.ptr >= 0) {
+        is_collection = 1;
+        VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (vec) {
+            n = vec->len < VM_GRAD_MAX_VARS ? vec->len : VM_GRAD_MAX_VARS;
+            for (int i = 0; i < n; i++) point[i] = as_number_vm(vm, vec->items[i]);
+        }
+    } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
+        is_collection = 1;
+        VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+        if (t && t->data) {
+            n = (int)(t->total < VM_GRAD_MAX_VARS ? t->total : VM_GRAD_MAX_VARS);
+            for (int i = 0; i < n; i++) point[i] = t->data[i];
+        }
+    } else {
+        point[0] = as_number_vm(vm, x_val);
+        n = 1;
+    }
+
+    if (n == 0) return FLOAT_VAL(0);
+
+    /* Scalar point → scalar derivative (single dual pass). */
+    if (!is_collection && n == 1) {
+        Value dual_arg = vm_make_dual_val(vm, point[0], 1.0);
+        Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
+        return FLOAT_VAL(vm_dual_tangent_of(vm, result));
+    }
+
+    double grads[VM_GRAD_MAX_VARS];
+
+    if (arity == 1) {
+        /* Whole-collection loss: pass one vector of dual elements per pass. */
+        for (int i = 0; i < n; i++) {
+            int32_t vptr = heap_alloc(&vm->heap);
+            if (vptr < 0) { vm->error = 1; break; }
+            VmVector* vv = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+            if (!vv) { vm->error = 1; break; }
+            vv->len = n; vv->cap = n;
+            vv->items = (Value*)vm_alloc(&vm->heap.regions, (size_t)n * sizeof(Value));
+            if (!vv->items) { vm->error = 1; break; }
+            for (int j = 0; j < n; j++)
+                vv->items[j] = vm_make_dual_val(vm, point[j], (j == i) ? 1.0 : 0.0);
+            vm->heap.objects[vptr]->type = HEAP_VECTOR;
+            vm->heap.objects[vptr]->opaque.ptr = vv;
+            Value arg = (Value){ .type = VAL_VECTOR, .as.ptr = vptr };
+            Value result = vm_ad_call_closure(vm, f_val, &arg, 1);
+            grads[i] = vm_dual_tangent_of(vm, result);
+        }
+    } else {
+        /* Spread: f takes N scalar args (arity == n, or unknown). */
+        for (int i = 0; i < n; i++) {
+            Value args[VM_GRAD_MAX_VARS];
+            for (int j = 0; j < n; j++)
+                args[j] = vm_make_dual_val(vm, point[j], (j == i) ? 1.0 : 0.0);
+            Value result = vm_ad_call_closure(vm, f_val, args, n);
+            grads[i] = vm_dual_tangent_of(vm, result);
+        }
+    }
+
+    return vm_make_double_vector(vm, grads, n);
+}
+
 /** @brief Peek into a closure's bytecode to find the native function id (fid)
  *         it's a thin wrapper around, by scanning its first few instructions
  *         for an OP_NATIVE_CALL before an OP_RETURN. Used to recognize
@@ -5707,12 +5855,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Math functions (20-35)
      * ══════════════════════════════════════════════════════════════════════ */
-    case 20: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); break; }
-    case 21: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); break; }
+    /* Reverse-mode AD tracing for the transcendental unary ops: when a tape
+     * is active and the operand slot is tracked, record the matching tape node
+     * (ad_sin/ad_cos/...) and map the result slot to it, so a closure run under
+     * `gradient` differentiates through sin/cos/exp/log/sqrt on the one tape.
+     * The plain-double forward value the VM already computes matches the tape
+     * node's stored value (same libm call), keeping VM/native output aligned. */
+#define VM_AD_TRACE_UNARY(vm, in_node, tape_fn, is_dual) do { \
+    if ((vm)->active_tape && (vm)->sp > 0) { \
+        (vm)->ad_node_map[(vm)->sp - 1] = ((in_node) != -1 && !(is_dual)) \
+            ? tape_fn((AdTape*)(vm)->active_tape, (in_node)) : -1; \
+    } \
+} while (0)
+    case 20: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,377); } else vm_push(vm, FLOAT_VAL(sin(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sin, _d); break; }
+    case 21: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,378); } else vm_push(vm, FLOAT_VAL(cos(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_cos, _d); break; }
     case 22: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { /* tan = sin/cos */ vm_push(vm,a); vm_dispatch_native(vm,377); Value s=vm_pop(vm); vm_push(vm,a); vm_dispatch_native(vm,378); Value c=vm_pop(vm); vm_push(vm,s); vm_push(vm,c); vm_dispatch_native(vm,376); } else vm_push(vm, FLOAT_VAL(tan(as_number(a)))); break; }
-    case 23: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); break; }
-    case 24: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); break; }
-    case 25: { Value a = vm_pop(vm); if (a.type==VAL_DUAL) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); break; }
+    case 23: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,379); } else vm_push(vm, FLOAT_VAL(exp(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_exp, _d); break; }
+    case 24: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,380); } else vm_push(vm, FLOAT_VAL(log(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_log, _d); break; }
+    case 25: { int _in = (vm->active_tape && vm->sp>0) ? vm->ad_node_map[vm->sp-1] : -1; Value a = vm_pop(vm); int _d = (a.type==VAL_DUAL); if (_d) { vm_push(vm,a); vm_dispatch_native(vm,381); } else vm_push(vm, FLOAT_VAL(sqrt(as_number(a)))); VM_AD_TRACE_UNARY(vm, _in, ad_sqrt, _d); break; }
     case 26: { Value a = vm_pop(vm); vm_push(vm, number_val(floor(as_number_vm(vm,a)))); break; }
     case 27: { Value a = vm_pop(vm); vm_push(vm, number_val(ceil(as_number_vm(vm,a)))); break; }
     case 28: { Value a = vm_pop(vm); vm_push(vm, number_val(vm_round_half_even(as_number_vm(vm,a)))); break; }
@@ -10899,73 +11059,23 @@ static void vm_dispatch_native(VM* vm, int fid) {
     (out_val) = (Value){.type = VAL_DUAL, .as.ptr = _dp}; \
 } while(0)
 
-    case 750: { /* gradient(f, point) → scalar or tensor of partial derivatives
-                 * Scalar point: returns f'(x) (same as derivative)
-                 * List/tensor point: returns #(∂f/∂x1 ∂f/∂x2 ... ∂f/∂xn) */
+    case 750: { /* %gradient-direct(f, point): exact forward-mode gradient.
+                 *
+                 * Arity-resolved to mirror the native codegen path exactly:
+                 *   - scalar point           → f'(x), a bare scalar
+                 *   - collection, arity == 1 → f takes the whole point as ONE
+                 *     vector argument; N dual passes each seed one component
+                 *     (a vector of dual elements), read via vref inside f
+                 *   - collection, arity != 1 → f takes N scalar arguments; N
+                 *     dual passes spread the components into N scalar duals
+                 * Returns a Scheme vector `#(∂f/∂x1 …)` (matching native's
+                 * `#(...)`).  Forward-mode dual arithmetic is what the native
+                 * `-r` path uses for a multi-argument scalar loss, so the two
+                 * agree to the last bit; the higher-level currying/spread
+                 * wrapper (`gradient` in the prelude) routes every surface
+                 * form through this single primitive. */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
-
-        /* Extract point values */
-        double point[VM_AD_MAX_VARS];
-        int n = 0;
-
-        if (x_val.type == VAL_PAIR) {
-            /* List of values: (list x1 x2 ... xn) */
-            Value cur = x_val;
-            while (cur.type == VAL_PAIR && n < VM_AD_MAX_VARS) {
-                point[n++] = as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
-            }
-        } else if (x_val.type == VAL_TENSOR && x_val.as.ptr >= 0) {
-            /* Tensor of values: #(x1 x2 ... xn) */
-            VmTensor* t = (VmTensor*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
-            if (t && t->data) {
-                n = (int)(t->total < VM_AD_MAX_VARS ? t->total : VM_AD_MAX_VARS);
-                for (int i = 0; i < n; i++) point[i] = t->data[i];
-            }
-        } else {
-            /* Scalar: single-variable derivative */
-            point[0] = as_number(x_val);
-            n = 1;
-        }
-
-        if (n == 0) { vm_push(vm, FLOAT_VAL(0)); break; }
-
-        if (n == 1) {
-            /* Scalar case: f'(x) via single dual pass */
-            Value dual_arg;
-            VM_AD_MAKE_DUAL(vm, point[0], 1.0, dual_arg);
-            Value result = vm_ad_call_closure(vm, f_val, &dual_arg, 1);
-            if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                vm_push(vm, FLOAT_VAL(rd ? rd->tangent : 0));
-            } else {
-                vm_push(vm, FLOAT_VAL(0)); /* constant function */
-            }
-        } else {
-            /* Multi-variable: N forward passes, seed each variable in turn */
-            double partials[VM_AD_MAX_VARS];
-            for (int i = 0; i < n; i++) {
-                Value args[VM_AD_MAX_VARS];
-                for (int j = 0; j < n; j++) {
-                    VM_AD_MAKE_DUAL(vm, point[j], (j == i) ? 1.0 : 0.0, args[j]);
-                }
-                Value result = vm_ad_call_closure(vm, f_val, args, n);
-                if (result.type == VAL_DUAL && result.as.ptr >= 0) {
-                    VmDual* rd = (VmDual*)vm->heap.objects[result.as.ptr]->opaque.ptr;
-                    partials[i] = rd ? rd->tangent : 0;
-                } else {
-                    partials[i] = 0;
-                }
-            }
-            /* Return as tensor */
-            int64_t shape[1] = { n };
-            VmTensor* t = vm_tensor_from_data(&vm->heap.regions, partials, shape, 1);
-            if (t) {
-                VM_PUSH_HEAP_OPAQUE(vm, HEAP_TENSOR, VAL_TENSOR, t);
-            } else {
-                vm_push(vm, NIL_VAL);
-            }
-        }
+        vm_push(vm, vm_gradient_compute(vm, f_val, x_val));
         break;
     }
 

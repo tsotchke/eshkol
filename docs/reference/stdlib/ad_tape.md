@@ -239,11 +239,19 @@ Write the snapshot values back into the tape's nodes; returns the tape.
 ```
 
 ## Extra builtins (not in `provide`)
-These low-level builtins exist in codegen but are outside this module's `provide` block; they appear in `tests/vm/ad_tape_lowlevel_regression.esk`:
-- `(ad-pow tape a p-node)` — power on the low-level tape (`p` here is a **node**, e.g. `(ad-const tape 3.0)`), distinct from stateful `tape-pow` whose `p` is a number.
+These low-level builtins exist in codegen but are outside this module's `provide` block; they are exercised by `tests/vm/ad_tape_lowlevel_regression.esk`, which passes on **all three substrates — JIT, AOT and the bytecode VM**:
+- `(ad-pow tape a p-node)` — power on the low-level tape (`p` here is a **node**, e.g. `(ad-const tape 3.0)`), distinct from stateful `tape-pow` whose `p` is a number.  Forward value is ordinary `pow(a, p)`; reverse derivatives are `d/da = p·a^(p-1)` and `d/dp = value·ln(a)`.
 - `(ad-value-of tape node)`, `(ad-gradient-of tape node)` — aliases of `ad-value` / `ad-gradient`.
 - `(ad-tape-length tape)` — number of nodes recorded.
 - `(ad-tape-release tape)` — release the low-level tape; idempotent (safe to call twice).
+
+`reverse-gradient` (a high-level, operator-overloading convenience that boxes a
+point as tape variables and reads back the gradient vector) is a VM builtin and
+is subsumed on the LLVM path by the `gradient` operator; the low-level surface
+above is the portable, substrate-uniform contract, so the low-level regression
+builds the equivalent reverse-mode gradient directly on the tape
+(`ad-var`/`ad-mul`/`ad-add`/`ad-backward`/`ad-gradient`) rather than calling
+`reverse-gradient`.
 
 ## Internal helpers (provided but user-facing use is uncommon)
 `node-value` and `node-grad` are the documented accessors. The following are used internally by the module and generally not called directly: the `tape-*` list helpers, `val-*` value helpers, and `node-grad-set!/add!` are **not** exported.

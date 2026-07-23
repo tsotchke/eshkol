@@ -186,6 +186,13 @@ oracles:
         severity: high
         label: 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from inside a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the same data as a top-level read — never silent zeros; verified on JIT and AOT'
         action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["vm_gradient_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'self-differentiating on every substrate: `gradient` on the bytecode VM (arity-resolved forward-mode dual — direct/wrapped/curried, N-arg spread, arity-1 whole-vector, non-polynomial) is 25/25 on the VM and byte-identical to native across native/vm-src/vm-eskb; the public low-level reverse-mode AD tape surface (incl. ad-pow) is green on JIT, AOT and the VM'
+        action: ./scripts/run_icc_smoke.sh
 
   # ─────────────────────────────────────────────────────────────────
   # TOTAL-LANGUAGE completion — unlike the compiler-readiness ratchet above,

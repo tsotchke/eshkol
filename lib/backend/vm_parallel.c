@@ -786,6 +786,7 @@ static int vm_publish_object_locked(VM* main_vm, VM* worker, Value in,
 
         case HEAP_CLOSURE:
             dst->closure.func_pc = src->closure.func_pc;
+            dst->closure.arity = src->closure.arity;
             dst->closure.n_upvalues = src->closure.n_upvalues;
             for (int i = 0; i < src->closure.n_upvalues && i < 16; i++) {
                 if (!vm_publish_value_locked(main_vm, worker, src->closure.upvalues[i],
