@@ -1,0 +1,28 @@
+;; Type System Test: predicate-guarded narrowing / occurrence typing (item 2).
+;;
+;; `c` is declared boolean (a number-or-#f sentinel modelled as boolean). Inside
+;; the true branch of `(number? c)` it must be narrowed to Number so it can flow
+;; into a numeric parameter — without narrowing this reported
+;; "expected Number, got Boolean".
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (needs-number (n : number)) (+ n 1))
+
+;; number? guard narrows c to Number in the then-branch
+(define (use-if (c : boolean))
+  (if (number? c)
+      (needs-number c)
+      0))
+
+;; and-chain guard narrows c to Number for the then-branch as well
+(define (use-and (c : boolean))
+  (if (and (number? c) #t)
+      (needs-number c)
+      0))
+
+(display (use-if #f))
+(newline)
+(display (use-and #f))
+(newline)

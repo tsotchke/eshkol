@@ -1,0 +1,96 @@
+;; ==================================================================
+;; Quantum Natural Gradient VQE -- the whole loop in Eshkol
+;; ==================================================================
+;;
+;; Natural gradient preconditions the energy gradient by the Fubini-Study
+;; quantum geometric tensor (the natural metric on the ansatz state manifold):
+;;   theta <- theta - lr * (g + eps I)^-1 grad
+;; The gradient is Moonlab's exact adjoint (vqe-gradient); the metric g is
+;; Moonlab's quantum geometric tensor (vqe-qgt); the (g+eps I)^-1 grad solve is
+;; done here in Scheme.  Against plain gradient descent from identical initial
+;; parameters, QNG reaches the H2 ground state in far fewer iterations.
+;;
+;; Run:  ./build/eshkol-run -r examples/qng_vqe.esk
+
+(require agent.quantum)
+
+(define lr 0.3) (define reg 0.001) (define steps 40)
+
+;; --- 4-vector + 4x4 helpers ---
+(define (vsub u v) (vector (- (vector-ref u 0)(vector-ref v 0)) (- (vector-ref u 1)(vector-ref v 1))
+                           (- (vector-ref u 2)(vector-ref v 2)) (- (vector-ref u 3)(vector-ref v 3))))
+(define (vscale s v) (vector (* s (vector-ref v 0))(* s (vector-ref v 1))(* s (vector-ref v 2))(* s (vector-ref v 3))))
+(define (copy4 v) (vector (vector-ref v 0)(vector-ref v 1)(vector-ref v 2)(vector-ref v 3)))
+;; (g + reg I) as a fresh mutable 4x4
+(define (metric+reg M reg)
+  (let ((A (vector (make-vector 4 0.0)(make-vector 4 0.0)(make-vector 4 0.0)(make-vector 4 0.0))))
+    (let li ((i 0))
+      (if (< i 4)
+          (begin
+            (let lj ((j 0))
+              (if (< j 4)
+                  (begin (vector-set! (vector-ref A i) j
+                           (+ (vector-ref (vector-ref M i) j) (if (= i j) reg 0.0)))
+                         (lj (+ j 1)))
+                  #f))
+            (li (+ i 1)))
+          #f))
+    A))
+;; solve 4x4 A x = b (A, b mutated)
+(define (solve4 A b)
+  (let ((x (make-vector 4 0.0)))
+    (let cols ((c 0))
+      (if (< c 4)
+          (let ((diag (vector-ref (vector-ref A c) c)))
+            (let rows ((r (+ c 1)))
+              (if (< r 4)
+                  (let ((f (/ (vector-ref (vector-ref A r) c) diag)))
+                    (let cc ((k c))
+                      (if (< k 4)
+                          (begin (vector-set! (vector-ref A r) k
+                                   (- (vector-ref (vector-ref A r) k) (* f (vector-ref (vector-ref A c) k))))
+                                 (cc (+ k 1)))
+                          #f))
+                    (vector-set! b r (- (vector-ref b r) (* f (vector-ref b c))))
+                    (rows (+ r 1)))
+                  #f))
+            (cols (+ c 1)))
+          #f))
+    (let back ((i 3))
+      (if (>= i 0)
+          (let ((s (vector-ref b i)))
+            (let jj ((j (+ i 1)))
+              (if (< j 4)
+                  (begin (set! s (- s (* (vector-ref (vector-ref A i) j) (vector-ref x j)))) (jj (+ j 1)))
+                  #f))
+            (vector-set! x i (/ s (vector-ref (vector-ref A i) i)))
+            (back (- i 1)))
+          #f))
+    x))
+
+(with-hamiltonian (make-h2-hamiltonian 0.7414)
+  (lambda (ham)
+    (define exact (hamiltonian-exact-ground-energy ham))
+    (define init (vector 0.1 0.2 0.3 0.4))
+    (display "=== Quantum Natural Gradient VQE (H2) ===") (newline)
+    (display "exact ground state: ") (display exact) (display " Ha") (newline)
+    (newline)
+    (display "  step   E(QNG)        E(vanilla GD)") (newline)
+    (let loop ((tq init) (tv init) (i 0))
+      (if (> i steps)
+          (begin
+            (newline)
+            (display "final QNG:     ") (display (vqe-energy ham tq)) (display " Ha") (newline)
+            (display "final vanilla: ") (display (vqe-energy ham tv)) (display " Ha") (newline)
+            (display "exact:         ") (display exact) (display " Ha") (newline)
+            (newline)
+            (display "The QGT-preconditioned step (metric from Moonlab, solve in Scheme)") (newline)
+            (display "descends to the ground state far faster than the raw gradient.") (newline))
+          (begin
+            (if (= 0 (modulo i 5))
+                (begin (display "   ") (display i) (display "    ")
+                       (display (vqe-energy ham tq)) (display "   ") (display (vqe-energy ham tv)) (newline))
+                #f)
+            (let ((qdir (solve4 (metric+reg (vqe-qgt ham tq) reg) (copy4 (vqe-gradient ham tq))))
+                  (vgrad (vqe-gradient ham tv)))
+              (loop (vsub tq (vscale lr qdir)) (vsub tv (vscale lr vgrad)) (+ i 1))))))))

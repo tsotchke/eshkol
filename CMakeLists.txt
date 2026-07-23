@@ -206,7 +206,10 @@ if(ESHKOL_QUANTUM_ENABLED)
 
     FetchContent_Declare(moonlab
         GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
-        GIT_TAG d2503460246da893c28b59845bb32689aa9602fc
+        # Moonlab v1.2.0: adds MOONLAB_API vqe_compute_qgt (QNG/QGT, needed by the
+        # quantum-chemistry examples) and the smooth first-principles H2/LiH PES.
+        # Pinned by the tag's commit SHA; ABI frozen per the Moonlab release note.
+        GIT_TAG e441957b22698ce93ad4868d585ac7ca3baa281f
         GIT_SHALLOW FALSE
     )
     FetchContent_MakeAvailable(moonlab)

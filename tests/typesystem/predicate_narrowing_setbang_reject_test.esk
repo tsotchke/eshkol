@@ -1,0 +1,21 @@
+;; Type System Test: narrowing is conservatively cancelled when the guarded
+;; variable is reassigned inside the branch (item 2 — soundness).
+;;
+;; Even though c is guarded by (number? c), the branch reassigns c via set!, so
+;; the refinement no longer holds and c reverts to Boolean — the numeric use
+;; must therefore still error. This proves the narrowing is not unsound.
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: [ERROR]
+;; EXPECT-STDERR: expected Number, got Boolean
+
+(define (needs-number (n : number)) (+ n 1))
+
+(define (use-setbang (c : boolean))
+  (if (number? c)
+      (begin
+        (set! c #t)          ;; reassignment cancels the narrowing
+        (needs-number c))    ;; c is Boolean again -> error
+      0))
+
+(display (use-setbang #f))
+(newline)
