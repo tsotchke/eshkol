@@ -147,6 +147,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crash→green AOT/JIT fixture under `ESHKOL_ARENA_POISON=1`, ThreadSanitizer
   (73 arena data races → 0), and the existing parallel + region-race +
   per-thread-arena suites. New ICC gate: `parallel_map_scope_reclaim_race`.
+- **Benign data race on the arena-poison diagnostic flag.** The
+  `eshkol_arena_poison_enabled()` env-var cache was a plain function-local
+  `int`, first-touched concurrently by pool workers (identical value, but a
+  real ThreadSanitizer-visible race). Now a relaxed `std::atomic<int>`.
 
 - **matmul tensor reads inside a defined function (#309) — verified resolved
   and now guarded.** #309 reported that a `matmul` result read back via
