@@ -69,6 +69,17 @@ ensure_examples_build() {
 example_should_skip() {
     local test_name="$1"
 
+    # Quantum-chemistry examples require the Moonlab backend; skip them unless
+    # the quantum lane is enabled (mirrors the ESHKOL_QUANTUM_ENABLED gating used
+    # by the quantum test suite, e.g. run_ad_adversarial.sh).
+    case "$test_name" in
+        vqe_h2.esk|h2_vibrational_quantum.esk|h2_vibrational_full.esk|qng_vqe.esk)
+            if [ "${ESHKOL_QUANTUM_ENABLED:-OFF}" != "ON" ]; then
+                return 0
+            fi
+            ;;
+    esac
+
     case "$test_name" in
         selene_*|qllm_*|agent.esk|consciousness_*)
             return 0
