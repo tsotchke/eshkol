@@ -437,3 +437,129 @@ eshkol_tagged_value_t arena_tagged_cons_get_tagged_value(const arena_tagged_cons
 
     return is_cdr ? cell->cdr : cell->car;
 }
+
+/**
+ * @brief Extract a tagged numeric value as a double (INT64 or DOUBLE storage).
+ */
+static double eshkol_tv_as_double(const eshkol_tagged_value_t* tv) {
+    uint8_t bt = ESHKOL_GET_BASE_TYPE(tv->type);
+    if (bt == ESHKOL_VALUE_INT64) return (double)tv->data.int_val;
+    if (bt == ESHKOL_VALUE_DOUBLE) return tv->data.double_val;
+    // Tensor elements arrive as raw int64 bit patterns of doubles elsewhere;
+    // here a numeric tagged value is either INT64 or DOUBLE. Fall back to the
+    // double interpretation of the stored payload.
+    return tv->data.double_val;
+}
+
+/**
+ * @brief Normalize the argument list of a higher-order gradient closure so a
+ *        single collection argument is expanded into spread scalar arguments.
+ *
+ * The curried gradient form `(gradient f)` yields a variadic closure `grad_f`
+ * that the caller may invoke either as
+ *   `(grad_f x0 x1 ...)`  — spread scalar coordinates, or
+ *   `(grad_f point)`      — a single vector / tensor / list point.
+ * The finite-difference machinery in AutodiffCodegen::gradientHigherOrder
+ * expects spread scalars, so this routine rewrites the second form into the
+ * first: when @p in_args is a one-element list whose sole element is a heap
+ * collection (Scheme vector, tensor, or list), it emits a fresh list of that
+ * collection's double elements. Every other shape — the empty list, already
+ * spread scalars, or a single scalar coordinate — is passed through unchanged.
+ * This makes `((gradient f) point)` agree with the two-argument
+ * `(gradient f point)` form.
+ *
+ * Values are passed by pointer to avoid struct-by-value ABI issues on ARM64.
+ *
+ * @param arena    Arena for any freshly allocated cons cells.
+ * @param in_args  The closure's incoming variadic argument list.
+ * @param out_args Receives the normalized argument list (set to @p in_args
+ *                 unchanged when no expansion applies).
+ */
+extern "C" void eshkol_grad_ho_expand_point(arena_t* arena,
+                                            const eshkol_tagged_value_t* in_args,
+                                            eshkol_tagged_value_t* out_args) {
+    if (!out_args || !in_args) return;
+    *out_args = *in_args;  // default: pass through unchanged
+    if (!arena) return;
+
+    // Must be a non-empty argument list (heap pointer to a cons cell).
+    if (ESHKOL_GET_BASE_TYPE(in_args->type) != ESHKOL_VALUE_HEAP_PTR) return;
+    arena_tagged_cons_cell_t* head =
+        (arena_tagged_cons_cell_t*)(void*)(uintptr_t)in_args->data.ptr_val;
+    if (!head) return;
+
+    // Only a SINGLE argument is a candidate for expansion; spread scalars
+    // (cdr is another cons) are already in the expected shape.
+    if (ESHKOL_GET_BASE_TYPE(head->cdr.type) != ESHKOL_VALUE_NULL) return;
+
+    // The sole argument must be a heap collection to be worth expanding; a
+    // single scalar (e.g. ((gradient f) 3.0)) is already correct.
+    eshkol_tagged_value_t elem = head->car;
+    if (ESHKOL_GET_BASE_TYPE(elem.type) != ESHKOL_VALUE_HEAP_PTR) return;
+    void* cptr = (void*)(uintptr_t)elem.data.ptr_val;
+    if (!cptr) return;
+    uint8_t sub = ESHKOL_GET_HEADER(cptr)->subtype;
+
+    // A list is already a spread sequence of scalars — use it directly.
+    if (sub == HEAP_SUBTYPE_CONS) {
+        *out_args = elem;
+        return;
+    }
+
+    // Otherwise gather the collection's numeric elements and rebuild a fresh
+    // scalar list (built end-to-front to preserve order), mirroring the cons
+    // representation the count/copy loop consumes.
+    eshkol_tagged_value_t acc;
+    acc.type = ESHKOL_VALUE_NULL;
+    acc.flags = 0;
+    acc.reserved = 0;
+    acc.data.raw_val = 0;
+
+    if (sub == HEAP_SUBTYPE_VECTOR) {
+        // Scheme vector layout: [length(8)][tagged elements...] (header at -8).
+        uint64_t len = *(uint64_t*)cptr;
+        const eshkol_tagged_value_t* elems =
+            (const eshkol_tagged_value_t*)((const uint8_t*)cptr + sizeof(uint64_t));
+        for (uint64_t i = len; i-- > 0; ) {
+            arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+            if (!cell) return;  // OOM: leave *out_args unchanged
+            cell->car.type = ESHKOL_VALUE_DOUBLE;
+            cell->car.flags = 0;
+            cell->car.reserved = 0;
+            cell->car.data.double_val = eshkol_tv_as_double(&elems[i]);
+            cell->cdr = acc;
+            acc.type = ESHKOL_VALUE_HEAP_PTR;
+            acc.flags = HEAP_SUBTYPE_CONS;
+            acc.reserved = 0;
+            acc.data.ptr_val = (uint64_t)(uintptr_t)cell;
+        }
+        *out_args = acc;
+        return;
+    }
+
+    if (sub == HEAP_SUBTYPE_TENSOR) {
+        // Tensor stores its elements as int64 bit patterns of doubles.
+        eshkol_tensor_t* t = (eshkol_tensor_t*)cptr;
+        uint64_t len = t->total_elements;
+        const int64_t* elems = t->elements;
+        for (uint64_t i = len; i-- > 0; ) {
+            arena_tagged_cons_cell_t* cell = arena_allocate_cons_with_header(arena);
+            if (!cell) return;
+            double d;
+            int64_t bits = elems[i];
+            __builtin_memcpy(&d, &bits, sizeof(double));
+            cell->car.type = ESHKOL_VALUE_DOUBLE;
+            cell->car.flags = 0;
+            cell->car.reserved = 0;
+            cell->car.data.double_val = d;
+            cell->cdr = acc;
+            acc.type = ESHKOL_VALUE_HEAP_PTR;
+            acc.flags = HEAP_SUBTYPE_CONS;
+            acc.reserved = 0;
+            acc.data.ptr_val = (uint64_t)(uintptr_t)cell;
+        }
+        *out_args = acc;
+        return;
+    }
+    // Any other heap subtype: leave unchanged.
+}

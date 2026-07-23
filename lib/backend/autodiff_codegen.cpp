@@ -3670,6 +3670,31 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
 
     Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
 
+    // Normalize the incoming variadic argument list so that a SINGLE
+    // collection argument — ((gradient f) point) where point is a vector /
+    // tensor / list — is expanded into spread scalar coordinates, matching the
+    // shape the finite-difference switch below expects and the two-argument
+    // form (gradient f point). Spread scalars ((gradient f) x y) and a single
+    // scalar ((gradient f) x) are passed through unchanged. Tagged values are
+    // marshalled by pointer to avoid struct-by-value ABI issues on ARM64 (same
+    // rationale as the cons accessors used below).
+    {
+        llvm::Function* expand_fn = llvm::cast<llvm::Function>(
+            ctx_.module().getOrInsertFunction(
+                "eshkol_grad_ho_expand_point",
+                FunctionType::get(ctx_.voidType(),
+                    {ctx_.ptrType(), ctx_.ptrType(), ctx_.ptrType()}, false)).getCallee());
+        llvm::IRBuilder<> entryB(&grad_func->getEntryBlock(),
+                                 grad_func->getEntryBlock().begin());
+        AllocaInst* ho_in_slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_ho_args_in");
+        AllocaInst* ho_out_slot = entryB.CreateAlloca(ctx_.taggedValueType(), nullptr, "grad_ho_args_out");
+        ctx_.builder().CreateStore(args_list, ho_in_slot);
+        Value* ho_arena = ctx_.builder().CreateLoad(
+            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        ctx_.builder().CreateCall(expand_fn, {ho_arena, ho_in_slot, ho_out_slot});
+        args_list = ctx_.builder().CreateLoad(ctx_.taggedValueType(), ho_out_slot);
+    }
+
     // Constants for numerical differentiation (central difference)
     Value* h = ConstantFP::get(ctx_.doubleType(), 1e-8);
     Value* two_h = ConstantFP::get(ctx_.doubleType(), 2e-8);
@@ -4211,6 +4236,29 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                 Value* rt_point_is_scalar = ctx_.builder().CreateOr(
                     ctx_.builder().CreateOr(rt_point_is_double, rt_point_is_int), rt_point_is_dual);
 
+                // Recover the callable's declared input arity so the point
+                // is expanded to match the function's true signature. The closure
+                // struct carries input_arity at byte offset 33 (see
+                // arena_allocate_closure_with_header / codegenClosureCall). A
+                // multi-parameter SCALAR loss — e.g. (loss x y), arity 2 — must
+                // have its N-element vector/list point UNPACKED into N separate
+                // scalar args (the forward-mode collection path below does this
+                // via its arity switch). Only an arity<=1 callable legitimately
+                // receives the whole point as ONE vector/tensor argument (the
+                // ESH-0235 reverse-mode tensor path). Reading the arity here — in
+                // the dominating entry block — lets us gate BOTH paths on it, so a
+                // first-class multi-arg loss reached through a function parameter
+                // is no longer mis-called with a single tensor argument (which
+                // misdispatched its scalar body to tensor-sub/tensor-mul).
+                Value* clo_arity_val = ctx_.builder().CreateZExt(
+                    ctx_.builder().CreateLoad(ctx_.int8Type(),
+                        ctx_.builder().CreateGEP(ctx_.int8Type(),
+                            ctx_.builder().CreateIntToPtr(tagged_.unpackInt64(closure_val), ctx_.ptrType()),
+                            ConstantInt::get(ctx_.int64Type(), 33))),
+                    ctx_.int64Type());
+                Value* clo_arity_le1 = ctx_.builder().CreateICmpULE(clo_arity_val,
+                    ConstantInt::get(ctx_.int64Type(), 1));
+
                 BasicBlock* grad_rt_scalar_fwd = BasicBlock::Create(
                     ctx_.context(), "grad_rt_scalar_fwd", current_func);
                 BasicBlock* grad_rt_collection = BasicBlock::Create(
@@ -4257,7 +4305,16 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
                     // a tensor op and returns a silent all-zero gradient.
                     Value* rvt_is_vec = b.CreateICmpEQ(rvt_sub,
                         ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-                    Value* rvt_seedable = b.CreateOr(rvt_is_tensor, rvt_is_vec);
+                    // Only take the single-argument reverse-mode tensor path
+                    // when the callable actually accepts the whole point as ONE
+                    // argument (arity <= 1). A multi-parameter scalar loss (arity
+                    // >= 2) must instead fall through to the forward-mode
+                    // collection path, whose arity switch unpacks the point into N
+                    // separate scalar args. Without this gate ESH-0235 captured
+                    // every vector/list/tensor point and called an arity-N loss
+                    // with a single tensor, misdispatching its scalar arithmetic.
+                    Value* rvt_seedable = b.CreateAnd(
+                        b.CreateOr(rvt_is_tensor, rvt_is_vec), clo_arity_le1);
                     llvm::StructType* rvt_tt = ctx_.tensorType();
                     BasicBlock* rvt_norm_vec = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_vec", current_func);
                     BasicBlock* rvt_norm_ten = BasicBlock::Create(ctx_.context(), "grad_rt_rev_norm_ten", current_func);
