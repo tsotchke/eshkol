@@ -1,0 +1,128 @@
+;; Regression: arity-1 whole-point tensor-loss gradients.
+;;
+;; An arity-1 loss receives the WHOLE point as one vector/tensor argument. When
+;; its body applies scalar arithmetic DIRECTLY to that whole argument
+;; (elementwise tensor semantics, e.g. (define (loss x) (* x x))), the loss
+;; value is a TENSOR, not a scalar read out of the point via vector-ref.
+;;
+;; gradient is ℝⁿ→ℝ, so:
+;;   * a SCALAR / 1-element-tensor loss output is the scalar case — the gradient
+;;     is exact (e.g. d/dx x² at 3 is 6, returned as #(6));
+;;   * a MULTI-element-tensor output is a vector-valued function (ℝⁿ→ℝᵐ) whose
+;;     gradient is undefined (the Jacobian is the right object) — gradient emits
+;;     a clean runtime diagnostic naming `jacobian` and aborts. That path is
+;;     verified out-of-band (it terminates the process), not in this all-pass
+;;     file; see scripts/icc_traces / the fix's PR description.
+;;
+;; Before the fix this class silently returned an all-zero gradient (or, on the
+;; reverse path, read an unwritten gradient slot). Every form below — direct,
+;; through a wrapper, and curried — must now agree and be exact AD.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (check name expected actual)
+  (if (approx-equal? expected actual 1e-9)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")") (newline))))
+
+;; Strict bit-for-bit equality: an indirect/curried form must be byte-identical
+;; to the direct exact-AD call, not merely close (guards against a silent
+;; finite-difference fallback).
+(define (check-exact name a b)
+  (if (= a b)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (") (display a) (display " != ") (display b) (display ")") (newline))))
+
+(define (wrap f pt) (gradient f pt))
+
+;; ---------------------------------------------------------------------------
+;; T1: (define (loss x) (* x x)) — d/dx x² = 2x; at the 1-element point 3 → 6.
+;; Reader-literal #(3.0), (vector 3.0), through a wrapper, and curried must all
+;; equal 6 exactly.
+;; ---------------------------------------------------------------------------
+(define (sq x) (* x x))
+(define d1t (gradient sq #(3.0)))
+(define d1v (gradient sq (vector 3.0)))
+(define w1t (wrap sq #(3.0)))
+(define w1v (wrap sq (vector 3.0)))
+(define c1v ((gradient sq) (vector 3.0)))
+(check "t1 direct  #(3)   d/dx" 6.0 (vref d1t 0))
+(check "t1 direct  (vec3) d/dx" 6.0 (vref d1v 0))
+(check "t1 wrapped #(3)   d/dx" 6.0 (vref w1t 0))
+(check "t1 wrapped (vec3) d/dx" 6.0 (vref w1v 0))
+(check "t1 curried (vec3) d/dx" 6.0 (vref c1v 0))
+(check-exact "t1 reader==vector direct" (vref d1t 0) (vref d1v 0))
+(check-exact "t1 wrapped==direct"       (vref d1v 0) (vref w1v 0))
+(check-exact "t1 curried==direct"       (vref d1v 0) (vref c1v 0))
+
+;; ---------------------------------------------------------------------------
+;; T2: (define (loss x) (+ x x)) — d/dx (x+x) = 2, independent of the point.
+;; ---------------------------------------------------------------------------
+(define (dbl x) (+ x x))
+(check "t2 direct  #(5)   d/dx" 2.0 (vref (gradient dbl #(5.0)) 0))
+(check "t2 wrapped (vec5) d/dx" 2.0 (vref (wrap dbl (vector 5.0)) 0))
+
+;; ---------------------------------------------------------------------------
+;; T3: identity (lambda (v) v) returns the whole point — d/dx x = 1.
+;; ---------------------------------------------------------------------------
+(check "t3 identity #(4)  d/dx" 1.0 (vref (gradient (lambda (v) v) #(4.0)) 0))
+(check "t3 identity wrap  d/dx" 1.0 (vref (wrap (lambda (v) v) (vector 4.0)) 0))
+
+;; ---------------------------------------------------------------------------
+;; T4: multi-node arithmetic composition on the whole point — x³ via
+;; (* (* x x) x); d/dx = 3x². At 0.5 → 0.75. The direct, wrapped, and curried
+;; forms must be byte-identical (exact AD through the taped graph, not central
+;; differencing). Exercises a chain of recorded MUL nodes, not just one op.
+;; ---------------------------------------------------------------------------
+(define (cube x) (* (* x x) x))
+(define x0 0.5)
+(define expected-cube (* 3.0 (* x0 x0)))
+(define d4 (gradient cube (vector x0)))
+(define w4 (wrap cube (vector x0)))
+(define c4 ((gradient cube) (vector x0)))
+(check "t4 cubic direct d/dx" expected-cube (vref d4 0))
+(check-exact "t4 cubic wrapped==direct" (vref d4 0) (vref w4 0))
+(check-exact "t4 cubic curried==direct" (vref d4 0) (vref c4 0))
+
+;; ---------------------------------------------------------------------------
+;; T5: no regression — a REDUCING arity-1 body (reads the point via vector-ref)
+;; still yields the exact scalar gradient. loss(v) = v0²; d/dv0 = 2 v0.
+;; ---------------------------------------------------------------------------
+(define (red v) (* (vector-ref v 0) (vector-ref v 0)))
+(check "t5 reduce  #(3)   d/dx" 6.0 (vref (gradient red #(3.0)) 0))
+(check "t5 reduce  wrap   d/dx" 6.0 (vref (wrap red (vector 3.0)) 0))
+
+;; ---------------------------------------------------------------------------
+;; T6: a (list …) point feeding a whole-point tensor loss must AGREE with the
+;; equivalent (vector …) point (both reverse-taped), not silently zero.
+;; ---------------------------------------------------------------------------
+(define gv6 (gradient sq (vector 4.0)))
+(define gl6 (gradient sq (list 4.0)))
+(check "t6 list whole-point d/dx" 8.0 (vref gl6 0))
+(check-exact "t6 list==vector"    (vref gv6 0) (vref gl6 0))
+
+;; ---------------------------------------------------------------------------
+(newline)
+(display "gradient_tensor_loss: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed") (newline)
+(if (= tests-failed 0)
+    (display "RESULT: ALL PASSED\n")
+    (display "RESULT: FAILURES\n"))
