@@ -11127,8 +11127,17 @@ private:
         // through the loop-carried args / return value. The define's own name
         // is the loop name, so its self-tail-calls are recognized as back
         // edges by the analysis (local_fns) and by codegenTailCallFromContext.
+        bool define_iter_needs_nursery = false;  // ESH-0214e
         bool define_iter_scope_safe = is_tail_rec &&
-            loopBodyIterScopeSafe(op->define_op.value, func_name);
+            loopBodyIterScopeSafe(op->define_op.value, func_name, &define_iter_needs_nursery);
+        // ESH-0214e: mutating-but-safe define loops use the nursery-region path;
+        // non-mutating ones keep the arena-scope path. Mutually exclusive.
+        bool define_iter_nursery = define_iter_scope_safe && define_iter_needs_nursery;
+        bool define_iter_arena_scope = define_iter_scope_safe && !define_iter_needs_nursery;
+        // Held in locals (not just tco_ctx) because the base-case return paths
+        // below run AFTER the "Clear TCO context" block zeroes the nursery fields.
+        Value* define_nursery_region = nullptr;       // ESH-0214e
+        Value* define_nursery_saved_arena = nullptr;  // ESH-0214e
         if (is_tail_rec) {
             use_tco = true;
             eshkol_debug("TCO: Enabling tail call optimization for define %s", func_name);
@@ -11141,7 +11150,10 @@ private:
             // define TCO path too, gated on the escape analysis above. When
             // unsafe this is false, so a define's back edges never inherit a
             // stale iter_scope from an enclosing context.
-            tco_ctx.iter_scope = define_iter_scope_safe;
+            tco_ctx.iter_scope = define_iter_arena_scope;
+            tco_ctx.iter_nursery = define_iter_nursery;     // ESH-0214e
+            tco_ctx.nursery_region = nullptr;               // ESH-0214e (set at open)
+            tco_ctx.nursery_saved_arena = nullptr;          // ESH-0214e
             tco_ctx.param_allocas.clear();
             tco_ctx.param_names.clear();
 
@@ -11167,6 +11179,16 @@ private:
                 }
             }
 
+            // ESH-0214e: open the loop's nursery region ONCE in the setup block
+            // (before branching into the header) for a mutating-but-safe define
+            // loop — same as codegenNamedLet. Records region + saved-arena into
+            // tco_ctx (SSA values dominating the loop).
+            if (define_iter_nursery) {
+                emitIterNurseryOpen(tco_ctx);
+                define_nursery_region = tco_ctx.nursery_region;
+                define_nursery_saved_arena = tco_ctx.nursery_saved_arena;
+            }
+
             // Create loop header block
             tco_loop_bb = BasicBlock::Create(*context, "tco_loop", function);
             tco_ctx.loop_header = tco_loop_bb;
@@ -11181,8 +11203,8 @@ private:
             // which ends the scope when tco_ctx.iter_scope is set) and the
             // define's base-case return below -- ends it with
             // eshkol_arena_iter_scope_end, so pushes and releases stay strictly
-            // balanced (LIFO).
-            if (define_iter_scope_safe) {
+            // balanced (LIFO). (Nursery loops use the region path opened above.)
+            if (define_iter_arena_scope) {
                 Value* iter_arena_ptr = getArenaPtr();
                 if (iter_arena_ptr) {
                     builder->CreateCall(getArenaPushScopeFunc(), {iter_arena_ptr});
@@ -11258,6 +11280,13 @@ private:
             // ESH-0214b (Bug 1): clear iter_scope too so a later, non-tail
             // define's back edges never inherit this loop's stale flag.
             binding_->getTCOContext().iter_scope = false;
+            // ESH-0214e: likewise clear the nursery flag/handles. The base-case
+            // return paths below use the LOCAL define_nursery_* captured above,
+            // so zeroing tco_ctx here is safe and prevents a later non-tail
+            // define from inheriting a stale nursery region.
+            binding_->getTCOContext().iter_nursery = false;
+            binding_->getTCOContext().nursery_region = nullptr;
+            binding_->getTCOContext().nursery_saved_arena = nullptr;
         }
         eshkol_debug("Function %s body_result: %p", func_name, body_result);
 
@@ -11290,8 +11319,10 @@ private:
                 // The result is the only datum flowing out; the runtime helper
                 // pops (reclaims) unless it points into the iteration span, in
                 // which case it commits (keeps the memory, balanced stack).
-                if (use_tco && define_iter_scope_safe) {
+                if (use_tco && define_iter_arena_scope) {
                     emitIterScopeEnd({body_result});
+                } else if (use_tco && define_iter_nursery && define_nursery_region) {
+                    body_result = emitIterNurseryClose(body_result, define_nursery_saved_arena);
                 }
                 builder->CreateRet(body_result);
             }
@@ -11312,8 +11343,10 @@ private:
                     ESHKOL_VALUE_CALLABLE);  // CRITICAL: Mark as LAMBDA_SEXPR, not CONS_PTR
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
-                if (use_tco && define_iter_scope_safe) {
+                if (use_tco && define_iter_arena_scope) {
                     emitIterScopeEnd({func_tagged});
+                } else if (use_tco && define_iter_nursery && define_nursery_region) {
+                    func_tagged = emitIterNurseryClose(func_tagged, define_nursery_saved_arena);
                 }
                 builder->CreateRet(func_tagged);
             }
@@ -11323,8 +11356,10 @@ private:
                 Value* tagged = typedValueToTaggedValue(typed);
                 // ESH-0214b (Bug 1): balance the per-iteration scope on this
                 // exit path too (see the tagged-value case above).
-                if (use_tco && define_iter_scope_safe) {
+                if (use_tco && define_iter_arena_scope) {
                     emitIterScopeEnd({tagged});
+                } else if (use_tco && define_iter_nursery && define_nursery_region) {
+                    tagged = emitIterNurseryClose(tagged, define_nursery_saved_arena);
                 }
                 builder->CreateRet(tagged);
             }
@@ -11335,8 +11370,10 @@ private:
                 ConstantInt::get(int64_type, 0), true);
             // ESH-0214b (Bug 1): balance the per-iteration scope on this exit
             // path too (see the tagged-value case above).
-            if (use_tco && define_iter_scope_safe) {
+            if (use_tco && define_iter_arena_scope) {
                 emitIterScopeEnd({null_tagged});
+            } else if (use_tco && define_iter_nursery && define_nursery_region) {
+                null_tagged = emitIterNurseryClose(null_tagged, define_nursery_saved_arena);
             }
             builder->CreateRet(null_tagged);
         }
@@ -24721,6 +24758,41 @@ private:
     // Memo for per-user-function analysis results (name -> safe?)
     std::unordered_map<std::string, bool> iter_scope_fn_memo;
 
+    // ESH-0214e: parallel memo recording whether an escape-safe user function's
+    // body contains a barriered structural mutation, so a loop that calls it is
+    // lowered with a nursery region even on a memo hit (a mutation reached only
+    // through a called define must still flip the whole loop to nursery mode, or
+    // the arena-scope path would rewind a slot the mutation stored into
+    // persistent state). Keyed identically to iter_scope_fn_memo.
+    std::unordered_map<std::string, bool> iter_scope_fn_nursery_memo;
+
+    // ESH-0214e: set by iterScopeSafeExpr while analyzing ONE loop body when it
+    // admits a barriered structural mutation (see iterScopeNurseryMutators).
+    // loopBodyIterScopeSafe resets it before each analysis and reports it out.
+    // Mutation channels admitted here MUST be exactly the ones whose codegen
+    // unconditionally emits eshkol_region_write_barrier_into on the mutated
+    // structure pointer, so a nursery-allocated value stored into persistent
+    // state is deep-promoted out of the nursery at the store.
+    bool iter_scope_needs_nursery_ = false;
+
+    // The structural mutators admitted into iter-scope under ESH-0214e. Each is
+    // barriered UNCONDITIONALLY at its codegen site on the mutated structure's
+    // pointer (collection_codegen.cpp vector-set!/vector-fill!, hash_codegen.cpp
+    // hash-table-set!, llvm_codegen.cpp set-car!/set-cdr!), so the write barrier
+    // promotes any nursery value they store into an outer/persistent structure.
+    // set! is deliberately EXCLUDED: its barrier fires only for GlobalVariable
+    // targets, and proving a set! target is global (not a shadowing enclosing-
+    // scope local, whose alloca is NOT barriered) needs full lexical resolution
+    // this downward-only analysis does not have — admitting it unsoundly would
+    // reintroduce exactly the dangling-pointer corruption this series closes.
+    static const std::set<std::string>& iterScopeNurseryMutators() {
+        static const std::set<std::string> s = {
+            "vector-set!", "vector-fill!", "hash-table-set!",
+            "set-car!", "set-cdr!",
+        };
+        return s;
+    }
+
     // ═════════════════════════════════════════════════════════════════════
     // ESH-0214c: PARALLEL-WORKER REACHABILITY (whole-program pre-pass)
     //
@@ -25025,6 +25097,24 @@ private:
                 }
                 const std::string name = op->call_op.func->variable.id;
 
+                // ESH-0214e: a barriered structural mutator (vector-set! /
+                // vector-fill! / hash-table-set! / set-car! / set-cdr!) is
+                // ADMITTED, and flips this loop to nursery-region lowering. Its
+                // codegen unconditionally promotes any nursery value it stores
+                // into the mutated structure out of the nursery (write barrier on
+                // the structure pointer), so the store no longer defeats
+                // reclamation. Its arguments are ordinary expressions and must
+                // themselves be escape-safe. Checked BEFORE the trailing-'!'
+                // hard-disable below so these five names are not swept up by it.
+                if (iterScopeNurseryMutators().count(name)) {
+                    for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                        if (!iterScopeSafeExpr(&op->call_op.variables[i],
+                                               local_fns, analyzing, depth + 1)) return false;
+                    }
+                    iter_scope_needs_nursery_ = true;
+                    return true;
+                }
+
                 // Mutators by convention: any name ending in '!' writes into
                 // pre-existing structure -- the one channel the dynamic check
                 // cannot see. Hard-disable.
@@ -25236,7 +25326,19 @@ private:
                              std::set<std::string>& analyzing,
                              int depth) {
         auto memo_it = iter_scope_fn_memo.find(name);
-        if (memo_it != iter_scope_fn_memo.end()) return memo_it->second;
+        if (memo_it != iter_scope_fn_memo.end()) {
+            // ESH-0214e: a memo HIT must still propagate the callee's nursery
+            // requirement into the loop being analyzed now — a barriered
+            // mutation reached only through this cached-safe define must still
+            // flip the whole loop to nursery lowering, or the arena-scope path
+            // would rewind a slot the mutation stored into persistent state.
+            if (memo_it->second) {
+                auto nit = iter_scope_fn_nursery_memo.find(name);
+                if (nit != iter_scope_fn_nursery_memo.end() && nit->second)
+                    iter_scope_needs_nursery_ = true;
+            }
+            return memo_it->second;
+        }
         if (analyzing.count(name)) return true;  // inductive: cycle back-edge
 
         auto ast_it = function_body_ast.find(name);
@@ -25244,9 +25346,17 @@ private:
 
         analyzing.insert(name);
         std::set<std::string> callee_local_fns;
+        // ESH-0214e: isolate THIS function's own nursery requirement so it can be
+        // memoized per-function, then fold it back into the caller's running
+        // accumulation (only when the function is actually escape-safe).
+        bool saved_nursery = iter_scope_needs_nursery_;
+        iter_scope_needs_nursery_ = false;
         bool ok = iterScopeSafeExpr(ast_it->second, callee_local_fns, analyzing, depth + 1);
+        bool fn_nursery = iter_scope_needs_nursery_;
+        iter_scope_needs_nursery_ = saved_nursery || (ok && fn_nursery);
         analyzing.erase(name);
         iter_scope_fn_memo[name] = ok;
+        iter_scope_fn_nursery_memo[name] = ok && fn_nursery;
         return ok;
     }
 
@@ -25255,7 +25365,9 @@ private:
     // per-iteration scope reclamation? `loop_name` is the name whose
     // self-tail-calls are the loop's back edges (the named-let name, or the
     // define's own function name).
-    bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name) {
+    bool loopBodyIterScopeSafe(const eshkol_ast_t* body, const std::string& loop_name,
+                               bool* out_needs_nursery = nullptr) {
+        if (out_needs_nursery) *out_needs_nursery = false;
         static const bool disabled = (getenv("ESHKOL_NO_ITER_SCOPE") != nullptr);
         if (disabled || !body) return false;
         // ESH-0214c: reject outright if this loop's body is reachable (via
@@ -25265,6 +25377,9 @@ private:
         // feature pushes/pops lives in __global_arena, which every worker
         // thread shares without synchronization; concurrent scope ops from
         // multiple threads race and corrupt it (parallel_flags_byte_regression.esk).
+        // The ESH-0214e nursery region stack is likewise thread-local, so the
+        // same rejection covers the nursery path (a mutating loop reachable from
+        // a worker keeps its pre-feature behavior: no reclamation).
         if (parallel_worker_ast_nodes.count((const void*)body)) {
             eshkol_debug("ESH-0214c: loop '%s' iter-scope disabled "
                          "(reachable from a parallel/future callback)", loop_name.c_str());
@@ -25272,9 +25387,13 @@ private:
         }
         std::set<std::string> local_fns = {loop_name};
         std::set<std::string> analyzing;
+        iter_scope_needs_nursery_ = false;  // ESH-0214e: reset per loop analysis
         bool ok = iterScopeSafeExpr(body, local_fns, analyzing, 0);
-        eshkol_debug("ESH-0214b: loop '%s' iter-scope %s",
-                     loop_name.c_str(), ok ? "ENABLED" : "disabled (analysis)");
+        bool nursery = ok && iter_scope_needs_nursery_;
+        if (out_needs_nursery) *out_needs_nursery = nursery;
+        eshkol_debug("ESH-0214b/e: loop '%s' iter-scope %s%s",
+                     loop_name.c_str(), ok ? "ENABLED" : "disabled (analysis)",
+                     nursery ? " [nursery: partial reclamation]" : "");
         return ok;
     }
 
@@ -25311,6 +25430,120 @@ private:
             {arena_ptr, arr, ConstantInt::get(int64_type, (uint64_t)n)});
     }
     // ═══════════════════ END ESH-0214b ═══════════════════
+
+    // ═══════════════════ ESH-0214e: nursery lowering for mutating loops ═══════
+    // A loop whose body is escape-safe AND contains a barriered structural
+    // mutation is lowered with a per-loop NURSERY REGION instead of the
+    // arena-scope path. These three emitters reuse the EXACT runtime entry points
+    // codegenWithRegion emits (region_create/push/enter/escape/pop/leave), so the
+    // nursery converges on the 48-h-validated with-region deep-promotion path
+    // rather than forking a second evacuator. See runtime_regions.cpp
+    // (eshkol_iter_nursery_recycle) for the runtime side.
+    struct IterNurseryFns {
+        FunctionCallee create, push, pop, enter, leave, recycle, escape_into;
+    };
+    IterNurseryFns getIterNurseryFns() {
+        PointerType* p = PointerType::get(*context, 0);
+        IterNurseryFns f;
+        f.create = module->getOrInsertFunction("region_create",
+            FunctionType::get(p, {p, int64_type}, false));
+        f.push = module->getOrInsertFunction("region_push",
+            FunctionType::get(void_type, {p}, false));
+        f.pop = module->getOrInsertFunction("region_pop",
+            FunctionType::get(void_type, {}, false));
+        f.enter = module->getOrInsertFunction("eshkol_region_enter",
+            FunctionType::get(p, {p}, false));
+        f.leave = module->getOrInsertFunction("eshkol_region_leave",
+            FunctionType::get(void_type, {p}, false));
+        f.recycle = module->getOrInsertFunction("eshkol_iter_nursery_recycle",
+            FunctionType::get(void_type, {p, p, int64_type}, false));
+        f.escape_into = module->getOrInsertFunction("region_escape_tagged_value_into",
+            FunctionType::get(void_type, {p, p}, false));
+        return f;
+    }
+
+    // Open the loop's nursery region in the current (setup) block, ONCE per loop
+    // activation. Stashes the region ptr and the eshkol_region_enter displaced-
+    // arena token into tco_ctx — both SSA values in the setup block, which
+    // dominates every back edge and the loop exit.
+    void emitIterNurseryOpen(eshkol::BindingCodegen::TailCallContext& tco_ctx) {
+        IterNurseryFns f = getIterNurseryFns();
+        Value* name = builder->CreateGlobalString("iter-nursery", "iter_nursery_name");
+        // Generous first-block size: a tick body's transient burst usually fits
+        // one block, so steady-state reset keeps a single block and never mallocs.
+        Value* size_hint = ConstantInt::get(int64_type, (uint64_t)65536);
+        Value* region = builder->CreateCall(f.create, {name, size_hint}, "iter_nursery");
+        builder->CreateCall(f.push, {region});
+        Value* saved = builder->CreateCall(f.enter, {region}, "iter_nursery_saved_arena");
+        tco_ctx.nursery_region = region;
+        tco_ctx.nursery_saved_arena = saved;
+    }
+
+    // End-of-iteration recycle at a TCO back edge: store the loop-carried
+    // out-values into an entry-hoisted scratch array, call the runtime recycle
+    // (promote them out of the nursery + reset the nursery), then load the
+    // PROMOTED values back so the caller stores those into the loop's parameter
+    // allocas (the originals are about to be reclaimed).
+    std::vector<Value*> emitIterNurseryRecycle(const std::vector<Value*>& out_values,
+                                               Value* region) {
+        IterNurseryFns f = getIterNurseryFns();
+        const size_t n = out_values.size();
+        ArrayType* arr_type = ArrayType::get(tagged_value_type, n ? n : 1);
+        Function* current_func = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        if (current_func && !current_func->empty()) {
+            BasicBlock& entry_bb = current_func->getEntryBlock();
+            builder->SetInsertPoint(&entry_bb, entry_bb.begin());
+        }
+        Value* arr = builder->CreateAlloca(arr_type, nullptr, "iter_nursery_vals");
+        builder->restoreIP(saved_ip);
+        for (size_t i = 0; i < n; i++) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arr_type, arr, 0, i);
+            builder->CreateStore(out_values[i], slot);
+        }
+        builder->CreateCall(f.recycle,
+            {region, arr, ConstantInt::get(int64_type, (uint64_t)n)});
+        std::vector<Value*> promoted;
+        promoted.reserve(n);
+        for (size_t i = 0; i < n; i++) {
+            Value* slot = builder->CreateConstInBoundsGEP2_64(arr_type, arr, 0, i);
+            promoted.push_back(builder->CreateLoad(tagged_value_type, slot,
+                                                   "iter_nursery_promoted"));
+        }
+        return promoted;
+    }
+
+    // Loop exit: escape the result out of the nursery (same as with-region's
+    // result escape), then tear the nursery down — region_pop frees its arena,
+    // eshkol_region_leave restores the displaced allocation arena (@p saved_arena
+    // is the eshkol_region_enter token from emitIterNurseryOpen). Returns the
+    // escaped result value to return from the loop. Takes @p saved_arena
+    // explicitly so the caller may hold it in a local past any tco_ctx reset.
+    Value* emitIterNurseryClose(Value* result, Value* saved_arena) {
+        IterNurseryFns f = getIterNurseryFns();
+        Value* escaped = result;
+        if (result && result->getType() == tagged_value_type) {
+            Function* current_func = builder->GetInsertBlock()->getParent();
+            IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+            if (current_func && !current_func->empty()) {
+                BasicBlock& entry_bb = current_func->getEntryBlock();
+                builder->SetInsertPoint(&entry_bb, entry_bb.begin());
+            }
+            AllocaInst* in_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                        "iter_nursery_result_in");
+            AllocaInst* out_slot = builder->CreateAlloca(tagged_value_type, nullptr,
+                                                         "iter_nursery_result_out");
+            builder->restoreIP(saved_ip);
+            builder->CreateStore(result, in_slot);
+            builder->CreateCall(f.escape_into, {out_slot, in_slot});
+            escaped = builder->CreateLoad(tagged_value_type, out_slot,
+                                          "iter_nursery_escaped_result");
+        }
+        builder->CreateCall(f.pop, {});
+        builder->CreateCall(f.leave, {saved_arena});
+        return escaped;
+    }
+    // ═══════════════════ END ESH-0214e ═══════════════════
 
     // Generate a tail call as a jump back to loop header (TCO transformation)
     // Uses the binding module's TCO context
@@ -25424,6 +25657,13 @@ private:
         // the span being rewound, so releasing first is safe.
         if (tco_ctx.iter_scope) {
             emitIterScopeEnd(new_values);
+        } else if (tco_ctx.iter_nursery && tco_ctx.nursery_region) {
+            // ESH-0214e: promote the loop-carried out-values out of the nursery
+            // (the write barrier already promoted every persistent-mutation
+            // escapee at its store), THEN reset the nursery. The recycle returns
+            // the PROMOTED values (surviving in the enclosing arena); store those
+            // into the parameter allocas since the originals are now reclaimed.
+            new_values = emitIterNurseryRecycle(new_values, tco_ctx.nursery_region);
         }
 
         // Store all new values to parameter allocas
@@ -27755,8 +27995,14 @@ private:
         // form (a non-TCO loop is real recursion; each activation is its own
         // dynamic extent). See the analysis block above codegenTailCall-
         // FromContext for the safety argument.
+        bool iter_needs_nursery = false;  // ESH-0214e
         bool iter_scope_safe = all_tail &&
-            loopBodyIterScopeSafe(op->let_op.body, loop_name);
+            loopBodyIterScopeSafe(op->let_op.body, loop_name, &iter_needs_nursery);
+        // ESH-0214e: a mutating-but-escape-safe loop uses the nursery-region path
+        // (partial reclamation); a non-mutating one keeps the arena-scope path.
+        // The two are mutually exclusive.
+        bool iter_nursery = iter_scope_safe && iter_needs_nursery;
+        bool iter_arena_scope = iter_scope_safe && !iter_needs_nursery;
 
         // NESTED NAMED LET FIX: Save TCO context to prevent corruption by nested named lets
         // Each named let saves the outer TCO state, does its work, then restores it
@@ -27767,13 +28013,19 @@ private:
         std::vector<AllocaInst*> saved_tco_param_allocas = tco_ctx.param_allocas;
         std::vector<std::string> saved_tco_param_names = tco_ctx.param_names;
         bool saved_tco_iter_scope = tco_ctx.iter_scope;
+        bool saved_tco_iter_nursery = tco_ctx.iter_nursery;               // ESH-0214e
+        llvm::Value* saved_tco_nursery_region = tco_ctx.nursery_region;   // ESH-0214e
+        llvm::Value* saved_tco_nursery_saved_arena = tco_ctx.nursery_saved_arena; // ESH-0214e
         unsigned saved_tco_open_guard_handlers = tco_ctx.open_guard_handlers;  // ESH-0222
         llvm::Value* saved_tco_loop_stack_save = tco_ctx.loop_stack_save;      // ESH-0222
 
         // Set up TCO context for this named let only when sound.
         tco_ctx.func_name = loop_name;
         tco_ctx.enabled = all_tail;
-        tco_ctx.iter_scope = iter_scope_safe;
+        tco_ctx.iter_scope = iter_arena_scope;
+        tco_ctx.iter_nursery = iter_nursery;               // ESH-0214e
+        tco_ctx.nursery_region = nullptr;                  // ESH-0214e (set at open)
+        tco_ctx.nursery_saved_arena = nullptr;             // ESH-0214e
         tco_ctx.param_allocas.clear();
         tco_ctx.param_names.clear();
 
@@ -27791,6 +28043,15 @@ private:
             tco_ctx.param_names.push_back(param_names[i]);
         }
 
+        // ESH-0214e: open the loop's nursery region ONCE, in the setup block
+        // (before branching into the header), when the body mutates persistent
+        // state through a barriered channel. Routes all iteration allocations
+        // into the nursery arena; each back edge recycles it. Records the region
+        // + displaced-arena token into tco_ctx (SSA values dominating the loop).
+        if (iter_nursery) {
+            emitIterNurseryOpen(tco_ctx);
+        }
+
         // Create loop header block for TCO
         BasicBlock* tco_loop_bb = BasicBlock::Create(*context, "tco_loop", loop_func);
         tco_ctx.loop_header = tco_loop_bb;
@@ -27803,8 +28064,9 @@ private:
         // the iteration -- each TCO back edge (codegenTailCallFromContext)
         // and the loop's exit return below -- ends it with
         // eshkol_arena_iter_scope_end, so pushes and releases stay strictly
-        // balanced (LIFO) across nested loops.
-        if (iter_scope_safe) {
+        // balanced (LIFO) across nested loops. (Nursery loops use the region
+        // path opened above instead, so this is gated on iter_arena_scope.)
+        if (iter_arena_scope) {
             Value* iter_arena_ptr = getArenaPtr();
             if (iter_arena_ptr) {
                 builder->CreateCall(getArenaPushScopeFunc(), {iter_arena_ptr});
@@ -27848,8 +28110,13 @@ private:
             // arena scope. The result value is the only datum flowing out; the
             // runtime helper pops (reclaims) when it cannot point into the
             // iteration span, and commits (keeps the memory) when it might.
-            if (iter_scope_safe && body_result->getType() == tagged_value_type) {
+            if (iter_arena_scope && body_result->getType() == tagged_value_type) {
                 emitIterScopeEnd({body_result});
+            } else if (iter_nursery && tco_ctx.nursery_region) {
+                // ESH-0214e: escape the result out of the nursery, then tear the
+                // nursery down (region_pop frees its arena, region_leave restores
+                // the displaced allocation arena).
+                body_result = emitIterNurseryClose(body_result, tco_ctx.nursery_saved_arena);
             }
             builder->CreateRet(body_result);
         }
@@ -27883,6 +28150,9 @@ private:
         tco_ctx.param_allocas = saved_tco_param_allocas;
         tco_ctx.param_names = saved_tco_param_names;
         tco_ctx.iter_scope = saved_tco_iter_scope;
+        tco_ctx.iter_nursery = saved_tco_iter_nursery;                  // ESH-0214e
+        tco_ctx.nursery_region = saved_tco_nursery_region;              // ESH-0214e
+        tco_ctx.nursery_saved_arena = saved_tco_nursery_saved_arena;    // ESH-0214e
         tco_ctx.open_guard_handlers = saved_tco_open_guard_handlers;  // ESH-0222
         tco_ctx.loop_stack_save = saved_tco_loop_stack_save;          // ESH-0222
 

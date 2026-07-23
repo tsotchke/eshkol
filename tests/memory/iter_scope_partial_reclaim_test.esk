@@ -1,0 +1,113 @@
+;;; tests/memory/iter_scope_partial_reclaim_test.esk — ESH-0214e reproducer
+;;; and flat-RSS gate, driven by iter_scope_partial_reclaim_test.sh.
+;;;
+;;; The resident tick-loop shape that DEFEATED ESH-0214b's automatic
+;;; per-iteration reclamation: a guard-wrapped self-tail define loop that
+;;; MUTATES persistent state EVERY tick through three barriered channels —
+;;;   (a) hash-table-set!  into a persistent global knowledge base,
+;;;   (b) vector-set!      into a persistent global workspace,
+;;;   (c) set-cdr!         to grow a persistent global list periodically —
+;;; while also allocating a chunk of transient garbage per tick that must die
+;;; with the tick.
+;;;
+;;; Before ESH-0214e the static gate rejected this body outright the moment it
+;;; saw a persistent mutation (all-or-nothing), so the loop got NO reclamation
+;;; and leaked one tick's transient garbage forever (~thousands of bytes/tick,
+;;; unbounded). ESH-0214e lowers a mutating-but-escape-safe loop with a
+;;; per-loop NURSERY REGION: the existing write barriers promote each
+;;; persistent-mutation escapee out of the nursery at the store, the loop-
+;;; carried out-values are promoted at each back edge, and the nursery is then
+;;; reset — reclaiming the transient garbage as if no mutation happened, while
+;;; every stored value reads back correct.
+;;;
+;;; This file exercises the AUTOMATIC path (no explicit with-region). Its
+;;; with-region twin, iter_scope_partial_reclaim_baseline.esk, wraps the same
+;;; body in (with-region ...) and is the flat-RSS acceptance target the
+;;; automatic path must match. The KB/workspace use a BOUNDED key space so the
+;;; only unbounded per-tick allocation is transient garbage — making flat RSS
+;;; the clean pass/fail signal.
+
+(define ticks 100000)
+(define kb-slots 256)                       ; bounded KB key space (overwrites)
+(define ws-slots 64)                         ; bounded workspace
+(define scratch-len 200)                     ; transient garbage per tick (~3.2KB)
+(define grow-every 1000)                      ; grow the persistent list this often
+
+(define kb (make-hash-table))                ; persistent knowledge base
+(define workspace (make-vector ws-slots 0))  ; persistent workspace
+(define trail (cons 'head '()))              ; persistent growing list (sentinel head)
+
+;; Self-tail-recursive daemon loop, wrapped in a catch-all guard (the resident
+;; error-boundary shape). `tail` is the current last cell of `trail`.
+(define (tick i tail)
+  (guard (e (#t tail))                        ; catch-all boundary: keeps the loop resident
+    (if (>= i ticks)
+        i
+        (begin
+          ;; transient garbage — dead at the end of this tick, must be reclaimed
+          (let ((scratch (make-vector scratch-len i)))
+            ;; (a) persistent KB mutation (hash-table-set!, bounded key space)
+            (hash-table-set! kb (modulo i kb-slots)
+                             (list i (* i 2) (vector-length scratch)))
+            ;; (b) persistent workspace mutation (vector-set!)
+            (vector-set! workspace (modulo i ws-slots) (list i (* i 3))))
+          ;; (c) grow the persistent global list periodically (set-cdr!)
+          (if (= (modulo i grow-every) 0)
+              (let ((cell (cons i '())))
+                (set-cdr! tail cell)
+                (tick (+ i 1) cell))
+              (tick (+ i 1) tail))))))
+
+(define result (tick 0 trail))
+
+;; ─── Correctness read-back (run AFTER the loop; no iter-scope constraint) ───
+
+;; KB: slot k holds the list from the last tick i<ticks with (modulo i kb-slots)=k.
+(define (verify-kb k ok)
+  (if (>= k kb-slots)
+      ok
+      (let* ((entry (hash-table-ref kb k #f))
+             (last-i (+ k (* (quotient (- ticks 1 k) kb-slots) kb-slots))))
+        (verify-kb (+ k 1)
+                   (and ok (pair? entry)
+                        (= (car entry) last-i)
+                        (= (cadr entry) (* last-i 2))
+                        (= (caddr entry) scratch-len))))))
+
+;; Workspace: slot s holds (list last-i (* last-i 3)) for the last writer last-i.
+(define (verify-ws s ok)
+  (if (>= s ws-slots)
+      ok
+      (let* ((entry (vector-ref workspace s))
+             (last-i (+ s (* (quotient (- ticks 1 s) ws-slots) ws-slots))))
+        (verify-ws (+ s 1)
+                   (and ok (pair? entry)
+                        (= (car entry) last-i)
+                        (= (cadr entry) (* last-i 3)))))))
+
+;; Trail: sentinel head + one cell per grow tick (i = 0, grow-every, 2*grow-every…).
+;; Every cell must read back its intact integer in ascending order.
+(define (verify-trail cell expect ok)
+  (if (null? cell)
+      (and ok (= expect (* grow-every (quotient (+ ticks (- grow-every 1)) grow-every))))
+      (verify-trail (cdr cell) (+ expect grow-every)
+                    (and ok (= (car cell) expect)))))
+
+(define kb-ok (verify-kb 0 #t))
+(define ws-ok (verify-ws 0 #t))
+(define trail-ok (verify-trail (cdr trail) 0 #t))
+
+(display "[iter_scope_partial_reclaim_test] ticks=")
+(display result)
+(display "/")
+(display ticks)
+(display " kb-ok=")
+(display kb-ok)
+(display " ws-ok=")
+(display ws-ok)
+(display " trail-ok=")
+(display trail-ok)
+(newline)
+(if (and (= result ticks) kb-ok ws-ok trail-ok)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline) (exit 1)))

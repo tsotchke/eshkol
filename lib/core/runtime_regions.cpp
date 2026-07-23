@@ -1624,3 +1624,118 @@ extern "C" void eshkol_region_write_barrier_range(const void* dst,
         eshkol_region_write_barrier_into(&slots[i], dst, &slots[i]);
     }
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// ESH-0214e: iter-scope PARTIAL RECLAMATION for mutating tick-loops.
+//
+// ESH-0214b's automatic per-iteration reclamation (arena_push_scope /
+// eshkol_arena_iter_scope_end, runtime_arena_core.cpp) is all-or-nothing: the
+// static gate (iterScopeSafeExpr) rejects a loop body outright the moment it
+// contains any persistent mutation, because a value the iteration allocates and
+// then stores into outer/persistent state would dangle when the scope is
+// rewound, and the shallow out-value span test at the back edge cannot see that
+// store. A resident tick loop that mutates persistent state EVERY tick
+// therefore got NO reclamation and leaked one iteration's transient garbage per
+// tick, unbounded (~3 KB/tick, linear).
+//
+// The fix does not fork a second evacuator or a second reclamation policy. It
+// reuses, verbatim, the with-region machinery whose deep-transitive escape
+// promotion has been validated over a 48-h resident run (ESH-0214c/d):
+//
+//   * The loop runs inside a NURSERY REGION (region_create/region_push/
+//     eshkol_region_enter, opened once per activation), so every iteration
+//     allocation lands in the nursery arena and region_index_owning() can
+//     classify it. Each of the six mutation channels' EXISTING write barriers
+//     (eshkol_region_write_barrier_into) then deep-promotes any barrier-recorded
+//     escapee — a nursery value stored into persistent/outer state — out of the
+//     nursery into the enclosing arena at the store, exactly as inside a
+//     with-region body. The barrier IS the escape-root record: it evacuates
+//     each escapee out of the tick arena the instant it becomes reachable from
+//     persistent state.
+//
+//   * eshkol_iter_nursery_recycle (below) runs at each TCO back edge. It
+//     promotes the loop-carried out-values (the freshly evaluated tail-call
+//     args, which the barrier never sees) out of the nursery via the SAME
+//     evacuator (region_escape_tagged_value_impl), then arena_reset()s the
+//     nursery — reclaiming the whole iteration's transient garbage — as if no
+//     mutation had happened. Its forwarding map (whose keys reference the arena
+//     just reset) is dropped so no stale entry survives into the next
+//     iteration's promotions.
+//
+// The reclamation is sound by the SAME invariant as with-region's region_pop:
+// after promotion no surviving object holds a pointer into the region being
+// freed (here, into the span being reset). This is textbook generational minor
+// collection (Appel) — the nursery is the young generation, the write barrier
+// is the remembered set, and recycle is the minor collection — but fully
+// deterministic (bounded per-iteration work, no tracing pause), which preserves
+// Eshkol's no-GC determinism.
+//
+// FALLBACK (correctness over reclamation): if the region stack is not in the
+// expected shape at a back edge (the nursery is not the innermost active
+// region — an unbalanced region op in the body, which well-formed codegen never
+// emits), recycle RETAINS this iteration (skips promotion AND reset) rather than
+// evacuate from the wrong region. Retention is bounded: the next well-formed
+// back edge resets the whole arena, reclaiming the retained bytes too.
+// ───────────────────────────────────────────────────────────────────────────
+
+extern "C" int eshkol_arena_poison_enabled(void);
+
+/**
+ * @brief End-of-iteration recycle for an ESH-0214e nursery loop (see block above).
+ *
+ * @param region  The loop's nursery region (opened once at loop entry).
+ * @param vals    The loop-carried out-values (tail-call args) about to flow into
+ *                the next iteration; each is promoted out of the nursery IN
+ *                PLACE so the caller stores the promoted (surviving) value into
+ *                the loop's parameter slot.
+ * @param n       Number of out-values.
+ */
+extern "C" void eshkol_iter_nursery_recycle(eshkol_region_t* region,
+                                            eshkol_tagged_value_t* vals,
+                                            uint64_t n) {
+    if (!region) return;
+
+    // Fallback guard: only recycle when this nursery is the innermost active
+    // region, i.e. the iteration body left the region stack exactly as it found
+    // it. Otherwise retain (skip promotion + reset) — never evacuate from the
+    // wrong region. Bounded: a later well-formed recycle reclaims these bytes.
+    if (region_current() != region) return;
+
+    // 1. Promote every loop-carried out-value out of the nursery into the
+    //    enclosing arena (region->escape_base). This is the identical evacuator
+    //    and code path as with-region's result escape
+    //    (region_escape_tagged_value); it shares the nursery region's forwarding
+    //    map, so any structure an out-value shares with a barrier-promoted
+    //    escapee from the same iteration stays shared (eq?-preserving). Values
+    //    already living outside the nursery (immediates, or pointers into the
+    //    enclosing/global arena) are returned unchanged and cost only a region
+    //    ownership probe.
+    if (vals) {
+        for (uint64_t i = 0; i < n; ++i) {
+            vals[i] = region_escape_tagged_value_impl(vals[i]);
+        }
+    }
+
+    // 2. Under the poison allocator, stamp the bytes about to be recycled with
+    //    0xCB so any interior pointer we FAILED to promote out (a missed escape
+    //    root) dereferences an obvious 0xCB.. address and crashes loudly instead
+    //    of silently reading recycled memory — the dangling-pointer tripwire the
+    //    ESH-0214 memory-model tests rely on.
+    if (eshkol_arena_poison_enabled() && region->arena) {
+        for (arena_block_t* b = region->arena->current_block; b; b = b->next) {
+            if (b->used) std::memset(b->memory, 0xCB, b->used);
+        }
+    }
+
+    // 3. Reset the nursery arena: reclaim ALL of this iteration's transient
+    //    garbage (bump pointer back to zero, free any spilled blocks, keep the
+    //    first block). O(1) on the steady-state single-block case — no per-
+    //    iteration malloc/free churn (the reason a persistent nursery + reset is
+    //    used instead of region_create/destroy per iteration).
+    arena_reset(region->arena);
+
+    // 4. Drop the forwarding map: its keys reference the arena just reset and
+    //    MUST NOT alias a fresh object that reuses the same address next
+    //    iteration. It is lazily recreated on the next escape/barrier promotion.
+    region_free_fwd_map(region);
+}

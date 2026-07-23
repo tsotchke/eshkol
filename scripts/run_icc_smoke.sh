@@ -464,6 +464,16 @@ probe define_loop_flat_rss_aot 'ESH-0214b: AOT guard-wrapped define loop keeps R
      ## above a 200MB ceiling.
      bash tests/memory/define_loop_flat_rss_aot_test.sh'
 
+probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES persistent state every tick reclaims transient garbage automatically (nursery region) — AOT flat RSS + correct + clean under ESHKOL_ARENA_POISON=1' \
+    'cd "$REPO_ROOT";
+     ## ESH-0214e: iter-scope partial reclamation. A guard-wrapped self-tail
+     ## define loop that hash-table-set!/vector-set!/set-cdr!s persistent state
+     ## every tick used to be REJECTED by the all-or-nothing gate and leaked one
+     ## tick of transient garbage forever; now it runs inside a per-loop nursery
+     ## region that promotes escapees out and resets each tick. The gate also
+     ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
+     bash tests/memory/iter_scope_partial_reclaim_test.sh'
+
 probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
     'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
 
