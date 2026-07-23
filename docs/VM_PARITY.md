@@ -17,7 +17,24 @@ to miss.
 > Status: the ratchet, manifest, and gate shipped with the v1.3.0-evolve
 > release (PR #118 — `scripts/run_vm_parity.sh`,
 > `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The counts below are from
-> the current v1.3.3-evolve candidate audit.
+> the v1.3.3-evolve audit.
+
+### v1.3.4-evolve parity changes
+
+- **Tensor matmul parity is now COMPLETE on the hosted VM.** `arange` (1-, 2-,
+  and 3-argument forms), nested-literal tensor operands, and multi-dimensional
+  `tensor-ref` / `tensor-set!` now compute the same answers on the bytecode VM
+  as on native codegen. The parity corpus gains `31_tensor_matmul`; the former
+  matmul-surface `gap` rows are retired to `vm-supported`.
+- **Reverse-mode `gradient` on the VM — implementation in progress.** The VM's
+  AD surface is currently scalar `derivative` only; a bytecode-VM reverse-mode
+  `gradient` implementation is in flight, with full parity targeted for this
+  release line. Until it lands, `op:GRADIENT` is tracked as an open parity item
+  (not a permanent waiver).
+- **`(the <type> expr)` is `native-only-justified`.** The checked type
+  ascription is a compile-time construct on the native type checker with no VM
+  surface; it is a runtime no-op, so a VM program that omits it computes the
+  identical result.
 
 ## The manifest
 

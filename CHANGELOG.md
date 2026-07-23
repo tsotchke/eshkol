@@ -5,7 +5,20 @@ All notable changes to Eshkol will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.4-evolve] - 2026-07-23
+
+A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
+long-duration resident workloads is fixed at the architectural root: automatic
+per-iteration memory reclamation now matches explicit `with-region` even for
+loops that mutate persistent state, `parallel-map` is race-free for
+collection-valued closures, gradients are exact through every callable form
+(indirect and curried, with no finite-difference fallback in the gradient path), printed floats
+round-trip, and the strict type checker accepts idiomatic dynamic-but-validated
+code. The release also lands the high-precision numerics wave (Ozaki-II exact
+and reduced-precision GEMM tiers, a mixed-precision linear solver, and a native
+128-bit integer type), a Moonlab v1.2.0 quantum pin with quantum-natural-gradient
+support, full hosted-VM tensor-matmul parity, and a round-tripping numeric
+printer.
 
 ### Fixed
 
@@ -46,6 +59,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `iter_scope_partial_reclaim` ICC oracle.
   (`lib/core/runtime_regions.cpp`, `lib/backend/llvm_codegen.cpp`,
   `inc/eshkol/backend/binding_codegen.h`)
+- **`gradient` recovers callable arity through a function parameter or
+  wrapper (#330).** `(gradient f point)` misbehaved when `f` was reached indirectly —
+  through a function parameter, a curried `((gradient f) point)` form, or any
+  wrapper — instead of being named directly at the call site. A
+  first-class-tensor-loss path added later (reverse-mode element seeding)
+  unconditionally captured every vector/list/tensor point and invoked the
+  closure with a single tensor argument, ignoring the callable's real arity, so
+  a multi-parameter scalar loss such as `(loss x y)` was invoked as
+  `loss(<tensor>)` and its scalar body misdispatched. The operator now recovers
+  the callable's arity from its closure metadata and unpacks an N-element point
+  into N scalar arguments, exactly as the direct-call path already did. Indirect
+  and curried gradients are now byte-identical to the direct call for
+  scalar multi-argument, vector, and non-polynomial losses, on both the JIT and
+  AOT paths, with no closure-ABI change. There is no finite-difference fallback
+  anywhere in the gradient path — every form is exact reverse-mode AD. A 25-check
+  suite pins the direct/indirect/curried equivalence.
+  (`lib/backend/autodiff_codegen.cpp`)
+- **Custom-VJP gradient silently zeroed on transitive captures.** A custom
+  vector-Jacobian-product whose backward closure reached a captured value
+  transitively (through an intermediate closure) had its contribution silently
+  dropped, returning a zero gradient instead of raising. The capture walk now
+  follows transitive closure references, so a custom-VJP node contributes its
+  full sensitivity.
+  (`lib/backend/autodiff_codegen.cpp`, `lib/core/runtime_autodiff.cpp`)
 
 ### Added
 
@@ -95,7 +132,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   arena-boxed, `eshkol_raise`) and the VM (`lib/backend/vm_native.c`, region-heap
   boxed) so both compute bit-identical results. Docs:
   `docs/reference/language/i128.md`; tests: `tests/types/i128_test.esk`
-  (native + VM parity) and `tests/types/i128_error_test.esk`.
+  (native + VM parity) and `tests/types/i128_error_test.esk`. The reduced-precision
+  Metal Ozaki tier is certified exact against this i128 path across the same
+  correctness regimes (`tests/gpu`), so the GPU fast tier's accuracy claim is
+  checked against a bit-exact reference rather than another float path.
+- **Linear `Qubit` type and linear-parameter enforcement in `define`.** A
+  first-class linear `Qubit` type whose values must be used exactly once; a
+  `define`d function may declare linear parameters and the checker enforces the
+  use-exactly-once discipline (double-use and drop are both rejected), giving
+  quantum-register operations a no-cloning guarantee at the type level. This
+  extends the HoTT type surface (`lib/types/hott_types.cpp`,
+  `inc/eshkol/types/hott_types.h`).
 - **`linear-solve` — full-f64 dense linear solver with a mixed-precision fast
   path.** `(linear-solve A b)` solves `A x = b` for a square `N×N` tensor `A`
   and length-`N` `b` with a full-f64 accuracy guarantee. On Apple/Accelerate it
@@ -161,6 +208,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fallback) and the `ozaki-ii-fast` ICC oracle. `ESHKOL_OZAKI_PROFILE=1` reports
   per-matmul internal pipeline GFLOP/s.
   (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
+- **Checked `(the <type> expr)` ascription and predicate-guarded narrowing
+  (strict mode).** The type checker gained several idiom-accepting features so
+  that idiomatic dynamic-but-validated code type-checks without escape hatches:
+  a new `(the <type> expr)` form asserts `expr` has the given type as a *trusted*
+  assertion to the checker (it narrows the checker's view but is a pure runtime
+  no-op — the emitted IR is byte-identical to `expr` alone); predicate-guarded
+  narrowing teaches the checker that a value tested by one of eight type
+  predicates (`number?`, `integer?`, `string?`, `symbol?`, `pair?`, `null?`,
+  `vector?`, `procedure?`) is that type inside the guarded branch, honored across
+  `if` and `and`, and cancelled at a `set!` of the narrowed variable; sum-type
+  annotations are honored on named-let parameters; and a numeric-tower join gives
+  recursive accumulators their least-upper-bound numeric type instead of
+  rejecting a widening. Nine new type-system tests including negative soundness
+  cases. (`lib/types/`, `lib/frontend/parser.cpp`)
+- **Shortest-round-trip numeric printing (R7RS 6.2.6).** `display`, `write`, and
+  `number->string` now emit the shortest decimal string that reads back as the
+  identical `double`, replacing the previous fixed-precision output that could
+  lose or add digits. `(sqrt 2.0)` prints `1.4142135623730951`; integral doubles
+  keep their no-`.0` form. Native codegen and the bytecode VM share one portable-C
+  routine, so their output is byte-identical.
+  (`lib/core/runtime_display_hosted.cpp`, `lib/backend/vm_native.c`)
+- **Hosted-VM tensor matmul parity.** The bytecode VM now matches native codegen
+  on the full tensor-matmul surface: `arange` in 1-, 2-, and 3-argument forms,
+  nested-literal tensor operands, and multi-dimensional `tensor-ref` /
+  `tensor-set!`. The parity corpus gains `31_tensor_matmul`, closing the last VM
+  divergences on this surface. (`lib/backend/vm_native.c`, `lib/backend/vm_compiler.c`)
+- **Moonlab quantum backend pinned to v1.2.0.** The `agent.quantum` integration
+  now targets Moonlab v1.2.0, which adds `vqe_compute_qgt` (quantum geometric
+  tensor / quantum natural gradient support) and a smooth first-principles
+  H2/LiH potential-energy surface. The H2 equilibrium oracle at bond length
+  0.735 Å is updated to `-1.142200155381` Ha (a `-2.95e-5` Ha shift from the
+  earlier PES). Adds differentiable quantum-chemistry examples (five programs)
+  and an arbitrary-order-AD H2 vibrational-frequency example.
+  (`docs/design/MOONLAB_INTEGRATION.md`, `examples/`)
 
 ### Fixed
 
@@ -226,6 +307,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ozaki_correctness_test.esk` (Ozaki vs an independent CPU f64 reference across
   integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, plus a
   moduli-sweep) and the `ozaki-ii-correctness` ICC oracle.
+- **Restored the `linear-solve` core boundary.** A build-boundary regression in
+  the mixed-precision linear solver was corrected so the native and VM surfaces
+  resolve the solver entry point consistently. (`lib/core/linear_solve.cpp`)
+
+### Changed
+
+- **Opt-in TensorCore adapter.** A TensorCore acceleration adapter is now
+  available behind an opt-in switch, pinned to a tested `tensorcore` version
+  range (`ESHKOL_TENSORCORE_MIN_VERSION` / `_MAX_TESTED_VERSION`); the default
+  numeric path is unchanged.
+- **Dead-code sweep.** Removed 56 ICC-confirmed orphan symbols superseded by the
+  BindingCodegen and AD-matrix refactors; no behavioral change.
+- **Build and platform.** A universal Linux build script provisions LLVM 21
+  per distro family; CMake `< 3.24` no longer errors on
+  `DOWNLOAD_EXTRACT_TIMESTAMP`; the WASM `scheme_main` re-entry export is
+  JS-safe with a null-guarded data layout; documentation-site section anchor
+  links resolve (heading ids + fragment scroll). A CI identity guard rejects new
+  commits that carry a forbidden private author email.
+
+### Documentation
+
+- Added `agent.quantum`, `agent.pqc`, and `core.dbsp` reference pages, and
+  closed the remaining ICC-flagged symbol-documentation gaps.
 
 ## [1.3.3-evolve] - 2026-07-16
 

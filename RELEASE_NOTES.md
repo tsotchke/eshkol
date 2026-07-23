@@ -1,3 +1,101 @@
+# Eshkol v1.3.4-evolve — Release Notes
+
+A resident-correctness release. Every defect surfaced by long-duration resident
+workloads is fixed at the architectural root, and the high-precision numerics
+wave lands alongside a Moonlab v1.2.0 quantum pin, full hosted-VM tensor-matmul
+parity, and a round-tripping numeric printer.
+
+## Highlights
+
+### Automatic memory reclamation matches explicit regions
+
+- **Iter-scope partial reclamation (ESH-0214e) closes the resident-memory
+  series.** A resident tick loop that mutates persistent state on every
+  iteration — a knowledge base, workspace, or growing list — used to get no
+  per-iteration reclamation at all and leaked one iteration's transient garbage
+  forever (about 3,366 bytes per tick; roughly 355 MB over 100,000 ticks).
+  Such a loop is now lowered with a per-loop nursery region: each iteration's
+  allocations land in the nursery, the existing structural write barriers
+  promote any persistent-mutation escapee out of the nursery at the store, each
+  tail-call back edge promotes the loop-carried out-values and resets the
+  nursery, and the loop exit escapes the result and tears the nursery down. The
+  same tick loop is now flat at 34 MB — identical to its explicit `with-region`
+  twin — with every stored value reading back correct on JIT and AOT. Automatic
+  scoping now matches `with-region` in resident loops, so `with-region` is no
+  longer required to get flat RSS. A new RSS gate pins the behavior.
+
+### Race-free parallelism
+
+- **`parallel-map` is safe for collection-valued closures.** A closure mapped in
+  parallel whose body used per-iteration scope reclamation — an internal
+  named-let loop, or a builtin such as `memv` — could return dangling or
+  overlapping structure once the input crossed the parallel threshold. On a pool
+  worker operating on the shared thread-safe arena, scope reclamation now
+  degrades to commit-only (allocations are retained; the shared scope stack is
+  never rewound), which is the established correctness-over-throughput fallback.
+  Results are now identical to serial `map`. ThreadSanitizer: 73 arena data
+  races to 0. New deterministic regression and an ICC gate.
+
+### Exact gradients through every callable form
+
+- **`gradient` recovers callable arity through a function parameter or wrapper.**
+  Indirect `(gradient f point)` and curried `((gradient f) point)` forms are now
+  byte-identical to the direct call for scalar multi-argument, vector, and
+  non-polynomial losses, on both JIT and AOT. The operator recovers the
+  callable's arity from its closure metadata instead of assuming a single tensor
+  argument. There is no finite-difference fallback anywhere in the gradient path
+  — every form is exact reverse-mode AD. A 25-check suite pins the equivalence.
+- **Custom-VJP transitive captures no longer silently zero.** A custom
+  vector-Jacobian-product whose backward closure reached a captured value
+  through an intermediate closure now contributes its full sensitivity.
+
+### High-precision numerics
+
+- **Ozaki-II exact DGEMM** recovers full-f64 `C = A*B` from reduced-precision
+  tensor cores, certified against an independent CPU f64 reference and against
+  the native 128-bit integer path. A CUDA INT8 (IMMA) tier and a Metal
+  reduced-precision fully-GPU fast tier are both opt-in and default off.
+- **`linear-solve`** is a full-f64 dense solver with a mixed-precision
+  iterative-refinement fast path that certifies a full-f64 residual and falls
+  back to a plain-f64 LU when it cannot — correctness is guaranteed, the speedup
+  is opportunistic.
+- **Native 128-bit integer type `i128`** — a first-class fixed-width wrapping
+  signed integer off the numeric tower, with a full builtin surface on both the
+  native and VM paths that compute bit-identical results.
+
+### Types
+
+- **Checked `(the <type> expr)` ascription** asserts a type to the checker as a
+  trusted assertion and is a pure runtime no-op (byte-identical IR).
+- **Predicate-guarded narrowing** across `if` and `and` for eight type
+  predicates, cancelled at `set!`; **sum-type annotations honored on named-let
+  parameters**; a **numeric-tower join** gives recursive accumulators their
+  least-upper-bound numeric type. Nine new type-system tests including negative
+  soundness cases.
+- **Linear `Qubit` type** with use-exactly-once enforcement on `define`d linear
+  parameters, giving quantum registers a no-cloning guarantee at the type level.
+
+### Printer
+
+- **Shortest-round-trip numeric printing (R7RS 6.2.6).** `display`, `write`, and
+  `number->string` emit the shortest decimal that reads back as the identical
+  `double`; integral doubles keep their no-`.0` form; native and VM output is
+  byte-identical through one shared portable-C routine. `(sqrt 2.0)` prints
+  `1.4142135623730951`.
+
+### VM parity and quantum
+
+- **Hosted-VM tensor matmul parity** is complete: `arange` in 1/2/3-argument
+  forms, nested-literal tensor operands, and multi-dimensional `tensor-ref` /
+  `tensor-set!`.
+- **Moonlab pinned to v1.2.0** adds `vqe_compute_qgt` (quantum geometric tensor
+  / quantum natural gradient) and a smooth first-principles H2/LiH
+  potential-energy surface; the H2 equilibrium oracle at 0.735 Å is updated to
+  `-1.142200155381` Ha. Differentiable quantum-chemistry examples and an
+  arbitrary-order-AD H2 vibrational-frequency example ship with the release.
+
+---
+
 # Eshkol v1.3.3-evolve — Release Notes
 
 Windows ARM64 packages now use a single platform-correct JIT target contract

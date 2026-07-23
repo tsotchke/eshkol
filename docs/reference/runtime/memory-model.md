@@ -97,9 +97,75 @@ so they survive `region_pop` even if mutated inside it (e.g. a hash table resize
 inside a region re-allocates its backing arrays in its home arena). Measured: peak
 RSS over 200k iterations dropped from ~3153 MB to ~42 MB.
 
+## Automatic per-iteration reclamation in resident loops (ESH-0214e)
+
+`with-region` is **no longer required** to keep a long-running loop's RSS flat.
+A tail-recursive loop (a top-level self-recursive `define` or a `named-let`)
+whose body allocates transient per-iteration garbage now gets **automatic
+per-iteration reclamation** — the compiler brackets each iteration in a scope
+and reclaims it at the back edge, so a resident tick/daemon loop stays flat
+without any explicit region annotation.
+
+Earlier, this automatic reclamation was *all-or-nothing*: the static escape
+analysis rejected a loop body outright the moment it contained any persistent
+mutation, because a value the iteration allocates and then stores into
+outer/persistent state (a knowledge base, a workspace, a growing list) would
+dangle when the per-iteration scope was rewound. A loop mutating persistent
+state on **every** iteration therefore got **no** reclamation and leaked one
+iteration's transient garbage forever (measured at ~3,366 bytes/tick; ~355 MB
+over 100,000 ticks).
+
+Such a mutating-but-escape-safe loop is now lowered with a **per-loop nursery
+region** instead of being rejected — reusing the same deep-transitive
+escape-promotion path that `with-region` uses, not a second mechanism:
+
+- every iteration allocation lands in the nursery arena;
+- each structural mutation's **existing write barrier** (`vector-set!`,
+  `vector-fill!`, `hash-table-set!`, `set-car!`, `set-cdr!`) promotes any
+  persistent-mutation escapee **out** of the nursery at the store — the write
+  barrier acts as the generational remembered set;
+- each tail-call back edge promotes the loop-carried out-values out and then
+  **resets** the nursery (a deterministic generational minor collection, no
+  tracing pause);
+- the loop exit escapes the result and tears the nursery down.
+
+Reclamation is sound by the same invariant as `with-region`'s `region_pop`:
+after promotion, no surviving object points into the reset span. `set!` is
+deliberately **not** an admitted mutation channel — its barrier fires only for
+globals, and proving a `set!` target is a global rather than a shadowing
+enclosing-scope local needs lexical resolution this downward-only analysis
+lacks; a loop whose only persistent mutation is a `set!` falls back to the
+commit-only path (correctness preserved, reclamation forgone). Non-mutating
+loops keep the existing arena-scope path unchanged.
+
+After the fix, a tick loop that mutates persistent state every iteration is flat
+at 34 MB — **identical to its explicit `with-region` twin** — with every stored
+value reading back correct, on JIT and AOT, and clean under
+`ESHKOL_ARENA_POISON=1`. `with-region` remains available and is still the right
+tool for a scratch region whose entire contents should be freed at a lexical
+boundary; it is simply no longer *required* to achieve flat RSS in a resident
+loop.
+
+## Parallel workers: commit-only reclamation
+
+Work-stealing pool workers all share the single thread-safe process arena, whose
+scope stack (`arena_push_scope` / `arena_pop_scope`) is intrinsically
+single-threaded — a pop rewinds the shared bump pointer and frees everything
+allocated since the matching push. So during **parallel execution**, scope
+operations on a shared arena degrade to **commit-only**: allocations are
+retained and the shared scope stack is never rewound. This makes `parallel-map`
+of a closure that allocates and returns collections (or uses an internal
+named-let loop, or a builtin such as `memv`) return results **identical to
+serial `map`**, with no cross-worker corruption. Per-iteration reclamation is
+deferred for the duration of parallel execution only; single-threaded loops and
+per-worker/region arenas keep full reclamation, so the flat-RSS behavior above
+is unchanged. This is the standard "commit over reclaim = correctness over
+throughput" fallback: the reclamation is what's traded away, never correctness.
+
 > **Known follow-up:** per-thread sub-arena routing for parallel workers in the
-> JIT codegen path is deferred — it requires making the shared arena slot
-> thread-local, a broader ABI change.
+> JIT codegen path (so each worker can reclaim its *own* scope stack rather than
+> only committing) is deferred — it requires making the shared arena slot
+> thread-local, a broader ABI change. Correctness does not depend on it.
 
 ## Stack and depth limits
 

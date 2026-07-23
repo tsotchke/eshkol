@@ -53,6 +53,23 @@ phase afterward.
 Practical rule: make the mapped/folded function pure. Thread an accumulator as a
 loop variable rather than `set!`-ing a shared cell from inside parallel work.
 
+### Scope reclamation on workers is commit-only (v1.3.4)
+
+`parallel-map` is safe for closures that **allocate and return collections** —
+including a closure whose body uses per-iteration scope reclamation (an internal
+named-let loop, or a builtin such as `memv` that brackets scratch allocation in a
+scope push/pop). A bump-arena's scope stack is intrinsically single-threaded (a
+pop rewinds the shared bump pointer), so when pool workers operate on the shared
+thread-safe process arena, scope operations degrade to **commit-only**:
+allocations are retained and the shared scope stack is never rewound. This is the
+established "commit over reclaim = correctness over throughput" fallback — per-worker
+reclamation is deferred for the duration of parallel execution, correctness is
+never traded. As a result, `parallel-map` results are **identical to serial
+`map`** for these closures (previously such closures could return
+dangling/overlapping structure past the parallel threshold). Single-threaded
+loops and per-worker/region arenas keep full reclamation, so flat-RSS behavior is
+unchanged. See [memory model](memory-model.md#parallel-workers-commit-only-reclamation).
+
 ## JIT warmup
 
 Under the JIT, `parallel-map` runs `item[0]` on the calling thread first to force

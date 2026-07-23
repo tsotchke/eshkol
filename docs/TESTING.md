@@ -10,6 +10,14 @@ Eshkol's correctness is defended by two layers of automated tests:
    behavior. Each emits [ICC](https://github.com/tsotchke) trace events that a
    readiness oracle consumes, so a green release requires them to pass.
 
+Every root-cause fix ships with a dedicated regression gate wired into the
+readiness oracle. The v1.3.4-evolve cycle adds, among others:
+`iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
+`parallel_map_scope_reclaim_race` (deterministic + ThreadSanitizer-clean
+`parallel-map`), the 25-check gradient-through-callable suite, the Ozaki-II
+exact/fast GEMM correctness gates, `i128` native+VM parity, and the
+`31_tensor_matmul` VM-parity corpus.
+
 All harnesses honor the `BUILD_DIR` environment variable (default `build/`), so
 you can point them at any built tree:
 

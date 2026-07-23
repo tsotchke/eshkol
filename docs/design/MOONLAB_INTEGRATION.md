@@ -1,7 +1,16 @@
 # Moonlab Quantum Simulator Integration
 
-Status: Design / RFC (no code changes in this document)
-Target Eshkol version: post-1.3.3-evolve (`inc/eshkol/eshkol.h` `ESHKOL_VERSION_STRING "1.3.3-evolve"`)
+Status: SHIPPED — the integration described in this RFC is implemented and gated
+behind `-DESHKOL_QUANTUM_ENABLED=ON` (`agent.quantum`, `agent.pqc`). As of
+v1.3.4-evolve the pinned Moonlab revision is **v1.2.0**, which adds
+`vqe_compute_qgt` (the quantum geometric tensor, enabling quantum-natural-gradient
+optimization) and a smooth first-principles H2/LiH potential-energy surface. The
+H2 equilibrium oracle at bond length 0.735 Å is `-1.142200155381` Ha (a `-2.95e-5`
+Ha shift from the earlier PES). Differentiable quantum-chemistry examples and an
+arbitrary-order-AD H2 vibrational-frequency example ship with the release. The RFC
+text below is retained for the design rationale.
+
+Target Eshkol version: v1.3.4-evolve (`inc/eshkol/eshkol.h`)
 Scope: wire the Moonlab quantum simulator into Eshkol as quantum-computing
 builtins, and replace Eshkol's placeholder `quantum-random` with a real,
 Bell-verified entropy source.
@@ -11,7 +20,7 @@ proposes no builtin wiring and touches no source. Every design claim below
 cites the file and symbol it is grounded in, across four repositories:
 
 - Eshkol — `/Users/tyr/Desktop/eshkol` (this repo).
-- Moonlab — `/Users/tyr/Desktop/quantum_simulator` (MIT, v1.1.0-rc, `github.com/tsotchke/moonlab`).
+- Moonlab — `github.com/tsotchke/moonlab` (MIT; pinned at v1.2.0 as of v1.3.4-evolve).
 - quantum_rng — `/Users/tyr/Desktop/quantum_rng` (MIT, `github.com/tsotchke/quantum_rng`).
 
 ---
