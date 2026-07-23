@@ -1,0 +1,2 @@
+(display (arange 1 5)) (newline)
+(display (arange 0 10 2)) (newline)

@@ -65,7 +65,7 @@ append	vm-supported
 append-file	gap	port/file IO surface missing in VM
 apply	vm-supported	
 apply-window	gap	signal faculty has no VM fid coverage
-arange	vm-supported	
+arange	vm-supported	#322: 1/2/3-arg (arange stop | start stop | start stop step) via a VM-compiler special form; native handler pops (start,stop,step)
 arithmetic-shift	vm-supported	
 asin	vm-supported	
 asinh	gap	no VM name binding
@@ -459,7 +459,7 @@ make-tensor	vm-supported
 make-vector	vm-supported	
 make-workspace	vm-supported	
 map	vm-supported	1-list map verified on all routes; multi-list map correct on vm-src but drops lists on the --emit-eskb route (found/map_two_lists_eskb_route.esk)
-matmul	vm-supported	
+matmul	vm-supported	#322: accepts tensors, flat numeric vectors, and rectangular nested numeric-vector literals (coerced to N-D tensors), matching native; parity in corpus/31_tensor_matmul.esk
 matrix-to-string	gap	tensor linalg/manipulation fid missing in VM
 max	vm-supported	
 max-pool2d	gap	ml faculty has no VM fid coverage
@@ -810,7 +810,7 @@ tensor-div	vm-supported
 tensor-dot	vm-supported	
 tensor-dtype	vm-supported	
 tensor-exp	vm-supported	
-tensor-get	vm-supported	
+tensor-get	vm-supported	#322: alias of tensor-ref; multi-dim (tensor-get t i j ...) via the same VM-compiler special form
 tensor-inverse	gap	tensor linalg/manipulation fid missing in VM
 tensor-length	gap	tensor linalg/manipulation fid missing in VM
 tensor-load	vm-supported	
@@ -830,12 +830,12 @@ tensor-qr	gap	tensor linalg/manipulation fid missing in VM
 tensor-rect-fill!	gap	tensor linalg/manipulation fid missing in VM
 tensor-reduce	gap	tensor linalg/manipulation fid missing in VM
 tensor-reduce-all	gap	tensor linalg/manipulation fid missing in VM
-tensor-ref	vm-supported	
+tensor-ref	vm-supported	#322: multi-dim (tensor-ref t i j ...) via a VM-compiler special form packing trailing indices into a list (native handler already accepts a list index)
 tensor-reshape	vm-supported	
 tensor-save	vm-supported	
 tensor-scale	vm-supported	
 tensor-set	gap	tensor linalg/manipulation fid missing in VM
-tensor-set!	vm-supported	
+tensor-set!	vm-supported	#322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
 tensor-shape	vm-supported	
 tensor-sin	vm-supported	
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM

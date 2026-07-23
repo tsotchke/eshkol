@@ -1,0 +1,6 @@
+(define A (make-tensor (list 2 2) 0.0))
+(tensor-set! A 0 0 1.0)
+(tensor-set! A 0 1 2.0)
+(tensor-set! A 1 0 3.0)
+(tensor-set! A 1 1 4.0)
+(display (tensor-data A)) (newline)
