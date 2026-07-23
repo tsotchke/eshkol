@@ -124,6 +124,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Flonum printer truncated doubles to ~6 significant figures.** Fixes #310.
+  `number->string` and `display`/`write` rendered every inexact real with the C
+  `"%g"` default (6 sig figs), so `(display (sqrt 2.0))` printed `1.41421` and
+  `(number->string 3.141592653589793)` returned `"3.14159"` — high-accuracy
+  results (e.g. Ozaki / AD outputs) could not be recovered from their printed
+  form, forcing tests to compute PASS/FAIL in-program. All double formatting now
+  routes through one shared portable-C formatter (`eshkol_dtoa_shortest`,
+  `inc/eshkol/core/dtoa_shortest.h`) that emits the **shortest decimal string
+  which reads back to the exact same double** (R7RS 6.2.6 round-trip), choosing
+  fixed vs. scientific notation the way `std::to_chars` does. `std::to_chars`
+  itself is not usable because the bytecode VM is C and is also compiled to
+  WebAssembly with emcc; sharing one C routine is what makes the native JIT,
+  native AOT and VM paths agree **byte-for-byte** (ADR-0003 parity). Integral
+  doubles keep their existing friendly no-`.0` form (`3.0` -> `"3"`), negative
+  zero still prints `-0`, and non-finite flonums keep the R7RS `+inf.0` /
+  `-inf.0` / `+nan.0` external representations — only the truncation is fixed.
+  Adds `tests/features/printer_roundtrip_test.esk`,
+  `tests/vm_parity/corpus/31_float_precision.esk` and the
+  `printer_roundtrip_oracle` ICC gate. (`lib/core/runtime_display_hosted.cpp`,
+  `lib/backend/vm_core.c`, `lib/backend/vm_native.c`, `lib/backend/vm_string.c`)
 - **Ozaki-II exact DGEMM correctness (Metal).** The opt-in CRT matmul
   (`ESHKOL_SF64_KERNEL=ozaki`) silently produced 5-30% numerical errors on any
   non-integer input, and returned NaN/garbage when asked for more than 16

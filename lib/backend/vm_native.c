@@ -2521,7 +2521,7 @@ static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
         snprintf(buf, sizeof(buf), "%llx", (unsigned long long)(int64_t)as_number(value));
         return vm_format_append_cstr(out, cap, pos, buf);
     case 'f':
-        snprintf(buf, sizeof(buf), "%.6g", as_number(value));
+        eshkol_dtoa_shortest(buf, sizeof(buf), as_number(value));
         return vm_format_append_cstr(out, cap, pos, buf);
     case 's':
         if (value.type == VAL_STRING) {
@@ -2546,7 +2546,7 @@ static int vm_format_append_value(VM* vm, char* out, size_t cap, size_t* pos,
             snprintf(buf, sizeof(buf), "%lld", (long long)value.as.i);
             return vm_format_append_cstr(out, cap, pos, buf);
         case VAL_FLOAT:
-            snprintf(buf, sizeof(buf), "%.6g", value.as.f);
+            eshkol_dtoa_shortest(buf, sizeof(buf), value.as.f);
             return vm_format_append_cstr(out, cap, pos, buf);
         case VAL_BOOL:
             return vm_format_append_cstr(out, cap, pos, value.as.b ? "#t" : "#f");
@@ -4972,7 +4972,7 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
         vm_port_write_cstr(port, number);
         break;
     case VAL_FLOAT:
-        snprintf(number, sizeof(number), "%.17g", value.as.f);
+        eshkol_dtoa_shortest(number, sizeof(number), value.as.f);
         vm_port_write_cstr(port, number);
         break;
     case VAL_BOOL: vm_port_write_cstr(port, value.as.b ? "#t" : "#f"); break;
@@ -5717,7 +5717,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         char buf[128];
         if (radix == 10 || radix <= 1 || radix > 36) {
             if (a.type == VAL_INT) snprintf(buf, sizeof(buf), "%lld", (long long)a.as.i);
-            else snprintf(buf, sizeof(buf), "%.15g", as_number(a));
+            else eshkol_dtoa_shortest(buf, sizeof(buf), as_number(a));
         } else {
             int64_t n = (a.type == VAL_INT) ? a.as.i : (int64_t)as_number(a);
             if (n == 0) { buf[0] = '0'; buf[1] = '\0'; }

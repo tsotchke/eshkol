@@ -651,7 +651,7 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
     switch ((int)v.type) {
         case VAL_NIL:   printf("()"); break;
         case VAL_INT:   printf("%lld", (long long)v.as.i); break;
-        case VAL_FLOAT: printf("%.6g", v.as.f); break;
+        case VAL_FLOAT: { char fbuf[48]; eshkol_dtoa_shortest(fbuf, sizeof(fbuf), v.as.f); fputs(fbuf, stdout); break; }
         case VAL_CHAR: {
             if (write_syntax) {
                 if (v.as.i == ' ') { fputs("#\\space", stdout); break; }
@@ -731,7 +731,15 @@ static void print_value_mode(VM* vm, Value v, int write_syntax) {
         case VAL_CLOSURE: printf("<closure@%d>", v.as.ptr); break;
         case VAL_COMPLEX: {
             VmComplex* z = (VmComplex*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-            if (z) printf("%g%+gi", z->real, z->imag);
+            if (z) {
+                char rb[48], ib[48];
+                eshkol_dtoa_shortest(rb, sizeof(rb), z->real);
+                eshkol_dtoa_shortest(ib, sizeof(ib), z->imag);
+                /* dtoa never emits a leading '+', so force an explicit sign on
+                 * the imaginary part (R7RS complex external representation). */
+                if (ib[0] == '+' || ib[0] == '-') printf("%s%si", rb, ib);
+                else                               printf("%s+%si", rb, ib);
+            }
             else printf("<complex>");
             break;
         }

@@ -399,16 +399,13 @@ static double vm_string_to_number(const VmString* s) {
     return val;
 }
 
-/** @brief Native call 564: `(number->string n)` — formats exact-integer
- *         doubles (< 1e15 magnitude) as plain integers, else with
- *         round-trip-safe `%.17g` precision. */
+/** @brief Native call 564: `(number->string n)` — shortest round-trip decimal
+ *         (shared with the native runtime via eshkol_dtoa_shortest, so integral
+ *         doubles still render as plain integers, e.g. 3.0 -> "3", while
+ *         non-integral values keep full precision and read back exactly). */
 static VmString* vm_number_to_string(VmRegionStack* rs, double n) {
-    char buf[64];
-    if (n == (int64_t)n && fabs(n) < 1e15) {
-        snprintf(buf, sizeof(buf), "%lld", (long long)(int64_t)n);
-    } else {
-        snprintf(buf, sizeof(buf), "%.17g", n);
-    }
+    char buf[48];
+    eshkol_dtoa_shortest(buf, sizeof(buf), n);
     return vm_string_from_cstr(rs, buf);
 }
 

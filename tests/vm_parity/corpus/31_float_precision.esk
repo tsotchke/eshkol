@@ -1,0 +1,17 @@
+; High-precision float display parity (issue #310).
+;
+; Before the fix, native printed doubles with "%g" (6 sig figs) and the VM
+; with "%.6g" — both truncated, so this file could not have existed in the
+; "shared display-format range". Now both paths route through the single
+; shortest-round-trip formatter (eshkol_dtoa_shortest), so the VM and native
+; agree BYTE-FOR-BYTE on full-precision values.
+(display (sqrt 2.0)) (newline)
+(display 3.141592653589793) (newline)
+(display (/ 1.0 3.0)) (newline)
+(display 1234567.0) (newline)
+(display 4.75072e-11) (newline)
+(display (number->string (sqrt 2.0))) (newline)
+(display (number->string 0.1)) (newline)
+(display 1e-10) (newline)
+(display 1e308) (newline)
+(display -0.0) (newline)
