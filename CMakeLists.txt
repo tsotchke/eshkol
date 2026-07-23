@@ -3835,6 +3835,69 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     endif()
 endif()
 
+# ===== SDNC training-mode module: weight-matrix backward pass =================
+# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
+# analytical forward constructor in weight_matrices.c: it differentiates the
+# same six-layer computable-transformer weight matrices so they become
+# trainable. The math is precision-generic (`qllm_real`, default float => the
+# QLMW/InterpreterWeights layout is byte-identical). Build it as a small static
+# library so the backward surface is compiled by the normal build rather than
+# living as source-only dead code.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
+    add_library(eshkol-qllm-backward STATIC lib/backend/qllm_backward.c)
+    target_include_directories(eshkol-qllm-backward PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(eshkol-qllm-backward PUBLIC m)
+    endif()
+
+    # Gradient-check test: numerical (central finite difference) vs. analytical
+    # gradient through the FFN backward passes. Compiled in double precision so
+    # the finite-difference floor drops far below the documented 1e-6 bar; the
+    # backward source is recompiled here with QLLM_REAL=double (the production
+    # library above stays float).
+    if(ESHKOL_BUILD_TESTS AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/qllm_backward_gradcheck_test.c")
+        add_executable(qllm_backward_gradcheck_test
+            tests/backend/qllm_backward_gradcheck_test.c
+            lib/backend/qllm_backward.c)
+        target_compile_definitions(qllm_backward_gradcheck_test PRIVATE QLLM_REAL=double)
+        target_include_directories(qllm_backward_gradcheck_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        )
+        if(NOT ESHKOL_USING_MSVC)
+            target_link_libraries(qllm_backward_gradcheck_test PRIVATE m)
+        endif()
+        add_test(
+            NAME qllm_backward_gradcheck
+            COMMAND $<TARGET_FILE:qllm_backward_gradcheck_test>
+        )
+        set_tests_properties(qllm_backward_gradcheck PROPERTIES
+            PASS_REGULAR_EXPRESSION "Results: 2 passed, 0 failed"
+        )
+    endif()
+endif()
+
+# ===== SDNC runtime tool: execute programs through the weight matrices ========
+# `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
+# weight_matrices tool) and executes Eshkol bytecode by running the transformer
+# forward pass — the weights ARE the interpreter. Standalone main(); the
+# default build uses the portable C reference matmul (no external qLLM dep).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
+    add_executable(eshkol-qllm-run lib/backend/qllm_interpreter.c)
+    target_include_directories(eshkol-qllm-run PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(eshkol-qllm-run PRIVATE m)
+    endif()
+    set_target_properties(eshkol-qllm-run PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
+endif()
+
 # ===== SDNC de-risking experiment: differentiable external memory head ========
 # Standalone prototype (its own main()) for a differentiable NTM/DNC-style
 # external memory addressing head — the keystone primitive that will later let

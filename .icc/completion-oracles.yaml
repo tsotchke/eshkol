@@ -863,6 +863,20 @@ oracles:
         label: At least one bytecode VM trace records a program halt
         action: ./scripts/run_sdnc_oracle.sh
 
+      # Weight-matrix backward gradient check (docs/SDNC.md §13). The
+      # reverse-mode FFN backward passes in lib/backend/qllm_backward.c
+      # must match a central finite-difference reference to L2 relative
+      # error < 1e-6. Emitted by the qllm_backward_gradcheck probe in
+      # scripts/run_icc_smoke.sh (double-precision build of the
+      # precision-generic backward source).
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["qllm_backward_gradcheck"]
+          event_values: ["PASS"]
+        severity: high
+        label: SDNC weight-matrix FFN backward gradients match finite differences (< 1e-6)
+        action: ./scripts/run_icc_smoke.sh
+
   # ─────────────────────────────────────────────────────────────────
   # No-regression gate — used after a refactor or codegen change to
   # confirm the fix didn't break anything. Lower bar than full release.
