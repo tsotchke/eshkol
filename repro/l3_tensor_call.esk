@@ -1,0 +1,3 @@
+(define A (tensor (list 2 2) 1.0))
+(define B (tensor (list 2 2) 2.0))
+(display (tensor-data (matmul A B))) (newline)
