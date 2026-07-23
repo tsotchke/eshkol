@@ -17,9 +17,15 @@
 ;; consistent numerical error cannot hide.
 ;;
 ;; NOTE: the matmul and its `tensor-data` read are done at TOP-LEVEL scope and
-;; only PLAIN VECTORS are handed to the checker — reading a tensor produced by
-;; `matmul` from inside a `define`d function currently reads zeros (a separate
-;; compiler-scope issue), so the probe must not touch the tensor object itself.
+;; only PLAIN VECTORS are handed to the checker. This was originally a
+;; work-around for #309 ("matmul tensor read inside a define returns zeros"),
+;; which turned out to be a mis-attribution of the very CRT-overflow/precision
+;; defect this file fixes: once #307 landed, reading a matmul tensor via
+;; tensor-ref/tensor-data from inside a defined function returns the identical
+;; correct data as a top-level read (guarded directly by
+;; tests/tensor/matmul_read_in_define_test.esk on JIT+AOT). The top-level read
+;; is kept here purely so the correctness verdict cannot depend on `display`
+;; digit count — it is no longer a scope work-around.
 ;;
 ;; Verdict is decided here (integer relative-error threshold), so it does not
 ;; depend on how many digits `display` prints.
