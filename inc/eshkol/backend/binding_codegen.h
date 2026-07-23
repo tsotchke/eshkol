@@ -295,6 +295,23 @@ public:
                                               // back edge must end it (pop/commit)
                                               // before jumping to the loop header
 
+        // ESH-0214e: iter-scope PARTIAL RECLAMATION for mutating loops. When the
+        // loop body is escape-safe but contains a barriered structural mutation
+        // (vector-set!/vector-fill!/hash-table-set!/set-car!/set-cdr!), the loop
+        // is lowered with a per-loop NURSERY REGION instead of the arena-scope
+        // path: iteration allocations land in `nursery_region`'s arena, the
+        // existing write barriers promote persistent-mutation escapees out of it,
+        // and each back edge calls eshkol_iter_nursery_recycle (promote the
+        // loop-carried out-values, then reset the nursery). `iter_nursery` and
+        // `iter_scope` are mutually exclusive. `nursery_region` is the
+        // region_create result; `nursery_saved_arena` is the eshkol_region_enter
+        // displaced-arena token restored by eshkol_region_leave at loop exit.
+        // Both are SSA values produced in the loop's setup block, which dominates
+        // every back edge and the exit.
+        bool iter_nursery = false;
+        llvm::Value* nursery_region = nullptr;
+        llvm::Value* nursery_saved_arena = nullptr;
+
         // --- ESH-0222: tail calls through `guard` inside a TCO loop ---
         //
         // A self-call that textually appears inside a `guard`'s protected body
