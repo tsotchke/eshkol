@@ -128,6 +128,18 @@ public:
                                            const std::vector<hott_type_expr_t*>& type_args) const;
 
     // Linear type binding (Phase 6)
+    //
+    // Enforcement scope — what "use exactly once" actually covers today (#320):
+    //  * Enforced: `define` and `lambda` PARAMETERS typed TYPE_FLAG_LINEAR. Such
+    //    a parameter must be referenced exactly once in the body; over/under-use
+    //    is reported at scope exit via checkLinearConstraints().
+    //  * NOT enforced: `let`/`let*`/`letrec` bindings — they are bound via the
+    //    plain bind() path (synthesizeLet), never bindLinear(), so a linear-typed
+    //    let binding is not use-once checked. (A known gap, not a guarantee.)
+    //  * Static, not dynamic: a use is counted where a linear variable NAME
+    //    appears. A closure that captures a linear variable counts as ONE static
+    //    use regardless of how many times the closure is later invoked (0 or many
+    //    dynamic duplications are invisible to this check).
     /** Bind @p name as a linear variable of the given type (must be used exactly once). */
     void bindLinear(const std::string& name, TypeId type);
     /** Record a use of the linear variable @p name, incrementing its usage count. */
@@ -147,6 +159,23 @@ public:
     /** True if all linear variables in scope were used exactly once. */
     bool checkLinearConstraints() const;
 
+    // Branch-exclusive linear accounting (#320 item 2). Mutually-exclusive
+    // branches (if/cond) must charge the MAX linear use across them, not the sum
+    // — e.g. (if b (X q) (Z q)) consumes the linear q exactly once at runtime.
+    /** Capture the current per-variable linear usage counts. */
+    std::map<std::string, int> snapshotLinearUsage() const { return linear_usage_count_; }
+    /** Restore linear usage counts to a previous snapshot (rewind a branch). */
+    void restoreLinearUsage(const std::map<std::string, int>& snap) { linear_usage_count_ = snap; }
+    /** Merge another branch's usage counts in by taking the per-variable max. */
+    void mergeMaxLinearUsage(const std::map<std::string, int>& other) {
+        for (const auto& kv : other) {
+            auto it = linear_usage_count_.find(kv.first);
+            if (it == linear_usage_count_.end() || kv.second > it->second) {
+                linear_usage_count_[kv.first] = kv.second;
+            }
+        }
+    }
+
 private:
     // Stack of scopes, each scope is a map from name to type
     std::vector<std::map<std::string, TypeId>> scopes_;
@@ -163,6 +192,15 @@ private:
     // Linear type tracking
     std::set<std::string> linear_vars_;
     std::map<std::string, int> linear_usage_count_;  // 0=unused, 1=used, 2+=overused
+
+    // Per-scope record of names bound linear (via bindLinear) in each active
+    // scope, parallel to scopes_. popScope() uses it to remove exactly this
+    // scope's linear tracking — restoring any shadowed outer binding — so a
+    // linear variable and its over/under-use diagnostics do not leak into
+    // sibling defines/lambdas (#320). had_prior/prior_count carry the shadowed
+    // outer usage count to restore when this scope exits.
+    struct LinearScopeEntry { std::string name; bool had_prior; int prior_count; };
+    std::vector<std::vector<LinearScopeEntry>> linear_scope_saves_;
 };
 
 /**
