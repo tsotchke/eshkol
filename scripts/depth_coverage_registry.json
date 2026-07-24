@@ -149,6 +149,10 @@
     {"name": "recursion.mutual", "class": "composable", "pillar": "P6b", "note": "mutual (2- and 3-cycle) recursion depth"},
     {"name": "recursion.cps-chain", "class": "composable", "pillar": "P6b", "note": "continuation-passing chain depth"},
     {"name": "recursion.through-map", "class": "composable", "pillar": "P6b", "note": "recursion threaded through map"},
-    {"name": "recursion.through-eval", "class": "composable", "pillar": "P6b", "note": "metacircular recursion-through-eval depth"}
+    {"name": "recursion.through-eval", "class": "composable", "pillar": "P6b", "note": "metacircular recursion-through-eval depth"},
+    {"name": "numeric.i128", "class": "composable", "pillar": "P6d", "note": "native fixed-width 128-bit arithmetic-chain depth (wrapping) — swept by scripts/run_edge_coverage_v134.sh i128_depth_NN (v1.3.4)"},
+    {"name": "ad.gradient-composition", "class": "composable", "pillar": "P6a", "note": "gradient of a function that calls a function, depth 1..N — swept by scripts/run_edge_coverage_v134.sh gradient_depth_NN (v1.3.4 #330)"},
+    {"name": "recursion.nursery-iter-scope", "class": "composable", "pillar": "P6b", "note": "nested mutating self-tail/named-let loops with per-iteration nursery reclamation, depth 1..N — swept by scripts/run_edge_coverage_v134.sh nursery_depth_NN (v1.3.4 ESH-0214e)"},
+    {"name": "collection.parallel-map-nesting", "class": "composable", "pillar": "P6f", "note": "parallel-map nested inside its own worker closure, depth 1..N — swept by scripts/run_edge_coverage_v134.sh parallel_depth_NN (v1.3.4)"}
   ]
 }
