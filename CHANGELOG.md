@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **P8 "escape-closure" adversarial pillar** (`scripts/run_p8_escape.sh`,
+  `scripts/p8/`, `tests/escape_matrix/`). A test/infra pillar that closes the
+  gap where a bug *class* could reach a consumer before our own tests flagged
+  it: for each class observed in a cycle it adds a generator or gate designed so
+  the same class is caught here first. Eight axes — (1) AD operator
+  binding-form sweep (differentiation point built as numeric/`#()`/`vector`/
+  `list`/`tensor`/var/let/fnret/`(the …)` across arity 1–3, vs closed form and
+  cross-form); (2) call-indirection sweep (direct/param/curried/let/two-level
+  byte-identical); (3) manifest-driven native-vs-VM arity ratchet over
+  `tests/coverage/language_surface.json` with a shrink-only baseline; (4)
+  reference-free property oracles (`number->string`∘`string->number`,
+  `read`∘`write`, exact algebraic identities) run per-substrate to defeat
+  shared-defect blindness; (5) seeded `parallel-map` concurrency fuzz vs the
+  serial oracle at threshold-straddling sizes ×20, with a nightly ThreadSanitizer
+  lane; (6) five-way surface-agreement ratchet (doc ↔ manifest ↔ native ↔ VM ↔
+  provide); (7) toolchain fault-injection matrix asserting nonzero-exit +
+  diagnostic (no exit-0 masking); (8) workload-shaped flat-RSS memory profiles.
+  Wired as the `p8_escape_matrix_green` ICC smoke probe plus per-axis
+  `escape_matrix` completion-oracle criteria under `eshkol-compiler-readiness`;
+  the full JIT+AOT+VM sweep, TSan, and Homebrew/Linux packaging lanes run in the
+  new nightly workflow `.github/workflows/adversarial-nightly.yml`. Each axis
+  retro-catches a prior-cycle bug class (verified against a pre-fix build for the
+  AD binding-form, printer round-trip, and concurrency-race classes). The pillar
+  additionally surfaced two currently-open defects, recorded under
+  `tests/escape_matrix/found/` and quarantined so the gate stays green while they
+  are tracked.
 - **SDNC weight-matrix backward pass wired into the build with a gradient
   check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
   companion to the analytical forward constructor in `weight_matrices.c` — was
