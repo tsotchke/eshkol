@@ -618,6 +618,14 @@ oracles:
         label: 'Full ASan+UBSan fuzz/tests corpus has zero sanitizer signatures'
         action: ./scripts/run_sanitizer_fuzz.sh
 
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["edge_v134_dynamic_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.3.4 dynamic edge coverage: the seeded, bounded, depth-parametric generator (scripts/gen_edge_v134.py) exercises every new-surface family — nursery iter-scope (6 barrier channels), capturing parallel-map/parallel-execute, exact gradient-through-callable + curried, native i128 wraparound (differential native-vs-VM), native matmul, and VM ad-pow/ad-tape — green across JIT/AOT-O0/AOT-O2/VM with no native-vs-VM divergence (full per-family gates in the v1.3.4-edge-coverage oracle)'
+        action: ./scripts/run_icc_smoke.sh
+
       - test_evidence: true
         severity: high
         label: 'v1.3 edge-case tests are indexed and runnable'
@@ -2149,3 +2157,74 @@ oracles:
         severity: high
         label: Ozaki-II reduced-precision fast tier (opt-in ozaki-fast, GPU residue split + df32 CRT reconstruction) is within the documented ~1e-8 bound (rel err <= 1e-7) across integer/fractional/pi-e/wide-magnitude regimes at K<=4096, with the fully-GPU fast path verified to engage (no silent fallback to the exact tier)
         action: ./tests/gpu/ozaki_fast_gate.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # v1.3.4 DYNAMIC EDGE COVERAGE — one criterion per new-surface family the
+  # v1.3.4 wave added. Driven by scripts/gen_edge_v134.py (bounded, seeded,
+  # depth-parametric) and scripts/run_edge_coverage_v134.sh, which runs every
+  # generated self-checking probe across the execution axes (JIT / AOT-O2 /
+  # AOT-O0, plus the bytecode VM for VM-capable families: i128 differential
+  # native-vs-VM, adtape VM-only) and emits kind:"edge_coverage" events into
+  # scripts/icc_traces/edge_coverage_v134.jsonl. A family gate is PASS iff every
+  # generated probe for that family passed on every axis it runs on.
+  #
+  # STAGED (not gated here, pending surface landing — see the branch report):
+  #   * roundtrip  number->string . string->number identity — needs the
+  #     shortest-round-trip printer (number->string is still %g-lossy on master).
+  #   * matmul on the VM — the VM registers only flat arity-2 tensor-ref /
+  #     arity-3 tensor-set! / arity-2 reshape / arity-1 arange, so multi-dim
+  #     tensor parity is native-only until VM tensor parity lands. matmul IS
+  #     gated on the native axes.
+  # ─────────────────────────────────────────────────────────────────
+  - name: v1.3.4-edge-coverage
+    aliases: [edge-coverage-v134, v134-edge, dynamic-edge-v134]
+    requires:
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_nursery_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Nursery iter-scope (ESH-0214e): guard-wrapped mutating self-tail/named-let loops compute exact checksums while each of the six barrier channels (hash-table-set!, vector-set!, set-car!, set-cdr!, string-set!, bytevector-u8-set!) promotes its persistent-mutation escapee — swept over escape-set size {1,4,16,64} and nested-loop depth 1..N; verified on JIT + AOT-O0 + AOT-O2'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_parallel_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'parallel-map / parallel-execute (#331): capturing closures returning collections are value-correct swept over n at the pool threshold {1,4,15,16,17,64,500}, over nested-list/string/#f closure shapes, over scope-op-heavy (memv + internal named-let) workers, and over parallel-map nesting depth 1..N; verified on JIT + AOT'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_gradient_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Exact gradient through a callable parameter + curried form (#330): a wrapped/annotated arity-2..5 scalar loss is byte-identical to the direct (gradient f point) call; the arity-1 tensor-loss path, list-vs-vector points, non-polynomial compositions, gradient-in-loop repetition, and gradient-composition depth 1..N all agree with the analytic gradient; verified on JIT + AOT'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_i128_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Native 128-bit integer (#314): boundary constructors/round-trip, two''s-complement wraparound at +-2^127 (add/sub/mul/neg, min*min), conversion edges, and arithmetic-chain depth 1..N match a Python-computed wrapping reference — DIFFERENTIAL native-vs-VM agreement (the guard-based out-of-range conversions probe is native-only)'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_matmul_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Tensor/matmul (native): arange arities, matmul from reshape/arange literals vs an independent product reference, and multi-dim tensor-ref/tensor-set! round-trip are value-correct on JIT + AOT-O0 + AOT-O2 (VM parity for multi-dim tensors is staged — see report)'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_adtape_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Low-level ad-tape / ad-pow (VM): ad-pow with fractional/negative/zero exponents matches value + analytic gradient, tape reuse across new/release cycles is stable, and the >1024-node growth boundary preserves the forward value and gradient — VM-only surface (ad-pow/ad-tape-length are not registered in the native backend)'
+        action: ./scripts/run_edge_coverage_v134.sh
+      - runtime_event:
+          event_kinds: [edge_coverage]
+          event_names: ["edge_v134_sweep_clean"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'v1.3.4 edge-coverage sweep is clean: every generated probe across every applicable execution axis (JIT / AOT-O0 / AOT-O2 / VM) passed, with no native-vs-VM differential divergence'
+        action: ./scripts/run_edge_coverage_v134.sh
