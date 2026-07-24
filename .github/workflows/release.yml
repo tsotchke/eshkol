@@ -1054,8 +1054,12 @@ jobs:
           cd /tmp/tap
 
           formula=Formula/eshkol.rb
-          sed -i -E "s|url \"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/[^\"]+\"|url \"${tarball_url}\"|" "$formula"
-          sed -i -E "s|sha256 \"[0-9a-f]{64}\"|sha256 \"${sha}\"|" "$formula"
+          # Only rewrite the TOP-LEVEL url/sha256 (2-space indent). The formula
+          # also carries `resource` blocks whose own sha256 lines (4-space
+          # indent) pin the bundled agent-FFI dependencies — those must survive
+          # the bump untouched, so both substitutions are anchored to column 3.
+          sed -i -E "s|^  url \"https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/[^\"]+\"|  url \"${tarball_url}\"|" "$formula"
+          sed -i -E "s|^  sha256 \"[0-9a-f]{64}\"|  sha256 \"${sha}\"|" "$formula"
 
           if git diff --quiet; then
             echo "::notice::Formula already at ${tag}; nothing to do."
