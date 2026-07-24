@@ -215,6 +215,32 @@ across every new-feature family).
   the `v1.3.4-edge-coverage` oracle (one criterion per family) plus a
   `v1.3-evolve` roll-up; new depth axes registered in
   `scripts/depth_coverage_registry.json`.
+- **WASM execute-and-diff differential lane (#353).** A new assurance lane
+  executes Eshkol-compiled WebAssembly and diffs its output against native,
+  closing the gap where the web tests only checked that a produced `.wasm` was a
+  valid binary. It builds the VM WASM module (the bytecode VM compiled via
+  Emscripten — the same module family that powers the browser REPL) fresh from
+  current source, runs each program of the VM-supported corpus under Node through
+  a new append-only batch `run_program` export, and byte-diffs the captured
+  stdout against native `eshkol-run -r` (reusing the VM-parity newline
+  normalization, comparing float text raw). Divergences are documented per file
+  in `tests/wasm_diff/EXCLUSIONS.tsv` — `EXCLUDED` for a surface that cannot run
+  in the sandbox, `XFAIL` for a real reported WASM bug (the comparison still runs
+  and an unexpected match fails the gate to force the row's removal) — with no
+  silent skips, and a `kind:"wasm_parity"` JSON-L trace feeds ICC.
+  (`scripts/run_wasm_differential.sh`, `scripts/lib/wasm_diff_runner.js`,
+  `lib/backend/vm_wasm_repl.c`)
+- **Execution-backed language-coverage gate (#352).** The language-surface
+  coverage gate now certifies executed, verified behaviour — a construct counts
+  only when it dispatched or executed in a passing run (or, for the bounded
+  compile-time-form allowlist, was parsed and code-generated) — with lexical
+  name-presence demoted to a diagnostic that earns no release credit. A permanent
+  invariant tripwire keeps the credited set a subset of the runtime/compile-time
+  evidence, and a monotonic deficit ledger refuses to record a larger deficit
+  without an explicit override. The proven surface is re-baselined from 1,056 to
+  1,078 (the `i128` tower, `linear-solve`, and string/pointer conversions landed
+  as new core builtins) and the policy floor and ledger are ratcheted to 1,078
+  (1,078/1,078 execution-backed).
 - **Shortest-round-trip numeric printing (R7RS 6.2.6).** `display`, `write`, and
   `number->string` now emit the shortest decimal string that reads back as the
   identical `double`, replacing the previous fixed-precision output that could
@@ -387,6 +413,21 @@ across every new-feature family).
   (the `{#(…) literal, inline (vector …), variable vector, inline/variable list,
   (the …) wrapper} × {plain, cons-routed, vector-ref, arity-N} × {gradient,
   hessian}` matrix, 33 cells, green JIT + AOT). (`lib/backend/autodiff_codegen.cpp`)
+- **Vector-field AD operators at a `(list …)` point, and residual exit-0 masking
+  in the driver (#354).** Two classes surfaced by the P8 escape-closure pillar.
+  `jacobian` / `curl` / `divergence` SIGSEGV'd at a `(list …)` point: the
+  cons-to-scheme-vector normalization added for the scalar-output operators
+  (`gradient` / `hessian` / `laplacian`, #343) was never extended to the
+  vector-field operators, so a cons-cell point fell through to the tensor path
+  and was misread — while the identical point written as
+  `#(…)`/`(vector …)`/`(tensor …)` or bound to a variable worked. The
+  normalization is now applied across every AD entry point that reads a point
+  subtype. Separately, the last exit-0 masking paths in the driver are closed:
+  an AOT missing/unreadable entry file (which previously compiled an empty
+  stdlib-only binary and exited 0), a `-r` syntax error (which previously ran
+  the parsed prefix), and an unresolved `(require …)` (which previously ran
+  without the module) are each now fatal with a nonzero exit before any binary
+  is written. (`lib/backend/autodiff_codegen.cpp`, `exe/eshkol-run.cpp`)
 - **Custom-VJP gradient silently zeroed on transitive captures.** A custom
   vector-Jacobian-product whose backward closure reached a captured value
   transitively (through an intermediate closure) had its contribution silently

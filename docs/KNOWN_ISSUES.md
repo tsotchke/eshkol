@@ -120,6 +120,14 @@ byte-identical across the VM's source and bytecode axes. The one remaining
 native-only case is higher-order nesting (gradient-of-derivative / Taylor
 tower); use native codegen (`eshkol-run`) for nested higher-order AD.
 
+### WASM batch compilation: multiple `define-syntax` forms
+Under the WASM batch compilation path, a program with two or more
+`define-syntax` forms mis-evaluates the first macro's arithmetic. The VM-native
+path and the browser REPL's incremental compilation path both evaluate the same
+program correctly. Found by the WASM execute-and-diff lane and tracked as an
+XFAIL gate in `tests/wasm_diff/EXCLUSIONS.tsv`; use the VM-native or incremental
+REPL path in the meantime.
+
 ---
 
 ## Tracked Open Issues

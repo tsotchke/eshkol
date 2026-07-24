@@ -164,6 +164,12 @@ numeric printer, over a hardened toolchain and a broadened assurance surface.
   regenerated for the new VM special forms and the coverage floor is enforced
   across the new-feature families, so a newly public surface cannot ship without
   executable evidence.
+- **WASM execute-and-diff differential lane.** A new lane builds the VM
+  WebAssembly module from current source, executes the VM-supported corpus under
+  Node, and byte-diffs its output against native `eshkol-run -r`, so WASM output
+  is now gated against native rather than only checked for a valid binary;
+  divergences are tracked per file (EXCLUDED / XFAIL, with an unexpected match
+  failing the gate).
 
 ---
 

@@ -130,6 +130,13 @@ symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 BUILD_DIR=build scripts/run_vm_parity.sh
 ```
 
+**WASM substrate.** `scripts/run_wasm_differential.sh` extends the parity
+guarantee to WebAssembly: it builds the VM WASM module from current source,
+executes the VM-supported corpus under Node, and byte-diffs its stdout against
+native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught.
+Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
+(`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
+
 > The VM parity harness lands with the v1.3.0-evolve release (PR #118); the
 > other four harnesses are already on `master`.
 
