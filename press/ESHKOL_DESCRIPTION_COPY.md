@@ -3,12 +3,23 @@
 ## A compiled Scheme with a constructive proof that a transformer is an interpreter
 
 Eshkol is a compiled programming language for mathematical and cognitive computing.
-The repository ships v1.3.3-evolve (July 2026) of the compiler — an arbitrary-order
+The repository ships v1.3.4-evolve (July 2026) of the compiler — an arbitrary-order
 automatic-differentiation system with exact gradients now verified through the
-tensor-op `input2` path, 100% conformance on a portable R7RS differential corpus,
-and a region-escape evacuator that makes long-running/resident programs safe to
-leave running across every heap subtype the language can allocate.
-v1.3.3-evolve adds an opt-in quantum computing stack — Moonlab state-vector
+tensor-op `input2` path and through every callable form (indirect, wrapped, and
+curried, with no finite-difference fallback), 100% conformance on a portable R7RS
+differential corpus, and a region-escape evacuator that makes long-running/resident
+programs safe to leave running across every heap subtype the language can allocate.
+v1.3.4-evolve is a resident-correctness release: automatic per-iteration memory
+reclamation now matches explicit `with-region` even for loops that mutate persistent
+state every tick (closing the ESH-0214 memory-management series); `parallel-map` is
+race-free for closures that allocate and return collections; printed floats round-trip
+to the identical `double` (R7RS 6.2.6); the strict type checker accepts a checked
+`(the <type> expr)` ascription and predicate-guarded narrowing; and the high-precision
+numerics wave lands (Ozaki-II exact and reduced-precision GEMM tiers, a mixed-precision
+`linear-solve`, and a native 128-bit integer type), alongside a Moonlab v1.2.0 quantum
+pin with quantum-natural-gradient support, full hosted-VM tensor-matmul parity, and a
+linear `Qubit` type.
+The earlier v1.3.3-evolve added an opt-in quantum computing stack — Moonlab state-vector
 simulation, a variational quantum eigensolver whose gradients flow through the
 language's own automatic differentiation via new custom-VJP tape nodes, a CHSH
 Bell-inequality gate, Bell-verified quantum randomness, and ML-KEM (FIPS 203)
@@ -344,8 +355,8 @@ release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 | | |
 |:---|:---|
 | Project | Eshkol |
-| Version | v1.3.3-evolve |
-| Release date | 16 July 2026 (builds on v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
+| Version | v1.3.4-evolve |
+| Release date | 23 July 2026 (builds on v1.3.3-evolve, 16 July 2026; v1.3.2-evolve, 9 July 2026; v1.3.1-evolve and v1.3.0-evolve, 7 July 2026) |
 | Implementation | C17 runtime, C++20 compiler |
 | Backend | LLVM 21 (version-enforced) |
 | Platforms | macOS Intel and Apple Silicon, Linux x86-64 and ARM64, Windows x86-64 and ARM64 via Visual Studio 2022 + ClangCL |
@@ -353,4 +364,4 @@ release builds produce byte-identical `build/stdlib.bc` and `build/eshkol-run`
 | Licence | MIT |
 | Source | https://github.com/tsotchke/eshkol |
 | Website | https://eshkol.ai |
-| Paper companion | *docs/SDNC.md*, repository `noesis`, artefact `artifacts/paper/` |
+| Paper companion | *docs/SDNC.md*, artefact `artifacts/paper/` |

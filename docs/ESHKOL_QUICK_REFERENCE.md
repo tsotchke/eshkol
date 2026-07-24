@@ -476,6 +476,26 @@ exp log log10 log2 sqrt pow
 (factor-graph? x)  (workspace? x)
 ```
 
+## Static Type Checking (strict mode)
+
+```scheme
+;; Checked ascription — trusted assertion to the checker, runtime no-op
+(the number (car xs))     ;; tell the checker this is a number
+(the string s)
+
+;; Predicate-guarded narrowing (if / and), cancelled at set!
+(if (number? x) (+ x 1) 0)        ;; x : number in then-branch
+(and (pair? p) (car p))           ;; p : pair for (car p)
+;; narrowing predicates: number? integer? string? symbol?
+;;                       pair? null? vector? procedure?
+
+;; Sum-type annotations honored on named-let params;
+;; numeric-tower join for recursive accumulators.
+
+;; Linear Qubit — must be used exactly once
+(define (h (q : Qubit)) ...)      ;; use-exactly-once enforced
+```
+
 ## I/O
 
 ```scheme

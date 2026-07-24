@@ -41,6 +41,14 @@ Conversions: `exact->inexact` (a.k.a. `inexact`), `inexact->exact` (a.k.a. `exac
 > decimal point — `(+ 1.0 2)` prints `3`, and `(+ 1/2 0.5)` prints `1` — but it is
 > still inexact (`(inexact? (+ 1/2 0.5))` ⇒ `#t`).
 
+> **Shortest round-trip printing (R7RS 6.2.6):** `display`, `write`, and
+> `number->string` emit the **shortest decimal string that reads back as the
+> identical `double`**. No digits are lost and none are fabricated: `(sqrt 2.0)`
+> prints `1.4142135623730951`, and reading that string back yields the same bit
+> pattern. Integral doubles keep the no-`.0` form described above. The native
+> compiler and the bytecode VM share one portable-C conversion routine, so their
+> printed output is byte-identical.
+
 ## Integers and bignums
 
 Integer arithmetic promotes to bignum automatically; there is no overflow.

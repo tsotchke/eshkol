@@ -10,6 +10,14 @@ Eshkol's correctness is defended by two layers of automated tests:
    behavior. Each emits [ICC](https://github.com/tsotchke) trace events that a
    readiness oracle consumes, so a green release requires them to pass.
 
+Every root-cause fix ships with a dedicated regression gate wired into the
+readiness oracle. The v1.3.4-evolve cycle adds, among others:
+`iter_scope_partial_reclaim` (resident-loop flat RSS with persistent mutation),
+`parallel_map_scope_reclaim_race` (deterministic + ThreadSanitizer-clean
+`parallel-map`), the 25-check gradient-through-callable suite, the Ozaki-II
+exact/fast GEMM correctness gates, `i128` native+VM parity, and the
+`31_tensor_matmul` VM-parity corpus.
+
 All harnesses honor the `BUILD_DIR` environment variable (default `build/`), so
 you can point them at any built tree:
 
@@ -121,6 +129,13 @@ symbols honest. Full write-up in [VM_PARITY.md](VM_PARITY.md).
 ```bash
 BUILD_DIR=build scripts/run_vm_parity.sh
 ```
+
+**WASM substrate.** `scripts/run_wasm_differential.sh` extends the parity
+guarantee to WebAssembly: it builds the VM WASM module from current source,
+executes the VM-supported corpus under Node, and byte-diffs its stdout against
+native `eshkol-run -r`, so a VM regression that only manifests in WASM is caught.
+Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
+(`EXCLUDED` / `XFAIL`), an unexpected match failing the gate.
 
 > The VM parity harness lands with the v1.3.0-evolve release (PR #118); the
 > other four harnesses are already on `master`.

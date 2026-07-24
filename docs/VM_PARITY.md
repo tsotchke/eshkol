@@ -17,7 +17,28 @@ to miss.
 > Status: the ratchet, manifest, and gate shipped with the v1.3.0-evolve
 > release (PR #118 — `scripts/run_vm_parity.sh`,
 > `scripts/vm_parity_audit.py`, `tests/vm_parity/`). The counts below are from
-> the current v1.3.3-evolve candidate audit.
+> the v1.3.4-evolve audit.
+
+### v1.3.4-evolve parity changes
+
+- **Tensor matmul parity is now COMPLETE on the hosted VM.** `arange` (1-, 2-,
+  and 3-argument forms), nested-literal tensor operands, and multi-dimensional
+  `tensor-ref` / `tensor-set!` now compute the same answers on the bytecode VM
+  as on native codegen. The parity corpus gains `31_tensor_matmul`; the former
+  matmul-surface `gap` rows are retired to `vm-supported`.
+- **Reverse/forward-mode `gradient` is now `vm-supported` (#337).** The VM lowers
+  an arity-resolved forward/reverse-mode `gradient` — direct, through a callable
+  parameter, and curried — byte-identical to native codegen across the `native`,
+  `vm-src`, and `vm-eskb` axes (`corpus/32_gradient_reverse.esk`,
+  `gradient_callable_arity_test.esk` 25/25 on the VM). `op:GRADIENT` and
+  `op:DERIVATIVE` move from `gap` to `vm-supported`; higher-order nesting
+  (gradient-of-derivative / Taylor tower, `op:DERIVATIVE_N`) stays native-only.
+  The public low-level AD tape surface (`ad-pow`, `ad-gradient-of`,
+  `ad-value-of`, `ad-tape-length`) is also complete on JIT and AOT.
+- **`(the <type> expr)` is `native-only-justified`.** The checked type
+  ascription is a compile-time construct on the native type checker with no VM
+  surface; it is a runtime no-op, so a VM program that omits it computes the
+  identical result.
 
 ## The manifest
 
@@ -31,10 +52,10 @@ statuses:
 | `gap` | acknowledged hole **or a verified behavioral divergence** (rows referencing `found/*.esk` name symbols present on both surfaces that compute different answers) — justification mandatory |
 
 Seeded 2026-07-03 from the live extraction and continuously re-audited with
-probe runs on `eshkol-vm-standalone-test` vs native `-r`: **916 rows — 540
-`vm-supported`, 44 `native-only-justified`, 332 `gap`**. Verified behavioral
-divergences remain explicit `gap` rows with reproducible programs under
-`tests/vm_parity/found/`.
+probe runs on `eshkol-vm-standalone-test` vs native `-r`: **936 rows — 562
+`vm-supported`, 45 `native-only-justified`, 329 `gap`** (v1.3.4-evolve audit).
+Verified behavioral divergences remain explicit `gap` rows with reproducible
+programs under `tests/vm_parity/found/`.
 
 ## The ratchet workflow
 
