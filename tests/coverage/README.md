@@ -1,7 +1,7 @@
 # Language-surface coverage tracking
 
 This directory is the backbone for **TOTAL-LANGUAGE exposure-engine coverage**:
-the mechanism that measures which of Eshkol's 1,056 user-facing constructs the
+the mechanism that measures which of Eshkol's 1,078 user-facing constructs the
 generative exposure engines actually exercise, names the gap, and turns
 "cover the whole language" into a measurable ICC completion-oracle criterion.
 
@@ -91,6 +91,47 @@ compiler process. Parser dispatch has one cached false branch in production;
 trace formatting/allocation occurs only in an opt-in run. Trace writes are
 deduplicated per process and flushed in batches.
 
+## Execution-backed guarantee and the deficit ratchet (A1)
+
+The gate certifies **executed behaviour**, never lexical name-presence. Two
+numbers are always reported side by side:
+
+- **Execution-backed** — the only gated number. A construct counts as covered
+  only when it dispatched/executed in a passing run (`O`/`C`/validated `V`) or,
+  for the bounded compile-time-form allowlist, was parsed and
+  accepted/code-generated (`A`/`G`). This is the fraction the policy floor and
+  the ICC oracle enforce.
+- **Lexical exposure** (`lexical_covered` / `spelled_but_unproven`) — a pure
+  diagnostic. A construct is "lexically covered" when its name merely appears as
+  an application head somewhere in the corpus or a generator. It earns **zero**
+  release credit; a name that is spelled but never executed is reported under
+  `spelled_but_unproven` and stays uncovered.
+
+`language_coverage.py` enforces this at runtime through
+`verify_execution_backed_invariant`: the credited set must be a subset of the
+runtime/compile-time evidence, and no source-only head may be counted. If a
+future refactor ever routes the lexical `collect_heads` output back into the
+gate, that assertion trips instead of silently inflating the number. The
+build-free guard `scripts/test_language_coverage_gate.py` pins the same property
+with synthetic traces so it can run without a compiler.
+
+`execution_deficit.json` is the monotonic **deficit ledger**: the categorised
+list of manifest constructs that lack execution evidence — i.e. the work queue.
+It also carries the ratchet baseline (`baseline_execution_backed_covered` /
+`_fraction`, `deficit_names`). The gate fails if execution-backed coverage drops
+below the baseline **or** if any construct not already in the ledger becomes
+uncovered (the deficit list grows). Regenerate it from a fresh run with:
+
+```sh
+./scripts/run_language_coverage.sh --write-execution-deficit
+```
+
+Writing refuses to record a larger deficit unless `--allow-deficit-growth` is
+passed with an explicit, reviewed regression, so the claim is never walked down
+silently. The gate emits an `execution_backed_language_coverage` runtime_event
+carrying both numbers and the ratchet verdict; the ICC oracle criterion of the
+same name consumes it.
+
 ## Wiring into the ICC completion-oracle
 
 The coverage fraction is designed to be an oracle criterion, not a one-off
@@ -101,7 +142,7 @@ criterion. `--trace PATH` writes them as fresh JSONL evidence:
 ```json
 {"kind": "runtime_event", "event": "language_surface_coverage",
  "name": "language_surface_coverage", "value": "PASS",
- "covered_fraction": 1.0, "covered": 1056, "surface_total": 1056,
+ "covered_fraction": 1.0, "covered": 1078, "surface_total": 1078,
  "status": "PASSED"}
 ```
 
@@ -116,7 +157,7 @@ pillars:
 3. `eshkol-compiler-readiness` requires the floor event to PASS.
 4. `total-language-coverage` additionally requires
    `language_surface_high_risk_complete=PASS`. Phase 4 closes both that
-   criterion and the complete surface: all 1,056 constructs now have
+   criterion and the complete surface: all 1,078 constructs now have
    deterministic execution evidence and the monotonic policy floor is 100%.
 5. Gate the campaign after regenerating traces:
    `icc readiness --repo eshkol --target total-language-coverage --trace-dir scripts/icc_traces`.

@@ -107,6 +107,10 @@ done
 
 cd "$REPO_ROOT"
 python3 scripts/gen_language_surface.py --check
+# Build-free guard: name-presence earns no credit and the deficit ratchet is
+# monotonic. Runs anywhere (no compiler needed) so the A1 property is enforced
+# even when the instrumented binaries are unavailable.
+python3 scripts/test_language_coverage_gate.py
 python3 scripts/test_runtime_language_coverage.py \
     --eshkol-run "$ESHKOL_RUN" \
     --eshkol-vm "$ESHKOL_VM"

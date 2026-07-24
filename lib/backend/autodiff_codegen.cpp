@@ -8885,10 +8885,16 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // to a raw double / raw int (a pure scalar expression). Everything else that
     // is not a provable collection — VAR, general call, general op, (the …) — is
     // decided at runtime.
+    // Only a PROVABLY scalar point short-circuits the runtime dispatch: a numeric
+    // literal, or a value the callback already lowered to a raw double. An i64
+    // value is NOT provably scalar — a VAR/call/(the …) point bound to a vector
+    // evaluates to a pointer-as-int64, and hard-classifying it scalar here read
+    // that pointer as a double and returned 0 (hessian/laplacian at a VAR-bound
+    // vector point). Defer every i64/ambiguous case to the runtime tag check
+    // below, exactly as gradient() does. (#320-followup)
     bool hess_ast_scalar_lit =
         (hpoint->type == ESHKOL_INT64 || hpoint->type == ESHKOL_DOUBLE) ||
-        typed_raw_->getType()->isDoubleTy() ||
-        (typed_raw_->getType()->isIntegerTy(64) && hpoint->type != ESHKOL_TENSOR);
+        typed_raw_->getType()->isDoubleTy();
     // A statically-known MULTI-parameter loss (arity > 1) can only be
     // differentiated at a COLLECTION point — its N coordinates unpacked into N
     // scalar args — never at a scalar. Emitting the 1-arg scalar path for it
