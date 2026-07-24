@@ -35,6 +35,8 @@
          make-h2-hamiltonian
          make-lih-hamiltonian
          make-h2o-hamiltonian
+         make-pauli-hamiltonian
+         vqe-qgt
          hamiltonian-destroy!
          hamiltonian-exact-ground-energy
          vqe-optimize
@@ -65,6 +67,10 @@
 (extern i64    vqe-make-h2-hamiltonian-raw  double        :real eshkol_vqe_make_h2_hamiltonian)
 (extern i64    vqe-make-lih-hamiltonian-raw double        :real eshkol_vqe_make_lih_hamiltonian)
 (extern i64    vqe-make-h2o-hamiltonian-raw              :real eshkol_vqe_make_h2o_hamiltonian)
+(extern i64    vqe-pauli-create-raw   i32 i32 double i32 :real eshkol_vqe_pauli_create)
+(extern i32    vqe-pauli-add-term-raw  i64 i32 double ptr :real eshkol_vqe_pauli_add_term)
+(extern i64    vqe-qgt-compute-raw i64 double double double double :real eshkol_vqe_qgt_compute)
+(extern double vqe-qgt-get-raw     i64 i64 :real eshkol_vqe_qgt_get)
 (extern void   hamiltonian-destroy-raw      i64           :real eshkol_vqe_hamiltonian_destroy)
 (extern double hamiltonian-exact-energy-raw i64           :real eshkol_vqe_hamiltonian_exact_ground_energy)
 (extern double vqe-optimize-raw             i64 i32       :real eshkol_vqe_optimize)
@@ -227,6 +233,42 @@
   (capability-require! 'ffi 'make-lih-hamiltonian)
   (check-hamiltonian-handle! "make-lih-hamiltonian"
                             (vqe-make-lih-hamiltonian-raw bond-distance)))
+
+(define (make-pauli-hamiltonian num-qubits pauli-strings coeffs nuc hf-reference)
+  "Create an N-qubit Pauli Hamiltonian from parallel vectors PAULI-STRINGS
+   (e.g. #(\"II\" \"IZ\" \"ZI\" \"ZZ\" \"XX\")) and COEFFS, with nuclear-repulsion
+   `nuc` and Hartree-Fock reference occupation bitmask `hf-reference` (e.g. #x2
+   for the H2 minimal basis).  Generalises past the fixed 5-term H2 form to any
+   qubit count and any Pauli strings -- it is Moonlab's pauli_hamiltonian_create
+   + pauli_hamiltonian_add_term surfaced to Scheme.  Returns an opaque
+   Hamiltonian handle; release it with hamiltonian-destroy!."
+  (capability-require! 'ffi 'make-pauli-hamiltonian)
+  (let* ((n (vector-length coeffs))
+         (h (check-hamiltonian-handle!
+             "make-pauli-hamiltonian"
+             (vqe-pauli-create-raw num-qubits n nuc hf-reference))))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vqe-pauli-add-term-raw h i (vector-ref coeffs i) (vector-ref pauli-strings i))
+            (loop (+ i 1)))
+          #f))
+    h))
+
+(define (vqe-qgt ham params)
+  "Quantum geometric (Fubini-Study) tensor of the default 4-parameter ansatz at
+   `params` (a length-4 vector).  Returns a 4x4 metric as a vector of 4 row
+   vectors, or raises on failure."
+  (capability-require! 'ffi 'vqe-qgt)
+  (let ((n (vqe-qgt-compute-raw ham (vector-ref params 0) (vector-ref params 1)
+                                    (vector-ref params 2) (vector-ref params 3))))
+    (if (< n 0)
+        (error (string-append "vqe-qgt failed: " (quantum-last-error)))
+        (vector
+          (vector (vqe-qgt-get-raw 0 0) (vqe-qgt-get-raw 0 1) (vqe-qgt-get-raw 0 2) (vqe-qgt-get-raw 0 3))
+          (vector (vqe-qgt-get-raw 1 0) (vqe-qgt-get-raw 1 1) (vqe-qgt-get-raw 1 2) (vqe-qgt-get-raw 1 3))
+          (vector (vqe-qgt-get-raw 2 0) (vqe-qgt-get-raw 2 1) (vqe-qgt-get-raw 2 2) (vqe-qgt-get-raw 2 3))
+          (vector (vqe-qgt-get-raw 3 0) (vqe-qgt-get-raw 3 1) (vqe-qgt-get-raw 3 2) (vqe-qgt-get-raw 3 3))))))
 
 (define (make-h2o-hamiltonian)
   "Create Moonlab's fixed-geometry H2O/STO-3G Pauli Hamiltonian."

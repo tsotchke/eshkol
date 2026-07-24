@@ -4288,6 +4288,49 @@ static AdTape* vm_ad_tape_from_value(VM* vm, Value tape_val) {
  *   (c) anything else -> clean VM error (vm->error = 1), no fabricated
  *       value, no crash.
  */
+/* #322: measure the row-major (leftmost-spine) shape of a possibly-nested
+ * numeric vector, so a nested vector literal like #(#(1 2) #(3 4)) can be
+ * coerced to an N-D tensor exactly as the native reader materializes it (a
+ * nested numeric literal IS a tensor natively). Walks element[0] down each
+ * nesting level, recording each vector length as one dimension. Returns the
+ * rank (>= 1), or -1 if it nests deeper than VM_TENSOR_MAX_DIMS. The result
+ * is only a candidate shape; vm_vec_fill validates rectangularity. */
+static int vm_vec_shape(VM* vm, Value v, int64_t* shape, int max_dims) {
+    int rank = 0;
+    while (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!vec) return -1;
+        if (rank >= max_dims) return -1;
+        shape[rank++] = vec->len;
+        if (vec->len <= 0) break;   /* empty level: no deeper spine to follow */
+        v = vec->items[0];
+    }
+    return rank;
+}
+
+/* #322: recursively flatten a nested numeric vector into `out` in row-major
+ * order, validating it against `shape[depth..rank)`. A ragged sub-vector
+ * (length != shape[depth]) or a non-numeric leaf is a clean failure (returns
+ * -1), matching native's "nested vector shape mismatch" rejection. `*pos` is
+ * the write cursor; `cap` guards the destination buffer. */
+static int vm_vec_fill(VM* vm, Value v, const int64_t* shape, int depth, int rank,
+                       double* out, int64_t* pos, int64_t cap) {
+    if (depth == rank) {
+        if (v.type != VAL_INT && v.type != VAL_FLOAT) return -1;
+        if (*pos >= cap) return -1;
+        out[(*pos)++] = as_number(v);
+        return 0;
+    }
+    if (v.type != VAL_VECTOR || !is_valid_heap_ptr(vm, v.as.ptr)) return -1;
+    VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+    if (!vec || (int64_t)vec->len != shape[depth]) return -1;   /* ragged */
+    for (int i = 0; i < vec->len; i++) {
+        if (vm_vec_fill(vm, vec->items[i], shape, depth + 1, rank, out, pos, cap) != 0)
+            return -1;
+    }
+    return 0;
+}
+
 static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
@@ -4297,19 +4340,50 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
         VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
         if (!vec) return NULL;
+
+        /* Fast path: a flat homogeneous numeric vector -> a fresh 1-D tensor. */
+        int all_numeric = 1;
         for (int i = 0; i < vec->len; i++) {
             if (vec->items[i].type != VAL_INT && vec->items[i].type != VAL_FLOAT) {
-                fprintf(stderr, "ERROR: %s: vector operand must be numeric (element %d is not a number)\n",
-                        op_name ? op_name : "tensor-op", i);
-                vm->error = 1;
-                return NULL;
+                all_numeric = 0;
+                break;
             }
         }
-        int64_t shape1[1] = { vec->len };
-        VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
-        if (!t) return NULL;
-        for (int i = 0; i < vec->len; i++) t->data[i] = as_number(vec->items[i]);
-        return t;
+        if (all_numeric) {
+            int64_t shape1[1] = { vec->len };
+            VmTensor* t = vm_tensor_new(&vm->heap.regions, shape1, 1);
+            if (!t) return NULL;
+            for (int i = 0; i < vec->len; i++) t->data[i] = as_number(vec->items[i]);
+            return t;
+        }
+
+        /* #322: a nested numeric vector (#(#(1 2) #(3 4)) ...) coerces to an
+         * N-D tensor, mirroring native, where such a reader literal already IS
+         * a rank-N tensor. Rectangular required; ragged nesting is an error. */
+        int64_t shape[VM_TENSOR_MAX_DIMS];
+        int rank = vm_vec_shape(vm, v, shape, VM_TENSOR_MAX_DIMS);
+        if (rank >= 2) {
+            int64_t total = 1;
+            for (int i = 0; i < rank; i++) total *= shape[i];
+            VmTensor* t = (total > 0) ? vm_tensor_new(&vm->heap.regions, shape, rank) : NULL;
+            if (t) {
+                int64_t pos = 0;
+                if (vm_vec_fill(vm, v, shape, 0, rank, t->data, &pos, total) == 0 &&
+                    pos == total) {
+                    return t;
+                }
+            }
+            fprintf(stderr, "ERROR: %s: nested vector shape mismatch "
+                            "(operand must be a rectangular numeric tensor)\n",
+                    op_name ? op_name : "tensor-op");
+            vm->error = 1;
+            return NULL;
+        }
+
+        fprintf(stderr, "ERROR: %s: vector operand must be numeric (element 0 is not a number)\n",
+                op_name ? op_name : "tensor-op");
+        vm->error = 1;
+        return NULL;
     }
     fprintf(stderr, "ERROR: %s: expected a tensor or numeric vector operand\n",
             op_name ? op_name : "tensor-op");
