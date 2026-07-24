@@ -58,11 +58,20 @@
 (display ": complete low-level AD operation surface")
 (newline)
 
-(define rg (reverse-gradient
-             (lambda (a b) (+ (* a a) (* b b)))
-             '(1.0 1.0)))
-(display (if (tensor? rg) "PASS" "FAIL"))
-(display ": reverse-gradient returns one component per input")
+;; Low-level reverse-mode gradient of f(a,b)=a^2+b^2 at (1,1) built directly on
+;; the tape: seed a,b as variables, record the graph, one backward sweep, then
+;; read each input's adjoint.  Expected grad = (2a, 2b) = (2, 2).  (The former
+;; high-level `reverse-gradient` convenience is exercised on the VM / via the
+;; `gradient` surface; here we assert the low-level tape primitives that are
+;; public on every substrate.)
+(define rt (ad-tape-new))
+(define ra (ad-var rt 1.0))
+(define rb (ad-var rt 1.0))
+(define rf (ad-add rt (ad-mul rt ra ra) (ad-mul rt rb rb)))
+(ad-backward rt rf)
+(display (if (and (= (ad-gradient rt ra) 2.0) (= (ad-gradient rt rb) 2.0))
+             "PASS" "FAIL"))
+(display ": low-level tape reverse-mode gradient = (2a, 2b)")
 (newline)
 
 (ad-tape-release tape)
