@@ -1,0 +1,21 @@
+;; ESH-0360 — jacobian / divergence / curl SIGSEGV at a (list ...) point.
+;; Found by the P8 escape-closure binding-form generator on master 5cb02c8a.
+;;
+;; The differentiation POINT built with (list ...) crashes all three
+;; vector-field AD operators. The identical point as #(...) / (vector ...) /
+;; (tensor ...) / a VAR bound to a vector / let-bound / function-return /
+;; (the (vector any) ...) is correct, AND gradient/hessian/laplacian at a
+;; (list ...) point are correct. The #343 cons->svec point normalization was
+;; applied to the scalar-output operators but not to jacobian/divergence/curl.
+;;
+;; Expected (per the working (vector ...) forms): jacobian = diag(1.5 2.0 2.5),
+;; divergence = 6.0, curl = #(0 0 0). Actual: SIGSEGV (exit 139).
+;; UNFIXED — tracked, reported. Do not "fix" by deleting this repro.
+(define (F v)
+  (vector (* 1.5 (vector-ref v 0))
+          (* 2.0 (vector-ref v 1))
+          (* 2.5 (vector-ref v 2))))
+
+(display "vector-point jacobian: ") (display (jacobian F (vector 1.0 2.0 3.0))) (newline)
+(display "list-point jacobian:   ") (display (jacobian F (list 1.0 2.0 3.0)))   (newline)  ;; SIGSEGV here
+(display "reached-end") (newline)
