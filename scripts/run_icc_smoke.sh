@@ -600,6 +600,20 @@ probe qllm_backward_gradcheck \
      [ "$rc" -eq 0 ] || exit 1;
      printf "%s" "$out" | grep -q "Results: 2 passed, 0 failed"'
 
+# ───────────────────────────────────────────────────────────────────
+# WASM execute-and-diff: Eshkol-compiled WASM output must byte-match
+# native. scripts/run_wasm_differential.sh builds the bytecode VM to
+# WebAssembly (Emscripten) and diffs its executed stdout against
+# `eshkol-run -r` over the VM-supported subset. Requires emcc + node; on
+# hosts without them the lane exits 77 (SKIP) which this probe treats as
+# a visible pass-with-skip (never a silent skip: the lane prints why).
+# Writes its own kind:"wasm_parity" trace consumed by the
+# wasm-execute-diff completion oracle.
+# ───────────────────────────────────────────────────────────────────
+probe wasm_execute_diff_oracle \
+    'WASM execute-and-diff: bytecode VM compiled to WebAssembly executes the VM-supported corpus under node and its stdout byte-matches native `eshkol-run -r` (float text RAW; vm-parity newline normalization) — SKIP (77) when emcc/node absent' \
+    'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_wasm_differential.sh --quick; rc=$?; [ "$rc" -eq 0 ] || [ "$rc" -eq 77 ]'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
