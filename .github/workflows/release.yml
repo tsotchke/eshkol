@@ -896,12 +896,200 @@ jobs:
           path: ${{ runner.temp }}\eshkol-${{ env.RELEASE_TAG }}-${{ matrix.name }}.zip
           if-no-files-found: error
 
+  # Release-blocking readiness gate (ADR-0010 section 2.5; closes AR1 gap A5).
+  # Regenerates the oracle evidence AT THE TAGGED SHA and runs the canonical
+  # v1.3-evolve readiness check. `publish-release` needs this job, so no asset
+  # is published on a real tag push unless ICC certifies ready/100. This turns
+  # "readiness=100" from a workstation verdict into a property of the released
+  # artifact.
+  #
+  # Event handling:
+  #   push (real tag)         -> BLOCKING: any verdict but ready/100 fails the
+  #                             job and, via `needs`, blocks publish-release.
+  #   workflow_dispatch (dry) -> ADVISORY: never publishes anything, so an
+  #                             unready verdict or a missing ICC is a loud
+  #                             warning, not a hard failure. This is not a
+  #                             fail-open: the dry-run ships no artifact.
+  #
+  # ICC provisioning: the ICC binary is not on stock GitHub runners. Set the
+  # ICC_BIN repository variable to a provisioned ICC install (self-hosted or a
+  # runner that installs it) and register the checkout under ICC_REPO. On a
+  # real tag push, if ICC is unavailable the gate emits a loud error and BLOCKS
+  # — it never fail-opens to a green publish. See CONTRIBUTING.md
+  # "Release-blocking readiness".
+  release-readiness-gate:
+    name: release-readiness-gate
+    runs-on: ubuntu-22.04
+    env:
+      # Name intentionally distinct from ICC_BIN: the resolved binary path is
+      # published to $GITHUB_ENV as ICC_BIN by the resolve step below, and a
+      # job-level env of the same name would shadow that write in later steps.
+      ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
+      ICC_REPO: ${{ vars.ICC_REPO || 'eshkol_lang' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      # Resolve ICC FIRST so a runner without it decides fast, before spending
+      # ~20 min on a build it could never certify. On a real tag push, absence
+      # of the oracle is a blocked release, never a green one.
+      - name: Resolve ICC binary (block on push, never fail-open)
+        shell: bash
+        run: |
+          set -uo pipefail
+          ICC_BIN="${ICC_BIN_OVERRIDE:-$HOME/Desktop/infinite_context_coder/bin/icc}"
+          if [[ -n "$ICC_BIN" && -x "$ICC_BIN" ]]; then
+            echo "ICC_BIN=$ICC_BIN" >> "$GITHUB_ENV"
+            echo "ICC_AVAILABLE=true" >> "$GITHUB_ENV"
+            "$ICC_BIN" --version || true
+            exit 0
+          fi
+          echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
+          msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            echo "::error title=Release readiness gate: ICC unavailable::$msg Publication is BLOCKED (never fail-open)."
+            exit 1
+          fi
+          echo "::warning title=Readiness gate skipped (dry-run)::$msg This non-publishing dry-run continues; a real tag push would be BLOCKED here."
+
+      - name: Add LLVM Repository (Linux)
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          apt_update() {
+            for attempt in 1 2 3; do
+              if sudo apt-get update -o Acquire::Retries=5; then
+                return 0
+              fi
+              sudo rm -rf /var/lib/apt/lists/*
+              sleep $((attempt * 15))
+            done
+            sudo apt-get update -o Acquire::Retries=5
+          }
+          apt_update
+
+      - name: Install Dependencies (Linux)
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config \
+            libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev \
+            libpng-dev libjpeg-dev libwebp-dev \
+            git python3 jq
+          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
+          ld.lld --version
+
+      - name: Configure and build (readiness evidence)
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG" \
+            -DESHKOL_BUILD_TESTS=ON \
+            -DESHKOL_BUILD_AGENT_FFI=ON
+          # Full build: run_vm_parity.sh needs the VM standalone binary, and it
+          # is the canonical test_result emitter the dispatch-table invariant
+          # consumes — without it architecture-verify false-FAILs.
+          cmake --build build --parallel
+
+      # Regenerate the oracle evidence at the tagged SHA (the readiness recipe's
+      # trace-emitting steps): language-surface coverage, then VM parity.
+      - name: Emit evidence traces
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          scripts/run_language_coverage.sh
+          scripts/run_vm_parity.sh
+
+      # Register the checkout so --repo resolves, then run the incident-class
+      # architecture invariants and emit the architecture_model event the
+      # readiness oracle reads.
+      - name: ICC architecture-verify
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          "$ICC_BIN" index --repo "$ICC_REPO"
+          "$ICC_BIN" architecture-verify \
+            --repo "$ICC_REPO" \
+            --model .icc/architecture-model.yaml \
+            --trace-dir scripts/icc_traces \
+            --emit-trace
+
+      # The gate. run_v1_3_readiness.sh refreshes the smoke trace, asks ICC for
+      # trace-aware v1.3-evolve readiness, and exits nonzero unless status ==
+      # ready. The explicit re-read then asserts score == 100 so the gate is
+      # literally "ready/100"; a wrong/absent score field leaves the canonical
+      # status check as the sole bar (never a spurious block). On a tag push an
+      # unready verdict blocks publication; on a dry-run it is advisory.
+      - name: ICC readiness gate (fail unless ready/100 on tag push)
+        if: env.ICC_AVAILABLE == 'true'
+        shell: bash
+        run: |
+          set -uxo pipefail
+          block=0
+          [[ "${GITHUB_EVENT_NAME}" == "push" ]] && block=1
+
+          verdict() {
+            # verdict "<message>"  -> error+exit on push, warning on dry-run
+            if [[ "$block" == 1 ]]; then
+              echo "::error title=Release blocked::$1"
+              exit 1
+            fi
+            echo "::warning title=Readiness (advisory on dry-run)::$1"
+          }
+
+          if ! scripts/run_v1_3_readiness.sh; then
+            verdict "scripts/run_v1_3_readiness.sh reported v1.3-evolve is not ready."
+          fi
+
+          readiness_json="$(mktemp)"
+          "$ICC_BIN" readiness \
+            --repo "$ICC_REPO" \
+            --target v1.3-evolve \
+            --trace-dir scripts/icc_traces \
+            --format json > "$readiness_json"
+          status="$(jq -r '.status // ""' "$readiness_json")"
+          score="$(jq -r '.score // .readiness // empty' "$readiness_json")"
+          echo "v1.3-evolve readiness: status=$status score=${score:-<none>}"
+
+          if [[ "$status" != "ready" ]]; then
+            verdict "v1.3-evolve readiness is '$status', expected 'ready'."
+          fi
+          if [[ -n "$score" && "$score" != "100" ]]; then
+            verdict "v1.3-evolve readiness score is '$score', expected 100."
+          fi
+
+      - name: Upload readiness evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-readiness-evidence
+          path: |
+            scripts/icc_traces/
+            .icc/runtime-traces/
+            .icc/runtime-traces-oracle-view/
+          if-no-files-found: ignore
+
   publish-release:
     name: publish-release
     runs-on: ubuntu-22.04
     needs:
       - unix-release-matrix
       - windows-release-matrix
+      - release-readiness-gate
 
     steps:
       - uses: actions/checkout@v6
