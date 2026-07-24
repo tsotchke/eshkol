@@ -3536,6 +3536,93 @@ static bool adAstUsesTensorOps(
     }
 }
 
+// #340: named pair/list operators that route a value THROUGH a cons cell — a
+// value built into a pair with `cons`/`list`… and/or read back with a
+// `car`/`cdr`-family accessor. A (vector …)/(list …)-constructed differentiation
+// point (HEAP_SUBTYPE_VECTOR) otherwise takes the forward-mode dual scheme-
+// vector path, where a DUAL_NUMBER-tagged element stored into a cons slot is
+// read back with that slot's int64/double accessor — which REJECTS the dual tag
+// (arena_tagged_cons_get_int64: "non-int-storage cell (type=6)"), silently drops
+// that tangent, and returns a wrong gradient (e.g. (+ (car pr) (cdr pr)) over
+// (cons x (* x x)) loses the (* x x) contribution → gradient 1 instead of 7).
+static bool adNameIsConsRouting(const char* n) {
+    if (!n) return false;
+    static const char* kPairOps[] = {
+        "cons", "cons*", "list", "list*", "append",
+        "car", "cdr",
+        "caar", "cadr", "cdar", "cddr",
+        "caaar", "caadr", "cadar", "caddr", "cdaar", "cdadr", "cddar", "cdddr",
+        "cadddr", "cddddr",
+        "first", "second", "third", "fourth", "fifth", "rest",
+        "list-ref", "list-tail", "set-car!", "set-cdr!",
+    };
+    for (const char* p : kPairOps)
+        if (std::strcmp(n, p) == 0) return true;
+    return false;
+}
+
+// Does the differentiated body route tracked values through a cons cell (see
+// adNameIsConsRouting)? If so, a (vector …)/(list …) point must be seeded on the
+// REVERSE-mode tape — which carries AD-node pointers through cons cells intact
+// (a #(…)/(tensor …) point already proves this), rather than the forward-mode
+// dual path that drops the tangent. Detection mirrors adAstUsesTensorOps: union
+// access for CALL/IF/COND, one layer of named-function indirection through
+// `bodies`, and a conservative default (unhandled forms → false).
+static bool adAstRoutesThroughCons(
+        const eshkol_ast_t* ast,
+        const std::unordered_map<std::string, const eshkol_ast_t*>* bodies = nullptr,
+        std::unordered_set<std::string>* visited = nullptr,
+        int depth = 0) {
+    if (!ast) return false;
+    if (ast->type == ESHKOL_CONS) {
+        return adAstRoutesThroughCons(ast->cons_cell.car, bodies, visited, depth) ||
+               adAstRoutesThroughCons(ast->cons_cell.cdr, bodies, visited, depth);
+    }
+    if (ast->type != ESHKOL_OP) return false;
+    const eshkol_operations_t* op = &ast->operation;
+    switch (op->op) {
+        case ESHKOL_CALL_OP:
+        case ESHKOL_IF_OP:
+        case ESHKOL_COND_OP: {
+            const eshkol_ast_t* f = op->call_op.func;
+            if (f && f->type == ESHKOL_VAR && adNameIsConsRouting(f->variable.id)) return true;
+            // Follow a call into a user-defined function's body (like ESH-0235).
+            if (bodies && visited && depth < 8 && f && f->type == ESHKOL_VAR && f->variable.id &&
+                !visited->count(f->variable.id)) {
+                auto it = bodies->find(f->variable.id);
+                if (it != bodies->end()) {
+                    visited->insert(f->variable.id);
+                    if (adAstRoutesThroughCons(it->second, bodies, visited, depth + 1)) return true;
+                }
+            }
+            if (f && adAstRoutesThroughCons(f, bodies, visited, depth)) return true;
+            for (uint64_t i = 0; i < op->call_op.num_vars; i++)
+                if (adAstRoutesThroughCons(&op->call_op.variables[i], bodies, visited, depth)) return true;
+            return false;
+        }
+        case ESHKOL_SEQUENCE_OP:
+        case ESHKOL_AND_OP:
+        case ESHKOL_OR_OP:
+            for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++)
+                if (adAstRoutesThroughCons(&op->sequence_op.expressions[i], bodies, visited, depth)) return true;
+            return false;
+        case ESHKOL_LET_OP:
+        case ESHKOL_LET_STAR_OP:
+        case ESHKOL_LETREC_OP:
+        case ESHKOL_LETREC_STAR_OP: {
+            for (uint64_t i = 0; i < op->let_op.num_bindings; i++)
+                if (adAstRoutesThroughCons(&op->let_op.bindings[i], bodies, visited, depth)) return true;
+            return adAstRoutesThroughCons(op->let_op.body, bodies, visited, depth);
+        }
+        case ESHKOL_LAMBDA_OP:
+            return adAstRoutesThroughCons(op->lambda_op.body, bodies, visited, depth);
+        case ESHKOL_DEFINE_OP:
+            return adAstRoutesThroughCons(op->define_op.value, bodies, visited, depth);
+        default:
+            return false;
+    }
+}
+
 // Elementwise arithmetic operators whose whole-tensor form the reverse-mode
 // tensor tape records as AD nodes (tensor_arith_codegen.cpp's AD path handles
 // exactly +,-,*,/). Applied to a whole vector these produce a tensor-shaped
@@ -5266,8 +5353,42 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         (grad_arity_early <= 1) &&
         adArity1WholePointTensorBody(op->gradient_op.function, function_body_ast_,
                                      grad_body_key, grad_fallback_param);
+    // #340: an arity-1 loss that routes tracked values through a cons cell drops
+    // its tangent on the forward-mode dual scheme-vector path (a DUAL_NUMBER slot
+    // is read back with an int/double accessor → silent-wrong gradient). The
+    // reverse-mode tape carries AD nodes through cons cells intact, so route a
+    // (vector …)/(list …) point through it as well — identical treatment to the
+    // tensor-op / whole-point-arith cases above and to a #(…)/(tensor …) point
+    // (which already succeeds because it lowers to the reverse path). Scanned on
+    // the source AST, following one layer of named-function indirection, exactly
+    // like grad_fn_uses_tensors below.
+    std::unordered_set<std::string> grad_cons_visited;
+    bool grad_fn_routes_cons =
+        (grad_arity_early <= 1) &&
+        adAstRoutesThroughCons(op->gradient_op.function, function_body_ast_, &grad_cons_visited);
+    if (!grad_fn_routes_cons && (grad_arity_early <= 1) &&
+        op->gradient_op.function->type == ESHKOL_VAR) {
+        const eshkol_ast_t* cbody = nullptr;
+        std::string ckey = func_ptr->getName().str();
+        auto crv = ckey.rfind("__rv");
+        if (crv != std::string::npos && crv + 4 < ckey.size() &&
+            ckey.find_first_not_of("0123456789", crv + 4) == std::string::npos) {
+            ckey.erase(crv);
+        }
+        if (function_body_ast_) {
+            auto cit = function_body_ast_->find(ckey);
+            if (cit == function_body_ast_->end())
+                cit = function_body_ast_->find(op->gradient_op.function->variable.id);
+            if (cit != function_body_ast_->end()) cbody = cit->second;
+        }
+        grad_cons_visited.clear();
+        if (cbody)
+            grad_fn_routes_cons =
+                adAstRoutesThroughCons(cbody, function_body_ast_, &grad_cons_visited);
+    }
     bool grad_vec_point_reverse =
-        (grad_arity_early <= 1) && (grad_fn_uses_tensors || grad_fn_arith_whole_point);
+        (grad_arity_early <= 1) &&
+        (grad_fn_uses_tensors || grad_fn_arith_whole_point || grad_fn_routes_cons);
 
     // Extract type from input (may be DOUBLE, INT64, TENSOR_PTR, or AD_NODE_PTR for nested gradients)
     Value* input_type = tagged_.getType(vector_val);
@@ -8693,34 +8814,99 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // machine-precision second derivatives, but central differences are
     // the current architectural baseline for second-order ops.
     //
-    // We detect "scalar" by checking if the AST point node is a plain
-    // number (VAR, NUM, or OP returning scalar) rather than a tensor/vector
-    // literal. This is sound because the parser distinguishes tensor
-    // literals (#(...)) from scalar expressions at parse time.
+    // Classify the differentiation POINT: scalar (f: R→R) vs collection
+    // (f: R^n→R). This CANNOT be read off the AST node kind alone — a VARIABLE,
+    // a general call, or a (the …) wrapper can hold EITHER a scalar or a
+    // vector/list at runtime. So decide the PROVABLE cases at compile time and
+    // defer the AMBIGUOUS ones to a RUNTIME check on the evaluated value's tag,
+    // exactly as gradient() does with rt_point_is_scalar (#339). Previously a VAR
+    // bound to a vector was hard-classified scalar; the vector pointer was then
+    // read as a double and f was called with a scalar where it expected a vector
+    // → SIGSEGV. The identical point written as a #(…) literal or an inline
+    // (vector …) already worked because those are provable COLLECTIONS at the AST
+    // level — the divergence was the AST-kind test, not the value.
+    const eshkol_ast_t* hpoint = op->hessian_op.point;
+    bool hess_ast_collection = (hpoint->type == ESHKOL_TENSOR);
+    // ESH-0095: a (tensor …) op is a collection point, not a scalar.
+    if (hpoint->type == ESHKOL_OP && hpoint->operation.op == ESHKOL_TENSOR_OP)
+        hess_ast_collection = true;
+    if (hpoint->type == ESHKOL_OP && hpoint->operation.op == ESHKOL_CALL_OP &&
+        hpoint->operation.call_op.func &&
+        hpoint->operation.call_op.func->type == ESHKOL_VAR) {
+        const char* fn = hpoint->operation.call_op.func->variable.id;
+        if (fn && (std::strcmp(fn, "vector") == 0 || std::strcmp(fn, "list") == 0))
+            hess_ast_collection = true;
+    }
+    // Provably scalar: a numeric literal, or a point the callback already lowered
+    // to a raw double / raw int (a pure scalar expression). Everything else that
+    // is not a provable collection — VAR, general call, general op, (the …) — is
+    // decided at runtime.
+    bool hess_ast_scalar_lit =
+        (hpoint->type == ESHKOL_INT64 || hpoint->type == ESHKOL_DOUBLE) ||
+        typed_raw_->getType()->isDoubleTy() ||
+        (typed_raw_->getType()->isIntegerTy(64) && hpoint->type != ESHKOL_TENSOR);
+    // A statically-known MULTI-parameter loss (arity > 1) can only be
+    // differentiated at a COLLECTION point — its N coordinates unpacked into N
+    // scalar args — never at a scalar. Emitting the 1-arg scalar path for it
+    // would be invalid IR ("Incorrect number of arguments passed to called
+    // function"), so such a loss must skip the scalar dispatch and go straight to
+    // the vector/multi-param path. (This also FIXES multi-param Hessian at a VAR
+    // point, which the old AST-kind test mis-sent to the invalid 1-arg scalar
+    // path.)
+    uint64_t hess_known_arity = 0;
+    if (func_ptr && function_arity_table_) {
+        std::string akey = func_ptr->getName().str();
+        auto arv = akey.rfind("__rv");
+        if (arv != std::string::npos && arv + 4 < akey.size() &&
+            akey.find_first_not_of("0123456789", arv + 4) == std::string::npos)
+            akey.erase(arv);
+        auto ait = function_arity_table_->find(akey);
+        if (ait != function_arity_table_->end()) hess_known_arity = ait->second;
+        hess_known_arity = adResolveValueArity(func_ptr, hess_known_arity);
+    }
+    bool hess_multi_param = (hess_known_arity > 1);
+    bool hess_rt_dispatch =
+        !hess_ast_collection && !hess_ast_scalar_lit && !hess_multi_param;
+
+    // Runtime-dispatch plumbing (only used when hess_rt_dispatch): a result slot
+    // and a common exit block into which BOTH the scalar and the vector/tensor
+    // computations store their tagged result. hess_vec_entry_bb is the block the
+    // not-scalar runtime edge falls into (the head of the vector/tensor path).
+    llvm::AllocaInst* hess_rt_slot = nullptr;
+    llvm::BasicBlock* hess_rt_done = nullptr;
+    llvm::BasicBlock* hess_vec_entry_bb = nullptr;
     {
-        bool is_scalar_input = (op->hessian_op.point->type == ESHKOL_INT64 ||
-                                op->hessian_op.point->type == ESHKOL_DOUBLE ||
-                                op->hessian_op.point->type == ESHKOL_VAR ||
-                                (op->hessian_op.point->type == ESHKOL_OP &&
-                                 op->hessian_op.point->operation.op != ESHKOL_CALL_OP));
-        // Also check: not a tensor literal, not a vector constructor
-        if (op->hessian_op.point->type == ESHKOL_TENSOR) is_scalar_input = false;
-        // ESH-0095: a (tensor ...) op is a COLLECTION point, not a scalar. The
-        // catch-all "OP && op != CALL_OP" above wrongly marked it scalar, so the
-        // tensor pointer was read as a double and f was called with a scalar
-        // where it expected a vector → SIGSEGV.
-        if (op->hessian_op.point->type == ESHKOL_OP &&
-            op->hessian_op.point->operation.op == ESHKOL_TENSOR_OP) is_scalar_input = false;
-        if (op->hessian_op.point->type == ESHKOL_OP &&
-            op->hessian_op.point->operation.op == ESHKOL_CALL_OP &&
-            op->hessian_op.point->operation.call_op.func &&
-            op->hessian_op.point->operation.call_op.func->type == ESHKOL_VAR) {
-            const char* fn = op->hessian_op.point->operation.call_op.func->variable.id;
-            if (fn && (strcmp(fn, "vector") == 0 || strcmp(fn, "list") == 0))
-                is_scalar_input = false;
+        // provably scalar (and not a known multi-param loss) → scalar path
+        bool do_scalar = hess_ast_scalar_lit && !hess_multi_param;
+
+        if (hess_rt_dispatch) {
+            Function* cur = ctx_.builder().GetInsertBlock()->getParent();
+            Value* rt_tagged;
+            if (typed_raw_->getType() == ctx_.taggedValueType())      rt_tagged = typed_raw_;
+            else if (typed_raw_->getType()->isDoubleTy())             rt_tagged = tagged_.packDouble(typed_raw_);
+            else if (typed_raw_->getType()->isIntegerTy(64))          rt_tagged = tagged_.packInt64(typed_raw_, true);
+            else                                                      rt_tagged = typed_raw_;
+            Value* rt_base = tagged_.getBaseType(tagged_.getType(rt_tagged));
+            Value* rt_is_d = ctx_.builder().CreateICmpEQ(rt_base,
+                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
+            Value* rt_is_i = ctx_.builder().CreateICmpEQ(rt_base,
+                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
+            Value* rt_is_du = ctx_.builder().CreateICmpEQ(rt_base,
+                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
+            Value* rt_is_scalar = ctx_.builder().CreateOr(
+                ctx_.builder().CreateOr(rt_is_d, rt_is_i), rt_is_du);
+
+            llvm::IRBuilder<> eb(&cur->getEntryBlock(), cur->getEntryBlock().begin());
+            hess_rt_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "hess_rt_result");
+            hess_rt_done = BasicBlock::Create(ctx_.context(), "hess_rt_done", cur);
+            BasicBlock* hess_scalar_bb = BasicBlock::Create(ctx_.context(), "hess_rt_scalar", cur);
+            hess_vec_entry_bb = BasicBlock::Create(ctx_.context(), "hess_rt_vector", cur);
+            ctx_.builder().CreateCondBr(rt_is_scalar, hess_scalar_bb, hess_vec_entry_bb);
+            ctx_.builder().SetInsertPoint(hess_scalar_bb);
+            do_scalar = true;
         }
 
-        if (is_scalar_input) {
+        if (do_scalar) {
             eshkol_info("Hessian: scalar input detected, using f''(x) formula");
 
             // Try to get a direct Function* for scalar hessian (avoids PHI issues with repeated calls).
@@ -8772,9 +8958,19 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
 
             Value* fres_dual = safeUnpackDualFromTagged(fres);
             Value* result = dualField(ctx_, fres_dual, 3);   // f''(x) = mixed term
-            return tagged_.packDouble(result);
+            Value* hess_scalar_res = tagged_.packDouble(result);
+            if (hess_rt_dispatch) {
+                ctx_.builder().CreateStore(hess_scalar_res, hess_rt_slot);
+                ctx_.builder().CreateBr(hess_rt_done);
+            } else {
+                return hess_scalar_res;
+            }
         }
     }
+
+    // On the not-scalar runtime edge, resume in the vector/tensor entry block.
+    if (hess_rt_dispatch)
+        ctx_.builder().SetInsertPoint(hess_vec_entry_bb);
 
     // ── VECTOR/TENSOR HESSIAN ───────────────────────────────────────────
 
@@ -8905,7 +9101,14 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
                 }
             }
             Value* mp_int = ctx_.builder().CreatePtrToInt(mp_res, ctx_.int64Type());
-            return tagged_.packPtr(mp_int, ESHKOL_VALUE_HEAP_PTR);
+            Value* hess_mp_ret = tagged_.packPtr(mp_int, ESHKOL_VALUE_HEAP_PTR);
+            if (hess_rt_dispatch) {
+                ctx_.builder().CreateStore(hess_mp_ret, hess_rt_slot);
+                ctx_.builder().CreateBr(hess_rt_done);
+                ctx_.builder().SetInsertPoint(hess_rt_done);
+                return ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_rt_slot);
+            }
+            return hess_mp_ret;
         }
     }
 
@@ -8920,9 +9123,23 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
 
     BasicBlock* hess_heap_dispatch = BasicBlock::Create(ctx_.context(), "hess_heap_dispatch", current_func);
     BasicBlock* hess_check_legacy = BasicBlock::Create(ctx_.context(), "hess_check_legacy", current_func);
+    BasicBlock* hess_check_cons = BasicBlock::Create(ctx_.context(), "hess_check_cons", current_func);
+    BasicBlock* hess_list_to_svec = BasicBlock::Create(ctx_.context(), "hess_list_to_svec", current_func);
     BasicBlock* hess_scheme_vector_input = BasicBlock::Create(ctx_.context(), "hess_scheme_vector", current_func);
     BasicBlock* hess_tensor_input = BasicBlock::Create(ctx_.context(), "hess_tensor_input", current_func);
     BasicBlock* hess_merge_input = BasicBlock::Create(ctx_.context(), "hess_merge_input", current_func);
+
+    // The scheme-vector path reads the point through this slot so a (list …)
+    // point can be normalized to a Scheme vector before it (mirrors gradient's
+    // grad_list_to_svec). Without the normalization a HEAP_SUBTYPE_CONS point
+    // fell through to the tensor path and its cons cell was misread as
+    // [length][elems] → SIGSEGV.
+    llvm::AllocaInst* hess_input_slot;
+    {
+        llvm::IRBuilder<> hb(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        hess_input_slot = hb.CreateAlloca(ctx_.taggedValueType(), nullptr, "hess_input_pt");
+    }
+    ctx_.builder().CreateStore(vector_val, hess_input_slot);
 
     // First check for HEAP_PTR (consolidated format)
     ctx_.builder().CreateCondBr(hess_is_heap_ptr, hess_heap_dispatch, hess_check_legacy);
@@ -8933,7 +9150,33 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     Value* hess_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), hess_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
     Value* hess_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), hess_header_ptr);
     Value* hess_is_vec_subtype = ctx_.builder().CreateICmpEQ(hess_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-    ctx_.builder().CreateCondBr(hess_is_vec_subtype, hess_scheme_vector_input, hess_tensor_input);
+    ctx_.builder().CreateCondBr(hess_is_vec_subtype, hess_scheme_vector_input, hess_check_cons);
+
+    // A (list …) point is a cons cell (HEAP_SUBTYPE_CONS): convert it to a Scheme
+    // vector so it takes the same path as a (vector …) point, instead of being
+    // misread as a tensor.
+    ctx_.builder().SetInsertPoint(hess_check_cons);
+    Value* hess_is_cons_subtype = ctx_.builder().CreateICmpEQ(hess_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    ctx_.builder().CreateCondBr(hess_is_cons_subtype, hess_list_to_svec, hess_tensor_input);
+
+    ctx_.builder().SetInsertPoint(hess_list_to_svec);
+    {
+        Value* l2s_arena = ctx_.builder().CreateLoad(
+            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
+        if (!l2s_fn) {
+            llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            l2s_fn = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                "eshkol_list_to_svec", &ctx_.module());
+        }
+        Value* hess_svec = ctx_.builder().CreateCall(l2s_fn, {l2s_arena, hess_input_slot});
+        Value* hess_svec_int = ctx_.builder().CreatePtrToInt(hess_svec, ctx_.int64Type());
+        Value* hess_svec_tagged = tagged_.packPtr(hess_svec_int, ESHKOL_VALUE_HEAP_PTR);
+        ctx_.builder().CreateStore(hess_svec_tagged, hess_input_slot);
+        ctx_.builder().CreateBr(hess_scheme_vector_input);
+    }
 
     // Legacy VECTOR_PTR fallback
     ctx_.builder().SetInsertPoint(hess_check_legacy);
@@ -8942,7 +9185,8 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     // SCHEME VECTOR: Convert to tensor format
     ctx_.builder().SetInsertPoint(hess_scheme_vector_input);
 
-    Value* hess_scheme_vec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* hess_scheme_input_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_input_slot);
+    Value* hess_scheme_vec_ptr_int = tagged_.unpackInt64(hess_scheme_input_val);
     Value* hess_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(hess_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
     Value* hess_scheme_len_ptr = ctx_.builder().CreateBitCast(hess_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
     Value* hess_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), hess_scheme_len_ptr);
@@ -9227,7 +9471,14 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     eshkol_info("Hessian computation complete");
     // Tag as TENSOR_PTR for proper display handling
     Value* hess_result_int = ctx_.builder().CreatePtrToInt(typed_hess_ptr, ctx_.int64Type());
-    return tagged_.packPtr(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
+    Value* hess_vec_ret = tagged_.packPtr(hess_result_int, ESHKOL_VALUE_HEAP_PTR);
+    if (hess_rt_dispatch) {
+        ctx_.builder().CreateStore(hess_vec_ret, hess_rt_slot);
+        ctx_.builder().CreateBr(hess_rt_done);
+        ctx_.builder().SetInsertPoint(hess_rt_done);
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_rt_slot);
+    }
+    return hess_vec_ret;
 }
 
 
