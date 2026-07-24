@@ -450,15 +450,31 @@ static int cuda_matmul_ozaki_int8_f64(const double* dA, const double* dB, double
     return rc;
 }
 
+/** @brief Predict whether the INT8-Ozaki path beats cublasDgemm at this shape.
+ *         Ozaki amortizes its split/reconstruct overhead only on large GEMMs.
+ *         Measured on GB10 (Grace Blackwell): it wins for M,N,K >= ~1024 (1.2x
+ *         at 1024^3 rising to ~4.9x at 8192^3, up to ~17x at reduced T) but
+ *         LOSES for small or small-K shapes (0.6-0.9x, e.g. 512^3, or 4096x512
+ *         x4096). The previous code ran Ozaki unconditionally whenever enabled,
+ *         paying that penalty on every small GEMM. This conservative guard
+ *         captures every measured win and avoids every measured loss. The
+ *         thresholds are GB10-calibrated; a self-calibrating, precision-
+ *         tolerance-aware size dispatcher (validated separately) is the
+ *         follow-up that generalises across GPUs and picks T automatically. */
+static inline bool cuda_ozaki_worthwhile(uint64_t M, uint64_t K, uint64_t N) {
+    return M >= 1024 && N >= 1024 && K >= 1024;
+}
+
 /** @brief Double-precision matmul via cuBLAS DGEMM, exploiting the
  *         column-major/row-major duality (computing C^T = B*A in cuBLAS
  *         terms yields row-major C = A*B without an explicit transpose).
  *         When ESHKOL_CUDA_F64_KERNEL=ozaki-int8 is set, the INT8 tensor-core
- *         Ozaki path is tried first and cublasDgemm is the fallback. */
+ *         Ozaki path is tried first (only when predicted faster, see
+ *         cuda_ozaki_worthwhile) and cublasDgemm is the fallback. */
 static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
     cuda_ozaki_check_env();
-    if (g_cuda_ozaki_enabled) {
+    if (g_cuda_ozaki_enabled && cuda_ozaki_worthwhile(M, K, N)) {
         GPU_LOG("matmul %llux%llu @ %llux%llu -> CUDA INT8-Ozaki (T=%d)",
                 (unsigned long long)M, (unsigned long long)K,
                 (unsigned long long)K, (unsigned long long)N, g_cuda_ozaki_T);
