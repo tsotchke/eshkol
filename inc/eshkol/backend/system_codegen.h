@@ -643,6 +643,8 @@ public:
     llvm::Value* adTapeNew(const eshkol_operations_t* op);
     /** @brief (ad-tape-release tape) — release an AD tape. @return Unspecified value. */
     llvm::Value* adTapeRelease(const eshkol_operations_t* op);
+    /** @brief (ad-tape-length tape) — number of nodes recorded on the tape. */
+    llvm::Value* adTapeLength(const eshkol_operations_t* op);
     /** @brief (ad-const value) — wrap a constant as an AD node (zero gradient). */
     llvm::Value* adConst(const eshkol_operations_t* op);
     /** @brief (ad-var value) — wrap a value as a differentiable AD leaf node. */
