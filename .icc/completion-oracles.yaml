@@ -74,6 +74,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["transitive_load_agent_ffi_link"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'Driver: agent-FFI native-link requirements propagate through the full transitive source closure (load/import/require, any depth; JIT+AOT), a plain program does not over-link the archive, and a broken generated-program link under -r exits nonzero instead of masking it with a reduced in-process fallback'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["jit_repl_clean_exit"]
           event_values: ["PASS"]
         severity: medium

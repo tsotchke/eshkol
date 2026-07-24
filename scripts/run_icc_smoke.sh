@@ -211,6 +211,15 @@ EOF
      "$ESHKOL_RUN" "$tmp" -o "$bin" >/dev/null 2>&1 && "$bin" >/dev/null; rc=$?
      rm -f "$tmp" "$bin"; exit $rc'
 
+# Transitive-closure agent-FFI link discovery + fatal-link-under-`-r`.
+# A helper reached only through (load …)/(import …) — two levels deep, no
+# top-level (require agent.*) — must still link the agent-FFI archive (JIT+AOT),
+# a plain program must not (no over-linking), and a broken generated-program
+# link under -r must exit nonzero without a reduced in-process fallback.
+probe transitive_load_agent_ffi_link "transitive (load) agent-FFI link + fatal -r link" \
+    'out=$(bash "$REPO_ROOT/tests/toolchain/transitive_ffi_link_test.sh" "$ESHKOL_RUN" 2>&1) || { printf "%s\n" "$out"; exit 1; }
+     printf "%s" "$out" | grep -q "PASS: transitive_ffi_link_test"'
+
 # Optional release-readiness evidence from an XLA-enabled build.  The default
 # lite build deliberately omits xla_codegen_test, so release coordinators pass
 # XLA_BUILD_DIR when certifying the full backend surface.  The integration test
