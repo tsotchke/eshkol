@@ -5,36 +5,134 @@ All notable changes to Eshkol will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.4-evolve] - 2026-07-23
+
+A resident-correctness release over v1.3.3-evolve. Every defect surfaced by
+long-duration resident workloads is fixed at the architectural root: automatic
+per-iteration memory reclamation now matches explicit `with-region` even for
+loops that mutate persistent state, `parallel-map` is race-free for
+collection-valued closures, gradients are exact through every callable form
+(indirect and curried, with no finite-difference fallback in the gradient path)
+and through every differentiation point classified by its runtime value, printed
+floats round-trip, and the strict type checker accepts idiomatic
+dynamic-but-validated code. `gradient` now runs at full parity on the bytecode
+VM as well as native codegen, so Eshkol is self-differentiating on every
+substrate. The release also lands the high-precision numerics wave (Ozaki-II
+exact and reduced-precision GEMM tiers on Metal and CUDA, a mixed-precision
+linear solver, and a native 128-bit integer type), a Moonlab v1.2.0 quantum pin
+with quantum-natural-gradient support, full hosted-VM tensor-matmul parity, and
+a round-tripping numeric printer. It also hardens the toolchain (transitive
+FFI-link discovery with fatal link failures, Homebrew-compatible
+system-dependency builds) and the assurance surface (dynamic edge coverage
+across every new-feature family).
 
 ### Added
 
-- **P8 "escape-closure" adversarial pillar** (`scripts/run_p8_escape.sh`,
-  `scripts/p8/`, `tests/escape_matrix/`). A test/infra pillar that closes the
-  gap where a bug *class* could reach a consumer before our own tests flagged
-  it: for each class observed in a cycle it adds a generator or gate designed so
-  the same class is caught here first. Eight axes — (1) AD operator
-  binding-form sweep (differentiation point built as numeric/`#()`/`vector`/
-  `list`/`tensor`/var/let/fnret/`(the …)` across arity 1–3, vs closed form and
-  cross-form); (2) call-indirection sweep (direct/param/curried/let/two-level
-  byte-identical); (3) manifest-driven native-vs-VM arity ratchet over
-  `tests/coverage/language_surface.json` with a shrink-only baseline; (4)
-  reference-free property oracles (`number->string`∘`string->number`,
-  `read`∘`write`, exact algebraic identities) run per-substrate to defeat
-  shared-defect blindness; (5) seeded `parallel-map` concurrency fuzz vs the
-  serial oracle at threshold-straddling sizes ×20, with a nightly ThreadSanitizer
-  lane; (6) five-way surface-agreement ratchet (doc ↔ manifest ↔ native ↔ VM ↔
-  provide); (7) toolchain fault-injection matrix asserting nonzero-exit +
-  diagnostic (no exit-0 masking); (8) workload-shaped flat-RSS memory profiles.
-  Wired as the `p8_escape_matrix_green` ICC smoke probe plus per-axis
-  `escape_matrix` completion-oracle criteria under `eshkol-compiler-readiness`;
-  the full JIT+AOT+VM sweep, TSan, and Homebrew/Linux packaging lanes run in the
-  new nightly workflow `.github/workflows/adversarial-nightly.yml`. Each axis
-  retro-catches a prior-cycle bug class (verified against a pre-fix build for the
-  AD binding-form, printer round-trip, and concurrency-race classes). The pillar
-  additionally surfaced two currently-open defects, recorded under
-  `tests/escape_matrix/found/` and quarantined so the gate stays green while they
-  are tracked.
+- **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
+  recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
+  ~500x faster than the deliberately crippled native FP64 pipeline on
+  consumer/prosumer NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32). Following the
+  Ootomo-Ozaki-Yokota scheme, each f64 operand is scaled per-row (A) / per-col
+  (B) into `[-1,1]`, sliced into `T+1` signed 7-bit integer slices, multiplied
+  as INT8->INT32 GEMMs via `cublasGemmEx` on the fast **TN/IMMA** layout
+  (transposed B-slices — mandatory on sm_86, a 3.7x cliff otherwise; Blackwell
+  is layout-indifferent so TN is safe everywhere), and reconstructed to f64 with
+  a **diagonal-fused** int32 reconstruction (same-weight slice-pairs on a
+  diagonal `d=p+q` accumulate via `beta=1` into int32-safe grouped buffers, then
+  a single fused kernel), provably int32-exact at any N. The int32 accumulation
+  is exact; the only error source is dropping slice-pairs with `p+q>T`. Measured
+  on an RTX 3090 (sm_86): **4.74 TFLOP/s-eq at full f64** (normwise error
+  2.7e-15) = **8.8x native cublasDgemm**, up to 16.6x at ~1e-11; on an RTX PRO
+  6000 Blackwell: **~30 TFLOP/s** (20x native f64). Opt-in and default OFF —
+  select via `ESHKOL_CUDA_F64_KERNEL=ozaki-int8` (the f64 GPU matmul otherwise
+  stays `cublasDgemm`). The accuracy/throughput knob is `ESHKOL_OZAKI_CUDA_T`
+  (default 6 = full f64 ~1e-15; T=4 ~1e-11 and ~2x faster), mirroring the Metal
+  Ozaki-II env conventions. `K` is guarded below 133,000 for int32 exactness;
+  out of range it falls back loudly to `cublasDgemm`. Wide-dynamic-range inputs
+  stay accurate via the per-row/col scaling (7.5e-15 on 1e-3..1e3 data). The
+  path is auto-gated to engage only when a measured crossover beats native
+  `cublasDgemm`, so small or skinny GEMMs keep native DGEMM, and a cost-model
+  accuracy-budget selector chooses between the native DGEMM and INT8-Ozaki tiers
+  per problem shape and requested accuracy (#346, #347). Adds
+  `tests/gpu/cuda_ozaki_correctness_gate.sh` / `cuda_ozaki_correctness_test.esk`
+  (INT8-Ozaki vs an independent CPU f64 reference across
+  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, a T=4/6 sweep,
+  and an out-of-range-knob loud-clamp check) and the
+  `cuda-ozaki-int8-correctness` ICC oracle.
+  (`lib/backend/gpu/gpu_memory_cuda.cpp`, `lib/backend/gpu/gpu_cuda_kernels.cu`)
+- **Native 128-bit integer type (`i128`).** A first-class, fixed-width,
+  two's-complement signed integer (range −2¹²⁷…2¹²⁷−1) that lives **off** the
+  numeric tower: unlike bignum (which grows), i128 arithmetic **wraps** modulo
+  2¹²⁸, and it never auto-promotes — every crossing to/from the tower is an
+  explicit conversion. Heap-boxed under a new subtype `HEAP_SUBTYPE_I128` (25)
+  with a 16-byte little-endian `{lo, hi}` payload whose layout matches the
+  planned two-u64 FFI ABI. Full surface on **both** the native codegen path and
+  the bytecode VM: constructors/predicate `i128` / `int->i128` / `string->i128`
+  (full range incl. −2¹²⁷) / `i128?`; wrapping arithmetic `i128-add` / `-sub` /
+  `-mul` / `-neg`; shifts `i128-shl` / `-ashr` / `-lshr` (count 0…127, out of
+  range raises); comparisons `i128=?` / `<?` / `>?` / `<=?` / `>=?`; truncated
+  `i128-quotient` / `i128-remainder` (C sign semantics; divide-by-zero raises);
+  conversions `i128->string` / `i128->int` (raises out of fixnum range); and
+  decimal `display`/`write`. The pure arithmetic core (`inc/eshkol/core/i128.h`)
+  is shared verbatim by the native runtime (`lib/core/i128_runtime.cpp`,
+  arena-boxed, `eshkol_raise`) and the VM (`lib/backend/vm_native.c`, region-heap
+  boxed) so both compute bit-identical results. Docs:
+  `docs/reference/language/i128.md`; tests: `tests/types/i128_test.esk`
+  (native + VM parity) and `tests/types/i128_error_test.esk`. The reduced-precision
+  Metal Ozaki tier is certified exact against this i128 path across the same
+  correctness regimes (`tests/gpu`), so the GPU fast tier's accuracy claim is
+  checked against a bit-exact reference rather than another float path.
+- **Linear `Qubit` type and linear-parameter enforcement in `define`.** A
+  first-class linear `Qubit` type whose values must be used exactly once; a
+  `define`d function may declare linear parameters and the checker enforces the
+  use-exactly-once discipline (double-use and drop are both rejected), giving
+  quantum-register operations a no-cloning guarantee at the type level. This
+  extends the HoTT type surface (`lib/types/hott_types.cpp`,
+  `inc/eshkol/types/hott_types.h`).
+- **`linear-solve` — full-f64 dense linear solver with a mixed-precision fast
+  path.** `(linear-solve A b)` solves `A x = b` for a square `N×N` tensor `A`
+  and length-`N` `b` with a full-f64 accuracy guarantee. On Apple/Accelerate it
+  factorizes `A` in fp32 (the `O(n³)` cost, ~2–3× faster than f64 on the AMX
+  units) and polishes the result back to full f64 by iterative refinement
+  (Langou/Baboulin/Dongarra): the residual is recomputed in f64 and a fp32
+  back-solve corrects `x` until the relative backward residual is certified at
+  ~`1e-13`. When refinement cannot certify a full-f64 result (ill-conditioned
+  systems) it silently falls back to a plain-f64 LAPACK `dgesv`, so the caller
+  always gets a correct f64 answer — the speedup is opportunistic, the
+  correctness is not. Non-Apple builds use a direct f64 LU. Singular,
+  non-square, and dimension-mismatch inputs raise catchable conditions.
+  Measured on an M2 Ultra: ~1.15–1.4× faster than the forced-`dgesv` path at
+  `N = 2048–4096` at `~1e-15` residual. Implemented in `lib/core/linear_solve.cpp`
+  with native-codegen and bytecode-VM surfaces (native call id 472) and an
+  `linear-solve-full-f64` ICC oracle; see
+  `tests/features/linear_solve_test.esk` and
+  [docs/reference/tensors/operations.md](docs/reference/tensors/operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path).
+- **Ozaki-II reduced-precision fast tier (Metal, opt-in) — beats AMX f64 at
+  large N.** A fully-GPU reduced-precision DGEMM tier alongside the bit-exact CRT
+  path, selected with `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`).
+  A linear CRT over **near-peak MPS f32 GEMMs**: the moduli are cap-limited
+  pairwise-coprime prime powers chosen so that a single MPS f32 GEMM of centered
+  residues is integer-exact (`K·(p/2)² < 2²⁴`), running each modulus at the GPU's
+  ~20 TF f32 ceiling. The residue split (`ozaki_fast_split`, straight from the f64
+  bit-pattern) and the df32 fractional-CRT reconstruction (`ozaki_fast_accum` +
+  `ozaki_fast_finalize`) run entirely on the GPU; the host only uploads A,B once,
+  does one O(N^2) exponent pass, and downloads C. All moduli run in one command
+  buffer with a single CPU-GPU sync. The accuracy knob is the moduli count
+  (`ESHKOL_OZAKI_FAST_MODULI`, default 11, clamped loudly to `[2,16]`); the
+  default targets ~1e-8 (worst-case rel err ~2.4e-8 over the four correctness
+  regimes), and df32 caps this tier at ~1e-11. **Measured on an M2 Ultra
+  (best-of-5, internal pipeline): N=8192 = ~1384 GF at 11 moduli = 1.26x clean
+  AMX `cblas_dgemm` (1099 GF), up to ~1448 GF (1.32x) at 10 moduli; ~7.7–9.7x
+  faster than the exact 16-modulus tier.** N=4096 ties AMX (overhead-bound at
+  smaller N). Requires fast-math OFF (already enforced) and `ldexp` not `exp2` —
+  both annihilate/inject ~1e-7 errors otherwise. The **default DGEMM path is
+  unchanged**; the tier is strictly opt-in and the existing exact
+  `ozaki-ii-correctness` gate is untouched. Adds `tests/gpu/ozaki_fast_gate.sh` /
+  `ozaki_fast_test.esk` (rel err <= 1e-7 across integer/fractional/pi-e/wide
+  regimes at K up to 4096, asserting the fast path engages with no silent
+  fallback) and the `ozaki-ii-fast` ICC oracle. `ESHKOL_OZAKI_PROFILE=1` reports
+  per-matmul internal pipeline GFLOP/s.
+  (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
 - **Reverse/forward-mode `gradient` on the bytecode VM — full AD parity for the
   gradient surface, self-differentiating on every substrate.** `gradient` now
   works on the VM exactly as on the native `-r`/AOT path: direct
@@ -68,42 +166,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`build/eshkol-run --strict-types -r …` exits 0), and the low-level ad-pow
   case is in the parity corpus (`tests/vm_parity/corpus/33_ad_pow_lowlevel.esk`,
   byte-identical native/vm-src/vm-eskb).
+- **Checked `(the <type> expr)` ascription and predicate-guarded narrowing
+  (strict mode).** The type checker gained several idiom-accepting features so
+  that idiomatic dynamic-but-validated code type-checks without escape hatches:
+  a new `(the <type> expr)` form asserts `expr` has the given type as a *trusted*
+  assertion to the checker (it narrows the checker's view but is a pure runtime
+  no-op — the emitted IR is byte-identical to `expr` alone); predicate-guarded
+  narrowing teaches the checker that a value tested by one of eight type
+  predicates (`number?`, `integer?`, `string?`, `symbol?`, `pair?`, `null?`,
+  `vector?`, `procedure?`) is that type inside the guarded branch, honored across
+  `if` and `and`, and cancelled at a `set!` of the narrowed variable; sum-type
+  annotations are honored on named-let parameters; and a numeric-tower join gives
+  recursive accumulators their least-upper-bound numeric type instead of
+  rejecting a widening. Nine new type-system tests including negative soundness
+  cases. (`lib/types/`, `lib/frontend/parser.cpp`)
 - **SDNC weight-matrix backward pass wired into the build with a gradient
-  check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
-  companion to the analytical forward constructor in `weight_matrices.c` — was
-  previously source-only: no build target, every function `static`, zero test
-  coverage. It is now compiled by the normal build (static library
-  `eshkol-qllm-backward`, header `inc/eshkol/backend/qllm_backward.h`), with the
-  two FFN backward passes (SQUARE-activation and gated-sigmoid) exposed as a
-  public surface. The backward math is precision-generic (`qllm_real`, default
-  `float` so the QLMW/`InterpreterWeights` layout is byte-identical). A new
-  gradient-check test (`tests/backend/qllm_backward_gradcheck_test.c`, ctest
-  `qllm_backward_gradcheck`) validates the analytical gradients against a
-  central finite-difference reference — recompiled in double
-  (`-DQLLM_REAL=double`) so the finite-difference floor drops below the
-  documented **1e-6** relative-error bar; achieved SQUARE `3.7e-9`, gated
-  `2.3e-9`. Also wired as the `qllm_backward_gradcheck` ICC smoke probe and a
-  completion-oracle criterion under `sdnc-paper-reproducibility`.
-- **`eshkol-qllm-run` tool.** `lib/backend/qllm_interpreter.c` (previously
+  check (#335).** `lib/backend/qllm_backward.c` — the reverse-mode
+  (training-mode) companion to the analytical forward constructor in
+  `weight_matrices.c` — was previously source-only: no build target, every
+  function `static`, zero test coverage. It is now compiled by the normal build
+  (static library `eshkol-qllm-backward`, header
+  `inc/eshkol/backend/qllm_backward.h`), with the two FFN backward passes
+  (SQUARE-activation and gated-sigmoid) exposed as a public surface. The backward
+  math is precision-generic (`qllm_real`, default `float` so the
+  QLMW/`InterpreterWeights` layout is byte-identical). A gradient-check test
+  (`tests/backend/qllm_backward_gradcheck_test.c`) validates the analytical
+  gradients against a central finite-difference reference — recompiled in double
+  so the finite-difference floor drops below the documented **1e-6**
+  relative-error bar (achieved SQUARE `3.7e-9`, gated `2.3e-9`) — and is wired as
+  the `qllm_backward_gradcheck` ICC smoke probe and a completion-oracle criterion.
+- **`eshkol-qllm-run` tool (#335).** `lib/backend/qllm_interpreter.c` (previously
   unbuilt) is now a standalone executable that loads a QLMW v3 weight file and
   executes Eshkol bytecode through the six-layer transformer forward pass — the
-  weights *are* the interpreter. Default build uses the portable C reference
+  weights *are* the interpreter. The default build uses the portable C reference
   matmul; `-DUSE_QLLM` links the qLLM NEON/Metal backend.
+- **Dynamic edge coverage for the v1.3.4 surface (#336).** A seeded, bounded,
+  depth-parametric generator (`scripts/gen_edge_v134.py`) and runner
+  (`scripts/run_edge_coverage_v134.sh`) reconcile the generative/adversarial
+  machinery (P2 edge-matrix + P6 depth-parametric + differential oracle) with
+  every new-surface family the v1.3.4 wave added: nursery iter-scope mutating
+  loops (all six barrier channels, escape-set size, nested-loop depth),
+  capturing `parallel-map`/`parallel-execute` returning collections (n at the
+  pool threshold, closure shapes, nesting depth), exact gradient through a
+  callable parameter + curried form (arity 1..5, list/vector points, composition
+  depth), native `i128` boundaries and wraparound (differential native-vs-VM,
+  arithmetic-chain depth), native tensor/`matmul` (arange arities, reshape/arange
+  product, multi-dim ref/set), the shortest-round-trip `number->string` /
+  `string->number` family, and low-level `ad-tape`/`ad-pow` on the VM
+  (fractional/negative/zero exponents, tape reuse, 1024-node growth). Every probe
+  is self-checking against a generator-computed ground truth and runs across
+  JIT / AOT-O0 / AOT-O2 (and the VM where the surface exists). Gated in ICC by
+  the `v1.3.4-edge-coverage` oracle (one criterion per family) plus a
+  `v1.3-evolve` roll-up; new depth axes registered in
+  `scripts/depth_coverage_registry.json`.
+- **WASM execute-and-diff differential lane (#353).** A new assurance lane
+  executes Eshkol-compiled WebAssembly and diffs its output against native,
+  closing the gap where the web tests only checked that a produced `.wasm` was a
+  valid binary. It builds the VM WASM module (the bytecode VM compiled via
+  Emscripten — the same module family that powers the browser REPL) fresh from
+  current source, runs each program of the VM-supported corpus under Node through
+  a new append-only batch `run_program` export, and byte-diffs the captured
+  stdout against native `eshkol-run -r` (reusing the VM-parity newline
+  normalization, comparing float text raw). Divergences are documented per file
+  in `tests/wasm_diff/EXCLUSIONS.tsv` — `EXCLUDED` for a surface that cannot run
+  in the sandbox, `XFAIL` for a real reported WASM bug (the comparison still runs
+  and an unexpected match fails the gate to force the row's removal) — with no
+  silent skips, and a `kind:"wasm_parity"` JSON-L trace feeds ICC.
+  (`scripts/run_wasm_differential.sh`, `scripts/lib/wasm_diff_runner.js`,
+  `lib/backend/vm_wasm_repl.c`)
+- **Execution-backed language-coverage gate (#352).** The language-surface
+  coverage gate now certifies executed, verified behaviour — a construct counts
+  only when it dispatched or executed in a passing run (or, for the bounded
+  compile-time-form allowlist, was parsed and code-generated) — with lexical
+  name-presence demoted to a diagnostic that earns no release credit. A permanent
+  invariant tripwire keeps the credited set a subset of the runtime/compile-time
+  evidence, and a monotonic deficit ledger refuses to record a larger deficit
+  without an explicit override. The proven surface is re-baselined from 1,056 to
+  1,078 (the `i128` tower, `linear-solve`, and string/pointer conversions landed
+  as new core builtins) and the policy floor and ledger are ratcheted to 1,078
+  (1,078/1,078 execution-backed).
+- **Shortest-round-trip numeric printing (R7RS 6.2.6).** `display`, `write`, and
+  `number->string` now emit the shortest decimal string that reads back as the
+  identical `double`, replacing the previous fixed-precision output that could
+  lose or add digits. `(sqrt 2.0)` prints `1.4142135623730951`; integral doubles
+  keep their no-`.0` form and non-finite flonums keep the R7RS
+  `+inf.0` / `-inf.0` / `+nan.0` external representations. Native codegen and the
+  bytecode VM share one portable-C routine (`eshkol_dtoa_shortest`), so their
+  output is byte-identical.
+  (`lib/core/runtime_display_hosted.cpp`, `lib/backend/vm_native.c`,
+  `lib/backend/vm_core.c`, `lib/backend/vm_string.c`)
+- **Hosted-VM tensor matmul parity.** The bytecode VM now matches native codegen
+  on the full tensor-matmul surface: `arange` in 1-, 2-, and 3-argument forms,
+  nested-literal tensor operands, and multi-dimensional `tensor-ref` /
+  `tensor-set!`. The parity corpus gains `31_tensor_matmul`, closing the last VM
+  divergences on this surface. (`lib/backend/vm_native.c`, `lib/backend/vm_compiler.c`)
+- **Moonlab quantum backend pinned to v1.2.0.** The `agent.quantum` integration
+  now targets Moonlab v1.2.0, which adds `vqe_compute_qgt` (quantum geometric
+  tensor / quantum natural gradient support) and a smooth first-principles
+  H2/LiH potential-energy surface. The H2 equilibrium oracle at bond length
+  0.735 Å is updated to `-1.142200155381` Ha (a `-2.95e-5` Ha shift from the
+  earlier PES). Adds differentiable quantum-chemistry examples (five programs)
+  and an arbitrary-order-AD H2 vibrational-frequency example.
+  (`docs/design/MOONLAB_INTEGRATION.md`, `examples/`)
 
 ### Changed
 
-- **`docs/SDNC.md` refreshed to verified reality.** Added the two-execution-layer
-  framing — the SDNC weight-matrix layer (83-opcode ISA incl. 19 AD opcodes,
-  127/127 three-way verified) and the production bytecode VM (66-opcode enum +
-  720 native-call IDs spanning 20–2118, AD dispatched at 390–409) as two real,
-  verified layers of one system with a precise opcode-for-capability
-  correspondence; updated counts upward where reality exceeds the doc
-  (three-way verification 127/127 inline, 124/124 traced, 83 opcodes
-  weight-implemented; `weight_matrices.c` now 7,544 lines); corrected
-  `execute_step`/`run_reference`/`forward_with_weights`/`export_weights_binary`
-  line references; documented the native-call ID surface (AD 390–409/1841–1844,
-  tensors 410–461, consciousness 509–547/1800s, i128 2100–2118); and re-pinned
-  the §7.3 SHA-256 checksums at the current verification SHA.
+- **Opt-in TensorCore adapter.** A TensorCore acceleration adapter is now
+  available behind an opt-in switch, pinned to a tested `tensorcore` version
+  range (`ESHKOL_TENSORCORE_MIN_VERSION` / `_MAX_TESTED_VERSION`); the default
+  numeric path is unchanged.
+- **Homebrew-compatible system-dependency builds (#344).** Every bundled
+  agent-FFI dependency is now resolvable without a live `FetchContent` download
+  so `brew install` works: an `ESHKOL_HOMEBREW_BUILD` umbrella option enables the
+  packaging contract (system PCRE2 imported under the bundled target name, the
+  remaining deps resolved via `FETCHCONTENT_SOURCE_DIR_<NAME>` source-dir
+  overrides that skip the dependency provider entirely), while the default
+  developer/release build stays byte-for-byte unchanged. The same rewrite fixes
+  pre-existing packaging bugs that left the keg non-functional (installs
+  `libeshkol-runtime.a`, the agent-FFI archives, and module sources under
+  `share/eshkol/lib`), and the release auto-bump substitutions are anchored to
+  the top-level indent so the new `resource` sha256 pins survive a release bump.
+- **Dead-code sweep.** Removed 56 ICC-confirmed orphan symbols superseded by the
+  BindingCodegen and AD-matrix refactors; no behavioral change.
+- **Build and platform.** A universal Linux build script provisions LLVM 21
+  per distro family; CMake `< 3.24` no longer errors on
+  `DOWNLOAD_EXTRACT_TIMESTAMP`; the WASM `scheme_main` re-entry export is
+  JS-safe with a null-guarded data layout; documentation-site section anchor
+  links resolve (heading ids + fragment scroll). The language-surface coverage
+  manifest was regenerated for the new VM tensor special forms (builtin count
+  unchanged). A CI identity guard rejects new commits that carry a forbidden
+  private author email.
 
 ### Fixed
 
@@ -122,40 +314,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation as a body expression. The compiler now resolves a `(name : type)`
   formal to its name and skips a `: rettype` return annotation between the
   signature and the body.
-- **Driver: agent-FFI link requirements now propagate through the full
-  transitive source closure, and a generated-program link failure under `-r`
-  is fatal instead of silently masked.** Two coupled defects in the
-  compile/link driver:
-  - *(A) Dropped transitive dependency.* Native-link discovery walked a
-    narrower graph than compilation. The compiler splices `(load "…")`,
-    `(import "…")`, and `(require module)` transitively, but the agent-FFI
-    requirement scan only followed top-level `(require …)` — so a helper reached
-    only through `(load …)`/`(import …)` (root loads A, A loads B, B requires
-    `agent.subprocess`) had its requirement lost. The produced binary emitted
-    `qllm_process_*` / `eshkol_sqlite_*` references while the linker omitted
-    `libeshkol-agent-ffi.a`, failing the native link with unresolved symbols.
-    Requirement discovery now walks the **same** canonical transitive source
-    closure as compilation (one traversal via `collectTransitiveSources`
-    produces both the source list and the requirements set), under `-r` and
-    ordinary AOT alike. Programs with no agent-FFI usage still do not link the
-    archive (no over-linking).
-  - *(B) Masked link failure under `-r`.* When the persistent-cache child's AOT
-    build failed, `eshkol-run -r` fell back to a reduced in-process run and
-    exited **0**, certifying a build that never linked — a trust hazard for
-    CI/benchmark harnesses. The fix distinguishes the two failure stages: a
-    native **link** failure (the masking vector — the standalone binary can't
-    resolve a symbol the in-process JIT would satisfy from eshkol-run's own
-    native closure) is now **fatal** under `-r` (linker diagnostic surfaced,
-    nonzero exit, the reduced program never runs); a **codegen/compile** failure
-    still falls back to the in-process JIT, which reproduces the same failure
-    with its richer runtime diagnostic — preserving the "called undefined
-    function 'x' (forward-referenced but never defined)" named error (the Bug-W
-    contract) and its nonzero exit. A missing/unopenable input file under `-r`
-    is likewise no longer swallowed with a zero exit. Regression:
-    `tests/toolchain/transitive_ffi_link_test.sh` (multi-level load graph,
-    JIT + AOT, over-linking guard, fatal-link exit status, and a codegen-failure
-    case asserting the named diagnostic still fires under `-r`).
-
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
   ESH-0214 memory-management series. ESH-0214b's automatic per-iteration
@@ -193,188 +351,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `iter_scope_partial_reclaim` ICC oracle.
   (`lib/core/runtime_regions.cpp`, `lib/backend/llvm_codegen.cpp`,
   `inc/eshkol/backend/binding_codegen.h`)
-
-### Added
-
-- **Dynamic edge coverage for the v1.3.4 surface (test/infra).** A seeded,
-  bounded, depth-parametric generator (`scripts/gen_edge_v134.py`) and runner
-  (`scripts/run_edge_coverage_v134.sh`) reconcile the generative/adversarial
-  machinery (P2 edge-matrix + P6 depth-parametric + differential oracle) with
-  every new-surface family the v1.3.4 wave added: nursery iter-scope mutating
-  loops (all six barrier channels, escape-set size, nested-loop depth),
-  capturing `parallel-map`/`parallel-execute` returning collections (n at the
-  pool threshold, closure shapes, nesting depth), exact gradient through a
-  callable parameter + curried form (arity 1..5, list/vector points,
-  composition depth), native `i128` boundaries and wraparound
-  (differential native-vs-VM, arithmetic-chain depth), native tensor/`matmul`
-  (arange arities, reshape/arange product, multi-dim ref/set), and low-level
-  `ad-tape`/`ad-pow` on the VM (fractional/negative/zero exponents, tape reuse,
-  1024-node growth). Every probe is self-checking against a generator-computed
-  ground truth and runs across JIT / AOT-O0 / AOT-O2 (and the VM where the
-  surface exists). Gated in ICC by the `v1.3.4-edge-coverage` oracle (one
-  criterion per family) plus a `v1.3-evolve` roll-up; new depth axes registered
-  in `scripts/depth_coverage_registry.json`. The `number->string`∘`string->number`
-  round-trip family is staged pending the shortest-round-trip printer.
-- **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
-  recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
-  ~500x faster than the deliberately crippled native FP64 pipeline on
-  consumer/prosumer NVIDIA GPUs (GeForce Ampere f64 = 1/64 FP32). Following the
-  Ootomo-Ozaki-Yokota scheme, each f64 operand is scaled per-row (A) / per-col
-  (B) into `[-1,1]`, sliced into `T+1` signed 7-bit integer slices, multiplied
-  as INT8->INT32 GEMMs via `cublasGemmEx` on the fast **TN/IMMA** layout
-  (transposed B-slices — mandatory on sm_86, a 3.7x cliff otherwise; Blackwell
-  is layout-indifferent so TN is safe everywhere), and reconstructed to f64 with
-  a **diagonal-fused** int32 reconstruction (same-weight slice-pairs on a
-  diagonal `d=p+q` accumulate via `beta=1` into int32-safe grouped buffers, then
-  a single fused kernel), provably int32-exact at any N. The int32 accumulation
-  is exact; the only error source is dropping slice-pairs with `p+q>T`. Measured
-  on an RTX 3090 (sm_86): **4.74 TFLOP/s-eq at full f64** (normwise error
-  2.7e-15) = **8.8x native cublasDgemm**, up to 16.6x at ~1e-11; on an RTX PRO
-  6000 Blackwell: **~30 TFLOP/s** (20x native f64). Opt-in and default OFF —
-  select via `ESHKOL_CUDA_F64_KERNEL=ozaki-int8` (the f64 GPU matmul otherwise
-  stays `cublasDgemm`). The accuracy/throughput knob is `ESHKOL_OZAKI_CUDA_T`
-  (default 6 = full f64 ~1e-15; T=4 ~1e-11 and ~2x faster), mirroring the Metal
-  Ozaki-II env conventions. `K` is guarded below 133,000 for int32 exactness;
-  out of range it falls back loudly to `cublasDgemm`. Wide-dynamic-range inputs
-  stay accurate via the per-row/col scaling (7.5e-15 on 1e-3..1e3 data). Adds
-  `tests/gpu/cuda_ozaki_correctness_gate.sh` / `cuda_ozaki_correctness_test.esk`
-  (INT8-Ozaki vs an independent CPU f64 reference across
-  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, a T=4/6 sweep,
-  and an out-of-range-knob loud-clamp check) and the
-  `cuda-ozaki-int8-correctness` ICC oracle.
-  (`lib/backend/gpu/gpu_memory_cuda.cpp`, `lib/backend/gpu/gpu_cuda_kernels.cu`)
-- **Native 128-bit integer type (`i128`).** A first-class, fixed-width,
-  two's-complement signed integer (range −2¹²⁷…2¹²⁷−1) that lives **off** the
-  numeric tower: unlike bignum (which grows), i128 arithmetic **wraps** modulo
-  2¹²⁸, and it never auto-promotes — every crossing to/from the tower is an
-  explicit conversion. Heap-boxed under a new subtype `HEAP_SUBTYPE_I128` (25)
-  with a 16-byte little-endian `{lo, hi}` payload whose layout matches the
-  planned two-u64 FFI ABI. Full surface on **both** the native codegen path and
-  the bytecode VM: constructors/predicate `i128` / `int->i128` / `string->i128`
-  (full range incl. −2¹²⁷) / `i128?`; wrapping arithmetic `i128-add` / `-sub` /
-  `-mul` / `-neg`; shifts `i128-shl` / `-ashr` / `-lshr` (count 0…127, out of
-  range raises); comparisons `i128=?` / `<?` / `>?` / `<=?` / `>=?`; truncated
-  `i128-quotient` / `i128-remainder` (C sign semantics; divide-by-zero raises);
-  conversions `i128->string` / `i128->int` (raises out of fixnum range); and
-  decimal `display`/`write`. The pure arithmetic core (`inc/eshkol/core/i128.h`)
-  is shared verbatim by the native runtime (`lib/core/i128_runtime.cpp`,
-  arena-boxed, `eshkol_raise`) and the VM (`lib/backend/vm_native.c`, region-heap
-  boxed) so both compute bit-identical results. Docs:
-  `docs/reference/language/i128.md`; tests: `tests/types/i128_test.esk`
-  (native + VM parity) and `tests/types/i128_error_test.esk`.
-- **`linear-solve` — full-f64 dense linear solver with a mixed-precision fast
-  path.** `(linear-solve A b)` solves `A x = b` for a square `N×N` tensor `A`
-  and length-`N` `b` with a full-f64 accuracy guarantee. On Apple/Accelerate it
-  factorizes `A` in fp32 (the `O(n³)` cost, ~2–3× faster than f64 on the AMX
-  units) and polishes the result back to full f64 by iterative refinement
-  (Langou/Baboulin/Dongarra): the residual is recomputed in f64 and a fp32
-  back-solve corrects `x` until the relative backward residual is certified at
-  ~`1e-13`. When refinement cannot certify a full-f64 result (ill-conditioned
-  systems) it silently falls back to a plain-f64 LAPACK `dgesv`, so the caller
-  always gets a correct f64 answer — the speedup is opportunistic, the
-  correctness is not. Non-Apple builds use a direct f64 LU. Singular,
-  non-square, and dimension-mismatch inputs raise catchable conditions.
-  Measured on an M2 Ultra: ~1.15–1.4× faster than the forced-`dgesv` path at
-  `N = 2048–4096` at `~1e-15` residual. Implemented in `lib/core/linear_solve.cpp`
-  with native-codegen and bytecode-VM surfaces (native call id 472) and an
-  `linear-solve-full-f64` ICC oracle; see
-  `tests/features/linear_solve_test.esk` and
-  [docs/reference/tensors/operations.md](docs/reference/tensors/operations.md#linear-solve--full-f64-solve-with-a-mixed-precision-fast-path).
-- **Ozaki-II reduced-precision fast tier (Metal, opt-in).** A fully-GPU
-  reduced-precision DGEMM tier alongside the bit-exact CRT path, selected with
-  `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`). It moves both
-  `O(num_moduli · N^2)` CPU passes of the exact tier onto the GPU: (1) the
-  per-modulus residue split runs in a Metal kernel (`ozaki_split`) from
-  two-limb-encoded operands uploaded once, and (2) the CRT reconstruction runs
-  in df32 on the GPU (`ozaki_reconstruct_df32`, fractional-Garner) so the
-  per-modulus `W_l` planes never leave the device. The accuracy knob is the
-  moduli count (`ESHKOL_OZAKI_FAST_MODULI`, default 10, clamped loudly to
-  `[2,12]`); the default targets ~1e-8 (worst-case rel err ~7e-8 over the four
-  correctness regimes), and df32 caps this tier at ~1e-11 for well-conditioned
-  data. Measured ~1.6–1.7x faster than the exact 16-modulus tier at N=4096/8192
-  on an M2 Ultra (the exact tier falls to its serial path at N=8192 while the
-  fast tier stays batched). Requires fast-math OFF (already enforced) — Metal
-  fast-math annihilates the df32 TwoSum compensation and collapses accuracy to
-  f32. The **default DGEMM path is unchanged**; the fast tier is strictly
-  opt-in and the existing exact `ozaki-ii-correctness` gate is untouched. Adds
-  `tests/gpu/ozaki_fast_gate.sh` / `ozaki_fast_test.esk` (rel err <= 1e-7 across
-  integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, asserting the
-  fast path engages with no silent fallback) and the `ozaki-ii-fast` ICC oracle.
-  `ESHKOL_OZAKI_PROFILE=1` reports per-matmul internal pipeline GFLOP/s.
-- **Ozaki-II reduced-precision fast tier (Metal, opt-in) — beats AMX f64 at
-  large N.** A fully-GPU reduced-precision DGEMM tier alongside the bit-exact CRT
-  path, selected with `ESHKOL_SF64_KERNEL=ozaki-fast` (or `ESHKOL_OZAKI_FAST=1`).
-  A linear CRT over **near-peak MPS f32 GEMMs**: the moduli are cap-limited
-  pairwise-coprime prime powers chosen so that a single MPS f32 GEMM of centered
-  residues is integer-exact (`K·(p/2)² < 2²⁴`), running each modulus at the GPU's
-  ~20 TF f32 ceiling. The residue split (`ozaki_fast_split`, straight from the f64
-  bit-pattern) and the df32 fractional-CRT reconstruction (`ozaki_fast_accum` +
-  `ozaki_fast_finalize`) run entirely on the GPU; the host only uploads A,B once,
-  does one O(N^2) exponent pass, and downloads C. All moduli run in one command
-  buffer with a single CPU-GPU sync. The accuracy knob is the moduli count
-  (`ESHKOL_OZAKI_FAST_MODULI`, default 11, clamped loudly to `[2,16]`); the
-  default targets ~1e-8 (worst-case rel err ~2.4e-8 over the four correctness
-  regimes), and df32 caps this tier at ~1e-11. **Measured on an M2 Ultra
-  (best-of-5, internal pipeline): N=8192 = ~1384 GF at 11 moduli = 1.26x clean
-  AMX `cblas_dgemm` (1099 GF), up to ~1448 GF (1.32x) at 10 moduli; ~7.7–9.7x
-  faster than the exact 16-modulus tier.** N=4096 ties AMX (overhead-bound at
-  smaller N). Requires fast-math OFF (already enforced) and `ldexp` not `exp2` —
-  both annihilate/inject ~1e-7 errors otherwise. The **default DGEMM path is
-  unchanged**; the tier is strictly opt-in and the existing exact
-  `ozaki-ii-correctness` gate is untouched. Adds `tests/gpu/ozaki_fast_gate.sh` /
-  `ozaki_fast_test.esk` (rel err <= 1e-7 across integer/fractional/pi-e/wide
-  regimes at K up to 4096, asserting the fast path engages with no silent
-  fallback) and the `ozaki-ii-fast` ICC oracle. `ESHKOL_OZAKI_PROFILE=1` reports
-  per-matmul internal pipeline GFLOP/s.
-  (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
-
-### Fixed
-
-- **Flonum printer truncated doubles to ~6 significant figures.** Fixes #310.
-  `number->string` and `display`/`write` rendered every inexact real with the C
-  `"%g"` default (6 sig figs), so `(display (sqrt 2.0))` printed `1.41421` and
-  `(number->string 3.141592653589793)` returned `"3.14159"` — high-accuracy
-  results (e.g. Ozaki / AD outputs) could not be recovered from their printed
-  form, forcing tests to compute PASS/FAIL in-program. All double formatting now
-  routes through one shared portable-C formatter (`eshkol_dtoa_shortest`,
-  `inc/eshkol/core/dtoa_shortest.h`) that emits the **shortest decimal string
-  which reads back to the exact same double** (R7RS 6.2.6 round-trip), choosing
-  fixed vs. scientific notation the way `std::to_chars` does. `std::to_chars`
-  itself is not usable because the bytecode VM is C and is also compiled to
-  WebAssembly with emcc; sharing one C routine is what makes the native JIT,
-  native AOT and VM paths agree **byte-for-byte** (ADR-0003 parity). Integral
-  doubles keep their existing friendly no-`.0` form (`3.0` -> `"3"`), negative
-  zero still prints `-0`, and non-finite flonums keep the R7RS `+inf.0` /
-  `-inf.0` / `+nan.0` external representations — only the truncation is fixed.
-  Adds `tests/features/printer_roundtrip_test.esk`,
-  `tests/vm_parity/corpus/31_float_precision.esk` and the
-  `printer_roundtrip_oracle` ICC gate. (`lib/core/runtime_display_hosted.cpp`,
-  `lib/backend/vm_core.c`, `lib/backend/vm_native.c`, `lib/backend/vm_string.c`)
-- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
-  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
-  parity gap. Three defects, all the same root cause: variadic tensor builtins
-  whose native runtime handlers take more operands than their fixed-arity
-  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
-  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
-  table registered `arange` as arity-1, so `(arange n)` and
-  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
-  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
-  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
-  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
-  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
-  literal matmul was rejected instead of computed. (3) multi-dim
-  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
-  index/value against their fixed-arity table entries, returning/writing the
-  wrong element when reading back a matmul result. Fix: explicit VM-compiler
-  special forms that emit the defaulted/packed operands (mirroring the existing
-  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
-  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
-  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
-  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
-  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
-  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
-  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
-  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
+- **Driver: agent-FFI link requirements now propagate through the full
+  transitive source closure, and a generated-program link failure under `-r`
+  is fatal instead of silently masked (#334).** Two coupled defects in the
+  compile/link driver. *(A) Dropped transitive dependency.* Native-link discovery
+  walked a narrower graph than compilation: the compiler splices `(load "…")`,
+  `(import "…")`, and `(require module)` transitively, but the agent-FFI
+  requirement scan only followed top-level `(require …)`, so a helper reached
+  only through `(load …)`/`(import …)` had its requirement lost and the produced
+  binary failed the native link with unresolved `qllm_process_*` /
+  `eshkol_sqlite_*` symbols. Requirement discovery now walks the **same**
+  canonical transitive source closure as compilation (one `collectTransitiveSources`
+  traversal produces both the source list and the requirements set), with no
+  over-linking for programs that use no agent-FFI. *(B) Masked link failure under
+  `-r`.* When the persistent-cache child's AOT build failed, `eshkol-run -r` fell
+  back to a reduced in-process run and exited **0**, certifying a build that never
+  linked. The driver now distinguishes the failure stages via a distinct exit
+  sentinel (with a Windows `_putenv_s` portability shim for the sentinel env
+  var): a native **link** failure is now **fatal** under `-r` (linker diagnostic
+  surfaced, nonzero exit, the reduced program never runs), while a
+  **codegen/compile** failure still falls back to the in-process JIT, preserving
+  the named "called undefined function 'x'" diagnostic (the Bug-W contract) and
+  its nonzero exit. A missing/unopenable input file under `-r` is likewise no
+  longer swallowed with a zero exit. Regression:
+  `tests/toolchain/transitive_ffi_link_test.sh`.
+- **`gradient` recovers callable arity through a function parameter or
+  wrapper (#330).** `(gradient f point)` misbehaved when `f` was reached indirectly —
+  through a function parameter, a curried `((gradient f) point)` form, or any
+  wrapper — instead of being named directly at the call site. A
+  first-class-tensor-loss path added later (reverse-mode element seeding)
+  unconditionally captured every vector/list/tensor point and invoked the
+  closure with a single tensor argument, ignoring the callable's real arity, so
+  a multi-parameter scalar loss such as `(loss x y)` was invoked as
+  `loss(<tensor>)` and its scalar body misdispatched. The operator now recovers
+  the callable's arity from its closure metadata and unpacks an N-element point
+  into N scalar arguments, exactly as the direct-call path already did. Indirect
+  and curried gradients are now byte-identical to the direct call for
+  scalar multi-argument, vector, and non-polynomial losses, on both the JIT and
+  AOT paths, with no closure-ABI change. There is no finite-difference fallback
+  anywhere in the gradient path — every form is exact reverse-mode AD. A 25-check
+  suite pins the direct/indirect/curried equivalence.
+  (`lib/backend/autodiff_codegen.cpp`)
+- **Arity-1 whole-point tensor-loss gradients no longer silently zero or crash
+  (#338).** An arity-1 loss receives the whole point as one vector/tensor
+  argument; when its body applies scalar arithmetic directly to that whole
+  argument (elementwise tensor semantics, e.g. `(define (loss x) (* x x))`), the
+  loss value is a *tensor* of AD nodes, not a single scalar AD node — a case the
+  gradient paths assumed away. The forward-mode dual scheme-vector path (reached
+  by a `(vector …)`/`(list …)` point) read only each element's primal and dropped
+  the tangent (a silent all-zero gradient); the reverse-mode tape path (reached
+  by a `#(…)`/`(tensor …)` point or any wrapped/curried form) saw a non-scalar
+  output, skipped backprop, and read unwritten gradient slots or dereferenced a
+  plain double as an AD-node pointer (zeros, or a SIGSEGV). `gradient` is ℝⁿ→ℝ:
+  a scalar or 1-element-tensor output now backpropagates from the sole element's
+  validated AD node (exact gradient), and a genuinely multi-element output raises
+  a clean diagnostic naming `jacobian` — never zeros, never a crash. Exact and
+  byte-identical across direct / wrapped / curried forms and
+  `#()`/`(vector)`/`(list)` points on JIT and AOT; adds
+  `tests/autodiff/gradient_tensor_loss_test.esk` (19/19).
+  (`lib/backend/autodiff_codegen.cpp`)
+- **Differentiation points are classified by runtime value, not AST node (#343).**
+  The differentiation *point* of `gradient`/`hessian` was classified from the AST
+  node kind, so a point that is a variable bound to a vector (or a general
+  expression, or a `(the …)` wrapper) was misrouted the moment its concrete value
+  diverged from what the node kind implied — two externally reported bugs share
+  this root cause. `hessian` hard-classified a variable as scalar, so a variable
+  bound to a vector took the scalar `f''(x)` path, read the vector pointer as a
+  double, and SIGSEGV'd (#339) — while the identical point written as a `#(…)`
+  literal worked because that is a provable collection at the AST level. And
+  `gradient` returned a silently wrong value when the loss routed tracked values
+  through a cons cell and the point was a `(vector …)`/`(list …)`, because the
+  forward-mode dual path stored a dual-number into a cons slot and read it back
+  with the int64 accessor, dropping the tangent (#340). Now only provable cases
+  are classified at compile time (numeric literal → scalar; `#(…)` / `(tensor …)`
+  / `(vector …)` / `(list …)` → collection) and the ambiguous ones (variable,
+  general call/op, `(the …)`) defer to a runtime check on the evaluated value's
+  tag; a cons-routing arity-1 vector point is routed through the reverse tape,
+  and a `(list …)` point is normalized to a Scheme vector so it no longer falls
+  through to the tensor path. Adds `tests/autodiff/varbound_point_matrix_test.esk`
+  (the `{#(…) literal, inline (vector …), variable vector, inline/variable list,
+  (the …) wrapper} × {plain, cons-routed, vector-ref, arity-N} × {gradient,
+  hessian}` matrix, 33 cells, green JIT + AOT). (`lib/backend/autodiff_codegen.cpp`)
+- **Vector-field AD operators at a `(list …)` point, and residual exit-0 masking
+  in the driver (#354).** Two classes surfaced by the P8 escape-closure pillar.
+  `jacobian` / `curl` / `divergence` SIGSEGV'd at a `(list …)` point: the
+  cons-to-scheme-vector normalization added for the scalar-output operators
+  (`gradient` / `hessian` / `laplacian`, #343) was never extended to the
+  vector-field operators, so a cons-cell point fell through to the tensor path
+  and was misread — while the identical point written as
+  `#(…)`/`(vector …)`/`(tensor …)` or bound to a variable worked. The
+  normalization is now applied across every AD entry point that reads a point
+  subtype. Separately, the last exit-0 masking paths in the driver are closed:
+  an AOT missing/unreadable entry file (which previously compiled an empty
+  stdlib-only binary and exited 0), a `-r` syntax error (which previously ran
+  the parsed prefix), and an unresolved `(require …)` (which previously ran
+  without the module) are each now fatal with a nonzero exit before any binary
+  is written. (`lib/backend/autodiff_codegen.cpp`, `exe/eshkol-run.cpp`)
+- **Custom-VJP gradient silently zeroed on transitive captures.** A custom
+  vector-Jacobian-product whose backward closure reached a captured value
+  transitively (through an intermediate closure) had its contribution silently
+  dropped, returning a zero gradient instead of raising. The capture walk now
+  follows transitive closure references, so a custom-VJP node contributes its
+  full sensitivity.
+  (`lib/backend/autodiff_codegen.cpp`, `lib/core/runtime_autodiff.cpp`)
+- **Reverse-mode AD tape pointer-array grows from the tape's owning arena
+  (#345).** The reverse-mode tape's node-pointer array grew (on doubling) from
+  the pinned shared arena, which `eshkol_region_enter` never region-swaps. Inside
+  a `(with-region …)` the tape header and every forward-pass AD node live in — and
+  are reclaimed at `region_pop` from — the region arena, but the grown pointer
+  array kept accreting in the pinned arena and was never reclaimed: residual
+  memory per step in a large region-scoped reverse-mode training loop. The tape
+  now records the arena its header and initial node array were allocated from
+  (`owner_arena`) and grows from it, so a tape created inside a region has its
+  grown array reclaimed with the region, while a tape created outside a region
+  grows into the same surviving arena as its header (never dangling behind a live
+  header when growth happens inside an inner region — the use-after-free the
+  naive "grow from the current arena" would cause). A tape with no recorded owner
+  falls back to the shared arena, preserving prior behavior. Adds
+  `tests/core/ad_tape_region_growth_test.cpp` (run under `ESHKOL_ARENA_POISON=1`):
+  a tape grown inside a region reads back intact after `region_pop`, and a loop
+  of region-scoped tape grows leaves the global arena flat (deterministic byte
+  measurement).
+- **`hessian`/`laplacian` residual at a variable-bound point (#349).** A remaining
+  `hessian`/`laplacian` residual at a variable-bound differentiation point — left
+  after the value-based point classification (#343) and the AD tape owner-arena
+  routing (#345) — is closed, so repeated evaluation at a variable-bound point
+  matches the inline-literal form. Externally contributed.
 - **`parallel-map` corrupted results from closures using scope-based
   reclamation (memory-safety).** A closure mapped in parallel whose body used
   per-iteration scope reclamation — an internal named-let loop, or a builtin
@@ -402,36 +504,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `eshkol_arena_poison_enabled()` env-var cache was a plain function-local
   `int`, first-touched concurrently by pool workers (identical value, but a
   real ThreadSanitizer-visible race). Now a relaxed `std::atomic<int>`.
-- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
-  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
-  parity gap. Three defects, all the same root cause: variadic tensor builtins
-  whose native runtime handlers take more operands than their fixed-arity
-  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
-  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
-  table registered `arange` as arity-1, so `(arange n)` and
-  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
-  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
-  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
-  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
-  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
-  literal matmul was rejected instead of computed. (3) multi-dim
-  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
-  index/value against their fixed-arity table entries, returning/writing the
-  wrong element when reading back a matmul result. Fix: explicit VM-compiler
-  special forms that emit the defaulted/packed operands (mirroring the existing
-  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
-  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
-  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
-  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
-  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
-  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
-  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
-  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
 - **matmul tensor reads inside a defined function (#309) — verified resolved
   and now guarded.** #309 reported that a `matmul` result read back via
   `tensor-ref`/`tensor-data` from inside a `define`d function returned zeros,
   while only top-level reads were correct. The symptom was a mis-attribution of
-  the Ozaki-II CRT-overflow/precision defect fixed in #307 (above): once #307
+  the Ozaki-II CRT-overflow/precision defect fixed in #307 (below): once #307
   landed, in-function reads return the identical correct data as top-level
   reads. This was reconfirmed by rebuilding at the #307 merge commit and at
   current master — the tensor read + arena + matmul codegen/runtime path is
@@ -461,6 +538,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ozaki_correctness_test.esk` (Ozaki vs an independent CPU f64 reference across
   integer/fractional/pi-e/wide-magnitude regimes at K up to 4096, plus a
   moduli-sweep) and the `ozaki-ii-correctness` ICC oracle.
+- **Restored the `linear-solve` core boundary.** A build-boundary regression in
+  the mixed-precision linear solver was corrected so the native and VM surfaces
+  resolve the solver entry point consistently. (`lib/core/linear_solve.cpp`)
+- **Linear-type checker scope leak and conditional over-restriction (#348).**
+  Leaving a scope now clears its linear bindings (the checker's `popScope`
+  previously leaked them), and a linear value used in exactly one branch of an
+  `if`/`cond` is no longer rejected as a double-use by the branch sum-counting —
+  so valid conditional linear gates type-check. Externally contributed.
+  (`lib/types/type_checker.cpp`)
+
+### Documentation
+
+- Added `agent.quantum`, `agent.pqc`, and `core.dbsp` reference pages, and
+  closed the remaining ICC-flagged symbol-documentation gaps.
+- **`docs/SDNC.md` refreshed to verified reality (#335).** Added the
+  two-execution-layer framing — the SDNC weight-matrix layer (83-opcode ISA
+  including 19 AD opcodes, 127/127 three-way verified) and the production
+  bytecode VM (66-opcode enum + 720 native-call IDs) as two real, verified layers
+  of one system with a precise opcode-for-capability correspondence; updated
+  counts upward where reality exceeds the doc; corrected the
+  `execute_step`/`run_reference`/`forward_with_weights`/`export_weights_binary`
+  line references; documented the native-call ID surface (AD, tensors,
+  consciousness, i128); and re-pinned the §7.3 SHA-256 checksums at the current
+  verification SHA.
 
 ## [1.3.3-evolve] - 2026-07-16
 

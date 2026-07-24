@@ -1,3 +1,178 @@
+# Eshkol v1.3.4-evolve — Release Notes
+
+A resident-correctness release. Every defect surfaced by long-duration resident
+workloads, and by downstream users, is fixed at the architectural root:
+automatic memory reclamation matches explicit regions, `parallel-map` is
+race-free, gradients are exact through every callable form and every
+differentiation point, printed floats round-trip, and the strict type checker
+accepts idiomatic dynamic-but-validated code. `gradient` now runs at full parity
+on the bytecode VM as well as native codegen, so exact automatic differentiation
+is available on every substrate. The high-precision numerics wave — Ozaki-II
+exact and reduced-precision GEMM tiers on Metal and CUDA, a mixed-precision
+linear solver, and a native 128-bit integer type — lands alongside a Moonlab
+v1.2.0 quantum pin, full hosted-VM tensor-matmul parity, and a round-tripping
+numeric printer, over a hardened toolchain and a broadened assurance surface.
+
+## Highlights
+
+### Automatic memory reclamation matches explicit regions
+
+- **Iter-scope partial reclamation (ESH-0214e) closes the resident-memory
+  series.** A resident tick loop that mutates persistent state on every
+  iteration — a knowledge base, workspace, or growing list — used to get no
+  per-iteration reclamation at all and leaked one iteration's transient garbage
+  forever (about 3,366 bytes per tick; roughly 355 MB over 100,000 ticks).
+  Such a loop is now lowered with a per-loop nursery region: each iteration's
+  allocations land in the nursery, the existing structural write barriers
+  promote any persistent-mutation escapee out of the nursery at the store, each
+  tail-call back edge promotes the loop-carried out-values and resets the
+  nursery, and the loop exit escapes the result and tears the nursery down. The
+  same tick loop is now flat at 34 MB — identical to its explicit `with-region`
+  twin — with every stored value reading back correct on JIT and AOT. Automatic
+  scoping now matches `with-region` in resident loops, so `with-region` is no
+  longer required to get flat RSS. A new RSS gate pins the behavior.
+
+### Race-free parallelism
+
+- **`parallel-map` is safe for collection-valued closures.** A closure mapped in
+  parallel whose body used per-iteration scope reclamation — an internal
+  named-let loop, or a builtin such as `memv` — could return dangling or
+  overlapping structure once the input crossed the parallel threshold. On a pool
+  worker operating on the shared thread-safe arena, scope reclamation now
+  degrades to commit-only (allocations are retained; the shared scope stack is
+  never rewound), which is the established correctness-over-throughput fallback.
+  Results are now identical to serial `map`. ThreadSanitizer: 73 arena data
+  races to 0. New deterministic regression and an ICC gate.
+
+### Exact gradients through every callable form
+
+- **`gradient` recovers callable arity through a function parameter or wrapper.**
+  Indirect `(gradient f point)` and curried `((gradient f) point)` forms are now
+  byte-identical to the direct call for scalar multi-argument, vector, and
+  non-polynomial losses, on both JIT and AOT. The operator recovers the
+  callable's arity from its closure metadata instead of assuming a single tensor
+  argument. There is no finite-difference fallback anywhere in the gradient path
+  — every form is exact reverse-mode AD. A 25-check suite pins the equivalence.
+- **Custom-VJP transitive captures no longer silently zero.** A custom
+  vector-Jacobian-product whose backward closure reached a captured value
+  through an intermediate closure now contributes its full sensitivity.
+- **`gradient` now runs on the bytecode VM at full parity.** Forward/reverse-mode
+  `gradient` — direct, through a callable parameter, and curried — is
+  byte-identical to native codegen across the VM's source and bytecode axes, so
+  Eshkol is self-differentiating on every substrate. `op:GRADIENT` and
+  `op:DERIVATIVE` become `vm-supported` in the parity manifest; higher-order
+  nesting (gradient-of-derivative / Taylor tower) stays native-only. The public
+  low-level reverse-mode AD tape surface (`ad-pow`, `ad-gradient-of`,
+  `ad-value-of`, `ad-tape-length`) is completed on JIT and AOT at the same time.
+- **Whole-point tensor-loss gradients are exact — no silent zeros, no crash.** An
+  arity-1 loss whose body applies elementwise arithmetic to its whole
+  vector/tensor argument now backpropagates from the sole element for a
+  scalar-valued output and raises a clean `jacobian` diagnostic for a
+  vector-valued one, instead of dropping the tangent or dereferencing a non-AD
+  value.
+- **Differentiation points are classified by runtime value, not syntax.** A point
+  that is a variable bound to a vector, a general expression, or a `(the …)`
+  wrapper is now routed exactly like the identical literal — closing an
+  externally reported `hessian` crash and an externally reported silently-wrong
+  `gradient` at cons-routed vector/list points, and the residual
+  `hessian`/`laplacian` variable-bound case behind them.
+- **Reverse-mode training loops stay flat under `with-region`.** The AD tape's
+  node-pointer array now grows from the tape's owning arena, so it is reclaimed
+  with the region at `region_pop` instead of accreting residual memory each step.
+
+### High-precision numerics
+
+- **Ozaki-II exact DGEMM** recovers full-f64 `C = A*B` from reduced-precision
+  tensor cores, certified against an independent CPU f64 reference and against
+  the native 128-bit integer path. A CUDA INT8 (IMMA) tier and a Metal
+  reduced-precision fully-GPU fast tier are both opt-in and default off; on CUDA
+  the INT8 path is engaged only when a measured crossover and an accuracy-budget
+  selector show it beating native `cublasDgemm` (externally contributed).
+- **`linear-solve`** is a full-f64 dense solver with a mixed-precision
+  iterative-refinement fast path that certifies a full-f64 residual and falls
+  back to a plain-f64 LU when it cannot — correctness is guaranteed, the speedup
+  is opportunistic.
+- **Native 128-bit integer type `i128`** — a first-class fixed-width wrapping
+  signed integer off the numeric tower, with a full builtin surface on both the
+  native and VM paths that compute bit-identical results.
+
+### Types
+
+- **Checked `(the <type> expr)` ascription** asserts a type to the checker as a
+  trusted assertion and is a pure runtime no-op (byte-identical IR).
+- **Predicate-guarded narrowing** across `if` and `and` for eight type
+  predicates, cancelled at `set!`; **sum-type annotations honored on named-let
+  parameters**; a **numeric-tower join** gives recursive accumulators their
+  least-upper-bound numeric type. Nine new type-system tests including negative
+  soundness cases.
+- **Linear `Qubit` type** with use-exactly-once enforcement on `define`d linear
+  parameters, giving quantum registers a no-cloning guarantee at the type level.
+  The linear checker's scope handling and conditional-branch counting are
+  hardened so that leaving a scope clears its linear bindings and a linear value
+  used in exactly one branch of an `if`/`cond` is accepted (externally
+  contributed).
+
+### Printer
+
+- **Shortest-round-trip numeric printing (R7RS 6.2.6).** `display`, `write`, and
+  `number->string` emit the shortest decimal that reads back as the identical
+  `double`; integral doubles keep their no-`.0` form; native and VM output is
+  byte-identical through one shared portable-C routine. `(sqrt 2.0)` prints
+  `1.4142135623730951`.
+
+### VM parity and quantum
+
+- **Reverse/forward-mode `gradient` reaches full VM parity** (see *Exact
+  gradients through every callable form* above), so the parity manifest gains
+  `op:GRADIENT` and `op:DERIVATIVE` as `vm-supported` and the hosted VM is
+  self-differentiating; higher-order nesting stays native-only.
+- **Hosted-VM tensor matmul parity** is complete: `arange` in 1/2/3-argument
+  forms, nested-literal tensor operands, and multi-dimensional `tensor-ref` /
+  `tensor-set!`.
+- **Moonlab pinned to v1.2.0** adds `vqe_compute_qgt` (quantum geometric tensor
+  / quantum natural gradient) and a smooth first-principles H2/LiH
+  potential-energy surface; the H2 equilibrium oracle at 0.735 Å is updated to
+  `-1.142200155381` Ha. Differentiable quantum-chemistry examples and an
+  arbitrary-order-AD H2 vibrational-frequency example ship with the release.
+
+### Toolchain and packaging
+
+- **Transitive FFI-link discovery, with fatal link failures under `-r`.** Native
+  agent-FFI link requirements now propagate through the full transitive
+  `(load …)` / `(import …)` / `(require …)` source closure, so a dependency
+  reached only indirectly is linked instead of failing the native link with
+  unresolved symbols; and a generated-program link failure under `-r` is now
+  fatal (nonzero exit) instead of being silently masked by a reduced in-process
+  fallback that exited zero.
+- **Homebrew-compatible builds.** Every bundled agent-FFI dependency resolves
+  without a live download, so `brew install` works, while the default developer
+  and release builds stay byte-for-byte unchanged. Pre-existing packaging bugs
+  that left the keg non-functional (missing runtime and agent-FFI archives,
+  misplaced module sources) are fixed, and the release auto-bump anchors its
+  substitutions so the new dependency pins survive a version bump.
+
+### Assurance
+
+- **Dynamic edge coverage for the v1.3.4 surface.** A seeded, bounded,
+  depth-parametric generator and runner reconcile the generative/adversarial
+  harnesses with every new-feature family — nursery iter-scope loops, capturing
+  `parallel-map`, exact gradient through callable/curried forms, `i128`
+  boundaries, native tensor/`matmul`, the round-trip printer, and the low-level
+  AD tape — each probe self-checking against a computed ground truth across JIT,
+  AOT-O0, AOT-O2, and the VM, and gated in ICC.
+- **Coverage-floor hardening.** The executable language-surface manifest is
+  regenerated for the new VM special forms and the coverage floor is enforced
+  across the new-feature families, so a newly public surface cannot ship without
+  executable evidence.
+- **WASM execute-and-diff differential lane.** A new lane builds the VM
+  WebAssembly module from current source, executes the VM-supported corpus under
+  Node, and byte-diffs its output against native `eshkol-run -r`, so WASM output
+  is now gated against native rather than only checked for a valid binary;
+  divergences are tracked per file (EXCLUDED / XFAIL, with an unexpected match
+  failing the gate).
+
+---
+
 # Eshkol v1.3.3-evolve — Release Notes
 
 Windows ARM64 packages now use a single platform-correct JIT target contract

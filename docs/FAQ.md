@@ -88,7 +88,7 @@ Eshkol provides three modes:
 2. **Forward-mode** (`derivative`): Dual number arithmetic. Efficient for functions with few inputs.
 3. **Reverse-mode** (`gradient`): Computational graph construction. Efficient for functions with many inputs (e.g., neural networks).
 
-All three are compiler primitives, not library functions. The compiler knows how to differentiate your code.
+All three are compiler primitives, not library functions. The compiler knows how to differentiate your code. `gradient` is exact reverse-mode AD however the callable is reached — named directly, passed through a function parameter, wrapped, or applied in curried form; `(gradient f pt)` through a wrapper and the curried `((gradient f) pt)` are byte-identical to the direct call, with no finite-difference fallback in the gradient path.
 
 ### What is the consciousness engine?
 
@@ -110,7 +110,7 @@ Eshkol compiles to native machine code via LLVM. Arithmetic and tensor operation
 
 ### Does Eshkol use garbage collection?
 
-No. Eshkol uses Ownership-Aware Lexical Regions (OALR) — arena-based allocation where memory is freed deterministically at scope boundaries. This provides microsecond-scale worst-case guarantees suitable for real-time systems.
+No. Eshkol uses Ownership-Aware Lexical Regions (OALR) — arena-based allocation where memory is freed deterministically at scope boundaries. This provides microsecond-scale worst-case guarantees suitable for real-time systems. As of v1.3.4, a resident tick/daemon loop reclaims its per-iteration garbage automatically — even when it mutates persistent state every iteration — so RSS stays flat without any explicit `with-region` annotation (`with-region` remains available for scratch regions but is no longer required).
 
 ### How does GPU dispatch work?
 
