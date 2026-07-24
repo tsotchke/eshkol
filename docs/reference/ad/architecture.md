@@ -131,6 +131,45 @@ path and silently return zeros. See [support-matrix.md](support-matrix.md).
 
 ---
 
+## Callable-arity recovery — `gradient` through wrappers and curried forms
+
+`gradient` is exact reverse-mode AD **regardless of how the callable is reached**
+— named directly, passed in through a function parameter, wrapped, or applied in
+curried form. There is **no finite-difference fallback** anywhere in the gradient
+path; a claim of "FD" for any of these forms is stale.
+
+The direct-call path always unpacked an N-element point into N scalar arguments
+using the callable's arity. A first-class-tensor-loss path added later
+(reverse-mode element seeding) unconditionally captured every vector/list/tensor
+point and invoked the closure with a **single tensor argument**, ignoring the
+callable's real arity. That shadowed the correct forward path, so when the
+callable was reached *indirectly* — `(gradient f point)` where `f` came through a
+parameter, or the curried `((gradient f) point)` — a multi-parameter scalar loss
+such as `(loss x y)` was invoked as `loss(<tensor>)` and its scalar body
+misdispatched.
+
+The fix recovers the callable's arity from its **closure metadata** (no closure
+ABI change) and unpacks the point accordingly, so the indirect and curried forms
+are byte-identical to the direct call for scalar multi-argument, vector, and
+non-polynomial losses, on both the JIT and AOT paths. A 25-check suite pins the
+direct/indirect/curried equivalence.
+
+```scheme
+;; direct, indirect, and curried all agree exactly:
+(define (loss x y) (+ (* x x) (* y y)))
+(gradient loss (vector 3.0 4.0))            ; direct
+(define (apply-grad f pt) (gradient f pt))
+(apply-grad loss (vector 3.0 4.0))          ; through a parameter
+((gradient loss) (vector 3.0 4.0))          ; curried
+;; => #(6 8) in every case
+```
+
+A related fix follows transitive closure captures in a **custom vector-Jacobian
+product**: a custom-VJP backward closure that reached a captured value through an
+intermediate closure previously had its contribution silently dropped (zero
+gradient); the capture walk now follows transitive references so the node
+contributes its full sensitivity.
+
 ## Numeric boundary (summary)
 
 The AD engine operates on `double` and the jet/dual structs only. Bignums,
