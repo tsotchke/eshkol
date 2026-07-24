@@ -18,6 +18,14 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
  * opcode forms. The caller emits the combining opcode (which consumes the
  * operands) and then restores c->n_locals to its saved entry value.
  */
+/* Pack a function's declared fixed arity into bits 32..40 of its func-PC
+ * constant (bit 40 = present flag).  The PC occupies only the low 32 bits, so
+ * nested-closure PC re-basing (which adds a small offset to the low word) and
+ * ESKB reload leave the arity intact; OP_CLOSURE unpacks it into
+ * closure.arity, which vm_closure_arity() reports to `gradient`. */
+#define VM_PACK_FUNC_ARITY(pc, arity) \
+    ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
+
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
@@ -259,17 +267,30 @@ static void compile_form_case(FuncChunk* c, Node* node, int tail) {
 static void compile_form_require(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
+    /* A `(require …)` form is an expression and MUST leave exactly one value on
+     * the stack when it adds no top-level binding: the top-level (and function
+     * body) compilers emit an OP_POP after any expression that grew no local,
+     * so a require that emits nothing would have that POP discard a *live*
+     * value — silently shifting every subsequent binding down one slot (the
+     * classic "define after (require stdlib) is unbound" corruption).  The
+     * no-op fast paths below therefore push an explicit OP_NIL placeholder that
+     * the caller's POP balances; the file-loading path adds real bindings, so a
+     * placeholder is emitted there only if it happened to add none. */
+    int locals_at_start = c->n_locals;
     if (node->n_children >= 2 && node->children[1]->type == N_SYMBOL) {
         const char* mod_name = node->children[1]->symbol;
         /* Track already-loaded modules to avoid double-loading */
         for (int i = 0; i < g_compiler_ctx.n_loaded; i++) {
-            if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) return;
+            if (strcmp(g_compiler_ctx.loaded_modules[i], mod_name) == 0) {
+                chunk_emit(c, OP_NIL, 0);
+                return;
+            }
         }
         if (g_compiler_ctx.n_loaded < 64)
             strncpy(g_compiler_ctx.loaded_modules[g_compiler_ctx.n_loaded++], mod_name, 127);
 
         /* stdlib is the prelude — builtins already available */
-        if (strcmp(mod_name, "stdlib") == 0) return;
+        if (strcmp(mod_name, "stdlib") == 0) { chunk_emit(c, OP_NIL, 0); return; }
 
         /* Build file path: module.name → lib/module/name.esk */
         char path[512];
@@ -283,6 +304,7 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
 
 #ifdef ESHKOL_VM_NO_DISASM
         /* WASM mode: no filesystem access. Prelude builtins already available. */
+        chunk_emit(c, OP_NIL, 0);
         return;
 #endif
         /* Read and parse the file */
@@ -322,6 +344,9 @@ static void compile_form_require(FuncChunk* c, Node* node, int tail) {
         }
         /* If file not found, silently continue (builtins always available) */
     }
+    /* Balance the caller's POP when the require added no binding of its own
+     * (empty/absent module, or a malformed require). */
+    if (c->n_locals == locals_at_start) chunk_emit(c, OP_NIL, 0);
     return;
 }
 
@@ -1173,6 +1198,17 @@ static void compile_form_letrec_star(FuncChunk* c, Node* node, int tail) {
  *        rest parameter via OP_PACK_REST), then inlines that chunk's code
  *        into @p c and emits an OP_CLOSURE over it.
  */
+/** @brief Resolve a formal-parameter node to its bound name, tolerating a
+ *         type-annotated `(name : type)` list form (the name is its first
+ *         child); a bare symbol is returned verbatim, anything else as "". */
+static const char* param_name(Node* p) {
+    if (!p) return "";
+    if (p->type == N_SYMBOL) return p->symbol;
+    if (p->type == N_LIST && p->n_children >= 1 && p->children[0]->type == N_SYMBOL)
+        return p->children[0]->symbol;
+    return "";
+}
+
 static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     Node* head = node->children[0];
     (void)head; (void)tail;
@@ -1183,7 +1219,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         return;
     }
     if (node->children[1]->type == N_LIST && node->children[1]->n_children >= 1) {
-        /* Function definition: (define (name params...) body) */
+        /* Function definition: (define (name params...) [: rettype] body) */
         Node* sig = node->children[1];
         char* fname = sig->children[0]->symbol;
 
@@ -1206,17 +1242,25 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         }
         func.param_count = has_rest ? 255 : fixed_params;
 
-        /* Add fixed parameters as locals */
+        /* Add fixed parameters as locals.  Each parameter may be a bare symbol
+         * or a type-annotated (name : type) list — bind the name in both. */
         for (int i = 1; i <= fixed_params; i++)
-            add_local(&func, sig->children[i]->symbol);
+            add_local(&func, param_name(sig->children[i]));
         /* Add rest parameter if present */
         if (has_rest && fixed_params + 2 < sig->n_children) {
-            add_local(&func, sig->children[fixed_params + 2]->symbol); /* name after dot */
+            add_local(&func, param_name(sig->children[fixed_params + 2])); /* name after dot */
             chunk_emit(&func, OP_PACK_REST, fixed_params);
         }
 
+        /* Skip a `: rettype` return-type annotation between the signature and
+         * the body (e.g. (define (f x) : real (+ x 1))). */
+        int body_start = 2;
+        if (node->n_children >= 4 && node->children[2]->type == N_SYMBOL
+            && strcmp(node->children[2]->symbol, ":") == 0)
+            body_start = 4;
+
         /* Compile body expressions */
-        for (int i = 2; i < node->n_children; i++) {
+        for (int i = body_start; i < node->n_children; i++) {
             int is_last = (i == node->n_children - 1);
             compile_expr(&func, node->children[i], is_last);
             if (!is_last) chunk_emit(&func, OP_POP, 0);
@@ -1234,7 +1278,7 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
 
         int jover = placeholder(c);
         int actual_func_pc = c->code_len;
-        c->constants[cfunc].as.i = actual_func_pc;
+        c->constants[cfunc].as.i = VM_PACK_FUNC_ARITY(actual_func_pc, func.param_count);
 
         /* Adjust nested function PC constants: any constant in the child
          * that was used as a CLOSURE operand contains a PC relative to the
@@ -1672,7 +1716,7 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
     int cfunc = chunk_add_const(c, INT_VAL(0));
     int jover = placeholder(c);
     int func_start = c->code_len;
-    c->constants[cfunc].as.i = func_start;
+    c->constants[cfunc].as.i = VM_PACK_FUNC_ARITY(func_start, func.param_count);
 
     int const_map2[MAX_CONSTS];
     for (int i = 0; i < func.n_constants; i++)
@@ -2930,6 +2974,81 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     if (is_sym(head, "real?") && node->n_children == 2) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return;
+    }
+
+    /* `gradient` special form: currying + point-spreading, lowered so the
+     * callable stays on the operand stack of the native gradient primitive
+     * (call id 750) rather than being routed through an intermediate Scheme
+     * wrapper frame — a first-class/named loss reached through `f` is then
+     * differentiated by the closure bridge exactly as the native path does.
+     * Forms:
+     *   (gradient f point)  -> native 750 directly (f, point on the stack)
+     *   (gradient f)        -> a curry closure that, applied to a single
+     *                          collection passes it whole, to a single scalar
+     *                          stays scalar, and to N scalars gathers a vector
+     *   (gradient f x y …)  -> (gradient f (vector x y …))
+     * The curry closure is synthesized from existing forms (no dedicated
+     * builtin, so the builtin count — and thus top-level slot layout — is
+     * unchanged), and the curried ((gradient f) …) form is that closure
+     * applied to its arguments; every surface form reaches native 750 with the
+     * same (f, point), so direct/wrapped/curried agree bit-for-bit. */
+    if (is_sym(head, "gradient") && node->n_children >= 2) {
+        if (node->n_children == 3) {
+            int s = c->n_locals;
+            compile_operands_tracked(c, node, 1, 2); /* push f, then point */
+            c->n_locals = s;
+            chunk_emit(c, OP_NATIVE_CALL, 750);
+            return;
+        }
+        Node* fexpr = node->children[1];
+        if (node->n_children == 2) {
+            /* (lambda __ga__
+             *   (if (if (pair? __ga__) (null? (cdr __ga__)) #f)
+             *       (gradient <f> (car __ga__))
+             *       (gradient <f> (list->vector __ga__)))) */
+            Node* single = make_call_node("if");
+            {   Node* isp = make_call_node("pair?");
+                add_child(isp, make_symbol_node("__ga__"));
+                Node* isn = make_call_node("null?");
+                Node* cdrn = make_call_node("cdr");
+                add_child(cdrn, make_symbol_node("__ga__"));
+                add_child(isn, cdrn);
+                add_child(single, isp);
+                add_child(single, isn);
+                Node* f_false = make_node(N_BOOL); f_false->numval = 0;
+                add_child(single, f_false);
+            }
+            Node* whole = make_call_node("gradient");
+            add_child(whole, fexpr);
+            {   Node* carn = make_call_node("car");
+                add_child(carn, make_symbol_node("__ga__"));
+                add_child(whole, carn); }
+            Node* spread = make_call_node("gradient");
+            add_child(spread, fexpr);
+            {   Node* l2v = make_call_node("list->vector");
+                add_child(l2v, make_symbol_node("__ga__"));
+                add_child(spread, l2v); }
+            Node* dispatch = make_call_node("if");
+            add_child(dispatch, single);
+            add_child(dispatch, whole);
+            add_child(dispatch, spread);
+            Node* lam = make_call_node("lambda");
+            add_child(lam, make_symbol_node("__ga__"));
+            add_child(lam, dispatch);
+            compile_expr(c, lam, tail);
+            /* Synthetic wrapper nodes intentionally leak (bounded, one per
+             * curried occurrence); `fexpr` is shared with `node` and freed with
+             * the top-level AST, so it must NOT be freed here. */
+            return;
+        }
+        /* n_children >= 4: (gradient f a b …) -> (gradient f (vector a b …)). */
+        Node* vec = make_call_node("vector");
+        for (int i = 2; i < node->n_children; i++) add_child(vec, node->children[i]);
+        Node* grad = make_call_node("gradient");
+        add_child(grad, fexpr);
+        add_child(grad, vec);
+        compile_expr(c, grad, tail);
+        return;
     }
 
     /* Function call: (f arg1 arg2 ...)
