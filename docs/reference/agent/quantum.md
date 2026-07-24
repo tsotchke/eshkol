@@ -108,6 +108,14 @@ models and released with `hamiltonian-destroy!` (or scoped with
 | `vqe-energy` | `(vqe-energy ham params)` | Exact ideal-state energy E(params) of the default one-layer hardware-efficient ansatz. **Differentiable** (see below) |
 | `vqe-gradient` | `(vqe-gradient ham params)` | Moonlab's exact dE/dtheta vector. `params` must be a vector with exactly `2*nqubits` entries; wrong length raises. Reverse-mode adjoint differentiation, no finite differences |
 
+> **Moonlab v1.2.0 (pinned as of v1.3.4-evolve).** The pinned backend adds the
+> quantum geometric tensor (`vqe_compute_qgt` in the Moonlab API), which supplies
+> the Fubini-Study metric behind **quantum-natural-gradient** optimization, and a
+> **smooth first-principles H2/LiH potential-energy surface** in place of the
+> earlier tabulated surface. With the smooth PES, the H2 equilibrium reference at
+> bond distance 0.735 Å is `-1.142200155381` Ha (a `-2.95e-5` Ha shift from the
+> earlier surface). See [MOONLAB_INTEGRATION](../../design/MOONLAB_INTEGRATION.md).
+
 ## `vqe-energy` is differentiable through Eshkol AD
 
 `vqe-energy` delegates to the `vqe-energy-primitive` compiler builtin rather
