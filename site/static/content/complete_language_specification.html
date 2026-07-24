@@ -810,6 +810,44 @@ Type Aliases</h4>
 <pre class="scheme"><code>(define-type Point (pair real real))
 (define-type (Maybe a) (+ a null))
 (define-type (List a) (list a))</code></pre>
+<h4 id="checked-ascription-the-type-expr">3.6.6 Checked Ascription —
+<code>(the &lt;type&gt; expr)</code></h4>
+<p><strong>Syntax:</strong></p>
+<pre class="scheme"><code>(the &lt;type&gt; expr)</code></pre>
+<p>Asserts to the type checker that <code>expr</code> has type
+<code>&lt;type&gt;</code>. It is a <strong>trusted assertion</strong>:
+the checker narrows its view of <code>expr</code> to
+<code>&lt;type&gt;</code> and does not re-derive it. It is a pure
+<strong>runtime no-op</strong> — the emitted IR is byte-identical to
+<code>expr</code> alone (no runtime tag check, no cost), so
+<code>(the &lt;type&gt; expr)</code> evaluates to exactly the same value
+as <code>expr</code>.</p>
+<pre class="scheme"><code>(the number (car mixed-list))   ; the checker now treats this element as number
+(the (list real) xs)</code></pre>
+<h4 id="predicate-guarded-narrowing">3.6.7 Predicate-Guarded
+Narrowing</h4>
+<p>Inside a branch guarded by a type predicate, the checker narrows the
+tested value to that type. Narrowing is honored across <code>if</code>
+and <code>and</code>, and is <strong>cancelled</strong> at a
+<code>set!</code> of the narrowed variable. The narrowing predicates
+are:</p>
+<p><code>number?</code>, <code>integer?</code>, <code>string?</code>,
+<code>symbol?</code>, <code>pair?</code>, <code>null?</code>,
+<code>vector?</code>, <code>procedure?</code>.</p>
+<pre class="scheme"><code>(if (number? x) (+ x 1) 0)      ; x : number in the then-branch
+(and (pair? p) (car p))         ; p : pair for (car p)</code></pre>
+<p>Additionally: <strong>sum-type annotations are honored on
+<code>named-let</code> parameters</strong>, and a <strong>numeric-tower
+join</strong> gives a recursive accumulator the least-upper-bound of the
+numeric types that flow into it (so an integer accumulator that later
+takes a rational or real value is accepted rather than rejected).</p>
+<h4 id="linear-types-qubit">3.6.8 Linear Types — <code>Qubit</code></h4>
+<p><code>Qubit</code> is a first-class <strong>linear</strong> type: its
+values must be used exactly once. A <code>define</code>d function may
+declare linear parameters, and the checker enforces the use-exactly-once
+discipline (both double-use and drop are rejected), giving
+quantum-register operations a no-cloning guarantee at the type
+level.</p>
 <h3 id="module-system">3.7 Module System</h3>
 <h4 id="require---import-modules">3.7.1 <code>require</code> - Import
 Modules</h4>
