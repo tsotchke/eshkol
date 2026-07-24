@@ -7312,9 +7312,26 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
 
     BasicBlock* jac_heap_dispatch = BasicBlock::Create(ctx_.context(), "jac_heap_dispatch", current_func);
     BasicBlock* jac_check_legacy = BasicBlock::Create(ctx_.context(), "jac_check_legacy", current_func);
+    BasicBlock* jac_check_cons = BasicBlock::Create(ctx_.context(), "jac_check_cons", current_func);
+    BasicBlock* jac_list_to_svec = BasicBlock::Create(ctx_.context(), "jac_list_to_svec", current_func);
     BasicBlock* jac_scheme_vector_input = BasicBlock::Create(ctx_.context(), "jac_scheme_vector", current_func);
     BasicBlock* jac_tensor_input = BasicBlock::Create(ctx_.context(), "jac_tensor_input", current_func);
     BasicBlock* jac_merge_input = BasicBlock::Create(ctx_.context(), "jac_merge_input", current_func);
+
+    // ESH-0360: the scheme-vector path reads the point through this slot so a
+    // (list …) point can be normalized to a Scheme vector before it (mirrors
+    // gradient's grad_list_to_svec / hessian's hess_list_to_svec). The #343
+    // cons→svec point normalization was applied to the scalar-output operators
+    // (gradient/hessian) but NOT to the vector-field operators — a (list …) point
+    // (HEAP_SUBTYPE_CONS) then fell through to the tensor path and its cons cell
+    // was misread as [length][elems] → SIGSEGV (found by the P8 escape-closure
+    // pillar; the identical point as #(…)/(vector …)/(tensor …)/VAR-bound worked).
+    llvm::AllocaInst* jac_input_slot;
+    {
+        llvm::IRBuilder<> jb(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        jac_input_slot = jb.CreateAlloca(ctx_.taggedValueType(), nullptr, "jac_input_pt");
+    }
+    ctx_.builder().CreateStore(vector_val, jac_input_slot);
 
     // First check for HEAP_PTR (consolidated format)
     ctx_.builder().CreateCondBr(is_heap_ptr, jac_heap_dispatch, jac_check_legacy);
@@ -7325,7 +7342,33 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* jac_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), jac_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
     Value* jac_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), jac_header_ptr);
     Value* jac_is_vec_subtype = ctx_.builder().CreateICmpEQ(jac_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-    ctx_.builder().CreateCondBr(jac_is_vec_subtype, jac_scheme_vector_input, jac_tensor_input);
+    ctx_.builder().CreateCondBr(jac_is_vec_subtype, jac_scheme_vector_input, jac_check_cons);
+
+    // A (list …) point is a cons cell (HEAP_SUBTYPE_CONS): convert it to a Scheme
+    // vector so it takes the same path as a (vector …) point, instead of being
+    // misread as a tensor.
+    ctx_.builder().SetInsertPoint(jac_check_cons);
+    Value* jac_is_cons_subtype = ctx_.builder().CreateICmpEQ(jac_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    ctx_.builder().CreateCondBr(jac_is_cons_subtype, jac_list_to_svec, jac_tensor_input);
+
+    ctx_.builder().SetInsertPoint(jac_list_to_svec);
+    {
+        Value* l2s_arena = ctx_.builder().CreateLoad(
+            PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+        llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
+        if (!l2s_fn) {
+            llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            l2s_fn = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                "eshkol_list_to_svec", &ctx_.module());
+        }
+        Value* jac_svec = ctx_.builder().CreateCall(l2s_fn, {l2s_arena, jac_input_slot});
+        Value* jac_svec_int = ctx_.builder().CreatePtrToInt(jac_svec, ctx_.int64Type());
+        Value* jac_svec_tagged = tagged_.packPtr(jac_svec_int, ESHKOL_VALUE_HEAP_PTR);
+        ctx_.builder().CreateStore(jac_svec_tagged, jac_input_slot);
+        ctx_.builder().CreateBr(jac_scheme_vector_input);
+    }
 
     // Legacy VECTOR_PTR fallback
     ctx_.builder().SetInsertPoint(jac_check_legacy);
@@ -7334,7 +7377,8 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     // SCHEME VECTOR: Convert to tensor format
     ctx_.builder().SetInsertPoint(jac_scheme_vector_input);
 
-    Value* jac_scheme_vec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* jac_scheme_input_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), jac_input_slot);
+    Value* jac_scheme_vec_ptr_int = tagged_.unpackInt64(jac_scheme_input_val);
     Value* jac_scheme_vec_ptr = ctx_.builder().CreateIntToPtr(jac_scheme_vec_ptr_int, ctx_.builder().getPtrTy());
     Value* jac_scheme_len_ptr = ctx_.builder().CreateBitCast(jac_scheme_vec_ptr, PointerType::getUnqual(ctx_.context()));
     Value* jac_scheme_len = ctx_.builder().CreateLoad(ctx_.int64Type(), jac_scheme_len_ptr);
@@ -9803,9 +9847,23 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     Function* current_func = ctx_.builder().GetInsertBlock()->getParent();
     BasicBlock* curl_heap_dispatch = BasicBlock::Create(ctx_.context(), "curl_heap_dispatch", current_func);
     BasicBlock* curl_check_legacy = BasicBlock::Create(ctx_.context(), "curl_check_legacy", current_func);
+    BasicBlock* curl_check_cons = BasicBlock::Create(ctx_.context(), "curl_check_cons", current_func);
+    BasicBlock* curl_list_to_svec = BasicBlock::Create(ctx_.context(), "curl_list_to_svec", current_func);
     BasicBlock* curl_scheme_input = BasicBlock::Create(ctx_.context(), "curl_scheme_input", current_func);
     BasicBlock* curl_tensor_input = BasicBlock::Create(ctx_.context(), "curl_tensor_input", current_func);
     BasicBlock* curl_merge_n = BasicBlock::Create(ctx_.context(), "curl_merge_n", current_func);
+
+    // ESH-0360: normalize a (list …) point to a Scheme vector before the
+    // length/dimension read below, mirroring jacobian's jac_list_to_svec. curl
+    // also delegates to jacobian() (fixed there) for the derivative values, but
+    // its OWN dimension extraction here would SIGSEGV on a HEAP_SUBTYPE_CONS
+    // point misread as a tensor (found by the P8 escape-closure pillar).
+    llvm::AllocaInst* curl_input_slot;
+    {
+        llvm::IRBuilder<> cb(&current_func->getEntryBlock(), current_func->getEntryBlock().begin());
+        curl_input_slot = cb.CreateAlloca(ctx_.taggedValueType(), nullptr, "curl_input_pt");
+    }
+    ctx_.builder().CreateStore(vector_val, curl_input_slot);
 
     ctx_.builder().CreateCondBr(curl_is_heap_ptr, curl_heap_dispatch, curl_check_legacy);
 
@@ -9815,7 +9873,29 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
     Value* curl_header_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), curl_heap_ptr_val, ConstantInt::get(ctx_.int64Type(), -8));
     Value* curl_subtype = ctx_.builder().CreateLoad(ctx_.int8Type(), curl_header_ptr);
     Value* curl_is_vec_subtype = ctx_.builder().CreateICmpEQ(curl_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_VECTOR));
-    ctx_.builder().CreateCondBr(curl_is_vec_subtype, curl_scheme_input, curl_tensor_input);
+    ctx_.builder().CreateCondBr(curl_is_vec_subtype, curl_scheme_input, curl_check_cons);
+
+    // A (list …) point is a cons cell (HEAP_SUBTYPE_CONS): convert to a Scheme
+    // vector so the length read below sees a vector, not a misread tensor.
+    ctx_.builder().SetInsertPoint(curl_check_cons);
+    Value* curl_is_cons_subtype = ctx_.builder().CreateICmpEQ(curl_subtype, ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_CONS));
+    ctx_.builder().CreateCondBr(curl_is_cons_subtype, curl_list_to_svec, curl_tensor_input);
+
+    ctx_.builder().SetInsertPoint(curl_list_to_svec);
+    {
+        llvm::Function* l2s_fn = ctx_.module().getFunction("eshkol_list_to_svec");
+        if (!l2s_fn) {
+            llvm::FunctionType* l2s_ty = llvm::FunctionType::get(
+                ctx_.builder().getPtrTy(),
+                {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy()}, false);
+            l2s_fn = llvm::Function::Create(l2s_ty, llvm::Function::ExternalLinkage,
+                "eshkol_list_to_svec", &ctx_.module());
+        }
+        Value* curl_svec = ctx_.builder().CreateCall(l2s_fn, {arena_ptr, curl_input_slot});
+        Value* curl_svec_int = ctx_.builder().CreatePtrToInt(curl_svec, ctx_.int64Type());
+        ctx_.builder().CreateStore(tagged_.packPtr(curl_svec_int, ESHKOL_VALUE_HEAP_PTR), curl_input_slot);
+        ctx_.builder().CreateBr(curl_scheme_input);
+    }
 
     // Legacy VECTOR_PTR fallback
     ctx_.builder().SetInsertPoint(curl_check_legacy);
@@ -9823,7 +9903,8 @@ llvm::Value* AutodiffCodegen::curl(const eshkol_operations_t* op) {
 
     // SCHEME VECTOR: Extract dimension from vector length
     ctx_.builder().SetInsertPoint(curl_scheme_input);
-    Value* curl_svec_ptr_int = tagged_.unpackInt64(vector_val);
+    Value* curl_effective_pt = ctx_.builder().CreateLoad(ctx_.taggedValueType(), curl_input_slot);
+    Value* curl_svec_ptr_int = tagged_.unpackInt64(curl_effective_pt);
     Value* curl_svec_ptr = ctx_.builder().CreateIntToPtr(curl_svec_ptr_int, ctx_.builder().getPtrTy());
     Value* curl_svec_len_ptr = ctx_.builder().CreateBitCast(curl_svec_ptr, PointerType::getUnqual(ctx_.context()));
     Value* curl_svec_n = ctx_.builder().CreateLoad(ctx_.int64Type(), curl_svec_len_ptr);

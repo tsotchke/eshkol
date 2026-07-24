@@ -1,0 +1,126 @@
+;; ESH-0360 regression — jacobian / divergence / curl at a (list …) point.
+;;
+;; The vector-field AD operators classify their differentiation POINT by reading
+;; a heap subtype and branching vector→scheme-vector else→tensor. #343 added the
+;; cons→svec normalization (a (list …) point is HEAP_SUBTYPE_CONS, not a vector)
+;; to the SCALAR-output operators (gradient / hessian, hence laplacian), but NOT
+;; to jacobian / divergence / curl — so a (list …) point fell through to the
+;; tensor path, its cons cell was misread as [length][elems], and all three
+;; SIGSEGV'd. gradient / hessian / laplacian and every other point-construction
+;; form (#(…) / (vector …) / (tensor …) / VAR-bound / let-bound) were correct.
+;; Found by the P8 escape-closure binding-form generator.
+;;
+;; Invariant (doubly strong, mirrors the P8 axis-1 generator):
+;;   (G) every operator at a (list …) point equals its CLOSED-FORM value, and
+;;   (A) it equals the identical point written as #(…)/(vector …)/(tensor …)/VAR.
+;; A regression re-introduces either a crash (no PASS marker, nonzero exit) or a
+;; wrong value (a FAIL: line). Prints a single terminal PASS: marker only when
+;; every cell holds.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (close? a b) (< (abs (- a b)) 1e-6))
+
+(define (check name expected actual)
+  (if (close? expected actual)
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline))))
+
+;; ── fields R^3 -> R^3 (linear, so J/div/curl are point-independent) ────────
+;; F: diagonal linear field (the ESH-0360 repro field).
+;;   jacobian = diag(1.5 2.0 2.5) ; divergence = 6.0 ; curl = (0 0 0).
+(define (F v)
+  (vector (* 1.5 (vector-ref v 0))
+          (* 2.0 (vector-ref v 1))
+          (* 2.5 (vector-ref v 2))))
+
+;; G: a field with a NONZERO curl so curl is exercised, not just checked ~0.
+;;   G = (-y, x, 0.5 z)
+;;   jacobian = [[0 -1 0] [1 0 0] [0 0 0.5]] ; divergence = 0.5 ; curl = (0 0 2).
+(define (G v)
+  (vector (* -1.0 (vector-ref v 1))
+          (*  1.0 (vector-ref v 0))
+          (*  0.5 (vector-ref v 2))))
+
+;; ── point in every construction form (all denote the same (1 2 3)) ─────────
+(define p-list-var (list 1.0 2.0 3.0))
+(define (mk-list) (list 1.0 2.0 3.0))
+
+;; ── jacobian F at a (list …) point vs closed form ──────────────────────────
+(define JF-list (jacobian F (list 1.0 2.0 3.0)))
+(check "jacF list [0][0]" 1.5 (tensor-ref JF-list 0 0))
+(check "jacF list [1][1]" 2.0 (tensor-ref JF-list 1 1))
+(check "jacF list [2][2]" 2.5 (tensor-ref JF-list 2 2))
+(check "jacF list [0][1]" 0.0 (tensor-ref JF-list 0 1))
+(check "jacF list [1][2]" 0.0 (tensor-ref JF-list 1 2))
+(check "jacF list [2][0]" 0.0 (tensor-ref JF-list 2 0))
+
+;; agreement: (list …) == (vector …) point, element by element.
+(define JF-vec (jacobian F (vector 1.0 2.0 3.0)))
+(check "jacF list==vec [0][0]" (tensor-ref JF-vec 0 0) (tensor-ref JF-list 0 0))
+(check "jacF list==vec [1][1]" (tensor-ref JF-vec 1 1) (tensor-ref JF-list 1 1))
+(check "jacF list==vec [2][2]" (tensor-ref JF-vec 2 2) (tensor-ref JF-list 2 2))
+
+;; other point-construction forms must all agree (close the whole class).
+(define JF-veclit (jacobian F #(1.0 2.0 3.0)))
+(define JF-tensor (jacobian F (tensor 3 1.0 2.0 3.0)))
+(define JF-varlist (jacobian F p-list-var))
+(define JF-fnret (jacobian F (mk-list)))
+(define JF-let (jacobian F (let ((q (list 1.0 2.0 3.0))) q)))
+(check "jacF veclit  [1][1]" 2.0 (tensor-ref JF-veclit 1 1))
+(check "jacF tensor  [1][1]" 2.0 (tensor-ref JF-tensor 1 1))
+(check "jacF varlist [1][1]" 2.0 (tensor-ref JF-varlist 1 1))
+(check "jacF fnret   [1][1]" 2.0 (tensor-ref JF-fnret 1 1))
+(check "jacF let     [1][1]" 2.0 (tensor-ref JF-let 1 1))
+
+;; ── divergence F at a (list …) point vs closed form and other forms ────────
+(check "divF list"    6.0 (divergence F (list 1.0 2.0 3.0)))
+(check "divF varlist" 6.0 (divergence F p-list-var))
+(check "divF let"     6.0 (divergence F (let ((q (list 1.0 2.0 3.0))) q)))
+(check "divF list==vec" (divergence F (vector 1.0 2.0 3.0))
+                        (divergence F (list 1.0 2.0 3.0)))
+
+;; ── curl F at a (list …) point (all components 0) ──────────────────────────
+(define CF-list (curl F (list 1.0 2.0 3.0)))
+(check "curlF list c0" 0.0 (vector-ref CF-list 0))
+(check "curlF list c1" 0.0 (vector-ref CF-list 1))
+(check "curlF list c2" 0.0 (vector-ref CF-list 2))
+
+;; ── nonzero-curl field G at a (list …) point vs closed form ────────────────
+(define JG-list (jacobian G (list 1.0 2.0 3.0)))
+(check "jacG list [0][1]" -1.0 (tensor-ref JG-list 0 1))
+(check "jacG list [1][0]"  1.0 (tensor-ref JG-list 1 0))
+(check "jacG list [2][2]"  0.5 (tensor-ref JG-list 2 2))
+(check "jacG list [0][0]"  0.0 (tensor-ref JG-list 0 0))
+
+(check "divG list" 0.5 (divergence G (list 1.0 2.0 3.0)))
+
+(define CG-list (curl G (list 1.0 2.0 3.0)))
+(define CG-vec  (curl G (vector 1.0 2.0 3.0)))
+(check "curlG list c0" 0.0 (vector-ref CG-list 0))
+(check "curlG list c1" 0.0 (vector-ref CG-list 1))
+(check "curlG list c2" 2.0 (vector-ref CG-list 2))
+(check "curlG list==vec c2" (vector-ref CG-vec 2) (vector-ref CG-list 2))
+
+;; ── laplacian at a (list …) point (delegates to hessian; regression guard) ─
+;;   phi(v) = 1.5 v0^2 + 2.0 v1^2 + 2.5 v2^2 ; laplacian = 2*(1.5+2.0+2.5) = 12.
+(define (phi v)
+  (+ (* 1.5 (* (vector-ref v 0) (vector-ref v 0)))
+     (+ (* 2.0 (* (vector-ref v 1) (vector-ref v 1)))
+        (* 2.5 (* (vector-ref v 2) (vector-ref v 2))))))
+(check "laplacian list"    12.0 (laplacian phi (list 1.0 2.0 3.0)))
+(check "laplacian list==vec" (laplacian phi (vector 1.0 2.0 3.0))
+                             (laplacian phi (list 1.0 2.0 3.0)))
+
+;; ── terminal marker: PASS only when every cell held ────────────────────────
+(display "SUMMARY ") (display tests-passed) (display "/") (display tests-failed) (newline)
+(if (= tests-failed 0)
+    (begin (display "PASS: field ops at list point match closed forms and vector point") (newline))
+    (begin (display "FAIL: field ops at list point regressed") (newline)))

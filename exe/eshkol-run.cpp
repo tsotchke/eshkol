@@ -2206,6 +2206,14 @@ static EscapeAnalyzer g_escape_analyzer;
 static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& base_dir, bool debug_mode);
 static void load_file_asts(const std::string& filepath, std::vector<eshkol_ast_t>& asts, bool debug_mode);
 static bool g_source_parse_failed = false;
+// ESH-0361: a required module that does not resolve on ANY search path is a hard
+// dependency failure. process_requires() prints "Module '…' not found" and used
+// to `continue`, so the AOT driver compiled the program WITHOUT the module and
+// exited 0 — masking the failure (and, for `eshkol-run bad.esk -o out`, writing
+// a binary that silently dropped the dependency). Set here, checked before any
+// codegen so a genuinely missing require is fatal and nothing is written. Found
+// by the P8 escape-closure fault-injection matrix.
+static bool g_module_load_failed = false;
 
 static void print_help(int x = 0)
 {
@@ -3738,6 +3746,11 @@ static void process_requires(std::vector<eshkol_ast_t>& asts, const std::string&
                         eshkol_error("    - %s/%s.esk", g_lib_dir.c_str(), path_display.c_str());
                     }
                     eshkol_error("    - $ESHKOL_PATH entries");
+                    // ESH-0361: record the unresolved dependency so the driver can
+                    // refuse to emit a program that silently dropped it. Keep the
+                    // `continue` so every missing module is listed, not just the
+                    // first.
+                    g_module_load_failed = true;
                     continue;
                 }
 
@@ -4377,6 +4390,7 @@ int main(int argc, char **argv)
             // (they load submodules synchronously).
             std::vector<eshkol_ast_t> file_asts;
             file_asts.reserve(64);
+            eshkol_reset_parse_errors();
             {
                 eshkol_ast_t ast = eshkol_parse_next_ast(file);
                 while (ast.type != ESHKOL_INVALID) {
@@ -4388,6 +4402,20 @@ int main(int argc, char **argv)
                     file_asts.push_back(ast);
                     ast = eshkol_parse_next_ast(file);
                 }
+            }
+            // ESH-0361: a hard parse error (e.g. an unbalanced paren →
+            // "unexpected end of input in list") stops the parse loop at the
+            // ESHKOL_INVALID sentinel — which is ALSO the EOF marker — so without
+            // consulting the parser's error flag the -r path ran whatever prefix
+            // parsed and exited 0, masking the syntax error from any build step
+            // that trusts $?. Mirror the AOT path's post-load parse-error check
+            // and make it fatal after the diagnostic. Found by the P8
+            // escape-closure fault-injection matrix.
+            if (eshkol_parse_had_error()) {
+                eshkol_error("Source parsing failed; refusing to run a truncated program");
+                file.close();
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
             }
 
             // Process require/import up front so their module contents are
@@ -4586,6 +4614,28 @@ int main(int argc, char **argv)
 
     // First pass: Load source files to check for stdlib requirements
     // (We'll process requires after potentially adding stdlib.o)
+    //
+    // ESH-0361: verify every entry source exists and is readable BEFORE loading
+    // or compiling anything. load_file_asts() only prints "File not found" and
+    // returns void, so the AOT path then compiled the resulting EMPTY program to
+    // a ~5MB stdlib-only binary and exited 0 — shipping an executable that never
+    // contained the user program (the most harmful masked-failure cell). A
+    // missing/unreadable entry file is fatal here and nothing is written,
+    // symmetric with the -r path's top-level existence check. Found by the P8
+    // escape-closure fault-injection matrix.
+    for (const auto &source_file : source_files) {
+        if (!std::filesystem::exists(source_file)) {
+            eshkol_error("File not found: %s", source_file);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+        std::ifstream probe(source_file);
+        if (!probe.is_open()) {
+            eshkol_error("Failed to open file: %s", source_file);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+    }
     eshkol_reset_parse_errors();
     for (const auto &source_file : source_files) {
         load_file_asts(source_file, asts, debug_mode);
@@ -4736,6 +4786,16 @@ int main(int argc, char **argv)
 
         // Process imports in the loaded ASTs (legacy)
         process_imports(asts, base_dir, debug_mode);
+    }
+
+    // ESH-0361: a required module that did not resolve is a hard dependency
+    // failure — refuse to emit a program that silently dropped it (process_requires
+    // already named every missing module). Fatal BEFORE any codegen, so no binary
+    // is written; symmetric with the missing-source and parse-error gates above.
+    if (g_module_load_failed) {
+        eshkol_error("Unresolved module dependency; refusing to compile an incomplete program");
+        eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+        return 1;
     }
 
     // Handle AST dumping if requested
