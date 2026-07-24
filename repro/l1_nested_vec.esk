@@ -1,0 +1,2 @@
+(display (tensor-data (matmul (vector (vector 1.0 2.0) (vector 3.0 4.0)) (vector (vector 5.0 6.0) (vector 7.0 8.0)))) )
+(newline)

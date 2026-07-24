@@ -1981,6 +1981,79 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* #322: (arange stop) | (arange start stop) | (arange start stop step).
+     * The native handler (case 419) pops exactly (start, stop, step) in that
+     * stack order — bottom→top — matching the LLVM path
+     * (tensor_creation_codegen.cpp::arange):
+     *   (arange n)              -> arange(0, n, 1)      [0, 1, ..., n-1]
+     *   (arange start stop)     -> arange(start, stop, 1)
+     *   (arange start stop step)
+     * arange's BUILTINS-table entry is fixed-arity-1, so the 1- and 3-arg
+     * spellings cannot go through the generic builtin closure: that closure
+     * loads a single local and then the 3-pop native handler reads two stale
+     * stack slots for `start`/`stop`, yielding a bogus 1-element/empty tensor
+     * (the reshape/arange rejection in #322 — a malformed arange result is not
+     * a valid matmul operand). Emit the defaulted operands explicitly so all
+     * three arities are deterministic and match native. */
+    if (is_sym(head, "arange") && node->n_children >= 2 && node->n_children <= 4) {
+        if (node->n_children == 2) {
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));   /* start */
+            compile_expr(c, node->children[1], 0);                     /* stop  */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
+        } else if (node->n_children == 3) {
+            compile_expr(c, node->children[1], 0);                     /* start */
+            compile_expr(c, node->children[2], 0);                     /* stop  */
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(1)));   /* step  */
+        } else { /* node->n_children == 4 */
+            compile_expr(c, node->children[1], 0);                     /* start */
+            compile_expr(c, node->children[2], 0);                     /* stop  */
+            compile_expr(c, node->children[3], 0);                     /* step  */
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 419);
+        return;
+    }
+
+    /* #322: (tensor-ref t i j ...) — multi-dim element read with the indices
+     * spelled as separate trailing args (the native idiom, matched by the LLVM
+     * path). tensor-ref's BUILTINS-table entry is a fixed 2-arg (tensor, index)
+     * closure, so (tensor-ref C 0 1) otherwise loads only the first index and
+     * the extra dims are silently dropped — a flat access that returns the
+     * wrong element. The native handler (case 411) already accepts a *list*
+     * index for multi-dim access, so pack the trailing dims into a shape list
+     * at compile time (exactly like the reshape special form). The 2-arg forms
+     * — (tensor-ref C flat) and (tensor-ref C (list i j)) — are untouched. */
+    if ((is_sym(head, "tensor-ref") || is_sym(head, "tensor-get")) && node->n_children >= 4) {
+        compile_expr(c, node->children[1], 0);          /* the tensor */
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 2; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);                   /* -> (i j ...) */
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 411);
+        return;
+    }
+
+    /* #322: (tensor-set! t i j ... v) — multi-dim element write with the
+     * indices spelled as separate trailing args. tensor-set!'s BUILTINS-table
+     * entry is a fixed 3-arg (tensor, index, value) closure, so
+     * (tensor-set! A 0 1 v) otherwise binds `value` to the *second index* and
+     * drops the real value, silently no-op'ing the multi-dim write. The native
+     * handler (case 412) accepts a list index, so pack the middle dims into a
+     * shape list and keep the trailing value. Stack order for case 412 is
+     * (tensor, index-list, value) bottom→top. The 3-arg forms —
+     * (tensor-set! A flat v) and (tensor-set! A (list i j) v) — are untouched. */
+    if (is_sym(head, "tensor-set!") && node->n_children >= 5) {
+        compile_expr(c, node->children[1], 0);          /* the tensor */
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 2; i >= 2; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);                   /* -> (i j ...) */
+        }
+        compile_expr(c, node->children[node->n_children - 1], 0);  /* value */
+        chunk_emit(c, OP_NATIVE_CALL, 412);
+        return;
+    }
+
     /* ── Constant Folding ── */
     /* If all operands are compile-time constants, evaluate at compile time */
     if (node->type == N_LIST && node->n_children >= 3) {

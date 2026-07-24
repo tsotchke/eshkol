@@ -1,0 +1,1 @@
+(display (arange 6)) (newline)

@@ -203,6 +203,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
+  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
+  parity gap. Three defects, all the same root cause: variadic tensor builtins
+  whose native runtime handlers take more operands than their fixed-arity
+  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
+  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
+  table registered `arange` as arity-1, so `(arange n)` and
+  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
+  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
+  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
+  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
+  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
+  literal matmul was rejected instead of computed. (3) multi-dim
+  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
+  index/value against their fixed-arity table entries, returning/writing the
+  wrong element when reading back a matmul result. Fix: explicit VM-compiler
+  special forms that emit the defaulted/packed operands (mirroring the existing
+  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
+  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
+  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
+  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
+  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
+  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
+  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
+  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
 - **`parallel-map` corrupted results from closures using scope-based
   reclamation (memory-safety).** A closure mapped in parallel whose body used
   per-iteration scope reclamation — an internal named-let loop, or a builtin

@@ -1,0 +1,6 @@
+(define C (reshape (vector 10.0 13.0 28.0 40.0) 2 2))
+(display (tensor-ref C 0 0)) (newline)
+(display (tensor-ref C 0 1)) (newline)
+(display (tensor-ref C 1 0)) (newline)
+(display (tensor-ref C 1 1)) (newline)
+(display (tensor-ref C (list 0 1))) (newline)
