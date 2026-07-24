@@ -1,9 +1,17 @@
 # Eshkol v1.3.4-evolve — Release Notes
 
 A resident-correctness release. Every defect surfaced by long-duration resident
-workloads is fixed at the architectural root, and the high-precision numerics
-wave lands alongside a Moonlab v1.2.0 quantum pin, full hosted-VM tensor-matmul
-parity, and a round-tripping numeric printer.
+workloads, and by downstream users, is fixed at the architectural root:
+automatic memory reclamation matches explicit regions, `parallel-map` is
+race-free, gradients are exact through every callable form and every
+differentiation point, printed floats round-trip, and the strict type checker
+accepts idiomatic dynamic-but-validated code. `gradient` now runs at full parity
+on the bytecode VM as well as native codegen, so exact automatic differentiation
+is available on every substrate. The high-precision numerics wave — Ozaki-II
+exact and reduced-precision GEMM tiers on Metal and CUDA, a mixed-precision
+linear solver, and a native 128-bit integer type — lands alongside a Moonlab
+v1.2.0 quantum pin, full hosted-VM tensor-matmul parity, and a round-tripping
+numeric printer, over a hardened toolchain and a broadened assurance surface.
 
 ## Highlights
 
@@ -48,13 +56,38 @@ parity, and a round-tripping numeric printer.
 - **Custom-VJP transitive captures no longer silently zero.** A custom
   vector-Jacobian-product whose backward closure reached a captured value
   through an intermediate closure now contributes its full sensitivity.
+- **`gradient` now runs on the bytecode VM at full parity.** Forward/reverse-mode
+  `gradient` — direct, through a callable parameter, and curried — is
+  byte-identical to native codegen across the VM's source and bytecode axes, so
+  Eshkol is self-differentiating on every substrate. `op:GRADIENT` and
+  `op:DERIVATIVE` become `vm-supported` in the parity manifest; higher-order
+  nesting (gradient-of-derivative / Taylor tower) stays native-only. The public
+  low-level reverse-mode AD tape surface (`ad-pow`, `ad-gradient-of`,
+  `ad-value-of`, `ad-tape-length`) is completed on JIT and AOT at the same time.
+- **Whole-point tensor-loss gradients are exact — no silent zeros, no crash.** An
+  arity-1 loss whose body applies elementwise arithmetic to its whole
+  vector/tensor argument now backpropagates from the sole element for a
+  scalar-valued output and raises a clean `jacobian` diagnostic for a
+  vector-valued one, instead of dropping the tangent or dereferencing a non-AD
+  value.
+- **Differentiation points are classified by runtime value, not syntax.** A point
+  that is a variable bound to a vector, a general expression, or a `(the …)`
+  wrapper is now routed exactly like the identical literal — closing an
+  externally reported `hessian` crash and an externally reported silently-wrong
+  `gradient` at cons-routed vector/list points, and the residual
+  `hessian`/`laplacian` variable-bound case behind them.
+- **Reverse-mode training loops stay flat under `with-region`.** The AD tape's
+  node-pointer array now grows from the tape's owning arena, so it is reclaimed
+  with the region at `region_pop` instead of accreting residual memory each step.
 
 ### High-precision numerics
 
 - **Ozaki-II exact DGEMM** recovers full-f64 `C = A*B` from reduced-precision
   tensor cores, certified against an independent CPU f64 reference and against
   the native 128-bit integer path. A CUDA INT8 (IMMA) tier and a Metal
-  reduced-precision fully-GPU fast tier are both opt-in and default off.
+  reduced-precision fully-GPU fast tier are both opt-in and default off; on CUDA
+  the INT8 path is engaged only when a measured crossover and an accuracy-budget
+  selector show it beating native `cublasDgemm` (externally contributed).
 - **`linear-solve`** is a full-f64 dense solver with a mixed-precision
   iterative-refinement fast path that certifies a full-f64 residual and falls
   back to a plain-f64 LU when it cannot — correctness is guaranteed, the speedup
@@ -74,6 +107,10 @@ parity, and a round-tripping numeric printer.
   soundness cases.
 - **Linear `Qubit` type** with use-exactly-once enforcement on `define`d linear
   parameters, giving quantum registers a no-cloning guarantee at the type level.
+  The linear checker's scope handling and conditional-branch counting are
+  hardened so that leaving a scope clears its linear bindings and a linear value
+  used in exactly one branch of an `if`/`cond` is accepted (externally
+  contributed).
 
 ### Printer
 
@@ -85,6 +122,10 @@ parity, and a round-tripping numeric printer.
 
 ### VM parity and quantum
 
+- **Reverse/forward-mode `gradient` reaches full VM parity** (see *Exact
+  gradients through every callable form* above), so the parity manifest gains
+  `op:GRADIENT` and `op:DERIVATIVE` as `vm-supported` and the hosted VM is
+  self-differentiating; higher-order nesting stays native-only.
 - **Hosted-VM tensor matmul parity** is complete: `arange` in 1/2/3-argument
   forms, nested-literal tensor operands, and multi-dimensional `tensor-ref` /
   `tensor-set!`.
@@ -93,6 +134,36 @@ parity, and a round-tripping numeric printer.
   potential-energy surface; the H2 equilibrium oracle at 0.735 Å is updated to
   `-1.142200155381` Ha. Differentiable quantum-chemistry examples and an
   arbitrary-order-AD H2 vibrational-frequency example ship with the release.
+
+### Toolchain and packaging
+
+- **Transitive FFI-link discovery, with fatal link failures under `-r`.** Native
+  agent-FFI link requirements now propagate through the full transitive
+  `(load …)` / `(import …)` / `(require …)` source closure, so a dependency
+  reached only indirectly is linked instead of failing the native link with
+  unresolved symbols; and a generated-program link failure under `-r` is now
+  fatal (nonzero exit) instead of being silently masked by a reduced in-process
+  fallback that exited zero.
+- **Homebrew-compatible builds.** Every bundled agent-FFI dependency resolves
+  without a live download, so `brew install` works, while the default developer
+  and release builds stay byte-for-byte unchanged. Pre-existing packaging bugs
+  that left the keg non-functional (missing runtime and agent-FFI archives,
+  misplaced module sources) are fixed, and the release auto-bump anchors its
+  substitutions so the new dependency pins survive a version bump.
+
+### Assurance
+
+- **Dynamic edge coverage for the v1.3.4 surface.** A seeded, bounded,
+  depth-parametric generator and runner reconcile the generative/adversarial
+  harnesses with every new-feature family — nursery iter-scope loops, capturing
+  `parallel-map`, exact gradient through callable/curried forms, `i128`
+  boundaries, native tensor/`matmul`, the round-trip printer, and the low-level
+  AD tape — each probe self-checking against a computed ground truth across JIT,
+  AOT-O0, AOT-O2, and the VM, and gated in ICC.
+- **Coverage-floor hardening.** The executable language-surface manifest is
+  regenerated for the new VM special forms and the coverage floor is enforced
+  across the new-feature families, so a newly public surface cannot ship without
+  executable evidence.
 
 ---
 

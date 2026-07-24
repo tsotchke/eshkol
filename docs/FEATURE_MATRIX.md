@@ -114,7 +114,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Gradient computation | Yes | Reverse | `gradient` |
 | Backpropagation | Yes | Reverse | Full backward pass |
 | Nested gradients | Yes / Partial | Reverse | Exact via nested scalar `derivative`; vector gradient-of-gradient returns zeros (ESH-0096) |
-| Double backward | Yes / Partial | Reverse | Second derivatives via nested scalar `derivative`; `hessian` works on vector points (crashes on tensor points, ESH-0095) |
+| Double backward | Yes | Reverse | Second derivatives via `hessian` (tensor-literal, vector, and variable-bound points, #343) or nested scalar `derivative` |
 | Jacobian matrices | Yes | Reverse | `jacobian` |
 | Hessian matrices | Yes | Reverse | `hessian` |
 | Tape stack (nesting) | Yes | Reverse | 32-level depth |
@@ -799,7 +799,7 @@ This matrix documents all implemented and planned features for the Eshkol langua
 | Variadic functions | Yes | OP_PACK_REST for rest parameters |
 | Tensor matmul parity | Yes | v1.3.4: `arange` (1/2/3-arg), nested-literal tensor operands, and multi-dimensional `tensor-ref`/`tensor-set!` compute the same answers as native codegen (parity corpus `31_tensor_matmul`) |
 | Shortest-round-trip number printing | Yes | v1.3.4: `display`/`write`/`number->string` share one portable-C routine with native, byte-identical output (R7RS 6.2.6) |
-| Reverse-mode `gradient` (`op:GRADIENT`) | WIP | Implementation in progress; VM AD surface is currently scalar `derivative` only, full parity targeted for this release line |
+| Reverse-mode `gradient` (`op:GRADIENT`) | Yes | v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across `vm-src`/`vm-eskb`; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only |
 | Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |

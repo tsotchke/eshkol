@@ -31,6 +31,23 @@
 - **Hosted-VM tensor matmul parity was incomplete.** `arange` (1/2/3-arg),
   nested-literal tensor operands, and multi-dimensional `tensor-ref` /
   `tensor-set!` now match native codegen on the bytecode VM.
+- **`gradient` was native-only on the bytecode VM.** Forward/reverse-mode
+  `gradient` — direct, through a callable parameter, and curried — now runs on
+  the VM byte-identically to native codegen (#337). `op:GRADIENT` and
+  `op:DERIVATIVE` are `vm-supported`; higher-order nesting (gradient-of-derivative
+  / Taylor tower) remains native-only.
+- **`hessian`/`laplacian` crashed at a tensor-literal or variable-bound point.**
+  The differentiation point was classified from the AST node kind, so a variable
+  bound to a vector (or a `#(...)` / `(tensor ...)` literal, or a `(the ...)`
+  wrapper) could take the wrong path and SIGSEGV; a cons-routed `gradient` could
+  also return a silently wrong value. Points are now classified by their runtime
+  value, so every point form gives the same result (#343). `laplacian` shares the
+  fixed `hessian` path (it is the trace of the Hessian). Resolves ESH-0095.
+- **Arity-1 whole-point tensor-loss gradients silently zeroed or crashed.** A
+  loss whose body applies elementwise arithmetic to its whole vector/tensor
+  argument now backpropagates exactly for a scalar-valued output and raises a
+  clean `jacobian` diagnostic for a vector-valued one, instead of dropping the
+  tangent or dereferencing a non-AD value (#338).
 
 ## Resolved in v1.1 (Previously Listed as Planned)
 
@@ -95,11 +112,13 @@ Top-level mutual recursion requires consecutive function defines. Interleaved no
 ### Tensor nested syntax not supported in VM parser
 `#((1 2) (3 4))` nested tensor syntax is not supported in the bytecode VM parser. Use flat tensors with `reshape` in the native compiler instead.
 
-### Reverse-mode gradient on the VM — implementation in progress
-The bytecode VM's AD surface is currently scalar `derivative` only; `gradient`
-in the VM handles single-variable functions today. A VM reverse-mode `gradient`
-implementation is in flight, with full native/VM parity targeted for this
-release line. Use `derivative` for scalar AD in the REPL in the meantime.
+### Reverse-mode gradient on the VM
+`gradient` now runs on the bytecode VM at full parity with native codegen
+(#337): forward/reverse-mode, arity-resolved (scalar / N-argument / arity-1
+whole-vector) and including the curried `((gradient f) point)` form,
+byte-identical across the VM's source and bytecode axes. The one remaining
+native-only case is higher-order nesting (gradient-of-derivative / Taylor
+tower); use native codegen (`eshkol-run`) for nested higher-order AD.
 
 ---
 
@@ -113,10 +132,16 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
 **Automatic differentiation**
 - Vector gradient-of-gradient silently returns zeros — use nested scalar
   `derivative` for exact higher-order results (ESH-0096).
-- `hessian`/`laplacian` SIGSEGV when the evaluation point is a tensor literal
-  `#(...)` / `(tensor ...)`; a `(vector ...)` point works (ESH-0095).
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
+- **Resident training loops accumulate RSS unless each step is scoped.** The
+  automatic per-iteration nursery (ESH-0214e) reclaims *structural* mutation, not
+  the reverse-mode AD tape, so a long-running gradient/training loop is excluded
+  from automatic reclamation by design. Wrap each optimization step in an
+  explicit `(with-region ...)` to get flat RSS — the tape's node-pointer array is
+  now reclaimed with the region (#345), so a per-step `with-region` is fully flat.
+  A lighter-weight tape mark/release API is planned so a bare training loop can
+  reclaim without a per-step region.
 
 **Recursion depth**
 - Deep non-tail recursion (~270k frames) dies with SIGILL and no diagnostic;
@@ -184,8 +209,12 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   unaffected (ESH-0103).
 
 **VM parity**
-- 27 bytecode-VM behavioral divergences and 351 parity gaps are documented and
-  tracked in `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)).
+- The VM implements a documented subset of the language, tracked row-by-row in
+  `tests/vm_parity/PARITY.tsv` (see [VM_PARITY.md](VM_PARITY.md)): 936 rows —
+  562 `vm-supported`, 45 `native-only-justified`, 329 `gap`, of which 17 are
+  verified behavioral divergences with reproducible programs under
+  `tests/vm_parity/found/` and the rest acknowledged holes. `op:GRADIENT` and
+  `op:DERIVATIVE` moved to `vm-supported` this release (#337).
 - A prior campaign pass reported "5 pre-existing surface-audit failures" for
   `scripts/run_vm_parity.sh`. Re-verified 2026-07-08 against current master
   (post-v1.3.0-evolve tag) with a full rebuild: `scripts/run_vm_parity.sh`
