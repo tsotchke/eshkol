@@ -1448,6 +1448,48 @@ supported</li>
 <li><strong>Homoiconicity</strong>: Lambda S-expressions preserved for
 metaprogramming</li>
 </ul>
+<h4 id="static-type-checking-strict-mode">Static type checking (strict
+mode)</h4>
+<p>On top of the runtime tagged-value system, Eshkol has an optional
+static type checker (gradual typing: warnings, not errors — programs run
+regardless). Strict mode accepts idiomatic dynamic-but-validated code
+without escape hatches:</p>
+<ul>
+<li><p><strong>Checked ascription
+<code>(the &lt;type&gt; expr)</code>.</strong> Asserts that
+<code>expr</code> has type <code>&lt;type&gt;</code> as a
+<strong>trusted assertion to the checker</strong> — it narrows the
+checker’s view of <code>expr</code> to <code>&lt;type&gt;</code>. It is
+a pure <strong>runtime no-op</strong>: the emitted IR is byte-identical
+to <code>expr</code> alone (no runtime tag check, no cost), so
+<code>(the &lt;type&gt; expr)</code> and <code>expr</code> compute
+exactly the same value.</p>
+<pre class="scheme"><code>(the number (car mixed-list))   ; tell the checker this element is a number</code></pre></li>
+<li><p><strong>Predicate-guarded narrowing.</strong> Inside a branch
+guarded by one of eight type predicates, the checker narrows the tested
+value to that type. The eight predicates are <code>number?</code>,
+<code>integer?</code>, <code>string?</code>, <code>symbol?</code>,
+<code>pair?</code>, <code>null?</code>, <code>vector?</code>, and
+<code>procedure?</code>. Narrowing is honored across both
+<code>if</code> and <code>and</code>, and is <strong>cancelled</strong>
+at a <code>set!</code> of the narrowed variable.</p>
+<pre class="scheme"><code>(if (number? x) (+ x 1) 0)      ; x is number in the then-branch
+(and (pair? p) (car p))         ; p is a pair for (car p)</code></pre></li>
+<li><p><strong>Sum-type annotations on named-let parameters</strong> are
+honored, so a <code>named-let</code> accumulator declared as a sum type
+keeps that type across iterations.</p></li>
+<li><p><strong>Numeric-tower join for recursive accumulators.</strong> A
+recursive accumulator is given the least-upper-bound (join) of the
+numeric types that flow into it, rather than being rejected when it
+widens (e.g. integer accumulator that later takes a rational or real
+value).</p></li>
+<li><p><strong>Linear <code>Qubit</code> type.</strong> A first-class
+linear type whose values must be used exactly once; a
+<code>define</code>d function may declare linear parameters and the
+checker enforces the use-exactly-once discipline (double-use and drop
+are both rejected), giving quantum-register operations a no-cloning
+guarantee at the type level.</p></li>
+</ul>
 <hr />
 <h2 id="why-eshkol">Why Eshkol?</h2>
 <h3 id="for-machine-learning-researchers">For Machine Learning
