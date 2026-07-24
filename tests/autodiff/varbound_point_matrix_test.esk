@@ -1,0 +1,110 @@
+;; Regression matrix: a differentiation POINT must be classified by its RUNTIME
+;; value, never by its AST node kind. A point that is a VARIABLE bound to a
+;; vector/list (or a general expression / (the …) wrapper) must give the SAME
+;; result as the identical point written as a #(…) literal or an inline
+;; (vector …)/(list …).
+;;
+;; Fixes #339: (hessian f p) SIGSEGV'd when p was a VAR bound to a vector — the
+;;   AST-kind test in AutodiffCodegen::hessian classified ESHKOL_VAR as scalar,
+;;   so the vector pointer was read as a double and f was called with a scalar.
+;; Fixes #340: (gradient loss p) returned a silently WRONG value when the loss
+;;   routed tracked values through a cons cell AND the point was a (vector …)/
+;;   (list …) (HEAP_SUBTYPE_VECTOR) — the forward-mode dual path stored a
+;;   DUAL_NUMBER into a cons slot and read it back with the int64 accessor,
+;;   dropping the tangent. Both are the same family: classify by value, not AST.
+;;
+;; Matrix covered here:
+;;   point form   : { #(…) literal, inline (vector …), VAR-bound vector,
+;;                    inline (list …), VAR-bound list, (the (vector any) …) }
+;;   loss form    : { plain (let), cons-routed (car/cdr), vector-ref, arity-N }
+;;   operator     : { gradient, hessian }
+;; Every cell is asserted to a known value.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (approx-equal? a b eps) (< (abs (- a b)) eps))
+
+(define (check name expected actual)
+  (if (approx-equal? expected actual 0.0001)
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline))))
+
+;; ── losses (arity-1 over a length-1 vector; L(p) truth at p0 = 3) ──────────
+;; plain:      L = x + x^2      => dL/dx0 = 1 + 2x = 7
+;; cons-routed: same value via (cons x (* x x)) then (+ (car pr) (cdr pr)) => 7
+;; vector-ref:  L = x^2         => dL/dx0 = 2x = 6 ; second deriv = 2
+(define (l-plain p) (let ((x (vector-ref p 0))) (+ x (* x x))))
+(define (l-cons p)
+  (let* ((x (vector-ref p 0)) (pr (cons x (* x x)))) (+ (car pr) (cdr pr))))
+(define (l-vref p) (* (vector-ref p 0) (vector-ref p 0)))
+
+;; arity-2 scalar loss: L(x,y) = x^2 + y^2 => grad (2x,2y); Hess diag 2,2.
+(define (l-arity2 x y) (+ (* x x) (* y y)))
+
+;; ── VAR-bound points ──────────────────────────────────────────────────────
+(define pv  (vector 3.0))
+(define pl  (list 3.0))
+(define pv2 (vector 3.0 4.0))
+(define pl2 (list 3.0 4.0))
+
+;; ── GRADIENT × plain loss × { literal, inline vector, VAR vector, inline
+;;    list, VAR list, (the …) } — every form must give #(7) at element 0 ──────
+(check "grad plain #(lit)"        7.0 (vref (gradient l-plain #(3.0)) 0))
+(check "grad plain (vector ..)"   7.0 (vref (gradient l-plain (vector 3.0)) 0))
+(check "grad plain VAR-vector"    7.0 (vref (gradient l-plain pv) 0))
+(check "grad plain (list ..)"     7.0 (vref (gradient l-plain (list 3.0)) 0))
+(check "grad plain VAR-list"      7.0 (vref (gradient l-plain pl) 0))
+(check "grad plain (the ..)"      7.0 (vref (gradient l-plain (the (vector any) pv)) 0))
+
+;; ── GRADIENT × cons-routed loss (the #340 core) — all forms must give #(7) ──
+(check "grad cons #(lit)"         7.0 (vref (gradient l-cons #(3.0)) 0))
+(check "grad cons (vector ..)"    7.0 (vref (gradient l-cons (vector 3.0)) 0))
+(check "grad cons VAR-vector"     7.0 (vref (gradient l-cons pv) 0))
+(check "grad cons (list ..)"      7.0 (vref (gradient l-cons (list 3.0)) 0))
+(check "grad cons VAR-list"       7.0 (vref (gradient l-cons pl) 0))
+(check "grad cons (the ..)"       7.0 (vref (gradient l-cons (the (vector any) pv)) 0))
+
+;; ── GRADIENT × vector-ref loss — all forms must give #(6) ──────────────────
+(check "grad vref #(lit)"         6.0 (vref (gradient l-vref #(3.0)) 0))
+(check "grad vref (vector ..)"    6.0 (vref (gradient l-vref (vector 3.0)) 0))
+(check "grad vref VAR-vector"     6.0 (vref (gradient l-vref pv) 0))
+(check "grad vref VAR-list"       6.0 (vref (gradient l-vref pl) 0))
+(check "grad vref (the ..)"       6.0 (vref (gradient l-vref (the (vector any) pv)) 0))
+
+;; ── GRADIENT × arity-2 scalar loss at (3,4) => #(6 8) ; literal/VAR/list ────
+(check "grad arity2 #(lit) d/dx"  6.0 (vref (gradient l-arity2 #(3.0 4.0)) 0))
+(check "grad arity2 #(lit) d/dy"  8.0 (vref (gradient l-arity2 #(3.0 4.0)) 1))
+(check "grad arity2 VAR-vec d/dx" 6.0 (vref (gradient l-arity2 pv2) 0))
+(check "grad arity2 VAR-vec d/dy" 8.0 (vref (gradient l-arity2 pv2) 1))
+(check "grad arity2 VAR-list d/dx" 6.0 (vref (gradient l-arity2 pl2) 0))
+(check "grad arity2 VAR-list d/dy" 8.0 (vref (gradient l-arity2 pl2) 1))
+
+;; ── HESSIAN × vector-ref loss (f = x0^2, so H[0][0] = 2) ────────────────────
+(check "hess vref #(lit)"         2.0 (vector-ref (vector-ref (hessian l-vref #(3.0)) 0) 0))
+(check "hess vref (vector ..)"    2.0 (vector-ref (vector-ref (hessian l-vref (vector 3.0)) 0) 0))
+(check "hess vref VAR-vector"     2.0 (vector-ref (vector-ref (hessian l-vref pv) 0) 0))
+(check "hess vref (list ..)"      2.0 (vector-ref (vector-ref (hessian l-vref (list 3.0)) 0) 0))
+(check "hess vref VAR-list"       2.0 (vector-ref (vector-ref (hessian l-vref pl) 0) 0))
+(check "hess vref (the ..)"       2.0 (vector-ref (vector-ref (hessian l-vref (the (vector any) pv)) 0) 0))
+
+;; ── HESSIAN × arity-2 scalar loss => diag(2,2), off-diagonal 0 ──────────────
+(check "hess arity2 VAR H[0][0]"  2.0 (vector-ref (vector-ref (hessian l-arity2 pv2) 0) 0))
+(check "hess arity2 VAR H[1][1]"  2.0 (vector-ref (vector-ref (hessian l-arity2 pv2) 1) 1))
+(check "hess arity2 VAR H[0][1]"  0.0 (vector-ref (vector-ref (hessian l-arity2 pv2) 0) 1))
+(check "hess arity2 #(lit) H[0][0]" 2.0 (vector-ref (vector-ref (hessian l-arity2 #(3.0 4.0)) 0) 0))
+
+;; ───────────────────────────────────────────────────────────────────────────
+(newline)
+(display "varbound_point_matrix: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed") (newline)
+(if (= tests-failed 0)
+    (display "RESULT: ALL PASSED\n")
+    (display "RESULT: FAILURES\n"))
