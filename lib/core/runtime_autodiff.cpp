@@ -477,6 +477,10 @@ ad_tape_t* arena_allocate_tape(arena_t* arena, size_t initial_capacity) {
     tape->capacity = initial_capacity;
     tape->variables = nullptr;
     tape->num_variables = 0;
+    // #341: remember the arena the header + nodes array live in so a later grow
+    // targets the SAME arena (region-created tapes stay fully reclaimable at
+    // region_pop; globally-created tapes never dangle when grown inside a region).
+    tape->owner_arena = arena;
 
     __eshkol_ad_counters.tape_allocations++;
     return tape;
@@ -503,12 +507,19 @@ void arena_tape_set_variables(ad_tape_t* tape, ad_node_t** vars, size_t n) {
  * @brief Appends a node to the tape's evaluation-order node list.
  *
  * Records `node` as the next entry in `tape`, growing the backing array
- * (doubling capacity, minimum 128) from the shared REPL arena
- * (__repl_shared_arena) when the tape is full. If the tape is full and no
- * arena is available, or growth fails, the append is silently dropped after
- * logging an error. Nodes must be added in the order they should be visited
- * during the reverse (backward) pass, since the tape is walked in this
- * recorded order to propagate gradients.
+ * (doubling capacity, minimum 128) from the tape's OWNING arena
+ * (tape->owner_arena — the arena the header and initial nodes array were
+ * allocated from) when the tape is full, falling back to the shared REPL arena
+ * (__repl_shared_arena) only for a legacy tape with no recorded owner. Growing
+ * from the owning arena keeps the pointer array's lifetime tied to the tape
+ * header's: a region-created tape's grown array is reclaimed with the region at
+ * region_pop (no ~8 MB/step residual — #341), and a tape created outside a
+ * region grows into the same (surviving) global arena, so its array never
+ * dangles behind the header when growth happens inside an inner region. If the
+ * tape is full and no arena is available, or growth fails, the append is
+ * silently dropped after logging an error. Nodes must be added in the order they
+ * should be visited during the reverse (backward) pass, since the tape is walked
+ * in this recorded order to propagate gradients.
  *
  * @param tape Tape to append to; no-op (with error log) if null.
  * @param node Node to append; no-op (with error log) if null.
@@ -520,7 +531,20 @@ void arena_tape_add_node(ad_tape_t* tape, ad_node_t* node) {
     }
 
     if (tape->num_nodes >= tape->capacity) {
-        arena_t* arena = __repl_shared_arena.load();
+        // #341: grow from the arena the tape header lives in, NOT the pinned
+        // __repl_shared_arena. The pinned arena is never region-swapped, so
+        // growing from it leaked the pointer array (~8 MB/step in a with-region
+        // training loop) even though the tape header + nodes were reclaimed at
+        // region_pop. Using owner_arena ties the array's lifetime to the header:
+        //   - tape created INSIDE a region  -> owner = region arena -> array
+        //     reclaimed at region_pop (fully flat).
+        //   - tape created OUTSIDE a region -> owner = global arena -> array
+        //     survives an inner region_pop alongside the header (no dangling
+        //     pointer — the dangling-pointer trap the naive "current arena" fix
+        //     would fall into).
+        // Fall back to the shared arena for any legacy tape lacking an owner.
+        arena_t* arena = tape->owner_arena ? tape->owner_arena
+                                           : __repl_shared_arena.load();
         if (!arena) {
             eshkol_error("Tape capacity exceeded and no arena available for growth: %zu/%zu",
                          tape->num_nodes, tape->capacity);

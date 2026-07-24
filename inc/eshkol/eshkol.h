@@ -1060,13 +1060,23 @@ typedef struct ad_node {
  * `variables` tracks the subset of nodes that are independent input
  * variables, so gradients with respect to them can be extracted after the
  * backward pass completes.
+ *
+ * `owner_arena` records the arena the tape header and its `nodes` array were
+ * allocated from at creation. When the array must grow, the new (larger) array
+ * is allocated from THIS arena rather than a pinned process-shared one, so the
+ * pointer array shares the tape header's lifetime exactly: a tape created inside
+ * a `(with-region ...)` grows into the region arena and is fully reclaimed at
+ * region_pop, while a tape created outside any region grows into the global
+ * arena and safely outlives an inner region it happens to be grown within (the
+ * grown array never dangles behind a surviving header). See #341.
  */
 typedef struct ad_tape {
-    ad_node_t** nodes;       // Array of nodes in evaluation order
-    size_t num_nodes;        // Current number of nodes
-    size_t capacity;         // Allocated capacity
-    ad_node_t** variables;   // Input variable nodes
-    size_t num_variables;    // Number of input variables
+    ad_node_t** nodes;         // Array of nodes in evaluation order
+    size_t num_nodes;          // Current number of nodes
+    size_t capacity;           // Allocated capacity
+    ad_node_t** variables;     // Input variable nodes
+    size_t num_variables;      // Number of input variables
+    struct arena* owner_arena; // Arena the header + nodes array live in; growth targets it (#341)
 } ad_tape_t;
 
 // ===== CLOSURE ENVIRONMENT STRUCTURES =====
