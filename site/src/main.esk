@@ -370,7 +370,7 @@
         (style! p "color" "#71717a")
         (style! p "fontSize" "0.8rem"))
 
-      (let ((p2 (create-text "p" "Site and REPL both compiled from Eshkol to WebAssembly." bottom)))
+      (let ((p2 (create-text "p" "The site and the REPL are both compiled from Eshkol to WebAssembly." bottom)))
         (style! p2 "color" "#71717a")
         (style! p2 "fontSize" "0.8rem")))
 
@@ -402,7 +402,7 @@
         (let ((title (create-text "h1" "The derivative is a compiler primitive." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. gradient, jacobian and hessian lower straight to machine instructions the way + does — exact through closures, recursion and control flow, with no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower to machine instructions the same way + does. They stay exact through closures, recursion and control flow. There is no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Proof strip: four release-gate numbers, one canonical form each
@@ -525,23 +525,31 @@
 
       (let ((s1 (create-div inner)))
         (web-add-class s1 "stat-box")
-        (let ((v (create-text "div" "1,078/1,078" s1))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "executable language surface, each row proven because it dispatched or executed in a passing run" s1))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "12,220,422" s1))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "constructed parameters" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-div inner)))
         (web-add-class s2 "stat-box")
-        (let ((v (create-text "div" "8" s2))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "differential operators, lowered to LLVM IR rather than called as a library" s2))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "127/127" s2))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "verified three ways" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-div inner)))
         (web-add-class s3 "stat-box")
-        (let ((v (create-text "div" "0" s3))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "garbage collectors: arenas allocate in O(1) and free at scope boundaries" s3))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "16" s3))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "release files, checksummed" s3))) (web-add-class l "stat-label")))
 
       (let ((s4 (create-div inner)))
         (web-add-class s4 "stat-box")
-        (let ((v (create-text "div" "936" s4))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "published parity rows, ratcheted one way so a gap cannot quietly close" s4))) (web-add-class l "stat-label"))))
+        (let ((v (create-text "div" "22" s4))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "consciousness primitives" s4))) (web-add-class l "stat-label")))
+
+      (let ((note (create-text "p" "The SDNC weight matrices carry those parameters, and every inline program is checked through the reference C VM, the simulated transformer, and the matrix forward pass. The release payload is 15 platform packages plus SHA256SUMS.txt." inner)))
+        (style! note "gridColumn" "1 / -1")
+        (style! note "color" "#71717a")
+        (style! note "fontSize" "0.78rem")
+        (style! note "textAlign" "center")
+        (style! note "marginTop" "20px")
+        (style! note "lineHeight" "1.7")))
 
     section))
 
@@ -603,7 +611,7 @@
 
       (render-feature-card grid
         "Complete executable evidence"
-        "1,078 of 1,078 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is ratcheted to 1,078 so the number cannot be walked back.")
+        "1,078 of 1,078 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,078, so the count can only grow.")
 
       (render-feature-card grid
         "Portable release packages"
@@ -616,7 +624,7 @@
 
       (render-feature-card grid2
         "Verified VM subset"
-        "936 parity rows, published: 562 VM-supported, 45 native-only by design, 329 gaps. 17 of those gaps are verified behavioral divergences, each with a program that reproduces it. The ledger only ratchets one way. The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB, and the hosted VM surface passes 53/53.")
+        "936 parity rows, published: 562 VM-supported, 45 native-only by design, 329 gaps. 17 of those gaps are verified behavioral divergences, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB, and the hosted VM surface passes 53/53.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
