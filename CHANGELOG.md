@@ -42,6 +42,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`build/eshkol-run --strict-types -r …` exits 0), and the low-level ad-pow
   case is in the parity corpus (`tests/vm_parity/corpus/33_ad_pow_lowlevel.esk`,
   byte-identical native/vm-src/vm-eskb).
+- **SDNC weight-matrix backward pass wired into the build with a gradient
+  check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
+  companion to the analytical forward constructor in `weight_matrices.c` — was
+  previously source-only: no build target, every function `static`, zero test
+  coverage. It is now compiled by the normal build (static library
+  `eshkol-qllm-backward`, header `inc/eshkol/backend/qllm_backward.h`), with the
+  two FFN backward passes (SQUARE-activation and gated-sigmoid) exposed as a
+  public surface. The backward math is precision-generic (`qllm_real`, default
+  `float` so the QLMW/`InterpreterWeights` layout is byte-identical). A new
+  gradient-check test (`tests/backend/qllm_backward_gradcheck_test.c`, ctest
+  `qllm_backward_gradcheck`) validates the analytical gradients against a
+  central finite-difference reference — recompiled in double
+  (`-DQLLM_REAL=double`) so the finite-difference floor drops below the
+  documented **1e-6** relative-error bar; achieved SQUARE `3.7e-9`, gated
+  `2.3e-9`. Also wired as the `qllm_backward_gradcheck` ICC smoke probe and a
+  completion-oracle criterion under `sdnc-paper-reproducibility`.
+- **`eshkol-qllm-run` tool.** `lib/backend/qllm_interpreter.c` (previously
+  unbuilt) is now a standalone executable that loads a QLMW v3 weight file and
+  executes Eshkol bytecode through the six-layer transformer forward pass — the
+  weights *are* the interpreter. Default build uses the portable C reference
+  matmul; `-DUSE_QLLM` links the qLLM NEON/Metal backend.
+
+### Changed
+
+- **`docs/SDNC.md` refreshed to verified reality.** Added the two-execution-layer
+  framing — the SDNC weight-matrix layer (83-opcode ISA incl. 19 AD opcodes,
+  127/127 three-way verified) and the production bytecode VM (66-opcode enum +
+  720 native-call IDs spanning 20–2118, AD dispatched at 390–409) as two real,
+  verified layers of one system with a precise opcode-for-capability
+  correspondence; updated counts upward where reality exceeds the doc
+  (three-way verification 127/127 inline, 124/124 traced, 83 opcodes
+  weight-implemented; `weight_matrices.c` now 7,544 lines); corrected
+  `execute_step`/`run_reference`/`forward_with_weights`/`export_weights_binary`
+  line references; documented the native-call ID surface (AD 390–409/1841–1844,
+  tensors 410–461, consciousness 509–547/1800s, i128 2100–2118); and re-pinned
+  the §7.3 SHA-256 checksums at the current verification SHA.
 
 ### Fixed
 
@@ -216,6 +252,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
+  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
+  parity gap. Three defects, all the same root cause: variadic tensor builtins
+  whose native runtime handlers take more operands than their fixed-arity
+  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
+  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
+  table registered `arange` as arity-1, so `(arange n)` and
+  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
+  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
+  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
+  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
+  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
+  literal matmul was rejected instead of computed. (3) multi-dim
+  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
+  index/value against their fixed-arity table entries, returning/writing the
+  wrong element when reading back a matmul result. Fix: explicit VM-compiler
+  special forms that emit the defaulted/packed operands (mirroring the existing
+  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
+  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
+  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
+  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
+  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
+  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
+  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
+  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
 - **`parallel-map` corrupted results from closures using scope-based
   reclamation (memory-safety).** A closure mapped in parallel whose body used
   per-iteration scope reclamation — an internal named-let loop, or a builtin

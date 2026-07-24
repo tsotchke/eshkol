@@ -102,6 +102,7 @@ static const char* op_to_string(eshkol_op_t op) {
         case ESHKOL_LAPLACIAN_OP: return "LAPLACIAN_OP";
         case ESHKOL_DIRECTIONAL_DERIV_OP: return "DIRECTIONAL_DERIV_OP";
         case ESHKOL_TYPE_ANNOTATION_OP: return "TYPE_ANNOTATION_OP";
+        case ESHKOL_THE_OP: return "THE_OP";
         case ESHKOL_FORALL_OP: return "FORALL_OP";
         case ESHKOL_GUARD_OP: return "GUARD_OP";
         case ESHKOL_RAISE_OP: return "RAISE_OP";

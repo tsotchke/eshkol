@@ -1,12 +1,18 @@
 /**
  * @file qllm_interpreter.c
- * @brief Load interpreter weights into qLLM and execute programs.
+ * @brief Load SDNC weight matrices and execute Eshkol programs through them.
  *
- * Creates a qLLM transformer model programmatically, loads the analytically
- * constructed weight matrices from weight_matrices.c, and executes arbitrary
- * Eshkol programs through qLLM tensor operations (NEON/Metal dispatch).
+ * Companion runtime tool for the paper artefact *"The Self-Differentiating
+ * Neural Computer: Computable Transformers via Analytical Weight
+ * Construction"* (tsotchke, 2026). It loads a QLMW v3 weight file (the
+ * analytically constructed six-layer transformer produced by
+ * `lib/backend/weight_matrices.c`) and executes arbitrary Eshkol bytecode by
+ * running the transformer forward pass — the weights *are* the interpreter.
  *
- * This is the end-to-end integration: Eshkol bytecode → qLLM weights → execution.
+ * This is the end-to-end integration: Eshkol bytecode -> SDNC weights ->
+ * execution. Built as the `eshkol-qllm-run` tool; the default build path uses
+ * the portable C reference matmul, and `-DUSE_QLLM` additionally links the
+ * qLLM tensor backend (NEON/Metal) for an accelerated benchmark.
  *
  * Three modes:
  *   1. Metal-accelerated: compile against libsemiclassical_qllm with -DUSE_QLLM
@@ -284,6 +290,11 @@ typedef struct {
 static CallFrame g_frames[64];
 static int g_frame_count = 0;
 
+/* This tool keeps its own small scratch heap; override any HEAP_SIZE pulled
+ * in transitively from the VM limit headers (via eskb_reader.c). */
+#ifdef HEAP_SIZE
+#undef HEAP_SIZE
+#endif
 #define HEAP_SIZE 4096
 static float g_heap[HEAP_SIZE];
 static int g_heap_ptr = 0;

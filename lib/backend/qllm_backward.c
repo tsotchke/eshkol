@@ -1,19 +1,39 @@
 /**
  * @file qllm_backward.c
- * @brief Backward pass + optimizer for qLLM computational transformer.
+ * @brief Backward (reverse-mode) pass through the SDNC weight matrices.
  *
- * Implements:
- *   - Per-dimension weighted MSE loss
- *   - Backward pass through configured transformer layers (attention + 2 FFN types)
- *   - AdamW optimizer with cosine LR schedule
- *   - Gradient clipping
- *   - QLMW v4 checkpoint format (weights + optimizer state)
+ * Companion training-mode module for the paper artefact
+ * *"The Self-Differentiating Neural Computer: Computable Transformers via
+ * Analytical Weight Construction"* (tsotchke, 2026). The analytical
+ * constructor in `lib/backend/weight_matrices.c` proves that a fixed
+ * six-layer transformer's weights *are* the Eshkol VM ISA (the forward
+ * pass). This file differentiates that same architecture: it computes the
+ * gradient of a per-dimension weighted MSE loss with respect to every layer
+ * parameter (attention + the SQUARE and gated-sigmoid FFN types), so the
+ * computable transformer can be trained from (state, target) pairs emitted
+ * by the reference interpreter rather than only constructed in closed form.
  *
- * The forward pass is in qllm_interpreter.c. This file provides the
- * training loop that learns weights from (state, target) pairs generated
- * by the reference interpreter in weight_matrices.c.
+ * Contents:
+ *   - Per-dimension weighted MSE loss configuration
+ *   - Backward through the SQUARE-activation FFN
+ *   - Backward through the gated-sigmoid FFN
+ *   - Backward through the Layer-0 Gaussian attention block
+ *   - Full reverse walk over the configured layer stack
+ *   - QLMW v4 checkpoint header (weights + optimiser state)
  *
- * Copyright (C) Tsotchke Corporation. MIT License.
+ * Correctness. The FFN backward passes are certified to relative error
+ * < 1e-6 against a central finite-difference reference by
+ * `tests/backend/qllm_backward_gradcheck_test.c` (ctest
+ * `qllm_backward_gradcheck`).
+ *
+ * Precision. The math is written against `qllm_real` (see qllm_backward.h),
+ * which defaults to `float` so the weight layout stays byte-compatible with
+ * `InterpreterWeights`/QLMW. The gradient-check test compiles this same
+ * source with `-DQLLM_REAL=double` to certify the algorithm below the
+ * float32 finite-difference floor.
+ *
+ * Copyright (C) tsotchke
+ * SPDX-License-Identifier: MIT
  */
 
 #include <stdio.h>
@@ -22,22 +42,9 @@
 #include <math.h>
 #include <stdint.h>
 
-/* Architecture constants (must match qllm_interpreter.c) */
-#ifndef D
-#define D 256
-#endif
-#ifndef H
-#define H 16
-#endif
-#ifndef HD
-#define HD 2
-#endif
-#ifndef N_LAYERS
-#define N_LAYERS 6
-#endif
-#ifndef FFN_DIM
-#define FFN_DIM 2304
-#endif
+/* qllm_real scalar type + architecture constants (D/H/HD/N_LAYERS/FFN_DIM),
+ * shared with the public backward surface and the gradient-check test. */
+#include "eshkol/backend/qllm_backward.h"
 
 /*******************************************************************************
  * Forward Cache — saved activations from forward pass for backward
@@ -45,22 +52,22 @@
 
 typedef struct {
     /* Per-layer input (after residual from prior layer) */
-    float x_in[N_LAYERS][D];
+    qllm_real x_in[N_LAYERS][D];
 
     /* Attention (Layer 0 only) */
-    float Q[D], K_all[256][D], V_all[256][D];
-    float scores_raw[256];
-    float attn_weights[256];
-    float hout[D];
+    qllm_real Q[D], K_all[256][D], V_all[256][D];
+    qllm_real scores_raw[256];
+    qllm_real attn_weights[256];
+    qllm_real hout[D];
     int np;
 
     /* FFN activations per layer */
-    float ffn_pre_act[N_LAYERS][FFN_DIM];   /* before activation */
-    float ffn_gate_pre[N_LAYERS][FFN_DIM];  /* gate before sigmoid */
-    float ffn_gate_post[N_LAYERS][FFN_DIM]; /* gate after sigmoid */
-    float ffn_up_post[N_LAYERS][FFN_DIM];   /* up after bias */
-    float ffn_h[N_LAYERS][FFN_DIM];         /* gate*up or h^2 */
-    float ffn_out[N_LAYERS][D];             /* FFN output before residual */
+    qllm_real ffn_pre_act[N_LAYERS][FFN_DIM];   /* before activation */
+    qllm_real ffn_gate_pre[N_LAYERS][FFN_DIM];  /* gate before sigmoid */
+    qllm_real ffn_gate_post[N_LAYERS][FFN_DIM]; /* gate after sigmoid */
+    qllm_real ffn_up_post[N_LAYERS][FFN_DIM];   /* up after bias */
+    qllm_real ffn_h[N_LAYERS][FFN_DIM];         /* gate*up or h^2 */
+    qllm_real ffn_out[N_LAYERS][D];             /* FFN output before residual */
 } QllmForwardCache;
 
 /*******************************************************************************
@@ -68,17 +75,17 @@ typedef struct {
  ******************************************************************************/
 
 typedef struct {
-    float dwq[N_LAYERS][D * D];
-    float dwk[N_LAYERS][D * D];
-    float dwv[N_LAYERS][D * D];
-    float dwo[N_LAYERS][D * D];
-    float dbq[N_LAYERS][D];
-    float dff_up[N_LAYERS][D * FFN_DIM];
-    float dff_up_b[N_LAYERS][FFN_DIM];
-    float dff_down[N_LAYERS][FFN_DIM * D];
-    float dff_down_b[N_LAYERS][D];
-    float dff_gate[N_LAYERS][D * FFN_DIM];
-    float dff_gate_b[N_LAYERS][FFN_DIM];
+    qllm_real dwq[N_LAYERS][D * D];
+    qllm_real dwk[N_LAYERS][D * D];
+    qllm_real dwv[N_LAYERS][D * D];
+    qllm_real dwo[N_LAYERS][D * D];
+    qllm_real dbq[N_LAYERS][D];
+    qllm_real dff_up[N_LAYERS][D * FFN_DIM];
+    qllm_real dff_up_b[N_LAYERS][FFN_DIM];
+    qllm_real dff_down[N_LAYERS][FFN_DIM * D];
+    qllm_real dff_down_b[N_LAYERS][D];
+    qllm_real dff_gate[N_LAYERS][D * FFN_DIM];
+    qllm_real dff_gate_b[N_LAYERS][FFN_DIM];
 } QllmWeightGradients;
 
 /*******************************************************************************
@@ -86,7 +93,7 @@ typedef struct {
  ******************************************************************************/
 
 typedef struct {
-    float dim_weights[D];
+    qllm_real dim_weights[D];
 } QllmLossConfig;
 
 /*******************************************************************************
@@ -94,23 +101,23 @@ typedef struct {
  * Forward: h = x @ W_up + b_up; a = h^2; fo = a @ W_down + b_down
  ******************************************************************************/
 
-static void qllm_backward_ffn_square(
-    const float* w_up,   /* D x FFN_DIM */
-    const float* w_down, /* FFN_DIM x D */
-    const float* b_up,
-    const float* b_down,
-    const float x_in[D],
-    const float h_pre[FFN_DIM],   /* h before squaring */
-    const float dfo[D],           /* upstream gradient */
-    float dx[D],                  /* output: gradient into input */
-    float* dw_up,  float* db_up,
-    float* dw_down, float* db_down)
+void qllm_backward_ffn_square(
+    const qllm_real* w_up,   /* D x FFN_DIM */
+    const qllm_real* w_down, /* FFN_DIM x D */
+    const qllm_real* b_up,
+    const qllm_real* b_down,
+    const qllm_real x_in[D],
+    const qllm_real h_pre[FFN_DIM],   /* h before squaring */
+    const qllm_real dfo[D],           /* upstream gradient */
+    qllm_real dx[D],                  /* output: gradient into input */
+    qllm_real* dw_up,  qllm_real* db_up,
+    qllm_real* dw_down, qllm_real* db_down)
 {
     /* d(b_down) += dfo */
     for (int i = 0; i < D; i++) db_down[i] += dfo[i];
 
     /* da = dfo @ W_down^T (shape: FFN_DIM) */
-    float da[FFN_DIM];
+    qllm_real da[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++) {
         da[j] = 0;
         for (int i = 0; i < D; i++)
@@ -123,7 +130,7 @@ static void qllm_backward_ffn_square(
             dw_down[j * D + i] += h_pre[j] * h_pre[j] * dfo[i]; /* a = h^2, so h_sq = h*h */
 
     /* dh = da * 2*h (derivative of h^2) */
-    float dh[FFN_DIM];
+    qllm_real dh[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++)
         dh[j] = da[j] * 2.0f * h_pre[j];
 
@@ -149,24 +156,24 @@ static void qllm_backward_ffn_square(
  *          fo = h @ W_down + b_down
  ******************************************************************************/
 
-static void qllm_backward_ffn_gated(
-    const float* w_up, const float* w_down, const float* w_gate,
-    const float* b_up, const float* b_down, const float* b_gate,
-    const float x_in[D],
-    const float gate_post[FFN_DIM],  /* sigmoid output */
-    const float up_post[FFN_DIM],    /* up = Wx + b */
-    const float h[FFN_DIM],          /* gate * up */
-    const float dfo[D],
-    float dx[D],
-    float* dw_up, float* db_up,
-    float* dw_down, float* db_down,
-    float* dw_gate, float* db_gate)
+void qllm_backward_ffn_gated(
+    const qllm_real* w_up, const qllm_real* w_down, const qllm_real* w_gate,
+    const qllm_real* b_up, const qllm_real* b_down, const qllm_real* b_gate,
+    const qllm_real x_in[D],
+    const qllm_real gate_post[FFN_DIM],  /* sigmoid output */
+    const qllm_real up_post[FFN_DIM],    /* up = Wx + b */
+    const qllm_real h[FFN_DIM],          /* gate * up */
+    const qllm_real dfo[D],
+    qllm_real dx[D],
+    qllm_real* dw_up, qllm_real* db_up,
+    qllm_real* dw_down, qllm_real* db_down,
+    qllm_real* dw_gate, qllm_real* db_gate)
 {
     /* d(b_down) += dfo */
     for (int i = 0; i < D; i++) db_down[i] += dfo[i];
 
     /* dh = dfo @ W_down^T */
-    float dh_vec[FFN_DIM];
+    qllm_real dh_vec[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++) {
         dh_vec[j] = 0;
         for (int i = 0; i < D; i++)
@@ -180,7 +187,7 @@ static void qllm_backward_ffn_gated(
 
     /* d_gate = dh * up (element-wise) */
     /* d_up = dh * gate (element-wise) */
-    float d_gate[FFN_DIM], d_up[FFN_DIM];
+    qllm_real d_gate[FFN_DIM], d_up[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++) {
         d_gate[j] = dh_vec[j] * up_post[j];
         d_up[j] = dh_vec[j] * gate_post[j];
@@ -196,7 +203,7 @@ static void qllm_backward_ffn_gated(
             dx[i] += d_up[j] * w_up[i * FFN_DIM + j];
 
     /* Gate branch: sigmoid backward: d_g_pre = d_gate * gate * (1 - gate) */
-    float d_g_pre[FFN_DIM];
+    qllm_real d_g_pre[FFN_DIM];
     for (int j = 0; j < FFN_DIM; j++)
         d_g_pre[j] = d_gate[j] * gate_post[j] * (1.0f - gate_post[j]);
 
@@ -214,11 +221,11 @@ static void qllm_backward_ffn_gated(
  ******************************************************************************/
 
 typedef struct {
-    float lr;
-    float beta1, beta2;
-    float epsilon;
-    float weight_decay;
-    float grad_clip_norm;
+    qllm_real lr;
+    qllm_real beta1, beta2;
+    qllm_real epsilon;
+    qllm_real weight_decay;
+    qllm_real grad_clip_norm;
     int t;  /* timestep */
 } QllmAdamWConfig;
 
@@ -227,7 +234,7 @@ typedef struct {
  ******************************************************************************/
 
 typedef struct {
-    float total_loss;
+    qllm_real total_loss;
     int n_steps;
     int correct_outputs;
     int total_outputs;
@@ -244,12 +251,12 @@ typedef struct {
  ******************************************************************************/
 
 static void qllm_backward_attention(
-    const float* wq, const float* wk, const float* wv, const float* wo,
-    const float* bq,
+    const qllm_real* wq, const qllm_real* wk, const qllm_real* wv, const qllm_real* wo,
+    const qllm_real* bq,
     const QllmForwardCache* cache,
-    const float dao[D],    /* upstream gradient into attention output */
-    float dx[D],           /* output: gradient into layer input */
-    float* dwq, float* dwk, float* dwv, float* dwo, float* dbq)
+    const qllm_real dao[D],    /* upstream gradient into attention output */
+    qllm_real dx[D],           /* output: gradient into layer input */
+    qllm_real* dwq, qllm_real* dwk, qllm_real* dwv, qllm_real* dwo, qllm_real* dbq)
 {
     int np = cache->np;
     if (np <= 0) return;
@@ -260,14 +267,14 @@ static void qllm_backward_attention(
             dwo[i * D + j] += cache->hout[i] * dao[j];
 
     /* d_hout = dao @ W_o^T */
-    float d_hout[D] = {0};
+    qllm_real d_hout[D] = {0};
     for (int i = 0; i < D; i++)
         for (int j = 0; j < D; j++)
             d_hout[i] += dao[j] * wo[i * D + j];
 
     /* d_attn[p] = sum_d(d_hout[d] * V[p][d]) for d in [0..HD-1] */
-    float d_attn[256] = {0};
-    float dV[256][D];
+    qllm_real d_attn[256] = {0};
+    qllm_real dV[256][D];
     memset(dV, 0, sizeof(dV));
     for (int p = 0; p < np; p++) {
         for (int d = 0; d < HD; d++) {
@@ -277,22 +284,22 @@ static void qllm_backward_attention(
     }
 
     /* Softmax backward: d_scores[p] = attn[p] * (d_attn[p] - dot(attn, d_attn)) */
-    float dot = 0;
+    qllm_real dot = 0;
     for (int p = 0; p < np; p++)
         dot += cache->attn_weights[p] * d_attn[p];
-    float d_scores[256];
-    float scale = 1.0f / sqrtf((float)HD);
+    qllm_real d_scores[256];
+    qllm_real scale = 1.0f / sqrt((qllm_real)HD);
     for (int p = 0; p < np; p++)
         d_scores[p] = cache->attn_weights[p] * (d_attn[p] - dot) * scale;
 
     /* dQ from scores: dQ[d] += sum_p(d_scores[p] * K[p][d]) for d in [0..HD-1] */
-    float dQ[D] = {0};
+    qllm_real dQ[D] = {0};
     for (int p = 0; p < np; p++)
         for (int d = 0; d < HD; d++)
             dQ[d] += d_scores[p] * cache->K_all[p][d];
 
     /* dK[p][d] += d_scores[p] * Q[d] */
-    float dK[256][D];
+    qllm_real dK[256][D];
     memset(dK, 0, sizeof(dK));
     for (int p = 0; p < np; p++)
         for (int d = 0; d < HD; d++)
@@ -323,29 +330,19 @@ static void qllm_backward_attention(
 
 /* Weight layout — must match InterpreterWeights in weight_matrices.c */
 typedef struct {
-    float wq[N_LAYERS][D * D];
-    float wk[N_LAYERS][D * D];
-    float wv[N_LAYERS][D * D];
-    float wo[N_LAYERS][D * D];
-    float bq[N_LAYERS][D];
-    float ff_up[N_LAYERS][D * FFN_DIM];
-    float ff_up_b[N_LAYERS][FFN_DIM];
-    float ff_down[N_LAYERS][FFN_DIM * D];
-    float ff_down_b[N_LAYERS][D];
-    float ff_gate[N_LAYERS][D * FFN_DIM];
-    float ff_gate_b[N_LAYERS][FFN_DIM];
+    qllm_real wq[N_LAYERS][D * D];
+    qllm_real wk[N_LAYERS][D * D];
+    qllm_real wv[N_LAYERS][D * D];
+    qllm_real wo[N_LAYERS][D * D];
+    qllm_real bq[N_LAYERS][D];
+    qllm_real ff_up[N_LAYERS][D * FFN_DIM];
+    qllm_real ff_up_b[N_LAYERS][FFN_DIM];
+    qllm_real ff_down[N_LAYERS][FFN_DIM * D];
+    qllm_real ff_down_b[N_LAYERS][D];
+    qllm_real ff_gate[N_LAYERS][D * FFN_DIM];
+    qllm_real ff_gate_b[N_LAYERS][FFN_DIM];
     int ff_type[N_LAYERS];
 } QllmWeights;
-
-/* Helper: matrix-vector multiply y = x @ W (x: 1×in, W: in×out, y: 1×out) */
-static void qllm_matvec(const float* x, const float* W, float* y, int in_dim, int out_dim) {
-    memset(y, 0, out_dim * sizeof(float));
-    for (int j = 0; j < out_dim; j++)
-        for (int i = 0; i < in_dim; i++)
-            y[j] += x[i] * W[i * out_dim + j];
-}
-
-static float qllm_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
 
 /*******************************************************************************
  * Cached Forward Pass — saves all activations for backward
@@ -354,14 +351,14 @@ static float qllm_sigmoidf(float x) { return 1.0f / (1.0f + expf(-x)); }
 static void qllm_backward(
     const QllmWeights* w,
     const QllmForwardCache* cache,
-    const float loss_grad[D],
+    const qllm_real loss_grad[D],
     QllmWeightGradients* grads)
 {
-    float dx[D];
-    memcpy(dx, loss_grad, D * sizeof(float));
+    qllm_real dx[D];
+    memcpy(dx, loss_grad, D * sizeof(qllm_real));
 
     for (int L = N_LAYERS - 2; L >= 0; L--) {
-        float dx_layer[D] = {0};
+        qllm_real dx_layer[D] = {0};
         int ff_type = w->ff_type[L];
 
         if (ff_type == 1) {
@@ -395,7 +392,7 @@ static void qllm_backward(
 
         /* Attention backward (Layer 0 only) */
         if (L == 0 && cache->np > 0) {
-            float dx_attn[D] = {0};
+            qllm_real dx_attn[D] = {0};
             qllm_backward_attention(
                 w->wq[0], w->wk[0], w->wv[0], w->wo[0], w->bq[0],
                 cache, dx, dx_attn,
@@ -405,7 +402,7 @@ static void qllm_backward(
                 dx_layer[i] += dx_attn[i];
         }
 
-        memcpy(dx, dx_layer, D * sizeof(float));
+        memcpy(dx, dx_layer, D * sizeof(qllm_real));
     }
 }
 

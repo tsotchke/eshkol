@@ -10870,6 +10870,12 @@ private:
                 // but generate no runtime code (proof erasure)
                 return packNullToTaggedValue();
 
+            // Expression-level checked cast (the <type> <expr>): the type is
+            // erased; the value is exactly that of the wrapped expression. Pure
+            // passthrough — emits identical IR to writing <expr> directly.
+            case ESHKOL_THE_OP:
+                return codegenAST(op->the_op.expr);
+
             // Multiple Return Values operations
             case ESHKOL_VALUES_OP:
                 return codegenValues(op);
