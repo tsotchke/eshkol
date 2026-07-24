@@ -1,0 +1,83 @@
+;; Flonum printer round-trip regression test (issue #310).
+;;
+;; Before the fix, number->string / display truncated doubles to ~6
+;; significant figures (the C "%g" default), so high-accuracy results could
+;; not be recovered from their printed form. The printer now emits the
+;; SHORTEST decimal that reads back to the exact same double (R7RS 6.2.6),
+;; via the single shared formatter eshkol_dtoa_shortest — so the native
+;; JIT / AOT paths and the bytecode VM all produce identical strings.
+;;
+;; This file is run on ALL THREE paths (native JIT, native AOT, VM). Because
+;; the expected strings are hard-coded, running the same file on each path is
+;; itself the parity check: any path that formats differently fails here.
+;;
+;; On any mismatch a line containing "error:" is printed, which the features
+;; harness (scripts/run_features_tests.sh) flags as a failure.
+
+(define fail-count 0)
+
+;; Exact printed-form check: (number->string x) must equal `expected`.
+(define (check-str name x expected)
+  (let ((got (number->string x)))
+    (if (string=? got expected)
+        (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+        (begin (set! fail-count (+ fail-count 1))
+               (display "error: ") (display name)
+               (display " expected \"") (display expected)
+               (display "\" got \"") (display got) (display "\"") (newline)))))
+
+;; Round-trip check: reading back the printed form recovers the value.
+;; For integral-valued doubles the reader yields an exact integer of equal
+;; value, so numeric `=` is the right equality here.
+(define (check-rt name x)
+  (let ((back (string->number (number->string x))))
+    (if (= x back)
+        (begin (display "ok   rt ") (display name) (newline))
+        (begin (set! fail-count (+ fail-count 1))
+               (display "error: round-trip ") (display name)
+               (display " printed ") (display (number->string x))
+               (display " read back ") (display back) (newline)))))
+
+;; ── Exact shortest-form strings (these all TRUNCATED before the fix) ──
+(check-str "pi"          3.141592653589793   "3.141592653589793")
+(check-str "1/3 double"  (/ 1.0 3.0)         "0.3333333333333333")
+(check-str "sqrt2"       (sqrt 2.0)          "1.4142135623730951")
+(check-str "0.1"         0.1                 "0.1")
+(check-str "ozaki-esque" 4.75072e-11         "4.75072e-11")
+(check-str "neg 2.5"     -2.5                "-2.5")
+(check-str "1234567.0"   1234567.0           "1234567")
+
+;; ── Integral-valued doubles keep the friendly no-".0" form (preserved) ──
+(check-str "3.0"         3.0                 "3")
+(check-str "100.0"       100.0               "100")
+(check-str "123456789.0" 123456789.0         "123456789")
+
+;; ── Scientific-notation extremes (subnormal / overflow territory) ──
+(check-str "1e-10"       1e-10               "1e-10")
+(check-str "1e10"        1e10                "1e+10")
+(check-str "1e-308"      1e-308              "1e-308")
+(check-str "1e308"       1e308               "1e+308")
+(check-str "5e-324"      5e-324              "5e-324")
+
+;; ── Negative zero display convention (preserved) ──
+(check-str "neg zero"    -0.0                "-0")
+
+;; ── Round-trip guarantee across the battery ──
+(check-rt "pi"         3.141592653589793)
+(check-rt "1/3"        (/ 1.0 3.0))
+(check-rt "sqrt2"      (sqrt 2.0))
+(check-rt "0.1"        0.1)
+(check-rt "ozaki"      4.75072e-11)
+(check-rt "1e-308"     1e-308)
+(check-rt "1e308"      1e308)
+(check-rt "5e-324"     5e-324)
+(check-rt "3.0"        3.0)
+(check-rt "123456789"  123456789.0)
+(check-rt "-2.5"       -2.5)
+(check-rt "big frac"   0.00010478049866971263)
+
+(newline)
+(if (= fail-count 0)
+    (display "ALL PRINTER ROUND-TRIP CHECKS PASSED\n")
+    (begin (display "error: ") (display fail-count)
+           (display " printer round-trip checks FAILED\n")))

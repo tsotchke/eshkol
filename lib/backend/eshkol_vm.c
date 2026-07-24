@@ -125,6 +125,11 @@ typedef void regex_t;
 /* Unified numeric tower types */
 #include "vm_numeric.h"
 
+/* Shortest round-trip double->text formatter, shared byte-for-byte with the
+ * native runtime (eshkol_format_double) so VM display / number->string agree
+ * with the JIT/AOT paths (issue #310, ADR-0003 parity). */
+#include "eshkol/core/dtoa_shortest.h"
+
 /* Runtime type libraries */
 #include "vm_complex.c"
 #include "vm_rational.c"

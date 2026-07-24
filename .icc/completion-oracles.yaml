@@ -620,6 +620,10 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["printer_roundtrip_oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: '#310: number->string / display emit the shortest decimal that reads back to the exact same double (no 6-sig-fig truncation); integral doubles keep the no-".0" form; byte-identical across JIT, AOT and VM'
           event_names: ["edge_v134_dynamic_coverage"]
           event_values: ["PASS"]
         severity: high
