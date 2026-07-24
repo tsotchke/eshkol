@@ -133,35 +133,39 @@ across every new-feature family).
   fallback) and the `ozaki-ii-fast` ICC oracle. `ESHKOL_OZAKI_PROFILE=1` reports
   per-matmul internal pipeline GFLOP/s.
   (`lib/backend/gpu/gpu_memory.mm`, `lib/backend/gpu/metal_softfloat.h`)
-- **Reverse/forward-mode `gradient` on the bytecode VM, and a public low-level
-  AD tape surface (#337).** `gradient` reaches full parity on the bytecode VM, so
-  Eshkol is self-differentiating on every substrate. The VM lowers an
-  arity-resolved forward-mode dual `gradient` as a compiler special form —
-  `(gradient f point)` direct, through a callable parameter, and curried
-  `((gradient f) point)` / `((gradient f) x y)` — with a scalar point yielding a
-  scalar derivative, an N-arg scalar loss spreading into N seeded coordinates,
-  and an arity-1 whole-vector loss seeded as one vector, matching native
-  codegen's arity handling. The callable's arity is packed into the high bits of
-  the func-PC constant so it survives ESKB serialization; transcendental unary
-  ops record on the one reverse-mode tape when a tape is active; and the result
-  is a first-class Scheme vector. Output is byte-identical to native across the
-  `native` / `vm-src` / `vm-eskb` axes (`tests/vm_parity/corpus/32_gradient_reverse.esk`,
-  `gradient_callable_arity_test.esk` 25/25 on the VM); `op:GRADIENT` and
-  `op:DERIVATIVE` move to `vm-supported` in `PARITY.tsv`, with higher-order
-  nesting (gradient-of-derivative / Taylor tower) staying native-only. The same
-  change completes the public low-level reverse-mode AD tape surface on JIT and
-  AOT — `ad-pow`, `ad-gradient-of`, `ad-value-of`, and `ad-tape-length` are wired
-  as codegen builtins over the shared `vm_autodiff.c` tape
-  (`tests/vm/ad_tape_lowlevel_regression.esk` green on JIT, AOT, and VM). Two
-  root-cause VM-compiler defects were fixed along the way: a no-op `(require …)`
-  left no value for the balancing `OP_POP`, silently shifting every later
-  top-level binding down one slot (a `define` after a `(require …)` bound to a
-  stale slot) — no-op require paths now leave an explicit `OP_NIL`; and
-  type-annotated parameters (`x : real`) and `: rettype` annotations that the VM
-  compiler previously ignored now resolve to their names with the annotation
-  skipped. A new `vm_gradient_parity` ICC gate is wired into the readiness oracle.
-  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`,
-  `lib/backend/autodiff_codegen.cpp`)
+- **Reverse/forward-mode `gradient` on the bytecode VM — full AD parity for the
+  gradient surface, self-differentiating on every substrate.** `gradient` now
+  works on the VM exactly as on the native `-r`/AOT path: direct
+  `(gradient f point)`, through a callable parameter `(define (w f p) (gradient
+  f p))`, and curried `((gradient f) point)` / `((gradient f) x y)`. It resolves
+  the callable's true arity and expands the point accordingly — a scalar point
+  yields a scalar derivative, an N-argument scalar loss spreads into N seeded
+  coordinates, and an arity-1 whole-vector loss (read via `vref`) is seeded as a
+  single vector — matching the native codegen's arity handling. The callable's
+  fixed arity is packed into the high bits of its func-PC constant at compile
+  time and unpacked by `OP_CLOSURE` into the closure, so it survives ESKB
+  serialization (whose per-function offsets do not). Results are byte-identical
+  to native across native / vm-src / vm-eskb for the whole gradient corpus
+  (`tests/vm_parity/corpus/32_gradient_reverse.esk`), including non-polynomial
+  losses (`sin`/`cos`/`exp`/`log`/`/`) and repeated in-loop calls (no leak).
+  `tests/autodiff/gradient_callable_arity_test.esk` is 25/25 on the VM.
+  Transcendental unary ops (`sin`/`cos`/`exp`/`log`/`sqrt`) are now recorded on
+  the one reverse-mode AD tape too. `op:GRADIENT` and `op:DERIVATIVE` flip to
+  `vm-supported` in `tests/vm_parity/PARITY.tsv`; higher-order nesting (gradient
+  of a derivative / Taylor tower) remains native-only. New ICC gate
+  `vm_gradient_parity`.
+- **Public low-level reverse-mode AD tape surface on the LLVM path (JIT + AOT).**
+  `ad-pow`, `ad-gradient-of`, `ad-value-of` and `ad-tape-length` — previously
+  `Unknown function` under JIT/AOT despite being VM builtins and documented —
+  are now first-class codegen builtins wired through the same sret-runtime
+  machinery as the rest of the `ad-*` tape ops (new `eshkol_ad_pow_sret` /
+  `eshkol_ad_tape_length_sret` wrappers over the shared `vm_autodiff.c` tape).
+  `(ad-pow tape base exponent)` gives ordinary `pow` forward semantics with
+  correct reverse derivatives (e.g. `d/dx x^0.5` at 4 → `0.25`).
+  `tests/vm/ad_tape_lowlevel_regression.esk` now passes on JIT, AOT and the VM
+  (`build/eshkol-run --strict-types -r …` exits 0), and the low-level ad-pow
+  case is in the parity corpus (`tests/vm_parity/corpus/33_ad_pow_lowlevel.esk`,
+  byte-identical native/vm-src/vm-eskb).
 - **Checked `(the <type> expr)` ascription and predicate-guarded narrowing
   (strict mode).** The type checker gained several idiom-accepting features so
   that idiomatic dynamic-but-validated code type-checks without escape hatches:
@@ -295,6 +299,21 @@ across every new-feature family).
 
 ### Fixed
 
+- **`(require stdlib)` (and any no-op `require`) silently shifted every
+  subsequent top-level binding down one slot.** The bytecode compiler lowers a
+  `require` of the always-available prelude to nothing, but the top-level (and
+  function-body) compilers emit an `OP_POP` after any expression that grows no
+  local — so the POP discarded a *live* stack value, misaligning the operand
+  stack from the compiler's slot model for the rest of the program. A
+  two-argument `define` written after `(require stdlib)` therefore bound to a
+  stale slot and called as `NIL` ("calling non-function"). Every no-op `require`
+  path now leaves an explicit `OP_NIL` placeholder for that POP to balance.
+- **Type-annotated function parameters and return types were ignored by the VM
+  compiler.** `(define (f (x : real) (y : real)) : real …)` bound its parameters
+  to empty names (so `f` computed on unbound zeros) and compiled the `: rettype`
+  annotation as a body expression. The compiler now resolves a `(name : type)`
+  formal to its name and skips a `: rettype` return annotation between the
+  signature and the body.
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
   ESH-0214 memory-management series. ESH-0214b's automatic per-iteration

@@ -374,6 +374,13 @@ double ad_value(const AdTape* tape, int node) {
     return tape->nodes[node].value;
 }
 
+/** @brief Number of nodes currently recorded on @p tape (native call 1843 /
+ *         `ad-tape-length`).  Exposed for the runtime sret wrapper so the
+ *         low-level tape surface is identical on the LLVM (JIT/AOT) path. */
+int ad_tape_length(const AdTape* tape) {
+    return tape ? tape->len : 0;
+}
+
 /*******************************************************************************
  * Self-Test
  ******************************************************************************/
