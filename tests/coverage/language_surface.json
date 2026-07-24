@@ -17,7 +17,7 @@
     "builtins_total": 1010,
     "builtins_in_native_closure_table": 427,
     "builtins_in_vm_table": 681,
-    "builtins_in_llvm_aot_dispatch": 771,
+    "builtins_in_llvm_aot_dispatch": 775,
     "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -699,7 +699,8 @@
       ],
       "arity": 2,
       "backends": [
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "tensor_ad"
     },
@@ -758,7 +759,8 @@
       ],
       "arity": 3,
       "backends": [
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "tensor_ad"
     },
@@ -889,7 +891,8 @@
       ],
       "arity": 1,
       "backends": [
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "tensor_ad"
     },
@@ -936,7 +939,8 @@
       ],
       "arity": 2,
       "backends": [
-        "vm"
+        "vm",
+        "native_llvm"
       ],
       "category": "tensor_ad"
     },
