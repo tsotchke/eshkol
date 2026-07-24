@@ -555,6 +555,25 @@ probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul resu
 probe edge_v134_dynamic_coverage 'v1.3.4 edge coverage (nursery iter-scope 6-channel, capturing parallel-map, exact gradient-through-callable + curried, native i128 wraparound, native matmul, VM ad-pow/ad-tape) — generated seeded probes green across JIT/AOT-O0/AOT-O2/VM with no native-vs-VM divergence' \
     'cd "$REPO_ROOT"; MODES="jit aot aot-O0 vm" JOBS="${JOBS:-4}" MAX_DEPTH="${EDGE_V134_MAX_DEPTH:-4}" \
         BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_edge_coverage_v134.sh >/dev/null 2>&1'
+# ───────────────────────────────────────────────────────────────────
+# SDNC weight-matrix backward gradient check (docs/SDNC.md §13). The
+# reverse-mode FFN backward passes in lib/backend/qllm_backward.c must
+# agree with a central finite-difference reference to relative error
+# < 1e-6. The test recompiles the precision-generic backward source in
+# double (-DQLLM_REAL=double) so the finite-difference floor drops well
+# below the bar; the production instantiation stays float. Self-contained
+# cc build so the smoke lane does not depend on a full CMake tree.
+# ───────────────────────────────────────────────────────────────────
+probe qllm_backward_gradcheck \
+    'SDNC qllm_backward FFN gradients (SQUARE + gated) match central finite differences to L2 rel err < 1e-6 (double regime)' \
+    'cd "$REPO_ROOT";
+     cc_bin="${CC:-cc}"; gc_out=$(mktemp "${TMPDIR:-/tmp}/icc-qllm-gradcheck.XXXXXX");
+     "$cc_bin" -O2 -DQLLM_REAL=double -Iinc \
+         tests/backend/qllm_backward_gradcheck_test.c \
+         lib/backend/qllm_backward.c -lm -o "$gc_out" >/dev/null 2>&1 || { rm -f "$gc_out"; exit 1; };
+     out=$("$gc_out" 2>&1); rc=$?; rm -f "$gc_out";
+     [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "Results: 2 passed, 0 failed"'
 
 echo
 echo "Trace written: $TRACE_FILE"
