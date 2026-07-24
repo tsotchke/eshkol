@@ -67,6 +67,11 @@ extern size_t arena_get_used_memory(const void* a);
 #endif
 #endif
 
+/* Shortest round-trip double->text — shared with display / number->string so
+ * the native `format` builtin (~a / ~f of a flonum) does not truncate to 6
+ * significant figures (issue #310). */
+#include "eshkol/core/dtoa_shortest.h"
+
 /* Portable dirname/basename — POSIX-equivalent semantics on every platform.
  * POSIX dirname/basename are allowed to modify their argument and return a
  * pointer into it (or into a static buffer); ours always work in-place,
@@ -3901,7 +3906,7 @@ static int sys_format_append_value(char* out,
         snprintf(buf, sizeof(buf), "%llx", (unsigned long long)sys_extract_int64(value));
         return sys_format_append_cstr(out, cap, pos, buf);
     case 'f':
-        snprintf(buf, sizeof(buf), "%.6g", sys_extract_double_display(value));
+        eshkol_dtoa_shortest(buf, sizeof(buf), sys_extract_double_display(value));
         return sys_format_append_cstr(out, cap, pos, buf);
     case 's': {
         const char* s = sys_extract_string(value);
@@ -3921,7 +3926,7 @@ static int sys_format_append_value(char* out,
             return sys_format_append_cstr(out, cap, pos, buf);
         }
         if (value.type == SYS_TYPE_DOUBLE) {
-            snprintf(buf, sizeof(buf), "%.6g", sys_extract_double_display(value));
+            eshkol_dtoa_shortest(buf, sizeof(buf), sys_extract_double_display(value));
             return sys_format_append_cstr(out, cap, pos, buf);
         }
         if (value.type == SYS_TYPE_BOOL)
