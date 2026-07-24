@@ -1,0 +1,36 @@
+; VM<->native parity for the public low-level reverse-mode AD tape surface,
+; including ad-pow (which was previously JIT/AOT "Unknown function").  Every op
+; takes the tape first; the tape is built explicitly, one backward sweep reads
+; adjoints.  All values print as bare scalars, so the byte streams match.
+
+; --- ad-pow with a fractional exponent: d/dx x^0.5 at x=4 -> value 2, grad 0.25
+(define tp (ad-tape-new))
+(define b (ad-var tp 4.0))
+(define e (ad-const tp 0.5))
+(define r (ad-pow tp b e))
+(display (ad-node-value tp r)) (newline)        ; 2
+(ad-backward tp r)
+(display (ad-gradient tp b)) (newline)           ; 0.25
+
+; --- y = x^3 at x=2: value 8, dy/dx = 3x^2 = 12 (integer exponent node) ---
+(define t2 (ad-tape-new))
+(define x (ad-var t2 2.0))
+(define three (ad-const t2 3.0))
+(define y (ad-pow t2 x three))
+(display (ad-value t2 y)) (newline)              ; 8
+(ad-backward t2 y)
+(display (ad-gradient-of t2 x)) (newline)        ; 12
+
+; --- reverse-mode gradient of a^2+b^2 at (1,1) built on the tape = (2, 2) ---
+(define t3 (ad-tape-new))
+(define a (ad-var t3 1.0))
+(define bb (ad-var t3 1.0))
+(define f (ad-add t3 (ad-mul t3 a a) (ad-mul t3 bb bb)))
+(ad-backward t3 f)
+(display (ad-gradient t3 a)) (display " ") (display (ad-gradient t3 bb)) (newline) ; 2 2
+
+; --- ad-tape-length reports a positive node count after recording ---
+(display (> (ad-tape-length t3) 0)) (newline)    ; #t
+(ad-tape-release tp)
+(ad-tape-release t2)
+(ad-tape-release t3)

@@ -1,0 +1,22 @@
+;; VM-surface probe: the high-level `reverse-gradient` convenience builtin
+;; (VM native-call 1840, arity 2).  On the LLVM path this surface is subsumed
+;; by the `gradient` operator (see docs/reference/stdlib/ad_tape.md), so this
+;; probe is deliberately VM-only via the *_surface_regression glob.
+;;
+;; f(x, y) = x^2 + y^2 at (1, 1)  =>  grad = (2x, 2y) = (2, 2).
+
+(define (loss x y) (+ (* x x) (* y y)))
+
+;; The result is a tensor (contract: "→ tensor of gradients"), so read it
+;; back with tensor-ref.  Exercise both a (vector ...) point and a list point
+;; — points are classified by runtime value, never construction form.
+(define g (reverse-gradient loss (vector 1.0 1.0)))
+(define gl (reverse-gradient loss (list 3.0 4.0)))
+
+(display (if (and (= (tensor-ref g 0) 2.0)
+                  (= (tensor-ref g 1) 2.0)
+                  (= (tensor-ref gl 0) 6.0)
+                  (= (tensor-ref gl 1) 8.0))
+             "PASS" "FAIL"))
+(display ": reverse-gradient of x^2+y^2 — vector point (1,1) -> (2,2); list point (3,4) -> (6,8)")
+(newline)
