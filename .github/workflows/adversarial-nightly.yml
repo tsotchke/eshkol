@@ -1,0 +1,186 @@
+name: Adversarial Nightly (P8 escape-closure)
+
+# NEW workflow (does not touch ci.yml / release.yml / pages.yml). Runs the P8
+# escape-closure pillar at full depth plus the heavy lanes that are too slow for
+# the per-PR CI budget: the full native-vs-VM arity sweep, the TSan concurrency
+# corpus, and the packaging (Homebrew / install-script) lanes.
+#
+# Nightly + manual only. The escape-matrix and TSan lanes are real gates; the
+# packaging lane is advisory (continue-on-error) and only alerts.
+
+on:
+  schedule:
+    - cron: '0 7 * * *'      # 07:00 UTC nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  LLVM_MAJOR: '21'
+
+concurrency:
+  group: adversarial-nightly-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Full P8 escape-closure pillar (JIT + AOT + VM lanes, full arity sweep).
+  # ---------------------------------------------------------------------------
+  escape-matrix:
+    name: escape-matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          brew install llvm@${LLVM_MAJOR} cmake ninja readline pcre2 sqlite
+
+      - name: Install toolchain (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: Configure & build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            LLVM_CONFIG="$(brew --prefix llvm@${LLVM_MAJOR})/bin/llvm-config"
+          else
+            LLVM_CONFIG="/usr/bin/llvm-config-${LLVM_MAJOR}"
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="$LLVM_CONFIG"
+          cmake --build build --target eshkol-run eshkol-vm-standalone-test stdlib --parallel
+
+      - name: Run P8 escape-closure pillar (full)
+        shell: bash
+        run: |
+          set -uxo pipefail
+          bash scripts/run_p8_escape.sh --full --build-dir build
+
+      - name: Upload escape-matrix trace
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: escape-matrix-trace-${{ matrix.os }}
+          path: scripts/icc_traces/escape_matrix.jsonl
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # Axis 5 nightly: the concurrency corpus under ThreadSanitizer.
+  # ---------------------------------------------------------------------------
+  concurrency-tsan:
+    name: concurrency-tsan (Linux)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} clang-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+
+      - name: TSan build
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build-tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DCMAKE_C_COMPILER="clang-${LLVM_MAJOR}" \
+            -DCMAKE_CXX_COMPILER="clang++-${LLVM_MAJOR}" \
+            -DESHKOL_ENABLE_TSAN=ON
+          cmake --build build-tsan --target eshkol-run stdlib --parallel
+
+      - name: Concurrency corpus under TSan
+        shell: bash
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        run: |
+          set -uxo pipefail
+          out=$(mktemp -d)
+          python3 scripts/p8/gen_concurrency_fuzz.py --out "$out" --seed 8805 --repeats 20 --shapes 10
+          rc=0
+          for f in "$out"/*.esk; do
+            ./build-tsan/eshkol-run -r "$f" || rc=1
+          done
+          rm -rf "$out"
+          exit $rc
+
+  # ---------------------------------------------------------------------------
+  # Axis 9: packaging lanes (advisory — alert only).
+  # ---------------------------------------------------------------------------
+  packaging-homebrew:
+    name: packaging-homebrew (macOS)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: brew install --build-from-source (in-repo formula)
+        shell: bash
+        run: |
+          set -uxo pipefail
+          # Build the in-repo formula from source (HEAD build), not the tap.
+          brew install --build-from-source --HEAD ./packaging/homebrew/eshkol.rb || {
+            echo "::warning::Homebrew build-from-source of packaging/homebrew/eshkol.rb failed"
+            exit 1
+          }
+          eshkol-run --version || eshkol --version || true
+
+  packaging-linux:
+    name: packaging-linux (install-script smoke)
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install toolchain (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          sudo apt-get update -o Acquire::Retries=5
+          sudo apt-get install -y cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev git python3
+      - name: Build + install + smoke the installed binary
+        shell: bash
+        run: |
+          set -uxo pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_REQUIRED_LLVM_MAJOR="${LLVM_MAJOR}" \
+            -DLLVM_CONFIG_EXECUTABLE="/usr/bin/llvm-config-${LLVM_MAJOR}" \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/eshkol-prefix" || { echo "::warning::configure failed"; exit 1; }
+          cmake --build build --target eshkol-run --parallel || { echo "::warning::build failed"; exit 1; }
+          cmake --install build || echo "::warning::cmake --install had no rules / failed"
+          BIN="$RUNNER_TEMP/eshkol-prefix/bin/eshkol-run"
+          [ -x "$BIN" ] || BIN="build/eshkol-run"
+          echo '(display "packaging-smoke-ok")(newline)' > "$RUNNER_TEMP/smoke.esk"
+          "$BIN" -r "$RUNNER_TEMP/smoke.esk" | grep -q packaging-smoke-ok

@@ -202,6 +202,82 @@ oracles:
         label: 'self-differentiating on every substrate: `gradient` on the bytecode VM (arity-resolved forward-mode dual — direct/wrapped/curried, N-arg spread, arity-1 whole-vector, non-polynomial) is 25/25 on the VM and byte-identical to native across native/vm-src/vm-eskb; the public low-level reverse-mode AD tape surface (incl. ad-pow) is green on JIT, AOT and the VM'
         action: ./scripts/run_icc_smoke.sh
 
+      # ─────────────────────────────────────────────────────────────
+      # P8 "escape-closure" pillar (scripts/run_p8_escape.sh). Each axis
+      # is built so that a 2026-07 externally-reported bug CLASS would have
+      # been caught by our own framework first; retro-catch evidence
+      # against pre-fix build 010053c8 is in .swarm/P8_ESCAPE_ANALYSIS.md.
+      # The CI subset emits these events (eshkol_smoke roll-up via
+      # scripts/run_icc_smoke.sh; per-axis kind:"escape_matrix" via the
+      # pillar runner into scripts/icc_traces/escape_matrix.jsonl). The
+      # full JIT+AOT+VM sweep and the TSan / Homebrew packaging lanes are
+      # NIGHTLY-ONLY (.github/workflows/adversarial-nightly.yml) and are
+      # advisory — they have no hard oracle criterion here.
+      # ─────────────────────────────────────────────────────────────
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["p8_escape_matrix_green"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 escape-closure pillar (CI subset) is green: every escape axis — AD binding-form + indirection sweeps, reference-free property oracles, parallel-map concurrency fuzz, native-vs-VM arity ratchet, five-way surface agreement, toolchain fault-injection, workload flat-RSS — passes with no NEW divergence / masking / regression'
+        action: ./scripts/run_icc_smoke.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_axis1_binding-form"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-1 (binding-form): every AD operator (gradient/jacobian/hessian/laplacian/curl/divergence/derivative) at a differentiation point built as numeric/#()/vector/list/tensor/VAR/let/fnret/(the ...) form matches the closed-form ground truth AND agrees across forms — retro-catches the #339/#340/#343 point-classified-by-AST-node class (SIGSEGV / silent-zero)'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_axis2_indirection"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-2 (indirection): an AD operator reached direct / through a function parameter / curried / stored-in-let / threaded-through-two-levels is byte-identical — retro-catches the #330 gradient-through-callable arity class'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["arity_sweep_native_vm_parity"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-3 (arity sweep): every manifest builtin with a known arity registered on BOTH native and VM agrees value-for-value (or errors identically) on its documented / wrong-arity / wrong-type calls — shrink-only baseline ratchet; a NEW native-vs-VM divergence (the #322/#327 VM-matmul class) fails the gate'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_axis4_property-oracle"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-4 (property oracles): reference-free invariants — number->string∘string->number identity over diverse doubles, (read∘write) round-trip, exact algebraic identities — hold on every substrate INDEPENDENTLY; retro-catches the 6-sig-fig printer class the lossy-normalized chibi differential missed (shared-defect blindness)'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_axis5_concurrency-fuzz"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-5 (concurrency fuzz): seeded parallel-map worker corpora (scope-op-heavy / allocating / string / mixed-#f closures × n∈{4,15,16,17,64} × 20 repeats) deep-equal the serial-map oracle every run — retro-catches the #331 shared-arena scope-stack race'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["five_way_surface_agreement"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'P8 axis-6 (five-way surface): doc ↔ manifest ↔ native-registration ↔ VM-dispatch ↔ module-provide agree for every builtin — shrink-only baseline ratchet; a NEW doc-orphan or backend asymmetry (the ad-pow native-missing class) fails the gate'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_fault_injection_suite"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'P8 axis-7 (fault injection): every toolchain fault hard-gate cell (broken --lib under -r/AOT, malformed-AOT, bad output dir, undefined symbol, missing source under -r) exits NONZERO with a diagnostic — retro-guards the #334 exit-0-masking class; XKNOWN masking cells (ESH-0361) are tracked, XPASS-on-fix'
+        action: ./scripts/run_p8_escape.sh
+      - runtime_event:
+          event_kinds: [escape_matrix]
+          event_names: ["p8_mem_profiles_suite"]
+          event_values: ["PASS"]
+        severity: medium
+        label: 'P8 axis-8 (memory profiles): peak RSS is FLAT in the iteration count across workload shapes (AD-training step loop / resident KB tick / proof-search churn / parallel-map batch × auto-scope|with-region) — a leak that scales RSS with work (the training-loop OOM class) trips the machine-independent ratio invariant'
+        action: ./scripts/run_p8_escape.sh
+
   # ─────────────────────────────────────────────────────────────────
   # TOTAL-LANGUAGE completion — unlike the compiler-readiness ratchet above,
   # this target stays red until every high-risk category is exercised. It is
