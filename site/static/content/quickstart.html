@@ -27,6 +27,67 @@ brew install eshkol</code></pre>
 <h3 id="linux-debianubuntu">Linux (Debian/Ubuntu)</h3>
 <pre class="bash"><code># Download .deb from https://github.com/tsotchke/eshkol/releases
 sudo dpkg -i eshkol_*.deb</code></pre>
+<h3 id="linux-from-source-any-distribution">Linux (from source, any
+distribution)</h3>
+<p>Eshkol requires LLVM 21, which most distributions do not ship by
+default. The universal build script detects your distro family,
+provisions LLVM 21 and the build dependencies for it, and then
+configures and builds:</p>
+<pre class="bash"><code>git clone https://github.com/tsotchke/eshkol.git
+cd eshkol
+scripts/build-linux.sh            # deps + configure + build
+scripts/build-linux.sh --ctest    # also run the test suite</code></pre>
+<p>Supported families:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Family</th>
+<th>Distributions</th>
+<th>LLVM 21 source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>debian</td>
+<td>Debian, Ubuntu, Linux Mint, LMDE, Pop!_OS, elementary, Kali</td>
+<td>apt.llvm.org (base codename resolved automatically; Mint’s own
+codename is never used)</td>
+</tr>
+<tr>
+<td>arch</td>
+<td>Arch, Manjaro, EndeavourOS, CachyOS</td>
+<td>pacman (current llvm when it is major 21, else the versioned llvm21
+legacy packages)</td>
+</tr>
+<tr>
+<td>fedora</td>
+<td>Fedora, RHEL, CentOS Stream, Rocky, Alma</td>
+<td>dnf (default LLVM when it is 21, else the versioned llvm21
+packages)</td>
+</tr>
+<tr>
+<td>suse</td>
+<td>openSUSE Tumbleweed, Leap</td>
+<td>zypper (versioned llvm21 packages)</td>
+</tr>
+<tr>
+<td>alpine</td>
+<td>Alpine</td>
+<td>apk (musl libc; experimental, not a release platform; run
+<code>apk add bash</code> first)</td>
+</tr>
+</tbody>
+</table>
+<p>Mint users can equivalently run
+<code>scripts/build-linux-mint.sh</code> (a shim for the same script).
+If a Debian-derivative’s apt.llvm.org suite cannot be resolved
+automatically, set <code>ESHKOL_BASE_CODENAME=jammy</code> (or
+<code>noble</code>/<code>bookworm</code>) and rerun.</p>
 <h3 id="windows-visual-studio-2022-llvm-21">Windows (Visual Studio 2022
 + LLVM 21)</h3>
 <pre class="powershell"><code># In Developer PowerShell for VS 2022:
