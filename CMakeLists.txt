@@ -3966,6 +3966,51 @@ endif()
 # runtime, but never silently disable or reduce it merely because of the host.
 option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
 
+# ──────────────────────────────────────────────────────────────────────────
+# Packaged / system-dependency resolution for the bundled agent-FFI native
+# dependencies (PCRE2, SQLite, zlib, tree-sitter + grammars, Yoga, curl).
+#
+# The default developer/release build downloads each dependency at pinned,
+# reproducible revisions via FetchContent (the block much further below).  That
+# is incompatible with sandboxed packaging environments such as Homebrew, which
+# inject a CMake dependency provider that refuses ALL FetchContent population
+# ("Refusing to populate dependency '<dep>' with FetchContent while building in
+# Homebrew, please use a formula dependency or add a resource to the formula").
+#
+# Two orthogonal, CMake-native escape hatches make a packaged build succeed
+# without a single network fetch, while leaving the default build byte-for-byte
+# unchanged:
+#
+#   * ESHKOL_USE_SYSTEM_PCRE2 links an installed PCRE2 (e.g. the Homebrew
+#     `pcre2` formula) under the same target name the bundled build defines,
+#     instead of fetching and compiling the pinned source.
+#
+#   * FETCHCONTENT_SOURCE_DIR_<UPPERCASE_NAME> points each remaining
+#     FetchContent dependency at a pre-staged source tree (a Homebrew
+#     `resource`).  CMake honors this natively: when set, the source-dir
+#     override "overrides everything else" — FetchContent_MakeAvailable() skips
+#     the dependency provider (so the Homebrew trap never fires) and performs no
+#     download (see the stock FetchContent.cmake).
+#
+# ESHKOL_HOMEBREW_BUILD is an umbrella that turns the packaging contract on: it
+# defaults ESHKOL_USE_SYSTEM_PCRE2 to ON and enables FETCHCONTENT_FULLY_
+# DISCONNECTED so any dependency the packager forgot to stage fails fast rather
+# than silently reaching the network.
+option(ESHKOL_HOMEBREW_BUILD
+    "Resolve bundled agent-FFI dependencies from system packages / staged resources (no FetchContent downloads)"
+    OFF)
+if(ESHKOL_HOMEBREW_BUILD)
+    set(_eshkol_use_system_pcre2_default ON)
+    if(NOT DEFINED FETCHCONTENT_FULLY_DISCONNECTED)
+        set(FETCHCONTENT_FULLY_DISCONNECTED ON)
+    endif()
+else()
+    set(_eshkol_use_system_pcre2_default OFF)
+endif()
+option(ESHKOL_USE_SYSTEM_PCRE2
+    "Link the system-provided PCRE2 (8-bit) instead of building the pinned source"
+    ${_eshkol_use_system_pcre2_default})
+
 if(ESHKOL_BUILD_AGENT_FFI)
     set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
 
@@ -4023,29 +4068,70 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # MSYS, vcpkg, a distro pkg-config database, or the release runner.
         # Build immutable upstream revisions on every host and package the
         # resulting static archives next to eshkol-agent-ffi.
+        #
+        # Exception: sandboxed packagers (see ESHKOL_HOMEBREW_BUILD /
+        # ESHKOL_USE_SYSTEM_PCRE2 / FETCHCONTENT_SOURCE_DIR_<name> above) may
+        # opt into resolving these from a system package or a pre-staged
+        # resource of the SAME pinned revision.  The default build below is
+        # unaffected.
         include(FetchContent)
         set(_eshkol_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
         set(_eshkol_saved_build_testing "${BUILD_TESTING}")
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
         set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
-        set(PCRE2_BUILD_PCRE2_8 ON CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2_16 OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2_32 OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2TEST OFF CACHE BOOL "" FORCE)
-        set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
-        set(PCRE2_STATIC_PIC ON CACHE BOOL "" FORCE)
-        set(PCRE2_INSTALL OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(eshkol_pcre2
-            GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
-            GIT_TAG f454e231fe5006dd7ff8f4693fd2b8eb94333429
-            GIT_SHALLOW FALSE
-        )
-        FetchContent_MakeAvailable(eshkol_pcre2)
-        if(NOT TARGET pcre2-8-static)
-            message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
+        if(ESHKOL_USE_SYSTEM_PCRE2)
+            # Resolve PCRE2 from an installed package (e.g. the Homebrew
+            # `pcre2` formula).  Import its static 8-bit archive under the exact
+            # target name the bundled build defines (pcre2-8-static) so every
+            # downstream link / packaging copy / AOT-link reference below is
+            # identical and needs no change.
+            find_package(PkgConfig QUIET)
+            if(PkgConfig_FOUND)
+                pkg_check_modules(ESHKOL_SYS_PCRE2 QUIET libpcre2-8)
+            endif()
+            find_path(ESHKOL_SYS_PCRE2_INCLUDE_DIR
+                NAMES pcre2.h
+                HINTS ${ESHKOL_SYS_PCRE2_INCLUDE_DIRS} ${ESHKOL_SYS_PCRE2_INCLUDEDIR})
+            # Prefer the static archive so the packaged agent closure stays
+            # self-contained, matching the bundled-build contract.
+            set(_eshkol_saved_lib_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+            set(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+            find_library(ESHKOL_SYS_PCRE2_LIBRARY
+                NAMES pcre2-8
+                HINTS ${ESHKOL_SYS_PCRE2_LIBRARY_DIRS} ${ESHKOL_SYS_PCRE2_LIBDIR})
+            set(CMAKE_FIND_LIBRARY_SUFFIXES "${_eshkol_saved_lib_suffixes}")
+            if(NOT ESHKOL_SYS_PCRE2_LIBRARY OR NOT ESHKOL_SYS_PCRE2_INCLUDE_DIR)
+                message(FATAL_ERROR
+                    "ESHKOL_USE_SYSTEM_PCRE2=ON but a static libpcre2-8 archive and "
+                    "pcre2.h could not be located. Install the PCRE2 development "
+                    "package (Homebrew: `brew install pcre2`).")
+            endif()
+            add_library(pcre2-8-static STATIC IMPORTED GLOBAL)
+            set_target_properties(pcre2-8-static PROPERTIES
+                IMPORTED_LOCATION "${ESHKOL_SYS_PCRE2_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${ESHKOL_SYS_PCRE2_INCLUDE_DIR}"
+                INTERFACE_COMPILE_DEFINITIONS "PCRE2_CODE_UNIT_WIDTH=8;PCRE2_STATIC=1")
+            message(STATUS "Agent FFI: system PCRE2 (${ESHKOL_SYS_PCRE2_LIBRARY})")
+        else()
+            set(PCRE2_BUILD_PCRE2_8 ON CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2_16 OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2_32 OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2TEST OFF CACHE BOOL "" FORCE)
+            set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
+            set(PCRE2_STATIC_PIC ON CACHE BOOL "" FORCE)
+            set(PCRE2_INSTALL OFF CACHE BOOL "" FORCE)
+            FetchContent_Declare(eshkol_pcre2
+                GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
+                GIT_TAG f454e231fe5006dd7ff8f4693fd2b8eb94333429
+                GIT_SHALLOW FALSE
+            )
+            FetchContent_MakeAvailable(eshkol_pcre2)
+            if(NOT TARGET pcre2-8-static)
+                message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
+            endif()
         endif()
 
         if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")
