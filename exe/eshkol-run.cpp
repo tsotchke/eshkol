@@ -867,10 +867,18 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
     // closure) apart from "the program failed to compile" (fall back so the JIT
     // re-diagnoses it, e.g. the named undefined-function runtime error). See
     // kCacheBuildLinkFailureExit. Scoped to the child spawn and cleared after.
+#if defined(_WIN32)
+    _putenv_s(kCacheBuildEnvVar, "1");
+#else
     ::setenv(kCacheBuildEnvVar, "1", 1);
+#endif
     int compile_status = eshkol::pkg::run_subprocess(
         compile_args, nullptr, link_subprocess_timeout_seconds());
+#if defined(_WIN32)
+    _putenv_s(kCacheBuildEnvVar, "");
+#else
     ::unsetenv(kCacheBuildEnvVar);
+#endif
     // The child compiler normally removes this linker input itself, but a
     // concurrent cold-cache stress exposed persistent `.tmp.o` sidecars.
     // The parent owns the cache transaction and therefore performs a final,
