@@ -185,6 +185,12 @@ void vm_run(VM* vm) {
             fprintf(stderr, "INVALID CONSTANT INDEX %d\n", instr.operand);
             vm->error = 1; goto vm_exit;
         }
+        /* A literal constant is never a tape node; clear any stale mapping on
+         * its slot so reverse-mode AD treats it as an ad_const operand rather
+         * than reusing a prior node index left in ad_node_map (only when a tape
+         * is active — a NULL check keeps non-AD execution untouched). */
+        if (vm->active_tape && vm->sp >= 0 && vm->sp < STACK_SIZE)
+            vm->ad_node_map[vm->sp] = -1;
         vm_push(vm, vm->constants[instr.operand]);
         DISPATCH();
 
@@ -398,10 +404,16 @@ void vm_run(VM* vm) {
         if (n_upvalues > 16) n_upvalues = 16;
         Value func_const = vm->constants[const_idx];
         int32_t func_pc = (int32_t)func_const.as.i;
+        /* Arity packed by the compiler in bits 32..40 of the func-PC constant
+         * (bit 40 = present flag); low 32 bits are the PC, so PC re-basing on
+         * inlining/ESKB load leaves the arity untouched. */
+        int32_t clo_arity = ((func_const.as.i >> 40) & 1)
+            ? (int32_t)((func_const.as.i >> 32) & 0xFF) : -1;
         int32_t ptr = heap_alloc(&vm->heap);
         if (ptr < 0) { vm->error = 1; goto vm_exit; }
         vm->heap.objects[ptr]->type = HEAP_CLOSURE;
         vm->heap.objects[ptr]->closure.func_pc = func_pc;
+        vm->heap.objects[ptr]->closure.arity = clo_arity;
         vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
         for (int i = 0; i < 16; i++)
             vm->heap.objects[ptr]->closure.open_slots[i] = -1;
@@ -1048,10 +1060,13 @@ vm_exit:
             if (n_upvalues > 16) n_upvalues = 16;
             Value func_const = vm->constants[const_idx];
             int32_t func_pc = (int32_t)func_const.as.i;
+            int32_t clo_arity = ((func_const.as.i >> 40) & 1)
+                ? (int32_t)((func_const.as.i >> 32) & 0xFF) : -1;
             int32_t ptr = heap_alloc(&vm->heap);
             if (ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[ptr]->type = HEAP_CLOSURE;
             vm->heap.objects[ptr]->closure.func_pc = func_pc;
+            vm->heap.objects[ptr]->closure.arity = clo_arity;
             vm->heap.objects[ptr]->closure.n_upvalues = n_upvalues;
             for (int i = 0; i < 16; i++)
                 vm->heap.objects[ptr]->closure.open_slots[i] = -1;

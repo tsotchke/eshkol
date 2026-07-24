@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Reverse/forward-mode `gradient` on the bytecode VM — full AD parity for the
+  gradient surface, self-differentiating on every substrate.** `gradient` now
+  works on the VM exactly as on the native `-r`/AOT path: direct
+  `(gradient f point)`, through a callable parameter `(define (w f p) (gradient
+  f p))`, and curried `((gradient f) point)` / `((gradient f) x y)`. It resolves
+  the callable's true arity and expands the point accordingly — a scalar point
+  yields a scalar derivative, an N-argument scalar loss spreads into N seeded
+  coordinates, and an arity-1 whole-vector loss (read via `vref`) is seeded as a
+  single vector — matching the native codegen's arity handling. The callable's
+  fixed arity is packed into the high bits of its func-PC constant at compile
+  time and unpacked by `OP_CLOSURE` into the closure, so it survives ESKB
+  serialization (whose per-function offsets do not). Results are byte-identical
+  to native across native / vm-src / vm-eskb for the whole gradient corpus
+  (`tests/vm_parity/corpus/32_gradient_reverse.esk`), including non-polynomial
+  losses (`sin`/`cos`/`exp`/`log`/`/`) and repeated in-loop calls (no leak).
+  `tests/autodiff/gradient_callable_arity_test.esk` is 25/25 on the VM.
+  Transcendental unary ops (`sin`/`cos`/`exp`/`log`/`sqrt`) are now recorded on
+  the one reverse-mode AD tape too. `op:GRADIENT` and `op:DERIVATIVE` flip to
+  `vm-supported` in `tests/vm_parity/PARITY.tsv`; higher-order nesting (gradient
+  of a derivative / Taylor tower) remains native-only. New ICC gate
+  `vm_gradient_parity`.
+- **Public low-level reverse-mode AD tape surface on the LLVM path (JIT + AOT).**
+  `ad-pow`, `ad-gradient-of`, `ad-value-of` and `ad-tape-length` — previously
+  `Unknown function` under JIT/AOT despite being VM builtins and documented —
+  are now first-class codegen builtins wired through the same sret-runtime
+  machinery as the rest of the `ad-*` tape ops (new `eshkol_ad_pow_sret` /
+  `eshkol_ad_tape_length_sret` wrappers over the shared `vm_autodiff.c` tape).
+  `(ad-pow tape base exponent)` gives ordinary `pow` forward semantics with
+  correct reverse derivatives (e.g. `d/dx x^0.5` at 4 → `0.25`).
+  `tests/vm/ad_tape_lowlevel_regression.esk` now passes on JIT, AOT and the VM
+  (`build/eshkol-run --strict-types -r …` exits 0), and the low-level ad-pow
+  case is in the parity corpus (`tests/vm_parity/corpus/33_ad_pow_lowlevel.esk`,
+  byte-identical native/vm-src/vm-eskb).
 - **SDNC weight-matrix backward pass wired into the build with a gradient
   check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
   companion to the analytical forward constructor in `weight_matrices.c` — was
@@ -48,6 +81,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`(require stdlib)` (and any no-op `require`) silently shifted every
+  subsequent top-level binding down one slot.** The bytecode compiler lowers a
+  `require` of the always-available prelude to nothing, but the top-level (and
+  function-body) compilers emit an `OP_POP` after any expression that grows no
+  local — so the POP discarded a *live* stack value, misaligning the operand
+  stack from the compiler's slot model for the rest of the program. A
+  two-argument `define` written after `(require stdlib)` therefore bound to a
+  stale slot and called as `NIL` ("calling non-function"). Every no-op `require`
+  path now leaves an explicit `OP_NIL` placeholder for that POP to balance.
+- **Type-annotated function parameters and return types were ignored by the VM
+  compiler.** `(define (f (x : real) (y : real)) : real …)` bound its parameters
+  to empty names (so `f` computed on unbound zeros) and compiled the `: rettype`
+  annotation as a body expression. The compiler now resolves a `(name : type)`
+  formal to its name and skips a `: rettype` return annotation between the
+  signature and the body.
 - **Driver: agent-FFI link requirements now propagate through the full
   transitive source closure, and a generated-program link failure under `-r`
   is fatal instead of silently masked.** Two coupled defects in the
@@ -308,7 +356,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `eshkol_arena_poison_enabled()` env-var cache was a plain function-local
   `int`, first-touched concurrently by pool workers (identical value, but a
   real ThreadSanitizer-visible race). Now a relaxed `std::atomic<int>`.
-
+- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
+  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
+  parity gap. Three defects, all the same root cause: variadic tensor builtins
+  whose native runtime handlers take more operands than their fixed-arity
+  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
+  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
+  table registered `arange` as arity-1, so `(arange n)` and
+  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
+  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
+  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
+  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
+  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
+  literal matmul was rejected instead of computed. (3) multi-dim
+  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
+  index/value against their fixed-arity table entries, returning/writing the
+  wrong element when reading back a matmul result. Fix: explicit VM-compiler
+  special forms that emit the defaulted/packed operands (mirroring the existing
+  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
+  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
+  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
+  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
+  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
+  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
+  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
+  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
 - **matmul tensor reads inside a defined function (#309) — verified resolved
   and now guarded.** #309 reported that a `matmul` result read back via
   `tensor-ref`/`tensor-data` from inside a `define`d function returned zeros,

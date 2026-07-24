@@ -208,6 +208,14 @@ typedef struct {
         struct { Value car; Value cdr; } cons;
         struct {
             int32_t func_pc;
+            /* Declared fixed-argument arity of the function, packed into the
+             * high bits of the func-PC constant at compile time and unpacked by
+             * OP_CLOSURE — so it survives ESKB serialization (the entry table's
+             * offsets don't, since bodies are re-laid-out on load).  -1 means
+             * unknown (an anonymous/synthesized closure); a variadic function
+             * records 255.  Read via vm_closure_arity() so `gradient` can
+             * expand a point to a callable's true signature. */
+            int32_t arity;
             int32_t n_upvalues;
             Value upvalues[16];
             /* -1 means closed/captured-by-value; otherwise this is an

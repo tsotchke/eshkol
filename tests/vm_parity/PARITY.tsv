@@ -310,7 +310,7 @@ gpu-matmul	vm-supported
 gpu-reduce	vm-supported	
 gpu-softmax	vm-supported	
 gpu-transpose	vm-supported	
-gradient	gap	silently wrong values (found/ad_gradient_wrong.esk)
+gradient	vm-supported
 gradient-descent	gap	ml faculty has no VM fid coverage
 hamming-window	gap	signal faculty has no VM fid coverage
 hann-window	gap	signal faculty has no VM fid coverage
@@ -506,7 +506,7 @@ op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
 op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
-op:DERIVATIVE	gap	AD surface diverges in VM (found/ad_gradient_wrong.esk)
+op:DERIVATIVE	vm-supported	forward-mode dual derivative of a scalar function; matches native for polynomial and transcendental cases (verified via the gradient corpus scalar-point path)
 op:DERIVATIVE_N	gap	arbitrary-order Taylor-tower AD operator not implemented on VM surface
 op:DIFF	gap	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
@@ -533,7 +533,7 @@ op:FG_OBSERVE	vm-supported	BUILTINS fid 527
 op:FG_UPDATE_CPT	vm-supported	BUILTINS fid 524
 op:FORALL	native-only-justified	static type syntax, erased before codegen
 op:FREE_ENERGY	vm-supported	BUILTINS fid 525
-op:GRADIENT	gap	returns 0 instead of gradient (found/ad_gradient_wrong.esk)
+op:GRADIENT	vm-supported	forward-mode dual gradient, arity-resolved (scalar / N-arg spread / arity-1 whole-vector) + curried form; byte-identical to native across native/vm-src/vm-eskb (corpus/32_gradient_reverse.esk). Higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only.
 op:GUARD	vm-supported	guard/raise verified 2026-07
 op:HESSIAN	gap	returns 0 (found/ad_gradient_wrong.esk)
 op:IF	vm-supported	vm_compiler special-form dispatch

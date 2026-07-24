@@ -552,6 +552,27 @@ probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul resu
      printf "%s" "$out" | grep -q "FAIL:" && exit 1;
      exit 0'
 
+probe vm_gradient_parity 'gradient on the bytecode VM: the callable-arity spec (direct/wrapped/curried; 2/3-arg scalar spread; arity-1 whole-vector; non-polynomial) is 25/25 on the VM AND byte-identical to native across native/vm-src/vm-eskb (corpus 32); the public low-level AD tape surface (incl. ad-pow) is green on JIT, AOT and the VM (corpus 33 + regression)' \
+    'cd "$REPO_ROOT"; vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     [ -x "$vm" ] || exit 1;
+     # (1) callable-arity spec: 25/25 on the VM
+     out=$(ESHKOL_VM_NO_DISASM=1 "$vm" tests/autodiff/gradient_callable_arity_test.esk 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "RESULT: ALL PASSED" || exit 1;
+     # (2) low-level tape surface (incl. ad-pow) public on JIT and AOT
+     out=$("$ESHKOL_RUN" --strict-types -r tests/vm/ad_tape_lowlevel_regression.esk 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "FAIL" && exit 1;
+     printf "%s" "$out" | grep -q "PASS: ad-pow propagates gradient" || exit 1;
+     bin=$(mktemp) || exit 1;
+     "$ESHKOL_RUN" --strict-types tests/vm/ad_tape_lowlevel_regression.esk -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "FAIL" && exit 1;
+     # (3) native<->VM byte-identical for the gradient + ad-pow corpora
+     for f in tests/vm_parity/corpus/32_gradient_reverse.esk tests/vm_parity/corpus/33_ad_pow_lowlevel.esk; do
+       n=$("$ESHKOL_RUN" -r "$f" 2>/dev/null | tr -d "\n");
+       v=$(ESHKOL_VM_NO_DISASM=1 "$vm" "$f" 2>/dev/null | grep -vE "Eshkol VM|Execution complete|^===" | tr -d "\n");
+       [ "$n" = "$v" ] || exit 1;
+     done;
+     exit 0'
 # v1.3.4 DYNAMIC EDGE COVERAGE. Runs the seeded, bounded, depth-parametric
 # edge-case generator (scripts/gen_edge_v134.py) across every applicable
 # execution axis (JIT / AOT-O2 / AOT-O0 / VM) via
