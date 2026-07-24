@@ -17,6 +17,7 @@
 #include <cmath>
 #include <atomic>
 #include <mutex>
+#include <chrono>
 
 // ----------------------------------------------------------------------------
 // Verbose diagnostics (defined before all GPU_LOG uses in this TU)
@@ -455,40 +456,172 @@ static int cuda_matmul_ozaki_int8_f64(const double* dA, const double* dB, double
  *         Measured on GB10 (Grace Blackwell): it wins for M,N,K >= ~1024 (1.2x
  *         at 1024^3 rising to ~4.9x at 8192^3, up to ~17x at reduced T) but
  *         LOSES for small or small-K shapes (0.6-0.9x, e.g. 512^3, or 4096x512
- *         x4096). The previous code ran Ozaki unconditionally whenever enabled,
- *         paying that penalty on every small GEMM. This conservative guard
- *         captures every measured win and avoids every measured loss. The
- *         thresholds are GB10-calibrated; a self-calibrating, precision-
- *         tolerance-aware size dispatcher (validated separately) is the
- *         follow-up that generalises across GPUs and picks T automatically. */
+ *         x4096). Used only by the legacy fixed-T override path
+ *         (ESHKOL_CUDA_F64_KERNEL=ozaki-int8); the accuracy-budget selector
+ *         below supersedes it with a self-calibrated cost model. */
 static inline bool cuda_ozaki_worthwhile(uint64_t M, uint64_t K, uint64_t N) {
     return M >= 1024 && N >= 1024 && K >= 1024;
+}
+
+// ============================================================================
+// Accuracy-budget-driven f64 matmul selector (stage 2 of #311)
+// ============================================================================
+// The caller states an accuracy budget via ESHKOL_MATMUL_ACCURACY; the selector
+// picks the CHEAPEST kernel — cublasDgemm (native f64) or INT8-Ozaki at slice-
+// count T — that MEETS the budget, consulting a self-calibrated cost model. It
+// never silently degrades below the budget (guardrail #1). Default (env unset)
+// keeps today's behaviour exactly: the selector is OFF unless opted into. The
+// selection is observable under ESHKOL_GPU_VERBOSE (guardrail: chosen kernel +
+// why). Decision logic is the validated ozaki_dispatch.cu::choose(), ported.
+
+// Per-T guaranteed relative error — CONSERVATIVE tiers (guaranteed >= the error
+// measured on well-conditioned GB10 inputs: T1~5e-5 T2~4e-7 T3~3e-9 T4~3e-11
+// T5~2e-13 T6~2e-15 T7~1e-15, each rounded up for a conditioning margin). The
+// selector picks the smallest T whose guaranteed tol <= budget, so it never
+// silently degrades below the contract. No INT8-Ozaki tier is bit-exact (the
+// path drops slice-pairs p+q>T), so a strict "full f64"/1e-15 budget falls to
+// native cublasDgemm; T7 (~1e-14) is the tightest Ozaki tier offered. Deeply
+// ill-conditioned callers should still pin an exact tier explicitly.
+static const double OZAKI_TOL[9] = {
+    /*0*/ 1.0e0, /*T1*/ 1e-3, /*T2*/ 1e-5, /*T3*/ 1e-7,
+    /*T4*/ 1e-9, /*T5*/ 1e-11, /*T6*/ 1e-13, /*T7*/ 1e-14, /*T8*/ 1e-14 };
+
+// Self-calibrated time model per kernel: t_ns = overhead_ns + work / peak_gflops,
+// with work = 2*M*K*N FLOP and peak in GFLOP/s (== FLOP/ns). Seeds are a
+// two-probe (N=1024/4096) fit of the ACTUAL in-tree eshkol kernels timed on GB10
+// (per-call device allocation included, not the standalone referee kernel), so
+// they reflect production cost. `peak_gflops` then self-calibrates at runtime to
+// a high-water of achieved throughput on the kernel that actually ran — the #306
+// mechanism, per kernel, on the GPU ("the hardcoded gpu_peak_gflops=200 dies
+// with it"). The safety margin in cuda_select_f64 biases crossover ties to exact
+// DGEMM. A downward, probe-based per-GPU recalibration is the generalising
+// follow-up for non-GB10 silicon. Index 0 = DGEMM, 1..8 = Ozaki-T.
+struct CudaGemmModel { double overhead_ns; double peak_gflops; };
+static CudaGemmModel g_gemm_model[9] = {
+    /* DGEMM  */ {   83360.0,  416.0 },   // GB10 cuBLAS DGEMM (FP64 roofline)
+    /* Ozaki1 */ { 1203520.0, 7488.1 },   // effective f64-eq GFLOP/s
+    /* Ozaki2 */ { 1500030.0, 4854.6 },
+    /* Ozaki3 */ { 1827770.0, 3471.3 },
+    /* Ozaki4 */ { 2252420.0, 2633.4 },
+    /* Ozaki5 */ { 2735870.0, 2093.4 },
+    /* Ozaki6 */ { 3163750.0, 1721.4 },
+    /* Ozaki7 */ { 3606020.0, 1421.7 },   // tightest tier offered (~1e-14)
+    /* Ozaki8 */ { 4000000.0, 1250.0 } };  // extrapolated; not selected (loop caps at T7)
+
+static inline double cuda_gemm_predict_ns(int idx, double work) {
+    const CudaGemmModel& m = g_gemm_model[idx];
+    return m.overhead_ns + work / m.peak_gflops;   // FLOP / (GFLOP/s) = ns
+}
+// #306-style high-water self-calibration from a real GEMM's measured wall time.
+static inline void cuda_gemm_calibrate(int idx, double work, double measured_ns) {
+    double compute_ns = measured_ns - g_gemm_model[idx].overhead_ns;
+    if (compute_ns <= 0.0) return;                 // overhead-dominated: no throughput signal
+    double achieved = work / compute_ns;           // GFLOP/s
+    if (achieved > g_gemm_model[idx].peak_gflops)   // achieved is a valid estimate; keep the max
+        g_gemm_model[idx].peak_gflops = achieved;
+}
+
+/** @brief Parse ESHKOL_MATMUL_ACCURACY once. Returns the relative-error budget,
+ *         or <0 when unset (selector disabled → legacy behaviour). "fast" =>
+ *         loosest tier; "exact"/"full" (and any unparseable value) => 1e-15. */
+static double cuda_matmul_budget(void) {
+    static bool checked = false;
+    static double budget = -1.0;
+    if (checked) return budget;
+    checked = true;
+    const char* e = std::getenv("ESHKOL_MATMUL_ACCURACY");
+    if (!e || !*e) { budget = -1.0; return budget; }        // disabled: no behaviour change
+    if (!strcmp(e, "fast"))                                  budget = 1e-2;
+    else if (!strcmp(e, "exact") || !strcmp(e, "full"))     budget = 1e-15;
+    else { budget = atof(e); if (!(budget > 0.0)) budget = 1e-15; }
+    eshkol_info("CUDA: accuracy-budget matmul selector engaged (budget=%.0e)", budget);
+    return budget;
+}
+
+// Require Ozaki to be predicted at least this much faster than DGEMM before we
+// leave the exact native path — absorbs the model's crossover optimism so a near
+// tie resolves to DGEMM (safe: exact, and never meaningfully slower).
+static const double CUDA_OZAKI_SAFETY = 1.15;
+
+/** @brief The #311 routing decision (ozaki_dispatch.cu::choose, ported): the
+ *         smallest T whose guaranteed accuracy meets the budget, then the
+ *         cheaper of {DGEMM, Ozaki-T} per the cost model (subject to the safety
+ *         margin). Ozaki is only a candidate when K is within the int32-exact
+ *         bound (else it would just fall back). Sets *out_T and *out_speedup;
+ *         returns true for Ozaki. */
+static bool cuda_select_f64(uint64_t M, uint64_t K, uint64_t N, double budget,
+                            int* out_T, double* out_speedup) {
+    double work = 2.0 * (double)M * (double)K * (double)N;
+    double t_dg = cuda_gemm_predict_ns(0, work);
+    *out_T = 0; *out_speedup = 1.0;
+    if (K > 133000) return false;                           // Ozaki int32-exact bound (see K guard)
+    int Treq = -1;
+    for (int T = 1; T <= 7; T++) if (OZAKI_TOL[T] <= budget) { Treq = T; break; }
+    if (Treq < 0) return false;                             // budget tighter than any Ozaki tier (exact -> DGEMM)
+    double t_oz = cuda_gemm_predict_ns(Treq, work);
+    if (t_oz * CUDA_OZAKI_SAFETY < t_dg) {                  // clear win required
+        *out_T = Treq; *out_speedup = t_dg / t_oz; return true;
+    }
+    return false;
 }
 
 /** @brief Double-precision matmul via cuBLAS DGEMM, exploiting the
  *         column-major/row-major duality (computing C^T = B*A in cuBLAS
  *         terms yields row-major C = A*B without an explicit transpose).
- *         When ESHKOL_CUDA_F64_KERNEL=ozaki-int8 is set, the INT8 tensor-core
- *         Ozaki path is tried first (only when predicted faster, see
- *         cuda_ozaki_worthwhile) and cublasDgemm is the fallback. */
+ *
+ *         f64 kernel selection, in priority order: (1) the legacy explicit
+ *         override ESHKOL_CUDA_F64_KERNEL=ozaki-int8 (fixed T, gated by
+ *         cuda_ozaki_worthwhile); (2) the accuracy-budget selector when
+ *         ESHKOL_MATMUL_ACCURACY is set; (3) plain cublasDgemm. Every real GEMM
+ *         is timed to self-calibrate its cost model. */
 static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffer* C,
                             uint64_t M, uint64_t K, uint64_t N) {
     cuda_ozaki_check_env();
-    if (g_cuda_ozaki_enabled && cuda_ozaki_worthwhile(M, K, N)) {
-        GPU_LOG("matmul %llux%llu @ %llux%llu -> CUDA INT8-Ozaki (T=%d)",
+    const double budget = cuda_matmul_budget();
+
+    bool use_ozaki = false;
+    int  ozT = g_cuda_ozaki_T;
+    double pred_speedup = 1.0;
+    const char* why = "cublasDgemm (default)";
+
+    if (g_cuda_ozaki_enabled) {
+        // Legacy explicit path (back-compat): fixed T when the crude guard says so.
+        if (cuda_ozaki_worthwhile(M, K, N)) {
+            use_ozaki = true; ozT = g_cuda_ozaki_T;
+            why = "ESHKOL_CUDA_F64_KERNEL override";
+        }
+    } else if (budget >= 0.0) {
+        // Accuracy-budget selector (stage 2 of #311).
+        use_ozaki = cuda_select_f64(M, K, N, budget, &ozT, &pred_speedup);
+        why = use_ozaki ? "accuracy-budget selector"
+                        : "budget met cheapest by cublasDgemm";
+    }
+
+    const double work = 2.0 * (double)M * (double)K * (double)N;
+
+    if (use_ozaki) {
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> INT8-Ozaki T=%d (%s, ~%.2fx vs DGEMM)",
                 (unsigned long long)M, (unsigned long long)K,
-                (unsigned long long)K, (unsigned long long)N, g_cuda_ozaki_T);
+                (unsigned long long)K, (unsigned long long)N, ozT, why, pred_speedup);
+        auto t0 = std::chrono::steady_clock::now();
         int rc = cuda_matmul_ozaki_int8_f64(
             (const double*)A->device_ptr, (const double*)B->device_ptr,
-            (double*)C->device_ptr, M, K, N, g_cuda_ozaki_T);
+            (double*)C->device_ptr, M, K, N, ozT);
         if (rc == 0) {
             cudaStreamSynchronize(g_cuda_stream);
+            double ns = std::chrono::duration<double, std::nano>(
+                            std::chrono::steady_clock::now() - t0).count();
+            cuda_gemm_calibrate(ozT, work, ns);       // self-calibrate this Ozaki-T
             return 0;
         }
         // Any failure / K-guard -> fall through to cublasDgemm below.
         GPU_LOG("matmul %llux%llu @ %llux%llu -> INT8-Ozaki fell back to cublasDgemm",
                 (unsigned long long)M, (unsigned long long)K,
                 (unsigned long long)K, (unsigned long long)N);
+    } else {
+        GPU_LOG("matmul %llux%llu @ %llux%llu -> cublasDgemm (%s)",
+                (unsigned long long)M, (unsigned long long)K,
+                (unsigned long long)K, (unsigned long long)N, why);
     }
 
     const double alpha = 1.0;
@@ -496,6 +629,7 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
 
     // cuBLAS uses column-major, so we compute C^T = B * A (in cuBLAS terms)
     // which gives us row-major C = A * B
+    auto t0 = std::chrono::steady_clock::now();
     cublasStatus_t status = cublasDgemm(g_cublas_handle,
         CUBLAS_OP_N, CUBLAS_OP_N,
         (int)N, (int)M, (int)K,
@@ -506,7 +640,13 @@ static int cuda_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuff
         (double*)C->device_ptr, (int)N);
 
     cudaStreamSynchronize(g_cuda_stream);
-    return (status == CUBLAS_STATUS_SUCCESS) ? 0 : -1;
+    if (status == CUBLAS_STATUS_SUCCESS) {
+        double ns = std::chrono::duration<double, std::nano>(
+                        std::chrono::steady_clock::now() - t0).count();
+        cuda_gemm_calibrate(0, work, ns);             // self-calibrate DGEMM
+        return 0;
+    }
+    return -1;
 }
 
 /** @brief Single-precision matmul via cuBLAS SGEMM, same column/row-major trick as cuda_matmul_f64. */
@@ -895,9 +1035,7 @@ int eshkol_gpu_matmul_f64(EshkolGPUBuffer* A, EshkolGPUBuffer* B, EshkolGPUBuffe
 
 #if ESHKOL_GPU_CUDA_AVAILABLE
     if (g_active_backend == ESHKOL_GPU_CUDA) {
-        GPU_LOG("matmul %llux%llu @ %llux%llu -> CUDA cuBLAS",
-                (unsigned long long)M, (unsigned long long)K,
-                (unsigned long long)K, (unsigned long long)N);
+        // cuda_matmul_f64 logs the concrete kernel it selects (DGEMM / Ozaki-T).
         return cuda_matmul_f64(A, B, C, M, K, N);
     }
 #endif
