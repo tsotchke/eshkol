@@ -402,7 +402,7 @@
         (let ((title (create-text "h1" "Build systems that think." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme, compiled to native code by LLVM 21. The derivative is a compiler primitive, not a tracing library: gradients compose with closures, recursion, and control flow the way arithmetic does. v1.3.3-evolve completes the Moonlab quantum/VQE/ML-KEM stack and hardens exact AD and resident memory. 1,057/1,057 deterministic traces prove every declared executable language surface. Fifteen platform packages ship with checksums, each verified on a clean host." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme, compiled to native code by LLVM 21. Ask for a gradient and the compiler emits one — through closures, recursion, and control flow, exactly, with no tracing library in the way. v1.3.3-evolve completes the Moonlab quantum/VQE/ML-KEM stack and hardens exact AD and resident memory. 1,057/1,057 deterministic traces prove every declared executable language surface. Fifteen platform packages ship with checksums, each verified on a clean host." left)))
           (web-add-class sub "hero-sub"))
 
         ;; Install command
@@ -441,7 +441,7 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c1 "Write the loss function and train it with gradient descent. The compiler differentiates it for you — exact derivatives, no manual calculus.")
+        (body-text c1 "Write the loss function and train it with gradient descent. The compiler works out the derivatives — exactly, with no calculus by hand.")
         (create-runnable-code-block c1
           "(define data '((1 2) (2 4) (3 6)))\n(define (loss w x y) (let ((e (- (* w x) y))) (* e e)))\n(define (epoch w lr d)\n  (if (null? d) w\n    (let ((x (caar d)) (y (cadar d)))\n      (epoch (- w (* lr (derivative (lambda (w) (loss w x y)) w)))\n             lr (cdr d)))))\n(define (train w lr n)\n  (if (= n 0) w (train (epoch w lr data) lr (- n 1))))\n(display (train 0.0 0.05 200))\n;; learns w → 2.0 from y = 2x"
           "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> data <span style='color:#00ff88'>'((1 2) (2 4) (3 6))</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss w x y)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>e</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)))</span> <span style='color:#c084fc'>(*</span> e e<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(epoch w lr d)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> d<span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>x</span> <span style='color:#c084fc'>(caar</span> d<span style='color:#c084fc'>))</span> (<span style='color:#a78bfa'>y</span> <span style='color:#c084fc'>(cadar</span> d<span style='color:#c084fc'>)))</span>\n      <span style='color:#c084fc'>(epoch</span> <span style='color:#c084fc'>(-</span> w <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span>\n                            <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(w)</span> <span style='color:#c084fc'>(loss</span> w x y<span style='color:#c084fc'>))</span> w<span style='color:#c084fc'>)))</span>\n             lr <span style='color:#c084fc'>(cdr</span> d<span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train w lr n)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> n <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(epoch</span> w lr data<span style='color:#c084fc'>)</span> lr <span style='color:#c084fc'>(-</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.05</span> <span style='color:#00ff88'>200</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; ≈ 2.0</span></pre>"))
@@ -551,7 +551,7 @@
 
       (render-feature-card grid
         "Zero Garbage Collection"
-        "Deterministic arenas with ownership tracking, not a collector. Allocation is O(1). Deallocation happens at scope boundaries. Nothing stops the world mid-simulation, and the worst case is guaranteed in microseconds.")
+        "Nothing stops the world. Memory is deterministic arenas with ownership tracking, not a collector. Allocation is O(1), deallocation happens at scope boundaries, and the worst case is guaranteed in microseconds.")
 
       (render-feature-card grid
         "Heterogeneous Computing"
@@ -577,7 +577,7 @@
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
     (section-heading section "What's new in v1.3.3-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Evolve, completed and verified.</strong> v1.3.3-evolve brings together compiler-native automatic differentiation, the complete Moonlab quantum trajectory, FIPS 203 post-quantum cryptography, exhaustive executable-surface evidence, and portable release packages. Exact AD and numeric-tower defects now either compute correctly or fail loudly. Poison tests hammer long-running region memory. Every supported platform archive runs outside the machine that built it. And the bytecode VM gets an honest label: a verified subset, not full native-backend parity.")
+    (body-html section "<strong style='color:#a78bfa'>Evolve, completed and verified.</strong> v1.3.3-evolve brings together compiler-native automatic differentiation, the complete Moonlab quantum trajectory, FIPS 203 post-quantum cryptography, exhaustive executable-surface evidence, and portable release packages. Exact AD and numeric-tower defects now either compute correctly or fail loudly. Poison tests hammer long-running region memory. Every supported platform archive runs outside the machine that built it. And the bytecode VM is called what it is — a verified subset, not full native-backend parity.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
@@ -1190,7 +1190,7 @@
 
     ;; ── Publication status ──────────────────────────────────────
     (section-subheading page "v1.3.3-evolve Publication")
-    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and binary downloads will appear here when publication is authorized." page)))
+    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and its packages appear here once publication is authorized." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
     (let ((releases (create-div page)))
@@ -1218,7 +1218,7 @@
 
     ;; ── Release Artifacts Table ────────────────────────────────
     (section-subheading page "Release Artifacts")
-    (body-text page "The table mirrors the release workflow's exact 15-package contract. Package links open the GitHub release; SHA256SUMS.txt is the sixteenth published file.")
+    (body-text page "The table mirrors the release workflow's exact 15-package contract. Package links open the GitHub release. SHA256SUMS.txt is the sixteenth published file.")
 
     (let ((tbl (web-create-element "table")))
       (web-add-class tbl "comparison-table")
@@ -1511,7 +1511,7 @@
         (let ((h (create-text "h3" "AD at the Compiler Level" d1)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text d1 "Other languages bolt on differentiation as a library (JAX, Zygote, PyTorch). Eshkol integrates AD directly into the LLVM codegen pipeline. The compiler sees gradients the same way it sees addition -- as a native operation to optimize."))
+        (body-text d1 "Other languages bolt differentiation on as a library (JAX, Zygote, PyTorch). Eshkol builds AD into the LLVM codegen pipeline. The compiler sees a gradient the same way it sees addition -- as a native operation to optimize."))
 
       (let ((d2 (create-card diff-grid)))
         (let ((h (create-text "h3" "Deterministic Performance" d2)))
@@ -1523,7 +1523,7 @@
         (let ((h (create-text "h3" "Self-Modifying Programs" d3)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text d3 "Homoiconicity means every function can inspect and transform its own source code. Combined with knowledge bases and probabilistic inference, this enables programs that reason about and improve themselves."))
+        (body-text d3 "Homoiconicity means every function can inspect and transform its own source code. Add knowledge bases and probabilistic inference, and you get programs that reason about themselves and improve themselves."))
 
       (let ((d4 (create-card diff-grid)))
         (let ((h (create-text "h3" "One Language, All Targets" d4)))
@@ -1536,7 +1536,7 @@
     ;; About
     (section-subheading page "About Eshkol")
     (body-text page "Eshkol is developed by Tsotchke Corporation. The name comes from the Hebrew word for 'cluster' -- a reference to both grape clusters (abundance) and computational clusters (parallel computing).")
-    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level, making calculus operations as natural and efficient as basic arithmetic. It combines the elegance of Scheme with the performance of compiled native code.")
+    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level. Calculus operations are as natural and as efficient as basic arithmetic. The language pairs the elegance of Scheme with the performance of compiled native code.")
     (body-text page "The language targets scientific computing, machine learning, and autonomous systems -- domains where mathematical precision, deterministic performance, and hardware acceleration matter.")
 
     (create-divider page)
