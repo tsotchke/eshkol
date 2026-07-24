@@ -3142,6 +3142,25 @@ if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime
     add_test(NAME runtime_shared_memory_test COMMAND runtime_shared_memory_test)
 endif()
 
+# #341: AD tape node-pointer array must grow from the tape's OWNING arena, not a
+# pinned process arena. This gate creates a tape outside a region, grows it
+# inside one, then reads it back after region_pop — the "grow from current arena"
+# regression would dangle here. Run under ESHKOL_ARENA_POISON=1 so the freed
+# region arena is 0xCB-stamped and a dangling read cannot pass by luck.
+if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/ad_tape_region_growth_test.cpp")
+    add_executable(ad_tape_region_growth_test tests/core/ad_tape_region_growth_test.cpp)
+    target_compile_features(ad_tape_region_growth_test PRIVATE cxx_std_17)
+    target_include_directories(ad_tape_region_growth_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(ad_tape_region_growth_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(ad_tape_region_growth_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(ad_tape_region_growth_test PRIVATE eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME ad_tape_region_growth_test COMMAND ad_tape_region_growth_test)
+    set_tests_properties(ad_tape_region_growth_test PROPERTIES
+        ENVIRONMENT "ESHKOL_ARENA_POISON=1")
+endif()
+
 if(ESHKOL_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/core/runtime_closure_alloc_test.cpp")
     add_executable(runtime_closure_alloc_test tests/core/runtime_closure_alloc_test.cpp)
     target_compile_features(runtime_closure_alloc_test PRIVATE cxx_std_17)
