@@ -1007,13 +1007,19 @@ static void compile_and_run(const char* source) {
             } else {
                 compile_expr(&main_chunk, expr, 0);
                 if (main_chunk.n_locals == locals_before) {
-                    int is_last = (expr_i == n_top_exprs - 1);
-#ifdef ESHKOL_VM_NO_DISASM
-                    if (is_last) chunk_emit(&main_chunk, OP_PRINT, 0);
-                    else chunk_emit(&main_chunk, OP_POP, 0);
-#else
+                    /* BATCH semantics: discard every top-level expression's
+                     * value, exactly like `eshkol-run -r` and the natively
+                     * built VM.  Auto-printing the LAST expression is REPL
+                     * behaviour and belongs to repl_session_eval(auto_print=1);
+                     * it must NOT be gated on ESHKOL_VM_NO_DISASM, which is a
+                     * display-VERBOSITY macro.  That coupling made the same
+                     * program print differently depending on how the binary was
+                     * built: the WASM batch runner (vm_wasm_repl.c defines the
+                     * macro) emitted a trailing final value where native -r
+                     * emits nothing — e.g. a closing (ad-tape-release t) leaked
+                     * "()".  Caught by scripts/run_wasm_differential.sh on
+                     * tests/vm_parity/corpus/33_ad_pow_lowlevel.esk. */
                     chunk_emit(&main_chunk, OP_POP, 0);
-#endif
                 }
             }
             expr_i++;
