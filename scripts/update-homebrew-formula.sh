@@ -71,12 +71,15 @@ import sys
 path, tag, sha = sys.argv[1:]
 with open(path) as f:
     src = f.read()
+# Only rewrite the TOP-LEVEL url/sha256 (2-space indent, anchored with (?m)^  ).
+# The formula also carries `resource` blocks whose own url/sha256 lines (deeper
+# indent) pin the bundled agent-FFI dependencies and must be left untouched.
 src = re.sub(
-    r'url "https://github\.com/tsotchke/eshkol/archive/(refs/tags/)?[^"]+"',
-    f'url "https://github.com/tsotchke/eshkol/archive/refs/tags/{tag}.tar.gz"',
+    r'(?m)^  url "https://github\.com/tsotchke/eshkol/archive/(refs/tags/)?[^"]+"',
+    f'  url "https://github.com/tsotchke/eshkol/archive/refs/tags/{tag}.tar.gz"',
     src,
 )
-src = re.sub(r'sha256 "[^"]*"', f'sha256 "{sha}"', src)
+src = re.sub(r'(?m)^  sha256 "[^"]*"', f'  sha256 "{sha}"', src)
 with open(path, "w") as f:
     f.write(src)
 print(f"==> updated {path}")
