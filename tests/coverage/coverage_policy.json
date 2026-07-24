@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "baseline_commit": "1fb762301a0c1fc9d05cd72636c89bd50bed178d",
-  "baseline_surface_total": 1056,
-  "minimum_covered": 1056,
+  "baseline_surface_total": 1078,
+  "minimum_covered": 1078,
   "minimum_covered_fraction": 1.0,
   "high_risk_categories": [
     "numeric",
