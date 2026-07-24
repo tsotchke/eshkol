@@ -1,0 +1,15 @@
+;; Type System Test: a linear qubit used once per exclusive if-branch is valid
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: consumed more than once
+;; EXPECT-NO-STDERR: was not consumed
+
+;; A single-qubit gate consumes a qubit and returns a fresh one. In (if b then
+;; else) the two branches are mutually exclusive, so using q exactly once in
+;; each branch consumes it exactly once at runtime — it is NOT a clone. Linear
+;; checking must charge the MAX use across the branches, not the sum (#320
+;; item 2); summing wrongly rejected this as "consumed more than once".
+(define (h (q : Qubit)) : Qubit q)
+(define (z (q : Qubit)) : Qubit q)
+
+(define (pick (b : Bool) (q : Qubit)) : Qubit
+  (if b (h q) (z q)))
