@@ -13945,6 +13945,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 n = (int)(t->total < 64 ? t->total : 64);
                 for (int i = 0; i < n; i++) point[i] = t->data[i];
             }
+        } else if (x_val.type == VAL_VECTOR && is_valid_heap_ptr(vm, x_val.as.ptr)) {
+            /* Points are classified by runtime value, never by construction
+             * form: a scheme (vector ...) point must behave exactly like the
+             * equivalent #(...) tensor or list point. */
+            VmVector* vec = (VmVector*)vm->heap.objects[x_val.as.ptr]->opaque.ptr;
+            if (vec) {
+                n = (int)(vec->len < 64 ? vec->len : 64);
+                for (int i = 0; i < n; i++) point[i] = as_number(vec->items[i]);
+            }
         } else {
             point[0] = as_number(x_val);
             n = 1;
