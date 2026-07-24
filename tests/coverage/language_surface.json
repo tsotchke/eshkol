@@ -21,7 +21,7 @@
     "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
-    "ast_ops": 112,
+    "ast_ops": 113,
     "prelude": 16
   },
   "builtins_by_category": {
@@ -164,7 +164,8 @@
     "ESHKOL_SDNC_PARAMS_OP",
     "ESHKOL_SDNC_SET_PARAMS_OP",
     "ESHKOL_SDNC_IMPROVE_OP",
-    "ESHKOL_SDNC_PRED_OP"
+    "ESHKOL_SDNC_PRED_OP",
+    "ESHKOL_THE_OP"
   ],
   "builtins": [
     {
