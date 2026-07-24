@@ -100,6 +100,22 @@
 (check "hess arity2 VAR H[0][1]"  0.0 (vector-ref (vector-ref (hessian l-arity2 pv2) 0) 1))
 (check "hess arity2 #(lit) H[0][0]" 2.0 (vector-ref (vector-ref (hessian l-arity2 #(3.0 4.0)) 0) 0))
 
+;; ── arity-1 loss over a length-3 vector: hessian AND laplacian at a VAR-bound
+;;    MULTI-element point. This is the case #339's fix left uncovered for the
+;;    arity-1 Hessian: a VAR bound to a length-N vector evaluates to a
+;;    pointer-as-int64, which the AST-kind test in AutodiffCodegen::hessian
+;;    mis-classified as a provable scalar → the pointer was read as a double and
+;;    hessian/laplacian silently returned 0. laplacian = trace(Hessian) inherits
+;;    the same fix. f(v) = v0^2*v1 + v2^3 ⇒ H = diag(2*v1, 0, 6*v2), trace = 15.
+(define (l-field v) (+ (* (vector-ref v 0) (vector-ref v 0) (vector-ref v 1))
+                       (* (vector-ref v 2) (vector-ref v 2) (vector-ref v 2))))
+(define pv3 (vector 2.0 3.0 1.5))
+(check "hess field #(lit) H[0][0]"   6.0 (vector-ref (vector-ref (hessian l-field #(2.0 3.0 1.5)) 0) 0))
+(check "hess field VAR-vec H[0][0]"  6.0 (vector-ref (vector-ref (hessian l-field pv3) 0) 0))
+(check "hess field VAR-vec H[2][2]"  9.0 (vector-ref (vector-ref (hessian l-field pv3) 2) 2))
+(check "laplacian field #(lit)"     15.0 (laplacian l-field #(2.0 3.0 1.5)))
+(check "laplacian field VAR-vec"    15.0 (laplacian l-field pv3))
+
 ;; ───────────────────────────────────────────────────────────────────────────
 (newline)
 (display "varbound_point_matrix: ")
