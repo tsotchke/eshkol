@@ -2941,6 +2941,9 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
 
         binding_names.push_back(name);
         binding_types.push_back(binding_type);
+        // NOTE(#320): let bindings use plain bind(), not bindLinear(), so a
+        // linear-typed let binding is NOT use-once checked. Linearity is enforced
+        // only on define/lambda parameters today; see Context's linear API docs.
         ctx_.bind(name, binding_type);
     }
 

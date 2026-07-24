@@ -128,6 +128,18 @@ public:
                                            const std::vector<hott_type_expr_t*>& type_args) const;
 
     // Linear type binding (Phase 6)
+    //
+    // Enforcement scope — what "use exactly once" actually covers today (#320):
+    //  * Enforced: `define` and `lambda` PARAMETERS typed TYPE_FLAG_LINEAR. Such
+    //    a parameter must be referenced exactly once in the body; over/under-use
+    //    is reported at scope exit via checkLinearConstraints().
+    //  * NOT enforced: `let`/`let*`/`letrec` bindings — they are bound via the
+    //    plain bind() path (synthesizeLet), never bindLinear(), so a linear-typed
+    //    let binding is not use-once checked. (A known gap, not a guarantee.)
+    //  * Static, not dynamic: a use is counted where a linear variable NAME
+    //    appears. A closure that captures a linear variable counts as ONE static
+    //    use regardless of how many times the closure is later invoked (0 or many
+    //    dynamic duplications are invisible to this check).
     /** Bind @p name as a linear variable of the given type (must be used exactly once). */
     void bindLinear(const std::string& name, TypeId type);
     /** Record a use of the linear variable @p name, incrementing its usage count. */
