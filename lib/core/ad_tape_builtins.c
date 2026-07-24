@@ -44,6 +44,8 @@ int ad_add(AdTape* tape, int left, int right);
 int ad_sub(AdTape* tape, int left, int right);
 int ad_mul(AdTape* tape, int left, int right);
 int ad_div(AdTape* tape, int left, int right);
+int ad_pow(AdTape* tape, int base, int exponent);
+int ad_tape_length(const AdTape* tape);
 int ad_sin(AdTape* tape, int node);
 int ad_cos(AdTape* tape, int node);
 int ad_exp(AdTape* tape, int node);
@@ -163,6 +165,10 @@ AD_BINARY_SRET(eshkol_ad_sub_sret, ad_sub)
 AD_BINARY_SRET(eshkol_ad_mul_sret, ad_mul)
 /** Sret wrapper for (ad-div tape left right). */
 AD_BINARY_SRET(eshkol_ad_div_sret, ad_div)
+/** Sret wrapper for (ad-pow tape base-node exponent-node): records
+ *  base^exponent with ordinary pow() forward value and the reverse
+ *  derivatives d/dbase = exp*base^(exp-1), d/dexp = value*ln(base). */
+AD_BINARY_SRET(eshkol_ad_pow_sret, ad_pow)
 
 /* Unary ops: (tape, node) → node_index */
 /** Defines an sret wrapper function `name` that records a unary AD op
@@ -218,6 +224,11 @@ void eshkol_ad_gradient_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const
 /** Sret wrapper for (ad-node-value tape node): return the forward
  *  (primal) value stored at `node` as a tagged double (0.0 if
  *  `tape_tv` is not a valid tape). */
+void eshkol_ad_tape_length_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv) {
+    AdTape* tape = extract_tape(tape_tv);
+    *out = make_int(tape ? ad_tape_length(tape) : 0);
+}
+
 void eshkol_ad_node_value_sret(ad_tagged_t* out, const ad_tagged_t* tape_tv, const ad_tagged_t* node_tv) {
     AdTape* tape = extract_tape(tape_tv);
     if (!tape) { *out = make_double(0.0); return; }
