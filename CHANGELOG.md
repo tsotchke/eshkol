@@ -96,6 +96,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotation as a body expression. The compiler now resolves a `(name : type)`
   formal to its name and skips a `: rettype` return annotation between the
   signature and the body.
+- **Driver: agent-FFI link requirements now propagate through the full
+  transitive source closure, and a generated-program link failure under `-r`
+  is fatal instead of silently masked.** Two coupled defects in the
+  compile/link driver:
+  - *(A) Dropped transitive dependency.* Native-link discovery walked a
+    narrower graph than compilation. The compiler splices `(load "…")`,
+    `(import "…")`, and `(require module)` transitively, but the agent-FFI
+    requirement scan only followed top-level `(require …)` — so a helper reached
+    only through `(load …)`/`(import …)` (root loads A, A loads B, B requires
+    `agent.subprocess`) had its requirement lost. The produced binary emitted
+    `qllm_process_*` / `eshkol_sqlite_*` references while the linker omitted
+    `libeshkol-agent-ffi.a`, failing the native link with unresolved symbols.
+    Requirement discovery now walks the **same** canonical transitive source
+    closure as compilation (one traversal via `collectTransitiveSources`
+    produces both the source list and the requirements set), under `-r` and
+    ordinary AOT alike. Programs with no agent-FFI usage still do not link the
+    archive (no over-linking).
+  - *(B) Masked link failure under `-r`.* When the persistent-cache child's AOT
+    build failed, `eshkol-run -r` fell back to a reduced in-process run and
+    exited **0**, certifying a build that never linked — a trust hazard for
+    CI/benchmark harnesses. The fix distinguishes the two failure stages: a
+    native **link** failure (the masking vector — the standalone binary can't
+    resolve a symbol the in-process JIT would satisfy from eshkol-run's own
+    native closure) is now **fatal** under `-r` (linker diagnostic surfaced,
+    nonzero exit, the reduced program never runs); a **codegen/compile** failure
+    still falls back to the in-process JIT, which reproduces the same failure
+    with its richer runtime diagnostic — preserving the "called undefined
+    function 'x' (forward-referenced but never defined)" named error (the Bug-W
+    contract) and its nonzero exit. A missing/unopenable input file under `-r`
+    is likewise no longer swallowed with a zero exit. Regression:
+    `tests/toolchain/transitive_ffi_link_test.sh` (multi-level load graph,
+    JIT + AOT, over-linking guard, fatal-link exit status, and a codegen-failure
+    case asserting the named diagnostic still fires under `-r`).
 
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
