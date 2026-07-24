@@ -302,10 +302,31 @@ oracles:
         label: No numeric, tensor/AD, geometry, control-flow, consciousness, macro, or memory-region construct remains unexercised
         action: ./scripts/run_language_coverage.sh --require-zero-high-risk
 
+      # A1 assurance gap: the coverage verdict must be EXECUTION-backed, never
+      # lexical name-presence. This criterion consumes the dedicated
+      # execution_backed_language_coverage event, which is PASS only when every
+      # credited construct has runtime execution evidence (O/C/V) or a bounded
+      # compile-time-form witness (A/G on the allowlist), the monotonic
+      # deficit ledger (tests/coverage/execution_deficit.json) did not grow, and
+      # execution-backed coverage did not drop. Lexical exposure is reported as
+      # the diagnostic spelled_but_unproven set and earns zero credit.
+      - runtime_event:
+          event_kinds: [runtime_event]
+          event_names: ["execution_backed_language_coverage"]
+          event_values: ["PASS"]
+        severity: high
+        label: Coverage is certified by executed/dispatched runtime evidence only; the monotonic execution deficit ledger did not grow and execution-backed coverage did not regress (lexical name-presence earns zero credit)
+        action: ./scripts/run_language_coverage.sh
+
       - test_evidence: true
         severity: medium
         label: Language-surface manifest, policy, and exposure-engine tests are indexed
         action: python3 scripts/gen_language_surface.py --check
+
+      - test_evidence: true
+        severity: medium
+        label: Build-free execution-backed gate guard (name-presence earns no credit; deficit ratchet is monotonic)
+        action: python3 scripts/test_language_coverage_gate.py
 
   # ─────────────────────────────────────────────────────────────────
   # Agent-FFI readiness — the contract the eshkol-agent depends on.
