@@ -646,6 +646,24 @@ TEST(context_linear_scope_shadowing) {
     ctx.popScope();
 }
 
+TEST(context_linear_branch_max_not_sum) {
+    // #320 item 2: a linear variable used once in each of two mutually-exclusive
+    // branches is consumed once at runtime — charge max(then, else), not the sum.
+    // This exercises the snapshot/restore/merge helpers synthesizeIf() relies on.
+    Context ctx;
+    ctx.bindLinear("q", BuiltinTypes::Int64);
+
+    auto before = ctx.snapshotLinearUsage();      // q: 0
+    ctx.useLinear("q");                            // then-branch consumes q -> 1
+    auto after_then = ctx.snapshotLinearUsage();   // q: 1
+    ctx.restoreLinearUsage(before);                // rewind for the else branch
+    ctx.useLinear("q");                            // else-branch consumes q -> 1
+    ctx.mergeMaxLinearUsage(after_then);           // max(1, 1) = 1, NOT 2
+
+    ASSERT_TRUE(ctx.checkLinearConstraints());     // q used exactly once
+    ASSERT_TRUE(ctx.getOverusedLinear().empty());
+}
+
 // ============================================================================
 // TypeChecker Tests
 // ============================================================================
@@ -886,6 +904,7 @@ int main() {
     RUN_TEST(context_linear_constraints);
     RUN_TEST(context_linear_scope_no_leak);
     RUN_TEST(context_linear_scope_shadowing);
+    RUN_TEST(context_linear_branch_max_not_sum);
 
     std::cout << std::endl << "--- TypeChecker Tests ---" << std::endl;
     RUN_TEST(type_checker_unsafe_context);

@@ -3171,6 +3171,11 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
         }
     }
 
+    // Snapshot linear usage before the branches so mutually-exclusive branches
+    // are charged the MAX linear use across them, not the sum (#320 item 2):
+    // (if b (X q) (Z q)) consumes the linear q exactly once at runtime.
+    auto linear_before = ctx_.snapshotLinearUsage();
+
     TypeCheckResult then_type;
     if (!active.empty()) {
         ctx_.pushScope();
@@ -3185,8 +3190,16 @@ TypeCheckResult TypeChecker::synthesizeIf(eshkol_ast_t* expr) {
     if (!then_type.success) return then_type;
 
     if (expr->operation.call_op.num_vars >= 3) {
+        // Rewind linear usage to the pre-branch baseline, synthesize the else
+        // branch from that same baseline, then charge max(then, else) per linear
+        // variable — the two branches are mutually exclusive at runtime.
+        auto after_then = ctx_.snapshotLinearUsage();
+        ctx_.restoreLinearUsage(linear_before);
+
         auto else_type = synthesize(&expr->operation.call_op.variables[2]);
         if (!else_type.success) return else_type;
+
+        ctx_.mergeMaxLinearUsage(after_then);
 
         TypeId then_t = then_type.inferred_type;
         TypeId else_t = else_type.inferred_type;

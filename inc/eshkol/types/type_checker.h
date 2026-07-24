@@ -147,6 +147,23 @@ public:
     /** True if all linear variables in scope were used exactly once. */
     bool checkLinearConstraints() const;
 
+    // Branch-exclusive linear accounting (#320 item 2). Mutually-exclusive
+    // branches (if/cond) must charge the MAX linear use across them, not the sum
+    // — e.g. (if b (X q) (Z q)) consumes the linear q exactly once at runtime.
+    /** Capture the current per-variable linear usage counts. */
+    std::map<std::string, int> snapshotLinearUsage() const { return linear_usage_count_; }
+    /** Restore linear usage counts to a previous snapshot (rewind a branch). */
+    void restoreLinearUsage(const std::map<std::string, int>& snap) { linear_usage_count_ = snap; }
+    /** Merge another branch's usage counts in by taking the per-variable max. */
+    void mergeMaxLinearUsage(const std::map<std::string, int>& other) {
+        for (const auto& kv : other) {
+            auto it = linear_usage_count_.find(kv.first);
+            if (it == linear_usage_count_.end() || kv.second > it->second) {
+                linear_usage_count_[kv.first] = kv.second;
+            }
+        }
+    }
+
 private:
     // Stack of scopes, each scope is a map from name to type
     std::vector<std::map<std::string, TypeId>> scopes_;
