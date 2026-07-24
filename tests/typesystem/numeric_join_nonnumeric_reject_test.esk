@@ -1,0 +1,17 @@
+;; Type System Test: the numeric-join relaxation only reconciles numeric types —
+;; a genuinely non-numeric recursive argument is still rejected (item 4, no
+;; soundness loss).
+;;
+;; The accumulator is Float64; passing a string on the recursive call must error.
+;; EXPECT-MODE: strict-types
+;; EXPECT-STDERR: [ERROR]
+;; EXPECT-STDERR: got String
+
+(define (bad-loop n)
+  (let loop ((i 0) (acc 0.0))
+    (if (>= i n)
+        acc
+        (loop (+ i 1) "not numeric"))))
+
+(display (bad-loop 0))
+(newline)

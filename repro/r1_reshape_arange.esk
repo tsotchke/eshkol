@@ -1,0 +1,4 @@
+(define A (reshape (arange 6) 2 3))
+(define B (reshape (arange 6) 3 2))
+(display (matmul A B))
+(newline)

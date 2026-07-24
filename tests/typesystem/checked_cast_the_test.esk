@@ -1,0 +1,18 @@
+;; Type System Test: expression-level checked cast (the <type> <expr>) (item 3).
+;;
+;; `v` is declared string-or-number (a heterogeneous slot). At this call site we
+;; know it holds a string, so `(the string v)` asserts that to the checker,
+;; letting it satisfy the string parameter of needs-string. The cast is a pure
+;; runtime no-op — it evaluates exactly to v. Without it, passing the sum-typed
+;; value to a string parameter reports "expected String, got (+ String Number)".
+;; EXPECT-MODE: strict-types
+;; EXPECT-NO-STDERR: [ERROR]
+;; EXPECT-NO-STDERR: [WARN]
+
+(define (needs-string (s : string)) (string-length s))
+
+(define (name-length (v : (+ string number)))
+  (needs-string (the string v)))
+
+(display (name-length "hello"))   ;; runtime: the-cast is a no-op, length = 5
+(newline)

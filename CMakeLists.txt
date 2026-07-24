@@ -206,7 +206,10 @@ if(ESHKOL_QUANTUM_ENABLED)
 
     FetchContent_Declare(moonlab
         GIT_REPOSITORY "${ESHKOL_MOONLAB_REPO}"
-        GIT_TAG d2503460246da893c28b59845bb32689aa9602fc
+        # Moonlab v1.2.0: adds MOONLAB_API vqe_compute_qgt (QNG/QGT, needed by the
+        # quantum-chemistry examples) and the smooth first-principles H2/LiH PES.
+        # Pinned by the tag's commit SHA; ABI frozen per the Moonlab release note.
+        GIT_TAG e441957b22698ce93ad4868d585ac7ca3baa281f
         GIT_SHALLOW FALSE
     )
     FetchContent_MakeAvailable(moonlab)
@@ -3018,6 +3021,24 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: jit_cache_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh")
+        # Generated-program native-dependency discovery must walk the SAME
+        # transitive source closure as compilation (load/import/require, at any
+        # depth), and a link failure under -r must be fatal (never a fallback
+        # that exits zero). See exe/eshkol-run.cpp transitiveClosureRequiresAgentFfi
+        # and tryRunFromPersistentJitCache.
+        add_test(
+            NAME transitive_ffi_link_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/transitive_ffi_link_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(transitive_ffi_link_test
+            PROPERTIES
+                TIMEOUT 180
+                PASS_REGULAR_EXPRESSION "PASS: transitive_ffi_link_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh")
         add_test(
             NAME static_link_getenv_capability_test
@@ -3835,6 +3856,69 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/weight_matrices.c")
     endif()
 endif()
 
+# ===== SDNC training-mode module: weight-matrix backward pass =================
+# `lib/backend/qllm_backward.c` is the reverse-mode (backward) companion to the
+# analytical forward constructor in weight_matrices.c: it differentiates the
+# same six-layer computable-transformer weight matrices so they become
+# trainable. The math is precision-generic (`qllm_real`, default float => the
+# QLMW/InterpreterWeights layout is byte-identical). Build it as a small static
+# library so the backward surface is compiled by the normal build rather than
+# living as source-only dead code.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
+    add_library(eshkol-qllm-backward STATIC lib/backend/qllm_backward.c)
+    target_include_directories(eshkol-qllm-backward PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(eshkol-qllm-backward PUBLIC m)
+    endif()
+
+    # Gradient-check test: numerical (central finite difference) vs. analytical
+    # gradient through the FFN backward passes. Compiled in double precision so
+    # the finite-difference floor drops far below the documented 1e-6 bar; the
+    # backward source is recompiled here with QLLM_REAL=double (the production
+    # library above stays float).
+    if(ESHKOL_BUILD_TESTS AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/qllm_backward_gradcheck_test.c")
+        add_executable(qllm_backward_gradcheck_test
+            tests/backend/qllm_backward_gradcheck_test.c
+            lib/backend/qllm_backward.c)
+        target_compile_definitions(qllm_backward_gradcheck_test PRIVATE QLLM_REAL=double)
+        target_include_directories(qllm_backward_gradcheck_test PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        )
+        if(NOT ESHKOL_USING_MSVC)
+            target_link_libraries(qllm_backward_gradcheck_test PRIVATE m)
+        endif()
+        add_test(
+            NAME qllm_backward_gradcheck
+            COMMAND $<TARGET_FILE:qllm_backward_gradcheck_test>
+        )
+        set_tests_properties(qllm_backward_gradcheck PROPERTIES
+            PASS_REGULAR_EXPRESSION "Results: 2 passed, 0 failed"
+        )
+    endif()
+endif()
+
+# ===== SDNC runtime tool: execute programs through the weight matrices ========
+# `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
+# weight_matrices tool) and executes Eshkol bytecode by running the transformer
+# forward pass — the weights ARE the interpreter. Standalone main(); the
+# default build uses the portable C reference matmul (no external qLLM dep).
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
+    add_executable(eshkol-qllm-run lib/backend/qllm_interpreter.c)
+    target_include_directories(eshkol-qllm-run PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/lib/backend
+    )
+    if(NOT ESHKOL_USING_MSVC)
+        target_link_libraries(eshkol-qllm-run PRIVATE m)
+    endif()
+    set_target_properties(eshkol-qllm-run PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
+    )
+endif()
+
 # ===== SDNC de-risking experiment: differentiable external memory head ========
 # Standalone prototype (its own main()) for a differentiable NTM/DNC-style
 # external memory addressing head — the keystone primitive that will later let
@@ -3900,6 +3984,51 @@ endif()
 # runtime, but never silently disable or reduce it merely because of the host.
 option(ESHKOL_BUILD_AGENT_FFI "Build agent FFI modules" ON)
 
+# ──────────────────────────────────────────────────────────────────────────
+# Packaged / system-dependency resolution for the bundled agent-FFI native
+# dependencies (PCRE2, SQLite, zlib, tree-sitter + grammars, Yoga, curl).
+#
+# The default developer/release build downloads each dependency at pinned,
+# reproducible revisions via FetchContent (the block much further below).  That
+# is incompatible with sandboxed packaging environments such as Homebrew, which
+# inject a CMake dependency provider that refuses ALL FetchContent population
+# ("Refusing to populate dependency '<dep>' with FetchContent while building in
+# Homebrew, please use a formula dependency or add a resource to the formula").
+#
+# Two orthogonal, CMake-native escape hatches make a packaged build succeed
+# without a single network fetch, while leaving the default build byte-for-byte
+# unchanged:
+#
+#   * ESHKOL_USE_SYSTEM_PCRE2 links an installed PCRE2 (e.g. the Homebrew
+#     `pcre2` formula) under the same target name the bundled build defines,
+#     instead of fetching and compiling the pinned source.
+#
+#   * FETCHCONTENT_SOURCE_DIR_<UPPERCASE_NAME> points each remaining
+#     FetchContent dependency at a pre-staged source tree (a Homebrew
+#     `resource`).  CMake honors this natively: when set, the source-dir
+#     override "overrides everything else" — FetchContent_MakeAvailable() skips
+#     the dependency provider (so the Homebrew trap never fires) and performs no
+#     download (see the stock FetchContent.cmake).
+#
+# ESHKOL_HOMEBREW_BUILD is an umbrella that turns the packaging contract on: it
+# defaults ESHKOL_USE_SYSTEM_PCRE2 to ON and enables FETCHCONTENT_FULLY_
+# DISCONNECTED so any dependency the packager forgot to stage fails fast rather
+# than silently reaching the network.
+option(ESHKOL_HOMEBREW_BUILD
+    "Resolve bundled agent-FFI dependencies from system packages / staged resources (no FetchContent downloads)"
+    OFF)
+if(ESHKOL_HOMEBREW_BUILD)
+    set(_eshkol_use_system_pcre2_default ON)
+    if(NOT DEFINED FETCHCONTENT_FULLY_DISCONNECTED)
+        set(FETCHCONTENT_FULLY_DISCONNECTED ON)
+    endif()
+else()
+    set(_eshkol_use_system_pcre2_default OFF)
+endif()
+option(ESHKOL_USE_SYSTEM_PCRE2
+    "Link the system-provided PCRE2 (8-bit) instead of building the pinned source"
+    ${_eshkol_use_system_pcre2_default})
+
 if(ESHKOL_BUILD_AGENT_FFI)
     set(AGENT_FFI_DIR "${CMAKE_SOURCE_DIR}/lib/agent/c")
 
@@ -3957,29 +4086,70 @@ if(ESHKOL_BUILD_AGENT_FFI)
         # MSYS, vcpkg, a distro pkg-config database, or the release runner.
         # Build immutable upstream revisions on every host and package the
         # resulting static archives next to eshkol-agent-ffi.
+        #
+        # Exception: sandboxed packagers (see ESHKOL_HOMEBREW_BUILD /
+        # ESHKOL_USE_SYSTEM_PCRE2 / FETCHCONTENT_SOURCE_DIR_<name> above) may
+        # opt into resolving these from a system package or a pre-staged
+        # resource of the SAME pinned revision.  The default build below is
+        # unaffected.
         include(FetchContent)
         set(_eshkol_saved_build_shared_libs "${BUILD_SHARED_LIBS}")
         set(_eshkol_saved_build_testing "${BUILD_TESTING}")
         set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
         set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 
-        set(PCRE2_BUILD_PCRE2_8 ON CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2_16 OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2_32 OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
-        set(PCRE2_BUILD_PCRE2TEST OFF CACHE BOOL "" FORCE)
-        set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
-        set(PCRE2_STATIC_PIC ON CACHE BOOL "" FORCE)
-        set(PCRE2_INSTALL OFF CACHE BOOL "" FORCE)
-        FetchContent_Declare(eshkol_pcre2
-            GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
-            GIT_TAG f454e231fe5006dd7ff8f4693fd2b8eb94333429
-            GIT_SHALLOW FALSE
-        )
-        FetchContent_MakeAvailable(eshkol_pcre2)
-        if(NOT TARGET pcre2-8-static)
-            message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
+        if(ESHKOL_USE_SYSTEM_PCRE2)
+            # Resolve PCRE2 from an installed package (e.g. the Homebrew
+            # `pcre2` formula).  Import its static 8-bit archive under the exact
+            # target name the bundled build defines (pcre2-8-static) so every
+            # downstream link / packaging copy / AOT-link reference below is
+            # identical and needs no change.
+            find_package(PkgConfig QUIET)
+            if(PkgConfig_FOUND)
+                pkg_check_modules(ESHKOL_SYS_PCRE2 QUIET libpcre2-8)
+            endif()
+            find_path(ESHKOL_SYS_PCRE2_INCLUDE_DIR
+                NAMES pcre2.h
+                HINTS ${ESHKOL_SYS_PCRE2_INCLUDE_DIRS} ${ESHKOL_SYS_PCRE2_INCLUDEDIR})
+            # Prefer the static archive so the packaged agent closure stays
+            # self-contained, matching the bundled-build contract.
+            set(_eshkol_saved_lib_suffixes "${CMAKE_FIND_LIBRARY_SUFFIXES}")
+            set(CMAKE_FIND_LIBRARY_SUFFIXES "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+            find_library(ESHKOL_SYS_PCRE2_LIBRARY
+                NAMES pcre2-8
+                HINTS ${ESHKOL_SYS_PCRE2_LIBRARY_DIRS} ${ESHKOL_SYS_PCRE2_LIBDIR})
+            set(CMAKE_FIND_LIBRARY_SUFFIXES "${_eshkol_saved_lib_suffixes}")
+            if(NOT ESHKOL_SYS_PCRE2_LIBRARY OR NOT ESHKOL_SYS_PCRE2_INCLUDE_DIR)
+                message(FATAL_ERROR
+                    "ESHKOL_USE_SYSTEM_PCRE2=ON but a static libpcre2-8 archive and "
+                    "pcre2.h could not be located. Install the PCRE2 development "
+                    "package (Homebrew: `brew install pcre2`).")
+            endif()
+            add_library(pcre2-8-static STATIC IMPORTED GLOBAL)
+            set_target_properties(pcre2-8-static PROPERTIES
+                IMPORTED_LOCATION "${ESHKOL_SYS_PCRE2_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${ESHKOL_SYS_PCRE2_INCLUDE_DIR}"
+                INTERFACE_COMPILE_DEFINITIONS "PCRE2_CODE_UNIT_WIDTH=8;PCRE2_STATIC=1")
+            message(STATUS "Agent FFI: system PCRE2 (${ESHKOL_SYS_PCRE2_LIBRARY})")
+        else()
+            set(PCRE2_BUILD_PCRE2_8 ON CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2_16 OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2_32 OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2GREP OFF CACHE BOOL "" FORCE)
+            set(PCRE2_BUILD_PCRE2TEST OFF CACHE BOOL "" FORCE)
+            set(PCRE2_SUPPORT_JIT ON CACHE BOOL "" FORCE)
+            set(PCRE2_STATIC_PIC ON CACHE BOOL "" FORCE)
+            set(PCRE2_INSTALL OFF CACHE BOOL "" FORCE)
+            FetchContent_Declare(eshkol_pcre2
+                GIT_REPOSITORY https://github.com/PCRE2Project/pcre2.git
+                GIT_TAG f454e231fe5006dd7ff8f4693fd2b8eb94333429
+                GIT_SHALLOW FALSE
+            )
+            FetchContent_MakeAvailable(eshkol_pcre2)
+            if(NOT TARGET pcre2-8-static)
+                message(FATAL_ERROR "Pinned PCRE2 did not define pcre2-8-static")
+            endif()
         endif()
 
         if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24")

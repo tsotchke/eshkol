@@ -211,6 +211,15 @@ EOF
      "$ESHKOL_RUN" "$tmp" -o "$bin" >/dev/null 2>&1 && "$bin" >/dev/null; rc=$?
      rm -f "$tmp" "$bin"; exit $rc'
 
+# Transitive-closure agent-FFI link discovery + fatal-link-under-`-r`.
+# A helper reached only through (load …)/(import …) — two levels deep, no
+# top-level (require agent.*) — must still link the agent-FFI archive (JIT+AOT),
+# a plain program must not (no over-linking), and a broken generated-program
+# link under -r must exit nonzero without a reduced in-process fallback.
+probe transitive_load_agent_ffi_link "transitive (load) agent-FFI link + fatal -r link" \
+    'out=$(bash "$REPO_ROOT/tests/toolchain/transitive_ffi_link_test.sh" "$ESHKOL_RUN" 2>&1) || { printf "%s\n" "$out"; exit 1; }
+     printf "%s" "$out" | grep -q "PASS: transitive_ffi_link_test"'
+
 # Optional release-readiness evidence from an XLA-enabled build.  The default
 # lite build deliberately omits xla_codegen_test, so release coordinators pass
 # XLA_BUILD_DIR when certifying the full backend surface.  The integration test
@@ -531,6 +540,22 @@ probe linear_solve_full_f64_oracle 'linear-solve: mixed-precision IR dense solve
      fi;
      exit 0'
 
+probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display emit the SHORTEST decimal that reads back to the exact same double (round-trip), no 6-sig-fig truncation, integral doubles keep the no-".0" form — byte-identical across JIT, AOT and the VM' \
+    'cd "$REPO_ROOT"; t=tests/features/printer_roundtrip_test.esk;
+     out=$(ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
+     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
+     printf "%s" "$out" | grep -q "error:" && exit 1;
+     bin=$(mktemp) || exit 1;
+     ESHKOL_PATH="$REPO_ROOT/lib" "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || { rm -f "$bin"; exit 1; };
+     out=$("$bin" 2>/dev/null); rc=$?; rm -f "$bin"; [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
+     printf "%s" "$out" | grep -q "error:" && exit 1;
+     vm="$BUILD_DIR_PATH/eshkol-vm-standalone-test";
+     if [ -x "$vm" ]; then
+       out=$(ESHKOL_VM_NO_DISASM=1 ESHKOL_PATH="$REPO_ROOT/lib" "$vm" "$t" 2>/dev/null) || exit 1;
+       printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
+       printf "%s" "$out" | grep -q "error:" && exit 1;
+     fi;
 probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
     'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
      out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
@@ -542,6 +567,38 @@ probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul resu
      printf "%s" "$out" | grep -q "PASS: matmul tensor reads inside defined functions match top-level" || exit 1;
      printf "%s" "$out" | grep -q "FAIL:" && exit 1;
      exit 0'
+
+# v1.3.4 DYNAMIC EDGE COVERAGE. Runs the seeded, bounded, depth-parametric
+# edge-case generator (scripts/gen_edge_v134.py) across every applicable
+# execution axis (JIT / AOT-O2 / AOT-O0 / VM) via
+# scripts/run_edge_coverage_v134.sh, which writes the per-family
+# kind:"edge_coverage" events into scripts/icc_traces/edge_coverage_v134.jsonl
+# that the `v1.3.4-edge-coverage` oracle gates on. This probe additionally
+# emits a single eshkol_smoke roll-up so the compiler-readiness harness fails
+# loudly if any family regresses. Reduced depth keeps the smoke run bounded
+# (< ~40s on a 4-core slice); the nightly lane runs the full MAX_DEPTH sweep.
+probe edge_v134_dynamic_coverage 'v1.3.4 edge coverage (nursery iter-scope 6-channel, capturing parallel-map, exact gradient-through-callable + curried, native i128 wraparound, native matmul, VM ad-pow/ad-tape) — generated seeded probes green across JIT/AOT-O0/AOT-O2/VM with no native-vs-VM divergence' \
+    'cd "$REPO_ROOT"; MODES="jit aot aot-O0 vm" JOBS="${JOBS:-4}" MAX_DEPTH="${EDGE_V134_MAX_DEPTH:-4}" \
+        BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_edge_coverage_v134.sh >/dev/null 2>&1'
+# ───────────────────────────────────────────────────────────────────
+# SDNC weight-matrix backward gradient check (docs/SDNC.md §13). The
+# reverse-mode FFN backward passes in lib/backend/qllm_backward.c must
+# agree with a central finite-difference reference to relative error
+# < 1e-6. The test recompiles the precision-generic backward source in
+# double (-DQLLM_REAL=double) so the finite-difference floor drops well
+# below the bar; the production instantiation stays float. Self-contained
+# cc build so the smoke lane does not depend on a full CMake tree.
+# ───────────────────────────────────────────────────────────────────
+probe qllm_backward_gradcheck \
+    'SDNC qllm_backward FFN gradients (SQUARE + gated) match central finite differences to L2 rel err < 1e-6 (double regime)' \
+    'cd "$REPO_ROOT";
+     cc_bin="${CC:-cc}"; gc_out=$(mktemp "${TMPDIR:-/tmp}/icc-qllm-gradcheck.XXXXXX");
+     "$cc_bin" -O2 -DQLLM_REAL=double -Iinc \
+         tests/backend/qllm_backward_gradcheck_test.c \
+         lib/backend/qllm_backward.c -lm -o "$gc_out" >/dev/null 2>&1 || { rm -f "$gc_out"; exit 1; };
+     out=$("$gc_out" 2>&1); rc=$?; rm -f "$gc_out";
+     [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "Results: 2 passed, 0 failed"'
 
 echo
 echo "Trace written: $TRACE_FILE"

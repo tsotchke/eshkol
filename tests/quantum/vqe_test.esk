@@ -5,15 +5,17 @@
 ;;   cmake --build build-quantum --target eshkol-run
 ;;   build-quantum/eshkol-run tests/quantum/vqe_test.esk
 ;;
-;; H2 at 0.735 Å takes Moonlab's equilibrium-coefficient path.  The familiar
-;; minimal-basis literature result is about -1.137 Ha; this pinned Moonlab
-;; coefficient set's direct-diagonalization oracle returns -1.142170640288 Ha
-;; (including its nuclear-repulsion term).  VQE must recover that exact oracle
-;; within the specified tolerance.
+;; H2 at 0.735 Å takes Moonlab's first-principles STO-3G path (v1.2.0's
+;; smooth PES).  The familiar minimal-basis literature result is about
+;; -1.137 Ha; this pinned Moonlab release's direct-diagonalization oracle
+;; returns -1.142200155381 Ha (including its nuclear-repulsion term; the
+;; pre-v1.2.0 coefficient set gave -1.142170640288, shifted -2.95e-5 Ha by
+;; the smooth-PES change).  VQE must recover the exact oracle within the
+;; specified tolerance.
 
 (require agent.quantum)
 
-(define h2-moonlab-exact-energy -1.142170640288)
+(define h2-moonlab-exact-energy -1.142200155381)
 (define exact-tolerance 0.000001)
 (define vqe-tolerance 0.000001)
 

@@ -20,7 +20,80 @@ and reduced-precision GEMM tiers, a mixed-precision linear solver, and a native
 support, full hosted-VM tensor-matmul parity, and a round-tripping numeric
 printer.
 
+### Added
+
+- **SDNC weight-matrix backward pass wired into the build with a gradient
+  check.** `lib/backend/qllm_backward.c` — the reverse-mode (training-mode)
+  companion to the analytical forward constructor in `weight_matrices.c` — was
+  previously source-only: no build target, every function `static`, zero test
+  coverage. It is now compiled by the normal build (static library
+  `eshkol-qllm-backward`, header `inc/eshkol/backend/qllm_backward.h`), with the
+  two FFN backward passes (SQUARE-activation and gated-sigmoid) exposed as a
+  public surface. The backward math is precision-generic (`qllm_real`, default
+  `float` so the QLMW/`InterpreterWeights` layout is byte-identical). A new
+  gradient-check test (`tests/backend/qllm_backward_gradcheck_test.c`, ctest
+  `qllm_backward_gradcheck`) validates the analytical gradients against a
+  central finite-difference reference — recompiled in double
+  (`-DQLLM_REAL=double`) so the finite-difference floor drops below the
+  documented **1e-6** relative-error bar; achieved SQUARE `3.7e-9`, gated
+  `2.3e-9`. Also wired as the `qllm_backward_gradcheck` ICC smoke probe and a
+  completion-oracle criterion under `sdnc-paper-reproducibility`.
+- **`eshkol-qllm-run` tool.** `lib/backend/qllm_interpreter.c` (previously
+  unbuilt) is now a standalone executable that loads a QLMW v3 weight file and
+  executes Eshkol bytecode through the six-layer transformer forward pass — the
+  weights *are* the interpreter. Default build uses the portable C reference
+  matmul; `-DUSE_QLLM` links the qLLM NEON/Metal backend.
+
+### Changed
+
+- **`docs/SDNC.md` refreshed to verified reality.** Added the two-execution-layer
+  framing — the SDNC weight-matrix layer (83-opcode ISA incl. 19 AD opcodes,
+  127/127 three-way verified) and the production bytecode VM (66-opcode enum +
+  720 native-call IDs spanning 20–2118, AD dispatched at 390–409) as two real,
+  verified layers of one system with a precise opcode-for-capability
+  correspondence; updated counts upward where reality exceeds the doc
+  (three-way verification 127/127 inline, 124/124 traced, 83 opcodes
+  weight-implemented; `weight_matrices.c` now 7,544 lines); corrected
+  `execute_step`/`run_reference`/`forward_with_weights`/`export_weights_binary`
+  line references; documented the native-call ID surface (AD 390–409/1841–1844,
+  tensors 410–461, consciousness 509–547/1800s, i128 2100–2118); and re-pinned
+  the §7.3 SHA-256 checksums at the current verification SHA.
+
 ### Fixed
+
+- **Driver: agent-FFI link requirements now propagate through the full
+  transitive source closure, and a generated-program link failure under `-r`
+  is fatal instead of silently masked.** Two coupled defects in the
+  compile/link driver:
+  - *(A) Dropped transitive dependency.* Native-link discovery walked a
+    narrower graph than compilation. The compiler splices `(load "…")`,
+    `(import "…")`, and `(require module)` transitively, but the agent-FFI
+    requirement scan only followed top-level `(require …)` — so a helper reached
+    only through `(load …)`/`(import …)` (root loads A, A loads B, B requires
+    `agent.subprocess`) had its requirement lost. The produced binary emitted
+    `qllm_process_*` / `eshkol_sqlite_*` references while the linker omitted
+    `libeshkol-agent-ffi.a`, failing the native link with unresolved symbols.
+    Requirement discovery now walks the **same** canonical transitive source
+    closure as compilation (one traversal via `collectTransitiveSources`
+    produces both the source list and the requirements set), under `-r` and
+    ordinary AOT alike. Programs with no agent-FFI usage still do not link the
+    archive (no over-linking).
+  - *(B) Masked link failure under `-r`.* When the persistent-cache child's AOT
+    build failed, `eshkol-run -r` fell back to a reduced in-process run and
+    exited **0**, certifying a build that never linked — a trust hazard for
+    CI/benchmark harnesses. The fix distinguishes the two failure stages: a
+    native **link** failure (the masking vector — the standalone binary can't
+    resolve a symbol the in-process JIT would satisfy from eshkol-run's own
+    native closure) is now **fatal** under `-r` (linker diagnostic surfaced,
+    nonzero exit, the reduced program never runs); a **codegen/compile** failure
+    still falls back to the in-process JIT, which reproduces the same failure
+    with its richer runtime diagnostic — preserving the "called undefined
+    function 'x' (forward-referenced but never defined)" named error (the Bug-W
+    contract) and its nonzero exit. A missing/unopenable input file under `-r`
+    is likewise no longer swallowed with a zero exit. Regression:
+    `tests/toolchain/transitive_ffi_link_test.sh` (multi-level load graph,
+    JIT + AOT, over-linking guard, fatal-link exit status, and a codegen-failure
+    case asserting the named diagnostic still fires under `-r`).
 
 - **ESH-0214e: iter-scope partial reclamation — a resident tick loop that
   mutates persistent state every tick no longer leaks.** This closes the
@@ -86,6 +159,25 @@ printer.
 
 ### Added
 
+- **Dynamic edge coverage for the v1.3.4 surface (test/infra).** A seeded,
+  bounded, depth-parametric generator (`scripts/gen_edge_v134.py`) and runner
+  (`scripts/run_edge_coverage_v134.sh`) reconcile the generative/adversarial
+  machinery (P2 edge-matrix + P6 depth-parametric + differential oracle) with
+  every new-surface family the v1.3.4 wave added: nursery iter-scope mutating
+  loops (all six barrier channels, escape-set size, nested-loop depth),
+  capturing `parallel-map`/`parallel-execute` returning collections (n at the
+  pool threshold, closure shapes, nesting depth), exact gradient through a
+  callable parameter + curried form (arity 1..5, list/vector points,
+  composition depth), native `i128` boundaries and wraparound
+  (differential native-vs-VM, arithmetic-chain depth), native tensor/`matmul`
+  (arange arities, reshape/arange product, multi-dim ref/set), and low-level
+  `ad-tape`/`ad-pow` on the VM (fractional/negative/zero exponents, tape reuse,
+  1024-node growth). Every probe is self-checking against a generator-computed
+  ground truth and runs across JIT / AOT-O0 / AOT-O2 (and the VM where the
+  surface exists). Gated in ICC by the `v1.3.4-edge-coverage` oracle (one
+  criterion per family) plus a `v1.3-evolve` roll-up; new depth axes registered
+  in `scripts/depth_coverage_registry.json`. The `number->string`∘`string->number`
+  round-trip family is staged pending the shortest-round-trip printer.
 - **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
   recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
   ~500x faster than the deliberately crippled native FP64 pipeline on
@@ -245,6 +337,51 @@ printer.
 
 ### Fixed
 
+- **Flonum printer truncated doubles to ~6 significant figures.** Fixes #310.
+  `number->string` and `display`/`write` rendered every inexact real with the C
+  `"%g"` default (6 sig figs), so `(display (sqrt 2.0))` printed `1.41421` and
+  `(number->string 3.141592653589793)` returned `"3.14159"` — high-accuracy
+  results (e.g. Ozaki / AD outputs) could not be recovered from their printed
+  form, forcing tests to compute PASS/FAIL in-program. All double formatting now
+  routes through one shared portable-C formatter (`eshkol_dtoa_shortest`,
+  `inc/eshkol/core/dtoa_shortest.h`) that emits the **shortest decimal string
+  which reads back to the exact same double** (R7RS 6.2.6 round-trip), choosing
+  fixed vs. scientific notation the way `std::to_chars` does. `std::to_chars`
+  itself is not usable because the bytecode VM is C and is also compiled to
+  WebAssembly with emcc; sharing one C routine is what makes the native JIT,
+  native AOT and VM paths agree **byte-for-byte** (ADR-0003 parity). Integral
+  doubles keep their existing friendly no-`.0` form (`3.0` -> `"3"`), negative
+  zero still prints `-0`, and non-finite flonums keep the R7RS `+inf.0` /
+  `-inf.0` / `+nan.0` external representations — only the truncation is fixed.
+  Adds `tests/features/printer_roundtrip_test.esk`,
+  `tests/vm_parity/corpus/31_float_precision.esk` and the
+  `printer_roundtrip_oracle` ICC gate. (`lib/core/runtime_display_hosted.cpp`,
+  `lib/backend/vm_core.c`, `lib/backend/vm_native.c`, `lib/backend/vm_string.c`)
+- **Hosted-VM tensor matmul parity (`matmul` on `reshape`/`arange` operands;
+  literal-tensor matmul).** Fixes #322 — the last open ADR-0003 codegen<->VM
+  parity gap. Three defects, all the same root cause: variadic tensor builtins
+  whose native runtime handlers take more operands than their fixed-arity
+  `BUILTINS[]` table entries, so the extra spellings silently read stale stack
+  slots. (1) `arange`: the case-419 handler pops `(start, stop, step)` but the
+  table registered `arange` as arity-1, so `(arange n)` and
+  `(arange start stop step)` produced a bogus 1-element / empty tensor; a
+  malformed `arange` then made `(reshape (arange 6) 2 3)` collapse to `nil`,
+  which `matmul` rightly rejected as a non-tensor operand. (2) nested numeric
+  vector literals (`#(#(1 2) #(3 4))`) are a 2-D tensor natively, but the VM's
+  centralized `vm_tensor_operand` only coerced *flat* numeric vectors, so 2-D
+  literal matmul was rejected instead of computed. (3) multi-dim
+  `(tensor-ref C i j)` / `(tensor-set! A i j v)` silently dropped the trailing
+  index/value against their fixed-arity table entries, returning/writing the
+  wrong element when reading back a matmul result. Fix: explicit VM-compiler
+  special forms that emit the defaulted/packed operands (mirroring the existing
+  `reshape` special form) for `arange` (1/2/3-arg), `tensor-ref`/`tensor-get`
+  and `tensor-set!` (multi-index), and an extension of `vm_tensor_operand` to
+  coerce a rectangular nested numeric vector to an N-D tensor (ragged nesting is
+  a clean error, matching native). VM matmul now matches native `-r` bit-for-bit
+  across literal x literal, `reshape(arange)`, `reshape x reshape`, non-square,
+  and 1xN/Nx1 shapes. Adds `tests/vm_parity/corpus/31_tensor_matmul.esk` (green
+  on the native, vm-src, and vm-eskb axes of `scripts/run_vm_parity.sh`).
+  (`lib/backend/vm_compiler.c`, `lib/backend/vm_native.c`)
 - **`parallel-map` corrupted results from closures using scope-based
   reclamation (memory-safety).** A closure mapped in parallel whose body used
   per-iteration scope reclamation — an internal named-let loop, or a builtin

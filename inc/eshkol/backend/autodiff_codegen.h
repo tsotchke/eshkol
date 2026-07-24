@@ -364,6 +364,19 @@ public:
     llvm::Value* emitRuntimeClosureGradient(llvm::Value* closure_val,
                                             llvm::Value* point_val);
 
+    /**
+     * Emit a runtime diagnostic for a vector-valued gradient target and abort.
+     *
+     * `gradient` is defined for scalar-valued functions ℝⁿ→ℝ. A loss body that
+     * applies scalar arithmetic to the WHOLE point (elementwise tensor
+     * semantics) can return a length-`len` tensor (ℝⁿ→ℝᵐ, m>1), for which the
+     * gradient is undefined — the Jacobian is the right object. Rather than
+     * silently returning zeros or dereferencing an unwritten gradient slot,
+     * print a clear message naming `jacobian` and abort. Emits `fprintf` +
+     * `abort` + `unreachable`; the caller must NOT add a terminator after it.
+     */
+    void emitVectorValuedGradientError(llvm::Value* len);
+
     /** Higher-order derivative: (derivative f) → closure */
     llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
 

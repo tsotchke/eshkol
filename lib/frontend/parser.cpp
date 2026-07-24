@@ -2848,7 +2848,15 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
                         collectVariableReferences(&ast->operation.sequence_op.expressions[i], refs);
                     }
                     break;
-                    
+
+                case ESHKOL_THE_OP:
+                    // (the T e): the wrapped expression may reference captured
+                    // variables — collect them so closures capture correctly.
+                    if (ast->operation.the_op.expr) {
+                        collectVariableReferences(ast->operation.the_op.expr, refs);
+                    }
+                    break;
+
                 case ESHKOL_DERIVATIVE_OP:
                     if (ast->operation.derivative_op.function) {
                         collectVariableReferences(ast->operation.derivative_op.function, refs);
@@ -4640,6 +4648,64 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
 
         eshkol_debug("Parsed type annotation for '%s'", name_token.value.c_str());
         return ast;
+    }
+
+    // Handle expression-level type ascription: (the <type> <expr>)
+    //
+    // This is a checked cast: it asserts <expr> has <type> to the type checker
+    // (letting a value recovered from a dynamic container — e.g.
+    // (the string (cdr (assoc key alist))) — satisfy a typed parameter without
+    // reconstruction) and is a pure no-op at runtime, evaluating exactly to
+    // <expr>. `the` is only special in head position; used as an ordinary
+    // identifier elsewhere it is unaffected.
+    if (token.type == TOKEN_SYMBOL && token.value == "the") {
+        // Look ahead: (the <type> <expr>). We must not steal the identifier
+        // `the` when it heads something that is not a type ascription (e.g. a
+        // user procedure named `the`); in that case fall through to the
+        // ordinary call path below. An ascription's second element is a type:
+        // either a parenthesised type form `(vector any)` or a primitive type
+        // name. A bare non-type symbol keeps `the` an ordinary call head.
+        Token t2 = tokenizer.peekToken();  // non-destructive (pushes back)
+        auto isPrimitiveTypeName = [](const std::string& n) {
+            std::string l = n;
+            for (auto& c : l) c = std::tolower((unsigned char)c);
+            return l == "integer" || l == "int" || l == "int64" ||
+                   l == "real" || l == "float" || l == "double" || l == "float64" ||
+                   l == "boolean" || l == "bool" || l == "string" || l == "str" ||
+                   l == "char" || l == "character" || l == "symbol" ||
+                   l == "null" || l == "nil" || l == "any" ||
+                   l == "nothing" || l == "never";
+        };
+        bool looks_like_ascription =
+            (t2.type == TOKEN_LPAREN) ||
+            (t2.type == TOKEN_SYMBOL && isPrimitiveTypeName(t2.value));
+        if (looks_like_ascription) {
+            hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
+            if (!type_expr) {
+                PARSE_ERROR_AT(token, "failed to parse type expression in (the ...) ascription");
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            eshkol_ast_t inner = parse_expression(tokenizer);
+            if (inner.type == ESHKOL_INVALID) {
+                hott_free_type_expr(type_expr);
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            Token rparen = tokenizer.nextToken();
+            if (rparen.type != TOKEN_RPAREN) {
+                PARSE_ERROR_AT(token, "expected ) after (the type expr) ascription");
+                hott_free_type_expr(type_expr);
+                ast.type = ESHKOL_INVALID;
+                return ast;
+            }
+            ast.type = ESHKOL_OP;
+            ast.operation.op = ESHKOL_THE_OP;
+            ast.operation.the_op.type_expr = type_expr;
+            ast.operation.the_op.expr = new eshkol_ast_t(inner);
+            return ast;
+        }
+        // else: not an ascription — fall through to ordinary symbol handling.
     }
 
     // First element should determine the operation

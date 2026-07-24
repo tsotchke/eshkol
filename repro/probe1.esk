@@ -1,0 +1,4 @@
+(define A #(#(1 2) #(3 4)))
+(display A) (newline)
+(display (vector? A)) (newline)
+(display (tensor? A)) (newline)
