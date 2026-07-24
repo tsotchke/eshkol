@@ -163,6 +163,15 @@ private:
     // Linear type tracking
     std::set<std::string> linear_vars_;
     std::map<std::string, int> linear_usage_count_;  // 0=unused, 1=used, 2+=overused
+
+    // Per-scope record of names bound linear (via bindLinear) in each active
+    // scope, parallel to scopes_. popScope() uses it to remove exactly this
+    // scope's linear tracking — restoring any shadowed outer binding — so a
+    // linear variable and its over/under-use diagnostics do not leak into
+    // sibling defines/lambdas (#320). had_prior/prior_count carry the shadowed
+    // outer usage count to restore when this scope exits.
+    struct LinearScopeEntry { std::string name; bool had_prior; int prior_count; };
+    std::vector<std::vector<LinearScopeEntry>> linear_scope_saves_;
 };
 
 /**

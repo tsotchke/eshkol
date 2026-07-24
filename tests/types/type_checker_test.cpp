@@ -602,6 +602,50 @@ TEST(context_linear_constraints) {
     ASSERT_TRUE(ctx.checkLinearConstraints());
 }
 
+TEST(context_linear_scope_no_leak) {
+    // #320 item 1: a linear violation in one scope must not leak into a sibling
+    // scope's constraint check. Previously popScope() never cleared
+    // linear_vars_/linear_usage_count_, so a define's over/under-use diagnostic
+    // was misattributed to the next define.
+    Context ctx;
+
+    // Scope A: linear 'q' used twice — a no-cloning violation, correctly caught.
+    ctx.pushScope();
+    ctx.bindLinear("q", BuiltinTypes::Int64);
+    ctx.useLinear("q");
+    ctx.useLinear("q");
+    ASSERT_FALSE(ctx.checkLinearConstraints());
+    ctx.popScope();
+
+    // Scope B (sibling): a fresh, valid linear 'r' used exactly once.
+    ctx.pushScope();
+    ctx.bindLinear("r", BuiltinTypes::Int64);
+    ctx.useLinear("r");
+    ASSERT_TRUE(ctx.checkLinearConstraints());   // must pass — no leaked 'q'
+    ASSERT_TRUE(ctx.getOverusedLinear().empty()); // 'q' must not resurface here
+    ASSERT_FALSE(ctx.isLinear("q"));              // 'q' gone once its scope closed
+    ctx.popScope();
+}
+
+TEST(context_linear_scope_shadowing) {
+    // #320 item 1: a nested linear binding that shadows an outer one must not,
+    // on scope exit, erase the outer variable's linear tracking (that would be a
+    // false negative — an unchecked outer linear variable).
+    Context ctx;
+    ctx.pushScope();
+    ctx.bindLinear("q", BuiltinTypes::Int64);   // outer q
+    ctx.pushScope();
+    ctx.bindLinear("q", BuiltinTypes::Int64);   // inner q shadows outer
+    ctx.useLinear("q");                          // consumes the INNER q
+    ASSERT_TRUE(ctx.checkLinearConstraints());
+    ctx.popScope();                              // restores outer q (still unused)
+    ASSERT_TRUE(ctx.isLinear("q"));              // outer q still tracked
+    ASSERT_FALSE(ctx.isLinearUsed("q"));         // inner use did not count for outer
+    ctx.useLinear("q");                          // now consume outer q
+    ASSERT_TRUE(ctx.checkLinearConstraints());
+    ctx.popScope();
+}
+
 // ============================================================================
 // TypeChecker Tests
 // ============================================================================
@@ -840,6 +884,8 @@ int main() {
     RUN_TEST(context_scope_shadowing);
     RUN_TEST(context_linear_binding);
     RUN_TEST(context_linear_constraints);
+    RUN_TEST(context_linear_scope_no_leak);
+    RUN_TEST(context_linear_scope_shadowing);
 
     std::cout << std::endl << "--- TypeChecker Tests ---" << std::endl;
     RUN_TEST(type_checker_unsafe_context);

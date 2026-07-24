@@ -22,6 +22,7 @@ namespace eshkol::hott {
 Context::Context() {
     // Start with global scope
     scopes_.push_back({});
+    linear_scope_saves_.push_back({});
 }
 
 /**
@@ -29,6 +30,7 @@ Context::Context() {
  */
 void Context::pushScope() {
     scopes_.push_back({});
+    linear_scope_saves_.push_back({});
 }
 
 /**
@@ -39,6 +41,22 @@ void Context::pushScope() {
  */
 void Context::popScope() {
     if (scopes_.size() > 1) {
+        // Tear down this scope's linear tracking so linear variables — and their
+        // over/under-use diagnostics — do not leak into sibling defines/lambdas
+        // (#320). A binding that shadowed an outer linear variable restores the
+        // outer usage count; a fresh binding is removed outright. Usage of a
+        // non-shadowed outer linear variable is left intact so it still
+        // propagates up to the enclosing scope's constraint check.
+        auto& saves = linear_scope_saves_.back();
+        for (auto it = saves.rbegin(); it != saves.rend(); ++it) {
+            if (it->had_prior) {
+                linear_usage_count_[it->name] = it->prior_count;
+            } else {
+                linear_vars_.erase(it->name);
+                linear_usage_count_.erase(it->name);
+            }
+        }
+        linear_scope_saves_.pop_back();
         scopes_.pop_back();
     }
 }
@@ -720,6 +738,13 @@ void BorrowChecker::addError(BorrowError::Kind kind, const std::string& var,
 void Context::bindLinear(const std::string& name, TypeId type) {
     // Bind the variable normally
     bind(name, type);
+    // Record what this scope is about to overwrite so popScope() can restore a
+    // shadowed outer linear binding (or drop a fresh one) — see popScope (#320).
+    if (!linear_scope_saves_.empty()) {
+        bool had_prior = linear_vars_.count(name) > 0;
+        int prior_count = had_prior ? linear_usage_count_[name] : 0;
+        linear_scope_saves_.back().push_back({name, had_prior, prior_count});
+    }
     // Mark it as linear
     linear_vars_.insert(name);
     linear_usage_count_[name] = 0;  // Unused initially
