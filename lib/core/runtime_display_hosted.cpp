@@ -12,6 +12,7 @@
 #include "../../inc/eshkol/core/inference.h"
 #include "../../inc/eshkol/core/workspace.h"
 #include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/dtoa_shortest.h"
 
 // Native i128 decimal renderer (lib/core/i128_runtime.cpp).
 extern "C" void eshkol_i128_display(const void* payload, void* stream);
@@ -23,21 +24,18 @@ extern "C" void eshkol_i128_display(const void* payload, void* stream);
 // ===== R7RS FLONUM EXTERNAL REPRESENTATION =====
 // Single source of truth for rendering an IEEE double as text. R7RS (6.2.6 /
 // 7.1.1) mandates the special external representations +inf.0 / -inf.0 /
-// +nan.0 for the non-finite flonums; plain "%g" (which prints "inf"/"nan")
-// is NOT readable back by the reader. Every double-formatting site — display,
-// write, number->string, logic-term printing — routes through this so the
-// representation is consistent everywhere it matters.
+// +nan.0 for the non-finite flonums, and requires number->string on an inexact
+// real to produce a string that reads back to the SAME double (round-trip).
+// Every double-formatting site — display, write, number->string, logic-term
+// printing — routes through this so the representation is consistent everywhere
+// it matters.
 //
-// Finite values keep the existing "%g" shortest-round-trip-ish convention to
-// avoid perturbing the large body of existing output.
+// The formatter emits the SHORTEST round-trip decimal (see dtoa_shortest.h);
+// the previous "%g" convention truncated to 6 significant figures, silently
+// dropping precision from high-accuracy results (issue #310). The same routine
+// backs the bytecode VM, so native JIT/AOT and the VM produce identical text.
 extern "C" int eshkol_format_double(char* buf, size_t n, double v) {
-    if (std::isnan(v)) {
-        return snprintf(buf, n, "+nan.0");
-    }
-    if (std::isinf(v)) {
-        return snprintf(buf, n, v < 0.0 ? "-inf.0" : "+inf.0");
-    }
-    return snprintf(buf, n, "%g", v);
+    return eshkol_dtoa_shortest(buf, n, v);
 }
 
 // Convenience wrapper: print a double to a FILE* in R7RS external form.
@@ -455,7 +453,10 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
         case ESHKOL_VALUE_DUAL_NUMBER: {
             eshkol_dual_number_t* dual = (eshkol_dual_number_t*)value->data.ptr_val;
             if (dual) {
-                fprintf(get_output(opts), "(dual %g %g)", dual->value, dual->derivative);
+                char dv[48], dd[48];
+                eshkol_format_double(dv, sizeof(dv), dual->value);
+                eshkol_format_double(dd, sizeof(dd), dual->derivative);
+                fprintf(get_output(opts), "(dual %s %s)", dv, dd);
             } else {
                 fprintf(get_output(opts), "(dual 0 0)");
             }
