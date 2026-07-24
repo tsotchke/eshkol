@@ -559,6 +559,26 @@ probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul resu
      printf "%s" "$out" | grep -q "FAIL:" && exit 1;
      exit 0'
 
+# ───────────────────────────────────────────────────────────────────
+# SDNC weight-matrix backward gradient check (docs/SDNC.md §13). The
+# reverse-mode FFN backward passes in lib/backend/qllm_backward.c must
+# agree with a central finite-difference reference to relative error
+# < 1e-6. The test recompiles the precision-generic backward source in
+# double (-DQLLM_REAL=double) so the finite-difference floor drops well
+# below the bar; the production instantiation stays float. Self-contained
+# cc build so the smoke lane does not depend on a full CMake tree.
+# ───────────────────────────────────────────────────────────────────
+probe qllm_backward_gradcheck \
+    'SDNC qllm_backward FFN gradients (SQUARE + gated) match central finite differences to L2 rel err < 1e-6 (double regime)' \
+    'cd "$REPO_ROOT";
+     cc_bin="${CC:-cc}"; gc_out=$(mktemp "${TMPDIR:-/tmp}/icc-qllm-gradcheck.XXXXXX");
+     "$cc_bin" -O2 -DQLLM_REAL=double -Iinc \
+         tests/backend/qllm_backward_gradcheck_test.c \
+         lib/backend/qllm_backward.c -lm -o "$gc_out" >/dev/null 2>&1 || { rm -f "$gc_out"; exit 1; };
+     out=$("$gc_out" 2>&1); rc=$?; rm -f "$gc_out";
+     [ "$rc" -eq 0 ] || exit 1;
+     printf "%s" "$out" | grep -q "Results: 2 passed, 0 failed"'
+
 echo
 echo "Trace written: $TRACE_FILE"
 echo "Probe summary: $((PROBE_TOTAL - PROBE_FAILURES))/$PROBE_TOTAL passed"
