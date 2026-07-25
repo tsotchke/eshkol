@@ -82,16 +82,21 @@ eshkol_test_digest() {
     printf '%s' "$1" | cksum | awk '{print $1}'
 }
 
-# Remove scratch directories orphaned by killed runs.  Two bounds, both cheap:
-# anything older than ESHKOL_TEST_TMP_MAX_AGE_MIN (default 720 = 12h) goes, and
-# if more than ESHKOL_TEST_TMP_MAX_DIRS (default 64) remain we drop the oldest
-# down to that cap.  Never touches a directory belonging to a live run within
-# the age window, so concurrent suites do not prune each other.
+# Remove scratch directories orphaned by killed runs.  Three bounds, all cheap:
+# anything older than ESHKOL_TEST_TMP_MAX_AGE_MIN (default 720 = 12h) goes; if
+# more than ESHKOL_TEST_TMP_MAX_DIRS (default 64) remain we drop the oldest down
+# to that cap; and if the surviving set exceeds ESHKOL_TEST_TMP_MAX_MB
+# (default 2048) we keep dropping the oldest until it fits.  The size bound is
+# the one that matters once a suite pins a toolchain — a pin is ~64 MB, so a
+# count-only cap could still leave several gigabytes behind after a run of
+# SIGKILLed suites (project rule: every harness needs a disk cap).  Oldest-first
+# ordering means a live run's directory is never the one chosen.
 eshkol_test_isolation_prune_stale() {
-    local root max_age max_dirs
+    local root max_age max_dirs max_mb
     root="$(eshkol_test_tmp_root)"
     max_age="${ESHKOL_TEST_TMP_MAX_AGE_MIN:-720}"
     max_dirs="${ESHKOL_TEST_TMP_MAX_DIRS:-64}"
+    max_mb="${ESHKOL_TEST_TMP_MAX_MB:-2048}"
 
     [ -d "$root" ] || return 0
 
@@ -114,6 +119,30 @@ eshkol_test_isolation_prune_stale() {
                 esac
             done
     fi
+
+    # Size-based sweep: drop the oldest until the set fits the budget.
+    #
+    # Only directories idle for at least ESHKOL_TEST_TMP_MIN_AGE_MIN (default
+    # 120) are eligible. Without that floor a burst of concurrent pinned runs
+    # could push the total over budget and make one run delete another's live
+    # scratch directory — trading a disk problem for a corruption problem.
+    local min_age total oldest
+    min_age="${ESHKOL_TEST_TMP_MIN_AGE_MIN:-120}"
+    while :; do
+        total=$(du -sm -- "$root"/eshkol-test.* 2>/dev/null | awk '{s+=$1} END {print s+0}')
+        [ -n "$total" ] || return 0
+        [ "$total" -le "$max_mb" ] && return 0
+        oldest=$(find "$root" -maxdepth 1 -type d -name 'eshkol-test.*' \
+                     -mmin "+$min_age" 2>/dev/null \
+                 | while IFS= read -r d; do
+                       printf '%s\t%s\n' "$(eshkol_test_file_stamp "$d" | awk '{print $2}')" "$d"
+                   done | sort -n | head -1 | cut -f2-)
+        [ -n "$oldest" ] || return 0
+        case "$oldest" in
+            "$root"/eshkol-test.*) rm -rf -- "$oldest" 2>/dev/null || return 0 ;;
+            *) return 0 ;;
+        esac
+    done
 }
 
 eshkol_test_isolation_cleanup() {
@@ -232,6 +261,11 @@ eshkol_test_reset_bin() {
 # falls back to the live ./build tree and a concurrent relink is back in play.
 ESHKOL_TEST_TOOLCHAIN_ARTIFACTS="eshkol-run stdlib.o stdlib.bc eshkol-repl eshkol-vm-standalone-test libeshkol-runtime.a libeshkol-static.a libeshkol-agent-ffi.a"
 
+# What a *pin* copies. Fingerprinting is free, copying is not: a full pin is
+# ~64 MB, so eshkol-repl (24 MB, unused by any pinning suite) stays out. Add to
+# this list only when a suite genuinely drives the artifact.
+ESHKOL_TEST_PIN_ARTIFACTS="eshkol-run stdlib.o stdlib.bc eshkol-vm-standalone-test libeshkol-runtime.a libeshkol-static.a libeshkol-agent-ffi.a"
+
 # Portable "size mtime" stamp for one file. BSD stat and GNU stat disagree on
 # flags, so try both; a missing file stamps as "-" (absent is a stable state).
 eshkol_test_file_stamp() {
@@ -326,9 +360,10 @@ eshkol_test_pin_toolchain() {
     mkdir -p -- "$pinned" \
         || eshkol_test_isolation_fail "cannot create pinned toolchain dir: $pinned"
 
-    # eshkol-run discovers stdlib.o/stdlib.bc relative to its own location, so
-    # copying them alongside keeps the pinned compiler self-sufficient.
-    for name in $ESHKOL_TEST_TOOLCHAIN_ARTIFACTS; do
+    # eshkol-run discovers stdlib.o/stdlib.bc and libeshkol-runtime.a relative
+    # to its own location before it looks at ./build, so copying them alongside
+    # keeps the pinned compiler self-sufficient for both JIT and AOT.
+    for name in $ESHKOL_TEST_PIN_ARTIFACTS; do
         [ -f "$build_dir/$name" ] || continue
         cp -p -- "$build_dir/$name" "$pinned/$name" 2>/dev/null || true
     done
@@ -421,6 +456,34 @@ eshkol_test_release_lock() {
 # that want it pass it as the extra pattern argument.
 ESHKOL_TEST_FAILURE_REGEX='(^|[^A-Za-z0-9_])(FAIL|FAILED|FAILURE|FAILS)([^A-Za-z0-9_]|$)|Failed:[[:space:]]*[1-9]|Failures:[[:space:]]*[1-9]|^[[:space:]]*✗|Assertion failed|Segmentation fault|Bus error|Abort trap|fatal signal'
 
+# Lines that mention a FAIL token only to report a count of ZERO —
+# "Total: 17, PASS: 17, FAIL: 0" and friends. These are explicit statements
+# that nothing failed, so they are dropped before the match above is applied.
+# This narrows nothing that could hide a real failure: a line reporting a
+# nonzero count, or naming a failing case, does not match this shape.
+ESHKOL_TEST_ZERO_FAILURE_REGEX='(FAIL|FAILED|FAILURES?|FAILS)[[:space:]]*[:=]?[[:space:]]*0([^0-9]|$)'
+
+# Decoration-wrapped title lines — a run of 3+ of = * # - at BOTH ends, e.g.
+#   === DEBUG MINIMAL FAIL TEST ===
+# Some test programs put the word FAIL in their own banner because the file is
+# named for the bug it reproduces (tests/lists/debug_minimal_fail.esk). A title
+# is not a verdict. Only the bare token FAIL is discounted this way: a banner
+# saying FAILED / FAILURE / FAILS *is* a verdict —
+#   !!! SOME TESTS FAILED - REVIEW NEEDED !!!
+# is a real failure and must still be caught, which is why ! is not a
+# decoration character here.
+ESHKOL_TEST_TITLE_DECORATION='^[[:space:]]*[=*#-][=*#-][=*#-].*[=*#-][=*#-][=*#-][[:space:]]*$'
+
+# Drop lines that mention a failure token without reporting a failure.
+# Reads stdin, writes stdout. Narrow by construction: every line it removes
+# either states a zero count or is a decorative title with no verdict word.
+eshkol_test_filter_verdict_noise() {
+    LC_ALL=C grep -Ev -- "$ESHKOL_TEST_ZERO_FAILURE_REGEX" 2>/dev/null \
+        | LC_ALL=C awk -v dec="$ESHKOL_TEST_TITLE_DECORATION" '
+            $0 ~ dec && $0 !~ /FAILED|FAILURE|FAILS/ { next }
+            { print }' 2>/dev/null
+}
+
 # True when $1 (a file) contains a failure marker. $2 — optional extra ERE,
 # OR-ed in for suites with their own markers (e.g. 'RESULT: FAIL|error:').
 eshkol_test_output_has_failure() {
@@ -430,7 +493,8 @@ eshkol_test_output_has_failure() {
 
     [ -f "$file" ] || return 1
     [ -n "$extra" ] && pattern="$pattern|$extra"
-    LC_ALL=C grep -Eq -- "$pattern" "$file" 2>/dev/null
+    eshkol_test_filter_verdict_noise < "$file" \
+        | LC_ALL=C grep -Eq -- "$pattern" 2>/dev/null
 }
 
 # Same, for output already captured in a shell variable.
@@ -440,7 +504,9 @@ eshkol_test_text_has_failure() {
     local pattern="$ESHKOL_TEST_FAILURE_REGEX"
 
     [ -n "$extra" ] && pattern="$pattern|$extra"
-    printf '%s\n' "$text" | LC_ALL=C grep -Eq -- "$pattern" 2>/dev/null
+    printf '%s\n' "$text" \
+        | eshkol_test_filter_verdict_noise \
+        | LC_ALL=C grep -Eq -- "$pattern" 2>/dev/null
 }
 
 # Print the offending lines so a suite can show *why* it failed.
@@ -453,7 +519,9 @@ eshkol_test_output_failures() {
 
     [ -f "$file" ] || return 0
     [ -n "$extra" ] && pattern="$pattern|$extra"
-    LC_ALL=C grep -En -- "$pattern" "$file" 2>/dev/null | head -n "$limit"
+    LC_ALL=C grep -En -- "$pattern" "$file" 2>/dev/null \
+        | eshkol_test_filter_verdict_noise \
+        | head -n "$limit"
 }
 
 # True when the file holds nothing but whitespace — "the test printed nothing".

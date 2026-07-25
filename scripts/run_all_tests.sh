@@ -241,6 +241,11 @@ extract_failures() {
         if echo "$line" | grep -qE '\.esk'; then
             continue
         fi
+        # Skip zero-count summaries ("Total: 17, PASS: 17, FAIL: 0") and
+        # decorative titles that merely contain the word ("=== FAIL TEST ===").
+        if [ -z "$(printf '%s\n' "$line" | eshkol_test_filter_verdict_noise)" ]; then
+            continue
+        fi
         if echo "$line" | grep -qE '(^|[^A-Za-z0-9_])FAIL([^A-Za-z0-9_]|$)'; then
             desc=$(echo "$line" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+$//')
             ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
