@@ -27663,6 +27663,87 @@ private:
         }
     }
 
+    /**
+     * @brief True iff @p name is used as a VALUE (not merely called) anywhere in
+     *        @p ast — `(set! g loop)`, `(list loop)`, `(map loop xs)`, a return
+     *        position — as opposed to the direct call `(loop …)`.
+     *
+     * codegenNamedLet uses this to decide whether the loop procedure can outlive
+     * the frame that created it. If it can, every capture cell must live in the
+     * arena rather than on the caller's stack: a leaked procedure reads its
+     * captures through the cell pointer, and a stack cell is dangling as soon as
+     * the enclosing function returns. That was a real crash, not a theoretical
+     * one — a read-only captured PARAMETER (materialised into an entry-block
+     * alloca) came back as a pair once the frame had been reused, so
+     * `(< i n)` inside a leaked loop body reported "expected number, got pair".
+     *
+     * Only the direct-callee position is excluded, and only for CALL_OP. IF_OP /
+     * COND_OP share the call_op layout but their `func` field is the condition,
+     * so it is inspected normally. Unhandled op kinds fall back to
+     * astReferencesVar, which counts a direct call too: that OVER-approximates
+     * escape, which costs one arena cell and can never be incorrect.
+     */
+    bool astUsesNameAsValue(const eshkol_ast_t* ast, const std::string& name) {
+        if (!ast) return false;
+        if (ast->type == ESHKOL_VAR) {
+            return ast->variable.id && name == ast->variable.id;
+        }
+        if (ast->type == ESHKOL_CONS) {
+            return astUsesNameAsValue(ast->cons_cell.car, name) ||
+                   astUsesNameAsValue(ast->cons_cell.cdr, name);
+        }
+        if (ast->type != ESHKOL_OP) return false;
+
+        const eshkol_operations_t* op = &ast->operation;
+        switch (op->op) {
+            case ESHKOL_CALL_OP: {
+                // The callee position of a direct `(name …)` call does not make
+                // the procedure escape; every argument position does.
+                const eshkol_ast_t* callee = op->call_op.func;
+                const bool direct_self_call =
+                    callee && callee->type == ESHKOL_VAR && callee->variable.id &&
+                    name == callee->variable.id;
+                if (!direct_self_call && astUsesNameAsValue(callee, name)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astUsesNameAsValue(&op->call_op.variables[i], name)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_IF_OP:
+            case ESHKOL_COND_OP:
+                if (astUsesNameAsValue(op->call_op.func, name)) return true;
+                for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
+                    if (astUsesNameAsValue(&op->call_op.variables[i], name)) return true;
+                }
+                return false;
+            case ESHKOL_SEQUENCE_OP:
+            case ESHKOL_AND_OP:
+            case ESHKOL_OR_OP:
+                for (uint64_t i = 0; i < op->sequence_op.num_expressions; i++) {
+                    if (astUsesNameAsValue(&op->sequence_op.expressions[i], name)) return true;
+                }
+                return false;
+            case ESHKOL_SET_OP:
+                return (op->set_op.name && name == op->set_op.name) ||
+                       astUsesNameAsValue(op->set_op.value, name);
+            case ESHKOL_LET_OP:
+            case ESHKOL_LET_STAR_OP:
+            case ESHKOL_LETREC_OP:
+            case ESHKOL_LETREC_STAR_OP:
+                for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
+                    if (astUsesNameAsValue(&op->let_op.bindings[i], name)) return true;
+                }
+                return astUsesNameAsValue(op->let_op.body, name);
+            case ESHKOL_LAMBDA_OP:
+                return astUsesNameAsValue(op->lambda_op.body, name);
+            case ESHKOL_DEFINE_OP:
+                return astUsesNameAsValue(op->define_op.value, name);
+            default:
+                // Conservative: any reference at all counts as an escape.
+                return astReferencesVar(ast, name);
+        }
+    }
+
     void findFreeVariablesImpl(const eshkol_ast_t* ast,
                           const std::unordered_map<std::string, Value*>& current_scope,
                           const eshkol_ast_t* parameters, uint64_t num_params,
@@ -29703,6 +29784,15 @@ private:
         //   - Other raw value        → same as raw-value Argument
         static int named_let_counter = 0;
         int current_counter = named_let_counter++;
+        // ESCAPED LOOP PROCEDURE: if the body uses `loop_name` as a VALUE (rather
+        // than only calling it), the procedure can outlive this frame. A leaked
+        // procedure reads its captures THROUGH the cell pointer, so every cell
+        // must then live in the arena — a stack cell is dangling the moment the
+        // enclosing function returns. Concretely: a read-only captured parameter
+        // is otherwise materialised into an entry-block alloca, and reading it
+        // from a leaked procedure after the frame was reused produced
+        // "Type error in <: expected number, got pair".
+        const bool loop_escapes = astUsesNameAsValue(op->let_op.body, loop_name);
         std::vector<Value*> capture_outer_ptrs;
         capture_outer_ptrs.reserve(free_vars.size());
         // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: fv -> arena storage for set!-mutated
@@ -29772,7 +29862,14 @@ private:
             // by-value-loads it — losing the mutation. Arena-move it first, then
             // pointer-pass the arena storage. Record it so codegenLambda's pointer
             // Argument branch pointer-passes instead of by-value loading.
-            if (isa<AllocaInst>(outer_val) && astSetsVar(op->let_op.body, fv)) {
+            // The same arena move is required, for a different reason, when the
+            // loop procedure escapes: the cell must outlive this frame even if
+            // nothing ever set!s it. Rebinding symbol_table (below) keeps the
+            // enclosing scope on the shared arena cell in both cases, so a later
+            // set! in the enclosing scope is still visible to the leaked
+            // procedure and vice versa.
+            if (isa<AllocaInst>(outer_val) &&
+                (loop_escapes || astSetsVar(op->let_op.body, fv))) {
                 Value* arena_ptr = builder->CreateLoad(
                     PointerType::getUnqual(*context), global_arena);
                 Value* arena_storage = builder->CreateCall(
@@ -29822,10 +29919,38 @@ private:
             }
 
             // Raw value (Argument with tagged_value/int64/double, or some
-            // computed Value). Materialise into an alloca on the caller's
-            // entry block so we can pass a pointer. set! through this pointer
-            // updates only the local slot, NOT the original Argument — which
-            // matches existing semantics (Arguments are immutable in Eshkol).
+            // computed Value). Materialise into a per-call cell so we can pass a
+            // pointer. set! through this pointer updates only that cell, NOT the
+            // original Argument — which matches existing semantics (Arguments are
+            // immutable in Eshkol).
+            //
+            // The cell is a stack alloca normally, and ARENA storage when the loop
+            // procedure escapes: a leaked procedure reads its captures through
+            // this pointer long after this frame is gone. A read-only captured
+            // parameter used to come back as whatever had reused the stack slot
+            // ("Type error in <: expected number, got pair").
+            if (loop_escapes) {
+                Value* esc_arena = builder->CreateLoad(
+                    PointerType::getUnqual(*context), global_arena);
+                Value* esc_cell = builder->CreateCall(
+                    getArenaAllocateFunc(), {esc_arena, sizeConst(16)});
+                Value* esc_tagged = outer_val;
+                if (esc_tagged->getType() != tagged_value_type) {
+                    if (esc_tagged->getType()->isDoubleTy()) {
+                        esc_tagged = packDoubleToTaggedValue(esc_tagged);
+                    } else if (esc_tagged->getType()->isIntegerTy(64)) {
+                        esc_tagged = packInt64ToTaggedValue(esc_tagged, true);
+                    } else if (esc_tagged->getType()->isIntegerTy(1)) {
+                        esc_tagged = packBoolToTaggedValue(esc_tagged);
+                    }
+                }
+                builder->CreateStore(esc_tagged, esc_cell);
+                capture_outer_ptrs.push_back(esc_cell);
+                eshkol_debug("Named let '%s': raw capture '%s' -> arena cell (loop escapes)",
+                             loop_name.c_str(), fv.c_str());
+                continue;
+            }
+
             BasicBlock* save_bb = builder->GetInsertBlock();
             Function* parent_fn = save_bb->getParent();
             BasicBlock& entry_bb = parent_fn->getEntryBlock();

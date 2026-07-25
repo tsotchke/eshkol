@@ -83,6 +83,23 @@
 (check "loop result, read-only capture" (f3 4) 4)
 (check "leaked procedure re-runs against the same capture" (g3 0) 4)
 
+;; ── the creating frame is REUSED before the leaked procedure is called ──
+;;
+;; This is the shape that proves the capture cells are arena storage and not the
+;; creating frame's stack. A read-only captured parameter is materialised into a
+;; per-call cell; when that cell was an entry-block alloca, calling the leaked
+;; procedure after the frame had been reused read whatever now occupied the slot
+;; and reported "Type error in <: expected number, got pair" — intermittently,
+;; because an unreused stack still happened to hold the right bytes.
+
+(define (burn n) (if (= n 0) 0 (+ 1 (burn (- n 1)))))
+(define (churn n acc) (if (= n 0) (length acc) (churn (- n 1) (cons (list n n) acc))))
+(check "stack burn returns" (burn 2000) 2000)
+(check "heap churn returns" (churn 5000 '()) 5000)
+(check "leaked procedure after the frame was reused" (g3 0) 4)
+(check "leaked procedure after the frame was reused, again" (g3 1) 4)
+(check "leaked no-capture procedure after reuse" (g2 7) 7)
+
 ;; ── two loop parameters ──
 
 (define g4 #f)
