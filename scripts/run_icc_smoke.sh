@@ -297,7 +297,19 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
        bin=$(mktemp "${TMPDIR:-/tmp}/icc_$(basename "$t" .esk).XXXXXX"); rm -f "$bin";
        "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
        tout=$("$bin" 2>&1);
-       if printf "%s" "$tout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]"; then
+       ## A bare FAIL token must not match when it only reports a count of
+       ## ZERO: a passing suite printing "Total: 19, PASS: 19, FAIL: 0" is not
+       ## a failure. Split across -e patterns rather than nesting `$` inside an
+       ## alternation group: ugrep (which is `grep` on some dev machines)
+       ## mis-parses `(a|b|$)` and then silently matches NOTHING, which would
+       ## turn this probe into one that can never fail. `$` is only ever used
+       ## at the end of a whole pattern here, which every engine handles.
+       if printf "%s" "$tout" | grep -qE \
+            -e "(^|[^A-Za-z0-9_])(FAILED|FAILURE|FAILS)" \
+            -e "(^|[^A-Za-z0-9_])FAIL[^A-Za-z0-9_:]" \
+            -e "(^|[^A-Za-z0-9_])FAIL$" \
+            -e "FAIL:[[:space:]]*[1-9]" \
+            -e "Failed:[[:space:]]*[1-9]"; then
          exit 1;
        fi;
      done;
