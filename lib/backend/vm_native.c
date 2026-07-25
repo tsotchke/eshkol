@@ -9,7 +9,11 @@ extern int64_t eshkol_linear_solve(
  * rather than included: this translation unit is C and does not pull in the
  * hosted arena header, but the handle table, its generation-tagged validation
  * and its message text must be the SAME code the native backend uses so the two
- * substrates cannot drift. Keep in sync with lib/core/arena_memory.h. */
+ * substrates cannot drift. Keep in sync with lib/core/arena_memory.h.
+ *
+ * The one exception is the WASM VM, which links no part of the hosted runtime
+ * and therefore has to carry the bookkeeping-only half of the table itself —
+ * see the block below for why that is sound and how CI pins it. */
 #define ESHKOL_RH_OK        0
 #define ESHKOL_RH_ERR_STALE 1
 
