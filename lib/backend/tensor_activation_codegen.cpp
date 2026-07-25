@@ -378,14 +378,30 @@ llvm::Value* TensorCodegen::tensorSoftmax(const eshkol_operations_t* op) {
         if (!axis_val) return nullptr;
 
         auto& builder = ctx_.builder();
-        llvm::Value* ptr_int = tagged_.safeExtractInt64(tensor_val);
-        llvm::Value* ptr = builder.CreateIntToPtr(ptr_int, ctx_.ptrType());
+        // Runtime-classified operand (ESH-0069). The 1-arg path already routed
+        // through the checked unpack; this axis-aware path still did the raw
+        // `IntToPtr(extractInt64(v))`, so a Scheme vector operand — the natural
+        // spelling, and what the surrounding transformer code produces — had its
+        // length read as the dimensions pointer and faulted.
+        llvm::Value* ptr = unpackTensorOperandChecked(tensor_val, "softmax");
         llvm::StructType* ttype = ctx_.tensorType();
         llvm::Value* elems = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(ttype, ptr, 2));
         llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(ttype, ptr, 3));
         llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), builder.CreateStructGEP(ttype, ptr, 0));
         llvm::Value* rank = builder.CreateLoad(ctx_.int64Type(), builder.CreateStructGEP(ttype, ptr, 1));
         llvm::Value* axis = tagged_.safeExtractInt64(axis_val);
+        // The axis indexes the dimensions array (dims[axis]); out of range that
+        // is an invalid read, so fail closed instead.
+        {
+            llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
+            llvm::Value* axis_ok = builder.CreateICmpULT(axis, rank);
+            llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_ok", cur_fn);
+            llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "softmax_axis_err", cur_fn);
+            builder.CreateCondBr(axis_ok, ok_bb, err_bb);
+            builder.SetInsertPoint(err_bb);
+            emitCatchableError("softmax: axis out of range for the operand's rank");
+            builder.SetInsertPoint(ok_bb);
+        }
 
         if (autodiff_) {
             llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());

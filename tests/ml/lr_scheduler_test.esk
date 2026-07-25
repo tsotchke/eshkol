@@ -1,5 +1,19 @@
 ;;; Learning Rate Scheduler Test Suite
 ;;; Tests for linear-warmup-lr, step-decay-lr, exponential-decay-lr, cosine-annealing-lr
+;;;
+;;; Argument order matches the shipped builtins (lib/backend/tensor_training_codegen.cpp,
+;;; documented in docs/API_REFERENCE.md and docs/breakdown/MACHINE_LEARNING.md) —
+;;; every scheduler takes base-lr FIRST:
+;;;
+;;;   (linear-warmup-lr      base-lr step warmup)
+;;;   (step-decay-lr         base-lr gamma epoch step-size)
+;;;   (exponential-decay-lr  base-lr gamma epoch)
+;;;   (cosine-annealing-lr   base-lr min-lr step total)
+;;;
+;;; This file previously called them step-first (and cosine-annealing-lr with 3
+;;; arguments), so eleven of the twelve cases were passing the learning rate in
+;;; as a step counter and the three cosine cases did not even satisfy the
+;;; builtin's arity. The expected values below are unchanged; only the calls are.
 
 (require stdlib)
 
@@ -13,7 +27,7 @@
 ;; Test 1: Linear warmup at step 0 returns 0.0
 ;; ============================================================
 (display "TEST: linear-warmup-lr at step 0") (newline)
-(let ((lr (linear-warmup-lr 0 100 0.01)))
+(let ((lr (linear-warmup-lr 0.01 0 100)))
   (display (if (approx= lr 0.0 0.0001)
                "PASS" "FAIL"))
   (display ": linear-warmup-lr returns 0.0 at step 0") (newline))
@@ -22,7 +36,7 @@
 ;; Test 2: Linear warmup halfway returns half of base-lr
 ;; ============================================================
 (display "TEST: linear-warmup-lr at halfway") (newline)
-(let ((lr (linear-warmup-lr 50 100 0.01)))
+(let ((lr (linear-warmup-lr 0.01 50 100)))
   (display (if (approx= lr 0.005 0.0001)
                "PASS" "FAIL"))
   (display ": linear-warmup-lr returns 0.005 at step 50/100") (newline))
@@ -31,7 +45,7 @@
 ;; Test 3: Linear warmup at final step returns full base-lr
 ;; ============================================================
 (display "TEST: linear-warmup-lr at full warmup") (newline)
-(let ((lr (linear-warmup-lr 100 100 0.01)))
+(let ((lr (linear-warmup-lr 0.01 100 100)))
   (display (if (approx= lr 0.01 0.0001)
                "PASS" "FAIL"))
   (display ": linear-warmup-lr returns base-lr at warmup-steps") (newline))
@@ -40,7 +54,7 @@
 ;; Test 4: Step decay at step 0 returns base-lr (no decay yet)
 ;; ============================================================
 (display "TEST: step-decay-lr at step 0") (newline)
-(let ((lr (step-decay-lr 0 10 0.1 0.01)))
+(let ((lr (step-decay-lr 0.01 0.1 0 10)))
   (display (if (approx= lr 0.01 0.0001)
                "PASS" "FAIL"))
   (display ": step-decay-lr returns base-lr at step 0") (newline))
@@ -50,7 +64,7 @@
 ;; base-lr * gamma^(floor(10/10)) = 0.01 * 0.1 = 0.001
 ;; ============================================================
 (display "TEST: step-decay-lr after one period") (newline)
-(let ((lr (step-decay-lr 10 10 0.1 0.01)))
+(let ((lr (step-decay-lr 0.01 0.1 10 10)))
   (display (if (approx= lr 0.001 0.0001)
                "PASS" "FAIL"))
   (display ": step-decay-lr decays by gamma after step-size steps") (newline))
@@ -60,7 +74,7 @@
 ;; base-lr * gamma^(floor(20/10)) = 0.01 * 0.1^2 = 0.0001
 ;; ============================================================
 (display "TEST: step-decay-lr after two periods") (newline)
-(let ((lr (step-decay-lr 20 10 0.1 0.01)))
+(let ((lr (step-decay-lr 0.01 0.1 20 10)))
   (display (if (approx= lr 0.0001 0.0001)
                "PASS" "FAIL"))
   (display ": step-decay-lr decays by gamma^2 after 2 periods") (newline))
@@ -70,7 +84,7 @@
 ;; base-lr * gamma^0 = 0.01 * 1 = 0.01
 ;; ============================================================
 (display "TEST: exponential-decay-lr at step 0") (newline)
-(let ((lr (exponential-decay-lr 0 0.9 0.01)))
+(let ((lr (exponential-decay-lr 0.01 0.9 0)))
   (display (if (approx= lr 0.01 0.0001)
                "PASS" "FAIL"))
   (display ": exponential-decay-lr returns base-lr at step 0") (newline))
@@ -80,7 +94,7 @@
 ;; base-lr * gamma^1 = 0.01 * 0.9 = 0.009
 ;; ============================================================
 (display "TEST: exponential-decay-lr at step 1") (newline)
-(let ((lr (exponential-decay-lr 1 0.9 0.01)))
+(let ((lr (exponential-decay-lr 0.01 0.9 1)))
   (display (if (approx= lr 0.009 0.0001)
                "PASS" "FAIL"))
   (display ": exponential-decay-lr applies gamma once at step 1") (newline))
@@ -90,39 +104,49 @@
 ;; base-lr * gamma^10 = 0.01 * 0.9^10 = 0.01 * 0.3486784401 ~ 0.003487
 ;; ============================================================
 (display "TEST: exponential-decay-lr at step 10") (newline)
-(let ((lr (exponential-decay-lr 10 0.9 0.01)))
+(let ((lr (exponential-decay-lr 0.01 0.9 10)))
   (display (if (approx= lr 0.003487 0.0001)
                "PASS" "FAIL"))
   (display ": exponential-decay-lr at step 10 matches gamma^10") (newline))
 
 ;; ============================================================
 ;; Test 10: Cosine annealing at step 0 returns full base-lr
-;; lr = base-lr * 0.5 * (1 + cos(0 * pi / total)) = base-lr
+;; min-lr = 0, so lr = 0.5 * base-lr * (1 + cos(0 * pi / total)) = base-lr
 ;; ============================================================
 (display "TEST: cosine-annealing-lr at step 0") (newline)
-(let ((lr (cosine-annealing-lr 0 100 0.01)))
+(let ((lr (cosine-annealing-lr 0.01 0.0 0 100)))
   (display (if (approx= lr 0.01 0.0001)
                "PASS" "FAIL"))
   (display ": cosine-annealing-lr returns base-lr at step 0") (newline))
 
 ;; ============================================================
 ;; Test 11: Cosine annealing at halfway returns ~half base-lr
-;; lr = base-lr * 0.5 * (1 + cos(50 * pi / 100)) = 0.01 * 0.5 * (1 + 0) = 0.005
+;; lr = 0.5 * base-lr * (1 + cos(50 * pi / 100)) = 0.01 * 0.5 * (1 + 0) = 0.005
 ;; ============================================================
 (display "TEST: cosine-annealing-lr at halfway") (newline)
-(let ((lr (cosine-annealing-lr 50 100 0.01)))
+(let ((lr (cosine-annealing-lr 0.01 0.0 50 100)))
   (display (if (approx= lr 0.005 0.0001)
                "PASS" "FAIL"))
   (display ": cosine-annealing-lr returns ~0.005 at halfway") (newline))
 
 ;; ============================================================
 ;; Test 12: Cosine annealing at final step decays to ~0
-;; lr = base-lr * 0.5 * (1 + cos(pi)) = 0.01 * 0.5 * (1 - 1) = 0.0
+;; lr = 0.5 * base-lr * (1 + cos(pi)) = 0.01 * 0.5 * (1 - 1) = 0.0
 ;; ============================================================
 (display "TEST: cosine-annealing-lr at end") (newline)
-(let ((lr (cosine-annealing-lr 100 100 0.01)))
+(let ((lr (cosine-annealing-lr 0.01 0.0 100 100)))
   (display (if (approx= lr 0.0 0.0001)
                "PASS" "FAIL"))
   (display ": cosine-annealing-lr decays to ~0 at total-steps") (newline))
+
+;; ============================================================
+;; Test 13: Cosine annealing honours a non-zero floor (min-lr)
+;; lr = min-lr + 0.5 * (base-lr - min-lr) * (1 + cos(pi)) = min-lr
+;; ============================================================
+(display "TEST: cosine-annealing-lr floor at end") (newline)
+(let ((lr (cosine-annealing-lr 0.01 0.001 100 100)))
+  (display (if (approx= lr 0.001 0.0001)
+               "PASS" "FAIL"))
+  (display ": cosine-annealing-lr decays to min-lr at total-steps") (newline))
 
 (display "=== LEARNING RATE SCHEDULER TESTS COMPLETE ===") (newline)

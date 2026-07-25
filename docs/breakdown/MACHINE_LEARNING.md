@@ -405,12 +405,23 @@ Position-wise FFN: `W2 * relu(W1 * x + b1) + b2`. Fused two-layer linear transfo
 **Signature:** `(embedding indices weights)` -- `tensor_codegen.cpp`
 
 Lookup table: maps integer indices to dense vectors. Weight matrix must be 2D
-`[vocab-size, embed-dim]`. Runtime guard validates rank.
+`[vocab-size, embed-dim]`; runtime guards validate the rank and every index
+(`0 <= i < vocab-size`), raising a catchable condition rather than reading
+outside the weight buffer.
+
+The index operand is classified by its runtime value, so a tensor, a `#(...)`
+literal, any Scheme vector (however constructed) and a numeric list are all
+accepted and give identical results.
 
 ```scheme
 (define embed-weights (make-tensor (list 10000 256) 0.0))
 (xavier-uniform! embed-weights 10000 256)
-(embedding #(42 17 256) embed-weights)  ; => 3 x 256 tensor
+(embedding #(42 17 256) embed-weights)   ; => 3 x 256 tensor
+
+;; A computed index vector works the same way — no conversion needed
+(define ids (make-vector 3 0))
+(vector-set! ids 0 42) (vector-set! ids 1 17) (vector-set! ids 2 256)
+(embedding ids embed-weights)            ; => the same 3 x 256 tensor
 ```
 
 ---

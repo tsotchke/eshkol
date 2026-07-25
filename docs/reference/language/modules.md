@@ -5,10 +5,17 @@ pair, and R7RS `define-library`/`import`. Both resolve module names to source
 files on a search path. `load` includes a file inline.
 
 Search path for module resolution:
-1. the current working directory,
-2. directories passed with `-I DIR`,
-3. the compiler's bundled `lib/` directory,
-4. entries in the `$ESHKOL_PATH` environment variable.
+1. the directory of the file doing the `require`/`import`/`load`,
+2. the project root (the current working directory),
+3. directories passed with `-I DIR`, then entries in the `$ESHKOL_PATH`
+   environment variable (`-I` directories are appended to it),
+4. the compiler's bundled `lib/` directory — itself located beside the running
+   compiler, and only then in the system prefixes.
+
+A path you name explicitly therefore overrides a module that ships with the
+compiler, while a project's own sources always come first. See
+[environment variables](../runtime/environment-variables.md#resolution-precedence)
+for the same rule applied to the native artifacts.
 
 ## `provide` / `require`
 

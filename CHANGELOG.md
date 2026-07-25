@@ -345,6 +345,92 @@ across every new-feature family).
   `HOTT_TYPE_NUMBER` kind, and calling through an ascribed callable
   (`((the procedure f) x)`) no longer hits codegen's "Call expression requires
   variable or inline lambda" bail-out.
+
+- **Higher-order derivatives through a variable-bound derivative closure were
+  silently wrong.** `(define df (derivative f))` followed by `(derivative df)`
+  returned `0.0` — for `f = x⁴` at `x=2` the second derivative is `48` — and the
+  unnamed spellings `(derivative (derivative f))` / `(derivative (car fs))`
+  printed `Failed to resolve function for higher-order derivative` at compile
+  time while still emitting a binary. The second-derivative *mathematics* was
+  never at fault: `(derivative-n f 2.0 2)` and
+  `(derivative (lambda (x) (derivative f x)) 2.0)` both already returned the
+  exact `48`. Two independent causes, both instances of classifying by the wrong
+  thing. **(1) Resolution.** `derivativeHigherOrder`'s runtime path first
+  required the differentiand to be a bare `ESHKOL_VAR`, then matched the bound
+  `llvm::Value` against a whitelist of subclasses (`Argument` / `AllocaInst` /
+  `LoadInst` / `GlobalVariable`). The `ESHKOL_VAR` gate rejects every *unnamed*
+  differentiand outright, so no whitelist entry could ever have fixed
+  `(derivative (derivative f))` — there is no binding to inspect — and the
+  whitelist itself encodes where the compiler happened to put a binding, which is
+  a storage decision, not a property of the language. Resolution now goes through
+  the ordinary expression codegen (the language's single authority on what an
+  expression denotes) and coerces the result to a tagged value, so named and
+  unnamed, local and global, parameter and computed differentiands all resolve
+  through one path. **(2) Nesting.** The emitted derivative closure unpacked its
+  argument to a raw double and seeded a fixed single-level dual `{x,1,0,0}`; that
+  unpack discards any perturbation the incoming point already carries, so the
+  moment the closure was itself differentiated the outer tangent was destroyed.
+  Both the static and the runtime-closure wrapper now seed *this* perturbation
+  level (`seedForwardAndPush`) and extract *this* level's coefficient
+  (`popAndExtractForward`) — the same shared runtime-level machinery
+  `(derivative f x)` uses — which makes the returned closure **dual-transparent**:
+  it differentiates like any other function. For `f = x⁴`, `derivative-n`, the
+  nested-lambda form, the curried named form and the curried unnamed form now all
+  return `32/48/48` at `x=2` and `108/108/72` at `x=3` on the JIT and the AOT
+  lane, with no compile-time diagnostic. `gradient`'s identical resolution block
+  is routed through the same helper. Regression:
+  `tests/ad/curried_higher_order_derivative_test.esk` (46 cells, both lanes).
+- **Curried `(derivative f)` did not exist on the bytecode VM, and nested VM
+  derivatives silently returned 0.** `derivative` reaches the VM as a native call
+  that pops exactly `(f, x)`, so the curried form popped whatever was below `f`
+  on the operand stack and bound a non-callable — applying it failed with
+  `calling non-function`. The curry is now lowered the same way `gradient`
+  already lowers its own, to `(lambda (__dx__) (derivative f __dx__))`, so both
+  spellings reach the same native call with the same `(f, x)` and agree exactly
+  with native (`32` at `x=2`, `108` at `x=3` for `x⁴`). Separately, the VM's
+  forward-mode carrier is a flat dual `{value, tangent}` with a single
+  perturbation, so a point that was *already* a dual got flattened, the inner
+  pass returned a plain float, and the outer pass read "non-dual result =
+  constant function" and pushed `0.0` — a silently wrong second derivative. The
+  VM now **raises a catchable error** naming the limitation instead. Higher-order
+  AD on the VM needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower
+  and stays native-only, recorded on the `op:DERIVATIVE` row of
+  `tests/vm_parity/PARITY.tsv`.
+- **A compiler could link a stale *system* runtime archive in preference to its
+  own, and `ESHKOL_LIB_DIR` could not override it.** `find_runtime_library()`
+  searched name-major: every location for `libeshkol-runtime.a` — including
+  `/usr/local/lib`, `/usr/lib` and `/opt/homebrew/lib` — was exhausted before
+  `libeshkol-static.a` was tried *anywhere*, including in the directory holding
+  the running `eshkol-run`. An install that ships only the legacy aggregate
+  archive name therefore linked whatever `libeshkol-runtime.a` an older Eshkol
+  had left in a system prefix, and `ESHKOL_LIB_DIR` did not rescue it because
+  the env directory was consulted once per *name* rather than ahead of every
+  location. When the stale archive's symbol set still matches, the link
+  succeeds and the program silently mixes runtime versions — a wrong-runtime
+  class defect, not a build failure. All install-artifact resolution (the
+  runtime archive, the agent-FFI archives beside it, `stdlib.o`, `stdlib.bc`,
+  and the `lib/**.esk` module tree) now runs through one shared,
+  **location-major** root list in `lib/core/platform_runtime.cpp`:
+  `$ESHKOL_LIB_DIR` first and absolutely, then `-L`/`-I` directories, then the
+  install the compiler belongs to — resolved from the executable's **real**
+  path, so a `bin/eshkol-run` symlink into a Homebrew Cellar keg resolves
+  inside the keg — then the working directory's build trees, then the system
+  prefixes; and within one directory the split archive is preferred over the
+  legacy aggregate, so a co-located archive can never lose to a system one. The
+  driver and `llvm_codegen.cpp`'s AOT link path shared none of this logic
+  before and could disagree about which archive a program links; they now use
+  the same resolver. An artifact taken from a system location is reported on
+  stderr with its path instead of being resolved silently, and archives carry
+  the Eshkol version they were built from (a build stamp in every
+  `libeshkol-runtime.a` / `libeshkol-static.a`), so a version disagreement is
+  reported as a warning. `$ESHKOL_PATH`/`-I` now also precede the installed
+  `lib/` tree for `(require …)`, so a module search path the user named is not
+  silently outranked by a module that ships with the compiler.
+  `$ESHKOL_SYSTEM_PREFIXES` overrides the built-in system prefix list for
+  unusual installs and for packaging tests. Regression test:
+  `tests/toolchain/runtime_archive_resolution_test.sh` (ctest
+  `runtime_archive_resolution_test`) stages a stale system archive and pins all
+  four precedence rules plus both stderr diagnostics.
 - **`(require stdlib)` (and any no-op `require`) silently shifted every
   subsequent top-level binding down one slot.** The bytecode compiler lowers a
   `require` of the always-available prelude to nothing, but the top-level (and

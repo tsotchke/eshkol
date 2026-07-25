@@ -1,0 +1,59 @@
+; string->number must read back everything number->string prints, and a
+; negative zero must stay signed.
+;
+; REGRESSION GATE. This release advertises round-trip printing, but three
+; printed values could not be read back:
+;   * R7RS <infnan> (7.1.1) — "+inf.0" / "-inf.0" / "+nan.0" / "-nan.0" — was
+;     rejected on BOTH substrates. The VM additionally ACCEPTED the C library's
+;     non-Scheme spellings "inf" / "infinity" / "nan", which native rejects.
+;   * exact rationals — the VM had no <ratio> branch at all, so the printed
+;     "1/2" read back as #f.
+;   * (* -1.0 0.0) is -0.0 by IEEE-754, but the VM's integer collapse treated
+;     -0.0 == 0 and printed 0 where native prints -0 (both at runtime and in
+;     the compiler's constant folder).
+
+; ---- R7RS <infnan>: exactly these four spellings are numbers ----
+(display (string->number "+inf.0")) (newline)
+(display (string->number "-inf.0")) (newline)
+(display (string->number "+nan.0")) (newline)
+(display (string->number "-nan.0")) (newline)
+
+; The sign is mandatory and the ".0" is part of the token; the C spellings the
+; underlying strtod() would accept are NOT Scheme numbers.
+(display (string->number "inf")) (newline)
+(display (string->number "nan")) (newline)
+(display (string->number "infinity")) (newline)
+(display (string->number "+INF.0")) (newline)
+(display (string->number "+inf.00")) (newline)
+
+; <infnan> is attached to <complex R> for every radix R.
+(display (string->number "#x+inf.0")) (newline)
+
+; ---- the actual round trip ----
+(display (string->number (number->string (/ 1.0 0.0)))) (newline)
+(display (string->number (number->string (/ -1.0 0.0)))) (newline)
+
+; ---- exact rationals ----
+(display (string->number "1/2")) (newline)
+(display (string->number "-3/4")) (newline)
+(display (string->number "4/2")) (newline)     ; reduces, denom 1 collapses to an int
+(display (string->number "1/0")) (newline)     ; zero denominator is not a number
+(display (string->number "1/")) (newline)
+(display (string->number "/2")) (newline)
+(display (string->number "1.5/2")) (newline)
+
+; ---- ordinary forms must be unaffected ----
+(display (string->number "12")) (newline)
+(display (string->number "1.5")) (newline)
+(display (string->number "#xff")) (newline)
+(display (string->number "abc")) (newline)
+
+; ---- negative zero keeps its sign ----
+(display (* -1.0 0.0)) (newline)               ; constant-folded at compile time
+(display (* 0.0 -1.0)) (newline)
+(define minus-one -1.0)
+(define zero 0.0)
+(display (* minus-one zero)) (newline)         ; and at run time
+(display (/ -1.0 (/ 1.0 0.0))) (newline)
+(display (- 0.0 0.0)) (newline)                ; +0.0, not -0.0
+(display (+ 0 0)) (newline)

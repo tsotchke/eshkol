@@ -26,118 +26,69 @@
              (display ") ad=") (display ad)
              (display " fd=") (display fd) (newline))))
 
-;; probe nest.gofd.rational.s.inline.capnone
-(define ad197 (gradient (lambda (x) (derivative (lambda (y) (/ 1.0 (+ 1.0 (* y y)))) x)) 1.1))
-(define (g197 x) (derivative (lambda (y) (/ 1.0 (+ 1.0 (* y y)))) x))
-(define fd197 (/ (- (g197 (+ 1.1 1e-5)) (g197 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofd.rational.s.inline.capnone" ad197 fd197 1e-6 1e-4)
+;; probe nest.curried.poly.s.named.capnone
+(define (cin193 y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y)))
+(define cdf193 (derivative cin193))
+(define ad193 ((derivative cdf193) 1.3))
+(define adu193 ((derivative (derivative cin193)) 1.3))
+(define (g193 x) (derivative (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
+(define fd193 (/ (- (g193 (+ 1.3 1e-5)) (g193 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.poly.s.named.capnone" ad193 fd193 1e-5 1e-4)
+(chk "nest.curried.poly.s.named.capnone[unnamed]" adu193 fd193 1e-5 1e-4)
+(chk "nest.curried.poly.s.named.capnone[agree]" adu193 ad193 1e-5 1e-4)
 
-;; probe nest.gofd.rational.s.named.capnone
-(define (inr198 y) (/ 1.0 (+ 1.0 (* y y))))
-(define ad198 (gradient (lambda (x) (derivative inr198 x)) 1.1))
+;; probe nest.curried.poly.s.lamvar.capnone
+(define cin194 (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))))
+(define cdf194 (derivative cin194))
+(define ad194 ((derivative cdf194) 1.3))
+(define adu194 ((derivative (derivative cin194)) 1.3))
+(define (g194 x) (derivative (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
+(define fd194 (/ (- (g194 (+ 1.3 1e-5)) (g194 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.poly.s.lamvar.capnone" ad194 fd194 1e-5 1e-4)
+(chk "nest.curried.poly.s.lamvar.capnone[unnamed]" adu194 fd194 1e-5 1e-4)
+(chk "nest.curried.poly.s.lamvar.capnone[agree]" adu194 ad194 1e-5 1e-4)
+
+;; probe nest.curried.prodlin.s.inline.capnone
+(define cdf195 (derivative (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0)))))
+(define ad195 ((derivative cdf195) 1.3))
+(define adu195 ((derivative (derivative (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0))))) 1.3))
+(define (g195 x) (derivative (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0))) x))
+(define fd195 (/ (- (g195 (+ 1.3 1e-5)) (g195 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.prodlin.s.inline.capnone" ad195 fd195 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.inline.capnone[unnamed]" adu195 fd195 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.inline.capnone[agree]" adu195 ad195 1e-5 1e-4)
+
+;; probe nest.curried.prodlin.s.named.capnone
+(define (cin196 y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0)))
+(define cdf196 (derivative cin196))
+(define ad196 ((derivative cdf196) 1.3))
+(define adu196 ((derivative (derivative cin196)) 1.3))
+(define (g196 x) (derivative (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0))) x))
+(define fd196 (/ (- (g196 (+ 1.3 1e-5)) (g196 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.prodlin.s.named.capnone" ad196 fd196 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.named.capnone[unnamed]" adu196 fd196 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.named.capnone[agree]" adu196 ad196 1e-5 1e-4)
+
+;; probe nest.curried.prodlin.s.lamvar.capnone
+(define cin197 (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0))))
+(define cdf197 (derivative cin197))
+(define ad197 ((derivative cdf197) 1.3))
+(define adu197 ((derivative (derivative cin197)) 1.3))
+(define (g197 x) (derivative (lambda (y) (* (+ (* 2.0 y) 1.0) (- y 3.0) (+ (* 0.5 y) 2.0))) x))
+(define fd197 (/ (- (g197 (+ 1.3 1e-5)) (g197 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.prodlin.s.lamvar.capnone" ad197 fd197 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.lamvar.capnone[unnamed]" adu197 fd197 1e-5 1e-4)
+(chk "nest.curried.prodlin.s.lamvar.capnone[agree]" adu197 ad197 1e-5 1e-4)
+
+;; probe nest.curried.rational.s.inline.capnone
+(define cdf198 (derivative (lambda (y) (/ 1.0 (+ 1.0 (* y y))))))
+(define ad198 ((derivative cdf198) 1.3))
+(define adu198 ((derivative (derivative (lambda (y) (/ 1.0 (+ 1.0 (* y y)))))) 1.3))
 (define (g198 x) (derivative (lambda (y) (/ 1.0 (+ 1.0 (* y y)))) x))
-(define fd198 (/ (- (g198 (+ 1.1 1e-5)) (g198 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofd.rational.s.named.capnone" ad198 fd198 1e-6 1e-4)
-
-;; probe nest.gofd.expsin.s.inline.capnone
-(define ad199 (gradient (lambda (x) (derivative (lambda (y) (* (exp (* 0.3 y)) (sin y))) x)) 1.1))
-(define (g199 x) (derivative (lambda (y) (* (exp (* 0.3 y)) (sin y))) x))
-(define fd199 (/ (- (g199 (+ 1.1 1e-5)) (g199 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofd.expsin.s.inline.capnone" ad199 fd199 1e-6 1e-4)
-
-;; probe nest.gofd.expsin.s.named.capnone
-(define (inr200 y) (* (exp (* 0.3 y)) (sin y)))
-(define ad200 (gradient (lambda (x) (derivative inr200 x)) 1.1))
-(define (g200 x) (derivative (lambda (y) (* (exp (* 0.3 y)) (sin y))) x))
-(define fd200 (/ (- (g200 (+ 1.1 1e-5)) (g200 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofd.expsin.s.named.capnone" ad200 fd200 1e-6 1e-4)
-
-;; probe nest.gofg.poly.s.inline.capnone
-(define ad201 (gradient (lambda (x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x)) 1.1))
-(define (g201 x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
-(define fd201 (/ (- (g201 (+ 1.1 1e-5)) (g201 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.poly.s.inline.capnone" ad201 fd201 1e-6 1e-4)
-
-;; probe nest.gofg.rational.s.inline.capnone
-(define ad202 (gradient (lambda (x) (gradient (lambda (y) (/ 1.0 (+ 1.0 (* y y)))) x)) 1.1))
-(define (g202 x) (gradient (lambda (y) (/ 1.0 (+ 1.0 (* y y)))) x))
-(define fd202 (/ (- (g202 (+ 1.1 1e-5)) (g202 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.rational.s.inline.capnone" ad202 fd202 1e-6 1e-4)
-
-;; probe nest.gofg.expsin.s.inline.capnone
-(define ad203 (gradient (lambda (x) (gradient (lambda (y) (* (exp (* 0.3 y)) (sin y))) x)) 1.1))
-(define (g203 x) (gradient (lambda (y) (* (exp (* 0.3 y)) (sin y))) x))
-(define fd203 (/ (- (g203 (+ 1.1 1e-5)) (g203 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.expsin.s.inline.capnone" ad203 fd203 1e-6 1e-4)
-
-;; probe nest.gofg.poly.s.named.capnone
-(define (inr204 y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y)))
-(define ad204 (gradient (lambda (x) (gradient inr204 x)) 1.1))
-(define (g204 x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
-(define fd204 (/ (- (g204 (+ 1.1 1e-5)) (g204 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.poly.s.named.capnone" ad204 fd204 1e-6 1e-4)
-
-;; probe nest.gofg.expsin.s.named.capnone
-(define (inr205 y) (* (exp (* 0.3 y)) (sin y)))
-(define ad205 (gradient (lambda (x) (gradient inr205 x)) 1.1))
-(define (g205 x) (gradient (lambda (y) (* (exp (* 0.3 y)) (sin y))) x))
-(define fd205 (/ (- (g205 (+ 1.1 1e-5)) (g205 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.expsin.s.named.capnone" ad205 fd205 1e-6 1e-4)
-
-;; probe nest.gofg.poly.s.lamvar.capnone
-(define inr206 (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))))
-(define ad206 (gradient (lambda (x) (gradient inr206 x)) 1.1))
-(define (g206 x) (gradient (lambda (y) (+ (- (* 1.5 y y y) (* 2.0 y y)) (* 3.0 y))) x))
-(define fd206 (/ (- (g206 (+ 1.1 1e-5)) (g206 (- 1.1 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofg.poly.s.lamvar.capnone" ad206 fd206 1e-6 1e-4)
-
-;; probe nest.gofd.a.v2.inline.capnone
-(define ad207 (gradient (lambda (v) (derivative (lambda (z) (* z (vref v 0))) (vref v 1))) (vector 3.0 4.0)))
-(define (g207 v) (derivative (lambda (z) (* z (vref v 0))) (vref v 1)))
-(define fd207_0 (/ (- (g207 (vector (+ 3.0 1e-5) 4.0)) (g207 (vector (- 3.0 1e-5) 4.0))) (* 2.0 1e-5)))
-(chk-x "nest.gofd.a.v2.inline.capnone[0]" "ESH-0093" (vref ad207 0) fd207_0 1e-6 1e-4)
-(define fd207_1 (/ (- (g207 (vector 3.0 (+ 4.0 1e-5))) (g207 (vector 3.0 (- 4.0 1e-5)))) (* 2.0 1e-5)))
-(chk-x "nest.gofd.a.v2.inline.capnone[1]" "ESH-0093" (vref ad207 1) fd207_1 1e-6 1e-4)
-
-;; probe nest.gofd.b.v2.inline.capnone
-(define ad208 (gradient (lambda (v) (derivative (lambda (z) (* z z (vref v 1))) (vref v 0))) (vector 1.3 -0.7)))
-(define (g208 v) (derivative (lambda (z) (* z z (vref v 1))) (vref v 0)))
-(define fd208_0 (/ (- (g208 (vector (+ 1.3 1e-5) -0.7)) (g208 (vector (- 1.3 1e-5) -0.7))) (* 2.0 1e-5)))
-(chk-x "nest.gofd.b.v2.inline.capnone[0]" "ESH-0093" (vref ad208 0) fd208_0 1e-6 1e-4)
-(define fd208_1 (/ (- (g208 (vector 1.3 (+ -0.7 1e-5))) (g208 (vector 1.3 (- -0.7 1e-5)))) (* 2.0 1e-5)))
-(chk-x "nest.gofd.b.v2.inline.capnone[1]" "ESH-0093" (vref ad208 1) fd208_1 1e-6 1e-4)
-
-;; probe nest.gofg.a.v1.inline.capnone
-(define ad209 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0)) (vector 2.0)))
-(define (g209 v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 0))) v) 0))
-(define fd209_0 (/ (- (g209 (vector (+ 2.0 1e-5))) (g209 (vector (- 2.0 1e-5)))) (* 2.0 1e-5)))
-(chk "nest.gofg.a.v1.inline.capnone[0]" (vref ad209 0) fd209_0 1e-6 1e-4)
-
-;; probe nest.gofg.b.v2.inline.capnone
-(define ad210 (gradient (lambda (v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 1))) v) 0)) (vector 3.0 4.0)))
-(define (g210 v) (vref (gradient (lambda (w) (* (vref w 0) (vref w 0) (vref w 1))) v) 0))
-(define fd210_0 (/ (- (g210 (vector (+ 3.0 1e-5) 4.0)) (g210 (vector (- 3.0 1e-5) 4.0))) (* 2.0 1e-5)))
-(chk "nest.gofg.b.v2.inline.capnone[0]" (vref ad210 0) fd210_0 1e-6 1e-4)
-(define fd210_1 (/ (- (g210 (vector 3.0 (+ 4.0 1e-5))) (g210 (vector 3.0 (- 4.0 1e-5)))) (* 2.0 1e-5)))
-(chk "nest.gofg.b.v2.inline.capnone[1]" (vref ad210 1) fd210_1 1e-6 1e-4)
-
-;; probe nest.gofdofd.poly.s.inline.capnone
-(define (g211 p) (derivative (lambda (x) (derivative (lambda (z) (* p (+ (- (* 1.5 z z z) (* 2.0 z z)) (* 3.0 z)))) x)) 1.1))
-(define ad211 (gradient (lambda (p) (derivative (lambda (x) (derivative (lambda (z) (* p (+ (- (* 1.5 z z z) (* 2.0 z z)) (* 3.0 z)))) x)) 1.1)) 1.3))
-(define fd211 (/ (- (g211 (+ 1.3 1e-5)) (g211 (- 1.3 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofdofd.poly.s.inline.capnone" ad211 fd211 1e-6 1e-4)
-
-;; probe nest.gofdofd.prodlin.s.inline.capnone
-(define (g212 p) (derivative (lambda (x) (derivative (lambda (z) (* p (* (+ (* 2.0 z) 1.0) (- z 3.0) (+ (* 0.5 z) 2.0)))) x)) 1.1))
-(define ad212 (gradient (lambda (p) (derivative (lambda (x) (derivative (lambda (z) (* p (* (+ (* 2.0 z) 1.0) (- z 3.0) (+ (* 0.5 z) 2.0)))) x)) 1.1)) 1.3))
-(define fd212 (/ (- (g212 (+ 1.3 1e-5)) (g212 (- 1.3 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofdofd.prodlin.s.inline.capnone" ad212 fd212 1e-6 1e-4)
-
-;; probe nest.gofdofd.sub.s.inline.capnone
-(define (g213 p) (derivative (lambda (x) (derivative (lambda (z) (* p (- (* (- z 0.7) (- z 0.7)) z))) x)) 1.1))
-(define ad213 (gradient (lambda (p) (derivative (lambda (x) (derivative (lambda (z) (* p (- (* (- z 0.7) (- z 0.7)) z))) x)) 1.1)) 1.3))
-(define fd213 (/ (- (g213 (+ 1.3 1e-5)) (g213 (- 1.3 1e-5))) (* 2.0 1e-5)))
-(chk "nest.gofdofd.sub.s.inline.capnone" ad213 fd213 1e-6 1e-4)
+(define fd198 (/ (- (g198 (+ 1.3 1e-5)) (g198 (- 1.3 1e-5))) (* 2.0 1e-5)))
+(chk "nest.curried.rational.s.inline.capnone" ad198 fd198 1e-5 1e-4)
+(chk "nest.curried.rational.s.inline.capnone[unnamed]" adu198 fd198 1e-5 1e-4)
+(chk "nest.curried.rational.s.inline.capnone[agree]" adu198 ad198 1e-5 1e-4)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

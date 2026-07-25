@@ -869,10 +869,11 @@ quantum-register operations a no-cloning guarantee at the type level.
 ```
 
 **Module Resolution:**
-1. Current directory
-2. `lib/` directory
-3. `$ESHKOL_PATH` directories
-4. System library paths
+1. The requiring file's own directory
+2. The project root (current directory)
+3. `-I` directories and `$ESHKOL_PATH` — the explicit override
+4. The installed `lib/` directory: beside the running compiler first, then the
+   system prefixes (`<prefix>/share/eshkol/lib`)
 
 **Examples:**
 ```scheme
@@ -2511,9 +2512,10 @@ reverse-mode tape described in 8.2.
 
 #### Search Order:
 1. Current directory (relative to source file)
-2. `lib/` directory
-3. `$ESHKOL_PATH` environment variable (colon-separated)
-4. System library paths
+2. The project root (the process's working directory)
+3. `$ESHKOL_PATH` (colon-separated; `-I` directories are appended to it)
+4. The installed `lib/` directory — located beside the running compiler first,
+   then in the system prefixes
 
 #### Path Conversion:
 - Module name `core.functional.compose`
@@ -2800,7 +2802,7 @@ For closures with captures, use bounce/trampoline:
 
 ### 12.5 Internal Defines
 
-Function bodies can contain internal definitions, which are automatically transformed to `letrec`:
+Function bodies can contain internal definitions, which are automatically transformed to `letrec*`:
 
 ```scheme
 (define (outer x)
@@ -2810,10 +2812,36 @@ Function bodies can contain internal definitions, which are automatically transf
 
 ; Transformed to:
 (define (outer x)
-  (letrec ((helper (lambda (y) (+ y 1)))
-           (z 10))
+  (letrec* ((helper (lambda (y) (+ y 1)))
+            (z 10))
     (+ x (helper z))))
 ```
+
+**Interspersed defines.** R7RS §5.3.3 places internal definitions at the
+beginning of a body. Eshkol also accepts them interspersed among body
+expressions (matching Racket/MIT/Guile/Chez), under these rules:
+
+1. Every internal define's **name** joins one `letrec*` binding set, so all
+   internal names share a single mutually visible recursive scope. Mutual
+   recursion works regardless of the order the functions are written in.
+2. A **function** define's lambda is created in the `letrec*` head. A body
+   expression may therefore call a function whose `define` appears later.
+3. A **value** define's initializer is evaluated **at its own source
+   position**, not up front. Body expressions and value-define initializers
+   execute in the order they are written.
+
+```scheme
+(define (outer)
+  (define v (make-vector 2 0.0))     ; leading define
+  (define (fill!) (vector-set! v 0 1.0) (vector-set! v 1 2.0))
+  (fill!)                            ; runs here
+  (define t (reshape v 1 2))         ; evaluated HERE, so it sees the filled v
+  (tensor-data t))                   ; => #(1 2)
+```
+
+Reading a value define's variable **before** its source position yields the
+unset slot rather than the eventual value; as in Racket and R6RS, that is a
+program error, not a supported forward reference.
 
 ---
 
