@@ -1200,16 +1200,8 @@ llvm::Value* TensorCodegen::transpose(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(not_2d, trans_dims_err, trans_dims_ok);
 
         ctx_.builder().SetInsertPoint(trans_dims_err);
-        llvm::Function* printf_fn_trans = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn_trans = ctx_.lookupFunction("exit");
-        if (printf_fn_trans && exit_fn_trans) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: transpose only supports 2D tensors (got %lld dimensions)\n");
-            ctx_.builder().CreateCall(printf_fn_trans, {fmt, src_ndim});
-            ctx_.builder().CreateCall(exit_fn_trans, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
+        ctx_.emitRaiseFmt("transpose: only supports 2D tensors (got %lldD)",
+                          {src_ndim});
 
         ctx_.builder().SetInsertPoint(trans_dims_ok);
     }
