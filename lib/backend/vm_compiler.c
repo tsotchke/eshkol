@@ -1,6 +1,16 @@
 static void compile_expr_impl(FuncChunk* c, Node* node, int tail);
 static void compile_expr(FuncChunk* c, Node* node, int tail);
 
+/* Element count above which a `#(...)` / `(vector ...)` literal is built by
+ * allocate-then-fill (constant operand-stack depth) instead of by pushing every
+ * element and running OP_VEC_CREATE. Below it the direct form is emitted, which
+ * is one instruction per element and comfortably inside the operand stack;
+ * above it the literal's size must not be limited by the stack, so the fill
+ * form is used. */
+#ifndef VM_VEC_LITERAL_STACK_CHUNK
+#define VM_VEC_LITERAL_STACK_CHUNK 256
+#endif
+
 /**
  * @brief Compile node->children[first..last] as a sequence of operands left
  *        on the stack, registering each pushed result as an anonymous local
@@ -2354,6 +2364,33 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
      * and every vector consumer silently disagree with the native backend. */
     if (is_sym(head, "vector")) {
         int n_elems = node->n_children - 1;
+        /* OP_VEC_CREATE consumes its elements off the operand stack, so the
+         * direct form needs n_elems stack slots — which made a literal's member
+         * count a function of ESHKOL_VM_STACK_SIZE (a #(...) of a few thousand
+         * numbers died with "STACK OVERFLOW" partway through pushing it).
+         * A literal's size must be governed by the literal, so past a
+         * threshold the vector is allocated once and filled slot by slot at
+         * CONSTANT stack depth: the element count is then bounded only by the
+         * growable code and constant arrays, not by the operand stack. */
+        if (n_elems > VM_VEC_LITERAL_STACK_CHUNK) {
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(n_elems)));
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(0)));
+            chunk_emit(c, OP_NATIVE_CALL, 218);   /* make-vector(n, fill) */
+            int saved_locals = c->n_locals;
+            add_local(c, "__vec_literal__");
+            for (int i = 1; i < node->n_children; i++) {
+                chunk_emit(c, OP_DUP, 0);                                   /* vec */
+                chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i - 1)));/* idx */
+                int elem_locals = c->n_locals;
+                add_local(c, "__vec_literal_idx__");
+                compile_expr(c, node->children[i], 0);                      /* val */
+                c->n_locals = elem_locals;
+                chunk_emit(c, OP_VEC_SET, 0);   /* pops val, idx, vec; pushes nil */
+                chunk_emit(c, OP_POP, 0);       /* drop the nil */
+            }
+            c->n_locals = saved_locals;
+            return;
+        }
         for (int i = 1; i < node->n_children; i++) compile_expr(c, node->children[i], 0);
         chunk_emit(c, OP_VEC_CREATE, n_elems);
         return;

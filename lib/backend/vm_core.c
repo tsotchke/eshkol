@@ -255,8 +255,33 @@ static void heap_init(Heap* h) {
  */
 static int32_t heap_alloc(Heap* h) {
     if (h->next_free >= h->capacity) {
-        fprintf(stderr, "HEAP OVERFLOW (max %d objects)\n", h->capacity);
-        return -1;
+        /* The object table is a growable pointer array, not a fixed pool.
+         * It used to be sized once at HEAP_SIZE, which turned any workload
+         * whose live-object count exceeded that (e.g. an N-parameter
+         * forward-mode gradient, which boxes N duals per pass for N passes)
+         * into a hard "HEAP OVERFLOW" instead of a slower-but-correct run.
+         * Grow geometrically up to ESHKOL_VM_HEAP_MAX_SIZE, which is the one
+         * remaining bound and is reported by name when it is reached. */
+        if (h->capacity >= ESHKOL_VM_HEAP_MAX_SIZE) {
+            fprintf(stderr, "ERROR: VM heap object limit reached "
+                            "(ESHKOL_VM_HEAP_MAX_SIZE=%d objects)\n",
+                    (int)ESHKOL_VM_HEAP_MAX_SIZE);
+            return -1;
+        }
+        int32_t new_cap = (h->capacity > 0) ? h->capacity * 2 : 1024;
+        if (new_cap > ESHKOL_VM_HEAP_MAX_SIZE || new_cap < 0)
+            new_cap = ESHKOL_VM_HEAP_MAX_SIZE;
+        HeapObject** grown =
+            (HeapObject**)realloc(h->objects, (size_t)new_cap * sizeof(HeapObject*));
+        if (!grown) {
+            fprintf(stderr, "ERROR: VM heap object table growth to %d objects failed\n",
+                    (int)new_cap);
+            return -1;
+        }
+        memset(grown + h->capacity, 0,
+               (size_t)(new_cap - h->capacity) * sizeof(HeapObject*));
+        h->objects = grown;
+        h->capacity = new_cap;
     }
     HeapObject* obj = (HeapObject*)vm_alloc(&h->regions, sizeof(HeapObject));
     if (!obj) { fprintf(stderr, "ARENA OOM\n"); return -1; }
@@ -304,8 +329,15 @@ typedef struct VM {
     /* Program */
     Instr* code;
     int code_len;
-    Value constants[MAX_CONSTS];
+    /* Growable constant pool. It used to be a fixed `Value[MAX_CONSTS]` while
+     * the copy-in loops clamped at MAX_CONSTS and still set n_constants to the
+     * chunk's full count — so a program with more constants than the pool (a
+     * multi-thousand-member literal is the easy way to get there) executed
+     * OP_CONST against uninitialized slots. Capacity now grows with the
+     * program, up to ESHKOL_VM_MAX_CONSTS_CEILING. */
+    Value* constants;
     int n_constants;
+    int const_cap;
 
     /* Execution state */
     int32_t pc;
@@ -544,9 +576,41 @@ static void vm_set_command_line(int argc, char** argv) { g_vm_argc = argc; g_vm_
 /** @brief Zero-initialize a VM instance: clears all state, initializes the
  *         heap, sets the default native policy, and marks the AD tape
  *         inactive with an empty node map. */
+/** @brief Ensure the constant pool can hold at least @p need entries, growing
+ *         it geometrically. Returns 0 (and reports the ceiling by name) when
+ *         @p need exceeds ESHKOL_VM_MAX_CONSTS_CEILING or on allocation
+ *         failure. */
+static int vm_ensure_const_cap(VM* vm, int need) {
+    if (!vm || need < 0) return 0;
+    if (need <= vm->const_cap) return 1;
+    if (need > ESHKOL_VM_MAX_CONSTS_CEILING) {
+        fprintf(stderr, "ERROR: constant pool limit reached "
+                        "(need %d, ESHKOL_VM_MAX_CONSTS_CEILING=%d)\n",
+                need, (int)ESHKOL_VM_MAX_CONSTS_CEILING);
+        return 0;
+    }
+    int cap = vm->const_cap > 0 ? vm->const_cap : MAX_CONSTS;
+    while (cap < need) {
+        if (cap > ESHKOL_VM_MAX_CONSTS_CEILING / 2) { cap = ESHKOL_VM_MAX_CONSTS_CEILING; break; }
+        cap *= 2;
+    }
+    Value* grown = (Value*)realloc(vm->constants, (size_t)cap * sizeof(Value));
+    if (!grown) {
+        fprintf(stderr, "ERROR: constant pool growth to %d entries failed\n", cap);
+        return 0;
+    }
+    memset(grown + vm->const_cap, 0, (size_t)(cap - vm->const_cap) * sizeof(Value));
+    vm->constants = grown;
+    vm->const_cap = cap;
+    return 1;
+}
+
 static void vm_init(VM* vm) {
     memset(vm, 0, sizeof(VM));
     heap_init(&vm->heap);
+    vm->constants = NULL;
+    vm->const_cap = 0;
+    (void)vm_ensure_const_cap(vm, MAX_CONSTS);
     vm->native_policy = ESHKOL_VM_NATIVE_POLICY_DESKTOP;
     vm->active_tape = NULL;
     memset(vm->ad_node_map, -1, sizeof(vm->ad_node_map));
@@ -605,11 +669,11 @@ static Value vm_peek(VM* vm, int offset) {
     return vm->stack[idx];
 }
 
-/** @brief Append @p v to the VM's constant pool.
- * @return The new constant's index, or -1 if MAX_CONSTS is exceeded.
+/** @brief Append @p v to the VM's constant pool, growing it as needed.
+ * @return The new constant's index, or -1 if the pool cannot grow.
  */
 static int add_constant(VM* vm, Value v) {
-    if (vm->n_constants >= MAX_CONSTS) return -1;
+    if (!vm_ensure_const_cap(vm, vm->n_constants + 1)) return -1;
     vm->constants[vm->n_constants] = v;
     return vm->n_constants++;
 }

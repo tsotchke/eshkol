@@ -1,0 +1,38 @@
+; VM<->native parity for `gradient` reached through a RUNTIME closure value.
+;
+; The two callable forms must agree. Native knows a directly-named loss's arity
+; at compile time, but a loss reached through a parameter (a wrapper, a stored
+; callable, anything first-class) has its arity read at run time and spread
+; across a switch with one call site per arity. That switch topped out at 8, and
+; arity 9+ fell into the vectorized single-argument default: an arity-12 loss
+; called through a wrapper was handed ONE vector argument and produced NO OUTPUT
+; AT ALL, while the identical loss called by name was correct. The VM always
+; read the arity dynamically and was right throughout.
+;
+; grad_i of sum_i (i+1) * x_i^2 at x_i = 1 is 2(i+1), so each component is a
+; per-index witness that every coordinate was really seeded.
+
+(define (loss12 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 x10 x11) (+ (* 1 (* x0 x0)) (* 2 (* x1 x1)) (* 3 (* x2 x2)) (* 4 (* x3 x3)) (* 5 (* x4 x4)) (* 6 (* x5 x5)) (* 7 (* x6 x6)) (* 8 (* x7 x7)) (* 9 (* x8 x8)) (* 10 (* x9 x9)) (* 11 (* x10 x10)) (* 12 (* x11 x11))))
+(define pt (list 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0))
+(define (gwrap fn p) (gradient fn p))
+
+; --- direct, by name: the compile-time-arity path ---
+(display (gradient loss12 pt)) (newline)
+
+; --- through a callable parameter: the runtime-arity path, past the old 8 ---
+(display (gwrap loss12 pt)) (newline)
+
+; --- both forms agree component by component ---
+(display (vector-ref (gradient loss12 pt) 0)) (newline)
+(display (vector-ref (gwrap loss12 pt) 0)) (newline)
+(display (vector-ref (gradient loss12 pt) 7)) (newline)
+(display (vector-ref (gwrap loss12 pt) 7)) (newline)
+(display (vector-ref (gradient loss12 pt) 8)) (newline)
+(display (vector-ref (gwrap loss12 pt) 8)) (newline)
+(display (vector-ref (gradient loss12 pt) 11)) (newline)
+(display (vector-ref (gwrap loss12 pt) 11)) (newline)
+
+; --- an arity-1 whole-vector loss still takes the vectorized path ---
+(define (vloss v) (+ (* (vref v 0) (vref v 0)) (* 2 (* (vref v 1) (vref v 1)))))
+(display (gradient vloss (vector 3.0 4.0))) (newline)
+(display (gwrap vloss (vector 3.0 4.0))) (newline)
