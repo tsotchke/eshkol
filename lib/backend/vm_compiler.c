@@ -1660,6 +1660,31 @@ static void compile_form_lambda(FuncChunk* c, Node* node, int tail) {
                    func.upvalues[i].enclosing_slot);
     }
     chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
+    /* Same open-slot conversion compile_form_lambda_2() performs — a
+     * fully-variadic lambda must see enclosing `set!`s (and have its own
+     * `set!`s be visible) through a live reference, not a stale by-value
+     * capture. */
+    if (c->enclosing == NULL) {
+        for (int i = 0; i < n_upvals; i++) {
+            if (!func.upvalues[i].is_local) continue;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, 151);
+            chunk_emit(c, OP_POP, 0);
+        }
+    } else {
+        for (int i = 0; i < n_upvals; i++) {
+            if (func.upvalues[i].is_local) continue;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, 252);
+            chunk_emit(c, OP_POP, 0);
+        }
+    }
     chunk_free_arrays(&func);
     return;
 }
@@ -2731,6 +2756,36 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         chunk_emit(c, OP_CLOSURE, cfunc | (n_upvals << 16));
         if (self_uv_idx >= 0) chunk_emit(c, OP_CLOSE_UPVALUE, self_uv_idx);
 
+        /* Finish the lambda lowering: convert captured upvalues to open
+         * (by-reference) slots exactly as compile_form_lambda_2() and
+         * compile_form_define() do for their closures.  Without this the loop
+         * closure holds by-VALUE copies, so a `set!` of an enclosing variable
+         * from the loop body writes the copy and the write vanishes when the
+         * loop returns.  Top level: native 151 opens a direct reference to the
+         * (permanent) top-level frame slot.  Nested: native 252 relays the
+         * enclosing closure's own open slot, which is the only reference that
+         * stays valid once this frame is gone.
+         *
+         * Unlike a general lambda (compile_form_lambda_2, which must not open
+         * slots into a frame its closure can outlive), a named let's closure is
+         * called synchronously and discarded before the enclosing frame
+         * returns, so opening a slot into a NESTED frame is sound here — that
+         * is the only way `(define (f n) (let loop (...) (set! n ...)) n)` can
+         * see the loop's writes.  The one escape route, leaking the loop
+         * closure out of the named let, is closed by native 152 below. */
+        int opened_frame_slot = 0;
+        for (int i = 0; i < n_upvals; i++) {
+            if (strcmp(func.upvalues[i].name, loop_name) == 0) continue;
+            int direct = func.upvalues[i].is_local;
+            if (direct && c->enclosing != NULL) opened_frame_slot = 1;
+            chunk_emit(c, OP_DUP, 0);
+            chunk_emit(c, OP_CONST, chunk_add_const(c, INT_VAL(i)));
+            chunk_emit(c, OP_CONST,
+                       chunk_add_const(c, INT_VAL(func.upvalues[i].enclosing_slot)));
+            chunk_emit(c, OP_NATIVE_CALL, direct ? 151 : 252);
+            chunk_emit(c, OP_POP, 0);
+        }
+
         /* Store closure in loop_slot */
         chunk_emit(c, OP_SET_LOCAL, loop_slot);
 
@@ -2748,6 +2803,17 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         }
         int body_tail = 1 > 0 ? 0 : tail; /* don't tail-call — need POPN cleanup */
         chunk_emit(c, body_tail ? OP_TAIL_CALL : OP_CALL, bindings->n_children);
+
+        /* The loop is finished, so every by-reference slot it opened into THIS
+         * frame must be closed (native 152) before the frame can go away.  A
+         * loop closure that never escaped is unreachable from here on; one that
+         * did escape keeps the values it last saw instead of a dangling alias
+         * into a frame that is about to be reused. */
+        if (opened_frame_slot) {
+            chunk_emit(c, OP_GET_LOCAL, loop_slot);
+            chunk_emit(c, OP_NATIVE_CALL, 152);
+            chunk_emit(c, OP_POP, 0);
+        }
 
         /* Cleanup */
         chunk_free_arrays(&func);
