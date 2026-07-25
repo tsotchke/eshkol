@@ -157,7 +157,7 @@ jobs:
           mkdir -p "$ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR"
           ./scripts/run_all_tests.sh
 
-      - name: Enforce 100 percent executable language coverage
+      - name: Enforce execution-backed language coverage (deficit ratchet, no lexical credit)
         shell: bash
         env:
           BUILD_DIR: build-quantum
@@ -165,7 +165,15 @@ jobs:
           LANGUAGE_COVERAGE_TRACE: ${{ runner.temp }}/eshkol-language-coverage/language_surface_coverage.jsonl
         run: |
           set -euxo pipefail
+          # A1: certification is EXECUTION-backed only. A construct counts as
+          # covered only when it dispatched/executed in a passing run (O/C/V) or,
+          # for the bounded compile-time-form allowlist, was parsed and
+          # accepted/code-generated (A/G). Lexical name-presence earns zero
+          # credit. The committed deficit ledger is monotonic: this gate fails if
+          # execution-backed coverage drops below its floor or the deficit list
+          # grows (a construct that used to execute stops executing).
           ./scripts/run_language_coverage.sh \
+            --execution-deficit tests/coverage/execution_deficit.json \
             --json "${{ runner.temp }}/eshkol-language-coverage/coverage_run.json"
 
       - name: Upload executable language-coverage evidence

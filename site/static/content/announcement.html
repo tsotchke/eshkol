@@ -64,6 +64,67 @@ arity from its closure metadata instead of assuming a single tensor
 argument, so a multi-parameter scalar loss no longer gets misdispatched.
 Nothing in the gradient path falls back to finite differences. Every
 form is exact reverse-mode AD.</p></li>
+<p><strong>Eshkol v1.3.4-evolve is a resident-correctness release: every
+defect surfaced by long-duration resident workloads is fixed at the
+architectural root. Automatic per-iteration memory reclamation now
+matches explicit <code>with-region</code> even for loops that mutate
+persistent state every tick; <code>parallel-map</code> is race-free for
+closures that allocate and return collections; gradients are exact
+through every callable form — indirect, wrapped, and curried, with no
+finite-difference fallback in the gradient path; printed floats
+round-trip to the identical <code>double</code> (R7RS 6.2.6); and the
+strict type checker accepts idiomatic dynamic-but-validated code via a
+checked <code>(the &lt;type&gt; expr)</code> ascription and
+predicate-guarded narrowing. The release also lands the high-precision
+numerics wave — Ozaki-II exact and reduced-precision GEMM tiers, a
+mixed-precision linear solver, and a native 128-bit integer type — a
+Moonlab v1.2.0 quantum pin with quantum-natural-gradient support, full
+hosted-VM tensor-matmul parity, and a linear <code>Qubit</code>
+type.</strong></p>
+<p>Eshkol is R7RS Scheme compiled to native code through LLVM 21, with
+automatic differentiation as a compiler primitive rather than a tracing
+library. v1.3.4-evolve is about the property that separates a research
+demo from something you can leave running as a daemon: correctness that
+holds over long-duration, resident, and parallel workloads.</p>
+<ul>
+<li><p><strong>Automatic memory reclamation matches explicit
+regions.</strong> This closes the ESH-0214 memory-management series. A
+resident tick/daemon loop that mutates persistent state on every
+iteration — a knowledge base, a workspace, a growing list — used to get
+no per-iteration reclamation at all (the static escape analysis rejected
+any loop body containing a persistent mutation) and leaked one
+iteration’s transient garbage forever: about 3,366 bytes per tick,
+roughly 355 MB over 100,000 ticks. Such a loop is now lowered with a
+per-loop nursery region reusing the same deep-transitive
+escape-promotion path <code>with-region</code> uses: each iteration’s
+allocations land in the nursery, the existing structural write barriers
+promote any persistent-mutation escapee out at the store, each tail-call
+back edge promotes the loop-carried out-values and resets the nursery,
+and the loop exit escapes the result and tears the nursery down — a
+deterministic generational minor collection with no tracing pause. The
+same tick loop is now flat at 34 MB, byte-for-byte identical to its
+explicit <code>with-region</code> twin. <code>with-region</code> remains
+available for scratch regions but is no longer required to get flat
+RSS.</p></li>
+<li><p><strong>Race-free <code>parallel-map</code> for collection-valued
+closures.</strong> A closure mapped in parallel whose body used
+per-iteration scope reclamation — an internal named-let loop, or a
+builtin such as <code>memv</code> — could return dangling or overlapping
+structure once the input crossed the parallel threshold. On a pool
+worker operating on the shared thread-safe arena, scope reclamation now
+degrades to commit-only (allocations are retained; the shared scope
+stack is never rewound), so results are identical to serial
+<code>map</code>. ThreadSanitizer reports zero arena data races where it
+previously reported dozens.</p></li>
+<li><p><strong>Exact gradients through every callable form.</strong>
+<code>(gradient f point)</code> reached through a function parameter or
+wrapper, and the curried <code>((gradient f) point)</code>, are now
+byte-identical to the direct call for scalar multi-argument, vector, and
+non-polynomial losses. The operator recovers the callable’s arity from
+its closure metadata instead of assuming a single tensor argument, so a
+multi-parameter scalar loss is no longer misdispatched. There is no
+finite-difference fallback anywhere in the gradient path — every form is
+exact reverse-mode AD.</p></li>
 <li><p><strong>Round-tripping floats.</strong> <code>display</code>,
 <code>write</code>, and <code>number-&gt;string</code> emit the shortest
 decimal that reads back as the identical <code>double</code> (R7RS
@@ -96,6 +157,27 @@ cannot.</p></li>
 v1.2.0. The pin brings <code>vqe_compute_qgt</code> (quantum geometric
 tensor / quantum natural gradient) and a smooth first-principles H2/LiH
 potential-energy surface. The H2 equilibrium oracle at 0.735 Å is
+to the checker as a trusted assertion and is a pure runtime no-op;
+predicate-guarded narrowing teaches the checker that a value tested by
+one of eight type predicates is that type inside the guarded branch
+(honored across <code>if</code> and <code>and</code>, cancelled at
+<code>set!</code>); sum-type annotations are honored on named-let
+parameters; and a numeric-tower join gives recursive accumulators their
+least-upper-bound numeric type. A linear <code>Qubit</code> type
+enforces use-exactly-once on declared linear parameters, giving quantum
+registers a no-cloning guarantee at the type level.</p></li>
+<li><p><strong>High-precision numerics.</strong> Ozaki-II recovers
+full-f64 <code>C = A*B</code> from reduced-precision tensor cores,
+certified against an independent CPU f64 reference and against the new
+native 128-bit integer path; a CUDA INT8 tier and a Metal
+reduced-precision fully-GPU fast tier are both opt-in and default off.
+<code>linear-solve</code> is a full-f64 dense solver with a
+mixed-precision iterative-refinement fast path that certifies a full-f64
+residual and falls back to a plain-f64 LU when it cannot.</p></li>
+<li><p><strong>Quantum and VM parity.</strong> Moonlab is pinned to
+v1.2.0, adding <code>vqe_compute_qgt</code> (quantum geometric tensor /
+quantum natural gradient) and a smooth first-principles H2/LiH
+potential-energy surface; the H2 equilibrium oracle at 0.735 Å is
 updated to <code>-1.142200155381</code> Ha. Hosted-VM tensor matmul
 parity is complete: <code>arange</code> in 1/2/3-argument forms,
 nested-literal tensor operands, and multi-dimensional
@@ -120,6 +202,25 @@ runs on the bytecode VM byte-identically to native. Higher-order nesting
 stays native-only. This is not a claim of complete backend parity.
 <code>PARITY.tsv</code> separately ratchets intentionally native-only
 facilities and known VM gaps, so unsupported behavior cannot masquerade
+1,078/1,078: every one of the 1,078 declared constructs is proven by
+runtime execution evidence — it dispatched or executed in a passing run
+— rather than by lexical name-presence, which is now only a diagnostic
+and earns no release credit. The surface was honestly re-baselined
+upward from 1,056 as the <code>i128</code> tower,
+<code>linear-solve</code>, and the string/pointer conversions landed as
+new core builtins, and the coverage floor and deficit ledger are
+ratcheted to 1,078 so the number cannot be walked back
+silently.</p></li>
+<li><p><strong>VM results are explicit, not overstated.</strong> The
+parity manifest is 936 rows — 562 <code>vm-supported</code>, 45
+<code>native-only-justified</code>, and 329 <code>gap</code>, of which
+17 are verified behavioral divergences with reproducible programs.
+<code>op:GRADIENT</code> and <code>op:DERIVATIVE</code> move to
+<code>vm-supported</code> this release, so <code>gradient</code> runs on
+the bytecode VM byte-identically to native; higher-order nesting stays
+native-only. This is not a claim of complete backend parity:
+<code>PARITY.tsv</code> separately ratchets intentionally native-only
+facilities and known VM gaps so unsupported behavior cannot masquerade
 as success.</p></li>
 <li><p><strong>Release packages are portable and honestly
 labelled.</strong> The release payload is 15 platform packages plus
@@ -135,6 +236,17 @@ matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>. The
 complete AD walkthrough is the <a
 href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
 guide</a>, and the memory model is documented in <a
+x64/ARM64 plus macOS x64/ARM64 cover Lite and XLA; real CUDA packages
+cover Linux x64/ARM64 and Windows x64. Windows ARM64 CUDA is not
+advertised, because NVIDIA does not provide the required supported
+toolkit.</p></li>
+</ul>
+<p>Full engineering detail lives in <a
+href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and gate
+matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the
+complete AD walkthrough is the <a
+href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
+guide</a>; the memory model is documented in <a
 href="docs/reference/runtime/memory-model.md">docs/reference/runtime/memory-model.md</a>.
 Every claim above is tied to shipped code and an executable gate.</p>
 <hr />
@@ -147,6 +259,10 @@ stack: state-vector simulation, VQE, a CHSH Bell-inequality gate,
 Bell-verified quantum randomness, and ML-KEM (FIPS 203) post-quantum
 cryptography. VQE gradients flow through Eshkol’s native automatic
 differentiation. The same release brings real
+stack — state-vector simulation, VQE whose gradients flow through
+Eshkol’s native automatic differentiation, a CHSH Bell-inequality gate,
+Bell-verified quantum randomness, and ML-KEM (FIPS 203) post-quantum
+cryptography — alongside real
 <code>make-parameter</code>/<code>parameterize</code> dynamic
 parameters, the <code>core.dbsp</code> incremental-dataflow module,
 bignum-capable exact rationals, one-pass reverse-mode gradients, and a
@@ -169,6 +285,23 @@ vector/learnable gamma. It closes the region-escape evacuator series
 <p>Full engineering detail lives in <a
 href="CHANGELOG.md">CHANGELOG.md</a>. The user-facing summary and gate
 matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>, and the
+<p>Eshkol is R7RS Scheme compiled to native code through LLVM 21, with
+automatic differentiation as a compiler primitive rather than a tracing
+library. v1.3.3-evolve extends that thesis in a new direction: a quantum
+circuit is just another differentiable computation. Build with
+<code>-DESHKOL_QUANTUM_ENABLED=ON</code> and
+<code>(vqe-energy ...)</code> — a variational quantum eigensolver energy
+evaluated on the Moonlab state-vector simulator — composes with
+<code>gradient</code> and ordinary optimizer code exactly like
+<code>matmul</code> does, via new custom-VJP AD tape nodes carrying
+Moonlab’s exact adjoint gradient. The same release corrects an
+overstated AD claim from v1.3.2-evolve with the real fix (exact
+<code>input2</code> gradients for first-class losses and
+vector/learnable gamma) and completes the region-escape evacuator series
+(ESH-0214).</p>
+<p>Full engineering detail lives in <a
+href="CHANGELOG.md">CHANGELOG.md</a>; the user-facing summary and gate
+matrix are in <a href="RELEASE_NOTES.md">RELEASE_NOTES.md</a>; the
 complete AD walkthrough is the <a
 href="docs/guide/AUTOMATIC_DIFFERENTIATION.md">Automatic Differentiation
 guide</a>. Every claim below is tied to shipped code and an executable
@@ -193,6 +326,13 @@ entangled pair, and it always matches the other: 200/200 shots. The
 permanent 16K-shot CHSH Bell-inequality gate (<code>bell-chsh</code>)
 measures S ≈ 2.86, past the classical bound of 2, and demands 2.4 &lt; S
 ≤ 2.95 on every run.</li>
+Two acceptance gates prove the integration produces genuine quantum
+behavior rather than a classical imitation: a Bell-pair smoke gate
+(measuring one qubit of an entangled pair always matches the other —
+200/200 shots) and a permanent 16K-shot CHSH Bell-inequality gate
+(<code>bell-chsh</code>) that measures S ≈ 2.86 — beyond the classical
+bound of 2 — with the gate requiring 2.4 &lt; S ≤ 2.95 on every
+run.</li>
 <li><strong>VQE, differentiable through Eshkol AD</strong> (#268/#270).
 Variational-quantum-eigensolver builtins — H2/LiH/H2O Hamiltonians,
 exact and variational energy, gradients, optimization — with the H2
@@ -204,6 +344,11 @@ adjoint gradient into Eshkol’s tape. So
 works. The release gate requires that custom-VJP adjoint to match
 Moonlab’s native adjoint to within <code>1e-8</code>, and a central
 finite difference to within <code>1e-4</code>. A VQE probe now sits
+adjoint gradient into Eshkol’s tape, so
+<code>(gradient (lambda (params) (vqe-energy ...)) params)</code> just
+works: the release gate requires the custom-VJP adjoint to match
+Moonlab’s native adjoint to within <code>1e-8</code> and a central
+finite difference to within <code>1e-4</code>, and a VQE probe now sits
 inside the AD adversarial oracle permanently.</li>
 <li><strong>ML-KEM (FIPS 203) post-quantum cryptography</strong> (#272).
 <code>agent.pqc</code> provides
@@ -240,6 +385,21 @@ int64 fast path, with a bignum numerator/denominator path taken only on
 overflow. Overflowing an int64 numerator or denominator no longer
 degrades silently to double, and bignum-magnitude rational literals
 parse. <code>(/ 1 (expt 10 19))</code> stays exact, and is verified
+(#233). Z-sets (weighted multisets) as a commutative group, the
+<code>z^-1</code>/<code>D</code>/<code>I</code> stream operators (D and
+I mutual inverses), incremental relational operators — linear
+map/filter/project/union, the three-term incremental join,
+multiplicity-correct <code>distinct</code> — and the generic
+incrementalizer <code>Q^Δ = D ∘ lift(Q) ∘ I</code>, in pure Eshkol with
+zero compiler changes. The first shipped slice of the
+incremental-dataflow spine (ADR 0009); acceptance gate 27/27 under JIT
+and AOT.</li>
+<li><strong>Exact rationals at any magnitude</strong> (#247). The exact
+rational type is now a canonical discriminated union: a zero-allocation
+int64 fast path, with a bignum numerator/denominator path taken only on
+overflow — so no silent degradation to double when a numerator or
+denominator overflows int64, and bignum-magnitude rational literals
+parse. <code>(/ 1 (expt 10 19))</code> stays exact; verified
 byte-identical to Python’s <code>Fraction</code> on reference
 workloads.</li>
 <li><strong>One-pass reverse gradients + AD introspection</strong>
@@ -280,6 +440,34 @@ instead of ~32 GB;</li>
 <li>and a 26x <code>--wasm</code> size regression — 5.57 MB → 60 KB, 635
 → 21 functions, dead-stripped, with a CI size gate.</li>
 </ul></li>
+replay into one primal + one reverse pass reading every input gradient
+from the tape (verified: N primal calls become 1, checked at N=4 and
+N=64), with new
+<code>(ad-counters)</code>/<code>(ad-primal-calls)</code> introspection
+builtins; persisted AOT/shared-lib artifacts now default to O2
+(~1.7x/41% speedup verified on float-heavy code).</li>
+<li><strong>A silent-wrong-answer correctness campaign</strong>, driven
+by two new generative exposure engines wired permanently into the ICC
+release oracle: a multi-oracle differential harness (generated R7RS
+programs cross-checked against chibi-scheme, JIT, AOT at O0/O2, and the
+bytecode VM) and an AD-vs-finite-difference adversarial oracle (147
+probes / 436 component checks across 21 generated files under JIT and
+AOT; a zero AD gradient where FD is nonzero is a hard failure). Together
+they drove root fixes for: every known silent-zero AD path
+(Jacobian/Hessian through inner forward-mode derivatives, gradients at
+<code>(vector ...)</code>-constructed points, Hessians through tensor
+ops and through <code>reshape</code>/2-D <code>tensor-matmul</code>);
+real bignum-aware VM arithmetic and comparisons; TCO for
+<code>cond</code>/<code>case</code>/<code>when</code>/<code>unless</code>/<code>and</code>/<code>or</code>
+in tail position (previously SIGBUS around 2M iterations unless written
+with <code>if</code>; now verified to 2,000,000 iterations under both
+JIT and AOT); numeric-tower exactness (<code>gcd</code>, bignum division
+identities, structural <code>eqv?</code>/<code>equal?</code> on
+rationals/complex); a stable, tail-recursive, memory-bounded
+<code>sort</code>/<code>filter</code> (2M elements at ~362 MiB peak
+instead of ~32 GB); and a 26x <code>--wasm</code> size regression (5.57
+MB → 60 KB, 635 → 21 functions, dead-stripped, with a CI size
+gate).</li>
 </ul>
 <h3
 id="v1.3.3-evolve-also-closes-out-the-ad-exactness-correction-and-the-evacuator-series">v1.3.3-evolve
@@ -316,6 +504,19 @@ Escape-then-force is now verified flat at ~116 MB under poison, for both
 <code>delay</code> and <code>make-promise</code>. This closes out the
 ESH-0214 region-evacuator series (ESH-0214a through e), which started
 with named-let and <code>define</code>-loop arena reclamation in
+heap subtype</strong> (ESH-0214e, #230). Adversarial-audit follow-up to
+ESH-0214d: <code>PROMISE</code> was left a shallow-copied leaf despite
+carrying interior pointers (a thunk and a cached value). A
+<code>delay</code>/<code>make-promise</code> created inside
+<code>with-region</code> that escaped outward dangled after
+<code>region_pop</code>, observable as a segfault or
+<code>car: not a pair</code> under <code>ESHKOL_ARENA_POISON=1</code>
+when the promise was later forced. Fixed by adding an evacuation case
+that walks both interior slots; verified flat at ~116 MB under poison
+over escape-then-force for both <code>delay</code> and
+<code>make-promise</code>. This closes out the ESH-0214 region-evacuator
+series (ESH-0214a through e) that started with
+named-let/<code>define</code>-loop arena reclamation in
 v1.3.1-evolve.</li>
 <li><strong>ICC release-oracle hardening</strong> (#232): the completion
 oracle now checks region-evacuator poison coverage and the corrected
@@ -552,6 +753,20 @@ participate exactly in Eshkol AD.</p>
 compiler — including the first-class-loss path that v1.3.2-evolve
 missed, and the silent-zero gradient paths the new adversarial oracle
 flushed out. Otherwise it isn’t exact AD at all.</p>
+bound when you need one. v1.3.3-evolve extends that composition across a
+hardware boundary: a variational quantum circuit’s energy is now just
+another node on the reverse-mode tape, carrying Moonlab’s exact adjoint
+gradient instead of a finite-difference approximation — hybrid
+quantum-classical optimization written as ordinary <code>gradient</code>
+code, in one language, run against a build whose quantum behavior is
+checked against a Bell inequality rather than taken on faith. The
+custom-VJP mechanism that enables it is general: any foreign computation
+with a known adjoint can participate exactly in Eshkol AD. And the
+release’s correction discipline matters for the same reason: “exact AD”
+is a claim that has to hold for every path through the compiler —
+including the first-class-loss path that v1.3.2-evolve missed and the
+silent-zero gradient paths the new adversarial oracle flushed out — or
+it isn’t exact AD at all.</p>
 <p>The region-evacuator work matters for a different, complementary
 reason. A differentiable systems language is only useful if the programs
 built on it can run unattended. That takes proper tail calls, flat
