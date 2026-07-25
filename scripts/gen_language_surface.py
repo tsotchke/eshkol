@@ -432,7 +432,11 @@ def categorize(name):
               "sin", "cos", "tan", "asin", "acos", "atan", "exp", "log", "sqrt",
               "floor", "ceiling", "round", "truncate", "sinh", "cosh", "tanh",
               "exact", "inexact", "exact->inexact", "inexact->exact",
-              "number->string", "string->number", "sign", "arithmetic-shift"}
+              "number->string", "string->number", "sign", "arithmetic-shift",
+              # Directional shift spellings and population count (documented in
+              # docs/tutorials/20_BITWISE_AND_SYSTEM.md and
+              # docs/API_REFERENCE.md) belong with their bitwise siblings.
+              "bit-shift-left", "bit-shift-right", "popcount", "bit-count"}
             or n.startswith("bitwise") or n in {"<", ">", "<=", ">=", "="}):
         return "numeric"
     # predicates

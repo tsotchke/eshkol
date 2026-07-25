@@ -1,0 +1,42 @@
+; Documented bitwise surface: directional shifts and population count.
+;
+; docs/tutorials/20_BITWISE_AND_SYSTEM.md documents bit-shift-left,
+; bit-shift-right and popcount; docs/API_REFERENCE.md documents the same
+; population count as bit-count. All four were documented but unimplemented —
+; this corpus entry pins that the native codegen and the bytecode VM now agree
+; byte-for-byte on them, including the exact (bignum) cases.
+
+; ---- the documented examples ----
+(display (bit-shift-left 1 8)) (newline)
+(display (bit-shift-right 256 4)) (newline)
+(display (popcount 255)) (newline)
+(display (bit-count 255)) (newline)
+
+; ---- the directional spellings are arithmetic-shift with a signed count ----
+(display (bit-shift-left 3 2)) (newline)
+(display (arithmetic-shift 3 2)) (newline)
+(display (bit-shift-right 100 3)) (newline)
+(display (arithmetic-shift 100 -3)) (newline)
+(display (bit-shift-right -8 2)) (newline)
+(display (bit-shift-left 256 -4)) (newline)
+(display (bit-shift-right 1 -8)) (newline)
+
+; ---- population count, including the R6RS convention for negatives ----
+(display (popcount 0)) (newline)
+(display (popcount 1)) (newline)
+(display (bit-count 4095)) (newline)
+(display (popcount -1)) (newline)
+(display (popcount -256)) (newline)
+(display (popcount -12345)) (newline)
+
+; ---- exact (bignum) operands ----
+(display (popcount (expt 2 100))) (newline)
+(display (popcount (- (expt 2 100) 1))) (newline)
+(display (bit-count (- (expt 2 128) 1))) (newline)
+(display (popcount (- (expt 2 100)))) (newline)
+
+; ---- a left shift that overflows int64 must stay exact, not wrap ----
+(display (bit-shift-left 1 100)) (newline)
+(display (arithmetic-shift 1 64)) (newline)
+(display (bit-shift-left 3 62)) (newline)
+(display (bit-shift-right (expt 2 100) 96)) (newline)
