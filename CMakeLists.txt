@@ -2862,6 +2862,60 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: matmul tensor reads inside defined functions match top-level"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # v1.3.4 blocker guard: a re-viewing tensor op (reshape/tensor-reshape/
+    # flatten/squeeze/unsqueeze/transpose/tensor-data) must carry its source
+    # payload into its result, including when the result is bound by an internal
+    # `define` written after the expressions that filled the source. The parser
+    # used to hoist every internal define's initializer into the enclosing
+    # letrec* head, so `(define t (reshape v n n))` ran before the loop that
+    # filled `v` and snapshotted zeros — matmul then computed on zeros with no
+    # error. Also pins the underlying evaluation-order contract directly.
+    # Verified on both -r (JIT) and AOT.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk")
+        add_test(
+            NAME reshape_payload_preserved_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk"
+        )
+        set_tests_properties(reshape_payload_preserved_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reshape_payload_preserved_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reshape_payload_preserved_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reshape_payload_preserved_aot'"
+        )
+        set_tests_properties(reshape_payload_preserved_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # The internal-define ordering contract itself. tests/parser/ is otherwise
+    # only run by scripts/run_parser_tests.sh, which judges a test by its exit
+    # code — this file used to print its results and an unconditional pass
+    # banner, so it reported success while printing 0 for the reshape case. It
+    # now compares every value, and this entry gates on the comparison.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk")
+        add_test(
+            NAME internal_define_order_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk"
+        )
+        set_tests_properties(internal_define_order_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME internal_define_order_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/internal_define_order_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/internal_define_order_aot'"
+        )
+        set_tests_properties(internal_define_order_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     add_test(
         NAME autodiff_tensor_reductions_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

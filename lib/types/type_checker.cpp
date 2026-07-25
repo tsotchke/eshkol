@@ -2890,6 +2890,8 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
     return TypeCheckResult::ok(BuiltinTypes::Null);
 }
 
+static bool exprAssignsVar(const eshkol_ast_t* e, const std::string& var);
+
 /**
  * @brief Synthesis rule for `let`/`let*`/`letrec`/`letrec*` forms (all share this rule).
  *
@@ -2905,6 +2907,13 @@ TypeCheckResult TypeChecker::synthesizeDefine(eshkol_ast_t* expr) {
  * already checked against the placeholder type). The body is synthesized
  * and its result becomes the let's type; the scope is popped before
  * returning.
+ *
+ * One exception to inferring from the bound expression: a `letrec*` slot bound
+ * to `'()` that the body then assigns is an UNSET slot, not a null-valued one
+ * (this is how internal-define lowering represents an interspersed value define
+ * whose initializer stays at its source position). Such a slot keeps
+ * BuiltinTypes::Value — narrowing it to Null would describe the placeholder
+ * rather than the value, and warn on every downstream use.
  * @return The body's TypeCheckResult (success or failure).
  */
 TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
@@ -2936,6 +2945,20 @@ TypeCheckResult TypeChecker::synthesizeLet(eshkol_ast_t* expr) {
             auto inferred = synthesize(binding.cons_cell.cdr);
             if (inferred.success) {
                 binding_type = inferred.inferred_type;
+            }
+            // An UNSET letrec* slot that the body assigns carries no type
+            // information: the value's real type comes from the `set!`, not from
+            // the placeholder. Internal-define lowering binds an interspersed
+            // value define's slot to '() in the letrec* head and assigns it at
+            // its source position, so narrowing to Null here would warn on every
+            // downstream numeric use of a perfectly well-typed program. Same
+            // soundness rule synthesizeIf() applies when a guarded branch
+            // reassigns the refined variable: a reassigned slot cannot be
+            // narrowed to what it held before.
+            if (expr->operation.op == ESHKOL_LETREC_STAR_OP &&
+                binding.cons_cell.cdr->type == ESHKOL_NULL &&
+                let.body && exprAssignsVar(let.body, name)) {
+                binding_type = BuiltinTypes::Value;
             }
         }
 
