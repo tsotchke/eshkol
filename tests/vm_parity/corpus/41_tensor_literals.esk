@@ -1,0 +1,66 @@
+; Tensor literals, views and operand coercion.
+;
+; REGRESSION GATE for the tensor-literal class. A nested numeric vector literal
+; IS a tensor, on every substrate, and everything that reads one must agree.
+; Three defects lived here:
+;
+;   * `transpose` returned a strided VIEW sharing the source buffer. Readers
+;     that honour strides (tensor-ref) were right, but every consumer that walks
+;     the data LINEARLY — the printer, tensor-data, flatten/reshape, matmul and
+;     the element-wise kernels — returned the UNtransposed elements with the
+;     transposed shape attached: (transpose (tensor 2 3 1 2 3 4 5 6)) displayed
+;     #((1 2) (3 4) (5 6)) instead of #((1 4) (2 5) (3 6)).
+;   * `tensor-data` built a LIST where native builds a VECTOR, and silently
+;     truncated at 1024 elements.
+;   * a ragged or non-tensor operand set a FATAL vm->error instead of raising,
+;     so `guard` could not intercept it: the program died with every later
+;     top-level form dropped, where native keeps running.
+;
+; The two VM axes (vm-src and vm-eskb) agreed throughout — nothing here was ever
+; specific to the serialized-bytecode route.
+
+; ---- shape and element access straight off a literal ----
+(display (tensor-shape #(1.0 2.0 3.0 4.0))) (newline)
+(display (tensor-ref #(1.0 2.0 3.0 4.0) 2)) (newline)
+(display (tensor-shape #(#(1.0 2.0) #(3.0 4.0)))) (newline)
+(display (tensor-ref #(#(1.0 2.0) #(3.0 4.0)) 1 1)) (newline)
+(display (tensor-shape #(#(#(1.0 2.0) #(3.0 4.0)) #(#(5.0 6.0) #(7.0 8.0))))) (newline)
+(display (tensor-ref #(#(#(1.0 2.0) #(3.0 4.0)) #(#(5.0 6.0) #(7.0 8.0))) 1 1 1)) (newline)
+
+; exact-integer elements coerce the same way
+(display (tensor-shape #(#(1 2) #(3 4)))) (newline)
+
+; ---- every construction route agrees on shape ----
+(display (tensor-shape (reshape (vector 1.0 2.0 3.0 4.0) 2 2))) (newline)
+(display (tensor-shape (make-tensor (list 2 2) 5.0))) (newline)
+(display (tensor-shape (tensor 2 2 1.0 2.0 3.0 4.0))) (newline)
+
+; ---- transpose must MATERIALIZE, not hand back a mislabelled buffer ----
+(display (transpose #(#(1.0 2.0) #(3.0 4.0)))) (newline)
+(display (transpose (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0))) (newline)
+(display (tensor-shape (transpose (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0)))) (newline)
+(display (transpose (transpose (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0)))) (newline)
+
+; a transposed tensor read by index, and by every LINEAR consumer
+(define TT (transpose (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0)))
+(display (tensor-ref TT 0 0)) (newline)
+(display (tensor-ref TT 0 1)) (newline)
+(display (tensor-ref TT 2 1)) (newline)
+(display (tensor-data TT)) (newline)
+(display (flatten TT)) (newline)
+(display (matmul TT (tensor 2 2 1.0 0.0 0.0 1.0))) (newline)
+
+; ---- tensor-data is a VECTOR, and indexable as one ----
+(display (tensor-data (tensor 2 2 1.0 2.0 3.0 4.0))) (newline)
+(display (vector-ref (tensor-data (tensor 2 2 1.0 2.0 3.0 4.0)) 2)) (newline)
+(display (tensor-data #(#(1.0 2.0) #(3.0 4.0)))) (newline)
+
+; ---- other ops consume a literal operand ----
+(display (matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))) (newline)
+(display (flatten #(#(1.0 2.0) #(3.0 4.0)))) (newline)
+
+; ---- a bad operand RAISES, catchably, and the program continues ----
+(display (guard (e (#t "caught")) (tensor-shape 42))) (newline)
+(display (guard (e (#t "caught")) (tensor-shape (vector "a" "b")))) (newline)
+(display (guard (e (#t "caught")) (error "boom"))) (newline)
+(display "tail-reached") (newline)
