@@ -335,7 +335,12 @@ static unsigned int link_subprocess_timeout_seconds() {
 //     native closure (agent-FFI, etc.), so it would run the program anyway and
 //     exit 0 — falsely certifying a build that never linked. This must be FATAL.
 //
-// To let the parent tell the two apart from the child's exit status alone, the
+//   * A DIAGNOSTIC REJECTION — the child's artifact-emission gate refused the
+//     program because a compilation stage reported an error — is a verdict about
+//     the source that the in-process JIT has no standing to overturn, and must
+//     also be FATAL. See kCacheBuildDiagnosticRejectExit.
+//
+// To let the parent tell these apart from the child's exit status alone, the
 // parent sets ESHKOL_INTERNAL_CACHE_BUILD=1 for the child, and the child's AOT
 // link-failure / link-timeout paths return this distinct sentinel INSTEAD of 1
 // when that env is present. Direct `eshkol-run file.esk -o out` users (no env)
@@ -343,6 +348,21 @@ static unsigned int link_subprocess_timeout_seconds() {
 // is chosen to avoid colliding with a codegen failure (1), SUBPROCESS_TIMEOUT
 // (124), or an execvp error (126/127).
 static constexpr int kCacheBuildLinkFailureExit = 3;
+
+// A third outcome, distinguished for the same reason: the child rejected the
+// program because a compilation stage reported an error diagnostic (the
+// artifact-emission gate in main()). That is a verdict about the SOURCE, not
+// about the child's environment, so the in-process JIT cannot overturn it and
+// must not be given the chance to try. Falling back is actively harmful there:
+// the JIT re-runs codegen over an AST already known to be bad — measured to
+// either crash the compiler outright or, when the JIT's configuration is milder
+// than the child's (a --strict-types type error is fatal to the child but only a
+// warning to the in-process path), to admit the module and start executing the
+// very program the compiler rejected. Generic codegen failures keep the
+// historical fallback, which genuinely re-diagnoses; see the block comment
+// above. Chosen, like the value above, to avoid colliding with a codegen
+// failure (1), SUBPROCESS_TIMEOUT (124), or an execvp error (126/127).
+static constexpr int kCacheBuildDiagnosticRejectExit = 4;
 
 static const char* const kCacheBuildEnvVar = "ESHKOL_INTERNAL_CACHE_BUILD";
 
@@ -887,6 +907,18 @@ std::optional<int> tryRunFromPersistentJitCache(const char* argv0,
         eshkol_error("-r: native link of '%s' failed; refusing to fall back to "
                      "a reduced in-process run. See the linker diagnostics above.",
                      filepath.c_str());
+        return 1;
+    }
+    if (compile_status == kCacheBuildDiagnosticRejectExit) {
+        // The child's artifact-emission gate rejected the program: a compilation
+        // stage reported an error diagnostic. The child already streamed those
+        // diagnostics to this process's stderr, so the user has the reason. Do
+        // not fall back — the in-process JIT would be re-compiling a program
+        // already known to be bad, and its only possible outcomes are to repeat
+        // the failure, to crash, or (worse) to run it under a milder
+        // configuration. Exit nonzero, having produced nothing and run nothing.
+        std::filesystem::remove(temp_binary, ec);
+        jitCacheTrace("diagnostic-rejected", key);
         return 1;
     }
     if (compile_status == eshkol::pkg::SUBPROCESS_TIMEOUT) {
@@ -4236,6 +4268,22 @@ int main(int argc, char **argv)
 #endif
     }
 
+    // Apply the type-system flags to the global config for EVERY mode.
+    //
+    // This used to live in the AOT branch alone, which the -r and -e branches
+    // return before ever reaching, so --strict-types was silently ignored
+    // whenever compilation happened in-process: the type checker stayed in
+    // gradual mode and reported warnings, the JIT gate below therefore saw no
+    // error, and the program the user asked to have strictly checked ran
+    // anyway. The flags describe how to compile, not which output mode to
+    // produce, so they are applied here, once, ahead of the mode dispatch.
+    if (strict_types || unsafe_mode) {
+        eshkol_config_t cfg = *eshkol_config_get();
+        cfg.strict_types = strict_types;
+        cfg.unsafe_mode = unsafe_mode;
+        eshkol_config_set(&cfg);
+    }
+
     // If we have an eval expression, use JIT mode
     if (eval_expr) {
         // Initialize runtime system
@@ -4920,13 +4968,8 @@ int main(int argc, char **argv)
             }
         }
         
-        // Apply type system flags to global config
-        if (strict_types || unsafe_mode) {
-            eshkol_config_t cfg = *eshkol_config_get();
-            cfg.strict_types = strict_types;
-            cfg.unsafe_mode = unsafe_mode;
-            eshkol_config_set(&cfg);
-        }
+        // (Type-system flags were applied ahead of the mode dispatch, so that
+        // -r and -e honor them too.)
 
         eshkol_info("Generating LLVM IR for module: %s", module_name.c_str());
 
@@ -5004,7 +5047,10 @@ int main(int argc, char **argv)
                          eshkol_diagnostic_error_count() - diagnostics_at_startup);
             eshkol_dispose_llvm_module(llvm_module);
             eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
-            return 1;
+            // Tell a `-r` parent that this is a verdict about the source, so it
+            // does not fall back to the in-process JIT and run the program we
+            // just refused; see kCacheBuildDiagnosticRejectExit.
+            return running_as_cache_build_child() ? kCacheBuildDiagnosticRejectExit : 1;
         }
 
         // Handle different output modes
