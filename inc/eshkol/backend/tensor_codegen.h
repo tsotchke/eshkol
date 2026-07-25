@@ -1413,6 +1413,25 @@ public:
     llvm::Value* unpackTensorOperandChecked(llvm::Value* tensor_val,
                                             const char* op_name);
 
+    /**
+     * @brief Emit a clean, catchable runtime error and terminate the current
+     *        block — the correct way to close a failed tensor guard.
+     *
+     * Several guards used to emit their diagnostic only `if (pf && ef)` after
+     * `ctx_.lookupFunction("printf")` / `("exit")`. Nothing ever registers
+     * `printf` or `exit` in the codegen function table, so those lookups always
+     * returned nullptr and the guard's failure block compiled to a bare
+     * `unreachable`. LLVM then reasons that the guarded condition can never
+     * hold and DELETES the branch: the check silently evaporated and the
+     * out-of-bounds access it was meant to stop happened anyway (SIGSEGV on
+     * read for tensor-get, a heap-corrupting write for tensor-set!). Raising
+     * through the runtime keeps the failure block live AND makes the error
+     * catchable by `guard`, matching every other bounds check in the codebase.
+     *
+     * @param message Diagnostic text for the raised exception.
+     */
+    void emitTensorRaise(const char* message);
+
 public:
     /**
      * Set callbacks for AST code generation.
