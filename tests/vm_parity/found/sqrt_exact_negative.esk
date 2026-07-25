@@ -1,0 +1,8 @@
+; FILED: (sqrt <negative exact>) does not promote to a complex on the VM.
+; native -r : +2i     (exact negative → complex, R7RS)
+; vm        : +nan.0  (always the double sqrt)
+; The inexact form agrees on both substrates: (sqrt -4.0) is +nan.0.
+(display (sqrt -4))
+(newline)
+(display (sqrt -4.0))
+(newline)

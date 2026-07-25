@@ -1,0 +1,11 @@
+; FILED: non-integral float `remainder`/`modulo` — NATIVE is the wrong side.
+; R7RS restricts both to integers, so results here are implementation-defined,
+; but native's are not even self-consistent:
+; native -r : -0.5 then 6192449487634432   (the modulo result is garbage)
+; vm        : 1.5  then 1.5                 (fmod / floored fmod)
+; The zero-divisor cases DO agree after the VM fix: (remainder 1.0 0.0) is
+; +nan.0 on both, and (modulo 1.0 0.0) is fatal on both.
+(display (remainder 5.5 2.0))
+(newline)
+(display (modulo 5.5 2.0))
+(newline)

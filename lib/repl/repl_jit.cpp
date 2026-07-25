@@ -256,6 +256,8 @@ extern "C" {
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
     int64_t eshkol_tensor_linear_from_index_arg(const eshkol_tagged_value_t* tv,
                                                 const int64_t* dims, int64_t ndim);
+    int64_t eshkol_tensor_slice_offset_from_index_arg(const eshkol_tagged_value_t* tv,
+                                                     const int64_t* dims, int64_t ndim);
     int64_t eshkol_tensor_index_arg_count(const eshkol_tagged_value_t* tv);
     int64_t eshkol_vref_unwrap_index(const eshkol_tagged_value_t* vec_tv,
                                      const eshkol_tagged_value_t* idx_tv);
@@ -1485,6 +1487,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_substring);
     ADD_SYMBOL(eshkol_unwrap_list_index);
     ADD_SYMBOL(eshkol_tensor_linear_from_index_arg);
+    ADD_SYMBOL(eshkol_tensor_slice_offset_from_index_arg);
     ADD_SYMBOL(eshkol_tensor_index_arg_count);
     ADD_SYMBOL(eshkol_vref_unwrap_index);
     ADD_SYMBOL(eshkol_tensor_rect_fill);

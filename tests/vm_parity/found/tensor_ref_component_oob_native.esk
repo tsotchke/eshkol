@@ -1,0 +1,12 @@
+; FILED: multi-dimensional tensor-ref where ONE COMPONENT is past its dimension
+; but the flattened offset still lands inside the tensor — NATIVE is the wrong
+; side. For a 2x2 tensor, index (0 2) addresses column 2 of row 0, which does
+; not exist; its row-major offset is 0*2+2 = 2, still below total 4.
+; native -r : 1        (fabricates the neighbouring element — it validates only
+;                       the flat offset, not each component)
+; vm        : caught
+; (tensor-ref t 2 0) has offset 4 >= total, so native's flat check DOES catch
+; that one; it is gated in corpus/40_tensor_bounds_contract.esk.
+(define t (make-tensor (list 2 2) 1.0))
+(display (guard (e (#t "caught")) (tensor-ref t 0 2)))
+(newline)

@@ -155,6 +155,61 @@ int64_t eshkol_tensor_linear_from_index_arg(
 }
 
 /**
+ * @brief Row-major offset for a `tensor-get` index argument, treating a bare
+ *        scalar as a partial (one-dimension) index.
+ *
+ * `tensor-get` is the dimension-aware accessor: partial indexing returns a
+ * sub-tensor view. Both spellings of a partial index must therefore agree —
+ * on a 2x3 tensor `M`, `(tensor-get M 1)` and `(tensor-get M (list 1))` are
+ * the same access and both are documented to yield row 1
+ * (docs/API_REFERENCE.md "tensor-get", docs/breakdown/VECTOR_OPERATIONS.md).
+ *
+ * eshkol_tensor_linear_from_index_arg() cannot be used for this: its bare-scalar
+ * case deliberately returns the index unscaled, because `tensor-ref`/`vref`
+ * define a single scalar index as a *flat* index (`(tensor-ref M 1)` => 2 on
+ * that same tensor) and route through it via eshkol_vref_unwrap_index().
+ * Sharing one helper made the two `tensor-get` spellings disagree: the scalar
+ * form returned a slice starting at flat[i] instead of flat[i * stride0], so
+ * `(tensor-get M 1)` came back as `#(2 3 4)` — and, for `i` past dims[0], read
+ * beyond the tensor.
+ *
+ * A cons index list already carries the partial-index scaling, so it is
+ * delegated unchanged; a bare scalar indexes dimension 0 and is scaled by the
+ * product of the remaining (unindexed) dimensions. For a 1-D tensor the two
+ * are identical (there is nothing left to scale by).
+ *
+ * @param tv_in Tagged index argument: a cons list of per-dimension indices,
+ *              or a bare scalar index selecting along dimension 0.
+ * @param dims  Array of @p ndim dimension sizes (row-major, outermost first).
+ * @param ndim  Number of dimensions in @p dims.
+ * @return      Linear (flat) row-major offset of the addressed element or
+ *              sub-block, or 0 if @p tv_in is NULL.
+ */
+int64_t eshkol_tensor_slice_offset_from_index_arg(
+    const eshkol_tagged_value_t* tv_in,
+    const int64_t* dims,
+    int64_t ndim) {
+    if (!tv_in) return 0;
+
+    const eshkol_tagged_value_t tv = *tv_in;
+    const uint8_t base_type = eshkol_base_type(tv.type);
+    if (base_type == ESHKOL_VALUE_HEAP_PTR && tv.data.ptr_val != 0) {
+        const eshkol_object_header_t* header =
+            ESHKOL_GET_HEADER((void*)tv.data.ptr_val);
+        if (header->subtype == HEAP_SUBTYPE_CONS) {
+            return eshkol_tensor_linear_from_index_arg(tv_in, dims, ndim);
+        }
+    }
+
+    int64_t linear = tagged_to_int64(tv);
+    if (!dims || ndim <= 1) return linear;
+    for (int64_t k = 1; k < ndim; k++) {
+        linear *= dims[k];
+    }
+    return linear;
+}
+
+/**
  * @brief Compute the index to use for a `(vector-ref v idx)`-style access, tensor-aware.
  *
  * If @p vec_tv_in is a HEAP_PTR to an object whose header reports
