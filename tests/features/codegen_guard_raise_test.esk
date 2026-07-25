@@ -1,0 +1,201 @@
+;; Runtime guards across the tensor/complex/AD codegen surface must RAISE, not
+;; evaporate.
+;;
+;; Every guard in this file emitted its diagnostic only inside
+;;
+;;     llvm::Function* pf = ctx_.lookupFunction("printf");
+;;     llvm::Function* ef = ctx_.lookupFunction("exit");
+;;     if (pf && ef) { ...print...; call exit(1); }
+;;     builder.CreateUnreachable();
+;;
+;; Nothing ever registers `printf` or `exit` in the codegen function table
+;; (defineFunction is only ever called for eshkol_* runtime helpers, hash-table,
+;; parallel and tensorcore symbols), so both lookups always returned nullptr and
+;; each failure block compiled to a bare `unreachable`. LLVM then correctly
+;; infers that the guarded condition cannot hold and DELETES THE BRANCH: the
+;; guard existed in the source and not in the binary.
+;;
+;; What that cost, measured on the unmodified compiler:
+;;
+;;   (transpose <rank-1>)          dims[1] read past the dimensions array; the
+;;                                 garbage became `cols` (1.8e19), the result
+;;                                 allocation failed, and the program died with
+;;                                 SIGSEGV at address 0 — NOT catchable by guard.
+;;   (feed-forward .. <rank-1> ..)  same shape of failure: SIGSEGV.
+;;   (tensor-dot 2x3 2x2)          inner dimensions 3 vs 2 disagree, so the
+;;                                 matmul loop read B[k*N+j] off the end of B's
+;;                                 element buffer and returned a FABRICATED
+;;                                 matrix #((7 10) (19 28)) built from whatever
+;;                                 followed it in the arena.
+;;   (jacobian <scalar-fn> v)      returned the exact integer 0, indistinguishable
+;;                                 from a real result in downstream arithmetic.
+;;   pooling / conv2d / conv3d     silently returned #() or ().
+;;
+;; All of them now raise through the runtime (eshkol_raise), so the failure block
+;; stays live and the error is catchable by `guard`. This file asserts both
+;; halves of the contract: the out-of-contract call raises, and the in-contract
+;; call still computes its documented value (a guard that over-rejects would be
+;; just as broken).
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (display expected)
+             (display " got ") (display got) (newline))))
+
+(define (raises? thunk)
+  (guard (e (#t 'raised)) (thunk)))
+
+;; Well-formed operands, reused by both halves.
+(define m2x2 (tensor 2 2 1.0 2.0 3.0 4.0))
+(define m2x3 (tensor 2 3 1.0 2.0 3.0 4.0 5.0 6.0))
+(define eye2 (tensor 2 2 1.0 0.0 0.0 1.0))
+(define m3x3 (tensor 3 3 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0 1.0))
+(define k2x2 (tensor 2 2 1.0 0.0 0.0 1.0))
+(define m4x4 (tensor 4 4 1.0  2.0  3.0  4.0
+                         5.0  6.0  7.0  8.0
+                         9.0 10.0 11.0 12.0
+                        13.0 14.0 15.0 16.0))
+(define rank1 (tensor 1.0 2.0 3.0))
+(define rank3 (tensor 2 2 2 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0))
+
+;; ── transpose: rank guard (was SIGSEGV) ───────────────────────────────────────
+;; ndim != 2 fell through to dims[1], one past the end of a rank-1 dimensions
+;; array. tensor_shape_codegen.cpp.
+
+(check "transpose rank-1 raises" (raises? (lambda () (transpose rank1))) 'raised)
+(check "transpose rank-3 raises" (raises? (lambda () (transpose rank3))) 'raised)
+(check "transpose 2x3 still works" (transpose m2x3)
+       (tensor 3 2 1.0 4.0 2.0 5.0 3.0 6.0))
+
+;; ── tensor-dot: rank guard and inner-dimension guard ─────────────────────────
+;; The inner-dimension guard is the memory-safety one: the matmul loops index
+;; B[k*N + j] for k < A's column count, so a mismatch reads past B's elements.
+;; tensor_reduce_codegen.cpp.
+
+(check "tensor-dot inner mismatch raises"
+       (raises? (lambda () (tensor-dot m2x3 m2x2))) 'raised)
+(check "tensor-dot rank-3 raises"
+       (raises? (lambda () (tensor-dot rank3 m2x2))) 'raised)
+(check "tensor-dot 2x2 @ I still works" (tensor-dot m2x2 eye2) m2x2)
+(check "tensor-dot 1-D dot product still works"
+       (tensor-dot (tensor 1.0 2.0 3.0) (tensor 4.0 5.0 6.0)) 32.0)
+
+;; ── pooling: input rank guards ───────────────────────────────────────────────
+;; ndim < 2 made h_idx = ndim - 2 negative, so dims[h_idx] read *before* the
+;; dimensions array. tensor_conv_codegen.cpp.
+
+(check "max-pool2d rank-1 raises"
+       (raises? (lambda () (max-pool2d rank1 2 2))) 'raised)
+(check "avg-pool2d rank-1 raises"
+       (raises? (lambda () (avg-pool2d rank1 2 2))) 'raised)
+(check "max-pool2d 4x4 still works" (max-pool2d m4x4 2 2)
+       (tensor 2 2 6.0 8.0 14.0 16.0))
+(check "avg-pool2d 4x4 still works" (avg-pool2d m4x4 2 2)
+       (tensor 2 2 3.5 5.5 11.5 13.5))
+
+;; ── conv2d: kernel rank guard (dead) and input rank guard (absent) ───────────
+;; conv2d only ever guarded its KERNEL rank; its input rank was never checked at
+;; all, so a rank-1 input read dims[-1] exactly like the pooling ops did. Both
+;; are guarded now. tensor_conv_codegen.cpp.
+
+(check "conv2d rank-1 input raises"
+       (raises? (lambda () (conv2d rank1 k2x2 1))) 'raised)
+(check "conv2d rank-1 kernel raises"
+       (raises? (lambda () (conv2d m3x3 rank1 1))) 'raised)
+(check "conv2d 3x3 * 2x2 still works" (conv2d m3x3 k2x2 1)
+       (tensor 2 2 2.0 2.0 2.0 2.0))
+
+;; ── conv3d: input/kernel rank guard ──────────────────────────────────────────
+;; ndim < 3 made dims[ndim - 3] index before the dimensions array.
+;; tensor_extras_codegen.cpp.
+
+(check "conv3d rank-2 input raises"
+       (raises? (lambda () (conv3d m2x2 (make-tensor '(1 1 1) 1.0) 1 0))) 'raised)
+(check "conv3d rank-2 kernel raises"
+       (raises? (lambda () (conv3d (make-tensor '(2 2 2) 1.0) m2x2 1 0))) 'raised)
+;; A 1x1x1x1x1 kernel over a 1x1x2x2x2 input leaves the D/H/W extents alone;
+;; conv3d reports the result over the spatial dimensions only.
+(check "conv3d rank-5 still works"
+       (tensor-shape (conv3d (make-tensor '(1 1 2 2 2) 1.0)
+                             (make-tensor '(1 1 1 1 1) 1.0) 1 0))
+       (list 2 2 2))
+
+;; ── tensor-qr: 2-D matrix guard ──────────────────────────────────────────────
+;; ndim < 2 fell through to dims[1]; the garbage n then sized three arena
+;; allocations. tensor_linalg_codegen.cpp.
+
+(check "tensor-qr rank-1 raises" (raises? (lambda () (tensor-qr rank1))) 'raised)
+(check "tensor-qr 2x2 still returns (Q R)" (length (tensor-qr m2x2)) 2)
+
+;; ── einsum "ij,jk->ik": 2-D operand guard ────────────────────────────────────
+;; tensor_linalg_codegen.cpp. NOTE: only the rank guard is asserted here. The
+;; in-contract 2-D case of this particular notation SIGSEGVs on unmodified
+;; master as well (a separate, pre-existing defect in the delegation to
+;; matmulSIMD — reported, not touched by this change), so there is no working
+;; happy path to pin down yet. The trace notation below is the einsum happy-path
+;; witness.
+(check "einsum ij,jk->ik rank-1 raises"
+       (raises? (lambda () (einsum "ij,jk->ik" rank1 rank1))) 'raised)
+(check "einsum ii-> still works" (einsum "ii->" m2x2) 5.0)
+
+;; ── feed-forward: W1 rank guard (was SIGSEGV) ───────────────────────────────
+;; tensor_transformer_codegen.cpp.
+
+(check "feed-forward rank-1 W1 raises"
+       (raises? (lambda ()
+                  (feed-forward m2x2 rank1 #(0.0 0.0) eye2 #(0.0 0.0)))) 'raised)
+(check "feed-forward with 2-D weights still works"
+       (if (feed-forward m2x2 eye2 #(0.0 0.0) eye2 #(0.0 0.0)) 'present 'missing)
+       'present)
+
+;; ── embedding: weights rank guard ────────────────────────────────────────────
+;; d_model is read from w_dims[1]. tensor_transformer_codegen.cpp.
+
+(check "embedding rank-1 weights raises"
+       (raises? (lambda () (embedding (tensor 0.0 1.0) rank1))) 'raised)
+(check "embedding 3x2 weights still selects rows"
+       (embedding (tensor 0.0 2.0) (tensor 3 2 1.0 2.0 3.0 4.0 5.0 6.0))
+       (tensor 2 2 1.0 2.0 5.0 6.0))
+
+;; ── jacobian: vector-valued output guard ─────────────────────────────────────
+;; The output dimension m is read from a test call's result, so a non-vector
+;; result cannot produce a Jacobian. It used to return the exact integer 0.
+;; autodiff_codegen.cpp.
+
+(check "jacobian of a scalar-valued function raises"
+       (raises? (lambda () (jacobian (lambda (v) (* 2.0 (vector-ref v 0)))
+                                     (vector 1.0 2.0))))
+       'raised)
+(check "jacobian of a vector-valued function still works"
+       (jacobian (lambda (v) (vector (* 2.0 (vector-ref v 0)) (vector-ref v 1)))
+                 (vector 3.0 4.0))
+       (tensor 2 2 2.0 0.0 0.0 1.0))
+
+;; ── complex: arena-allocation null check ─────────────────────────────────────
+;; complex_codegen.cpp packComplexToTagged stores the complex struct straight
+;; into the arena pointer it just took, so a dropped null check is a store
+;; through null. The failure needs a genuinely exhausted arena and so is not
+;; reachable from a test; this asserts only that converting the check to a raise
+;; left the ordinary path intact.
+(check "make-rectangular still packs" (real-part (make-rectangular 1.0 2.0)) 1.0)
+(check "make-rectangular imag" (imag-part (make-rectangular 1.0 2.0)) 2.0)
+
+;; ── linear-algebra arena-allocation null checks ──────────────────────────────
+;; The same class in tensor_linalg_codegen.cpp's emitArenaAllocNullCheck, used by
+;; tensor-lu / -det / -inverse / -solve / -cholesky / -qr / -svd (19 call sites).
+;; Also not reachable without exhausting the arena; happy paths asserted instead.
+(check "tensor-lu still returns 3 parts" (length (tensor-lu m2x2)) 3)
+(check "tensor-svd still returns 3 parts" (length (tensor-svd m2x2)) 3)
+(check "tensor-det still computes" (tensor-det m2x2) -2.0)
+
+(newline)
+(if (= fail-count 0)
+    (begin (display "RESULT: PASS") (newline))
+    (begin (display "RESULT: FAIL (") (display fail-count) (display " checks)")
+           (newline)
+           (exit 1)))

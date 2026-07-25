@@ -820,16 +820,9 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(too_many_dims, matmul_dims_err, matmul_dims_ok);
 
         ctx_.builder().SetInsertPoint(matmul_dims_err);
-        llvm::Function* printf_fn_matmul = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn_matmul = ctx_.lookupFunction("exit");
-        if (printf_fn_matmul && exit_fn_matmul) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: tensor-dot matmul only supports 1D and 2D tensors (got %lld dimensions)\n");
-            ctx_.builder().CreateCall(printf_fn_matmul, {fmt, a_num_dims});
-            ctx_.builder().CreateCall(exit_fn_matmul, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
+        ctx_.emitRaiseFmt(
+            "tensor-dot: only supports 1D and 2D tensors (got %lld dimensions)",
+            {a_num_dims});
 
         ctx_.builder().SetInsertPoint(matmul_dims_ok);
     }
@@ -907,18 +900,11 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
     ctx_.builder().CreateCondBr(k_match, shape_ok_bb, shape_err_bb);
 
     ctx_.builder().SetInsertPoint(shape_err_bb);
-    {
-        llvm::Function* printf_fn_shape = ctx_.lookupFunction("printf");
-        llvm::Function* exit_fn_shape = ctx_.lookupFunction("exit");
-        if (printf_fn_shape && exit_fn_shape) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: matmul inner dimensions mismatch (%lld vs %lld)\n");
-            ctx_.builder().CreateCall(printf_fn_shape, {fmt, a_cols, b_dim0});
-            ctx_.builder().CreateCall(exit_fn_shape, {llvm::ConstantInt::get(
-                llvm::Type::getInt32Ty(ctx_.context()), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
-    }
+    // Memory safety, not a diagnostic: the matmul loops below index
+    // B[k * N + j] for k < a_cols. If a_cols exceeds B's row count the read runs
+    // off the end of B's element buffer.
+    ctx_.emitRaiseFmt("tensor-dot: matmul inner dimensions mismatch (%lld vs %lld)",
+                      {a_cols, b_dim0});
 
     ctx_.builder().SetInsertPoint(shape_ok_bb);
 

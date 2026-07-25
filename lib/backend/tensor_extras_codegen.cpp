@@ -1070,14 +1070,8 @@ llvm::Value* TensorCodegen::conv3d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "c3d_dims_err", current_func);
         builder.CreateCondBr(both_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: conv3d requires at least 3D tensors (input=%lldD, kernel=%lldD)\n");
-            builder.CreateCall(pf, {fmt, in_ndims, k_ndims});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("conv3d: requires at least 3D tensors (input=%lldD, kernel=%lldD)",
+                          {in_ndims, k_ndims});
         builder.SetInsertPoint(ok_bb);
     }
 

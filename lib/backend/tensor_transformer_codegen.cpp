@@ -2379,14 +2379,7 @@ llvm::Value* TensorCodegen::feedForward(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "ffn_wdims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: FFN requires 2D weight matrix (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, w1_ndim});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("feed-forward: W1 requires a 2D weight matrix (got %lldD)", {w1_ndim});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -2868,14 +2861,7 @@ llvm::Value* TensorCodegen::embedding(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "emb_wdims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: embedding requires 2D weight matrix (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, w_ndim});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("embedding: requires a 2D weight matrix (got %lldD)", {w_ndim});
         builder.SetInsertPoint(ok_bb);
     }
 
