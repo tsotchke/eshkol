@@ -2981,6 +2981,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: checkpointed_reverse_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
+    # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
+    # (the emitted closure unpacked its argument to a raw double, destroying an
+    # enclosing perturbation), and an UNNAMED differentiand — `(derivative
+    # (derivative f))`, `(derivative (car fs))` — failed resolution outright.
+    # Assert orders 1..3 at TWO points (x^4's 2nd and 3rd derivatives coincide
+    # at x=2, so one point cannot distinguish a correct answer from an accident)
+    # and assert that derivative-n, the nested-lambda form and both curried
+    # forms all agree — a disagreement between two spellings of one operation is
+    # itself the regression. Both the JIT and the AOT lane.
+    add_test(
+        NAME curried_higher_order_derivative_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/curried_higher_order_derivative_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(curried_higher_order_derivative_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME curried_higher_order_derivative_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/curried_higher_order_derivative_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/curried_higher_order_derivative_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/curried_higher_order_derivative_aot'"
+    )
+    set_tests_properties(curried_higher_order_derivative_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
