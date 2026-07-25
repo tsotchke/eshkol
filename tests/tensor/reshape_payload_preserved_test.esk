@@ -1,0 +1,289 @@
+;; tests/tensor/reshape_payload_preserved_test.esk
+;;
+;; Regression guard: a re-viewing tensor op must carry its SOURCE PAYLOAD into
+;; the value it returns, including when its result is bound by an internal
+;; `define` that sits after the expressions which filled the source.
+;;
+;; Reported symptom (v1.3.4 release blocker): `(tensor-data (reshape v n n))`
+;; came back all zeros while `v` itself held the right numbers, so every
+;; downstream `matmul` computed on zeros and returned a plausible-looking wrong
+;; answer with no error. It surfaced as four failing `diagonal` cases in
+;; tests/gpu/sf64_primitives_test.esk.
+;;
+;; Root cause was NOT in reshape. The parser hoisted EVERY internal define's
+;; initializer into the enclosing `letrec*` head, so a value define written
+;; after other body expressions was evaluated BEFORE them:
+;;
+;;     (define v (make-vector 4 0.0))
+;;     (define (fill! i) ... (vector-set! v i (+ i 1.0)) ...)
+;;     (fill! 0)
+;;     (define t (reshape v 2 2))   ; ran before (fill! 0)
+;;
+;; `reshape` snapshots a vector operand into tensor storage, so it snapshotted
+;; the pre-`fill!` zeros. The fix keeps every internal define's NAME in the one
+;; mutually-visible `letrec*` binding set but leaves an interspersed value
+;; define's INITIALIZER at its source position (bound unset, assigned in place).
+;;
+;; This test therefore pins BOTH halves:
+;;   (A) evaluation order — an interspersed define initializer runs where it is
+;;       written, not before the body expressions preceding it;
+;;   (B) payload preservation for the whole re-viewing family (reshape,
+;;       tensor-reshape, flatten, squeeze, unsqueeze, transpose, tensor-data)
+;;       over vector, list and tensor operands, exercised through the exact
+;;       interspersed-define shape that used to lose it;
+;;   (C) the end-to-end blocker shape — reshape feeding matmul — at a small
+;;       size and at a GPU/BLAS-dispatched size, checked against real numbers.
+;;
+;; Runs identically under `-r` (JIT) and AOT (compile + run).
+
+(define fails 0)
+
+(define (chk label got want)
+  (if (= got want)
+      (begin (display "  ok   ") (display label) (display " = ") (display got) (newline))
+      (begin
+        (set! fails (+ fails 1))
+        (display "  FAIL ") (display label)
+        (display " got=") (display got) (display " want=") (display want) (newline))))
+
+(define (chk-str label got want)
+  (if (string=? got want)
+      (begin (display "  ok   ") (display label) (display " = ") (display got) (newline))
+      (begin
+        (set! fails (+ fails 1))
+        (display "  FAIL ") (display label)
+        (display " got=") (display got) (display " want=") (display want) (newline))))
+
+;; ---------------------------------------------------------------------------
+;; (A) An interspersed value define evaluates at its source position.
+;; ---------------------------------------------------------------------------
+;; `trace` records the order in which the pieces of a body actually run. With
+;; the initializer hoisted this reported "BAC"; source order is "ABC".
+(display "(A) interspersed define evaluation order:") (newline)
+
+(define trace "")
+(define (note s) (set! trace (string-append trace s)) #t)
+
+(define (ordered)
+  (note "A")
+  (define x (begin (note "B") 5))
+  (note "C")
+  x)
+
+(define ordered-value (ordered))
+(chk-str "body runs in source order" trace "ABC")
+(chk "interspersed define still binds its value" ordered-value 5)
+
+;; The same shape with the define's initializer reading mutated state: the
+;; initializer must see the state as of its own source position.
+(define (reads-mutation)
+  (define cell (make-vector 1 0.0))
+  (define (bump!) (vector-set! cell 0 7.0) #t)
+  (bump!)
+  (define seen (vector-ref cell 0))
+  seen)
+(chk "initializer observes preceding mutation" (reads-mutation) 7.0)
+
+;; A leading value define (nothing runs before it) is unaffected, and a hoisted
+;; function define still closes over a name assigned later in the body.
+(define (leading-and-closure)
+  (define base 10.0)
+  (define (plus-later) (+ base later))
+  (define later 5.0)
+  (plus-later))
+(chk "hoisted lambda sees later-assigned slot" (leading-and-closure) 15.0)
+
+;; A body EXPRESSION may still call a function whose define appears later:
+;; function defines keep their hoisted lambda initializer, so the closure
+;; already exists by the time the body runs.
+(define (forward-call)
+  (define slot (make-vector 1 0))
+  (vector-set! slot 0 (helper 3))
+  (define (helper k) (* k 2))
+  (vector-ref slot 0))
+(chk "body expression calls a later function define" (forward-call) 6)
+
+;; ---------------------------------------------------------------------------
+;; (B) Payload preservation across the re-viewing family.
+;; ---------------------------------------------------------------------------
+;; Every case below builds its source with `make-vector` + mutation, runs the
+;; mutation as a body EXPRESSION, and only then binds the re-viewed value with
+;; an interspersed `define` — the shape that used to yield zeros.
+(display "(B) re-viewing ops preserve the source payload:") (newline)
+
+(define (filled-vector n)
+  (define v (make-vector n 0.0))
+  (define (fill! i)
+    (if (< i n)
+        (begin (vector-set! v i (+ i 1.0)) (fill! (+ i 1)))
+        #t))
+  (fill! 0)
+  v)
+
+;; reshape, vector operand
+(define (reshape-of-vector)
+  (define v (make-vector 4 0.0))
+  (define (fill! i) (if (< i 4) (begin (vector-set! v i (+ i 1.0)) (fill! (+ i 1))) #t))
+  (fill! 0)
+  (define t (reshape v 2 2))
+  (define d (tensor-data t))
+  d)
+(let ((d (reshape-of-vector)))
+  (chk "reshape(vector)[0]" (vector-ref d 0) 1.0)
+  (chk "reshape(vector)[1]" (vector-ref d 1) 2.0)
+  (chk "reshape(vector)[2]" (vector-ref d 2) 3.0)
+  (chk "reshape(vector)[3]" (vector-ref d 3) 4.0))
+
+;; reshape, tensor operand
+(define (reshape-of-tensor)
+  (define v (filled-vector 4))
+  (define src (tensor v))
+  (define t (reshape src 2 2))
+  (tensor-data t))
+(let ((d (reshape-of-tensor)))
+  (chk "reshape(tensor)[0]" (vector-ref d 0) 1.0)
+  (chk "reshape(tensor)[3]" (vector-ref d 3) 4.0))
+
+;; reshape, list operand. A numeric list is either coerced (payload preserved,
+;; same as the vector spelling) or refused with a clean catchable type error.
+;; What it must NEVER do is return a zeroed payload, so both outcomes are
+;; accepted here and a silent zero is not. On a tree where the list spelling is
+;; refused, the refusal prints a "Type error in reshape" line on stderr — that
+;; line is the expected outcome of this check, not a failure of the test.
+(display "  note: the next check may print a caught 'Type error in reshape'")
+(newline)
+(define list-reshape-ok
+  (guard (e (#t #t))
+    (let ((d (tensor-data (reshape (list 1.0 2.0 3.0 4.0) 2 2))))
+      (and (= (vector-ref d 0) 1.0) (= (vector-ref d 3) 4.0)))))
+(chk "reshape(list) preserves payload or refuses cleanly"
+     (if list-reshape-ok 1 0) 1)
+
+;; The list spelling routed through `(tensor ...)` must always preserve payload.
+(define (reshape-of-list-tensor)
+  (define src (tensor (list 1.0 2.0 3.0 4.0)))
+  (define t (reshape src 2 2))
+  (tensor-data t))
+(let ((d (reshape-of-list-tensor)))
+  (chk "reshape(tensor-of-list)[0]" (vector-ref d 0) 1.0)
+  (chk "reshape(tensor-of-list)[3]" (vector-ref d 3) 4.0))
+
+;; tensor-reshape (documented alias of reshape)
+(define (tensor-reshape-of-vector)
+  (define v (filled-vector 4))
+  (define t (tensor-reshape v 2 2))
+  (tensor-data t))
+(let ((d (tensor-reshape-of-vector)))
+  (chk "tensor-reshape(vector)[0]" (vector-ref d 0) 1.0)
+  (chk "tensor-reshape(vector)[3]" (vector-ref d 3) 4.0))
+
+;; flatten
+(define (flatten-of-vector)
+  (define v (filled-vector 4))
+  (define t (flatten v))
+  (tensor-data t))
+(let ((d (flatten-of-vector)))
+  (chk "flatten(vector)[0]" (vector-ref d 0) 1.0)
+  (chk "flatten(vector)[3]" (vector-ref d 3) 4.0))
+
+;; squeeze
+(define (squeeze-of-vector)
+  (define v (filled-vector 4))
+  (define t (squeeze v))
+  (tensor-data t))
+(let ((d (squeeze-of-vector)))
+  (chk "squeeze(vector)[0]" (vector-ref d 0) 1.0)
+  (chk "squeeze(vector)[3]" (vector-ref d 3) 4.0))
+
+;; unsqueeze
+(define (unsqueeze-of-vector)
+  (define v (filled-vector 4))
+  (define t (unsqueeze v 0))
+  (tensor-data t))
+(let ((d (unsqueeze-of-vector)))
+  (chk "unsqueeze(vector)[0]" (vector-ref d 0) 1.0)
+  (chk "unsqueeze(vector)[3]" (vector-ref d 3) 4.0))
+
+;; transpose of a reshaped vector: [[1,2],[3,4]]^T = [[1,3],[2,4]]
+(define (transpose-of-reshaped-vector)
+  (define v (filled-vector 4))
+  (define m (reshape v 2 2))
+  (define t (transpose m))
+  (tensor-data t))
+(let ((d (transpose-of-reshaped-vector)))
+  (chk "transpose(reshape(vector))[0]" (vector-ref d 0) 1.0)
+  (chk "transpose(reshape(vector))[1]" (vector-ref d 1) 3.0)
+  (chk "transpose(reshape(vector))[2]" (vector-ref d 2) 2.0)
+  (chk "transpose(reshape(vector))[3]" (vector-ref d 3) 4.0))
+
+;; tensor-data / tensor-shape straight off a vector operand
+(define (data-and-shape-of-vector)
+  (define v (filled-vector 4))
+  (define d (tensor-data v))
+  (define s (tensor-shape (reshape v 2 2)))
+  (list (vector-ref d 0) (vector-ref d 3) (car s) (car (cdr s))))
+(let ((r (data-and-shape-of-vector)))
+  (chk "tensor-data(vector)[0]" (car r) 1.0)
+  (chk "tensor-data(vector)[3]" (car (cdr r)) 4.0)
+  (chk "tensor-shape(reshape v 2 2) rows" (car (cdr (cdr r))) 2)
+  (chk "tensor-shape(reshape v 2 2) cols" (car (cdr (cdr (cdr r)))) 2))
+
+;; ---------------------------------------------------------------------------
+;; (C) End-to-end blocker shape: reshape feeding matmul, with real numbers.
+;; ---------------------------------------------------------------------------
+;; A = diag(1..n), I = identity(n)  =>  A*I = A, so C[i,i] = i+1 and every
+;; off-diagonal entry is 0. n = 4 stays on the scalar/BLAS path; n = 50
+;; (125000 ops) crosses the GPU dispatch threshold. Both are checked against
+;; the exact expected numbers, not merely for the absence of a failure word.
+(display "(C) reshape -> matmul diagonal, real values:") (newline)
+
+(define (diag-matmul-ok n)
+  (define size (* n n))
+  (define A-data (make-vector size 0.0))
+  (define I-data (make-vector size 0.0))
+  (define (set-diagonal! i)
+    (if (< i n)
+        (begin
+          (vector-set! A-data (+ (* i n) i) (+ i 1.0))
+          (vector-set! I-data (+ (* i n) i) 1.0)
+          (set-diagonal! (+ i 1)))
+        #t))
+  (set-diagonal! 0)
+  (define A (reshape A-data n n))
+  (define I (reshape I-data n n))
+  (define C (matmul A I))
+  (define C-data (tensor-data C))
+  ;; Sum the diagonal: expect 1+2+...+n. A zeroed payload sums to 0.
+  (define diag-sum
+    (let loop ((i 0) (acc 0.0))
+      (if (< i n)
+          (loop (+ i 1) (+ acc (vector-ref C-data (+ (* i n) i))))
+          acc)))
+  (display "  n=") (display n)
+  (display " C[0,0]=") (display (vector-ref C-data 0))
+  (display " C[1,1]=") (display (vector-ref C-data (+ n 1)))
+  (display " C[last,last]=") (display (vector-ref C-data (- size 1)))
+  (display " C[0,1]=") (display (vector-ref C-data 1))
+  (display " diag-sum=") (display diag-sum)
+  (newline)
+  (chk "C[0,0]" (vector-ref C-data 0) 1.0)
+  (chk "C[1,1]" (vector-ref C-data (+ n 1)) 2.0)
+  (chk "C[last,last]" (vector-ref C-data (- size 1)) (+ n 0.0))
+  (chk "C[0,1] off-diagonal" (vector-ref C-data 1) 0.0)
+  (chk "diagonal sum" diag-sum (/ (* n (+ n 1)) 2.0))
+  #t)
+
+(diag-matmul-ok 4)
+(diag-matmul-ok 50)
+
+;; ---------------------------------------------------------------------------
+(newline)
+(if (= fails 0)
+    (begin
+      (display "PASS: reshape and the re-viewing tensor ops preserve their source payload")
+      (newline))
+    (begin
+      (display "FAIL: ")
+      (display fails)
+      (display " payload/order check(s) failed")
+      (newline)))

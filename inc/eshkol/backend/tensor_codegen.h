@@ -1485,6 +1485,45 @@ public:
     llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
                                  const char* op_name);
 
+    /**
+     * Emit a catchable Eshkol error at the current insert point and terminate
+     * the block with `unreachable`.
+     *
+     * Constructs an ESHKOL_EXCEPTION_ERROR via
+     * `eshkol_make_exception_with_header` and raises it through
+     * `eshkol_raise`, so the condition is observable to `guard`/
+     * `with-exception-handler` instead of aborting the process or (worse)
+     * letting a bad index walk off the end of a buffer. Mirrors the guard
+     * tensor-get/tensor-set! already emit; factored out so shape/range guards
+     * in the transformer ops fail closed the same way.
+     *
+     * @param message Constant, user-facing message for the raised condition.
+     */
+    void emitCatchableError(const char* message);
+
+    /**
+     * Runtime shape guard: raise a catchable error unless `actual == expected`.
+     *
+     * Splits the current block into an ok/err pair, emits `message` on the
+     * error edge via emitCatchableError(), and leaves the builder positioned in
+     * the ok block. Used for tensor rank/extent preconditions that were
+     * previously either unchecked or reported with printf+exit (not catchable).
+     */
+    void emitRankGuard(llvm::Value* actual, int64_t expected,
+                       const char* message, const char* label);
+
+    /**
+     * Runtime shape guard: raise a catchable error unless `actual >= minimum`.
+     *
+     * The transformer kernels index `dims[1]` (and `dims[2]` for batched
+     * inputs) off their activation operands. A rank-1 operand — which is what a
+     * coerced 1-D vector/list becomes — made those loads read past the end of
+     * the dimensions array. Guarding the rank turns that invalid read into a
+     * catchable condition.
+     */
+    void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
+                          const char* message, const char* label);
+
 public:
     /**
      * Set callbacks for AST code generation.

@@ -38,10 +38,15 @@ extern void eshkol_runtime_fatal(eshkol_exception_type_t type,
  *       -> return its data pointer unchanged (zero-copy, hot path).
  *   (b) operand is a homogeneous numeric vector (HEAP_SUBTYPE_VECTOR whose every
  *       element is an int64 or double) -> coerce to a fresh 1-D tensor.
- *   (c) operand is a proper list of numbers -> coerce to a fresh 1-D tensor,
- *       exactly as `(tensor '(1 2 3))` does. A list and a vector of the same
- *       numbers denote the same 1-D tensor, so accepting one spelling and
- *       rejecting the other would be an arbitrary distinction.
+ *   (c) operand is a homogeneous numeric proper list (every car an int64 or a
+ *       double, in either the HEAP_SUBTYPE_CONS or the legacy CONS_PTR tag
+ *       form) -> coerce to a fresh 1-D tensor, exactly as `(tensor '(1 2 3))`
+ *       does. A numeric collection means the same thing to a tensor op whichever
+ *       collection type it arrives in — matching `(tensor X)`, which already
+ *       unpacks lists via eshkol_tensor_from_collection, and the AD point
+ *       classification, which normalizes a list point to a vector. Accepting the
+ *       vector spelling and rejecting the list would be an arbitrary
+ *       distinction.
  *   (d) anything else (int, string, bool, null, improper/non-numeric list,
  *       non-numeric/heterogeneous vector, …) -> raise a clean, catchable type
  *       error via eshkol_type_error_with_operand and never touch the struct.
@@ -96,14 +101,20 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                     }
                     return t;
                 }
+                /* A CONS-subtype operand is handled below, by the single
+                 * ESHKOL_IS_CONS_COMPAT site — it covers this consolidated
+                 * HEAP_PTR form AND the legacy CONS_PTR tag, so there is exactly
+                 * one list-coercion contract rather than two that could drift. */
             }
         }
         /* Legacy direct TENSOR_PTR type tag. */
         if (val->type == ESHKOL_VALUE_TENSOR_PTR && val->data.ptr_val) {
             return (void*)(uintptr_t)val->data.ptr_val;
         }
-        /* Proper list of numbers -> fresh 1-D tensor. Measure first (so an
-         * improper or non-numeric list allocates nothing), then fill. */
+        /* Homogeneous numeric PROPER list -> fresh 1-D tensor, in either tag
+         * form. Two passes: validate (length, every car numeric, NULL
+         * terminator) before allocating, so an improper or non-numeric list
+         * raises without leaving a partial tensor behind. */
         if (ESHKOL_IS_CONS_COMPAT(*val)) {
             int64_t len = 0;
             eshkol_tagged_value_t cur = *val;

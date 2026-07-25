@@ -1,0 +1,35 @@
+; Division by zero: IEEE-754 for inexact operands, fatal only for exact ones.
+;
+; REGRESSION GATE. The VM used to raise a fatal "DIVIDE BY ZERO" for ANY zero
+; divisor, including float division, and then exited 0 — so every form after
+; the first float division by zero was silently dropped while the process
+; still reported success. Native follows IEEE-754 here, and so must the VM.
+;
+; Exact division by an exact zero legitimately stays an error on both
+; substrates (see the exit-status stage of scripts/run_vm_parity.sh); this
+; corpus entry only exercises the results that must be VALUES.
+
+(display (/ 0.0 0.0)) (newline)     ; +nan.0
+(display (/ 1.0 0.0)) (newline)     ; +inf.0
+(display (/ -1.0 0.0)) (newline)    ; -inf.0
+
+; Inexactness is contagious: one inexact operand makes the whole operation
+; IEEE, even when the ZERO itself is written as an exact 0.
+(display (/ 1.0 0)) (newline)       ; +inf.0
+(display (/ -1.0 0)) (newline)      ; -inf.0
+(display (/ 0 0.0)) (newline)       ; +nan.0
+
+; Ordinary float division still works, and nan/inf are usable values.
+(display (/ 7.0 2.0)) (newline)
+(display (< 1.0 (/ 1.0 0.0))) (newline)
+(display (= (/ 0.0 0.0) (/ 0.0 0.0))) (newline)
+
+; A bignum operand must reach the bignum domain rather than the plain double
+; path, where a heap pointer reads back as 0.0 and every bignum division
+; silently produced 0.  (A bignum over an INEXACT zero is left out: native
+; answers 0 there, filed in found/bignum_div_inexact_zero_native.esk.)
+(display (/ (expt 2 100) 2.0)) (newline)
+(display (/ (expt 2 100) 2)) (newline)
+
+; Nothing after a float division by zero may be dropped.
+(display "tail-reached") (newline)
