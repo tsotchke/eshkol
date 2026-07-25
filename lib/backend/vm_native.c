@@ -35,12 +35,19 @@ extern int64_t eshkol_linear_solve(
  * slot+generation bookkeeping with no arena, no region stack and no evacuator
  * behind it, which is exactly the part that is expressible in this TU.  What
  * must not drift is the OBSERVABLE protocol — token layout, the open/live/
- * close/not-live transitions, the out-of-order close cascade, and the error
- * text — and that is pinned by CI rather than by hope:
+ * close/not-live transitions and the out-of-order close cascade — and that is
+ * pinned by CI rather than by hope:
  * tests/vm_parity/corpus/region_handle_contract.esk runs on native, on the
  * native VM (scripts/run_vm_parity.sh) and on THIS build
  * (scripts/run_wasm_differential.sh), byte-compared against native.  Any
  * divergence from the reclaim=0 path of runtime_regions.cpp fails that lane.
+ *
+ * The status TEXT is the one part no cross-substrate test currently observes:
+ * a misuse is raised, and the corpus file compares the handler's tag rather
+ * than the message (native echoes it on stderr, the VM does not).  So the
+ * strings below are copied verbatim and must be updated together with
+ * eshkol_region_handle_status_message() in runtime_regions.cpp — a diff of the
+ * two switch bodies is the check, since no lane will catch it for you.
  *
  * Plain statics rather than thread_local: this build is single-threaded
  * (-s ENVIRONMENT=node, no pthreads), so per-thread tables would be one table.
