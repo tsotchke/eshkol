@@ -5079,8 +5079,10 @@ static void vm_push_bignum_norm(VM* vm, VmBignum* b) {
  *         back to inexact float (R7RS contagion). Division by zero sets
  *         vm->error. */
 static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
-    /* Bignum mixed with an inexact float → inexact float. */
-    if ((op == '+' || op == '-' || op == '*') &&
+    /* Bignum mixed with an inexact float → inexact float.  Division is
+     * included: inexactness is contagious, so `(/ <bignum> 0.0)` is IEEE-754
+     * division yielding ±inf.0 / +nan.0 rather than an error. */
+    if ((op == '+' || op == '-' || op == '*' || op == '/') &&
         (a.type == VAL_FLOAT || b.type == VAL_FLOAT)) {
         double x = (a.type == VAL_BIGNUM)
             ? bignum_to_double((VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)
@@ -5088,7 +5090,8 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
         double y = (b.type == VAL_BIGNUM)
             ? bignum_to_double((VmBignum*)vm->heap.objects[b.as.ptr]->opaque.ptr)
             : as_number(b);
-        double r = (op == '+') ? x + y : (op == '-') ? x - y : x * y;
+        double r = (op == '+') ? x + y : (op == '-') ? x - y
+                 : (op == '*') ? x * y : x / y;
         vm_push(vm, FLOAT_VAL(r));
         return;
     }
@@ -5101,21 +5104,43 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     case '+': r = bignum_add(rs, ab, bb); break;
     case '-': r = bignum_sub(rs, ab, bb); break;
     case '*': r = bignum_mul(rs, ab, bb); break;
-    case 'q': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+    case 'q': if (bignum_is_zero(bb)) {
+                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_div(rs, ab, bb); break;
-    case 'r': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+    case 'r': if (bignum_is_zero(bb)) {
+                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_mod(rs, ab, bb); break;
+    case '/': {
+        /* Exact bignum `/`.  A zero divisor is a fatal exact division by
+         * zero (native raises "bignum division by zero").  An even division
+         * yields the exact quotient.  A non-even exact division would need a
+         * bignum RATIONAL, which is outside this VM's numeric tower (its
+         * VmRational is int64/int64) — it falls back to the correctly-rounded
+         * double, the documented gap in tests/vm_parity/PARITY.tsv.  Before
+         * this case existed a bignum fell through to the plain double path,
+         * where as_number() reads a heap pointer's .as.i as 0.0 and every
+         * bignum division silently produced 0. */
+        if (bignum_is_zero(bb)) {
+            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
+        VmBignum* rem = bignum_mod(rs, ab, bb);
+        if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
+        vm_push(vm, FLOAT_VAL(bignum_to_double(ab) / bignum_to_double(bb)));
+        return;
+    }
     case 'm': {
         /* R7RS modulo: result carries the sign of the divisor. bignum_mod
          * returns the truncated remainder (sign of the dividend), so adjust
          * by adding the divisor when the signs disagree. */
-        if (bignum_is_zero(bb)) { vm->error = 1; return; }
+        if (bignum_is_zero(bb)) {
+            fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; return; }
         r = bignum_mod(rs, ab, bb);
         if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
             r = bignum_add(rs, r, bb);
         break;
     }
-    default: vm->error = 1; return;
+    default:
+        fprintf(stderr, "ERROR: unsupported bignum operation '%c'\n", op);
+        vm->error = 1; return;
     }
     vm_push_bignum_norm(vm, r);
 }
@@ -5909,21 +5934,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else vm_push(vm, number_val(fabs(as_number(a)))); break; }
     /* modulo, remainder, quotient — first-class closure versions */
+    /* Each of the three used to `break` on a zero divisor with a bare
+     * vm->error = 1 and NO message.  Combined with the VM's old exit-0 that
+     * made a division by zero completely invisible: no diagnostic, no exit
+     * status, and every later top-level form silently dropped.  Every fatal
+     * path here now names itself on stderr. */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        /* `modulo` by zero is fatal for exact AND inexact operands — native
+         * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
+        if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
+        /* `remainder` with an INEXACT operand is fmod, so a zero divisor is
+         * IEEE-754 (+nan.0) rather than an error — native agrees: it answers
+         * +nan.0 for both (remainder 1.0 0.0) and (remainder 1 0.0).  Only the
+         * all-exact form is a fatal division by zero. */
+        if (a.type==VAL_FLOAT || b.type==VAL_FLOAT) {
+            vm_push(vm, FLOAT_VAL(fmod(as_number(a), as_number(b)))); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'q'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -6426,6 +6464,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
             if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
             if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            /* Exact division by an exact zero is fatal (native raises
+             * "rational division by zero").  It must be rejected BEFORE the
+             * overflow fallback below: vm_rational_div() also returns NULL for
+             * a zero divisor, and the fallback then evaluated the ADDITION
+             * formula, so `(/ 1/2 0)` silently produced 0.5. */
+            if (fid == 334 && b_r.num == 0) {
+                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
+            }
             VmRational* result = NULL;
             switch (fid) {
                 case 331: result = vm_rational_add(rat_arena, &a_r, &b_r); break;
@@ -6433,7 +6479,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 case 333: result = vm_rational_mul(rat_arena, &a_r, &b_r); break;
                 case 334: result = vm_rational_div(rat_arena, &a_r, &b_r); break;
             }
-            if (!result) { vm_push(vm, FLOAT_VAL((double)a_r.num/(double)a_r.denom + (double)b_r.num/(double)b_r.denom)); break; }
+            if (!result) {
+                /* int64 overflow after reduction — fall back to inexact, using
+                 * the fallback formula for the OPERATION ACTUALLY REQUESTED
+                 * (this used to add unconditionally, so an overflowing
+                 * subtraction/multiplication/division returned a sum). */
+                double x = (double)a_r.num / (double)a_r.denom;
+                double y = (double)b_r.num / (double)b_r.denom;
+                double fb = (fid == 331) ? x + y : (fid == 332) ? x - y
+                          : (fid == 333) ? x * y : x / y;
+                vm_push(vm, FLOAT_VAL(fb)); break;
+            }
             if (result->denom == 1) { vm_push(vm, INT_VAL(result->num)); break; }
             int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = result;
@@ -11720,9 +11776,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
         } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
                    (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
-            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) { vm->error = 1; break; }
+            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) {
+                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
             vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
-        } else { vm_push(vm, number_val(as_number(a_val) / as_number(b_val))); }
+        } else if (vm_either_bignum(a_val, b_val)) {
+            /* as_number() answers 0.0 for a heap-boxed bignum, so without this
+             * branch the plain double fallback below silently produced 0 for
+             * every bignum division routed through the variadic `/`. */
+            vm_bignum_arith(vm, a_val, b_val, '/');
+        } else {
+            /* At least one operand is INEXACT here, so a zero divisor is
+             * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
+            vm_push(vm, number_val(as_number(a_val) / as_number(b_val)));
+        }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
@@ -11892,6 +11958,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
         }
         vm_push(vm, NIL_VAL); break;
+    }
+
+    case 152: { /* close a closure's open upvalue slots.
+                 * Snapshots each open slot's CURRENT stack value into the
+                 * closure's own upvalue storage and drops the by-reference
+                 * alias.  Emitted at named-let exit for a loop closure that
+                 * opened slots into the enclosing (non-top-level) frame: the
+                 * references are valid for the whole synchronous loop, but if
+                 * the loop closure is leaked out of the named let (e.g. by
+                 * `(set! g loop)`) the frame is gone afterwards, and reading
+                 * or writing a dead slot would corrupt an unrelated live
+                 * value.  Closing degrades a leaked closure to by-value
+                 * capture instead. */
+        Value cl_val = vm_pop(vm);
+        if (cl_val.type == VAL_CLOSURE && cl_val.as.ptr >= 0 &&
+            cl_val.as.ptr < vm->heap.next_free) {
+            HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
+            if (cl && cl->type == HEAP_CLOSURE) {
+                for (int i = 0; i < cl->closure.n_upvalues && i < 16; i++) {
+                    int32_t open_slot = cl->closure.open_slots[i];
+                    if (open_slot < 0) continue;
+                    if (open_slot < STACK_SIZE)
+                        cl->closure.upvalues[i] = vm->stack[open_slot];
+                    cl->closure.open_slots[i] = -1;
+                }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
     }
 
     case 151: { /* direct open slot: set closure upvalue to reference a stack slot */
