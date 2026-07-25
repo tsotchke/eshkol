@@ -48,3 +48,31 @@ const char* repl_eval(const char* source) {
     repl_session_eval(g_session, source, 1);
     return "";
 }
+
+/** @brief WASM-exported: run @p source as a whole program in BATCH mode,
+ *         i.e. exactly as `eshkol-vm-standalone <file.esk>` / `eshkol-run -r`
+ *         run it — compile the prelude + the program into a fresh chunk and
+ *         execute, WITHOUT the REPL's trailing auto-print of the last
+ *         expression's value.  Output is emitted only by explicit
+ *         display/write/newline, matching the native `-r` batch surface.
+ *
+ *         This is the entry point the WASM execute-and-diff lane drives
+ *         (scripts/run_wasm_differential.sh): the VM's C display code is what
+ *         gets compiled to WASM here, so the captured stdout is a genuine
+ *         product of WASM execution — not a JS re-implementation of Eshkol
+ *         formatting.  Each program should run in a freshly instantiated
+ *         module so global VM state does not leak between programs.
+ *
+ *         BATCH CONTRACT: no value is auto-printed — not even the last
+ *         expression's.  Only explicit display/write/newline produce output,
+ *         exactly as `eshkol-run -r` behaves.  (compile_and_run() used to
+ *         auto-print the final expression when built with
+ *         ESHKOL_VM_NO_DISASM, which this file defines; that
+ *         verbosity-macro coupling was removed at the root in eshkol_vm.c.)
+ */
+EMSCRIPTEN_KEEPALIVE
+void run_program(const char* source) {
+    if (!source) return;
+    g_source_file_path = "<wasm-diff>";
+    compile_and_run(source);
+}
