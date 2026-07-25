@@ -80,7 +80,8 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-lu",
+                                                    TensorOperandMode::RequireMatrix);
 
     // Get dimensions - must be 2D square
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
@@ -249,7 +250,8 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-det",
+                                                    TensorOperandMode::RequireMatrix);
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
@@ -325,7 +327,8 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-inverse",
+                                                    TensorOperandMode::RequireMatrix);
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
@@ -430,8 +433,9 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
     if (!a_tagged || !b_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
-    llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-solve",
+                                                    TensorOperandMode::RequireMatrix);
+    llvm::Value* b_ptr = unpackTensorOperandChecked(b_tagged, "tensor-solve");
 
     llvm::Value* a_dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* a_dims_ptr = builder.CreateLoad(ctx_.ptrType(), a_dims_field);
@@ -682,7 +686,8 @@ llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-cholesky",
+                                                    TensorOperandMode::RequireMatrix);
 
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
     llvm::Value* dims_ptr = builder.CreateLoad(ctx_.ptrType(), dims_field);
@@ -780,7 +785,8 @@ llvm::Value* TensorCodegen::tensorQR(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-qr",
+                                                    TensorOperandMode::RequireMatrix);
 
     // Guard: QR decomposition requires a 2D matrix
     llvm::Value* qr_ndim_field = builder.CreateStructGEP(tensor_type, a_ptr, 1);
@@ -964,7 +970,8 @@ llvm::Value* TensorCodegen::tensorSVD(const eshkol_operations_t* op) {
     if (!a_tagged) return nullptr;
 
     llvm::StructType* tensor_type = ctx_.tensorType();
-    llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+    llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "tensor-svd",
+                                                    TensorOperandMode::RequireMatrix);
 
     // Get dimensions: m (rows), n (cols)
     llvm::Value* dims_field = builder.CreateStructGEP(tensor_type, a_ptr, 0);
@@ -1211,8 +1218,11 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         if (!a_tagged || !b_tagged) return nullptr;
 
         llvm::StructType* tensor_type = ctx_.tensorType();
-        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
-        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+        // "ij,jk->ik" names two indices per operand, so both must be matrices.
+        llvm::Value* a_ptr = unpackTensorOperandChecked(
+            a_tagged, "einsum \"ij,jk->ik\"", TensorOperandMode::RequireMatrix);
+        llvm::Value* b_ptr = unpackTensorOperandChecked(
+            b_tagged, "einsum \"ij,jk->ik\"", TensorOperandMode::RequireMatrix);
 
         // Guard: einsum matmul requires 2D tensors
         llvm::Value* a_ndim_f = builder.CreateStructGEP(tensor_type, a_ptr, 1);
@@ -1251,12 +1261,12 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         llvm::Value* N_ptr = builder.CreateGEP(ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* N = builder.CreateLoad(ctx_.int64Type(), N_ptr);
 
-        llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
-        llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_f);
-        llvm::Value* b_elems_f = builder.CreateStructGEP(tensor_type, b_ptr, 2);
-        llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_f);
-
-        return matmulSIMD(a_elems, b_elems, M, K, N);
+        // matmulSIMD takes the TENSOR pointers, not the element buffers: it
+        // loads field 2 off each argument itself. Passing the already-loaded
+        // element buffers made it read `elements[2]` as the elements pointer, so
+        // `(einsum "ij,jk->ik" A B)` dereferenced A's third element as an
+        // address and died with SIGSEGV for perfectly well-formed 2-D tensors.
+        return matmulSIMD(a_ptr, b_ptr, M, K, N);
     }
 
     if (nota == "ij->ji" && op->call_op.num_vars == 2) {
@@ -1270,7 +1280,9 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         if (!a_tagged) return nullptr;
 
         llvm::StructType* tensor_type = ctx_.tensorType();
-        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
+        // "ii->" is a trace: two indices on one operand, so a matrix.
+        llvm::Value* a_ptr = unpackTensorOperandChecked(
+            a_tagged, "einsum \"ii->\"", TensorOperandMode::RequireMatrix);
         llvm::Value* dims_f = builder.CreateStructGEP(tensor_type, a_ptr, 0);
         llvm::Value* dims = builder.CreateLoad(ctx_.ptrType(), dims_f);
         llvm::Value* n = builder.CreateLoad(ctx_.int64Type(), dims);
@@ -1316,8 +1328,10 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         if (!a_tagged || !b_tagged) return nullptr;
 
         llvm::StructType* tensor_type = ctx_.tensorType();
-        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
-        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+        // "i,i->" is a vector dot product: 1-D data, so a numeric vector or
+        // list is a perfectly good operand and coerces like `(tensor …)`.
+        llvm::Value* a_ptr = unpackTensorOperandChecked(a_tagged, "einsum \"i,i->\"");
+        llvm::Value* b_ptr = unpackTensorOperandChecked(b_tagged, "einsum \"i,i->\"");
         llvm::Value* a_total_f = builder.CreateStructGEP(tensor_type, a_ptr, 3);
         llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), a_total_f);
         llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
@@ -1365,8 +1379,11 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         if (!a_tagged || !b_tagged) return nullptr;
 
         llvm::StructType* tensor_type = ctx_.tensorType();
-        llvm::Value* a_ptr = tagged_.unpackPtr(a_tagged);
-        llvm::Value* b_ptr = tagged_.unpackPtr(b_tagged);
+        // "ij,ij->" names two indices per operand: both are matrices.
+        llvm::Value* a_ptr = unpackTensorOperandChecked(
+            a_tagged, "einsum \"ij,ij->\"", TensorOperandMode::RequireMatrix);
+        llvm::Value* b_ptr = unpackTensorOperandChecked(
+            b_tagged, "einsum \"ij,ij->\"", TensorOperandMode::RequireMatrix);
         llvm::Value* a_total_f = builder.CreateStructGEP(tensor_type, a_ptr, 3);
         llvm::Value* total = builder.CreateLoad(ctx_.int64Type(), a_total_f);
         llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);

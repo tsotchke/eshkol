@@ -199,7 +199,8 @@ void TensorCodegen::attachLoopMetadata(llvm::BranchInst* backEdge,
  *         of dereferencing garbage, and calls
  *         `eshkol_tensor_operand_checked` to validate/coerce the operand. */
 llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
-                                                       const char* op_name) {
+                                                       const char* op_name,
+                                                       TensorOperandMode mode) {
     auto& b = ctx_.builder();
 
     // Record the current source location so the runtime error formatter can
@@ -239,16 +240,45 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
     llvm::Value* slot = b.CreateAlloca(ctx_.taggedValueType(), nullptr, "tensor_operand_slot");
     b.CreateStore(tensor_val, slot);
 
-    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_operand_checked");
+    // Read-only operands may be satisfied by a coercible numeric collection;
+    // an operand written through in place may not (a coerced copy would absorb
+    // the update and the caller would see success with nothing changed).
+    const char* symbol = "eshkol_tensor_operand_checked";
+    if (mode == TensorOperandMode::RequireTensor) {
+        symbol = "eshkol_tensor_destination_checked";
+    } else if (mode == TensorOperandMode::RequireMatrix) {
+        symbol = "eshkol_tensor_matrix_operand_checked";
+    }
+    llvm::Function* fn = ctx_.module().getFunction(symbol);
     if (!fn) {
-        // void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t*, const char*)
+        // void* <symbol>(const eshkol_tagged_value_t*, const char*)
         llvm::FunctionType* ft = llvm::FunctionType::get(
             ctx_.ptrType(), {ctx_.ptrType(), ctx_.ptrType()}, false);
         fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                    "eshkol_tensor_operand_checked", &ctx_.module());
+                                    symbol, &ctx_.module());
     }
     llvm::Value* name = ctx_.internCString(op_name ? op_name : "tensor-op");
     return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
+}
+
+/** @brief Runtime axis validation for the axis-reduce family (see header).
+ *         Emits `eshkol_tensor_axis_checked(axis, rank, op_name)`, which
+ *         raises catchably unless rank >= 2 and 0 <= axis < rank, and returns
+ *         the validated axis. */
+llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+                                            const char* op_name) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_tensor_axis_checked");
+    if (!fn) {
+        // int64_t eshkol_tensor_axis_checked(int64_t axis, int64_t rank, const char*)
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int64Type(), {ctx_.int64Type(), ctx_.int64Type(), ctx_.ptrType()},
+            false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_tensor_axis_checked", &ctx_.module());
+    }
+    llvm::Value* name = ctx_.internCString(op_name ? op_name : "tensor-reduce-axis");
+    return b.CreateCall(fn, {axis, rank, name}, "reduce_axis_checked");
 }
 
 // Note: All tensor implementations are complex and depend on:
