@@ -282,9 +282,10 @@ llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank
 }
 
 /** @brief Raise a catchable ESHKOL_EXCEPTION_ERROR carrying @p message at the
- *         current insert point, then terminate the block with `unreachable`
- *         (see the declaration for why shape/range guards must be catchable
- *         rather than printf+exit). */
+ *         current insert point, then terminate the block with `unreachable`.
+ *         See the declaration for why a guard must never close with a bare
+ *         `unreachable` (the optimizer deletes the branch) and why shape/range
+ *         guards must be catchable rather than printf+exit. */
 void TensorCodegen::emitCatchableError(const char* message) {
     auto& b = ctx_.builder();
 
@@ -640,6 +641,23 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
         ctx_.builder().CreateStore(idx, idx_slot);
         runtime_linear = ctx_.builder().CreateCall(lin_fn, {idx_slot, dims_ptr, ndim});
         runtime_index_count = ctx_.builder().CreateCall(count_fn, {idx_slot});
+
+        // Rank guard for the list-index idiom `(tensor-ref t (list i j …))`.
+        // The count comes from the cons chain, so it can exceed the tensor's
+        // rank; the prod_dims loop below then reads dims[i] past the end of the
+        // dimensions array, and `ndim - count` underflows into a huge unsigned
+        // slice rank. The multi-arg path checks this statically — this is the
+        // same check when the index count is only known at runtime.
+        {
+            llvm::Value* too_many = ctx_.builder().CreateICmpUGT(runtime_index_count, ndim);
+            llvm::Function* cur_fn2 = ctx_.builder().GetInsertBlock()->getParent();
+            llvm::BasicBlock* rank_ok = llvm::BasicBlock::Create(ctx_.context(), "tget_rank_ok", cur_fn2);
+            llvm::BasicBlock* rank_err = llvm::BasicBlock::Create(ctx_.context(), "tget_rank_err", cur_fn2);
+            ctx_.builder().CreateCondBr(too_many, rank_err, rank_ok);
+            ctx_.builder().SetInsertPoint(rank_err);
+            emitCatchableError("tensor-get: too many indices for tensor rank");
+            ctx_.builder().SetInsertPoint(rank_ok);
+        }
     } else {
         for (uint64_t i = 0; i < num_indices; i++) {
             llvm::Value* idx = codegenAST(&op->call_op.variables[i + 1]);
@@ -712,15 +730,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
 
             ctx_.builder().SetInsertPoint(idx_err);
-            llvm::Function* pf = ctx_.lookupFunction("printf");
-            llvm::Function* ef = ctx_.lookupFunction("exit");
-            if (pf && ef) {
-                llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                    "Error: too many indices for tensor-get (got %lld, tensor is %lldD)\n");
-                ctx_.builder().CreateCall(pf, {fmt, idx_count, ndim});
-                ctx_.builder().CreateCall(ef, {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), 1)});
-            }
-            ctx_.builder().CreateUnreachable();
+            emitCatchableError("tensor-get: too many indices for tensor rank");
 
             ctx_.builder().SetInsertPoint(idx_ok);
         }
@@ -744,16 +754,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             ctx_.builder().CreateCondBr(oob, oob_bb, ok_bb);
 
             ctx_.builder().SetInsertPoint(oob_bb);
-            llvm::Function* printf_fn = ctx_.lookupFunction("printf");
-            llvm::Function* exit_fn = ctx_.lookupFunction("exit");
-            if (printf_fn && exit_fn) {
-                llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                    "Error: tensor index out of bounds (dimension %lld)\n");
-                ctx_.builder().CreateCall(printf_fn, {fmt, dim_i});
-                ctx_.builder().CreateCall(exit_fn, {llvm::ConstantInt::get(
-                    llvm::Type::getInt32Ty(ctx_.context()), 1)});
-            }
-            ctx_.builder().CreateUnreachable();
+            emitCatchableError("tensor-get: index out of bounds");
 
             ctx_.builder().SetInsertPoint(ok_bb);
 
@@ -993,15 +994,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
 
         ctx_.builder().SetInsertPoint(idx_err);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: too many indices for tensor-set! (got %lld, tensor is %lldD)\n");
-            ctx_.builder().CreateCall(pf, {fmt, idx_count, ndim});
-            ctx_.builder().CreateCall(ef, {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
+        emitCatchableError("tensor-set!: too many indices for tensor rank");
 
         ctx_.builder().SetInsertPoint(idx_ok);
     }
@@ -1097,15 +1090,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(oob, bounds_err, bounds_ok);
 
         ctx_.builder().SetInsertPoint(bounds_err);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = ctx_.builder().CreateGlobalString(
-                "Error: tensor-set! index out of bounds (index %lld, size %lld)\n");
-            ctx_.builder().CreateCall(pf, {fmt, linear_index, total_elements});
-            ctx_.builder().CreateCall(ef, {llvm::ConstantInt::get(ctx_.builder().getInt32Ty(), 1)});
-        }
-        ctx_.builder().CreateUnreachable();
+        emitCatchableError("tensor-set!: index out of bounds");
 
         ctx_.builder().SetInsertPoint(bounds_ok);
     }
