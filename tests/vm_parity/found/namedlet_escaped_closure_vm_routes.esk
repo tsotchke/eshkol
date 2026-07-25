@@ -1,0 +1,51 @@
+; FILED: calling a leaked named-let loop procedure — the remaining divergence is
+; on the VM side, and the vm-eskb route differs from vm-src.
+;
+; The native half of this defect is fixed (a first-class reference to a named-let
+; loop procedure now builds a real closure over the shared capture cells instead
+; of leaking the bare function pointer, which used to SIGSEGV at the first read
+; of a captured variable on both JIT and AOT). What is left is the VM:
+;
+;   escape through a GLOBAL cell (this file)
+;     native -r   2|2|ALIVE
+;     native AOT  2|2|ALIVE
+;     vm-src      2|2|ALIVE
+;     vm-eskb     "2|" then `ERROR: calling non-function at pc=4985 argc=1 type=3`
+;
+;   escape through a LET-BOUND cell (see below)
+;     native -r   2
+;     native AOT  2
+;     vm-src      `ERROR: calling non-function ... argc=1 type=3`
+;     vm-eskb     `ERROR: calling non-function ... argc=1 type=3`
+;
+; So the compiled-bytecode route loses a loop procedure stored in a global that
+; the source route keeps, and neither VM route can call one stored in a let
+; binding. Both are the VM's side of the same contract, so this cannot go into
+; corpus/ yet: gating it today would fail on the vm-eskb axis for a reason that
+; has nothing to do with native.
+;
+; The native contract is gated meanwhile by
+; tests/features/namedlet_escaped_closure_test.esk (15 checks, JIT and AOT).
+; Move both shapes below into a corpus entry once the VM can call a leaked loop
+; procedure on both routes and through both kinds of escape cell.
+
+; ---- escape through a global cell: vm-src agrees, vm-eskb does not ----
+(define g #f)
+(define (f)
+  (let ((acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! g loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))))
+(display (f))
+(display "|")
+(display (g 5))
+(display "|ALIVE")
+(newline)
+
+; ---- escape through a let-bound cell: neither VM route agrees ----
+(define (probe)
+  (let ((esc #f) (acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! esc loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))
+    (esc 5)))
+(display (probe))
+(newline)

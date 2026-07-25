@@ -1,0 +1,139 @@
+;; A nested collection means the same thing however it is WRITTEN.
+;;
+;; Eshkol accepts a nested collection wherever a tensor is expected, and it can
+;; be written two ways: as a nested vector LITERAL, which the parser flattens
+;; into a higher-rank tensor literal at compile time, or built at run time with
+;; `vector` / `list`. They are the same value, so every tensor question about
+;; them must get the same answer — and a nest that is not rectangular must fail
+;; the same way in both spellings.
+;;
+;; Two defects made that false.
+;;
+;;   1. A runtime-built nest was REJECTED where the identical literal was
+;;      accepted. Every tensor operation routes its primary operand through
+;;      eshkol_tensor_operand_checked(), which coerced a flat numeric vector to a
+;;      rank-1 tensor and rejected everything else. A rectangular nested literal
+;;      never arrived there as a nest (the parser had already flattened it); the
+;;      runtime-built value did, and got a type error:
+;;
+;;        (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))
+;;          before  Type error in tensor-shape: expected tensor or numeric vector
+;;          after   (2 2)
+;;
+;;   2. A NON-RECTANGULAR literal fabricated a shape and could crash.
+;;      parse_vector_body() reported a *parse* diagnostic and returned
+;;      ESHKOL_INVALID, which was neither catchable nor fatal:
+;;
+;;        (tensor-shape #(#(1.0 2.0) #(3.0)))   before ()   after raises
+;;        (tensor-ref  #(#(1.0 2.0) #(3.0)) 0 0) before 0   after raises
+;;        (tensor-shape #(#(1.0 2.0) 3.0))      before (2)  after raises
+;;        (define v #(#(1.0 2.0) #(3.0))) then (vector-length v)
+;;                                              before SIGSEGV at 0x0
+;;                                              after  2
+;;
+;; Both are fixed by routing the question to ONE value-based walker: the operand
+;; check hands a nest to the same rank-N walker `(tensor X)` uses, and the parser
+;; lowers a non-rectangular nest to `(vector <sub-literal> ...)` instead of
+;; failing the parse, so the literal and the runtime-built spelling of the same
+;; value are ruled on by the same code.
+;;
+;; The agreeing rows are gated across substrates in
+;; tests/vm_parity/corpus/46_tensor_literal_spellings.esk. This file additionally pins the
+;; rows the bytecode VM cannot express yet: a CATCHABLE ragged error (the VM's is
+;; fatal on master), list/vector mixtures, and rank beyond 3.
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (display expected)
+             (display " got ") (display got) (newline))))
+
+;; ── the two spellings agree on shape and on elements ──
+
+(check "rank 2, runtime-built"
+       (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0))) (list 2 2))
+(check "rank 2, literal"
+       (tensor-shape #(#(1.0 2.0) #(3.0 4.0))) (list 2 2))
+(check "rank 3, runtime-built"
+       (tensor-shape (vector (vector (vector 1.0 2.0) (vector 3.0 4.0))
+                             (vector (vector 5.0 6.0) (vector 7.0 8.0))))
+       (list 2 2 2))
+(check "rank 3, literal"
+       (tensor-shape #(#(#(1.0 2.0) #(3.0 4.0)) #(#(5.0 6.0) #(7.0 8.0))))
+       (list 2 2 2))
+(check "rank 4, runtime-built"
+       (tensor-shape (vector (vector (vector (vector 1.0 2.0)))))
+       (list 1 1 1 2))
+
+;; Non-square, so a transposed stride would show up as a wrong element.
+(check "non-square shape, runtime-built"
+       (tensor-shape (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0))) (list 2 3))
+(check "non-square element, runtime-built"
+       (tensor-ref (vector (vector 1.0 2.0 3.0) (vector 4.0 5.0 6.0)) 1 2) 6.0)
+(check "non-square element, literal"
+       (tensor-ref #(#(1.0 2.0 3.0) #(4.0 5.0 6.0)) 1 2) 6.0)
+
+;; Lists and vectors in any combination denote the same nest.
+(check "list of vectors"
+       (tensor-shape (list (vector 1.0 2.0) (vector 3.0 4.0))) (list 2 2))
+(check "vector of lists"
+       (tensor-shape (vector (list 1.0 2.0) (list 3.0 4.0))) (list 2 2))
+(check "vector of tensors"
+       (tensor-shape (vector (tensor 1.0 2.0) (tensor 3.0 4.0))) (list 2 2))
+
+;; ── coercing a nest does not change what the nest IS ──
+
+(define vv (vector (vector 1.0 2.0) (vector 3.0 4.0)))
+(check "runtime-built nest is a vector" (vector? vv) #t)
+(check "runtime-built nest has 2 elements" (vector-length vv) 2)
+(check "runtime-built nest element is a vector" (vector? (vector-ref vv 0)) #t)
+(check "runtime-built nest inner element" (vector-ref (vector-ref vv 1) 0) 3.0)
+;; The literal spelling is Eshkol's rank-2 tensor literal, flattened at parse
+;; time, so it has FOUR elements. That is the declared distinction between the
+;; two spellings and is deliberately asserted here so it cannot drift.
+(check "nested literal is the flattened rank-2 tensor"
+       (vector-length #(#(1.0 2.0) #(3.0 4.0))) 4)
+
+;; ── flat collections keep coercing to rank 1 ──
+
+(check "flat vector operand" (tensor-shape (vector 1.0 2.0 3.0)) (list 3))
+(check "flat literal operand" (tensor-shape #(1.0 2.0 3.0)) (list 3))
+
+;; ── a non-rectangular nest raises CATCHABLY in both spellings ──
+
+(check "ragged literal, tensor-shape"
+       (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) #(3.0)))) "caught")
+(check "ragged literal, tensor-ref"
+       (guard (e (#t "caught")) (tensor-ref #(#(1.0 2.0) #(3.0)) 0 0)) "caught")
+(check "mixed literal (number where a sub-collection was expected)"
+       (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) 3.0))) "caught")
+(check "ragged runtime-built, tensor-shape"
+       (guard (e (#t "caught"))
+              (tensor-shape (vector (vector 1.0 2.0) (vector 3.0)))) "caught")
+(check "ragged runtime-built at rank 3"
+       (guard (e (#t "caught"))
+              (tensor-shape (vector (vector (vector 1.0 2.0))
+                                    (vector (vector 3.0 4.0) (vector 5.0 6.0)))))
+       "caught")
+(check "mixed runtime-built (sub-collection where a number was expected)"
+       (guard (e (#t "caught"))
+              (tensor-shape (vector 1.0 (vector 2.0 3.0)))) "caught")
+
+;; ── a ragged literal is still a nameable VALUE, not a hole ──
+;; Binding one and reading it used to dereference the invalid AST node and
+;; SIGSEGV at 0x0; it is now an ordinary nested vector, exactly as the VM has it.
+
+(define ragged #(#(1.0 2.0) #(3.0)))
+(check "ragged literal binds and is a vector" (vector? ragged) #t)
+(check "ragged literal length" (vector-length ragged) 2)
+(check "ragged literal first row length" (vector-length (vector-ref ragged 0)) 2)
+(check "ragged literal second row length" (vector-length (vector-ref ragged 1)) 1)
+
+(display "tensor-nested-literal-spellings failures: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline)))

@@ -1,0 +1,143 @@
+;; A named-let loop procedure used as a first-class VALUE.
+;;
+;; R7RS 4.2.4 defines `(let loop ((v init) ...) body)` as a letrec binding `loop`
+;; to an ordinary procedure. `loop` is therefore a value like any other: it can
+;; be stored, returned, put in a data structure or passed to a higher-order
+;; procedure, and it keeps the bindings its body closed over.
+;;
+;; Native codegen SIGSEGVed on that. Since the #224 per-call capture fix a
+;; named-let loop function's signature is
+;;
+;;     tagged f(tagged p0..pk-1, ptr c0..cm-1)
+;;
+;; with one capture POINTER per captured free variable — deliberately NOT the
+;; closure ABI, so that concurrent invocations of the enclosing closure each get
+;; their own capture storage. A first-class reference to `loop` had no entry in
+;; the symbol table and no arity in function_arity_table, so codegenVariable fell
+;; through to the generic function-table path and returned the bare function
+;; pointer. Calling the leaked procedure then entered the loop function with its
+;; capture parameters filled from whatever the closure dispatcher happened to
+;; pass, and the first read of a captured variable dereferenced that as a capture
+;; cell:
+;;
+;;     (define g #f)
+;;     (define (f)
+;;       (let ((acc 0))
+;;         (let loop ((i 0))
+;;           (if (< i 2)
+;;               (begin (set! g loop) (set! acc (+ acc 1)) (loop (+ i 1)))
+;;               acc))))
+;;     (display (f)) (display "|") (display (g 5))
+;;
+;;     before  "2|" then SIGSEGV at 0xa9035ff8a90267fa, exit 139 (JIT and AOT)
+;;     after   "2|2", exit 0
+;;
+;; A first-class reference now builds a real closure whose environment holds the
+;; address of each shared capture cell, with a per-loop trampoline turning those
+;; env slots back into the pointer arguments the loop function expects. The cells
+;; are the arena storage codegenNamedLet already creates for any capture the body
+;; set!s, so a leaked procedure keeps reading and writing the same storage the
+;; loop wrote through, and that storage outlives the enclosing frame.
+;;
+;; NOTE: native-only by design. The bytecode VM cannot yet call a leaked loop
+;; procedure through the compiled-bytecode (.eskb) route at all, and cannot call
+;; one held in a LET-bound cell on either VM route — filed in
+;; tests/vm_parity/found/namedlet_escaped_closure_vm_routes.esk — so this
+;; contract is not yet gateable in the VM parity corpus.
+
+(define fail-count 0)
+
+(define (check name got expected)
+  (if (equal? got expected)
+      (begin (display "ok   ") (display name) (display " => ") (display got) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "error: ") (display name)
+             (display " expected ") (display expected)
+             (display " got ") (display got) (newline))))
+
+;; ── a capture the loop body set!s: the leaked procedure sees the last value ──
+
+(define g1 #f)
+(define (f1)
+  (let ((acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! g1 loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))))
+(check "loop result, set!-mutated capture" (f1) 2)
+(check "leaked procedure sees the mutated capture" (g1 5) 2)
+
+;; ── no captures at all: the loop parameter alone decides the answer ──
+
+(define g2 #f)
+(define (f2)
+  (let loop ((i 0))
+    (if (< i 3) (begin (set! g2 loop) (loop (+ i 1))) i)))
+(check "loop result, no captures" (f2) 3)
+(check "leaked procedure, no captures" (g2 7) 7)
+
+;; ── a read-only capture (an enclosing parameter used as the loop bound) ──
+
+(define g3 #f)
+(define (f3 n)
+  (let loop ((i 0))
+    (if (< i n) (begin (set! g3 loop) (loop (+ i 1))) i)))
+(check "loop result, read-only capture" (f3 4) 4)
+(check "leaked procedure re-runs against the same capture" (g3 0) 4)
+
+;; ── two loop parameters ──
+
+(define g4 #f)
+(define (f4)
+  (let ((base 10))
+    (let loop ((i 0) (sum 0))
+      (if (< i 3) (begin (set! g4 loop) (loop (+ i 1) (+ sum base))) sum))))
+(check "loop result, two parameters" (f4) 30)
+(check "leaked procedure, two parameters" (g4 3 0) 0)
+(check "leaked procedure, two parameters, re-entered" (g4 1 5) 25)
+
+;; ── the escape cell is a LET binding rather than a global ──
+
+(define (f5)
+  (let ((esc #f) (acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! esc loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))
+    (esc 5)))
+(check "escape through a let-bound cell" (f5) 2)
+
+;; ── the procedure stored into a data structure inside its own body ──
+
+(define (f6)
+  (let ((k 5))
+    (let loop ((i 0))
+      (if (< i 1)
+          (loop (+ i 1))
+          (let ((fs (list loop))) (+ k (length fs)))))))
+(check "loop procedure in a list inside its own body" (f6) 6)
+
+;; ── nested named lets, inner procedure leaked ──
+
+(define g7 #f)
+(define (f7)
+  (let ((total 0))
+    (let outer ((i 0))
+      (if (< i 2)
+          (begin
+            (let inner ((j 0))
+              (if (< j 2)
+                  (begin (set! g7 inner) (set! total (+ total 1)) (inner (+ j 1)))
+                  total))
+            (outer (+ i 1)))
+          total))))
+(check "nested loops, outer result" (f7) 4)
+(check "leaked inner procedure" (g7 9) 4)
+
+;; ── an ordinary named let is unaffected ──
+
+(check "ordinary named let, sum"
+       (let loop ((i 0) (acc 0)) (if (< i 5) (loop (+ i 1) (+ acc i)) acc)) 10)
+(check "ordinary named let, factorial"
+       (let fact ((n 5) (out 1)) (if (= n 0) out (fact (- n 1) (* out n)))) 120)
+
+(display "namedlet-escaped-closure failures: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL") (newline)))
