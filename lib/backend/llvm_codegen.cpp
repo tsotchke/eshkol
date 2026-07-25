@@ -539,6 +539,77 @@ static std::string g_debug_source_directory;
 static std::string g_source_text;
 static std::string g_source_filepath;
 
+/* Per-file source text, for diagnostics rendered from a file that is NOT the
+ * ambient source context (ESH-0364).
+ *
+ * The AOT driver inlines every `(require …)`d module's forms into one flat AST
+ * array and compiles them as a single unit under a single ambient context — the
+ * ENTRY file. Any diagnostic for a form that came from a module therefore
+ * printed the entry file's NAME beside the module's LINE number: a location that
+ * resolves to real but unrelated source, which is worse than no location at all.
+ * (The JIT path was already correct — repl_jit.cpp's executeBatch takes explicit
+ * per-module provenance — so the same mistake was named accurately under `-r`
+ * and misattributed under `-o`.)
+ *
+ * Filled lazily and only on a diagnostic path, so the read costs nothing in a
+ * clean compile. A file that cannot be read caches an empty string: the
+ * diagnostic then prints "file:line:col:" without the source line and caret,
+ * which is still a location the reader can act on. */
+static std::map<std::string, std::string> g_source_text_by_file;
+
+static const std::string& sourceTextForFile(const std::string& path) {
+    static const std::string empty;
+    if (path.empty()) return empty;
+    if (path == g_source_filepath && !g_source_text.empty()) return g_source_text;
+    auto it = g_source_text_by_file.find(path);
+    if (it != g_source_text_by_file.end()) return it->second;
+    std::string text;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) {
+            text.assign((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        }
+    }
+    return g_source_text_by_file.emplace(path, std::move(text)).first->second;
+}
+
+/* Make a top-level form's originating file the ambient source context for the
+ * duration of its codegen, restoring the previous one on the way out. Nodes with
+ * no provenance (every inner node) and forms from the ambient file itself are a
+ * no-op, so the cost on the hot path is one integer compare. */
+class ScopedAstProvenance {
+public:
+    explicit ScopedAstProvenance(uint32_t source_file_id) {
+        if (source_file_id == 0) return;
+        const char* name = eshkol_source_file_name(source_file_id);
+        if (!name || !*name || g_source_filepath == name) return;
+        // Resolve the text BEFORE rebinding g_source_filepath: sourceTextForFile
+        // short-circuits on `path == g_source_filepath` to reuse the ambient
+        // text, so assigning the new path first made that test trivially true
+        // and handed back the OUTGOING file's text — the caret then rendered a
+        // line from the wrong file (or nothing, when the new line number ran
+        // past the old file's end).
+        std::string text = sourceTextForFile(std::string(name));
+        saved_path_ = std::move(g_source_filepath);
+        saved_text_ = std::move(g_source_text);
+        active_ = true;
+        g_source_filepath = name;
+        g_source_text = std::move(text);
+    }
+    ~ScopedAstProvenance() {
+        if (!active_) return;
+        g_source_filepath = std::move(saved_path_);
+        g_source_text = std::move(saved_text_);
+    }
+    ScopedAstProvenance(const ScopedAstProvenance&) = delete;
+    ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
+private:
+    std::string saved_path_;
+    std::string saved_text_;
+    bool active_ = false;
+};
+
 struct AotModuleStats {
     uint64_t functions = 0;
     uint64_t definitions = 0;
@@ -9428,6 +9499,16 @@ private:
 
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
+
+        // ESH-0364: adopt this form's originating file as the source context, so
+        // `line`/`column` are reported against the file they were measured in.
+        // Placed here rather than in the callers because generateLLVMIR walks the
+        // top-level array from several loops (externs, function defines, global
+        // defines) and createMainWrapper/createLibraryInitFunction walk it again
+        // — one scope at the single entry point covers every one of them, and
+        // any future walk, for free. Only top-level forms carry provenance;
+        // inner nodes are 0 and correctly inherit the enclosing form's file.
+        ScopedAstProvenance provenance(ast->source_file_id);
 
         // Update source location for error context
         if (ast->line > 0) {

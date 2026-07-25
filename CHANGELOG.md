@@ -366,6 +366,32 @@ across every new-feature family).
   meanings (`cwd` is the REQUIRED SECOND positional of every `process-spawn*`,
   and the THIRD positional of the `run-*` wrappers is the timeout).
 
+- **ESH-0364: a diagnostic for code from a `(require …)`d module named the wrong
+  file.** The AOT driver inlines every required module's forms into ONE flat AST
+  array and compiles them as a single unit under a single ambient source context
+  — the entry file. Any diagnostic for a form that came from a module therefore
+  printed the ENTRY file's NAME beside the MODULE's LINE number. For a 3-line
+  entry file requiring a module, the reported location was `entry.esk:6:13` — a
+  line that file does not have; where the entry file was longer, it pointed at
+  real but unrelated source, which is worse than reporting no location at all.
+  (The JIT path was already correct: `executeBatch` takes explicit per-module
+  provenance, which is why the same mistake was named accurately under `-r` and
+  misattributed under `-o`.) Root cause: `eshkol_ast_t` carried `line`/`column`
+  but no FILE, so a location was only meaningful relative to whatever context
+  happened to be ambient. AST nodes now carry `source_file_id`, an id into a
+  process-lifetime interned table, stamped on every top-level form at the single
+  choke point every form passes through (a form cannot span two files, so inner
+  nodes inherit their enclosing form's file). Codegen adopts that file for the
+  duration of the form's codegen, so all of `generateLLVMIR`'s separate top-level
+  walks — externs, function defines, global defines, `createMainWrapper`,
+  `createLibraryInitFunction` — are covered by one scope, along with any future
+  one. The module's source TEXT is resolved with its name, so the caret block
+  renders the offending line from the right file; a file that cannot be read
+  degrades to `file:line:col:` without the excerpt rather than to a wrong
+  excerpt. Deliberately an id rather than a `const char*`: AST nodes are built in
+  many places with no central zero-init, so an unset field holds garbage — a
+  garbage id falls outside the table and reads as "unknown", where a garbage
+  pointer would be dereferenced by the diagnostic printer.
 - **`iota` silently ignored its `start` and `step` arguments.** The stdlib
   defined `iota` as a strictly 1-argument function while callers (including
   `tests/features/new_functions_test.esk`, comments and all) were already writing

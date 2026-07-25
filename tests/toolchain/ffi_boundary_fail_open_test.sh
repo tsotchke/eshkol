@@ -45,6 +45,13 @@ if [ ! -x "$ESHKOL_RUN" ]; then
     echo "FAIL: ffi_boundary_fail_open_test eshkol-run is not executable: $ESHKOL_RUN" >&2
     exit 1
 fi
+# Absolutize: the module-attribution cells run the compiler from inside a
+# temporary module tree (so its ESHKOL_PATH resolution is exercised the way a
+# real consumer's is), and a relative ./build/eshkol-run would not survive the cd.
+case "$ESHKOL_RUN" in
+    /*) ;;
+    *)  ESHKOL_RUN="$(cd "$(dirname "$ESHKOL_RUN")" && pwd)/$(basename "$ESHKOL_RUN")" ;;
+esac
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -144,6 +151,54 @@ cat > "$raw_extern_ok" <<'ESK'
 (display (if (null? (c-strchr #f 65)) "null-ok" "null-ok"))
 (newline)
 ESK
+
+# ESH-0364: a diagnostic for a form that came from a `(require …)`d module must
+# name THAT module's file, not the compilation entry point. The AOT driver inlines
+# every required module's forms into one flat AST array compiled as a single unit,
+# so a diagnostic rendered from the ambient source context printed the ENTRY file's
+# name beside the MODULE's line number — here, "entry.esk:6", a line the 3-line
+# entry file does not even have. A location that resolves to real but unrelated
+# source is worse than no location, and both diagnostics this suite covers are
+# rendered through that path.
+prov_dir="$tmp/prov"
+mkdir -p "$prov_dir/provmod"
+cat > "$prov_dir/provmod/armod.esk" <<'ESK'
+(provide mod-call)
+(define (two-args a b) (+ a b))
+
+(define (mod-call)
+  ;; The arity mistake is on line 6 OF THIS FILE.
+  (two-args 1))
+ESK
+cat > "$prov_dir/entry.esk" <<'ESK'
+(require provmod.armod)
+(display (mod-call))
+(newline)
+ESK
+
+# ── ESH-0364: cross-file diagnostic attribution, AOT and -r ─────────────────
+for mode in aot jit; do
+    log="$tmp/prov_$mode.log"
+    if [ "$mode" = aot ]; then
+        ( cd "$prov_dir" && ESHKOL_PATH="$prov_dir" "$ESHKOL_RUN" entry.esk -o "$prov_dir/out.bin" ) >"$log" 2>&1
+        ec=$?
+    else
+        ( cd "$prov_dir" && ESHKOL_PATH="$prov_dir" "$ESHKOL_RUN" -r entry.esk ) >"$log" 2>&1
+        ec=$?
+    fi
+    assert_not_signal "$mode module-diagnostic attribution" "$ec" "$log"
+    grep -q "Arity mismatch: two-args expects 2 arguments but got 1" "$log" \
+        || fail "$mode module diagnostic missing: $(head -5 "$log" | tr '\n' ' ')"
+    grep -q "armod\.esk:6:" "$log" \
+        || fail "$mode diagnostic did not attribute the error to the module file (ESH-0364): $(head -3 "$log" | tr '\n' ' ')"
+    grep -q "entry\.esk:6:" "$log" \
+        && fail "$mode diagnostic blamed the ENTRY file for a MODULE line (ESH-0364 regression)"
+    # The caret block must render the module's real source line, which only works
+    # if the module's TEXT was resolved too, not just its name.
+    grep -q "two-args 1" "$log" \
+        || fail "$mode diagnostic rendered no source line from the module (text not resolved with the name)"
+    echo "  ok: $mode diagnostic names armod.esk:6 and renders that file's source line"
+done
 
 # Positive control: correct arity, correct types, real child process.
 happy="$tmp/ffi_happy.esk"
