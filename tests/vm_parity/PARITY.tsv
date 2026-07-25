@@ -509,7 +509,7 @@ op:DEFINE	vm-supported	vm_compiler special-form dispatch
 op:DEFINE_RECORD_TYPE	vm-supported	verified 2026-07
 op:DEFINE_SYNTAX	gap	simple rewrite macros work; recursive and set!-mutating macros diverge (found/recursive_macro_zero.esk, found/macro_set_top_level.esk)
 op:DEFINE_TYPE	native-only-justified	static type syntax, erased before codegen
-op:DERIVATIVE	vm-supported	forward-mode dual derivative of a scalar function; matches native for polynomial and transcendental cases (verified via the gradient corpus scalar-point path)
+op:DERIVATIVE	vm-supported	forward-mode dual derivative of a scalar function, direct `(derivative f x)` and curried `((derivative f) x)` (ESH-0369 lowers the curry to (lambda (__dx__) (derivative f __dx__)) so both reach native 393 with the same (f, x) and agree exactly); matches native for polynomial and transcendental cases (verified via the gradient corpus scalar-point path). FIRST ORDER ONLY: the VM's carrier is a flat VmDual {value, tangent} with a single perturbation, so nested/higher-order differentiation — `(derivative (lambda (x) (derivative f x)) x0)` or `(derivative (derivative f))` — cannot be represented and native 393 RAISES a catchable error for a dual-valued point rather than fabricating the 0.0 it used to return. Higher-order AD needs the native jet (e1/e2/ep perturbation slots, autodiff_codegen.cpp seedForwardAndPush) or a VM Taylor tower; native-only until a VM jet carrier is built
 op:DERIVATIVE_N	gap	arbitrary-order Taylor-tower AD operator not implemented on VM surface
 op:DIFF	gap	AD surface diverges in VM
 op:DIRECTIONAL_DERIV	gap	AD surface diverges in VM
