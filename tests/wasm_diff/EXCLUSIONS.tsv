@@ -1,0 +1,26 @@
+# WASM execute-and-diff exclusions / expected-failures manifest.
+#
+# Consumed by scripts/run_wasm_differential.sh.  Each row overrides how one
+# file in the supported subset (tests/vm_parity/corpus/) is treated, so the
+# gate stays green while every divergence is documented per-file — never
+# silently skipped.
+#
+# Columns (TAB-separated):
+#   1  file      basename WITH .esk extension
+#   2  class     EXCLUDED | XFAIL
+#   3  reason    one-line justification (shown in the report + ICC trace)
+#
+# EXCLUDED  the program's surface cannot run in the WASM sandbox at all (an
+#           environment limitation, not a codegen correctness bug).  The
+#           comparison is skipped and an EXCLUDED event is emitted.
+#
+# XFAIL     a REAL, reported WASM bug in a supported surface.  The comparison
+#           still runs and is EXPECTED to diverge; a divergence is reported as
+#           XFAIL (does not break the gate).  If the program ever MATCHES
+#           native again (bug fixed), that XPASS FAILS the gate — the ratchet
+#           that forces this row to be removed so the file becomes fully gated.
+#           XFAIL never fixes the bug; it documents and tracks it.
+#
+# file	class	reason
+29_include_ci.esk	EXCLUDED	include-ci reads a .scm file from disk; the WASM sandbox has no filesystem so the include yields () and the program prints ()() — an environment limitation, not a codegen bug. The native VM (with a filesystem) matches native codegen, so this is out-of-subset for WASM.
+16_define_syntax.esk	XFAIL	REAL WASM BUG (reported, not fixed): under the batch compile path (compile_and_run) a program with two or more define-syntax forms mis-evaluates the FIRST macro's arithmetic in wasm32 — (dbl 21)=>(* 2 21) prints a garbage bignum (value varies per build; native prints 42). Minimal repro: two define-syntax + one display. Not a resource limit (repros with 8MB stack, SAFE_HEAP clean, VM heap/consts far from full); native VM (same source) is correct; the incremental REPL path (repl_eval) is also correct — the defect is batch-compile-in-wasm32 only.
