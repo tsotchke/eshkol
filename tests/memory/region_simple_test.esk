@@ -1,4 +1,17 @@
 ;;; Simple test for with-region memory management
+;;;
+;;; with-region must be value-transparent: the form's value is the value of its
+;;; body, and popping the region must not disturb it. The expected values are
+;;; just the arithmetic in each body -- they were already written into the
+;;; labels of the display-only version of this file.
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ;; Define a simple function first
 (define (add-one x) (+ x 1))
@@ -8,19 +21,14 @@
   (with-region
     (+ 10 20)))
 
-;; Display result
-(display "Result 1 (10 + 20): ")
-(display result1)
-(newline)
+(check "anonymous with-region returns (+ 10 20)" 30 result1)
 
 ;; Test named region
 (define result2
   (with-region 'calc-region
     (* 5 5)))
 
-(display "Result 2 (5 * 5): ")
-(display result2)
-(newline)
+(check "named with-region returns (* 5 5)" 25 result2)
 
 ;; Test nested regions
 (define result3
@@ -29,9 +37,9 @@
        (with-region 'inner
          (* 3 4)))))
 
-(display "Result 3 (100 + 3*4): ")
-(display result3)
-(newline)
+(check "nested with-region returns (+ 100 (* 3 4))" 112 result3)
 
-(display "All region tests passed!")
-(newline)
+;; A call into a function defined outside the region must still work, and its
+;; result must survive the region pop.
+(check "with-region body calling an outer procedure" 42
+       (with-region 'call-out (add-one 41)))

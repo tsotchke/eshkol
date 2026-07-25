@@ -1,45 +1,41 @@
 ;;; Test reorganized stdlib
+;;;
+;;; Expected values are fixed by what each name denotes (SRFI-1 iota, ordinary
+;;; function composition, a stable ascending sort), not by current output.
 (require stdlib)
 
-(display "Testing reorganized stdlib:")
-(newline)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ;;; Test arithmetic operators
-(display "  add(3, 4) = ")
-(display (add 3 4))
-(newline)
+(check "add(3, 4)" 7 (add 3 4))
 
 ;;; Test comparison
-(display "  lt(3, 5) = ")
-(display (lt 3 5))
-(newline)
+(check "lt(3, 5)" #t (lt 3 5))
+(check "lt(5, 3)" #f (lt 5 3))
 
 ;;; Test predicates
-(display "  is-even?(4) = ")
-(display (is-even? 4))
-(newline)
+(check "is-even?(4)" #t (is-even? 4))
+(check "is-even?(5)" #f (is-even? 5))
 
-;;; Test compose
+;;; Test compose -- (compose f g) x = f (g x)
 (define (double x) (* x 2))
 (define (inc x) (+ x 1))
-(display "  (compose double inc)(5) = ")
-(display ((compose double inc) 5))
-(newline)
+(check "(compose double inc)(5) = double(inc(5))" 12 ((compose double inc) 5))
+;; ...and the order matters: the other order would give 11.
+(check "(compose inc double)(5) = inc(double(5))" 11 ((compose inc double) 5))
 
-;;; Test iota
-(display "  (iota 5) = ")
-(display (iota 5))
-(newline)
+;;; Test iota -- SRFI-1: (iota count) counts up from 0
+(check "(iota 5)" '(0 1 2 3 4) (iota 5))
 
 ;;; Test curry
-(display "  ((curry2 add) 3 4) = ")
-(display (((curry2 add) 3) 4))
-(newline)
+(check "((curry2 add) 3) 4" 7 (((curry2 add) 3) 4))
 
 ;;; Test sort
-(display "  (sort '(3 1 4 1 5) <) = ")
-(display (sort '(3 1 4 1 5) <))
-(newline)
-
-(display "Stdlib test passed!")
-(newline)
+(check "(sort '(3 1 4 1 5) <)" '(1 1 3 4 5) (sort '(3 1 4 1 5) <))
+(check "(sort '(3 1 4 1 5) >)" '(5 4 3 1 1) (sort '(3 1 4 1 5) >))

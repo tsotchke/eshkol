@@ -7,6 +7,19 @@
 ;; are transformed to letrec*. Once a non-define expression appears,
 ;; everything after it goes into the letrec* body in order.
 
+;; Every case below is a value assertion, not a display. The expected values
+;; are fixed by R7RS body-evaluation order, not by whatever the compiler
+;; currently emits: a body is evaluated left to right, so a
+;; (vector-set! v 0 42.0) written before (define x (vector-ref v 0)) must be
+;; visible to it.
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
+
 ;; Test 1: Side effects between defines must execute in order
 (define (test-interleaved-side-effects)
   (define v (make-vector 2 0.0))
@@ -14,10 +27,8 @@
   (define x (vector-ref v 0))      ;; should see 42.0, not 0.0
   x)
 
-(display "Test 1 (interleaved side effects): ")
-(define result1 (test-interleaved-side-effects))
-(display result1) (newline)
-;; Must print 42.0 — if it prints 0.0, the bug has regressed
+;; Must be 42.0 — if it is 0.0, the hoisting bug has regressed.
+(check "interleaved side effects" 42.0 (test-interleaved-side-effects))
 
 ;; Test 2: Multiple side effects between defines
 (define (test-multiple-side-effects)
@@ -30,10 +41,7 @@
                  (vector-ref v 2) (vector-ref v 3)))
   sum)
 
-(display "Test 2 (multiple side effects): ")
-(define result2 (test-multiple-side-effects))
-(display result2) (newline)
-;; Must print 10.0
+(check "multiple side effects" 10.0 (test-multiple-side-effects))
 
 ;; Test 3: Consecutive defines at start should still work as letrec*
 (define (test-consecutive-defines)
@@ -42,9 +50,7 @@
   (define c 30)
   (+ a b c))
 
-(display "Test 3 (consecutive defines): ")
-(display (test-consecutive-defines)) (newline)
-;; Must print 60
+(check "consecutive defines" 60 (test-consecutive-defines))
 
 ;; Test 4: The original reshape bug scenario
 (define (test-reshape-after-set)
@@ -55,9 +61,5 @@
   (define T-data (tensor-data T))
   (+ (vector-ref T-data 0) (vector-ref T-data 3)))
 
-(display "Test 4 (reshape after vector-set!): ")
-(display (test-reshape-after-set)) (newline)
-;; Must print 5.0 (1.0 + 4.0)
-
-(display "All letrec* regression tests passed!")
-(newline)
+;; 1.0 + 4.0 — the reshape must observe both vector-set!s.
+(check "reshape after vector-set!" 5.0 (test-reshape-after-set))

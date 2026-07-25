@@ -1,52 +1,39 @@
 ;;; Test new stdlib functions
+;;;
+;;; Expected values are R7RS / SRFI-1 semantics for each accessor and mapper --
+;;; they were already written into the labels of the display-only version.
 (require stdlib)
 
-(display "=== Testing new stdlib functions ===")
-(newline)
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "PASS: ") (display name) (newline))
+      (begin (display "FAIL: ") (display name)
+             (display " -- expected ") (write expected)
+             (display ", got ") (write actual)
+             (newline))))
 
 ;; Test map
-(display "map (+ 1) '(1 2 3): ")
-(display (map (lambda (x) (+ x 1)) '(1 2 3)))
-(newline)
+(check "map (+ 1) '(1 2 3)" '(2 3 4) (map (lambda (x) (+ x 1)) '(1 2 3)))
 
 ;; Test map2
-(display "map2 + '(1 2 3) '(10 20 30): ")
-(display (map2 + '(1 2 3) '(10 20 30)))
-(newline)
+(check "map2 + '(1 2 3) '(10 20 30)" '(11 22 33) (map2 + '(1 2 3) '(10 20 30)))
 
 ;; Test cadr
-(display "cadr '(1 2 3): ")
-(display (cadr '(1 2 3)))
-(newline)
+(check "cadr '(1 2 3)" 2 (cadr '(1 2 3)))
 
 ;; Test caddr
-(display "caddr '(1 2 3 4): ")
-(display (caddr '(1 2 3 4)))
-(newline)
+(check "caddr '(1 2 3 4)" 3 (caddr '(1 2 3 4)))
 
 ;; Test caar
-(display "caar '((1 2) 3): ")
-(display (caar '((1 2) 3)))
-(newline)
+(check "caar '((1 2) 3)" 1 (caar '((1 2) 3)))
 
 ;; Test first/second/third
-(display "first '(a b c): ")
-(display (first '(a b c)))
-(newline)
-
-(display "second '(a b c): ")
-(display (second '(a b c)))
-(newline)
-
-(display "third '(a b c): ")
-(display (third '(a b c)))
-(newline)
+(check "first '(a b c)" 'a (first '(a b c)))
+(check "second '(a b c)" 'b (second '(a b c)))
+(check "third '(a b c)" 'c (third '(a b c)))
 
 ;; Test nested map
-(display "map square (map (+ 1) '(1 2 3)): ")
 (define (square x) (* x x))
-(display (map square (map (lambda (x) (+ x 1)) '(1 2 3))))
-(newline)
-
-(display "=== All tests passed ===")
-(newline)
+(check "map square (map (+ 1) '(1 2 3))"
+       '(4 9 16)
+       (map square (map (lambda (x) (+ x 1)) '(1 2 3))))
