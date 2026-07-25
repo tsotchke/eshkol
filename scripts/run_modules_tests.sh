@@ -5,6 +5,13 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "modules"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -20,10 +27,13 @@ COMPILE_FAIL=0
 declare -a FAILED_TESTS
 declare -a RUNTIME_ERRORS
 
-RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-modules-tests.XXXXXX")
+RUN_DIR="$ESHKOL_TEST_TMPDIR/run"
+mkdir -p "$RUN_DIR"
 cleanup() {
-    rm -rf "$RUN_DIR"
-    rm -f a.out a.out.tmp.o 2>/dev/null || true
+    # No repo-root `rm -f a.out` here: this suite compiles to $RUN_DIR, and
+    # reaching into the repo root deleted whatever a *concurrent* suite had just
+    # built there — the exact cross-suite clobber this isolation pass removes.
+    eshkol_test_isolation_cleanup
 }
 trap cleanup EXIT
 
@@ -99,7 +109,10 @@ for test_file in tests/modules/*.esk; do
             # Compilation succeeded, try to run
             if "$test_bin" > "$test_output" 2>&1; then
                 # Check if there were any errors in output
-                if grep -q "error:" "$test_output"; then
+                # `error:` alone is a compiler diagnostic, not a verdict: these
+                # programs print their own FAIL lines and exit 0, so scan for
+                # failure markers too — anywhere on the line, not just column 0.
+                if eshkol_test_output_has_failure "$test_output" 'error:'; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
                     ((FAIL++)) || true

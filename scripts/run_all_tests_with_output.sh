@@ -17,6 +17,11 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Change to project directory
 cd "$PROJECT_DIR"
 
+# Per-run, per-repo-root isolation; this script owns its own EXIT trap.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$SCRIPT_DIR/lib/test_isolation.sh"
+eshkol_test_isolation_init "all-verbose"
+
 # Counters
 SUITES_PASS=0
 SUITES_FAIL=0
@@ -60,18 +65,9 @@ if [ ! -d "$BUILD_DIR" ]; then
 fi
 
 cleanup_output_log() {
-    local path="${OUTPUT_LOG:-}"
-
-    if [ -z "$path" ]; then
-        return
-    fi
-
-    if [ -L "$path" ] || { [ -e "$path" ] && ! test -f "$path"; }; then
-        echo "Refusing to remove non-file or symlinked output log path: $path" >&2
-        return
-    fi
-
-    rm -f -- "$path"
+    # OUTPUT_LOG lives inside this run's private scratch directory, which the
+    # shared helper owns and removes.
+    eshkol_test_isolation_cleanup
 }
 
 require_regular_executable() {
@@ -115,11 +111,14 @@ run_suite_script() {
 # Check if compiler exists
 require_regular_executable "eshkol-run" "$BUILD_DIR/eshkol-run"
 
+# Fingerprint the relinkable toolchain artifacts; re-checked before the verdict.
+eshkol_test_toolchain_snapshot "$BUILD_DIR"
+
 echo "Running all test suites with full output..."
 echo ""
 
-# Create temp file for output
-OUTPUT_LOG=$(mktemp)
+# Create temp file for output, inside this run's private scratch directory.
+OUTPUT_LOG="$ESHKOL_TEST_TMPDIR/suite.log"
 trap cleanup_output_log EXIT
 
 # Run each test suite
@@ -147,8 +146,14 @@ for script in "${TEST_SCRIPTS[@]}"; do
     echo -e "${BLUE}═════════════════════════════════════════${NC}"
     echo ""
 
-    # Run with full output, capture exit code
-    if run_suite_script "$script_path" 2>&1 | tee "$OUTPUT_LOG"; then
+    # Run with full output, capture exit code.
+    #
+    # The status that matters is the SUITE's, not tee's. `if suite | tee log`
+    # tests tee, which always succeeds, so every suite was recorded PASSED and
+    # this script could not fail no matter what broke. Read PIPESTATUS[0].
+    run_suite_script "$script_path" 2>&1 | tee "$OUTPUT_LOG"
+    suite_exit=${PIPESTATUS[0]}
+    if [ "$suite_exit" -eq 0 ]; then
         echo ""
         echo -e "${GREEN}═══ $suite_name: PASSED ═══${NC}"
         PASSED_SUITES+=("$suite_name")
@@ -196,6 +201,11 @@ if [ $TOTAL -gt 0 ]; then
 fi
 
 echo ""
+
+# A rebuild during the run invalidates every verdict above.
+if ! eshkol_test_toolchain_verify "$BUILD_DIR"; then
+    exit 3
+fi
 
 # Exit with appropriate code
 if [ $SUITES_FAIL -eq 0 ]; then

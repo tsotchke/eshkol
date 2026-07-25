@@ -3,13 +3,20 @@
 
 set -euo pipefail
 
+# Per-run, per-repo-root isolation and the shared honest-detection helpers.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "manifold"
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${BUILD_DIR:-build}"
 ESHKOL_RUN="$ROOT_DIR/$BUILD_DIR/eshkol-run"
 TEST_FILE="$ROOT_DIR/tests/manifold/manifold_test.esk"
-RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-manifold-tests.XXXXXX")"
+RUN_DIR="$ESHKOL_TEST_TMPDIR/run"
+mkdir -p "$RUN_DIR"
 TEST_BIN="$RUN_DIR/manifold_test"
-cleanup() { rm -rf "$RUN_DIR"; }
+RUN_OUT="$RUN_DIR/manifold_test.out"
+cleanup() { eshkol_test_isolation_cleanup; }
 trap cleanup EXIT
 
 echo "========================================="
@@ -22,7 +29,42 @@ if [ ! -x "$ESHKOL_RUN" ]; then
 fi
 
 "$ESHKOL_RUN" -L"$ROOT_DIR/$BUILD_DIR" "$TEST_FILE" -o "$TEST_BIN"
-"$TEST_BIN"
+
+# The summary below used to be hardcoded "Passed: 1 / Failed: 0", printed
+# whenever the binary exited 0. The test program prints its own per-case
+# verdicts and exits 0 regardless, so a failing regression was reported as a
+# pass — and run_all_tests.sh scraped that fabricated summary into the
+# aggregate count. Derive the verdict from what the program actually printed.
+set +e
+"$TEST_BIN" > "$RUN_OUT" 2>&1
+run_rc=$?
+set -e
+cat "$RUN_OUT"
+
+if [ "$run_rc" -ne 0 ]; then
+    echo ""
+    echo "Passed: 0"
+    echo "Failed: 1"
+    exit "$run_rc"
+fi
+
+if eshkol_test_output_has_failure "$RUN_OUT" 'error:'; then
+    echo ""
+    echo "Failing lines:"
+    eshkol_test_output_failures "$RUN_OUT" 'error:' 20 | sed 's/^/  /'
+    echo ""
+    echo "Passed: 0"
+    echo "Failed: 1"
+    exit 1
+fi
+
+if eshkol_test_output_is_silent "$RUN_OUT"; then
+    echo ""
+    echo "The manifold test produced no output — absence of a verdict is not a pass."
+    echo "Passed: 0"
+    echo "Failed: 1"
+    exit 1
+fi
 
 echo ""
 echo "Passed: 1"

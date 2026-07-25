@@ -3,6 +3,12 @@
 # System Test Suite (Hash Tables, File I/O, etc.)
 # Runs all system-level tests
 
+
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "system"
 set +e  # Don't exit on error
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,16 +48,26 @@ for test_file in "$TEST_DIR"/*.esk; do
     printf "Testing: %-40s " "$test_name"
 
     # Compile
-    if ! ./$BUILD_DIR/eshkol-run "$test_file" > /dev/null 2>&1; then
+    if ! ./$BUILD_DIR/eshkol-run "$test_file" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         echo -e "${RED}COMPILE FAIL${NC}"
         ((FAIL++))
         continue
     fi
 
-    # Run
-    if ./a.out > /dev/null 2>&1; then
-        echo -e "${GREEN}PASS${NC}"
-        ((PASS++))
+    # Run.
+    #
+    # The output is captured, not discarded: these programs print their own
+    # verdicts and exit 0 either way, so throwing stdout at /dev/null and
+    # trusting the exit status certified every failing assertion as a PASS.
+    if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
+        if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT" 'error:'; then
+            echo -e "${RED}ASSERTION FAIL${NC}"
+            eshkol_test_output_failures "$ESHKOL_TEST_OUT" 'error:' 10 | sed 's/^/    /'
+            ((FAIL++))
+        else
+            echo -e "${GREEN}PASS${NC}"
+            ((PASS++))
+        fi
     else
         EXIT_CODE=$?
         if [ $EXIT_CODE -eq 139 ] || [ $EXIT_CODE -eq 134 ]; then
@@ -74,8 +90,7 @@ if [ $TOTAL -gt 0 ]; then
 fi
 echo "========================================="
 
-rm -f a.out
-
+eshkol_test_reset_bin
 if [ $FAIL -gt 0 ]; then
     exit 1
 else

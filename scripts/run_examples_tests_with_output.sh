@@ -5,6 +5,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "examples-out"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -65,17 +71,16 @@ for test_file in $FILES; do
     echo "========================================="
 
     # Clean up stale temp files
-    rm -f a.out a.out.tmp.o
-
+    eshkol_test_reset_bin
     echo -e "${BLUE}[Compiling...]${NC}"
 
     # Try to compile (show output)
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" 2>&1; then
         echo ""
         echo -e "${BLUE}[Running...]${NC}"
 
         # Try to run (show output)
-        if ./a.out 2>&1; then
+        if "$ESHKOL_TEST_BIN" 2>&1; then
             echo ""
             echo -e "${GREEN}✅ PASS${NC}"
             ((PASS++))
@@ -105,8 +110,7 @@ echo -e "${GREEN}Passed: $PASS${NC}"
 echo -e "${RED}Failed: $FAIL${NC}"
 
 # Clean up
-rm -f a.out a.out.tmp.o
-
+eshkol_test_reset_bin
 if [ $FAIL -eq 0 ]; then
     exit 0
 else

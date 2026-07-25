@@ -9,6 +9,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "xla"
+
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO_ROOT"
 TRACE_DIR=${ICC_TRACE_DIR:-"$REPO_ROOT/scripts/icc_traces"}
@@ -66,12 +72,12 @@ build_cache_enables_xla() {
 }
 
 cleanup_xla_binary_artifacts() {
-    rm -f a.out a.out.tmp.o
+    eshkol_test_reset_bin
 }
 
 cleanup_xla_temp_artifacts() {
     cleanup_xla_binary_artifacts
-    rm -f /tmp/xla_test_output.txt /tmp/xla_compile.log /tmp/xla_perf_output.txt /tmp/xla_perf_test.esk
+    rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_TMPDIR/xla_perf.out" "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
 }
 
 select_timeout_command() {
@@ -187,19 +193,29 @@ else
         cleanup_xla_binary_artifacts
 
         # Try to compile
-        if "$BUILD_DIR/eshkol-run" "$test_file" -L"$BUILD_DIR" > /tmp/xla_compile.log 2>&1; then
+        if "$BUILD_DIR/eshkol-run" "$test_file" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
             # Compilation succeeded, try to run
-            if ./a.out > /tmp/xla_test_output.txt 2>&1; then
+            if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
                 # Check for FAIL markers in output (from test assertions)
-                if grep -q "^FAIL:" /tmp/xla_test_output.txt; then
+                # A failure marker anywhere in the output fails the test — the old
+                # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
+                # form that most test programs actually print.
+                if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
                     echo -e "${RED}❌ ASSERTION FAIL${NC}"
                     FAILED_TESTS+=("$test_name")
                     ((FAIL++)) || true
                     # Show failed assertions
-                    grep -i "fail" /tmp/xla_test_output.txt | head -3 | sed 's/^/    /'
-                elif grep -v "PASS" /tmp/xla_test_output.txt | grep -qi "error:"; then
+                    grep -i "fail" "$ESHKOL_TEST_OUT" | head -3 | sed 's/^/    /'
+                elif grep -v "PASS" "$ESHKOL_TEST_OUT" | grep -qi "error:"; then
                     echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                     RUNTIME_ERRORS+=("$test_name")
+                    ((FAIL++)) || true
+                elif eshkol_test_output_is_silent "$ESHKOL_TEST_OUT"; then
+                    # No success marker existed here at all: PASS was simply the
+                    # default branch, so a test that died before printing
+                    # anything was scored as passing.
+                    echo -e "${RED}❌ NO OUTPUT${NC}"
+                    FAILED_TESTS+=("$test_name")
                     ((FAIL++)) || true
                 else
                     echo -e "${GREEN}✅ PASS${NC}"
@@ -217,7 +233,7 @@ else
             ((COMPILE_FAIL++)) || true
             ((FAIL++)) || true
             # Show compile error (last few lines)
-            tail -3 /tmp/xla_compile.log 2>/dev/null | sed 's/^/    /'
+            tail -3 "$ESHKOL_TEST_COMPILE_LOG" 2>/dev/null | sed 's/^/    /'
         fi
     done
 fi
@@ -228,7 +244,7 @@ echo ""
 echo -e "${BLUE}===== Performance Sanity Check =====${NC}"
 
 # Quick benchmark to verify matmul path is working
-cat > /tmp/xla_perf_test.esk << 'ESKEOF'
+cat > "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk" << 'ESKEOF'
 ;; Quick performance sanity check
 (define N 150)
 (define A (reshape (arange (* N N)) N N))
@@ -241,14 +257,14 @@ ESKEOF
 
 printf "Testing %-45s " "performance_sanity"
 
-if "$BUILD_DIR/eshkol-run" /tmp/xla_perf_test.esk -L"$BUILD_DIR" > /tmp/xla_compile.log 2>&1; then
+if "$BUILD_DIR/eshkol-run" "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
     start_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
     if TIMEOUT_CMD="$(select_timeout_command)"; then
-        PERF_RUN=("$TIMEOUT_CMD" 60 ./a.out)
+        PERF_RUN=("$TIMEOUT_CMD" 60 "$ESHKOL_TEST_BIN")
     else
-        PERF_RUN=(./a.out)
+        PERF_RUN=("$ESHKOL_TEST_BIN")
     fi
-    if "${PERF_RUN[@]}" > /tmp/xla_perf_output.txt 2>&1; then
+    if "${PERF_RUN[@]}" > "$ESHKOL_TEST_TMPDIR/xla_perf.out" 2>&1; then
         end_time=$(python3 -c "import time; print(int(time.time() * 1000))" 2>/dev/null || date +%s%3N)
         elapsed=$((end_time - start_time))
         echo -e "${GREEN}✅ PASS${NC} (${elapsed}ms)"
@@ -265,7 +281,7 @@ else
     ((FAIL++)) || true
 fi
 
-rm -f /tmp/xla_perf_test.esk
+rm -f "$ESHKOL_TEST_TMPDIR/xla_perf_test.esk"
 
 echo ""
 

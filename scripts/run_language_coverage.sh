@@ -54,6 +54,21 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
         exit 2
     fi
 
+    # Pin the compiler for the duration of the run. This script drives the whole
+    # test corpus twice over (core, then quantum) for tens of minutes; a rebuild
+    # of either tree mid-run makes the coverage evidence a mixture of two
+    # compilers, and a single relink was enough to manufacture a SEGFAULT
+    # verdict for a test that passes on a stable build. run_all_tests.sh is
+    # invoked with a repository-relative BUILD_DIR (its interface), so the guard
+    # here is a start/end fingerprint of every relinkable artifact in both trees
+    # rather than a redirect at a private copy.
+    ESHKOL_TEST_ISOLATION_NO_TRAP=1
+    # shellcheck source=lib/test_isolation.sh
+    source "$REPO_ROOT/scripts/lib/test_isolation.sh"
+    eshkol_test_isolation_init "language-coverage"
+    eshkol_test_toolchain_snapshot "$BUILD_DIR_PATH" core
+    eshkol_test_toolchain_snapshot "$QUANTUM_BUILD_DIR_PATH" quantum
+
     GENERATED_TRACE_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-language-coverage.XXXXXX")
     cleanup() {
         local rc=$?
@@ -62,6 +77,7 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
         else
             rm -rf "$GENERATED_TRACE_ROOT"
         fi
+        eshkol_test_isolation_cleanup
         return "$rc"
     }
     trap cleanup EXIT
@@ -79,6 +95,16 @@ if [ -z "$RUNTIME_TRACE_DIRS" ]; then
         ESHKOL_LANGUAGE_COVERAGE_TRACE_DIR="$QUANTUM_TRACE" \
             "$QUANTUM_RUN" -r "$test" "-L$QUANTUM_BUILD_DIR_PATH"
     done
+
+    # Refuse to publish coverage evidence gathered across a rebuild.
+    if ! eshkol_test_toolchain_verify "$BUILD_DIR_PATH" core; then
+        echo "run_language_coverage: refusing to publish coverage evidence from an invalid run." >&2
+        exit 3
+    fi
+    if ! eshkol_test_toolchain_verify "$QUANTUM_BUILD_DIR_PATH" quantum; then
+        echo "run_language_coverage: refusing to publish coverage evidence from an invalid run." >&2
+        exit 3
+    fi
 
     RUNTIME_TRACE_DIRS="$CORE_TRACE:$QUANTUM_TRACE"
 fi

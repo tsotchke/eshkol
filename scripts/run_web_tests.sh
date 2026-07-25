@@ -5,6 +5,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "web"
+
 # Honour $BUILD_DIR (CI passes it via the matrix); fall back to "build" for plain local runs.
 BUILD_DIR="${BUILD_DIR:-build}"
 
@@ -15,7 +21,7 @@ SERVER_BIN="$PROJECT_DIR/$BUILD_DIR/eshkol-server"
 ESHKOL_RUN="$PROJECT_DIR/$BUILD_DIR/eshkol-run"
 PORT="${ESHKOL_WEB_TEST_PORT:-}"
 SERVER_PID=""
-SERVER_LOG_TMP="/tmp/eshkol_server_$$.log"
+SERVER_LOG_TMP="$ESHKOL_TEST_TMPDIR/eshkol_server.log"
 
 # Colors
 RED='\033[0;31m'
@@ -32,7 +38,10 @@ cleanup() {
         kill "$SERVER_PID" 2>/dev/null || true
         wait "$SERVER_PID" 2>/dev/null || true
     fi
-    rm -f /tmp/eshkol_web_test_*.tmp "$SERVER_LOG_TMP"
+    # Scoped to this run only. The old `rm -f /tmp/eshkol_web_test_*.tmp` glob
+    # matched every concurrent run's scratch files, not just our own.
+    rm -f "$ESHKOL_TEST_TMPDIR"/*.tmp "$SERVER_LOG_TMP"
+    eshkol_test_isolation_cleanup
 }
 
 trap cleanup EXIT
@@ -261,7 +270,7 @@ for test_file in "$PROJECT_DIR"/tests/web/*.esk; do
     printf "Testing %-45s " "$test_name"
 
     # Compile to WASM
-    output_wasm="/tmp/eshkol_web_test_$$.wasm"
+    output_wasm="$ESHKOL_TEST_TMPDIR/eshkol_web_test.wasm"
     if "$ESHKOL_RUN" "$test_file" --wasm -o "$output_wasm" 2>/dev/null; then
         # Check if WASM file was created and is valid
         if wasm_file_is_valid "$output_wasm"; then
@@ -304,6 +313,12 @@ if [ "$START_RC" -eq 2 ]; then
     echo -e "${GREEN}Passed:         $PASS${NC}"
     echo -e "${RED}Failed:         $FAIL${NC}"
     echo ""
+    # The skip path must not launder failures already recorded by Part 1. The
+    # unconditional `exit 0` here reported success even when $FAIL was nonzero.
+    if [ "$FAIL" -ne 0 ]; then
+        echo -e "${RED}Server tests were skipped, but $FAIL earlier test(s) failed.${NC}"
+        exit 1
+    fi
     echo -e "${GREEN}WASM tests passed; server bind unavailable, server tests skipped.${NC}"
     exit 0
 fi

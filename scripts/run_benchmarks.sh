@@ -4,6 +4,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "benchmarks"
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="${PROJECT_DIR}/build"
@@ -27,10 +33,11 @@ run_benchmark() {
     echo "----------------------------------------"
 
     # Compile and link (using same mode as test scripts)
-    "$BUILD_DIR/eshkol-run" "$bench_file" -L"$BUILD_DIR" -o "/tmp/${bench_name}" 2>&1
+    "$BUILD_DIR/eshkol-run" "$bench_file" -L"$BUILD_DIR" \
+        -o "$ESHKOL_TEST_TMPDIR/${bench_name}" 2>&1
 
     # Run
-    "/tmp/${bench_name}"
+    "$ESHKOL_TEST_TMPDIR/${bench_name}"
 
     echo ""
 }

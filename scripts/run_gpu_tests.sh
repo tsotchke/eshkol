@@ -5,6 +5,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "gpu"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -56,22 +62,31 @@ for test_file in tests/gpu/*.esk; do
     printf "Testing %-50s " "$test_name"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
-
+    eshkol_test_reset_bin
     # Try to compile
-    if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" > /dev/null 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run "$test_file" -L./"$BUILD_DIR" -o "$ESHKOL_TEST_BIN" > /dev/null 2>&1; then
         # Compilation succeeded, try to run
         if [ "$test_name" = "cuda_host_sync_regression_test.esk" ]; then
-            runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 ./a.out)
+            runtime_cmd=(env ESHKOL_GPU_THRESHOLD=1 ESHKOL_GPU_VERBOSE=1 "$ESHKOL_TEST_BIN")
         else
-            runtime_cmd=(./a.out)
+            runtime_cmd=("$ESHKOL_TEST_BIN")
         fi
 
-        if "${runtime_cmd[@]}" > /tmp/gpu_test_output.txt 2>&1; then
+        if "${runtime_cmd[@]}" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for FAIL markers in output
-            if grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" /tmp/gpu_test_output.txt; then
+            # A failure marker anywhere in the output fails the test — the old
+            # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
+            # form that most test programs actually print.
+            if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
                 echo -e "${YELLOW}FAIL MARKER${NC}"
+                eshkol_test_output_failures "$ESHKOL_TEST_OUT" "" 12 | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")
+                ((FAIL++)) || true
+            elif eshkol_test_output_is_silent "$ESHKOL_TEST_OUT"; then
+                # These tests all print their own verdicts; producing nothing
+                # means the program died before saying anything. Not a pass.
+                echo -e "${RED}NO OUTPUT${NC}"
+                FAILED_TESTS+=("$test_name")
                 ((FAIL++)) || true
             else
                 echo -e "${GREEN}PASS${NC}"
@@ -128,7 +143,7 @@ fi
 echo ""
 
 # Clean up
-rm -f /tmp/gpu_test_output.txt a.out a.out.tmp.o
+rm -f "$ESHKOL_TEST_OUT" "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_BIN.tmp.o"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then

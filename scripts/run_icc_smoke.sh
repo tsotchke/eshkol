@@ -284,7 +284,8 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
     'cd "$REPO_ROOT";
      ## Inline list — avoid heredoc + double-eval quoting issues. Each
      ## test produces "PASS:" / "FAIL:" lines; we only fail the probe if
-     ## any test prints a literal "^FAIL:" or its summary shows nonzero
+     ## any test prints a FAIL marker anywhere on a line (indented
+     ## `  <case>: FAIL` included) or its summary shows nonzero
      ## "Failed: N" with N >= 1.
      for t in tests/v1_2_edge_cases/append_variadic_test.esk \
               tests/v1_2_edge_cases/main_substring_name_test.esk \
@@ -293,10 +294,10 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
               tests/v1_2_edge_cases/string_escapes_test.esk \
               tests/v1_2_edge_cases/procedure_arity_test.esk \
               tests/v1_2_edge_cases/json_schema_test.esk; do
-       bin="/tmp/icc_$(basename "$t" .esk).bin";
+       bin=$(mktemp "${TMPDIR:-/tmp}/icc_$(basename "$t" .esk).XXXXXX"); rm -f "$bin";
        "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
        tout=$("$bin" 2>&1);
-       if printf "%s" "$tout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]"; then
+       if printf "%s" "$tout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]"; then
          exit 1;
        fi;
      done;
@@ -463,11 +464,11 @@ probe string_edge_ops_r7rs 'string-map returns a string; string->number honors r
     'cd "$REPO_ROOT";
      t="tests/string/string_edge_test.esk";
      rout=$("$ESHKOL_RUN" -r "$t" 2>&1) || exit 1;
-     printf "%s" "$rout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
-     bin="/tmp/icc_string_edge.bin"; rm -f "$bin";
+     printf "%s" "$rout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
+     bin=$(mktemp "${TMPDIR:-/tmp}/icc_string_edge.XXXXXX"); rm -f "$bin";
      "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
      aout=$("$bin" 2>&1) || exit 1;
-     printf "%s" "$aout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
+     printf "%s" "$aout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
      rm -f "$bin";
      exit 0'
 
@@ -556,6 +557,8 @@ probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display 
        printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
        printf "%s" "$out" | grep -q "error:" && exit 1;
      fi;
+     exit 0'
+
 probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
     'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
      out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;

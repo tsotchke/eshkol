@@ -5,6 +5,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "list-out"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/test_output_helpers.sh"
 
@@ -77,16 +83,34 @@ for test_file in tests/lists/*.esk; do
     echo "" >> "$output_file"
     
     # Try to compile
-    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" > "$compile_output_file" 2>&1; then
+    if ./"$BUILD_DIR"/eshkol-run -L./"$BUILD_DIR" "$test_file" -o "$ESHKOL_TEST_BIN" > "$compile_output_file" 2>&1; then
         # Compilation succeeded, try to run
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"
         echo "OUTPUT:" >> "$output_file"
         echo "----------------------------------------" >> "$output_file"
         
-        if ./a.out >> "$output_file" 2>&1; then
+        # A zero exit status is not a pass. Capture the run output to its own
+        # file (the combined log mixes it with the compilation transcript) and
+        # scan it: these programs print their own FAIL lines and exit 0 either
+        # way, so trusting the status alone certified failing assertions.
+        "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1
+        RUN_EXIT=$?
+        cat "$ESHKOL_TEST_OUT" >> "$output_file"
+        if [ $RUN_EXIT -eq 0 ] && eshkol_test_output_has_failure "$ESHKOL_TEST_OUT" 'error:'; then
+            echo "----------------------------------------" >> "$output_file"
+            echo "RUNTIME: ASSERTION FAILURE (exit 0, output reports failures)" >> "$output_file"
+            echo "FINAL STATUS: ASSERTION FAIL" >> "$output_file"
+            echo -e "${RED}  ASSERTION FAIL (test exited 0 but reported failures)${NC}"
+            eshkol_test_output_failures "$ESHKOL_TEST_OUT" 'error:' 10 | sed 's/^/    /'
+            ((FAIL++))
+            FAILED_TESTS+=("$test_name")
+        elif [ $RUN_EXIT -eq 0 ]; then
             # Check if there were any errors in output
-            if grep -q "error:" "$output_file"; then
+            # `error:` alone is a compiler diagnostic, not a verdict: these
+            # programs print their own FAIL lines and exit 0, so scan for
+            # failure markers too — anywhere on the line, not just column 0.
+            if eshkol_test_output_has_failure "$output_file" 'error:'; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 echo "STATUS: RUNTIME ERROR" >> "$output_file"
                 RUNTIME_ERRORS+=("$test_name")
@@ -180,8 +204,7 @@ echo -e "${BLUE}Summary file: $RESULTS_FILE${NC}"
 echo ""
 
 # Clean up
-rm -f a.out
-
+eshkol_test_reset_bin
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then
     exit 0

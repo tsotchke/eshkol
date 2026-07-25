@@ -13,6 +13,12 @@
 
 set -u
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "v12-edge-runner"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN="$ROOT/$BUILD_DIR/eshkol-run"
 DIR="$ROOT/tests/v1_2_edge_cases"
@@ -56,18 +62,22 @@ run_one() {
 
     local mode; mode=$(detect_mode "$esk")
     local rc=0
+    # Capture the program output instead of discarding it: these tests print
+    # their own PASS/FAIL lines and exit 0 either way, so a verdict taken from
+    # the exit status alone certified printed failures as passes.
+    local out="$ESHKOL_TEST_TMPDIR/v1_2_edge_${name}.out"
 
     case "$mode" in
         jit)
-            "$RUN" -r "$esk" >/dev/null 2>&1
+            "$RUN" -r "$esk" > "$out" 2>&1
             rc=$?
             ;;
         compile|*)
-            local bin="/tmp/v1_2_edge_${name}_bin"
+            local bin="$ESHKOL_TEST_TMPDIR/v1_2_edge_${name}_bin"
             rm -f "$bin"
-            "$RUN" "$esk" -o "$bin" >/dev/null 2>&1 || { rc=$?; }
+            "$RUN" "$esk" -o "$bin" > "$out" 2>&1 || { rc=$?; }
             if [ "$rc" -eq 0 ] && [ -x "$bin" ]; then
-                "$bin" >/dev/null 2>&1
+                "$bin" > "$out" 2>&1
                 rc=$?
             elif [ "$rc" -eq 0 ]; then
                 # compile reported success but no binary — treat as fail
@@ -75,6 +85,15 @@ run_one() {
             fi
             ;;
     esac
+
+    if [ "$rc" -eq 0 ] && eshkol_test_output_has_failure "$out"; then
+        FAIL=$((FAIL+1))
+        FAILED_NAMES+=("$name [mode=$mode rc=0, output reports failures]")
+        eshkol_test_output_failures "$out" "" 6 | sed 's/^/    /'
+        rm -f "$out"
+        return
+    fi
+    rm -f "$out"
 
     if [ "$rc" -eq 0 ]; then
         PASS=$((PASS+1))

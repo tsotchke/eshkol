@@ -47,8 +47,13 @@ RUN="./$BUILD_DIR/eshkol-run"
 echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
 echo ""
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# Per-run, per-repo-root isolation and the shared honest-detection helpers.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "codegen-optlevel"
+WORK="$ESHKOL_TEST_TMPDIR/work"
+mkdir -p "$WORK"
+trap eshkol_test_isolation_cleanup EXIT
 
 PROBE="$WORK/optlevel_probe.esk"
 printf '%s\n' \
@@ -89,7 +94,27 @@ check_not_optimized() {
     printf "Testing %-52s " "$name"
 
     local log="$WORK/log.txt"
-    "$RUN" -d -L"./$BUILD_DIR" "$@" > "$log" 2>&1
+    local rc=0
+    "$RUN" -d -L"./$BUILD_DIR" "$@" > "$log" 2>&1 || rc=$?
+
+    # A compiler that crashed produces no "-O2/-O3" line either, so the plain
+    # "marker absent ⇒ PASS" test scored a failed compile as an assertion pass.
+    # Require the command to have succeeded and to have said *something*.
+    if [ "$rc" -ne 0 ]; then
+        echo -e "${RED}COMPILE FAIL (exit $rc)${NC}"
+        tail -5 "$log" | sed 's/^/      /'
+        FAILED_TESTS+=("$name")
+        ((FAIL++)) || true
+        return
+    fi
+    if eshkol_test_output_is_silent "$log"; then
+        echo -e "${RED}NO DIAGNOSTIC OUTPUT${NC}"
+        echo "    -d produced no pass diagnostics; absence of the -O2/-O3 line"
+        echo "    proves nothing when nothing was printed at all."
+        FAILED_TESTS+=("$name")
+        ((FAIL++)) || true
+        return
+    fi
 
     if grep -qE "optimization passes at -O[123]" "$log"; then
         echo -e "${RED}ASSERTION FAIL${NC}"

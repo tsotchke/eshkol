@@ -14,6 +14,12 @@
 # Usage: scripts/run_sicp_smoke.sh [--no-aot] [--allow-incomplete]
 set -u
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "sicp"
+
 # The timeout/json helpers are byte-oriented Perl snippets. Force a portable
 # locale here, not only in the test wrapper, so real release runs do not depend
 # on host-specific C.UTF-8 availability.
@@ -84,7 +90,12 @@ json_escape() {
 verdict() { # rc out -> echoes PASS|FAIL
     local rc="$1" out="$2"
     if [ "$rc" -ne 0 ]; then echo FAIL; return; fi
-    if printf '%s' "$out" | grep -qE '^FAIL:|HAS-FAIL|Failed:[[:space:]]+[1-9]|FAILS'; then echo FAIL; return; fi
+    # Unanchored: `  <case>: FAIL` (indented, no trailing colon) is the form
+    # most test programs print, and `^FAIL:` never saw it.
+    if eshkol_test_text_has_failure "$out" 'HAS-FAIL'; then echo FAIL; return; fi
+    # A run that printed nothing has not demonstrated anything. Absence of
+    # output is not a pass.
+    if [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then echo FAIL; return; fi
     echo PASS
 }
 
@@ -176,7 +187,7 @@ for f in "$REPO_ROOT"/tests/sicp/*.esk; do
     # ----- AOT -----
     av="SKIP"
     if [ "$DO_AOT" -eq 1 ]; then
-        bin="/tmp/sicp_${base}.bin"; rm -f "$bin"
+        bin="$ESHKOL_TEST_TMPDIR/sicp_${base}.bin"; rm -f "$bin"
         cout=$(run_guarded 180 "$ESHKOL_RUN" "$f" -o "$bin" 2>&1); crc=$?
         if [ "$crc" -ne 0 ]; then
             av=FAIL

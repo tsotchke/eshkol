@@ -22,17 +22,30 @@ ESHKOL="./${BUILD_DIR}/eshkol-run"
 FAILURE_LINES="${ESHKOL_EDGE_FAILURE_LINES:-40}"
 PASS=0
 FAIL=0
-LOCK_DIR="${TMPDIR:-/tmp}/eshkol_v12_edge.lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "Another v1.2 edge-case suite is already running; refusing to share temp/runtime resources." >&2
+# This suite is genuinely non-reentrant *within one checkout*: its tests bind
+# fixed runtime resources (ports, ESHKOL_PATH-relative module loads) that two
+# simultaneous runs would fight over.  The lock was previously machine-global,
+# so two git worktrees — two agents, or CI beside a local run — falsely blocked
+# each other with "already running" even though they share nothing.  Key it to
+# this repo root instead, and reclaim it if the previous holder was killed.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "v12-edge"
+
+if ! eshkol_test_acquire_lock "v12-edge"; then
+    echo "Another v1.2 edge-case suite is already running for this checkout" >&2
+    echo "  ($ESHKOL_TEST_REPO_ROOT); refusing to share temp/runtime resources." >&2
+    echo "Runs in other worktrees are unaffected — this lock is per repo root." >&2
     exit 2
 fi
-TMP_WORK=$(mktemp -d "${TMPDIR:-/tmp}/eshkol_v12.XXXXXX")
+
+TMP_WORK="$ESHKOL_TEST_TMPDIR"
 RUN_OUT_TMP="$TMP_WORK/run.out"
 COMPILE_ERR_TMP="$TMP_WORK/compile.err"
 AOT_BIN="$TMP_WORK/aot-test"
 cleanup() {
-    rm -rf "$TMP_WORK" "$LOCK_DIR"
+    eshkol_test_release_lock
+    eshkol_test_isolation_cleanup
 }
 trap cleanup EXIT
 

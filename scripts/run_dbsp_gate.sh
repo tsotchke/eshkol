@@ -32,26 +32,65 @@ fi
 
 FAILURES=0
 
+# Per-run, per-repo-root isolation and the shared honest-detection helpers.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$SCRIPT_DIR/lib/test_isolation.sh"
+eshkol_test_isolation_init "dbsp-gate"
+trap eshkol_test_isolation_cleanup EXIT
+
+# The header above says the test "exits non-zero on any failure". Nothing
+# enforced that: the output streamed straight to the terminal and the verdict
+# came from the exit status alone, so a run that printed FAIL lines and exited 0
+# was reported as "JIT: PASS". Capture the output and read it.
+DBSP_OUT="$ESHKOL_TEST_TMPDIR/dbsp.out"
+
+# $1 — label for the message; runs the rest as the command under test.
+dbsp_check_output() {
+    local label="$1"
+    if eshkol_test_output_has_failure "$DBSP_OUT"; then
+        echo "$label: FAIL (test reported failures while exiting 0)"
+        eshkol_test_output_failures "$DBSP_OUT" "" 10 | sed 's/^/  /'
+        return 1
+    fi
+    if eshkol_test_output_is_silent "$DBSP_OUT"; then
+        echo "$label: FAIL (no output — absence of a verdict is not a pass)"
+        return 1
+    fi
+    return 0
+}
+
 echo "========================================="
 echo "  core.dbsp acceptance gate (ADR 0009)"
 echo "========================================="
 
 echo ""
 echo "--- [1/2] JIT (-r) -----------------------"
-if "$RUN" -r "$TEST"; then
-    echo "JIT: PASS"
+if "$RUN" -r "$TEST" > "$DBSP_OUT" 2>&1; then
+    cat "$DBSP_OUT"
+    if dbsp_check_output "JIT"; then
+        echo "JIT: PASS"
+    else
+        FAILURES=$((FAILURES + 1))
+    fi
 else
+    cat "$DBSP_OUT"
     echo "JIT: FAIL"
     FAILURES=$((FAILURES + 1))
 fi
 
 echo ""
 echo "--- [2/2] AOT (compile + run) ------------"
-AOT_BIN="$(mktemp -t dbsp_aot.XXXXXX)"
+AOT_BIN="$ESHKOL_TEST_TMPDIR/dbsp_aot"
 if "$RUN" -o "$AOT_BIN" "$TEST"; then
-    if "$AOT_BIN"; then
-        echo "AOT: PASS"
+    if "$AOT_BIN" > "$DBSP_OUT" 2>&1; then
+        cat "$DBSP_OUT"
+        if dbsp_check_output "AOT"; then
+            echo "AOT: PASS"
+        else
+            FAILURES=$((FAILURES + 1))
+        fi
     else
+        cat "$DBSP_OUT"
         echo "AOT: FAIL (runtime)"
         FAILURES=$((FAILURES + 1))
     fi

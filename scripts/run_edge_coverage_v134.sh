@@ -152,9 +152,23 @@ if [ "${EDGE_V134_WORKER:-}" = 1 ]; then run_one "$1" "$2"; exit 0; fi
 # Coordinator
 # --------------------------------------------------------------------------
 mkdir -p "$TRACE_DIR"
-WORK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-edge-v134.XXXXXX")
+
+# Per-run isolation, and pin the binary under test. This suite drives eshkol-run
+# across a generated corpus for many minutes; a rebuild in the same worktree
+# mid-run used to swap the compiler underneath it, so failures (including
+# crashes) could belong to no single build. Run against a private copy instead.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+source "$REPO_ROOT/scripts/lib/test_isolation.sh"
+eshkol_test_isolation_init "edge-v134"
+PINNED_BUILD_DIR="$(eshkol_test_pin_toolchain "$BUILD_DIR_ABS")"
+ESHKOL_RUN="$PINNED_BUILD_DIR/eshkol-run"
+[ -x "$PINNED_BUILD_DIR/eshkol-vm-standalone-test" ] \
+    && ESHKOL_VM="$PINNED_BUILD_DIR/eshkol-vm-standalone-test"
+echo "run_edge_coverage_v134: pinned toolchain -> $PINNED_BUILD_DIR" >&2
+
+WORK_DIR="$ESHKOL_TEST_TMPDIR/work"
 GEN_DIR="$WORK_DIR/corpus"
-trap 'rm -rf "$WORK_DIR"' EXIT
+trap 'rm -rf "$WORK_DIR"; eshkol_test_isolation_cleanup' EXIT
 mkdir -p "$WORK_DIR/results" "$GEN_DIR"
 
 if [ -z "${ESHKOL_JIT_CACHE_DIR:-}" ]; then

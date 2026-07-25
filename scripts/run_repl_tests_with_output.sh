@@ -12,6 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 source "$SCRIPT_DIR/test_output_helpers.sh"
+# Shared honest-detection helpers (eshkol_test_output_has_failure et al).
+source "$SCRIPT_DIR/lib/test_isolation.sh"
 
 # Colors for output
 RED='\033[0;31m'
@@ -117,7 +119,10 @@ run_test_verbose() {
         SEGFAULT_TESTS+=("$test_name")
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true
-    elif grep -q "error:" "$output_file" 2>/dev/null; then
+    # `error:` alone is a compiler diagnostic, not a verdict: these
+    # programs print their own FAIL lines and exit 0, so scan for
+    # failure markers too — anywhere on the line, not just column 0.
+    elif eshkol_test_output_has_failure "$output_file" 'error:'; then
         echo "FINAL STATUS: RUNTIME ERROR" >> "$output_file"
         echo -e "${RED}  ❌ RUNTIME ERROR${NC}"
         FAILED_TESTS+=("$test_name")

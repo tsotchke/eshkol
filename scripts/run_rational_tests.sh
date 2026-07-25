@@ -5,6 +5,12 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+eshkol_test_isolation_init "rational"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -63,18 +69,20 @@ for test_file in "$RATIONAL_TEST_DIR"/*.esk; do
     printf "Testing %-45s " "$test_name"
 
     # Clean up stale artifacts
-    rm -f a.out
-
+    eshkol_test_reset_bin
     # Try to compile
-    if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR > /tmp/rational_compile.log 2>&1; then
+    if ./$BUILD_DIR/eshkol-run "$test_file" -L./$BUILD_DIR -o "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_COMPILE_LOG" 2>&1; then
         # Compilation succeeded, try to run
-        if ./a.out > /tmp/rational_test_output.txt 2>&1; then
+        if "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1; then
             # Check for FAIL markers in output
-            if grep -q "^FAIL:" /tmp/rational_test_output.txt; then
+            # A failure marker anywhere in the output fails the test — the old
+            # `^FAIL`-anchored match never saw the indented `  <case>: FAIL`
+            # form that most test programs actually print.
+            if eshkol_test_output_has_failure "$ESHKOL_TEST_OUT"; then
                 echo -e "${RED}ASSERTION FAIL${NC}"
                 FAILED_TESTS+=("$test_name")
                 ((FAIL++)) || true
-                grep "^FAIL:" /tmp/rational_test_output.txt | head -5 | sed 's/^/    /'
+                eshkol_test_output_failures "$ESHKOL_TEST_OUT" "" 5 | sed 's/^/    /'
             else
                 echo -e "${GREEN}PASS${NC}"
                 ((PASS++)) || true
@@ -89,7 +97,7 @@ for test_file in "$RATIONAL_TEST_DIR"/*.esk; do
         echo -e "${RED}COMPILE FAIL${NC}"
         FAILED_TESTS+=("$test_name")
         ((FAIL++)) || true
-        tail -3 /tmp/rational_compile.log 2>/dev/null | sed 's/^/    /'
+        tail -3 "$ESHKOL_TEST_COMPILE_LOG" 2>/dev/null | sed 's/^/    /'
     fi
 done
 
@@ -114,7 +122,7 @@ if [ $FAIL -gt 0 ]; then
 fi
 
 # Clean up
-rm -f a.out /tmp/rational_compile.log /tmp/rational_test_output.txt
+rm -f "$ESHKOL_TEST_BIN" "$ESHKOL_TEST_COMPILE_LOG" "$ESHKOL_TEST_OUT"
 
 # Exit with appropriate code
 if [ $FAIL -eq 0 ]; then
