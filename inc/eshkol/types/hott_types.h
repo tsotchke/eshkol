@@ -19,6 +19,11 @@
 #ifndef ESHKOL_TYPES_HOTT_TYPES_H
 #define ESHKOL_TYPES_HOTT_TYPES_H
 
+// For hott_type_kind_t, which BuiltinTypeSpelling (below) carries so the
+// parser and the type environment agree on one registry of type-name
+// spellings. type_checker.h already includes this header.
+#include "eshkol/eshkol.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -211,6 +216,11 @@ namespace BuiltinTypes {
     inline constexpr TypeId UInt32{34, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId UInt64{35, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId USize{36, Universe::U0, TYPE_FLAG_EXACT};
+    // R7RS exact rationals (heap numerator/denominator pairs — see
+    // core/rational.h and HEAP_SUBTYPE_RATIONAL). A sibling of Integer/Real
+    // under Number, matching how Complex already sits beside Real here rather
+    // than above it: this type graph keeps the numeric tower flat under Number.
+    inline constexpr TypeId Rational{37, Universe::U0, TYPE_FLAG_EXACT};
     inline constexpr TypeId Real{15, Universe::U0, 0};
     inline constexpr TypeId Float64{16, Universe::U0, 0};
     inline constexpr TypeId Float32{17, Universe::U0, 0};  // Single precision float
@@ -787,6 +797,72 @@ bool isNumericType(const TypeEnvironment& env, TypeId id);
  * Check if a type is a collection (List, Vector, etc.).
  */
 bool isCollectionType(const TypeEnvironment& env, TypeId id);
+
+// ============================================================================
+// CANONICAL BARE TYPE-NAME REGISTRY
+// ============================================================================
+
+/**
+ * @brief One canonical spelling of a *bare* (unparameterised) type name.
+ *
+ * A bare type name is a type written as a single symbol — `number`, `string`,
+ * `pair` — as opposed to a parenthesised type form like `(vector integer)`.
+ * They appear in parameter annotations (`(x : number)`), in return
+ * annotations, and in expression-level checked casts (`(the number e)`).
+ *
+ * `kind` is the dedicated hott_type_kind_t for spellings that have one
+ * (`integer` -> HOTT_TYPE_INTEGER). For every other spelling it is
+ * HOTT_TYPE_VAR, which means "carry the name and let
+ * TypeChecker::resolveType() resolve it through the type environment's name
+ * table" — which is exactly why @c id below must be registered under @c name.
+ *
+ * `id` is the TypeEnvironment id this spelling denotes, and
+ * initializeBuiltinTypes() registers @c name for it. BuiltinTypes::Invalid
+ * means "no TypeId denotes this spelling" (the bottom type `nothing` has a
+ * HoTT kind but no runtime type node); such spellings are still accepted, and
+ * are resolved by their dedicated @c kind alone.
+ */
+struct BuiltinTypeSpelling {
+    const char* name;
+    hott_type_kind_t kind;
+    TypeId id;
+};
+
+/**
+ * @brief The one canonical registry of bare type-name spellings.
+ *
+ * This table is the SINGLE SOURCE OF TRUTH for "is this symbol a type name",
+ * and it has exactly two consumers:
+ *
+ *   1. TypeEnvironment::initializeBuiltinTypes(), which registers every entry
+ *      with a valid `id` into the type environment's name table — so a name
+ *      that is spellable is always resolvable.
+ *   2. The parser: parsePrimitiveType() turns a spelling into a type
+ *      expression, and the `(the <type> <expr>)` lookahead uses
+ *      isBuiltinTypeName() to decide whether `the` heads an ascription.
+ *
+ * Those used to be three independently hand-maintained lists, which is how
+ * `(the number 3)` came to be a parse error while `(the string s)` worked and
+ * `number` was simultaneously a documented narrowing type: the parser's
+ * private allow-list simply omitted it, so the form degraded into a call to an
+ * undefined function named `the`. Add a bare type spelling HERE and all three
+ * agree by construction.
+ */
+const std::vector<BuiltinTypeSpelling>& builtinTypeSpellings();
+
+/**
+ * @brief Look up a bare type-name spelling (case-insensitive).
+ * @return The registry entry, or nullptr if @p name is not a type name.
+ */
+const BuiltinTypeSpelling* lookupBuiltinTypeSpelling(const std::string& name);
+
+/**
+ * @brief True if @p name is a bare type-name spelling (case-insensitive).
+ *
+ * The predicate the parser uses to tell a type ascription from an ordinary
+ * call. See builtinTypeSpellings().
+ */
+bool isBuiltinTypeName(const std::string& name);
 
 } // namespace eshkol::hott
 

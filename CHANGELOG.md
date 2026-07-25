@@ -296,9 +296,55 @@ across every new-feature family).
   manifest was regenerated for the new VM tensor special forms (builtin count
   unchanged). A CI identity guard rejects new commits that carry a forbidden
   private author email.
+- **`Rational` in the compile-time numeric tower.** Eshkol has had R7RS exact
+  rationals at runtime (`HEAP_SUBTYPE_RATIONAL`, `rational?`) with no
+  corresponding type, so `rational` was not a spellable type name. It is now a
+  registered exact type under `Number`, a sibling of `Integer`/`Real` — matching
+  how `Complex` already sits beside `Real` in this graph rather than above it.
 
 ### Fixed
 
+- **`--strict-types` did not make type errors fatal, contradicting `--help`
+  ("Type errors are fatal") and `docs/reference/runtime/eshkol-run.md`.** The
+  flag only changed the *wording* of the diagnostic — `[ERROR] Type error:`
+  instead of `[WARN] Type warning:` — after which code generation ran to
+  completion, the compile exited **0**, and the AOT path wrote a finished
+  binary for the program the type checker had just rejected. Every reject
+  fixture in `tests/typesystem/` demonstrated it: the error was printed and the
+  build succeeded anyway, so any build step trusting `$?` (or the existence of
+  the output file) certified ill-typed code. Under `--strict-types`, accumulated
+  type errors now abort compilation at the end of the type-checking phase: the
+  compile exits nonzero and **no** binary is produced. Gradual mode (the
+  default) is byte-for-byte unchanged — it warns and continues — and `--unsafe`
+  still reports nothing.
+- **A checked cast silently swallowed errors inside the expression it wrapped.**
+  `(the <type> <expr>)` synthesized `<expr>` and then *discarded* the result, so
+  a failing inner synthesis (an unbound variable, say) produced no diagnostic at
+  all and was not counted — the ascription hid exactly the nested error its
+  documentation promises not to hide, and `--strict-types` had nothing to be
+  fatal about. Nested failures now go through the unified enforcement point
+  while the ascribed type still flows onward: `the` trusts the *type*, not the
+  expression.
+- **`(the <type> expr)` rejected the most natural bare type names.** `(the
+  number 3)` was a parse error — "Unknown function: the" followed by "Undefined
+  variable: number" — because the form was recognised via a hand-maintained
+  allow-list inside the parser that omitted `number`, `pair`, `vector`,
+  `procedure`, `list`, `tensor`, `complex` and `rational`, so the ascription
+  degraded into a call to an undefined procedure named `the`. `number` is one of
+  the eight documented narrowing predicates, and
+  `docs/COMPLETE_LANGUAGE_SPECIFICATION.md` used `(the number (car
+  mixed-list))` as its own example. The parser's private list is gone: bare type
+  names now come from one canonical registry in the type system
+  (`eshkol::hott::builtinTypeSpellings()`), which also populates the type
+  environment's name table — so a spelling the parser accepts is always a
+  spelling the checker can resolve, and the two cannot drift apart again. Bare
+  container/constructor names (`pair`, `vector`, `list`, `tensor`, `complex`,
+  `procedure`, `closure`, `hash-table`, `qubit`, the sized integer and
+  autodiff spellings) resolve to their real types instead of silently widening
+  to `any`, `number` resolves through the previously-unwired
+  `HOTT_TYPE_NUMBER` kind, and calling through an ascribed callable
+  (`((the procedure f) x)`) no longer hits codegen's "Call expression requires
+  variable or inline lambda" bail-out.
 - **`(require stdlib)` (and any no-op `require`) silently shifted every
   subsequent top-level binding down one slot.** The bytecode compiler lowers a
   `require` of the always-available prelude to nothing, but the top-level (and
