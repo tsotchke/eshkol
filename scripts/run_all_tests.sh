@@ -236,21 +236,19 @@ extract_failures() {
     # as they print `FAIL: <case>`. Requiring `^\s*FAIL:` here hid whole classes
     # of assertion failure — tests/gpu/sf64_primitives_test.esk being the case
     # that exposed it.
+    # Filter the whole log once — zero-count summaries and decorative titles
+    # out, "Testing foo.esk" result lines out (Pattern 1 owns those) — then take
+    # what is left. Filtering per line would fork two processes per log line.
+    local assert_file="$TMPDIR_TESTS/${suite_name}_assertions.log"
+    grep -v '\.esk' "$clean_file" 2>/dev/null \
+        | eshkol_test_filter_verdict_noise \
+        | grep -E '(^|[^A-Za-z0-9_])FAIL([^A-Za-z0-9_]|$)' \
+        > "$assert_file" 2>/dev/null || true
     while IFS= read -r line; do
-        # Skip the "Testing foo.esk … FAIL" result lines — Pattern 1 owns those.
-        if echo "$line" | grep -qE '\.esk'; then
-            continue
-        fi
-        # Skip zero-count summaries ("Total: 17, PASS: 17, FAIL: 0") and
-        # decorative titles that merely contain the word ("=== FAIL TEST ===").
-        if [ -z "$(printf '%s\n' "$line" | eshkol_test_filter_verdict_noise)" ]; then
-            continue
-        fi
-        if echo "$line" | grep -qE '(^|[^A-Za-z0-9_])FAIL([^A-Za-z0-9_]|$)'; then
-            desc=$(echo "$line" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+$//')
-            ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
-        fi
-    done < "$clean_file"
+        desc=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+$//')
+        [ -n "$desc" ] || continue
+        ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
+    done < "$assert_file"
 
     # Count passes and fails from suite summary lines.
     # Handles:
