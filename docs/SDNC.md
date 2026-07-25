@@ -28,8 +28,8 @@ verifies **127/127 inline programs** (three-way self-test,
 `ctest -R sdnc_paper_weight_tests`) and **124/124 traced programs**.
 The matrix forward path agrees with the reference C interpreter on
 every byte of every step of every traced program. The artefact
-weight-implements **83 opcodes** — every opcode but `OP_NATIVE_CALL`,
-the deliberate external boundary for host services.
+weight-implements **82 of the 83 opcodes** — every opcode but
+`OP_NATIVE_CALL`, the deliberate external boundary for host services.
 
 > **Numbers track master.** The counts, line references, and IDs in
 > this document are re-verified against the current `master`; the SDNC

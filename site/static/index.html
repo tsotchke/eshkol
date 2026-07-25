@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Eshkol — R7RS Scheme on LLVM 21 with AD as a compiler primitive</title>
-  <meta name="description" content="Eshkol v1.3.3-evolve is R7RS Scheme on LLVM 21 with compiler-native automatic differentiation, Moonlab quantum/VQE, FIPS 203 ML-KEM, complete executable-surface evidence, and verified cross-platform release packages.">
-  <meta property="og:title" content="Eshkol — R7RS Scheme with AD as a compiler primitive">
-  <meta property="og:description" content="Compiler-native AD, quantum/VQE, ML-KEM, 1,057/1,057 executable language traces, and 15 verified platform packages plus checksums. v1.3.3-evolve.">
+  <title>Eshkol — The derivative is a compiler primitive</title>
+  <meta name="description" content="Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower straight to machine instructions. All 1,078 declared language constructs are proven by runtime execution, and the same gradient runs byte-identically on the bytecode VM.">
+  <meta property="og:title" content="Eshkol — Build systems that think.">
+  <meta property="og:description" content="The derivative is a compiler primitive, not a tracing library. 1,078 of 1,078 declared language constructs proven by runtime execution, 8 differential operators lowered to LLVM IR, and 936 published parity rows. v1.3.4-evolve.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://eshkol.ai">
   <meta property="og:image" content="https://eshkol.ai/img/og-image.png">
@@ -14,8 +14,8 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Eshkol logo — a stylized grape cluster">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Eshkol — R7RS Scheme with AD as a compiler primitive">
-  <meta name="twitter:description" content="Compiler-native AD, quantum/VQE, ML-KEM, complete executable-surface evidence, and verified cross-platform packages. v1.3.3-evolve.">
+  <meta name="twitter:title" content="Eshkol — Build systems that think.">
+  <meta name="twitter:description" content="The derivative is a compiler primitive, not a tracing library. 8 differential operators lowered to LLVM IR, 1,078/1,078 constructs proven by execution, 936 published parity rows. v1.3.4-evolve.">
   <meta name="twitter:image" content="https://eshkol.ai/img/og-image.png">
   <meta name="theme-color" content="#7c3aed">
   <link rel="canonical" href="https://eshkol.ai/">
@@ -36,7 +36,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Eshkol",
-    "softwareVersion": "1.3.3-evolve",
+    "softwareVersion": "1.3.4-evolve",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "Linux, macOS, Windows, WebAssembly",
     "downloadUrl": "https://github.com/tsotchke/eshkol/releases",
@@ -283,7 +283,7 @@
           const container = document.getElementById('releases-container');
           const status = document.getElementById('release-status');
           if (!container) return;
-          const expectedTag = 'v1.3.3-evolve';
+          const expectedTag = 'v1.3.4-evolve';
           const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (ch) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
           })[ch]);
