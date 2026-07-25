@@ -307,7 +307,14 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             sanitizer_flags: '-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON'
-            test_command: ./scripts/run_v1_2_edge_cases_tests.sh
+            # This is the only lane that runs under sanitizers, so it must
+            # exercise the code most likely to read or write out of bounds:
+            # the tensor and autodiff paths, which do their own index and
+            # rank arithmetic over arena memory. It previously ran the v1.2
+            # edge-case corpus alone, which touches none of them — several
+            # memory-safety fixes were credited to a green here that never
+            # executed the paths they repaired.
+            test_command: ./scripts/run_v1_2_edge_cases_tests.sh && ./scripts/run_ml_tests.sh && ./scripts/run_ad_oracle.sh
             upload_artifact: 'false'
             artifact_name: ''
 
