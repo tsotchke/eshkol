@@ -19853,17 +19853,18 @@ private:
         // Normal path: continue with the original codegen below.
         builder->SetInsertPoint(normal_mod_bb);
 
-        // Unpack integers
-        Value* int_val1 = unpackInt64FromTaggedValue(arg1);
-        Value* int_val2 = unpackInt64FromTaggedValue(arg2);
         Value* zero = ConstantInt::get(int64_type, 0);
-
-        // Check for division by zero
-        Value* is_zero = builder->CreateICmpEQ(int_val2, zero, "mod_zero_check");
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* zero_bb = BasicBlock::Create(*context, "mod_zero", func);
         BasicBlock* safe_bb = BasicBlock::Create(*context, "mod_safe", func);
-        builder->CreateCondBr(is_zero, zero_bb, safe_bb);
+        // The divide-by-zero test is per-representation and is now emitted on
+        // the int64 and flonum paths individually: a DOUBLE tagged value's
+        // raw int64 storage field is its BIT PATTERN, not its numeric value,
+        // so a single shared integer comparison cannot serve both (it also
+        // sent every flonum operand into the int64 SRem path, which is what
+        // made (modulo 5.5 2.0) return garbage). Enter the dispatch here and
+        // let each representation raise for itself.
+        builder->CreateBr(safe_bb);
 
         // Division by zero path - raise exception
         builder->SetInsertPoint(zero_bb);
@@ -19905,10 +19906,12 @@ private:
         builder->SetInsertPoint(safe_bb);
 
         Value* any_bignum = arith_->emitIsBignumCheck(arg1, arg2);
-        BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum", func);
-        BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",    func);
-        BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",  func);
-        builder->CreateCondBr(any_bignum, bn_bb, int_bb);
+        BasicBlock* bn_bb  = BasicBlock::Create(*context, "mod_bignum",   func);
+        BasicBlock* chk_bb = BasicBlock::Create(*context, "mod_check_dbl", func);
+        BasicBlock* dbl_bb = BasicBlock::Create(*context, "mod_double",   func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "mod_int",      func);
+        BasicBlock* mrg_bb = BasicBlock::Create(*context, "mod_merge",    func);
+        builder->CreateCondBr(any_bignum, bn_bb, chk_bb);
 
         // Bignum path: eshkol_bignum_binary_tagged op=4 → mod
         builder->SetInsertPoint(bn_bb);
@@ -19916,8 +19919,73 @@ private:
         BasicBlock* bn_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 
+        // FLONUM DISPATCH: an inexact operand makes the result inexact (R7RS
+        // exactness contagion), so `modulo` on a flonum must be the FLOORED
+        // remainder computed in double precision. Previously there was NO
+        // flonum path at all: both operands went through
+        // unpackInt64FromTaggedValue, so (modulo 5.5 2.0) took the SRem of two
+        // IEEE-754 bit patterns and returned a huge meaningless integer.
+        // R7RS 6.2.6 defines modulo/floor-remainder on integers, and an
+        // integral flonum IS an integer ((integer? 3.0) is #t), so this path
+        // is required for conformance, not just for the non-integral case.
+        builder->SetInsertPoint(chk_bb);
+        Value* mod_l_is_dbl = builder->CreateICmpEQ(arg1_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* mod_r_is_dbl = builder->CreateICmpEQ(arg2_base,
+            ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+        Value* mod_any_dbl = builder->CreateOr(mod_l_is_dbl, mod_r_is_dbl, "mod_any_double");
+        builder->CreateCondBr(mod_any_dbl, dbl_bb, int_bb);
+
+        // Flonum path — floored remainder: frem is C's fmod (TRUNCATED, sign
+        // of the dividend); fold it into the divisor's sign so the result
+        // matches R7RS `modulo` / `floor-remainder`.
+        builder->SetInsertPoint(dbl_bb);
+        Value* mod_a_dbl = arith_->extractAsDouble(arg1);
+        Value* mod_b_dbl = arith_->extractAsDouble(arg2);
+        Value* dzero = ConstantFP::get(double_type, 0.0);
+        // R7RS 6.2.6: it is an error if the divisor is zero. Raise, exactly as
+        // the int64 path does (and as the bytecode VM does), rather than
+        // quietly answering +nan.0.
+        BasicBlock* dbl_safe_bb = BasicBlock::Create(*context, "mod_double_safe", func);
+        builder->CreateCondBr(builder->CreateFCmpOEQ(mod_b_dbl, dzero, "mod_dbl_zero_check"),
+                              zero_bb, dbl_safe_bb);
+        builder->SetInsertPoint(dbl_safe_bb);
+        Value* dbl_rem = builder->CreateFRem(mod_a_dbl, mod_b_dbl, "mod_fmod");
+        Value* dbl_rem_neg = builder->CreateFCmpOLT(dbl_rem, dzero, "mod_dbl_rem_neg");
+        Value* dbl_div_neg = builder->CreateFCmpOLT(mod_b_dbl, dzero, "mod_dbl_div_neg");
+        Value* dbl_signs_differ = builder->CreateXor(dbl_rem_neg, dbl_div_neg,
+                                                     "mod_dbl_signs_differ");
+        Value* dbl_rem_nonzero = builder->CreateFCmpONE(dbl_rem, dzero, "mod_dbl_rem_nonzero");
+        Value* dbl_need_adjust = builder->CreateAnd(dbl_signs_differ, dbl_rem_nonzero,
+                                                    "mod_dbl_need_adjust");
+        Value* dbl_adjusted = builder->CreateFAdd(dbl_rem, mod_b_dbl, "mod_dbl_adjusted");
+        Value* dbl_mod = builder->CreateSelect(dbl_need_adjust, dbl_adjusted, dbl_rem,
+                                               "mod_dbl_result");
+        Value* dbl_mod_tagged = packDoubleToTaggedValue(dbl_mod);
+        BasicBlock* dbl_exit = builder->GetInsertBlock();
+        builder->CreateBr(mrg_bb);
+
         // Int64 fast path — Scheme's modulo: result has same sign as divisor.
         builder->SetInsertPoint(int_bb);
+        Value* int_val1 = unpackInt64FromTaggedValue(arg1);
+        Value* int_val2 = unpackInt64FromTaggedValue(arg2);
+        BasicBlock* int_safe_bb = BasicBlock::Create(*context, "mod_int_safe", func);
+        builder->CreateCondBr(builder->CreateICmpEQ(int_val2, zero, "mod_zero_check"),
+                              zero_bb, int_safe_bb);
+        builder->SetInsertPoint(int_safe_bb);
+        // Audit M4 (P0), mirroring remainder()/quotient(): SRem of INT64_MIN by
+        // -1 is undefined behavior in LLVM (SIGFPE on x86). The mathematical
+        // result is 0 and SRem(x, 1) == 0, so sanitize the divisor to 1 in
+        // exactly that case; no other input changes.
+        {
+            Value* mod_is_min = builder->CreateICmpEQ(int_val1,
+                ConstantInt::get(int64_type, INT64_MIN));
+            Value* mod_is_neg1 = builder->CreateICmpEQ(int_val2,
+                ConstantInt::get(int64_type, -1));
+            int_val2 = builder->CreateSelect(
+                builder->CreateAnd(mod_is_min, mod_is_neg1),
+                ConstantInt::get(int64_type, 1), int_val2);
+        }
         Value* rem = builder->CreateSRem(int_val1, int_val2, "remainder");
         Value* rem_neg = builder->CreateICmpSLT(rem, zero, "rem_neg");
         Value* div_neg = builder->CreateICmpSLT(int_val2, zero, "div_neg");
@@ -19930,10 +19998,11 @@ private:
         BasicBlock* int_exit = builder->GetInsertBlock();
         builder->CreateBr(mrg_bb);
 
-        // Merge (bn vs int paths).
+        // Merge (bn vs flonum vs int paths).
         builder->SetInsertPoint(mrg_bb);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 2, "modulo_phi");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 3, "modulo_phi");
         result_phi->addIncoming(bn_result, bn_exit);
+        result_phi->addIncoming(dbl_mod_tagged, dbl_exit);
         result_phi->addIncoming(int_tagged, int_exit);
         BasicBlock* normal_exit_mod = builder->GetInsertBlock();
         builder->CreateBr(mod_outer_merge);
@@ -25985,26 +26054,101 @@ private:
     // bound_vars tracks all variable names bound by enclosing lambdas (for nested closure support)
     // CLOSURE-OVER-NAMED-LET-LOOPVAR FIX: Returns true iff `var` is the target of
     // a SET_OP anywhere in the AST subtree `ast`. Mirrors the recursion structure
-    // of findFreeVariablesImpl. Uses `default: return false;` so any unhandled op
-    // type only makes the fix incomplete (a missed set! → by-value capture, the
-    // pre-existing behavior), never incorrect.
+    // of findFreeVariablesImpl.
+    //
+    // COMPLETENESS MATTERS (ESH-0214f / vm-parity `do_set_param_native`): this
+    // predicate also drives ASSIGNMENT CONVERSION — boxing a set!-mutated
+    // function/lambda parameter into an alloca (codegenFunctionDefinition ~11252,
+    // codegenLambda ~27380). There, a MISSED set! is not merely "incomplete": the
+    // parameter stays a by-value LLVM Argument, so codegenSet finds no storage
+    // location and the assignment is dropped with a "not mutable" diagnostic. That
+    // is exactly how
+    //     (define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
+    // returned 10 instead of 13: `do` lowers to the call_op layout but had no case
+    // here, and nothing walked into ESHKOL_CONS subtrees (which is where `do`
+    // keeps its bindings/steps/test/result forms), so the set! was invisible.
+    //
+    // The safe direction of error is to over-approximate — a spurious `true` only
+    // costs one unused alloca / one arena-promoted capture, whereas a spurious
+    // `false` silently miscompiles a mutation. So every structural container the
+    // parser can produce is walked, and `default: return false` is now reached
+    // only by genuine leaves (literals, quote, type annotations, macro defs).
     bool astSetsVar(const eshkol_ast_t* ast, const std::string& var) {
         if (!ast) return false;
+        // Walk raw cons structure: `do` bindings ((var init step) ...), cond/case
+        // clauses and every other list-shaped payload live in CONS cells, not in
+        // ESHKOL_OP nodes. Quoted data is unreachable from here (QUOTE_OP is a
+        // leaf below), and a set! can only be recognized via an ESHKOL_SET_OP
+        // node, so walking cons cells cannot manufacture a false positive out of
+        // a literal list.
+        if (ast->type == ESHKOL_CONS) {
+            return astSetsVar(ast->cons_cell.car, var) ||
+                   astSetsVar(ast->cons_cell.cdr, var);
+        }
         if (ast->type != ESHKOL_OP) return false;
         const eshkol_operations_t* op = &ast->operation;
         switch (op->op) {
             case ESHKOL_SET_OP:
                 if (op->set_op.name && var == op->set_op.name) return true;
                 return astSetsVar(op->set_op.value, var);
+            // ---- call_op layout: func + variables[] --------------------------
             case ESHKOL_CALL_OP:
             case ESHKOL_IF_OP:
-            case ESHKOL_COND_OP: {
+            case ESHKOL_COND_OP:
+            case ESHKOL_CASE_OP:
+            // `do`: call_op.func is CONS(bindings, CONS(test, results)) and
+            // call_op.variables[] is the body (see codegenDo).
+            case ESHKOL_DO_OP:
+            case ESHKOL_WHEN_OP:
+            case ESHKOL_EXTERN_OP:
+            case ESHKOL_UNLESS_OP:
+            case ESHKOL_UNIFY_OP:
+            case ESHKOL_MAKE_SUBST_OP:
+            case ESHKOL_WALK_OP:
+            case ESHKOL_MAKE_FACT_OP:
+            case ESHKOL_MAKE_KB_OP:
+            case ESHKOL_KB_ASSERT_OP:
+            case ESHKOL_KB_QUERY_OP:
+            case ESHKOL_KB_QUERY_PREFIX_OP:
+            case ESHKOL_LOGIC_VAR_PRED_OP:
+            case ESHKOL_SUBSTITUTION_PRED_OP:
+            case ESHKOL_KB_PRED_OP:
+            case ESHKOL_FACT_PRED_OP:
+            case ESHKOL_FACTOR_GRAPH_PRED_OP:
+            case ESHKOL_WORKSPACE_PRED_OP:
+            case ESHKOL_MAKE_FACTOR_GRAPH_OP:
+            case ESHKOL_FG_ADD_FACTOR_OP:
+            case ESHKOL_FG_INFER_OP:
+            case ESHKOL_FG_UPDATE_CPT_OP:
+            case ESHKOL_FG_OBSERVE_OP:
+            case ESHKOL_FREE_ENERGY_OP:
+            case ESHKOL_EXPECTED_FREE_ENERGY_OP:
+            case ESHKOL_MAKE_WORKSPACE_OP:
+            case ESHKOL_WS_REGISTER_OP:
+            case ESHKOL_WS_STEP_OP:
+            case ESHKOL_DNC_MAKE_OP:
+            case ESHKOL_DNC_CONTENT_ADDR_OP:
+            case ESHKOL_DNC_LOC_ADDR_OP:
+            case ESHKOL_DNC_READ_OP:
+            case ESHKOL_DNC_WRITE_OP:
+            case ESHKOL_DNC_ALLOC_WEIGHTS_OP:
+            case ESHKOL_DNC_READ_GRAD_OP:
+            case ESHKOL_DNC_PRED_OP:
+            case ESHKOL_SDNC_PROGRAM_OP:
+            case ESHKOL_SDNC_RUN_OP:
+            case ESHKOL_SDNC_WEIGHT_GRAD_OP:
+            case ESHKOL_SDNC_PARAMS_OP:
+            case ESHKOL_SDNC_SET_PARAMS_OP:
+            case ESHKOL_SDNC_IMPROVE_OP:
+            case ESHKOL_SDNC_PRED_OP:
+            case ESHKOL_MAKE_PARAMETER_OP: {
                 if (op->call_op.func && astSetsVar(op->call_op.func, var)) return true;
                 for (uint64_t i = 0; i < op->call_op.num_vars; i++) {
                     if (astSetsVar(&op->call_op.variables[i], var)) return true;
                 }
                 return false;
             }
+            // ---- sequence_op layout: expressions[] ---------------------------
             case ESHKOL_SEQUENCE_OP:
             case ESHKOL_AND_OP:
             case ESHKOL_OR_OP:
@@ -26017,11 +26161,7 @@ private:
             case ESHKOL_LETREC_OP:
             case ESHKOL_LETREC_STAR_OP: {
                 for (uint64_t i = 0; i < op->let_op.num_bindings; i++) {
-                    const eshkol_ast_t* binding = &op->let_op.bindings[i];
-                    if (binding->type == ESHKOL_CONS && binding->cons_cell.cdr &&
-                        astSetsVar(binding->cons_cell.cdr, var)) {
-                        return true;
-                    }
+                    if (astSetsVar(&op->let_op.bindings[i], var)) return true;
                 }
                 return astSetsVar(op->let_op.body, var);
             }
@@ -26029,6 +26169,109 @@ private:
                 return astSetsVar(op->lambda_op.body, var);
             case ESHKOL_DEFINE_OP:
                 return astSetsVar(op->define_op.value, var);
+            // ---- named layouts ----------------------------------------------
+            case ESHKOL_GUARD_OP: {
+                for (uint64_t i = 0; i < op->guard_op.num_clauses; i++) {
+                    if (astSetsVar(&op->guard_op.clauses[i], var)) return true;
+                }
+                for (uint64_t i = 0; i < op->guard_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->guard_op.body[i], var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_WITH_REGION_OP:
+                for (uint64_t i = 0; i < op->with_region_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->with_region_op.body[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_RAISE_OP:
+                return astSetsVar(op->raise_op.exception, var);
+            case ESHKOL_VALUES_OP:
+                for (uint64_t i = 0; i < op->values_op.num_values; i++) {
+                    if (astSetsVar(&op->values_op.expressions[i], var)) return true;
+                }
+                return false;
+            case ESHKOL_CALL_WITH_VALUES_OP:
+                return astSetsVar(op->call_with_values_op.producer, var) ||
+                       astSetsVar(op->call_with_values_op.consumer, var);
+            case ESHKOL_LET_VALUES_OP:
+            case ESHKOL_LET_STAR_VALUES_OP: {
+                for (uint64_t i = 0; i < op->let_values_op.num_bindings; i++) {
+                    if (astSetsVar(&op->let_values_op.producers[i], var)) return true;
+                }
+                return astSetsVar(op->let_values_op.body, var);
+            }
+            case ESHKOL_MATCH_OP: {
+                if (astSetsVar(op->match_op.expr, var)) return true;
+                for (uint64_t i = 0; i < op->match_op.num_clauses; i++) {
+                    if (astSetsVar(op->match_op.clauses[i].guard, var)) return true;
+                    if (astSetsVar(op->match_op.clauses[i].body, var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_CALL_CC_OP:
+                return astSetsVar(op->call_cc_op.proc, var);
+            case ESHKOL_DYNAMIC_WIND_OP:
+                return astSetsVar(op->dynamic_wind_op.before, var) ||
+                       astSetsVar(op->dynamic_wind_op.thunk, var) ||
+                       astSetsVar(op->dynamic_wind_op.after, var);
+            case ESHKOL_OWNED_OP:
+                return astSetsVar(op->owned_op.value, var);
+            case ESHKOL_MOVE_OP:
+                return astSetsVar(op->move_op.value, var);
+            case ESHKOL_BORROW_OP: {
+                if (astSetsVar(op->borrow_op.value, var)) return true;
+                for (uint64_t i = 0; i < op->borrow_op.num_body_exprs; i++) {
+                    if (astSetsVar(&op->borrow_op.body[i], var)) return true;
+                }
+                return false;
+            }
+            case ESHKOL_SHARED_OP:
+                return astSetsVar(op->shared_op.value, var);
+            case ESHKOL_WEAK_REF_OP:
+                return astSetsVar(op->weak_ref_op.value, var);
+            case ESHKOL_COMPOSE_OP:
+                return astSetsVar(op->compose_op.func_a, var) ||
+                       astSetsVar(op->compose_op.func_b, var);
+            case ESHKOL_TENSOR_OP:
+                for (uint64_t i = 0; i < op->tensor_op.total_elements; i++) {
+                    if (astSetsVar(&op->tensor_op.elements[i], var)) return true;
+                }
+                return false;
+            // ---- automatic-differentiation ops: each has its OWN union member
+            // (function/point/…), NOT the call_op layout — see eshkol.h.
+            case ESHKOL_DIFF_OP:
+                return astSetsVar(op->diff_op.expression, var);
+            case ESHKOL_DERIVATIVE_OP:
+                return astSetsVar(op->derivative_op.function, var) ||
+                       astSetsVar(op->derivative_op.point, var);
+            case ESHKOL_TAYLOR_OP:
+            case ESHKOL_DERIVATIVE_N_OP:
+                return astSetsVar(op->taylor_op.function, var) ||
+                       astSetsVar(op->taylor_op.point, var) ||
+                       astSetsVar(op->taylor_op.order, var);
+            case ESHKOL_GRADIENT_OP:
+                return astSetsVar(op->gradient_op.function, var) ||
+                       astSetsVar(op->gradient_op.point, var);
+            case ESHKOL_JACOBIAN_OP:
+                return astSetsVar(op->jacobian_op.function, var) ||
+                       astSetsVar(op->jacobian_op.point, var);
+            case ESHKOL_HESSIAN_OP:
+                return astSetsVar(op->hessian_op.function, var) ||
+                       astSetsVar(op->hessian_op.point, var);
+            case ESHKOL_DIVERGENCE_OP:
+                return astSetsVar(op->divergence_op.function, var) ||
+                       astSetsVar(op->divergence_op.point, var);
+            case ESHKOL_CURL_OP:
+                return astSetsVar(op->curl_op.function, var) ||
+                       astSetsVar(op->curl_op.point, var);
+            case ESHKOL_LAPLACIAN_OP:
+                return astSetsVar(op->laplacian_op.function, var) ||
+                       astSetsVar(op->laplacian_op.point, var);
+            case ESHKOL_DIRECTIONAL_DERIV_OP:
+                return astSetsVar(op->directional_deriv_op.function, var) ||
+                       astSetsVar(op->directional_deriv_op.point, var) ||
+                       astSetsVar(op->directional_deriv_op.direction, var);
             default:
                 return false;
         }

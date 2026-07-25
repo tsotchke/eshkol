@@ -987,7 +987,27 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
             case 0: r = ld + rd; break;
             case 1: r = ld - rd; break;
             case 2: r = ld * rd; break;
-            case 3: r = (rd != 0.0) ? ld / rd : 0.0; break;
+            /* R7RS 6.2.6 (`/`): "It is an error if any argument other than
+             * the first is an exact zero."  An INEXACT zero divisor is NOT an
+             * error — it is ordinary IEEE-754 division, so the result must be
+             * +inf.0 / -inf.0 / +nan.0.  The old `(rd != 0.0) ? ... : 0.0`
+             * guard silently answered 0 for e.g. (/ (expt 2 100) 0.0), which
+             * dropped the dividend entirely. */
+            case 3: r = ld / rd; break;
+            /* modulo / quotient / remainder with one inexact operand. R7RS
+             * 6.2.6 defines these on integers, and an integral flonum IS an
+             * integer (`(integer? 3.0)` is #t), so they must work here;
+             * inexact contagion makes the result inexact. `quotient` is
+             * truncated division, `remainder` is the TRUNCATED remainder
+             * (sign of the dividend = fmod, NOT C's IEEE `remainder()`), and
+             * `modulo` is the FLOORED remainder (sign of the divisor). */
+            case 4: {
+                r = std::fmod(ld, rd);
+                if (r != 0.0 && ((r < 0.0) != (rd < 0.0))) r += rd;
+                break;
+            }
+            case 5: r = std::trunc(ld / rd); break;
+            case 6: r = std::fmod(ld, rd); break;
             default: r = 0.0; break;
         }
         *result = eshkol_make_double(r);
