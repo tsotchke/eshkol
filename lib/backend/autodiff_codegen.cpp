@@ -2682,17 +2682,81 @@ llvm::Value* AutodiffCodegen::loadNodeInput2(llvm::Value* node_ptr) {
 }
 
 /**
+ * @brief Resolve an AD operator's differentiand to a runtime CALLABLE tagged value by evaluating the expression.
+ *
+ * ESH-0369. The higher-order AD forms need a first-class callable whenever the
+ * differentiand is a *value* rather than a compile-time-known llvm::Function*.
+ * The predecessor of this helper (open-coded, once per AD operator) first
+ * required `func_ast->type == ESHKOL_VAR` and then matched the bound
+ * llvm::Value against a whitelist of subclasses. Both tests classify by the
+ * wrong thing:
+ *
+ *   - the ESHKOL_VAR gate rejects every *unnamed* differentiand outright, so
+ *     `(derivative (derivative f))` and `(derivative (car fs))` could never
+ *     resolve — no whitelist entry can fix that, because there is no binding
+ *     to inspect;
+ *   - the value-shape whitelist encodes where the compiler happened to put a
+ *     binding (argument slot / alloca / global / already-loaded value), which
+ *     is an artifact of the storage decision, not of the language.
+ *
+ * There is already exactly one authority on what an expression evaluates to —
+ * the ordinary expression codegen — so ask it, then coerce to a tagged value.
+ * Every shape (named or not, local or global, parameter or computed) resolves
+ * through the same path, and a shape nobody enumerated resolves too.
+ *
+ * Emits at the CURRENT insert point: the differentiand must be evaluated where
+ * the AD form appears, exactly once, before any wrapper function is created.
+ */
+llvm::Value* AutodiffCodegen::resolveDifferentiandClosure(const eshkol_ast_t* func_ast,
+                                                          const char* what) {
+    using namespace llvm;
+    if (!func_ast) return nullptr;
+    if (!codegen_ast_callback_) {
+        eshkol_error("%s: expression codegen callback not set", what);
+        return nullptr;
+    }
+
+    Value* v = codegen_ast_callback_(func_ast, callback_context_);
+    if (!v) {
+        eshkol_error("%s: failed to evaluate the function expression", what);
+        return nullptr;
+    }
+
+    // Already a tagged value (the common case: variable reference, function
+    // parameter, nested AD form, call result).
+    if (v->getType() == ctx_.taggedValueType()) return v;
+
+    // A pointer means storage holding a tagged value (global / alloca / by-ref
+    // capture slot). One load reaches the value regardless of which of those
+    // it is — the distinction the old whitelist was trying to draw.
+    if (v->getType()->isPointerTy() && !isa<Function>(v)) {
+        return ctx_.builder().CreateLoad(ctx_.taggedValueType(), v);
+    }
+
+    // Anything else is a raw scalar/aggregate, i.e. not a callable at all.
+    eshkol_error("%s: the function expression does not evaluate to a procedure", what);
+    return nullptr;
+}
+
+/**
  * @brief Codegen the higher-order form `(derivative f)` (no evaluation point): synthesize and return a closure computing f' at a runtime-supplied point.
  *
- * Resolves `f` to an LLVM function (or, when it is a runtime function
- * parameter/captured closure, builds a small wrapper that dispatches through
- * closure_call_callback_). Emits a fresh `derivative_<name>_<n>` function
- * whose body seeds a single-level dual {x, 1, 0, 0}, calls the original
- * function with it, extracts the tangent (getDualTangent) as the derivative
- * value, and returns it packed as a tagged double. Threads through the
- * original function's captures (looked up via the symbol tables / REPL
- * registries) into a freshly-allocated closure wrapping the derivative
- * function, so the returned closure captures the same environment as `f`.
+ * Resolves `f` to an LLVM function or — for any differentiand that is a
+ * runtime value (function parameter, variable bound to a closure, `(car fs)`,
+ * a nested `(derivative g)`) — to a CALLABLE tagged value via
+ * resolveDifferentiandClosure(), dispatching through closure_call_callback_.
+ *
+ * Emits a fresh `derivative_<name>_<n>` function whose body seeds THIS
+ * perturbation level via seedForwardAndPush(), calls the original function,
+ * and extracts this level's derivative component via popAndExtractForward().
+ * Using the shared runtime-perturbation-level machinery (rather than a
+ * hardcoded single-level dual) is what makes the returned closure
+ * dual-TRANSPARENT: differentiating it again nests exactly, so the curried
+ * spelling `(derivative (derivative f))` agrees with `derivative-n` and with
+ * the nested-lambda spelling. Threads through the original function's captures
+ * (looked up via the symbol tables / REPL registries) into a freshly-allocated
+ * closure wrapping the derivative function, so the returned closure captures
+ * the same environment as `f`.
  *
  * @param op the derivative operation AST node (function only, point == null).
  * @return a CALLABLE tagged value wrapping the derivative closure, or nullptr on resolution failure.
@@ -2705,131 +2769,113 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     // Get the function to differentiate
     Value* func = resolve_lambda_callback_(op->derivative_op.function, 0, callback_context_);
 
-    // RUNTIME FUNCTION PARAMETER FIX: If resolveLambdaFunction returns nullptr,
-    // check if this is a function parameter and create a runtime derivative wrapper
+    // RUNTIME DIFFERENTIAND (ESH-0369): when the operand is not a
+    // compile-time-known function it is a *value*. Resolve it through the
+    // ordinary expression codegen (resolveDifferentiandClosure) so a function
+    // parameter, a variable bound to a `(derivative f)` closure, `(car fs)`,
+    // and a nested `(derivative (derivative f))` all reach the same runtime
+    // derivative wrapper. See resolveDifferentiandClosure for why this replaced
+    // the ESHKOL_VAR gate + llvm::Value shape whitelist.
     if (!func) {
-        const eshkol_ast_t* func_ast = op->derivative_op.function;
-        if (func_ast && func_ast->type == ESHKOL_VAR) {
-            std::string func_name = func_ast->variable.id;
-            eshkol_debug("derivative HO: trying runtime function parameter '%s'", func_name.c_str());
-
-            // Check if this is a function parameter or captured value
-            Value* var_value = nullptr;
-            auto local_it = symbol_table_->find(func_name);
-            if (local_it != symbol_table_->end()) {
-                var_value = local_it->second;
-            } else {
-                auto global_it = global_symbol_table_->find(func_name);
-                if (global_it != global_symbol_table_->end()) {
-                    var_value = global_it->second;
-                }
-            }
-
-            if (var_value) {
-                // Get the closure value for runtime dispatch
-                Value* closure_val = nullptr;
-                if (isa<Argument>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
-                    closure_val = var_value;
-                } else if (isa<Argument>(var_value) && var_value->getType()->isPointerTy()) {
-                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                } else if (isa<AllocaInst>(var_value)) {
-                    AllocaInst* alloca = cast<AllocaInst>(var_value);
-                    if (alloca->getAllocatedType() == ctx_.taggedValueType()) {
-                        closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                    }
-                } else if (isa<LoadInst>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
-                    closure_val = var_value;
-                } else if (isa<GlobalVariable>(var_value)) {
-                    GlobalVariable* global = cast<GlobalVariable>(var_value);
-                    closure_val = ctx_.builder().CreateLoad(global->getValueType(), var_value);
-                }
-
-                if (closure_val) {
-                    eshkol_debug("derivative HO: creating runtime derivative wrapper for '%s'", func_name.c_str());
-
-                    // Create a derivative wrapper that captures the function and calls it at runtime
-                    std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
-
-                    // Wrapper function takes: (x_tagged, captured_f_ptr)
-                    // captured_f_ptr is a pointer to the closure tagged_value
-                    std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
-                    FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
-                    Function* deriv_func = Function::Create(
-                        deriv_func_type,
-                        Function::ExternalLinkage,
-                        deriv_func_name,
-                        ctx_.module()
-                    );
-
-                    // Save current insertion point
-                    BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
-                    BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
-
-                    // Create function body
-                    BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
-                    ctx_.builder().SetInsertPoint(entry);
-
-                    auto arg_it = deriv_func->arg_begin();
-                    Value* x_tagged = &(*arg_it);
-                    x_tagged->setName("x");
-                    ++arg_it;
-                    Value* captured_f_ptr = &(*arg_it);
-                    captured_f_ptr->setName("captured_f");
-
-                    // Load the captured function closure
-                    Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
-
-                    // Forward-mode AD: seed a dual {x, 1, 0, 0} and call the
-                    // captured closure with it. The closure body threads dual
-                    // arithmetic at runtime (dispatch on the DUAL_NUMBER tag),
-                    // so the tangent of the result is exactly f'(x) — no
-                    // finite-difference step / epsilon error.
-                    Value* x = tagged_.unpackDouble(x_tagged);
-                    Value* one_seed = ConstantFP::get(ctx_.doubleType(), 1.0);
-                    Value* x_seed_tagged = packDualToTagged(createDualNumber(x, one_seed));
-                    std::vector<Value*> call_args_ad = {x_seed_tagged};
-                    Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
-                    Value* f_ad_dual = safeUnpackDualFromTagged(f_ad);
-                    Value* derivative_val = getDualTangent(f_ad_dual);
-                    Value* result_tagged = tagged_.packDouble(derivative_val);
-                    ctx_.builder().CreateRet(result_tagged);
-
-                    // Restore insertion point
-                    if (saved_bb) {
-                        ctx_.builder().SetInsertPoint(saved_bb, saved_point);
-                    }
-
-                    // Register the derivative function
-                    (*function_table_)[deriv_func_name] = deriv_func;
-
-                    // Create closure capturing the function parameter
-                    Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
-                    Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
-
-                    uint64_t packed_info = 1;  // 1 capture (the function)
-                    Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
-                    Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
-                    // Derivative function returns a scalar
-                    Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
-                    Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
-
-                    // Use with_header allocator for consolidated CALLABLE type
-                    Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
-                                                             {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
-
-                    // Store captured function
-                    Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-                    Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
-                    Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
-                    ctx_.builder().CreateStore(closure_val, captures_base);
-
-                    // Return closure as CALLABLE tagged value
-                    return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
-                }
-            }
+        Value* closure_val =
+            resolveDifferentiandClosure(op->derivative_op.function, "derivative");
+        if (!closure_val) {
+            eshkol_error("Failed to resolve function for higher-order derivative");
+            return nullptr;
         }
-        eshkol_error("Failed to resolve function for higher-order derivative");
-        return nullptr;
+
+        eshkol_debug("derivative HO: creating runtime derivative wrapper for a value differentiand");
+
+        // Create a derivative wrapper that captures the function and calls it at runtime
+        std::string deriv_func_name = "derivative_runtime_" + std::to_string(derivative_ho_counter_++);
+
+        // Wrapper function takes: (x_tagged, captured_f_ptr)
+        // captured_f_ptr is a pointer to the closure tagged_value
+        std::vector<Type*> param_types = {ctx_.taggedValueType(), PointerType::getUnqual(ctx_.context())};
+        FunctionType* deriv_func_type = FunctionType::get(ctx_.taggedValueType(), param_types, false);
+        Function* deriv_func = Function::Create(
+            deriv_func_type,
+            Function::ExternalLinkage,
+            deriv_func_name,
+            ctx_.module()
+        );
+
+        // Save current insertion point
+        BasicBlock* saved_bb = ctx_.builder().GetInsertBlock();
+        BasicBlock::iterator saved_point = ctx_.builder().GetInsertPoint();
+
+        // Create function body
+        BasicBlock* entry = BasicBlock::Create(ctx_.context(), "entry", deriv_func);
+        ctx_.builder().SetInsertPoint(entry);
+
+        auto arg_it = deriv_func->arg_begin();
+        Value* x_tagged = &(*arg_it);
+        x_tagged->setName("x");
+        ++arg_it;
+        Value* captured_f_ptr = &(*arg_it);
+        captured_f_ptr->setName("captured_f");
+
+        // Load the captured function closure
+        Value* f_closure = ctx_.builder().CreateLoad(ctx_.taggedValueType(), captured_f_ptr);
+
+        // Forward-mode AD through the SHARED runtime-perturbation-level
+        // machinery (ESH-0369) — the same seedForwardAndPush /
+        // popAndExtractForward pair codegenDerivativeMonolith uses for
+        // `(derivative f x)`.
+        //
+        // The predecessor here unpacked x to a raw double and seeded a fixed
+        // single-level dual {x, 1, 0, 0}. That is correct only when nothing
+        // outside is differentiating too: the unpackDouble DISCARDS any
+        // perturbation the incoming point already carries, so the moment this
+        // closure was itself differentiated the outer tangent was destroyed and
+        // the second derivative came back 0. Seeding THIS level's slot instead
+        // (e1 at depth 0, e2 at depth 1, ep at depth 2) and extracting THIS
+        // level's coefficient makes the returned closure dual-TRANSPARENT: it
+        // behaves like an ordinary differentiable function of x, so
+        // `(derivative (derivative f))` nests exactly and agrees with
+        // `derivative-n` and with the nested-lambda spelling.
+        //
+        // popAndExtractForward also handles a vector-valued (R→Rⁿ) result and
+        // records an outer reverse tape's mixed linearization, so the curried
+        // form inherits those behaviors rather than reimplementing them.
+        Value* pert_level = nullptr;
+        Value* x_seed_tagged = seedForwardAndPush(x_tagged, &pert_level);
+        std::vector<Value*> call_args_ad = {x_seed_tagged};
+        Value* f_ad = closure_call_callback_(f_closure, call_args_ad, "derivative-ad", callback_context_);
+        Value* result_tagged = popAndExtractForward(f_ad, pert_level);
+        ctx_.builder().CreateRet(result_tagged);
+
+        // Restore insertion point
+        if (saved_bb) {
+            ctx_.builder().SetInsertPoint(saved_bb, saved_point);
+        }
+
+        // Register the derivative function
+        (*function_table_)[deriv_func_name] = deriv_func;
+
+        // Create closure capturing the function parameter
+        Value* func_ptr_int = ctx_.builder().CreatePtrToInt(deriv_func, ctx_.int64Type());
+        Value* arena_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), ctx_.globalArena());
+
+        uint64_t packed_info = 1;  // 1 capture (the function)
+        Value* packed_captures = ConstantInt::get(ctx_.int64Type(), packed_info);
+        Value* sexpr_ptr = ConstantInt::get(ctx_.int64Type(), 0);
+        // Derivative function returns a scalar
+        Value* return_type_info = ConstantInt::get(ctx_.int64Type(), CLOSURE_RETURN_SCALAR | (1 << 8));
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(ctx_.context()));
+
+        // Use with_header allocator for consolidated CALLABLE type
+        Value* closure_ptr = ctx_.builder().CreateCall(get_closure_alloc_func_(callback_context_),
+                                                 {arena_ptr, func_ptr_int, packed_captures, sexpr_ptr, return_type_info, closure_name});
+
+        // Store captured function
+        Value* env_ptr_ptr = ctx_.builder().CreateGEP(ctx_.int8Type(), closure_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+        Value* env_ptr = ctx_.builder().CreateLoad(PointerType::getUnqual(ctx_.context()), env_ptr_ptr);
+        Value* captures_base = ctx_.builder().CreateGEP(ctx_.int8Type(), env_ptr, ConstantInt::get(ctx_.int64Type(), 8));
+        ctx_.builder().CreateStore(closure_val, captures_base);
+
+        // Return closure as CALLABLE tagged value
+        return tagged_.packPtr(closure_ptr, ESHKOL_VALUE_CALLABLE);
     }
 
     Function* func_ptr = dyn_cast<Function>(func);
@@ -2875,13 +2921,14 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     Value* x_tagged = &(*arg_it);
     x_tagged->setName("x");
 
-    // Extract double from x
-    Value* x = tagged_.unpackDouble(x_tagged);
-
-    // Create dual number with seed = 1.0
-    Value* one = ConstantFP::get(ctx_.doubleType(), 1.0);
-    Value* x_dual = createDualNumber(x, one);
-    Value* x_dual_tagged = packDualToTagged(x_dual);
+    // Seed THIS perturbation level, preserving any the incoming point already
+    // carries (ESH-0369). Identical discipline to codegenDerivativeMonolith and
+    // to the runtime-closure branch above: the predecessor unpacked x to a raw
+    // double and seeded a fixed {x, 1, 0, 0} dual, which silently destroyed an
+    // enclosing derivative's perturbation and returned 0 for the second
+    // derivative of a curried `(define df (derivative f))`.
+    Value* pert_level = nullptr;
+    Value* x_dual_tagged = seedForwardAndPush(x_tagged, &pert_level);
 
     // Build call arguments: (x_dual_tagged, captures...)
     std::vector<Value*> call_args = {x_dual_tagged};
@@ -2893,12 +2940,8 @@ llvm::Value* AutodiffCodegen::derivativeHigherOrder(const eshkol_operations_t* o
     // Call the original function with dual number
     Value* result = ctx_.builder().CreateCall(orig_func_type, func_ptr, call_args);
 
-    // Extract derivative from result (tangent part of dual number)
-    Value* result_dual = unpackDualFromTagged(result);
-    Value* derivative_val = this->getDualTangent(result_dual);
-
-    // Pack result as tagged double
-    Value* result_tagged = tagged_.packDouble(derivative_val);
+    // Extract THIS level's derivative component (and pop the level).
+    Value* result_tagged = popAndExtractForward(result, pert_level);
     ctx_.builder().CreateRet(result_tagged);
 
     // Restore insertion point
@@ -3840,33 +3883,11 @@ llvm::Value* AutodiffCodegen::gradientHigherOrder(const eshkol_operations_t* op)
     Value* closure_val = nullptr;
 
     if (!func) {
-        // Runtime function parameter - get the closure value
-        const eshkol_ast_t* func_ast = op->gradient_op.function;
-        if (func_ast && func_ast->type == ESHKOL_VAR) {
-            std::string func_name = func_ast->variable.id;
-            Value* var_value = nullptr;
-
-            auto local_it = symbol_table_->find(func_name);
-            if (local_it != symbol_table_->end()) {
-                var_value = local_it->second;
-            } else {
-                auto global_it = global_symbol_table_->find(func_name);
-                if (global_it != global_symbol_table_->end()) {
-                    var_value = global_it->second;
-                }
-            }
-
-            if (var_value) {
-                if (isa<Argument>(var_value) && var_value->getType() == ctx_.taggedValueType()) {
-                    closure_val = var_value;
-                } else if (isa<AllocaInst>(var_value)) {
-                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                } else if (isa<GlobalVariable>(var_value)) {
-                    closure_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), var_value);
-                }
-            }
-        }
-
+        // Runtime differentiand (ESH-0369): evaluate the function expression
+        // through the ordinary expression codegen rather than gating on
+        // ESHKOL_VAR and then matching the bound value's LLVM subclass. See
+        // resolveDifferentiandClosure.
+        closure_val = resolveDifferentiandClosure(op->gradient_op.function, "gradient");
         if (!closure_val) {
             eshkol_error("Failed to resolve function for higher-order gradient");
             return nullptr;

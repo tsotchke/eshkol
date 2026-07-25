@@ -11,6 +11,21 @@
  *        vm_*_dispatch() runtime modules, exception handling, and
  *        continuations) directly inline in this function body.
  */
+/**
+ * @brief Is @p v an EXACT number (integer, bignum, rational, i128)?
+ *
+ * R7RS exactness decides the division-by-zero policy, so OP_DIV needs it:
+ * exact-by-exact-zero is a fatal "division by zero", while a single INEXACT
+ * operand makes the whole operation IEEE-754 float division, which must
+ * produce +nan.0 / ±inf.0 exactly as the native backend does. Anything
+ * non-numeric answers 0 (inexact) so it cannot turn a float division into a
+ * spurious error.
+ */
+static int vm_is_exact_number(Value v) {
+    return v.type == VAL_INT || v.type == VAL_BIGNUM ||
+           v.type == VAL_RATIONAL || v.type == VAL_I128;
+}
+
 static size_t vm_continuation_allocation_size(const VM* vm) {
     return sizeof(VmContinuation) +
         (size_t)vm->sp * sizeof(Value) +
@@ -276,9 +291,18 @@ void vm_run(VM* vm) {
             if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
             vm_push(vm, a); vm_push(vm, b); vm_dispatch_native(vm, 334);
         }
+        /* A bignum operand must reach the bignum domain: as_number() reads a
+         * heap pointer's .as.i and answers 0.0, so falling through to the
+         * double path below made every bignum division silently produce 0. */
+        else if (vm_either_bignum(a, b)) { vm->ad_node_map[vm->sp] = -1; vm_bignum_arith(vm, a, b, '/'); if (vm->error) goto vm_exit; }
         else {
         double bd = as_number(b);
-        if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
+        /* Only EXACT-by-exact-zero is an error.  With any inexact operand this
+         * is IEEE-754 division and must yield +nan.0 / ±inf.0 like native —
+         * erroring here aborted the run and dropped every later top-level
+         * form (tests/vm_parity/corpus/37_float_div_zero.esk). */
+        if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
+            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
         VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0); vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }
     lbl_MOD: {
         Value b = vm_pop(vm), a = vm_pop(vm);
@@ -968,8 +992,12 @@ vm_exit:
                 if (b.as.i == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
                 vm_push(vm,a); vm_push(vm,b); vm_dispatch_native(vm,334);
             }
+            /* See the threaded-dispatch OP_DIV above: bignums need the bignum
+             * domain, and only EXACT-by-exact-zero is an error. */
+            else if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'/'); }
             else { double bd = as_number(b);
-            if (bd == 0) { fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
+            if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
+                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
             vm_push(vm, number_val(as_number(a) / bd)); } break; }
         case OP_MOD: {
             Value b = vm_pop(vm), a = vm_pop(vm);

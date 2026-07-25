@@ -2862,6 +2862,60 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PASS_REGULAR_EXPRESSION "PASS: matmul tensor reads inside defined functions match top-level"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # v1.3.4 blocker guard: a re-viewing tensor op (reshape/tensor-reshape/
+    # flatten/squeeze/unsqueeze/transpose/tensor-data) must carry its source
+    # payload into its result, including when the result is bound by an internal
+    # `define` written after the expressions that filled the source. The parser
+    # used to hoist every internal define's initializer into the enclosing
+    # letrec* head, so `(define t (reshape v n n))` ran before the loop that
+    # filled `v` and snapshotted zeros — matmul then computed on zeros with no
+    # error. Also pins the underlying evaluation-order contract directly.
+    # Verified on both -r (JIT) and AOT.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk")
+        add_test(
+            NAME reshape_payload_preserved_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk"
+        )
+        set_tests_properties(reshape_payload_preserved_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME reshape_payload_preserved_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/reshape_payload_preserved_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/reshape_payload_preserved_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/reshape_payload_preserved_aot'"
+        )
+        set_tests_properties(reshape_payload_preserved_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: reshape and the re-viewing tensor ops preserve their source payload"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
+    # The internal-define ordering contract itself. tests/parser/ is otherwise
+    # only run by scripts/run_parser_tests.sh, which judges a test by its exit
+    # code — this file used to print its results and an unconditional pass
+    # banner, so it reported success while printing 0 for the reshape case. It
+    # now compares every value, and this entry gates on the comparison.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk")
+        add_test(
+            NAME internal_define_order_jit_smoke
+            COMMAND $<TARGET_FILE:eshkol-run> -r
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk"
+        )
+        set_tests_properties(internal_define_order_jit_smoke PROPERTIES
+            TIMEOUT 120
+            PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+        add_test(
+            NAME internal_define_order_aot_smoke
+            COMMAND sh -c
+                "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/internal_define_order_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/parser/letrec_star_regression_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/internal_define_order_aot'"
+        )
+        set_tests_properties(internal_define_order_aot_smoke PROPERTIES
+            TIMEOUT 180
+            PASS_REGULAR_EXPRESSION "PASS: internal defines preserve source-order evaluation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     add_test(
         NAME autodiff_tensor_reductions_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
@@ -2927,6 +2981,37 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: checkpointed_reverse_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0369: higher-order derivatives through a VARIABLE-BOUND derivative
+    # closure. `(define df (derivative f))` then `(derivative df)` returned 0.0
+    # (the emitted closure unpacked its argument to a raw double, destroying an
+    # enclosing perturbation), and an UNNAMED differentiand — `(derivative
+    # (derivative f))`, `(derivative (car fs))` — failed resolution outright.
+    # Assert orders 1..3 at TWO points (x^4's 2nd and 3rd derivatives coincide
+    # at x=2, so one point cannot distinguish a correct answer from an accident)
+    # and assert that derivative-n, the nested-lambda form and both curried
+    # forms all agree — a disagreement between two spellings of one operation is
+    # itself the regression. Both the JIT and the AOT lane.
+    add_test(
+        NAME curried_higher_order_derivative_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/curried_higher_order_derivative_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(curried_higher_order_derivative_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME curried_higher_order_derivative_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/curried_higher_order_derivative_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/curried_higher_order_derivative_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/curried_higher_order_derivative_aot'"
+    )
+    set_tests_properties(curried_higher_order_derivative_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form"
+            FAIL_REGULAR_EXPRESSION "FAIL:|Failed to resolve function for higher-order|LLVM module verification failed|fatal signal")
     # ESH-0360 (found by the P8 escape-closure binding-form generator): the
     # vector-field AD operators (jacobian/divergence/curl) SIGSEGV'd at a (list …)
     # point — the #343 cons→svec point normalization was applied to gradient/
@@ -3180,6 +3265,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             PROPERTIES
                 TIMEOUT 180
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/debug_info_emission_test.sh")
+        # `-g` builds must actually build. Every top-level define used to be
+        # handed a definition DISubprogram at declaration time, so the bodyless
+        # `:external` stdlib defines (@caadr, @cadar, @caddr, @cddr, ...) failed
+        # LLVM's "function declaration may only have a unique !dbg attachment"
+        # check and no output was ever produced. Asserts on artifacts and
+        # behaviour -- compiles, links, runs correctly at every -O level, and the
+        # emitted DWARF names user functions and carries source line rows -- so a
+        # compiler that stops producing output cannot pass.
+        add_test(
+            NAME debug_info_emission_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/debug_info_emission_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(debug_info_emission_test
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: debug_info_emission_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND

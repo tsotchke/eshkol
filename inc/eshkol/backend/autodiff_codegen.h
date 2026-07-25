@@ -377,6 +377,39 @@ public:
      */
     void emitVectorValuedGradientError(llvm::Value* len);
 
+    /**
+     * Resolve an AD operator's differentiand to a runtime CALLABLE tagged value
+     * by EVALUATING the function expression, not by pattern-matching the shape
+     * of the LLVM value a name happens to be bound to.
+     *
+     * The higher-order AD forms need a first-class callable whenever the
+     * differentiand is not a compile-time-known llvm::Function* — i.e. whenever
+     * it is a *value*: a variable bound to a closure returned by `(derivative
+     * f)` / `(gradient f)`, a function parameter, an element pulled out of a
+     * list, or a nested `(derivative (derivative f))` whose operand is itself
+     * an operation. Historically each call site re-implemented this as (a) a
+     * hard gate on `func_ast->type == ESHKOL_VAR`, then (b) a whitelist of
+     * accepted llvm::Value subclasses (Argument / AllocaInst / LoadInst /
+     * GlobalVariable). Both halves classify by the wrong thing: the binding's
+     * storage class is an artifact of where the compiler happened to put it,
+     * and the whitelist cannot — even in principle — cover an operand that has
+     * no name at all.
+     *
+     * The language already has exactly one authority on "what does this
+     * expression evaluate to": the ordinary expression codegen. This routes
+     * through it and then coerces the result to a tagged value, so every
+     * expression shape resolves through the same path. Emits at the CURRENT
+     * insert point (the operand must be evaluated where the AD form appears,
+     * exactly once) and leaves the insert point where the callback left it.
+     *
+     * @param func_ast the differentiand expression (any AST shape).
+     * @param what operator name used in the diagnostic (e.g. "derivative").
+     * @return a tagged value expected to carry ESHKOL_VALUE_CALLABLE, or
+     *         nullptr if the expression could not be evaluated to one.
+     */
+    llvm::Value* resolveDifferentiandClosure(const eshkol_ast_t* func_ast,
+                                             const char* what);
+
     /** Higher-order derivative: (derivative f) → closure */
     llvm::Value* derivativeHigherOrder(const eshkol_operations_t* op);
 

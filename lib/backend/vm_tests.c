@@ -649,8 +649,9 @@ static void test_closures(void) {
  * Called from main() after all modules are included.
  ******************************************************************************/
 
-/* Forward declaration — compile_and_run is defined in eshkol_vm.c hub */
-static void compile_and_run(const char* source);
+/* Forward declaration — compile_and_run is defined in eshkol_vm.c hub.
+ * Returns nonzero when the VM stopped on a fatal runtime error. */
+static int compile_and_run(const char* source);
 
 static int source_test_count = 0, source_test_pass = 0;
 

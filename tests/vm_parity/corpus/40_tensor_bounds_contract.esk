@@ -1,0 +1,47 @@
+; Out-of-range tensor-ref is a catchable error on every substrate.
+;
+; Extends the indexed-accessor bounds contract of corpus/34_bounds_contract.esk
+; to the tensor accessors. The VM's flat tensor-ref path was brought under the
+; contract when that entry landed, but the MULTI-DIMENSIONAL path still called
+; vm_tensor_ref(), which answers 0.0 for a bad rank or an out-of-range
+; component — a fabricated value. A non-index argument also fabricated 0.0.
+;
+; tensor-set! is deliberately NOT gated here yet: the VM now raises (its
+; out-of-range write used to be a silent no-op the program could not detect),
+; but native still returns without writing. Filed in
+; found/tensor_set_oob_silent_native.esk until the native half lands.
+
+(define t (make-tensor (list 2 2) 1.0))
+
+; ---- flat index ----
+(display (guard (e (#t "caught")) (tensor-ref t 100))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref t -1))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref t 4))) (newline)
+
+; ---- multi-dimensional index, spelled as separate trailing args ----
+(display (guard (e (#t "caught")) (tensor-ref t 5 5))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref t -1 0))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref t 2 0))) (newline)
+; NOT gated: (tensor-ref t 0 2) — a component past its dimension whose
+; FLATTENED offset still lands inside the tensor. The VM checks each component
+; and raises; native checks only the flat offset and fabricates the neighbouring
+; element. Filed in found/tensor_ref_component_oob_native.esk.
+
+; ---- multi-dimensional index, spelled as a list ----
+(display (guard (e (#t "caught")) (tensor-ref t (list 5 5)))) (newline)
+(display (guard (e (#t "caught")) (tensor-ref t (list -1 0)))) (newline)
+
+; ---- in-range access is unaffected ----
+(display (tensor-ref t 0)) (newline)
+(display (tensor-ref t 3)) (newline)
+(display (tensor-ref t 0 0)) (newline)
+(display (tensor-ref t 1 1)) (newline)
+(display (tensor-ref t (list 1 0))) (newline)
+
+; ---- in-range writes still land ----
+(tensor-set! t 0 0 11.0)
+(tensor-set! t 1 1 44.0)
+(display (tensor-ref t 0 0)) (newline)
+(display (tensor-ref t 1 1)) (newline)
+(tensor-set! t 1 22.0)
+(display (tensor-ref t 1)) (newline)

@@ -163,6 +163,11 @@ static double as_number(Value v) {
 /** @brief Wrap a double as an INT Value if it's an exact, small
  *         (< 1e15 in magnitude) integer, else as a FLOAT Value. */
 static Value number_val(double d) {
+    /* A negative zero must stay INEXACT.  IEEE-754 makes (* -1.0 0.0) = -0.0,
+     * but the integer collapse below treats -0.0 == 0 and turned it into the
+     * exact integer 0, discarding the sign bit — so the VM printed 0 where
+     * native prints -0, and a printed -0.0 could not round-trip. */
+    if (d == 0.0 && signbit(d)) return FLOAT_VAL(d);
     if (d == (int64_t)d && fabs(d) < 1e15) return INT_VAL((int64_t)d);
     return FLOAT_VAL(d);
 }
