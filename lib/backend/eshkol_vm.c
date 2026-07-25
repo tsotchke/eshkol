@@ -654,8 +654,15 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"real?", 1697, 1}, {"rational?", 1698, 1}, {"tensor?", 1699, 1},
     {"type-of", 740, 1},
-    /* Error objects — IDs 711-713 */
-    {"error-object?", 711, 1}, {"error-object-message", 712, 1},
+    /* Error objects — IDs 711-714.
+     * These three were misbound by one slot: native 711 is error-MESSAGE and
+     * 712 is error-TYPE, so R7RS `error-object?` answered the message string
+     * ("boom" instead of #t) and `error-object-message` answered the type
+     * ("error" instead of "boom"). The predicate is 714 and the message is 711.
+     * It only became observable once `(error ...)` and the tensor-operand
+     * rejections started raising catchably — before that no `guard` could reach
+     * an error object on the VM at all. */
+    {"error-object?", 714, 1}, {"error-object-message", 711, 1},
     {"error-object-irritants", 713, 1},
     /* Math extensions — IDs 720-746 */
     {"cosh", 720, 1}, {"sinh", 721, 1}, {"tanh", 722, 1},
