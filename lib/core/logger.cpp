@@ -74,6 +74,26 @@ static std::mutex g_log_mutex;
 // threw "mutex lock failed: Invalid argument" (SIGABRT). A suppressed log must
 // not lock at all.
 static std::atomic<eshkol_logger_t> g_max_level{ESHKOL_NOTICE};
+
+// The single authoritative count of error-severity diagnostics raised in this
+// process (see eshkol_diagnostic_error_count()). Every diagnostic primitive
+// below bumps it, which is what lets the compilation gates ask "did anything
+// report an error?" without each of the ~800 individual eshkol_error() call
+// sites having to thread a status back to the driver. Atomic and relaxed: the
+// gates read it after the compiling thread has joined/returned, so no ordering
+// beyond per-object atomicity is required.
+static std::atomic<unsigned long> g_error_diagnostics{0};
+
+/** Count @p level against the error tally if it is error severity or worse.
+ *  Called before the level-suppression early-return in every primitive: a
+ *  raised error must count even when the configured verbosity hides it, or
+ *  `--quiet` would silently turn a fatal error back into a wrong answer. */
+static inline void tally_diagnostic(eshkol_logger_t level) {
+    if (level <= ESHKOL_ERROR) {
+        g_error_diagnostics.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 static eshkol_log_format_t g_log_format = ESHKOL_LOG_TEXT;
 static FILE* g_log_file = nullptr;
 static bool g_color_enabled = true;
@@ -375,7 +395,13 @@ void eshkol_set_timestamps(bool enabled) {
  *  Terminates the process via exit(1) when @p level is ESHKOL_FATAL.
  *  @param level Severity level.
  *  @param msg printf-style format string, followed by its arguments. */
+unsigned long eshkol_diagnostic_error_count(void) {
+    return g_error_diagnostics.load(std::memory_order_relaxed);
+}
+
 void eshkol_printf(eshkol_logger_t level, const char* msg, ...) {
+    tally_diagnostic(level);
+
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
@@ -414,6 +440,8 @@ void eshkol_log_with_location(eshkol_logger_t level,
                                int line,
                                const char* func,
                                const char* msg, ...) {
+    tally_diagnostic(level);
+
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
@@ -463,6 +491,8 @@ void eshkol_log_with_location(eshkol_logger_t level,
  *  @param level Severity level.
  *  @param msg Base message string, followed by NULL-terminated key/value pairs. */
 void eshkol_log_structured(eshkol_logger_t level, const char* msg, ...) {
+    tally_diagnostic(level);
+
     // Lock-free fast path: a suppressed log must take no lock (see g_max_level).
     if (level > g_max_level.load(std::memory_order_relaxed)) return;
 
@@ -636,6 +666,8 @@ void eshkol_stacktrace(eshkol_logger_t level) {
 static void eshkol_diagnostic_at(eshkol_logger_t level,
                                   const char* file, unsigned line, unsigned column,
                                   const char* source_text, const char* msg, va_list ap) {
+    tally_diagnostic(level);
+
     FILE* out = get_output();
     char buffer[4096];
     vsnprintf(buffer, sizeof(buffer), msg, ap);

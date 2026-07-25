@@ -190,8 +190,14 @@ static void warn_if_link_archive_recently_modified(const std::vector<std::string
         auto age_seconds = std::chrono::duration_cast<std::chrono::seconds>(
             now_system - as_system_time).count();
         if (age_seconds >= 0 && age_seconds < kRecentSeconds) {
-            eshkol_error(
-                "note: '%s' was modified %lld second(s) ago. If another build "
+            // Advisory, and deliberately so: a recently-rebuilt archive is a
+            // plausible explanation for a confusing link failure, not itself a
+            // fault in the program being compiled. It is reported at warning
+            // severity so it cannot count toward the error tally that now
+            // blocks artifact emission — reporting it as an error would fail
+            // builds merely for overlapping with a concurrent one.
+            eshkol_warn(
+                "'%s' was modified %lld second(s) ago. If another build "
                 "(e.g. `cmake --build build --target eshkol-run stdlib`) is "
                 "rebuilding the Eshkol runtime/agent-FFI libraries "
                 "concurrently in this tree, the archive above may have been "
@@ -3928,6 +3934,12 @@ int main(int argc, char **argv)
     __eshkol_argc = (int32_t)argc;
     __eshkol_argv = argv;
 
+    // Baseline for the artifact-emission gate below. Sampled before anything
+    // can report a diagnostic, so the gate covers every compilation stage —
+    // option handling, module resolution, parsing, type checking and codegen
+    // alike — rather than only the stage it happens to sit next to.
+    const unsigned long diagnostics_at_startup = eshkol_diagnostic_error_count();
+
     int ch = 0;
 
     uint8_t debug_mode = 0;
@@ -4276,7 +4288,20 @@ int main(int argc, char **argv)
             }
 
             // Execute directly (don't auto-wrap with display - let user control output)
-            jit_ctx.execute(&ast);
+            //
+            // execute() throws when the form cannot be compiled, or when the
+            // JIT gate refuses it because compiling it reported an error. That
+            // has to become an ordinary non-zero exit: an uncaught exception
+            // here reached std::terminate, so a diagnosed compile failure under
+            // -e looked to the shell like a crash of the compiler rather than a
+            // rejection of the program.
+            try {
+                jit_ctx.execute(&ast);
+            } catch (const std::exception& e) {
+                eshkol_error("Evaluation failed: %s", e.what());
+                eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+                return 1;
+            }
 
             // Parse next expression
             ast = eshkol_parse_next_ast_from_stream(eval_stream);
@@ -4953,7 +4978,35 @@ int main(int argc, char **argv)
             eshkol_error("Failed to generate LLVM IR");
             return 1;
         }
-        
+
+        // THE ARTIFACT-EMISSION GATE.
+        //
+        // Everything below this point writes something a later build step or a
+        // user will trust: an object file, a static/shared library, a WASM
+        // module, ESKB bytecode, an .ll dump, or a linked executable. None of
+        // that may be produced once any stage has reported an error, because a
+        // compiler that prints "ERROR:" and still emits a runnable artifact
+        // turns every diagnostic into a silent wrong answer at run time — the
+        // reported program computes something, just not what its source says.
+        //
+        // Individual stages cannot be relied on to enforce this themselves.
+        // Reporting an error is a single eshkol_error() call at any of several
+        // hundred sites; propagating one is a return path through every
+        // enclosing frame, and the codegen frames in particular routinely
+        // recover by substituting a placeholder value and carrying on. So the
+        // authority is the diagnostic tally rather than a returned status:
+        // if the count grew while we were compiling, there is no artifact.
+        //
+        // One gate, sited above every output mode, is the point: each new
+        // emission path inherits it instead of having to remember it.
+        if (eshkol_diagnostic_error_count() != diagnostics_at_startup) {
+            eshkol_error("compilation reported %lu error(s); no artifact was written",
+                         eshkol_diagnostic_error_count() - diagnostics_at_startup);
+            eshkol_dispose_llvm_module(llvm_module);
+            eshkol_runtime_shutdown(ESHKOL_SHUTDOWN_ERROR);
+            return 1;
+        }
+
         // Handle different output modes
         if (dump_ir) {
             // Dump IR to file
