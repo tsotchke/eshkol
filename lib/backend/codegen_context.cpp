@@ -104,7 +104,9 @@ void CodegenContext::emitRaiseFmt(const char* format, llvm::ArrayRef<llvm::Value
     std::vector<llvm::Value*> call_args;
     call_args.reserve(args.size() + 3);
     call_args.push_back(buf);
-    call_args.push_back(llvm::ConstantInt::get(int64Type(), kMsgBufSize));
+    // snprintf's second parameter is size_t, which is i32 on wasm32 and i64 on
+    // native 64-bit — take the width from the type system rather than assuming.
+    call_args.push_back(llvm::ConstantInt::get(types_.getSizeType(), kMsgBufSize));
     call_args.push_back(builder_.CreateGlobalString(format));
     for (llvm::Value* a : args) call_args.push_back(a);
     builder_.CreateCall(snprintf_fn, call_args);
