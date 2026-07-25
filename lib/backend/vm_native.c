@@ -6919,6 +6919,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        /* ESH-0369: the VM's forward-mode carrier is a FLAT VmDual {value,
+         * tangent} — one perturbation, no nesting level. A point that is
+         * ALREADY a dual therefore means an enclosing differentiation is live
+         * (a nested `(derivative (lambda (x) (derivative f x)) x0)`, or a
+         * curried `(derivative (derivative f))`), and the flat carrier cannot
+         * represent the two independent perturbations that needs: as_number()
+         * would flatten the incoming dual to its value, the inner pass would
+         * return a plain float, and the outer pass would read "non-dual result
+         * = constant function" and push 0. That is a silently WRONG second
+         * derivative, which is exactly what the native jet (e1/e2/ep slots,
+         * lib/backend/autodiff_codegen.cpp seedForwardAndPush) exists to get
+         * right. Raise instead — a catchable error the caller can see, not a
+         * fabricated zero. Higher-order AD on the VM is tracked as a
+         * native-only row in tests/vm_parity/PARITY.tsv. */
+        if (x_val.type == VAL_DUAL) {
+            vm_raise_error_msg(vm,
+                "derivative: higher-order/nested derivative is not supported on the VM "
+                "(the VM's forward-mode dual carries a single perturbation); "
+                "use the native backend");
+            break;
+        }
         /* Create dual number: x + 1ε */
         VmDual* d = vm_dual_make(&vm->heap.regions, as_number(x_val), 1.0);
         if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }

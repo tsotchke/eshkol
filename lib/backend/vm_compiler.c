@@ -3013,6 +3013,41 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         compile_expr(c, node->children[1], 0); chunk_emit(c, OP_NUM_P, 0); return;
     }
 
+    /* `derivative` curried form (ESH-0369): `(derivative f)` with no point is
+     * the documented spelling that returns f' as a first-class procedure. The
+     * VM reaches `derivative` as native call id 393, which pops exactly
+     * (f, x) — so the curried form used to pop garbage off the operand stack
+     * and bind a non-callable, and applying it failed with "calling
+     * non-function". Lower it the same way `gradient` lowers its curry (see
+     * below): synthesize
+     *     (lambda (__dx__) (derivative <f> __dx__))
+     * from existing forms, so no builtin is added (the builtin count, and
+     * therefore the top-level slot layout, is unchanged) and the curried form
+     * reaches native 393 with exactly the same (f, x) as the direct form —
+     * hence identical values.
+     *
+     * FIRST order only. Differentiating the resulting closure again is nested
+     * differentiation, which the VM's flat single-perturbation dual cannot
+     * represent; native call 393 now RAISES for a dual-valued point rather
+     * than fabricating 0 (see vm_native.c case 393), so the unsupported case
+     * is loud. Tracked as a native-only row in tests/vm_parity/PARITY.tsv. */
+    if (is_sym(head, "derivative") && node->n_children == 2) {
+        Node* inner = make_call_node("derivative");
+        add_child(inner, node->children[1]);
+        add_child(inner, make_symbol_node("__dx__"));
+        Node* params = make_node(N_LIST);          /* (__dx__) — one FIXED param */
+        add_child(params, make_symbol_node("__dx__"));
+        Node* lam = make_call_node("lambda");
+        add_child(lam, params);
+        add_child(lam, inner);
+        compile_expr(c, lam, tail);
+        /* Synthetic wrapper nodes intentionally leak (bounded, one per curried
+         * occurrence); children[1] is shared with `node` and is freed with the
+         * top-level AST, so it must NOT be freed here — same ownership rule as
+         * the `gradient` curry below. */
+        return;
+    }
+
     /* `gradient` special form: currying + point-spreading, lowered so the
      * callable stays on the operand stack of the native gradient primitive
      * (call id 750) rather than being routed through an intermediate Scheme
