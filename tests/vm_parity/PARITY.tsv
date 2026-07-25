@@ -90,6 +90,9 @@ bce-loss	gap	ml faculty has no VM fid coverage
 begin	vm-supported	
 binary-cross-entropy-loss	gap	ml faculty has no VM fid coverage
 binary-port?	gap	port/file IO surface missing in VM
+bit-count	vm-supported	native fid + VM BUILTINS 2202; alias of popcount (docs/API_REFERENCE.md spelling)
+bit-shift-left	vm-supported	native fid + VM BUILTINS 2200; arithmetic-shift with a positive count
+bit-shift-right	vm-supported	native fid + VM BUILTINS 2201; arithmetic-shift with a negated count
 bitwise-and	vm-supported	
 bitwise-not	vm-supported	
 bitwise-or	vm-supported	
@@ -635,6 +638,7 @@ path-resolve	vm-supported
 peek-char	gap	port/file IO surface missing in VM
 peek-u8	gap	port/file IO surface missing in VM
 poll-fd	native-only-justified	OS/process interface — native runtime only
+popcount	vm-supported	native fid + VM BUILTINS 2202; R6RS bitwise-bit-count convention for negatives
 port?	vm-supported	
 positional-encoding	gap	ml faculty has no VM fid coverage
 positive?	vm-supported	
