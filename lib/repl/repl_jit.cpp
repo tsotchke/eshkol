@@ -2930,7 +2930,16 @@ void ReplJITContext::injectPreviousSymbols(Module* module) {
             // All lambdas have signature: eshkol_tagged_value(*)(eshkol_tagged_value, eshkol_tagged_value, ...)
             Type* tagged_value_type = StructType::getTypeByName(module->getContext(), "eshkol_tagged_value");
             if (!tagged_value_type) {
-                std::cerr << "ERROR: eshkol_tagged_value type not found - skipping lambda injection" << std::endl;
+                // Reported through the logger rather than straight to cerr so
+                // it reaches the error tally and the gate in addModule() below
+                // refuses the module. This is the same fail-open shape the gate
+                // exists to remove: skipping the injection leaves the batch
+                // referring to a lambda it never declared, and "ERROR" followed
+                // by a module that still executes is how a diagnosed program
+                // ends up returning a wrong answer.
+                eshkol_error("eshkol_tagged_value type not found; cannot declare "
+                             "lambda '%s' for JIT module '%s'",
+                             lambda_name.c_str(), module->getName().str().c_str());
                 continue;
             }
 
