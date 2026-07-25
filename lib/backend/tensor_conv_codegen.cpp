@@ -96,14 +96,7 @@ llvm::Value* TensorCodegen::maxPool2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "mp2d_dims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: maxpool2d requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, num_dims});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("max-pool2d: requires at least a 2D tensor (got %lldD)", {num_dims});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -387,14 +380,7 @@ llvm::Value* TensorCodegen::avgPool2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "ap2d_dims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: avgpool2d requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, num_dims});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("avg-pool2d: requires at least a 2D tensor (got %lldD)", {num_dims});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -869,6 +855,22 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
     llvm::Value* in_total_field = builder.CreateStructGEP(tensor_type, input_ptr, 3);
     llvm::Value* in_total = builder.CreateLoad(ctx_.int64Type(), in_total_field);
 
+    // Guard: conv2d input requires at least a 2D tensor. Without this the
+    // dims[num_dims - 2] read below indexes *before* the dimensions array for a
+    // rank-1 input (h_idx == -1), and the garbage H/W then size the output
+    // tensor and bound the convolution loops. max-pool2d/avg-pool2d have always
+    // guarded their input rank; conv2d only ever guarded its kernel.
+    {
+        llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
+        llvm::Value* dims_ok = builder.CreateICmpUGE(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2));
+        llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_indims_ok", cur_fn);
+        llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_indims_err", cur_fn);
+        builder.CreateCondBr(dims_ok, ok_bb, err_bb);
+        builder.SetInsertPoint(err_bb);
+        ctx_.emitRaiseFmt("conv2d: input requires at least a 2D tensor (got %lldD)", {num_dims});
+        builder.SetInsertPoint(ok_bb);
+    }
+
     // Get last 2 dimensions (H, W)
     llvm::Value* h_idx = builder.CreateSub(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 2));
     llvm::Value* w_idx = builder.CreateSub(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
@@ -899,14 +901,7 @@ llvm::Value* TensorCodegen::conv2d(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "c2d_kdims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: conv2d kernel requires at least 2D tensor (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, k_ndim});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("conv2d: kernel requires at least a 2D tensor (got %lldD)", {k_ndim});
         builder.SetInsertPoint(ok_bb);
     }
 

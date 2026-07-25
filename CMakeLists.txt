@@ -3009,6 +3009,21 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "TEST: Empty collection edge cases"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Runtime guards across the tensor/complex/AD surface must raise catchably
+    # rather than being optimized away. Two of these cases were hard SIGSEGVs and
+    # one returned a matrix fabricated from out-of-bounds reads, so the
+    # `fatal signal` clause in FAIL_REGULAR_EXPRESSION is load-bearing here.
+    add_test(
+        NAME codegen_guard_raise_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/codegen_guard_raise_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(codegen_guard_raise_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "RESULT: PASS"
+            FAIL_REGULAR_EXPRESSION "error:|LLVM module verification failed|fatal signal")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/v1_3_smoke_features_test.esk")
         add_test(
             NAME v1_3_smoke_features_runtime_smoke
