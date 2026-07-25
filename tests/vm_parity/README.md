@@ -131,6 +131,8 @@ header. Filed while building this gate, 2026-07:
 | `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
 | `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
 | `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
+| `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
+| `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
 
 Divergences where **native is the wrong side** (filed rather than "fixed" in
 the VM to match a native bug; native codegen is not VM-owned):
@@ -144,6 +146,8 @@ the VM to match a native bug; native codegen is not VM-owned):
 | `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
 | `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
 | `tensor_ref_component_oob_native.esk` | component past its dimension fabricates natively when the flat offset fits |
+| `tensor_vector_built_nested_native.esk` | a runtime-BUILT nested vector is rejected natively; the identical literal is accepted |
+| `tensor_ragged_literal_native.esk` | a ragged literal fabricates `()` natively instead of raising |
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed
