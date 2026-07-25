@@ -1771,14 +1771,18 @@ Conversion between numbers and strings.
 For inexact (floating-point) numbers, `number->string` — like `display` and
 `write` — emits the **shortest decimal string that reads back as the identical
 `double`** (R7RS 6.2.6): no digits are lost and none are fabricated. Integral
-doubles print without a trailing `.0`. The native compiler and the bytecode VM
-share one conversion routine, so their output is byte-identical.
+doubles print without a trailing `.0`; negative zero is the one exception and
+prints `-0.0`, because `-0` would read back as the *exact* integer zero and lose
+both the inexactness and the observable sign. The native compiler and the
+bytecode VM share one conversion routine, so their output is byte-identical.
 
 **Examples**:
 ```scheme
 (number->string 42)         ; => "42"
 (string->number "3.14")     ; => 3.14
 (number->string (sqrt 2.0)) ; => "1.4142135623730951"
+(number->string 3.0)        ; => "3"      (integral double, still inexact)
+(number->string -0.0)       ; => "-0.0"   (sign and inexactness both survive)
 ```
 
 ---

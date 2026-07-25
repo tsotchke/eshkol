@@ -66,9 +66,21 @@ static int eshkol_dtoa_shortest(char* buf, size_t cap, double v) {
         return snprintf(buf, cap, v < 0.0 ? "-inf.0" : "+inf.0");
     }
 
-    /* Signed zero: "0" / "-0" (matches the existing %g convention). */
+    /* Signed zero.
+     *
+     * Positive zero keeps the friendly integral-double form "0" (the same
+     * convention that renders 3.0 as "3"): reading "0" back recovers the same
+     * NUMERIC VALUE, only its exactness changes.
+     *
+     * Negative zero must NOT follow that convention. "-0" is not a flonum
+     * external representation at all — the reader takes it as the exact integer
+     * zero, which has no sign, so BOTH the inexactness and the sign bit were
+     * lost: (/ 1.0 (string->number (number->string -0.0))) came back +inf.0
+     * where the value itself gives -inf.0. That is a genuine loss of the value,
+     * not just of its exactness, so negative zero is rendered "-0.0", which the
+     * reader recovers as an inexact negative zero (R7RS 6.2.6 round-trip). */
     if (v == 0.0) {
-        return snprintf(buf, cap, signbit(v) ? "-0" : "0");
+        return snprintf(buf, cap, signbit(v) ? "-0.0" : "0");
     }
 
     /* 1) Minimal significant digits: smallest sig-digit count in 1..17 whose
