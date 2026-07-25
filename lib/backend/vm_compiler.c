@@ -26,6 +26,162 @@ static void compile_expr(FuncChunk* c, Node* node, int tail);
 #define VM_PACK_FUNC_ARITY(pc, arity) \
     ((int64_t)(uint32_t)(pc) | (1LL << 40) | (((int64_t)((arity) & 0xFF)) << 32))
 
+/* ── R7RS §5.3.1 TOP-LEVEL REDEFINITION ─────────────────────────────────────
+ *
+ * "At the top level of a program, a definition
+ *      (define <variable> <expression>)
+ *  has essentially the same effect as the assignment expression
+ *      (set! <variable> <expression>)
+ *  if <variable> is bound to a non-syntax value."
+ *
+ * The VM binds each top-level define to a fresh stack slot, and resolve_local()
+ * scans backwards, so a *later* reference already found the later definition.
+ * What it could not do is update an *earlier* one: a procedure defined before
+ * the redefinition captured the first definition's slot as an upvalue, so
+ * calling it after the redefinition still ran the old body.
+ *
+ * Top-level captures are already by reference — compile_form_define() and
+ * compile_form_lambda_2() convert every is_local upvalue of a top-level
+ * closure into an open (stack-slot) upvalue via native call 151, precisely so
+ * a later `set!` is visible. A redefinition is a `set!`, so assigning to the
+ * existing slot instead of adding a second one gives R7RS semantics for free.
+ *
+ * This is restricted to names the *user program* defines more than once
+ * (registered below from a pre-scan of the source). Applying it to any name
+ * that merely already resolves would also capture the builtin preamble and
+ * the Scheme prelude, whose slots are pre-registered before user code is
+ * compiled: a user `(define (car x) ...)` would then rebind the slot the
+ * prelude's own `map`/`fold` read through, letting user code break the
+ * standard library. Native keeps the stdlib in a separately compiled object
+ * where that cannot happen, so matching it here also preserves parity.
+ */
+#define VM_MAX_REDEFINED_NAMES 128
+static char g_vm_redefined_names[VM_MAX_REDEFINED_NAMES][128];
+static int  g_vm_n_redefined = 0;
+
+/** @brief Forget every registered redefined top-level name. */
+static void vm_clear_redefined_toplevel_names(void) {
+    g_vm_n_redefined = 0;
+}
+
+/** @brief Register @p name as defined more than once at the program's top
+ *         level (idempotent; silently ignored past the table capacity, which
+ *         only costs the old stale-binding behaviour). */
+static void vm_add_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return;
+    if (g_vm_n_redefined >= VM_MAX_REDEFINED_NAMES) return;
+    strncpy(g_vm_redefined_names[g_vm_n_redefined], name, 127);
+    g_vm_redefined_names[g_vm_n_redefined][127] = 0;
+    g_vm_n_redefined++;
+}
+
+/** @return 1 if @p name is defined more than once at the top level of the
+ *          program being compiled. */
+static int vm_is_redefined_toplevel_name(const char* name) {
+    if (!name || !name[0]) return 0;
+    for (int i = 0; i < g_vm_n_redefined; i++)
+        if (strcmp(g_vm_redefined_names[i], name) == 0) return 1;
+    return 0;
+}
+
+/** @return the name a top-level `define` form binds — `x` for both
+ *          `(define x v)` and `(define (x . args) body)` — or NULL if @p e is
+ *          not a define form. */
+static const char* vm_define_bound_name(Node* e) {
+    if (!e || e->type != N_LIST || e->n_children < 2) return NULL;
+    if (e->children[0]->type != N_SYMBOL) return NULL;
+    if (strcmp(e->children[0]->symbol, "define") != 0) return NULL;
+    Node* target = e->children[1];
+    if (target->type == N_SYMBOL) return target->symbol;
+    if (target->type == N_LIST && target->n_children >= 1 &&
+        target->children[0]->type == N_SYMBOL) {
+        return target->children[0]->symbol;
+    }
+    return NULL;
+}
+
+/** @brief Register every name that @p n top-level @p forms define more than
+ *         once (R7RS §5.3.1). Replaces any previous registration. */
+static void vm_register_redefined_from_forms(Node** forms, int n) {
+    vm_clear_redefined_toplevel_names();
+    if (!forms) return;
+
+    char seen[VM_MAX_REDEFINED_NAMES * 4][128];
+    int n_seen = 0;
+    for (int i = 0; i < n; i++) {
+        const char* name = vm_define_bound_name(forms[i]);
+        if (!name) continue;
+        int already = 0;
+        for (int s = 0; s < n_seen; s++)
+            if (strcmp(seen[s], name) == 0) { already = 1; break; }
+        if (already) {
+            vm_add_redefined_toplevel_name(name);
+        } else if (n_seen < (int)(sizeof(seen) / sizeof(seen[0]))) {
+            strncpy(seen[n_seen], name, 127);
+            seen[n_seen][127] = 0;
+            n_seen++;
+        }
+    }
+}
+
+/** @brief Same as vm_register_redefined_from_forms() for a driver that has no
+ *         parsed top-level array — parses @p source into a throw-away AST just
+ *         to count the definitions. The parser has no registration side
+ *         effects (macros are expanded during compilation, not parsing), so
+ *         reading the source twice is safe. */
+static void vm_prescan_redefined_toplevel_names(const char* source) {
+    vm_clear_redefined_toplevel_names();
+    if (!source) return;
+
+    const char* saved_src = src_ptr;
+    src_ptr = source;
+
+    Node* forms[VM_MAX_REDEFINED_NAMES * 8];
+    int n_forms = 0;
+    while (n_forms < (int)(sizeof(forms) / sizeof(forms[0]))) {
+        skip_ws();
+        if (!*src_ptr) break;
+        Node* expr = parse_sexp();
+        if (!expr) break;
+        forms[n_forms++] = expr;
+    }
+
+    vm_register_redefined_from_forms(forms, n_forms);
+
+    for (int i = 0; i < n_forms; i++) free_node(forms[i]);
+    src_ptr = saved_src;
+}
+
+/* The group-compilation driver in compile_and_run() pre-registers a NIL local
+ * per member of a mutually-recursive define group before compiling any of
+ * them, so inside a group `resolve_local` finds a slot that no definition has
+ * run yet. Suppress the redefinition rule for that window. */
+static int g_vm_predeclared_group_depth = 0;
+
+/** @return the existing top-level slot a redefinition of @p name must assign
+ *          to, or -1 when this define should create a new binding.
+ *
+ * A heap-boxed target (set!-mutated *and* captured, so its slot holds a
+ * 1-element vector) is declined: assigning into the box means emitting
+ * GET_LOCAL/CONST before the value, which would leave two untracked values
+ * under the value's own compile-time stack accounting. Such a name would have
+ * to be redefined *and* set!-mutated *and* captured; declining leaves it on
+ * the previous behaviour rather than risking mis-tracked slots. */
+static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
+    if (!c || c->enclosing != NULL) return -1;          /* top level only */
+    if (g_vm_predeclared_group_depth > 0) return -1;
+    if (!vm_is_redefined_toplevel_name(name)) return -1;
+
+    int slot = resolve_local(c, name);
+    if (slot < 0) return -1;
+    for (int li = c->n_locals - 1; li >= 0; li--) {
+        if (c->locals[li].slot == slot && c->locals[li].boxed) return -1;
+    }
+    return slot;
+}
+
 static void compile_operands_tracked(FuncChunk* c, Node* node, int first, int last) {
     for (int i = first; i <= last; i++) {
         compile_expr(c, node->children[i], 0);
@@ -1214,7 +1370,18 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
     (void)head; (void)tail;
     if (node->children[1]->type == N_SYMBOL) {
         /* Simple variable definition */
+        int redef_slot = vm_redefinition_target_slot(c, node->children[1]->symbol);
         compile_expr(c, node->children[2], 0);
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: assign to the name's existing location, so every
+             * closure that already captured that slot sees the new value.
+             * SET_LOCAL consumes the value; push NIL in its place so the
+             * caller's "this define added no local, POP its result"
+             * bookkeeping still balances. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
+            return;
+        }
         add_local(c, node->children[1]->symbol);
         return;
     }
@@ -1223,7 +1390,11 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
         Node* sig = node->children[1];
         char* fname = sig->children[0]->symbol;
 
-        int func_slot = add_local(c, fname);
+        /* R7RS §5.3.1: a redefinition reuses the name's existing location
+         * rather than binding a new one, so the body below also resolves the
+         * name to that slot. */
+        int redef_slot = vm_redefinition_target_slot(c, fname);
+        int func_slot = redef_slot >= 0 ? redef_slot : add_local(c, fname);
 
         /* Compile function body into a separate chunk.
          * The body can reference fname via GET_UPVALUE which will be captured
@@ -1361,6 +1532,13 @@ static void compile_form_define(FuncChunk* c, Node* node, int tail) {
                     g_n_repatch++;
                 }
             }
+        }
+        if (redef_slot >= 0) {
+            /* R7RS §5.3.1: store the new procedure into the name's existing
+             * location. Must come after the open-upvalue conversion above,
+             * which needs the closure on the stack top. */
+            chunk_emit(c, OP_SET_LOCAL, redef_slot);
+            chunk_emit(c, OP_NIL, 0);
         }
         chunk_free_arrays(&func);
         return;

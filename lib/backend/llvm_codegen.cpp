@@ -4201,6 +4201,9 @@ private:
             this
         );
         strio_->setDisplayValueFunc(eshkol_display_value_func);
+        // R7RS §5.3.1: display must not short-circuit a redefined name to the
+        // name-keyed `<name>_sexpr` side table (see setRedefinedTopLevelNames).
+        strio_->setRedefinedTopLevelNames(&redefined_toplevel_names);
         eshkol_debug("Created StringIOCodegen with callbacks");
 
         // Initialize BindingCodegen - variable binding operations
