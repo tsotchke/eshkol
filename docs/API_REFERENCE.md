@@ -3763,12 +3763,13 @@ return the adjusted learning rate as a scalar — they do not modify any state.
 
 #### `cosine-annealing-lr`
 
-**Syntax:** `(cosine-annealing-lr step total base-lr)` → Number
+**Syntax:** `(cosine-annealing-lr base-lr min-lr step total)` → Number
 
-Cosine annealing: η_t = base-lr · 0.5 · (1 + cos(π · step / total)).
+Cosine annealing: η_t = min-lr + 0.5 · (base-lr − min-lr) · (1 + cos(π · step / total)).
 
-Smoothly decays from `base-lr` to approximately 0 over `total` steps following a cosine curve.
-The gradual decay avoids the abrupt drops of step-based schedules.
+Smoothly decays from `base-lr` to `min-lr` over `total` steps following a cosine curve
+(pass `0.0` for `min-lr` to decay to approximately 0). The gradual decay avoids the abrupt
+drops of step-based schedules.
 
 **Use case:** Standard for transformer training (BERT, GPT).
 
@@ -3776,7 +3777,7 @@ The gradual decay avoids the abrupt drops of step-based schedules.
 
 #### `step-decay-lr`
 
-**Syntax:** `(step-decay-lr step size γ base-lr)` → Number
+**Syntax:** `(step-decay-lr base-lr γ step size)` → Number
 
 Step decay: η_t = base-lr · γ^⌊step/size⌋.
 
@@ -3788,7 +3789,7 @@ Reduces the learning rate by factor γ every `size` steps. Common values: γ = 0
 
 #### `linear-warmup-lr`
 
-**Syntax:** `(linear-warmup-lr step warmup base-lr)` → Number
+**Syntax:** `(linear-warmup-lr base-lr step warmup)` → Number
 
 Linear warmup: η_t = base-lr · min(step / warmup, 1).
 
@@ -3805,7 +3806,7 @@ statistics before taking large steps.
 
 #### `exponential-decay-lr`
 
-**Syntax:** `(exponential-decay-lr step γ base-lr)` → Number
+**Syntax:** `(exponential-decay-lr base-lr γ step)` → Number
 
 Exponential decay: η_t = base-lr · γ^step.
 
@@ -3819,8 +3820,8 @@ Continuous exponential decay — more aggressive than step decay as it reduces e
 ;; Warmup for 1000 steps, then cosine decay for 9000 steps
 (define (lr-schedule step)
   (if (< step 1000)
-    (linear-warmup-lr step 1000 0.001)
-    (cosine-annealing-lr (- step 1000) 9000 0.001)))
+    (linear-warmup-lr 0.001 step 1000)
+    (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000)))
 
 (lr-schedule 0)       ; => 0.0 (start of warmup)
 (lr-schedule 500)     ; => 0.0005 (mid-warmup)
@@ -4151,8 +4152,8 @@ a complete neural network training pipeline.
 
          ;; Learning rate schedule
          (lr (if (< step 1000)
-               (linear-warmup-lr step 1000 0.001)
-               (cosine-annealing-lr (- step 1000) 9000 0.001))))
+               (linear-warmup-lr 0.001 step 1000)
+               (cosine-annealing-lr 0.001 0.0 (- step 1000) 9000))))
 
     ;; Gradient clipping
     (clip-grad-norm! (car grads) 1.0)

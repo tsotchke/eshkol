@@ -15423,48 +15423,42 @@ private:
         // Layout: [header(-8) | numerator(i64,+0) | denominator(i64,+8)]
         // =========================================================================
         if (func_name == "rational?" || func_name == "exact-rational?") {
+            // Exact rationals: fixnum, bignum, or a heap RATIONAL. `rational?`
+            // additionally covers the *inexact* rationals, because R7RS §6.2.5
+            // requires the tower to nest — integer? ⊆ rational? ⊆ real? — and
+            // every finite flonum is a rational number (only +inf.0, -inf.0 and
+            // +nan.0 are real-but-not-rational). Excluding flonums here made the
+            // tower self-contradictory: `(integer? 3.0)` answered #t while
+            // `(rational? 3.0)` answered #f. `exact-rational?` keeps the
+            // exact-only meaning — that is what the separate name is for.
+            const bool exact_only = (func_name == "exact-rational?");
+
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
-            // Rational? is true for: INT64 (integers are rational) OR HEAP_PTR+RATIONAL
-            Value* type_tag = builder->CreateExtractValue(arg, {0});
-            Value* is_int = builder->CreateICmpEQ(type_tag,
+            Value* base_type = getBaseType(getTaggedValueType(arg));
+            Value* is_int = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_ratio = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
 
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* check_heap_bb = BasicBlock::Create(*context, "rat_check_heap", current_func);
-            BasicBlock* true_bb = BasicBlock::Create(*context, "rat_true", current_func);
-            BasicBlock* false_bb = BasicBlock::Create(*context, "rat_false", current_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "rat_merge", current_func);
+            Value* result = builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_ratio);
 
-            builder->CreateCondBr(is_int, true_bb, check_heap_bb);
+            if (!exact_only) {
+                Value* is_double = builder->CreateICmpEQ(base_type,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+                Value* dbl_val = unpackDoubleFromTaggedValue(arg);
+                Function* fabs_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+                Value* magnitude = builder->CreateCall(fabs_fn, {dbl_val});
+                // Ordered compare: false for NaN as well as for the infinities.
+                Value* is_finite = builder->CreateFCmpOLT(magnitude,
+                    ConstantFP::getInfinity(double_type));
+                result = builder->CreateOr(result,
+                    builder->CreateAnd(is_double, is_finite));
+            }
 
-            builder->SetInsertPoint(check_heap_bb);
-            Value* is_heap = builder->CreateICmpEQ(type_tag,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            BasicBlock* check_sub_bb = BasicBlock::Create(*context, "rat_check_sub", current_func);
-            builder->CreateCondBr(is_heap, check_sub_bb, false_bb);
-
-            builder->SetInsertPoint(check_sub_bb);
-            Value* ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
-            Value* header = builder->CreateLoad(int8_type,
-                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
-            Value* is_rational = builder->CreateICmpEQ(header,
-                ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
-            builder->CreateCondBr(is_rational, true_bb, false_bb);
-
-            builder->SetInsertPoint(true_bb);
-            builder->CreateBr(merge_bb);
-            builder->SetInsertPoint(false_bb);
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2);
-            phi->addIncoming(ConstantInt::getTrue(*context), true_bb);
-            phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
-            return packBoolToTaggedValue(phi);
+            return packBoolToTaggedValue(result);
         }
 
         // (numerator x) / (denominator x): route through the runtime so
@@ -34088,23 +34082,33 @@ private:
         if (!x_typed.llvm_value) return nullptr;
 
         // R7RS: complex? returns #t for any number (integer, real, complex)
-        // since the numeric tower is integer ⊂ rational ⊂ real ⊂ complex
+        // since the numeric tower is integer ⊂ rational ⊂ real ⊂ complex —
+        // and #f for everything that is not a number.
+        //
+        // HEAP_PTR is the *consolidated* pointer tag: bignums and rationals
+        // share it with strings, symbols, pairs, vectors, hash tables and every
+        // other heap object, and are told apart by the header subtype. Accepting
+        // the bare tag therefore reported `(complex? "hello")`, `(complex? 'foo)`
+        // and `(complex? '(1 2 3))` as #t. Match the numeric-subtype test that
+        // `number?` and `real?` already use.
         Value* x_tagged = typedValueToTaggedValue(x_typed);
-        Value* type_tag = builder->CreateExtractValue(x_tagged, {0}, "type");
+        Value* type_tag = getBaseType(getTaggedValueType(x_tagged));
 
-        // Check for any numeric type: INT64, DOUBLE, COMPLEX, or HEAP_PTR (bignum/rational)
         Value* is_int = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
         Value* is_double = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* is_complex = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
-        Value* is_heap = builder->CreateICmpEQ(type_tag,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_bignum = isHeapSubtype(x_tagged, HEAP_SUBTYPE_BIGNUM);
+        Value* is_rational = isHeapSubtype(x_tagged, HEAP_SUBTYPE_RATIONAL);
+        Value* is_ad = isCallableSubtype(x_tagged, CALLABLE_SUBTYPE_AD_NODE);
 
         Value* is_numeric = builder->CreateOr(is_int, is_double);
         is_numeric = builder->CreateOr(is_numeric, is_complex);
-        is_numeric = builder->CreateOr(is_numeric, is_heap);
+        is_numeric = builder->CreateOr(is_numeric, is_bignum);
+        is_numeric = builder->CreateOr(is_numeric, is_rational);
+        is_numeric = builder->CreateOr(is_numeric, is_ad);
 
         return packBoolToTaggedValue(is_numeric);
     }
