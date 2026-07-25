@@ -21,14 +21,16 @@
 
 /** @brief Compute the NumPy-style broadcast-compatible output shape from
  *         two input shapes (trailing dims aligned, size-1 dims stretch).
- * @return 0 on success, -1 if shapes are incompatible or the result would
- *         exceed VM_TENSOR_MAX_DIMS.
+ * @return 0 on success, -1 if the shapes are incompatible. The result rank is
+ *         max(a_dims, b_dims); @p out_shape must have room for that many
+ *         entries (callers size it from the operands, so broadcasting carries
+ *         no rank ceiling of its own).
  */
 static int vm_broadcast_shapes(const int64_t* a_shape, int a_dims,
                                const int64_t* b_shape, int b_dims,
                                int64_t* out_shape, int* out_dims) {
     *out_dims = a_dims > b_dims ? a_dims : b_dims;
-    if (*out_dims > VM_TENSOR_MAX_DIMS) return -1;
+    if (*out_dims <= 0) return -1;
 
     for (int i = 0; i < *out_dims; i++) {
         int64_t a = (i < a_dims) ? a_shape[a_dims - 1 - i] : 1;
@@ -50,8 +52,8 @@ typedef double (*VmBinaryFn)(double, double);
  *         tensor, clamping any broadcast (size-1) dimension's index to 0. */
 static int64_t vm_broadcast_src_index(int64_t flat, const int64_t* out_shape, int out_dims,
                                       const int64_t* src_shape, int src_dims,
-                                      const int64_t* src_strides) {
-    int64_t indices[VM_TENSOR_MAX_DIMS];
+                                      const int64_t* src_strides,
+                                      int64_t* indices) {
     vm_tensor_unravel(flat, out_shape, out_dims, indices);
 
     int64_t off = 0;
@@ -72,7 +74,10 @@ static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
                                      const VmTensor* b, VmBinaryFn op) {
     if (!a || !b || !op) return NULL;
 
-    int64_t out_shape[VM_TENSOR_MAX_DIMS];
+    int max_rank = a->n_dims > b->n_dims ? a->n_dims : b->n_dims;
+    int64_t* out_shape = vm_tensor_dim_scratch(rs, max_rank);
+    int64_t* idx_scratch = vm_tensor_dim_scratch(rs, max_rank);
+    if (!out_shape || !idx_scratch) return NULL;
     int out_dims;
     if (vm_broadcast_shapes(a->shape, a->n_dims, b->shape, b->n_dims,
                             out_shape, &out_dims) != 0) {
@@ -85,9 +90,11 @@ static VmTensor* vm_tensor_binary_op(VmRegionStack* rs, const VmTensor* a,
 
     for (int64_t i = 0; i < out->total; i++) {
         int64_t ai = vm_broadcast_src_index(i, out_shape, out_dims,
-                                            a->shape, a->n_dims, a->strides);
+                                            a->shape, a->n_dims, a->strides,
+                                            idx_scratch);
         int64_t bi = vm_broadcast_src_index(i, out_shape, out_dims,
-                                            b->shape, b->n_dims, b->strides);
+                                            b->shape, b->n_dims, b->strides,
+                                            idx_scratch);
         out->data[i] = op(a->data[ai], b->data[bi]);
     }
     return out;
@@ -152,7 +159,8 @@ static VmTensor* vm_tensor_unary_op(VmRegionStack* rs, const VmTensor* t, VmUnar
     out->dtype = t->dtype;
 
     /* Handle non-contiguous source */
-    int64_t expected_strides[VM_TENSOR_MAX_DIMS];
+    int64_t* expected_strides = vm_tensor_dim_scratch(rs, t->n_dims);
+    if (!expected_strides) return NULL;
     vm_tensor_compute_strides(t->shape, t->n_dims, expected_strides);
     int is_contiguous = 1;
     for (int i = 0; i < t->n_dims; i++) {
@@ -164,7 +172,8 @@ static VmTensor* vm_tensor_unary_op(VmRegionStack* rs, const VmTensor* t, VmUnar
             out->data[i] = op(t->data[i]);
         }
     } else {
-        int64_t indices[VM_TENSOR_MAX_DIMS];
+        int64_t* indices = vm_tensor_dim_scratch(rs, t->n_dims);
+        if (!indices) return NULL;
         for (int64_t i = 0; i < out->total; i++) {
             vm_tensor_unravel(i, t->shape, t->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(t, indices, t->n_dims);
@@ -355,8 +364,10 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
     if (axis < 0) axis += t->n_dims;
     if (axis < 0 || axis >= t->n_dims) return NULL;
 
-    /* Build output shape (remove axis) */
-    int64_t out_shape[VM_TENSOR_MAX_DIMS];
+    /* Build output shape (remove axis); scratch is sized from the operand's
+     * own rank, so a reduction over a high-rank tensor is not capped. */
+    int64_t* out_shape = vm_tensor_dim_scratch(rs, t->n_dims + 1);
+    if (!out_shape) return NULL;
     int out_dims = 0;
     int scalar_reduce = 0;  /* flag: 1D input reduced to scalar */
     for (int i = 0; i < t->n_dims; i++) {
@@ -385,7 +396,11 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
     }
 
     /* Iterate over all elements of t */
-    int64_t t_indices[VM_TENSOR_MAX_DIMS];
+    int64_t* t_indices = vm_tensor_dim_scratch(rs, t->n_dims);
+    int64_t* out_indices = vm_tensor_dim_scratch(rs, t->n_dims + 1);
+    int64_t* out_strides = vm_tensor_dim_scratch(rs, t->n_dims + 1);
+    if (!t_indices || !out_indices || !out_strides) return NULL;
+    vm_tensor_compute_strides(out_shape, out_dims, out_strides);
     for (int64_t flat = 0; flat < t->total; flat++) {
         vm_tensor_unravel(flat, t->shape, t->n_dims, t_indices);
         int64_t src_off = vm_tensor_flat_offset(t, t_indices, t->n_dims);
@@ -394,13 +409,10 @@ static VmTensor* vm_tensor_reduce(VmRegionStack* rs, const VmTensor* t,
         /* Compute output flat index (skip axis dimension) */
         int64_t out_flat = 0;
         if (!scalar_reduce) {
-            int64_t out_indices[VM_TENSOR_MAX_DIMS];
             int oi = 0;
             for (int i = 0; i < t->n_dims; i++) {
                 if (i != axis) out_indices[oi++] = t_indices[i];
             }
-            int64_t out_strides[VM_TENSOR_MAX_DIMS];
-            vm_tensor_compute_strides(out_shape, out_dims, out_strides);
             for (int i = 0; i < out_dims; i++) {
                 out_flat += out_indices[i] * out_strides[i];
             }
@@ -552,7 +564,8 @@ static VmTensor* vm_tensor_softmax(VmRegionStack* rs, const VmTensor* t, int axi
 
     /* Copy source data, respecting non-contiguous strides */
     {
-        int64_t indices[VM_TENSOR_MAX_DIMS];
+        int64_t* indices = vm_tensor_dim_scratch(rs, t->n_dims);
+        if (!indices) return NULL;
         for (int64_t i = 0; i < out->total; i++) {
             vm_tensor_unravel(i, t->shape, t->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(t, indices, t->n_dims);
@@ -568,7 +581,8 @@ static VmTensor* vm_tensor_softmax(VmRegionStack* rs, const VmTensor* t, int axi
     int64_t n_slices = out->total / axis_len;
 
     /* Compute the stride for the axis dimension in the output (contiguous) */
-    int64_t out_strides[VM_TENSOR_MAX_DIMS];
+    int64_t* out_strides = vm_tensor_dim_scratch(rs, out->n_dims);
+    if (!out_strides) return NULL;
     vm_tensor_compute_strides(out->shape, out->n_dims, out_strides);
     int64_t axis_stride = out_strides[axis];
 
@@ -705,7 +719,9 @@ static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
 
     int64_t batch, in_c, out_c;
     int out_nd;
-    int64_t out_shape[VM_TENSOR_MAX_DIMS];
+    /* Output rank never exceeds the input's, so scratch is sized from it. */
+    int64_t* out_shape = vm_tensor_dim_scratch(rs, in_nd > 3 ? in_nd : 3);
+    if (!out_shape) return NULL;
 
     if (k_nd >= 4) {
         /* Full NCHW. */
@@ -716,7 +732,6 @@ static VmTensor* vm_tensor_conv2d(VmRegionStack* rs, const VmTensor* input,
         batch = 1;
         for (int i = 0; i < in_nd - 3; i++) batch *= input->shape[i];
         out_nd = (in_nd - 3) + 3;
-        if (out_nd > VM_TENSOR_MAX_DIMS) return NULL;
         int lead = in_nd - 3;
         for (int i = 0; i < lead; i++) out_shape[i] = input->shape[i];
         out_shape[lead]     = out_c;
@@ -884,7 +899,8 @@ static VmTensor* vm_tensor_concat(VmRegionStack* rs, const VmTensor* a,
         if (i != axis && a->shape[i] != b->shape[i]) return NULL;
     }
 
-    int64_t out_shape[VM_TENSOR_MAX_DIMS];
+    int64_t* out_shape = vm_tensor_dim_scratch(rs, a->n_dims);
+    if (!out_shape) return NULL;
     for (int i = 0; i < a->n_dims; i++) {
         out_shape[i] = (i == axis) ? a->shape[i] + b->shape[i] : a->shape[i];
     }
@@ -894,12 +910,13 @@ static VmTensor* vm_tensor_concat(VmRegionStack* rs, const VmTensor* a,
     out->dtype = vm_tensor_promote_dtype(a, b);
 
     /* Copy elements: iterate output, map to source */
-    int64_t indices[VM_TENSOR_MAX_DIMS];
+    int64_t* indices = vm_tensor_dim_scratch(rs, a->n_dims);
+    int64_t* src_indices = vm_tensor_dim_scratch(rs, a->n_dims);
+    if (!indices || !src_indices) return NULL;
     for (int64_t flat = 0; flat < out->total; flat++) {
         vm_tensor_unravel(flat, out_shape, a->n_dims, indices);
 
         const VmTensor* src;
-        int64_t src_indices[VM_TENSOR_MAX_DIMS];
         memcpy(src_indices, indices, (size_t)a->n_dims * sizeof(int64_t));
 
         if (indices[axis] < a->shape[axis]) {
