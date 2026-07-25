@@ -12204,6 +12204,51 @@ private:
         return builder->CreateLoad(tagged_value_type, result_ptr);
     }
 
+    /**
+     * @brief Emit the uniform out-of-range guard shared by every indexed
+     *        accessor: when @p bad is true, raise a *catchable*
+     *        ESHKOL_EXCEPTION_ERROR carrying @p msg; otherwise fall through
+     *        with the builder positioned in the in-range continuation.
+     *
+     * R7RS 6.9 makes an out-of-range index "an error", and the house parity
+     * contract requires every substrate (AOT/JIT codegen, the C runtime
+     * helpers in lib/core/runtime_bytevector.cpp, and the bytecode VM) to
+     * signal it identically — same catchable condition, same message text —
+     * so a `guard` around the access behaves byte-for-byte the same
+     * everywhere. This mirrors the pre-existing vector-ref / vector-set! /
+     * string-ref / tensor-ref guards (see collection_codegen.cpp) so the
+     * whole accessor family shares one contract.
+     */
+    void emitBoundsCheckRaise(Value* bad, const char* msg) {
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* ok_bb = BasicBlock::Create(*context, "bounds_ok", func);
+        BasicBlock* fail_bb = BasicBlock::Create(*context, "bounds_fail", func);
+        builder->CreateCondBr(bad, fail_bb, ok_bb);
+
+        builder->SetInsertPoint(fail_bb);
+        Function* raise_func = module->getFunction("eshkol_raise");
+        if (!raise_func) {
+            FunctionType* raise_type = FunctionType::get(void_type, {ptr_type}, false);
+            raise_func = Function::Create(raise_type, Function::ExternalLinkage,
+                                          "eshkol_raise", module.get());
+            raise_func->setDoesNotReturn();
+        }
+        Function* make_exc_func = module->getFunction("eshkol_make_exception_with_header");
+        if (!make_exc_func) {
+            FunctionType* make_type =
+                FunctionType::get(ptr_type, {int32_type, ptr_type}, false);
+            make_exc_func = Function::Create(make_type, Function::ExternalLinkage,
+                                            "eshkol_make_exception_with_header", module.get());
+        }
+        Value* msg_str = builder->CreateGlobalString(msg);
+        Value* exc = builder->CreateCall(make_exc_func,
+            {ConstantInt::get(int32_type, ESHKOL_EXCEPTION_ERROR), msg_str});
+        builder->CreateCall(raise_func, {exc});
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(ok_bb);
+    }
+
     Value* codegenCall(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             return nullptr;
@@ -15626,9 +15671,17 @@ private:
             Value* idx = typedValueToTaggedValue(idx_tv);
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
+            // R7RS 6.9: an out-of-range index is an error. Without this guard
+            // the load below silently read adjacent heap memory.
+            Value* bv_len = builder->CreateLoad(int64_type, ptr, "bv_len");
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateICmpSLT(idx_i64, ConstantInt::get(int64_type, 0)),
+                    builder->CreateICmpSGE(idx_i64, bv_len)),
+                "bytevector-u8-ref: index out of bounds");
             Value* data_ptr = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 8));
-            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
             Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
             Value* byte_val = builder->CreateLoad(int8_type, byte_ptr, "bv_byte");
             Value* byte_i64 = builder->CreateZExt(byte_val, int64_type);
@@ -15645,12 +15698,27 @@ private:
             Value* val = typedValueToTaggedValue(val_tv);
             Value* ptr = builder->CreateIntToPtr(
                 builder->CreateExtractValue(bv, {4}), PointerType::getUnqual(*context));
+            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
+            Value* val_i64 = unpackInt64FromTaggedValue(val);
+            // R7RS 6.9: an out-of-range index is an error, and the stored
+            // value must be a byte in [0, 255]. Without these guards the
+            // store below silently corrupted adjacent heap memory and
+            // out-of-range values were truncated mod 256.
+            Value* bv_len = builder->CreateLoad(int64_type, ptr, "bv_len");
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateICmpSLT(idx_i64, ConstantInt::get(int64_type, 0)),
+                    builder->CreateICmpSGE(idx_i64, bv_len)),
+                "bytevector-u8-set!: index out of bounds");
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateICmpSLT(val_i64, ConstantInt::get(int64_type, 0)),
+                    builder->CreateICmpSGT(val_i64, ConstantInt::get(int64_type, 255))),
+                "bytevector-u8-set!: byte value out of range");
             Value* data_ptr = builder->CreateGEP(int8_type, ptr,
                 ConstantInt::get(int64_type, 8));
-            Value* idx_i64 = unpackInt64FromTaggedValue(idx);
             Value* byte_ptr = builder->CreateGEP(int8_type, data_ptr, idx_i64);
-            Value* byte_val = builder->CreateTrunc(
-                unpackInt64FromTaggedValue(val), int8_type);
+            Value* byte_val = builder->CreateTrunc(val_i64, int8_type);
             builder->CreateStore(byte_val, byte_ptr);
             return packNullToTaggedValue();
         }
@@ -15757,6 +15825,17 @@ private:
                 if (!e_tv.llvm_value) return nullptr;
                 end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
             }
+            // R7RS 6.9: 0 <= start <= end <= (bytevector-length bv). Without
+            // this guard an out-of-range `end` produced a bytevector whose
+            // payload was copied out of adjacent heap memory.
+            Value* zero64 = ConstantInt::get(int64_type, 0);
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateOr(
+                        builder->CreateICmpSLT(start, zero64),
+                        builder->CreateICmpSLT(end, start)),
+                    builder->CreateICmpSGT(end, src_len)),
+                "bytevector-copy: index out of bounds");
             Value* new_len = builder->CreateSub(end, start);
 
             // Allocate new bytevector
@@ -15807,6 +15886,23 @@ private:
                 end = unpackInt64FromTaggedValue(typedValueToTaggedValue(e_tv));
             }
             Value* count = builder->CreateSub(end, start);
+
+            // R7RS 6.9: 0 <= start <= end <= (bytevector-length from) and the
+            // (end - start) bytes must fit in `to` at `at`. Without this guard
+            // the memmove below silently ran off either bytevector.
+            Value* to_len = builder->CreateLoad(int64_type, to_ptr, "bv_to_len");
+            Value* zero64 = ConstantInt::get(int64_type, 0);
+            emitBoundsCheckRaise(
+                builder->CreateOr(
+                    builder->CreateOr(
+                        builder->CreateOr(
+                            builder->CreateICmpSLT(start, zero64),
+                            builder->CreateICmpSLT(end, start)),
+                        builder->CreateICmpSGT(end, from_len)),
+                    builder->CreateOr(
+                        builder->CreateICmpSLT(at_idx, zero64),
+                        builder->CreateICmpSGT(builder->CreateAdd(at_idx, count), to_len))),
+                "bytevector-copy!: index out of bounds");
 
             Value* dest = builder->CreateGEP(int8_type, to_ptr,
                 builder->CreateAdd(ConstantInt::get(int64_type, 8), at_idx));
@@ -16497,6 +16593,13 @@ private:
         if (func_name == "bitwise-xor") return codegenBitwiseXor(op);
         if (func_name == "bitwise-not") return codegenBitwiseNot(op);
         if (func_name == "arithmetic-shift") return codegenArithmeticShift(op);
+        // Directional shift spellings and population count — documented in
+        // docs/tutorials/20_BITWISE_AND_SYSTEM.md; `bit-count` is the
+        // docs/API_REFERENCE.md spelling of `popcount`.
+        if (func_name == "bit-shift-left") return codegenBitShift(op, false);
+        if (func_name == "bit-shift-right") return codegenBitShift(op, true);
+        if (func_name == "popcount" || func_name == "bit-count")
+            return codegenPopcount(op);
 
         // Handle tensor-to-string conversions
         if (func_name == "vector-to-string") return codegenVectorToString(op);
@@ -22481,14 +22584,157 @@ private:
         if (!tv_n.llvm_value || !tv_count.llvm_value) return nullptr;
         Value* n = typedValueToTaggedValue(tv_n);
         Value* count = typedValueToTaggedValue(tv_count);
+        return emitArithmeticShiftTagged(n, count);
+    }
 
-        // If n is bignum, dispatch to runtime (op=4)
+    /**
+     * @brief `(bit-shift-left n k)` / `(bit-shift-right n k)`.
+     *
+     * Documented in docs/tutorials/20_BITWISE_AND_SYSTEM.md:
+     *   (bit-shift-left 1 8)    => 256
+     *   (bit-shift-right 256 4) => 16
+     *
+     * These are the directional spellings of `arithmetic-shift` and share its
+     * exact semantics — including the limb-aware bignum path and the
+     * sign-propagating (arithmetic, to -inf) right shift — so
+     *   (bit-shift-left  n k) === (arithmetic-shift n k)
+     *   (bit-shift-right n k) === (arithmetic-shift n (- k))
+     * A negative count shifts the other way rather than being undefined.
+     */
+    Value* codegenBitShift(const eshkol_operations_t* op, bool shift_right) {
+        const char* name = shift_right ? "bit-shift-right" : "bit-shift-left";
+        if (op->call_op.num_vars != 2) {
+            eshkol_error("%s requires exactly 2 arguments", name);
+            return nullptr;
+        }
+        TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
+        TypedValue tv_k = codegenTypedAST(&op->call_op.variables[1]);
+        if (!tv_n.llvm_value || !tv_k.llvm_value) return nullptr;
+        Value* n = typedValueToTaggedValue(tv_n);
+        Value* k = typedValueToTaggedValue(tv_k);
+        if (shift_right) {
+            // arithmetic-shift takes a signed count; negate for a right shift.
+            k = tagged_->packInt64(
+                builder->CreateNeg(tagged_->unpackInt64(k), "bsr_count"));
+        }
+        return emitArithmeticShiftTagged(n, k);
+    }
+
+    /**
+     * @brief `(popcount n)` / `(bit-count n)` — population count.
+     *
+     * Documented in docs/tutorials/20_BITWISE_AND_SYSTEM.md as
+     * `(popcount 255) => 8` and in docs/API_REFERENCE.md as `(bit-count n)`;
+     * the two names are exact synonyms.
+     *
+     * Contract, defined for every exact integer (fixnum and bignum alike):
+     *   n >= 0 : the number of 1 bits in n's binary representation.
+     *   n <  0 : Eshkol models a negative integer as an *infinite*
+     *            two's-complement bit string (see
+     *            docs/breakdown/EXACT_ARITHMETIC.md), which has infinitely
+     *            many 1 bits, so the width-independent R6RS
+     *            `bitwise-bit-count` convention is used:
+     *              (popcount n) = (bitwise-not (popcount (bitwise-not n)))
+     *                           = -1 - (popcount (bitwise-not n))
+     *            e.g. (popcount -1) => -1, (popcount -256) => -9.
+     * Because the rule never mentions a word width, the int64 fast path and
+     * the bignum path agree on every value they both represent.
+     */
+    Value* codegenPopcount(const eshkol_operations_t* op) {
+        if (op->call_op.num_vars != 1) {
+            eshkol_error("popcount requires exactly 1 argument");
+            return nullptr;
+        }
+        TypedValue tv_n = codegenTypedAST(&op->call_op.variables[0]);
+        if (!tv_n.llvm_value) return nullptr;
+        Value* n = typedValueToTaggedValue(tv_n);
+
+        // Bignum operand -> runtime dispatch (op=5); `right` is unused.
         Value* is_bn = isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM);
+        Function* func = builder->GetInsertBlock()->getParent();
+        BasicBlock* bn_bb = BasicBlock::Create(*context, "popcount_bignum", func);
+        BasicBlock* int_bb = BasicBlock::Create(*context, "popcount_int", func);
+        BasicBlock* merge_bb = BasicBlock::Create(*context, "popcount_merge", func);
+        builder->CreateCondBr(is_bn, bn_bb, int_bb);
+
+        builder->SetInsertPoint(bn_bb);
+        Value* arena_ptr = builder->CreateLoad(ptr_type, global_arena);
+        Value* n_alloca = builder->CreateAlloca(tagged_value_type);
+        Value* r_alloca = builder->CreateAlloca(tagged_value_type);
+        builder->CreateStore(n, n_alloca);
+        FunctionType* fn_type = FunctionType::get(void_type,
+            {ptr_type, ptr_type, ptr_type, int32_type, ptr_type}, false);
+        FunctionCallee bn_fn =
+            module->getOrInsertFunction("eshkol_bignum_bitwise_tagged", fn_type);
+        builder->CreateCall(bn_fn, {arena_ptr, n_alloca, n_alloca,
+            ConstantInt::get(int32_type, 5), r_alloca});
+        Value* bn_result = builder->CreateLoad(tagged_value_type, r_alloca);
+        builder->CreateBr(merge_bb);
+        BasicBlock* bn_exit = builder->GetInsertBlock();
+
+        // int64 path: n >= 0 ? ctpop(n) : -1 - ctpop(~n)
+        builder->SetInsertPoint(int_bb);
+        Value* n_int = tagged_->unpackInt64(n);
+        Function* ctpop = ESHKOL_GET_INTRINSIC(
+            module.get(), Intrinsic::ctpop, {int64_type});
+        Value* is_neg = builder->CreateICmpSLT(n_int, ConstantInt::get(int64_type, 0));
+        Value* magnitude = builder->CreateSelect(is_neg,
+            builder->CreateNot(n_int, "popcount_not"), n_int, "popcount_mag");
+        Value* bits = builder->CreateCall(ctpop, {magnitude}, "popcount_bits");
+        Value* negated = builder->CreateSub(
+            ConstantInt::get(int64_type, -1), bits, "popcount_neg");
+        Value* int_result = tagged_->packInt64(
+            builder->CreateSelect(is_neg, negated, bits, "popcount_result"));
+        builder->CreateBr(merge_bb);
+        BasicBlock* int_exit = builder->GetInsertBlock();
+
+        builder->SetInsertPoint(merge_bb);
+        PHINode* phi = builder->CreatePHI(tagged_value_type, 2);
+        phi->addIncoming(bn_result, bn_exit);
+        phi->addIncoming(int_result, int_exit);
+        return phi;
+    }
+
+    /**
+     * @brief Shared body of `arithmetic-shift` / `bit-shift-left` /
+     *        `bit-shift-right`.
+     *
+     * Dispatches to the exact bignum runtime (`eshkol_bignum_bitwise_tagged`
+     * op=4) when the operand is already a bignum, *or* when a left shift of an
+     * int64 operand would overflow int64.  Without the overflow test the
+     * documented `(arithmetic-shift 1 64) => 18446744073709551616`
+     * (docs/internal/ESHKOL_V1_LANGUAGE_REFERENCE.md) silently wrapped to
+     * -2^63, and `(bit-shift-left 1 100)` would do the same.  Right shifts of
+     * an int64 can never overflow, so they stay on the fast path.
+     */
+    Value* emitArithmeticShiftTagged(Value* n, Value* count) {
+        Value* is_bn = isHeapSubtype(n, HEAP_SUBTYPE_BIGNUM);
+
+        // Overflow probe for a left shift of an int64 operand:
+        //   count in [0, 62] : exact iff ((n << count) >> count) == n
+        //   count >= 63      : take the exact path unconditionally
+        // The probe shift is clamped so it can never produce poison.
+        Value* n_probe = tagged_->unpackInt64(n);
+        Value* c_probe = tagged_->unpackInt64(count);
+        Value* zero64p = ConstantInt::get(int64_type, 0);
+        Value* c62 = ConstantInt::get(int64_type, 62);
+        Value* is_left = builder->CreateICmpSGE(c_probe, zero64p, "ash_is_left");
+        Value* safe_c = builder->CreateSelect(
+            builder->CreateICmpUGT(c_probe, c62), c62, c_probe, "ash_safe_count");
+        Value* round_trip = builder->CreateAShr(
+            builder->CreateShl(n_probe, safe_c), safe_c, "ash_round_trip");
+        Value* wide_count = builder->CreateICmpSGT(c_probe, c62);
+        Value* lost_bits = builder->CreateICmpNE(round_trip, n_probe);
+        Value* overflows = builder->CreateAnd(is_left,
+            builder->CreateOr(wide_count, lost_bits), "ash_overflows");
+
+        Value* need_exact = builder->CreateOr(is_bn, overflows, "ash_need_exact");
+
         Function* func = builder->GetInsertBlock()->getParent();
         BasicBlock* bn_bb = BasicBlock::Create(*context, "ashift_bignum", func);
         BasicBlock* int_bb = BasicBlock::Create(*context, "ashift_int", func);
         BasicBlock* merge_bb = BasicBlock::Create(*context, "ashift_merge", func);
-        builder->CreateCondBr(is_bn, bn_bb, int_bb);
+        builder->CreateCondBr(need_exact, bn_bb, int_bb);
 
         // Bignum path: call runtime
         builder->SetInsertPoint(bn_bb);

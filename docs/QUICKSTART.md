@@ -14,7 +14,7 @@ Visit **[eshkol.ai](https://eshkol.ai)** to try Eshkol in your browser:
 - **Learn** — interactive textbook with runnable code examples, plus 27 in-depth tutorials
 - **Examples** — 10 complete programs you can run instantly
 
-No installation required. The REPL runs a bytecode interpreter compiled to WebAssembly via Emscripten. Automatic differentiation, exact arithmetic, knowledge bases, and more all work in the browser.
+No installation required. The REPL runs the bytecode VM, compiled to WebAssembly through Emscripten. Automatic differentiation, exact arithmetic, knowledge bases, and more all work in the browser.
 
 ---
 

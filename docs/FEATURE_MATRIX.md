@@ -2,7 +2,7 @@
 
 **Status Key** (table cells): `Yes` = Production | `WIP` = In Progress | `Planned` = Planned | `No` = Not Planned | `Partial` = Partially supported
 
-This matrix documents all implemented and planned features for the Eshkol language ecosystem. All **Production** features are code-verified with extensive test coverage (37 suites, 528 self-reported tests).
+This matrix lists every implemented and planned feature in the Eshkol ecosystem. Every **Production** feature is code-verified, with extensive test coverage (37 suites, 528 self-reported tests).
 
 ---
 
