@@ -1,0 +1,71 @@
+; Uniform out-of-range contract for the indexed-accessor family.
+;
+; R7RS 6.7/6.8/6.9 make an out-of-range index "an error"; the house parity
+; contract requires every substrate to signal it identically, so a `guard`
+; around each access must produce byte-identical output on the native codegen
+; (AOT and -r JIT) and on the bytecode VM.
+;
+; This corpus entry exists because the family used to diverge: the native
+; codegen bounds-checked vector-ref/vector-set!/string-ref/tensor-ref but
+; performed NO check at all on the bytevector accessors (reading and writing
+; adjacent heap memory), while the VM raised nothing anywhere and instead
+; fabricated a value (-1 for bytevector-u8-ref, '() for vector-ref, codepoint 0
+; for string-ref, 0.0 for tensor-ref) or silently clamped a copy range.
+;
+; Each line below prints "caught" on every substrate. Any substrate that
+; fabricates a value, clamps a range, or fails to raise shows up as a byte
+; difference here.
+
+(define bv (make-bytevector 4 7))
+(define v (vector 1 2 3 4))
+
+; ---- bytevector element access ----
+(display (guard (e (#t "caught")) (bytevector-u8-ref bv 100))) (newline)
+(display (guard (e (#t "caught")) (bytevector-u8-ref bv 4))) (newline)
+(display (guard (e (#t "caught")) (bytevector-u8-ref bv -1))) (newline)
+(display (guard (e (#t "caught")) (bytevector-u8-set! bv 100 1))) (newline)
+(display (guard (e (#t "caught")) (bytevector-u8-set! bv -1 1))) (newline)
+
+; ---- bytevector-u8-set! byte range: R7RS requires a byte in [0, 255] ----
+(display (guard (e (#t "caught")) (bytevector-u8-set! bv 0 999))) (newline)
+(display (guard (e (#t "caught")) (bytevector-u8-set! bv 0 -1))) (newline)
+
+; ---- bytevector copy ranges (including the optional [start [end]] args) ----
+(display (guard (e (#t "caught")) (bytevector-copy bv 1 99))) (newline)
+(display (guard (e (#t "caught")) (bytevector-copy bv -1 2))) (newline)
+(display (guard (e (#t "caught")) (bytevector-copy bv 3 1))) (newline)
+(display (guard (e (#t "caught")) (bytevector-copy! bv 2 (make-bytevector 8 1)))) (newline)
+(display (guard (e (#t "caught")) (bytevector-copy! bv 3 (make-bytevector 4 1) 0 4))) (newline)
+(display (guard (e (#t "caught")) (bytevector-copy! bv 0 (make-bytevector 4 1) 0 99))) (newline)
+
+; ---- vectors and strings (the pre-existing model the family now shares) ----
+(display (guard (e (#t "caught")) (vector-ref v 100))) (newline)
+(display (guard (e (#t "caught")) (vector-ref v -1))) (newline)
+(display (guard (e (#t "caught")) (vector-set! v 100 0))) (newline)
+(display (guard (e (#t "caught")) (string-ref "abcd" 100))) (newline)
+(display (guard (e (#t "caught")) (string-ref "abcd" -1))) (newline)
+
+; ---- in-range access must be unaffected on every substrate ----
+(display (bytevector-u8-ref bv 0)) (newline)
+(display (bytevector-u8-ref bv 3)) (newline)
+(display (bytevector-length (bytevector-copy bv))) (newline)
+(display (bytevector-length (bytevector-copy bv 1 3))) (newline)
+(display (bytevector-length (bytevector-copy bv 1))) (newline)
+(display (vector-ref v 0)) (newline)
+(display (vector-ref v 3)) (newline)
+(display (string-ref "abcd" 0)) (newline)
+(display (string-ref "abcd" 3)) (newline)
+
+; A ranged copy! that exactly fits must still copy.
+(define dst (make-bytevector 8 0))
+(bytevector-copy! dst 2 (make-bytevector 4 9) 1 3)
+(display (bytevector-u8-ref dst 1)) (newline)
+(display (bytevector-u8-ref dst 2)) (newline)
+(display (bytevector-u8-ref dst 3)) (newline)
+(display (bytevector-u8-ref dst 4)) (newline)
+
+; Boundary byte values 0 and 255 are legal.
+(bytevector-u8-set! bv 0 0)
+(bytevector-u8-set! bv 1 255)
+(display (bytevector-u8-ref bv 0)) (newline)
+(display (bytevector-u8-ref bv 1)) (newline)
