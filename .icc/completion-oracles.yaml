@@ -268,7 +268,7 @@ oracles:
           event_names: ["p8_fault_injection_suite"]
           event_values: ["PASS"]
         severity: high
-        label: 'P8 axis-7 (fault injection): every toolchain fault hard-gate cell (broken --lib under -r/AOT, malformed-AOT, bad output dir, undefined symbol, missing source under -r) exits NONZERO with a diagnostic — retro-guards the #334 exit-0-masking class; XKNOWN masking cells (ESH-0361) are tracked, XPASS-on-fix'
+        label: 'P8 axis-7 (fault injection): every toolchain fault cell (broken --lib under -r/AOT, malformed under -r/AOT, bad output dir, undefined symbol, missing source under -r/AOT, unreadable source, unresolved require under -r/AOT, bounded hang) exits NONZERO with a diagnostic — retro-guards the #334 exit-0-masking class; all 12 cells are hard gates since the ESH-0361 residue was fixed in #354 and its five XKNOWN cells were promoted, so zero XKNOWN and zero XPASS is the passing state'
         action: ./scripts/run_p8_escape.sh
       - runtime_event:
           event_kinds: [escape_matrix]
@@ -736,6 +736,10 @@ oracles:
           event_values: ["PASS"]
         severity: high
         label: '#310: number->string / display emit the shortest decimal that reads back to the exact same double (no 6-sig-fig truncation); integral doubles keep the no-".0" form; byte-identical across JIT, AOT and VM'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["edge_v134_dynamic_coverage"]
           event_values: ["PASS"]
         severity: high
@@ -1921,7 +1925,7 @@ oracles:
           event_names: ["vm_parity_gate"]
           event_values: ["PASS"]
         severity: high
-        label: VM parity gate (audit + corpus differential + out-of-subset probes all green)
+        label: VM parity gate (surface audit + corpus differential on both VM axes + out-of-subset probes + fatal-error fail-closed probes all green)
         action: ./scripts/run_vm_parity.sh
 
   # ─────────────────────────────────────────────────────────────────
@@ -2225,6 +2229,11 @@ oracles:
         severity: high
         label: Metal fixed-N16 exact Ozaki dispatch certification checks that every sampled deterministic 512x512 integer-witness output matches an independent native-i128 reference with signed magnitude < 2^58, where the native-i128 reference is converted to correctly rounded f64 before equality comparison, that both cached JIT and AOT execute successfully, that Apple Accelerate on the identical witness disagrees on at least one sampled output, and that no CPU fallback path is used
         action: ./tests/gpu/ozaki_certification_gate.sh
+        # Also driven by scripts/run_gpu_tests.sh (hence run_all_tests.sh's `gpu`
+        # suite) whenever a real GPU device is present; on a GPU-less host that
+        # suite prints a LOUD skip and this criterion correctly stays evidence-less
+        # rather than green. No hosted CI runner has a GPU — see
+        # .github/workflows/gpu-execution-gate.yml.
 
   # ─────────────────────────────────────────────────────────────────
   # INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in). Recovers FP64-accurate

@@ -3356,6 +3356,7 @@
     {
       "name": "error-object-message",
       "ids": [
+        711,
         712
       ],
       "arity": 1,
@@ -3369,7 +3370,8 @@
     {
       "name": "error-object?",
       "ids": [
-        711
+        711,
+        714
       ],
       "arity": 1,
       "backends": [
@@ -9583,7 +9585,8 @@
     {
       "name": "tensor",
       "ids": [
-        410
+        410,
+        474
       ],
       "arity": 2,
       "backends": [
