@@ -1714,6 +1714,32 @@ llvm::Value* AutodiffCodegen::getArenaPtr() {
     return ctx_.builder().CreateLoad(ctx_.ptrType(), arena_global);
 }
 
+/** @brief Emit `eshkol_ad_node_probe(arena, bits, expect_type)`: is this element
+ *         bit pattern a LIVE tape node, decided by arena residency before any
+ *         load through it?
+ *
+ * A tensor element slot holds either an f64 bit pattern or a tape-node pointer,
+ * and the ranges overlap — every subnormal double has a zero exponent field and
+ * a bit pattern below the pointer ceiling. The range tests here are only a cheap
+ * pre-filter; this probe is what actually decides, and it never dereferences a
+ * candidate the arena does not own. Pass -1 for @p expect_type to accept any
+ * plausible node tag. Returns an i1. */
+llvm::Value* AutodiffCodegen::emitAdNodeProbe(llvm::Value* elem_bits, int32_t expect_type) {
+    auto& b = ctx_.builder();
+    llvm::Function* fn = ctx_.module().getFunction("eshkol_ad_node_probe");
+    if (!fn) {
+        llvm::FunctionType* ft = llvm::FunctionType::get(
+            ctx_.int32Type(), {ctx_.ptrType(), ctx_.int64Type(), ctx_.int32Type()}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "eshkol_ad_node_probe", &ctx_.module());
+    }
+    llvm::Value* arena_ptr = getArenaPtr();
+    if (!arena_ptr) arena_ptr = llvm::ConstantPointerNull::get(ctx_.ptrType());
+    llvm::Value* r = b.CreateCall(fn, {arena_ptr, elem_bits,
+        llvm::ConstantInt::get(ctx_.int32Type(), expect_type)}, "ad_node_probe");
+    return b.CreateICmpNE(r, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+}
+
 // Create AD node for a constant value (gradient = 0)
 /**
  * @brief Allocate a reverse-mode AD tape node of type AD_NODE_CONSTANT (gradient fixed at 0).
@@ -4551,10 +4577,9 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
 
                     b.SetInsertPoint(rvt_tvalidate);
                     Value* rvt_oe0_ptr = b.CreateIntToPtr(rvt_oe0, ctx_.ptrType());
-                    Value* rvt_oe0_type = b.CreateLoad(ctx_.int32Type(),
-                        b.CreateStructGEP(ctx_.adNodeType(), rvt_oe0_ptr, 0));
-                    Value* rvt_oe0_valid = b.CreateICmpULE(rvt_oe0_type,
-                        ConstantInt::get(ctx_.int32Type(), 63));
+                    // Residency-first probe (see emitAdNodeProbe): the range
+                    // test above admits every subnormal double.
+                    Value* rvt_oe0_valid = emitAdNodeProbe(rvt_oe0, -1);
                     b.CreateCondBr(rvt_oe0_valid, rvt_tset, rvt_decide);
 
                     b.SetInsertPoint(rvt_tset);
@@ -6199,25 +6224,23 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     Value* could_be_ptr = ctx_.builder().CreateAnd(not_zero, in_ptr_range);
     ctx_.builder().CreateCondBr(could_be_ptr, check_ad_ptr, is_regular_double);
 
-    // CHECK AD POINTER: Try to validate it's actually an AD node
+    // CHECK AD POINTER: validate it really is a live AD node before touching it.
+    //
+    // This used to IntToPtr the element and load node->type directly, guarded
+    // only by the range test above. That inverts the dependency: the load is
+    // what decides whether the address is valid, so a non-pointer in range
+    // faults. Every SUBNORMAL double is such a non-pointer — zero exponent
+    // field, bit pattern below the ceiling — so a differentiation point holding
+    // e.g. 1e-309 (bits 0x0000b8157268fdaf) SIGSEGV'd at its own value.
+    // eshkol_ad_node_probe establishes arena residency first and only then reads
+    // the tag, so a double's bit pattern is rejected without any load through it.
     ctx_.builder().SetInsertPoint(check_ad_ptr);
     Value* ad_ptr_candidate = ctx_.builder().CreateIntToPtr(elem_val_int64, PointerType::getUnqual(ctx_.context()));
-    // Check if pointer is non-null and has valid AD node type
-    Value* ptr_not_null = ctx_.builder().CreateICmpNE(elem_val_int64,
-        ConstantInt::get(ctx_.int64Type(), 0));
+    // A variable node carries type AD_NODE_VARIABLE (1); that is what an outer
+    // gradient leaves in its input tensor's element slots.
+    Value* is_ad_var = emitAdNodeProbe(elem_val_int64, 1);
 
-    BasicBlock* check_ad_type = BasicBlock::Create(ctx_.context(), "check_ad_type", current_func);
     BasicBlock* not_ad_node = BasicBlock::Create(ctx_.context(), "not_ad_node", current_func);
-    ctx_.builder().CreateCondBr(ptr_not_null, check_ad_type, not_ad_node);
-
-    // Check AD node type field
-    ctx_.builder().SetInsertPoint(check_ad_type);
-    Value* type_field_ptr = ctx_.builder().CreateStructGEP(ctx_.adNodeType(), ad_ptr_candidate, 0);
-    Value* type_field = ctx_.builder().CreateLoad(ctx_.int32Type(), type_field_ptr);
-    // Valid AD node types are 0-7 (CONSTANT, PTR, ADD, SUB, MUL, DIV, SIN, COS)
-    // Also check that it's exactly type 1 (AD_NODE_PTR) since that's what variables are
-    Value* is_ad_var = ctx_.builder().CreateICmpEQ(type_field, ConstantInt::get(ctx_.int32Type(), 1));
-
     BasicBlock* use_existing_ad = BasicBlock::Create(ctx_.context(), "use_existing_ad", current_func);
     ctx_.builder().CreateCondBr(is_ad_var, use_existing_ad, not_ad_node);
 
@@ -6785,11 +6808,9 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
 
     ctx_.builder().SetInsertPoint(out_tvalidate);
     Value* out_e0_ptr = ctx_.builder().CreateIntToPtr(out_e0, ctx_.ptrType());
-    Value* out_e0_type = ctx_.builder().CreateLoad(ctx_.int32Type(),
-        ctx_.builder().CreateStructGEP(ctx_.adNodeType(), out_e0_ptr, 0));
-    // Valid AD node op-type tags are a small non-negative range (0..~45).
-    Value* out_e0_valid = ctx_.builder().CreateICmpULE(out_e0_type,
-        ConstantInt::get(ctx_.int32Type(), 63));
+    // Residency-first probe, not a raw load of node->type: the range test above
+    // admits every subnormal double, and loading the tag through one faults.
+    Value* out_e0_valid = emitAdNodeProbe(out_e0, -1);
     ctx_.builder().CreateCondBr(out_e0_valid, out_tset, out_decide);
 
     ctx_.builder().SetInsertPoint(out_tset);
@@ -7879,14 +7900,21 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     Value* is_small_value = ctx_.builder().CreateICmpULT(out_comp_int,
         ConstantInt::get(ctx_.int64Type(), 1000));
     
-    // Check IEEE754 exponent for doubles (bit pattern detection)
+    // Check IEEE754 exponent for doubles (bit pattern detection). A zero
+    // exponent field alone is NOT sufficient — every subnormal double has one —
+    // so also treat anything at or above the pointer ceiling as a double,
+    // matching the matmul/reduce AD paths.
     Value* exp_mask_jac = ConstantInt::get(ctx_.int64Type(), 0x7FF0000000000000ULL);
     Value* exp_bits_jac = ctx_.builder().CreateAnd(out_comp_int, exp_mask_jac);
     Value* has_exponent_jac = ctx_.builder().CreateICmpNE(exp_bits_jac,
         ConstantInt::get(ctx_.int64Type(), 0));
+    Value* below_ptr_ceiling_jac = ctx_.builder().CreateICmpULT(out_comp_int,
+        ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+    Value* double_like_jac = ctx_.builder().CreateOr(has_exponent_jac,
+        ctx_.builder().CreateNot(below_ptr_ceiling_jac));
     
-    // If has exponent, it's a double, not an AD node pointer
-    Value* is_likely_double_jac = ctx_.builder().CreateAnd(has_exponent_jac,
+    // If it looks like a double, it is not an AD node pointer
+    Value* is_likely_double_jac = ctx_.builder().CreateAnd(double_like_jac,
         ctx_.builder().CreateNot(is_small_value));
     
     // Output is AD node only if: not small AND not double

@@ -118,6 +118,12 @@ void arena_commit_scope(arena_t* arena);
 /** True if @p ptr points into memory allocated after the innermost scope
  *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
+/** True if @p ptr points into ANY live allocation of @p arena (any block,
+ *  below that block's high-water mark). Unlike arena_top_scope_contains this
+ *  is scope-independent: it answers "is this address memory this arena owns
+ *  and has handed out", which is the precondition for dereferencing an
+ *  integer that MIGHT be an arena pointer. */
+int arena_contains(const arena_t* arena, const void* ptr);
 void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
 
 // Per-thread arena management (v1.2)

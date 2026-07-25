@@ -64,18 +64,14 @@ RTOL2, ATOL2 = "1e-4", "1e-7"
 # (XKNOWN) while the tracked task is open, and reports XPASS (stale — promote to
 # gate) the moment the fix lands. EMPTY = every generated cell is a hard gate.
 #
-# ESH-0360-field-list-point: jacobian / divergence / curl SIGSEGV when the
-#   differentiation POINT is built with (list ...). The identical point as a
-#   #(...) literal / (vector ...) / (tensor ...) / VAR-bound / let-bound /
-#   fnret / (the (vector any) ...) is correct, and gradient/hessian/laplacian
-#   at a (list ...) point are correct — the #343 cons->svec point normalization
-#   was applied to the scalar-output operators but NOT to the vector-field
-#   operators. Found on master 5cb02c8a. Reported, unfixed.
-KNOWN_CRASH = {
-    ("jacobian", "list"): "ESH-0360-field-list-point",
-    ("divergence", "list"): "ESH-0360-field-list-point",
-    ("curl", "list"): "ESH-0360-field-list-point",
-}
+# EMPTY as of #354. ESH-0360-field-list-point (jacobian / divergence / curl
+# SIGSEGV when the differentiation POINT is built with (list ...), because the
+# #343 cons->svec point normalization was applied to the scalar-output operators
+# but NOT to the vector-field operators) was fixed in #354, the ratchet reported
+# the quarantined cell as XPASS, and the (list ...) point forms are now hard
+# gates inside ad_bind_field_linear. The fix is additionally pinned by
+# tests/autodiff/field_ops_list_point_test.esk. ESH-0360 is CLOSED.
+KNOWN_CRASH = {}
 
 
 def fnum(rng, lo, hi):
