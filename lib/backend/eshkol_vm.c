@@ -220,14 +220,40 @@ static int g_n_repatch = 0;
  * Bridge: run a compiled FuncChunk through the VM
  ******************************************************************************/
 
-static void run_compiled_chunk(FuncChunk* chunk) {
+/**
+ * @brief Terminal fatal-error report: answers 1 (and names the failure on
+ *        stderr) when @p vm stopped with vm->error set.
+ *
+ * The interpreter has ~130 fatal paths that only set vm->error without
+ * printing anything (heap exhaustion, bad operands, arity faults, AD tape
+ * faults, ...). Combined with the old unconditional `return 0` from main()
+ * those runs were completely invisible: no message, a success exit status,
+ * and every remaining top-level form silently dropped. Reporting once here,
+ * at the single point where execution ends, guarantees that EVERY fatal path
+ * produces both an ERROR marker on stderr and a nonzero exit status without
+ * having to duplicate a diagnostic at each site.
+ */
+static int vm_report_fatal(VM* vm) {
+    if (!vm || !vm->error) return 0;
+    fprintf(stderr, "ERROR: VM terminated on a fatal runtime error"
+                    " (pc=%d sp=%d fp=%d)\n", vm->pc, vm->sp, vm->fp);
+    return 1;
+}
+
+/** @brief Run @p chunk on a fresh VM. Returns 0 on a clean run and 1 when
+ *         the interpreter stopped on a fatal error (vm->error) — the caller
+ *         turns that into a NONZERO process exit status. The VM used to
+ *         swallow every fatal error and exit 0, so a "DIVIDE BY ZERO" or
+ *         "FRAME OVERFLOW" silently dropped all remaining top-level forms
+ *         while still reporting success to the shell and to CI. */
+static int run_compiled_chunk(FuncChunk* chunk) {
     VM* vm = vm_create();
-    if (!vm) return;
+    if (!vm) return 1;
 
     /* Transfer bytecode to VM */
     free(vm->code);
     vm->code = (Instr*)calloc(chunk->code_len, sizeof(Instr));
-    if (!vm->code) { vm_free(vm); return; }
+    if (!vm->code) { vm_free(vm); return 1; }
     vm->code_len = chunk->code_len;
     for (int i = 0; i < chunk->code_len; i++) {
         vm->code[i].op = chunk->code[i].op;
@@ -242,7 +268,9 @@ static void run_compiled_chunk(FuncChunk* chunk) {
 
     vm_run(vm);
     vm_run_exit_handlers(vm);
+    int failed = vm_report_fatal(vm);
     vm_free(vm);
+    return failed;
 }
 /* Builtin function table: name → (native_id, arity) */
 typedef struct { const char* name; int native_id; int arity; } BuiltinDef;
@@ -379,7 +407,14 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
-    {"make-tensor", 410, 2}, {"tensor", 410, 2},
+    {"make-tensor", 410, 2},
+    /* `tensor` is NOT an alias of make-tensor: it is the variadic constructor
+     * compiled by vm_compiler.c's (tensor ...) special form via native 473.
+     * This first-class entry is the closure form, reached only when `tensor` is
+     * passed as a value; native 474 treats its single argument as one
+     * constructor argument (typically a nested collection). Binding the name to
+     * make-tensor's 2-arg native made every (tensor ...) call silently wrong. */
+    {"tensor", 474, 1},
     {"tensor-get", 411, 2}, {"tensor-ref", 411, 2},
     {"tensor-set!", 412, 3},
     {"tensor-shape", 413, 1}, {"tensor-data", 414, 1},
@@ -619,8 +654,15 @@ static const BuiltinDef BUILTINS[] = {
      * ═══════════════════════════════════════════════════════════════ */
     {"real?", 1697, 1}, {"rational?", 1698, 1}, {"tensor?", 1699, 1},
     {"type-of", 740, 1},
-    /* Error objects — IDs 711-713 */
-    {"error-object?", 711, 1}, {"error-object-message", 712, 1},
+    /* Error objects — IDs 711-714.
+     * These three were misbound by one slot: native 711 is error-MESSAGE and
+     * 712 is error-TYPE, so R7RS `error-object?` answered the message string
+     * ("boom" instead of #t) and `error-object-message` answered the type
+     * ("error" instead of "boom"). The predicate is 714 and the message is 711.
+     * It only became observable once `(error ...)` and the tensor-operand
+     * rejections started raising catchably — before that no `guard` could reach
+     * an error object on the VM at all. */
+    {"error-object?", 714, 1}, {"error-object-message", 711, 1},
     {"error-object-irritants", 713, 1},
     /* Math extensions — IDs 720-746 */
     {"cosh", 720, 1}, {"sinh", 721, 1}, {"tanh", 722, 1},
@@ -816,7 +858,10 @@ static void emit_builtin_preamble(FuncChunk* c) {
 #define g_eskb_output_path g_compiler_ctx.eskb_output
 #define g_source_file_path g_compiler_ctx.source_path
 
-static void compile_and_run(const char* source) {
+/** @brief Compile @p source and execute it. Returns 0 on a clean run, 1 if
+ *         the VM stopped on a fatal runtime error — propagated to main()'s
+ *         exit status so a fatal VM error can never look like success. */
+static int compile_and_run(const char* source) {
     FuncChunk main_chunk; chunk_init_arrays(&main_chunk);
 
     /* Emit builtin function definitions as first-class closures */
@@ -1188,7 +1233,7 @@ static void compile_and_run(const char* source) {
     peephole_optimize(&main_chunk);
 
     /* Execute using full VM */
-    run_compiled_chunk(&main_chunk);
+    return run_compiled_chunk(&main_chunk);
 }
 
 /*******************************************************************************
@@ -2008,6 +2053,12 @@ int main(int argc, char** argv) {
         }
 
         if (input) {
+            /* A fatal runtime error must reach the shell as a NONZERO status.
+             * The VM previously returned 0 unconditionally, so a program that
+             * died on "DIVIDE BY ZERO" / "FRAME OVERFLOW" / a bad native call
+             * — dropping every remaining top-level form — was indistinguishable
+             * from a clean run for scripts, Makefiles and CI. */
+            int run_failed = 0;
             vm_set_command_line(argc - input_index, &argv[input_index]);
             size_t len = strlen(input);
             if (len > 5 && strcmp(input + len - 5, ".eskb") == 0) {
@@ -2031,6 +2082,7 @@ int main(int argc, char** argv) {
                     vm_run(vm);
                     vm_run_exit_handlers(vm);
                     printf("\n=== Execution complete ===\n");
+                    run_failed = vm_report_fatal(vm);
                     vm_free(vm);
                     eskb_module_free(&mod);
                 } else {
@@ -2048,10 +2100,11 @@ int main(int argc, char** argv) {
                 fread(source, 1, (size_t)flen, f); source[flen] = 0; fclose(f);
                 printf("=== Eshkol VM+Compiler — compiling %s ===\n\n", input);
                 g_source_file_path = input;
-                compile_and_run(source);
+                run_failed = compile_and_run(source);
                 free(source);
                 printf("\n=== Execution complete ===\n");
             }
+            if (run_failed) return 1;
         }
     } else {
         vm_set_command_line(argc, argv);

@@ -1,0 +1,21 @@
+;; Helper module for tests/tensor/embedding_operand_via_module_test.esk.
+;;
+;; Found during tensor-operand and checkpoint-resume hardening: `embedding`
+;; reinterpreted whatever its index operand evaluated to as an eshkol_tensor_t*,
+;; so a computed / VAR-bound Scheme vector (HEAP_SUBTYPE_VECTOR, layout
+;; [len:i64][tagged elems...]) had its length read as the dimensions pointer and
+;; faulted near a null address. A `#(...)` literal survived only because that
+;; form parses to a tensor, not to a Scheme vector — which is exactly why the
+;; classification has to happen on the RUNTIME VALUE.
+;;
+;; The lookup lives in a separate module because a call through a loaded module
+;; is a distinct code path (cross-module slot calls synthesize signatures from
+;; the call site), and that is the path where the fault was first observed.
+
+(provide module-embedding-lookup module-embedding-row-sum)
+
+(define (module-embedding-lookup indices weights)
+  (embedding indices weights))
+
+(define (module-embedding-row-sum indices weights)
+  (tensor-sum (embedding indices weights)))
