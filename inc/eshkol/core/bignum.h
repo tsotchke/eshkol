@@ -363,8 +363,24 @@ eshkol_bignum_t* eshkol_bignum_bitwise_not(arena_t* arena, const eshkol_bignum_t
  */
 eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, int64_t count);
 
+/**
+ * @brief Population count (`popcount` / `bit-count`) of a bignum.
+ *
+ * For a non-negative @p a this is the number of 1 bits in its magnitude.
+ * Because Eshkol models a negative integer as an *infinite* two's-complement
+ * bit string (which has infinitely many 1 bits), negative values follow the
+ * width-independent R6RS `bitwise-bit-count` convention
+ * `bit-count(a) = -1 - bit-count(~a)`, so the result agrees with the int64
+ * fast path on every value both can represent.
+ *
+ * @param a Operand.
+ * @return Set-bit count for @p a >= 0, or `-1 - bit-count(~a)` for @p a < 0
+ *         (0 if @p a is NULL).
+ */
+int64_t eshkol_bignum_popcount(const eshkol_bignum_t* a);
+
 /* Tagged value dispatch for bitwise ops.
- * op: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift */
+ * op: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift, 5=popcount/bit-count */
 void eshkol_bignum_bitwise_tagged(arena_t* arena,
     const eshkol_tagged_value_t* left, const eshkol_tagged_value_t* right,
     int op, eshkol_tagged_value_t* result);

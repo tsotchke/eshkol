@@ -691,13 +691,21 @@ void vm_run(VM* vm) {
         DISPATCH();
     }
 
+    /* The threaded (computed-goto) bodies below and the switch-based fallback
+     * further down are the two halves of the same interpreter; the inline
+     * vector/string accessor fast paths must enforce the same catchable
+     * out-of-range contract as the native codegen in BOTH.  See
+     * vm_raise_error_msg() in vm_native.c. */
     lbl_VEC_REF: {
         Value idx = vm_pop(vm), vec_val = vm_pop(vm);
         if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); DISPATCH(); }
         VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
         int i = (int)as_number(idx);
-        if (vec && i >= 0 && i < vec->len) vm_push(vm, vec->items[i]);
-        else vm_push(vm, NIL_VAL);
+        if (!vec || i < 0 || i >= vec->len) {
+            vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+            DISPATCH();
+        }
+        vm_push(vm, vec->items[i]);
         DISPATCH();
     }
 
@@ -706,7 +714,11 @@ void vm_run(VM* vm) {
         if (vec_val.type == VAL_VECTOR) {
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
-            if (vec && i >= 0 && i < vec->len) vec->items[i] = val;
+            if (!vec || i < 0 || i >= vec->len) {
+                vm_raise_error_msg(vm, "vector-set!: index out of bounds");
+                DISPATCH();
+            }
+            vec->items[i] = val;
         }
         vm_push(vm, NIL_VAL);
         DISPATCH();
@@ -726,9 +738,12 @@ void vm_run(VM* vm) {
         if (str_val.type == VAL_STRING) {
             VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
+            if (!s || i < 0 || i >= s->byte_len) {
+                vm_raise_error_msg(vm, "string-ref: index out of bounds");
+                DISPATCH();
+            }
             /* R7RS string-ref returns a character, not its integer code. */
-            if (s && i >= 0 && i < s->byte_len) vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
-            else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
+            vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
         } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
         DISPATCH();
     }
@@ -1356,13 +1371,22 @@ vm_exit:
             break;
         }
 
+        /* OP_VEC_REF / OP_VEC_SET / OP_STR_REF are the inline fast paths the
+         * VM compiler emits for direct (vector-ref v i) / (vector-set! v i x) /
+         * (string-ref s i) calls; the native-call handlers (vm_native.c cases
+         * 219/220/551) serve the indirect/higher-order calls.  Both must
+         * enforce the same catchable out-of-range contract as the native
+         * codegen — see vm_raise_error_msg() in vm_native.c. */
         case OP_VEC_REF: {
             Value idx = vm_pop(vm), vec_val = vm_pop(vm);
             if (vec_val.type != VAL_VECTOR) { vm_push(vm, NIL_VAL); break; }
             VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
             int i = (int)as_number(idx);
-            if (vec && i >= 0 && i < vec->len) vm_push(vm, vec->items[i]);
-            else vm_push(vm, NIL_VAL);
+            if (!vec || i < 0 || i >= vec->len) {
+                vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+                break;
+            }
+            vm_push(vm, vec->items[i]);
             break;
         }
 
@@ -1371,7 +1395,11 @@ vm_exit:
             if (vec_val.type == VAL_VECTOR) {
                 VmVector* vec = (VmVector*)vm->heap.objects[vec_val.as.ptr]->opaque.ptr;
                 int i = (int)as_number(idx);
-                if (vec && i >= 0 && i < vec->len) vec->items[i] = val;
+                if (!vec || i < 0 || i >= vec->len) {
+                    vm_raise_error_msg(vm, "vector-set!: index out of bounds");
+                    break;
+                }
+                vec->items[i] = val;
             }
             vm_push(vm, NIL_VAL);
             break;
@@ -1391,9 +1419,12 @@ vm_exit:
             if (str_val.type == VAL_STRING) {
                 VmString* s = (VmString*)vm->heap.objects[str_val.as.ptr]->opaque.ptr;
                 int i = (int)as_number(idx);
+                if (!s || i < 0 || i >= s->byte_len) {
+                    vm_raise_error_msg(vm, "string-ref: index out of bounds");
+                    break;
+                }
                 /* R7RS string-ref returns a character, not its integer code. */
-                if (s && i >= 0 && i < s->byte_len) vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
-                else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
+                vm_push(vm, (Value){.type = VAL_CHAR, .as.i = (unsigned char)s->data[i]});
             } else vm_push(vm, (Value){.type = VAL_CHAR, .as.i = 0});
             break;
         }

@@ -632,11 +632,16 @@ static const BuiltinDef BUILTINS[] = {
     {"char-downcase", 1686, 1},
     {"char=?", 1687, 2}, {"char<?", 1688, 2}, {"char>?", 1689, 2},
     /* ═══════════════════════════════════════════════════════════════
-     * Bitwise operations — IDs 1692-1696
+     * Bitwise operations — IDs 1692-1696, 2200-2202
      * ═══════════════════════════════════════════════════════════════ */
     {"bitwise-and", 1692, 2}, {"bitwise-or", 1693, 2},
     {"bitwise-xor", 1694, 2}, {"bitwise-not", 1695, 1},
     {"arithmetic-shift", 1696, 2},
+    /* Directional shift spellings and population count, documented in
+     * docs/tutorials/20_BITWISE_AND_SYSTEM.md; `bit-count` is the
+     * docs/API_REFERENCE.md spelling of `popcount`. */
+    {"bit-shift-left", 2200, 2}, {"bit-shift-right", 2201, 2},
+    {"popcount", 2202, 1}, {"bit-count", 2202, 1},
     /* ═══════════════════════════════════════════════════════════════
      * Type predicates — IDs 1697-1710
      * ═══════════════════════════════════════════════════════════════ */

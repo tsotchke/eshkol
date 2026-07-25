@@ -14,10 +14,10 @@
     }
   },
   "counts": {
-    "builtins_total": 1010,
+    "builtins_total": 1014,
     "builtins_in_native_closure_table": 427,
-    "builtins_in_vm_table": 681,
-    "builtins_in_llvm_aot_dispatch": 775,
+    "builtins_in_vm_table": 685,
+    "builtins_in_llvm_aot_dispatch": 779,
     "builtins_aot_only": 284,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
@@ -27,7 +27,7 @@
   "builtins_by_category": {
     "ffi_system": 293,
     "tensor_ad": 221,
-    "numeric": 86,
+    "numeric": 90,
     "predicate": 76,
     "geometry": 61,
     "io_port": 52,
@@ -1391,6 +1391,42 @@
         "native_llvm"
       ],
       "category": "predicate"
+    },
+    {
+      "name": "bit-count",
+      "ids": [
+        2202
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "numeric"
+    },
+    {
+      "name": "bit-shift-left",
+      "ids": [
+        2200
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "numeric"
+    },
+    {
+      "name": "bit-shift-right",
+      "ids": [
+        2201
+      ],
+      "arity": 2,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "numeric"
     },
     {
       "name": "bitwise-and",
@@ -7441,6 +7477,18 @@
         "native_llvm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "popcount",
+      "ids": [
+        2202
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "numeric"
     },
     {
       "name": "port?",

@@ -364,6 +364,46 @@ static int bignum_sign(const VmBignum* b) {
     return bignum_is_zero(b) ? 0 : b->sign;
 }
 
+/**
+ * @brief Population count of @p b for `(popcount n)` / `(bit-count n)`.
+ *
+ * Mirrors eshkol_bignum_popcount() in lib/core/bignum.cpp (and the int64 fast
+ * path vm_popcount_i64()): the number of 1 bits in the magnitude for
+ * non-negative values, and the width-independent R6RS `bitwise-bit-count`
+ * convention `-1 - bit-count(~b)` for negative values.  Since `~b == |b| - 1`
+ * for b < 0, the magnitude limbs are decremented by one with borrow
+ * propagation as they are counted; a non-zero negative has |b| >= 1, so the
+ * borrow cannot underflow.  Limbs are base 2^32 here (the hosted runtime uses
+ * 2^64), which changes nothing about the result.
+ */
+static int64_t vm_bignum_popcount(const VmBignum* b) {
+    if (!b || bignum_is_zero(b)) return 0;
+
+    int64_t count = 0;
+    if (b->sign >= 0) {
+        for (int i = 0; i < b->n_limbs; i++) {
+            uint32_t limb = b->limbs[i];
+            while (limb) { count += (limb & 1u); limb >>= 1; }
+        }
+        return count;
+    }
+
+    int borrow = 1;
+    for (int i = 0; i < b->n_limbs; i++) {
+        uint32_t limb = b->limbs[i];
+        if (borrow) {
+            if (limb == 0) {
+                limb = 0xFFFFFFFFu;      /* borrow propagates to the next limb */
+            } else {
+                limb -= 1u;
+                borrow = 0;
+            }
+        }
+        while (limb) { count += (limb & 1u); limb >>= 1; }
+    }
+    return -1 - count;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
  * Arithmetic: add, sub, mul, div, mod, neg, abs, pow, gcd
  * ═══════════════════════════════════════════════════════════════════════════ */
