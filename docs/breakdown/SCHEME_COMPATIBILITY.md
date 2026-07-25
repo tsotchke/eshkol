@@ -196,7 +196,7 @@ x
   (map helper (filter (lambda (x) (> x threshold)) data)))
 ```
 
-**Implementation note:** Internal definitions are transformed to `letrec*` by the parser ([parser.cpp](../../lib/frontend/parser.cpp)). Only consecutive defines at the start of a body are collected; once a non-define expression appears, subsequent defines are treated as expressions. This matches R7RS semantics and prevents side-effect reordering.
+**Implementation note:** Internal definitions are transformed to `letrec*` by the parser ([parser.cpp](../../lib/frontend/parser.cpp)). Every internal define's name joins one `letrec*` binding set no matter where in the body it appears, so all internal names share a single mutually visible recursive scope (interspersed defines are accepted, as in Racket/MIT/Guile/Chez). Side-effect order is preserved: a function define's lambda is created in the `letrec*` head, while a value define that follows any body expression has its initializer evaluated at that source position rather than up front.
 
 ---
 

@@ -45,9 +45,16 @@
 (display (if (exact? 3/7) "PASS" "FAIL")) (display ": 3/7 is exact") (newline)
 
 ; 10. rational? predicate
+;    R7RS 6.2.5: the tower nests (integer? ⊆ rational? ⊆ real?), and every
+;    FINITE real is a rational number — so an inexact 1.5 is rational, while
+;    the infinities and NaN are not. `exact-rational?` is the exact-only
+;    predicate; that distinction is what separates the two names.
 (display (if (rational? 1/2) "PASS" "FAIL")) (display ": rational? on 1/2") (newline)
 (display (if (rational? 3) "PASS" "FAIL")) (display ": rational? on integer 3") (newline)
-(display (if (not (rational? 1.5)) "PASS" "FAIL")) (display ": rational? on 1.5 is false") (newline)
+(display (if (rational? 1.5) "PASS" "FAIL")) (display ": rational? on inexact 1.5 is true") (newline)
+(display (if (not (exact-rational? 1.5)) "PASS" "FAIL")) (display ": exact-rational? on 1.5 is false") (newline)
+(display (if (exact-rational? 1/2) "PASS" "FAIL")) (display ": exact-rational? on 1/2 is true") (newline)
+(display (if (rational? 3.0) "PASS" "FAIL")) (display ": rational? agrees with integer? on 3.0") (newline)
 
 ; 11. numerator/denominator accessors
 (display (if (= (numerator 3/7) 3) "PASS" "FAIL")) (display ": numerator of 3/7 is 3") (newline)

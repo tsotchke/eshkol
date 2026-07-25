@@ -1414,23 +1414,56 @@ public:
                                             const char* op_name);
 
     /**
-     * @brief Emit a clean, catchable runtime error and terminate the current
-     *        block — the correct way to close a failed tensor guard.
+     * Emit a catchable Eshkol error at the current insert point and terminate
+     * the block with `unreachable` — the correct way to close a failed tensor
+     * guard.
      *
-     * Several guards used to emit their diagnostic only `if (pf && ef)` after
-     * `ctx_.lookupFunction("printf")` / `("exit")`. Nothing ever registers
-     * `printf` or `exit` in the codegen function table, so those lookups always
-     * returned nullptr and the guard's failure block compiled to a bare
-     * `unreachable`. LLVM then reasons that the guarded condition can never
-     * hold and DELETES the branch: the check silently evaporated and the
-     * out-of-bounds access it was meant to stop happened anyway (SIGSEGV on
-     * read for tensor-get, a heap-corrupting write for tensor-set!). Raising
-     * through the runtime keeps the failure block live AND makes the error
-     * catchable by `guard`, matching every other bounds check in the codebase.
+     * Constructs an ESHKOL_EXCEPTION_ERROR via
+     * `eshkol_make_exception_with_header` and raises it through
+     * `eshkol_raise`, so the condition is observable to `guard`/
+     * `with-exception-handler` instead of aborting the process or (worse)
+     * letting a bad index walk off the end of a buffer. Factored out so the
+     * tensor-get/tensor-set! bounds guards and the shape/range guards in the
+     * transformer ops all fail closed the same way.
      *
-     * @param message Diagnostic text for the raised exception.
+     * Why raising, and not printf+exit: several guards used to emit their
+     * diagnostic only `if (pf && ef)` after `ctx_.lookupFunction("printf")` /
+     * `("exit")`. Nothing ever registers `printf` or `exit` in the codegen
+     * function table, so those lookups always returned nullptr and the guard's
+     * failure block compiled to a bare `unreachable`. LLVM then reasons that
+     * the guarded condition can never hold and DELETES the branch: the check
+     * silently evaporated and the out-of-bounds access it was meant to stop
+     * happened anyway (SIGSEGV on read for tensor-get, a heap-corrupting write
+     * for tensor-set!). Raising through the runtime keeps the failure block
+     * live AND makes the error catchable, matching every other bounds check in
+     * the codebase.
+     *
+     * @param message Constant, user-facing message for the raised condition.
      */
-    void emitTensorRaise(const char* message);
+    void emitCatchableError(const char* message);
+
+    /**
+     * Runtime shape guard: raise a catchable error unless `actual == expected`.
+     *
+     * Splits the current block into an ok/err pair, emits `message` on the
+     * error edge via emitCatchableError(), and leaves the builder positioned in
+     * the ok block. Used for tensor rank/extent preconditions that were
+     * previously either unchecked or reported with printf+exit (not catchable).
+     */
+    void emitRankGuard(llvm::Value* actual, int64_t expected,
+                       const char* message, const char* label);
+
+    /**
+     * Runtime shape guard: raise a catchable error unless `actual >= minimum`.
+     *
+     * The transformer kernels index `dims[1]` (and `dims[2]` for batched
+     * inputs) off their activation operands. A rank-1 operand — which is what a
+     * coerced 1-D vector/list becomes — made those loads read past the end of
+     * the dimensions array. Guarding the rank turns that invalid read into a
+     * catchable condition.
+     */
+    void emitMinRankGuard(llvm::Value* actual, int64_t minimum,
+                          const char* message, const char* label);
 
 public:
     /**
