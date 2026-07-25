@@ -447,35 +447,17 @@ std::filesystem::path resolveSelfPath(const char* argv0) {
     return {};
 }
 
-std::filesystem::path findBuildArtifact(const std::string& name,
-                                        const std::filesystem::path& self_path) {
-    auto cwd = std::filesystem::current_path();
-    auto exe_dir = self_path.empty() ? std::filesystem::path{} : self_path.parent_path();
-    std::vector<std::filesystem::path> candidates;
-    if (!exe_dir.empty()) {
-        candidates.push_back(exe_dir / name);
-        candidates.push_back(exe_dir / "../lib" / name);
-        candidates.push_back(exe_dir / "../lib/eshkol" / name);
-    }
-    candidates.push_back(cwd / name);
-    candidates.push_back(cwd / "build" / name);
-    candidates.push_back(cwd / "build-verify" / name);
-    candidates.push_back(cwd.parent_path() / "build" / name);
-    candidates.push_back(cwd.parent_path() / "build-verify" / name);
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/lib/eshkol/" + name);
-    candidates.emplace_back("/usr/lib/eshkol/" + name);
-#endif
-
-    std::error_code ec;
-    for (const auto& candidate : candidates) {
-        if (std::filesystem::exists(candidate, ec)) {
-            auto canonical = std::filesystem::weakly_canonical(candidate, ec);
-            return ec ? candidate : canonical;
-        }
-    }
-    return {};
+// Locate an installed build artifact (stdlib.bc / stdlib.o) for the run-cache
+// key. This must agree with the resolution the loader itself performs
+// (repl_jit.cpp findStdlibObject/findStdlibBitcode, find_stdlib_object below):
+// fingerprinting a different copy than the one actually loaded would let a
+// cache entry survive a stdlib change. Both sides therefore go through the one
+// shared, location-major root list.
+std::filesystem::path findBuildArtifact(const std::string& name) {
+    const auto resolved = eshkol::platform::resolve_install_artifact(
+        eshkol::platform::install_library_roots(), {name});
+    return resolved.found() ? std::filesystem::path(resolved.path)
+                            : std::filesystem::path{};
 }
 
 std::filesystem::path jitCacheRoot() {
@@ -597,8 +579,8 @@ std::string makeJitRunCacheKey(const std::filesystem::path& source_path,
     hashUpdate(hash, "opt-level", std::to_string(opt_level));
     hashUpdate(hash, "target-triple", target_triple ? target_triple : "");
 
-    const auto stdlib_bc = findBuildArtifact("stdlib.bc", self_path);
-    const auto stdlib_o = findBuildArtifact("stdlib.o", self_path);
+    const auto stdlib_bc = findBuildArtifact("stdlib.bc");
+    const auto stdlib_o = findBuildArtifact("stdlib.o");
     hashUpdate(hash, "stdlib.bc", stdlib_bc.empty() ? "missing" : fileMetadataFingerprint(stdlib_bc));
     hashUpdate(hash, "stdlib.o", stdlib_o.empty() ? "missing" : fileMetadataFingerprint(stdlib_o));
 
@@ -2391,84 +2373,79 @@ static void process_imports(std::vector<eshkol_ast_t>& asts, const std::string& 
     }
 }
 
-// Find the pre-compiled stdlib.o file
-static void append_library_candidates(std::vector<std::filesystem::path>& candidates,
-                                      const std::vector<char*>& lib_paths,
-                                      const std::filesystem::path& leaf_name) {
+// The `-L<dir>` directories, in command-line order, as search roots.
+static std::vector<std::string> explicit_library_dirs(const std::vector<char*>& lib_paths)
+{
+    std::vector<std::string> dirs;
+    dirs.reserve(lib_paths.size());
     for (const auto* lib_path : lib_paths) {
         if (!lib_path || lib_path[0] == '\0') {
             continue;
         }
-        candidates.emplace_back(std::filesystem::path(lib_path) / leaf_name);
+        dirs.emplace_back(lib_path);
+    }
+    return dirs;
+}
+
+// Print a resolution note when the artifact did not come from this compiler's
+// own install, or when its embedded build stamp disagrees with this build. A
+// version disagreement is the dangerous case — the archive can satisfy every
+// symbol and still have been built against a different tagged-value/arena
+// layout — so it is a warning, not a note.
+static void report_artifact_resolution(
+    std::string_view label,
+    const eshkol::platform::ResolvedInstallArtifact& artifact,
+    bool verify_version = true)
+{
+    const auto note = eshkol::platform::describe_install_artifact(
+        label, artifact, verify_version);
+    if (note.text.empty()) {
+        return;
+    }
+    // Resolution runs from several call sites (module tree lookups in
+    // particular); the user needs the note once, not once per lookup.
+    static std::set<std::string> already_reported;
+    if (!already_reported.insert(note.text).second) {
+        return;
+    }
+    if (note.severe) {
+        eshkol_warn("%s", note.text.c_str());
+    } else {
+        eshkol_notice("%s", note.text.c_str());
     }
 }
 
+// Find the pre-compiled stdlib.o file
 static std::string find_stdlib_object(const std::vector<char*>& lib_paths)
 {
-    auto cwd = eshkol::platform::current_directory();
-    auto exe_dir = eshkol::platform::executable_directory();
-
-    std::vector<std::filesystem::path> candidates;
-    append_library_candidates(candidates, lib_paths, "stdlib.o");
-
-    candidates.insert(candidates.end(), {
-        exe_dir / "stdlib.o",
-        exe_dir / "../lib/stdlib.o",
-        exe_dir / "../lib/eshkol/stdlib.o",
-        cwd / "stdlib.o",
-        cwd / "build/stdlib.o",
-        cwd.parent_path() / "build/stdlib.o",
-    });
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
-    candidates.emplace_back("/usr/local/lib/stdlib.o");
-    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
-    candidates.emplace_back("/usr/lib/stdlib.o");
-    candidates.emplace_back("/opt/homebrew/lib/eshkol/stdlib.o");
-    candidates.emplace_back("/opt/homebrew/lib/stdlib.o");
-#endif
-
-    return eshkol::platform::find_first_existing(candidates);
+    const auto resolved = eshkol::platform::resolve_install_artifact(
+        eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
+        {"stdlib.o"});
+    // stdlib.o carries no build stamp (it is generated Eshkol code, not a
+    // stamped archive), so only its origin is reportable.
+    report_artifact_resolution("precompiled stdlib object", resolved,
+                               /*verify_version=*/false);
+    return resolved.path;
 }
 
 // Find the runtime library. Prefer the split runtime archive; fall back to the
 // historical aggregate archive for older build/install layouts.
-static std::string find_runtime_library(const std::vector<char*>& lib_paths)
+//
+// Location-major (see platform_runtime.h): BOTH names are tried in a root
+// before the next root is opened, so `libeshkol-static.a` sitting beside the
+// compiler outranks a `libeshkol-runtime.a` in /usr/local/lib. The reverse
+// order — every location for `eshkol-runtime` first — is what let a stale
+// system archive win over the compiler's own (RC B3): an install that ships
+// only the legacy aggregate name silently linked someone else's runtime.
+static eshkol::platform::ResolvedInstallArtifact resolve_runtime_archive(
+    const std::vector<char*>& lib_paths)
 {
-    auto cwd = eshkol::platform::current_directory();
-    auto exe_dir = eshkol::platform::executable_directory();
-    std::vector<std::filesystem::path> candidates;
-
-    for (const char* logical_name : {"eshkol-runtime", "eshkol-static"}) {
-        const auto library_name = eshkol::platform::static_library_name(logical_name);
-
-        if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
-            candidates.emplace_back(std::filesystem::path(env_lib) / library_name);
-        }
-
-        append_library_candidates(candidates, lib_paths, library_name);
-
-        candidates.insert(candidates.end(), {
-            exe_dir / library_name,
-            exe_dir / "../lib" / library_name,
-            exe_dir / "../lib/eshkol" / library_name,
-            cwd / library_name,
-            cwd / "build" / library_name,
-            cwd.parent_path() / "build" / library_name,
+    return eshkol::platform::resolve_install_artifact(
+        eshkol::platform::install_library_roots(explicit_library_dirs(lib_paths)),
+        {
+            eshkol::platform::static_library_name("eshkol-runtime"),
+            eshkol::platform::static_library_name("eshkol-static"),
         });
-
-#ifndef _WIN32
-        candidates.emplace_back("/usr/local/lib" / std::filesystem::path(library_name));
-        candidates.emplace_back("/usr/local/lib/eshkol" / std::filesystem::path(library_name));
-        candidates.emplace_back("/usr/lib" / std::filesystem::path(library_name));
-        candidates.emplace_back("/usr/lib/eshkol" / std::filesystem::path(library_name));
-        candidates.emplace_back("/opt/homebrew/lib" / std::filesystem::path(library_name));
-        candidates.emplace_back("/opt/homebrew/lib/eshkol" / std::filesystem::path(library_name));
-#endif
-    }
-
-    return eshkol::platform::find_first_existing(candidates);
 }
 
 // Check if any AST contains a require for stdlib or core.* modules.
@@ -2541,43 +2518,51 @@ static bool requires_stdlib_module_explicitly(const std::vector<eshkol_ast_t>& a
 // silently dropped its agent-FFI link requirement, producing an executable with
 // unresolved qllm_process_* / eshkol_sqlite_* symbols.
 
-// Find the library base directory (lib/)
+// Find the library base directory (lib/) that holds the module sources.
+//
+// Executable-relative before cwd: stdlib + core.* belong to the Eshkol
+// install, not to the cwd. A downstream project (run from its own cwd) may
+// have its OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
+// submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
+// e.g. (require core.manifold) is not recognised as precompiled and AOT tries
+// to source-resolve it and fails. That makes the -r run-cache fall back to the
+// in-process JIT every run. install_module_roots() encodes that order (and
+// puts $ESHKOL_LIB_DIR ahead of it, and the system prefixes last).
 static std::string find_lib_dir()
 {
-    auto cwd = eshkol::platform::current_directory();
-    auto exe_dir = eshkol::platform::executable_directory();
+    const auto roots = eshkol::platform::install_module_roots();
 
-    // Executable-relative first: stdlib + core.* belong to the Eshkol install,
-    // not to the cwd. A downstream project (run from its own cwd) may have its
-    // OWN lib/ that would otherwise shadow Eshkol's — which breaks stdlib
-    // submodule discovery (collect_all_submodules parses <lib>/stdlib.esk), so
-    // e.g. (require core.manifold) is not recognised as precompiled and AOT
-    // tries to source-resolve it and fails. That makes the -r run-cache fall
-    // back to the in-process JIT every run.
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "lib",
-        exe_dir / "../lib",
-        exe_dir / "../share/eshkol/lib",
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
-    };
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/share/eshkol/lib");
-    candidates.emplace_back("/usr/share/eshkol/lib");
-#endif
-
-    // The Eshkol lib is the one that actually carries stdlib.esk. Prefer the
-    // first candidate that has it (skips a downstream project's unrelated lib/).
-    for (const auto& c : candidates) {
+    // The Eshkol module tree is the one that actually carries stdlib.esk.
+    // Prefer the first root that has it — that check is what keeps a
+    // downstream project's unrelated lib/ (or an archive-only lib/ in a
+    // release package) from being mistaken for the module tree.
+    for (const auto& root : roots) {
         std::error_code ec;
-        if (std::filesystem::exists(c / "stdlib.esk", ec)) {
-            return c.string();
+        if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
+            eshkol::platform::ResolvedInstallArtifact resolved{
+                root.path.string(), root.origin, root.path};
+            report_artifact_resolution("module source tree", resolved,
+                                       /*verify_version=*/false);
+            return root.path.string();
         }
     }
 
-    return eshkol::platform::find_first_existing(candidates);
+    // No root carried stdlib.esk. Fall back to the first directory that at
+    // least exists, so a partial install still resolves user modules — but
+    // never promote $ESHKOL_LIB_DIR here: it names a directory of native
+    // archives, and accepting it as the module root would point (require …)
+    // at a build directory with no .esk files in it.
+    for (const auto& root : roots) {
+        if (root.origin == eshkol::platform::InstallOrigin::EnvOverride) {
+            continue;
+        }
+        std::error_code ec;
+        if (std::filesystem::is_directory(root.path, ec)) {
+            return root.path.string();
+        }
+    }
+
+    return {};
 }
 
 // Convert symbolic module name to file path
@@ -2619,9 +2604,18 @@ static std::string resolve_module_path(const std::string& module_name, const std
     }
 
     // Search order:
-    // 1. Current directory (relative to base_dir)
-    // 2. Library path (lib/)
-    // 3. Environment variable $ESHKOL_PATH (colon-separated)
+    // 1. The requiring file's own directory (relative to base_dir)
+    // 2. The cwd / project root
+    // 3. Environment variable $ESHKOL_PATH (colon-separated) — the explicit
+    //    override, which the `-I` flags are merged into
+    // 4. The installed library directory (lib/)
+    //
+    // The program's own sources come first, then the paths the user named
+    // explicitly, then the install. $ESHKOL_PATH ahead of lib/ is the same
+    // rule ESHKOL_LIB_DIR follows for archives: a location the user asked for
+    // must not be silently outranked by a copy that ships with the compiler.
+    // (Before this ordering, `-I mytree` could not override an installed
+    // core.* module at all.)
 
     // Try current directory first
     std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
@@ -2641,29 +2635,6 @@ static std::string resolve_module_path(const std::string& module_name, const std
         std::filesystem::path cwd_path = std::filesystem::path(".") / path_part;
         if (std::filesystem::exists(cwd_path)) {
             return std::filesystem::canonical(cwd_path).string();
-        }
-    }
-
-    // Try library directory
-    if (!lib_dir.empty()) {
-        std::filesystem::path lib_path = std::filesystem::path(lib_dir) / path_part;
-        if (std::filesystem::exists(lib_path)) {
-            return std::filesystem::canonical(lib_path).string();
-        }
-        // Directory-as-module: if lib/web.esk doesn't exist, try lib/web/web.esk
-        // This allows (require web) to find lib/web/web.esk as the package entry point
-        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
-        if (std::filesystem::is_directory(dir_module)) {
-            // Try same-name entry point: lib/web/web.esk
-            std::filesystem::path entry = dir_module / (module_name + ".esk");
-            if (std::filesystem::exists(entry)) {
-                return std::filesystem::canonical(entry).string();
-            }
-            // Try index.esk: lib/web/index.esk
-            std::filesystem::path index = dir_module / "index.esk";
-            if (std::filesystem::exists(index)) {
-                return std::filesystem::canonical(index).string();
-            }
         }
     }
 
@@ -2693,6 +2664,29 @@ static std::string resolve_module_path(const std::string& module_name, const std
             std::filesystem::path env_path = dir_path / path_part;
             if (std::filesystem::exists(env_path, ec)) {
                 return std::filesystem::canonical(env_path, ec).string();
+            }
+        }
+    }
+
+    // Try library directory
+    if (!lib_dir.empty()) {
+        std::filesystem::path lib_path = std::filesystem::path(lib_dir) / path_part;
+        if (std::filesystem::exists(lib_path)) {
+            return std::filesystem::canonical(lib_path).string();
+        }
+        // Directory-as-module: if lib/web.esk doesn't exist, try lib/web/web.esk
+        // This allows (require web) to find lib/web/web.esk as the package entry point
+        std::filesystem::path dir_module = std::filesystem::path(lib_dir) / module_name;
+        if (std::filesystem::is_directory(dir_module)) {
+            // Try same-name entry point: lib/web/web.esk
+            std::filesystem::path entry = dir_module / (module_name + ".esk");
+            if (std::filesystem::exists(entry)) {
+                return std::filesystem::canonical(entry).string();
+            }
+            // Try index.esk: lib/web/index.esk
+            std::filesystem::path index = dir_module / "index.esk";
+            if (std::filesystem::exists(index)) {
+                return std::filesystem::canonical(index).string();
             }
         }
     }
@@ -2854,7 +2848,7 @@ static void collectTransitiveSources(
 
     // Resolve a referenced module/path against the referring file's directory,
     // then the -I include paths, then resolve_module_path's own search order
-    // (cwd, lib dir, $ESHKOL_PATH).
+    // (cwd, $ESHKOL_PATH, lib dir).
     auto resolve_ref = [&](const std::string& ref) -> std::string {
         std::string mp = resolve_module_path(ref, base_dir, g_lib_dir);
         if (!mp.empty()) return mp;
@@ -5192,13 +5186,18 @@ int main(int argc, char **argv)
         // single left-to-right pass.  The old runtime-before-agent order was
         // accepted by Apple/MSVC but left those helper references unresolved
         // in Linux AOT executables.
-        std::string runtime_lib = find_runtime_library(lib_paths);
+        const auto runtime_archive = resolve_runtime_archive(lib_paths);
+        std::string runtime_lib = runtime_archive.path;
         if (runtime_lib.empty()) {
             eshkol_error("Could not find libeshkol-runtime.a or legacy libeshkol-static.a");
-            eshkol_error("Searched: ./build/, /usr/local/lib/, /opt/homebrew/lib/, and relative to executable");
+            eshkol_error("Searched, in order: $ESHKOL_LIB_DIR, every -L directory, "
+                         "the directory holding this compiler (and its ../lib, "
+                         "../lib/eshkol), the working directory's build trees, then "
+                         "the system prefixes");
             eshkol_error("Please install Eshkol properly or build from source");
             return 1;
         }
+        report_artifact_resolution("runtime archive", runtime_archive);
 
         if (needs_agent_ffi) {
             const auto agent_ffi_path =

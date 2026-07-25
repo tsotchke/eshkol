@@ -21,9 +21,40 @@ invalidation and the stdlib object cache.
 
 | Variable | Effect |
 |----------|--------|
-| `ESHKOL_PATH` | Module/include search path for `require`. |
-| `ESHKOL_LIB_DIR` | Directory to locate the precompiled stdlib / runtime libraries. |
+| `ESHKOL_PATH` | Module/include search path for `require`. Searched after the requiring file's own directory and the project root, and **before** the installed `lib/` tree, so a path you name overrides a module that ships with the compiler. `-I` directories are merged into it. |
+| `ESHKOL_LIB_DIR` | Directory holding the precompiled stdlib (`stdlib.o`, `stdlib.bc`) and the runtime archives (`libeshkol-runtime.a`, or the legacy `libeshkol-static.a`). Highest precedence of all: it is searched — together with its `eshkol/` subdirectory — before `-L` paths, before the compiler's own install, and before any system location. |
+| `ESHKOL_SYSTEM_PREFIXES` | Replaces the built-in list of system install prefixes searched as a last resort (`/usr/local`, `/usr`, `/opt/homebrew`). Path-list syntax; each entry contributes `<prefix>/lib`, `<prefix>/lib/eshkol` and `<prefix>/share/eshkol/lib`. For unusual installs and for packaging tests that must not read the host's real system directories. |
 | `ESHKOL_PROJECT_ROOT` | Project root used for relative paths in exception/backtrace reporting. |
+
+### Resolution precedence
+
+Every install artifact the toolchain resolves at run time — the runtime
+archive, the agent-FFI archives beside it, `stdlib.o`, `stdlib.bc`, and the
+`lib/**.esk` module tree — is looked up in one order, highest precedence
+first:
+
+1. `$ESHKOL_LIB_DIR` (native artifacts) / `$ESHKOL_PATH` (module sources).
+2. Directories named by `-L` (native) or `-I` (modules) flags.
+3. The install the running compiler belongs to: the directory holding its
+   **real** path (symlinks resolved, so a `bin/eshkol-run` symlink into a
+   Homebrew Cellar keg resolves inside the keg), plus that directory's
+   `../lib`, `../lib/eshkol` and `../share/eshkol/lib`.
+4. The working directory and its `build/` trees — for running out of a build
+   tree during development.
+5. The system prefixes.
+
+Within one directory the split runtime archive (`libeshkol-runtime.a`) is
+preferred over the legacy aggregate (`libeshkol-static.a`); the search never
+moves to a lower-precedence directory while the current one can satisfy the
+request. A compiler therefore always links its own runtime, and an install
+that ships only the legacy archive name is not overtaken by an unrelated
+`libeshkol-runtime.a` elsewhere on the machine.
+
+If an artifact does come from a system location, `eshkol-run` says so on
+stderr with the path it used. Archives carry the Eshkol version they were
+built from; when that disagrees with the running compiler, the message is a
+warning, because such an archive can satisfy every symbol and still have been
+built against a different runtime layout.
 
 ## Resource limits
 
