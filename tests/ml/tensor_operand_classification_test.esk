@@ -20,7 +20,9 @@
 ;;   (tile t '(3))                           #(1 2)      — silently untiled
 ;;   (tile m22 (vector 2))                   #(5368873992 …) — read past `reps`
 ;;   (tensor-sum t4 1)                       ()          — NULL tensor
-;;   (tensor-sum t4 0)                       #()         — rank-0 tensor
+;;   (tensor-sum t4 0)                       #()         — rank-0 tensor, and it
+;;                                                        disagreed with the VM,
+;;                                                        which returns #(10)
 ;;
 ;; Three contracts are asserted, one per operand kind:
 ;;   (a) read-only 1-D DATA operand  -> a numeric vector or list is accepted and
@@ -251,10 +253,25 @@
        (guard (exn (#t #t)) (tensor-mean m23 5) #f))
 (check "axis reject: negative axis past the rank"
        (guard (exn (#t #t)) (tensor-sum m23 -9) #f))
-(check "axis reject: axis form on a rank-1 tensor (was #())"
-       (guard (exn (#t #t)) (tensor-sum t4 0) #f))
-(check "axis reject: axis form on a rank-1 tensor, mean"
-       (guard (exn (#t #t)) (tensor-mean t4 0) #f))
+
+;; Reducing the SOLE axis of a rank-1 tensor is a complete reduction, not an
+;; error: it yields a 1-element tensor. This is the answer the VM already gives
+;; (vm_tensor_reduce: "a 1D input reduces to a 1-element tensor rather than a
+;; 0-dim one") and the answer numpy gives. It used to be `#()` — a rank-0 tensor
+;; whose single element held the correct sum but which displayed as empty and
+;; compared unequal to every number.
+(check "axis: rank-1 axis 0 is a complete reduction -> 1 element (was #())"
+       (= (tensor-length (tensor-sum t4 0)) 1))
+(check "axis: rank-1 axis 0 sum = 10"
+       (close? (tensor-get (tensor-sum t4 0) 0) 10.0))
+(check "axis: rank-1 axis 0 agrees with the 1-argument form"
+       (close? (tensor-get (tensor-sum t4 0) 0) (tensor-sum t4)))
+(check "axis: rank-1 axis 0 mean = 2.5"
+       (close? (tensor-get (tensor-mean t4 0) 0) 2.5))
+(check "axis: rank-1 axis -1 normalizes to 0 and reduces"
+       (close? (tensor-get (tensor-sum t4 -1) 0) 10.0))
+(check "axis: rank-1 axis 1 is still out of range"
+       (guard (exn (#t #t)) (tensor-sum t4 1) #f))
 
 ;; ---------------------------------------------------------------------------
 ;; A raised classification error must be recoverable: execution continues.

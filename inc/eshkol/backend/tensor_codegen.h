@@ -1463,12 +1463,16 @@ public:
     /**
      * Validate a reduction axis against the operand's rank, at runtime.
      *
-     * Emits a call to `eshkol_tensor_axis_checked`, which requires rank >= 2
-     * and 0 <= axis < rank and otherwise raises a catchable error. Without it
-     * an out-of-range axis produced a result rather than an error: the numeric
-     * path returned a NULL tensor that displays as `()`, the rank-1 path
-     * returned a rank-0 tensor that displays as `#()`, and the AD path indexed
+     * Emits a call to `eshkol_tensor_axis_checked`, which requires
+     * `0 <= axis < rank` and otherwise raises a catchable error. Without it an
+     * out-of-range axis produced a result rather than an error: the numeric path
+     * returned a NULL tensor that displays as `()`, and the AD path indexed
      * `dims[axis]` past the end of the dimensions array.
+     *
+     * Reducing the sole axis of a rank-1 tensor is NOT an error — it is a
+     * complete reduction and yields a 1-element tensor, matching the VM's
+     * vm_tensor_reduce. Both lowerings clamp their output rank to 1 for that
+     * case; see the `reduce_to_scalar` handling in emitAxisReduce.
      *
      * Call this ONCE, after the caller has normalized a negative axis and
      * before either the AD or the numeric lowering consumes it.

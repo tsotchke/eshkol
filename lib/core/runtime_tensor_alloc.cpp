@@ -325,40 +325,39 @@ void eshkol_tensor_counts_checked(const eshkol_tagged_value_t* val,
 }
 
 /*
- * Validate and normalize a reduction AXIS against the operand's rank.
+ * Validate a reduction AXIS against the operand's rank.
  *
  * `(tensor-sum t axis)` / `(tensor-mean t axis)` / `(tensor-max t axis)` /
- * `(tensor-min t axis)` reduce `t` along one axis and return a tensor of rank
- * `rank - 1`. Neither the codegen nor eshkol_xla_reduce checked the axis
- * against the rank, and both silently produced a result:
+ * `(tensor-min t axis)` reduce `t` along one axis. Neither the codegen nor
+ * eshkol_xla_reduce checked the axis against the rank, so an axis naming a
+ * dimension the tensor does not have still produced a value:
  *
- *   (tensor-sum #(1 2 3 4) 1)  =>  ()    ; eshkol_xla_reduce returned NULL for
- *                                        ; the out-of-range axis and the NULL
- *                                        ; was packed as a heap pointer
- *   (tensor-sum #(1 2 3 4) 0)  =>  #()   ; rank 1 - 1 = 0, a rank-0 tensor
+ *   (tensor-sum #(1 2 3 4) 1)  =>  ()   ; eshkol_xla_reduce returned NULL for
+ *                                       ; the out-of-range axis and the NULL
+ *                                       ; was packed as a heap pointer anyway
+ *   (tensor-mean m23 5)        =>  ()   ; likewise
  *
- * Both print as an empty collection and compare unequal to every real number,
- * so a wrong axis reads as "the tensor was empty" rather than as an error. The
- * AD path was worse: it indexes `dims[axis]` directly to size its output, so an
+ * That prints as an empty collection and compares unequal to every real number,
+ * so a wrong axis read as "the tensor was empty" rather than as an error. The AD
+ * path was worse: it indexes `dims[axis]` directly to size its output, so an
  * out-of-range axis read past the dimensions array before dividing by whatever
  * it found.
  *
- * A reduction needs an axis to reduce AND at least one axis to keep, so the
- * contract is rank >= 2 and (after the caller's negative-axis normalization)
- * 0 <= axis < rank. `(tensor-sum t)` remains the way to reduce a rank-1 tensor
- * to a scalar. Returns the validated axis so the caller can use the result
- * directly; never returns on the failure path (the error raises catchably).
+ * The contract is exactly `0 <= axis < rank` after the caller's negative-axis
+ * normalization. Note what is NOT an error: reducing the sole axis of a rank-1
+ * tensor. `(tensor-sum #(1 2 3 4) 0)` is a complete reduction and yields the
+ * 1-element tensor `#(10)` — the answer the VM's vm_tensor_reduce already
+ * documents ("a 1D input reduces to a 1-element tensor rather than a 0-dim
+ * one") and the answer numpy gives. It used to yield `#()` because `rank - 1`
+ * was used unclamped as the output rank; that is fixed in eshkol_xla_reduce and
+ * in the AD lowering rather than turned into an error, so both substrates and
+ * both native reduce paths agree.
+ *
+ * Returns the validated axis so the caller can use the result directly; never
+ * returns on the failure path (the error raises catchably).
  */
 int64_t eshkol_tensor_axis_checked(int64_t axis, int64_t rank,
                                   const char* op_name) {
-    if (rank < 2) {
-        eshkol_runtime_fatal(
-            ESHKOL_EXCEPTION_ERROR,
-            "%s: axis reduction needs a tensor of rank 2 or more (got rank %lld); "
-            "use the 1-argument form to reduce every element to a scalar",
-            op_name ? op_name : "tensor axis reduction", (long long)rank);
-        return 0;  /* not reached */
-    }
     if (axis < 0 || axis >= rank) {
         eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR,
                              "%s: axis %lld out of range for rank-%lld tensor",

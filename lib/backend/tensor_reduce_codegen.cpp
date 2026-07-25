@@ -1660,7 +1660,17 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         llvm::Value* result_ptr = builder.CreateCall(alloc_tensor, {arena_ptr}, "axis_reduce_ad_tensor");
 
         llvm::Value* one_i64 = llvm::ConstantInt::get(ctx_.int64Type(), 1);
-        llvm::Value* out_num_dims = builder.CreateSub(src_num_dims, one_i64);
+        // Reducing the sole axis of a rank-1 tensor removes the only dimension.
+        // `rank - 1` was stored unclamped as the output rank, so the result was a
+        // rank-0 tensor that displayed as `#()` even though its single element
+        // held the correct value. Clamp to 1 and write dims[0] = 1 below, so a
+        // complete reduction yields the 1-element tensor that the numeric path
+        // and the VM's vm_tensor_reduce both return.
+        llvm::Value* reduce_to_scalar = builder.CreateICmpULE(src_num_dims, one_i64,
+                                                             "axis_reduce_to_scalar");
+        llvm::Value* out_num_dims = builder.CreateSelect(
+            reduce_to_scalar, one_i64, builder.CreateSub(src_num_dims, one_i64),
+            "axis_reduce_out_rank");
         llvm::Value* dims_bytes = builder.CreateMul(out_num_dims,
             llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
         llvm::Value* result_dims = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "axis_reduce_ad_dims");
@@ -1704,6 +1714,23 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
         builder.CreateBr(dim_cond);
 
         builder.SetInsertPoint(dim_done);
+        // The copy loop above skips the reduced axis, so on a rank-1 operand it
+        // writes nothing and result_dims[0] would stay uninitialized arena bytes.
+        // The clamped output rank claims one dimension, so give it its length.
+        {
+            llvm::Value* wrote_none = builder.CreateICmpEQ(
+                builder.CreateLoad(ctx_.int64Type(), dim_out),
+                llvm::ConstantInt::get(ctx_.int64Type(), 0));
+            llvm::BasicBlock* scalar_dim_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "axis_reduce_scalar_dim", current_func);
+            llvm::BasicBlock* dims_ready_bb = llvm::BasicBlock::Create(
+                ctx_.context(), "axis_reduce_dims_ready", current_func);
+            builder.CreateCondBr(wrote_none, scalar_dim_bb, dims_ready_bb);
+            builder.SetInsertPoint(scalar_dim_bb);
+            builder.CreateStore(one_i64, result_dims);
+            builder.CreateBr(dims_ready_bb);
+            builder.SetInsertPoint(dims_ready_bb);
+        }
 
         llvm::Value* inner_stride = builder.CreateAlloca(ctx_.int64Type(), nullptr, "axis_reduce_inner_stride");
         builder.CreateStore(one_i64, inner_stride);
