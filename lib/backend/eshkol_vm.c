@@ -841,6 +841,10 @@ static void compile_and_run(const char* source) {
     }
 
     /* stack_depth synced via n_locals */
+    /* Everything registered so far belongs to the builtin preamble and the
+     * Scheme prelude; user definitions start here (R7RS 5.3.1 redefinition
+     * may only reassign a location the user program itself created). */
+    vm_set_user_locals_base(main_chunk.n_locals);
     src_ptr = source;
 
     /* TWO-PASS COMPILATION:
@@ -1232,6 +1236,7 @@ static void compile_source_to_chunk_with_options(const char* source,
      * binding that source execution no longer has, and the VM parity gate
      * would see vm-eskb diverge from vm-src. */
     vm_prescan_redefined_toplevel_names(source);
+    vm_set_user_locals_base(chunk->n_locals);
 
     src_ptr = source;
     while (1) {
