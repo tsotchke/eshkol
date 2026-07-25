@@ -2862,10 +2862,20 @@ public:
             // procedure definition, so the location is pre-declared here for
             // `is_function` defines too. Ordinary (single) procedure defines
             // keep the direct-call fast path and get no location.
+            //
+            // Library mode is excluded: it has no `main`, so the definition
+            // stores that make a location authoritative are emitted by the
+            // chunked __eshkol_lib_init* sequence rather than the top-level
+            // order, and creating a location no definition writes to would be
+            // strictly worse than the direct call. No stdlib module defines a
+            // name twice, so this exclusion is currently unreachable in
+            // practice; if one ever did, it keeps the pre-existing behaviour
+            // instead of a location that reads as zero.
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                     (!asts_to_use[i].operation.define_op.is_function ||
-                     isRedefinedTopLevelName(asts_to_use[i].operation.define_op.name))) {
+                     (!library_mode &&
+                      isRedefinedTopLevelName(asts_to_use[i].operation.define_op.name)))) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
                     // `:external` references and library `provide` bindings keep
                     // their raw public name so they bind cross-object to
