@@ -21,14 +21,20 @@
 #              newline characters from both sides before byte comparison.
 #              Value divergences, dropped output and fabricated output all
 #              still surface; only newline-placement divergences are masked
-#              (that is exactly the filed quirk).  The VM also exits 0 on
-#              fatal runtime errors (filed: found/error_exit_code_zero.esk),
-#              so VM failure is detected via ERROR/WARNING markers on
-#              stderr, not via exit codes.
+#              (that is exactly the filed quirk).  VM failure is detected via
+#              BOTH the exit status and ERROR/WARNING markers on stderr; the
+#              VM used to exit 0 on every fatal runtime error, which stage 4
+#              now gates directly.
 #
 #   3. OOS     Programs outside the subset (tests/vm_parity/oos/) must fail
 #              CLEANLY on the VM: a clear diagnostic on stderr and no
 #              fabricated value on stdout.
+#
+#   4. FATAL   Programs whose FIRST failing form is fatal on both substrates
+#              (tests/vm_parity/fatal/) must FAIL CLOSED: nonzero exit, a
+#              diagnostic on stderr, and no output past the fatal form.  This
+#              is the fail-open ratchet — a fatal VM error may never again
+#              look like a successful run to a shell or to CI.
 #
 # Emits (mirroring scripts/run_sicp_smoke.sh):
 #   * pytest-style lines : "PASSED tests/vm_parity/<file>::<check>"
@@ -256,8 +262,7 @@ for f in "${oos_files[@]}"; do
     normalize "$d/vm.raw" "$d/vm.out"
     nodeid="tests/vm_parity/oos/$base.esk"
     # Clean failure = a clear diagnostic on stderr AND no fabricated value
-    # on stdout.  (The VM exits 0 even on fatal errors — filed in
-    # found/error_exit_code_zero.esk — so exit codes prove nothing here.)
+    # on stdout.  Exit status is asserted separately, in stage 4.
     if ! grep -qE "ERROR|undefined variable" "$d/vm.err"; then
         report FAIL "$nodeid::fails-cleanly" "oos_${base}" \
             "no diagnostic on stderr; VM may have silently mis-executed an unsupported feature"
@@ -270,11 +275,57 @@ for f in "${oos_files[@]}"; do
     fi
 done
 
+# ── stage 4: fatal errors must FAIL CLOSED ──────────────────────────────
+#
+# The VM used to return 0 from main() unconditionally, so a program killed by
+# a fatal runtime error — dropping every remaining top-level form — was
+# indistinguishable from a clean run for shells, Makefiles and CI.  Each probe
+# in tests/vm_parity/fatal/ must, on BOTH substrates, (1) exit NONZERO,
+# (2) name the failure on stderr, and (3) not print the sentinel that follows
+# the failing form.  This is the same fail-open discipline already enforced at
+# the driver and FFI boundaries.
+echo
+echo "== stage 4: fatal-error exit status (fail closed, both substrates) =="
+FATAL="$REPO_ROOT/tests/vm_parity/fatal"
+fatal_files=("$FATAL"/*.esk)
+for f in "${fatal_files[@]}"; do
+    base=$(basename "$f" .esk)
+    d="$WORK/fatal_$base"; mkdir -p "$d"
+    nodeid="tests/vm_parity/fatal/$base.esk"
+
+    run_guarded "$TIMEOUT_RUN" "$ESHKOL_RUN" -n -r "$f" >"$d/native.raw" 2>"$d/native.err"
+    nrc=$?
+    ESHKOL_VM_NO_DISASM=1 run_guarded "$TIMEOUT_RUN" "$VM_BIN" "$f" >"$d/vm.raw" 2>"$d/vm.err"
+    vrc=$?
+
+    if [ $nrc -eq 0 ]; then
+        report FAIL "$nodeid::native-exits-nonzero" "fatal_${base}_native" \
+            "native -r exited 0 on a fatal error"
+    else
+        report PASS "$nodeid::native-exits-nonzero" "fatal_${base}_native" \
+            "native exited $nrc"
+    fi
+
+    if [ $vrc -eq 0 ]; then
+        report FAIL "$nodeid::vm-exits-nonzero" "fatal_${base}_vm" \
+            "VM exited 0 on a fatal error (fail-open regression)"
+    elif ! grep -qE "ERROR|OVERFLOW|BY ZERO" "$d/vm.err"; then
+        report FAIL "$nodeid::vm-exits-nonzero" "fatal_${base}_vm" \
+            "VM exited $vrc but printed no diagnostic on stderr"
+    elif grep -q "MUST-NOT-PRINT" "$d/vm.raw"; then
+        report FAIL "$nodeid::vm-exits-nonzero" "fatal_${base}_vm" \
+            "VM continued past the fatal form"
+    else
+        report PASS "$nodeid::vm-exits-nonzero" "fatal_${base}_vm" \
+            "VM exited $vrc with a diagnostic and stopped at the fatal form"
+    fi
+done
+
 # ── gate ─────────────────────────────────────────────────────────────────
 echo
 echo "vm-parity: $pass passed, $fail failed"
 if [ $fail -eq 0 ]; then
-    gate_summary="$pass checks green (audit + corpus + oos)"
+    gate_summary="$pass checks green (audit + corpus + oos + fatal)"
     emit_event "vm_parity_gate" "PASS" "$gate_summary"
     # Name the production dispatcher explicitly so ICC can bind this full
     # source+serialized-bytecode parity run to the implementation boundary it
