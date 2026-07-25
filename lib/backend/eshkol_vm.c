@@ -263,7 +263,7 @@ static int run_compiled_chunk(FuncChunk* chunk) {
     /* Transfer constants. The pool is grown to the chunk's full count: the
      * old `i < MAX_CONSTS` clamp dropped the tail while still advertising
      * n_constants, so OP_CONST past the pool read uninitialized memory. */
-    if (!vm_ensure_const_cap(vm, chunk->n_constants)) return;
+    if (!vm_ensure_const_cap(vm, chunk->n_constants)) { vm_free(vm); return 1; }
     for (int i = 0; i < chunk->n_constants; i++) {
         vm->constants[i] = chunk->constants[i];
     }
