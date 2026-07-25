@@ -1431,6 +1431,38 @@ private:
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
     std::unordered_map<std::string, uint64_t> function_arity_table;
 
+    /* R7RS §5.3.1 TOP-LEVEL REDEFINITION.
+     *
+     * "At the top level of a program, a definition
+     *      (define <variable> <expression>)
+     *  has essentially the same effect as the assignment expression
+     *      (set! <variable> <expression>)
+     *  if <variable> is bound to a non-syntax value.  However, if
+     *  <variable> is not bound [...] the definition will bind <variable>
+     *  to a new location before performing the assignment."
+     *
+     * So a top-level name has exactly ONE location, every definition of it
+     * assigns to that location in program order, and every reference reads
+     * the location when it is evaluated — not when it is compiled.
+     *
+     * Eshkol's fast path deliberately violates that in exchange for direct
+     * calls: a `(define (f ...) ...)` becomes an LLVM Function resolved at
+     * the call site through function_table / `<name>_func`, while a
+     * `(define f <expr>)` becomes a tagged_value GlobalVariable resolved
+     * through symbol_table.  Two definitions of one name therefore produced
+     * two independent bindings, and the call site picked between them by
+     * namespace priority and by codegen order rather than by program order.
+     *
+     * This set holds the names that are defined more than once at the top
+     * level of the current compilation unit.  For exactly those names the
+     * fast path is switched off and the R7RS single-location model is used:
+     * the location is a tagged_value global (created in Step 1.5), every
+     * definition — value or procedure — stores into it at its own position
+     * in program order (Step 3), and every reference loads from it.  Single
+     * definitions, which is every name in practice, keep the direct call.
+     */
+    std::unordered_set<std::string> redefined_toplevel_names;
+
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
     // source-level tensor-flow analysis (adAstUsesTensorOps) that inline
@@ -2754,7 +2786,12 @@ public:
             // SAFE ORDER: Function declarations → Function bodies → Global variables in main()
             // Global variables (including lambdas) are processed ONLY in main function context
             // This avoids issues with processing lambdas without a function context
-            
+
+            // Step 0: R7RS §5.3.1 — which top-level names are defined more than
+            // once?  Must run before Step 1.5 creates bindings and before Step 2
+            // compiles any body that references them.
+            collectRedefinedTopLevelNames(asts_to_use, num_asts_to_use);
+
             // Step 1: Create function declarations FIRST (including nested functions)
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 bool is_external_define =
@@ -2820,9 +2857,15 @@ public:
             // module emits @<name> as a pure external declaration plus a
             // __repl_var_<name> marker that addModule consumes to allocate
             // the shared 16-byte tagged_value slot on first definition.
+            // R7RS §5.3.1: a name defined more than once at top level is bound
+            // through a location even when every one of its definitions is a
+            // procedure definition, so the location is pre-declared here for
+            // `is_function` defines too. Ordinary (single) procedure defines
+            // keep the direct-call fast path and get no location.
             for (size_t i = 0; i < num_asts_to_use; i++) {
                 if (asts_to_use[i].type == ESHKOL_OP && asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
-                    !asts_to_use[i].operation.define_op.is_function) {
+                    (!asts_to_use[i].operation.define_op.is_function ||
+                     isRedefinedTopLevelName(asts_to_use[i].operation.define_op.name))) {
                     const char* var_name = asts_to_use[i].operation.define_op.name;
                     // `:external` references and library `provide` bindings keep
                     // their raw public name so they bind cross-object to
@@ -2981,8 +3024,14 @@ public:
                                                asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
                                                asts_to_use[i].operation.define_op.is_function);
 
-                        // Skip function definitions - they were already compiled in earlier pass
+                        // Skip function definitions - they were already compiled in earlier pass.
+                        // R7RS §5.3.1: a *redefined* name is bound through a
+                        // location, so its procedure definitions still have to
+                        // assign to that location here, at their own position in
+                        // the top-level order — that is what makes the later
+                        // define win and the earlier one win before it.
                         if (is_function_def) {
+                            emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
                             continue;
                         }
 
@@ -3302,6 +3351,15 @@ public:
                 // Step 3: Process global variable definitions BEFORE calling scheme_main
                 current_function = c_main;
                 for (size_t i = 0; i < num_asts_to_use; i++) {
+                    // R7RS §5.3.1: procedure definitions of a redefined name assign
+                    // to that name's binding location, in top-level order, exactly
+                    // as in the no-user-main path above.
+                    if (asts_to_use[i].type == ESHKOL_OP &&
+                        asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
+                        asts_to_use[i].operation.define_op.is_function) {
+                        emitRedefinitionStoreForFunctionDefine(&asts_to_use[i]);
+                        continue;
+                    }
                     // Process non-function top-level defines to initialize global variables
                     if (asts_to_use[i].type == ESHKOL_OP &&
                         asts_to_use[i].operation.op == ESHKOL_DEFINE_OP &&
@@ -4538,6 +4596,126 @@ private:
         eshkol_debug("Created recursive N-dimensional tensor display helper function");
     }
     
+    /* R7RS §5.3.1: find the top-level names that are defined more than once
+     * in this compilation unit.  Those are the names whose binding must be a
+     * single mutable location assigned in program order (see the
+     * redefined_toplevel_names comment) instead of a compile-time-resolved
+     * direct call.
+     *
+     * `:external` defines are skipped: they are the precompiled stdlib's
+     * bindings, re-materialised into this AST by process_requires with their
+     * bodies living in the linked object.  A user define of the same name is
+     * a *shadow* of a separately compiled unit, not an in-unit redefinition,
+     * and is already handled by the user-shadows-builtin path (audit Bug G).
+     * Counting them here would drag every stdlib-shadowing call onto the
+     * indirect path for no semantic gain.
+     */
+    void collectRedefinedTopLevelNames(const eshkol_ast_t* asts, size_t num_asts) {
+        redefined_toplevel_names.clear();
+        if (!asts) return;
+
+        std::unordered_map<std::string, unsigned> counts;
+        for (size_t i = 0; i < num_asts; i++) {
+            if (asts[i].type != ESHKOL_OP) continue;
+            if (asts[i].operation.op != ESHKOL_DEFINE_OP) continue;
+            if (asts[i].operation.define_op.is_external) continue;
+            const char* name = asts[i].operation.define_op.name;
+            if (!name || !name[0]) continue;
+            counts[name]++;
+        }
+
+        for (const auto& entry : counts) {
+            if (entry.second > 1) {
+                redefined_toplevel_names.insert(entry.first);
+                eshkol_debug("R7RS 5.3.1: '%s' is defined %u times at top level - "
+                             "binding through a single mutable location",
+                             entry.first.c_str(), entry.second);
+            }
+        }
+    }
+
+    bool isRedefinedTopLevelName(const char* name) const {
+        return name && name[0] &&
+               redefined_toplevel_names.find(name) != redefined_toplevel_names.end();
+    }
+
+    /* Wrap a top-level LLVM function in a zero-capture arena closure and
+     * return it as a CALLABLE tagged_value — the first-class value of a
+     * procedure definition.  Shared by the function-as-value path in
+     * codegenVariable and by the R7RS §5.3.1 redefinition stores, so both
+     * produce byte-identical closures (same packed_info / return_type_info
+     * layout the closure-call path decodes). */
+    Value* emitFunctionAsCallableValue(Function* func, uint64_t num_params) {
+        if (!func) return nullptr;
+
+        Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+
+        // Pack closure info: no captures (bits 0-15), arity (bits 16-31)
+        uint64_t packed_info = (num_params & 0xFFFF) << 16;
+        Value* packed_info_val = sizeConst(packed_info);
+
+        Value* sexpr_ptr = intPtrConst(0);
+        // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
+        Value* return_type_info = intPtrConst(return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+
+        Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
+                                                 {arena_ptr, func_ptr_int, packed_info_val,
+                                                  sexpr_ptr, return_type_info, closure_name});
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
+    /* R7RS §5.3.1 store for a top-level PROCEDURE definition of a redefined
+     * name.  Ordinary procedure definitions need no store — their call sites
+     * resolve the LLVM function directly — but a redefined name is bound
+     * through a location, so each definition has to assign the procedure to
+     * that location at its own point in program order.  Emitted from the
+     * main/global-init sequence, where `builder` is already positioned at
+     * the definition's place in the top-level order. */
+    void emitRedefinitionStoreForFunctionDefine(const eshkol_ast_t* ast) {
+        if (!ast || ast->type != ESHKOL_OP ||
+            ast->operation.op != ESHKOL_DEFINE_OP ||
+            !ast->operation.define_op.is_function ||
+            ast->operation.define_op.is_external) {
+            return;
+        }
+
+        const char* name = ast->operation.define_op.name;
+        if (!isRedefinedTopLevelName(name)) return;
+
+        auto declared_it = declared_functions_by_ast.find(ast);
+        if (declared_it == declared_functions_by_ast.end() || !declared_it->second) {
+            eshkol_debug("R7RS 5.3.1: no declared function for redefined '%s' - "
+                         "skipping location store", name);
+            return;
+        }
+
+        std::string storage_name =
+            userGlobalStorageName(name, g_repl_mode_enabled, library_mode);
+        GlobalVariable* location = module->getNamedGlobal(storage_name);
+        if (!location) {
+            eshkol_debug("R7RS 5.3.1: no location global for redefined '%s' (%s)",
+                         name, storage_name.c_str());
+            return;
+        }
+
+        uint64_t arity = ast->operation.define_op.num_params;
+        Value* callable = emitFunctionAsCallableValue(declared_it->second, arity);
+        if (!callable) return;
+
+        builder->CreateStore(callable, location);
+        // The location is the binding: keep both symbol tables pointing at it so
+        // every later reference (call or value read) loads from it.
+        symbol_table[name] = location;
+        global_symbol_table[name] = location;
+        function_arity_table[name] = arity;
+        eshkol_debug("R7RS 5.3.1: stored procedure '%s' (arity=%llu) into its "
+                     "binding location %s", name,
+                     (unsigned long long)arity, storage_name.c_str());
+    }
+
     void createFunctionDeclaration(const eshkol_ast_t* ast) {
         if (ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.is_function) {
@@ -9910,31 +10088,9 @@ private:
             if (arity_it != function_arity_table.end()) {
                 // User-defined function with known arity - wrap in closure
                 uint64_t num_params = arity_it->second;
-                Value* func_ptr_int = builder->CreatePtrToInt(func, intptr_type);
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-
-                // Pack closure info: no captures, arity in bits 16-31
-                // Format: bits 0-15 = num_captures, bits 16-31 = fixed_params
-                uint64_t packed_info = 0;  // No captures (bits 0-15 = 0)
-                packed_info |= (num_params & 0xFFFF) << 16;  // Arity in bits 16-31
-                Value* packed_info_val = sizeConst(packed_info);
-
-                // No S-expression for now
-                Value* sexpr_ptr = intPtrConst(0);
-
-                // Return type unknown for general user functions
-                // Pack: bits 0-7 = return_type, bits 8-15 = input_arity
-                uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | (num_params << 8);
-                Value* return_type_info = intPtrConst(return_type_info_val);
-                Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
-
-                // Use with_header allocator for consolidated CALLABLE type
-                Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
-                                                         {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
                 eshkol_debug("Wrapped user function '%s' (arity=%llu) in closure for first-class use",
                             var_name.c_str(), (unsigned long long)num_params);
-                // Pack as CALLABLE (subtype CLOSURE is in header)
-                return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+                return emitFunctionAsCallableValue(func, num_params);
             }
 
             // Fallback: return raw function pointer (for C functions, builtins, etc.)
