@@ -4856,7 +4856,19 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 Value* clo_arity = ctx_.builder().CreateZExt(
                     ctx_.builder().CreateLoad(ctx_.int8Type(), clo_arity_ptr), ctx_.int64Type());
 
-                const int GRAD_MAX_ARITY = 8;
+                /* Arity of a RUNTIME closure is only known at run time, so the
+                 * spread is a switch with one call site per arity. The ceiling
+                 * was 8, and arity 9+ fell into the vectorized default: an
+                 * arity-12 loss reached through a wrapper (e.g.
+                 * (define (gwrap f p) (gradient f p))) was called with ONE
+                 * vector argument, so it produced nothing at all while the
+                 * same loss called directly by name was correct. Raised to 32,
+                 * and anything above it now raises a named error instead of
+                 * silently taking the vector path — see gcall_too_many below. */
+                const int GRAD_MAX_ARITY = 32;
+                /* Sentinel the closure ABI uses for a variadic callable; it
+                 * legitimately wants the vectorized single-argument form. */
+                const uint64_t GRAD_VARIADIC_ARITY = 255;
                 BasicBlock* gcall_default = BasicBlock::Create(ctx_.context(), "grad_call_vec", current_func);
                 BasicBlock* gcall_merge = BasicBlock::Create(ctx_.context(), "grad_call_merge", current_func);
                 // ESH-0093: the callee body runs one forward level deeper
@@ -4885,8 +4897,46 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     ctx_.builder().CreateBr(gcall_merge);
                     gcall_variants.push_back({cexit, r});
                 }
-                // Default (arity 0 / variadic / unreadable): vectorized fallback.
+                // Default: arity 0 (unreadable), variadic, or above the spread
+                // ceiling. The first two legitimately want the vectorized
+                // single-argument form; the third is a real limit and says so
+                // rather than quietly mis-calling the loss.
                 ctx_.builder().SetInsertPoint(gcall_default);
+                BasicBlock* gcall_vec = BasicBlock::Create(ctx_.context(), "grad_call_vec_ok", current_func);
+                BasicBlock* gcall_too_many = BasicBlock::Create(ctx_.context(), "grad_call_arity_over", current_func);
+                Value* over_ceiling = ctx_.builder().CreateAnd(
+                    ctx_.builder().CreateICmpUGT(clo_arity,
+                        ConstantInt::get(ctx_.int64Type(), GRAD_MAX_ARITY)),
+                    ctx_.builder().CreateICmpNE(clo_arity,
+                        ConstantInt::get(ctx_.int64Type(), GRAD_VARIADIC_ARITY)));
+                ctx_.builder().CreateCondBr(over_ceiling, gcall_too_many, gcall_vec);
+
+                ctx_.builder().SetInsertPoint(gcall_too_many);
+                {
+                    llvm::Function* arity_err_fn =
+                        ctx_.module().getFunction("eshkol_type_error_with_operand");
+                    if (!arity_err_fn) {
+                        llvm::FunctionType* ft = llvm::FunctionType::get(
+                            ctx_.builder().getVoidTy(),
+                            {ctx_.builder().getPtrTy(), ctx_.builder().getPtrTy(),
+                             ctx_.builder().getPtrTy()}, false);
+                        arity_err_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                            "eshkol_type_error_with_operand", &ctx_.module());
+                        arity_err_fn->setDoesNotReturn();
+                    }
+                    Value* slot = ctx_.builder().CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                                              "grad_arity_err_slot");
+                    ctx_.builder().CreateStore(closure_val, slot);
+                    Value* proc = ctx_.builder().CreateGlobalString("gradient", "grad_arity_proc");
+                    Value* expected = ctx_.builder().CreateGlobalString(
+                        "callable whose argument count is at most 32 (a loss with more "
+                        "coordinates must take its point as one vector argument)",
+                        "grad_arity_expected");
+                    ctx_.builder().CreateCall(arity_err_fn, {proc, expected, slot});
+                    ctx_.builder().CreateUnreachable();
+                }
+
+                ctx_.builder().SetInsertPoint(gcall_vec);
                 Value* gdef_r = closure_call_callback_(closure_val,
                     std::vector<Value*>{dual_vec_tagged}, "autodiff", callback_context_);
                 BasicBlock* gdef_exit = ctx_.builder().GetInsertBlock();
