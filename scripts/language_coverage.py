@@ -9,9 +9,15 @@ and reports covered% plus the categorised list of UNCOVERED constructs — the
 constructs no engine exercises today.
 
 This is the "ICC tracks every part of the language dynamically" mechanism: each
-run emits a coverage sidecar (tests/coverage/coverage_run.json) whose
-`covered_fraction` and `uncovered` fields are consumable as an ICC
-completion-oracle runtime_event (see tests/coverage/README.md).
+run emits a coverage sidecar whose `covered_fraction` and `uncovered` fields are
+consumable as an ICC completion-oracle runtime_event (see
+tests/coverage/README.md).
+
+The sidecar defaults to the IGNORED build tree (build/coverage/coverage_run.json)
+so that running the gate never dirties a tracked file. The committed sidecar
+tests/coverage/coverage_run.json is a deliberate, reviewed artifact: refresh it
+only with the explicit `--update-committed-run` flag (or an explicit
+`--json tests/coverage/coverage_run.json`).
 
 Engines measured:
   * scripts/gen_generative_corpus.py        (run_generative_differential.py)
@@ -21,7 +27,7 @@ Engines measured:
 
 Usage:
   python3 scripts/language_coverage.py --runtime-trace-dir DIR [DIR ...]
-      [--json OUT] [--emit-runtime-event]
+      [--json OUT] [--update-committed-run] [--emit-runtime-event]
 """
 
 import argparse
@@ -45,6 +51,13 @@ POLICY = os.path.join(REPO, "tests", "coverage", "coverage_policy.json")
 # credit; it is reported only as the diagnostic `spelled_but_unproven` set.
 EXECUTION_DEFICIT = os.path.join(REPO, "tests", "coverage",
                                  "execution_deficit.json")
+# The per-run sidecar is BUILD OUTPUT: it defaults into the gitignored build
+# tree so that `./scripts/run_language_coverage.sh` (and the ICC smoke probe that
+# invokes it) leave `git status` clean. The committed copy under tests/coverage/
+# is a reviewed release artifact, refreshed only on explicit request.
+DEFAULT_RUN_JSON = os.path.join(REPO, "build", "coverage", "coverage_run.json")
+COMMITTED_RUN_JSON = os.path.join(REPO, "tests", "coverage",
+                                  "coverage_run.json")
 
 # Scheme test roots exercised by scripts/run_all_tests.sh. Keep this list in
 # the same order as that suite's TEST_SCRIPTS array. The text scan is diagnostic
@@ -576,8 +589,15 @@ def evaluate_deficit_ratchet(current, baseline):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--json", default=os.path.join(REPO, "tests", "coverage",
-                                                   "coverage_run.json"))
+    ap.add_argument("--json", default=DEFAULT_RUN_JSON,
+                    help="per-run sidecar output path; defaults to the "
+                         "gitignored %(default)s so a gate run never dirties "
+                         "a tracked file")
+    ap.add_argument("--update-committed-run", action="store_true",
+                    help="also refresh the committed sidecar "
+                         "tests/coverage/coverage_run.json from this run — the "
+                         "explicit, reviewed regeneration path (use at a "
+                         "release cut or when the policy floor moves)")
     ap.add_argument("--runtime-trace-dir", action="append", required=True,
                     help="directory containing execution TSV traces (repeatable)")
     ap.add_argument("--emit-runtime-event", action="store_true",
@@ -782,10 +802,17 @@ def main():
         "source_exposed_by_quantum_tests": sorted(set(surface) &
                                                    heads_by_engine["tests/quantum/*.esk (quantum-enabled CI)"]),
     }
-    os.makedirs(os.path.dirname(args.json), exist_ok=True)
-    with open(args.json, "w") as fh:
-        json.dump(out, fh, indent=2)
-        fh.write("\n")
+    sidecar_paths = [args.json]
+    if (args.update_committed_run
+            and os.path.abspath(args.json) != os.path.abspath(COMMITTED_RUN_JSON)):
+        sidecar_paths.append(COMMITTED_RUN_JSON)
+    for sidecar_path in sidecar_paths:
+        parent = os.path.dirname(sidecar_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(sidecar_path, "w") as fh:
+            json.dump(out, fh, indent=2)
+            fh.write("\n")
 
     print("Language-surface coverage (runtime execution evidence)")
     print("  surface constructs : %d" % total)
@@ -809,7 +836,7 @@ def main():
         print("  deficit ratchet    : no committed baseline (bootstrapping)")
     print("  high-risk uncovered: %d — %s"
           % (len(uncovered_high_risk), "COMPLETE" if high_risk_pass else "OPEN"))
-    print("  sidecar            : %s" % args.json)
+    print("  sidecar            : %s" % ", ".join(sidecar_paths))
     print("  trace files        : %d" % len(runtime_evidence["trace_paths"]))
     print("  runtime events     : %s" % ", ".join(
         "%s=%d" % item for item in sorted(runtime_evidence["event_counts"].items())))

@@ -58,6 +58,8 @@
     (newline))
 
   ;; Test Batch Norm
+  ;; (batch-norm input γ β ε [axis]) — 4 or 5 arguments; γ (scale), β (shift)
+  ;; and ε are required (docs/API_REFERENCE.md, tensor_conv_codegen.cpp).
   (display "-- Testing Batch Norm --")
   (newline)
   (let* ((input (reshape #(1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0) 2 4)))
@@ -65,10 +67,11 @@
     (display input)
     (newline)
     (display "batch-norm result: ")
-    (display (batch-norm input))
+    (display (batch-norm input 1.0 0.0 0.00001))
     (newline))
 
   ;; Test Layer Norm
+  ;; (layer-norm input γ β ε [axis]) — same required arguments as batch-norm.
   (display "-- Testing Layer Norm --")
   (newline)
   (let* ((input (reshape #(1.0 2.0 3.0 4.0) 1 4)))
@@ -76,7 +79,7 @@
     (display input)
     (newline)
     (display "layer-norm result: ")
-    (display (layer-norm input))
+    (display (layer-norm input 1.0 0.0 0.00001))
     (newline))
 
   (display "=== Convolution & Pooling Tests Complete ===")
