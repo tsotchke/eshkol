@@ -47,7 +47,15 @@ BASELINE = {
     ("deriv", "localparam"): 8,
     ("deriv", "vecref"): 8,
     ("gradn", "capnone"): 3,
-    ("gradn", "vecref"): 1,       # d2 returns garbage (ESH-0122 capture bug)
+    # ESH-0369: was 1 (d2 returned garbage — the ESH-0122 capture bug). The
+    # higher-order `derivative` closure is now dual-transparent (it seeds and
+    # extracts its own perturbation level via seedForwardAndPush /
+    # popAndExtractForward instead of unpacking x to a raw double and seeding a
+    # fixed single-level dual), so a nested gradient over a vecref-captured
+    # differentiand now holds to depth 3 — the same depth as the capnone cell,
+    # i.e. the capture form is no longer the limit. Depth 4+ remains bounded by
+    # the 8-jet's three perturbation slots, which is ESH-0122's residue.
+    ("gradn", "vecref"): 3,
     ("gofd", "vecref"): 8,        # exact through the full generated ladder
     ("jacod", "vecref"): 8,       # forward-over-reverse fix, ESH-0120
     ("hessod", "vecref"): 1,      # depth 1 fixed; deeper cells remain bounded

@@ -189,13 +189,25 @@ The pooling ops are named `max-pool2d` / `avg-pool2d` (with the `2d` suffix).
 | `batch-norm` | `(batch-norm input gamma beta epsilon [axis])` | ✅ scalar **or** per-feature tensor gamma/beta; 4-arg and 5-arg (axis) forms |
 | `layer-norm` | `(layer-norm input gamma beta epsilon [axis])` | ✅ scalar **or** per-feature tensor gamma/beta; 4-arg and 5-arg (axis) forms |
 | `multi-head-attention` | `(multi-head-attention Q K V num-heads W_Q W_K W_V W_O [mask])` | ✅ forward pass runs (8–9 args) |
-| `embedding` | `(embedding indices weights)` | ✅ `idx #(0 2)`, 3×2 weights → the selected rows |
+| `embedding` | `(embedding indices weights)` | ✅ `idx #(0 2)`, 3×2 weights → the selected rows; index operand may be a tensor, `#(...)`, any Scheme vector, or a numeric list |
 | `positional-encoding` | `(positional-encoding max-len d-model)` | ✅ sinusoidal, exactly 2 args |
 | `dropout` | `(dropout tensor drop-prob)` | ✅ 2 args; `(dropout #(1 2 3) 0.0)` → `#(1 2 3)` |
 | `softmax` | `(softmax tensor [axis])` | ✅ `(softmax #(1 2 3))` → `#(0.0900306 0.244728 0.665241)` |
 
 > **`batch-norm` and `layer-norm` accept both a scalar and a per-feature
 > tensor for `gamma`/`beta`** and support the optional 5th `axis` argument.
+
+> **Operands in this group are classified by runtime value.** Every tensor
+> operand of `embedding`, `scaled-dot-attention`, `multi-head-attention`,
+> `rotary-embedding`, `padding-mask`, `feed-forward` and `softmax` accepts a
+> tensor, a `#(...)` literal, any Scheme vector regardless of how it was built,
+> or a homogeneous numeric list — all producing identical results. Shape
+> preconditions fail closed with a catchable condition rather than reading
+> outside the operand: `embedding` requires rank-2 weights and
+> `0 <= index < vocab_size`; `feed-forward` requires a rank-2 `W1`;
+> `scaled-dot-attention` / `multi-head-attention` / `rotary-embedding` /
+> `feed-forward` require rank-2 or rank-3 activations; `softmax`'s optional
+> `axis` must be within the operand's rank.
 > `(layer-norm #(1.0 2.0 3.0 4.0) #(1.0 …) #(0.0 …) 1e-5)` normalizes to
 > `#(-1.3416 -0.4472 0.4472 1.3416)`. (Earlier builds mis-read a tensor
 > gamma/beta as a scalar — garbage denormals — and SIGSEGV'd on the axis form;

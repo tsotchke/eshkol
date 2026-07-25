@@ -1,0 +1,116 @@
+;; Regression: an `embedding` lookup reached through a LOADED module must
+;; classify its index operand by runtime value exactly like a direct call.
+;;
+;; Found during tensor-operand and checkpoint-resume hardening. The direct call
+;; and the cross-module call are distinct code paths — a call into a loaded
+;; module resolves through a function slot whose signature is synthesized from
+;; the call site — and the crash was first observed on the module path. Keep
+;; both lanes covered so a fix that only lands on one is caught.
+;;
+;; Run from the repo root: eshkol-run -r tests/tensor/embedding_operand_via_module_test.esk
+
+(load "tests/tensor/embedding_operand_module.esk")
+
+(define failures 0)
+
+(define (check name actual expected)
+  (if (equal? actual expected)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual)
+        (newline))))
+
+(define weights
+  (reshape
+   (vector->tensor
+    (vector 0.0 1.0 2.0 10.0 11.0 12.0 20.0 21.0 22.0 30.0 31.0 32.0))
+   4 3))
+
+(define (rows-of t nrows ncols)
+  (let row-loop ((r 0) (acc '()))
+    (if (= r nrows)
+        (reverse acc)
+        (row-loop
+         (+ r 1)
+         (cons
+          (let col-loop ((c 0) (cols '()))
+            (if (= c ncols)
+                (reverse cols)
+                (col-loop (+ c 1) (cons (tensor-ref t r c) cols))))
+          acc)))))
+
+(define expected-rows (list (list 0.0 1.0 2.0) (list 20.0 21.0 22.0)))
+
+;; A computed vector, crossing the module boundary as an argument.
+(define computed (make-vector 2 0))
+(vector-set! computed 0 0)
+(vector-set! computed 1 2)
+
+(check "module lookup, computed vector"
+       (rows-of (module-embedding-lookup computed weights) 2 3)
+       expected-rows)
+(check "module lookup, tensor literal"
+       (rows-of (module-embedding-lookup #(0 2) weights) 2 3)
+       expected-rows)
+(check "module lookup, inline vector"
+       (rows-of (module-embedding-lookup (vector 0 2) weights) 2 3)
+       expected-rows)
+(check "module lookup, list"
+       (rows-of (module-embedding-lookup (list 0 2) weights) 2 3)
+       expected-rows)
+(check "module lookup, explicit tensor"
+       (rows-of (module-embedding-lookup (vector->tensor computed) weights) 2 3)
+       expected-rows)
+
+(check "module lookup shape"
+       (tensor-shape (module-embedding-lookup computed weights))
+       (list 2 3))
+(check "module row-sum"
+       (module-embedding-row-sum computed weights)
+       66.0)
+
+;; Fail closed across the module boundary too.
+(define (raises? thunk) (guard (exn (#t #t)) (begin (thunk) #f)))
+
+(define oob (make-vector 1 0))
+(vector-set! oob 0 4)
+(check "module lookup, out-of-range index raises"
+       (raises? (lambda () (module-embedding-lookup oob weights))) #t)
+
+(define neg (make-vector 1 0))
+(vector-set! neg 0 -1)
+(check "module lookup, negative index raises"
+       (raises? (lambda () (module-embedding-lookup neg weights))) #t)
+
+(check "module lookup, rank-1 weights raises"
+       (raises? (lambda ()
+                  (module-embedding-lookup
+                   computed (vector->tensor (vector 1.0 2.0 3.0)))))
+       #t)
+
+;; Still usable afterwards.
+(check "module lookup after rejections"
+       (rows-of (module-embedding-lookup computed weights) 2 3)
+       expected-rows)
+
+;; Reverse-mode AD through the cross-module lookup.
+(define (tensor->list t n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (reverse acc) (loop (+ i 1) (cons (tensor-ref t i) acc)))))
+
+(check "gradient through module lookup"
+       (tensor->list
+        (gradient (lambda (theta) (module-embedding-row-sum computed (reshape theta 3 2)))
+                  (vector->tensor (vector 1.0 2.0 3.0 4.0 5.0 6.0)))
+        6)
+       (list 1.0 1.0 0.0 0.0 1.0 1.0))
+
+(display "embedding_operand_via_module: ")
+(if (= failures 0)
+    (display "PASS: cross-module embedding classifies index operands by runtime value")
+    (begin (display "FAIL: ") (display failures) (display " assertion(s)")))
+(newline)
+(if (> failures 0) (exit 1))

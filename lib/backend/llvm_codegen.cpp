@@ -364,6 +364,91 @@ static void coerceIntegerBinaryOperandTypes(llvm::Module& module) {
     }
 }
 
+/* DWARF DEBUG INFO: enforce LLVM's function-level debug-location invariants as
+ * the last step before module verification.
+ *
+ * A debug location is only meaningful inside the function whose DISubprogram
+ * scopes it, and LLVM enforces that:
+ *
+ *   "!dbg attachment points at wrong subprogram for function"
+ *   "inlinable function call in a function with debug info must have a !dbg
+ *    location"
+ *
+ * Both failures come from one property of the backend: the current debug
+ * location lives on a single shared IRBuilder whose insertion point is moved
+ * across function boundaries by dozens of call sites -- entry-block alloca
+ * hoists, out-of-line arithmetic helpers, lambda and nested-function bodies, AD
+ * and tensor thunks. IRBuilderBase::SetInsertPoint(BB, IP) *overwrites* the
+ * current location as a side effect when IP != BB->end() and leaves it alone
+ * when IP == BB->end(), so a location can both leak into a function it does not
+ * describe and silently go missing on the way back out. Restoring an insertion
+ * point is not enough; the location has to be restored with it, at every one of
+ * those sites.
+ *
+ * Codegen anchors locations at the boundaries it owns -- see
+ * anchorDebugLocation, which is what makes the emitted line attribution
+ * accurate. This pass is the invariant behind that: like
+ * coerceCallArgIntegerTypes above, centralising here is the fix that does not
+ * require every insertion-point helper in the backend to be individually
+ * correct for -g builds to verify.
+ *
+ *   * function with no subprogram -> its instructions carry no debug location,
+ *     rather than one scoped to whichever function was emitted around it;
+ *   * function with a subprogram  -> every instruction's location is scoped to
+ *     that subprogram. A wrong-scope location keeps its line and column (the
+ *     line was real, only the scope was inherited); a missing one inherits the
+ *     nearest preceding valid location, so line tables degrade gracefully
+ *     instead of collapsing onto the function's opening line.
+ */
+static void normalizeDebugLocations(llvm::Module& module, llvm::LLVMContext& ctx) {
+    using namespace llvm;
+
+    auto scopedToSubprogram = [](const DebugLoc& dl, DISubprogram* sp) -> bool {
+        if (!dl) return false;
+        auto* local = dyn_cast_or_null<DILocalScope>(dl->getScope());
+        if (!local || local->getSubprogram() != sp) return false;
+        if (dl.getInlinedAt() && dl->getInlinedAtScope()->getSubprogram() != sp) {
+            return false;
+        }
+        return true;
+    };
+
+    for (Function& F : module) {
+        if (F.isDeclaration()) continue;
+
+        DISubprogram* sp = F.getSubprogram();
+        if (!sp) {
+            for (BasicBlock& BB : F) {
+                for (Instruction& I : BB) {
+                    if (I.getDebugLoc()) I.setDebugLoc(DebugLoc());
+                }
+            }
+            continue;
+        }
+
+        unsigned anchor_line = sp->getScopeLine();
+        if (anchor_line == 0) anchor_line = sp->getLine();
+        if (anchor_line == 0) anchor_line = 1;
+        DebugLoc last = DILocation::get(ctx, anchor_line, 0, sp);
+
+        for (BasicBlock& BB : F) {
+            for (Instruction& I : BB) {
+                DebugLoc dl = I.getDebugLoc();
+                if (scopedToSubprogram(dl, sp)) {
+                    last = dl;
+                    continue;
+                }
+                if (dl) {
+                    I.setDebugLoc(DILocation::get(ctx, dl.getLine(), dl.getCol(), sp));
+                } else {
+                    I.setDebugLoc(last);
+                }
+                last = I.getDebugLoc();
+            }
+        }
+    }
+}
+
 // Run LLVM optimization passes on a module before codegen
 static void optimizeModule(llvm::Module& module, llvm::TargetMachine* TM, bool is_wasm = false) {
     // Always coerce mismatched integer types first.  On native this is a no-op;
@@ -3429,6 +3514,15 @@ public:
             coerceCallArgIntegerTypes(*module);
             coerceIntegerBinaryOperandTypes(*module);
 
+            // DWARF DEBUG INFO: make every instruction's debug location belong
+            // to the function that contains it. Without this, a single backend
+            // helper that moves the shared builder's insertion point without
+            // carrying the location along makes the whole -g build fail
+            // verification. See normalizeDebugLocations.
+            if (emit_debug_info_) {
+                normalizeDebugLocations(*module, *context);
+            }
+
             // Verify the module
             std::string error_str;
             std::string ir_str;
@@ -4353,8 +4447,11 @@ private:
         
         // Save old insertion point
         IRBuilderBase::InsertPoint old_ip = builder->saveIP();
+        DebugLoc old_debug_loc = builder->getCurrentDebugLocation();
         builder->SetInsertPoint(entry);
-        
+        // Runtime helper with no DISubprogram; drop any inherited location.
+        anchorDebugLocationToCurrentFunction();
+
         // Get parameters
         auto arg_it = display_tensor_recursive_func->arg_begin();
         Value* elements = &*arg_it++;
@@ -4533,11 +4630,143 @@ private:
         
         // Restore insertion point
         builder->restoreIP(old_ip);
-        
+        builder->SetCurrentDebugLocation(old_debug_loc);
+        anchorDebugLocationToCurrentFunction();
+
         function_table["displayTensorRecursive"] = display_tensor_recursive_func;
         eshkol_debug("Created recursive N-dimensional tensor display helper function");
     }
-    
+
+    // DWARF DEBUG INFO: build the DISubprogram for an Eshkol `define`d function.
+    //
+    // `is_definition` decides the *flavour* of the node, and that distinction is
+    // load-bearing for LLVM's verifier, not cosmetic:
+    //
+    //   * a definition subprogram is a *distinct* MDNode owned by the compile
+    //     unit -- it is what produces a DW_TAG_subprogram with code ranges, and
+    //     it is the only kind an LLVM Function *with a body* may carry;
+    //   * a declaration subprogram is *uniqued* and unit-less -- the only kind a
+    //     bodyless Function may carry ("function declaration may only have a
+    //     unique !dbg attachment", Verifier::visitFunction).
+    //
+    // Attaching a definition subprogram to a function that never receives a body
+    // is therefore a hard IR verification error, which is exactly what broke
+    // every `-g` build: `createFunctionDeclaration` runs over *all* top-level
+    // defines, including the `:external` ones that a `(require <stdlib module>)`
+    // produces, whose bodies live in the pre-linked stdlib object and are skipped
+    // by codegenFunctionDefinition. So `@caar`, `@cadr`, `@caadr`, `@cadar`,
+    // `@caddr`, `@cddr`, ... all ended up as declarations wearing a definition
+    // subprogram and the module failed to verify before a single byte of output
+    // was written.
+    //
+    // The invariant is now structural rather than predicted: declarations get the
+    // declaration flavour here, and codegenFunctionDefinition upgrades to the
+    // definition flavour at the point it actually creates the entry block. A
+    // function can only ever carry a definition subprogram if it has a body.
+    DISubprogram* createDefineSubprogram(Function* function,
+                                        const char* func_name,
+                                        unsigned line_no,
+                                        uint64_t num_params,
+                                        bool is_variadic,
+                                        bool is_definition) {
+        if (!emit_debug_info_ || !di_builder_ || !di_file_ || !function || !func_name) {
+            return nullptr;
+        }
+
+        // Subroutine type: return + parameters, all left unspecified (Eshkol
+        // values are dynamically tagged, so there is no single DWARF type).
+        SmallVector<Metadata*, 8> di_param_types;
+        di_param_types.push_back(nullptr);            // return type
+        for (uint64_t i = 0; i < num_params; ++i) {
+            di_param_types.push_back(nullptr);        // parameter types
+        }
+        if (is_variadic) {
+            di_param_types.push_back(nullptr);        // rest parameter
+        }
+        DISubroutineType* di_func_type = di_builder_->createSubroutineType(
+            di_builder_->getOrCreateTypeArray(di_param_types));
+
+        // The linkage name must match the LLVM symbol or the verifier rejects the
+        // attachment ("!dbg attachment points at wrong subprogram for function").
+        // In REPL mode the symbol is the versioned `f__rvN` name.
+        return di_builder_->createFunction(
+            di_file_,                    // Scope (file)
+            func_name,                   // Source-level name
+            function->getName(),         // Linkage name
+            di_file_,                    // File
+            line_no,                     // Line number
+            di_func_type,                // Type
+            line_no,                     // Scope line
+            DINode::FlagPrototyped,
+            is_definition ? DISubprogram::SPFlagDefinition
+                          : DISubprogram::SPFlagZero);
+    }
+
+    // DWARF DEBUG INFO: re-anchor the builder's current debug location to the
+    // function we are emitting into *right now*.
+    //
+    // IRBuilder's current debug location is sticky, but codegen moves the
+    // insertion point across function boundaries constantly (lambda bodies,
+    // nested defines, pre-generated helpers, AD/tensor thunks). A DILocation is
+    // only legal inside the function whose DISubprogram scopes it, so an
+    // inherited location is an IR verification error, not a cosmetic slip:
+    //
+    //   * a location scoped to another function's subprogram gives
+    //     "!dbg attachment points at wrong subprogram for function" -- e.g. the
+    //     entry-block allocas of `make-counter` were still scoped to `fact`,
+    //     simply because `fact`'s body was emitted just before it;
+    //   * no location at all, in a function that has debug info, gives
+    //     "inlinable function call in a function with debug info must have a
+    //     !dbg location" for every call in the entry scaffolding emitted before
+    //     the first AST node was visited.
+    //
+    // Both are the same defect -- trusting a sticky location across a scope
+    // change -- so the location is derived from the current insertion point
+    // instead of being trusted to still apply.
+    //
+    // `line == 0` means "no source position of its own": keep the current line
+    // if it is already scoped to this function, otherwise fall back to the
+    // function's scope line.
+    void anchorDebugLocation(unsigned line, unsigned column) {
+        if (!emit_debug_info_) return;
+        BasicBlock* bb = builder->GetInsertBlock();
+        if (!bb) return;
+        Function* fn = bb->getParent();
+        DISubprogram* sp = fn ? fn->getSubprogram() : nullptr;
+        if (!sp) {
+            // Synthetic helper with no debug info of its own (__lambda_init__,
+            // display thunks, worker trampolines). It must not inherit a
+            // location scoped to a real function's subprogram.
+            if (builder->getCurrentDebugLocation()) {
+                builder->SetCurrentDebugLocation(DebugLoc());
+            }
+            return;
+        }
+
+        DebugLoc cur = builder->getCurrentDebugLocation();
+        bool scope_ok = false;
+        if (cur) {
+            if (auto* local = dyn_cast_or_null<DILocalScope>(cur->getScope())) {
+                scope_ok = (local->getSubprogram() == sp);
+            }
+        }
+
+        unsigned l = line;
+        if (l == 0) {
+            if (scope_ok) return;            // already valid here; leave it alone
+            l = sp->getScopeLine();
+            if (l == 0) l = sp->getLine();
+            if (l == 0) l = 1;
+        }
+        if (scope_ok && cur.getLine() == l && cur.getCol() == column) return;
+        builder->SetCurrentDebugLocation(DILocation::get(*context, l, column, sp));
+    }
+
+    // Anchor to the start of whatever function is now being emitted into. Called
+    // right after a function body's entry block becomes the insertion point, and
+    // after an insertion-point restore that crosses a function boundary.
+    void anchorDebugLocationToCurrentFunction() { anchorDebugLocation(0, 0); }
+
     void createFunctionDeclaration(const eshkol_ast_t* ast) {
         if (ast->type != ESHKOL_OP || ast->operation.op != ESHKOL_DEFINE_OP ||
             !ast->operation.define_op.is_function) {
@@ -4669,34 +4898,21 @@ private:
         // ESH-0187: record the full define node (params + body) for P2 mono.
         function_def_ast[func_name] = ast;
 
-        // DWARF DEBUG INFO: Attach DISubprogram to function for source-level debugging
+        // DWARF DEBUG INFO: attach a *declaration* subprogram. This function has
+        // no body yet, and may never get one (`:external` defines resolve to the
+        // pre-linked stdlib object). codegenFunctionDefinition upgrades this to a
+        // definition subprogram at the moment it creates the entry block -- see
+        // createDefineSubprogram for why the flavour must track the body.
         if (emit_debug_info_ && di_builder_ && di_file_) {
-            // Create subroutine type (all args as unspecified type for now)
-            SmallVector<Metadata*, 8> di_param_types;
-            di_param_types.push_back(nullptr); // Return type (unspecified)
-            for (uint64_t i = 0; i < num_params; ++i) {
-                di_param_types.push_back(nullptr); // Parameter types (unspecified)
-            }
-            if (is_variadic) {
-                di_param_types.push_back(nullptr); // Rest parameter
-            }
-            DISubroutineType* di_func_type = di_builder_->createSubroutineType(
-                di_builder_->getOrCreateTypeArray(di_param_types));
-
             unsigned line_no = ast->line > 0 ? ast->line : 1;
-            DISubprogram* di_sp = di_builder_->createFunction(
-                di_file_,              // Scope (file)
-                func_name,             // Name
-                function->getName(),   // Linkage name
-                di_file_,              // File
-                line_no,               // Line number
-                di_func_type,          // Type
-                line_no,               // Scope line
-                DINode::FlagPrototyped,
-                DISubprogram::SPFlagDefinition);
-
-            function->setSubprogram(di_sp);
-            eshkol_debug("Attached DISubprogram to %s at line %u", func_name, line_no);
+            DISubprogram* di_sp = createDefineSubprogram(
+                function, func_name, line_no, num_params, is_variadic,
+                /*is_definition=*/false);
+            if (di_sp) {
+                function->setSubprogram(di_sp);
+                eshkol_debug("Attached declaration DISubprogram to %s at line %u",
+                             func_name, line_no);
+            }
         }
 
         registerContextFunction(func_name, function);
@@ -4721,6 +4937,8 @@ private:
 
         builder->SetInsertPoint(init_entry);
         current_function = init_func;
+        // __lambda_init__ has no DISubprogram; drop any inherited location.
+        anchorDebugLocationToCurrentFunction();
 
         for (size_t i = 0; i < num_asts; i++) {
             // Look for (define var (lambda ...)) patterns
@@ -9420,17 +9638,12 @@ private:
             }
         }
 
-        // DWARF DEBUG INFO: Set source location on builder for subsequent instructions
-        if (emit_debug_info_ && ast->line > 0 && builder->GetInsertBlock()) {
-            Function* cur_fn = builder->GetInsertBlock()->getParent();
-            if (cur_fn) {
-                DISubprogram* sp = cur_fn->getSubprogram();
-                if (sp) {
-                    builder->SetCurrentDebugLocation(
-                        DILocation::get(*context, ast->line, ast->column, sp));
-                }
-            }
-        }
+        // DWARF DEBUG INFO: Set source location on builder for subsequent
+        // instructions. Always re-anchored to the function being emitted into --
+        // a node with no line of its own must still not leave a location scoped
+        // to a previously emitted function in place. See anchorDebugLocation.
+        anchorDebugLocation(ast->line > 0 ? ast->line : 0,
+                            ast->line > 0 ? ast->column : 0);
 
         emitLanguageCoverage(ast);
 
@@ -11098,6 +11311,35 @@ private:
         BasicBlock* entry = BasicBlock::Create(*context, "entry", function);
         builder->SetInsertPoint(entry);
 
+        // DWARF DEBUG INFO: this function is now a definition, so upgrade the
+        // declaration subprogram createFunctionDeclaration attached into a real
+        // definition subprogram. Must happen before any body instruction is
+        // emitted, because codegenAST reads current_function->getSubprogram() to
+        // build each instruction's DILocation scope, and a DILocation scope has
+        // to be the definition node.
+        if (emit_debug_info_ && di_builder_ && di_file_) {
+            DISubprogram* existing = function->getSubprogram();
+            if (!existing || !existing->isDefinition()) {
+                bool is_variadic = op->define_op.is_variadic && op->define_op.rest_param;
+                unsigned line_no = ast->line > 0 ? ast->line
+                                                 : (existing ? existing->getLine() : 1);
+                DISubprogram* def_sp = createDefineSubprogram(
+                    function, func_name, line_no,
+                    op->define_op.num_params, is_variadic,
+                    /*is_definition=*/true);
+                if (def_sp) {
+                    function->setSubprogram(def_sp);
+                    eshkol_debug("Upgraded %s to definition DISubprogram at line %u",
+                                 func_name, line_no);
+                }
+            }
+            // The entry scaffolding below (recursion-depth check, parameter
+            // allocas, TCO setup) is emitted before the first codegenAST call,
+            // so it needs a location of its own rather than whichever function
+            // was emitted previously.
+            anchorDebugLocationToCurrentFunction();
+        }
+
         // Set current function
         Function* prev_function = current_function;
         current_function = function;
@@ -11741,8 +11983,12 @@ private:
         // Create basic block for function body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", nested_func);
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        DebugLoc old_debug_loc = builder->getCurrentDebugLocation();
 
         builder->SetInsertPoint(entry);
+        // nested_func carries no DISubprogram of its own, so the enclosing
+        // function's location must not follow us in here.
+        anchorDebugLocationToCurrentFunction();
 
         // Save and set current function
         Function* prev_function = current_function;
@@ -11850,6 +12096,8 @@ private:
         symbol_table = prev_symbols;
         current_function = prev_function;
         builder->restoreIP(old_point);
+        builder->SetCurrentDebugLocation(old_debug_loc);
+        anchorDebugLocationToCurrentFunction();
 
         // CLOSURE MUTATION FIX: Update outer scope to use GlobalVariables for captured variables
         // This ensures that both the nested function and outer scope share the same storage
@@ -15423,48 +15671,42 @@ private:
         // Layout: [header(-8) | numerator(i64,+0) | denominator(i64,+8)]
         // =========================================================================
         if (func_name == "rational?" || func_name == "exact-rational?") {
+            // Exact rationals: fixnum, bignum, or a heap RATIONAL. `rational?`
+            // additionally covers the *inexact* rationals, because R7RS §6.2.5
+            // requires the tower to nest — integer? ⊆ rational? ⊆ real? — and
+            // every finite flonum is a rational number (only +inf.0, -inf.0 and
+            // +nan.0 are real-but-not-rational). Excluding flonums here made the
+            // tower self-contradictory: `(integer? 3.0)` answered #t while
+            // `(rational? 3.0)` answered #f. `exact-rational?` keeps the
+            // exact-only meaning — that is what the separate name is for.
+            const bool exact_only = (func_name == "exact-rational?");
+
             TypedValue tv = codegenTypedAST(&op->call_op.variables[0]);
             if (!tv.llvm_value) return nullptr;
             Value* arg = typedValueToTaggedValue(tv);
 
-            // Rational? is true for: INT64 (integers are rational) OR HEAP_PTR+RATIONAL
-            Value* type_tag = builder->CreateExtractValue(arg, {0});
-            Value* is_int = builder->CreateICmpEQ(type_tag,
+            Value* base_type = getBaseType(getTaggedValueType(arg));
+            Value* is_int = builder->CreateICmpEQ(base_type,
                 ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
+            Value* is_bignum = isHeapSubtype(arg, HEAP_SUBTYPE_BIGNUM);
+            Value* is_ratio = isHeapSubtype(arg, HEAP_SUBTYPE_RATIONAL);
 
-            Function* current_func = builder->GetInsertBlock()->getParent();
-            BasicBlock* check_heap_bb = BasicBlock::Create(*context, "rat_check_heap", current_func);
-            BasicBlock* true_bb = BasicBlock::Create(*context, "rat_true", current_func);
-            BasicBlock* false_bb = BasicBlock::Create(*context, "rat_false", current_func);
-            BasicBlock* merge_bb = BasicBlock::Create(*context, "rat_merge", current_func);
+            Value* result = builder->CreateOr(builder->CreateOr(is_int, is_bignum), is_ratio);
 
-            builder->CreateCondBr(is_int, true_bb, check_heap_bb);
+            if (!exact_only) {
+                Value* is_double = builder->CreateICmpEQ(base_type,
+                    ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
+                Value* dbl_val = unpackDoubleFromTaggedValue(arg);
+                Function* fabs_fn = ESHKOL_GET_INTRINSIC(module.get(), Intrinsic::fabs, {double_type});
+                Value* magnitude = builder->CreateCall(fabs_fn, {dbl_val});
+                // Ordered compare: false for NaN as well as for the infinities.
+                Value* is_finite = builder->CreateFCmpOLT(magnitude,
+                    ConstantFP::getInfinity(double_type));
+                result = builder->CreateOr(result,
+                    builder->CreateAnd(is_double, is_finite));
+            }
 
-            builder->SetInsertPoint(check_heap_bb);
-            Value* is_heap = builder->CreateICmpEQ(type_tag,
-                ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
-            BasicBlock* check_sub_bb = BasicBlock::Create(*context, "rat_check_sub", current_func);
-            builder->CreateCondBr(is_heap, check_sub_bb, false_bb);
-
-            builder->SetInsertPoint(check_sub_bb);
-            Value* ptr = builder->CreateIntToPtr(
-                builder->CreateExtractValue(arg, {4}), PointerType::getUnqual(*context));
-            Value* header = builder->CreateLoad(int8_type,
-                builder->CreateGEP(int8_type, ptr, ConstantInt::get(int64_type, -8)));
-            Value* is_rational = builder->CreateICmpEQ(header,
-                ConstantInt::get(int8_type, HEAP_SUBTYPE_RATIONAL));
-            builder->CreateCondBr(is_rational, true_bb, false_bb);
-
-            builder->SetInsertPoint(true_bb);
-            builder->CreateBr(merge_bb);
-            builder->SetInsertPoint(false_bb);
-            builder->CreateBr(merge_bb);
-
-            builder->SetInsertPoint(merge_bb);
-            PHINode* phi = builder->CreatePHI(Type::getInt1Ty(*context), 2);
-            phi->addIncoming(ConstantInt::getTrue(*context), true_bb);
-            phi->addIncoming(ConstantInt::getFalse(*context), false_bb);
-            return packBoolToTaggedValue(phi);
+            return packBoolToTaggedValue(result);
         }
 
         // (numerator x) / (denominator x): route through the runtime so
@@ -27172,8 +27414,13 @@ private:
         // Create basic block for lambda body
         BasicBlock* entry = BasicBlock::Create(*context, "entry", lambda_func);
         IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        DebugLoc old_debug_loc = builder->getCurrentDebugLocation();
 
         builder->SetInsertPoint(entry);
+        // Anchor into the lambda before any of its entry scaffolding is emitted;
+        // otherwise the recursion-depth call below is scoped to the *enclosing*
+        // function's subprogram. Restored together with old_point at the end.
+        anchorDebugLocationToCurrentFunction();
 
         // STACK OVERFLOW PROTECTION: Check recursion depth at function entry
         {
@@ -27533,6 +27780,11 @@ private:
                     lambda_name.c_str(), (unsigned long long)op->lambda_op.num_params, free_vars.size());
 
         builder->restoreIP(old_point);
+        // The insertion point is back in the enclosing function, so the lambda's
+        // debug location must go with it -- the caller emits closure-allocation
+        // instructions immediately after this point.
+        builder->SetCurrentDebugLocation(old_debug_loc);
+        anchorDebugLocationToCurrentFunction();
 
         // NOTE: Inline S-expression generation for lambdas inside functions was disabled
         // because codegenLambdaToSExpr creates branching control flow (via codegenTaggedArenaConsCellFromTaggedValue)
@@ -28788,18 +29040,35 @@ private:
         Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, index_int);
         Value* elem_as_int64 = builder->CreateLoad(int64_type, elem_ptr);
         
-        // PHASE 1 FIX: Runtime AD mode detection using global flag
-        // Handle 3 cases: small integers, doubles (bitcast), AD node pointers
-        
-        // PHASE 1 FIX: Check global __ad_mode_active flag at RUNTIME
+        // A tensor's element slot holds EITHER an f64 bit pattern or, while a
+        // reverse-mode sweep is running, a pointer to the AD tape node standing
+        // in for that element. Which one it is is decided by whether AD mode is
+        // active — NOT by inspecting the bits.
+        //
+        // Reading it back out used to guess from the bits in BOTH modes:
+        // `bits < 1000` meant "small integer" and a zero IEEE-754 exponent
+        // field meant "pointer". Both tests misread genuine f64 data, because a
+        // SUBNORMAL double has a zero exponent field by definition. A tensor
+        // element such as 2.7e-309 (bits 0x0001f62a6a61f608) was therefore
+        // handed back as a CALLABLE holding 0x0001f62a6a61f608 as an address,
+        // and the next arithmetic op dereferenced that bit pattern -> SIGSEGV at
+        // exactly the element's value. Subnormals in the bits<1000 window
+        // (up to ~4.9e-321) were silently returned as the integers 1..999.
+        //
+        // Found during tensor-operand and checkpoint-resume hardening: a model
+        // resumed from a checkpoint reaches subnormal magnitudes as a matter of
+        // course — an Adam moment that stops receiving gradient decays by
+        // beta^step — so the fault was deterministic (its address WAS the stored
+        // value) and only ever appeared after a resume, never on a fresh run
+        // whose moments are still exactly 0.0.
+        //
+        // Outside AD mode a tensor element is unconditionally an f64 bit
+        // pattern, so no guessing is needed or allowed. This matches what the
+        // compound-tensor element read already does.
         Value* in_ad_mode = builder->CreateLoad(int1_type, ad_mode_active);
 
         BasicBlock* ad_mode_check = BasicBlock::Create(*context, "vref_ad_mode_check", current_func);
         BasicBlock* normal_mode_check = BasicBlock::Create(*context, "vref_normal_mode_check", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "vref_int", current_func);
-        BasicBlock* check_large = BasicBlock::Create(*context, "vref_check_large", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "vref_double", current_func);
-        BasicBlock* tensor_ad_node_path = BasicBlock::Create(*context, "vref_tensor_ad_node", current_func);
         BasicBlock* vref_merge = BasicBlock::Create(*context, "vref_merge", current_func);
         
         builder->CreateCondBr(in_ad_mode, ad_mode_check, normal_mode_check);
@@ -28827,10 +29096,17 @@ private:
         Value* ad_exponent_bits = builder->CreateAnd(elem_as_int64, ad_exponent_mask);
         Value* ad_has_exponent = builder->CreateICmpNE(ad_exponent_bits,
             ConstantInt::get(int64_type, 0));
+        // Require the candidate to also sit below the pointer ceiling, matching
+        // the predicate the matmul/reduce AD paths use. A zero exponent alone
+        // admits every subnormal; the ceiling rejects the large-mantissa ones.
+        Value* ad_below_ptr_ceiling = builder->CreateICmpULT(elem_as_int64,
+            ConstantInt::get(int64_type, 0x0001000000000000ULL));
+        Value* ad_is_double_like = builder->CreateOr(ad_has_exponent,
+            builder->CreateNot(ad_below_ptr_ceiling));
 
         BasicBlock* ad_large_is_double = BasicBlock::Create(*context, "vref_ad_large_double", current_func);
         BasicBlock* ad_large_is_ptr = BasicBlock::Create(*context, "vref_ad_large_ptr", current_func);
-        builder->CreateCondBr(ad_has_exponent, ad_large_is_double, ad_large_is_ptr);
+        builder->CreateCondBr(ad_is_double_like, ad_large_is_double, ad_large_is_ptr);
 
         // AD mode, large value with exponent: it's a double (e.g., captured constant tensor)
         builder->SetInsertPoint(ad_large_is_double);
@@ -28846,49 +29122,22 @@ private:
         builder->CreateBr(vref_merge);
         BasicBlock* ad_large_exit = builder->GetInsertBlock();
         
-        // Normal mode path: use existing IEEE754 heuristic
+        // Normal mode path: the slot is an f64 bit pattern, full stop. No
+        // bit-pattern classification — that is what misread subnormals as
+        // pointers and as small integers.
         builder->SetInsertPoint(normal_mode_check);
-        Value* is_small_int = builder->CreateICmpULT(elem_as_int64,
-            ConstantInt::get(int64_type, 1000));
-        builder->CreateCondBr(is_small_int, int_path, check_large);
-        
-        // Small integer path: Pack as int64
-        builder->SetInsertPoint(int_path);
-        Value* int_tagged = packInt64ToTaggedValue(elem_as_int64, true);
-        builder->CreateBr(vref_merge);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-        
-        // Check if large value is double (has exponent) or pointer (no exponent)
-        builder->SetInsertPoint(check_large);
-        Value* exponent_mask = ConstantInt::get(int64_type, 0x7FF0000000000000ULL);
-        Value* exponent_bits = builder->CreateAnd(elem_as_int64, exponent_mask);
-        Value* has_exponent = builder->CreateICmpNE(exponent_bits,
-            ConstantInt::get(int64_type, 0));
-        builder->CreateCondBr(has_exponent, double_path, tensor_ad_node_path);
-        
-        // Double path: Bitcast int64 to double and pack
-        builder->SetInsertPoint(double_path);
         Value* elem_double = builder->CreateBitCast(elem_as_int64, double_type);
         Value* double_tagged = packDoubleToTaggedValue(elem_double);
         builder->CreateBr(vref_merge);
         BasicBlock* double_exit = builder->GetInsertBlock();
         
-        // AD node path: Treat as AD node pointer (fallback for normal mode)
-        builder->SetInsertPoint(tensor_ad_node_path);
-        Value* tensor_ad_node_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
-        Value* tensor_ad_node_tagged = packPtrToTaggedValue(tensor_ad_node_ptr, ESHKOL_VALUE_CALLABLE);
-        builder->CreateBr(vref_merge);
-        BasicBlock* ad_exit = builder->GetInsertBlock();
-        
-        // Merge: Return tagged_value (int, double, or AD node from tensor)
+        // Merge: Return tagged_value (double, or an AD node while a sweep runs)
         builder->SetInsertPoint(vref_merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 6, "vref_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "vref_result");
         result_phi->addIncoming(ad_int_tagged, ad_small_exit);
         result_phi->addIncoming(ad_double_tagged, ad_double_exit);  // AD mode double (captured tensors)
         result_phi->addIncoming(ad_tagged, ad_large_exit);          // AD mode AD node pointer
-        result_phi->addIncoming(int_tagged, int_exit);
         result_phi->addIncoming(double_tagged, double_exit);
-        result_phi->addIncoming(tensor_ad_node_tagged, ad_exit);
         builder->CreateBr(vref_final);
         
         // Final merge: Return tensor element, Scheme vector element, or AD node
@@ -32734,11 +32983,18 @@ private:
                 Value* ad_exp_bits = builder->CreateAnd(elem_as_int64, ad_exp_mask);
                 Value* ad_has_exp = builder->CreateICmpNE(ad_exp_bits,
                     ConstantInt::get(int64_type, 0));
+                // Also require the candidate below the pointer ceiling: a zero
+                // exponent field alone admits every subnormal double, so real
+                // data was read back as a tape-node address.
+                Value* ad_below_ceiling = builder->CreateICmpULT(elem_as_int64,
+                    ConstantInt::get(int64_type, 0x0001000000000000ULL));
+                Value* ad_double_like = builder->CreateOr(ad_has_exp,
+                    builder->CreateNot(ad_below_ceiling));
 
                 BasicBlock* ad_double = BasicBlock::Create(*context, "compound_ad_double", current_func);
                 BasicBlock* ad_node = BasicBlock::Create(*context, "compound_ad_node", current_func);
 
-                builder->CreateCondBr(ad_has_exp, ad_double, ad_node);
+                builder->CreateCondBr(ad_double_like, ad_double, ad_node);
 
                 builder->SetInsertPoint(ad_double);
                 Value* ad_d = builder->CreateBitCast(elem_as_int64, double_type);
@@ -34088,23 +34344,33 @@ private:
         if (!x_typed.llvm_value) return nullptr;
 
         // R7RS: complex? returns #t for any number (integer, real, complex)
-        // since the numeric tower is integer ⊂ rational ⊂ real ⊂ complex
+        // since the numeric tower is integer ⊂ rational ⊂ real ⊂ complex —
+        // and #f for everything that is not a number.
+        //
+        // HEAP_PTR is the *consolidated* pointer tag: bignums and rationals
+        // share it with strings, symbols, pairs, vectors, hash tables and every
+        // other heap object, and are told apart by the header subtype. Accepting
+        // the bare tag therefore reported `(complex? "hello")`, `(complex? 'foo)`
+        // and `(complex? '(1 2 3))` as #t. Match the numeric-subtype test that
+        // `number?` and `real?` already use.
         Value* x_tagged = typedValueToTaggedValue(x_typed);
-        Value* type_tag = builder->CreateExtractValue(x_tagged, {0}, "type");
+        Value* type_tag = getBaseType(getTaggedValueType(x_tagged));
 
-        // Check for any numeric type: INT64, DOUBLE, COMPLEX, or HEAP_PTR (bignum/rational)
         Value* is_int = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_INT64));
         Value* is_double = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_DOUBLE));
         Value* is_complex = builder->CreateICmpEQ(type_tag,
             ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX));
-        Value* is_heap = builder->CreateICmpEQ(type_tag,
-            ConstantInt::get(int8_type, ESHKOL_VALUE_HEAP_PTR));
+        Value* is_bignum = isHeapSubtype(x_tagged, HEAP_SUBTYPE_BIGNUM);
+        Value* is_rational = isHeapSubtype(x_tagged, HEAP_SUBTYPE_RATIONAL);
+        Value* is_ad = isCallableSubtype(x_tagged, CALLABLE_SUBTYPE_AD_NODE);
 
         Value* is_numeric = builder->CreateOr(is_int, is_double);
         is_numeric = builder->CreateOr(is_numeric, is_complex);
-        is_numeric = builder->CreateOr(is_numeric, is_heap);
+        is_numeric = builder->CreateOr(is_numeric, is_bignum);
+        is_numeric = builder->CreateOr(is_numeric, is_rational);
+        is_numeric = builder->CreateOr(is_numeric, is_ad);
 
         return packBoolToTaggedValue(is_numeric);
     }

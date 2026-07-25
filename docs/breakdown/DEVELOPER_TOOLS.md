@@ -498,7 +498,7 @@ The `-g` flag calls `eshkol_enable_debug_info()` with the resolved absolute path
 
 ### 5.4 Diagnosing Parser Issues
 
-The common symptom pattern "works at top level but not inside a function" indicates a parser transformation issue. Check `transformInternalDefinesToLetrec` in `lib/frontend/parser.cpp`. The rule is: only consecutive `define` forms at the start of a body are grouped into `letrec*`; once a non-`define` expression appears, no further defines are hoisted.
+The common symptom pattern "works at top level but not inside a function" indicates a parser transformation issue. Check `transformInternalDefinesToLetrec` in `lib/frontend/parser.cpp`. The rule is: every internal `define`'s NAME joins one `letrec*` binding set regardless of where it appears in the body; a function define's lambda is created in the `letrec*` head (so a body expression may call a function defined later), while a value define that appears after any body expression has its INITIALIZER left at that source position (the slot is bound unset and assigned in place). If a value looks stale inside a function, check whether it is read before its define's source position.
 
 For parenthesis or reader issues, the LSP server's diagnostic output (visible in VSCode's Problems panel) reflects what the Eshkol parser actually sees — if the LSP shows no errors but the compiler fails, the issue is in semantic analysis or code generation, not the parser.
 

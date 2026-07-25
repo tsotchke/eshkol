@@ -348,13 +348,16 @@
 (check "Trampoline even(1000)" #t (local-trampoline (lambda () (t-even 1000))))
 (check "Trampoline odd(999)" #t (local-trampoline (lambda () (t-odd 999))))
 
-;; Trampolined sum for stress test
-(define (t-sum n acc)
+;; Trampolined sum for stress test.
+;; Named t-trampoline-sum, not t-sum: Section 7 already binds `t-sum` to a
+;; tensor, and this file's two uses of the name are unrelated.
+(define (t-trampoline-sum n acc)
   (if (= n 0)
       acc
-      (lambda () (t-sum (- n 1) (+ acc n)))))
+      (lambda () (t-trampoline-sum (- n 1) (+ acc n)))))
 
-(check "Trampoline sum(500)" 125250 (local-trampoline (lambda () (t-sum 500 0))))
+(check "Trampoline sum(500)" 125250
+       (local-trampoline (lambda () (t-trampoline-sum 500 0))))
 
 ;; =============================================================================
 ;; SECTION 11: FUNCTION COMPOSITION CHAINS

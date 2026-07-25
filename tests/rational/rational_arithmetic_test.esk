@@ -64,6 +64,11 @@
 
 (display (rational? 3.14))
 (newline)
+; Expected: #t (R7RS: every finite real is rational; use exact-rational? for
+;                the exact-only test)
+
+(display (exact-rational? 3.14))
+(newline)
 ; Expected: #f
 
 ; Numerator/denominator access

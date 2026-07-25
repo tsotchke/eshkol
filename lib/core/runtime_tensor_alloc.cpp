@@ -33,9 +33,15 @@ void eshkol_type_error_with_operand(const char* proc_name,
  *       -> return its data pointer unchanged (zero-copy, hot path).
  *   (b) operand is a homogeneous numeric vector (HEAP_SUBTYPE_VECTOR whose every
  *       element is an int64 or double) -> coerce to a fresh 1-D tensor.
- *   (c) anything else (int, string, bool, null, pair, non-numeric/heterogeneous
- *       vector, …) -> raise a clean, catchable type error via
- *       eshkol_type_error_with_operand and never touch the struct.
+ *   (c) operand is a homogeneous numeric proper list (HEAP_SUBTYPE_CONS whose
+ *       every car is an int64 or double) -> coerce to a fresh 1-D tensor, so a
+ *       numeric collection means the same thing to a tensor op whichever
+ *       collection type it arrives in (matching `(tensor X)`, which already
+ *       unpacks lists via eshkol_tensor_from_collection, and the AD point
+ *       classification, which normalizes a list point to a vector).
+ *   (d) anything else (int, string, bool, null, improper/non-numeric list,
+ *       non-numeric/heterogeneous vector, …) -> raise a clean, catchable type
+ *       error via eshkol_type_error_with_operand and never touch the struct.
  *
  * This makes it structurally impossible for a tensor op to segfault on a
  * wrong-typed operand: it either gets a valid tensor or the program sees a
@@ -84,6 +90,49 @@ void* eshkol_tensor_operand_checked(const eshkol_tagged_value_t* val,
                                        ? e->data.double_val
                                        : (double)e->data.int_val;
                         std::memcpy(&t->elements[i], &d, sizeof(double));
+                    }
+                    return t;
+                }
+                if (hdr->subtype == HEAP_SUBTYPE_CONS) {
+                    /* Coerce a homogeneous numeric PROPER list to a 1-D tensor.
+                     * Two passes: validate (length, every car numeric, NULL
+                     * terminator) before allocating, so an improper or
+                     * non-numeric list raises without leaving a partial tensor
+                     * behind. */
+                    int64_t len = 0;
+                    eshkol_tagged_value_t cur = *val;
+                    bool coercible = true;
+                    while (ESHKOL_IS_CONS_COMPAT(cur)) {
+                        const auto* cell =
+                            (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+                        if (!cell) { coercible = false; break; }
+                        uint8_t bt = (uint8_t)(cell->car.type & 0x0F);
+                        if (bt != ESHKOL_VALUE_INT64 && bt != ESHKOL_VALUE_DOUBLE) {
+                            coercible = false;
+                            break;
+                        }
+                        len++;
+                        cur = cell->cdr;
+                    }
+                    if (!coercible || cur.type != ESHKOL_VALUE_NULL) {
+                        eshkol_type_error_with_operand(
+                            op_name, "tensor or numeric collection", val);
+                        return nullptr;  /* not reached */
+                    }
+                    arena_t* arena = get_global_arena();
+                    eshkol_tensor_t* t =
+                        arena_allocate_tensor_full(arena, 1, (uint64_t)len);
+                    if (!t) return nullptr;
+                    if (t->dimensions) t->dimensions[0] = (uint64_t)len;
+                    cur = *val;
+                    for (int64_t i = 0; i < len && ESHKOL_IS_CONS_COMPAT(cur); i++) {
+                        const auto* cell =
+                            (const arena_tagged_cons_cell_t*)(uintptr_t)cur.data.ptr_val;
+                        double d = ((cell->car.type & 0x0F) == ESHKOL_VALUE_DOUBLE)
+                                       ? cell->car.data.double_val
+                                       : (double)cell->car.data.int_val;
+                        std::memcpy(&t->elements[i], &d, sizeof(double));
+                        cur = cell->cdr;
                     }
                     return t;
                 }
