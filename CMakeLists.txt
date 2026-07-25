@@ -2972,7 +2972,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
-            FAIL_REGULAR_EXPRESSION "FAIL:|is not a procedure|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
     add_test(
         NAME toplevel_redefinition_aot_smoke
         COMMAND sh -c
@@ -2982,7 +2982,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
-            FAIL_REGULAR_EXPRESSION "FAIL:|is not a procedure|LLVM module verification failed|fatal signal")
+            FAIL_REGULAR_EXPRESSION "FAIL:|Error: variable|LLVM module verification failed|fatal signal")
 
     # R7RS 5.3.1, the other direction: once a procedure name has been redefined
     # to a number, calling it must be REJECTED, not silently dispatched to the
@@ -2997,7 +2997,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(toplevel_redefinition_not_procedure_runtime_smoke
         PROPERTIES
             TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "is not a procedure"
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
             FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
     add_test(
         NAME toplevel_redefinition_not_procedure_aot_smoke
@@ -3007,7 +3007,7 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
     set_tests_properties(toplevel_redefinition_not_procedure_aot_smoke
         PROPERTIES
             TIMEOUT 300
-            PASS_REGULAR_EXPRESSION "is not a procedure"
+            PASS_REGULAR_EXPRESSION "Error: variable .redefined-to-a-number. is not a procedure"
             FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
 
     add_test(
