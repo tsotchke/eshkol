@@ -1,0 +1,156 @@
+;; ESH-0369 regression — higher-order derivatives through a VARIABLE-BOUND
+;; derivative closure (the "curried" spelling).
+;;
+;; The defect: `(define df (derivative f))` followed by `(derivative df)` was
+;; silently wrong. Two independent causes, both of the "classify by the wrong
+;; thing" family:
+;;
+;;  1. RESOLUTION. derivativeHigherOrder gated its runtime-closure path on
+;;     `func_ast->type == ESHKOL_VAR` and then matched the bound llvm::Value
+;;     against a whitelist of subclasses (Argument / AllocaInst / LoadInst /
+;;     GlobalVariable). A differentiand with no name at all — `(derivative
+;;     (derivative f))`, `(derivative (car fs))` — never reached the whitelist
+;;     and failed with "Failed to resolve function for higher-order derivative"
+;;     while still emitting a binary that returned 0. The fix resolves through
+;;     the ordinary expression codegen, so every expression shape works.
+;;
+;;  2. NESTING. The emitted derivative closure unpacked its argument to a raw
+;;     double and seeded a fixed single-level dual {x,1,0,0}. That unpack
+;;     DISCARDED any perturbation the incoming point already carried, so the
+;;     moment the closure was itself differentiated the outer tangent was
+;;     destroyed and the second derivative came back 0.0. The fix seeds THIS
+;;     perturbation level (seedForwardAndPush) and extracts THIS level's
+;;     coefficient (popAndExtractForward) — the same shared machinery
+;;     `(derivative f x)` uses — which makes the closure dual-TRANSPARENT.
+;;
+;; Invariant asserted here (the release rule that a disagreement between two
+;; spellings of ONE operation is itself the bug): for orders 1..3, at TWO
+;; distinct points, EVERY spelling of the same mathematical quantity agrees with
+;; the closed form and with every other spelling:
+;;   A  (derivative-n f x k)                     — Taylor tower
+;;   B  (derivative (lambda (x) (derivative f x)) x) — nested lambda
+;;   C  (define df (derivative f)) … (df x)      — curried via a named binding
+;;   D  ((derivative (derivative f)) x)          — curried, differentiand unnamed
+;;
+;; Two points are used on purpose: for f = x^4 the second and third derivatives
+;; COINCIDE at x=2 (both 48), so a single point cannot distinguish a correct
+;; answer from an accident. At x=3 they are 108 and 72.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+(define (check name expected actual)
+  (if (close? expected actual)
+      (begin (set! tests-passed (+ tests-passed 1))
+             (display "ok: ") (display name) (newline))
+      (begin (set! tests-failed (+ tests-failed 1))
+             (display "FAIL: ") (display name)
+             (display " (expected ") (display expected)
+             (display ", got ") (display actual) (display ")") (newline))))
+
+;; ── f(x) = x^4 ; f' = 4x^3 ; f'' = 12x^2 ; f''' = 24x ───────────────────────
+;;   @2: 32, 48, 48      @3: 108, 108, 72
+(define (f4 x) (* x x x x))
+
+;; ── spelling C: curried through named bindings, orders 1..3 ─────────────────
+(define df  (derivative f4))
+(define d2f (derivative df))
+(define d3f (derivative d2f))
+
+(check "C d1 @2"  32.0 (df  2.0))
+(check "C d2 @2"  48.0 (d2f 2.0))
+(check "C d3 @2"  48.0 (d3f 2.0))
+(check "C d1 @3" 108.0 (df  3.0))
+(check "C d2 @3" 108.0 (d2f 3.0))
+(check "C d3 @3"  72.0 (d3f 3.0))
+
+;; ── spelling D: curried with an UNNAMED differentiand (the shape that used to
+;;    print "Failed to resolve function for higher-order derivative") ─────────
+(check "D d2 @2"  48.0 ((derivative (derivative f4)) 2.0))
+(check "D d3 @2"  48.0 ((derivative (derivative (derivative f4))) 2.0))
+(check "D d2 @3" 108.0 ((derivative (derivative f4)) 3.0))
+(check "D d3 @3"  72.0 ((derivative (derivative (derivative f4))) 3.0))
+
+;; ── the differentiand as a function PARAMETER, curried twice ────────────────
+(define (d2-of f x) ((derivative (derivative f)) x))
+(check "param d2 @2"  48.0 (d2-of f4 2.0))
+(check "param d2 @3" 108.0 (d2-of f4 3.0))
+
+;; ── the differentiand pulled out of a list (no binding to inspect at all) ───
+(define fs (list (derivative f4)))
+(define d2-list (derivative (car fs)))
+(check "list d2 @2"  48.0 (d2-list 2.0))
+(check "list d2 @3" 108.0 (d2-list 3.0))
+
+;; ── the differentiand let-bound inside a function ───────────────────────────
+(define (d2-let x)
+  (let ((g (derivative f4)))
+    ((derivative g) x)))
+(check "let d2 @2"  48.0 (d2-let 2.0))
+(check "let d2 @3" 108.0 (d2-let 3.0))
+
+;; ── cross-spelling agreement: A (derivative-n) == B (nested lambda) == C ────
+(define (b-d2 x) (derivative (lambda (u) (derivative f4 u)) x))
+(define (b-d3 x) (derivative (lambda (u) (derivative (lambda (v) (derivative f4 v)) u)) x))
+
+(check "A==closed d1 @2"  32.0 (derivative-n f4 2.0 1))
+(check "A==closed d2 @2"  48.0 (derivative-n f4 2.0 2))
+(check "A==closed d3 @2"  48.0 (derivative-n f4 2.0 3))
+(check "A==closed d1 @3" 108.0 (derivative-n f4 3.0 1))
+(check "A==closed d2 @3" 108.0 (derivative-n f4 3.0 2))
+(check "A==closed d3 @3"  72.0 (derivative-n f4 3.0 3))
+
+(check "B==A d2 @2" (derivative-n f4 2.0 2) (b-d2 2.0))
+(check "B==A d3 @2" (derivative-n f4 2.0 3) (b-d3 2.0))
+(check "B==A d2 @3" (derivative-n f4 3.0 2) (b-d2 3.0))
+(check "B==A d3 @3" (derivative-n f4 3.0 3) (b-d3 3.0))
+
+(check "C==A d2 @2" (derivative-n f4 2.0 2) (d2f 2.0))
+(check "C==A d3 @2" (derivative-n f4 2.0 3) (d3f 2.0))
+(check "C==A d2 @3" (derivative-n f4 3.0 2) (d2f 3.0))
+(check "C==A d3 @3" (derivative-n f4 3.0 3) (d3f 3.0))
+
+(check "C==B d2 @2" (b-d2 2.0) (d2f 2.0))
+(check "C==B d3 @2" (b-d3 2.0) (d3f 2.0))
+(check "C==B d2 @3" (b-d2 3.0) (d2f 3.0))
+(check "C==B d3 @3" (b-d3 3.0) (d3f 3.0))
+
+(check "D==C d2 @2" (d2f 2.0) ((derivative (derivative f4)) 2.0))
+(check "D==C d3 @3" (d3f 3.0) ((derivative (derivative (derivative f4))) 3.0))
+
+;; ── a transcendental, so the result is not a polynomial coincidence ─────────
+;;   g = sin ; g' = cos ; g'' = -sin
+(define (gsin x) (sin x))
+(define dsin  (derivative gsin))
+(define d2sin (derivative dsin))
+(check "sin d1 @1" (cos 1.0)          (dsin  1.0))
+(check "sin d2 @1" (- 0.0 (sin 1.0))  (d2sin 1.0))
+(check "sin d1 @2" (cos 2.0)          (dsin  2.0))
+(check "sin d2 @2" (- 0.0 (sin 2.0))  (d2sin 2.0))
+(check "sin d2 == A" (derivative-n gsin 1.0 2) (d2sin 1.0))
+
+;; ── a curried GRADIENT closure must still agree with the direct form ────────
+;;   g2(x,y) = x^2 y + y^3 ; grad = (2xy, x^2 + 3y^2) ; @(2,3) = (12, 31)
+(define (g2 x y) (+ (* x x y) (* y y y)))
+(define gg (gradient g2))
+(check "curried grad d/dx" 12.0 (vector-ref (gg (vector 2.0 3.0)) 0))
+(check "curried grad d/dy" 31.0 (vector-ref (gg (vector 2.0 3.0)) 1))
+(check "curried grad == direct d/dx"
+       (vector-ref (gradient g2 (vector 2.0 3.0)) 0)
+       (vector-ref (gg (vector 2.0 3.0)) 0))
+(check "curried grad == direct d/dy"
+       (vector-ref (gradient g2 (vector 2.0 3.0)) 1)
+       (vector-ref (gg (vector 2.0 3.0)) 1))
+(check "curried grad spread == whole"
+       (vector-ref (gg (vector 2.0 3.0)) 1)
+       (vector-ref (gg 2.0 3.0) 1))
+
+;; ── terminal marker: PASS only when every cell held ─────────────────────────
+(display "SUMMARY ") (display tests-passed) (display "/") (display tests-failed) (newline)
+(if (= tests-failed 0)
+    (begin (display "PASS: curried higher-order derivatives agree with derivative-n and the nested-lambda form") (newline))
+    (begin (display "FAIL: curried higher-order derivative regressed") (newline)))
