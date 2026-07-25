@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-**Eshkol** is a modern functional programming language designed from the ground up for scientific computing and machine learning. It combines the elegance of Scheme with the performance of native code compilation via LLVM, featuring **automatic differentiation as a first-class language primitive**, **GPU-accelerated tensor operations**, and an **active inference consciousness engine**.
+**Eshkol** is a functional programming language built for scientific computing and machine learning. It pairs the elegance of Scheme with native code compiled through LLVM. Three things set it apart: **automatic differentiation as a first-class language primitive**, **GPU-accelerated tensor operations**, and an **active inference consciousness engine**.
 
 ### Key Differentiators
 
@@ -164,7 +164,7 @@ Eshkol uses **S-expression syntax** familiar to Lisp/Scheme programmers:
 
 ### 555+ Built-in Functions
 
-Eshkol v1.1 ships with over 555 built-in functions spanning arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
+Eshkol v1.1 ships with over 555 built-in functions. They span arithmetic, math, strings, lists, vectors, tensors, automatic differentiation, vector calculus, exact arithmetic, complex numbers, continuations, parallel primitives, GPU operations, signal processing, logic programming, active inference, and web platform APIs.
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `abs`, `floor`, `ceiling`, `round`, `truncate`, `modulo`, `remainder`, `quotient`, `gcd`, `lcm`, `min`, `max`, `expt`, `exact->inexact`, `inexact->exact`
 
