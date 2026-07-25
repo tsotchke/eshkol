@@ -3268,6 +3268,29 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/debug_info_emission_test.sh")
+        # `-g` builds must actually build. Every top-level define used to be
+        # handed a definition DISubprogram at declaration time, so the bodyless
+        # `:external` stdlib defines (@caadr, @cadar, @caddr, @cddr, ...) failed
+        # LLVM's "function declaration may only have a unique !dbg attachment"
+        # check and no output was ever produced. Asserts on artifacts and
+        # behaviour -- compiles, links, runs correctly at every -O level, and the
+        # emitted DWARF names user functions and carries source line rows -- so a
+        # compiler that stops producing output cannot pass.
+        add_test(
+            NAME debug_info_emission_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/debug_info_emission_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(debug_info_emission_test
+            PROPERTIES
+                TIMEOUT 900
+                PASS_REGULAR_EXPRESSION "PASS: debug_info_emission_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_archive_resolution_test.sh")
         # RC B3: a compiler must link its OWN runtime. The archive co-located
         # with the running eshkol-run (resolved through its real path) beats one
