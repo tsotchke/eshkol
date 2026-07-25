@@ -94,6 +94,12 @@ static inline void tally_diagnostic(eshkol_logger_t level) {
     }
 }
 
+/** Read the error tally; see eshkol_diagnostic_error_count() in logger.h for
+ *  what the gates do with it. */
+unsigned long eshkol_diagnostic_error_count(void) {
+    return g_error_diagnostics.load(std::memory_order_relaxed);
+}
+
 static eshkol_log_format_t g_log_format = ESHKOL_LOG_TEXT;
 static FILE* g_log_file = nullptr;
 static bool g_color_enabled = true;
@@ -395,10 +401,6 @@ void eshkol_set_timestamps(bool enabled) {
  *  Terminates the process via exit(1) when @p level is ESHKOL_FATAL.
  *  @param level Severity level.
  *  @param msg printf-style format string, followed by its arguments. */
-unsigned long eshkol_diagnostic_error_count(void) {
-    return g_error_diagnostics.load(std::memory_order_relaxed);
-}
-
 void eshkol_printf(eshkol_logger_t level, const char* msg, ...) {
     tally_diagnostic(level);
 
