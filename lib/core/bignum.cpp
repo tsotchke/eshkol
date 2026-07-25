@@ -1326,6 +1326,35 @@ void eshkol_bignum_pow_tagged(arena_t* arena,
 /* Parse a base-10 number (int64 / bignum / double / rational) from an
  * already-whitespace-trimmed, prefix-stripped string. Internal helper.
  * `start` must be non-NULL and non-empty. */
+/**
+ * @brief Recognize R7RS `<infnan>` (7.1.1): exactly `+inf.0`, `-inf.0`,
+ *        `+nan.0` or `-nan.0`, optionally followed by trailing blanks.
+ *
+ * Only these four spellings are numbers. The C library's `strtod` also accepts
+ * `inf`, `infinity` and `nan(chars)`, none of which are Scheme numeric
+ * literals, so the token must be matched explicitly rather than delegated —
+ * and the sign is mandatory. Written to be byte-identical with the bytecode
+ * VM's copy (vm_native.c, string->number), so a printed infinity reads back
+ * the same on both substrates.
+ *
+ * @param s Candidate text, already past any radix prefix.
+ * @param[out] out Parsed double, written only when the token matches.
+ * @return true when @p s is an `<infnan>` token.
+ */
+static bool eshkol_s2n_infnan(const char* s, double* out) {
+    if (!s || (s[0] != '+' && s[0] != '-')) return false;
+    bool negative = (s[0] == '-');
+    double magnitude;
+    if      (std::strncmp(s + 1, "inf.0", 5) == 0) magnitude = HUGE_VAL;
+    else if (std::strncmp(s + 1, "nan.0", 5) == 0) magnitude = NAN;
+    else return false;
+    const char* rest = s + 6;
+    while (*rest == ' ' || *rest == '\t') rest++;
+    if (*rest != '\0') return false;
+    if (out) *out = negative ? -magnitude : magnitude;
+    return true;
+}
+
 static void eshkol_s2n_decimal(arena_t* arena, const char* start,
     eshkol_tagged_value_t* result) {
     /* R7RS: string->number returns #f if the string is not a valid number.
@@ -1513,6 +1542,19 @@ void eshkol_string_to_number_radix_tagged(arena_t* arena, const char* str,
     if (radix < 2 || radix > 36) {
         *result = false_val;
         return;
+    }
+
+    /* R7RS 7.1.1 attaches <infnan> to <complex R> for EVERY radix R, so it is
+     * recognized here rather than inside the radix-10 path.  Without this the
+     * printer and the reader disagreed: (number->string (/ 1.0 0.0)) produces
+     * "+inf.0", which string->number then rejected — a printed value that
+     * could not be read back. */
+    {
+        double infnan = 0.0;
+        if (eshkol_s2n_infnan(start, &infnan)) {
+            *result = eshkol_make_double(infnan);
+            return;
+        }
     }
 
     if (radix == 10) {

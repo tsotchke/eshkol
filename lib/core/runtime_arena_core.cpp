@@ -446,6 +446,22 @@ int arena_top_scope_contains(const arena_t* arena, const void* ptr) {
     return 0;
 }
 
+/* Does ptr point into ANY live allocation of this arena?
+ *
+ * Scope-independent companion to arena_top_scope_contains: walks every block in
+ * the chain and asks whether ptr lies below that block's high-water mark. This
+ * is the residency test a caller needs BEFORE dereferencing an integer that
+ * might be an arena pointer — see eshkol_ad_node_probe(), where the integer in
+ * question may equally well be the bit pattern of a subnormal double. */
+int arena_contains(const arena_t* arena, const void* ptr) {
+    if (!arena || !ptr) return 0;
+    const uint8_t* p = (const uint8_t*)ptr;
+    for (const arena_block_t* b = arena->current_block; b; b = b->next) {
+        if (p >= b->memory && p < b->memory + b->used) return 1;
+    }
+    return 0;
+}
+
 /* End a per-iteration loop scope (ESH-0214b automatic reclamation).
  *
  * vals/n are the values that flow OUT of the ending iteration: the freshly

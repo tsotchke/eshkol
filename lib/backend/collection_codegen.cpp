@@ -335,10 +335,17 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         llvm::Value* ad_exp_bits = ctx_.builder().CreateAnd(elem_as_int64, ad_exp_mask);
         llvm::Value* ad_has_exp = ctx_.builder().CreateICmpNE(ad_exp_bits,
             llvm::ConstantInt::get(ctx_.int64Type(), 0));
+        // Also require the candidate below the pointer ceiling, matching the
+        // matmul/reduce AD paths: a zero exponent field alone admits every
+        // subnormal double and so misreads real data as a tape-node address.
+        llvm::Value* ad_below_ceiling = ctx_.builder().CreateICmpULT(elem_as_int64,
+            llvm::ConstantInt::get(ctx_.int64Type(), 0x0001000000000000ULL));
+        llvm::Value* ad_double_like = ctx_.builder().CreateOr(ad_has_exp,
+            ctx_.builder().CreateNot(ad_below_ceiling));
 
         llvm::BasicBlock* car_ad_double = llvm::BasicBlock::Create(ctx_.context(), "car_ad_double", current_func);
         llvm::BasicBlock* car_ad_node = llvm::BasicBlock::Create(ctx_.context(), "car_ad_node", current_func);
-        ctx_.builder().CreateCondBr(ad_has_exp, car_ad_double, car_ad_node);
+        ctx_.builder().CreateCondBr(ad_double_like, car_ad_double, car_ad_node);
 
         ctx_.builder().SetInsertPoint(car_ad_double);
         llvm::Value* car_ad_d = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
@@ -352,21 +359,12 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
         ctx_.builder().CreateBr(car_tensor_merge);
         llvm::BasicBlock* car_ad_node_exit = ctx_.builder().GetInsertBlock();
 
-        // Normal mode: check int vs double
+        // Normal mode: the slot is an f64 bit pattern, full stop. The old
+        // `bits < 1000 -> integer` test returned the integers 1..999 for
+        // subnormal elements (up to ~4.9e-321) — a silent wrong value on real
+        // data, and the same misreading that turned larger subnormals into
+        // bogus tape-node addresses.
         ctx_.builder().SetInsertPoint(car_tensor_normal);
-        llvm::Value* is_small_normal = ctx_.builder().CreateICmpULT(elem_as_int64,
-            llvm::ConstantInt::get(ctx_.int64Type(), 1000));
-
-        llvm::BasicBlock* car_normal_int = llvm::BasicBlock::Create(ctx_.context(), "car_normal_int", current_func);
-        llvm::BasicBlock* car_normal_double = llvm::BasicBlock::Create(ctx_.context(), "car_normal_double", current_func);
-        ctx_.builder().CreateCondBr(is_small_normal, car_normal_int, car_normal_double);
-
-        ctx_.builder().SetInsertPoint(car_normal_int);
-        llvm::Value* car_normal_int_tagged = tagged_.packInt64(elem_as_int64, true);
-        ctx_.builder().CreateBr(car_tensor_merge);
-        llvm::BasicBlock* car_normal_int_exit = ctx_.builder().GetInsertBlock();
-
-        ctx_.builder().SetInsertPoint(car_normal_double);
         llvm::Value* car_normal_d = ctx_.builder().CreateBitCast(elem_as_int64, ctx_.doubleType());
         llvm::Value* car_normal_double_tagged = tagged_.packDouble(car_normal_d);
         ctx_.builder().CreateBr(car_tensor_merge);
@@ -374,11 +372,10 @@ llvm::Value* CollectionCodegen::car(const eshkol_operations_t* op) {
 
         // Merge tensor results
         ctx_.builder().SetInsertPoint(car_tensor_merge);
-        llvm::PHINode* tensor_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 5);
+        llvm::PHINode* tensor_phi = ctx_.builder().CreatePHI(ctx_.taggedValueType(), 4);
         tensor_phi->addIncoming(car_ad_int, car_ad_small_exit);
         tensor_phi->addIncoming(car_ad_double_tagged, car_ad_double_exit);
         tensor_phi->addIncoming(car_ad_node_tagged, car_ad_node_exit);
-        tensor_phi->addIncoming(car_normal_int_tagged, car_normal_int_exit);
         tensor_phi->addIncoming(car_normal_double_tagged, car_normal_double_exit);
 
         llvm::Value* tensor_elem = tensor_phi;

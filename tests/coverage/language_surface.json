@@ -9583,7 +9583,8 @@
     {
       "name": "tensor",
       "ids": [
-        410
+        410,
+        474
       ],
       "arity": 2,
       "backends": [

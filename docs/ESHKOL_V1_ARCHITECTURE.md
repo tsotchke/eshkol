@@ -773,9 +773,10 @@ int64_t wrong = static_cast<int64_t>(value);  // → 3 (loses precision!)
                          │
 ┌────────────────────────▼────────────────────────────────────────┐
 │ Module Resolution (Path search with precedence)                 │
-│ 1. Current directory                                            │
-│ 2. Library path (lib/)                                          │
-│ 3. $ESHKOL_PATH environment variable (colon-separated)          │
+│ 1. The requiring file's directory                               │
+│ 2. The project root (current directory)                         │
+│ 3. $ESHKOL_PATH / -I directories (the explicit override)        │
+│ 4. Library path (lib/): beside the compiler, then system        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
