@@ -234,8 +234,11 @@ static void run_compiled_chunk(FuncChunk* chunk) {
         vm->code[i].operand = chunk->code[i].operand;
     }
 
-    /* Transfer constants */
-    for (int i = 0; i < chunk->n_constants && i < MAX_CONSTS; i++) {
+    /* Transfer constants. The pool is grown to the chunk's full count: the
+     * old `i < MAX_CONSTS` clamp dropped the tail while still advertising
+     * n_constants, so OP_CONST past the pool read uninitialized memory. */
+    if (!vm_ensure_const_cap(vm, chunk->n_constants)) return;
+    for (int i = 0; i < chunk->n_constants; i++) {
         vm->constants[i] = chunk->constants[i];
     }
     vm->n_constants = chunk->n_constants;
@@ -1407,7 +1410,8 @@ static ReplSession* repl_session_create(void) {
     rs->vm->code_len = rs->chunk.code_len;
     for (int i = 0; i < rs->chunk.code_len; i++)
         rs->vm->code[i] = rs->chunk.code[i];
-    for (int i = 0; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+    if (!vm_ensure_const_cap(rs->vm, rs->chunk.n_constants)) return NULL;
+    for (int i = 0; i < rs->chunk.n_constants; i++)
         rs->vm->constants[i] = rs->chunk.constants[i];
     rs->vm->n_constants = rs->chunk.n_constants;
 
@@ -1493,7 +1497,8 @@ static void repl_session_eval(ReplSession* rs, const char* source, int auto_prin
         rs->vm->code[i] = rs->chunk.code[i];
 
     /* Update VM constants */
-    for (int i = const_start; i < rs->chunk.n_constants && i < MAX_CONSTS; i++)
+    if (!vm_ensure_const_cap(rs->vm, rs->chunk.n_constants)) return;
+    for (int i = const_start; i < rs->chunk.n_constants; i++)
         rs->vm->constants[i] = rs->chunk.constants[i];
     rs->vm->n_constants = rs->chunk.n_constants;
 
@@ -1615,7 +1620,8 @@ static int eshkol_vm_validate_stack_operand(int32_t operand) {
 
 static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
     if (!mod) return -1;
-    if (mod->n_constants < 0 || mod->n_constants > ESHKOL_VM_MAX_CONSTS) return -1;
+    /* The pool grows on demand; the ceiling is the profile bound. */
+    if (mod->n_constants < 0 || mod->n_constants > ESHKOL_VM_MAX_CONSTS_CEILING) return -1;
     if (mod->code_len <= 0 || mod->code_len > ESHKOL_VM_MAX_CODE) return -1;
     if (mod->n_functions <= 0 || !mod->functions) return -1;
     if (!mod->opcodes || !mod->operands) return -1;
@@ -1703,7 +1709,8 @@ static int eshkol_vm_validate_module_profile(const EskbModule* mod) {
 static int eshkol_vm_materialize_eskb_constants(VM* vm, const EskbModule* mod,
                                                 int reject_string_constants) {
     if (!vm || !mod) return -1;
-    if (mod->n_constants < 0 || mod->n_constants > MAX_CONSTS) return -1;
+    if (mod->n_constants < 0) return -1;
+    if (!vm_ensure_const_cap(vm, mod->n_constants)) return -1;
 
     for (int i = 0; i < mod->n_constants; i++) {
         switch (mod->const_types[i]) {

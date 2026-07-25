@@ -1676,7 +1676,22 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         // TENSOR DIMS PATH: call runtime to extract dims from tensor elements
         ctx_.builder().SetInsertPoint(tensor_dims_path);
         llvm::Value* t_arena = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
-        llvm::Value* td_max_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t));
+        // Rank comes from the shape operand, so the dims array is sized at
+        // runtime from its own length. A fixed 16-entry array silently dropped
+        // every dimension past the sixteenth.
+        auto* dim_count_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType()}, false);
+        llvm::Function* t_dim_count_fn = ctx_.module().getFunction("eshkol_tensor_dim_count");
+        if (!t_dim_count_fn) {
+            t_dim_count_fn = llvm::Function::Create(dim_count_ft,
+                llvm::Function::ExternalLinkage, "eshkol_tensor_dim_count", &ctx_.module());
+        }
+        llvm::Value* td_rank = ctx_.builder().CreateCall(t_dim_count_fn, {heap_ptr}, "tensor_rank");
+        // One spare slot keeps a zero-rank shape from requesting a 0-byte block.
+        llvm::Value* td_max_bytes = ctx_.builder().CreateAdd(
+            ctx_.builder().CreateMul(
+                td_rank, llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t))),
+            llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
         llvm::Value* td_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {t_arena, td_max_bytes}, "tensor_dims");
 
@@ -1688,8 +1703,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
                 llvm::Function::ExternalLinkage, "eshkol_tensor_to_dims", &ctx_.module());
         }
         llvm::Value* td_ndim = ctx_.builder().CreateCall(
-            t2d_fn, {heap_ptr, td_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
-            "tensor_ndim");
+            t2d_fn, {heap_ptr, td_dims_array, td_rank}, "tensor_ndim");
 
         auto* td_total_ft = llvm::FunctionType::get(ctx_.int64Type(),
             {ctx_.ptrType(), ctx_.int64Type()}, false);
@@ -1711,7 +1725,20 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
         // Allocate dims array for up to 16 dimensions
         llvm::Value* list_arena = ctx_.builder().CreateLoad(
             llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
-        llvm::Value* max_dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t));
+        // Size the dims array from the shape list's own length (see
+        // eshkol_cons_list_dim_count) rather than a fixed 16 entries.
+        auto* list_count_ft = llvm::FunctionType::get(ctx_.int64Type(),
+            {ctx_.ptrType()}, false);
+        llvm::Function* list_count_fn = ctx_.module().getFunction("eshkol_cons_list_dim_count");
+        if (!list_count_fn) {
+            list_count_fn = llvm::Function::Create(list_count_ft,
+                llvm::Function::ExternalLinkage, "eshkol_cons_list_dim_count", &ctx_.module());
+        }
+        llvm::Value* list_rank = ctx_.builder().CreateCall(list_count_fn, {cons_ptr}, "list_rank");
+        llvm::Value* max_dims_bytes = ctx_.builder().CreateAdd(
+            ctx_.builder().CreateMul(
+                list_rank, llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t))),
+            llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
         llvm::Value* list_dims_array = ctx_.builder().CreateCall(
             arena_alloc, {list_arena, max_dims_bytes}, "list_dims");
 
@@ -1746,9 +1773,7 @@ llvm::Value* TensorCodegen::reshape(const eshkol_operations_t* op) {
             }
         }
         llvm::Value* list_ndim = ctx_.builder().CreateCall(
-            list_to_dims_fn,
-            {cons_ptr, list_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
-            "list_ndim");
+            list_to_dims_fn, {cons_ptr, list_dims_array, list_rank}, "list_ndim");
 
         // Compute total via runtime: int64_t eshkol_compute_dims_total(int64_t*, int64_t)
         auto* total_ft = llvm::FunctionType::get(ctx_.int64Type(),

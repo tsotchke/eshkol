@@ -20,8 +20,22 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── Max dimensions ── */
-#define VM_TENSOR_MAX_DIMS 8
+/* ── Rank (dimension count) ──
+ *
+ * A tensor's rank is NOT capped by the struct: `shape`/`strides` are pointers
+ * that reference the inline arrays below for the common low-rank case and an
+ * arena allocation beyond it, so a rank-N literal or reshape of any N works.
+ * VM_TENSOR_INLINE_DIMS is purely an allocation fast path.
+ *
+ * VM_TENSOR_MAX_DIMS is a different thing: the bound on the *scratch* shape
+ * buffers that the few remaining fixed-rank consumers (model-file I/O, the
+ * Riemannian-Adam optimizer state) stage on the C stack. Those reject a
+ * higher-rank operand explicitly, naming the limit, rather than clamping it.
+ */
+#define VM_TENSOR_INLINE_DIMS 8
+#ifndef VM_TENSOR_MAX_DIMS
+#define VM_TENSOR_MAX_DIMS 32
+#endif
 
 /* ── Tensor dtypes ── */
 #define VM_TENSOR_DTYPE_F64  0
@@ -33,13 +47,47 @@
 /* ── Tensor ── */
 typedef struct {
     int      n_dims;
-    int64_t  shape[VM_TENSOR_MAX_DIMS];
-    int64_t  strides[VM_TENSOR_MAX_DIMS];
+    int64_t* shape;        /* n_dims entries: inline_shape, or arena beyond it */
+    int64_t* strides;      /* n_dims entries: inline_strides, or arena beyond it */
     double*  data;         /* arena-allocated */
     int64_t  total;        /* total number of elements */
     int      owns_data;    /* 1 = owns data (allocated), 0 = view (shared) */
     int      dtype;        /* VM_TENSOR_DTYPE_* metadata; data stays double-backed */
+    int64_t  inline_shape[VM_TENSOR_INLINE_DIMS];
+    int64_t  inline_strides[VM_TENSOR_INLINE_DIMS];
 } VmTensor;
+
+/** @brief Point @p t's shape/strides at storage for @p n_dims dimensions:
+ *         the inline arrays when the rank fits, otherwise one arena block.
+ *         Sets t->n_dims. Returns 0 when the arena is exhausted.
+ *
+ * Every VmTensor construction site must call this before writing shape or
+ * strides — it is what makes rank unbounded instead of struct-limited. */
+static int vm_tensor_bind_dims(VmRegionStack* rs, VmTensor* t, int n_dims) {
+    if (!t || n_dims <= 0) return 0;
+    if (n_dims <= VM_TENSOR_INLINE_DIMS) {
+        t->shape = t->inline_shape;
+        t->strides = t->inline_strides;
+    } else {
+        if ((size_t)n_dims > SIZE_MAX / (2 * sizeof(int64_t))) return 0;
+        int64_t* buf = (int64_t*)vm_alloc(rs, (size_t)n_dims * 2 * sizeof(int64_t));
+        if (!buf) return 0;
+        t->shape = buf;
+        t->strides = buf + n_dims;
+    }
+    t->n_dims = n_dims;
+    return 1;
+}
+
+/** @brief Arena-allocate @p n_dims int64 scratch entries for staging a shape,
+ *         a stride vector or an unravelled index whose rank is only known at
+ *         runtime. Used instead of an `int64_t buf[VM_TENSOR_MAX_DIMS]` local
+ *         wherever the rank is the tensor's own and therefore unbounded. */
+static int64_t* vm_tensor_dim_scratch(VmRegionStack* rs, int n_dims) {
+    if (n_dims <= 0) return NULL;
+    if ((size_t)n_dims > SIZE_MAX / sizeof(int64_t)) return NULL;
+    return (int64_t*)vm_alloc(rs, (size_t)n_dims * sizeof(int64_t));
+}
 
 /* ── Internal helpers ── */
 
@@ -222,12 +270,12 @@ static void vm_tensor_unravel(int64_t flat, const int64_t* shape, int n_dims, in
 /** @brief Native call 410: allocate a new zero-initialized (f64) tensor
  *         with the given @p shape. */
 static VmTensor* vm_tensor_new(VmRegionStack* rs, const int64_t* shape, int n_dims) {
-    if (n_dims <= 0 || n_dims > VM_TENSOR_MAX_DIMS) return NULL;
+    if (n_dims <= 0) return NULL;
 
     VmTensor* t = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!t) return NULL;
+    if (!vm_tensor_bind_dims(rs, t, n_dims)) return NULL;
 
-    t->n_dims = n_dims;
     memcpy(t->shape, shape, (size_t)n_dims * sizeof(int64_t));
     t->total = vm_tensor_compute_strides(shape, n_dims, t->strides);
 
@@ -292,7 +340,7 @@ static void vm_tensor_set(VmTensor* t, const int64_t* indices, int n_indices, do
  *         row-major. */
 static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
                                    const int64_t* new_shape, int new_dims) {
-    if (!t || new_dims <= 0 || new_dims > VM_TENSOR_MAX_DIMS) return NULL;
+    if (!t || new_dims <= 0) return NULL;
 
     /* Compute new total and verify it matches */
     int64_t new_total = 1;
@@ -306,7 +354,7 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!v) return NULL;
 
-    v->n_dims = new_dims;
+    if (!vm_tensor_bind_dims(rs, v, new_dims)) return NULL;
     memcpy(v->shape, new_shape, (size_t)new_dims * sizeof(int64_t));
     v->total = vm_tensor_compute_strides(new_shape, new_dims, v->strides);
     v->data = t->data;   /* shared data */
@@ -324,7 +372,7 @@ static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!v) return NULL;
 
-    v->n_dims = t->n_dims;
+    if (!vm_tensor_bind_dims(rs, v, t->n_dims)) return NULL;
     memcpy(v->shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
     memcpy(v->strides, t->strides, (size_t)t->n_dims * sizeof(int64_t));
 
@@ -390,7 +438,7 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     VmTensor* c = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!c) return NULL;
 
-    c->n_dims = t->n_dims;
+    if (!vm_tensor_bind_dims(rs, c, t->n_dims)) return NULL;
     memcpy(c->shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
     c->total = vm_tensor_compute_strides(t->shape, t->n_dims, c->strides);
     c->owns_data = 1;
@@ -402,7 +450,8 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
     /* Handle non-contiguous source (e.g. transposed view) by element-wise copy */
     int is_contiguous = 1;
     {
-        int64_t expected_strides[VM_TENSOR_MAX_DIMS];
+        int64_t* expected_strides = vm_tensor_dim_scratch(rs, t->n_dims);
+        if (!expected_strides) return NULL;
         vm_tensor_compute_strides(t->shape, t->n_dims, expected_strides);
         for (int i = 0; i < t->n_dims; i++) {
             if (t->strides[i] != expected_strides[i]) {
@@ -416,7 +465,8 @@ static VmTensor* vm_tensor_copy(VmRegionStack* rs, const VmTensor* t) {
         memcpy(c->data, t->data, (size_t)c->total * sizeof(double));
     } else {
         /* Element-wise copy for non-contiguous sources */
-        int64_t indices[VM_TENSOR_MAX_DIMS];
+        int64_t* indices = vm_tensor_dim_scratch(rs, t->n_dims);
+        if (!indices) return NULL;
         for (int64_t i = 0; i < c->total; i++) {
             vm_tensor_unravel(i, t->shape, t->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(t, indices, t->n_dims);
@@ -499,7 +549,7 @@ static VmTensor* vm_tensor_slice(VmRegionStack* rs, const VmTensor* t, int64_t i
     VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
     if (!v) return NULL;
 
-    v->n_dims = t->n_dims - 1;
+    if (!vm_tensor_bind_dims(rs, v, t->n_dims - 1)) return NULL;
     for (int i = 0; i < v->n_dims; i++) {
         v->shape[i] = t->shape[i + 1];
         v->strides[i] = t->strides[i + 1];
@@ -520,7 +570,8 @@ static VmTensor* vm_tensor_cast_dtype(VmRegionStack* rs, const VmTensor* src, in
     VmTensor* out = vm_tensor_new(rs, src->shape, src->n_dims);
     if (!out) return NULL;
     out->dtype = vm_tensor_normalize_dtype(dtype);
-    int64_t expected_strides[VM_TENSOR_MAX_DIMS];
+    int64_t* expected_strides = vm_tensor_dim_scratch(rs, src->n_dims);
+    if (!expected_strides) return NULL;
     vm_tensor_compute_strides(src->shape, src->n_dims, expected_strides);
     int is_contiguous = 1;
     for (int i = 0; i < src->n_dims; i++) {
@@ -534,7 +585,8 @@ static VmTensor* vm_tensor_cast_dtype(VmRegionStack* rs, const VmTensor* src, in
             out->data[i] = vm_tensor_quantize_value(src->data[i], out->dtype);
         }
     } else {
-        int64_t indices[VM_TENSOR_MAX_DIMS];
+        int64_t* indices = vm_tensor_dim_scratch(rs, src->n_dims);
+        if (!indices) return NULL;
         for (int64_t i = 0; i < out->total; i++) {
             vm_tensor_unravel(i, src->shape, src->n_dims, indices);
             int64_t src_off = vm_tensor_flat_offset(src, indices, src->n_dims);

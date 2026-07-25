@@ -548,7 +548,19 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
     llvm::Function* mt_arena_alloc = mem_.getArenaAllocate();
     llvm::Value* mt_list_arena = builder.CreateLoad(
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
-    llvm::Value* mt_max_dims_bytes = llvm::ConstantInt::get(ctx_.int64Type(), 16 * sizeof(int64_t));
+    // Size the dims array from the shape list itself: a fixed 16-entry array
+    // silently truncated any shape of rank > 16 (see eshkol_cons_list_dim_count).
+    auto* mt_count_ft = llvm::FunctionType::get(ctx_.int64Type(), {ctx_.ptrType()}, false);
+    llvm::Function* mt_count_fn = ctx_.module().getFunction("eshkol_cons_list_dim_count");
+    if (!mt_count_fn) {
+        mt_count_fn = llvm::Function::Create(mt_count_ft,
+            llvm::Function::ExternalLinkage, "eshkol_cons_list_dim_count", &ctx_.module());
+    }
+    llvm::Value* mt_list_rank = builder.CreateCall(mt_count_fn, {cons_ptr}, "mt_list_rank");
+    llvm::Value* mt_max_dims_bytes = builder.CreateAdd(
+        builder.CreateMul(mt_list_rank,
+            llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t))),
+        llvm::ConstantInt::get(ctx_.int64Type(), (int64_t)sizeof(int64_t)));
     llvm::Value* mt_dims_array = builder.CreateCall(
         mt_arena_alloc, {mt_list_arena, mt_max_dims_bytes}, "mt_list_dims");
 
@@ -560,8 +572,7 @@ llvm::Value* TensorCodegen::makeTensorImpl(const eshkol_operations_t* op) {
             llvm::Function::ExternalLinkage, "eshkol_cons_list_to_dims", &ctx_.module());
     }
     llvm::Value* mt_list_ndim = builder.CreateCall(
-        mt_l2d_fn, {cons_ptr, mt_dims_array, llvm::ConstantInt::get(ctx_.int64Type(), 16)},
-        "mt_list_ndim");
+        mt_l2d_fn, {cons_ptr, mt_dims_array, mt_list_rank}, "mt_list_ndim");
 
     auto* mt_total_ft = llvm::FunctionType::get(ctx_.int64Type(),
         {ctx_.ptrType(), ctx_.int64Type()}, false);
