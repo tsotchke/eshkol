@@ -15,10 +15,10 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
-*	vm-supported	
+*	vm-supported	a negative zero stays inexact: (* -1.0 0.0) is -0.0 at run time and in the constant folder, not the exact integer 0 (corpus/38_numeric_reader_roundtrip.esk)
 +	vm-supported	
 -	vm-supported	
-/	vm-supported	exact/exact division now yields an exact rational (div2/OP_DIV dispatch to rational div; `/` no longer constant-folded to a float)
+/	vm-supported	exact/exact division yields an exact rational; a zero divisor is fatal ONLY for exact operands - any inexact operand makes it IEEE-754 (+nan.0/inf.0), and a bignum reaches the bignum domain instead of the double path that read it as 0 (corpus/37_float_div_zero.esk, tests/vm_parity/fatal/); exact bignum RATIONALS are unrepresentable (found/bignum_exact_rational.esk)
 /rational	gap	no VM name binding
 <	vm-supported	
 <=	vm-supported	
@@ -229,7 +229,7 @@ eof-object?	vm-supported
 eq?	gap	symbol identity returns #f (found/equal_eq_structural_false.esk)
 equal?	vm-supported	deep structural equality over pairs/vectors/tensors/strings/numbers (vm_deep_equal)
 eqv?	gap	aliased to broken eq?/equal? fids (found/equal_eq_structural_false.esk)
-error	vm-supported	
+error	vm-supported	raises a catchable condition and keeps its text on stderr; it used to set a fatal vm->error that no `guard` could intercept and printed the message onto the program's stdout (corpus/41_tensor_literals.esk)
 eval	gap	eval/environment reflection has no VM binding
 even?	vm-supported	
 exact	gap	no VM name binding
@@ -549,7 +549,7 @@ op:KB_QUERY	vm-supported	BUILTINS fid 512
 op:KB_QUERY_PREFIX	gap	kb-query-prefix has no VM binding
 op:LAMBDA	vm-supported	vm_compiler special-form dispatch
 op:LAPLACIAN	gap	AD surface diverges in VM
-op:LET	vm-supported	vm_compiler special-form dispatch (incl named let)
+op:LET	vm-supported	vm_compiler special-form dispatch (incl named let); a named let is treated as a lambda scope by the capture analysis and opens its captured slots by reference (corpus/36_set_from_named_let.esk)
 op:LETREC	vm-supported	vm_compiler special-form dispatch
 op:LETREC_STAR	vm-supported	vm_compiler special-form dispatch (verified 2026-07)
 op:LETREC_SYNTAX	gap	same as op:LET_SYNTAX
@@ -584,7 +584,7 @@ op:SDNC_RUN	gap	core.sdnc has no VM fids
 op:SDNC_SET_PARAMS	gap	core.sdnc has no VM fids
 op:SDNC_WEIGHT_GRAD	gap	core.sdnc has no VM fids
 op:SEQUENCE	vm-supported	vm_compiler begin dispatch
-op:SET	vm-supported	vm_compiler special-form dispatch
+op:SET	vm-supported	vm_compiler special-form dispatch; set! of an enclosing variable from a named-let body now persists (corpus/36_set_from_named_let.esk)
 op:SHARED	native-only-justified	OALR ownership — native-arena construct
 op:SUB	vm-supported	OP_SUB bytecode
 op:SUBSTITUTION_PRED	vm-supported	BUILTINS fid 506
@@ -745,7 +745,7 @@ stack	gap	tensor linalg/manipulation fid missing in VM
 step-decay-lr	gap	ml faculty has no VM fid coverage
 string	gap	extended string surface missing in VM
 string->list	vm-supported	
-string->number	vm-supported	
+string->number	vm-supported	reads R7RS <infnan> (+inf.0/-inf.0/+nan.0/-nan.0, any radix) and exact <ratio> "n/d", and rejects the C-only spellings inf/infinity/nan that strtod accepts, so every printed number reads back (corpus/38_numeric_reader_roundtrip.esk)
 string->symbol	vm-supported
 string->utf8	vm-supported	
 string-append	vm-supported	
@@ -796,7 +796,7 @@ tan	vm-supported
 tanh	vm-supported	
 target-intrinsic	native-only-justified	low-level memory/FFI primitive tied to native codegen
 temp-directory	vm-supported	
-tensor	vm-supported	
+tensor	vm-supported	variadic constructor: leading exact-integer dims then product(dims) values, a flat value list, or one rectangular nested collection (vm_compiler (tensor ...) special form -> native 473; the closure form is 474). Was aliased to make-tensor's 2-arg native, so every call silently used only its first two arguments (corpus/39_tensor_constructor.esk); the nested-collection form is ahead of native (found/tensor_nested_collection_native.esk)
 tensor->vector	gap	tensor linalg/manipulation fid missing in VM
 tensor-abs	vm-supported	
 tensor-add	vm-supported	
@@ -808,7 +808,7 @@ tensor-cholesky	gap	tensor linalg/manipulation fid missing in VM
 tensor-corrcoef	gap	tensor linalg/manipulation fid missing in VM
 tensor-cos	vm-supported	
 tensor-cov	gap	tensor linalg/manipulation fid missing in VM
-tensor-data	vm-supported	
+tensor-data	vm-supported	returns a VECTOR like native (it built a list) and no longer truncates silently at 1024 elements (corpus/41_tensor_literals.esk)
 tensor-det	gap	tensor linalg/manipulation fid missing in VM
 tensor-disk-fill!	gap	tensor linalg/manipulation fid missing in VM
 tensor-div	vm-supported	
@@ -835,13 +835,13 @@ tensor-qr	gap	tensor linalg/manipulation fid missing in VM
 tensor-rect-fill!	gap	tensor linalg/manipulation fid missing in VM
 tensor-reduce	gap	tensor linalg/manipulation fid missing in VM
 tensor-reduce-all	gap	tensor linalg/manipulation fid missing in VM
-tensor-ref	vm-supported	#322: multi-dim (tensor-ref t i j ...) via a VM-compiler special form packing trailing indices into a list (native handler already accepts a list index)
+tensor-ref	vm-supported	out-of-range raises the uniform bounds error on the FLAT and the multi-dimensional path (each component checked, not just the flattened offset) and a non-index argument raises instead of fabricating 0.0 (corpus/40_tensor_bounds_contract.esk); #322: multi-dim (tensor-ref t i j ...) via a VM-compiler special form packing trailing indices into a list (native handler already accepts a list index)
 tensor-reshape	vm-supported	
 tensor-save	vm-supported	
 tensor-scale	vm-supported	
 tensor-set	gap	tensor linalg/manipulation fid missing in VM
-tensor-set!	vm-supported	#322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
-tensor-shape	vm-supported	
+tensor-set!	vm-supported	out-of-range raises the uniform bounds error instead of silently discarding the write; native still returns without writing (found/tensor_set_oob_silent_native.esk); #322: multi-dim (tensor-set! t i j ... v) via a VM-compiler special form packing the middle indices into a list, keeping the trailing value
+tensor-shape	vm-supported	agrees for every non-empty tensor; (tensor-shape #()) still differs on the degenerate empty case (found/tensor_shape_empty_vector.esk)
 tensor-sin	vm-supported	
 tensor-solve	gap	tensor linalg/manipulation fid missing in VM
 tensor-sqrt	vm-supported	
@@ -873,7 +873,7 @@ tile	gap	tensor linalg/manipulation fid missing in VM
 time	gap	time surface has no VM binding
 trace	gap	no VM name binding
 train-test-split	gap	ml faculty has no VM fid coverage
-transpose	vm-supported	
+transpose	vm-supported	MATERIALIZES the transpose; it used to return a strided view sharing the source buffer, so every LINEAR reader (printer, tensor-data, flatten, matmul, element-wise kernels) returned the untransposed elements under the transposed shape (corpus/41_tensor_literals.esk)
 triplet-loss	gap	ml faculty has no VM fid coverage
 trunc	gap	no VM name binding
 truncate	vm-supported	

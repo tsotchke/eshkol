@@ -316,6 +316,23 @@ static VmTensor* vm_tensor_from_data(VmRegionStack* rs, const double* data,
 
 /** @brief Native call 413: `(tensor-ref t indices...)` — read an element
  *         by multi-dimensional indices (0.0 if out of range). */
+/**
+ * @brief Is @p indices a valid multi-dimensional index into @p t?
+ *
+ * True only when the rank matches and every component is within its dimension.
+ * vm_tensor_ref() / vm_tensor_set() answer 0.0 / do nothing when it is not,
+ * which fabricates a value and hides a lost write; the accessors' native-call
+ * sites use this to raise the uniform out-of-range error instead (the bounds
+ * contract in tests/vm_parity/corpus/34_bounds_contract.esk).
+ */
+static int vm_tensor_indices_in_range(const VmTensor* t, const int64_t* indices,
+                                      int n_indices) {
+    if (!t || !t->data || !indices || n_indices != t->n_dims) return 0;
+    for (int i = 0; i < n_indices; i++)
+        if (indices[i] < 0 || indices[i] >= t->shape[i]) return 0;
+    return 1;
+}
+
 static double vm_tensor_ref(const VmTensor* t, const int64_t* indices, int n_indices) {
     if (!t || !t->data || n_indices != t->n_dims) return 0.0;
     int64_t off = vm_tensor_flat_offset(t, indices, n_indices);
@@ -369,24 +386,46 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
 static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     if (!t || t->n_dims < 2) return NULL;
 
-    VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
+    /* MATERIALIZE the transpose rather than returning a strided view sharing
+     * `data`.  A view is only correct for readers that honour `strides`:
+     * vm_tensor_flat_offset() does, so (tensor-ref (transpose t) i j) was
+     * right, but every consumer that walks `data` LINEARLY — the tensor
+     * printer, tensor-data, flatten/reshape, matmul and the element-wise
+     * kernels — read the original row-major order and silently returned the
+     * UNtransposed elements: (transpose (tensor 2 3 1 2 3 4 5 6)) displayed
+     * #((1 2) (3 4) (5 6)) with the correct shape (3 2) attached, where native
+     * gives #((1 4) (2 5) (3 6)).  Native materializes here too, so this also
+     * matches its cost model, and it keeps strides canonically contiguous
+     * everywhere in the VM instead of leaving a non-contiguous tensor that
+     * every future reader would have to remember to handle. */
+    int64_t* shape = vm_tensor_dim_scratch(rs, t->n_dims);
+    if (!shape) return NULL;
+    memcpy(shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
+    shape[0] = t->shape[1];
+    shape[1] = t->shape[0];
+
+    VmTensor* v = vm_tensor_new(rs, shape, t->n_dims);
     if (!v) return NULL;
-
-    if (!vm_tensor_bind_dims(rs, v, t->n_dims)) return NULL;
-    memcpy(v->shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
-    memcpy(v->strides, t->strides, (size_t)t->n_dims * sizeof(int64_t));
-
-    /* Swap dim 0 and dim 1 */
-    v->shape[0] = t->shape[1];
-    v->shape[1] = t->shape[0];
-    v->strides[0] = t->strides[1];
-    v->strides[1] = t->strides[0];
-
-    v->data = t->data;
-    v->total = t->total;
-    v->owns_data = 0;
     v->dtype = t->dtype;
+    if (!t->data) return v;
 
+    /* Gather through the SOURCE's strides with dim 0 and 1 exchanged. */
+    int64_t* src_strides = vm_tensor_dim_scratch(rs, t->n_dims);
+    int64_t* idx = vm_tensor_dim_scratch(rs, t->n_dims);
+    if (!src_strides || !idx) return NULL;
+    memcpy(src_strides, t->strides, (size_t)t->n_dims * sizeof(int64_t));
+    src_strides[0] = t->strides[1];
+    src_strides[1] = t->strides[0];
+    for (int d = 0; d < t->n_dims; d++) idx[d] = 0;
+    for (int64_t flat = 0; flat < v->total; flat++) {
+        int64_t src = 0;
+        for (int d = 0; d < t->n_dims; d++) src += idx[d] * src_strides[d];
+        v->data[flat] = t->data[src];
+        for (int d = t->n_dims - 1; d >= 0; d--) {   /* row-major increment */
+            if (++idx[d] < shape[d]) break;
+            idx[d] = 0;
+        }
+    }
     return v;
 }
 
