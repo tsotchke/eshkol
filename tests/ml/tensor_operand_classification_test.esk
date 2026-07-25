@@ -1,0 +1,271 @@
+;; ESH-0069 follow-through — operand classification for the tensor-op families
+;; that the original sweep missed because they spelled the unchecked unpack
+;; `tagged_.unpackPtr(v)` rather than `IntToPtr(unpackInt64(v))`.
+;;
+;; Covered here: linalg (lu/det/inverse/solve/cholesky/qr/svd), einsum, the loss
+;; family, the optimizer/training family, the dataloader, tile's `reps`, the
+;; normalization scale/shift parameters, and the axis form of tensor-sum /
+;; tensor-mean.
+;;
+;; Measured on the unmodified compiler, every one of these was a crash or a
+;; fabricated value, none of them catchable:
+;;   (tensor-det (vector 1. 2. 3. 4.))       SIGSEGV at 0x4
+;;   (tensor-cholesky (vector 4. 2. 2. 3.))  SIGSEGV at 0x4
+;;   (tensor-svd 7)                          SIGSEGV at 0x7
+;;   (tensor-solve A '(5. 10.))              SIGSEGV at 0x8
+;;   (mse-loss (vector …) (vector …))        SIGSEGV at 0x3
+;;   (sgd-step params (vector …) 0.1)        SIGSEGV at 0x3fe0000000000000
+;;   (make-dataloader (vector …) 2)          SIGSEGV at 0x4
+;;   (einsum "ij,jk->ik" A B)                SIGSEGV at 0x4008000000000000
+;;   (tile t '(3))                           #(1 2)      — silently untiled
+;;   (tile m22 (vector 2))                   #(5368873992 …) — read past `reps`
+;;   (tensor-sum t4 1)                       ()          — NULL tensor
+;;   (tensor-sum t4 0)                       #()         — rank-0 tensor
+;;
+;; Three contracts are asserted, one per operand kind:
+;;   (a) read-only 1-D DATA operand  -> a numeric vector or list is accepted and
+;;       coerced, exactly as `(tensor …)` does.
+;;   (b) operand written IN PLACE    -> a collection is REJECTED; coercing would
+;;       update a throwaway copy and report success with nothing changed.
+;;   (c) MATRIX operand (rank >= 2)  -> a flat collection is REJECTED; nothing in
+;;       n loose numbers says how to fold them into rows and columns.
+;; In every case a genuine tensor must still compute its documented value.
+
+(require stdlib)
+
+(display "=== Tensor operand classification suite ===") (newline)
+
+(define pass-count 0)
+(define fail-count 0)
+
+(define (check name cond)
+  (if cond
+      (begin (set! pass-count (+ pass-count 1))
+             (display "PASS: ") (display name) (newline))
+      (begin (set! fail-count (+ fail-count 1))
+             (display "FAIL: ") (display name) (newline))))
+
+(define (close? a b) (< (abs (- a b)) 1e-9))
+
+(define t4  (reshape (vector 1.0 2.0 3.0 4.0) 4))       ; rank 1
+(define m22 (reshape (vector 4.0 3.0 6.0 3.0) 2 2))     ; rank 2, det = -6
+(define spd (reshape (vector 2.0 1.0 1.0 3.0) 2 2))     ; rank 2, SPD
+(define m23 (reshape (vector 1.0 2.0 3.0 4.0 5.0 6.0) 2 3))
+(define eye (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
+
+;; ---------------------------------------------------------------------------
+;; (c) MATRIX operands: genuine matrix works, non-matrix raises catchably
+;; ---------------------------------------------------------------------------
+(check "matrix: tensor-det m22 = -6"        (close? (tensor-det m22) -6.0))
+(check "matrix: tensor-inverse m22 tensor"  (tensor? (tensor-inverse m22)))
+(check "matrix: tensor-cholesky spd tensor" (tensor? (tensor-cholesky spd)))
+(check "matrix: tensor-qr m22 returns"      (not (eq? (tensor-qr m22) #f)))
+(check "matrix: tensor-svd m22 returns"     (not (eq? (tensor-svd m22) #f)))
+(check "matrix: tensor-lu m22 returns"      (not (eq? (tensor-lu m22) #f)))
+
+(check "matrix reject: det on numeric vector"
+       (guard (exn (#t #t)) (tensor-det (vector 1.0 2.0 3.0 4.0)) #f))
+(check "matrix reject: det on rank-1 tensor"
+       (guard (exn (#t #t)) (tensor-det t4) #f))
+(check "matrix reject: det on integer"
+       (guard (exn (#t #t)) (tensor-det 7) #f))
+(check "matrix reject: inverse on numeric vector"
+       (guard (exn (#t #t)) (tensor-inverse (vector 1.0 2.0 3.0 4.0)) #f))
+(check "matrix reject: cholesky on numeric vector"
+       (guard (exn (#t #t)) (tensor-cholesky (vector 4.0 2.0 2.0 3.0)) #f))
+(check "matrix reject: qr on rank-1 tensor"
+       (guard (exn (#t #t)) (tensor-qr t4) #f))
+(check "matrix reject: svd on integer"
+       (guard (exn (#t #t)) (tensor-svd 7) #f))
+(check "matrix reject: lu on numeric list"
+       (guard (exn (#t #t)) (tensor-lu (list 1.0 2.0 3.0 4.0)) #f))
+
+;; tensor-solve splits the two contracts across its own arguments: A is a
+;; matrix, b is 1-D data. (2 1; 1 3) x = (5 10) -> x = (1 3).
+(check "solve: matrix A + tensor b = #(1 3)"
+       (let ((x (tensor-solve spd (reshape (vector 5.0 10.0) 2))))
+         (and (close? (tensor-get x 0) 1.0) (close? (tensor-get x 1) 3.0))))
+(check "solve: b may be a numeric list (coerced)"
+       (let ((x (tensor-solve spd (list 5.0 10.0))))
+         (and (close? (tensor-get x 0) 1.0) (close? (tensor-get x 1) 3.0))))
+(check "solve: b may be a numeric vector (coerced)"
+       (let ((x (tensor-solve spd (vector 5.0 10.0))))
+         (and (close? (tensor-get x 0) 1.0) (close? (tensor-get x 1) 3.0))))
+(check "solve reject: A as a flat vector"
+       (guard (exn (#t #t)) (tensor-solve (vector 2.0 1.0 1.0 3.0) (vector 5.0 10.0)) #f))
+
+;; ---------------------------------------------------------------------------
+;; einsum: the notation says how many indices each operand has, so "ij,jk->ik"
+;; and "ii->" require matrices while "i,i->" takes 1-D data.
+;; ---------------------------------------------------------------------------
+(check "einsum: ij,jk->ik on matrices (A x I = A)"
+       (let ((r (einsum "ij,jk->ik" m22 eye)))
+         (and (close? (tensor-get r 0 0) 4.0) (close? (tensor-get r 0 1) 3.0)
+              (close? (tensor-get r 1 0) 6.0) (close? (tensor-get r 1 1) 3.0))))
+(check "einsum: i,i-> dot of tensors = 11"
+       (close? (einsum "i,i->" (reshape (vector 1.0 2.0) 2)
+                               (reshape (vector 3.0 4.0) 2)) 11.0))
+(check "einsum: i,i-> accepts numeric vectors (coerced)"
+       (close? (einsum "i,i->" (vector 1.0 2.0) (vector 3.0 4.0)) 11.0))
+(check "einsum reject: i,i-> on integers"
+       (guard (exn (#t #t)) (einsum "i,i->" 5 6) #f))
+(check "einsum reject: ij,jk->ik on rank-1 operand"
+       (guard (exn (#t #t)) (einsum "ij,jk->ik" t4 m22) #f))
+(check "einsum reject: ii-> on rank-1 operand"
+       (guard (exn (#t #t)) (einsum "ii->" t4) #f))
+
+;; ---------------------------------------------------------------------------
+;; (a) LOSS family: pred/target are read-only 1-D data, so vectors and lists
+;;     coerce. mse of (1 2 3) vs (1 2 4) is 1/3.
+;; ---------------------------------------------------------------------------
+(define p3 (reshape (vector 1.0 2.0 3.0) 3))
+(define q3 (reshape (vector 1.0 2.0 4.0) 3))
+(check "loss: mse on tensors = 1/3"        (close? (mse-loss p3 q3) (/ 1.0 3.0)))
+(check "loss: mse coerces vectors"
+       (close? (mse-loss (vector 1.0 2.0 3.0) (vector 1.0 2.0 4.0)) (/ 1.0 3.0)))
+(check "loss: mse coerces lists"
+       (close? (mse-loss (list 1.0 2.0 3.0) (list 1.0 2.0 4.0)) (/ 1.0 3.0)))
+(check "loss: mae coerces vectors = 1.5"
+       (close? (mae-loss (vector 1.0 2.0) (vector 2.0 4.0)) 1.5))
+(check "loss: huber coerces vectors = 1.0"
+       (close? (huber-loss (vector 1.0 2.0) (vector 2.0 4.0)) 1.0))
+(check "loss: bce coerces vectors"
+       (> (binary-cross-entropy-loss (vector 0.9 0.1) (vector 1.0 0.0)) 0.0))
+(check "loss: kl-div coerces vectors"
+       (> (kl-div-loss (vector 0.5 0.5) (vector 0.4 0.6)) 0.0))
+(check "loss: triplet coerces vectors"
+       (>= (triplet-loss (vector 1.0 0.0) (vector 1.0 0.1) (vector 0.0 1.0)) 0.0))
+(check "loss reject: mse on integers"
+       (guard (exn (#t #t)) (mse-loss 3 4) #f))
+(check "loss reject: mse on strings"
+       (guard (exn (#t #t)) (mse-loss "a" "b") #f))
+(check "loss reject: cross-entropy on integer logits"
+       (guard (exn (#t #t)) (cross-entropy-loss 1 2) #f))
+
+;; ---------------------------------------------------------------------------
+;; (b) TRAINING family: `params` and the momentum/velocity accumulators are
+;;     written in place, so a collection is rejected; `grads` is read-only and
+;;     coerces. A genuine step must still move the parameters.
+;; ---------------------------------------------------------------------------
+(check "train: sgd-step updates a tensor in place"
+       (let ((p (reshape (vector 1.0 2.0 3.0) 3))
+             (g (reshape (vector 0.5 0.5 0.5) 3)))
+         (sgd-step p g 0.1)
+         (close? (tensor-get p 0) 0.95)))
+(check "train: sgd-step accepts a vector for grads (read-only)"
+       (let ((p (reshape (vector 1.0 2.0 3.0) 3)))
+         (sgd-step p (vector 0.5 0.5 0.5) 0.1)
+         (close? (tensor-get p 0) 0.95)))
+(check "train: zero-grad! zeroes a tensor"
+       (let ((t (reshape (vector 1.0 2.0 3.0) 3)))
+         (zero-grad! t)
+         (close? (tensor-get t 0) 0.0)))
+(check "train: clip-grad-norm! scales a tensor"
+       (let ((t (reshape (vector 3.0 4.0) 2)))
+         (clip-grad-norm! t 1.0)
+         (close? (tensor-get t 0) 0.6)))
+(check "train: check-grad-health on a tensor"
+       (not (eq? (check-grad-health (reshape (vector 1.0 2.0) 2)) #f)))
+
+(check "train reject: sgd-step params as a vector"
+       (guard (exn (#t #t))
+              (sgd-step (vector 1.0 2.0 3.0) (reshape (vector 0.5 0.5 0.5) 3) 0.1) #f))
+(check "train reject: zero-grad! on a vector"
+       (guard (exn (#t #t)) (zero-grad! (vector 1.0 2.0 3.0)) #f))
+(check "train reject: clip-grad-norm! on a vector"
+       (guard (exn (#t #t)) (clip-grad-norm! (vector 3.0 4.0) 1.0) #f))
+(check "train reject: xavier-uniform! on a vector"
+       (guard (exn (#t #t)) (xavier-uniform! (vector 0.0 0.0) 2 2) #f))
+(check "train reject: kaiming-normal! on a vector"
+       (guard (exn (#t #t)) (kaiming-normal! (vector 0.0 0.0) 2) #f))
+(check "train reject: adam-step params as a vector"
+       (guard (exn (#t #t))
+              (adam-step (vector 1.0 2.0) (reshape (vector 0.1 0.1) 2) 0.01
+                         (reshape (vector 0.0 0.0) 2) (reshape (vector 0.0 0.0) 2) 1) #f))
+
+;; ---------------------------------------------------------------------------
+;; DATALOADER: `data` is a read-only data operand.
+;; ---------------------------------------------------------------------------
+(check "dataloader: 4 samples / batch 2 = 2 batches"
+       (= (dataloader-length (make-dataloader (reshape (vector 1.0 2.0 3.0 4.0) 4) 2)) 2))
+(check "dataloader: coerces a numeric vector"
+       (= (dataloader-length (make-dataloader (vector 1.0 2.0 3.0 4.0) 2)) 2))
+(check "dataloader reject: integer data"
+       (guard (exn (#t #t)) (make-dataloader 7 2) #f))
+(check "dataloader reject: string data"
+       (guard (exn (#t #t)) (make-dataloader "abc" 2) #f))
+
+;; ---------------------------------------------------------------------------
+;; TILE `reps`: documented as "a list or vector of repetition counts", one per
+;; dimension. Both spellings must work; a wrong length or a non-integer count
+;; must raise rather than read past the operand.
+;; ---------------------------------------------------------------------------
+(check "tile: rank-1, vector reps -> 6 elements"
+       (= (tensor-length (tile (reshape (vector 1.0 2.0) 2) (vector 3))) 6))
+(check "tile: rank-1, LIST reps -> 6 elements (was silently untiled)"
+       (= (tensor-length (tile (reshape (vector 1.0 2.0) 2) (list 3))) 6))
+(check "tile: rank-1 list reps repeats the values"
+       (let ((r (tile (reshape (vector 1.0 2.0) 2) (list 3))))
+         (and (close? (tensor-get r 0) 1.0) (close? (tensor-get r 2) 1.0)
+              (close? (tensor-get r 4) 1.0))))
+(check "tile: rank-2, one count per dimension"
+       (= (tensor-length (tile m22 (vector 2 1))) 8))
+(check "tile reject: integer reps"
+       (guard (exn (#t #t)) (tile (reshape (vector 1.0 2.0) 2) 3) #f))
+(check "tile reject: fewer counts than dimensions"
+       (guard (exn (#t #t)) (tile m22 (vector 2)) #f))
+(check "tile reject: more counts than dimensions"
+       (guard (exn (#t #t)) (tile (reshape (vector 1.0 2.0) 2) (vector 2 2)) #f))
+(check "tile reject: non-integer counts"
+       (guard (exn (#t #t)) (tile m22 (vector 1.5 2.5)) #f))
+
+;; ---------------------------------------------------------------------------
+;; NORMALIZATION scale/shift parameters are per-feature data operands.
+;; ---------------------------------------------------------------------------
+(check "layer-norm: tensor gamma/beta"
+       (tensor? (layer-norm p3 (reshape (vector 1.0 1.0 1.0) 3)
+                               (reshape (vector 0.0 0.0 0.0) 3) 1e-5)))
+(check "layer-norm: vector gamma/beta coerce"
+       (tensor? (layer-norm p3 (vector 1.0 1.0 1.0) (vector 0.0 0.0 0.0) 1e-5)))
+
+;; ---------------------------------------------------------------------------
+;; AXIS REDUCE: a valid axis still reduces; an axis that addresses no reducible
+;; dimension raises instead of yielding an empty collection.
+;; ---------------------------------------------------------------------------
+(check "axis: sum m23 axis 0 = [5 7 9]"
+       (let ((r (tensor-sum m23 0)))
+         (and (close? (tensor-get r 0) 5.0) (close? (tensor-get r 1) 7.0)
+              (close? (tensor-get r 2) 9.0))))
+(check "axis: sum m23 axis 1 = [6 15]"
+       (let ((r (tensor-sum m23 1)))
+         (and (close? (tensor-get r 0) 6.0) (close? (tensor-get r 1) 15.0))))
+(check "axis: negative axis still normalizes (-1 == 1)"
+       (let ((r (tensor-sum m23 -1)))
+         (and (close? (tensor-get r 0) 6.0) (close? (tensor-get r 1) 15.0))))
+(check "axis: mean m23 axis 0 = [2.5 3.5 4.5]"
+       (let ((r (tensor-mean m23 0)))
+         (and (close? (tensor-get r 0) 2.5) (close? (tensor-get r 2) 4.5))))
+(check "axis: 1-argument sum still reduces every element"
+       (close? (tensor-sum t4) 10.0))
+(check "axis reject: axis past the rank (was NULL, displayed as ())"
+       (guard (exn (#t #t)) (tensor-mean m23 5) #f))
+(check "axis reject: negative axis past the rank"
+       (guard (exn (#t #t)) (tensor-sum m23 -9) #f))
+(check "axis reject: axis form on a rank-1 tensor (was #())"
+       (guard (exn (#t #t)) (tensor-sum t4 0) #f))
+(check "axis reject: axis form on a rank-1 tensor, mean"
+       (guard (exn (#t #t)) (tensor-mean t4 0) #f))
+
+;; ---------------------------------------------------------------------------
+;; A raised classification error must be recoverable: execution continues.
+;; ---------------------------------------------------------------------------
+(check "recovery: computation continues after a caught classification error"
+       (let ((r (guard (exn (#t 'caught)) (tensor-det (vector 1.0 2.0 3.0 4.0)))))
+         (and (eq? r 'caught) (close? (tensor-det m22) -6.0))))
+
+(display "=== Results ===") (newline)
+(display "Passed: ") (display pass-count) (newline)
+(display "Failed: ") (display fail-count) (newline)
+(if (= fail-count 0)
+    (begin (display "ALL TESTS PASSED") (newline))
+    (begin (display "SOME TESTS FAILED") (newline)))

@@ -1588,6 +1588,10 @@ llvm::Value* TensorCodegen::tensorReduceWithDim(const eshkol_operations_t* op) {
     llvm::Value* is_negative = ctx_.builder().CreateICmpSLT(axis_val, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted_axis = ctx_.builder().CreateAdd(axis_val, src_num_dims);
     axis_val = ctx_.builder().CreateSelect(is_negative, adjusted_axis, axis_val);
+    // An axis that does not address a reducible dimension used to reach
+    // eshkol_xla_reduce, which returned NULL, which was packed as a heap
+    // pointer and displayed as `()` — an error that read as an empty result.
+    axis_val = checkReduceAxis(axis_val, src_num_dims, "tensor-reduce");
 
     // Load arena
     llvm::Value* arena_ptr = ctx_.builder().CreateLoad(ctx_.ptrType(), ctx_.globalArena());
@@ -1633,6 +1637,13 @@ llvm::Value* TensorCodegen::emitAxisReduce(llvm::Value* tensor_val, llvm::Value*
     llvm::Value* is_negative = builder.CreateICmpSLT(axis, llvm::ConstantInt::get(ctx_.int64Type(), 0));
     llvm::Value* adjusted = builder.CreateAdd(axis, src_num_dims);
     axis = builder.CreateSelect(is_negative, adjusted, axis);
+    // Validate ONCE, before either lowering below consumes the axis: the AD
+    // path loads `src_dims_ptr[axis]` to size its output (an out-of-range axis
+    // read past the dimensions array, then divided by whatever it found), and
+    // the numeric path let eshkol_xla_reduce return NULL, which was packed as a
+    // heap pointer and displayed as `()`. A rank-1 operand reduced to rank 0
+    // and displayed as `#()`. All three read as an empty result, not an error.
+    axis = checkReduceAxis(axis, src_num_dims, "tensor-reduce-axis");
 
     if (autodiff_ && op_code >= 0 && op_code <= 3) {
         llvm::Value* in_ad_mode = builder.CreateLoad(ctx_.int1Type(), ctx_.adModeActive());

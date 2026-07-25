@@ -1396,22 +1396,90 @@ private:
 
 public:
     /**
+     * How a tensor operand may be satisfied.
+     *
+     * The choice is a property of what the op DOES with the pointer, not of
+     * which argument slot the operand occupies: a read-only operand may be
+     * coerced from a numeric collection, an operand written through in place
+     * may not (see TensorOperandMode::RequireTensor).
+     */
+    enum class TensorOperandMode {
+        /**
+         * Read-only operand. A tensor is used as-is; a homogeneous numeric
+         * vector or list is coerced to a fresh 1-D tensor, matching `(tensor
+         * X)` and the AD point classification, so "a tensor of numbers" means
+         * the same thing however it is spelled.
+         */
+        CoerceCollections,
+        /**
+         * Operand the op writes through (an optimizer's `params`, `zero-grad!`
+         * / `xavier-uniform!`'s tensor, a momentum/velocity accumulator).
+         * Coercion would update a throwaway copy and report success, so a
+         * collection is rejected with a catchable error instead.
+         */
+        RequireTensor,
+        /**
+         * Operand that must be a MATRIX: rank >= 2 (tensor-lu / -det /
+         * -inverse / -cholesky / -qr / -svd, tensor-solve's `A`, einsum's
+         * "ij,jk->ik" operands). These index dims[0] and dims[1] and walk the
+         * elements row-major, so a rank-1 operand yields a fabricated answer
+         * rather than an error — and coercing a flat collection produces
+         * exactly that rank-1 shape. Nothing in `n` loose numbers says how to
+         * fold them into rows and columns, so this mode rejects both instead of
+         * guessing a shape.
+         */
+        RequireMatrix
+    };
+
+    /**
      * Centralized, type-checked tensor-operand unpack (ESH-0069).
      *
-     * Replaces the ad-hoc `IntToPtr(unpackInt64(v))` that every tensor op used
-     * to reinterpret its operand as an eshkol_tensor_t* without validation —
-     * which segfaulted when handed a vector/int/string. This emits a call to
-     * the runtime `eshkol_tensor_operand_checked`, which:
+     * Replaces the ad-hoc `IntToPtr(unpackInt64(v))` / `tagged_.unpackPtr(v)`
+     * that every tensor op used to reinterpret its operand as an
+     * eshkol_tensor_t* without validation — which segfaulted when handed a
+     * vector/int/string. This emits a call to the runtime
+     * `eshkol_tensor_operand_checked`, which:
      *   - returns the data pointer if the operand is already a tensor,
      *   - coerces a homogeneous numeric vector to a fresh 1-D tensor,
      *   - otherwise raises a clean, catchable type error (never segfaults).
      *
+     * With TensorOperandMode::RequireTensor it instead calls
+     * `eshkol_tensor_destination_checked`, which performs the same
+     * classification without the coercion.
+     *
+     * Emit this ONCE per operand, outside any loop the op generates: on the
+     * coercing path each call can allocate a fresh tensor.
+     *
      * @param tensor_val The tagged operand value (from codegenAST).
      * @param op_name    User-facing op name, used only for the error message.
+     * @param mode       Whether a numeric collection may be coerced.
      * @return An i8* pointing at the validated tensor struct (eshkol_tensor_t*).
      */
-    llvm::Value* unpackTensorOperandChecked(llvm::Value* tensor_val,
-                                            const char* op_name);
+    llvm::Value* unpackTensorOperandChecked(
+        llvm::Value* tensor_val,
+        const char* op_name,
+        TensorOperandMode mode = TensorOperandMode::CoerceCollections);
+
+    /**
+     * Validate a reduction axis against the operand's rank, at runtime.
+     *
+     * Emits a call to `eshkol_tensor_axis_checked`, which requires rank >= 2
+     * and 0 <= axis < rank and otherwise raises a catchable error. Without it
+     * an out-of-range axis produced a result rather than an error: the numeric
+     * path returned a NULL tensor that displays as `()`, the rank-1 path
+     * returned a rank-0 tensor that displays as `#()`, and the AD path indexed
+     * `dims[axis]` past the end of the dimensions array.
+     *
+     * Call this ONCE, after the caller has normalized a negative axis and
+     * before either the AD or the numeric lowering consumes it.
+     *
+     * @param axis     Normalized (non-negative) axis as an i64.
+     * @param rank     The operand's `num_dimensions` as an i64.
+     * @param op_name  User-facing op name, used only for the error message.
+     * @return The validated axis (i64), usable directly.
+     */
+    llvm::Value* checkReduceAxis(llvm::Value* axis, llvm::Value* rank,
+                                 const char* op_name);
 
 public:
     /**

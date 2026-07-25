@@ -2998,6 +2998,23 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Every tensor operand is classified by its runtime tag before the op reads
+    # the struct: a 1-D data operand accepts a numeric vector/list and coerces,
+    # an operand written in place and a matrix operand reject a collection, and
+    # an axis that addresses no reducible dimension raises. Before this, each of
+    # these was a SIGSEGV or a fabricated value — see the test header for the
+    # measured before-values. Gated in both JIT and AOT.
+    add_test(
+        NAME tensor_operand_classification_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ml/tensor_operand_classification_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tensor_operand_classification_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "ALL TESTS PASSED"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

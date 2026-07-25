@@ -75,16 +75,52 @@ llvm::Value* TensorCodegen::tile(const eshkol_operations_t* op) {
     llvm::Value* total_field = builder.CreateStructGEP(tensor_type, tensor_ptr, 3);
     llvm::Value* src_total = builder.CreateLoad(ctx_.int64Type(), total_field);
 
-    // Get reps as a Scheme vector: [length:i64, tagged_value...].  The old
-    // lowering loaded each 64-bit half-slot and attempted `inttoptr` to the
-    // tagged-value *struct* type, producing invalid LLVM IR.  Preserve the
-    // real 16-byte tagged layout and extract each integer through the shared
-    // TaggedValueCodegen helper.
-    llvm::Value* reps_ptr = tagged_.unpackPtr(reps_val);
-    llvm::Value* reps_data = builder.CreateGEP(
-        ctx_.int8Type(), reps_ptr,
-        llvm::ConstantInt::get(ctx_.int64Type(), sizeof(int64_t)),
-        "tile_reps_data");
+    llvm::Function* arena_alloc = mem_.getArenaAllocate();
+
+    // Read `reps` through the runtime classifier rather than peeking at the
+    // operand's bytes as a Scheme vector `[length:i64][tagged elems...]`.
+    // `reps` is documented as "a list or vector of repetition counts": the byte
+    // peek made only the vector spelling work — a LIST had a cons cell's car
+    // read as its length so every count came back 1 and the tensor was returned
+    // untiled (a silent wrong answer), a bare integer was dereferenced as a
+    // vector and crashed, and a vector shorter than the tensor's rank was read
+    // past its end. eshkol_tensor_counts_checked accepts either documented
+    // spelling, requires exactly one integer count per dimension, and raises a
+    // catchable error otherwise. It writes plain int64 counts, so the loop below
+    // reads `reps_counts[i]` directly instead of decoding a tagged slot.
+    llvm::Value* reps_counts = builder.CreateCall(
+        arena_alloc,
+        {arena_ptr, builder.CreateMul(num_dims,
+                                      llvm::ConstantInt::get(ctx_.int64Type(), 8))},
+        "tile_reps_counts");
+    {
+        llvm::Value* reps_tagged = reps_val;
+        if (reps_tagged->getType() != ctx_.taggedValueType()) {
+            // A raw (untagged) scalar — tag it so the classifier reports a clean
+            // type error instead of treating the value as a heap pointer.
+            reps_tagged = tagged_.packInt64(reps_tagged, true);
+        }
+        llvm::Value* reps_slot = builder.CreateAlloca(ctx_.taggedValueType(), nullptr,
+                                                     "tile_reps_slot");
+        builder.CreateStore(reps_tagged, reps_slot);
+
+        llvm::Function* counts_fn =
+            ctx_.module().getFunction("eshkol_tensor_counts_checked");
+        if (!counts_fn) {
+            // void eshkol_tensor_counts_checked(const eshkol_tagged_value_t*,
+            //                                   int64_t rank, int64_t* out,
+            //                                   const char* op_name)
+            llvm::FunctionType* ft = llvm::FunctionType::get(
+                builder.getVoidTy(),
+                {ctx_.ptrType(), ctx_.int64Type(), ctx_.ptrType(), ctx_.ptrType()},
+                false);
+            counts_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                               "eshkol_tensor_counts_checked",
+                                               &ctx_.module());
+        }
+        builder.CreateCall(counts_fn, {reps_slot, num_dims, reps_counts,
+                                       ctx_.internCString("tile")});
+    }
 
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
 
@@ -94,7 +130,6 @@ llvm::Value* TensorCodegen::tile(const eshkol_operations_t* op) {
 
     // Allocate new dimensions array
     llvm::Value* dims_bytes = builder.CreateMul(num_dims, llvm::ConstantInt::get(ctx_.int64Type(), 8));
-    llvm::Function* arena_alloc = mem_.getArenaAllocate();
     llvm::Value* new_dims_ptr = builder.CreateCall(arena_alloc, {arena_ptr, dims_bytes}, "tile_dims");
 
     // Calculate new dimensions and total elements
@@ -117,11 +152,9 @@ llvm::Value* TensorCodegen::tile(const eshkol_operations_t* op) {
     // Get source dimension
     llvm::Value* src_dim_ptr = builder.CreateGEP(ctx_.int64Type(), src_dims_ptr, i);
     llvm::Value* src_dim = builder.CreateLoad(ctx_.int64Type(), src_dim_ptr);
-    llvm::Value* rep_tagged_ptr = builder.CreateGEP(
-        ctx_.taggedValueType(), reps_data, i, "tile_rep_slot");
-    llvm::Value* rep_tagged = builder.CreateLoad(
-        ctx_.taggedValueType(), rep_tagged_ptr, "tile_rep");
-    llvm::Value* rep_count = tagged_.unpackInt64(rep_tagged);
+    llvm::Value* rep_slot = builder.CreateGEP(
+        ctx_.int64Type(), reps_counts, i, "tile_rep_slot");
+    llvm::Value* rep_count = builder.CreateLoad(ctx_.int64Type(), rep_slot, "tile_rep");
     // Clamp rep_count to at least 1
     llvm::Value* rep_clamped = builder.CreateSelect(
         builder.CreateICmpSLT(rep_count, llvm::ConstantInt::get(ctx_.int64Type(), 1)),
