@@ -111,6 +111,16 @@ cat > "$catchable" <<'ESK'
 (newline)
 ESK
 
+# ESH-0363 catchability of the CODEGEN guard itself (no wrapper check in front of
+# it), so the boundary error is a condition and not merely a nicer abort.
+catchable_raw="$tmp/ffi_catchable_raw.esk"
+cat > "$catchable_raw" <<'ESK'
+(extern ptr c-getenv2 ptr :real getenv)
+(define (probe v) (guard (e (#t "caught-raw")) (c-getenv2 v) "not-reached"))
+(display (probe 5000))
+(newline)
+ESK
+
 # ESH-0363 backstop: a user-declared extern, called directly with an integer in
 # a `ptr` parameter. No wrapper is involved, so this exercises the CODEGEN
 # boundary guard itself — the part that covers every extern in the language, not
@@ -225,6 +235,15 @@ if [ "$ec" -eq 0 ] && grep -q "caught" "$log"; then
     echo "  ok: FFI type error caught by guard, program continued and exited 0"
 else
     fail "FFI type error was not catchable by guard (exit $ec): $(head -5 "$log" | tr '\n' ' ')"
+fi
+
+log="$tmp/catchable_raw.log"
+ec="$(run "$log" "$ESHKOL_RUN" -r "$catchable_raw")"
+assert_not_signal "-r catchable boundary type error" "$ec" "$log"
+if [ "$ec" -eq 0 ] && grep -q "caught-raw" "$log"; then
+    echo "  ok: codegen boundary type error is a catchable condition, not just a nicer abort"
+else
+    fail "codegen boundary FFI type error was not catchable by guard (exit $ec): $(head -5 "$log" | tr '\n' ' ')"
 fi
 
 # ── ESH-0363 backstop: codegen guard on a bare user extern ──────────────────

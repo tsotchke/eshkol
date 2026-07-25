@@ -6,15 +6,6 @@
 
 (provide iota iota-from iota-step repeat make-list range zip)
 
-;;; iota: Generate a list of numbers starting from 0
-;;; (iota 5) => (0 1 2 3 4)
-(define (iota count)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons n acc))))
-  (build (- count 1) '()))
-
 ;;; iota-from: Generate a list of numbers starting from a given value
 ;;; (iota-from 5 1) => (1 2 3 4 5)
 (define (iota-from count start)
@@ -32,6 +23,31 @@
         acc
         (build (- n 1) (cons (+ start (* n step)) acc))))
   (build (- count 1) '()))
+
+;;; iota: Generate a list of `count` numbers.
+;;; (iota 5)     => (0 1 2 3 4)
+;;; (iota 5 1)   => (1 2 3 4 5)
+;;; (iota 5 0 2) => (0 2 4 6 8)
+;;;
+;;; `start` and `step` are OPTIONAL and positional, matching SRFI-1 / R7RS-large
+;;; `iota`. Defined after iota-from/iota-step so it can delegate to them.
+;;;
+;;; This used to be `(define (iota count) …)` — a strictly 1-argument function —
+;;; while callers were already writing `(iota 5 1)` and `(iota 5 0 2)`. Codegen
+;;; silently DISCARDED the surplus arguments (the ESH-0362 fail-open: an argument
+;;; past the callee's parameter count was simply never pushed), so those calls
+;;; returned (0 1 2 3 4) — the wrong list, with no error, no warning that fails a
+;;; build, and a test that "passed" while asserting nothing about start or step.
+;;; Making arity errors fatal turned that silent wrong answer into a compile
+;;; error, which is what exposed the missing optional arguments; accepting them
+;;; is the actual fix.
+(define (iota count . rest)
+  (cond ((null? rest)
+         (iota-from count 0))
+        ((null? (cdr rest))
+         (iota-from count (car rest)))
+        (else
+         (iota-step count (car rest) (car (cdr rest))))))
 
 ;;; repeat: Create a list with n copies of x
 (define (repeat n x)
