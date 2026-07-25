@@ -392,6 +392,27 @@ across every new-feature family).
   many places with no central zero-init, so an unset field holds garbage — a
   garbage id falls outside the table and reads as "unknown", where a garbage
   pointer would be dereferenced by the diagnostic printer.
+- **ESH-0365: `(import (lib name))` reported the position of its CLOSING PAREN,
+  and the language-coverage gate was certifying `import` on an accident.** The
+  R7RS import form is lowered to a `require`, and the lowered node took its
+  source position from the token the spec loop had just consumed — which is the
+  form's closing `)`, not the `(import` that begins it. So a diagnostic about a
+  malformed import pointed its caret at the closing paren. It also meant `import`
+  had no execution-backed coverage evidence of its own: the tracker credits a
+  compile-time form only when a parser-dispatch event and an accept/codegen event
+  share an exact source position, and the dispatch event is recorded at the
+  operator token while the accept event took its position from the closing paren.
+  `import` was nonetheless certified covered at 1078/1078 — by a **cross-file
+  collision**. Before ESH-0364, a required module's codegen events were attributed
+  to the REQUIRING file, and in `tests/modules/r7rs_import_modifiers_test.esk` the
+  imported module's `define`s at lines 5-7 column 2 landed on exactly the same
+  positions as that file's own `(import …)` forms at lines 5-7 column 2. The
+  position-only credit rule ignores the operation kind, so an unrelated `define`
+  in another file was granting `import` its coverage. Fixing the attribution
+  removed the collision and exposed the wrong position underneath it. The lowered
+  node now carries the `(import` position, which both puts the caret on the
+  construct and earns `import` genuine same-file evidence in all six import tests
+  — coverage stays 1078/1078 on real evidence rather than a coincidence.
 - **`iota` silently ignored its `start` and `step` arguments.** The stdlib
   defined `iota` as a strictly 1-argument function while callers (including
   `tests/features/new_functions_test.esk`, comments and all) were already writing

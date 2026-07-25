@@ -9679,7 +9679,34 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                     specs.push_back(spec);
                 }
-                return make_r7rs_import_ast(specs, token.line, token.column);
+                // ESH-0365: locate the lowered node at the `import` form's
+                // START, not at `token` — which by here is the form's CLOSING
+                // PAREN, because the spec loop above exits on TOKEN_RPAREN.
+                // `ast.line`/`ast.column` still hold the operator token, i.e.
+                // where the construct actually begins.
+                //
+                // A desugared node that reports its closing paren is the same
+                // defect class as ESH-0364: a location must identify the
+                // construct it describes. Two consequences, both real:
+                //
+                //  * A diagnostic about a bad import pointed a caret at `)`.
+                //  * `import` earned no execution-backed coverage of its own.
+                //    The tracker credits a compile-time form when a parser
+                //    dispatch event and an accept/codegen event share an exact
+                //    source position; the dispatch event is recorded at the
+                //    operator token, while the accept event took its position
+                //    from this call — so they never matched. `import` was
+                //    nonetheless certified covered, by an ACCIDENT: before
+                //    ESH-0364, a required module's codegen events were attributed
+                //    to the REQUIRING file, and in
+                //    tests/modules/r7rs_import_modifiers_test.esk the imported
+                //    module's `define`s at lines 5-7 column 2 collided with that
+                //    file's own `(import …)` forms at lines 5-7 column 2. The
+                //    position-only credit rule ignores the operation kind, so an
+                //    unrelated `define` in another file was granting `import` its
+                //    coverage. Fixing the attribution removed the collision and
+                //    exposed that this position was wrong all along.
+                return make_r7rs_import_ast(specs, ast.line, ast.column);
             }
             if (token.type != TOKEN_STRING) {
                 PARSE_ERROR_AT(token, "import requires a string path or R7RS library import set");
