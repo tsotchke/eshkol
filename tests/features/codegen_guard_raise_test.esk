@@ -133,14 +133,24 @@
 (check "tensor-qr 2x2 still returns (Q R)" (length (tensor-qr m2x2)) 2)
 
 ;; ── einsum "ij,jk->ik": 2-D operand guard ────────────────────────────────────
-;; tensor_linalg_codegen.cpp. NOTE: only the rank guard is asserted here. The
-;; in-contract 2-D case of this particular notation SIGSEGVs on unmodified
-;; master as well (a separate, pre-existing defect in the delegation to
-;; matmulSIMD — reported, not touched by this change), so there is no working
-;; happy path to pin down yet. The trace notation below is the einsum happy-path
-;; witness.
+;; tensor_linalg_codegen.cpp.
+;;
+;; Writing the happy-path half of this row is what exposed a second, separate
+;; defect: the in-contract 2-D case SIGSEGVed on unmodified master too. einsum
+;; delegated to matmulSIMD passing the operands' ELEMENT buffers, but matmulSIMD
+;; takes the tensor pointers and does its own StructGEP(tensor_type, ptr, 2) to
+;; reach the elements — so it loaded element[2] and used that double's bit
+;; pattern as a pointer (the crash address was 0x4008000000000000, exactly the
+;; bit pattern of 3.0). Fixed alongside, hence a real happy path to assert here:
+;; the result must agree with tensor-dot elementwise.
 (check "einsum ij,jk->ik rank-1 raises"
        (raises? (lambda () (einsum "ij,jk->ik" rank1 rank1))) 'raised)
+(check "einsum ij,jk->ik matches tensor-dot"
+       (einsum "ij,jk->ik" m2x2 m2x2) (tensor-dot m2x2 m2x2))
+(check "einsum ij,jk->ik against identity"
+       (einsum "ij,jk->ik" m2x2 eye2) m2x2)
+(check "einsum ij,jk->ik value" (einsum "ij,jk->ik" m2x2 m2x2)
+       (tensor 2 2 7.0 10.0 15.0 22.0))
 (check "einsum ii-> still works" (einsum "ii->" m2x2) 5.0)
 
 ;; ── feed-forward: W1 rank guard (was SIGSEGV) ───────────────────────────────

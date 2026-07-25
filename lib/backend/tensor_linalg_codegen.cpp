@@ -1234,12 +1234,12 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         llvm::Value* N_ptr = builder.CreateGEP(ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* N = builder.CreateLoad(ctx_.int64Type(), N_ptr);
 
-        llvm::Value* a_elems_f = builder.CreateStructGEP(tensor_type, a_ptr, 2);
-        llvm::Value* a_elems = builder.CreateLoad(ctx_.ptrType(), a_elems_f);
-        llvm::Value* b_elems_f = builder.CreateStructGEP(tensor_type, b_ptr, 2);
-        llvm::Value* b_elems = builder.CreateLoad(ctx_.ptrType(), b_elems_f);
-
-        return matmulSIMD(a_elems, b_elems, M, K, N);
+        // matmulSIMD takes the TENSOR pointers, not their element buffers — it
+        // does its own StructGEP(tensor_type, ptr, 2) to reach the elements.
+        // Passing the already-loaded element pointers made it read field 2 of the
+        // element array, i.e. it loaded element[2] and used that double's bit
+        // pattern as a pointer.
+        return matmulSIMD(a_ptr, b_ptr, M, K, N);
     }
 
     if (nota == "ij->ji" && op->call_op.num_vars == 2) {
