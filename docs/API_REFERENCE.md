@@ -4081,6 +4081,19 @@ the weight matrix.
 - weights: (vocab_size, d_model) — embedding matrix
 - Output: (batch, seq, d_model)
 
+**Operand forms.** `indices` may be a tensor, a `#(...)` literal, a Scheme vector
+(however it was built — literal, `(vector …)`, `make-vector` + `vector-set!`, or
+received through a parameter), or a numeric list. All spellings produce identical
+results; the operand is classified by its runtime value, not by how it was
+written. The same holds for every other tensor operand in the transformer family
+(`scaled-dot-attention`, `multi-head-attention`, `rotary-embedding`,
+`padding-mask`, `feed-forward`, `softmax`).
+
+**Fails closed.** `weights` must be rank 2, and every index must satisfy
+`0 <= i < vocab_size`. A wrong rank, an out-of-range or negative index, or a
+non-numeric operand raises a catchable Eshkol condition (observable to `guard` /
+`with-exception-handler`); none of them reads outside the weight buffer.
+
 **Implementation:** `embedding` in [lib/backend/tensor_transformer_codegen.cpp](../lib/backend/tensor_transformer_codegen.cpp).
 
 #### Transformer Example

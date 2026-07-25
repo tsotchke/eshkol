@@ -251,6 +251,72 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
     return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
 }
 
+/** @brief Raise a catchable ESHKOL_EXCEPTION_ERROR carrying @p message at the
+ *         current insert point, then terminate the block with `unreachable`
+ *         (see the declaration for why shape/range guards must be catchable
+ *         rather than printf+exit). */
+void TensorCodegen::emitCatchableError(const char* message) {
+    auto& b = ctx_.builder();
+
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            b.getVoidTy(), {ctx_.ptrType()}, false);
+        raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                                           "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            ctx_.ptrType(), {b.getInt32Ty(), ctx_.ptrType()}, false);
+        make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                                              "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    llvm::Value* msg = b.CreateGlobalString(message);
+    llvm::Value* exc_type = llvm::ConstantInt::get(b.getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+    llvm::Value* exc = b.CreateCall(make_exc_func, {exc_type, msg});
+    b.CreateCall(raise_func, {exc});
+    b.CreateUnreachable();
+}
+
+/** @brief Emit `actual == expected` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitRankGuard(llvm::Value* actual, int64_t expected,
+                                  const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpEQ(
+        actual, llvm::ConstantInt::get(actual->getType(), expected));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
+/** @brief Emit `actual >= minimum` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitMinRankGuard(llvm::Value* actual, int64_t minimum,
+                                     const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpSGE(
+        actual, llvm::ConstantInt::get(actual->getType(), minimum));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
 // Note: All tensor implementations are complex and depend on:
 // - AST code generation for nested expressions
 // - Autodiff integration (dual numbers, AD nodes)
