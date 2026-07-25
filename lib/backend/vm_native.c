@@ -12,6 +12,137 @@ extern int64_t eshkol_linear_solve(
  * substrates cannot drift. Keep in sync with lib/core/arena_memory.h. */
 #define ESHKOL_RH_OK        0
 #define ESHKOL_RH_ERR_STALE 1
+
+#if defined(ESHKOL_VM_WASM)
+/* WASM VM substrate: the handle table has to be HERE, not linked.
+ *
+ * The WASM VM is a single translation unit — Emscripten compiles
+ * lib/backend/vm_wasm_repl.c (which #includes eshkol_vm.c) with no part of the
+ * hosted runtime linked in, so lib/core/runtime_regions.cpp simply does not
+ * exist in that build.  Left undefined these six entry points become
+ * Emscripten's aborting `missing function:` stubs, and because a `guard` records
+ * a handle mark on every handler push (vm_run.c), that abort fires on ANY
+ * program using exceptions — not merely on programs using region handles.
+ *
+ * WHY A SECOND IMPLEMENTATION IS SOUND HERE. The VM only ever asks for the
+ * BOOKKEEPING-ONLY contract (`reclaim` = 0, close with no keeps to promote):
+ * its heap has no escape evacuator, so a close reclaims nothing on either
+ * substrate — see tests/vm_parity/PARITY.tsv.  That contract is pure
+ * slot+generation bookkeeping with no arena, no region stack and no evacuator
+ * behind it, which is exactly the part that is expressible in this TU.  What
+ * must not drift is the OBSERVABLE protocol — token layout, the open/live/
+ * close/not-live transitions, the out-of-order close cascade, and the error
+ * text — and that is pinned by CI rather than by hope:
+ * tests/vm_parity/corpus/region_handle_contract.esk runs on native, on the
+ * native VM (scripts/run_vm_parity.sh) and on THIS build
+ * (scripts/run_wasm_differential.sh), byte-compared against native.  Any
+ * divergence from the reclaim=0 path of runtime_regions.cpp fails that lane.
+ *
+ * Plain statics rather than thread_local: this build is single-threaded
+ * (-s ENVIRONMENT=node, no pthreads), so per-thread tables would be one table.
+ */
+#define ESHKOL_RH_ERR_TOO_MANY 3
+/* == ESHKOL_MAX_REGION_HANDLES (lib/core/arena_memory.h), so a loop that opens
+ * without closing hits the same bounded ESHKOL_RH_ERR_TOO_MANY on both. */
+#define VM_RH_MAX_HANDLES 64
+/* Token layout, verbatim from runtime_regions.cpp: low bits hold slot+1 (so 0
+ * is never valid and a zeroed integer cannot masquerade as a handle), the rest
+ * hold the slot generation. */
+#define VM_RH_SLOT_BITS 8
+#define VM_RH_SLOT_MASK ((int64_t)((1 << VM_RH_SLOT_BITS) - 1))
+
+typedef struct {
+    uint64_t generation;  /* bumped on every close; never 0 once used */
+    uint64_t open_seq;    /* monotonic open order — the cascade/unwind ordering */
+    uint8_t  in_use;
+} VmRegionHandleSlot;
+
+static VmRegionHandleSlot vm_rh_slots[VM_RH_MAX_HANDLES];
+static uint64_t vm_rh_seq = 0;
+
+/** @brief Resolve a token to a slot index, or -1 if it names no open handle. */
+static int vm_rh_decode(int64_t token) {
+    if (token <= 0) return -1;
+    const int slot = (int)(token & VM_RH_SLOT_MASK) - 1;
+    if (slot < 0 || slot >= VM_RH_MAX_HANDLES) return -1;
+    if (!vm_rh_slots[slot].in_use) return -1;
+    if ((uint64_t)(token >> VM_RH_SLOT_BITS) != vm_rh_slots[slot].generation) return -1;
+    return slot;
+}
+
+/** @brief Retire a slot, invalidating every token that named it (bumping the
+ *         generation is what makes double-close and use-after-close safe). */
+static void vm_rh_retire(int slot) {
+    vm_rh_slots[slot].in_use = 0;
+    vm_rh_slots[slot].open_seq = 0;
+    vm_rh_slots[slot].generation++;
+    if (vm_rh_slots[slot].generation == 0) vm_rh_slots[slot].generation = 1;
+}
+
+int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint,
+                                  int reclaim, int* status) {
+    /* No arena to name or size, and no region to reclaim: the VM contract. */
+    (void)name; (void)size_hint; (void)reclaim;
+    if (status) *status = ESHKOL_RH_OK;
+    int slot = -1;
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (!vm_rh_slots[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (status) *status = ESHKOL_RH_ERR_TOO_MANY;
+        return 0;
+    }
+    if (vm_rh_slots[slot].generation == 0) vm_rh_slots[slot].generation = 1;
+    vm_rh_slots[slot].open_seq = ++vm_rh_seq;
+    vm_rh_slots[slot].in_use = 1;
+    return (int64_t)((vm_rh_slots[slot].generation << VM_RH_SLOT_BITS) |
+                     (uint64_t)(slot + 1));
+}
+
+int eshkol_region_handle_close(int64_t token, void* vals, uint64_t n) {
+    /* Nothing is reclaimed, so every kept value is already where it will stay. */
+    (void)vals; (void)n;
+    const int slot = vm_rh_decode(token);
+    /* Double-close, use-after-close and a fabricated integer: one clean status. */
+    if (slot < 0) return ESHKOL_RH_ERR_STALE;
+    /* An out-of-order close CASCADES: closing an outer handle retires every
+     * handle opened after it.  The reclaiming path reads that ordering off the
+     * region stack; with no region stack, the monotonic open sequence is it. */
+    const uint64_t seq = vm_rh_slots[slot].open_seq;
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (vm_rh_slots[i].in_use && vm_rh_slots[i].open_seq >= seq) vm_rh_retire(i);
+    }
+    return ESHKOL_RH_OK;
+}
+
+int eshkol_region_handle_live(int64_t token) {
+    return vm_rh_decode(token) >= 0 ? 1 : 0;
+}
+
+uint64_t eshkol_region_handle_seq_mark(void) {
+    return vm_rh_seq;
+}
+
+void eshkol_region_handle_seq_unwind_to(uint64_t mark) {
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (vm_rh_slots[i].in_use && vm_rh_slots[i].open_seq > mark) vm_rh_retire(i);
+    }
+}
+
+/* Verbatim from runtime_regions.cpp: this text is what a `guard` around a
+ * misused handle displays, so it is part of the compared output. */
+const char* eshkol_region_handle_status_message(int status) {
+    switch (status) {
+        case 0:  return "region handle ok";
+        case 1:  return "region-close: invalid or already-closed region handle";
+        case 2:  return "region-close: region handle no longer names a live region";
+        case 3:  return "region-open: too many open region handles — a region-close is missing";
+        case 4:  return "region-open: region stack overflow — a region-close is missing";
+        case 5:  return "region-open: failed to create region";
+        default: return "region handle: unknown error";
+    }
+}
+#else
 extern int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint,
                                          int reclaim, int* status);
 extern int eshkol_region_handle_close(int64_t token, void* vals, uint64_t n);
@@ -19,6 +150,7 @@ extern int eshkol_region_handle_live(int64_t token);
 extern const char* eshkol_region_handle_status_message(int status);
 extern uint64_t eshkol_region_handle_seq_mark(void);
 extern void eshkol_region_handle_seq_unwind_to(uint64_t mark);
+#endif  /* ESHKOL_VM_WASM */
 
 /* Heap pointer validation — prevent OOB heap access from untrusted values.
  * Used before any vm->heap.objects[val.as.ptr] dereference. */
