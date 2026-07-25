@@ -2344,3 +2344,29 @@ oracles:
         severity: high
         label: 'v1.3.4 edge-coverage sweep is clean: every generated probe across every applicable execution axis (JIT / AOT-O0 / AOT-O2 / VM) passed, with no native-vs-VM differential divergence'
         action: ./scripts/run_edge_coverage_v134.sh
+
+  # ─────────────────────────────────────────────────────────────────
+  # WASM execute-and-diff. Closes the WASM-correctness cell: prior CI
+  # only asserted a produced .wasm is a valid binary (magic bytes) —
+  # nothing EXECUTED Eshkol-compiled WASM and diffed its output against
+  # native. scripts/run_wasm_differential.sh builds the bytecode VM to
+  # WebAssembly (Emscripten, from lib/backend/vm_wasm_repl.c — the same
+  # module that powers the browser REPL, whose C display/number-format
+  # code IS what runs in WASM), executes each program of the VM-supported
+  # subset (tests/vm_parity/corpus) under node via its run_program export,
+  # and byte-diffs the captured stdout against native `eshkol-run -r`
+  # (vm-parity newline normalization; float text compared RAW). Over that
+  # subset native codegen == native VM, so any wasm value divergence
+  # isolates the WASM compilation. Writes kind:"wasm_parity" events to
+  # scripts/icc_traces/wasm_parity.jsonl.
+  # ─────────────────────────────────────────────────────────────────
+  - name: wasm-execute-diff
+    aliases: [wasm_parity, wasm-parity, wasm-execute-parity, wasm-correctness]
+    requires:
+      - runtime_event:
+          event_kinds: [wasm_parity]
+          event_names: ["wasm_parity_gate"]
+          event_values: ["PASS"]
+        severity: high
+        label: WASM execute-and-diff gate (Eshkol-compiled WASM output byte-matches native `eshkol-run -r` on the VM-supported subset; out-of-subset programs fail cleanly / are excluded with reasons)
+        action: ./scripts/run_wasm_differential.sh
