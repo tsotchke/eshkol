@@ -771,3 +771,96 @@ jobs:
             ${{ matrix.build_dir }}/Release/eshkol-repl.exe
             ${{ matrix.build_dir }}/stdlib.o
             ${{ matrix.build_dir }}/stdlib.bc
+
+  # ─────────────────────────────────────────────────────────────────────
+  # WASM execute-and-diff lane.  Closes the WASM-correctness cell in the
+  # assurance matrix: the rest of CI only asserts a produced .wasm is a
+  # valid binary (magic bytes) + that its env-import surface matches the JS
+  # glue — nothing else EXECUTES Eshkol-compiled WASM and diffs its output
+  # against native.  This self-contained job builds the bytecode VM to
+  # WebAssembly (Emscripten, from lib/backend/vm_wasm_repl.c — the same
+  # module family that powers the browser REPL, whose C display/number-format
+  # code is what actually runs in WASM), then runs
+  # scripts/run_wasm_differential.sh: it executes the VM-supported corpus
+  # (tests/vm_parity/corpus) under node via the run_program export and
+  # byte-diffs the captured stdout against native `eshkol-run -r`.  Runs in
+  # parallel with unix-matrix (so it does not extend the critical path) and
+  # only builds eshkol-run + stdlib (lite) plus the tiny VM WASM, keeping the
+  # cost bounded.  The bounded subset runs on every PR; a scheduled/dispatch
+  # workflow can set WASM_DIFF_FULL=1 to additionally sweep the differential
+  # corpus (tests/differential/corpus).
+  # ─────────────────────────────────────────────────────────────────────
+  wasm-execute-diff:
+    name: wasm-execute-diff
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Add LLVM Repository (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-${LLVM_MAJOR} main" | sudo tee /etc/apt/sources.list.d/llvm.list
+          for attempt in 1 2 3; do
+            sudo apt-get update -o Acquire::Retries=5 && break
+            sudo rm -rf /var/lib/apt/lists/*; sleep $((attempt * 15))
+          done
+
+      - name: Install Dependencies (Linux)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get install -y \
+            cmake ninja-build \
+            llvm-${LLVM_MAJOR} llvm-${LLVM_MAJOR}-dev lld-${LLVM_MAJOR} \
+            libreadline-dev pkg-config libssl-dev libncurses-dev \
+            libpcre2-dev libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev \
+            git python3
+          sudo ln -sf "/usr/bin/ld.lld-${LLVM_MAJOR}" /usr/bin/ld.lld
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 4.0.22
+          actions-cache-folder: emsdk-cache-4.0.22
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Configure (lite)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DESHKOL_BUILD_TESTS=OFF \
+            -DESHKOL_XLA_ENABLED=OFF \
+            -DESHKOL_GPU_ENABLED=OFF
+
+      - name: Build eshkol-run + stdlib
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build build --target eshkol-run stdlib --parallel
+
+      - name: Run WASM execute-and-diff
+        shell: bash
+        env:
+          BUILD_DIR: build
+        run: |
+          set -euxo pipefail
+          emcc --version
+          node --version
+          ./scripts/run_wasm_differential.sh --quick
+
+      - name: Upload WASM diff trace
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: wasm-execute-diff-trace
+          path: scripts/icc_traces/wasm_parity.jsonl
+          if-no-files-found: ignore
