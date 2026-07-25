@@ -152,6 +152,25 @@
        (guard (e (#t 'raised)) (tensor-ref (tensor (list 1.0 2.0 3.0)) -1))
        'raised)
 
+;; Same rank mismatch through the LIST-index idiom. `tensor-get` reaches the
+;; runtime-count path (a 2-argument `tensor-ref` is the flat vref shorthand
+;; instead), where the index count is only known at run time — that path had no
+;; rank check at all, so it read dims[i] past the end of the dimensions array and
+;; then underflowed `ndim - count` into a huge unsigned slice rank.
+(check "rank-2 list index on rank-1"
+       (guard (e (#t 'raised)) (tensor-get (tensor (list 1.0 2.0)) (list 0 0)))
+       'raised)
+
+;; …while the valid list-index reads through the same path still work, including
+;; a partial index, which yields a slice rather than a scalar.
+(check "list index full (1 1)" (tensor-get m2x2 (list 1 1)) 4.0)
+(check "list index scalar"     (tensor-get (tensor (list 1.0 2.0)) 1) 2.0)
+(check "partial list index slices" (tensor-shape (tensor-get m2x2 (list 1))) (list 2))
+(check "partial list index values"
+       (list (tensor-ref (tensor-get m2x2 (list 1)) 0)
+             (tensor-ref (tensor-get m2x2 (list 1)) 1))
+       (list 3.0 4.0))
+
 ;; tensor-set! must refuse the same accesses — an unguarded write corrupts the
 ;; heap rather than merely reading garbage.
 (check "tensor-set! flat out of range"
