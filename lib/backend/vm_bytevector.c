@@ -59,25 +59,32 @@ int vm_bv_length(const VmBytevector* bv) {
     return bv ? bv->len : 0;
 }
 
-/** @brief Native call 682: `(bytevector-u8-ref bv k)`, erroring (and
- *         returning -1) if @p k is out of range. */
+/**
+ * @brief Native call 682: `(bytevector-u8-ref bv k)`, returning -1 if @p k is
+ *        out of range.
+ *
+ * The *language-level* out-of-range contract is enforced one level up, in the
+ * native-call dispatch (vm_native.c case 682), which raises a catchable
+ * "bytevector-u8-ref: index out of bounds" condition — the same condition and
+ * message the AOT/JIT codegen and the C runtime helpers raise.  This accessor
+ * therefore stays quiet: printing a diagnostic here would both duplicate the
+ * raised condition and emit a stray stderr ERROR marker.  The -1 return is
+ * only a defensive fallback for direct C callers (e.g. the self-test below).
+ */
 int vm_bv_u8_ref(const VmBytevector* bv, int k) {
-    if (!bv || k < 0 || k >= bv->len) {
-        fprintf(stderr, "ERROR: bytevector-u8-ref index %d out of range [0,%d)\n",
-                k, bv ? bv->len : 0);
-        return -1;
-    }
+    if (!bv || k < 0 || k >= bv->len) return -1;
     return bv->data[k];
 }
 
-/** @brief Native call 683: `(bytevector-u8-set! bv k byte)`, erroring if
- *         @p k is out of range. */
+/**
+ * @brief Native call 683: `(bytevector-u8-set! bv k byte)`, a no-op if @p k is
+ *        out of range.
+ *
+ * As with vm_bv_u8_ref(), the catchable out-of-range error (and the byte-range
+ * check on @p byte) is raised by the dispatch in vm_native.c case 683.
+ */
 void vm_bv_u8_set(VmBytevector* bv, int k, int byte) {
-    if (!bv || k < 0 || k >= bv->len) {
-        fprintf(stderr, "ERROR: bytevector-u8-set! index %d out of range [0,%d)\n",
-                k, bv ? bv->len : 0);
-        return;
-    }
+    if (!bv || k < 0 || k >= bv->len) return;
     bv->data[k] = (uint8_t)(byte & 0xFF);
 }
 
@@ -106,10 +113,9 @@ void vm_bv_copy_to(VmBytevector* to, int at, const VmBytevector* from, int start
     if (end < 0 || end > from->len) end = from->len;
     if (start > end) start = end;
     int n = end - start;
-    if (at < 0 || at + n > to->len) {
-        fprintf(stderr, "ERROR: bytevector-copy! destination overflow\n");
-        return;
-    }
+    /* Range violations are raised as a catchable condition by the dispatch in
+     * vm_native.c case 685; stay quiet here (see vm_bv_u8_ref). */
+    if (at < 0 || at + n > to->len) return;
     /* memmove handles overlapping regions (same bytevector copy) */
     memmove(to->data + at, from->data + start, (size_t)n);
 }

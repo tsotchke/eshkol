@@ -1832,6 +1832,54 @@ eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, i
     }
 }
 
+/** @brief Portable 64-bit set-bit count (SWAR; no compiler builtins). */
+static int64_t bignum_popcount64(uint64_t v) {
+    v = v - ((v >> 1) & 0x5555555555555555ULL);
+    v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+    v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+    return (int64_t)((v * 0x0101010101010101ULL) >> 56);
+}
+
+/**
+ * @brief Population count of a bignum (see bignum.h for the full contract).
+ *
+ * Non-negative values: count the 1 bits across the magnitude limbs.
+ *
+ * Negative values: a negative integer's two's-complement bit string is
+ * infinite, so the R6RS `bitwise-bit-count` convention applies —
+ * `bit-count(a) = -1 - bit-count(~a)`. For a < 0, `~a == |a| - 1`, so the
+ * magnitude limbs are decremented by one (with borrow propagation) as they
+ * are counted. `a->sign` implies `|a| >= 1`, so the borrow cannot underflow.
+ */
+int64_t eshkol_bignum_popcount(const eshkol_bignum_t* a) {
+    if (!a) return 0;
+
+    const uint64_t* limbs = BIGNUM_LIMBS(a);
+    int64_t count = 0;
+
+    if (!a->sign) {
+        for (uint32_t i = 0; i < a->num_limbs; i++) {
+            count += bignum_popcount64(limbs[i]);
+        }
+        return count;
+    }
+
+    int borrow = 1;
+    for (uint32_t i = 0; i < a->num_limbs; i++) {
+        uint64_t limb = limbs[i];
+        if (borrow) {
+            if (limb == 0) {
+                limb = ~(uint64_t)0;   /* borrow propagates to the next limb */
+            } else {
+                limb -= 1;
+                borrow = 0;
+            }
+        }
+        count += bignum_popcount64(limb);
+    }
+    return -1 - count;
+}
+
 /**
  * @brief Dispatch a bitwise operation on tagged numeric values, using bignum bitwise ops.
  *
@@ -1841,7 +1889,8 @@ eshkol_bignum_t* eshkol_bignum_shift(arena_t* arena, const eshkol_bignum_t* a, i
  * @param arena Arena to allocate any intermediate/result bignum from.
  * @param left Left operand (tagged INT64 or bignum HEAP_PTR).
  * @param right Right operand; ignored for the unary NOT operation.
- * @param op Operation selector: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift.
+ * @param op Operation selector: 0=and, 1=or, 2=xor, 3=not, 4=arithmetic-shift,
+ *           5=popcount/bit-count (unary).
  * @param[out] result Tagged value written with the operation's result (0 if operands are invalid).
  */
 void eshkol_bignum_bitwise_tagged(arena_t* arena,
@@ -1893,6 +1942,12 @@ void eshkol_bignum_bitwise_tagged(arena_t* arena,
                 shift_count = right->data.int_val;
             }
             if (a) res = eshkol_bignum_shift(arena, a, shift_count);
+            break;
+        }
+        case 5: { /* popcount / bit-count (unary; `right` is ignored) */
+            if (a) {
+                res = eshkol_bignum_from_int64(arena, eshkol_bignum_popcount(a));
+            }
             break;
         }
     }
