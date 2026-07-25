@@ -1,9 +1,16 @@
 # Language-surface coverage tracking
 
 This directory is the backbone for **TOTAL-LANGUAGE exposure-engine coverage**:
-the mechanism that measures which of Eshkol's 1,078 user-facing constructs the
+the mechanism that measures which of Eshkol's user-facing constructs the
 generative exposure engines actually exercise, names the gap, and turns
 "cover the whole language" into a measurable ICC completion-oracle criterion.
+
+Two numbers, and neither is hardcoded in prose: the **live surface total** is
+whatever `language_surface.json` holds (regenerated from compiler sources, so it
+grows the moment a builtin lands), and the **enforced floor** is
+`coverage_policy.json`'s `minimum_covered`, which only ever increases and is
+1,078 as of the v1.3.4 line. A surface that has grown past the floor is not a
+failure — it is the next ratchet.
 
 ## Artifacts
 
@@ -175,7 +182,7 @@ pillars:
 3. `eshkol-compiler-readiness` requires the floor event to PASS.
 4. `total-language-coverage` additionally requires
    `language_surface_high_risk_complete=PASS`. Phase 4 closes both that
-   criterion and the complete surface: all 1,078 constructs now have
+   criterion and the complete surface: every construct in the live manifest has
    deterministic execution evidence and the monotonic policy floor is 100%.
 5. Gate the campaign after regenerating traces:
    `icc readiness --repo eshkol --target total-language-coverage --trace-dir scripts/icc_traces`.

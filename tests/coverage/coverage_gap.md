@@ -104,6 +104,14 @@ floor still read 1,056. The gate always measures against the live manifest, so
 the honest floor is re-baselined here to 1,078/1,078 rather than left stale, and
 all 22 agent-FFI (quantum/PQC) constructs are proven on the quantum build.
 
+The table above is the state at that re-baseline. The live numbers are whatever
+`language_surface.json` (ground truth, regenerated from source) and
+`coverage_policy.json` (the enforced floor, which only ever increases) currently
+say — read them, not this prose, and note that the manifest total moves whenever
+a builtin lands while the floor moves only by a deliberate ratchet. The
+committed sidecar is regenerated with `--update-committed-run` (see the
+README) so its nested policy block always matches the live floor.
+
 Guarantees added by this work:
 
 - `verify_execution_backed_invariant` refuses to certify any construct that
