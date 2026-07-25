@@ -107,10 +107,31 @@
 (test-case "vector? true" #t (vector? vec1))
 (test-case "vector? list" #f (vector? '(1 2 3)))
 
-;; Nested vectors
-(define vec2 #(#(1 2) #(3 4)))
+;; Nested vectors.
+;;
+;; NOTE: `#(#(1 2) #(3 4))` is NOT a vector of vectors in Eshkol — the reader
+;; treats a nested `#(...)` literal as 2-D *tensor* syntax and builds a 2x2
+;; tensor (lib/frontend/parser.cpp: "Handles recursive nesting: #(#(1 2) #(3 4))
+;; → 2D tensor [2,2]"). That literal form is relied on by docs, examples and the
+;; VM-parity corpus (e.g. `(matmul #(#(1 2) #(3 4)) #(#(5 6) #(7 8)))`), and the
+;; printer keeps the two apart: a rank-2 tensor prints as `#((1 2) (3 4))`,
+;; a real vector of vectors as `#(#(1 2) #(3 4))`.
+;;
+;; So build the R7RS vector-of-vectors with `vector`, and pin the tensor-literal
+;; reading separately rather than conflating them.
+(define vec2 (vector (vector 1 2) (vector 3 4)))
 (test-case "nested vector length" 2 (vector-length vec2))
-(test-case "nested vector-ref" #(1 2) (vector-ref vec2 0))
+(test-case "nested vector-ref" (vector 1 2) (vector-ref vec2 0))
+(test-case "nested vector-ref 1" (vector 3 4) (vector-ref vec2 1))
+
+;; Nested `#(...)` literal: a 2-D tensor. Pin the rank/extent and the row
+;; reads, which are what the literal syntax means. Deliberately NOT pinning
+;; `vector-length` of a rank-2 literal here — that observable belongs to the
+;; tensor-literal generality work, not to this parser test.
+(define tensor2x2 #(#(1 2) #(3 4)))
+(test-case "nested literal is a 2x2 tensor" (list 2 2) (tensor-shape tensor2x2))
+(test-case "nested literal row 0" #(1 2) (tensor-get tensor2x2 0))
+(test-case "nested literal row 1" #(3 4) (tensor-get tensor2x2 1))
 
 ;; ============================================================================
 ;; Test: Quoted Expressions

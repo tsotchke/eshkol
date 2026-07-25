@@ -105,7 +105,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | **Forward-Mode AD** |
 | Dual numbers | Yes | Forward | O(1) overhead/op |
 | Scalar derivatives | Yes | Forward | `derivative` |
-| Higher-order derivatives | Yes | Forward | Nested differentials |
+| Higher-order derivatives | Yes | Forward | Nested differentials; every spelling agrees — `(derivative-n f x k)`, the nested-lambda form, and the curried form `(define df (derivative f))` … `(derivative df)` / `(derivative (derivative f))` (v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders 1-3 are exact) |
 | Math function support | Yes | Forward | sin, cos, exp, log, sqrt, tan, sinh, cosh, tanh, abs, pow |
 | Dual arithmetic | Yes | Forward | +, -, *, / |
 | `derivative` operator | Yes | Forward | 30+ tests |
@@ -800,6 +800,7 @@ This matrix lists every implemented and planned feature in the Eshkol ecosystem.
 | Tensor matmul parity | Yes | v1.3.4: `arange` (1/2/3-arg), nested-literal tensor operands, and multi-dimensional `tensor-ref`/`tensor-set!` compute the same answers as native codegen (parity corpus `31_tensor_matmul`) |
 | Shortest-round-trip number printing | Yes | v1.3.4: `display`/`write`/`number->string` share one portable-C routine with native, byte-identical output (R7RS 6.2.6) |
 | Reverse-mode `gradient` (`op:GRADIENT`) | Yes | v1.3.4 (#337): forward/reverse-mode, arity-resolved (scalar / N-arg / arity-1 whole-vector) incl. the curried form, byte-identical to native across `vm-src`/`vm-eskb`; higher-order nesting (gradient-of-derivative / Taylor tower) stays native-only |
+| Forward-mode `derivative` (`op:DERIVATIVE`) | Yes / first order | v1.3.4 (ESH-0369): direct `(derivative f x)` and curried `((derivative f) x)` both lower to the same native call with the same `(f, x)`, so they agree exactly with native. First order only — the VM's carrier is a flat dual `{value, tangent}` with a single perturbation, so nested/higher-order differentiation now **raises a catchable error** instead of returning the `0.0` it used to fabricate. Higher-order AD needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower; native-only until a VM jet carrier is built |
 | Checked ascription `(the <type> expr)` | No | native-only-justified: compile-time type-checker construct, runtime no-op — a VM program that omits it computes the identical result |
 | **Weight Matrix Transformer** |
 | Transformer interpreter | Yes | d_model=256, 6 layers, FFN_DIM=2304, 12.22M params |

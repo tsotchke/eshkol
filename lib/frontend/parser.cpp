@@ -2916,9 +2916,16 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
     }
 }
 
+static eshkol_ast_t make_parser_set_ast(const std::string& name,
+                                        eshkol_ast_t value,
+                                        uint32_t line,
+                                        uint32_t column);
+
 // Transform internal defines to letrec
 // Takes a vector of body expressions and returns a transformed AST
-// ALL internal defines are collected into a letrec, regardless of position
+// ALL internal define NAMES are collected into a letrec, regardless of
+// position; an interspersed value define's INITIALIZER stays where it was
+// written (emitted as a `set!` on its slot).
 //
 // Example:
 //   (display "before")
@@ -2926,23 +2933,32 @@ static void collectVariableReferences(const eshkol_ast_t* ast, std::set<std::str
 //   (define (helper x) (+ x 1))
 //   (+ a (helper 2))
 // Becomes:
-//   (letrec ((a 1) (helper (lambda (x) (+ x 1))))
-//     (begin (display "before") (+ a (helper 2))))
+//   (letrec* ((a '()) (helper (lambda (x) (+ x 1))))
+//     (begin (display "before") (set! a 1) (+ a (helper 2))))
 /**
- * @brief Hoists all internal `define`s in a body into a single `letrec*`, per R7RS §5.3.3 (Racket-compatible interspersed-define semantics).
+ * @brief Collects all internal `define`s in a body into a single `letrec*`, per R7RS §5.3.3 (Racket-compatible interspersed-define semantics).
  *
  * Splits @p body_expressions into defines and non-define expressions,
  * regardless of where the defines appear in the body (interspersed defines
  * are accepted, matching Racket/MIT/Guile/Chez rather than requiring all
- * defines to precede all expressions). Each define becomes a `letrec*`
- * binding — function defines are wrapped in an ESHKOL_LAMBDA_OP capturing
- * the original parameters/rest-param/type annotations, and simple variable
- * defines use their value expression directly — bound left-to-right so
- * each definition's initializer can see earlier ones. All non-define
- * expressions are preserved in their original relative order and become
- * the resulting letrec*'s body (wrapped in an ESHKOL_SEQUENCE_OP if there
- * is more than one), so side effects still execute in source order even
- * though the defines' initializers all evaluate up front.
+ * defines to precede all expressions). Every define contributes a `letrec*`
+ * binding, so all internal names share one mutually-visible recursive scope
+ * — function defines are wrapped in an ESHKOL_LAMBDA_OP capturing the
+ * original parameters/rest-param/type annotations, and simple variable
+ * defines use their value expression directly. All non-define expressions
+ * are preserved in their original relative order and become the resulting
+ * letrec*'s body (wrapped in an ESHKOL_SEQUENCE_OP if there is more than
+ * one).
+ *
+ * Initializer *evaluation order* is source order, not binding order: a
+ * value define that appears after any body expression keeps its initializer
+ * at that source position (the slot is bound unset and a `set!` is emitted
+ * in place), because hoisting it would evaluate it before the expressions
+ * it was written after and silently observe pre-mutation state. Function
+ * defines and leading value defines (those before any body expression) are
+ * initialized in the `letrec*` head as before: creating a closure has no
+ * observable effect, and a leading initializer is already first in source
+ * order.
  *
  * @param body_expressions The body's expressions in source order.
  * @return An ESHKOL_LETREC_STAR_OP AST node; if there are no defines,
@@ -2994,21 +3010,66 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
     //
     //  Preserving side-effect order: non-define expressions appear in the
     //  letrec* body in their original source order, so `(display "a")`,
-    //  `(helper 0)`, `(display "b")` all execute in that order. The
-    //  defines' value expressions (lambdas, computed values) evaluate up
-    //  front at letrec* init time, before the body runs — consistent
-    //  with hoisted-letrec* semantics. Lambdas don't execute at init,
-    //  only their closures are captured.
+    //  `(helper 0)`, `(display "b")` all execute in that order.
+    //
+    //  ONLY THE NAMES ARE HOISTED, NOT EVERY INITIALIZER. Hoisting a value
+    //  define's initializer as well reordered evaluation across the body and
+    //  silently produced stale results:
+    //
+    //    (define (f n)
+    //      (define v (make-vector 4 0.0))
+    //      (define (fill! i) ... (vector-set! v i (+ i 1.0)) ...)
+    //      (fill! 0)
+    //      (define t (reshape v n n))   ; ran BEFORE (fill! 0)
+    //      (tensor-data t))             ; => #(0 0 0 0), not #(1 2 3 4)
+    //
+    //  `reshape` snapshots its vector operand into tensor storage, so a
+    //  hoisted initializer captured the pre-mutation zeros and every
+    //  downstream matmul computed on them — wrong values, no error. The
+    //  probe is order-only and needs no tensors at all:
+    //  `(display "A") (define x (begin (display "B") 5)) (display "C")`
+    //  printed "BAC" natively (the bytecode VM already printed "ABC").
+    //
+    //  So: a value define that appears after any body expression keeps its
+    //  initializer at that source position — the letrec* head binds the slot
+    //  unset and a `set!` is emitted in place. letrec* slots are activation
+    //  cells read indirectly, so a hoisted lambda that closes over such a
+    //  name still observes the value once the `set!` has run.
+    //
+    //  Function defines keep their hoisted lambda initializer: constructing a
+    //  closure has no observable effect, and hoisting is what lets a body
+    //  expression call a function whose define appears later. Leading value
+    //  defines (before any body expression) are likewise unchanged — they are
+    //  already first in source order.
 
     std::vector<eshkol_ast_t> defines;     // All internal defines, in source order
-    std::vector<eshkol_ast_t> body_exprs;  // Non-define expressions, in source order
+    std::vector<bool> defer_initializer;   // Parallel to `defines`
+    std::vector<eshkol_ast_t> body_exprs;  // Non-define expressions + deferred
+                                           // initializers, in source order
 
+    bool seen_body_expression = false;
     for (size_t i = 0; i < body_expressions.size(); i++) {
-        if (body_expressions[i].type == ESHKOL_OP &&
-            body_expressions[i].operation.op == ESHKOL_DEFINE_OP) {
-            defines.push_back(body_expressions[i]);
-        } else {
-            body_exprs.push_back(body_expressions[i]);
+        const eshkol_ast_t& expr = body_expressions[i];
+        if (expr.type != ESHKOL_OP || expr.operation.op != ESHKOL_DEFINE_OP) {
+            seen_body_expression = true;
+            body_exprs.push_back(expr);
+            continue;
+        }
+
+        const bool defer = seen_body_expression &&
+                           !expr.operation.define_op.is_function &&
+                           expr.operation.define_op.value != nullptr &&
+                           expr.operation.define_op.name != nullptr;
+
+        defines.push_back(expr);
+        defer_initializer.push_back(defer);
+
+        if (defer) {
+            body_exprs.push_back(make_parser_set_ast(
+                expr.operation.define_op.name,
+                *expr.operation.define_op.value,
+                expr.line,
+                expr.column));
         }
     }
 
@@ -3096,6 +3157,19 @@ static eshkol_ast_t transformInternalDefinesToLetrec(const std::vector<eshkol_as
             } else {
                 val_ast.operation.lambda_op.param_types = nullptr;
             }
+        } else if (defer_initializer[i]) {
+            // Interspersed value define: the initializer stays at its source
+            // position (emitted as a `set!` in the body above), so the slot is
+            // bound unset here. Hoisting it would evaluate it before the body
+            // expressions it was written after.
+            // The slot's real type comes from the deferred initializer and is
+            // synthesized at its `set!` site; TypeChecker::synthesizeLet()
+            // recognizes an unset-and-later-assigned letrec* slot and keeps it
+            // at the root supertype rather than narrowing it to Null.
+            val_ast = eshkol_ast_t{};
+            eshkol_ast_make_null(&val_ast);
+            val_ast.line = def.line;
+            val_ast.column = def.column;
         } else {
             // Simple variable define - use value directly
             val_ast = *def.operation.define_op.value;

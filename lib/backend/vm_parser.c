@@ -802,11 +802,12 @@ static int scan_for_set(Node* node, const char* name) {
 }
 
 /**
- * @brief Scan for free references to @p name inside nested lambda (and
- *        `define`-as-implicit-lambda) bodies — a reference is free (a
- *        capture) if @p name is not rebound as a parameter or let binding
- *        at an inner scope. @p in_lambda tracks whether the current
- *        recursion is inside a lambda body.
+ * @brief Scan for free references to @p name inside nested lambda bodies —
+ *        explicit `lambda`, `define`-as-implicit-lambda, and named `let`
+ *        (whose body is lowered to a lambda). A reference is free (a
+ *        capture) if @p name is not rebound as a parameter, a loop
+ *        variable or a let binding at an inner scope. @p in_lambda tracks
+ *        whether the current recursion is inside a lambda body.
  */
 static int scan_for_capture(Node* node, const char* name, int in_lambda) {
     if (!node) return 0;
@@ -836,6 +837,38 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
             }
             /* Scan body (now inside lambda) */
             for (int i = 2; i < node->n_children; i++)
+                if (scan_for_capture(node->children[i], name, 1)) return 1;
+            return 0;
+        }
+        /* Named let — (let loop ((v init) ...) body ...) — is lowered to
+         * (letrec ((loop (lambda (v ...) body ...))) (loop init ...)), so its
+         * body IS a lambda body: a free reference to @p name inside it is a
+         * capture, exactly as it would be inside an explicit `lambda`.  The
+         * generic `let` arm below cannot see this because a named let's
+         * children[1] is the loop SYMBOL, not the binding list, so without
+         * this arm the loop body was scanned with in_lambda unchanged and a
+         * variable that is `set!` only from inside a named let was reported
+         * as un-captured — leaving it unboxed, so the loop closure mutated a
+         * private by-value copy that was discarded when the loop returned
+         * (tests/vm_parity/corpus/36_set_from_named_let.esk). */
+        if (head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
+            && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
+            && node->children[2]->type == N_LIST) {
+            Node* bindings = node->children[2];
+            /* The loop name and the loop variables shadow @p name inside the
+             * body; the init expressions are evaluated in the ENCLOSING scope
+             * and so keep the caller's in_lambda state. */
+            int rebound = (strcmp(node->children[1]->symbol, name) == 0);
+            for (int i = 0; i < bindings->n_children; i++) {
+                Node* b = bindings->children[i];
+                if (b->type != N_LIST || b->n_children < 1) continue;
+                if (b->n_children >= 2
+                    && scan_for_capture(b->children[1], name, in_lambda)) return 1;
+                if (b->children[0]->type == N_SYMBOL
+                    && strcmp(b->children[0]->symbol, name) == 0) rebound = 1;
+            }
+            if (rebound) return 0;
+            for (int i = 3; i < node->n_children; i++)
                 if (scan_for_capture(node->children[i], name, 1)) return 1;
             return 0;
         }

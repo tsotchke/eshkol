@@ -1,0 +1,86 @@
+; set! of an ENCLOSING variable from inside a named-let body must persist
+; after the loop returns — on both substrates.
+;
+; REGRESSION GATE. The VM lowers a named let to (letrec ((loop (lambda ...))))
+; but skipped the open-slot / capture-analysis steps every other lambda
+; lowering performs, so the loop closure mutated a by-VALUE copy of the
+; captured variable: the write was visible during the loop and vanished at
+; loop exit. Silent wrong answer, exit 0, no diagnostic.
+;
+; Covers the whole class: top-level global, nested named lets, an enclosing
+; `let` local, a `do`/`let` nested inside the loop body, a non-numeric value,
+; a named let inside a function (enclosing local AND parameter), and a named
+; let nested inside a named let inside a function.
+
+; 1. top-level global
+(define g1 0)
+(let loop ((i 0)) (if (< i 3) (begin (set! g1 (+ g1 1)) (loop (+ i 1))) #f))
+(display g1) (newline)
+
+; 2. nested named lets, same global
+(define g2 0)
+(let outer ((i 0))
+  (if (< i 2)
+      (begin (let inner ((j 0))
+               (if (< j 3) (begin (set! g2 (+ g2 1)) (inner (+ j 1))) #f))
+             (outer (+ i 1)))
+      #f))
+(display g2) (newline)
+
+; 3. enclosing `let` local, mutated from the loop
+(let ((acc 0))
+  (let loop ((i 0)) (if (< i 3) (begin (set! acc (+ acc 1)) (loop (+ i 1))) #f))
+  (display acc) (newline))
+
+; 4. inner `do` inside the loop body reaches the same global
+(define g3 0)
+(let loop ((i 0))
+  (if (< i 2)
+      (begin (do ((j 0 (+ j 1))) ((= j 3)) (set! g3 (+ g3 1)))
+             (loop (+ i 1)))
+      #f))
+(display g3) (newline)
+
+; 4b. inner `let` inside the loop body reaches the same global.  Kept as its
+; own loop: two sibling block forms in ONE body would also trip the filed
+; `do`/`let` composition corruption (found/consecutive_do_state_leak.esk),
+; which is a different, pre-existing defect and not what this file gates.
+(define g3b 0)
+(let loop ((i 0))
+  (if (< i 2)
+      (begin (let ((one 1)) (set! g3b (+ g3b one))) (loop (+ i 1)))
+      #f))
+(display g3b) (newline)
+
+; 5. non-numeric value (proves it is not an arithmetic artefact)
+(define g4 "before")
+(let loop ((i 0)) (if (< i 2) (begin (set! g4 "after") (loop (+ i 1))) #f))
+(display g4) (newline)
+
+; 6. named let inside a function: enclosing let local
+(define (sum-local n)
+  (let ((acc 0))
+    (let loop ((i 0)) (if (< i n) (begin (set! acc (+ acc i)) (loop (+ i 1))) #f))
+    acc))
+(display (sum-local 5)) (newline)
+
+; 7. named let inside a function: the function's PARAMETER
+(define (bump-param n)
+  (let loop ((i 0)) (if (< i 3) (begin (set! n (+ n 1)) (loop (+ i 1))) #f))
+  n)
+(display (bump-param 10)) (newline)
+
+; 8. named let nested inside a named let inside a function
+(define (bump-nested n)
+  (let outer ((i 0))
+    (if (< i 2)
+        (begin (let inner ((j 0))
+                 (if (< j 2) (begin (set! n (+ n 1)) (inner (+ j 1))) #f))
+               (outer (+ i 1)))
+        #f))
+  n)
+(display (bump-nested 100)) (newline)
+
+; 9. the loop still returns its own value, and the loop variable is untouched
+(display (let loop ((i 0) (acc 0)) (if (< i 4) (loop (+ i 1) (+ acc i)) acc)))
+(newline)
