@@ -2954,6 +2954,62 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # R7RS 5.3.1: a later top-level define wins. The regression covers, on both
+    # the JIT and the AOT lane: value-then-procedure, procedure-then-value,
+    # procedure-then-procedure at the same and at a different arity, a forward
+    # reference from a body compiled before the redefinition (tail and non-tail),
+    # a call written between the two definitions seeing the earlier one, and a
+    # self-recursive redefinition. Before the fix the first case died with
+    # "variable 'g' is not a procedure", the forward references froze on the
+    # first definition, and the intervening call ran the later one.
+    add_test(
+        NAME toplevel_redefinition_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(toplevel_redefinition_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|is not a procedure|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/features/toplevel_redefinition_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_aot'"
+    )
+    set_tests_properties(toplevel_redefinition_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: r7rs-toplevel-redefinition"
+            FAIL_REGULAR_EXPRESSION "FAIL:|is not a procedure|LLVM module verification failed|fatal signal")
+
+    # R7RS 5.3.1, the other direction: once a procedure name has been redefined
+    # to a number, calling it must be REJECTED, not silently dispatched to the
+    # stale procedure. The program is expected to die, so the shell swallows the
+    # exit status and the assertion is on the diagnostic; UNREACHABLE is printed
+    # only if the call was accepted.
+    add_test(
+        NAME toplevel_redefinition_not_procedure_runtime_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME toplevel_redefinition_not_procedure_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/backend/toplevel_redefinition_not_procedure_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/toplevel_redefinition_not_procedure_aot' 2>&1; exit 0"
+    )
+    set_tests_properties(toplevel_redefinition_not_procedure_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "is not a procedure"
+            FAIL_REGULAR_EXPRESSION "UNREACHABLE|LLVM module verification failed|fatal signal")
+
     add_test(
         NAME diff_control_flow_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>
