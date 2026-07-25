@@ -1,0 +1,12 @@
+; FILED: error-object-irritants always answers () on the VM.
+; native -r : (1 2)
+; vm        : ()
+; The VM's `error` is a fixed 1-argument native (fid 237) and native 713 is a
+; stub, so the irritants never reach the condition object — VmError does carry
+; an irritants field. The raise itself is stack-safe with extra arguments and
+; the message survives (both gated in corpus/41_tensor_literals.esk); only the
+; irritant list is missing. Needs a variadic `error` plus a real 713.
+(display (guard (e (#t (error-object-irritants e))) (error "boom" 1 2)))
+(newline)
+(display (guard (e (#t (error-object-message e))) (error "boom" 1 2)))
+(newline)

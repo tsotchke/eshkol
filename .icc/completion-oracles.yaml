@@ -1921,7 +1921,7 @@ oracles:
           event_names: ["vm_parity_gate"]
           event_values: ["PASS"]
         severity: high
-        label: VM parity gate (audit + corpus differential + out-of-subset probes all green)
+        label: VM parity gate (surface audit + corpus differential on both VM axes + out-of-subset probes + fatal-error fail-closed probes all green)
         action: ./scripts/run_vm_parity.sh
 
   # ─────────────────────────────────────────────────────────────────
