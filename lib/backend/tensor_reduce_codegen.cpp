@@ -821,7 +821,7 @@ llvm::Value* TensorCodegen::tensorDot(const eshkol_operations_t* op) {
 
         ctx_.builder().SetInsertPoint(matmul_dims_err);
         ctx_.emitRaiseFmt(
-            "tensor-dot: only supports 1D and 2D tensors (got %lld dimensions)",
+            "tensor-dot: only supports 1D and 2D tensors (got %lldD)",
             {a_num_dims});
 
         ctx_.builder().SetInsertPoint(matmul_dims_ok);
