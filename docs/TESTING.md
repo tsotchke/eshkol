@@ -140,6 +140,76 @@ Per-file divergences are tracked in `tests/wasm_diff/EXCLUSIONS.tsv`
 > The VM parity harness lands with the v1.3.0-evolve release (PR #118); the
 > other four harnesses are already on `master`.
 
+## P8 — escape-closure pillar
+
+**Why:** the earlier pillars find *new* defects well, but a class of bug still
+occasionally reached a downstream consumer before our own tests flagged it. The
+escape-closure pillar closes that gap: for every bug **class** observed in a
+release cycle it adds a generator or gate designed so that the *same class*
+would have been caught here first. Each axis names the escape it closes.
+
+**What (eight axes):**
+
+1. **Binding-form** — every automatic-differentiation operator
+   (`gradient`/`jacobian`/`hessian`/`laplacian`/`curl`/`divergence`/`derivative`)
+   is exercised with its differentiation *point* built in every construction
+   form — numeric literal, `#(…)` literal, `(vector …)`, `(list …)`,
+   `(tensor …)`, a variable, a `let`-binding, a function return, and
+   `(the (vector any) …)` — across arity 1–3, each checked against the
+   closed-form ground truth *and* against every other form. Closes a class where
+   the point was classified from its AST node kind rather than its runtime value
+   (crash or silent-zero the moment the value diverged from the node kind).
+2. **Indirection** — the same operators reached `direct` / through a function
+   parameter / `curried` / stored in a `let` / threaded through two wrapper
+   frames must be byte-identical. Closes a gradient-through-callable arity class.
+3. **Arity sweep** — driven from `tests/coverage/language_surface.json`: every
+   builtin registered on *both* the native and VM backends is called at its
+   documented arity (type-correct args) plus one wrong-arity and one wrong-type
+   call, native vs VM, asserting value parity or the same clean error. A
+   shrink-only baseline (`tests/escape_matrix/arity_parity_baseline.json`)
+   grandfathers known parity gaps; a *new* divergence fails. Closes a
+   VM-vs-native special-form class.
+4. **Property oracles** — reference-free invariants that run on every substrate
+   *independently* (so a shared normalizer can never hide a shared defect):
+   `number->string`∘`string->number` identity over diverse doubles,
+   `read`∘`write` round-trip for data, and exact algebraic identities. Closes a
+   float-printing class a lossy-normalized cross-implementation differential had
+   missed.
+5. **Concurrency fuzz** — seeded `parallel-map` worker corpora (scope-op-heavy,
+   allocating, string, mixed-`#f` closures) at input sizes straddling the pool
+   threshold `{4,15,16,17,64}`, repeated 20×, each compared to the serial-`map`
+   oracle in the same program. Closes a shared-arena scope-stack race; the
+   nightly runs the same corpus under ThreadSanitizer.
+6. **Five-way surface agreement** — a static ratchet cross-checking every
+   builtin across doc mention ↔ manifest entry ↔ native registration ↔ VM
+   dispatch ↔ module provide list, against a shrink-only baseline
+   (`tests/escape_matrix/five_way_baseline.json`). Closes a
+   documented-but-not-registered backend-asymmetry class.
+7. **Fault injection** — a matrix that injects missing / unopenable / malformed
+   source, a bad `(require …)`, a broken `--lib`, a bad output path, an
+   undefined symbol, and a hang into the `-r` and AOT drivers, asserting a
+   nonzero exit and a naming diagnostic. Closes an exit-0-masking class.
+8. **Memory profiles** — workload shapes (AD-training step loop, resident KB
+   tick, proof-search churn, `parallel-map` batch) × `{auto-scope, with-region}`,
+   asserting the machine-independent invariant that peak RSS is *flat* in the
+   iteration count (a leak scales RSS with work). Extends P4.
+
+```bash
+# CI subset (all eight axes, bounded, < ~2 min):
+BUILD_DIR=build scripts/run_p8_escape.sh --quick
+# Full sweep (JIT+AOT+VM lanes, full arity sweep) — also the nightly lane:
+BUILD_DIR=build scripts/run_p8_escape.sh --full
+```
+
+Generators and gates live in `scripts/p8/`; corpora are generated into a
+per-run temp dir (seeded, disk-capped, removed on exit). Trace kind:
+`escape_matrix` (roll-up `p8_escape_matrix_green`). The full JIT+AOT+VM sweep,
+the ThreadSanitizer concurrency lane, and the packaging lanes (Homebrew
+build-from-source, Linux install smoke) run in
+`.github/workflows/adversarial-nightly.yml`. Bugs a generator surfaces but that
+are not yet fixed are quarantined (tracked-open) and recorded under
+`tests/escape_matrix/found/`, flipping to a hard gate automatically when fixed.
+
 ---
 
 ## ICC readiness oracle

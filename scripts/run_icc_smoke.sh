@@ -634,6 +634,23 @@ probe qllm_backward_gradcheck \
 probe wasm_execute_diff_oracle \
     'WASM execute-and-diff: bytecode VM compiled to WebAssembly executes the VM-supported corpus under node and its stdout byte-matches native `eshkol-run -r` (float text RAW; vm-parity newline normalization) — SKIP (77) when emcc/node absent' \
     'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_wasm_differential.sh --quick; rc=$?; [ "$rc" -eq 0 ] || [ "$rc" -eq 77 ]'
+# P8 escape-closure pillar (scripts/run_p8_escape.sh). One roll-up probe
+# runs the bounded CI subset of all eight escape axes — AD binding-form +
+# indirection point/callable sweeps, reference-free property oracles,
+# parallel-map concurrency fuzz, the manifest-driven native-vs-VM arity
+# ratchet, the five-way surface-agreement ratchet, the toolchain
+# fault-injection matrix, and the workload flat-RSS profiles — against a
+# freshly built eshkol-run (+ VM). Each axis is designed to retro-catch a
+# 2026-07 externally-reported bug CLASS. The runner writes per-axis
+# kind:"escape_matrix" events plus the roll-up p8_escape_matrix_green into
+# scripts/icc_traces/escape_matrix.jsonl (its own trace file); this probe
+# additionally fails the compiler-readiness smoke loudly if any axis
+# regresses. The full JIT+AOT+VM sweep and the TSan / packaging lanes run
+# nightly (.github/workflows/adversarial-nightly.yml).
+# ───────────────────────────────────────────────────────────────────
+probe p8_escape_matrix_green \
+    'P8 escape-closure pillar (CI subset): AD binding-form + indirection sweeps, property oracles, parallel-map concurrency fuzz, native-vs-VM arity ratchet, five-way surface agreement, toolchain fault-injection, workload flat-RSS — every axis retro-catches a 2026-07 reported bug class; green with no NEW divergence/masking/regression' \
+    'cd "$REPO_ROOT"; BUILD_DIR="$BUILD_DIR_PATH" bash scripts/run_p8_escape.sh --quick --build-dir "$BUILD_DIR_PATH" >/dev/null 2>&1'
 
 echo
 echo "Trace written: $TRACE_FILE"

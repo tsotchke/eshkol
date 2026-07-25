@@ -1399,9 +1399,17 @@ backed by the existing runtime helper
 <p><strong>Syntax</strong>: <code>(number-&gt;string n)</code>,
 <code>(string-&gt;number str)</code></p>
 <p>Conversion between numbers and strings.</p>
+<p>For inexact (floating-point) numbers, <code>number-&gt;string</code>
+— like <code>display</code> and <code>write</code> — emits the
+<strong>shortest decimal string that reads back as the identical
+<code>double</code></strong> (R7RS 6.2.6): no digits are lost and none
+are fabricated. Integral doubles print without a trailing
+<code>.0</code>. The native compiler and the bytecode VM share one
+conversion routine, so their output is byte-identical.</p>
 <p><strong>Examples</strong>:</p>
-<pre class="scheme"><code>(number-&gt;string 42)     ; =&gt; &quot;42&quot;
-(string-&gt;number &quot;3.14&quot;) ; =&gt; 3.14</code></pre>
+<pre class="scheme"><code>(number-&gt;string 42)         ; =&gt; &quot;42&quot;
+(string-&gt;number &quot;3.14&quot;)     ; =&gt; 3.14
+(number-&gt;string (sqrt 2.0)) ; =&gt; &quot;1.4142135623730951&quot;</code></pre>
 <hr />
 <h2 id="file-io">File &amp; I/O</h2>
 <h3 id="port-operations">Port Operations</h3>
@@ -1868,6 +1876,13 @@ pool. Each element is processed independently — <code>proc</code> must
 be thread-safe (no shared mutable state without synchronization).</p>
 <p>Order is preserved: the output list has the same element ordering as
 the input.</p>
+<p>As of v1.3.4, <code>parallel-map</code> is safe for closures that
+<strong>allocate and return collections</strong> (including closures
+whose bodies use an internal named-let loop or a builtin such as
+<code>memv</code>): scope reclamation degrades to commit-only on pool
+workers sharing the thread-safe arena, so results are <strong>identical
+to serial <code>map</code></strong>. See <a
+href="reference/runtime/parallelism.md#scope-reclamation-on-workers-is-commit-only-v134">parallelism</a>.</p>
 <pre class="scheme"><code>(parallel-map (lambda (x) (* x x)) &#39;(1 2 3 4 5))  ; =&gt; (1 4 9 16 25)</code></pre>
 <h3 id="parallel-fold"><code>parallel-fold</code></h3>
 <p><strong>Syntax:</strong> <code>(parallel-fold proc init list)</code>
