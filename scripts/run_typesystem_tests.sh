@@ -68,8 +68,18 @@ for test_file in tests/typesystem/*.esk; do
         *)            ;; # no extra flags
     esac
 
-    # Compile, capturing stderr separately
-    ./$BUILD_DIR/eshkol-run "$test_file" $flags -o /tmp/typesystem_test_bin > /dev/null 2>/tmp/typesystem_test_stderr.txt
+    # Compile, capturing stderr separately.
+    #
+    # `|| true` is load-bearing: this is a NEGATIVE suite, so a nonzero compile
+    # exit is the expected outcome for most fixtures, and `set -e` at the top of
+    # this script would otherwise abort the whole run at the first one. That went
+    # unnoticed only because the faults these fixtures inject used to compile
+    # successfully anyway — arity_mismatch_test.esk reported its error and then
+    # exited 0 (the ESH-0362 fail-open). Once arity errors became fatal the very
+    # first fixture killed the harness mid-file, with no PASS/FAIL line and no
+    # summary. Verdicts come from the EXPECT-STDERR / EXPECT-NO-STDERR patterns
+    # below, never from the exit status.
+    ./$BUILD_DIR/eshkol-run "$test_file" $flags -o /tmp/typesystem_test_bin > /dev/null 2>/tmp/typesystem_test_stderr.txt || true
     compile_exit=$?
 
     # Check all EXPECT-STDERR patterns

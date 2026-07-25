@@ -366,6 +366,28 @@ across every new-feature family).
   meanings (`cwd` is the REQUIRED SECOND positional of every `process-spawn*`,
   and the THIRD positional of the `run-*` wrappers is the timeout).
 
+- **`iota` silently ignored its `start` and `step` arguments.** The stdlib
+  defined `iota` as a strictly 1-argument function while callers (including
+  `tests/features/new_functions_test.esk`, comments and all) were already writing
+  `(iota 5 1)` and `(iota 5 0 2)`. Because codegen discarded arguments past the
+  callee's parameter count (the ESH-0362 fail-open above), both returned
+  `(0 1 2 3 4)` — the wrong list, with no error and no build-failing warning, and
+  a test that "passed" while asserting nothing about start or step. `iota` now
+  takes the optional positional `start` and `step` of SRFI-1 / R7RS-large
+  (`(iota 5 1)` → `(1 2 3 4 5)`, `(iota 5 0 2)` → `(0 2 4 6 8)`), delegating to
+  the existing `iota-from` / `iota-step`. Found by making arity errors fatal,
+  which turned the silent wrong answer into a compile error.
+- **The type-system negative suite aborted at its first fixture.**
+  `scripts/run_typesystem_tests.sh` runs under `set -e` but invoked the compiler
+  unguarded — and it is a *negative* suite, where a nonzero compile exit is the
+  expected outcome. This never fired only because the faults its fixtures inject
+  used to compile successfully anyway (`arity_mismatch_test.esk` reported its
+  error and exited 0). With arity errors now fatal, the first fixture killed the
+  harness mid-file, with no PASS/FAIL line and no summary — a suite that reports
+  nothing looks nothing like a suite that fails. The compile invocation no longer
+  trips `set -e`; verdicts come from the EXPECT-STDERR patterns, never the exit
+  status. All 20 fixtures now run (20/20).
+
 - **`(require stdlib)` (and any no-op `require`) silently shifted every
   subsequent top-level binding down one slot.** The bytecode compiler lowers a
   `require` of the always-available prelude to nothing, but the top-level (and
