@@ -26,6 +26,8 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 >	vm-supported	
 >=	vm-supported	
 _format-list	vm-supported	
+_region-close-list	vm-supported	
+_region-open	vm-supported	
 abs	vm-supported	
 acons	gap	no VM name binding
 acos	vm-supported	
@@ -691,6 +693,9 @@ regex-match	vm-supported
 regex-match-groups	vm-supported	
 regex-match?	vm-supported	
 regex-split	vm-supported	
+region-close	native-only-justified	#341 region handles: the name resolves on both substrates (VM via the prelude fold onto _region-close-list) and the handle protocol, its validation and every error message are byte-identical (one shared C implementation; pinned by corpus/region_handle_contract.esk). RECLAMATION is native-only: the VM heap has no escape evacuator to deep-promote kept values with, the same reason with-region is a pass-through there. Output parity holds; only the memory reclamation is absent.
+region-open	native-only-justified	#341 region handles: see region-close. Open/close/validate and every error message match; the VM records a bookkeeping-only handle whose close frees nothing.
+region-open?	vm-supported	
 relu	vm-supported	
 remainder	vm-supported	
 remove	gap	no VM name binding

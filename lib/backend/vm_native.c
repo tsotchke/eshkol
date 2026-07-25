@@ -5,6 +5,21 @@ extern int64_t eshkol_linear_solve(
     int64_t b_ndim, const int64_t* b_dims,
     const double* A, const double* b, double* x);
 
+/* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
+ * rather than included: this translation unit is C and does not pull in the
+ * hosted arena header, but the handle table, its generation-tagged validation
+ * and its message text must be the SAME code the native backend uses so the two
+ * substrates cannot drift. Keep in sync with lib/core/arena_memory.h. */
+#define ESHKOL_RH_OK        0
+#define ESHKOL_RH_ERR_STALE 1
+extern int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint,
+                                         int reclaim, int* status);
+extern int eshkol_region_handle_close(int64_t token, void* vals, uint64_t n);
+extern int eshkol_region_handle_live(int64_t token);
+extern const char* eshkol_region_handle_status_message(int status);
+extern uint64_t eshkol_region_handle_seq_mark(void);
+extern void eshkol_region_handle_seq_unwind_to(uint64_t mark);
+
 /* Heap pointer validation — prevent OOB heap access from untrusted values.
  * Used before any vm->heap.objects[val.as.ptr] dereference. */
 #define VM_VALIDATE_HEAP(vm, val) \
@@ -5750,6 +5765,14 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
             vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
         vm_promise_eval_unwind_to(
             vm, vm->handler_stack[vm->n_handlers].promise_mark);
+        /* #341: retire every region handle opened after this handler was
+         * installed, mirroring the native raise path (which additionally frees
+         * the regions and promotes the raised value out of them — there is
+         * nothing to free or promote here, the VM close is bookkeeping-only).
+         * Doing it keeps handle liveness after a caught exception observably
+         * identical on both substrates. */
+        eshkol_region_handle_seq_unwind_to(
+            vm->handler_stack[vm->n_handlers].region_handle_mark);
         vm->sp = vm->handler_stack[vm->n_handlers].sp;
         vm->fp = vm->handler_stack[vm->n_handlers].fp;
         vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
@@ -14142,6 +14165,83 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm_push(vm, FLOAT_VAL(lo + eshkol_qrng_double() * (hi - lo)));
         }
+        break;
+    }
+
+    /* ── User-reachable region handles (#341), IDs 2210-2212 ──────────────
+     *
+     * These call the SAME implementation the native backend does
+     * (lib/core/runtime_regions.cpp), with reclaim = 0: the handle protocol,
+     * its generation-tagged validation and its error text are byte-identical
+     * across substrates, but a close here reclaims nothing because the VM heap
+     * has no escape evacuator to promote kept values out with — exactly why
+     * `with-region` is a pass-through on the VM too. Errors are raised through
+     * vm_raise_error_msg with the shared message text, so a `guard` around a
+     * misused handle observes identical output on both substrates.
+     * See tests/vm_parity/PARITY.tsv. */
+    case 2210: { /* _region-open(name-or-#f, size-or-#f) -> handle token */
+        Value size_val = vm_pop(vm), name_val = vm_pop(vm);
+        const char* name = NULL;
+        uint64_t size_hint = 0;
+        const int have_size = (size_val.type != VAL_BOOL || size_val.as.b) &&
+                              size_val.type != VAL_NIL;
+        const int have_name = (name_val.type != VAL_BOOL || name_val.as.b) &&
+                              name_val.type != VAL_NIL;
+        if (have_size) {
+            const double d = as_number(size_val);
+            size_hint = d > 0 ? (uint64_t)d : 0;
+        }
+        if (have_name) {
+            if (!have_size && (name_val.type == VAL_INT || name_val.type == VAL_FLOAT)) {
+                /* Same rule as the native backend: a lone numeric argument is
+                 * the size hint, not the name. */
+                const double d = as_number(name_val);
+                size_hint = d > 0 ? (uint64_t)d : 0;
+            } else {
+                VmString* s = vm_value_as_string(vm, name_val);
+                if (s) name = s->data;
+            }
+        }
+        int status = ESHKOL_RH_OK;
+        const int64_t token = eshkol_region_handle_open(name, size_hint, 0, &status);
+        if (status != ESHKOL_RH_OK) {
+            vm_raise_error_msg(vm, eshkol_region_handle_status_message(status));
+            break;
+        }
+        vm_push(vm, INT_VAL(token));
+        break;
+    }
+
+    case 2211: { /* _region-close-list(handle, keeps) -> keep | list | '() */
+        Value keeps = vm_pop(vm), handle = vm_pop(vm);
+        if (handle.type != VAL_INT) {
+            vm_raise_error_msg(vm,
+                eshkol_region_handle_status_message(ESHKOL_RH_ERR_STALE));
+            break;
+        }
+        /* No promotion: a bookkeeping-only close reclaims nothing, so every
+         * kept value is already where it will stay. */
+        const int status = eshkol_region_handle_close(handle.as.i, NULL, 0);
+        if (status != ESHKOL_RH_OK) {
+            vm_raise_error_msg(vm, eshkol_region_handle_status_message(status));
+            break;
+        }
+        /* Return shape must match the native backend exactly: '() for no keeps,
+         * the single value for one, the list for several. */
+        if (keeps.type != VAL_PAIR) {
+            vm_push(vm, NIL_VAL);
+        } else if (vm->heap.objects[keeps.as.ptr]->cons.cdr.type != VAL_PAIR) {
+            vm_push(vm, vm->heap.objects[keeps.as.ptr]->cons.car);
+        } else {
+            vm_push(vm, keeps);
+        }
+        break;
+    }
+
+    case 2212: { /* region-open?(handle) -> boolean; never raises */
+        Value handle = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(handle.type == VAL_INT &&
+                             eshkol_region_handle_live(handle.as.i) != 0));
         break;
     }
 

@@ -28,6 +28,45 @@ across every new-feature family).
 
 ### Added
 
+- **User-reachable region handles: `region-open` / `region-close` /
+  `region-open?` (#341).** A non-lexical surface over the region machinery
+  `with-region` already uses, for loop shapes where a lexical block is awkward.
+  The motivating case is an autodiff training step: the automatic per-iteration
+  nursery (ESH-0214e) disqualifies any loop body containing a `gradient` op, a
+  `set!` or a `tensor-set!` — a training step trips all three, by design — so a
+  161-parameter MLP doing a full-batch `gradient` per step grew ~123 MB/step
+  unbounded. `(region-open ['name] [size])` returns an opaque exact-integer
+  handle; `(region-close handle v ...)` deep-promotes the named values out
+  through the validated escape evacuator (interior-pointer walk included) and
+  reclaims everything else. Measured on that loop, peak RSS is **flat** at
+  131-132 MB across 5/10/20/40 steps against 632/1258/2510/5013 MB unscoped,
+  with bit-identical trained parameters. `with-region` remains the recommended
+  default and is unchanged: it cannot be left un-closed.
+
+  Safety is the whole design. The handle is a slot index plus a **generation**
+  counter rather than a pointer, so every stale token is detectably stale:
+  double close, use after close, a token from another thread and a fabricated
+  integer all fail validation and raise a clean catchable error instead of
+  touching freed memory. Closing an outer handle while an inner one is live is a
+  **defined cascade** (inner regions closed innermost-first, keeps promoted at
+  every level, inner tokens invalidated) rather than an error, because that is
+  the identical operation an unwind performs. Never closing is bounded: the 65th
+  simultaneous handle raises. A loop using handles is excluded from the
+  automatic nursery, so the two mechanisms never nest unexpectedly.
+
+- **Non-local exits now unwind regions (#341).** A `raise`/`guard` or a `call/cc`
+  escape crossing an open region closes it, after **deep-promoting the in-flight
+  value** (the raised value, or the value delivered to the continuation) out of
+  every region being torn down, and restoring the allocation-routing slot before
+  any arena is freed. The region depth is recorded as a mark beside the existing
+  `wind_mark` / `promise_mark` on the exception-handler record and the captured
+  continuation state. This also **fixes `with-region`**, which previously leaked
+  its region on a `raise` out of the body *and* left the shared allocation slot
+  pointing at an arena that was never freed. All teardown — explicit close,
+  out-of-order cascade, `with-region` exit, raise, continuation escape — now
+  funnels through one `eshkol_region_unwind_to()` primitive, so the structured
+  and unstructured surfaces cannot drift apart.
+
 - **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
   recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
   ~500x faster than the deliberately crippled native FP64 pipeline on

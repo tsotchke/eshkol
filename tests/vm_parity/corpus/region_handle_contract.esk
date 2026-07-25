@@ -1,0 +1,92 @@
+;; #341 — user-reachable region handles: uniform cross-substrate contract.
+;;
+;; The handle protocol (open -> live -> close -> not-live), the return shape of
+;; region-close for 0 / 1 / many keeps, and every misuse outcome must be
+;; byte-identical on native and on the bytecode VM. Both substrates dispatch into
+;; the same C implementation in lib/core/runtime_regions.cpp, so this pins that
+;; they cannot drift.
+;;
+;; Errors are observed HANDLED (through `guard`), never as raw output: the native
+;; path echoes the message on stderr before raising while the VM does not, so the
+;; guarded observation is the comparable one — the same rule the bytevector
+;; bounds-contract corpus file follows.
+;;
+;; What is deliberately NOT compared here is reclamation. On the VM a close is
+;; bookkeeping-only (no escape evacuator in the VM heap, the same reason
+;; with-region is a pass-through there); see tests/vm_parity/PARITY.tsv. Peak-RSS
+;; reclamation is gated separately by tests/memory/region_handle_training_rss_test.sh.
+
+;; ── protocol: open, live, close returning the kept value, then not live ──
+(define h1 (region-open))
+(display (region-open? h1))
+(newline)
+(display (region-close h1 (list 1 2 3)))
+(newline)
+(display (region-open? h1))
+(newline)
+
+;; ── return shape: no keeps -> '() ──
+(define h2 (region-open 'named))
+(display (region-close h2))
+(newline)
+
+;; ── return shape: several keeps -> a list, in argument order ──
+(define h3 (region-open 'named 65536))
+(display (region-close h3 (list 'a 'b) 'c 4))
+(newline)
+
+;; ── a lone numeric argument is the size hint, not the name ──
+(define h4 (region-open 32768))
+(display (region-close h4 'sized))
+(newline)
+
+;; ── double close raises, catchably ──
+(define h5 (region-open))
+(display (region-close h5 'first))
+(newline)
+(display (guard (e (#t 'caught-double-close)) (region-close h5) 'NOT-CAUGHT))
+(newline)
+
+;; ── a fabricated token never validates, and probing it never raises ──
+(display (region-open? 987654321))
+(newline)
+(display (guard (e (#t 'caught-fabricated)) (region-close 987654321) 'NOT-CAUGHT))
+(newline)
+
+;; ── a zero/negative token is never a handle ──
+(display (region-open? 0))
+(newline)
+(display (region-open? -5))
+(newline)
+
+;; ── out-of-order close is a defined cascade: closing the outer handle also
+;;    closes the inner one and invalidates its token ──
+(define outer (region-open 'outer))
+(define inner (region-open 'inner))
+(display (region-close outer 'kept-through-cascade))
+(newline)
+(display (region-open? inner))
+(newline)
+(display (region-open? outer))
+(newline)
+(display (guard (e (#t 'caught-cascaded-inner)) (region-close inner) 'NOT-CAUGHT))
+(newline)
+
+;; ── a raise crossing an open handle closes it; the handler sees the raised
+;;    value intact and the handle dead ──
+(define crossed #f)
+(display (guard (e (#t (list 'handler-got e)))
+           (set! crossed (region-open 'crossed))
+           (raise (list 'payload 42))))
+(newline)
+(display (region-open? crossed))
+(newline)
+(display (guard (e (#t 'caught-after-unwind)) (region-close crossed) 'NOT-CAUGHT))
+(newline)
+
+;; ── handles are reusable after close: opening again must succeed ──
+(define h6 (region-open))
+(display (region-close h6 'reopened))
+(newline)
+(display "region-handle-contract-done")
+(newline)
