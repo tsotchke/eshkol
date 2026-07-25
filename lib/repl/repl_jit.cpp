@@ -262,6 +262,8 @@ extern "C" {
     int64_t eshkol_unwrap_list_index(const eshkol_tagged_value_t* tv);
     int64_t eshkol_tensor_linear_from_index_arg(const eshkol_tagged_value_t* tv,
                                                 const int64_t* dims, int64_t ndim);
+    int64_t eshkol_tensor_slice_offset_from_index_arg(const eshkol_tagged_value_t* tv,
+                                                     const int64_t* dims, int64_t ndim);
     int64_t eshkol_tensor_index_arg_count(const eshkol_tagged_value_t* tv);
     int64_t eshkol_vref_unwrap_index(const eshkol_tagged_value_t* vec_tv,
                                      const eshkol_tagged_value_t* idx_tv);
@@ -1498,6 +1500,7 @@ void ReplJITContext::registerRuntimeSymbols() {
     ADD_SYMBOL(eshkol_utf8_substring);
     ADD_SYMBOL(eshkol_unwrap_list_index);
     ADD_SYMBOL(eshkol_tensor_linear_from_index_arg);
+    ADD_SYMBOL(eshkol_tensor_slice_offset_from_index_arg);
     ADD_SYMBOL(eshkol_tensor_index_arg_count);
     ADD_SYMBOL(eshkol_vref_unwrap_index);
     ADD_SYMBOL(eshkol_tensor_rect_fill);
@@ -2265,77 +2268,35 @@ void ReplJITContext::registerLambdaVar(const std::string& var_name) {
 }
 
 /**
- * @brief Searches a set of platform-specific candidate paths for a precompiled stdlib.o object file.
- * @return The first existing candidate path, or an empty string if none is found.
+ * @brief Locates the precompiled stdlib.o object file.
+ *
+ * Resolution goes through the shared, location-major install roots
+ * (platform::install_library_roots): $ESHKOL_LIB_DIR, then the directory
+ * holding this executable's real path and its ../lib{,/eshkol}, then the
+ * working directory's build trees, then the system prefixes. The driver's
+ * run-cache key fingerprints the same resolution (eshkol-run.cpp
+ * findBuildArtifact), so the cache can never be keyed on a different copy
+ * than the one loaded here.
+ *
+ * @return The resolved path, or an empty string if no root carries it.
  */
-// Find the pre-compiled stdlib.o file
 static std::string findStdlibObject() {
-    auto cwd = platform::current_directory();
-    auto exe_dir = platform::executable_directory();
-
-#ifdef _WIN32
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "stdlib.o",
-        exe_dir / "../lib/stdlib.o",
-        exe_dir / "../lib/eshkol/stdlib.o",
-        cwd / "stdlib.o",
-        cwd / "build/stdlib.o",
-        cwd.parent_path() / "build/stdlib.o",
-    };
-#else
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "stdlib.o",
-        exe_dir / "../lib/stdlib.o",
-        exe_dir / "../lib/eshkol/stdlib.o",
-        cwd / "stdlib.o",
-        cwd / "build/stdlib.o",
-        cwd.parent_path() / "build/stdlib.o",
-    };
-#endif
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.o");
-    candidates.emplace_back("/usr/lib/eshkol/stdlib.o");
-#endif
-
-    return platform::find_first_existing(candidates);
+    return platform::resolve_install_artifact(
+        platform::install_library_roots(), {"stdlib.o"}).path;
 }
 
 /**
- * @brief Searches a set of platform-specific candidate paths for a precompiled stdlib.bc bitcode file.
- * @return The first existing candidate path, or an empty string if none is found.
+ * @brief Locates the precompiled stdlib.bc bitcode file.
+ *
+ * Same shared, location-major roots as findStdlibObject() — the JIT must load
+ * the bitcode belonging to the install whose compiler is running, not a copy
+ * left in a system prefix by an older one.
+ *
+ * @return The resolved path, or an empty string if no root carries it.
  */
-// Find the pre-compiled stdlib.bc bitcode file
 static std::string findStdlibBitcode() {
-    auto cwd = platform::current_directory();
-    auto exe_dir = platform::executable_directory();
-
-#ifdef _WIN32
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "stdlib.bc",
-        exe_dir / "../lib/stdlib.bc",
-        exe_dir / "../lib/eshkol/stdlib.bc",
-        cwd / "stdlib.bc",
-        cwd / "build/stdlib.bc",
-        cwd.parent_path() / "build/stdlib.bc",
-    };
-#else
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "stdlib.bc",
-        exe_dir / "../lib/stdlib.bc",
-        exe_dir / "../lib/eshkol/stdlib.bc",
-        cwd / "stdlib.bc",
-        cwd / "build/stdlib.bc",
-        cwd.parent_path() / "build/stdlib.bc",
-    };
-#endif
-
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/lib/eshkol/stdlib.bc");
-    candidates.emplace_back("/usr/lib/eshkol/stdlib.bc");
-#endif
-
-    return platform::find_first_existing(candidates);
+    return platform::resolve_install_artifact(
+        platform::install_library_roots(), {"stdlib.bc"}).path;
 }
 
 // Discover and register stdlib symbols dynamically from .bc metadata.
@@ -3090,40 +3051,37 @@ static std::vector<eshkol_ast_t> parseAllAstsFromString(const std::string& conte
  * @brief Searches a set of platform-specific candidate paths for the Eshkol `lib` directory (module source root).
  * @return The first existing candidate directory path, or an empty string if none is found.
  */
-// Find the lib directory (matches eshkol-run.cpp logic)
+// Find the lib directory (matches eshkol-run.cpp find_lib_dir())
 static std::string findLibDir() {
-    auto cwd = platform::current_directory();
-    auto exe_dir = platform::executable_directory();
-
     // Prefer the Eshkol installation that actually owns stdlib.esk.  A
     // release package also contains ../lib for native archives; accepting the
     // first existing directory therefore selects the archive directory and
     // makes installed source modules such as agent.regex invisible to the
-    // cache-disabled JIT.  Keep this order aligned with eshkol-run.cpp: the
-    // executable-relative installed source tree wins over a downstream
-    // project's unrelated lib/ directory.
-    std::vector<std::filesystem::path> candidates = {
-        exe_dir / "lib",
-        exe_dir / "../lib",
-        exe_dir / "../share/eshkol/lib",
-        cwd / "lib",
-        cwd.parent_path() / "lib",
-        cwd / "share/eshkol/lib",
-    };
+    // cache-disabled JIT.  platform::install_module_roots() supplies the
+    // shared precedence — $ESHKOL_LIB_DIR, then the real executable's install
+    // tree, then the cwd, then the system prefixes — so the executable-
+    // relative installed source tree wins over a downstream project's
+    // unrelated lib/ directory.
+    const auto roots = platform::install_module_roots();
 
-#ifndef _WIN32
-    candidates.emplace_back("/usr/local/share/eshkol/lib");
-    candidates.emplace_back("/usr/share/eshkol/lib");
-#endif
-
-    for (const auto& candidate : candidates) {
+    for (const auto& root : roots) {
         std::error_code ec;
-        if (std::filesystem::exists(candidate / "stdlib.esk", ec)) {
-            return candidate.string();
+        if (std::filesystem::exists(root.path / "stdlib.esk", ec)) {
+            return root.path.string();
         }
     }
 
-    return platform::find_first_existing(candidates);
+    for (const auto& root : roots) {
+        if (root.origin == platform::InstallOrigin::EnvOverride) {
+            continue;
+        }
+        std::error_code ec;
+        if (std::filesystem::is_directory(root.path, ec)) {
+            return root.path.string();
+        }
+    }
+
+    return {};
 }
 
 // Global lib directory cache
@@ -3192,23 +3150,18 @@ static std::string resolveModulePath(const std::string& module_name, const std::
         g_lib_dir = findLibDir();
     }
 
-    // Search order:
-    // 1. Current directory (relative to base_dir)
-    // 2. Library path (lib/)
-    // 3. Environment variable $ESHKOL_PATH (colon-separated)
+    // Search order (kept identical to eshkol-run.cpp resolve_module_path):
+    // 1. The requiring file's own directory (the program's own sources)
+    // 2. $ESHKOL_PATH — the explicit override, which `-I` flags feed into
+    // 3. The installed library directory (lib/)
+    // The override precedes the install for the same reason ESHKOL_LIB_DIR
+    // precedes every archive location: a search path the user named must not
+    // be silently outranked by a copy that happens to ship with the compiler.
 
     // Try current directory first
     std::filesystem::path current_path = std::filesystem::path(base_dir) / path_part;
     if (std::filesystem::exists(current_path)) {
         return std::filesystem::canonical(current_path).string();
-    }
-
-    // Try library directory
-    if (!g_lib_dir.empty()) {
-        std::filesystem::path lib_path = std::filesystem::path(g_lib_dir) / path_part;
-        if (std::filesystem::exists(lib_path)) {
-            return std::filesystem::canonical(lib_path).string();
-        }
     }
 
     // Try $ESHKOL_PATH
@@ -3221,6 +3174,14 @@ static std::string resolveModulePath(const std::string& module_name, const std::
             if (std::filesystem::exists(env_path)) {
                 return std::filesystem::canonical(env_path).string();
             }
+        }
+    }
+
+    // Try library directory
+    if (!g_lib_dir.empty()) {
+        std::filesystem::path lib_path = std::filesystem::path(g_lib_dir) / path_part;
+        if (std::filesystem::exists(lib_path)) {
+            return std::filesystem::canonical(lib_path).string();
         }
     }
 
