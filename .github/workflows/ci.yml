@@ -485,6 +485,28 @@ jobs:
             ${{ matrix.build_dir }}/stdlib.o
             ${{ matrix.build_dir }}/stdlib.bc
 
+      # Evidence must survive CI (ADR-0010 §2.2; closes AR1 gap A5). Any lane
+      # that emits ICC oracle traces — the execution-backed coverage step, the
+      # pillar runners — writes them under scripts/icc_traces/ and the .icc
+      # oracle-view dirs, which are git-ignored and were therefore discarded
+      # when the runner was torn down, so "readiness=100" never had CI-side
+      # evidence behind it. Upload whatever a lane produced as a per-lane
+      # artifact. `if: always()` keeps evidence from failing lanes;
+      # `if-no-files-found: ignore` makes this a no-op on lanes that emit
+      # nothing. Append-only and deliberately a distinct step from the
+      # trace-emitting steps that sibling branches add, so those merge without
+      # a conflict here.
+      - name: Upload ICC evidence traces
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: icc-evidence-${{ matrix.name }}
+          path: |
+            scripts/icc_traces/
+            .icc/runtime-traces/
+            .icc/runtime-traces-oracle-view/
+          if-no-files-found: ignore
+
   windows-matrix:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
