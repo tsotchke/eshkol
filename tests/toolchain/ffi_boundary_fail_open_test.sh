@@ -156,6 +156,18 @@ cat > "$happy" <<'ESK'
 (display "spawn-ok=") (display (if (process-running? h) "yes" (if h "yes" "no"))) (newline)
 (process-wait h 10000)
 (process-destroy h)
+;; #f in a pointer position is LEGAL — it is how Eshkol spells a NULL pointer
+;; argument. process-spawn passes a NULL envp through a `ptr` parameter, and #f
+;; for cwd means "inherit the caller's". The guard must not reject either.
+(define h2 (process-spawn "/bin/echo envp-null-ok" "."))
+(process-close-stdin h2)
+(process-wait h2 10000)
+(display (process-read-all-stdout h2 4096))
+(process-destroy h2)
+(define h3 (process-spawn-argv (list "/bin/echo" "cwd-null-ok") #f))
+(process-wait h3 10000)
+(display (process-read-all-stdout h3 4096))
+(process-destroy h3)
 ESK
 
 # ── ESH-0362 cell 1: too few arguments, -r ──────────────────────────────────
@@ -275,7 +287,9 @@ ec="$(run "$log" "$ESHKOL_RUN" -r "$happy")"
 grep -q "exit=0" "$log" || fail "-r correct-arity spawn: /bin/echo did not report exit 0"
 grep -q "hello-ffi-guard" "$log" || fail "-r correct-arity spawn did not capture child stdout"
 grep -q "spawn-ok=yes" "$log" || fail "-r correct-arity process-spawn-argv returned no handle"
-echo "  ok: -r correct-arity spawn ran /bin/echo and captured its output"
+grep -q "envp-null-ok" "$log" || fail "-r process-spawn with a NULL envp (#f in a ptr param) was rejected"
+grep -q "cwd-null-ok" "$log" || fail "-r process-spawn-argv with #f cwd (NULL pointer argument) was rejected"
+echo "  ok: -r correct-arity spawn ran /bin/echo, captured its output, and accepted #f (NULL) pointer args"
 
 happy_bin="$tmp/happy.bin"
 rm -f "$happy_bin"
