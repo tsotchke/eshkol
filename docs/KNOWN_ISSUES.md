@@ -147,6 +147,17 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
   exact. The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
   byte-identical to `(gradient f point)`. Curried *scalar* higher-order
   derivatives are exact to 3rd order (ESH-0369).
+- **`derivative-n` / `taylor` applied to a derivative *closure* returns 0.** With
+  `(define df (derivative f))`, `(derivative-n df x k)` yields `0` — the tower
+  path seeds a heap Taylor tower, but the closure `(derivative f)` returns is
+  jet-transparent, not tower-transparent, so it reads the tower-tagged argument
+  as a jet and the result carries no tower for extraction to read. Every
+  *well-defined* route to the same number is exact: `(derivative-n f x k)` on the
+  base function, `(derivative df)` / `(derivative (derivative f))` (the curried
+  spelling, ESH-0369), and `(derivative (lambda (x) (df x)) x0)`. Closing this
+  needs a "differentiate a tower" runtime step (`c_k(f') = (k+1)·c_{k+1}(f)`)
+  inside the emitted derivative wrapper — a build item, not a limit of the
+  mathematics.
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
 - **Resident training loops accumulate RSS unless each step is scoped.** The
