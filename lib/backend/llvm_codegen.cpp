@@ -1560,6 +1560,28 @@ private:
     // seeded with the outer's value at the call site.
     std::unordered_map<llvm::Function*, std::vector<std::string>> named_let_captures;
 
+    // ESCAPED NAMED-LET LOOP PROCEDURE.  A named-let loop function's LLVM
+    // signature is (params..., one capture POINTER per captured free var), so
+    // it can only be entered by a caller that knows the capture list.  When the
+    // loop procedure is used as a first-class VALUE — `(set! g loop)`,
+    // `(cons loop '())`, `(map loop xs)` — codegenVariable used to fall through
+    // to the generic `function_table` path and hand back the bare Function*,
+    // whose capture parameters the closure dispatcher then filled with whatever
+    // happened to be in the argument registers.  Calling the leaked procedure
+    // dereferenced that garbage as a capture cell (SIGSEGV).  These two maps let
+    // codegenVariable build a REAL closure instead: the env holds one tagged
+    // int64 per capture (the address of the shared cell, exactly the convention
+    // `capturePointerTagFromCurrentFunction` already uses), and a per-loop
+    // trampoline re-derefs those slots back into the pointer arguments the loop
+    // function expects.
+    struct NamedLetEscapeInfo {
+        llvm::Function* loop_func = nullptr;
+        std::vector<std::string> captures;
+        uint64_t arity = 0;
+    };
+    std::unordered_map<std::string, NamedLetEscapeInfo> named_let_escapes;
+    std::unordered_map<llvm::Function*, llvm::Function*> named_let_escape_thunks;
+
     // HoTT TYPE TRACKING: Maps variable names to their compile-time HoTT types
     // This enables type-directed optimizations when both operand types are known
     std::unordered_map<std::string, eshkol::hott::TypeId> symbol_hott_types;
@@ -10824,6 +10846,28 @@ private:
                 Value* closure_ptr = builder->CreateCall(getArenaAllocateClosureWithHeaderFunc(),
                                                          {arena_ptr, func_ptr_int, packed_info, sexpr_ptr, return_type_info, closure_name});
                 return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+            }
+        }
+
+        // ESCAPED NAMED-LET LOOP PROCEDURE used as a VALUE.  This must precede
+        // the generic function_table path below: a loop function's signature
+        // carries one capture POINTER per captured free variable, so handing
+        // back the bare Function* (or wrapping it in a capture-less closure)
+        // leaves those parameters to be filled with whatever the closure
+        // dispatcher happens to pass — dereferenced as a capture cell on the
+        // first read of a captured variable, which is a wild-pointer SIGSEGV
+        // rather than a wrong answer.  Build a genuine closure over the shared
+        // capture cells instead, so a leaked loop procedure keeps seeing the
+        // same storage the loop itself wrote through (the cells are arena-moved
+        // by codegenNamedLet when the body set!s them, so they outlive the
+        // enclosing frame).
+        {
+            auto escape_it = named_let_escapes.find(var_name);
+            if (escape_it != named_let_escapes.end() && escape_it->second.loop_func) {
+                if (Value* escaped =
+                        codegenNamedLetEscapeClosure(var_name, escape_it->second)) {
+                    return escaped;
+                }
             }
         }
 
@@ -29413,6 +29457,176 @@ private:
     }
 
 
+    /**
+     * @brief Build (once per loop function) the trampoline that lets an escaped
+     *        named-let loop procedure be entered through the ordinary closure ABI.
+     *
+     * A named-let loop function is `tagged f(tagged p0..pk-1, ptr c0..cm-1)`,
+     * where each `ci` points DIRECTLY at the shared cell holding capture `i`.
+     * The closure dispatcher, by contrast, passes `&env.captures[i]` — a slot
+     * holding a tagged value. The trampoline bridges exactly that one level:
+     * each slot carries the cell address as a tagged INT64 (the same convention
+     * `capturePointerTagFromCurrentFunction` uses when a body lambda captures a
+     * `_cap` argument), so the thunk loads it, turns it back into a pointer, and
+     * forwards it. Without the trampoline the dispatcher would hand the loop
+     * function pointers to the env slots themselves and every read of a captured
+     * variable would return the tag bytes instead of the value.
+     *
+     * Emitted lazily: only a named let whose loop procedure is actually used as
+     * a value pays for it, so the stdlib's many ordinary loops emit no extra IR.
+     */
+    Function* getNamedLetEscapeThunk(const NamedLetEscapeInfo& info) {
+        if (!info.loop_func) return nullptr;
+        auto cached = named_let_escape_thunks.find(info.loop_func);
+        if (cached != named_let_escape_thunks.end()) return cached->second;
+
+        const size_t k = (size_t)info.arity;
+        const size_t m = info.captures.size();
+
+        std::vector<Type*> param_types(k, tagged_value_type);
+        for (size_t i = 0; i < m; i++) {
+            param_types.push_back(PointerType::getUnqual(*context));
+        }
+        FunctionType* thunk_type = FunctionType::get(tagged_value_type, param_types, false);
+        Function* thunk = Function::Create(
+            thunk_type, Function::InternalLinkage,
+            info.loop_func->getName().str() + "_escape", module.get());
+
+        IRBuilderBase::InsertPoint old_point = builder->saveIP();
+        Function* prev_function = current_function;
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", thunk);
+        builder->SetInsertPoint(entry);
+        current_function = thunk;
+
+        std::vector<Value*> forwarded;
+        forwarded.reserve(k + m);
+        auto arg_it = thunk->arg_begin();
+        for (size_t i = 0; i < k; i++, ++arg_it) {
+            arg_it->setName("p" + std::to_string(i));
+            forwarded.push_back(&*arg_it);
+        }
+        for (size_t i = 0; i < m; i++, ++arg_it) {
+            arg_it->setName(info.captures[i] + "_slot");
+            Value* slot_value = builder->CreateLoad(tagged_value_type, &*arg_it,
+                                                    info.captures[i] + ".slot");
+            Value* cell_int = unpackInt64FromTaggedValue(slot_value);
+            forwarded.push_back(builder->CreateIntToPtr(
+                cell_int, PointerType::getUnqual(*context), info.captures[i] + ".cell"));
+        }
+
+        Value* result = builder->CreateCall(info.loop_func, forwarded);
+        builder->CreateRet(result);
+
+        current_function = prev_function;
+        builder->restoreIP(old_point);
+        named_let_escape_thunks[info.loop_func] = thunk;
+        return thunk;
+    }
+
+    /**
+     * @brief Materialise a first-class closure for a named-let loop procedure
+     *        used as a VALUE, or nullptr when the capture cells are not
+     *        reachable from the function currently being emitted.
+     *
+     * Each capture's shared cell is located the same three ways the rest of the
+     * backend locates one: the loop function's own `<fv>_cap` pointer argument,
+     * an enclosing lambda's `captured_<fv>` slot (which holds the cell address
+     * as a tagged int64), or the symbol table when the cell is a plain alloca /
+     * global / pointer instruction of the active function. Returning nullptr
+     * (rather than guessing) keeps the old behaviour for any shape not covered,
+     * so this can never make a working program worse.
+     */
+    Value* codegenNamedLetEscapeClosure(const std::string& loop_name,
+                                        const NamedLetEscapeInfo& info) {
+        Function* active_function = builder->GetInsertBlock()
+            ? builder->GetInsertBlock()->getParent()
+            : current_function;
+        if (!active_function || !info.loop_func) return nullptr;
+
+        // Resolve every capture cell BEFORE emitting anything, so a shape we
+        // cannot handle leaves no half-built closure behind.
+        std::vector<Value*> cell_ptrs;
+        cell_ptrs.reserve(info.captures.size());
+        for (const std::string& fv : info.captures) {
+            Value* cell = nullptr;
+
+            const std::string cap_arg_name = fv + "_cap";
+            for (auto& arg : active_function->args()) {
+                if (arg.getName() == cap_arg_name && arg.getType()->isPointerTy()) {
+                    cell = &arg;
+                    break;
+                }
+            }
+
+            if (!cell) {
+                const std::string captured_arg_name = "captured_" + fv;
+                for (auto& arg : active_function->args()) {
+                    if (arg.getName() == captured_arg_name && arg.getType()->isPointerTy()) {
+                        Value* slot = builder->CreateLoad(tagged_value_type, &arg,
+                                                          fv + ".captured_slot");
+                        Value* cell_int = unpackInt64FromTaggedValue(slot);
+                        cell = builder->CreateIntToPtr(
+                            cell_int, PointerType::getUnqual(*context), fv + ".captured_cell");
+                        break;
+                    }
+                }
+            }
+
+            if (!cell) {
+                auto sym_it = symbol_table.find(fv);
+                Value* sym = (sym_it != symbol_table.end()) ? sym_it->second : nullptr;
+                if (sym && sym->getType()->isPointerTy()) {
+                    Instruction* inst = dyn_cast<Instruction>(sym);
+                    if (!inst || inst->getFunction() == active_function) {
+                        cell = sym;
+                    }
+                }
+            }
+
+            if (!cell) {
+                eshkol_debug("Named let '%s' used as a value: capture '%s' has no reachable cell",
+                             loop_name.c_str(), fv.c_str());
+                return nullptr;
+            }
+            cell_ptrs.push_back(cell);
+        }
+
+        Function* thunk = getNamedLetEscapeThunk(info);
+        if (!thunk) return nullptr;
+
+        Value* func_ptr_int = builder->CreatePtrToInt(thunk, intptr_type);
+        Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+        uint64_t packed_info = info.captures.size() & 0xFFFF;
+        packed_info |= (info.arity & 0xFFFF) << 16;
+        Value* packed_info_val = sizeConst(packed_info);
+        Value* sexpr_ptr = intPtrConst(0);
+        uint64_t return_type_info_val = CLOSURE_RETURN_UNKNOWN | ((info.arity & 0xFF) << 8);
+        Value* return_type_info = intPtrConst(return_type_info_val);
+        Value* closure_name = ConstantPointerNull::get(PointerType::getUnqual(*context));
+        Value* closure_ptr = builder->CreateCall(
+            getArenaAllocateClosureWithHeaderFunc(),
+            {arena_ptr, func_ptr_int, packed_info_val, sexpr_ptr, return_type_info, closure_name});
+
+        if (!info.captures.empty()) {
+            // env layout: { size_t packed_info; eshkol_tagged_value_t captures[] }
+            Value* env_ptr_ptr = builder->CreateGEP(int8_type, closure_ptr,
+                                                    ConstantInt::get(int64_type, 8));
+            Value* env_ptr = builder->CreateLoad(PointerType::getUnqual(*context), env_ptr_ptr);
+            Value* captures_base = builder->CreateGEP(int8_type, env_ptr,
+                                                      ConstantInt::get(int64_type, 8));
+            for (size_t i = 0; i < cell_ptrs.size(); i++) {
+                Value* slot = builder->CreateGEP(tagged_value_type, captures_base,
+                                                 ConstantInt::get(int64_type, (int64_t)i));
+                Value* cell_int = builder->CreatePtrToInt(cell_ptrs[i], int64_type);
+                builder->CreateStore(packInt64ToTaggedValue(cell_int, true), slot);
+            }
+        }
+
+        eshkol_debug("Named let '%s' escaped as a value: closure over %zu capture cell(s)",
+                     loop_name.c_str(), info.captures.size());
+        return packPtrToTaggedValue(closure_ptr, ESHKOL_VALUE_CALLABLE);
+    }
+
     // Named let: (let loop ((var init) ...) body)
     // Transforms to: (letrec ((loop (lambda (var ...) body))) (loop init ...))
     Value* codegenNamedLet(const eshkol_operations_t* op) {
@@ -29687,6 +29901,24 @@ private:
         bool had_prev_gst = global_symbol_table.count(func_key) > 0;
         Value* prev_loop_gst = had_prev_gst ? global_symbol_table[func_key] : nullptr;
 
+        // ESCAPED LOOP PROCEDURE: record what a first-class reference to
+        // `loop_name` needs (the loop function, its capture list and its
+        // user-visible arity) so codegenVariable can build a real closure
+        // instead of leaking a bare Function* whose capture parameters the
+        // closure dispatcher would fill with garbage.  Saved/restored on the
+        // same discipline as the function_table entry above, so nested and
+        // sequential loops sharing a name never see each other's metadata.
+        bool had_prev_escape = named_let_escapes.count(loop_name) > 0;
+        NamedLetEscapeInfo prev_escape =
+            had_prev_escape ? named_let_escapes[loop_name] : NamedLetEscapeInfo{};
+        {
+            NamedLetEscapeInfo escape_info;
+            escape_info.loop_func = loop_func;
+            escape_info.captures = free_vars;
+            escape_info.arity = (uint64_t)param_names.size();
+            named_let_escapes[loop_name] = escape_info;
+        }
+
         // Register function so it can be called recursively
         function_table[loop_name] = loop_func;
         symbol_table[func_key] = loop_func;
@@ -29959,6 +30191,11 @@ private:
             global_symbol_table[func_key] = prev_loop_gst;
         } else {
             global_symbol_table.erase(func_key);
+        }
+        if (had_prev_escape) {
+            named_let_escapes[loop_name] = prev_escape;
+        } else {
+            named_let_escapes.erase(loop_name);
         }
 
         eshkol_debug("Named let '%s' completed", loop_name.c_str());
