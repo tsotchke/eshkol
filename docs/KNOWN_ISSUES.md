@@ -139,7 +139,14 @@ Edge-case findings surfaced by the adversarial-testing harnesses (see
 
 **Automatic differentiation**
 - Vector gradient-of-gradient silently returns zeros — use nested scalar
-  `derivative` for exact higher-order results (ESH-0096).
+  `derivative` for exact higher-order results (ESH-0096). The same shape reached
+  through a **curried** gradient closure behaves the same way: with
+  `(define g (gradient f))`, `(jacobian g point)` returns a zero matrix, and
+  `(gradient g)` correctly refuses (the gradient of an ℝⁿ→ℝⁿ function is
+  undefined) with a diagnostic naming `jacobian`. Use `(hessian f point)` — it is
+  exact. The curried gradient itself, `(g point)` / `(g x y …)`, is exact and
+  byte-identical to `(gradient f point)`. Curried *scalar* higher-order
+  derivatives are exact to 3rd order (ESH-0369).
 - Vector-param AD op combined with a captured local parameter fails LLVM
   verification (`PtrToInt source must be pointer`) (ESH-0072, ESH-0097).
 - **Resident training loops accumulate RSS unless each step is scoped.** The

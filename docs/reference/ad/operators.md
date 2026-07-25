@@ -310,6 +310,7 @@ so the reverse-mode lambda only closes over globals.
 | Composition | Status | Note |
 |-------------|--------|------|
 | `derivative` of `derivative` (scalar 2nd order) | ✅ | exact, 2 perturbation slots |
+| `derivative` of a **variable-bound** derivative closure — the curried spelling `(define df (derivative f))` … `(derivative df)` | ✅ | exact to 3rd order (v1.3.4, ESH-0369). The closure returned by `(derivative f)` seeds and extracts *this* perturbation level, so it is dual-transparent and differentiates like any other function. `(derivative (derivative f))` and `(derivative (car fs))` — differentiands with no name to look up — resolve too. Every spelling agrees: `derivative-n`, nested-lambda, curried-named, curried-unnamed. See [tests/ad/curried_higher_order_derivative_test.esk](../../../tests/ad/curried_higher_order_derivative_test.esk) |
 | `gradient` of scalar `derivative`, scalar point | ✅ | forward-fast-path |
 | `gradient` (vector point) over inner `derivative` — **mixed reverse-over-forward** | ✅ | fixed in v1.3 (#113, ESH-0093); see [tests/ad/mixed_mode_ad_test.esk](../../../tests/ad/mixed_mode_ad_test.esk), 15/15 |
 | `gradient` of `gradient`, **scalar** point | ✅ | e.g. `L''` returns correct value |
