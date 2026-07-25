@@ -2954,6 +2954,104 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Tensor-operand and checkpoint-resume hardening.
+    #
+    # (1) `embedding` reinterpreted its index/weight operands as tensors without
+    #     looking at what they actually were, so a computed Scheme vector had its
+    #     length read as the dimensions pointer -> SIGSEGV near a null address,
+    #     while a `#(...)` literal "worked" only because that form parses to a
+    #     tensor. Index range and weight rank were also unchecked/uncatchable.
+    #     Covered directly AND through a loaded module, since a cross-module call
+    #     resolves through a separately synthesized signature.
+    #
+    # (2) A tensor element slot holds either an f64 bit pattern or a reverse-mode
+    #     tape-node pointer, and the read guessed which from the bits — a zero
+    #     IEEE-754 exponent field meant "pointer". Every SUBNORMAL double has one,
+    #     so resumed optimizer state (which decays through the subnormal range as
+    #     a matter of course) was dereferenced as an address and faulted at its
+    #     own value. Both lanes for every case: the fault only reproduced under
+    #     optimized AOT for the reporter, and only after a checkpoint resume.
+    add_test(
+        NAME embedding_operand_matrix_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/embedding_operand_matrix_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(embedding_operand_matrix_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: embedding classifies index operands by runtime value"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME embedding_operand_matrix_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/embedding_operand_matrix_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/embedding_operand_matrix_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/embedding_operand_matrix_aot'"
+    )
+    set_tests_properties(embedding_operand_matrix_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: embedding classifies index operands by runtime value"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME embedding_operand_via_module_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -r tests/tensor/embedding_operand_via_module_test.esk -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(embedding_operand_via_module_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: cross-module embedding classifies index operands by runtime value"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME embedding_operand_via_module_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_SOURCE_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/embedding_operand_via_module_aot' tests/tensor/embedding_operand_via_module_test.esk && '${CMAKE_CURRENT_BINARY_DIR}/embedding_operand_via_module_aot'"
+    )
+    set_tests_properties(embedding_operand_via_module_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: cross-module embedding classifies index operands by runtime value"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME subnormal_tensor_element_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/subnormal_tensor_element_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(subnormal_tensor_element_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: subnormal tensor elements survive reads, checkpoints and AD"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME subnormal_tensor_element_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/subnormal_tensor_element_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/subnormal_tensor_element_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/subnormal_tensor_element_aot'"
+    )
+    set_tests_properties(subnormal_tensor_element_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: subnormal tensor elements survive reads, checkpoints and AD"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME checkpoint_resume_training_runtime_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -r '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/checkpoint_resume_training_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}'"
+    )
+    set_tests_properties(checkpoint_resume_training_runtime_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: resumed model takes another reverse-mode training step"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME checkpoint_resume_training_aot_smoke
+        COMMAND sh -c
+            "cd '${CMAKE_CURRENT_BINARY_DIR}' && '$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/checkpoint_resume_training_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/tensor/checkpoint_resume_training_test.esk' && '${CMAKE_CURRENT_BINARY_DIR}/checkpoint_resume_training_aot'"
+    )
+    set_tests_properties(checkpoint_resume_training_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: resumed model takes another reverse-mode training step"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME diff_control_flow_runtime_smoke
         COMMAND $<TARGET_FILE:eshkol-run>

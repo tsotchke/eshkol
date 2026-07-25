@@ -1,0 +1,178 @@
+;; Regression: a SUBNORMAL tensor element must read back as its own value —
+;; never as a pointer, never as a small integer.
+;;
+;; Found during tensor-operand and checkpoint-resume hardening. A tensor's
+;; element slot is 64 bits holding either an f64 bit pattern or, while a
+;; reverse-mode sweep is running, a pointer to the tape node standing in for
+;; that element. The element read used to guess which from the bits:
+;;
+;;   bits < 1000                       -> "small integer"
+;;   IEEE-754 exponent field == 0      -> "tape-node pointer"
+;;
+;; Every subnormal double has a zero exponent field by definition, so genuine
+;; data was misread. An element of 2.7e-309 (bits 0x0001f62a6a61f608) came back
+;; as a callable holding 0x0001f62a6a61f608 as an address, and the next
+;; arithmetic op dereferenced it: SIGSEGV whose fault address WAS the stored
+;; value. Subnormals under ~4.9e-321 came back as the integers 1..999 instead —
+;; a silent wrong value with no crash at all.
+;;
+;; This is a checkpoint-resume bug in practice: exponential-decay state (an
+;; optimizer moment for a parameter that stops receiving gradient decays by
+;; beta^step) passes through the subnormal range as a matter of course, so a
+;; long-running model reaches it and a freshly initialized one — whose state is
+;; still exactly 0.0 — never does. Hence "loads fine, then the next step faults
+;; at a fixed address".
+;;
+;; Asserted here: subnormals survive tensor construction, element reads,
+;; arithmetic, a save/load checkpoint round trip, and a reverse-mode gradient.
+
+(define failures 0)
+
+(define (check name actual expected)
+  (if (equal? actual expected)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual)
+        (newline))))
+
+(define (check-true name actual)
+  (check name (if actual #t #f) #t))
+
+;; Build the subnormals at RUNTIME so nothing is decided at compile time.
+;; 1.0e-309 has bits 0x000B8157268FDAF0: zero exponent field, non-zero, and
+;; below the 2^48 "pointer ceiling" — i.e. the worst case for any bit-pattern
+;; heuristic. The 1.0e-320 value lands in the old bits<1000 integer window.
+(define one-e-300 1.0e-300)
+(define sub-large (/ one-e-300 1.0e9))       ; ~1e-309, subnormal
+(define sub-small (/ one-e-300 1.0e20))      ; ~1e-320, subnormal, tiny bits
+(define normal-value 2.5)
+
+(check-true "sub-large is subnormal-range" (< sub-large 2.3e-308))
+(check-true "sub-large is positive" (> sub-large 0.0))
+(check-true "sub-small is smaller still" (< sub-small sub-large))
+(check-true "sub-small is positive" (> sub-small 0.0))
+
+;; --- element reads on a plain tensor -------------------------------------
+(define t (vector->tensor (vector sub-large normal-value sub-small)))
+
+(check "tensor-ref subnormal (large mantissa)" (tensor-ref t 0) sub-large)
+(check "tensor-ref normal neighbour" (tensor-ref t 1) normal-value)
+(check "tensor-ref subnormal (tiny bits)" (tensor-ref t 2) sub-small)
+
+;; Arithmetic on the value read back must not dereference it.
+(check "multiply a subnormal element" (* 2.0 (tensor-ref t 0)) (* 2.0 sub-large))
+(check "add a subnormal element" (+ 1.0 (tensor-ref t 0)) 1.0)
+(check-true "compare a subnormal element" (> (tensor-ref t 0) 0.0))
+(check-true "subnormal element is a real number" (real? (tensor-ref t 0)))
+(check-true "tiny subnormal element is a real number" (real? (tensor-ref t 2)))
+(check-true "tiny subnormal element is not an integer"
+            (not (integer? (tensor-ref t 2))))
+
+;; A whole-tensor scan: every element must be readable and finite.
+(define scanned
+  (let loop ((i 0) (acc 0.0))
+    (if (= i (tensor-length t))
+        acc
+        (loop (+ i 1) (+ acc (* 0.5 (tensor-ref t i)))))))
+(check "scan every element" scanned (* 0.5 (+ sub-large normal-value sub-small)))
+
+;; `car` of a tensor reads an element through a different code path.
+(check "car of a subnormal-leading tensor" (car t) sub-large)
+
+;; --- checkpoint round trip ------------------------------------------------
+;; A decaying-state buffer: most entries have decayed into the subnormal range,
+;; exactly like an optimizer moment resumed from a long-running checkpoint.
+(define width 512)
+(define decayed (make-vector width 0.0))
+(let fill ((i 0) (x 1.0e-290))
+  (if (< i width)
+      (begin
+        (vector-set! decayed i x)
+        (fill (+ i 1) (/ x 1.6)))
+      #t))
+
+(define state (vector->tensor decayed))
+(define ckpt-path "eshkol_subnormal_checkpoint_test.bin")
+
+(check-true "checkpoint written"
+            (model-save ckpt-path (list (cons "state" state))))
+
+(define loaded (model-load ckpt-path))
+(check-true "checkpoint loaded" (pair? loaded))
+(define reloaded (cdr (assoc "state" loaded)))
+(check "reloaded length" (tensor-length reloaded) width)
+
+;; Read back every element of the resumed state and do arithmetic on it. This
+;; is the exact shape of the crash: load a checkpoint, then touch the state.
+(define subnormal-count
+  (let loop ((i 0) (n 0))
+    (if (= i width)
+        n
+        (loop (+ i 1)
+              (if (and (> (tensor-ref reloaded i) 0.0)
+                       (< (tensor-ref reloaded i) 2.3e-308))
+                  (+ n 1)
+                  n)))))
+(check-true "resumed state really does contain subnormals" (> subnormal-count 200))
+
+(define resumed-mismatches
+  (let loop ((i 0) (bad 0))
+    (if (= i width)
+        bad
+        (loop (+ i 1)
+              (if (equal? (tensor-ref reloaded i) (vector-ref decayed i))
+                  bad
+                  (+ bad 1))))))
+(check "every resumed element round-trips exactly" resumed-mismatches 0)
+
+;; An optimizer-shaped update over the resumed state: read, scale, accumulate,
+;; write back. Pre-fix this faulted at the first subnormal entry.
+(define updated
+  (let loop ((i 0) (acc 0.0))
+    (if (= i width)
+        acc
+        (let* ((m (tensor-ref reloaded i))
+               (step (* 0.9 m)))
+          (tensor-set! reloaded i step)
+          (loop (+ i 1) (+ acc step))))))
+(check-true "optimizer-shaped update over resumed state completes"
+            (>= updated 0.0))
+
+(delete-file ckpt-path)
+
+;; --- reverse-mode AD over subnormal parameters ---------------------------
+;; The gradient of (sum theta^2) is 2*theta; at a subnormal theta the exact
+;; result underflows to zero, but the sweep must run and the non-subnormal
+;; component must be exact.
+(define (sq-loss theta)
+  (tensor-sum (tensor-mul theta theta)))
+
+(define theta0 (vector->tensor (vector sub-large 3.0 sub-small)))
+(define g (gradient sq-loss theta0))
+(check "gradient at a subnormal parameter, normal component"
+       (tensor-ref g 1) 6.0)
+(check-true "gradient at a subnormal parameter, subnormal components finite"
+            (and (>= (tensor-ref g 0) 0.0) (>= (tensor-ref g 2) 0.0)))
+
+;; A gradient whose loss reads the subnormal parameters through tensor-ref.
+(define (ref-loss theta)
+  (+ (* 4.0 (tensor-ref theta 1))
+     (tensor-ref theta 0)
+     (tensor-ref theta 2)))
+(define g2 (gradient ref-loss theta0))
+(check "gradient through tensor-ref at subnormal parameters"
+       (tensor-ref g2 1) 4.0)
+(check "gradient through tensor-ref, subnormal slot 0" (tensor-ref g2 0) 1.0)
+(check "gradient through tensor-ref, subnormal slot 2" (tensor-ref g2 2) 1.0)
+
+;; ---------------------------------------------------------------------------
+
+(display "subnormal_tensor_element: ")
+(if (= failures 0)
+    (display "PASS: subnormal tensor elements survive reads, checkpoints and AD")
+    (begin (display "FAIL: ") (display failures) (display " assertion(s)")))
+(newline)
+(if (> failures 0) (exit 1))
