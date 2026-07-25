@@ -299,6 +299,41 @@ across every new-feature family).
 
 ### Fixed
 
+- **A compiler could link a stale *system* runtime archive in preference to its
+  own, and `ESHKOL_LIB_DIR` could not override it.** `find_runtime_library()`
+  searched name-major: every location for `libeshkol-runtime.a` — including
+  `/usr/local/lib`, `/usr/lib` and `/opt/homebrew/lib` — was exhausted before
+  `libeshkol-static.a` was tried *anywhere*, including in the directory holding
+  the running `eshkol-run`. An install that ships only the legacy aggregate
+  archive name therefore linked whatever `libeshkol-runtime.a` an older Eshkol
+  had left in a system prefix, and `ESHKOL_LIB_DIR` did not rescue it because
+  the env directory was consulted once per *name* rather than ahead of every
+  location. When the stale archive's symbol set still matches, the link
+  succeeds and the program silently mixes runtime versions — a wrong-runtime
+  class defect, not a build failure. All install-artifact resolution (the
+  runtime archive, the agent-FFI archives beside it, `stdlib.o`, `stdlib.bc`,
+  and the `lib/**.esk` module tree) now runs through one shared,
+  **location-major** root list in `lib/core/platform_runtime.cpp`:
+  `$ESHKOL_LIB_DIR` first and absolutely, then `-L`/`-I` directories, then the
+  install the compiler belongs to — resolved from the executable's **real**
+  path, so a `bin/eshkol-run` symlink into a Homebrew Cellar keg resolves
+  inside the keg — then the working directory's build trees, then the system
+  prefixes; and within one directory the split archive is preferred over the
+  legacy aggregate, so a co-located archive can never lose to a system one. The
+  driver and `llvm_codegen.cpp`'s AOT link path shared none of this logic
+  before and could disagree about which archive a program links; they now use
+  the same resolver. An artifact taken from a system location is reported on
+  stderr with its path instead of being resolved silently, and archives carry
+  the Eshkol version they were built from (a build stamp in every
+  `libeshkol-runtime.a` / `libeshkol-static.a`), so a version disagreement is
+  reported as a warning. `$ESHKOL_PATH`/`-I` now also precede the installed
+  `lib/` tree for `(require …)`, so a module search path the user named is not
+  silently outranked by a module that ships with the compiler.
+  `$ESHKOL_SYSTEM_PREFIXES` overrides the built-in system prefix list for
+  unusual installs and for packaging tests. Regression test:
+  `tests/toolchain/runtime_archive_resolution_test.sh` (ctest
+  `runtime_archive_resolution_test`) stages a stale system archive and pins all
+  four precedence rules plus both stderr diagnostics.
 - **`(require stdlib)` (and any no-op `require`) silently shifted every
   subsequent top-level binding down one slot.** The bytecode compiler lowers a
   `require` of the always-available prelude to nothing, but the top-level (and

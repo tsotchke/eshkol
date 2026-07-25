@@ -854,10 +854,11 @@ quantum-register operations a no-cloning guarantee at the type level.
 ```
 
 **Module Resolution:**
-1. Current directory
-2. `lib/` directory
-3. `$ESHKOL_PATH` directories
-4. System library paths
+1. The requiring file's own directory
+2. The project root (current directory)
+3. `-I` directories and `$ESHKOL_PATH` — the explicit override
+4. The installed `lib/` directory: beside the running compiler first, then the
+   system prefixes (`<prefix>/share/eshkol/lib`)
 
 **Examples:**
 ```scheme
@@ -2496,9 +2497,10 @@ reverse-mode tape described in 8.2.
 
 #### Search Order:
 1. Current directory (relative to source file)
-2. `lib/` directory
-3. `$ESHKOL_PATH` environment variable (colon-separated)
-4. System library paths
+2. The project root (the process's working directory)
+3. `$ESHKOL_PATH` (colon-separated; `-I` directories are appended to it)
+4. The installed `lib/` directory — located beside the running compiler first,
+   then in the system prefixes
 
 #### Path Conversion:
 - Module name `core.functional.compose`

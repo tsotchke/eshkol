@@ -262,13 +262,13 @@ Dot-separated module names are converted to filesystem paths:
 "core.list.transform" → "core/list/transform.esk"
 ```
 
-Search order:
+Search order (identical to the driver's `resolve_module_path`):
 1. `base_dir/core/list/transform.esk` (relative to caller)
-2. `g_lib_dir/core/list/transform.esk` (discovered lib/ directory)
-3. Paths from `$ESHKOL_PATH` (colon-separated)
+2. Paths from `$ESHKOL_PATH` (colon-separated; `-I` directories are appended to it) — the explicit override precedes the install
+3. `g_lib_dir/core/list/transform.esk` (discovered lib/ directory)
 4. Legacy fallbacks: `lib/...`, `../lib/...`
 
-`g_lib_dir` is discovered once via `findLibDir()` by searching upward from the executable location for the `lib/` subdirectory containing `core/`.
+`g_lib_dir` is discovered once via `findLibDir()`, which walks the shared install-root ladder (`platform::install_module_roots()`: `$ESHKOL_LIB_DIR`, then the **real** executable path's `lib` / `../lib` / `../share/eshkol/lib`, then the working directory's equivalents, then the system prefixes) and accepts the first root that actually carries `stdlib.esk`.
 
 ### 6.4 Typed Results: `executeTagged(ast)`
 
