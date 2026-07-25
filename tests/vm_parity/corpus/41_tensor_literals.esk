@@ -63,4 +63,24 @@
 (display (guard (e (#t "caught")) (tensor-shape 42))) (newline)
 (display (guard (e (#t "caught")) (tensor-shape (vector "a" "b")))) (newline)
 (display (guard (e (#t "caught")) (error "boom"))) (newline)
+
+; ---- the condition is a real error object, and says what went wrong ----
+; `error-object?` and `error-object-message` were misbound by one native slot
+; (to error-message and error-type), so the predicate answered the message
+; string and the message accessor answered the type. Only observable once
+; `(error ...)` and the operand rejections began raising catchably.
+(display (guard (e (#t (error-object? e))) (error "boom"))) (newline)
+(display (guard (e (#t (error-object-message e))) (error "boom"))) (newline)
+(display (guard (e (#t (error-object? e))) (raise 42))) (newline)
+
+; the out-of-range message text is identical on every substrate
+(define bt (make-tensor (list 2 2) 1.0))
+(display (guard (e (#t (error-object-message e))) (tensor-ref bt 99))) (newline)
+
+; a raise carrying irritants must not disturb the stack
+(display (guard (e (#t "caught")) (error "boom" 1 2))) (newline)
+(display (+ 1 2)) (newline)
+(display (list 1 2 3)) (newline)
+(display (guard (e (#t "outer")) (guard (e2 ((string? e2) "inner")) (error "boom" 7)))) (newline)
+
 (display "tail-reached") (newline)
