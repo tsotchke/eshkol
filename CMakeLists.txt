@@ -3084,6 +3084,28 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_archive_resolution_test.sh")
+        # RC B3: a compiler must link its OWN runtime. The archive co-located
+        # with the running eshkol-run (resolved through its real path) beats one
+        # in a system prefix, $ESHKOL_LIB_DIR beats everything, the system
+        # fallback still works when nothing is co-located, and a system or
+        # version-mismatched archive is reported on stderr instead of being
+        # resolved silently. Hermetic: $ESHKOL_SYSTEM_PREFIXES points the
+        # system tier at a directory the test owns.
+        add_test(
+            NAME runtime_archive_resolution_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_archive_resolution_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(runtime_archive_resolution_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: runtime_archive_resolution_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh")
         add_test(
             NAME static_link_getenv_capability_test

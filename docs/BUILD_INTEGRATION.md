@@ -34,8 +34,8 @@ out.o: \
 The prerequisite list is exactly the entry file plus every file
 transitively reachable from it via `(load "…")`, `(import "…")`, and
 `(require module)`, resolved through the same search order the compiler
-itself uses (the referring file's directory, `-I` include paths, the
-current directory, the Eshkol `lib/` directory, then `$ESHKOL_PATH`).
+itself uses (the referring file's directory, the current directory, the
+`-I` include paths / `$ESHKOL_PATH`, then the Eshkol `lib/` directory).
 Paths with spaces, `#`, or `$` are escaped per Make depfile conventions.
 The scan is deliberately generous — a dependency that turns out to be
 unreachable at compile time only costs a redundant rebuild, whereas a

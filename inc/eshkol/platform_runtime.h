@@ -32,6 +32,25 @@ std::filesystem::path executable_path();
 std::filesystem::path executable_directory();
 
 /**
+ * @brief Get the directory containing the currently running executable, with
+ *        every symlink on the way resolved.
+ *
+ * `/proc/self/exe` is already symlink-free, but `_NSGetExecutablePath` and
+ * `GetModuleFileNameW` report the path the process was *launched* through.
+ * When that is a symlink into an install tree (the Homebrew
+ * `<prefix>/bin/eshkol-run -> ../Cellar/eshkol/<v>/bin/eshkol-run` layout, or
+ * any hand-made `~/bin` link), the launch path's parent is not the directory
+ * the compiler's own runtime archive/module tree was installed into.
+ * Artifact resolution must start from the real location, so it is this
+ * function — not executable_directory() — that seeds the co-located search
+ * tier.
+ *
+ * @return Symlink-resolved parent directory of the running executable, or an
+ *         empty path if it cannot be determined.
+ */
+std::filesystem::path executable_real_directory();
+
+/**
  * @brief Get the process's current working directory.
  * @return Absolute current working directory, or an empty path on error.
  */
@@ -45,6 +64,139 @@ std::filesystem::path current_directory();
  *         none of the candidates exist.
  */
 std::string find_first_existing(const std::vector<std::filesystem::path>& candidates);
+
+// ---------------------------------------------------------------------------
+// Install-artifact resolution (runtime archives, stdlib.o/.bc, module tree)
+// ---------------------------------------------------------------------------
+//
+// Every artifact the toolchain resolves at run time — libeshkol-runtime.a /
+// libeshkol-static.a, libeshkol-agent-*.a, stdlib.o, stdlib.bc, and the
+// lib/**.esk module tree — is looked up through the ordered root list built
+// by install_library_roots() / install_module_roots() and probed by
+// resolve_install_artifact().
+//
+// The order is LOCATION-major: each root is fully probed (for every accepted
+// file name) before the next root is considered.  A search that is instead
+// name-major — all locations for name A, then all locations for name B —
+// lets a system copy of A outrank the compiler's own co-located B, which is
+// how a v1.3.4 compiler could link an eleven-day-old /usr/local/lib archive
+// in preference to the archive installed beside it.  Resolution must never
+// leave the install the compiler belongs to unless that install genuinely
+// does not carry the artifact.
+
+/** @brief Precedence tier an install artifact was resolved from, highest
+ *         precedence first. */
+enum class InstallOrigin {
+    NotFound = 0,   ///< No candidate existed in any root.
+    EnvOverride,    ///< $ESHKOL_LIB_DIR — the absolute escape hatch.
+    ExplicitFlag,   ///< A `-L<dir>` given on the command line.
+    CoLocated,      ///< Beside the running executable's real path.
+    WorkingTree,    ///< cwd / cwd's build tree — developer convenience.
+    SystemFallback, ///< A system prefix (/usr/local, /usr, /opt/homebrew, …).
+};
+
+/** @brief One directory to probe, tagged with the tier it came from. */
+struct InstallSearchRoot {
+    std::filesystem::path path;
+    InstallOrigin origin = InstallOrigin::NotFound;
+};
+
+/** @brief Outcome of an install-artifact lookup. */
+struct ResolvedInstallArtifact {
+    std::string path;            ///< Canonical path; empty when unresolved.
+    InstallOrigin origin = InstallOrigin::NotFound;
+    std::filesystem::path root;  ///< Root the artifact was found under.
+
+    bool found() const { return !path.empty(); }
+};
+
+/**
+ * @brief Build the ordered root list for native install artifacts (static
+ *        archives, stdlib.o, stdlib.bc).
+ *
+ * Tiers, in order: $ESHKOL_LIB_DIR (and its `eshkol/` subdirectory), each
+ * @p explicit_dirs entry (`-L`), the real executable directory plus its
+ * `../lib` and `../lib/eshkol`, the same for the launch-path directory when
+ * that differs, the working directory and its build trees, and finally the
+ * system prefixes.
+ *
+ * @param explicit_dirs Directories named by `-L` flags, in command-line order.
+ * @return Roots to probe, highest precedence first, duplicates removed.
+ */
+std::vector<InstallSearchRoot> install_library_roots(
+    const std::vector<std::string>& explicit_dirs = {});
+
+/**
+ * @brief Build the ordered root list for the Eshkol module source tree
+ *        (`stdlib.esk` and the `core/`, `agent/`, … directories beside it).
+ *
+ * Same tier order as install_library_roots(), with the layouts that carry
+ * module sources: `<dir>/lib`, `<dir>/../lib`, `<dir>/../share/eshkol/lib`
+ * and `<prefix>/share/eshkol/lib`.
+ *
+ * @return Roots to probe, highest precedence first, duplicates removed.
+ */
+std::vector<InstallSearchRoot> install_module_roots();
+
+/**
+ * @brief Probe @p roots in order and return the first existing artifact.
+ *
+ * Within a single root every entry of @p leaf_names is tried in order, so a
+ * lower-precedence root can never outrank a higher-precedence one merely by
+ * carrying an earlier-named file.
+ *
+ * @param roots      Ordered roots, as built by install_library_roots() /
+ *                   install_module_roots().
+ * @param leaf_names Accepted file (or subdirectory) names, most preferred
+ *                   first — e.g. {"libeshkol-runtime.a", "libeshkol-static.a"}.
+ * @return The resolved artifact, or a ResolvedInstallArtifact whose found()
+ *         is false when no root carries any of the names.
+ */
+ResolvedInstallArtifact resolve_install_artifact(
+    const std::vector<InstallSearchRoot>& roots,
+    const std::vector<std::string>& leaf_names);
+
+/** @brief Human-readable name of a precedence tier, for diagnostics. */
+const char* install_origin_name(InstallOrigin origin);
+
+/**
+ * @brief Read the Eshkol version an archive (or object file) was built from.
+ *
+ * Scans @p artifact for the build stamp that every translation unit of
+ * lib/core/platform_runtime.cpp embeds, so it works for `libeshkol-runtime.a`
+ * and `libeshkol-static.a` regardless of archive format and without an `ar`
+ * reader.
+ *
+ * @param artifact File to scan.
+ * @return The stamped version string (e.g. "1.3.4-evolve"), or an empty
+ *         string when @p artifact carries no stamp — which is the case for
+ *         every archive built before the stamp existed.
+ */
+std::string archive_build_version(const std::filesystem::path& artifact);
+
+/** @brief A diagnostic about where an artifact came from. */
+struct InstallArtifactNote {
+    std::string text;     ///< Message to print; empty when nothing to report.
+    bool severe = false;  ///< True when the artifact's version disagrees with this build.
+};
+
+/**
+ * @brief Describe a resolution that the user should know about.
+ *
+ * Reports two situations and stays silent otherwise: an artifact taken from a
+ * system prefix rather than from the compiler's own install, and an artifact
+ * whose embedded build stamp disagrees with this compiler's
+ * ESHKOL_VERSION_STRING (the silent-ABI-skew case, flagged as severe).
+ *
+ * @param label    What was resolved, e.g. "runtime archive".
+ * @param artifact The resolution to describe.
+ * @param verify_version Whether to read @p artifact's build stamp; pass false
+ *        for artifacts that carry no stamp (stdlib.o, module trees).
+ * @return The note to print, or a note whose text is empty.
+ */
+InstallArtifactNote describe_install_artifact(std::string_view label,
+                                             const ResolvedInstallArtifact& artifact,
+                                             bool verify_version = true);
 
 /**
  * @brief Get the current user's home directory.
