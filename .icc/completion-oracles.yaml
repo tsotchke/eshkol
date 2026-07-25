@@ -497,6 +497,14 @@ oracles:
   # The three "[x]" items already in v1.3-evolve (string interpolation,
   # named keyword arguments, let-match) get smoke probes that pin
   # their behavior so a regression downstream surfaces immediately.
+  #
+  # ENFORCEMENT (ADR-0010, closes AR1 gap A5): this target is now
+  # release-blocking. .github/workflows/release.yml::release-readiness-gate
+  # regenerates traces at the tagged SHA and fails the release on any verdict
+  # but ready/100 from `icc readiness --target v1.3-evolve`. Adding a criterion
+  # below therefore hard-gates publication: keep planned/unlanded items as
+  # explicit FAIL probes, never as new required criteria without evidence, or
+  # the release self-blocks.
   # ─────────────────────────────────────────────────────────────────
   - name: v1.3-evolve
     aliases: [v1.3, release-1.3, evolve]
