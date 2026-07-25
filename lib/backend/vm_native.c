@@ -5788,6 +5788,108 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
     }
 }
 
+/*
+ * Raise `msg` as a catchable error condition, exactly as `(error msg)` would.
+ *
+ * This is the VM half of the uniform out-of-range contract for indexed
+ * accessors (R7RS 6.9: an out-of-range index is an error).  The AOT/JIT
+ * codegen guards (lib/backend/llvm_codegen.cpp emitBoundsCheckRaise, plus the
+ * pre-existing vector-ref / vector-set! / string-ref / tensor-ref guards in
+ * lib/backend/collection_codegen.cpp) and the C runtime helpers in
+ * lib/core/runtime_bytevector.cpp raise the same condition with the same
+ * message text, so a `guard` around an out-of-range access behaves
+ * byte-for-byte identically on every substrate.  Before this existed the VM
+ * silently fabricated a value (-1 for bytevector-u8-ref, () for vector-ref,
+ * 0 for string-ref/tensor-ref) and kept running.
+ *
+ * Pushes nothing: control transfers to the innermost handler, or the
+ * unhandled-exception path flags vm->error.  Callers must `break` immediately.
+ */
+static void vm_raise_error_msg(VM* vm, const char* msg) {
+    vm->error = 0;
+    VmError* e = vm_error_make(&vm->heap.regions, "error", msg, NULL, 0);
+    Value exn = NIL_VAL;
+    if (e) {
+        int32_t ep = heap_alloc(&vm->heap);
+        if (ep >= 0) {
+            vm->heap.objects[ep]->type = HEAP_ERROR;
+            vm->heap.objects[ep]->opaque.ptr = e;
+            exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
+        }
+    }
+    vm_dispatch_exception(vm, exn);
+}
+
+/*
+ * Shared int64 bit twiddling for arithmetic-shift / bit-shift-left /
+ * bit-shift-right.  The shift amount is clamped to [0, 63] exactly like the
+ * native codegen (llvm_codegen.cpp emitArithmeticShiftTagged), so an
+ * out-of-word-width count can neither invoke C shift UB nor diverge between
+ * substrates.  The left shift goes through uint64_t for the same reason.
+ */
+static int64_t vm_arith_shift_i64(int64_t val, int64_t count) {
+    if (count >= 0) {
+        if (count > 63) count = 63;
+        return (int64_t)((uint64_t)val << count);
+    }
+    int64_t amt = -count;
+    if (amt > 63) amt = 63;
+    return val >> amt;   /* arithmetic (sign-propagating) right shift */
+}
+
+/*
+ * Population count for `(popcount n)` / `(bit-count n)`, matching
+ * codegenPopcount(): the number of 1 bits for val >= 0, and the
+ * width-independent R6RS `bitwise-bit-count` convention -1 - popcount(~val)
+ * for val < 0 (Eshkol models a negative integer as an infinite
+ * two's-complement bit string).  Portable SWAR — no compiler builtins.
+ */
+/*
+ * Push `(arithmetic-shift a count)` — the shared body of arithmetic-shift,
+ * bit-shift-left and bit-shift-right — promoting to the exact bignum domain
+ * whenever int64 cannot hold the answer, so the VM matches the native
+ * codegen's emitArithmeticShiftTagged() (and the documented
+ * `(arithmetic-shift 1 64) => 18446744073709551616`).
+ *
+ * A bignum operand always takes the exact path; an int64 operand takes it only
+ * when a left shift would overflow.  Right shifts of an int64 are always exact
+ * on the fast path.
+ */
+static void vm_push_shift_exact(VM* vm, Value a, int64_t count) {
+    if (a.type != VAL_BIGNUM) {
+        int64_t val = (int64_t)as_number(a);
+        if (count < 0) {                       /* right shift: always exact */
+            vm_push(vm, INT_VAL(vm_arith_shift_i64(val, count)));
+            return;
+        }
+        if (val == 0) { vm_push(vm, INT_VAL(0)); return; }
+        if (count <= 62) {
+            int64_t shifted = (int64_t)((uint64_t)val << count);
+            if ((shifted >> count) == val) {   /* no bits lost */
+                vm_push(vm, INT_VAL(shifted));
+                return;
+            }
+        }
+        /* Left shift overflows int64 — fall through to the exact path. */
+    }
+
+    VmBignum* ab = vm_coerce_bignum(vm, a);
+    if (!ab) { vm->error = 1; return; }
+    VmBignum* r = (count >= 0)
+        ? bignum_shift_left(&vm->heap.regions, ab, (int)count)
+        : bignum_shift_right(&vm->heap.regions, ab, (int)(-count));
+    vm_push_bignum_norm(vm, r);
+}
+
+static int64_t vm_popcount_i64(int64_t val) {
+    uint64_t v = (uint64_t)(val < 0 ? ~val : val);
+    v = v - ((v >> 1) & 0x5555555555555555ULL);
+    v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
+    v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+    int64_t bits = (int64_t)((v * 0x0101010101010101ULL) >> 56);
+    return val < 0 ? -1 - bits : bits;
+}
+
 /* R7RS delay-force trampoline.  Both ordinary and delay-force evaluations
  * join the VM-wide intrusive chain so exceptions and continuations can roll
  * them back in O(1) auxiliary memory.  Successful delay-force chains are
@@ -7001,9 +7103,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         /* Single int/float index: flat access; list: multi-dim */
         if (idx_val.type == VAL_INT || idx_val.type == VAL_FLOAT) {
             int64_t flat = (int64_t)as_number(idx_val);
-            if (flat >= 0 && flat < t->total)
-                vm_push(vm, FLOAT_VAL(t->data[flat]));
-            else vm_push(vm, FLOAT_VAL(0));
+            /* Parity contract: out of range is a catchable error (the native
+             * codegen has always raised here; the VM used to fabricate 0.0). */
+            if (flat < 0 || flat >= t->total) {
+                vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
+                break;
+            }
+            vm_push(vm, FLOAT_VAL(t->data[flat]));
         } else if (idx_val.type == VAL_PAIR) {
             /* Multi-dim: walk list to get indices */
             int64_t indices[8]; int nd = 0;
@@ -7996,7 +8102,15 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value idx = vm_pop(vm), s_val = vm_pop(vm);
         if (s_val.type == VAL_STRING && vm->heap.objects[s_val.as.ptr]->opaque.ptr) {
             VmString* s = (VmString*)vm->heap.objects[s_val.as.ptr]->opaque.ptr;
-            int cp = vm_string_ref(s, (int)as_number(idx));
+            int k = (int)as_number(idx);
+            /* R7RS 6.7 + parity contract: out of range is a catchable error
+             * (the native codegen has always raised here; the VM used to
+             * fabricate codepoint 0). */
+            if (!s || k < 0 || k >= s->char_len) {
+                vm_raise_error_msg(vm, "string-ref: index out of bounds");
+                break;
+            }
+            int cp = vm_string_ref(s, k);
             vm_push(vm, INT_VAL(cp >= 0 ? cp : 0));
         } else vm_push(vm, INT_VAL(0));
         break;
@@ -10864,7 +10978,13 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value k = vm_pop(vm), bv_val = vm_pop(vm);
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
-            vm_push(vm, INT_VAL(vm_bv_u8_ref(bv, (int)as_number(k))));
+            int idx = (int)as_number(k);
+            /* R7RS 6.9 + parity contract: out of range is a catchable error. */
+            if (!bv || idx < 0 || idx >= bv->len) {
+                vm_raise_error_msg(vm, "bytevector-u8-ref: index out of bounds");
+                break;
+            }
+            vm_push(vm, INT_VAL(vm_bv_u8_ref(bv, idx)));
         } else vm_push(vm, INT_VAL(0));
         break;
     }
@@ -10872,7 +10992,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
         Value byte = vm_pop(vm), k = vm_pop(vm), bv_val = vm_pop(vm);
         if (is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) {
             VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
-            vm_bv_u8_set(bv, (int)as_number(k), (int)as_number(byte));
+            int idx = (int)as_number(k);
+            int b = (int)as_number(byte);
+            if (!bv || idx < 0 || idx >= bv->len) {
+                vm_raise_error_msg(vm, "bytevector-u8-set!: index out of bounds");
+                break;
+            }
+            if (b < 0 || b > 255) {
+                vm_raise_error_msg(vm, "bytevector-u8-set!: byte value out of range");
+                break;
+            }
+            vm_bv_u8_set(bv, idx, b);
         }
         vm_push(vm, NIL_VAL);
         break;
@@ -10897,12 +11027,72 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmBytevector* to_bv = (VmBytevector*)vm->heap.objects[to_val.as.ptr]->opaque.ptr;
             VmBytevector* from_bv = (VmBytevector*)vm->heap.objects[from_val.as.ptr]->opaque.ptr;
             int at = (int)as_number(at_val);
-            if (to_bv && from_bv && at >= 0) {
-                int copy_len = from_bv->len;
-                if (at + copy_len > to_bv->len) copy_len = to_bv->len - at;
-                if (copy_len > 0) memcpy(to_bv->data + at, from_bv->data, (size_t)copy_len);
+            if (to_bv && from_bv) {
+                /* R7RS 6.9 + parity contract: the source must fit in the
+                 * destination at `at`.  Previously the copy length was
+                 * silently clamped, truncating the caller's data. */
+                if (at < 0 || at + from_bv->len > to_bv->len) {
+                    vm_raise_error_msg(vm, "bytevector-copy!: index out of bounds");
+                    break;
+                }
+                if (from_bv->len > 0)
+                    memcpy(to_bv->data + at, from_bv->data, (size_t)from_bv->len);
             }
         }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    /* Range forms of bytevector-copy / bytevector-copy!.  The BUILTINS-table
+     * entries are fixed-arity closures (bytevector-copy/1, bytevector-copy!/3),
+     * so a call carrying the R7RS optional [start [end]] arguments used to have
+     * them silently dropped — (bytevector-copy bv 1 99) returned a full copy
+     * where the native codegen raises.  The VM compiler emits these ids for the
+     * optional-argument spellings (see vm_compiler.c) so both substrates share
+     * one range contract. `end` is always explicit here: 2203/2205 are the
+     * "no end supplied" arities, so a negative end is a genuine error rather
+     * than an absent-argument sentinel. */
+    case 2203:   /* (bytevector-copy bv start) */
+    case 2204: { /* (bytevector-copy bv start end) */
+        int has_end = (fid == 2204);
+        Value end_val = has_end ? vm_pop(vm) : NIL_VAL;
+        Value start_val = vm_pop(vm), bv_val = vm_pop(vm);
+        if (!is_heap_type(vm, bv_val, HEAP_BYTEVECTOR)) { vm_push(vm, NIL_VAL); break; }
+        VmBytevector* bv = (VmBytevector*)vm->heap.objects[bv_val.as.ptr]->opaque.ptr;
+        if (!bv) { vm_push(vm, NIL_VAL); break; }
+        int start = (int)as_number(start_val);
+        int end = has_end ? (int)as_number(end_val) : bv->len;
+        if (start < 0 || end < start || end > bv->len) {
+            vm_raise_error_msg(vm, "bytevector-copy: index out of bounds");
+            break;
+        }
+        VmBytevector* r = vm_bv_copy(&vm->heap.regions, bv, start, end);
+        if (r) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_BYTEVECTOR, VAL_BYTEVECTOR, r); break; }
+        vm_push(vm, NIL_VAL);
+        break;
+    }
+    case 2205:   /* (bytevector-copy! to at from start) */
+    case 2206: { /* (bytevector-copy! to at from start end) */
+        int has_end = (fid == 2206);
+        Value end_val = has_end ? vm_pop(vm) : NIL_VAL;
+        Value start_val = vm_pop(vm), from_val = vm_pop(vm),
+              at_val = vm_pop(vm), to_val = vm_pop(vm);
+        if (!is_heap_type(vm, to_val, HEAP_BYTEVECTOR) ||
+            !is_heap_type(vm, from_val, HEAP_BYTEVECTOR)) {
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        VmBytevector* to_bv = (VmBytevector*)vm->heap.objects[to_val.as.ptr]->opaque.ptr;
+        VmBytevector* from_bv = (VmBytevector*)vm->heap.objects[from_val.as.ptr]->opaque.ptr;
+        if (!to_bv || !from_bv) { vm_push(vm, NIL_VAL); break; }
+        int at = (int)as_number(at_val);
+        int start = (int)as_number(start_val);
+        int end = has_end ? (int)as_number(end_val) : from_bv->len;
+        if (start < 0 || end < start || end > from_bv->len ||
+            at < 0 || at + (end - start) > to_bv->len) {
+            vm_raise_error_msg(vm, "bytevector-copy!: index out of bounds");
+            break;
+        }
+        vm_bv_copy_to(to_bv, at, from_bv, start, end);
         vm_push(vm, NIL_VAL);
         break;
     }
@@ -11887,15 +12077,25 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (vec_v.type == VAL_VECTOR) {
             VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
             int idx = (int)as_number(idx_v);
-            if (v && idx >= 0 && idx < v->len) vm_push(vm, v->items[idx]);
-            else vm_push(vm, NIL_VAL);
+            /* R7RS 6.8 + parity contract: out of range is a catchable error
+             * (the native codegen has always raised here; the VM used to
+             * fabricate '()). */
+            if (!v || idx < 0 || idx >= v->len) {
+                vm_raise_error_msg(vm, "vector-ref: index out of bounds");
+                break;
+            }
+            vm_push(vm, v->items[idx]);
         } else vm_push(vm, NIL_VAL); break; }
     case 220: { /* vector-set! */
         Value val = vm_pop(vm), idx_v = vm_pop(vm), vec_v = vm_pop(vm);
         if (vec_v.type == VAL_VECTOR) {
             VmVector* v = (VmVector*)vm->heap.objects[vec_v.as.ptr]->opaque.ptr;
             int idx = (int)as_number(idx_v);
-            if (v && idx >= 0 && idx < v->len) v->items[idx] = val;
+            if (!v || idx < 0 || idx >= v->len) {
+                vm_raise_error_msg(vm, "vector-set!: index out of bounds");
+                break;
+            }
+            v->items[idx] = val;
         } vm_push(vm, NIL_VAL); break; }
     case 221: { /* vector-length */
         Value v = vm_pop(vm);
@@ -12213,9 +12413,30 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 1693: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a) | (int64_t)as_number(b))); break; }
     case 1694: { Value b = vm_pop(vm), a = vm_pop(vm); vm_push(vm, INT_VAL((int64_t)as_number(a) ^ (int64_t)as_number(b))); break; }
     case 1695: { Value a = vm_pop(vm); vm_push(vm, INT_VAL(~(int64_t)as_number(a))); break; }
-    case 1696: { Value b = vm_pop(vm), a = vm_pop(vm);
-        int64_t val = (int64_t)as_number(a), shift = (int64_t)as_number(b);
-        vm_push(vm, INT_VAL(shift >= 0 ? val << shift : val >> (-shift))); break; }
+    case 1696: { /* arithmetic-shift */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        vm_push_shift_exact(vm, a, (int64_t)as_number(b)); break; }
+    /* Directional shift spellings + population count — documented in
+     * docs/tutorials/20_BITWISE_AND_SYSTEM.md and docs/API_REFERENCE.md.
+     * bit-shift-left n k === arithmetic-shift n k;
+     * bit-shift-right n k === arithmetic-shift n (- k). */
+    case 2200: { /* bit-shift-left */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        vm_push_shift_exact(vm, a, (int64_t)as_number(b)); break; }
+    case 2201: { /* bit-shift-right */
+        Value b = vm_pop(vm), a = vm_pop(vm);
+        vm_push_shift_exact(vm, a, -(int64_t)as_number(b)); break; }
+    case 2202: { /* popcount / bit-count */
+        Value a = vm_pop(vm);
+        if (a.type == VAL_BIGNUM) {
+            /* Exact operand: count over the magnitude limbs, using the same
+             * R6RS convention as the int64 path for negative values. */
+            VmBignum* b = (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr;
+            vm_push(vm, INT_VAL(vm_bignum_popcount(b)));
+        } else {
+            vm_push(vm, INT_VAL(vm_popcount_i64((int64_t)as_number(a))));
+        }
+        break; }
 
     /* ══════════════════════════════════════════════════════════════════════
      * Type predicates (1697-1699)
