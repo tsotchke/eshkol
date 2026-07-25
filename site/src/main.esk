@@ -324,7 +324,7 @@
           (style! name "fontWeight" "800")
           (style! name "color" "#7c3aed")
           (style! name "marginBottom" "12px"))
-        (let ((desc (create-text "p" "Compiled, deterministic, differentiable. Mathematics as a first-class citizen." brand)))
+        (let ((desc (create-text "p" "Build systems that think. Compiled, deterministic, differentiable." brand)))
           (style! desc "color" "#71717a")
           (style! desc "fontSize" "0.85rem")
           (style! desc "lineHeight" "1.6")
@@ -370,7 +370,7 @@
         (style! p "color" "#71717a")
         (style! p "fontSize" "0.8rem"))
 
-      (let ((p2 (create-text "p" "This website is written in Eshkol, compiled to WebAssembly." bottom)))
+      (let ((p2 (create-text "p" "The site and the REPL are both compiled from Eshkol to WebAssembly." bottom)))
         (style! p2 "color" "#71717a")
         (style! p2 "fontSize" "0.8rem")))
 
@@ -399,11 +399,19 @@
         (style! left "flex" "1")
         (style! left "minWidth" "320px")
 
-        (let ((title (create-text "h1" "Build systems that think." left)))
+        (let ((title (create-text "h1" "The derivative is a compiler primitive." left)))
           (web-add-class title "hero-title"))
 
-        (let ((sub (create-text "p" "Eshkol is R7RS Scheme on LLVM 21 with automatic differentiation as a compiler primitive. v1.3.3-evolve completes the Moonlab quantum/VQE/ML-KEM stack, proves every declared executable language surface with 1,057/1,057 deterministic traces, hardens exact AD and resident memory, and ships a clean-host-verified 15-package platform matrix with checksums." left)))
+        (let ((sub (create-text "p" "Eshkol is R7RS Scheme compiled to native code through LLVM 21. Gradient, Jacobian and Hessian lower to machine instructions the same way + does. They stay exact through closures, recursion and control flow. There is no tracing library in between. The same gradient runs byte-identically on the bytecode VM." left)))
           (web-add-class sub "hero-sub"))
+
+        ;; Proof strip: four release-gate numbers, one canonical form each
+        (let ((proof (create-text "p" "1,078 / 1,078 executable language surface   ·   8 differential operators   ·   zero GC   ·   936 parity rows, published" left)))
+          (style! proof "color" "#a78bfa")
+          (style! proof "fontSize" "0.82rem")
+          (style! proof "fontFamily" "JetBrains Mono,monospace")
+          (style! proof "marginTop" "18px")
+          (style! proof "lineHeight" "1.8"))
 
         ;; Install command
         (let ((install (create-div left)))
@@ -417,17 +425,26 @@
           (style! btns "display" "flex")
           (style! btns "gap" "16px")
           (style! btns "flexWrap" "wrap")
-          (create-btn-primary "Get Started" "/downloads" btns)
-          (create-btn-secondary "Try in Browser" "/playground" btns)))
+          (create-btn-primary "Run it in the browser" "/playground" btns)
+          (create-btn-secondary "Get Started" "/downloads" btns)))
 
       ;; Right side: runnable code
       (let ((right (create-div split)))
         (web-add-class right "hero-side")
         (style! right "flex" "1")
         (style! right "minWidth" "360px")
+        (let ((frame (create-text "p" "Run it. The 12.0 is computed by compiled machine code, not by a finite difference." right)))
+          (style! frame "color" "#a0a0b8")
+          (style! frame "fontSize" "0.85rem")
+          (style! frame "marginBottom" "12px"))
         (create-runnable-code-block right
           "(define (cube x) (* x x x))\n\n(display (derivative cube 2.0))\n;; => 12.0  (d/dx x^3 = 3x^2)"
-          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(cube x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> cube <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 12.0  -- d/dx(x^3) = 3x^2 at x=2</span></pre>")))
+          "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.9rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; Automatic differentiation — compiled to native code</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(cube x)</span> <span style='color:#c084fc'>(*</span> x x x<span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(derivative</span> cube <span style='color:#00ff88'>2.0</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => 12.0  -- d/dx(x^3) = 3x^2 at x=2</span></pre>")
+        (let ((selfhost (create-text "p" "This page is one Eshkol source file compiled to WebAssembly. The REPL beside it is the bytecode VM, also compiled to WebAssembly." right)))
+          (style! selfhost "color" "#71717a")
+          (style! selfhost "fontSize" "0.8rem")
+          (style! selfhost "marginTop" "12px")
+          (style! selfhost "fontStyle" "italic"))))
 
     hero))
 
@@ -441,7 +458,7 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c1 "Define a loss function and train with gradient descent. Autodiff computes exact derivatives — no manual calculus needed.")
+        (body-text c1 "Write the loss function and train it with gradient descent. The compiler works out the derivatives — exactly, with no calculus by hand.")
         (create-runnable-code-block c1
           "(define data '((1 2) (2 4) (3 6)))\n(define (loss w x y) (let ((e (- (* w x) y))) (* e e)))\n(define (epoch w lr d)\n  (if (null? d) w\n    (let ((x (caar d)) (y (cadar d)))\n      (epoch (- w (* lr (derivative (lambda (w) (loss w x y)) w)))\n             lr (cdr d)))))\n(define (train w lr n)\n  (if (= n 0) w (train (epoch w lr data) lr (- n 1))))\n(display (train 0.0 0.05 200))\n;; learns w → 2.0 from y = 2x"
           "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> data <span style='color:#00ff88'>'((1 2) (2 4) (3 6))</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(loss w x y)</span>\n  <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>e</span> <span style='color:#c084fc'>(-</span> <span style='color:#c084fc'>(*</span> w x<span style='color:#c084fc'>)</span> y<span style='color:#c084fc'>)))</span> <span style='color:#c084fc'>(*</span> e e<span style='color:#c084fc'>)))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(epoch w lr d)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(null?</span> d<span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(let</span> ((<span style='color:#a78bfa'>x</span> <span style='color:#c084fc'>(caar</span> d<span style='color:#c084fc'>))</span> (<span style='color:#a78bfa'>y</span> <span style='color:#c084fc'>(cadar</span> d<span style='color:#c084fc'>)))</span>\n      <span style='color:#c084fc'>(epoch</span> <span style='color:#c084fc'>(-</span> w <span style='color:#c084fc'>(*</span> lr <span style='color:#c084fc'>(derivative</span>\n                            <span style='color:#c084fc'>(lambda</span> <span style='color:#a78bfa'>(w)</span> <span style='color:#c084fc'>(loss</span> w x y<span style='color:#c084fc'>))</span> w<span style='color:#c084fc'>)))</span>\n             lr <span style='color:#c084fc'>(cdr</span> d<span style='color:#c084fc'>)))))</span>\n\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(train w lr n)</span>\n  <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(=</span> n <span style='color:#00ff88'>0</span><span style='color:#c084fc'>)</span> w\n    <span style='color:#c084fc'>(train</span> <span style='color:#c084fc'>(epoch</span> w lr data<span style='color:#c084fc'>)</span> lr <span style='color:#c084fc'>(-</span> n <span style='color:#00ff88'>1</span><span style='color:#c084fc'>))))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(train</span> <span style='color:#00ff88'>0.0</span> <span style='color:#00ff88'>0.05</span> <span style='color:#00ff88'>200</span><span style='color:#c084fc'>))</span>  <span style='color:#606078'>;; ≈ 2.0</span></pre>"))
@@ -452,7 +469,7 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c2 "RK4 integration of dy/dt = -2y. Takes the ODE as a higher-order function. 200 steps reaches machine-precision e^(-4).")
+        (body-text c2 "RK4 integration of dy/dt = -2y. The integrator takes the ODE as an argument, because functions are values here. 200 steps reach machine-precision e^(-4).")
         (create-runnable-code-block c2
           "(define (decay t y) (* -2.0 y))\n(define (rk4 f t y h)\n  (let* ((k1 (* h (f t y)))\n         (k2 (* h (f (+ t (* 0.5 h)) (+ y (* 0.5 k1)))))\n         (k3 (* h (f (+ t (* 0.5 h)) (+ y (* 0.5 k2)))))\n         (k4 (* h (f (+ t h) (+ y k3)))))\n    (+ y (* (/ 1.0 6.0) (+ k1 (* 2.0 k2) (* 2.0 k3) k4)))))\n(display\n  (let loop ((t 0.0) (y 1.0) (i 0))\n    (if (>= i 200) y\n      (loop (+ t 0.01) (rk4 decay t y 0.01) (+ i 1)))))"
           "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(decay t y)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>-2.0</span> y<span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> <span style='color:#a78bfa'>(rk4 f t y h)</span>\n  <span style='color:#c084fc'>(let*</span> ((<span style='color:#a78bfa'>k1</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> t y<span style='color:#c084fc'>)))</span>\n         (<span style='color:#a78bfa'>k2</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> h<span style='color:#c084fc'>))</span> <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> k1<span style='color:#c084fc'>)))))</span>\n         (<span style='color:#a78bfa'>k3</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> h<span style='color:#c084fc'>))</span> <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>0.5</span> k2<span style='color:#c084fc'>)))))</span>\n         (<span style='color:#a78bfa'>k4</span> <span style='color:#c084fc'>(*</span> h <span style='color:#c084fc'>(f</span> <span style='color:#c084fc'>(+</span> t h<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> y k3<span style='color:#c084fc'>)))))</span>\n    <span style='color:#c084fc'>(+</span> y <span style='color:#c084fc'>(*</span> <span style='color:#c084fc'>(/</span> <span style='color:#00ff88'>1.0</span> <span style='color:#00ff88'>6.0</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> k1 <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>2.0</span> k2<span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(*</span> <span style='color:#00ff88'>2.0</span> k3<span style='color:#c084fc'>)</span> k4<span style='color:#c084fc'>)))))</span>\n<span style='color:#c084fc'>(display</span>\n  <span style='color:#c084fc'>(let</span> loop ((<span style='color:#a78bfa'>t</span> <span style='color:#00ff88'>0.0</span>) (<span style='color:#a78bfa'>y</span> <span style='color:#00ff88'>1.0</span>) (<span style='color:#a78bfa'>i</span> <span style='color:#00ff88'>0</span>))\n    <span style='color:#c084fc'>(if</span> <span style='color:#c084fc'>(>=</span> i <span style='color:#00ff88'>200</span><span style='color:#c084fc'>)</span> y\n      <span style='color:#c084fc'>(loop</span> <span style='color:#c084fc'>(+</span> t <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(rk4</span> decay t y <span style='color:#00ff88'>0.01</span><span style='color:#c084fc'>)</span> <span style='color:#c084fc'>(+</span> i <span style='color:#00ff88'>1</span><span style='color:#c084fc'>)))))</span>\n<span style='color:#606078'>;; => 0.01832 (e^-4, machine precision)</span></pre>"))
@@ -463,7 +480,7 @@
           (style! h "fontSize" "1.2rem")
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "12px"))
-        (body-text c3 "Built-in knowledge base with unification and probabilistic inference via factor graphs and belief propagation.")
+        (body-text c3 "The knowledge base ships with the language. Facts unify against patterns, and factor graphs with belief propagation handle the probabilities.")
         (create-runnable-code-block c3
           "(define kb (make-kb))\n(kb-assert! kb (make-fact '(parent alice bob)))\n(kb-assert! kb (make-fact '(parent bob charlie)))\n(display (kb-query kb '(parent alice ?child)))"
           "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#c084fc'>(define</span> kb <span style='color:#c084fc'>(make-kb)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent alice bob)</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(kb-assert!</span> kb <span style='color:#c084fc'>(make-fact</span> <span style='color:#00ff88'>'(parent bob charlie)</span><span style='color:#c084fc'>))</span>\n\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(kb-query</span> kb <span style='color:#00ff88'>'(parent alice ?child)</span><span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => ((parent alice bob))</span></pre>")))
@@ -474,13 +491,13 @@
   (let ((section (create-section parent)))
     (section-heading section "What you can build")
 
-    (body-html section "<strong style='color:#a78bfa'>Machine Learning Pipelines.</strong> Train neural networks with compiler-native automatic differentiation. Gradient, Jacobian, and Hessian are compiler primitives, not library calls. AD through control flow, closures, and recursion produces exact derivatives with zero overhead.")
+    (body-html section "<strong style='color:#a78bfa'>Machine Learning Pipelines.</strong> Train neural networks with compiler-native automatic differentiation. Gradient, Jacobian, and Hessian are compiler primitives, not library calls. Differentiate through control flow, closures, and recursion, and the derivatives come back exact with zero overhead.")
 
-    (body-html section "<strong style='color:#a78bfa'>Scientific Simulations.</strong> Solve differential equations, run Monte Carlo simulations, and process signals with deterministic memory and GPU acceleration. Arena-based allocation gives O(1) alloc and deallocation at scope boundaries -- no GC pauses during a simulation step.")
+    (body-html section "<strong style='color:#a78bfa'>Scientific Simulations.</strong> Solve differential equations, run Monte Carlo simulations, and process signals on deterministic memory with GPU acceleration. Arenas allocate in O(1) and free at scope boundaries. No garbage collector interrupts a simulation step.")
 
-    (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty using the consciousness engine: knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
+    (body-html section "<strong style='color:#a78bfa'>Autonomous Agents.</strong> Build systems that reason about their own uncertainty. The consciousness engine gives you knowledge bases with Prolog-style unification, factor graphs with belief propagation, and global workspace theory for competing cognitive modules.")
 
-    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to native executables, or target WebAssembly for the browser. This entire website is a single Eshkol source file compiled to WASM. 97 browser-host bindings (DOM, events, canvas, timers, fetch, localStorage, window), hash-based routing, and a live bytecode REPL -- all from one language.")
+    (body-html section "<strong style='color:#a78bfa'>Full-Stack Applications.</strong> Compile to a native executable, or target WebAssembly for the browser. This whole website is one Eshkol source file compiled to WASM. It uses 97 browser-host bindings: DOM, events, canvas, timers, fetch, localStorage, and window. Hash-based routing and a live bytecode REPL come from that same file -- all one language.")
 
     section))
 
@@ -508,23 +525,31 @@
 
       (let ((s1 (create-div inner)))
         (web-add-class s1 "stat-box")
-        (let ((v (create-text "div" "555+" s1))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "Built-in Functions" s1))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "12,220,422" s1))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "constructed parameters" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-div inner)))
         (web-add-class s2 "stat-box")
-        (let ((v (create-text "div" "528" s2))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "Tests Passing" s2))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "127/127" s2))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "verified three ways" s2))) (web-add-class l "stat-label")))
 
       (let ((s3 (create-div inner)))
         (web-add-class s3 "stat-box")
-        (let ((v (create-text "div" "8" s3))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "AD Operators" s3))) (web-add-class l "stat-label")))
+        (let ((v (create-text "div" "16" s3))) (web-add-class v "stat-value"))
+        (let ((l (create-text "div" "release files, checksummed" s3))) (web-add-class l "stat-label")))
 
       (let ((s4 (create-div inner)))
         (web-add-class s4 "stat-box")
         (let ((v (create-text "div" "22" s4))) (web-add-class v "stat-value"))
-        (let ((l (create-text "div" "Consciousness Primitives" s4))) (web-add-class l "stat-label"))))
+        (let ((l (create-text "div" "consciousness primitives" s4))) (web-add-class l "stat-label")))
+
+      (let ((note (create-text "p" "The SDNC weight matrices carry those parameters, and every inline program is checked through the reference C VM, the simulated transformer, and the matrix forward pass. The release payload is 15 platform packages plus SHA256SUMS.txt." inner)))
+        (style! note "gridColumn" "1 / -1")
+        (style! note "color" "#71717a")
+        (style! note "fontSize" "0.78rem")
+        (style! note "textAlign" "center")
+        (style! note "marginTop" "20px")
+        (style! note "lineHeight" "1.7")))
 
     section))
 
@@ -547,76 +572,97 @@
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
         "Compiler-Native AD"
-        "8 differential operators compiled directly to LLVM IR. Forward-mode dual numbers and reverse-mode tape. gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative. No runtime library overhead.")
+        "8 differential operators lower straight to LLVM IR: gradient, jacobian, hessian, divergence, curl, laplacian, derivative, directional-derivative. Forward mode uses dual numbers, reverse mode a tape. No runtime library sits between you and the math.")
 
       (render-feature-card grid
         "Zero Garbage Collection"
-        "Deterministic arena-based memory with ownership tracking. No GC pauses, no unpredictable latency. Allocation in O(1). Deallocation at scope boundaries. Microsecond worst-case guarantees.")
+        "Nothing stops the world. Memory is deterministic arenas with ownership tracking, not a collector. Allocation is O(1), deallocation happens at scope boundaries, and the worst case is guaranteed in microseconds.")
 
       (render-feature-card grid
         "Heterogeneous Computing"
-        "GPU acceleration via Metal and CUDA. XLA/StableHLO for ML workloads. SIMD vectorization. Automatic dispatch: GPU, BLAS, SIMD, scalar. One expression, all backends."))
+        "One expression, all backends. Tensor work dispatches automatically to GPU, BLAS, SIMD, or scalar code. Metal and CUDA drive the GPUs, XLA/StableHLO carries ML workloads, and SIMD vectorization covers the rest."))
 
     (create-divider section)
 
     (let ((grid2 (create-grid-3 section)))
       (render-feature-card grid2
         "Full R7RS Scheme"
-        "Closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, pattern matching. Homoiconic: every function can display its own source code.")
+        "Closures, first-class continuations (call/cc), dynamic-wind, hygienic macros (syntax-rules), tail call optimization, and pattern matching. The language is homoiconic, so every function can display its own source code.")
 
       (render-feature-card grid2
         "Complete Numeric Tower"
-        "int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), complex. Tagged values enable dynamic dispatch with zero overhead for known types.")
+        "int64, bignum (arbitrary precision), rational (exact fractions), double (IEEE 754), and complex. Tagged values carry the dynamic dispatch, so a known type pays zero overhead.")
 
       (render-feature-card grid2
         "Consciousness Engine"
-        "Knowledge bases with unification, factor graphs with belief propagation, global workspace theory. 22 built-in primitives for systems that reason about their own uncertainty."))
+        "22 built-in primitives for systems that reason about their own uncertainty. Knowledge bases unify. Factor graphs propagate belief. Global workspace theory arbitrates between competing modules."))
 
     section))
 
 (define (render-v12-features parent)
   (let ((section (create-section parent)))
-    (section-heading section "What's new in v1.3.3-evolve")
-    (body-html section "<strong style='color:#a78bfa'>Evolve, completed and verified.</strong> v1.3.3-evolve combines compiler-native automatic differentiation, the complete Moonlab quantum trajectory, FIPS 203 post-quantum cryptography, exhaustive executable-surface evidence, and portable release packages. Exact AD and numeric-tower defects now fail loudly or compute correctly; long-running region memory is poison-tested; every supported platform archive is exercised outside its builder; and the bytecode VM is reported honestly as a verified subset rather than presented as full native-backend parity.")
+    (section-heading section "What's new in v1.3.4-evolve")
+    (body-html section "<strong style='color:#a78bfa'>Resident correctness.</strong> Run an Eshkol daemon for 100,000 ticks and its memory stays flat. Every defect that long-duration resident workloads surfaced is fixed at the architectural root: automatic per-iteration reclamation, race-free parallel-map, exact gradients through every callable form, and floats that round-trip to the identical double. High-precision numerics, a Moonlab v1.2.0 quantum pin, and a linear Qubit type land alongside them.")
 
     (let ((grid (create-grid-3 section)))
       (render-feature-card grid
-        "Quantum S1-S5"
-        "Moonlab-backed state preparation, Bell-verified randomness, VQE, custom-VJP differentiation through circuits, FIPS 203 ML-KEM 512/768/1024, and a permanent CHSH gate. H2 VQE agrees with exact energy to 4.4e-16.")
+        "Memory that stays flat"
+        "A tick loop that mutates persistent state used to leak about 3,366 bytes per iteration, roughly 355 MB over 100,000 ticks. A per-loop nursery region now reclaims it. The same loop sits flat at 34 MB, byte-for-byte identical to its explicit with-region twin.")
 
       (render-feature-card grid
         "Complete executable evidence"
-        "1,057/1,057 language-surface rows execute deterministically. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and 127 five-oracle generative programs produce zero divergences.")
+        "1,078 of 1,078 declared constructs, each proven because it dispatched or executed in a passing run. Lexical name-presence earns no credit. SICP passes 88/88 under JIT and AOT, Chibi agrees 34/34, and the floor is fixed at 1,078, so the count can only grow.")
 
       (render-feature-card grid
         "Portable release packages"
-        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths are exercised on clean Windows, Linux, and macOS hosts."))
+        "Fifteen platform packages plus SHA256SUMS.txt are validated as one 16-file release payload. Clean Windows, Linux, and macOS hosts exercise the relocated core and agent JITs, cached AOT links, image codecs, LLVM 21, and CUDA 12 paths."))
 
     (let ((grid2 (create-grid-3 section)))
       (render-feature-card grid2
-        "Exact AD and numeric tower"
-        "First-class tensor losses, input2 gradients, forward-over-reverse composition, Hessians, bignums, and rationals are exact across the supported paths. Unsupported tensor backward operations now raise an error instead of silently returning zero.")
+        "Exact gradients, every callable form"
+        "Reach gradient through a function parameter, a wrapper, or the curried ((gradient f) point). All come back byte-identical to the direct call. Nothing in the gradient path falls back to finite differences.")
 
       (render-feature-card grid2
         "Verified VM subset"
-        "The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB; the hosted VM surface passes 53/53. PARITY.tsv explicitly ratchets unsupported or divergent operations, so these results do not claim complete backend parity.")
+        "936 parity rows, published: 562 VM-supported, 45 native-only by design, 329 gaps. 17 of those gaps are verified behavioral divergences, each with a program that reproduces it. The ledger only moves one way, so a gap never closes quietly. The shared VM/native corpus passes 68/68 across native LLVM, VM source, and emitted ESKB, and the hosted VM surface passes 53/53.")
 
       (render-feature-card grid2
         "Heterogeneous dispatch"
-        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon, CUDA 12.4 + cuBLAS on Linux x64/ARM64 and Windows x64, or XLA/StableHLO. CUDA-labelled packages fail closed unless the real GPU backend is present."))
+        "Tensor operations dispatch through SIMD micro-kernels, cBLAS/Accelerate, Metal on Apple Silicon, or XLA/StableHLO. CUDA 12.4 with cuBLAS covers Linux x64/ARM64 and Windows x64. A CUDA-labelled package fails closed unless the real GPU backend is present."))
 
     (let ((grid3 (create-grid-3 section)))
       (render-feature-card grid3
-        "Resident-memory hardening"
-        "The region evacuator deep-walks every interior-pointer subtype, large stable list sorts stay bounded, and long-running loops reclaim per-iteration arenas. Poison and million-iteration tests make stale region references fail loudly.")
+        "Race-free parallel-map"
+        "A closure that allocates and returns a collection used to hand back dangling structure past the parallel threshold. On a pool worker, scope reclamation now degrades to commit-only. ThreadSanitizer reports zero arena data races where it previously reported dozens.")
 
       (render-feature-card grid3
-        "Relocatable JIT and AOT"
-        "Windows ARM64 uses SEH-correct Small-model code with import cells and bounded JIT arenas. Linux packages carry their codec closure and preserve consumer runtime paths instead of replaying hosted-builder locations.")
+        "Floats that round-trip"
+        "display, write, and number->string emit the shortest decimal that reads back as the identical double (R7RS 6.2.6). The compiler and the bytecode VM share one portable-C routine, so their output is byte-identical. (sqrt 2.0) prints 1.4142135623730951.")
 
       (render-feature-card grid3
         "Permanent release oracles"
-        "CTest 76/76, the 44-suite aggregate, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100/100 are repeatable release gates."))
+        "Nothing here is a one-off check. CTest 76/76, the 44-suite aggregate, reference and generative differentials, WebAssembly import equality, Taylor 441/441 JIT+AOT equivalence, ICC architecture 8/8, and readiness 100/100 all run as repeatable release gates."))
+
+    section))
+
+(define (render-sdnc parent)
+  (let ((section (create-section parent)))
+    (section-heading section "The bytecode VM, as a transformer")
+
+    (body-html section "<strong style='color:#a78bfa'>SDNC.</strong> A six-layer transformer with 12,220,422 analytically constructed parameters runs Eshkol's bytecode ISA. The weights are not trained. They are constructed, and they reproduce the production C VM bit-identically in float32.")
+
+    (let ((grid (create-grid-3 section)))
+      (render-feature-card grid
+        "83-instruction ISA"
+        "82 opcodes are implemented in the weights. One is a deliberate external boundary: OP_NATIVE_CALL, the seam where the matrix hands off to host services. The boundary is declared, not discovered.")
+
+      (render-feature-card grid
+        "Bit-identical, not approximate"
+        "The transformer and the production C VM agree bit-for-bit on the full per-step machine state: program counter, stack pointers, registers, and arena cells.")
+
+      (render-feature-card grid
+        "127/127, checked three ways"
+        "Every inline program is verified through the reference C VM, the simulated transformer, and the matrix forward pass. All three agree, or the gate fails."))
 
     section))
 
@@ -656,7 +702,7 @@
         (create-runnable-code-block card2
           "(define M (reshape #(1.0 2.0 3.0 4.0) 2 2))\n(define x #(5.0 6.0))\n(display (tensor-matmul M x))\n;; => #(17 39) — M times column vector x"
           "<pre style='margin:0;font-family:JetBrains Mono,monospace;font-size:0.82rem;line-height:1.6;color:#e8e8f0'><span style='color:#606078'>;; 2x2 matrix times 2-vector — one expression, all backends</span>\n<span style='color:#c084fc'>(define</span> M <span style='color:#c084fc'>(reshape</span> <span style='color:#00ff88'>#(1.0 2.0 3.0 4.0)</span> <span style='color:#00ff88'>2</span> <span style='color:#00ff88'>2</span><span style='color:#c084fc'>))</span>\n<span style='color:#c084fc'>(define</span> x <span style='color:#00ff88'>#(5.0 6.0)</span><span style='color:#c084fc'>)</span>\n<span style='color:#c084fc'>(display</span> <span style='color:#c084fc'>(tensor-matmul</span> M x<span style='color:#c084fc'>))</span>\n<span style='color:#606078'>;; => #(17 39)  (= [[1,2],[3,4]] * [5,6])</span></pre>")
-        (let ((cap (create-text "p" "Tensor ops dispatch through SIMD, BLAS, Metal, or CUDA at runtime." card2)))
+        (let ((cap (create-text "p" "Tensor operations dispatch to SIMD, BLAS, Metal, or CUDA at runtime." card2)))
           (style! cap "color" "#71717a")
           (style! cap "fontSize" "0.8rem")
           (style! cap "marginTop" "12px")
@@ -705,6 +751,7 @@
   (render-app-cards content)
   (render-pillars content)
   (render-v12-features content)
+  (render-sdnc content)
   (render-code-showcase content)
   (render-what-you-can-build content)
   (render-comparison-table content)
@@ -1186,11 +1233,11 @@
 
 (define (render-downloads-page content)
   (let ((page (create-section content)))
-    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.3-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
+    (create-page-header page "Downloads" "Install Eshkol on macOS, Linux, Windows, or build from source. v1.3.4-evolve publishes 15 platform packages plus SHA256SUMS.txt: one verified 16-file release payload.")
 
     ;; ── Publication status ──────────────────────────────────────
-    (section-subheading page "v1.3.3-evolve Publication")
-    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and binary downloads will appear here when publication is authorized." page)))
+    (section-subheading page "v1.3.4-evolve Publication")
+    (let ((status (create-text "p" "Release-ready on verified master. The immutable tag and its packages appear here once publication is authorized." page)))
       (web-set-attribute status "id" "release-status")
       (style! status "color" "#a1a1aa"))
     (let ((releases (create-div page)))
@@ -1208,7 +1255,7 @@
     (section-subheading page "Linux")
     (body-text page "Choose the x64 or ARM64 archive and the Lite, XLA, or CUDA 12.4 tier. Verify it against SHA256SUMS.txt before extraction.")
     (create-code-block page
-      "<code style='color:#606078'># Valid after the v1.3.3-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.3-evolve/eshkol-v1.3.3-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.3-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.3-evolve-linux-x64-lite.tar.gz")
+      "<code style='color:#606078'># Valid after the v1.3.4-evolve tag is published</code>\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz\n<code style='color:#22c55e'>$</code> curl -LO https://github.com/tsotchke/eshkol/releases/download/v1.3.4-evolve/SHA256SUMS.txt\n<code style='color:#22c55e'>$</code> sha256sum -c SHA256SUMS.txt --ignore-missing\n<code style='color:#22c55e'>$</code> tar xzf eshkol-v1.3.4-evolve-linux-x64-lite.tar.gz")
 
     ;; ── Windows ────────────────────────────────────────────────
     (section-subheading page "Windows")
@@ -1218,7 +1265,7 @@
 
     ;; ── Release Artifacts Table ────────────────────────────────
     (section-subheading page "Release Artifacts")
-    (body-text page "The table mirrors the release workflow's exact 15-package contract. Package links open the GitHub release; SHA256SUMS.txt is the sixteenth published file.")
+    (body-text page "The table mirrors the release workflow's exact 15-package contract. Package links open the GitHub release. SHA256SUMS.txt is the sixteenth published file.")
 
     (let ((tbl (web-create-element "table")))
       (web-add-class tbl "comparison-table")
@@ -1342,7 +1389,7 @@
 
         ;; Welcome message
         (web-set-inner-html output
-          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.3-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
+          "<span style='color:#7c3aed;font-weight:bold'>Eshkol Bytecode VM</span> <span style='color:#71717a'>v1.3.4-evolve</span>\n<span style='color:#71717a'>83-opcode ISA | Arena memory (OALR) | R7RS Scheme</span>\n<span style='color:#71717a'>Type an expression and press Enter.</span>\n\n"))
 
       ;; Terminal input area
       (let ((input-row (create-div terminal)))
@@ -1395,7 +1442,7 @@
     (let ((stats (create-grid-4 page)))
       (let ((s1 (create-card stats)))
         (web-add-class s1 "text-center")
-        (let ((v (create-text "div" "221KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
+        (let ((v (create-text "div" "226KB" s1))) (web-add-class v "stat-value") (style! v "fontSize" "1.8rem"))
         (let ((l (create-text "div" "Site WASM" s1))) (web-add-class l "stat-label")))
 
       (let ((s2 (create-card stats)))
@@ -1511,7 +1558,7 @@
         (let ((h (create-text "h3" "AD at the Compiler Level" d1)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text d1 "Other languages bolt on differentiation as a library (JAX, Zygote, PyTorch). Eshkol integrates AD directly into the LLVM codegen pipeline. The compiler sees gradients the same way it sees addition -- as a native operation to optimize."))
+        (body-text d1 "Other languages bolt differentiation on as a library (JAX, Zygote, PyTorch). Eshkol builds AD into the LLVM codegen pipeline. The compiler sees a gradient the same way it sees addition -- as a native operation to optimize."))
 
       (let ((d2 (create-card diff-grid)))
         (let ((h (create-text "h3" "Deterministic Performance" d2)))
@@ -1523,7 +1570,7 @@
         (let ((h (create-text "h3" "Self-Modifying Programs" d3)))
           (style! h "color" "#a78bfa")
           (style! h "marginBottom" "8px"))
-        (body-text d3 "Homoiconicity means every function can inspect and transform its own source code. Combined with knowledge bases and probabilistic inference, this enables programs that reason about and improve themselves."))
+        (body-text d3 "Homoiconicity means every function can inspect and transform its own source code. Add knowledge bases and probabilistic inference, and you get programs that reason about themselves and improve themselves."))
 
       (let ((d4 (create-card diff-grid)))
         (let ((h (create-text "h3" "One Language, All Targets" d4)))
@@ -1536,7 +1583,7 @@
     ;; About
     (section-subheading page "About Eshkol")
     (body-text page "Eshkol is developed by Tsotchke Corporation. The name comes from the Hebrew word for 'cluster' -- a reference to both grape clusters (abundance) and computational clusters (parallel computing).")
-    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level, making calculus operations as natural and efficient as basic arithmetic. It combines the elegance of Scheme with the performance of compiled native code.")
+    (body-text page "Eshkol is the first production programming language to integrate automatic differentiation directly at the compiler level. Calculus operations are as natural and as efficient as basic arithmetic. The language pairs the elegance of Scheme with the performance of compiled native code.")
     (body-text page "The language targets scientific computing, machine learning, and autonomous systems -- domains where mathematical precision, deterministic performance, and hardware acceleration matter.")
 
     (create-divider page)

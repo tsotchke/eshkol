@@ -45,3 +45,89 @@
 
 (display "TEST: bitwise-or all bits") (newline)
 (display (if (= (bitwise-or 170 85) 255) "PASS" "FAIL")) (display ": bitwise-or 170 85 = 255 (0xAA | 0x55 = 0xFF)") (newline)
+
+;;; ---------------------------------------------------------------------------
+;;; Directional shift spellings and population count.
+;;;
+;;; docs/tutorials/20_BITWISE_AND_SYSTEM.md documents bit-shift-left,
+;;; bit-shift-right and popcount; docs/API_REFERENCE.md documents the same
+;;; population count as bit-count. All four are exercised here on both the
+;;; native codegen and the bytecode VM.
+;;; ---------------------------------------------------------------------------
+
+(display "TEST: bit-shift-left documented example") (newline)
+(display (if (= (bit-shift-left 1 8) 256) "PASS" "FAIL")) (display ": bit-shift-left 1 8 = 256") (newline)
+
+(display "TEST: bit-shift-right documented example") (newline)
+(display (if (= (bit-shift-right 256 4) 16) "PASS" "FAIL")) (display ": bit-shift-right 256 4 = 16") (newline)
+
+(display "TEST: popcount documented example") (newline)
+(display (if (= (popcount 255) 8) "PASS" "FAIL")) (display ": popcount 255 = 8") (newline)
+
+(display "TEST: bit-count is a synonym of popcount") (newline)
+(display (if (= (bit-count 255) 8) "PASS" "FAIL")) (display ": bit-count 255 = 8") (newline)
+
+(display "TEST: bit-shift-left agrees with arithmetic-shift") (newline)
+(display (if (= (bit-shift-left 3 2) (arithmetic-shift 3 2)) "PASS" "FAIL")) (display ": bit-shift-left 3 2 = arithmetic-shift 3 2") (newline)
+
+(display "TEST: bit-shift-right agrees with negated arithmetic-shift") (newline)
+(display (if (= (bit-shift-right 100 3) (arithmetic-shift 100 -3)) "PASS" "FAIL")) (display ": bit-shift-right 100 3 = arithmetic-shift 100 -3") (newline)
+
+(display "TEST: bit-shift-right sign-propagates") (newline)
+(display (if (= (bit-shift-right -8 2) -2) "PASS" "FAIL")) (display ": bit-shift-right -8 2 = -2") (newline)
+
+(display "TEST: bit-shift-left with negative count shifts right") (newline)
+(display (if (= (bit-shift-left 256 -4) 16) "PASS" "FAIL")) (display ": bit-shift-left 256 -4 = 16") (newline)
+
+(display "TEST: bit-shift-right with negative count shifts left") (newline)
+(display (if (= (bit-shift-right 1 -8) 256) "PASS" "FAIL")) (display ": bit-shift-right 1 -8 = 256") (newline)
+
+(display "TEST: popcount of zero") (newline)
+(display (if (= (popcount 0) 0) "PASS" "FAIL")) (display ": popcount 0 = 0") (newline)
+
+(display "TEST: popcount of a single bit") (newline)
+(display (if (= (popcount 1) 1) "PASS" "FAIL")) (display ": popcount 1 = 1") (newline)
+
+(display "TEST: bit-count of 4095") (newline)
+(display (if (= (bit-count 4095) 12) "PASS" "FAIL")) (display ": bit-count 4095 = 12") (newline)
+
+;; Negative operands follow the width-independent R6RS bitwise-bit-count
+;; convention: (popcount n) = -1 - (popcount (bitwise-not n)). This is the only
+;; rule that agrees for fixnums and bignums, since a negative integer's
+;; two's-complement bit string is infinite.
+(display "TEST: popcount of -1 (R6RS convention)") (newline)
+(display (if (= (popcount -1) -1) "PASS" "FAIL")) (display ": popcount -1 = -1") (newline)
+
+(display "TEST: popcount of -256 (R6RS convention)") (newline)
+(display (if (= (popcount -256) -9) "PASS" "FAIL")) (display ": popcount -256 = -9") (newline)
+
+(display "TEST: popcount negative matches bitwise-not identity") (newline)
+(display (if (= (popcount -12345) (- -1 (popcount (bitwise-not -12345)))) "PASS" "FAIL")) (display ": popcount -12345 = -1 - popcount (bitwise-not -12345)") (newline)
+
+;; Exact (bignum) operands.
+(display "TEST: popcount of 2^100") (newline)
+(display (if (= (popcount (expt 2 100)) 1) "PASS" "FAIL")) (display ": popcount 2^100 = 1") (newline)
+
+(display "TEST: popcount of 2^100 - 1") (newline)
+(display (if (= (popcount (- (expt 2 100) 1)) 100) "PASS" "FAIL")) (display ": popcount (2^100 - 1) = 100") (newline)
+
+(display "TEST: bit-count of 2^128 - 1") (newline)
+(display (if (= (bit-count (- (expt 2 128) 1)) 128) "PASS" "FAIL")) (display ": bit-count (2^128 - 1) = 128") (newline)
+
+(display "TEST: popcount of -2^100 (R6RS convention on a bignum)") (newline)
+(display (if (= (popcount (- (expt 2 100))) -101) "PASS" "FAIL")) (display ": popcount -2^100 = -101") (newline)
+
+;; A left shift that overflows int64 must promote to the exact domain rather
+;; than wrapping. This also pins the documented
+;; (arithmetic-shift 1 64) => 18446744073709551616.
+(display "TEST: bit-shift-left promotes past int64") (newline)
+(display (if (= (bit-shift-left 1 100) (expt 2 100)) "PASS" "FAIL")) (display ": bit-shift-left 1 100 = 2^100") (newline)
+
+(display "TEST: arithmetic-shift 1 64 stays exact") (newline)
+(display (if (= (arithmetic-shift 1 64) 18446744073709551616) "PASS" "FAIL")) (display ": arithmetic-shift 1 64 = 18446744073709551616") (newline)
+
+(display "TEST: bit-shift-left 3 62 stays exact") (newline)
+(display (if (= (bit-shift-left 3 62) 13835058055282163712) "PASS" "FAIL")) (display ": bit-shift-left 3 62 = 13835058055282163712") (newline)
+
+(display "TEST: bit-shift-right on a bignum") (newline)
+(display (if (= (bit-shift-right (expt 2 100) 96) 16) "PASS" "FAIL")) (display ": bit-shift-right 2^100 96 = 16") (newline)
