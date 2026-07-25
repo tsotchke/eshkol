@@ -133,6 +133,28 @@
 (check "sin d2 @2" (- 0.0 (sin 2.0))  (d2sin 2.0))
 (check "sin d2 == A" (derivative-n gsin 1.0 2) (d2sin 1.0))
 
+;; ── the differentiand CAPTURES a free variable ──────────────────────────────
+;; The derivative wrapper has to thread the original function's captures into
+;; the closure it returns (static path) or capture the closure whole (runtime
+;; path). Assert both capture forms: a lambda closing over a parameter of its
+;; maker, and a named function closing over a global.
+;;   fa(x) = a*x^4 with a=2 ; fa' = 8x^3 ; fa'' = 24x^2
+;;   @2: 64, 96      @3: 216, 216  (2x the x^4 values)
+(define a 2.0)
+(define (mk c) (lambda (x) (* c (* x x x x))))
+(define fa   (mk 2.0))
+(define dfa  (derivative fa))
+(define d2fa (derivative dfa))
+(check "capture(param) d1 @2"  64.0 (dfa  2.0))
+(check "capture(param) d2 @2"  96.0 (d2fa 2.0))
+(check "capture(param) d2 @3" 216.0 (d2fa 3.0))
+
+(define (fg x) (* a (* x x x x)))
+(define d2fg (derivative (derivative fg)))
+(check "capture(global) d2 @2"  96.0 (d2fg 2.0))
+(check "capture(global) d2 @3" 216.0 (d2fg 3.0))
+(check "capture(global) d2 == A" (derivative-n fg 2.0 2) (d2fg 2.0))
+
 ;; ── a curried GRADIENT closure must still agree with the direct form ────────
 ;;   g2(x,y) = x^2 y + y^3 ; grad = (2xy, x^2 + 3y^2) ; @(2,3) = (12, 31)
 (define (g2 x y) (+ (* x x y) (* y y y)))
