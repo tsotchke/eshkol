@@ -154,6 +154,21 @@ static void vm_prescan_redefined_toplevel_names(const char* source) {
     src_ptr = saved_src;
 }
 
+/* First stack slot that belongs to the user program: every slot below it was
+ * created by emit_builtin_preamble() or by the Scheme prelude. A redefinition
+ * may only assign to a location the user program itself created — otherwise the
+ * FIRST user definition of a name that happens to collide with a builtin (and
+ * is then redefined) would overwrite the preamble's own closure slot, letting
+ * user code rebind what the prelude's map/fold read through. Native keeps its
+ * stdlib in a separately compiled object where that cannot happen; the
+ * watermark keeps the VM matching it. */
+static int g_vm_user_locals_base = 0;
+
+/** @brief Mark @p n_locals as the boundary between prelude and user slots. */
+static void vm_set_user_locals_base(int n_locals) {
+    g_vm_user_locals_base = n_locals > 0 ? n_locals : 0;
+}
+
 /* The group-compilation driver in compile_and_run() pre-registers a NIL local
  * per member of a mutually-recursive define group before compiling any of
  * them, so inside a group `resolve_local` finds a slot that no definition has
@@ -176,6 +191,7 @@ static int vm_redefinition_target_slot(FuncChunk* c, const char* name) {
 
     int slot = resolve_local(c, name);
     if (slot < 0) return -1;
+    if (slot < g_vm_user_locals_base) return -1;   /* prelude/builtin location */
     for (int li = c->n_locals - 1; li >= 0; li--) {
         if (c->locals[li].slot == slot && c->locals[li].boxed) return -1;
     }
