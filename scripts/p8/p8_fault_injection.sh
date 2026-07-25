@@ -16,10 +16,14 @@
 # Verdicts per cell:
 #   PASS    invariant held (nonzero exit + diagnostic token present)
 #   FAIL    a HARD-GATE cell violated the invariant (a NEW masking regression)
-#   XKNOWN  a cell tagged xmask=1 (a tracked-open exit-0 masking, ESH-0361) did
-#           not meet the invariant — tolerated, recorded, reported
+#   XKNOWN  a cell tagged xmask=1 (a tracked-open exit-0 masking) did not meet
+#           the invariant — tolerated, recorded, reported
 #   XPASS   an xmask cell now MEETS the invariant (bug fixed) -> FAILS the gate
-#           so the cell is promoted to a hard gate and ESH-0361 is closed
+#           so the cell is promoted to a hard gate and its task is closed
+#
+# There are currently NO xmask cells: the ESH-0361 masking residue was fixed in
+# #354 and all five of its cells were promoted to hard gates below. A future
+# tracked-open masking is quarantined by adding xmask=1 back on its own cell.
 #
 # ICC wiring: pytest-style "PASSED tests/escape_matrix/fault::<id>" lines plus
 # kind=escape_matrix JSON-L events into scripts/icc_traces/escape_matrix.jsonl,
@@ -84,7 +88,7 @@ cell() {
   if [ -n "$token" ]; then printf '%s' "$out" | grep -qiF "$token" || ok=0; fi
   if [ "$ok" -eq 1 ]; then
     if [ "$xmask" -eq 1 ]; then
-      XP=$((XP+1)); echo "XPASS $id (masking fixed — promote to hard gate, close ESH-0361)"; emit "$id" XPASS "invariant now holds"
+      XP=$((XP+1)); echo "XPASS $id (masking fixed — promote to hard gate, close the tracked task)"; emit "$id" XPASS "invariant now holds"
       echo "XPASS tests/escape_matrix/fault::$id"
     else
       PASS=$((PASS+1)); emit "$id" PASS "exit=$ec token ok"
@@ -92,8 +96,8 @@ cell() {
     fi
   else
     if [ "$xmask" -eq 1 ]; then
-      XK=$((XK+1)); emit "$id" XKNOWN "exit=$ec (ESH-0361 masking)"
-      echo "XKNOWN tests/escape_matrix/fault::$id (exit=$ec, ESH-0361)"
+      XK=$((XK+1)); emit "$id" XKNOWN "exit=$ec (tracked-open masking)"
+      echo "XKNOWN tests/escape_matrix/fault::$id (exit=$ec, tracked-open masking)"
     else
       FAIL=$((FAIL+1)); emit "$id" FAIL "exit=$ec token-missing"
       echo "FAILED tests/escape_matrix/fault::$id (exit=$ec)"
@@ -120,12 +124,25 @@ cell fault_bad_output_dir   0 ""             30 -- "$ESHKOL_RUN" "$OK" -o "/none
 cell fault_broken_lib_r     0 ""             20 -- "$ESHKOL_RUN" -r "$OK" --lib "/nonexistent/libbogus.dylib"
 cell fault_broken_lib_aot   0 ""             30 -- "$ESHKOL_RUN" "$OK" -o "$WORK/lib.bin" --lib "/nonexistent/libbogus.dylib"
 
-# ---- TRACKED-OPEN masking cells (ESH-0361) — xmask=1 ---------------------
-cell fault_missing_aot      1 ""             30 -- "$ESHKOL_RUN" "$MISSING" -o "$WORK/missing.bin"
-cell fault_malformed_r      1 ""             20 -- "$ESHKOL_RUN" -r "$MAL"
-cell fault_unreadable_r     1 ""             20 -- "$ESHKOL_RUN" -r "$NOPERM"
-cell fault_bad_require_r    1 ""             20 -- "$ESHKOL_RUN" -r "$BADREQ"
-cell fault_bad_require_aot  1 ""             30 -- "$ESHKOL_RUN" "$BADREQ" -o "$WORK/br.bin"
+# ---- PROMOTED cells: the ESH-0361 exit-0 masking residue, fixed in #354 ----
+# These five were xmask=1 (XKNOWN, tracked-open) until #354 made every one of
+# them exit nonzero with a diagnostic and write no binary. The ratchet reported
+# them as XPASS; they are now hard gates, each carrying the diagnostic token the
+# fix introduced, so the masking cannot silently return. ESH-0361 is CLOSED —
+# permanently pinned by tests/toolchain/driver_fault_exit_code_test.sh too.
+cell fault_missing_aot      0 "File not found"          30 -- "$ESHKOL_RUN" "$MISSING" -o "$WORK/missing.bin"
+cell fault_malformed_r      0 "unexpected end of input" 20 -- "$ESHKOL_RUN" -r "$MAL"
+# Mode 000 is still readable as root (some containers), where this fault cannot
+# be constructed at all. Assert only when the process genuinely cannot read the
+# file — same guard as tests/toolchain/driver_fault_exit_code_test.sh cell (c).
+if ! { : < "$NOPERM"; } 2>/dev/null; then
+  cell fault_unreadable_r   0 "Failed to open file"     20 -- "$ESHKOL_RUN" -r "$NOPERM"
+else
+  echo "SKIP tests/escape_matrix/fault::fault_unreadable_r (mode-000 still readable — running as root?)"
+  emit fault_unreadable_r SKIP "mode-000 readable (root) — fault not constructible on this host"
+fi
+cell fault_bad_require_r    0 "nonexistent.module.xyz"  20 -- "$ESHKOL_RUN" -r "$BADREQ"
+cell fault_bad_require_aot  0 "nonexistent.module.xyz"  30 -- "$ESHKOL_RUN" "$BADREQ" -o "$WORK/br.bin"
 
 # ---- HANG cell: an infinite loop under -r must be bounded, not exit 0 ----
 # eshkol-run does not honor SIGALRM under -r, so bound it with an uncatchable

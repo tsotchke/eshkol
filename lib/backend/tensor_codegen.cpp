@@ -251,9 +251,12 @@ llvm::Value* TensorCodegen::unpackTensorOperandChecked(llvm::Value* tensor_val,
     return b.CreateCall(fn, {slot, name}, "tensor_ptr_checked");
 }
 
-// Raise a catchable runtime error and terminate the current block. See the
-// header for why a guard must never close with a bare `unreachable`.
-void TensorCodegen::emitTensorRaise(const char* message) {
+/** @brief Raise a catchable ESHKOL_EXCEPTION_ERROR carrying @p message at the
+ *         current insert point, then terminate the block with `unreachable`.
+ *         See the declaration for why a guard must never close with a bare
+ *         `unreachable` (the optimizer deletes the branch) and why shape/range
+ *         guards must be catchable rather than printf+exit. */
+void TensorCodegen::emitCatchableError(const char* message) {
     auto& b = ctx_.builder();
 
     llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
@@ -277,6 +280,42 @@ void TensorCodegen::emitTensorRaise(const char* message) {
     llvm::Value* exc = b.CreateCall(make_exc_func, {exc_type, msg});
     b.CreateCall(raise_func, {exc});
     b.CreateUnreachable();
+}
+
+/** @brief Emit `actual == expected` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitRankGuard(llvm::Value* actual, int64_t expected,
+                                  const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpEQ(
+        actual, llvm::ConstantInt::get(actual->getType(), expected));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
+/** @brief Emit `actual >= minimum` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitMinRankGuard(llvm::Value* actual, int64_t minimum,
+                                     const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpSGE(
+        actual, llvm::ConstantInt::get(actual->getType(), minimum));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
 }
 
 // Note: All tensor implementations are complex and depend on:
@@ -515,10 +554,17 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // funneled it through `eshkol_unwrap_list_index`, which returns
     // only the *car* — collapsing every (0 _ _) read on a 3D tensor
     // to flat[0]. Fix: in the 1-arg case, route through
-    // `eshkol_tensor_linear_from_index_arg` to compute the full
+    // `eshkol_tensor_slice_offset_from_index_arg` to compute the full
     // row-major offset, and use `eshkol_tensor_index_arg_count` to
     // decide scalar-vs-slice the same way the multi-arg path does.
     // The multi-arg path keeps the original per-arg unwrap.
+    //
+    // That helper — rather than `eshkol_tensor_linear_from_index_arg` — because
+    // a *bare scalar* index here is also a partial index and must be scaled by
+    // the remaining dimensions: `(tensor-get M 1)` on a 2x3 is row 1, exactly
+    // like `(tensor-get M (list 1))`. The shared helper leaves a scalar
+    // unscaled (that is `tensor-ref`'s flat-index contract), which made the two
+    // spellings disagree and let an index past dims[0] slice past the end.
     llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
     if (!unwrap_fn) {
         llvm::FunctionType* ft = llvm::FunctionType::get(
@@ -533,14 +579,14 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* runtime_index_count = nullptr;
 
     if (num_indices == 1) {
-        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_linear_from_index_arg");
+        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_slice_offset_from_index_arg");
         if (!lin_fn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
                 ctx_.int64Type(),
                 {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
             lin_fn = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage,
-                "eshkol_tensor_linear_from_index_arg", &ctx_.module());
+                "eshkol_tensor_slice_offset_from_index_arg", &ctx_.module());
         }
         llvm::Function* count_fn = ctx_.module().getFunction("eshkol_tensor_index_arg_count");
         if (!count_fn) {
@@ -579,7 +625,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             llvm::BasicBlock* rank_err = llvm::BasicBlock::Create(ctx_.context(), "tget_rank_err", cur_fn2);
             ctx_.builder().CreateCondBr(too_many, rank_err, rank_ok);
             ctx_.builder().SetInsertPoint(rank_err);
-            emitTensorRaise("tensor-get: too many indices for tensor rank");
+            emitCatchableError("tensor-get: too many indices for tensor rank");
             ctx_.builder().SetInsertPoint(rank_ok);
         }
     } else {
@@ -654,7 +700,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
 
             ctx_.builder().SetInsertPoint(idx_err);
-            emitTensorRaise("tensor-get: too many indices for tensor rank");
+            emitCatchableError("tensor-get: too many indices for tensor rank");
 
             ctx_.builder().SetInsertPoint(idx_ok);
         }
@@ -678,7 +724,7 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
             ctx_.builder().CreateCondBr(oob, oob_bb, ok_bb);
 
             ctx_.builder().SetInsertPoint(oob_bb);
-            emitTensorRaise("tensor-get: index out of bounds");
+            emitCatchableError("tensor-get: index out of bounds");
 
             ctx_.builder().SetInsertPoint(ok_bb);
 
@@ -918,7 +964,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(too_many, idx_err, idx_ok);
 
         ctx_.builder().SetInsertPoint(idx_err);
-        emitTensorRaise("tensor-set!: too many indices for tensor rank");
+        emitCatchableError("tensor-set!: too many indices for tensor rank");
 
         ctx_.builder().SetInsertPoint(idx_ok);
     }
@@ -1014,7 +1060,7 @@ llvm::Value* TensorCodegen::tensorSet(const eshkol_operations_t* op) {
         ctx_.builder().CreateCondBr(oob, bounds_err, bounds_ok);
 
         ctx_.builder().SetInsertPoint(bounds_err);
-        emitTensorRaise("tensor-set!: index out of bounds");
+        emitCatchableError("tensor-set!: index out of bounds");
 
         ctx_.builder().SetInsertPoint(bounds_ok);
     }

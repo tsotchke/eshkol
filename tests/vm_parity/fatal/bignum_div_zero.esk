@@ -1,0 +1,3 @@
+; Exact BIGNUM division by an exact zero is fatal.
+(display (/ (expt 2 100) 0))
+(display "MUST-NOT-PRINT")
