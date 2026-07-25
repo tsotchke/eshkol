@@ -299,6 +299,73 @@ across every new-feature family).
 
 ### Fixed
 
+- **ESH-0362: an arity error is now FATAL, on every execution path — no more
+  poisoned handles.** Calling a fixed-arity function with the wrong number of
+  arguments printed a named diagnostic and then *kept going*. Three distinct
+  fail-open cells, all closed at the root:
+  - **Too few arguments** (the reported case). The closure-call arity check
+    emitted `Arity mismatch: f expects 2 arguments but got 1` and returned
+    `nullptr` without marking the compilation fatal. A `nullptr` from codegen is
+    indistinguishable from "this form produced no value", so the enclosing
+    `(define h (f a))` bound `h` to **null** and compilation continued. Under
+    `-r` the program ran with the poisoned binding — `(process-pid h)` answered
+    `0` and the next consumer dereferenced NULL (`SIGSEGV at 0x0`, far from the
+    real mistake); under `-o` the driver wrote a complete binary and **exited
+    0**, shipping the poisoned program.
+  - **Too many arguments.** The argument loop simply never pushed a surplus
+    argument, so the call was emitted at the callee's parameter count and the
+    extra arguments *vanished*: `(add2 1 2 99)` ran as `(add2 1 2)` and printed
+    `3`. The only trace was a gradual-typing `Type warning: function 'add2'
+    expects 2 arguments, got 3`, which by design never fails a build.
+  - **`-r` / REPL slot calls.** The two `__repl_fwd_<name>` indirect-call paths
+    synthesise the callee's signature from the *call's* argument count, so a
+    wrong count was not even a mismatch — it was a silent ABI disagreement, and
+    the callee read its missing parameter out of whatever the register happened
+    to hold. This is the path a `(require …)`d module's functions are called
+    through, so the same file that named the error under `-o` reported nothing
+    under `-r`. Both paths now consult the registered arity, and abstain only
+    when it cannot be established (a genuine forward reference, a variadic
+    callee, or a closure whose signature carries capture slots).
+
+  All three now fail the compilation: `-r` exits nonzero without running, `-o`
+  writes no binary, and the named diagnostic text is preserved verbatim — it is
+  a consumer-facing contract. A related silent rebind is now surfaced too: when
+  an `extern` reuses a C symbol already declared in the module with a *different
+  parameter count* (e.g. `(extern void h :real strlen)` against the runtime's own
+  1-parameter `strlen`), the declaration site warns instead of letting the call
+  site paper the difference over with a null argument.
+
+- **ESH-0363: FFI pointer arguments are type-checked at the boundary — an
+  integer is no longer dereferenced as an address.** An `extern` parameter
+  declared `ptr` / `string` / `char*` was passed to C by unconditionally
+  reinterpreting the tagged value's 64-bit payload as a pointer. A number in a
+  pointer position therefore became a pointer *equal to that number*:
+  `(run-argv-capture argv 5000)` — the timeout supplied where the positional
+  `cwd` belongs — reached the `execvp` shim as `const char* 0x1388` and died with
+  `SIGSEGV at address 0x1388`, with no diagnostic and no exit code. Codegen now
+  emits a check ahead of that conversion for every pointer-declared `extern`
+  parameter and raises a **catchable** `ESHKOL_EXCEPTION_TYPE_ERROR` naming the
+  extern, the argument position, the declared type and the offending value:
+  `FFI type error in process-spawn-argv-flags-raw (C symbol
+  qllm_process_spawn_argv_flags): argument 2 is declared 'ptr' and requires a
+  string or pointer handle, but got the integer 5000`. Applied across the whole
+  `extern` surface — **216 pointer-typed parameters over 323 declarations**, of
+  which 115 across 80 declarations are the `agent.*` FFI surface — not just the
+  reported call. A statically-decidable case (a numeric *literal* in a pointer
+  position) is reported at compile time instead of as an LLVM verifier message.
+  The predicate is a denylist of the immediate tags that cannot denote memory
+  (numbers, characters, symbols, `#t`, dual/complex numbers, logic variables),
+  never an allowlist of pointer tags, so a legitimate handle, port, bytevector,
+  callable, `'()` or `#f` (Eshkol's spelling of a NULL pointer argument) can
+  never be rejected. `--freestanding` and `wasm32` targets are excluded: neither
+  has the hosted error runtime to raise into.
+  `lib/agent/subprocess.esk` additionally validates `cwd` and `timeout-ms` by
+  name, so the reported error identifies the parameter the caller actually got
+  wrong rather than the internal `-raw` extern, and the spawn-family docstrings
+  plus `docs/reference/agent/ffi.md` now state exact arities and positional
+  meanings (`cwd` is the REQUIRED SECOND positional of every `process-spawn*`,
+  and the THIRD positional of the `run-*` wrappers is the timeout).
+
 - **`(require stdlib)` (and any no-op `require`) silently shifted every
   subsequent top-level binding down one slot.** The bytecode compiler lowers a
   `require` of the always-available prelude to nothing, but the top-level (and

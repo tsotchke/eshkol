@@ -3084,6 +3084,27 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: driver_fault_exit_code_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
+    if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh")
+        # ESH-0362 / ESH-0363 (found during FFI-boundary hardening): the two
+        # fail-open cells at the interpreter and the FFI boundary must stay
+        # closed on BOTH paths. An arity error is fatal under -r AND AOT (no
+        # null binding, no binary written); a wrong-typed pointer argument
+        # raises a catchable type error instead of being dereferenced; and the
+        # correctly-called spawn family still runs a real child end to end.
+        # See lib/backend/llvm_codegen.cpp (arity sites + emitFfiPointerArgGuard
+        # + replSlotArityMismatch) and lib/agent/subprocess.esk.
+        add_test(
+            NAME ffi_boundary_fail_open_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/ffi_boundary_fail_open_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+        )
+        set_tests_properties(ffi_boundary_fail_open_test
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: ffi_boundary_fail_open_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/static_link_getenv_capability_test.sh")
         add_test(
             NAME static_link_getenv_capability_test
