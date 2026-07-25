@@ -2057,6 +2057,43 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* (bytevector-copy bv start [end]) — the R7RS optional-range spellings.
+     * bytevector-copy's BUILTINS-table entry is a fixed 1-arg closure, so the
+     * range arguments were silently dropped and the call returned a *full*
+     * copy where the native codegen raises on an out-of-range range. Emit the
+     * dedicated range natives instead (vm_native.c cases 2203/2204), which
+     * carry the same bounds contract as the codegen. */
+    if (is_sym(head, "bytevector-copy") &&
+        (node->n_children == 3 || node->n_children == 4)) {
+        compile_expr(c, node->children[1], 0);          /* bv    */
+        compile_expr(c, node->children[2], 0);          /* start */
+        if (node->n_children == 4) {
+            compile_expr(c, node->children[3], 0);      /* end   */
+            chunk_emit(c, OP_NATIVE_CALL, 2204);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 2203);
+        }
+        return;
+    }
+
+    /* (bytevector-copy! to at from start [end]) — same story for the mutating
+     * form, whose BUILTINS entry is a fixed 3-arg closure (vm_native.c cases
+     * 2205/2206). */
+    if (is_sym(head, "bytevector-copy!") &&
+        (node->n_children == 5 || node->n_children == 6)) {
+        compile_expr(c, node->children[1], 0);          /* to    */
+        compile_expr(c, node->children[2], 0);          /* at    */
+        compile_expr(c, node->children[3], 0);          /* from  */
+        compile_expr(c, node->children[4], 0);          /* start */
+        if (node->n_children == 6) {
+            compile_expr(c, node->children[5], 0);      /* end   */
+            chunk_emit(c, OP_NATIVE_CALL, 2206);
+        } else {
+            chunk_emit(c, OP_NATIVE_CALL, 2205);
+        }
+        return;
+    }
+
     /* #322: (tensor-ref t i j ...) — multi-dim element read with the indices
      * spelled as separate trailing args (the native idiom, matched by the LLVM
      * path). tensor-ref's BUILTINS-table entry is a fixed 2-arg (tensor, index)

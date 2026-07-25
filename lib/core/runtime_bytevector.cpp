@@ -48,6 +48,23 @@ void* eshkol_make_bytevector(void* arena, int64_t len, int64_t fill_byte) {
     return ptr;
 }
 
+/*
+ * Out-of-range contract (R7RS 6.9: an out-of-range index is an error).
+ *
+ * Every substrate — the AOT/JIT codegen guards in
+ * lib/backend/llvm_codegen.cpp, these C runtime helpers, and the bytecode
+ * VM in lib/backend/vm_bytevector.c — raises the *same catchable* condition
+ * with the *same message text*, so a `guard` around a bytevector access
+ * behaves identically everywhere. Keep the strings below in sync with the
+ * codegen guards and vm_bytevector.c; tests/vm_parity/corpus/
+ * bytevector_bounds_contract.esk pins them.
+ *
+ * eshkol_runtime_fatal() raises through eshkol_raise() exactly like the
+ * codegen path; it additionally echoes the message on stderr, which is why
+ * the parity corpus compares the *handled* (guarded) observation.
+ */
+#define ESHKOL_BV_OOB_MSG(proc) proc ": index out of bounds"
+
 /* Get byte at index k (returns int64_t for tagged value compatibility). */
 int64_t eshkol_bytevector_u8_ref(void* bv, int64_t k) {
     if (!bv) {
@@ -57,9 +74,8 @@ int64_t eshkol_bytevector_u8_ref(void* bv, int64_t k) {
 
     const int64_t len = *((int64_t*)bv);
     if (k < 0 || k >= len) {
-        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
-                             "Error in bytevector-u8-ref: index %lld out of range [0, %lld)",
-                             (long long)k, (long long)len);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s",
+                             ESHKOL_BV_OOB_MSG("bytevector-u8-ref"));
     }
 
     uint8_t* data = (uint8_t*)bv + 8;
@@ -75,15 +91,13 @@ void eshkol_bytevector_u8_set(void* bv, int64_t k, int64_t byte_val) {
 
     const int64_t len = *((int64_t*)bv);
     if (k < 0 || k >= len) {
-        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
-                             "Error in bytevector-u8-set!: index %lld out of range [0, %lld)",
-                             (long long)k, (long long)len);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s",
+                             ESHKOL_BV_OOB_MSG("bytevector-u8-set!"));
     }
 
     if (byte_val < 0 || byte_val > 255) {
-        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
-                             "Error in bytevector-u8-set!: byte value %lld out of range [0, 255]",
-                             (long long)byte_val);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s",
+                             "bytevector-u8-set!: byte value out of range");
     }
 
     uint8_t* data = (uint8_t*)bv + 8;
@@ -116,9 +130,8 @@ void* eshkol_bytevector_copy(void* arena, void* bv, int64_t start, int64_t end) 
     if (end < 0) end = len;
 
     if (start < 0 || start > len || end < start || end > len) {
-        eshkol_runtime_fatal(ESHKOL_EXCEPTION_RANGE_ERROR,
-                             "Error in bytevector-copy: range [%lld, %lld) out of bounds [0, %lld)",
-                             (long long)start, (long long)end, (long long)len);
+        eshkol_runtime_fatal(ESHKOL_EXCEPTION_ERROR, "%s",
+                             ESHKOL_BV_OOB_MSG("bytevector-copy"));
     }
 
     const int64_t copy_len = end - start;

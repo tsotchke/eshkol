@@ -62,5 +62,94 @@
 (expect-equal "make-vector valid length unchanged" (vector-length (make-vector 3 0)) 3)
 (expect-equal "make-string valid length unchanged" (string-length (make-string 5 #\x)) 5)
 
+;;; ---------------------------------------------------------------------------
+;;; Uniform out-of-range contract for the indexed-accessor family.
+;;;
+;;; R7RS 6.7/6.8/6.9 make an out-of-range index "an error", and the house
+;;; parity contract requires every substrate to signal it identically. Before
+;;; this was enforced the family diverged three ways:
+;;;
+;;;   bytevector-u8-ref   native codegen: NO check (read adjacent heap memory)
+;;;                       C runtime helper: raised
+;;;                       VM: printed a diagnostic and returned -1
+;;;   bytevector-u8-set!  native codegen: NO check (WROTE adjacent heap memory)
+;;;   bytevector-copy     native codegen: NO check (copied adjacent memory into
+;;;                       the result, so (bytevector-copy bv 1 99) returned a
+;;;                       98-byte bytevector); VM silently clamped
+;;;   bytevector-copy!    native codegen: NO check; VM silently clamped/dropped
+;;;                       the optional [start [end]] arguments
+;;;   vector-ref/set!     native raised; VM fabricated '() / silently no-op'd
+;;;   string-ref          native raised; VM fabricated codepoint 0
+;;;   tensor-ref          native raised; VM fabricated 0.0
+;;;
+;;; Every one now raises the same catchable condition on native JIT, AOT and
+;;; the VM. tests/vm_parity/corpus/34_bounds_contract.esk pins the byte-level
+;;; cross-substrate agreement; this test pins the behaviour itself.
+;;; ---------------------------------------------------------------------------
+
+(expect-raise "bytevector-u8-ref past end raises"
+  (lambda () (bytevector-u8-ref (make-bytevector 4 7) 100)))
+(expect-raise "bytevector-u8-ref negative index raises"
+  (lambda () (bytevector-u8-ref (make-bytevector 4 7) -1)))
+(expect-raise "bytevector-u8-ref at length raises"
+  (lambda () (bytevector-u8-ref (make-bytevector 4 7) 4)))
+(expect-raise "bytevector-u8-set! past end raises"
+  (lambda () (bytevector-u8-set! (make-bytevector 4 7) 100 1)))
+(expect-raise "bytevector-u8-set! negative index raises"
+  (lambda () (bytevector-u8-set! (make-bytevector 4 7) -1 1)))
+(expect-raise "bytevector-u8-set! byte value above 255 raises"
+  (lambda () (bytevector-u8-set! (make-bytevector 4 7) 0 999)))
+(expect-raise "bytevector-u8-set! negative byte value raises"
+  (lambda () (bytevector-u8-set! (make-bytevector 4 7) 0 -1)))
+(expect-raise "bytevector-copy end past length raises"
+  (lambda () (bytevector-copy (make-bytevector 4 7) 1 99)))
+(expect-raise "bytevector-copy negative start raises"
+  (lambda () (bytevector-copy (make-bytevector 4 7) -1 2)))
+(expect-raise "bytevector-copy end before start raises"
+  (lambda () (bytevector-copy (make-bytevector 4 7) 3 1)))
+(expect-raise "bytevector-copy! destination overflow raises"
+  (lambda () (bytevector-copy! (make-bytevector 4 0) 2 (make-bytevector 8 1))))
+(expect-raise "bytevector-copy! ranged destination overflow raises"
+  (lambda () (bytevector-copy! (make-bytevector 8 0) 7 (make-bytevector 4 1) 0 4)))
+(expect-raise "bytevector-copy! source end past length raises"
+  (lambda () (bytevector-copy! (make-bytevector 8 0) 0 (make-bytevector 4 1) 0 99)))
+(expect-raise "vector-ref past end raises"
+  (lambda () (vector-ref (vector 1 2 3 4) 100)))
+(expect-raise "vector-ref negative index raises"
+  (lambda () (vector-ref (vector 1 2 3 4) -1)))
+(expect-raise "vector-set! past end raises"
+  (lambda () (vector-set! (vector 1 2 3 4) 100 0)))
+(expect-raise "string-ref past end raises"
+  (lambda () (string-ref "abcd" 100)))
+(expect-raise "string-ref negative index raises"
+  (lambda () (string-ref "abcd" -1)))
+
+;; ---- in-range bytevector/vector/string access must be unaffected ----
+(expect-equal "bytevector-u8-ref first byte" (bytevector-u8-ref (make-bytevector 4 7) 0) 7)
+(expect-equal "bytevector-u8-ref last byte" (bytevector-u8-ref (make-bytevector 4 7) 3) 7)
+(expect-equal "bytevector-u8-set! boundary bytes accepted"
+  (let ((bv (make-bytevector 2 0)))
+    (bytevector-u8-set! bv 0 0)
+    (bytevector-u8-set! bv 1 255)
+    (list (bytevector-u8-ref bv 0) (bytevector-u8-ref bv 1)))
+  (list 0 255))
+(expect-equal "bytevector-copy full range length"
+  (bytevector-length (bytevector-copy (make-bytevector 4 7))) 4)
+(expect-equal "bytevector-copy sub-range length"
+  (bytevector-length (bytevector-copy (make-bytevector 4 7) 1 3)) 2)
+(expect-equal "bytevector-copy open-ended range length"
+  (bytevector-length (bytevector-copy (make-bytevector 4 7) 1)) 3)
+(expect-equal "bytevector-copy! exact fit copies"
+  (let ((dst (make-bytevector 8 0)))
+    (bytevector-copy! dst 2 (make-bytevector 4 9) 1 3)
+    (list (bytevector-u8-ref dst 1) (bytevector-u8-ref dst 2)
+          (bytevector-u8-ref dst 3) (bytevector-u8-ref dst 4)))
+  (list 0 9 9 0))
+(expect-equal "vector-ref boundary indices"
+  (let ((v (vector 10 20 30 40)))
+    (list (vector-ref v 0) (vector-ref v 3)))
+  (list 10 40))
+(expect-equal "string-ref boundary index" (string-ref "abcd" 3) #\d)
+
 (display "runtime bounds hardening test complete")
 (newline)

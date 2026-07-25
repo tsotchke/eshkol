@@ -2130,8 +2130,10 @@ All standard arithmetic operators (`+`, `-`, `*`, `/`, `quotient`, `remainder`, 
 #### Bitwise Operations
 - `(bitwise-and a b)`, `(bitwise-or a b)`, `(bitwise-xor a b)` — Bitwise ops (two's complement for bignums)
 - `(bitwise-not a)` — Bitwise complement
-- `(arithmetic-shift a n)` — Shift left (positive n) or right (negative n)
-- `(bit-count n)` — Population count
+- `(arithmetic-shift a n)` — Shift left (positive n) or right (negative n). A left shift that overflows int64 promotes to an exact bignum, so `(arithmetic-shift 1 64)` is `18446744073709551616`
+- `(bit-shift-left a n)` — Left shift; identical to `(arithmetic-shift a n)`
+- `(bit-shift-right a n)` — Arithmetic (sign-propagating) right shift; identical to `(arithmetic-shift a (- n))`
+- `(bit-count n)`, `(popcount n)` — Population count (synonyms). For `n >= 0` this is the number of 1 bits. Because a negative integer's two's-complement bit string is infinite, negative `n` follows the width-independent R6RS `bitwise-bit-count` convention `-1 - (bit-count (bitwise-not n))`, so `(popcount -1)` is `-1`. The rule never mentions a word width, so int64 and bignum operands agree
 
 ### Rational Numbers
 
