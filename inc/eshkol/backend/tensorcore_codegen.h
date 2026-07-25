@@ -21,7 +21,11 @@ namespace eshkol {
 class CodegenContext;
 
 /* Declare the canonical Eshkol adapter ABI in an LLVM module. The operation is
- * idempotent and rejects a pre-existing symbol with a conflicting signature. */
+ * idempotent and rejects a pre-existing symbol with a conflicting signature.
+ * Returns the number of declarations added, or 0 on failure with *error set.
+ * Returns 0 with *error CLEARED when the ABI does not apply to the module's
+ * target at all — it is 64-bit by definition, so a 32-bit target (wasm32) has
+ * nothing to declare and that is not a failure. */
 std::size_t declareTensorcoreAdapterAbi(llvm::Module& module,
                                         llvm::IntegerType* size_type,
                                         std::string* error = nullptr);
@@ -37,6 +41,10 @@ bool verifyTensorcoreAdapterModule(const llvm::Module& module,
 
 }  // namespace eshkol
 
+/* Register the adapter declarations for a codegen context. Returns the number
+ * declared, 0 when the ABI does not apply to the target (not an error, and no
+ * diagnostic is emitted), or a negative value when registration genuinely
+ * failed, having reported why. */
 extern "C" int eshkol_register_tensorcore_builtins(eshkol::CodegenContext* ctx);
 
 #endif  /* ESHKOL_LLVM_BACKEND_ENABLED */

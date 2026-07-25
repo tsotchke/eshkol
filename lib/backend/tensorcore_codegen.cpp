@@ -74,8 +74,26 @@ std::size_t declareTensorcoreAdapterAbi(llvm::Module& module,
                                         llvm::IntegerType* size_type,
                                         std::string* error) {
     if (error) error->clear();
-    if (!size_type || !size_type->isIntegerTy(64)) {
-        set_error(error, "tensorcore adapter ABI requires a 64-bit size type");
+    if (!size_type) {
+        set_error(error, "tensorcore adapter ABI needs the module's size type");
+        return 0;
+    }
+    if (!size_type->isIntegerTy(64)) {
+        // NOT AN ERROR: the adapter ABI is 64-bit by definition, so on a 32-bit
+        // target (wasm32) there is simply nothing to declare. Unavailability is
+        // an expected, handled state — the caller's comment at the registration
+        // site says so, and callers that lack the TensorCore package already
+        // resolve these names to explicit-unavailable stubs.
+        //
+        // It used to report an error here, which every wasm32 compile then
+        // emitted whether or not the program mentioned a tensor-core op. Once an
+        // emitted error diagnostic became fatal, that turned into "no WebAssembly
+        // artifact can be produced at all". A program that does use one of these
+        // ops on wasm32 still fails, at its own operation's codegen, with a
+        // diagnostic naming the op — which is the diagnostic a user can act on.
+        //
+        // Reported as zero declarations with no error set: nothing to declare
+        // here, and nothing went wrong.
         return 0;
     }
 
@@ -188,9 +206,16 @@ extern "C" int eshkol_register_tensorcore_builtins(eshkol::CodegenContext* ctx) 
     if (!ctx) return -1;
     std::string error;
     const std::size_t count = eshkol::registerTensorcoreBuiltins(*ctx, &error);
+    if (count == 0 && error.empty()) {
+        // Nothing to declare, and nothing went wrong: the adapter ABI does not
+        // apply to this target (see declareTensorcoreAdapterAbi). Report success
+        // with zero declarations so the caller does not treat an inapplicable
+        // adapter as a failed compilation.
+        eshkol_debug("tensorcore: canonical adapter ABI does not apply to this target");
+        return 0;
+    }
     if (count == 0) {
-        eshkol_error("%s", error.empty() ?
-                     "tensorcore adapter declaration failed" : error.c_str());
+        eshkol_error("%s", error.c_str());
         return -1;
     }
     eshkol_debug("tensorcore: registered %zu canonical adapter declarations", count);
