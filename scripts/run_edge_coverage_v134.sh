@@ -158,7 +158,19 @@ mkdir -p "$TRACE_DIR"
 # mid-run used to swap the compiler underneath it, so failures (including
 # crashes) could belong to no single build. Run against a private copy instead.
 ESHKOL_TEST_ISOLATION_NO_TRAP=1
-source "$REPO_ROOT/scripts/lib/test_isolation.sh"
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$REPO_ROOT/scripts/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
 eshkol_test_isolation_init "edge-v134"
 PINNED_BUILD_DIR="$(eshkol_test_pin_toolchain "$BUILD_DIR_ABS")"
 ESHKOL_RUN="$PINNED_BUILD_DIR/eshkol-run"

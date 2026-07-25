@@ -31,9 +31,16 @@ LAST_OUT=""
 LAST_RC=0
 
 setup_fake_repo() {
-    mkdir -p "$FAKE/scripts" "$FAKE/build" "$FAKE/tests/sicp"
+    mkdir -p "$FAKE/scripts/lib" "$FAKE/build" "$FAKE/tests/sicp"
     cp "$SMOKE" "$FAKE/scripts/run_sicp_smoke.sh" || fail "copy smoke script"
     chmod +x "$FAKE/scripts/run_sicp_smoke.sh"
+    # The smoke script sources the shared isolation/detection prelude relative to
+    # its own location, so the synthetic repo needs it too. Without it the
+    # `source` failed, every helper became "command not found", and the gate's
+    # verdict function silently degraded to reporting PASS — the gate testing the
+    # gate would have passed a harness with no detection at all.
+    cp "$ROOT/scripts/lib/test_isolation.sh" "$FAKE/scripts/lib/test_isolation.sh" \
+        || fail "copy test_isolation.sh"
 
     cat > "$FAKE/tests/sicp/ch1_newton.esk" <<'ESK'
 (display "fake sicp probe") (newline)
