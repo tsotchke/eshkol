@@ -682,6 +682,23 @@ private:
     // Helper: Get arena pointer from global
     llvm::Value* getArenaPtr();
 
+    /**
+     * Helper: emit a residency-checked "is this element bit pattern a live AD
+     * tape node?" probe (i1 result).
+     *
+     * A tensor element slot holds either an f64 bit pattern or a pointer to the
+     * tape node standing in for that element, and the two overlap: every
+     * subnormal double has a zero IEEE-754 exponent field and a bit pattern
+     * below the user-space pointer ceiling. Deciding by loading `node->type`
+     * through the candidate faults exactly when the candidate is not a pointer,
+     * so the decision is delegated to `eshkol_ad_node_probe`, which confirms the
+     * arena owns the address before reading anything through it.
+     *
+     * @param elem_bits   i64 element bit pattern.
+     * @param expect_type required ad_node_type value, or -1 for any plausible tag.
+     */
+    llvm::Value* emitAdNodeProbe(llvm::Value* elem_bits, int32_t expect_type);
+
     // Helper: Get or declare math function
     llvm::Function* getMathFunc(const std::string& name);
 

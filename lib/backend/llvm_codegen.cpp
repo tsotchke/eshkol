@@ -28788,18 +28788,35 @@ private:
         Value* elem_ptr = builder->CreateGEP(int64_type, typed_elements_ptr, index_int);
         Value* elem_as_int64 = builder->CreateLoad(int64_type, elem_ptr);
         
-        // PHASE 1 FIX: Runtime AD mode detection using global flag
-        // Handle 3 cases: small integers, doubles (bitcast), AD node pointers
-        
-        // PHASE 1 FIX: Check global __ad_mode_active flag at RUNTIME
+        // A tensor's element slot holds EITHER an f64 bit pattern or, while a
+        // reverse-mode sweep is running, a pointer to the AD tape node standing
+        // in for that element. Which one it is is decided by whether AD mode is
+        // active — NOT by inspecting the bits.
+        //
+        // Reading it back out used to guess from the bits in BOTH modes:
+        // `bits < 1000` meant "small integer" and a zero IEEE-754 exponent
+        // field meant "pointer". Both tests misread genuine f64 data, because a
+        // SUBNORMAL double has a zero exponent field by definition. A tensor
+        // element such as 2.7e-309 (bits 0x0001f62a6a61f608) was therefore
+        // handed back as a CALLABLE holding 0x0001f62a6a61f608 as an address,
+        // and the next arithmetic op dereferenced that bit pattern -> SIGSEGV at
+        // exactly the element's value. Subnormals in the bits<1000 window
+        // (up to ~4.9e-321) were silently returned as the integers 1..999.
+        //
+        // Found during tensor-operand and checkpoint-resume hardening: a model
+        // resumed from a checkpoint reaches subnormal magnitudes as a matter of
+        // course — an Adam moment that stops receiving gradient decays by
+        // beta^step — so the fault was deterministic (its address WAS the stored
+        // value) and only ever appeared after a resume, never on a fresh run
+        // whose moments are still exactly 0.0.
+        //
+        // Outside AD mode a tensor element is unconditionally an f64 bit
+        // pattern, so no guessing is needed or allowed. This matches what the
+        // compound-tensor element read already does.
         Value* in_ad_mode = builder->CreateLoad(int1_type, ad_mode_active);
 
         BasicBlock* ad_mode_check = BasicBlock::Create(*context, "vref_ad_mode_check", current_func);
         BasicBlock* normal_mode_check = BasicBlock::Create(*context, "vref_normal_mode_check", current_func);
-        BasicBlock* int_path = BasicBlock::Create(*context, "vref_int", current_func);
-        BasicBlock* check_large = BasicBlock::Create(*context, "vref_check_large", current_func);
-        BasicBlock* double_path = BasicBlock::Create(*context, "vref_double", current_func);
-        BasicBlock* tensor_ad_node_path = BasicBlock::Create(*context, "vref_tensor_ad_node", current_func);
         BasicBlock* vref_merge = BasicBlock::Create(*context, "vref_merge", current_func);
         
         builder->CreateCondBr(in_ad_mode, ad_mode_check, normal_mode_check);
@@ -28827,10 +28844,17 @@ private:
         Value* ad_exponent_bits = builder->CreateAnd(elem_as_int64, ad_exponent_mask);
         Value* ad_has_exponent = builder->CreateICmpNE(ad_exponent_bits,
             ConstantInt::get(int64_type, 0));
+        // Require the candidate to also sit below the pointer ceiling, matching
+        // the predicate the matmul/reduce AD paths use. A zero exponent alone
+        // admits every subnormal; the ceiling rejects the large-mantissa ones.
+        Value* ad_below_ptr_ceiling = builder->CreateICmpULT(elem_as_int64,
+            ConstantInt::get(int64_type, 0x0001000000000000ULL));
+        Value* ad_is_double_like = builder->CreateOr(ad_has_exponent,
+            builder->CreateNot(ad_below_ptr_ceiling));
 
         BasicBlock* ad_large_is_double = BasicBlock::Create(*context, "vref_ad_large_double", current_func);
         BasicBlock* ad_large_is_ptr = BasicBlock::Create(*context, "vref_ad_large_ptr", current_func);
-        builder->CreateCondBr(ad_has_exponent, ad_large_is_double, ad_large_is_ptr);
+        builder->CreateCondBr(ad_is_double_like, ad_large_is_double, ad_large_is_ptr);
 
         // AD mode, large value with exponent: it's a double (e.g., captured constant tensor)
         builder->SetInsertPoint(ad_large_is_double);
@@ -28846,49 +28870,22 @@ private:
         builder->CreateBr(vref_merge);
         BasicBlock* ad_large_exit = builder->GetInsertBlock();
         
-        // Normal mode path: use existing IEEE754 heuristic
+        // Normal mode path: the slot is an f64 bit pattern, full stop. No
+        // bit-pattern classification — that is what misread subnormals as
+        // pointers and as small integers.
         builder->SetInsertPoint(normal_mode_check);
-        Value* is_small_int = builder->CreateICmpULT(elem_as_int64,
-            ConstantInt::get(int64_type, 1000));
-        builder->CreateCondBr(is_small_int, int_path, check_large);
-        
-        // Small integer path: Pack as int64
-        builder->SetInsertPoint(int_path);
-        Value* int_tagged = packInt64ToTaggedValue(elem_as_int64, true);
-        builder->CreateBr(vref_merge);
-        BasicBlock* int_exit = builder->GetInsertBlock();
-        
-        // Check if large value is double (has exponent) or pointer (no exponent)
-        builder->SetInsertPoint(check_large);
-        Value* exponent_mask = ConstantInt::get(int64_type, 0x7FF0000000000000ULL);
-        Value* exponent_bits = builder->CreateAnd(elem_as_int64, exponent_mask);
-        Value* has_exponent = builder->CreateICmpNE(exponent_bits,
-            ConstantInt::get(int64_type, 0));
-        builder->CreateCondBr(has_exponent, double_path, tensor_ad_node_path);
-        
-        // Double path: Bitcast int64 to double and pack
-        builder->SetInsertPoint(double_path);
         Value* elem_double = builder->CreateBitCast(elem_as_int64, double_type);
         Value* double_tagged = packDoubleToTaggedValue(elem_double);
         builder->CreateBr(vref_merge);
         BasicBlock* double_exit = builder->GetInsertBlock();
         
-        // AD node path: Treat as AD node pointer (fallback for normal mode)
-        builder->SetInsertPoint(tensor_ad_node_path);
-        Value* tensor_ad_node_ptr = builder->CreateIntToPtr(elem_as_int64, PointerType::getUnqual(*context));
-        Value* tensor_ad_node_tagged = packPtrToTaggedValue(tensor_ad_node_ptr, ESHKOL_VALUE_CALLABLE);
-        builder->CreateBr(vref_merge);
-        BasicBlock* ad_exit = builder->GetInsertBlock();
-        
-        // Merge: Return tagged_value (int, double, or AD node from tensor)
+        // Merge: Return tagged_value (double, or an AD node while a sweep runs)
         builder->SetInsertPoint(vref_merge);
-        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 6, "vref_result");
+        PHINode* result_phi = builder->CreatePHI(tagged_value_type, 4, "vref_result");
         result_phi->addIncoming(ad_int_tagged, ad_small_exit);
         result_phi->addIncoming(ad_double_tagged, ad_double_exit);  // AD mode double (captured tensors)
         result_phi->addIncoming(ad_tagged, ad_large_exit);          // AD mode AD node pointer
-        result_phi->addIncoming(int_tagged, int_exit);
         result_phi->addIncoming(double_tagged, double_exit);
-        result_phi->addIncoming(tensor_ad_node_tagged, ad_exit);
         builder->CreateBr(vref_final);
         
         // Final merge: Return tensor element, Scheme vector element, or AD node
@@ -32734,11 +32731,18 @@ private:
                 Value* ad_exp_bits = builder->CreateAnd(elem_as_int64, ad_exp_mask);
                 Value* ad_has_exp = builder->CreateICmpNE(ad_exp_bits,
                     ConstantInt::get(int64_type, 0));
+                // Also require the candidate below the pointer ceiling: a zero
+                // exponent field alone admits every subnormal double, so real
+                // data was read back as a tape-node address.
+                Value* ad_below_ceiling = builder->CreateICmpULT(elem_as_int64,
+                    ConstantInt::get(int64_type, 0x0001000000000000ULL));
+                Value* ad_double_like = builder->CreateOr(ad_has_exp,
+                    builder->CreateNot(ad_below_ceiling));
 
                 BasicBlock* ad_double = BasicBlock::Create(*context, "compound_ad_double", current_func);
                 BasicBlock* ad_node = BasicBlock::Create(*context, "compound_ad_node", current_func);
 
-                builder->CreateCondBr(ad_has_exp, ad_double, ad_node);
+                builder->CreateCondBr(ad_double_like, ad_double, ad_node);
 
                 builder->SetInsertPoint(ad_double);
                 Value* ad_d = builder->CreateBitCast(elem_as_int64, double_type);
