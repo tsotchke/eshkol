@@ -2013,6 +2013,111 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
 }
 
 /**
+ * @brief Is @p n the reader's representation of a quoted symbol, i.e. `'sym`
+ *        (equivalently the list `(quote sym)`)?
+ *
+ * The VM reader lowers `'x` to the two-element list `(quote x)` (vm_parser.c),
+ * so this is the shape a with-region region NAME arrives in.
+ */
+static int is_quoted_symbol(Node* n) {
+    return n && n->type == N_LIST && n->n_children == 2 &&
+           is_sym(n->children[0], "quote") &&
+           n->children[1] && n->children[1]->type == N_SYMBOL;
+}
+
+/**
+ * @brief Compile `(with-region [spec] body ...)` — the VM lowering of the OALR
+ *        lexically-scoped region form.
+ *
+ * TWO DEFECTS THIS REPLACES. The previous lowering was
+ *
+ *     for (int i = 1; i < node->n_children; i++)
+ *         compile_expr(c, node->children[i], tail && i == last);
+ *
+ * which got the form wrong in two independent ways:
+ *
+ *  1. NO `OP_POP` FOR NON-FINAL BODY EXPRESSIONS. Every body expression leaves
+ *     its value on the operand stack, so a multi-expression body stranded one
+ *     value per non-final expression. This is NOT benign on the VM: top-level
+ *     bindings live in stack slots that the compiler hands out by counting
+ *     (`add_local`), and the top-level driver emits exactly ONE `OP_POP` per
+ *     expression that grew no local (eshkol_vm.c). Strand N extra values and
+ *     every subsequent top-level `define` is assigned a slot that is already
+ *     occupied by junk — the same slot-shift corruption documented on
+ *     compile_form_require() above, in the opposite direction. Lowered exactly
+ *     like `begin` now: discard all but the last.
+ *
+ *  2. THE REGION SPECIFIER WAS COMPILED AS AN EXPRESSION. The documented
+ *     surface syntax (docs/reference/runtime/memory-model.md) is
+ *
+ *         (with-region body ...)              ; anonymous
+ *         (with-region 'name body ...)        ; named
+ *         (with-region ('name size) body ...) ; named + size hint in bytes
+ *
+ *     The specifier is DECLARATIVE — it names and sizes the arena. Compiling
+ *     it as an expression made `'name` a stray value push (see defect 1), and
+ *     made `('name size)` a CALL of the symbol `name` with argument `size`,
+ *     i.e. a hard "not a function" runtime error on a documented spelling.
+ *     The specifier is now recognised and skipped, as the native front end
+ *     does (lib/frontend/parser.cpp, ESHKOL_WITH_REGION_OP).
+ *
+ * WHY THE BODY IS OTHERWISE A PASS-THROUGH (the honest VM boundary). Native
+ * brackets the body with region_create/region_push/eshkol_region_enter and
+ * tears it down through the single shared teardown primitive
+ * `eshkol_region_unwind_to()` (llvm_codegen.cpp codegenWithRegion), which
+ * promotes the body result one region level out before the arena dies. The VM
+ * emits no such bracket because the VM heap has no escape evacuator to promote
+ * a kept value with: a real push/pop here would free the object graph the body
+ * just returned. This is the SAME boundary the user-reachable handle surface
+ * declares — `(region-close)` on the VM is bookkeeping-only for exactly this
+ * reason (vm_native.c fid 2211, tests/vm_parity/PARITY.tsv). So on the VM
+ * `with-region` is value- and effect-transparent but reclaims nothing; VM-side
+ * reclamation is gated on a VM-heap evacuator that does not exist yet.
+ * Correspondingly this lowering must NOT grow a parallel teardown mechanism:
+ * when the evacuator lands, the bracket belongs on `eshkol_region_unwind_to`'s
+ * VM counterpart, not on an open-coded push/pop pair here.
+ */
+static void compile_form_with_region(FuncChunk* c, Node* node, int tail) {
+    /* Recognise the optional region specifier. `'name` and `('name size)` are
+     * specifiers; anything else is the first body expression.
+     *
+     * The native front end distinguishes the reader's `'name` sugar from an
+     * explicitly written `(quote name)` (its tokenizer sees TOKEN_QUOTE), and
+     * treats only the former as a specifier. The VM reader collapses both to
+     * `(quote name)`, so a with-region whose SOLE body expression is literally
+     * `(quote name)` is read here as "specifier, empty body" — a degenerate
+     * form with no use (its value is a symbol and its body allocates nothing).
+     * Every documented spelling agrees on both substrates. */
+    int body_start = 1;
+    Node* spec = node->children[1];
+    if (is_quoted_symbol(spec)) {
+        body_start = 2;                              /* (with-region 'name …) */
+    } else if (spec && spec->type == N_LIST && spec->n_children >= 1 &&
+               spec->n_children <= 2 && is_quoted_symbol(spec->children[0])) {
+        body_start = 2;                       /* (with-region ('name size) …) */
+    }
+
+    if (body_start >= node->n_children) {
+        /* Native rejects this at parse time ("with-region requires at least
+         * one body expression"). Report it the same way and still leave
+         * exactly one value on the stack: an expression that emits nothing
+         * would have the caller's balancing OP_POP discard a live value. */
+        fprintf(stderr, "ERROR: with-region requires at least one body expression\n");
+        chunk_emit(c, OP_NIL, 0);
+        return;
+    }
+
+    for (int i = body_start; i < node->n_children; i++) {
+        if (i < node->n_children - 1) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_POP, 0);
+        } else {
+            compile_expr(c, node->children[i], tail);
+        }
+    }
+}
+
+/**
  * @brief Core expression compiler: dispatches on Node @p node's type/head
  *        symbol and emits the corresponding bytecode into chunk @p c.
  *
@@ -2026,7 +2131,8 @@ static void compile_form_lambda_2(FuncChunk* c, Node* node, int tail) {
  * (arithmetic, comparisons, cons/car/cdr, vector/string ops, call/cc,
  * etc.). Most substantial special forms (cond/case/let family/define/
  * set!/do/lambda/guard/dynamic-wind/delay/parameterize/let-values/
- * with-exception-handler/define-record-type/require) are delegated to the
+ * with-exception-handler/define-record-type/require/with-region) are
+ * delegated to the
  * dedicated compile_form_*() functions above; `if` and the arithmetic/
  * comparison primitives remain compiled inline here.
  * @p tail indicates whether @p node is in tail position, enabling
@@ -3326,8 +3432,7 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
 
     /* -- with-region -- */
     if (is_sym(head, "with-region") && node->n_children >= 2) {
-        for (int i = 1; i < node->n_children; i++)
-            compile_expr(c, node->children[i], tail && i == node->n_children - 1);
+        compile_form_with_region(c, node, tail);
         return;
     }
 

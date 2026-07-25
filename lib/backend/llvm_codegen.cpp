@@ -33076,6 +33076,19 @@ private:
             }
             AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
             builder->restoreIP(with_region_saved_ip);
+
+            // codegenAST returns a RAW i64/double for a primitive literal and a
+            // tagged struct for everything else. Storing the raw form into a
+            // tagged_value_type slot writes the payload and leaves the TYPE TAG
+            // uninitialised, which was visible as `(with-region 41)` displaying
+            // `#<unknown>` and `(with-region 4.5)` displaying `()` — the VM
+            // (correctly) printed 41 and 4.5. It is also a memory-safety hazard
+            // rather than a display quirk: eshkol_region_unwind_to() promotes
+            // this slot by DISPATCHING ON THAT TAG, so a garbage tag that
+            // happens to read as a heap pointer sends the evacuator deep-walking
+            // an arbitrary address. Pack first, exactly as every other caller
+            // that hands a codegen result to the tagged-value runtime does.
+            result = ensureTaggedValue(result);
             builder->CreateStore(result, result_alloca);
 
             // #341: promote the result out AND tear the region down in one call.

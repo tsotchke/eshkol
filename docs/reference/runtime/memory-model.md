@@ -65,12 +65,36 @@ the region exits.
 (with-region ('name size) body ...) ; named region + size hint (bytes)
 ```
 
-At least one body expression is required. The value of the last body expression
-is returned; because the region's arena is freed on exit, a returned heap value
-is **deep-copied out** into the parent/global arena so it survives (the "escape"
-mechanism). The compiler emits `region_create` → `region_push` → *body* →
-`region_pop`; `region_pop` destroys the region arena, reclaiming everything
-allocated inside.
+At least one body expression is required, and the region name/size specifier is
+**declarative**, not an expression: `('name size)` names and sizes the arena, it
+is not a call. Non-final body expressions are evaluated for effect and their
+values discarded, exactly as in `begin`.
+
+The value of the last body expression is returned; because the region's arena is
+freed on exit, a returned heap value is **deep-copied out** into the
+parent/global arena so it survives (the "escape" mechanism). The compiler emits
+`region_create` → `region_push` → `eshkol_region_enter` → *body* →
+`eshkol_region_unwind_to`, the single shared teardown primitive that also serves
+`region-close`, a `raise` crossing an open region, and a continuation escape: it
+promotes the kept result while the region is still current, restores the
+allocation slot, then pops. Because that promotion **dispatches on the result's
+tagged type**, `with-region` packs its body result before handing over the slot;
+a raw unpacked literal would carry an uninitialised tag into the evacuator.
+
+### Substrate support
+
+Native (JIT and AOT) implements the full contract above. On the **bytecode VM**
+`with-region` is value- and effect-transparent — all three spellings evaluate the
+body identically and return the same value, pinned across the native, `vm-src`
+and `vm-eskb` axes by `tests/vm_parity/corpus/with_region_lowering.esk` — but it
+**reclaims nothing**: the VM heap has no escape evacuator to deep-promote a body
+result out with, so a real push/pop there would free the object graph the body
+just returned. This is the same boundary a VM `region-close` declares (see
+[User-reachable region handles](#user-reachable-region-handles-341) below and
+`tests/vm_parity/PARITY.tsv`). A VM-heap evacuator is the prerequisite for VM
+reclamation on either surface; when it lands, `with-region` should bracket
+through that evacuator's unwind entry point rather than grow a second teardown
+mechanism.
 
 ```scheme
 ;; Allocations inside the body are freed at region exit; the result escapes.
