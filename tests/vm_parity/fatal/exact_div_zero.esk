@@ -1,0 +1,4 @@
+; Exact division by an exact zero is fatal on both substrates.
+; The VM must exit NONZERO, say so on stderr, and stop here.
+(display (/ 1 0))
+(display "MUST-NOT-PRINT")

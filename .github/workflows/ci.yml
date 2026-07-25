@@ -35,6 +35,29 @@ env:
   CUDA_PACKAGE_SERIES: '12-4'
 
 jobs:
+  # The language-surface manifest is the ground truth the execution-backed
+  # coverage floor is measured against, so a stale manifest fails the coverage
+  # gate. That gate lives in the quantum lane, which is both advisory and the
+  # slowest lane to report — four separate changes have burned a full matrix
+  # cycle discovering a one-second staleness error there. This job answers the
+  # same question in well under a minute, on every pull request.
+  surface-manifest:
+    name: surface-manifest
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Manifest matches the source-extracted surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/gen_language_surface.py
+          if ! git diff --quiet -- tests/coverage/language_surface.json; then
+            echo "::error file=tests/coverage/language_surface.json::The language-surface manifest is stale. Regenerate it with 'python3 scripts/gen_language_surface.py' and commit the result — a new builtin, special form or AST op must be declared before the execution-backed coverage floor can measure it."
+            git --no-pager diff -- tests/coverage/language_surface.json
+            exit 1
+          fi
+          echo "manifest is current"
+
   # Moonlab is deliberately opt-in, so keep its networked macOS coverage in a
   # separate advisory job. `continue-on-error` makes the lane informative
   # without turning the default required CI set into a Moonlab availability
@@ -284,7 +307,14 @@ jobs:
             xla_enabled: 'OFF'
             gpu_enabled: 'OFF'
             sanitizer_flags: '-DESHKOL_ENABLE_ASAN=ON -DESHKOL_ENABLE_UBSAN=ON'
-            test_command: ./scripts/run_v1_2_edge_cases_tests.sh
+            # This is the only lane that runs under sanitizers, so it must
+            # exercise the code most likely to read or write out of bounds:
+            # the tensor and autodiff paths, which do their own index and
+            # rank arithmetic over arena memory. It previously ran the v1.2
+            # edge-case corpus alone, which touches none of them — several
+            # memory-safety fixes were credited to a green here that never
+            # executed the paths they repaired.
+            test_command: ./scripts/run_v1_2_edge_cases_tests.sh && ./scripts/run_ml_tests.sh && ./scripts/run_ad_oracle.sh
             upload_artifact: 'false'
             artifact_name: ''
 

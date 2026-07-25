@@ -281,6 +281,72 @@ llvm::Value* TensorCodegen::checkReduceAxis(llvm::Value* axis, llvm::Value* rank
     return b.CreateCall(fn, {axis, rank, name}, "reduce_axis_checked");
 }
 
+/** @brief Raise a catchable ESHKOL_EXCEPTION_ERROR carrying @p message at the
+ *         current insert point, then terminate the block with `unreachable`
+ *         (see the declaration for why shape/range guards must be catchable
+ *         rather than printf+exit). */
+void TensorCodegen::emitCatchableError(const char* message) {
+    auto& b = ctx_.builder();
+
+    llvm::Function* raise_func = ctx_.module().getFunction("eshkol_raise");
+    if (!raise_func) {
+        llvm::FunctionType* raise_type = llvm::FunctionType::get(
+            b.getVoidTy(), {ctx_.ptrType()}, false);
+        raise_func = llvm::Function::Create(raise_type, llvm::Function::ExternalLinkage,
+                                           "eshkol_raise", &ctx_.module());
+        raise_func->setDoesNotReturn();
+    }
+    llvm::Function* make_exc_func = ctx_.module().getFunction("eshkol_make_exception_with_header");
+    if (!make_exc_func) {
+        llvm::FunctionType* make_type = llvm::FunctionType::get(
+            ctx_.ptrType(), {b.getInt32Ty(), ctx_.ptrType()}, false);
+        make_exc_func = llvm::Function::Create(make_type, llvm::Function::ExternalLinkage,
+                                              "eshkol_make_exception_with_header", &ctx_.module());
+    }
+
+    llvm::Value* msg = b.CreateGlobalString(message);
+    llvm::Value* exc_type = llvm::ConstantInt::get(b.getInt32Ty(), ESHKOL_EXCEPTION_ERROR);
+    llvm::Value* exc = b.CreateCall(make_exc_func, {exc_type, msg});
+    b.CreateCall(raise_func, {exc});
+    b.CreateUnreachable();
+}
+
+/** @brief Emit `actual == expected` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitRankGuard(llvm::Value* actual, int64_t expected,
+                                  const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpEQ(
+        actual, llvm::ConstantInt::get(actual->getType(), expected));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
+/** @brief Emit `actual >= minimum` or raise @p message; leaves the builder in
+ *         the success block. */
+void TensorCodegen::emitMinRankGuard(llvm::Value* actual, int64_t minimum,
+                                     const char* message, const char* label) {
+    auto& b = ctx_.builder();
+    llvm::Function* cur_fn = b.GetInsertBlock()->getParent();
+    llvm::Value* ok = b.CreateICmpSGE(
+        actual, llvm::ConstantInt::get(actual->getType(), minimum));
+    llvm::BasicBlock* ok_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_ok", cur_fn);
+    llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(
+        ctx_.context(), std::string(label) + "_err", cur_fn);
+    b.CreateCondBr(ok, ok_bb, err_bb);
+    b.SetInsertPoint(err_bb);
+    emitCatchableError(message);
+    b.SetInsertPoint(ok_bb);
+}
+
 // Note: All tensor implementations are complex and depend on:
 // - AST code generation for nested expressions
 // - Autodiff integration (dual numbers, AD nodes)
@@ -517,10 +583,17 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     // funneled it through `eshkol_unwrap_list_index`, which returns
     // only the *car* — collapsing every (0 _ _) read on a 3D tensor
     // to flat[0]. Fix: in the 1-arg case, route through
-    // `eshkol_tensor_linear_from_index_arg` to compute the full
+    // `eshkol_tensor_slice_offset_from_index_arg` to compute the full
     // row-major offset, and use `eshkol_tensor_index_arg_count` to
     // decide scalar-vs-slice the same way the multi-arg path does.
     // The multi-arg path keeps the original per-arg unwrap.
+    //
+    // That helper — rather than `eshkol_tensor_linear_from_index_arg` — because
+    // a *bare scalar* index here is also a partial index and must be scaled by
+    // the remaining dimensions: `(tensor-get M 1)` on a 2x3 is row 1, exactly
+    // like `(tensor-get M (list 1))`. The shared helper leaves a scalar
+    // unscaled (that is `tensor-ref`'s flat-index contract), which made the two
+    // spellings disagree and let an index past dims[0] slice past the end.
     llvm::Function* unwrap_fn = ctx_.module().getFunction("eshkol_unwrap_list_index");
     if (!unwrap_fn) {
         llvm::FunctionType* ft = llvm::FunctionType::get(
@@ -535,14 +608,14 @@ llvm::Value* TensorCodegen::tensorGet(const eshkol_operations_t* op) {
     llvm::Value* runtime_index_count = nullptr;
 
     if (num_indices == 1) {
-        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_linear_from_index_arg");
+        llvm::Function* lin_fn = ctx_.module().getFunction("eshkol_tensor_slice_offset_from_index_arg");
         if (!lin_fn) {
             llvm::FunctionType* ft = llvm::FunctionType::get(
                 ctx_.int64Type(),
                 {ctx_.ptrType(), ctx_.ptrType(), ctx_.int64Type()}, false);
             lin_fn = llvm::Function::Create(
                 ft, llvm::Function::ExternalLinkage,
-                "eshkol_tensor_linear_from_index_arg", &ctx_.module());
+                "eshkol_tensor_slice_offset_from_index_arg", &ctx_.module());
         }
         llvm::Function* count_fn = ctx_.module().getFunction("eshkol_tensor_index_arg_count");
         if (!count_fn) {

@@ -142,7 +142,7 @@ typedef struct eshkol_ast {
 
 **Key responsibilities:**
 - 94 operation types (see `eshkol_op_t` enum in [`inc/eshkol/eshkol.h`](inc/eshkol/eshkol.h))
-- Internal define to `letrec*` transformation (consecutive defines at body start only)
+- Internal define to `letrec*` transformation (all define names, wherever they appear in the body; a value define's initializer stays at its source position)
 - `delay`/`delay-force` desugaring to promise constructors
 - `define-record-type` to vector operation transformation
 - `?x` syntax for logic variables (`ESHKOL_LOGIC_VAR_OP`)

@@ -1,0 +1,11 @@
+; FILED: (tensor-shape #()) disagrees on the shape of an EMPTY tensor.
+; native -r : (0)   — a one-element shape LIST
+; vm        : #()   — an empty VECTOR (pair? #f, vector? #t on the VM;
+;                     pair? #t, vector? #f natively)
+; Every non-empty tensor agrees (both answer a list, e.g. (2 2)), so this is
+; only the degenerate empty case; gated shapes live in
+; corpus/41_tensor_literals.esk.
+(display (tensor-shape #()))
+(newline)
+(display (list (pair? (tensor-shape #())) (vector? (tensor-shape #()))))
+(newline)
