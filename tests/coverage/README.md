@@ -11,7 +11,7 @@ generative exposure engines actually exercise, names the gap, and turns
 |---|---|---|
 | `language_surface.json` | `scripts/gen_language_surface.py` | Ground-truth manifest: every core builtin, tracked Agent FFI API, special form, AST op, and prelude fn, each categorised by risk. Extracted from source — never hand-maintained. |
 | `coverage_policy.json` | monotonic ratchet | Minimum covered count/fraction and the categories that must reach zero uncovered before TOTAL-LANGUAGE completion. The floor can only increase. |
-| `coverage_run.json` | `scripts/language_coverage.py` | Per-run sidecar: covered / total, covered fraction, covered + uncovered names by category. |
+| `coverage_run.json` | `scripts/language_coverage.py --update-committed-run` | Committed snapshot of the sidecar: covered / total, covered fraction, the nested effective policy block, and covered + uncovered names by category. **Build output by nature** — an ordinary gate run writes the sidecar to the gitignored `build/coverage/coverage_run.json` instead, so running the gate never dirties the tree. Refresh this copy deliberately (see below). |
 | `coverage_gap.md` | analysis | Human-readable gap report ranked by silent-wrong risk. |
 
 Collect evidence and regenerate everything:
@@ -32,6 +32,24 @@ LANGUAGE_COVERAGE_RUNTIME_TRACE_DIRS=/tmp/core-trace:/tmp/quantum-trace \
 
 The corpus and instrumentation are deterministic; the trace is per-process TSV
 so concurrent test workers can append evidence without sharing mutable state.
+
+### The gate never writes a tracked file
+
+An ordinary run writes its sidecar to `build/coverage/coverage_run.json`, which
+is gitignored, so `git status --porcelain` is empty afterwards. Refresh the
+**committed** sidecar only when it is meant to change — at a release cut, or
+whenever `coverage_policy.json` moves — with the explicit flag:
+
+```sh
+BUILD_DIR=build QUANTUM_BUILD_DIR=build-quantum \
+  ./scripts/run_language_coverage.sh --update-committed-run
+```
+
+That is the only supported way to regenerate `coverage_run.json`; review the
+resulting diff like any other artifact. Its nested `coverage_policy` block is
+derived from the live `coverage_policy.json`, so a committed sidecar whose
+`minimum_covered` disagrees with the policy floor simply means it was not
+regenerated after the last ratchet.
 
 ## How the manifest is built (ground truth)
 

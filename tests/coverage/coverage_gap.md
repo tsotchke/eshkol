@@ -1,16 +1,28 @@
 # Language-surface coverage completion — phases 3–4
 
 Ground truth is generated from compiler/runtime sources into
-`language_surface.json`; deterministic execution evidence is generated into
-`coverage_run.json`. Regenerate and enforce both with:
+`language_surface.json`; deterministic execution evidence is written to the
+gitignored `build/coverage/coverage_run.json`. Enforce the floor with:
 
 ```sh
 ./scripts/run_language_coverage.sh --require-zero-high-risk
 ```
 
-## Phase result
+That run leaves the working tree clean. To also refresh the **committed**
+sidecar `coverage_run.json` — a deliberate artifact, e.g. at a release cut or
+after the policy floor moves — add the explicit flag:
 
-| Metric | Before | Current |
+```sh
+./scripts/run_language_coverage.sh --require-zero-high-risk --update-committed-run
+```
+
+## Phase result (historical — the #277 phase-3/4 campaign)
+
+The numbers in this section are the record of that campaign, not the live
+contract. The current surface and floor are **1,078/1,078** — see
+"A1 — execution-backed certification" below and `coverage_policy.json`.
+
+| Metric | Before | At the close of #277 |
 |---|---:|---:|
 | User-facing surface | 1,057 | 1,056 |
 | Deterministically exercised | 137 (13.0%) | **1,056 (100.0%)** |
@@ -46,10 +58,11 @@ cross-representation vector mutation/equality, VM symbol identity, VM complex
 and rational dispatch, dead dual-number aliases, a non-failing `syntax-error`,
 invalid `tile` IR, and incorrect `tensor-apply` arithmetic/return packing.
 
-## Full-surface closure
+## Full-surface closure (as of #277)
 
-All 1,056 manifest constructs now occur in deterministic programs that their
-mandatory CI harness actually compiles and executes.  The final lower-risk
+All 1,056 manifest constructs of that campaign occurred in deterministic
+programs that their mandatory CI harness compiles and executes.  The final
+lower-risk
 closure added hermetic native and VM probes for port lifecycles, file/process
 operations, atomics and raw-pointer FFI, image resizing, condition variables,
 futures, polling, and immediate process termination.  Those probes exposed and
@@ -59,8 +72,9 @@ lost exactness and nanosecond precision, string conversions returned untagged
 buffers, file wrapper arities and current-port rebinding were incomplete, and
 VM image results were incorrectly freed despite arena ownership.
 
-The policy floor is therefore ratcheted to 1,056/1,056.  Any construct removed
-from the executable corpus now fails CI; the floor cannot be lowered by a
+The policy floor was therefore ratcheted to 1,056/1,056 at that point, and has
+since been re-baselined upward to **1,078/1,078** (below).  Any construct removed
+from the executable corpus fails CI; the floor cannot be lowered by a
 command-line threshold.
 
 ## A1 — execution-backed certification, no lexical credit (2026-07-24)
