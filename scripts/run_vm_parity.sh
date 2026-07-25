@@ -325,7 +325,7 @@ done
 echo
 echo "vm-parity: $pass passed, $fail failed"
 if [ $fail -eq 0 ]; then
-    gate_summary="$pass checks green (audit + corpus + oos)"
+    gate_summary="$pass checks green (audit + corpus + oos + fatal)"
     emit_event "vm_parity_gate" "PASS" "$gate_summary"
     # Name the production dispatcher explicitly so ICC can bind this full
     # source+serialized-bytecode parity run to the implementation boundary it
