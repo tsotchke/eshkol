@@ -45,7 +45,10 @@ static llvm::Function* getOrDeclareRuntimeFunc(
     return f;
 }
 
-// Helper: emit null check after arena allocation — exits with OOM message if null
+// Helper: emit null check after arena allocation — raises a catchable OOM error
+// if the allocation failed. Every caller writes into the returned buffer
+// immediately afterwards, so a dropped check is a null store, not a diagnostic
+// nicety.
 static void emitArenaAllocNullCheck(llvm::IRBuilder<>& builder, CodegenContext& ctx,
                                      llvm::Value* ptr, const char* msg) {
     llvm::Function* cur_fn = builder.GetInsertBlock()->getParent();
@@ -56,14 +59,7 @@ static void emitArenaAllocNullCheck(llvm::IRBuilder<>& builder, CodegenContext& 
     builder.CreateCondBr(is_null, null_bb, ok_bb);
 
     builder.SetInsertPoint(null_bb);
-    llvm::Function* pf = ctx.lookupFunction("printf");
-    llvm::Function* ef = ctx.lookupFunction("exit");
-    if (pf && ef) {
-        llvm::Value* fmt = builder.CreateGlobalString(msg);
-        builder.CreateCall(pf, {fmt});
-        builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-    }
-    builder.CreateUnreachable();
+    ctx.emitRaise(msg);
     builder.SetInsertPoint(ok_bb);
 }
 
@@ -97,7 +93,7 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "lu_data");
-    emitArenaAllocNullCheck(builder, ctx_, lu_data, "Error: out of memory in tensor-lu\n");
+    emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-lu: out of memory");
 
     // Copy source tensor elements (int64 bitpatterns) to double array
     // Loop: for i = 0..n*n: lu_data[i] = bitcast(src[i])
@@ -128,7 +124,7 @@ llvm::Value* TensorCodegen::tensorLU(const eshkol_operations_t* op) {
     // Allocate pivot array (n int64s)
     llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "lu_piv");
-    emitArenaAllocNullCheck(builder, ctx_, piv_data, "Error: out of memory in tensor-lu (pivot)\n");
+    emitArenaAllocNullCheck(builder, ctx_, piv_data, "tensor-lu: out of memory (pivot)");
 
     // Call runtime LU decomposition
     llvm::FunctionType* lu_ft = llvm::FunctionType::get(
@@ -266,10 +262,10 @@ llvm::Value* TensorCodegen::tensorDet(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "det_lu");
-    emitArenaAllocNullCheck(builder, ctx_, lu_data, "Error: out of memory in tensor-det\n");
+    emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-det: out of memory");
     llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "det_piv");
-    emitArenaAllocNullCheck(builder, ctx_, piv_data, "Error: out of memory in tensor-det (pivot)\n");
+    emitArenaAllocNullCheck(builder, ctx_, piv_data, "tensor-det: out of memory (pivot)");
 
     // Copy tensor elements to double array
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -342,12 +338,12 @@ llvm::Value* TensorCodegen::tensorInverse(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_lu");
-    emitArenaAllocNullCheck(builder, ctx_, lu_data, "Error: out of memory in tensor-inverse\n");
+    emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-inverse: out of memory");
     llvm::Value* piv_size = builder.CreateMul(n, llvm::ConstantInt::get(ctx_.int64Type(), 8));
     llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, piv_size}, "inv_piv");
-    emitArenaAllocNullCheck(builder, ctx_, piv_data, "Error: out of memory in tensor-inverse (pivot)\n");
+    emitArenaAllocNullCheck(builder, ctx_, piv_data, "tensor-inverse: out of memory (pivot)");
     llvm::Value* inv_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "inv_data");
-    emitArenaAllocNullCheck(builder, ctx_, inv_data, "Error: out of memory in tensor-inverse (result)\n");
+    emitArenaAllocNullCheck(builder, ctx_, inv_data, "tensor-inverse: out of memory (result)");
 
     // Copy tensor elements to double array
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -453,11 +449,11 @@ llvm::Value* TensorCodegen::tensorSolve(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* lu_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "solve_lu");
-    emitArenaAllocNullCheck(builder, ctx_, lu_data, "Error: out of memory in tensor-solve\n");
+    emitArenaAllocNullCheck(builder, ctx_, lu_data, "tensor-solve: out of memory");
     llvm::Value* piv_data = builder.CreateCall(alloc_fn, {arena_ptr, b_bytes}, "solve_piv");
-    emitArenaAllocNullCheck(builder, ctx_, piv_data, "Error: out of memory in tensor-solve (pivot)\n");
+    emitArenaAllocNullCheck(builder, ctx_, piv_data, "tensor-solve: out of memory (pivot)");
     llvm::Value* b_data = builder.CreateCall(alloc_fn, {arena_ptr, b_bytes}, "solve_b");
-    emitArenaAllocNullCheck(builder, ctx_, b_data, "Error: out of memory in tensor-solve (b)\n");
+    emitArenaAllocNullCheck(builder, ctx_, b_data, "tensor-solve: out of memory (b)");
 
     // Copy A to lu_data, b to b_data
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -701,9 +697,9 @@ llvm::Value* TensorCodegen::tensorCholesky(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "chol_a");
-    emitArenaAllocNullCheck(builder, ctx_, a_data, "Error: out of memory in tensor-cholesky\n");
+    emitArenaAllocNullCheck(builder, ctx_, a_data, "tensor-cholesky: out of memory");
     llvm::Value* l_data = builder.CreateCall(alloc_fn, {arena_ptr, byte_size}, "chol_l");
-    emitArenaAllocNullCheck(builder, ctx_, l_data, "Error: out of memory in tensor-cholesky (L)\n");
+    emitArenaAllocNullCheck(builder, ctx_, l_data, "tensor-cholesky: out of memory (L)");
 
     // Copy tensor to double array
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -798,14 +794,7 @@ llvm::Value* TensorCodegen::tensorQR(const eshkol_operations_t* op) {
         llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "qr_dims_err", cur_fn);
         builder.CreateCondBr(dims_ok, ok_bb, err_bb);
         builder.SetInsertPoint(err_bb);
-        llvm::Function* pf = ctx_.lookupFunction("printf");
-        llvm::Function* ef = ctx_.lookupFunction("exit");
-        if (pf && ef) {
-            llvm::Value* fmt = builder.CreateGlobalString("Error: QR decomposition requires a 2D matrix (got %lldD)\n");
-            builder.CreateCall(pf, {fmt, qr_ndim});
-            builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-        }
-        builder.CreateUnreachable();
+        ctx_.emitRaiseFmt("tensor-qr: requires a 2D matrix (got %lldD)", {qr_ndim});
         builder.SetInsertPoint(ok_bb);
     }
 
@@ -827,11 +816,11 @@ llvm::Value* TensorCodegen::tensorQR(const eshkol_operations_t* op) {
         llvm::PointerType::get(ctx_.context(), 0), ctx_.globalArena());
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "qr_a");
-    emitArenaAllocNullCheck(builder, ctx_, a_data, "Error: out of memory in tensor-qr\n");
+    emitArenaAllocNullCheck(builder, ctx_, a_data, "tensor-qr: out of memory");
     llvm::Value* q_data = builder.CreateCall(alloc_fn, {arena_ptr, q_bytes}, "qr_q");
-    emitArenaAllocNullCheck(builder, ctx_, q_data, "Error: out of memory in tensor-qr (Q)\n");
+    emitArenaAllocNullCheck(builder, ctx_, q_data, "tensor-qr: out of memory (Q)");
     llvm::Value* r_data = builder.CreateCall(alloc_fn, {arena_ptr, r_bytes}, "qr_r");
-    emitArenaAllocNullCheck(builder, ctx_, r_data, "Error: out of memory in tensor-qr (R)\n");
+    emitArenaAllocNullCheck(builder, ctx_, r_data, "tensor-qr: out of memory (R)");
 
     // Copy tensor to double array
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -1003,13 +992,13 @@ llvm::Value* TensorCodegen::tensorSVD(const eshkol_operations_t* op) {
     llvm::Function* alloc_fn = mem_.getArenaAllocate();
 
     llvm::Value* a_data = builder.CreateCall(alloc_fn, {arena_ptr, a_bytes}, "svd_a");
-    emitArenaAllocNullCheck(builder, ctx_, a_data, "Error: out of memory in tensor-svd\n");
+    emitArenaAllocNullCheck(builder, ctx_, a_data, "tensor-svd: out of memory");
     llvm::Value* u_data = builder.CreateCall(alloc_fn, {arena_ptr, u_bytes}, "svd_u");
-    emitArenaAllocNullCheck(builder, ctx_, u_data, "Error: out of memory in tensor-svd (U)\n");
+    emitArenaAllocNullCheck(builder, ctx_, u_data, "tensor-svd: out of memory (U)");
     llvm::Value* s_data = builder.CreateCall(alloc_fn, {arena_ptr, s_bytes}, "svd_s");
-    emitArenaAllocNullCheck(builder, ctx_, s_data, "Error: out of memory in tensor-svd (S)\n");
+    emitArenaAllocNullCheck(builder, ctx_, s_data, "tensor-svd: out of memory (S)");
     llvm::Value* v_data = builder.CreateCall(alloc_fn, {arena_ptr, v_bytes}, "svd_v");
-    emitArenaAllocNullCheck(builder, ctx_, v_data, "Error: out of memory in tensor-svd (V)\n");
+    emitArenaAllocNullCheck(builder, ctx_, v_data, "tensor-svd: out of memory (V)");
 
     // Copy tensor elements (int64 bitpatterns) to double array for A
     llvm::Function* current_func = builder.GetInsertBlock()->getParent();
@@ -1238,14 +1227,8 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
             llvm::BasicBlock* err_bb = llvm::BasicBlock::Create(ctx_.context(), "einmm_dims_err", cur_fn);
             builder.CreateCondBr(both_ok, ok_bb, err_bb);
             builder.SetInsertPoint(err_bb);
-            llvm::Function* pf = ctx_.lookupFunction("printf");
-            llvm::Function* ef = ctx_.lookupFunction("exit");
-            if (pf && ef) {
-                llvm::Value* fmt = builder.CreateGlobalString("Error: einsum matmul requires 2D tensors (got %lldD and %lldD)\n");
-                builder.CreateCall(pf, {fmt, a_ndim_val, b_ndim_val});
-                builder.CreateCall(ef, {llvm::ConstantInt::get(builder.getInt32Ty(), 1)});
-            }
-            builder.CreateUnreachable();
+            ctx_.emitRaiseFmt("einsum: \"ij,jk->ik\" requires 2D tensors (got %lldD and %lldD)",
+                              {a_ndim_val, b_ndim_val});
             builder.SetInsertPoint(ok_bb);
         }
 
@@ -1261,11 +1244,13 @@ llvm::Value* TensorCodegen::tensorEinsum(const eshkol_operations_t* op) {
         llvm::Value* N_ptr = builder.CreateGEP(ctx_.int64Type(), b_dims, llvm::ConstantInt::get(ctx_.int64Type(), 1));
         llvm::Value* N = builder.CreateLoad(ctx_.int64Type(), N_ptr);
 
-        // matmulSIMD takes the TENSOR pointers, not the element buffers: it
-        // loads field 2 off each argument itself. Passing the already-loaded
-        // element buffers made it read `elements[2]` as the elements pointer, so
-        // `(einsum "ij,jk->ik" A B)` dereferenced A's third element as an
-        // address and died with SIGSEGV for perfectly well-formed 2-D tensors.
+        // matmulSIMD takes the TENSOR pointers, not their element buffers — it
+        // does its own StructGEP(tensor_type, ptr, 2) to reach the elements.
+        // Passing the already-loaded element pointers made it read field 2 of
+        // the element array, i.e. it loaded `elements[2]` and used that double's
+        // bit pattern as a pointer: `(einsum "ij,jk->ik" A B)` dereferenced A's
+        // third element as an address and died with SIGSEGV for perfectly
+        // well-formed 2-D tensors.
         return matmulSIMD(a_ptr, b_ptr, M, K, N);
     }
 
