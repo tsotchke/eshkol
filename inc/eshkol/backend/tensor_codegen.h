@@ -1487,15 +1487,28 @@ public:
 
     /**
      * Emit a catchable Eshkol error at the current insert point and terminate
-     * the block with `unreachable`.
+     * the block with `unreachable` — the correct way to close a failed tensor
+     * guard.
      *
      * Constructs an ESHKOL_EXCEPTION_ERROR via
      * `eshkol_make_exception_with_header` and raises it through
      * `eshkol_raise`, so the condition is observable to `guard`/
      * `with-exception-handler` instead of aborting the process or (worse)
-     * letting a bad index walk off the end of a buffer. Mirrors the guard
-     * tensor-get/tensor-set! already emit; factored out so shape/range guards
-     * in the transformer ops fail closed the same way.
+     * letting a bad index walk off the end of a buffer. Factored out so the
+     * tensor-get/tensor-set! bounds guards and the shape/range guards in the
+     * transformer ops all fail closed the same way.
+     *
+     * Why raising, and not printf+exit: several guards used to emit their
+     * diagnostic only `if (pf && ef)` after `ctx_.lookupFunction("printf")` /
+     * `("exit")`. Nothing ever registers `printf` or `exit` in the codegen
+     * function table, so those lookups always returned nullptr and the guard's
+     * failure block compiled to a bare `unreachable`. LLVM then reasons that
+     * the guarded condition can never hold and DELETES the branch: the check
+     * silently evaporated and the out-of-bounds access it was meant to stop
+     * happened anyway (SIGSEGV on read for tensor-get, a heap-corrupting write
+     * for tensor-set!). Raising through the runtime keeps the failure block
+     * live AND makes the error catchable, matching every other bounds check in
+     * the codebase.
      *
      * @param message Constant, user-facing message for the raised condition.
      */

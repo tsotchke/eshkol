@@ -299,6 +299,40 @@ across every new-feature family).
 
 ### Fixed
 
+- **`(tensor (list (list …) (list …)))` built a rank-1 tensor of zeros, and the
+  rank-2 read that followed segfaulted.** `(tensor X)` on a single collection
+  argument walked exactly ONE level of `X`, coercing every element with
+  "heap pointer -> 0.0", so a nest of lists silently lost its shape and
+  displayed as `#(0 0)`; `(tensor #(#(1 2) #(3 4)))` looked correct only because
+  the *parser* flattens nested `#(...)` literals at compile time. A rectangular
+  nest of lists and/or vectors — in any combination, to any rank up to 8, with
+  nested tensors as elements — now builds the N-dimensional tensor its shape
+  describes, matching the "classify by runtime value, not construction form"
+  principle. A ragged or otherwise non-rectangular nest raises a clean catchable
+  error instead of fabricating a wrong shape.
+- **Every rank and bounds guard in `tensor-get`/`tensor-ref` and `tensor-set!`
+  had been silently deleted by the optimizer.** Those guards emitted their
+  diagnostic only `if (printf && exit)` resolved through the codegen function
+  table, which never registers either symbol — so each failure block compiled to
+  a bare `unreachable`, from which LLVM infers the guarded condition is
+  impossible and removes the branch. A multi-index read of a lower-rank tensor
+  therefore ran off the end of the dimensions array and underflowed the slice
+  rank (SIGSEGV on both JIT and AOT), and an out-of-range `tensor-set!` wrote
+  outside the element buffer. All four guards now raise a catchable error
+  through the runtime, and the list-index idiom `(tensor-ref t (list i j …))`
+  gained the runtime rank check its multi-argument sibling always had.
+- **`(number->string -0.0)` produced `"-0"`, which reads back as the exact
+  integer `0`.** `"-0"` is not a flonum external representation, so the reader
+  took it as an exact zero — which has no sign — and both the inexactness and
+  the sign bit were lost: `(/ 1.0 -0.0)` is `-inf.0` but
+  `(/ 1.0 (string->number (number->string -0.0)))` came back `+inf.0`. That is a
+  loss of the VALUE, not merely of its exactness, so negative zero now renders
+  `"-0.0"`, which reads back as an inexact negative zero (R7RS 6.2.6
+  round-trip). Positive zero and the other integral-valued doubles keep the
+  established no-`.0` form (`0`, `3`, `1234567`), whose read-back recovers the
+  same numeric value. The shared formatter backs native and the bytecode VM, so
+  all three substrates emit the same bytes.
+
 - **Higher-order derivatives through a variable-bound derivative closure were
   silently wrong.** `(define df (derivative f))` followed by `(derivative df)`
   returned `0.0` — for `f = x⁴` at `x=2` the second derivative is `48` — and the
