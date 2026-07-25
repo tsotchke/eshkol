@@ -1,0 +1,12 @@
+; FILED: (tensor <rectangular nested collection>) — NATIVE is the wrong side.
+; The VM now builds the rank-N tensor the nesting describes; native flattens the
+; outer level and zero-fills.
+; native -r : #(0 0)              shape (2)
+; vm        : #((1 2) (3 4))      shape (2 2)
+; The VM also rejects a ragged nesting rather than truncating it. Gate the
+; nested form in corpus/39_tensor_constructor.esk once the native constructor
+; lands; every VARIADIC form of (tensor ...) already agrees and is gated there.
+(display (tensor (list (list 1.0 2.0) (list 3.0 4.0))))
+(newline)
+(display (tensor-shape (tensor (list (list 1.0 2.0) (list 3.0 4.0)))))
+(newline)

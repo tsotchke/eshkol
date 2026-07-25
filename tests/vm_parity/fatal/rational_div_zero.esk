@@ -1,0 +1,5 @@
+; Exact RATIONAL division by an exact zero is fatal.  The VM used to fall into
+; vm_rational_div()'s NULL/overflow path, which evaluated the ADDITION
+; formula, so this silently produced 0.5 and exited 0.
+(display (/ 1/2 0))
+(display "MUST-NOT-PRINT")

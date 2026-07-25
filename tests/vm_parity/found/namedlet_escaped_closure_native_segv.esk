@@ -1,0 +1,16 @@
+; FILED: NATIVE crashes when a named-let loop procedure is leaked out of the
+; loop and then called. The VM survives: its loop closure's by-reference slots
+; are closed at named-let exit (native call 152), so a leaked closure keeps the
+; values it last saw instead of aliasing a dead frame.
+; native -r : "2|" then SIGSEGV ("fatal signal: SIGSEGV")
+; vm        : 2|2|ALIVE
+(define g #f)
+(define (f)
+  (let ((acc 0))
+    (let loop ((i 0))
+      (if (< i 2) (begin (set! g loop) (set! acc (+ acc 1)) (loop (+ i 1))) acc))))
+(display (f))
+(display "|")
+(display (g 5))
+(display "|ALIVE")
+(newline)

@@ -1,0 +1,14 @@
+; FILED: a nested vector BUILT AT RUNTIME is rejected natively while the
+; identical LITERAL is accepted — NATIVE is the wrong side.
+; (vector (vector 1.0 2.0) (vector 3.0 4.0)) and #(#(1.0 2.0) #(3.0 4.0)) are
+; the same value, so they must coerce to the same 2x2 tensor.
+; native -r : "caught" (raises) for the built form, (2 2) for the literal
+; vm        : (2 2) for both
+; The VM's coercion is value-based and therefore consistent; native's depends on
+; how the value was produced. Native codegen is not VM-owned, so this is filed
+; rather than "fixed" in the VM to match. Gate it in
+; corpus/41_tensor_literals.esk once native accepts the built form.
+(display (guard (e (#t "caught")) (tensor-shape (vector (vector 1.0 2.0) (vector 3.0 4.0)))))
+(newline)
+(display (guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) #(3.0 4.0)))))
+(newline)
