@@ -64,6 +64,54 @@ Integer arithmetic promotes to bignum automatically; there is no overflow.
 (3 2 2 6 12)
 ```
 
+### Integer division (R7RS 6.2.6)
+
+Three sign conventions, each with its R7RS synonym. `modulo` **is**
+`floor-remainder`, `remainder` **is** `truncate-remainder`, and `quotient`
+**is** `truncate-quotient` — the same procedure under two names, so they agree
+on every representation.
+
+| procedure | synonym | sign of result |
+|---|---|---|
+| `quotient` | `truncate-quotient` | truncates toward zero |
+| `remainder` | `truncate-remainder` | sign of the **dividend** |
+| `floor-quotient` | — | floors toward −∞ |
+| `modulo` | `floor-remainder` | sign of the **divisor** |
+
+`floor/` and `truncate/` return both halves as two values.
+
+```scheme
+(display (list (quotient -7 3) (remainder -7 3) (modulo -7 3))) (newline)
+(display (list (floor-quotient -7 3) (floor-remainder -7 3))) (newline)
+(display (call-with-values (lambda () (floor/ -7 3)) list)) (newline)
+```
+```
+(-2 -1 2)
+(-3 2)
+(-3 2)
+```
+
+All of them accept bignums, and — because an integral flonum *is* an integer
+(`(integer? 7.0)` ⇒ `#t`) — inexact operands too, where exactness contagion
+makes the result inexact:
+
+```scheme
+(display (list (modulo (expt 2 100) 3) (floor-quotient (expt 2 100) 3))) (newline)
+(display (list (remainder 7.0 2.0) (modulo -7.0 3.0) (modulo 5 2.0))) (newline)
+(display (list (remainder 5.5 2.0) (modulo 5.5 2.0))) (newline)
+```
+```
+(1 422550200076076467165567735125)
+(1 2 1)
+(1.5 1.5)
+```
+
+> **Not C's `remainder()`.** The C library's `remainder(5.5, 2.0)` is `-0.5`
+> (IEEE-754 round-to-*nearest* remainder). Scheme's `remainder` is the
+> *truncated* remainder — `fmod` — so `(remainder 5.5 2.0)` is `1.5`.
+
+A zero divisor is an error for all of them (R7RS 6.2.6) and raises.
+
 ## Rationals
 
 Division of exact integers that do not divide evenly yields an exact rational,

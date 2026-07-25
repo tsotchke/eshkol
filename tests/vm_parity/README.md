@@ -61,11 +61,13 @@ Seeded 2026-07-03 from the live extraction, hand-verified with probe runs on
 `eshkol-run`, `stdlib`, `eshkol-vm-standalone-test`):
 
 * **stage 1** — the surface audit above;
-* **stage 2** — runs every program in `corpus/` (30 programs inside the VM's
+* **stage 2** — runs every program in `corpus/` (39 programs inside the VM's
   *verified* subset: arithmetic, floats, comparisons, recursion, TCO,
   closures + `set!`, let-family, named let, higher-order functions, lists,
   strings, `make-vector` vectors, `cond`/`case`/`when`/`unless`, flat `do`,
-  quasiquote, rewrite-only macros, `guard`/`raise`, `call/cc`, `values`,
+  `set!` from a `do` body, flonum integer division (`modulo`/`remainder`
+  sign conventions under exactness contagion), quasiquote, rewrite-only
+  macros, `guard`/`raise`, `call/cc`, `values`,
   `define-record-type`, a sieve) under three axes — native `eshkol-run -r`,
   `vm-src` (the VM's own compiler), and `vm-eskb`
   (`--profile hosted-vm --emit-eskb` + VM) — and byte-compares

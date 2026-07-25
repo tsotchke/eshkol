@@ -1,0 +1,89 @@
+(require stdlib)
+
+; `set!` from inside a `do` body must mutate the enclosing binding
+; (R7RS 4.1.6 `set!` stores in the location to which the variable is bound;
+; R7RS 4.2.4 `do` evaluates its commands in the body's environment).
+;
+; Regression cover for tests/vm_parity/found/do_set_param_native.esk: native
+; assignment conversion decides whether a function/lambda PARAMETER needs a
+; mutable cell by scanning the body for a `set!` of it. That scan had no case
+; for `do` and never descended into cons-cell subtrees, so the parameter
+; stayed a by-value LLVM Argument, the store had nowhere to land, and the
+; mutation was dropped with a "not mutable" diagnostic while the program still
+; produced a value. Every container that can hold the `set!` is covered here.
+
+(display "TEST: set! of an enclosing binding from a do body") (newline)
+
+; ── 1. the filed case: set! of a function parameter ──────────────────────
+(define (f n) (do ((i 0 (+ i 1))) ((= i 3)) (set! n (+ n 1))) n)
+(display (if (= (f 10) 13) "PASS" "FAIL"))
+(display ": (f 10) = 13 — three writes reach the parameter") (newline)
+
+; ── 2. same, but the do's result form reads the parameter ────────────────
+(define (k n) (do ((i 0 (+ i 1))) ((= i 3) n) (set! n (* n 2))))
+(display (if (= (k 1) 8) "PASS" "FAIL"))
+(display ": (k 1) = 8 — result form sees the mutations") (newline)
+
+; ── 3. several parameters mutated in one body ────────────────────────────
+(define (m a b)
+  (do ((i 0 (+ i 1))) ((= i 2))
+    (set! a (+ a 1))
+    (set! b (* b 3)))
+  (list a b))
+(display (if (equal? (m 0 1) (list 2 9)) "PASS" "FAIL"))
+(display ": (m 0 1) = (2 9) — independent parameters both mutate") (newline)
+
+; ── 4. a lambda parameter, not a define parameter ────────────────────────
+(display (if (= ((lambda (n) (do ((i 0 (+ i 1))) ((= i 4)) (set! n (- n 1))) n) 10) 6)
+             "PASS" "FAIL"))
+(display ": lambda parameter mutates from a do body") (newline)
+
+; ── 5. a let-bound variable (not a parameter) ────────────────────────────
+(define (g)
+  (let ((acc 0))
+    (do ((i 1 (+ i 1))) ((> i 4) acc)
+      (set! acc (+ acc i)))))
+(display (if (= (g) 10) "PASS" "FAIL"))
+(display ": let-bound accumulator sums to 10") (newline)
+
+; ── 6. the set! nested inside a conditional inside the body ─────────────
+(define (w n) (do ((i 0 (+ i 1))) ((= i 3)) (when (even? i) (set! n (+ n 10)))) n)
+(display (if (= (w 0) 20) "PASS" "FAIL"))
+(display ": set! inside `when` inside `do`") (newline)
+(define (u n) (do ((i 0 (+ i 1))) ((= i 3)) (unless (even? i) (set! n (+ n 1)))) n)
+(display (if (= (u 0) 1) "PASS" "FAIL"))
+(display ": set! inside `unless` inside `do`") (newline)
+(define (c n)
+  (do ((i 0 (+ i 1))) ((= i 3))
+    (case i ((0) (set! n 5)) ((1) (set! n (* n 2))) (else (set! n (+ n 1)))))
+  n)
+(display (if (= (c 0) 11) "PASS" "FAIL"))
+(display ": set! inside `case` inside `do`") (newline)
+(define (gd n)
+  (do ((i 0 (+ i 1))) ((= i 2))
+    (guard (e (#t (set! n (+ n 7)))) (raise 'boom)))
+  n)
+(display (if (= (gd 0) 14) "PASS" "FAIL"))
+(display ": set! inside a `guard` handler inside `do`") (newline)
+
+; ── 7. the set! in a do STEP expression, not the body ───────────────────
+; The steps live in cons-cell subtrees of the do node, so this only works if
+; the scan walks raw cons structure as well as operation nodes.
+(define (s n)
+  (do ((i 0 (+ i 1))
+       (j 0 (begin (set! n (+ n 100)) (+ j 1))))
+      ((= i 2))
+    (set! n (+ n 1)))
+  n)
+(display (if (= (s 0) 202) "PASS" "FAIL"))
+(display ": set! in a do step expression reaches the parameter") (newline)
+
+; ── 8. nested do loops both mutating the same parameter ──────────────────
+(define (h n)
+  (do ((i 0 (+ i 1))) ((= i 2) n)
+    (do ((j 0 (+ j 1))) ((= j 3))
+      (set! n (* n 2)))))
+(display (if (= (h 1) 64) "PASS" "FAIL"))
+(display ": nested do bodies both mutate — 6 doublings") (newline)
+
+(display "DONE") (newline)

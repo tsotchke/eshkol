@@ -1,0 +1,115 @@
+(require stdlib)
+
+; R7RS 6.2.6 integer division across the whole numeric tower.
+;
+; Regression cover for the native-side defects the VM-parity differential
+; sweep filed (tests/vm_parity/found/):
+;   * float_remainder_modulo_native.esk — `remainder` called the C library's
+;     IEEE-754 round-to-NEAREST remainder() instead of the TRUNCATED
+;     remainder, and `modulo` had no flonum path at all (it took the SRem of
+;     two IEEE-754 bit patterns).
+;   * bignum_div_inexact_zero_native.esk — a bignum divided by an INEXACT
+;     zero answered 0 instead of an infinity.
+; Plus floor-quotient / floor-remainder / floor/, which were int64-only and
+; therefore disagreed with the `modulo` they are DEFINED to equal.
+
+(display "TEST: R7RS integer division across the numeric tower") (newline)
+
+; ── 1. exact integers: the three sign conventions ────────────────────────
+(display (if (= (modulo -7 3) 2) "PASS" "FAIL"))
+(display ": (modulo -7 3) = 2 — sign of divisor") (newline)
+(display (if (= (modulo 7 -3) -2) "PASS" "FAIL"))
+(display ": (modulo 7 -3) = -2 — sign of divisor") (newline)
+(display (if (= (remainder -7 3) -1) "PASS" "FAIL"))
+(display ": (remainder -7 3) = -1 — sign of dividend") (newline)
+(display (if (= (remainder 7 -3) 1) "PASS" "FAIL"))
+(display ": (remainder 7 -3) = 1 — sign of dividend") (newline)
+(display (if (= (quotient -7 3) -2) "PASS" "FAIL"))
+(display ": (quotient -7 3) = -2 — truncate toward zero") (newline)
+
+; ── 2. flonums: TRUNCATED remainder, FLOORED modulo ──────────────────────
+; The C library's remainder(5.5, 2.0) is -0.5 (round-to-nearest); R7RS's
+; truncated remainder is 1.5. This is the assertion that pins the difference.
+(display (if (= (remainder 5.5 2.0) 1.5) "PASS" "FAIL"))
+(display ": (remainder 5.5 2.0) = 1.5 — truncated, not IEEE remainder()") (newline)
+(display (if (= (modulo 5.5 2.0) 1.5) "PASS" "FAIL"))
+(display ": (modulo 5.5 2.0) = 1.5") (newline)
+; INTEGRAL flonums are integers per R7RS ((integer? 7.0) is #t), so these
+; must agree with the exact answers above. remainder(7.0, 2.0) is -1.0 under
+; the IEEE function and 1.0 under the truncated one.
+(display (if (= (remainder 7.0 2.0) 1.0) "PASS" "FAIL"))
+(display ": (remainder 7.0 2.0) = 1.0 — matches (remainder 7 2)") (newline)
+(display (if (= (modulo -7.0 3.0) 2.0) "PASS" "FAIL"))
+(display ": (modulo -7.0 3.0) = 2.0 — matches (modulo -7 3)") (newline)
+(display (if (= (remainder -7.0 3.0) -1.0) "PASS" "FAIL"))
+(display ": (remainder -7.0 3.0) = -1.0 — matches (remainder -7 3)") (newline)
+(display (if (= (modulo 7.0 -3.0) -2.0) "PASS" "FAIL"))
+(display ": (modulo 7.0 -3.0) = -2.0 — matches (modulo 7 -3)") (newline)
+; exactness contagion: one inexact operand makes the result inexact
+(display (if (inexact? (modulo 5 2.0)) "PASS" "FAIL"))
+(display ": (modulo 5 2.0) is inexact — exact/inexact contagion") (newline)
+(display (if (= (modulo 5 2.0) 1.0) "PASS" "FAIL"))
+(display ": (modulo 5 2.0) = 1.0") (newline)
+(display (if (= (remainder 5 2.0) 1.0) "PASS" "FAIL"))
+(display ": (remainder 5 2.0) = 1.0") (newline)
+
+; ── 3. bignum operands stay exact ────────────────────────────────────────
+(display (if (= (modulo (expt 2 100) 3) 1) "PASS" "FAIL"))
+(display ": (modulo (expt 2 100) 3) = 1") (newline)
+(display (if (= (remainder (expt 2 100) 3) 1) "PASS" "FAIL"))
+(display ": (remainder (expt 2 100) 3) = 1") (newline)
+(display (if (= (quotient (expt 2 100) 3) 422550200076076467165567735125) "PASS" "FAIL"))
+(display ": (quotient (expt 2 100) 3) is exact") (newline)
+
+; ── 4. R7RS synonyms must be the SAME function ───────────────────────────
+; R7RS 6.2.6: (floor-remainder n1 n2) is (modulo n1 n2); (truncate-remainder
+; n1 n2) is (remainder n1 n2); (truncate-quotient n1 n2) is (quotient n1 n2).
+(display (if (= (floor-remainder 7 3) (modulo 7 3)) "PASS" "FAIL"))
+(display ": (floor-remainder 7 3) = (modulo 7 3)") (newline)
+(display (if (= (floor-remainder -7 3) (modulo -7 3)) "PASS" "FAIL"))
+(display ": (floor-remainder -7 3) = (modulo -7 3)") (newline)
+(display (if (= (floor-remainder 7.0 2.0) (modulo 7.0 2.0)) "PASS" "FAIL"))
+(display ": (floor-remainder 7.0 2.0) = (modulo 7.0 2.0) — flonum") (newline)
+(display (if (= (floor-remainder (expt 2 100) 3) (modulo (expt 2 100) 3)) "PASS" "FAIL"))
+(display ": (floor-remainder (expt 2 100) 3) = (modulo …) — bignum") (newline)
+(display (if (= (truncate-remainder -7 3) (remainder -7 3)) "PASS" "FAIL"))
+(display ": (truncate-remainder -7 3) = (remainder -7 3)") (newline)
+(display (if (= (truncate-quotient -7 3) (quotient -7 3)) "PASS" "FAIL"))
+(display ": (truncate-quotient -7 3) = (quotient -7 3)") (newline)
+
+; ── 5. floor-quotient: floor(n1/n2) for every representation ─────────────
+(display (if (= (floor-quotient 7 2) 3) "PASS" "FAIL"))
+(display ": (floor-quotient 7 2) = 3") (newline)
+(display (if (= (floor-quotient -7 2) -4) "PASS" "FAIL"))
+(display ": (floor-quotient -7 2) = -4 — floors, does not truncate") (newline)
+(display (if (= (floor-quotient 7 -2) -4) "PASS" "FAIL"))
+(display ": (floor-quotient 7 -2) = -4") (newline)
+(display (if (= (floor-quotient -7 -2) 3) "PASS" "FAIL"))
+(display ": (floor-quotient -7 -2) = 3") (newline)
+(display (if (= (floor-quotient 7.0 2.0) 3.0) "PASS" "FAIL"))
+(display ": (floor-quotient 7.0 2.0) = 3.0 — flonum") (newline)
+(display (if (= (floor-quotient (expt 2 100) 3) 422550200076076467165567735125) "PASS" "FAIL"))
+(display ": (floor-quotient (expt 2 100) 3) is exact — bignum") (newline)
+; the division identity must hold: n1 = n2*(floor-quotient) + (floor-remainder)
+(display (if (= (+ (* 3 (floor-quotient -7 3)) (floor-remainder -7 3)) -7) "PASS" "FAIL"))
+(display ": floor division identity holds for (-7, 3)") (newline)
+(display (if (= (+ (* -3 (floor-quotient 7 -3)) (floor-remainder 7 -3)) 7) "PASS" "FAIL"))
+(display ": floor division identity holds for (7, -3)") (newline)
+
+; ── 6. division by an INEXACT zero is IEEE-754, not an error ─────────────
+; R7RS 6.2.6 (`/`): "It is an error if any argument other than the first is
+; an exact zero." An inexact zero divisor is therefore ordinary IEEE-754
+; division. The bignum dividend must survive it.
+(display (if (= (/ (expt 2 100) 0.0) (/ 1 0.0)) "PASS" "FAIL"))
+(display ": (/ (expt 2 100) 0.0) is +inf.0, not 0") (newline)
+(display (if (> (/ (expt 2 100) 0.0) 0.0) "PASS" "FAIL"))
+(display ": (/ (expt 2 100) 0.0) is positive infinity") (newline)
+(display (if (< (/ (- (expt 2 100)) 0.0) 0.0) "PASS" "FAIL"))
+(display ": (/ (- (expt 2 100)) 0.0) is negative infinity") (newline)
+(display (if (not (= (/ 0.0 0.0) (/ 0.0 0.0))) "PASS" "FAIL"))
+(display ": (/ 0.0 0.0) is +nan.0 (not equal to itself)") (newline)
+; a nonzero inexact divisor still divides the bignum
+(display (if (> (/ (expt 2 100) 2.0) 6.0e29) "PASS" "FAIL"))
+(display ": (/ (expt 2 100) 2.0) is ~6.34e29") (newline)
+
+(display "DONE") (newline)

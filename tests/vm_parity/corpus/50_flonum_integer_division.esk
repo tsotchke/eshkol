@@ -1,0 +1,31 @@
+; R7RS 6.2.6 integer division with an INEXACT operand — exactness contagion
+; plus the two sign conventions:
+;   modulo    -> result has the sign of the DIVISOR   (floored remainder)
+;   remainder -> result has the sign of the DIVIDEND  (truncated remainder)
+; An integral flonum IS an integer per R7RS ((integer? 7.0) is #t), so every
+; line below must agree with its exact-integer counterpart in
+; corpus/26_int_division.esk.
+;
+; Native was the wrong side here (found/float_remainder_modulo_native.esk):
+; `remainder` called the C library's remainder(), which is IEEE-754
+; round-to-NEAREST remainder — a different function — and `modulo` had no
+; flonum path at all, so both operands went through the int64 unpack and it
+; returned the SRem of two IEEE-754 bit patterns.
+;
+; NOT gated here (the VM is the wrong side, still filed in found/):
+;   (remainder 5.5 2.0)      — VM truncates the operands to integers and
+;                              answers 1; native answers 1.5.
+;   (modulo <flonum> 0.0)    — divisor-is-zero handling.
+(display (modulo 5.5 2.0)) (newline)
+(display (remainder 7.0 2.0)) (newline)
+(display (modulo 7.0 2.0)) (newline)
+(display (remainder -7.0 3.0)) (newline)
+(display (modulo -7.0 3.0)) (newline)
+(display (remainder 7.0 -3.0)) (newline)
+(display (modulo 7.0 -3.0)) (newline)
+(display (remainder -7.0 -3.0)) (newline)
+(display (modulo -7.0 -3.0)) (newline)
+(display (modulo 5 2.0)) (newline)
+(display (remainder 5 2.0)) (newline)
+(display (modulo 5.0 2)) (newline)
+(display (remainder 5.0 2)) (newline)

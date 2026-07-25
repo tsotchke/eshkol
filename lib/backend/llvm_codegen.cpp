@@ -8317,6 +8317,22 @@ private:
         return tagged_->safeExtractInt64(val);
     }
 
+    /**
+     * @brief R7RS 6.2.6 `floor-quotient`: floor(a/b), for any numeric
+     *        representation.
+     *
+     * Derived from the floored remainder rather than re-implemented:
+     * `(a - (modulo a b)) / b`. The numerator is an exact multiple of `b` by
+     * construction, so exact operands stay exact (the division never produces a
+     * rational) and fixnum / bignum / flonum operands all flow through the
+     * polymorphic primitives. Also the sole place `floor/` gets its quotient,
+     * so the two can never disagree.
+     */
+    Value* emitFloorQuotient(Value* a, Value* b) {
+        Value* m = arith_->mod(a, b);
+        return arith_->div(arith_->sub(a, m), b);
+    }
+
     // Helper: Extract car element from cons cell as tagged value (type-safe approach)
     // This avoids ABI issues with returning 16-byte structs from C functions
     Value* extractConsCarAsTaggedValue(Value* cons_ptr) {
@@ -12585,57 +12601,39 @@ private:
             // Return as MULTI_VALUE heap ptr
             return packPtrToTaggedValue(mv, ESHKOL_VALUE_HEAP_PTR);
         }
-        // R7RS floor-quotient: floor(a/b), handling negative divisors correctly
+        // R7RS 6.2.6 floor-quotient: floor(n1/n2).
+        //
+        // This family used to be int64-ONLY: each of floor-quotient /
+        // floor-remainder / floor/ extracted both operands with
+        // safeExtractInt64 and did its own SDiv/SRem. That silently disagreed
+        // with the R7RS synonyms it is *defined* to equal — R7RS 6.2.6 states
+        // that `modulo` IS `floor-remainder` — because `modulo` dispatches on
+        // bignum and flonum representations and these did not:
+        //   (floor-quotient  (expt 2 100) 3)  gave 1745178066
+        //   (floor-remainder 7.0 2.0)         gave 7881299347898368
+        // Both are now expressed with the polymorphic tagged-value primitives,
+        // so exact-integer, bignum and flonum operands all behave, and there is
+        // exactly ONE floored-remainder implementation in the compiler.
+        //
+        // floor-quotient is derived rather than re-implemented:
+        //     (a - (modulo a b)) / b
+        // The numerator is an exact multiple of b by construction, so the
+        // exact-division path returns an integer (never a rational), and the
+        // formula is representation-agnostic. A zero divisor now raises (R7RS:
+        // "it is an error if n2 is zero") instead of being sanitized to 1 and
+        // quietly answering the dividend.
         if (func_name == "floor-quotient") {
             if (op->call_op.num_vars != 2) { eshkol_error("floor-quotient requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            // floor division: q = a/b, adjust if signs differ and remainder != 0
-            Value* q = builder->CreateSDiv(a, b);
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adjusted = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
-            Value* result = builder->CreateSelect(need_adjust, adjusted, q);
-            return packInt64ToTaggedValue(result);
+            Value* a = typedValueToTaggedValue(a_tv);
+            Value* b = typedValueToTaggedValue(b_tv);
+            return emitFloorQuotient(a, b);
         }
-        // R7RS floor-remainder: a - b * floor-quotient(a, b)
-        if (func_name == "floor-remainder") {
-            if (op->call_op.num_vars != 2) { eshkol_error("floor-remainder requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
-            TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
-            TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
-            if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            // floor remainder: r = a%b, adjust if signs differ and r != 0
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adjusted = builder->CreateAdd(r, b);
-            Value* result = builder->CreateSelect(need_adjust, adjusted, r);
-            return packInt64ToTaggedValue(result);
-        }
+        // R7RS 6.2.6: (floor-remainder n1 n2) IS (modulo n1 n2). One
+        // implementation, no second copy to drift out of sync.
+        if (func_name == "floor-remainder") return codegenModulo(op);
         // R7RS floor/: returns (values floor-quotient floor-remainder)
         if (func_name == "floor/") {
             if (op->call_op.num_vars != 2) { eshkol_error("floor/ requires 2 arguments"); return nullptr; }  // P2: avoid host OOB on variables[1]
@@ -12643,27 +12641,10 @@ private:
             TypedValue a_tv = codegenTypedAST(&op->call_op.variables[0]);
             TypedValue b_tv = codegenTypedAST(&op->call_op.variables[1]);
             if (!a_tv.llvm_value || !b_tv.llvm_value) return nullptr;
-            Value* a = safeExtractInt64(typedValueToTaggedValue(a_tv));
-            Value* b = safeExtractInt64(typedValueToTaggedValue(b_tv));
-            // P1: avoid UB SDiv/SRem on b==0 and INT64_MIN/-1 (sanitize divisor to 1).
-            b = builder->CreateSelect(builder->CreateOr(
-                    builder->CreateICmpEQ(b, ConstantInt::get(int64_type, 0)),
-                    builder->CreateAnd(builder->CreateICmpEQ(a, ConstantInt::get(int64_type, INT64_MIN)),
-                                       builder->CreateICmpEQ(b, ConstantInt::get(int64_type, -1)))),
-                ConstantInt::get(int64_type, 1), b);
-            Value* q = builder->CreateSDiv(a, b);
-            Value* r = builder->CreateSRem(a, b);
-            Value* r_nonzero = builder->CreateICmpNE(r, ConstantInt::get(int64_type, 0));
-            Value* a_neg = builder->CreateICmpSLT(a, ConstantInt::get(int64_type, 0));
-            Value* b_neg = builder->CreateICmpSLT(b, ConstantInt::get(int64_type, 0));
-            Value* signs_differ = builder->CreateXor(a_neg, b_neg);
-            Value* need_adjust = builder->CreateAnd(r_nonzero, signs_differ);
-            Value* adj_q = builder->CreateSub(q, ConstantInt::get(int64_type, 1));
-            Value* adj_r = builder->CreateAdd(r, b);
-            Value* final_q = builder->CreateSelect(need_adjust, adj_q, q);
-            Value* final_r = builder->CreateSelect(need_adjust, adj_r, r);
-            Value* tq = packInt64ToTaggedValue(final_q);
-            Value* tr = packInt64ToTaggedValue(final_r);
+            Value* a = typedValueToTaggedValue(a_tv);
+            Value* b = typedValueToTaggedValue(b_tv);
+            Value* tr = arith_->mod(a, b);
+            Value* tq = arith_->div(arith_->sub(a, tr), b);
             // Pack as multi-value
             Value* arena_ptr = getArenaPtr();
             llvm::FunctionCallee alloc_mv = module->getOrInsertFunction("arena_allocate_multi_value",
