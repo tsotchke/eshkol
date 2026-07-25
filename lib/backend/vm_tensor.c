@@ -342,24 +342,44 @@ static VmTensor* vm_tensor_reshape(VmRegionStack* rs, const VmTensor* t,
 static VmTensor* vm_tensor_transpose(VmRegionStack* rs, const VmTensor* t) {
     if (!t || t->n_dims < 2) return NULL;
 
-    VmTensor* v = (VmTensor*)vm_alloc_object(rs, VM_SUBTYPE_TENSOR, sizeof(VmTensor));
+    /* MATERIALIZE the transpose rather than returning a strided view sharing
+     * `data`.  A view is only correct for readers that honour `strides`:
+     * vm_tensor_flat_offset() does, so (tensor-ref (transpose t) i j) was
+     * right, but every consumer that walks `data` LINEARLY — the tensor
+     * printer, tensor-data, flatten/reshape, matmul and the element-wise
+     * kernels — read the original row-major order and silently returned the
+     * UNtransposed elements: (transpose (tensor 2 3 1 2 3 4 5 6)) displayed
+     * #((1 2) (3 4) (5 6)) with the correct shape (3 2) attached, where native
+     * gives #((1 4) (2 5) (3 6)).  Native materializes here too, so this also
+     * matches its cost model, and it keeps strides canonically contiguous
+     * everywhere in the VM instead of leaving a non-contiguous tensor that
+     * every future reader would have to remember to handle. */
+    int64_t shape[VM_TENSOR_MAX_DIMS];
+    memcpy(shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
+    shape[0] = t->shape[1];
+    shape[1] = t->shape[0];
+
+    VmTensor* v = vm_tensor_new(rs, shape, t->n_dims);
     if (!v) return NULL;
-
-    v->n_dims = t->n_dims;
-    memcpy(v->shape, t->shape, (size_t)t->n_dims * sizeof(int64_t));
-    memcpy(v->strides, t->strides, (size_t)t->n_dims * sizeof(int64_t));
-
-    /* Swap dim 0 and dim 1 */
-    v->shape[0] = t->shape[1];
-    v->shape[1] = t->shape[0];
-    v->strides[0] = t->strides[1];
-    v->strides[1] = t->strides[0];
-
-    v->data = t->data;
-    v->total = t->total;
-    v->owns_data = 0;
     v->dtype = t->dtype;
+    if (!t->data) return v;
 
+    /* Gather through the SOURCE's strides with dim 0 and 1 exchanged. */
+    int64_t src_strides[VM_TENSOR_MAX_DIMS];
+    memcpy(src_strides, t->strides, (size_t)t->n_dims * sizeof(int64_t));
+    src_strides[0] = t->strides[1];
+    src_strides[1] = t->strides[0];
+
+    int64_t idx[VM_TENSOR_MAX_DIMS] = {0};
+    for (int64_t flat = 0; flat < v->total; flat++) {
+        int64_t src = 0;
+        for (int d = 0; d < t->n_dims; d++) src += idx[d] * src_strides[d];
+        v->data[flat] = t->data[src];
+        for (int d = t->n_dims - 1; d >= 0; d--) {   /* row-major increment */
+            if (++idx[d] < shape[d]) break;
+            idx[d] = 0;
+        }
+    }
     return v;
 }
 
