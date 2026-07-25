@@ -202,6 +202,11 @@ static hott_type_expr_t* hott_alloc_type_expr(hott_type_kind_t kind) {
 }
 
 // Primitive type constructors
+/** Create a payload-free type expression of an arbitrary primitive kind. */
+hott_type_expr_t* hott_make_primitive_type(hott_type_kind_t kind) {
+    return hott_alloc_type_expr(kind);
+}
+
 /** Create a HOTT_TYPE_INTEGER type expression. */
 hott_type_expr_t* hott_make_integer_type(void) {
     return hott_alloc_type_expr(HOTT_TYPE_INTEGER);

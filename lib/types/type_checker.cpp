@@ -1194,7 +1194,21 @@ TypeCheckResult TypeChecker::synthesizeOperation(eshkol_ast_t* expr) {
             // trust boundary (no runtime check), consistent with `--strict-types`
             // as a whole-program refinement rather than a soundness proof.
             if (expr->operation.the_op.expr) {
-                synthesize(expr->operation.the_op.expr);
+                auto inner = synthesize(expr->operation.the_op.expr);
+                if (!inner.success) {
+                    // The result was previously DISCARDED, so the comment above
+                    // was not true: a failing inner synthesis (an unbound
+                    // variable, say) vanished and the ascription reported
+                    // nothing at all — the ascription hid exactly the nested
+                    // error it promises not to hide. errorAt() only builds a
+                    // failing result; nothing is recorded until it is reported.
+                    // Route it through the unified enforcement point so it is
+                    // both printed and counted (and therefore fatal under
+                    // --strict-types), while the ascribed type still flows
+                    // onward: `the` trusts the TYPE, not the expression.
+                    reportTypeIssue(inner.error_message,
+                                    expr->operation.the_op.expr);
+                }
             }
             return TypeCheckResult::ok(resolveType(expr->operation.the_op.type_expr));
         }
@@ -3305,6 +3319,13 @@ TypeId TypeChecker::resolveType(const hott_type_expr_t* type_expr) {
 
         case HOTT_TYPE_REAL:
             return BuiltinTypes::Float64;
+
+        // The `number` supertype. HOTT_TYPE_NUMBER existed in the kind enum and
+        // was handled in codegen, but never had a case here — so a `number`
+        // annotation resolved through `default:` to Value (any), silently
+        // widening it. It is now produced by the canonical spelling registry.
+        case HOTT_TYPE_NUMBER:
+            return BuiltinTypes::Number;
 
         case HOTT_TYPE_STRING:
             return BuiltinTypes::String;
