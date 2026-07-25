@@ -71,19 +71,22 @@ The function responsible for this translation is inside `process_requires` in `e
 
 The compiler searches for a module file in the following order, stopping at the first match:
 
-1. Each directory listed in the `ESHKOL_PATH` environment variable (colon-separated on POSIX, semicolon-separated on Windows).
-2. The `lib/` directory relative to the compiler executable (`g_lib_dir`).
-3. System-level paths (platform-dependent, typically `/usr/lib/eshkol/` or `/usr/local/lib/eshkol/`).
+1. The directory of the file doing the `require` (the program's own sources).
+2. The project root — the process's working directory.
+3. Each directory listed in the `ESHKOL_PATH` environment variable (colon-separated on POSIX, semicolon-separated on Windows); `-I DIR` flags are appended to it. This is the explicit override, so it precedes the installed tree.
+4. The installed module tree (`g_lib_dir`).
 
-`g_lib_dir` is determined at startup from the path of the `eshkol-run` executable itself, making the compiler relocatable without requiring environment configuration for the standard library.
+`g_lib_dir` is determined at startup from the **real** path of the `eshkol-run` executable — symlinks resolved, so a `bin/eshkol-run` symlink into an install keg resolves inside that keg — by taking the first of `<exe>/lib`, `<exe>/../lib`, `<exe>/../share/eshkol/lib`, the working directory's equivalents, then `<prefix>/share/eshkol/lib` for the system prefixes, that actually contains `stdlib.esk`. That identity check is what stops a downstream project's unrelated `lib/` (or a release package's archive-only `lib/`) from being mistaken for the module tree, and the executable-relative roots are what make the compiler relocatable without environment configuration. The same precedence ladder resolves the native artifacts — see [environment variables](../reference/runtime/environment-variables.md#resolution-precedence).
 
 ### 3.3 Example Resolution
 
 ```
-require core.list.transform
-  → candidate: $ESHKOL_PATH/core/list/transform.esk    (checked first)
-  → candidate: <exe>/../lib/core/list/transform.esk     (g_lib_dir, typical match)
-  → candidate: /usr/local/lib/eshkol/core/list/transform.esk
+require core.list.transform            (from src/app.esk, cwd = project root)
+  → candidate: src/core/list/transform.esk              (requiring file's dir)
+  → candidate: ./core/list/transform.esk                (project root)
+  → candidate: $ESHKOL_PATH/core/list/transform.esk     (explicit override)
+  → candidate: <real exe>/../lib/core/list/transform.esk        (g_lib_dir, typical match)
+  → candidate: /usr/local/share/eshkol/lib/core/list/transform.esk
 ```
 
 ---

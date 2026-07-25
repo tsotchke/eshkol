@@ -7,6 +7,7 @@
 
 #include <eshkol/platform_runtime.h>
 #include <eshkol/build_config.h>
+#include <eshkol/eshkol.h>
 
 #include <algorithm>
 #include <array>
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <random>
 #include <sstream>
 #include <system_error>
@@ -464,6 +466,25 @@ std::filesystem::path executable_directory() {
     return path.parent_path();
 }
 
+/** Return the symlink-resolved directory containing the current executable.
+ *  See the header for why co-located resolution must not use the launch
+ *  path's parent. */
+std::filesystem::path executable_real_directory() {
+    auto path = executable_path();
+    if (path.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    auto real = std::filesystem::canonical(path, ec);
+    if (ec || real.empty()) {
+        // A canonicalization failure (deleted image, permission-denied
+        // component) must not lose the co-located tier entirely: fall back to
+        // the launch path, which is what the pre-real-path behavior used.
+        return path.parent_path();
+    }
+    return real.parent_path();
+}
+
 /** Return the process's current working directory, or an empty path if
  *  it cannot be queried. */
 std::filesystem::path current_directory() {
@@ -483,6 +504,322 @@ std::string find_first_existing(const std::vector<std::filesystem::path>& candid
         }
     }
     return {};
+}
+
+// ---------------------------------------------------------------------------
+// Install-artifact resolution
+// ---------------------------------------------------------------------------
+
+/** Build stamp embedded in every archive, object and executable that contains
+ *  this translation unit — libeshkol-runtime.a and libeshkol-static.a both do.
+ *  archive_build_version() scans a candidate archive's bytes for it, which is
+ *  how the driver notices that the archive it is about to link was built from
+ *  a different Eshkol than the compiler doing the linking (the silent-ABI-skew
+ *  case: same symbol set, different tagged-value/arena layout).
+ *
+ *  External linkage and `volatile`-free const data: the object file keeps the
+ *  literal even though nothing in this build references it, and static-archive
+ *  members are copied whole, so the stamp survives into every .a. */
+extern "C" const char eshkol_runtime_build_stamp[] =
+    "ESHKOL-RUNTIME" "-BUILD-STAMP:" ESHKOL_VERSION_STRING ";";
+
+namespace {
+
+/** The stamp's marker prefix, assembled at run time.
+ *
+ *  Deliberately NOT a single literal: this scanner is itself compiled into
+ *  the archives it scans, and a contiguous copy of the marker here would be
+ *  a second hit inside libeshkol-runtime.a with no version behind it. */
+std::string build_stamp_marker() {
+    return std::string("ESHKOL-RUNTIME") + "-BUILD-STAMP:";
+}
+
+/** Environment variable value, or nullptr when unset/empty. */
+const char* nonempty_env(const char* name) {
+    const char* value = std::getenv(name);
+    return (value && value[0] != '\0') ? value : nullptr;
+}
+
+constexpr char kPathListSeparator =
+#ifdef _WIN32
+    ';';
+#else
+    ':';
+#endif
+
+/** Split a platform path list ("a:b:c") into its non-empty entries. */
+std::vector<std::string> split_path_list(const char* value) {
+    std::vector<std::string> entries;
+    if (!value) {
+        return entries;
+    }
+    std::stringstream stream(value);
+    std::string entry;
+    while (std::getline(stream, entry, kPathListSeparator)) {
+        if (!entry.empty()) {
+            entries.push_back(entry);
+        }
+    }
+    return entries;
+}
+
+/** Append @p path at tier @p origin, skipping empties and any directory an
+ *  earlier (i.e. higher-precedence) tier already contributed. */
+void append_root(std::vector<InstallSearchRoot>& roots,
+                 std::filesystem::path path,
+                 InstallOrigin origin) {
+    if (path.empty()) {
+        return;
+    }
+    path = path.lexically_normal();
+    for (const auto& existing : roots) {
+        if (existing.path == path) {
+            return;
+        }
+    }
+    roots.push_back({std::move(path), origin});
+}
+
+/** The system install prefixes searched as a last resort.
+ *
+ *  $ESHKOL_SYSTEM_PREFIXES replaces the built-in list; it exists so an unusual
+ *  install (or a packaging test that must not write to /usr) can describe its
+ *  own system locations instead of having them hardcoded. */
+std::vector<std::filesystem::path> system_prefixes() {
+    if (const char* override_list = nonempty_env("ESHKOL_SYSTEM_PREFIXES")) {
+        std::vector<std::filesystem::path> prefixes;
+        for (auto& entry : split_path_list(override_list)) {
+            prefixes.emplace_back(std::move(entry));
+        }
+        return prefixes;
+    }
+#ifdef _WIN32
+    return {};
+#else
+    return {"/usr/local", "/usr", "/opt/homebrew"};
+#endif
+}
+
+} // namespace
+
+/** @brief Name of a precedence tier, for diagnostics. */
+const char* install_origin_name(InstallOrigin origin) {
+    switch (origin) {
+        case InstallOrigin::EnvOverride:    return "ESHKOL_LIB_DIR";
+        case InstallOrigin::ExplicitFlag:   return "-L path";
+        case InstallOrigin::CoLocated:      return "compiler install";
+        case InstallOrigin::WorkingTree:    return "working directory";
+        case InstallOrigin::SystemFallback: return "system location";
+        case InstallOrigin::NotFound:       break;
+    }
+    return "not found";
+}
+
+std::vector<InstallSearchRoot> install_library_roots(
+    const std::vector<std::string>& explicit_dirs
+) {
+    std::vector<InstallSearchRoot> roots;
+
+    // 1. The escape hatch. Absolute precedence: whatever the user pointed at
+    //    is searched before anything the toolchain infers, so pointing it at
+    //    an install always overrides a system copy.
+    if (const char* env_lib = nonempty_env("ESHKOL_LIB_DIR")) {
+        append_root(roots, env_lib, InstallOrigin::EnvOverride);
+        append_root(roots, std::filesystem::path(env_lib) / "eshkol",
+                    InstallOrigin::EnvOverride);
+    }
+
+    // 2. Explicit -L directories, in command-line order.
+    for (const auto& dir : explicit_dirs) {
+        append_root(roots, dir, InstallOrigin::ExplicitFlag);
+    }
+
+    // 3. The install the running compiler belongs to. The real path comes
+    //    first; the launch path is kept as a secondary co-located root so an
+    //    install that deliberately keeps its archives beside a symlink still
+    //    resolves.
+    for (const auto& base : {executable_real_directory(), executable_directory()}) {
+        if (base.empty()) {
+            continue;
+        }
+        append_root(roots, base, InstallOrigin::CoLocated);
+        append_root(roots, base / ".." / "lib", InstallOrigin::CoLocated);
+        append_root(roots, base / ".." / "lib" / "eshkol", InstallOrigin::CoLocated);
+    }
+
+    // 4. Developer convenience: a build tree reachable from the cwd.
+    auto cwd = current_directory();
+    if (!cwd.empty()) {
+        append_root(roots, cwd, InstallOrigin::WorkingTree);
+        append_root(roots, cwd / "build", InstallOrigin::WorkingTree);
+        append_root(roots, cwd / "build-verify", InstallOrigin::WorkingTree);
+        append_root(roots, cwd.parent_path() / "build", InstallOrigin::WorkingTree);
+        append_root(roots, cwd.parent_path() / "build-verify", InstallOrigin::WorkingTree);
+    }
+
+    // 5. System prefixes, last.
+    for (const auto& prefix : system_prefixes()) {
+        append_root(roots, prefix / "lib", InstallOrigin::SystemFallback);
+        append_root(roots, prefix / "lib" / "eshkol", InstallOrigin::SystemFallback);
+    }
+
+    return roots;
+}
+
+std::vector<InstallSearchRoot> install_module_roots() {
+    std::vector<InstallSearchRoot> roots;
+
+    // $ESHKOL_LIB_DIR is documented for the native artifacts, but an install
+    // whose .esk tree sits beside them must still be reachable through the
+    // escape hatch. Callers verify the tree's identity (stdlib.esk) before
+    // accepting a root, so a build directory named here is simply skipped.
+    if (const char* env_lib = nonempty_env("ESHKOL_LIB_DIR")) {
+        append_root(roots, env_lib, InstallOrigin::EnvOverride);
+        append_root(roots, std::filesystem::path(env_lib) / "lib",
+                    InstallOrigin::EnvOverride);
+    }
+
+    for (const auto& base : {executable_real_directory(), executable_directory()}) {
+        if (base.empty()) {
+            continue;
+        }
+        append_root(roots, base / "lib", InstallOrigin::CoLocated);
+        append_root(roots, base / ".." / "lib", InstallOrigin::CoLocated);
+        append_root(roots, base / ".." / "share" / "eshkol" / "lib",
+                    InstallOrigin::CoLocated);
+    }
+
+    auto cwd = current_directory();
+    if (!cwd.empty()) {
+        append_root(roots, cwd / "lib", InstallOrigin::WorkingTree);
+        append_root(roots, cwd.parent_path() / "lib", InstallOrigin::WorkingTree);
+        append_root(roots, cwd / "share" / "eshkol" / "lib", InstallOrigin::WorkingTree);
+    }
+
+    for (const auto& prefix : system_prefixes()) {
+        append_root(roots, prefix / "share" / "eshkol" / "lib",
+                    InstallOrigin::SystemFallback);
+    }
+
+    return roots;
+}
+
+ResolvedInstallArtifact resolve_install_artifact(
+    const std::vector<InstallSearchRoot>& roots,
+    const std::vector<std::string>& leaf_names
+) {
+    // Location-major: a root is exhausted before the next one is opened.
+    for (const auto& root : roots) {
+        for (const auto& leaf : leaf_names) {
+            auto resolved = canonical_if_exists(root.path / leaf);
+            if (!resolved.empty()) {
+                return {resolved.string(), root.origin, root.path};
+            }
+        }
+    }
+    return {};
+}
+
+std::string archive_build_version(const std::filesystem::path& artifact) {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(artifact, ec) || ec) {
+        return {};
+    }
+
+    std::ifstream stream(artifact, std::ios::binary);
+    if (!stream) {
+        return {};
+    }
+
+    const std::string marker = build_stamp_marker();
+    constexpr std::size_t kChunkSize = 1u << 20;
+    // Version strings are short; anything longer is not a stamp.
+    constexpr std::size_t kMaxVersionLength = 64;
+
+    std::string window;
+    std::string chunk(kChunkSize, '\0');
+    while (stream.read(chunk.data(), static_cast<std::streamsize>(kChunkSize)) ||
+           stream.gcount() > 0) {
+        window.append(chunk.data(), static_cast<std::size_t>(stream.gcount()));
+
+        std::size_t search_from = 0;
+        for (;;) {
+            const auto hit = window.find(marker, search_from);
+            if (hit == std::string::npos) {
+                break;
+            }
+            const auto value_begin = hit + marker.size();
+            const auto terminator = window.find(';', value_begin);
+            if (terminator == std::string::npos) {
+                // The stamp straddles the chunk boundary — keep it in the
+                // window and resume once more bytes are in.
+                if (window.size() - hit <= marker.size() + kMaxVersionLength) {
+                    window.erase(0, hit);
+                    search_from = 0;
+                    break;
+                }
+                search_from = value_begin;
+                continue;
+            }
+            const auto length = terminator - value_begin;
+            if (length > 0 && length <= kMaxVersionLength) {
+                std::string version = window.substr(value_begin, length);
+                const bool printable = std::all_of(
+                    version.begin(), version.end(),
+                    [](unsigned char c) { return c >= 0x20 && c < 0x7f; });
+                if (printable) {
+                    return version;
+                }
+            }
+            search_from = terminator + 1;
+        }
+
+        // Retain a marker-sized tail so a stamp split across chunks is found.
+        const std::size_t keep = marker.size() + kMaxVersionLength;
+        if (window.size() > keep) {
+            window.erase(0, window.size() - keep);
+        }
+    }
+
+    return {};
+}
+
+InstallArtifactNote describe_install_artifact(std::string_view label,
+                                             const ResolvedInstallArtifact& artifact,
+                                             bool verify_version) {
+    InstallArtifactNote note;
+    if (!artifact.found()) {
+        return note;
+    }
+
+    const std::string stamped =
+        verify_version ? archive_build_version(artifact.path) : std::string();
+    const bool version_known = !stamped.empty();
+    const bool version_differs = version_known && stamped != ESHKOL_VERSION_STRING;
+
+    if (version_differs) {
+        note.severe = true;
+        note.text = "the " + std::string(label) + " being linked, " + artifact.path +
+                    ", was built from Eshkol " + stamped + " but this compiler is " +
+                    ESHKOL_VERSION_STRING +
+                    " — generated programs would mix runtime versions. It was found"
+                    " via the " + install_origin_name(artifact.origin) +
+                    ". Set ESHKOL_LIB_DIR to the directory holding the matching"
+                    " archive, or reinstall so the archive sits beside the compiler.";
+        return note;
+    }
+
+    if (artifact.origin == InstallOrigin::SystemFallback) {
+        note.text = "using the " + std::string(label) + " from a system location, " +
+                    artifact.path +
+                    " — no matching artifact is installed beside this compiler" +
+                    (version_known
+                         ? " (versions agree: " + stamped + ")"
+                         : std::string(" (it carries no build stamp, so it cannot"
+                                       " be confirmed to match)")) +
+                    ". Set ESHKOL_LIB_DIR to override.";
+    }
+    return note;
 }
 
 /** @brief Determine the current user's home directory.

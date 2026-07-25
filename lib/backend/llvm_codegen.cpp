@@ -38747,52 +38747,41 @@ int eshkol_compile_llvm_ir_to_executable(LLVMModuleRef module_ref, const char* f
             }
         }
 
-        std::filesystem::path runtime_lib_path;
-        const std::vector<std::string> runtime_library_names = {
-            eshkol::platform::static_library_name("eshkol-runtime"),
-            eshkol::platform::static_library_name("eshkol-static"),
-        };
-        auto exe_dir = eshkol::platform::executable_directory();
-
-        for (const auto& runtime_library_name : runtime_library_names) {
-            if (const char* env_lib = std::getenv("ESHKOL_LIB_DIR")) {
-                auto env_path = std::filesystem::path(env_lib) / runtime_library_name;
-                if (std::filesystem::exists(env_path)) {
-                    runtime_lib_path = env_path;
-                    break;
+        // One shared, location-major resolution for the runtime archive (see
+        // platform_runtime.h): $ESHKOL_LIB_DIR, the -L directories, the real
+        // executable's own install, the working directory's build trees, then
+        // the system prefixes — and within each of those, the split archive
+        // before the legacy aggregate. This path used to keep its own copy of
+        // the search, which meant the driver and this backend could disagree
+        // about which archive a program links; and, like the driver's, it was
+        // name-major, so a lower-precedence `libeshkol-runtime.a` outranked
+        // the compiler's own `libeshkol-static.a`.
+        std::vector<std::string> explicit_lib_dirs;
+        if (lib_paths && num_lib_paths > 0) {
+            for (size_t i = 0; i < num_lib_paths; i++) {
+                if (lib_paths[i] && lib_paths[i][0] != '\0') {
+                    explicit_lib_dirs.emplace_back(lib_paths[i]);
                 }
             }
-
-            if (runtime_lib_path.empty() && !exe_dir.empty()) {
-                std::vector<std::filesystem::path> candidates = {
-                    exe_dir / runtime_library_name,
-                    exe_dir / "../lib" / runtime_library_name,
-                    exe_dir / "../lib/eshkol" / runtime_library_name,
-                };
-                for (const auto& candidate : candidates) {
-                    if (std::filesystem::exists(candidate)) {
-                        runtime_lib_path = candidate;
-                        break;
-                    }
+        }
+        const auto resolved_runtime = eshkol::platform::resolve_install_artifact(
+            eshkol::platform::install_library_roots(explicit_lib_dirs),
+            {
+                eshkol::platform::static_library_name("eshkol-runtime"),
+                eshkol::platform::static_library_name("eshkol-static"),
+            });
+        std::filesystem::path runtime_lib_path =
+            resolved_runtime.found() ? std::filesystem::path(resolved_runtime.path)
+                                     : std::filesystem::path{};
+        if (resolved_runtime.found()) {
+            const auto note = eshkol::platform::describe_install_artifact(
+                "runtime archive", resolved_runtime);
+            if (!note.text.empty()) {
+                if (note.severe) {
+                    eshkol_warn("%s", note.text.c_str());
+                } else {
+                    eshkol_notice("%s", note.text.c_str());
                 }
-            }
-
-            if (runtime_lib_path.empty() && !cwd.empty()) {
-                std::vector<std::filesystem::path> candidates = {
-                    cwd / runtime_library_name,
-                    cwd / "build" / runtime_library_name,
-                    cwd.parent_path() / "build" / runtime_library_name,
-                };
-                for (const auto& candidate : candidates) {
-                    if (std::filesystem::exists(candidate)) {
-                        runtime_lib_path = candidate;
-                        break;
-                    }
-                }
-            }
-
-            if (!runtime_lib_path.empty()) {
-                break;
             }
         }
 
