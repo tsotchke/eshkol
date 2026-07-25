@@ -15,6 +15,7 @@ Thank you for your interest in contributing to Eshkol! This document provides gu
     - [Reporting Issues](#reporting-issues)
     - [Suggesting Enhancements](#suggesting-enhancements)
     - [Pull Requests](#pull-requests)
+    - [Branch Protection and Required Checks](#branch-protection-and-required-checks)
   - [Development Guidelines](#development-guidelines)
     - [Coding Standards](#coding-standards)
       - [C Code](#c-code)
@@ -127,16 +128,44 @@ The website is written in Eshkol and compiled to WebAssembly:
 # Compile the website
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 
-# Rebuild the browser REPL VM
+# Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I lib/backend lib/backend/vm_wasm_repl.c \
+  -I inc -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
 cd site/static && python3 -m http.server 8888
 ```
+
+The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
+nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, or the prelude cache
+changes — otherwise the browser REPL silently keeps running an older VM. Two
+flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
+and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
+that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`) as aborting stubs so a program calling them fails cleanly.
+
+After rebuilding, check the bundle in node before committing it — the same
+`repl_eval` entry point the site uses:
+
+```bash
+node -e '
+const f=require("./site/static/eshkol-vm.js");
+f({print:t=>console.log(t)}).then(m=>{
+  const ev=m.cwrap("repl_eval","string",["string"]);
+  ev("(display (sqrt 2.0))");                                   // 1.4142135623730951
+  ev("(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))");
+  ev("(display (gradient v (vector 3.0 4.0)))");                // #(6 8)
+});'
+```
+
+Then update the VM WASM size statistic in `site/src/main.esk` (the `s2`
+`"...KB"` cell) to match the new artifact — `scripts/verify_site_release.py`
+fails if the published number drifts by more than 1KB.
 
 ## How to Contribute
 
@@ -172,6 +201,56 @@ We follow a standard GitHub flow for contributions:
 7. Push your branch to your fork: `git push origin your-branch-name`.
 8. Submit a pull request to the `master` branch of the Eshkol repository.
 9. Respond to any feedback or questions during the review process.
+
+### Branch Protection and Required Checks
+
+`master` is branch-protected. The protection rules themselves are applied in the
+repository settings (Settings → Branches → branch protection rule for `master`);
+this section is the authoritative reference for *what* that configuration should
+require. It is the enforcement half of the closed-loop assurance architecture
+(`docs/design/adr/0010-closed-loop-assurance.md`, closing AR1 gap A5): before this
+was in place, `master` had zero required checks and every lane was advisory.
+
+**Required status checks** (a PR cannot merge until all of these are green):
+
+- `linux-x64-lite`
+- `linux-arm64-lite`
+- `macos-arm64-lite`
+- `macos-x64-lite`
+- `windows-arm64-lite`
+- `linux-x64-asan-ubsan` — the memory-safety (ASan + UBSan) lane; required so
+  address/UB regressions cannot merge behind an advisory lane.
+- `identity-guard` — enforces the commit-identity allowlist on every PR.
+
+Also enabled in the protection rule: require branches to be up to date before
+merging, require linear history, and dismiss stale approvals on new commits.
+
+**Advisory checks** (run on every PR and must be *reviewed* before merge, but do
+not mechanically block it — they depend on optional backends, special hardware, or
+a networked service and cannot gate the default merge):
+
+- `quantum-macos` — opt-in Moonlab quantum lane (`continue-on-error`, networked).
+- the XLA lanes (`*-xla`) — optional XLA backend.
+- the CUDA lanes (`*-cuda`) and the self-hosted GPU execution gate — require GPU
+  hardware not present on the default hosted runners.
+
+Advisory does not mean ignorable: a reviewer checks **all** lanes, including the
+advisory ones, before merging, and dedupes stale check entries by taking the latest
+run per lane name. Linux lite lanes intermittently hit hosted-runner reclaim
+(exit 143 / `BlobNotFound`); re-run the failed jobs once before treating a red as a
+real regression.
+
+**Release-blocking readiness.** Publishing a release is additionally gated by the
+`release-readiness-gate` job in `.github/workflows/release.yml`, which regenerates
+the oracle traces at the tagged SHA and runs `icc architecture-verify` +
+`icc readiness --target v1.3-evolve`. `publish-release` depends on it, so **no
+release asset is published unless readiness is ready/100** at the cut SHA. The gate
+requires ICC to be provisioned on the release runner via the `ICC_BIN` repository
+variable (a path to the ICC binary; optionally `ICC_REPO` for the registered index
+name, default `eshkol_lang`). If ICC is unavailable on a real tag push the gate
+emits a loud error and blocks the release — it never fail-opens to a green publish.
+A non-publishing `workflow_dispatch` dry-run treats the same conditions as advisory
+warnings, since it ships nothing.
 
 ## Development Guidelines
 

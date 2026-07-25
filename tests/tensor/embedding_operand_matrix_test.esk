@@ -1,0 +1,217 @@
+;; Regression: `embedding` must classify its index and weight operands by
+;; RUNTIME VALUE, and must fail closed on an out-of-range index or a wrong rank.
+;;
+;; Found during tensor-operand and checkpoint-resume hardening. `embedding`
+;; unpacked both operands with the historical `IntToPtr(unpackInt64(v))`, which
+;; reinterprets ANY operand as an eshkol_tensor_t*. A Scheme vector
+;; (HEAP_SUBTYPE_VECTOR, layout [len:i64][tagged elems...]) then had its length
+;; read as the dimensions pointer -> SIGSEGV near a null address. A `#(...)`
+;; literal appeared to work only because that form parses to a tensor.
+;; Separately, the index was used unchecked, so a negative or >= vocab-size id
+;; loaded weights from outside the weight buffer and returned plausible garbage,
+;; and the rank precondition was reported with printf+exit (uncatchable).
+;;
+;; Asserted here: every spelling of the same index operand
+;; {#(...) literal, inline (vector ...), computed vector, (list ...), tensor}
+;; produces byte-identical, correct rows; the output shape is right; every
+;; invalid index/rank raises a CATCHABLE condition; the result composes with
+;; downstream tensor ops; and reverse-mode AD differentiates through the lookup.
+
+(define failures 0)
+
+(define (check name actual expected)
+  (if (equal? actual expected)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual)
+        (newline))))
+
+;; Weight matrix: 4 rows (vocab) x 3 columns (d_model); row r = 10r, 10r+1, 10r+2
+(define weights
+  (reshape
+   (vector->tensor
+    (vector 0.0 1.0 2.0 10.0 11.0 12.0 20.0 21.0 22.0 30.0 31.0 32.0))
+   4 3))
+
+;; ---------------------------------------------------------------------------
+;; (a) every operand spelling works and produces identical results
+;; (b) exact row contents, not just shape
+;; ---------------------------------------------------------------------------
+
+;; A tensor literal (the only spelling that worked before the fix).
+(define from-literal (embedding #(0 2) weights))
+
+;; An inline (vector ...) — a Scheme vector, not a tensor.
+(define from-inline-vector (embedding (vector 0 2) weights))
+
+;; A COMPUTED vector: built empty and filled by mutation, so nothing about it is
+;; knowable at compile time.
+(define computed (make-vector 2 0))
+(vector-set! computed 0 0)
+(vector-set! computed 1 2)
+(define from-computed-vector (embedding computed weights))
+
+;; A VAR-bound vector reached through a function parameter.
+(define (lookup-through-parameter idx) (embedding idx weights))
+(define from-parameter (lookup-through-parameter computed))
+
+;; A numeric list.
+(define from-list (embedding (list 0 2) weights))
+
+;; An explicit tensor.
+(define from-tensor (embedding (vector->tensor computed) weights))
+
+(define expected-rows (list (list 0.0 1.0 2.0) (list 20.0 21.0 22.0)))
+
+(define (rows-of t nrows ncols)
+  (let row-loop ((r 0) (acc '()))
+    (if (= r nrows)
+        (reverse acc)
+        (row-loop
+         (+ r 1)
+         (cons
+          (let col-loop ((c 0) (cols '()))
+            (if (= c ncols)
+                (reverse cols)
+                (col-loop (+ c 1) (cons (tensor-ref t r c) cols))))
+          acc)))))
+
+(check "literal-vector rows" (rows-of from-literal 2 3) expected-rows)
+(check "inline-vector rows" (rows-of from-inline-vector 2 3) expected-rows)
+(check "computed-vector rows" (rows-of from-computed-vector 2 3) expected-rows)
+(check "parameter-vector rows" (rows-of from-parameter 2 3) expected-rows)
+(check "list rows" (rows-of from-list 2 3) expected-rows)
+(check "tensor rows" (rows-of from-tensor 2 3) expected-rows)
+
+;; Shape: indices_shape ++ (d_model)
+(check "literal shape" (tensor-shape from-literal) (list 2 3))
+(check "computed shape" (tensor-shape from-computed-vector) (list 2 3))
+(check "list shape" (tensor-shape from-list) (list 2 3))
+(check "tensor shape" (tensor-shape from-tensor) (list 2 3))
+
+;; A longer, repeated, out-of-order index vector: order and repetition must be
+;; honoured exactly (this is what a real token-id batch looks like).
+(define batch (make-vector 4 0))
+(vector-set! batch 0 3)
+(vector-set! batch 1 1)
+(vector-set! batch 2 3)
+(vector-set! batch 3 0)
+(check "repeated/out-of-order rows"
+       (rows-of (embedding batch weights) 4 3)
+       (list (list 30.0 31.0 32.0)
+             (list 10.0 11.0 12.0)
+             (list 30.0 31.0 32.0)
+             (list 0.0 1.0 2.0)))
+
+;; ---------------------------------------------------------------------------
+;; (c) invalid indices and invalid ranks fail closed with a catchable error
+;; ---------------------------------------------------------------------------
+
+(define (raises? thunk)
+  (guard (exn (#t #t)) (begin (thunk) #f)))
+
+(define oob (make-vector 1 0))
+(vector-set! oob 0 4)                     ; == vocab-size
+(check "index == vocab-size raises"
+       (raises? (lambda () (embedding oob weights))) #t)
+
+(define way-oob (make-vector 1 0))
+(vector-set! way-oob 0 99999)
+(check "index far beyond vocab raises"
+       (raises? (lambda () (embedding way-oob weights))) #t)
+
+(define neg (make-vector 1 0))
+(vector-set! neg 0 -1)
+(check "negative index raises"
+       (raises? (lambda () (embedding neg weights))) #t)
+
+(define neg-far (make-vector 1 0))
+(vector-set! neg-far 0 -99999)
+(check "far negative index raises"
+       (raises? (lambda () (embedding neg-far weights))) #t)
+
+;; A rank-1 "weight matrix" has no d_model dimension to read.
+(check "rank-1 weights raises"
+       (raises? (lambda () (embedding #(0) (vector->tensor (vector 1.0 2.0 3.0)))))
+       #t)
+
+;; A non-numeric index operand must raise, not reinterpret its pointer.
+(check "string index operand raises"
+       (raises? (lambda () (embedding "not-an-index" weights))) #t)
+
+(check "boolean index operand raises"
+       (raises? (lambda () (embedding #f weights))) #t)
+
+;; Failing closed must leave the process usable: a valid lookup still works
+;; after every rejected one.
+(check "valid lookup after rejections"
+       (rows-of (embedding computed weights) 2 3) expected-rows)
+
+;; ---------------------------------------------------------------------------
+;; (e) composes with downstream tensor ops
+;; ---------------------------------------------------------------------------
+
+(check "tensor-sum of computed-index lookup"
+       (tensor-sum (embedding computed weights)) 66.0)
+(check "tensor-add over two spellings"
+       (tensor-sum (tensor-add (embedding computed weights)
+                               (embedding #(0 2) weights)))
+       132.0)
+(check "transpose of lookup"
+       (tensor-shape (transpose (embedding computed weights))) (list 3 2))
+(check "feed-forward accepts a lookup result"
+       (tensor-shape
+        (feed-forward (embedding computed weights)
+                      (reshape (vector->tensor (vector 1.0 0.0 0.0 1.0 0.0 0.0)) 3 2)
+                      (vector->tensor (vector 0.0 0.0))
+                      (reshape (vector->tensor (vector 1.0 0.0 0.0 0.0 1.0 0.0)) 2 3)
+                      (vector->tensor (vector 0.0 0.0 0.0))))
+       (list 2 3))
+
+;; ---------------------------------------------------------------------------
+;; (e) reverse-mode AD differentiates through an embedding lookup
+;; ---------------------------------------------------------------------------
+
+;; Selecting rows 0 and 2 of a 3x2 table and summing them: d/dtheta is 1 for
+;; every element of rows 0 and 2, and 0 for row 1.
+(define (embedding-loss theta)
+  (tensor-sum (embedding computed (reshape theta 3 2))))
+
+(define grad-literal-index
+  (gradient (lambda (theta) (tensor-sum (embedding #(0 2) (reshape theta 3 2))))
+            (vector->tensor (vector 1.0 2.0 3.0 4.0 5.0 6.0))))
+(define grad-computed-index
+  (gradient embedding-loss
+            (vector->tensor (vector 1.0 2.0 3.0 4.0 5.0 6.0))))
+
+(define (tensor->list t n)
+  (let loop ((i 0) (acc '()))
+    (if (= i n) (reverse acc) (loop (+ i 1) (cons (tensor-ref t i) acc)))))
+
+(check "gradient through lookup (literal index)"
+       (tensor->list grad-literal-index 6)
+       (list 1.0 1.0 0.0 0.0 1.0 1.0))
+(check "gradient through lookup (computed index)"
+       (tensor->list grad-computed-index 6)
+       (list 1.0 1.0 0.0 0.0 1.0 1.0))
+
+;; A weighted row selection: the gradient must scale with the coefficient.
+(define (weighted-loss theta)
+  (* 3.0 (tensor-sum (embedding computed (reshape theta 3 2)))))
+(check "gradient scales through lookup"
+       (tensor->list
+        (gradient weighted-loss (vector->tensor (vector 1.0 2.0 3.0 4.0 5.0 6.0)))
+        6)
+       (list 3.0 3.0 0.0 0.0 3.0 3.0))
+
+;; ---------------------------------------------------------------------------
+
+(display "embedding_operand_matrix: ")
+(if (= failures 0)
+    (display "PASS: embedding classifies index operands by runtime value")
+    (begin (display "FAIL: ") (display failures) (display " assertion(s)")))
+(newline)
+(if (> failures 0) (exit 1))
