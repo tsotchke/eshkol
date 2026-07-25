@@ -2119,6 +2119,25 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
         return;
     }
 
+    /* (tensor a b c ...) — the variadic tensor constructor.
+     *
+     * `tensor` is a VARIADIC special form natively (leading exact-integer dims
+     * then product(dims) values, or a bare list of values, or one rectangular
+     * nested collection), but the VM's BUILTINS table aliased the name to
+     * make-tensor's fixed 2-arg native, so every call read only its first two
+     * arguments: (tensor 2 2 1.0 2.0 3.0 4.0) built #(2 2) and a nested list
+     * built (). Pack the arguments into a list (exactly like the tensor-ref
+     * special form below) and let native 473 apply the real rule. */
+    if (is_sym(head, "tensor") && node->n_children >= 2) {
+        chunk_emit(c, OP_NIL, 0);
+        for (int i = node->n_children - 1; i >= 1; i--) {
+            compile_expr(c, node->children[i], 0);
+            chunk_emit(c, OP_CONS, 0);
+        }
+        chunk_emit(c, OP_NATIVE_CALL, 473);
+        return;
+    }
+
     /* #322: (tensor-ref t i j ...) — multi-dim element read with the indices
      * spelled as separate trailing args (the native idiom, matched by the LLVM
      * path). tensor-ref's BUILTINS-table entry is a fixed 2-arg (tensor, index)
@@ -2219,7 +2238,14 @@ static void compile_expr_impl(FuncChunk* c, Node* node, int tail) {
                  * lets it produce an exact rational (or int), or a float, based
                  * on the actual operand types. */
                 if (folded) {
-                    int ci = chunk_add_const(c, result == (int64_t)result && fabs(result) < 1e15
+                    /* Preserve a negative zero as INEXACT, exactly as the
+                     * runtime's number_val() does: IEEE-754 makes
+                     * (* -1.0 0.0) = -0.0, and the integer collapse treats
+                     * -0.0 == 0, so folding it discarded the sign bit and the
+                     * VM printed 0 where native prints -0. */
+                    int negative_zero = (result == 0.0 && signbit(result));
+                    int ci = chunk_add_const(c,
+                        (!negative_zero && result == (int64_t)result && fabs(result) < 1e15)
                         ? INT_VAL((int64_t)result) : FLOAT_VAL(result));
                     if (ci >= 0) chunk_emit(c, OP_CONST, ci);
                     return;

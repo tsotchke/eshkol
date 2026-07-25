@@ -1,0 +1,12 @@
+; FILED: out-of-range tensor-set! — NATIVE is the wrong side.
+; The bounds contract (corpus/34_bounds_contract.esk) requires every substrate
+; to signal an out-of-range index identically. The VM now raises; native returns
+; without writing, so the lost write is undetectable by the program.
+; native -r : "1" (no raise; the write silently vanished)
+; vm        : "caught"
+; Gate these in corpus/40_tensor_bounds_contract.esk once native raises.
+(define t (make-tensor (list 2 2) 1.0))
+(display (guard (e (#t "caught")) (tensor-set! t 100 9.0)))
+(newline)
+(display (guard (e (#t "caught")) (tensor-set! t -1 9.0)))
+(newline)

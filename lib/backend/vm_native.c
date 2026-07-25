@@ -4331,6 +4331,125 @@ static int vm_vec_fill(VM* vm, Value v, const int64_t* shape, int depth, int ran
     return 0;
 }
 
+/* ── (tensor <nested collection>) support ───────────────────────────────────
+ *
+ * vm_vec_shape/vm_vec_fill above handle nested VECTOR literals only, because a
+ * nested numeric vector literal IS a tensor natively.  The `tensor`
+ * constructor also accepts nested LISTS and tensors, so these three helpers
+ * view all three uniformly as "collections" and reuse the same
+ * shape-then-validate-while-filling structure.
+ */
+
+/** @brief Element count of @p v viewed as a collection, or -1 if @p v is not
+ *         one (i.e. it is a scalar leaf). A tensor counts as its flat length,
+ *         so a tensor nested inside a list contributes its own elements. */
+static int vm_tensor_collection_len(VM* vm, Value v) {
+    if (v.type == VAL_PAIR) {
+        int len = 0;
+        Value cur = v;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            len++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        return len;
+    }
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return vec ? (int)vec->len : -1;
+    }
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return t ? (int)t->total : -1;
+    }
+    return -1;
+}
+
+/** @brief Element @p index of collection @p v (NIL when out of range). */
+static Value vm_tensor_collection_at(VM* vm, Value v, int index) {
+    if (index < 0) return NIL_VAL;
+    if (v.type == VAL_PAIR) {
+        Value cur = v;
+        while (index-- > 0) {
+            if (cur.type != VAL_PAIR || !is_valid_heap_ptr(vm, cur.as.ptr)) return NIL_VAL;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (cur.type != VAL_PAIR || !is_valid_heap_ptr(vm, cur.as.ptr)) return NIL_VAL;
+        return vm->heap.objects[cur.as.ptr]->cons.car;
+    }
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!vec || index >= vec->len) return NIL_VAL;
+        return vec->items[index];
+    }
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || index >= t->total) return NIL_VAL;
+        return FLOAT_VAL(t->data[index]);
+    }
+    return NIL_VAL;
+}
+
+/** @brief Row-major fill of @p data from nested collection @p v, validating
+ *         @p v against @p shape at every level. Returns 0 on success, -1 when
+ *         @p v is ragged (a level's length disagrees with the shape) or nests
+ *         deeper/shallower than the inferred rank. */
+static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
+                                 int rank, double* data, int64_t* pos, int64_t cap) {
+    if (level == rank) {
+        if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
+        if (v.type != VAL_INT && v.type != VAL_FLOAT) return -1;
+        if (*pos >= cap) return -1;
+        data[(*pos)++] = as_number(v);
+        return 0;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len != (int)shape[level]) return -1;                  /* ragged */
+    for (int i = 0; i < len; i++) {
+        if (vm_tensor_nested_fill(vm, vm_tensor_collection_at(vm, v, i),
+                                  shape, level + 1, rank, data, pos, cap) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Build a tensor from a rectangular nested collection (lists, vectors
+ *        and tensors may be mixed at any level).
+ *
+ * The shape is measured down the leftmost spine, then validated on the way in
+ * while filling: a ragged nesting is REJECTED (@p err set) rather than
+ * silently truncated or zero-filled. Rank is capped at VM_TENSOR_MAX_DIMS.
+ *
+ * @return The new tensor, or NULL with *@p err set to a diagnostic.
+ */
+static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
+    int64_t shape[VM_TENSOR_MAX_DIMS];
+    int rank = 0;
+    Value spine = v;
+    for (;;) {
+        int len = vm_tensor_collection_len(vm, spine);
+        if (len < 0) break;                       /* scalar leaf: shape ends */
+        if (len == 0) { if (err) *err = "tensor: empty nested collection"; return NULL; }
+        if (rank >= VM_TENSOR_MAX_DIMS) {
+            if (err) *err = "tensor: nesting deeper than 8 dimensions";
+            return NULL;
+        }
+        shape[rank++] = len;
+        spine = vm_tensor_collection_at(vm, spine, 0);
+    }
+    if (rank == 0) { if (err) *err = "tensor: not a collection"; return NULL; }
+
+    VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
+    if (!t) { if (err) *err = "tensor: allocation failed"; return NULL; }
+    int64_t pos = 0;
+    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t->data, &pos, t->total) != 0
+        || pos != t->total) {
+        if (err) *err = "tensor: nested collection is not rectangular";
+        return NULL;
+    }
+    return t;
+}
+
 static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
@@ -7087,6 +7206,92 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Tensor Core Operations (410-420)
      * ══════════════════════════════════════════════════════════════════════ */
+    /* ── (tensor ...) constructor (fids 473/474) ───────────────────────────
+     *
+     * `tensor` is NOT make-tensor. The language spells it variadically, either
+     * as leading exact-integer DIMS followed by exactly product(dims) values —
+     * (tensor 2 2 1.0 2.0 3.0 4.0) is the 2x2 matrix — or as a bare list of
+     * values, (tensor 1.3 -0.7), or as a single rectangular nested collection.
+     * The VM's BUILTINS table aliased the name to make-tensor's 2-arg native
+     * (fid 410), so it read only the FIRST TWO arguments and every form was
+     * silently wrong: (tensor 2 2 1.0 2.0 3.0 4.0) built the 2-element tensor
+     * #(2 2), (tensor 4 0.5 -1.0 2.0 1.5) built four copies of 0.5, and a
+     * nested list produced (). PARITY.tsv nonetheless claimed vm-supported.
+     *
+     * Dims-vs-values is resolved exactly as the native path does: take the
+     * LONGEST prefix of leading exact integers whose product equals the number
+     * of remaining arguments. Nothing matching means the arguments are a flat
+     * vector of values. (tensor 1 2) is therefore shape (1) holding 2, while
+     * (tensor 2 3) is the flat #(2 3) — 2*3 != 0 and 2 != 1.
+     */
+    case 473: case 474: {
+        /* 473: the (tensor a b c ...) special form passes its arguments as a
+         *      list, built by the compiler.
+         * 474: the first-class `tensor` closure passes ONE value, which is
+         *      treated as that single argument. */
+        Value arg_src = vm_pop(vm);
+        Value args[VM_TENSOR_CTOR_MAX_ARGS];
+        int n_args = 0;
+        if (fid == 473) {
+            Value cur = arg_src;
+            while (cur.type == VAL_PAIR && n_args < VM_TENSOR_CTOR_MAX_ARGS) {
+                args[n_args++] = vm->heap.objects[cur.as.ptr]->cons.car;
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+            if (cur.type == VAL_PAIR) {
+                vm_raise_error_msg(vm, "tensor: too many arguments");
+                break;
+            }
+        } else {
+            args[n_args++] = arg_src;
+        }
+        if (n_args == 0) {
+            vm_raise_error_msg(vm, "tensor: needs at least one argument");
+            break;
+        }
+
+        /* A single collection argument is a nested-collection literal. */
+        if (n_args == 1 && vm_tensor_collection_len(vm, args[0]) >= 0) {
+            const char* nest_err = NULL;
+            VmTensor* nested = vm_tensor_from_nested(vm, args[0], &nest_err);
+            if (!nested) {
+                vm_raise_error_msg(vm, nest_err ? nest_err
+                    : "tensor: not a rectangular nested collection");
+                break;
+            }
+            VM_PUSH_TENSOR(vm, nested);
+            break;
+        }
+
+        /* Longest leading run of exact integers that can serve as dims. */
+        int max_dims = n_args - 1;
+        if (max_dims > VM_TENSOR_MAX_DIMS) max_dims = VM_TENSOR_MAX_DIMS;
+        int n_leading = 0;
+        while (n_leading < max_dims && args[n_leading].type == VAL_INT
+               && args[n_leading].as.i > 0)
+            n_leading++;
+
+        int64_t shape[VM_TENSOR_MAX_DIMS];
+        int n_dims = 0, first_value = 0;
+        for (int k = n_leading; k >= 1 && n_dims == 0; k--) {
+            int64_t product = 1;
+            for (int i = 0; i < k; i++) product *= args[i].as.i;
+            if (product != (int64_t)(n_args - k)) continue;
+            for (int i = 0; i < k; i++) shape[i] = args[i].as.i;
+            n_dims = k;
+            first_value = k;
+        }
+        if (n_dims == 0) { /* flat vector of values */
+            shape[0] = n_args; n_dims = 1; first_value = 0;
+        }
+
+        VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, n_dims);
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        for (int64_t i = 0; i < t->total; i++)
+            t->data[i] = as_number_vm(vm, args[first_value + i]);
+        VM_PUSH_TENSOR(vm, t);
+        break;
+    }
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
         int64_t shape[8]; int n_dims = vm_extract_shape(vm, shape_val, shape, 8);
@@ -7110,18 +7315,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             vm_push(vm, FLOAT_VAL(t->data[flat]));
-        } else if (idx_val.type == VAL_PAIR) {
-            /* Multi-dim: walk list to get indices */
-            int64_t indices[8]; int nd = 0;
-            Value cur = idx_val;
-            while (cur.type == VAL_PAIR && nd < 8) {
-                indices[nd++] = (int64_t)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
+            /* Multi-dim index, given as a list or a vector.  Same bounds
+             * contract as the flat path above: vm_tensor_ref() answers 0.0 for
+             * a bad rank or an out-of-range index, which fabricates a value. */
+            int64_t indices[8];
+            int nd = vm_extract_shape(vm, idx_val, indices, 8);
+            if (!vm_tensor_indices_in_range(t, indices, nd)) {
+                vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
+                break;
             }
-            double val = vm_tensor_ref(t, indices, nd);
-            vm_push(vm, FLOAT_VAL(val));
+            vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
         } else {
-            vm_push(vm, FLOAT_VAL(0));
+            /* Anything else is not an index — fabricating 0.0 hid the mistake. */
+            vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector");
         }
         break;
     }
@@ -7137,6 +7344,24 @@ static void vm_dispatch_native(VM* vm, int fid) {
         if (!t) { vm_push(vm, NIL_VAL); break; }
         int64_t indices[8]; int n = vm_extract_shape(vm, idx_val, indices, 8);
         if (n == 0) { indices[0] = (int64_t)as_number(idx_val); n = 1; }
+        /* Bounds contract (#356): an out-of-range write is a catchable error on
+         * every substrate.  vm_tensor_set() returns silently instead, so an
+         * out-of-range tensor-set! was a NO-OP the program could not detect. */
+        if (n == 1 && t->n_dims != 1) {
+            /* Single index against a rank>1 tensor is flat addressing, matching
+             * tensor-ref's flat path. */
+            if (indices[0] < 0 || indices[0] >= t->total) {
+                vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
+                break;
+            }
+            t->data[indices[0]] = as_number(val);
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        if (!vm_tensor_indices_in_range(t, indices, n)) {
+            vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
+            break;
+        }
         vm_tensor_set(t, indices, n, as_number(val));
         vm_push(vm, NIL_VAL);
         break;
@@ -12045,8 +12270,78 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else if (pfx == 'd') { radix215 = 10; p215 += 2; }
             else { vm_push(vm, BOOL_VAL(0)); break; }
         }
+        /* R7RS 7.1.1 <infnan>: exactly +inf.0 / -inf.0 / +nan.0 / -nan.0, in
+         * every radix.  Must be matched explicitly — strtod() below also
+         * accepts "inf", "infinity" and "nan", none of which are Scheme
+         * numeric literals, and it stops before the mandatory ".0" so the real
+         * spellings were REJECTED while the bogus ones were accepted.  Kept
+         * byte-identical with eshkol_s2n_infnan() in lib/core/bignum.cpp so a
+         * printed infinity reads back the same on both substrates. */
+        {
+            double infnan215 = 0.0; int matched215 = 0;
+            if (p215[0] == '+' || p215[0] == '-') {
+                double mag215 = 0.0; int have215 = 0;
+                if      (strncmp(p215 + 1, "inf.0", 5) == 0) { mag215 = HUGE_VAL; have215 = 1; }
+                else if (strncmp(p215 + 1, "nan.0", 5) == 0) { mag215 = (double)NAN; have215 = 1; }
+                if (have215) {
+                    const char* rest215 = p215 + 6;
+                    while (*rest215 == ' ' || *rest215 == '\t') rest215++;
+                    if (*rest215 == '\0') {
+                        infnan215 = (p215[0] == '-') ? -mag215 : mag215;
+                        matched215 = 1;
+                    }
+                }
+            }
+            if (matched215) { vm_push(vm, FLOAT_VAL(infnan215)); break; }
+        }
         char* end215 = NULL;
         if (radix215 == 10) {
+            /* A decimal number must begin with a digit or '.' after an
+             * optional sign (mirrors eshkol_s2n_decimal()'s guard).  Without
+             * it strtod() accepted the C-only spellings "inf" / "infinity" /
+             * "nan", which native correctly rejects. */
+            {
+                const char* d215 = p215;
+                while (*d215 == ' ' || *d215 == '\t') d215++;
+                if (*d215 == '+' || *d215 == '-') d215++;
+                if (!(*d215 >= '0' && *d215 <= '9') && *d215 != '.') {
+                    vm_push(vm, BOOL_VAL(0)); break;
+                }
+            }
+            /* Exact rational "num/denom" (R7RS 7.1.1 <ratio>), as native's
+             * eshkol_s2n_decimal() reads it.  The VM had no rational branch, so
+             * (number->string 1/2) printed "1/2" and string->number then
+             * answered #f — the same failure to read back a printed value as
+             * the <infnan> case above. */
+            {
+                const char* slash215 = strchr(p215, '/');
+                if (slash215 && !strpbrk(p215, ".eE")) {
+                    char* nend215 = NULL;
+                    errno = 0;
+                    long long num215 = strtoll(p215, &nend215, 10);
+                    if (nend215 == slash215 && errno != ERANGE) {
+                        char* dend215 = NULL;
+                        errno = 0;
+                        long long den215 = strtoll(slash215 + 1, &dend215, 10);
+                        if (*dend215 == '\0' && dend215 != slash215 + 1
+                            && errno != ERANGE && den215 != 0) {
+                            VmRational* rat215 = vm_rational_make(
+                                vm_active_arena(&vm->heap.regions),
+                                (int64_t)num215, (int64_t)den215);
+                            if (rat215) {
+                                if (rat215->denom == 1) {
+                                    vm_push(vm, INT_VAL(rat215->num));
+                                } else {
+                                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_RATIONAL,
+                                                        VAL_RATIONAL, rat215);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (slash215) { vm_push(vm, BOOL_VAL(0)); break; }
+            }
             /* Try integer first; fall back to float */
             long long iv = strtoll(p215, &end215, 10);
             if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }

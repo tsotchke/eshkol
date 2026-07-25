@@ -22,6 +22,10 @@
 
 /* ── Max dimensions ── */
 #define VM_TENSOR_MAX_DIMS 8
+/* Upper bound on the argument count the variadic (tensor ...) constructor
+ * accepts in one call — the dims and every element are spelled inline, so this
+ * bounds the compile-time argument list, not the tensor's element count. */
+#define VM_TENSOR_CTOR_MAX_ARGS 4096
 
 /* ── Tensor dtypes ── */
 #define VM_TENSOR_DTYPE_F64  0
@@ -268,6 +272,23 @@ static VmTensor* vm_tensor_from_data(VmRegionStack* rs, const double* data,
 
 /** @brief Native call 413: `(tensor-ref t indices...)` — read an element
  *         by multi-dimensional indices (0.0 if out of range). */
+/**
+ * @brief Is @p indices a valid multi-dimensional index into @p t?
+ *
+ * True only when the rank matches and every component is within its dimension.
+ * vm_tensor_ref() / vm_tensor_set() answer 0.0 / do nothing when it is not,
+ * which fabricates a value and hides a lost write; the accessors' native-call
+ * sites use this to raise the uniform out-of-range error instead (the bounds
+ * contract in tests/vm_parity/corpus/34_bounds_contract.esk).
+ */
+static int vm_tensor_indices_in_range(const VmTensor* t, const int64_t* indices,
+                                      int n_indices) {
+    if (!t || !t->data || !indices || n_indices != t->n_dims) return 0;
+    for (int i = 0; i < n_indices; i++)
+        if (indices[i] < 0 || indices[i] >= t->shape[i]) return 0;
+    return 1;
+}
+
 static double vm_tensor_ref(const VmTensor* t, const int64_t* indices, int n_indices) {
     if (!t || !t->data || n_indices != t->n_dims) return 0.0;
     int64_t off = vm_tensor_flat_offset(t, indices, n_indices);

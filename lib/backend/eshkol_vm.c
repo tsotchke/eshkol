@@ -407,7 +407,14 @@ static const BuiltinDef BUILTINS[] = {
     /* ═══════════════════════════════════════════════════════════════
      * Tensors — IDs 410-470
      * ═══════════════════════════════════════════════════════════════ */
-    {"make-tensor", 410, 2}, {"tensor", 410, 2},
+    {"make-tensor", 410, 2},
+    /* `tensor` is NOT an alias of make-tensor: it is the variadic constructor
+     * compiled by vm_compiler.c's (tensor ...) special form via native 473.
+     * This first-class entry is the closure form, reached only when `tensor` is
+     * passed as a value; native 474 treats its single argument as one
+     * constructor argument (typically a nested collection). Binding the name to
+     * make-tensor's 2-arg native made every (tensor ...) call silently wrong. */
+    {"tensor", 474, 1},
     {"tensor-get", 411, 2}, {"tensor-ref", 411, 2},
     {"tensor-set!", 412, 3},
     {"tensor-shape", 413, 1}, {"tensor-data", 414, 1},
