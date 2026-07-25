@@ -2451,7 +2451,11 @@ add_custom_command(
   OUTPUT ${STDLIB_OUTPUT}
   BYPRODUCTS ${STDLIB_BITCODE}
   COMMAND ${CMAKE_COMMAND} -E env ${STDLIB_CODEGEN_ENV}
-          $<TARGET_FILE:eshkol-run> --shared-lib -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
+          # -c pins the library-mode OBJECT flavour: stdlib.o/stdlib.bc are
+          # linked into every user binary and loaded by the REPL JIT, so this
+          # edge wants a relocatable object, not the loadable shared library
+          # `--shared-lib` produces on its own.
+          $<TARGET_FILE:eshkol-run> --shared-lib -c -o "${CMAKE_CURRENT_BINARY_DIR}/stdlib" "${STDLIB_SOURCE}"
   DEPENDS eshkol-run ${STDLIB_SOURCE} ${STDLIB_TRANSITIVE_SOURCES}
   WORKING_DIRECTORY ${STDLIB_WORKING_DIRECTORY}
   COMMENT "Compiling standard library to ${STDLIB_OUTPUT}"
