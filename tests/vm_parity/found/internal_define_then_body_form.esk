@@ -4,7 +4,7 @@
 ; non-final expression, popping the variable's own slot.
 ; native -r : 7
 ; vm        : ()
-; Independent of the named-let capture class (corpus/34_set_from_named_let.esk)
+; Independent of the named-let capture class (corpus/36_set_from_named_let.esk)
 ; — it reproduces with a plain `let` as the following form, and the `do` variant
 ; ((define acc 7) (do ((i 0 (+ i 1))) ((= i 2))) acc) spins forever.
 (define (f) (define acc 7) (let ((x 1)) x) acc)

@@ -300,7 +300,7 @@ void vm_run(VM* vm) {
         /* Only EXACT-by-exact-zero is an error.  With any inexact operand this
          * is IEEE-754 division and must yield +nan.0 / ±inf.0 like native —
          * erroring here aborted the run and dropped every later top-level
-         * form (tests/vm_parity/corpus/35_float_div_zero.esk). */
+         * form (tests/vm_parity/corpus/37_float_div_zero.esk). */
         if (bd == 0 && vm_is_exact_number(a) && vm_is_exact_number(b)) {
             fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; goto vm_exit; }
         VM_AD_BINARY(vm, a_sp, b_sp, ad_div, 0); vm_push(vm, number_val(as_number(a) / bd)); } DISPATCH(); }

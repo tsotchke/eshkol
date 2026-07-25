@@ -850,7 +850,7 @@ static int scan_for_capture(Node* node, const char* name, int in_lambda) {
          * variable that is `set!` only from inside a named let was reported
          * as un-captured — leaving it unboxed, so the loop closure mutated a
          * private by-value copy that was discarded when the loop returned
-         * (tests/vm_parity/corpus/34_set_from_named_let.esk). */
+         * (tests/vm_parity/corpus/36_set_from_named_let.esk). */
         if (head->type == N_SYMBOL && strcmp(head->symbol, "let") == 0
             && node->n_children >= 4 && node->children[1]->type == N_SYMBOL
             && node->children[2]->type == N_LIST) {
