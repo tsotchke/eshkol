@@ -2807,7 +2807,8 @@ Eshkol supports exact rational numbers as pairs of arbitrary-precision integers.
 ```scheme
 (display (rational? 1/3))       ; => #t
 (display (rational? 42))        ; => #t  (integers are rational)
-(display (rational? 3.14))      ; => #f
+(display (rational? 3.14))      ; => #t  (R7RS: every finite real is rational)
+(display (exact-rational? 3.14)); => #f  (exact-only predicate)
 (display (exact? 1/3))          ; => #t
 (display (exact? 42))           ; => #t
 (display (inexact? 3.14))       ; => #t
