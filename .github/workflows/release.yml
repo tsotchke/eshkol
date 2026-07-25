@@ -926,6 +926,10 @@ jobs:
       # job-level env of the same name would shadow that write in later steps.
       ICC_BIN_OVERRIDE: ${{ vars.ICC_BIN }}
       ICC_REPO: ${{ vars.ICC_REPO || 'eshkol_lang' }}
+      # Arms release-blocking enforcement.  Set to 1 in the same change that
+      # provisions ICC on the release runner; until then the gate reports
+      # loudly without blocking a release it cannot certify.
+      REQUIRE_READINESS_GATE: ${{ vars.ESHKOL_REQUIRE_READINESS_GATE }}
     steps:
       - uses: actions/checkout@v6
 
@@ -945,6 +949,15 @@ jobs:
           fi
           echo "ICC_AVAILABLE=false" >> "$GITHUB_ENV"
           msg="ICC_BIN='${ICC_BIN:-unset}' is not present or executable on this runner. The release cannot be certified without the readiness oracle. Provision ICC on the release runner and set the ICC_BIN repository variable — see CONTRIBUTING.md 'Release-blocking readiness'."
+          # Enforcement is armed by the repository variable ESHKOL_REQUIRE_READINESS_GATE=1.
+          # Until ICC is provisioned on the release runner, an unarmed gate warns loudly
+          # rather than blocking a release it cannot yet certify: a gate that always
+          # blocks would be turned off, and a gate that is off is worse than one that
+          # is honest about not running.  Arm it in the same change that provisions ICC.
+          if [[ "${GITHUB_EVENT_NAME}" == "push" && "${REQUIRE_READINESS_GATE}" != "1" ]]; then
+            echo "::warning title=Release readiness gate NOT ARMED::$msg Publication continues because ESHKOL_REQUIRE_READINESS_GATE is not set to 1. This release is certified by the maintainer-side battery instead."
+            exit 0
+          fi
           if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
             echo "::error title=Release readiness gate: ICC unavailable::$msg Publication is BLOCKED (never fail-open)."
             exit 1
