@@ -2127,8 +2127,15 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
   # every AOT/JIT user link resolves against that archive alone.
   lib/core/event_loop.c
-  ${ESHKOL_EVENT_LOOP_SRC}
 )
+
+# The selected event-loop backend is appended rather than listed above because
+# tests/toolchain/runtime_core_boundary_test.cpp parses that set() block
+# TEXTUALLY and requires every line to name a file that exists — a
+# ${VARIABLE} reference inside the block reads as a missing source. Appending
+# here (before the REMOVE_ITEM below) still keeps it out of
+# ESHKOL_NON_RUNTIME_SRC, so it is compiled exactly once.
+list(APPEND ESHKOL_RUNTIME_HOSTED_SRC ${ESHKOL_EVENT_LOOP_SRC})
 
 list(REMOVE_ITEM LIB_SRC
   ${ESHKOL_RUNTIME_CORE_SRC}
