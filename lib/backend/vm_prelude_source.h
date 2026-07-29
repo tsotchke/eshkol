@@ -102,6 +102,15 @@ static const char* const ESHKOL_VM_PRELUDE_SOURCE =
     "(define (min a . rest) (fold-left _min2 a rest))\n"
     "(define (string-append . args) (fold-left _string-append-2 \"\" args))\n"
     "(define (format fmt . args) (_format-list fmt args))\n"
+    /* User-reachable region handles (#341). The variadic surface is folded onto
+     * the fixed-arity natives 2210/2211; #f stands for an omitted argument, and
+     * the natives apply the same "lone numeric argument is the size hint" rule
+     * the native backend does, so every arity agrees across substrates. */
+    "(define (region-open . a)\n"
+    "  (cond ((null? a) (_region-open #f #f))\n"
+    "        ((null? (cdr a)) (_region-open (car a) #f))\n"
+    "        (else (_region-open (car a) (car (cdr a))))))\n"
+    "(define (region-close h . keeps) (_region-close-list h keeps))\n"
     "(define (emit! emitter event . args) (_emit-event emitter event args))\n"
     "(define (read . args)\n"
     "  (cond ((null? args) (_read0))\n"

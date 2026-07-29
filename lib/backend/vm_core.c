@@ -365,6 +365,10 @@ typedef struct VM {
         int n_winds;
         int n_parameter_bindings;
         Value promise_mark;
+        /* #341: open-handle sequence mark. A raise retires every region handle
+         * opened after the handler was installed, so handle liveness after a
+         * caught exception reads identically on the VM and on native. */
+        uint64_t region_handle_mark;
     } handler_stack[16];
     int n_handlers;
     Value current_exception;
