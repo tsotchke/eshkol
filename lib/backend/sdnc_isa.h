@@ -22,6 +22,17 @@
  * than failing to link. Sharing one header is what makes that class of drift
  * impossible rather than merely unlikely.
  *
+ * Deliberately a PRIVATE header under lib/backend/ rather than a public one
+ * under inc/. `OpCode` and `Instr` are names several unrelated translation
+ * units in this tree also use for their own, different instruction sets
+ * (eshkol_compiler.c, vm_core.c, stackvm_codegen.c, weight_compiler.c,
+ * eshkol_benchmark.c). No single translation unit sees two of them, so there is
+ * no ODR violation today -- but publishing these particular spellings into the
+ * public include path would invite one, and would also put an internal ISA into
+ * the generated API documentation. Keeping the header beside its only two
+ * consumers, next to sibling private headers like eskb_format.h and
+ * vm_numeric.h, gives single-sourcing without widening the surface.
+ *
  * IMPORTANT -- this is NOT the production bytecode VM's instruction set. The
  * production VM (`lib/backend/vm_core.c`) is a separate 66-opcode ISA whose
  * values 64/65 are `OP_LANGUAGE_COVERAGE`/`OP_LANGUAGE_COVERAGE_CALL`, and it
@@ -33,8 +44,8 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
-#ifndef ESHKOL_BACKEND_SDNC_ISA_H
-#define ESHKOL_BACKEND_SDNC_ISA_H
+#ifndef ESHKOL_LIB_BACKEND_SDNC_ISA_H
+#define ESHKOL_LIB_BACKEND_SDNC_ISA_H
 
 /*******************************************************************************
  * Architecture constants
@@ -234,4 +245,4 @@ enum {
 #define TYPE_NIL     6.0f
 #define TYPE_CONT    7.0f
 
-#endif /* ESHKOL_BACKEND_SDNC_ISA_H */
+#endif /* ESHKOL_LIB_BACKEND_SDNC_ISA_H */
