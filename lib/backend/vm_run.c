@@ -835,6 +835,7 @@ void vm_run(VM* vm) {
         vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
         vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
         vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
+        vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
         vm->n_handlers++;
         DISPATCH();
     }
@@ -1525,6 +1526,7 @@ vm_exit:
             vm->handler_stack[vm->n_handlers].n_winds = vm->n_winds;
             vm->handler_stack[vm->n_handlers].n_parameter_bindings = vm->n_parameter_bindings;
             vm->handler_stack[vm->n_handlers].promise_mark = vm->promise_eval_head;
+            vm->handler_stack[vm->n_handlers].region_handle_mark = eshkol_region_handle_seq_mark();  /* #341 */
             vm->n_handlers++;
             break;
         }

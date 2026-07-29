@@ -97,7 +97,19 @@ _DATA_ATOMS = [
     "#\\a", "#\\Z", "#\\space", "#\\newline",
     "\"plain\"", "\"with space\"", "\"tab\\ttab\"", "\"nl\\nnl\"",
     "\"quote\\\"inside\"", "\"back\\\\slash\"", "\"\"",
-    "sym", "another-symbol", "with->arrow", "|weird sym|",
+    # Symbols must be QUOTED. These atoms are emitted into evaluated
+    # constructor calls -- `(vector 0 sym)` -- so a bare symbol is a variable
+    # reference, not symbol data. Unquoted, the generated program referenced
+    # undefined variables; the compiler printed a diagnostic for each and
+    # emitted a binary anyway, so this oracle passed while pinning nothing.
+    #
+    # `|weird sym|` is deliberately absent: the reader does not yet implement
+    # R7RS 7.1.1 vertical-line symbol syntax, so `'|weird sym|` lexes as the
+    # two tokens `'|weird` and `sym|` and the latter becomes an undefined
+    # variable. That gap is pinned by
+    # tests/vm_parity/found/r7rs_pipe_delimited_symbol.esk -- restore this atom
+    # once the reader supports it.
+    "'sym", "'another-symbol", "'with->arrow",
     "#t", "#f",
 ]
 

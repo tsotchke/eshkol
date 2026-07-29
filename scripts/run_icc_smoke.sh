@@ -284,7 +284,8 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
     'cd "$REPO_ROOT";
      ## Inline list — avoid heredoc + double-eval quoting issues. Each
      ## test produces "PASS:" / "FAIL:" lines; we only fail the probe if
-     ## any test prints a literal "^FAIL:" or its summary shows nonzero
+     ## any test prints a FAIL marker anywhere on a line (indented
+     ## `  <case>: FAIL` included) or its summary shows nonzero
      ## "Failed: N" with N >= 1.
      for t in tests/v1_2_edge_cases/append_variadic_test.esk \
               tests/v1_2_edge_cases/main_substring_name_test.esk \
@@ -293,10 +294,22 @@ probe v1_2_edge_case_tests_pass "v1.2 edge-case suite passes" \
               tests/v1_2_edge_cases/string_escapes_test.esk \
               tests/v1_2_edge_cases/procedure_arity_test.esk \
               tests/v1_2_edge_cases/json_schema_test.esk; do
-       bin="/tmp/icc_$(basename "$t" .esk).bin";
+       bin=$(mktemp "${TMPDIR:-/tmp}/icc_$(basename "$t" .esk).XXXXXX"); rm -f "$bin";
        "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
        tout=$("$bin" 2>&1);
-       if printf "%s" "$tout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]"; then
+       ## A bare FAIL token must not match when it only reports a count of
+       ## ZERO: a passing suite printing "Total: 19, PASS: 19, FAIL: 0" is not
+       ## a failure. Split across -e patterns rather than nesting `$` inside an
+       ## alternation group: ugrep (which is `grep` on some dev machines)
+       ## mis-parses `(a|b|$)` and then silently matches NOTHING, which would
+       ## turn this probe into one that can never fail. `$` is only ever used
+       ## at the end of a whole pattern here, which every engine handles.
+       if printf "%s" "$tout" | grep -qE \
+            -e "(^|[^A-Za-z0-9_])(FAILED|FAILURE|FAILS)" \
+            -e "(^|[^A-Za-z0-9_])FAIL[^A-Za-z0-9_:]" \
+            -e "(^|[^A-Za-z0-9_])FAIL$" \
+            -e "FAIL:[[:space:]]*[1-9]" \
+            -e "Failed:[[:space:]]*[1-9]"; then
          exit 1;
        fi;
      done;
@@ -463,11 +476,11 @@ probe string_edge_ops_r7rs 'string-map returns a string; string->number honors r
     'cd "$REPO_ROOT";
      t="tests/string/string_edge_test.esk";
      rout=$("$ESHKOL_RUN" -r "$t" 2>&1) || exit 1;
-     printf "%s" "$rout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
-     bin="/tmp/icc_string_edge.bin"; rm -f "$bin";
+     printf "%s" "$rout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
+     bin=$(mktemp "${TMPDIR:-/tmp}/icc_string_edge.XXXXXX"); rm -f "$bin";
      "$ESHKOL_RUN" "$t" -o "$bin" >/dev/null 2>&1 || exit 1;
      aout=$("$bin" 2>&1) || exit 1;
-     printf "%s" "$aout" | grep -qE "^FAIL:|Failed:[[:space:]]+[1-9]" && exit 1;
+     printf "%s" "$aout" | grep -qE "(^|[^A-Za-z0-9_])FAIL|Failed:[[:space:]]+[1-9]" && exit 1;
      rm -f "$bin";
      exit 0'
 
@@ -488,6 +501,20 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## region that promotes escapees out and resets each tick. The gate also
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
+
+probe region_handle_scoped_reclamation '#341: user-reachable region handles keep an AD training loop flat, numerics identical across plain/with-region/handle, full misuse matrix clean under ESHKOL_ARENA_POISON=1' \
+    'cd "$REPO_ROOT";
+     ## #341: the automatic per-iteration nursery (ESH-0214e) disqualifies any
+     ## loop body containing a gradient op, a set! or a tensor-set! — an AD
+     ## training step trips all three — so a 161-param MLP grew ~123MB/step
+     ## unbounded. region-open / region-close give the same region machinery a
+     ## NON-LEXICAL surface. This gate requires flat peak RSS across step counts,
+     ## bit-identical trained parameters against both the unscoped baseline and
+     ## the with-region twin, and the whole safety matrix (double close,
+     ## use-after-close, out-of-order cascade, fabricated tokens, raise and
+     ## call/cc unwind crossing an open handle, slot reuse, never-closed) clean
+     ## on AOT and JIT under the arena poisoner.
+     bash tests/memory/region_handle_training_rss_test.sh'
 
 probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
     'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
@@ -556,6 +583,8 @@ probe printer_roundtrip_oracle 'flonum printer (#310): number->string / display 
        printf "%s" "$out" | grep -q "ALL PRINTER ROUND-TRIP CHECKS PASSED" || exit 1;
        printf "%s" "$out" | grep -q "error:" && exit 1;
      fi;
+     exit 0'
+
 probe matmul_tensor_read_scope_oracle 'matmul-tensor scope (#309): a matmul result read via tensor-ref/tensor-data from INSIDE a defined function (captured global, argument, in-function matmul, nested define, closure, with-region escape, large GPU/BLAS-dispatched matmul) returns the SAME data as a top-level read — never zeros; verified on JIT and AOT' \
     'cd "$REPO_ROOT"; t=tests/tensor/matmul_read_in_define_test.esk;
      out=$("$ESHKOL_RUN" -r "$t" 2>/dev/null) || exit 1;
