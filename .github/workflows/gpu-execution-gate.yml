@@ -84,3 +84,115 @@ jobs:
             build-gpu-gate-cpuref.configure.log
             build-gpu-gate-cpuref.build.log
           if-no-files-found: ignore
+
+  # ───────────────────────────────────────────────────────────────────
+  # Visibility, not coverage.
+  #
+  # The job above has produced ZERO evidence since it was written: no
+  # self-hosted `[self-hosted, gpu]` runner is registered, so every
+  # scheduled run queues until `timeout-minutes` cancels it. A cancelled
+  # job is easy to read as noise, which is exactly how a permanently
+  # unrun correctness gate stays invisible.
+  #
+  # This job runs on a HOSTED runner on purpose — its whole purpose is to
+  # report whether the real gate ran, so it must not depend on the
+  # hardware whose absence it reports. It never fabricates GPU coverage
+  # and it never fails the run: it emits a WARNING annotation, a job
+  # summary, and an uploaded status marker naming exactly why there is no
+  # GPU evidence and how long there has been none.
+  # ───────────────────────────────────────────────────────────────────
+  gpu-gate-visibility:
+    name: GPU gate staleness report (hosted — reports whether the real gate ran)
+    needs: gpu-execution
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Report whether the GPU execution gate ran
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          GATE_RESULT: ${{ needs.gpu-execution.result }}
+        run: |
+          set -u
+          marker=gpu-gate-status.txt
+
+          # Best-effort: listing self-hosted runners needs administration:read,
+          # which GITHUB_TOKEN does not have by default. An unavailable count is
+          # reported as unknown rather than guessed.
+          runners=$(gh api "repos/$REPO/actions/runners" \
+                      --jq '[.runners[] | select([.labels[].name] | index("gpu"))] | length' \
+                    2>/dev/null || echo unknown)
+
+          last_success=$(gh api \
+              "repos/$REPO/actions/workflows/gpu-execution-gate.yml/runs?status=success&per_page=1" \
+              --jq '.workflow_runs[0].updated_at // empty' 2>/dev/null || echo "")
+          if [ -n "$last_success" ]; then
+            days=$(( ( $(date -u +%s) - $(date -u -d "$last_success" +%s) ) / 86400 ))
+            history="last successful run: $last_success (${days} days ago)"
+          else
+            history="last successful run: NEVER — this gate has produced no GPU evidence at any point in its history"
+          fi
+
+          {
+            echo "gate_job_result: $GATE_RESULT"
+            echo "gpu_labelled_self_hosted_runners: $runners"
+            echo "$history"
+            echo "commit: $GITHUB_SHA"
+            echo "reported_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$marker"
+
+          {
+            echo "## GPU execution gate — did it actually run?"
+            echo
+            echo '| Fact | Value |'
+            echo '|---|---|'
+            echo "| \`gpu-execution\` job result | \`$GATE_RESULT\` |"
+            echo "| self-hosted runners carrying the \`gpu\` label | $runners |"
+            echo "| history | $history |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$GATE_RESULT" = "success" ]; then
+            echo "GPU execution gate ran and passed on a real GPU device."
+            echo "verdict: GPU evidence produced by this run" >> "$marker"
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo "GPU evidence was produced by this run." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          reason="job result '$GATE_RESULT'"
+          if [ "$runners" = "0" ]; then
+            reason="no self-hosted runner carrying the [self-hosted, gpu] labels is registered"
+          elif [ "$runners" = "unknown" ]; then
+            reason="$reason; runner registration could not be read (token lacks administration:read)"
+          fi
+
+          echo "::warning title=GPU gate did not run::GPU execution gate produced NO evidence: $reason. $history. Every GPU/Metal correctness claim (including the exact-Ozaki/Ozaki-II GEMM tiers) is therefore unverified by automation — it is a manual attestation until a GPU runner is registered."
+          echo "verdict: NO GPU evidence — $reason" >> "$marker"
+          {
+            echo
+            echo "**GPU gate did not run: $reason.**"
+            echo
+            echo "No GPU/Metal correctness claim is verified by automation on this commit."
+            echo "Until a \`[self-hosted, gpu]\` runner is registered, GPU correctness is a"
+            echo "MANUAL attestation. On a Metal-capable host, the equivalent local evidence is:"
+            echo
+            echo '```'
+            echo 'tests/gpu/gpu_correctness_gate.sh          # GPU-vs-CPU numeric diff'
+            echo 'scripts/run_gpu_tests.sh                   # GPU suite + exact-Ozaki certification'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Visibility, never a false red: this job reports, it does not gate.
+          exit 0
+
+      - name: Upload GPU gate status marker
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gpu-gate-status
+          path: gpu-gate-status.txt
+          if-no-files-found: warn

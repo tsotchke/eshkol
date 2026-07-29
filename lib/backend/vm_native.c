@@ -5,6 +5,164 @@ extern int64_t eshkol_linear_solve(
     int64_t b_ndim, const int64_t* b_dims,
     const double* A, const double* b, double* x);
 
+/* User-reachable region handles (#341, lib/core/runtime_regions.cpp). Declared
+ * rather than included: this translation unit is C and does not pull in the
+ * hosted arena header, but the handle table, its generation-tagged validation
+ * and its message text must be the SAME code the native backend uses so the two
+ * substrates cannot drift. Keep in sync with lib/core/arena_memory.h.
+ *
+ * The one exception is the WASM VM, which links no part of the hosted runtime
+ * and therefore has to carry the bookkeeping-only half of the table itself —
+ * see the block below for why that is sound and how CI pins it. */
+#define ESHKOL_RH_OK        0
+#define ESHKOL_RH_ERR_STALE 1
+
+#if defined(ESHKOL_VM_WASM)
+/* WASM VM substrate: the handle table has to be HERE, not linked.
+ *
+ * The WASM VM is a single translation unit — Emscripten compiles
+ * lib/backend/vm_wasm_repl.c (which #includes eshkol_vm.c) with no part of the
+ * hosted runtime linked in, so lib/core/runtime_regions.cpp simply does not
+ * exist in that build.  Left undefined these six entry points become
+ * Emscripten's aborting `missing function:` stubs, and because a `guard` records
+ * a handle mark on every handler push (vm_run.c), that abort fires on ANY
+ * program using exceptions — not merely on programs using region handles.
+ *
+ * WHY A SECOND IMPLEMENTATION IS SOUND HERE. The VM only ever asks for the
+ * BOOKKEEPING-ONLY contract (`reclaim` = 0, close with no keeps to promote):
+ * its heap has no escape evacuator, so a close reclaims nothing on either
+ * substrate — see tests/vm_parity/PARITY.tsv.  That contract is pure
+ * slot+generation bookkeeping with no arena, no region stack and no evacuator
+ * behind it, which is exactly the part that is expressible in this TU.  What
+ * must not drift is the OBSERVABLE protocol — token layout, the open/live/
+ * close/not-live transitions and the out-of-order close cascade — and that is
+ * pinned by CI rather than by hope:
+ * tests/vm_parity/corpus/region_handle_contract.esk runs on native, on the
+ * native VM (scripts/run_vm_parity.sh) and on THIS build
+ * (scripts/run_wasm_differential.sh), byte-compared against native.  Any
+ * divergence from the reclaim=0 path of runtime_regions.cpp fails that lane.
+ *
+ * The status TEXT is the one part no cross-substrate test currently observes:
+ * a misuse is raised, and the corpus file compares the handler's tag rather
+ * than the message (native echoes it on stderr, the VM does not).  So the
+ * strings below are copied verbatim and must be updated together with
+ * eshkol_region_handle_status_message() in runtime_regions.cpp — a diff of the
+ * two switch bodies is the check, since no lane will catch it for you.
+ *
+ * Plain statics rather than thread_local: this build is single-threaded
+ * (-s ENVIRONMENT=node, no pthreads), so per-thread tables would be one table.
+ */
+#define ESHKOL_RH_ERR_TOO_MANY 3
+/* == ESHKOL_MAX_REGION_HANDLES (lib/core/arena_memory.h), so a loop that opens
+ * without closing hits the same bounded ESHKOL_RH_ERR_TOO_MANY on both. */
+#define VM_RH_MAX_HANDLES 64
+/* Token layout, verbatim from runtime_regions.cpp: low bits hold slot+1 (so 0
+ * is never valid and a zeroed integer cannot masquerade as a handle), the rest
+ * hold the slot generation. */
+#define VM_RH_SLOT_BITS 8
+#define VM_RH_SLOT_MASK ((int64_t)((1 << VM_RH_SLOT_BITS) - 1))
+
+typedef struct {
+    uint64_t generation;  /* bumped on every close; never 0 once used */
+    uint64_t open_seq;    /* monotonic open order — the cascade/unwind ordering */
+    uint8_t  in_use;
+} VmRegionHandleSlot;
+
+static VmRegionHandleSlot vm_rh_slots[VM_RH_MAX_HANDLES];
+static uint64_t vm_rh_seq = 0;
+
+/** @brief Resolve a token to a slot index, or -1 if it names no open handle. */
+static int vm_rh_decode(int64_t token) {
+    if (token <= 0) return -1;
+    const int slot = (int)(token & VM_RH_SLOT_MASK) - 1;
+    if (slot < 0 || slot >= VM_RH_MAX_HANDLES) return -1;
+    if (!vm_rh_slots[slot].in_use) return -1;
+    if ((uint64_t)(token >> VM_RH_SLOT_BITS) != vm_rh_slots[slot].generation) return -1;
+    return slot;
+}
+
+/** @brief Retire a slot, invalidating every token that named it (bumping the
+ *         generation is what makes double-close and use-after-close safe). */
+static void vm_rh_retire(int slot) {
+    vm_rh_slots[slot].in_use = 0;
+    vm_rh_slots[slot].open_seq = 0;
+    vm_rh_slots[slot].generation++;
+    if (vm_rh_slots[slot].generation == 0) vm_rh_slots[slot].generation = 1;
+}
+
+int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint,
+                                  int reclaim, int* status) {
+    /* No arena to name or size, and no region to reclaim: the VM contract. */
+    (void)name; (void)size_hint; (void)reclaim;
+    if (status) *status = ESHKOL_RH_OK;
+    int slot = -1;
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (!vm_rh_slots[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (status) *status = ESHKOL_RH_ERR_TOO_MANY;
+        return 0;
+    }
+    if (vm_rh_slots[slot].generation == 0) vm_rh_slots[slot].generation = 1;
+    vm_rh_slots[slot].open_seq = ++vm_rh_seq;
+    vm_rh_slots[slot].in_use = 1;
+    return (int64_t)((vm_rh_slots[slot].generation << VM_RH_SLOT_BITS) |
+                     (uint64_t)(slot + 1));
+}
+
+int eshkol_region_handle_close(int64_t token, void* vals, uint64_t n) {
+    /* Nothing is reclaimed, so every kept value is already where it will stay. */
+    (void)vals; (void)n;
+    const int slot = vm_rh_decode(token);
+    /* Double-close, use-after-close and a fabricated integer: one clean status. */
+    if (slot < 0) return ESHKOL_RH_ERR_STALE;
+    /* An out-of-order close CASCADES: closing an outer handle retires every
+     * handle opened after it.  The reclaiming path reads that ordering off the
+     * region stack; with no region stack, the monotonic open sequence is it. */
+    const uint64_t seq = vm_rh_slots[slot].open_seq;
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (vm_rh_slots[i].in_use && vm_rh_slots[i].open_seq >= seq) vm_rh_retire(i);
+    }
+    return ESHKOL_RH_OK;
+}
+
+int eshkol_region_handle_live(int64_t token) {
+    return vm_rh_decode(token) >= 0 ? 1 : 0;
+}
+
+uint64_t eshkol_region_handle_seq_mark(void) {
+    return vm_rh_seq;
+}
+
+void eshkol_region_handle_seq_unwind_to(uint64_t mark) {
+    for (int i = 0; i < VM_RH_MAX_HANDLES; ++i) {
+        if (vm_rh_slots[i].in_use && vm_rh_slots[i].open_seq > mark) vm_rh_retire(i);
+    }
+}
+
+/* Verbatim from runtime_regions.cpp: this text is what a `guard` around a
+ * misused handle displays, so it is part of the compared output. */
+const char* eshkol_region_handle_status_message(int status) {
+    switch (status) {
+        case 0:  return "region handle ok";
+        case 1:  return "region-close: invalid or already-closed region handle";
+        case 2:  return "region-close: region handle no longer names a live region";
+        case 3:  return "region-open: too many open region handles — a region-close is missing";
+        case 4:  return "region-open: region stack overflow — a region-close is missing";
+        case 5:  return "region-open: failed to create region";
+        default: return "region handle: unknown error";
+    }
+}
+#else
+extern int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint,
+                                         int reclaim, int* status);
+extern int eshkol_region_handle_close(int64_t token, void* vals, uint64_t n);
+extern int eshkol_region_handle_live(int64_t token);
+extern const char* eshkol_region_handle_status_message(int status);
+extern uint64_t eshkol_region_handle_seq_mark(void);
+extern void eshkol_region_handle_seq_unwind_to(uint64_t mark);
+#endif  /* ESHKOL_VM_WASM */
+
 /* Heap pointer validation — prevent OOB heap access from untrusted values.
  * Used before any vm->heap.objects[val.as.ptr] dereference. */
 #define VM_VALIDATE_HEAP(vm, val) \
@@ -4313,24 +4471,191 @@ static int vm_vec_shape(VM* vm, Value v, int64_t* shape, int max_dims) {
  * (length != shape[depth]) or a non-numeric leaf is a clean failure (returns
  * -1), matching native's "nested vector shape mismatch" rejection. `*pos` is
  * the write cursor; `cap` guards the destination buffer. */
+/* Where a nested-vector coercion went wrong, so the diagnostic can NAME the
+ * offending dimension rather than only reporting "shape mismatch". */
+typedef struct {
+    int     level;    /* nesting level that disagreed (0 = outermost); -1 = none */
+    int64_t expected; /* length the inferred shape requires there (-1 = a scalar) */
+    int64_t got;      /* length actually found (-1 when that level is not a vector) */
+} VmVecMismatch;
+
 static int vm_vec_fill(VM* vm, Value v, const int64_t* shape, int depth, int rank,
-                       double* out, int64_t* pos, int64_t cap) {
+                       double* out, int64_t* pos, int64_t cap, VmVecMismatch* bad) {
     if (depth == rank) {
-        if (v.type != VAL_INT && v.type != VAL_FLOAT) return -1;
+        if (v.type != VAL_INT && v.type != VAL_FLOAT) {
+            /* A vector where the shape says a number belongs: this branch nests
+             * deeper than the leftmost spine the shape was measured from. */
+            if (bad && bad->level < 0) {
+                bad->level = depth; bad->expected = -1; bad->got = -1;
+                if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+                    VmVector* deeper = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+                    if (deeper) bad->got = (int64_t)deeper->len;
+                }
+            }
+            return -1;
+        }
         if (*pos >= cap) return -1;
         out[(*pos)++] = as_number(v);
         return 0;
     }
-    if (v.type != VAL_VECTOR || !is_valid_heap_ptr(vm, v.as.ptr)) return -1;
+    if (v.type != VAL_VECTOR || !is_valid_heap_ptr(vm, v.as.ptr)) {
+        if (bad && bad->level < 0) {
+            bad->level = depth; bad->expected = shape[depth]; bad->got = -1;
+        }
+        return -1;
+    }
     VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
-    if (!vec || (int64_t)vec->len != shape[depth]) return -1;   /* ragged */
+    if (!vec || (int64_t)vec->len != shape[depth]) {              /* ragged */
+        if (bad && bad->level < 0) {
+            bad->level = depth; bad->expected = shape[depth];
+            bad->got = vec ? (int64_t)vec->len : -1;
+        }
+        return -1;
+    }
     for (int i = 0; i < vec->len; i++) {
-        if (vm_vec_fill(vm, vec->items[i], shape, depth + 1, rank, out, pos, cap) != 0)
+        if (vm_vec_fill(vm, vec->items[i], shape, depth + 1, rank, out, pos, cap, bad) != 0)
             return -1;
     }
     return 0;
 }
 
+/* ── (tensor <nested collection>) support ───────────────────────────────────
+ *
+ * vm_vec_shape/vm_vec_fill above handle nested VECTOR literals only, because a
+ * nested numeric vector literal IS a tensor natively.  The `tensor`
+ * constructor also accepts nested LISTS and tensors, so these three helpers
+ * view all three uniformly as "collections" and reuse the same
+ * shape-then-validate-while-filling structure.
+ */
+
+/** @brief Element count of @p v viewed as a collection, or -1 if @p v is not
+ *         one (i.e. it is a scalar leaf). A tensor counts as its flat length,
+ *         so a tensor nested inside a list contributes its own elements. */
+static int vm_tensor_collection_len(VM* vm, Value v) {
+    if (v.type == VAL_PAIR) {
+        int len = 0;
+        Value cur = v;
+        while (cur.type == VAL_PAIR && is_valid_heap_ptr(vm, cur.as.ptr)) {
+            len++;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        return len;
+    }
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return vec ? (int)vec->len : -1;
+    }
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        return t ? (int)t->total : -1;
+    }
+    return -1;
+}
+
+/** @brief Element @p index of collection @p v (NIL when out of range). */
+static Value vm_tensor_collection_at(VM* vm, Value v, int index) {
+    if (index < 0) return NIL_VAL;
+    if (v.type == VAL_PAIR) {
+        Value cur = v;
+        while (index-- > 0) {
+            if (cur.type != VAL_PAIR || !is_valid_heap_ptr(vm, cur.as.ptr)) return NIL_VAL;
+            cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        }
+        if (cur.type != VAL_PAIR || !is_valid_heap_ptr(vm, cur.as.ptr)) return NIL_VAL;
+        return vm->heap.objects[cur.as.ptr]->cons.car;
+    }
+    if (v.type == VAL_VECTOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmVector* vec = (VmVector*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!vec || index >= vec->len) return NIL_VAL;
+        return vec->items[index];
+    }
+    if (v.type == VAL_TENSOR && is_valid_heap_ptr(vm, v.as.ptr)) {
+        VmTensor* t = (VmTensor*)vm->heap.objects[v.as.ptr]->opaque.ptr;
+        if (!t || index >= t->total) return NIL_VAL;
+        return FLOAT_VAL(t->data[index]);
+    }
+    return NIL_VAL;
+}
+
+/** @brief Row-major fill of @p data from nested collection @p v, validating
+ *         @p v against @p shape at every level. Returns 0 on success, -1 when
+ *         @p v is ragged (a level's length disagrees with the shape) or nests
+ *         deeper/shallower than the inferred rank. */
+static int vm_tensor_nested_fill(VM* vm, Value v, const int64_t* shape, int level,
+                                 int rank, double* data, int64_t* pos, int64_t cap) {
+    if (level == rank) {
+        if (vm_tensor_collection_len(vm, v) >= 0) return -1;  /* deeper than rank */
+        if (v.type != VAL_INT && v.type != VAL_FLOAT) return -1;
+        if (*pos >= cap) return -1;
+        data[(*pos)++] = as_number(v);
+        return 0;
+    }
+    int len = vm_tensor_collection_len(vm, v);
+    if (len != (int)shape[level]) return -1;                  /* ragged */
+    for (int i = 0; i < len; i++) {
+        if (vm_tensor_nested_fill(vm, vm_tensor_collection_at(vm, v, i),
+                                  shape, level + 1, rank, data, pos, cap) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Build a tensor from a rectangular nested collection (lists, vectors
+ *        and tensors may be mixed at any level).
+ *
+ * The shape is measured down the leftmost spine, then validated on the way in
+ * while filling: a ragged nesting is REJECTED (@p err set) rather than
+ * silently truncated or zero-filled. Rank is capped at VM_TENSOR_MAX_DIMS.
+ *
+ * @return The new tensor, or NULL with *@p err set to a diagnostic.
+ */
+static VmTensor* vm_tensor_from_nested(VM* vm, Value v, const char** err) {
+    int64_t shape[VM_TENSOR_MAX_DIMS];
+    int rank = 0;
+    Value spine = v;
+    for (;;) {
+        int len = vm_tensor_collection_len(vm, spine);
+        if (len < 0) break;                       /* scalar leaf: shape ends */
+        if (len == 0) { if (err) *err = "tensor: empty nested collection"; return NULL; }
+        if (rank >= VM_TENSOR_MAX_DIMS) {
+            if (err) *err = "tensor: nesting deeper than 8 dimensions";
+            return NULL;
+        }
+        shape[rank++] = len;
+        spine = vm_tensor_collection_at(vm, spine, 0);
+    }
+    if (rank == 0) { if (err) *err = "tensor: not a collection"; return NULL; }
+
+    VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, rank);
+    if (!t) { if (err) *err = "tensor: allocation failed"; return NULL; }
+    int64_t pos = 0;
+    if (vm_tensor_nested_fill(vm, v, shape, 0, rank, t->data, &pos, t->total) != 0
+        || pos != t->total) {
+        if (err) *err = "tensor: nested collection is not rectangular";
+        return NULL;
+    }
+    return t;
+}
+
+static void vm_raise_error_msg(VM* vm, const char* msg);   /* defined below */
+
+/**
+ * @brief Coerce @p v to a tensor operand for @p op_name, or RAISE.
+ *
+ * Every rejection is now a CATCHABLE error (vm_raise_error_msg) instead of a
+ * fatal vm->error. Setting vm->error killed the whole program: a `guard` around
+ * the access could not intercept it, so
+ * `(guard (e (#t "caught")) (tensor-shape #(#(1.0 2.0) #(3.0))))` printed
+ * nothing, exited nonzero, and dropped every later top-level form — while
+ * native fabricates `()` and keeps going. Neither is the contract: a ragged
+ * operand must raise a clean, catchable error NAMING the dimension that
+ * disagreed (tests/vm_parity/corpus/41_tensor_literals.esk).
+ *
+ * A NULL answer means the error was already raised, so callers must `break`
+ * WITHOUT pushing: the raise restored the handler's stack pointer and a
+ * fabricated push would corrupt it.
+ */
 static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
     if (v.type == VAL_TENSOR) {
         if (!is_valid_heap_ptr(vm, v.as.ptr)) return NULL;
@@ -4366,28 +4691,48 @@ static VmTensor* vm_tensor_operand(VM* vm, Value v, const char* op_name) {
             int64_t total = 1;
             for (int i = 0; i < rank; i++) total *= shape[i];
             VmTensor* t = (total > 0) ? vm_tensor_new(&vm->heap.regions, shape, rank) : NULL;
+            VmVecMismatch bad = { -1, 0, 0 };
             if (t) {
                 int64_t pos = 0;
-                if (vm_vec_fill(vm, v, shape, 0, rank, t->data, &pos, total) == 0 &&
+                if (vm_vec_fill(vm, v, shape, 0, rank, t->data, &pos, total, &bad) == 0 &&
                     pos == total) {
                     return t;
                 }
             }
-            fprintf(stderr, "ERROR: %s: nested vector shape mismatch "
-                            "(operand must be a rectangular numeric tensor)\n",
-                    op_name ? op_name : "tensor-op");
-            vm->error = 1;
+            char msg[208];
+            const char* who = op_name ? op_name : "tensor-op";
+            if (bad.level >= 0 && bad.expected >= 0 && bad.got >= 0)
+                snprintf(msg, sizeof msg, "%s: nested vector is ragged - dimension %d "
+                         "has length %lld but %lld was expected",
+                         who, bad.level, (long long)bad.got, (long long)bad.expected);
+            else if (bad.level >= 0 && bad.expected < 0)
+                snprintf(msg, sizeof msg, "%s: nested vector is ragged - dimension %d "
+                         "nests deeper than rank %d", who, bad.level, rank);
+            else if (bad.level >= 0)
+                snprintf(msg, sizeof msg, "%s: nested vector is ragged - dimension %d "
+                         "is not a vector of length %lld",
+                         who, bad.level, (long long)bad.expected);
+            else
+                snprintf(msg, sizeof msg, "%s: nested vector shape mismatch (operand "
+                         "must be a rectangular numeric tensor)", who);
+            vm_raise_error_msg(vm, msg);
             return NULL;
         }
 
-        fprintf(stderr, "ERROR: %s: vector operand must be numeric (element 0 is not a number)\n",
-                op_name ? op_name : "tensor-op");
-        vm->error = 1;
+        {
+            char msg[176];
+            snprintf(msg, sizeof msg, "%s: vector operand must be numeric "
+                     "(element 0 is not a number)", op_name ? op_name : "tensor-op");
+            vm_raise_error_msg(vm, msg);
+        }
         return NULL;
     }
-    fprintf(stderr, "ERROR: %s: expected a tensor or numeric vector operand\n",
-            op_name ? op_name : "tensor-op");
-    vm->error = 1;
+    {
+        char msg[176];
+        snprintf(msg, sizeof msg, "%s: expected a tensor or numeric vector operand",
+                 op_name ? op_name : "tensor-op");
+        vm_raise_error_msg(vm, msg);
+    }
     return NULL;
 }
 
@@ -5079,8 +5424,10 @@ static void vm_push_bignum_norm(VM* vm, VmBignum* b) {
  *         back to inexact float (R7RS contagion). Division by zero sets
  *         vm->error. */
 static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
-    /* Bignum mixed with an inexact float → inexact float. */
-    if ((op == '+' || op == '-' || op == '*') &&
+    /* Bignum mixed with an inexact float → inexact float.  Division is
+     * included: inexactness is contagious, so `(/ <bignum> 0.0)` is IEEE-754
+     * division yielding ±inf.0 / +nan.0 rather than an error. */
+    if ((op == '+' || op == '-' || op == '*' || op == '/') &&
         (a.type == VAL_FLOAT || b.type == VAL_FLOAT)) {
         double x = (a.type == VAL_BIGNUM)
             ? bignum_to_double((VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)
@@ -5088,7 +5435,8 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
         double y = (b.type == VAL_BIGNUM)
             ? bignum_to_double((VmBignum*)vm->heap.objects[b.as.ptr]->opaque.ptr)
             : as_number(b);
-        double r = (op == '+') ? x + y : (op == '-') ? x - y : x * y;
+        double r = (op == '+') ? x + y : (op == '-') ? x - y
+                 : (op == '*') ? x * y : x / y;
         vm_push(vm, FLOAT_VAL(r));
         return;
     }
@@ -5101,21 +5449,43 @@ static void vm_bignum_arith(VM* vm, Value a, Value b, char op) {
     case '+': r = bignum_add(rs, ab, bb); break;
     case '-': r = bignum_sub(rs, ab, bb); break;
     case '*': r = bignum_mul(rs, ab, bb); break;
-    case 'q': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+    case 'q': if (bignum_is_zero(bb)) {
+                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_div(rs, ab, bb); break;
-    case 'r': if (bignum_is_zero(bb)) { vm->error = 1; return; }
+    case 'r': if (bignum_is_zero(bb)) {
+                  fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
               r = bignum_mod(rs, ab, bb); break;
+    case '/': {
+        /* Exact bignum `/`.  A zero divisor is a fatal exact division by
+         * zero (native raises "bignum division by zero").  An even division
+         * yields the exact quotient.  A non-even exact division would need a
+         * bignum RATIONAL, which is outside this VM's numeric tower (its
+         * VmRational is int64/int64) — it falls back to the correctly-rounded
+         * double, the documented gap in tests/vm_parity/PARITY.tsv.  Before
+         * this case existed a bignum fell through to the plain double path,
+         * where as_number() reads a heap pointer's .as.i as 0.0 and every
+         * bignum division silently produced 0. */
+        if (bignum_is_zero(bb)) {
+            fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; return; }
+        VmBignum* rem = bignum_mod(rs, ab, bb);
+        if (rem && bignum_is_zero(rem)) { r = bignum_div(rs, ab, bb); break; }
+        vm_push(vm, FLOAT_VAL(bignum_to_double(ab) / bignum_to_double(bb)));
+        return;
+    }
     case 'm': {
         /* R7RS modulo: result carries the sign of the divisor. bignum_mod
          * returns the truncated remainder (sign of the dividend), so adjust
          * by adding the divisor when the signs disagree. */
-        if (bignum_is_zero(bb)) { vm->error = 1; return; }
+        if (bignum_is_zero(bb)) {
+            fprintf(stderr, "MODULO BY ZERO\n"); vm->error = 1; return; }
         r = bignum_mod(rs, ab, bb);
         if (r && !bignum_is_zero(r) && bignum_sign(r) != bignum_sign(bb))
             r = bignum_add(rs, r, bb);
         break;
     }
-    default: vm->error = 1; return;
+    default:
+        fprintf(stderr, "ERROR: unsupported bignum operation '%c'\n", op);
+        vm->error = 1; return;
     }
     vm_push_bignum_norm(vm, r);
 }
@@ -5750,15 +6120,67 @@ static void vm_dispatch_exception(VM* vm, Value exn) {
             vm, vm->handler_stack[vm->n_handlers].n_parameter_bindings);
         vm_promise_eval_unwind_to(
             vm, vm->handler_stack[vm->n_handlers].promise_mark);
+        /* #341: retire every region handle opened after this handler was
+         * installed, mirroring the native raise path (which additionally frees
+         * the regions and promotes the raised value out of them — there is
+         * nothing to free or promote here, the VM close is bookkeeping-only).
+         * Doing it keeps handle liveness after a caught exception observably
+         * identical on both substrates. */
+        eshkol_region_handle_seq_unwind_to(
+            vm->handler_stack[vm->n_handlers].region_handle_mark);
         vm->sp = vm->handler_stack[vm->n_handlers].sp;
         vm->fp = vm->handler_stack[vm->n_handlers].fp;
         vm->frame_count = vm->handler_stack[vm->n_handlers].frame_count;
         vm->pc = vm->handler_stack[vm->n_handlers].pc;
         vm_escape_native_control(vm);
     } else {
-        fprintf(stderr, "ERROR: unhandled exception: ");
-        print_value(vm, exn);
-        fprintf(stderr, "\n");
+        /* Report the condition on stderr ONLY, and report what it actually says.
+         * print_value() writes to stdout and renders every error object as the
+         * opaque "<error-object>", so an unhandled raise used to (a) throw away
+         * the message the raiser built — "tensor-ref: index out of bounds",
+         * "tensor-shape: nested vector is ragged - dimension 1 has length 1 but
+         * 2 was expected" — and (b) append a fabricated value to the PROGRAM's
+         * stdout on a run that failed, which is exactly what the parity gate's
+         * out-of-subset stage treats as a mis-execution. */
+        if (exn.type == VAL_ERROR_OBJ && is_valid_heap_ptr(vm, exn.as.ptr)) {
+            VmError* err = (VmError*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+            if (err) {
+                fprintf(stderr, "ERROR: unhandled exception: %s%s%s\n",
+                        err->type[0] ? err->type : "error",
+                        err->message[0] ? ": " : "",
+                        err->message[0] ? err->message : "");
+            } else {
+                fprintf(stderr, "ERROR: unhandled exception: <error-object>\n");
+            }
+        } else {
+            /* A raise of a plain datum, e.g. (raise 42). Render the scalar
+             * cases directly to stderr rather than calling print_value(), which
+             * would put them on the program's stdout. */
+            char buf[64];
+            switch (exn.type) {
+            case VAL_NIL:    fprintf(stderr, "ERROR: unhandled exception: ()\n"); break;
+            case VAL_INT:    fprintf(stderr, "ERROR: unhandled exception: %lld\n",
+                                     (long long)exn.as.i); break;
+            case VAL_BOOL:   fprintf(stderr, "ERROR: unhandled exception: #%c\n",
+                                     exn.as.b ? 't' : 'f'); break;
+            case VAL_FLOAT:  eshkol_dtoa_shortest(buf, sizeof buf, exn.as.f);
+                             fprintf(stderr, "ERROR: unhandled exception: %s\n", buf); break;
+            case VAL_STRING:
+            case VAL_SYMBOL: {
+                const char* text = NULL;
+                if (is_valid_heap_ptr(vm, exn.as.ptr)) {
+                    VmString* s = (VmString*)vm->heap.objects[exn.as.ptr]->opaque.ptr;
+                    if (s && s->data) text = s->data;
+                }
+                fprintf(stderr, "ERROR: unhandled exception: %s\n", text ? text : "");
+                break;
+            }
+            default:
+                fprintf(stderr, "ERROR: unhandled exception: <value of type %d>\n",
+                        (int)exn.type);
+                break;
+            }
+        }
         vm->error = 1;
     }
 }
@@ -6011,21 +6433,34 @@ static void vm_dispatch_native(VM* vm, int fid) {
         else if (a.type==VAL_BIGNUM) { vm_push_bignum_norm(vm, bignum_abs_val(&vm->heap.regions, (VmBignum*)vm->heap.objects[a.as.ptr]->opaque.ptr)); }
         else vm_push(vm, number_val(fabs(as_number(a)))); break; }
     /* modulo, remainder, quotient — first-class closure versions */
+    /* Each of the three used to `break` on a zero divisor with a bare
+     * vm->error = 1 and NO message.  Combined with the VM's old exit-0 that
+     * made a division by zero completely invisible: no diagnostic, no exit
+     * status, and every later top-level form silently dropped.  Every fatal
+     * path here now names itself on stderr. */
     case 36: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'m'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        /* `modulo` by zero is fatal for exact AND inexact operands — native
+         * raises "division by zero" for both (modulo 1 0) and (modulo 1 0.0). */
+        if (ib==0){ fprintf(stderr, "MODULO BY ZERO\n"); vm->error=1; break; }
         int64_t r=ia%ib; if(r!=0&&((r^ib)<0)) r+=ib;
         vm_push(vm, INT_VAL(r)); break; }
     case 37: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'r'); break; }
+        /* `remainder` with an INEXACT operand is fmod, so a zero divisor is
+         * IEEE-754 (+nan.0) rather than an error — native agrees: it answers
+         * +nan.0 for both (remainder 1.0 0.0) and (remainder 1 0.0).  Only the
+         * all-exact form is a fatal division by zero. */
+        if (a.type==VAL_FLOAT || b.type==VAL_FLOAT) {
+            vm_push(vm, FLOAT_VAL(fmod(as_number(a), as_number(b)))); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        if (ib==0){ fprintf(stderr, "REMAINDER BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia%ib)); break; }
     case 38: { Value b = vm_pop(vm); Value a = vm_pop(vm);
         if (vm_either_bignum(a,b)) { vm_bignum_arith(vm,a,b,'q'); break; }
         int64_t ia=(int64_t)as_number(a), ib=(int64_t)as_number(b);
-        if (ib==0){vm->error=1;break;}
+        if (ib==0){ fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error=1; break; }
         vm_push(vm, INT_VAL(ia/ib)); break; }
 
     /* ══════════════════════════════════════════════════════════════════════
@@ -6528,6 +6963,14 @@ static void vm_dispatch_native(VM* vm, int fid) {
             VmRational a_r = {(int64_t)as_number(a_val), 1}, b_r = {(int64_t)as_number(b_val), 1};
             if (a_val.type == VAL_RATIONAL) a_r = *(VmRational*)vm->heap.objects[a_val.as.ptr]->opaque.ptr;
             if (b_val.type == VAL_RATIONAL) b_r = *(VmRational*)vm->heap.objects[b_val.as.ptr]->opaque.ptr;
+            /* Exact division by an exact zero is fatal (native raises
+             * "rational division by zero").  It must be rejected BEFORE the
+             * overflow fallback below: vm_rational_div() also returns NULL for
+             * a zero divisor, and the fallback then evaluated the ADDITION
+             * formula, so `(/ 1/2 0)` silently produced 0.5. */
+            if (fid == 334 && b_r.num == 0) {
+                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break;
+            }
             VmRational* result = NULL;
             switch (fid) {
                 case 331: result = vm_rational_add(rat_arena, &a_r, &b_r); break;
@@ -6535,7 +6978,17 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 case 333: result = vm_rational_mul(rat_arena, &a_r, &b_r); break;
                 case 334: result = vm_rational_div(rat_arena, &a_r, &b_r); break;
             }
-            if (!result) { vm_push(vm, FLOAT_VAL((double)a_r.num/(double)a_r.denom + (double)b_r.num/(double)b_r.denom)); break; }
+            if (!result) {
+                /* int64 overflow after reduction — fall back to inexact, using
+                 * the fallback formula for the OPERATION ACTUALLY REQUESTED
+                 * (this used to add unconditionally, so an overflowing
+                 * subtraction/multiplication/division returned a sum). */
+                double x = (double)a_r.num / (double)a_r.denom;
+                double y = (double)b_r.num / (double)b_r.denom;
+                double fb = (fid == 331) ? x + y : (fid == 332) ? x - y
+                          : (fid == 333) ? x * y : x / y;
+                vm_push(vm, FLOAT_VAL(fb)); break;
+            }
             if (result->denom == 1) { vm_push(vm, INT_VAL(result->num)); break; }
             int32_t ptr = heap_alloc(&vm->heap); if (ptr < 0) { vm->error = 1; break; }
             vm->heap.objects[ptr]->type = HEAP_RATIONAL; vm->heap.objects[ptr]->opaque.ptr = result;
@@ -6919,6 +7372,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
     case 393: { /* derivative: (derivative f x) → f'(x) using forward-mode dual numbers */
         Value x_val = vm_pop(vm), f_val = vm_pop(vm);
+        /* ESH-0369: the VM's forward-mode carrier is a FLAT VmDual {value,
+         * tangent} — one perturbation, no nesting level. A point that is
+         * ALREADY a dual therefore means an enclosing differentiation is live
+         * (a nested `(derivative (lambda (x) (derivative f x)) x0)`, or a
+         * curried `(derivative (derivative f))`), and the flat carrier cannot
+         * represent the two independent perturbations that needs: as_number()
+         * would flatten the incoming dual to its value, the inner pass would
+         * return a plain float, and the outer pass would read "non-dual result
+         * = constant function" and push 0. That is a silently WRONG second
+         * derivative, which is exactly what the native jet (e1/e2/ep slots,
+         * lib/backend/autodiff_codegen.cpp seedForwardAndPush) exists to get
+         * right. Raise instead — a catchable error the caller can see, not a
+         * fabricated zero. Higher-order AD on the VM is tracked as a
+         * native-only row in tests/vm_parity/PARITY.tsv. */
+        if (x_val.type == VAL_DUAL) {
+            vm_raise_error_msg(vm,
+                "derivative: higher-order/nested derivative is not supported on the VM "
+                "(the VM's forward-mode dual carries a single perturbation); "
+                "use the native backend");
+            break;
+        }
         /* Create dual number: x + 1ε */
         VmDual* d = vm_dual_make(&vm->heap.regions, as_number(x_val), 1.0);
         if (!d) { vm_push(vm, FLOAT_VAL(0)); break; }
@@ -7031,6 +7505,92 @@ static void vm_dispatch_native(VM* vm, int fid) {
     /* ══════════════════════════════════════════════════════════════════════
      * Tensor Core Operations (410-420)
      * ══════════════════════════════════════════════════════════════════════ */
+    /* ── (tensor ...) constructor (fids 473/474) ───────────────────────────
+     *
+     * `tensor` is NOT make-tensor. The language spells it variadically, either
+     * as leading exact-integer DIMS followed by exactly product(dims) values —
+     * (tensor 2 2 1.0 2.0 3.0 4.0) is the 2x2 matrix — or as a bare list of
+     * values, (tensor 1.3 -0.7), or as a single rectangular nested collection.
+     * The VM's BUILTINS table aliased the name to make-tensor's 2-arg native
+     * (fid 410), so it read only the FIRST TWO arguments and every form was
+     * silently wrong: (tensor 2 2 1.0 2.0 3.0 4.0) built the 2-element tensor
+     * #(2 2), (tensor 4 0.5 -1.0 2.0 1.5) built four copies of 0.5, and a
+     * nested list produced (). PARITY.tsv nonetheless claimed vm-supported.
+     *
+     * Dims-vs-values is resolved exactly as the native path does: take the
+     * LONGEST prefix of leading exact integers whose product equals the number
+     * of remaining arguments. Nothing matching means the arguments are a flat
+     * vector of values. (tensor 1 2) is therefore shape (1) holding 2, while
+     * (tensor 2 3) is the flat #(2 3) — 2*3 != 0 and 2 != 1.
+     */
+    case 473: case 474: {
+        /* 473: the (tensor a b c ...) special form passes its arguments as a
+         *      list, built by the compiler.
+         * 474: the first-class `tensor` closure passes ONE value, which is
+         *      treated as that single argument. */
+        Value arg_src = vm_pop(vm);
+        Value args[VM_TENSOR_CTOR_MAX_ARGS];
+        int n_args = 0;
+        if (fid == 473) {
+            Value cur = arg_src;
+            while (cur.type == VAL_PAIR && n_args < VM_TENSOR_CTOR_MAX_ARGS) {
+                args[n_args++] = vm->heap.objects[cur.as.ptr]->cons.car;
+                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+            }
+            if (cur.type == VAL_PAIR) {
+                vm_raise_error_msg(vm, "tensor: too many arguments");
+                break;
+            }
+        } else {
+            args[n_args++] = arg_src;
+        }
+        if (n_args == 0) {
+            vm_raise_error_msg(vm, "tensor: needs at least one argument");
+            break;
+        }
+
+        /* A single collection argument is a nested-collection literal. */
+        if (n_args == 1 && vm_tensor_collection_len(vm, args[0]) >= 0) {
+            const char* nest_err = NULL;
+            VmTensor* nested = vm_tensor_from_nested(vm, args[0], &nest_err);
+            if (!nested) {
+                vm_raise_error_msg(vm, nest_err ? nest_err
+                    : "tensor: not a rectangular nested collection");
+                break;
+            }
+            VM_PUSH_TENSOR(vm, nested);
+            break;
+        }
+
+        /* Longest leading run of exact integers that can serve as dims. */
+        int max_dims = n_args - 1;
+        if (max_dims > VM_TENSOR_MAX_DIMS) max_dims = VM_TENSOR_MAX_DIMS;
+        int n_leading = 0;
+        while (n_leading < max_dims && args[n_leading].type == VAL_INT
+               && args[n_leading].as.i > 0)
+            n_leading++;
+
+        int64_t shape[VM_TENSOR_MAX_DIMS];
+        int n_dims = 0, first_value = 0;
+        for (int k = n_leading; k >= 1 && n_dims == 0; k--) {
+            int64_t product = 1;
+            for (int i = 0; i < k; i++) product *= args[i].as.i;
+            if (product != (int64_t)(n_args - k)) continue;
+            for (int i = 0; i < k; i++) shape[i] = args[i].as.i;
+            n_dims = k;
+            first_value = k;
+        }
+        if (n_dims == 0) { /* flat vector of values */
+            shape[0] = n_args; n_dims = 1; first_value = 0;
+        }
+
+        VmTensor* t = vm_tensor_new(&vm->heap.regions, shape, n_dims);
+        if (!t) { vm_push(vm, NIL_VAL); break; }
+        for (int64_t i = 0; i < t->total; i++)
+            t->data[i] = as_number_vm(vm, args[first_value + i]);
+        VM_PUSH_TENSOR(vm, t);
+        break;
+    }
     case 410: { /* make-tensor(shape, fill) */
         Value fill = vm_pop(vm), shape_val = vm_pop(vm);
         int64_t shape[8]; int n_dims = vm_extract_shape(vm, shape_val, shape, 8);
@@ -7043,7 +7603,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 411: { /* tensor-ref(tensor, indices) — flat or multi-dim access */
         Value idx_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-ref");
-        if (!t) { vm_push(vm, FLOAT_VAL(0)); break; }
+        if (!t) break;   /* raised: push nothing */
         /* Single int/float index: flat access; list: multi-dim */
         if (idx_val.type == VAL_INT || idx_val.type == VAL_FLOAT) {
             int64_t flat = (int64_t)as_number(idx_val);
@@ -7054,18 +7614,20 @@ static void vm_dispatch_native(VM* vm, int fid) {
                 break;
             }
             vm_push(vm, FLOAT_VAL(t->data[flat]));
-        } else if (idx_val.type == VAL_PAIR) {
-            /* Multi-dim: walk list to get indices */
-            int64_t indices[8]; int nd = 0;
-            Value cur = idx_val;
-            while (cur.type == VAL_PAIR && nd < 8) {
-                indices[nd++] = (int64_t)as_number(vm->heap.objects[cur.as.ptr]->cons.car);
-                cur = vm->heap.objects[cur.as.ptr]->cons.cdr;
+        } else if (idx_val.type == VAL_PAIR || idx_val.type == VAL_VECTOR) {
+            /* Multi-dim index, given as a list or a vector.  Same bounds
+             * contract as the flat path above: vm_tensor_ref() answers 0.0 for
+             * a bad rank or an out-of-range index, which fabricates a value. */
+            int64_t indices[8];
+            int nd = vm_extract_shape(vm, idx_val, indices, 8);
+            if (!vm_tensor_indices_in_range(t, indices, nd)) {
+                vm_raise_error_msg(vm, "tensor-ref: index out of bounds");
+                break;
             }
-            double val = vm_tensor_ref(t, indices, nd);
-            vm_push(vm, FLOAT_VAL(val));
+            vm_push(vm, FLOAT_VAL(vm_tensor_ref(t, indices, nd)));
         } else {
-            vm_push(vm, FLOAT_VAL(0));
+            /* Anything else is not an index — fabricating 0.0 hid the mistake. */
+            vm_raise_error_msg(vm, "tensor-ref: index must be an integer, list or vector");
         }
         break;
     }
@@ -7078,9 +7640,27 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm->error = 1; vm_push(vm, NIL_VAL); break;
         }
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-set!");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         int64_t indices[8]; int n = vm_extract_shape(vm, idx_val, indices, 8);
         if (n == 0) { indices[0] = (int64_t)as_number(idx_val); n = 1; }
+        /* Bounds contract (#356): an out-of-range write is a catchable error on
+         * every substrate.  vm_tensor_set() returns silently instead, so an
+         * out-of-range tensor-set! was a NO-OP the program could not detect. */
+        if (n == 1 && t->n_dims != 1) {
+            /* Single index against a rank>1 tensor is flat addressing, matching
+             * tensor-ref's flat path. */
+            if (indices[0] < 0 || indices[0] >= t->total) {
+                vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
+                break;
+            }
+            t->data[indices[0]] = as_number(val);
+            vm_push(vm, NIL_VAL);
+            break;
+        }
+        if (!vm_tensor_indices_in_range(t, indices, n)) {
+            vm_raise_error_msg(vm, "tensor-set!: index out of bounds");
+            break;
+        }
         vm_tensor_set(t, indices, n, as_number(val));
         vm_push(vm, NIL_VAL);
         break;
@@ -7088,7 +7668,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 413: { /* tensor-shape → list */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-shape");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         Value result = NIL_VAL;
         for (int i = t->n_dims - 1; i >= 0; i--) {
             int32_t p = heap_alloc(&vm->heap);
@@ -7104,24 +7684,31 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 414: { /* tensor-data → flat list (for small tensors) */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-data");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
-        Value result = NIL_VAL;
-        int64_t limit = t->total > 1024 ? 1024 : t->total;
-        for (int64_t i = limit - 1; i >= 0; i--) {
-            int32_t p = heap_alloc(&vm->heap);
-            if (p < 0) { vm->error = 1; break; }
-            vm->heap.objects[p]->type = HEAP_CONS;
-            vm->heap.objects[p]->cons.car = FLOAT_VAL(t->data[i]);
-            vm->heap.objects[p]->cons.cdr = result;
-            result = PAIR_VAL(p);
-        }
-        vm_push(vm, result);
+        if (!t) break;   /* raised: push nothing */
+        /* A VECTOR of the elements, matching native — this used to build a
+         * LIST, so (tensor-data t) printed (1 2 3 4) against native's
+         * #(1 2 3 4) and any vector-ref of the result failed on the VM only.
+         * Also drops the silent 1024-element truncation: a large tensor
+         * returned a short vector with no diagnostic. */
+        int64_t count = t->total < 0 ? 0 : t->total;
+        int32_t vp = heap_alloc(&vm->heap);
+        if (vp < 0) { vm->error = 1; break; }
+        VmVector* vec = (VmVector*)vm_alloc(&vm->heap.regions, sizeof(VmVector));
+        if (!vec) { vm->error = 1; break; }
+        vec->len = (int)count; vec->cap = (int)count;
+        vec->items = (Value*)vm_alloc(&vm->heap.regions,
+                                      (size_t)(count > 0 ? count : 1) * sizeof(Value));
+        if (!vec->items) { vm->error = 1; break; }
+        for (int64_t i = 0; i < count; i++) vec->items[i] = FLOAT_VAL(t->data[i]);
+        vm->heap.objects[vp]->type = HEAP_VECTOR;
+        vm->heap.objects[vp]->opaque.ptr = vec;
+        vm_push(vm, (Value){.type = VAL_VECTOR, .as.ptr = vp});
         break;
     }
     case 415: { /* reshape(tensor, new_shape) */
         Value shape_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "reshape");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         int64_t shape[8]; int n = vm_extract_shape(vm, shape_val, shape, 8);
         VmTensor* out = vm_tensor_reshape(&vm->heap.regions, t, shape, n);
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -7131,7 +7718,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 416: { /* transpose */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "transpose");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_gpu_try_transpose(&vm->heap.regions, t);
         if (!out) out = vm_tensor_transpose(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
@@ -7166,7 +7753,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 420: { /* flatten */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "flatten");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_flatten(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
@@ -7213,8 +7800,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 440: { /* matmul — GPU dispatch if tensor is large enough */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* a = vm_tensor_operand(vm, a_val, "matmul");
+        if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "matmul");
-        if (!a || !b) { vm_push(vm, NIL_VAL); break; }
+        if (!b) break;   /* raised: push nothing */
         /* Try GPU first, fall through to CPU */
         VmTensor* out = vm_gpu_try_matmul(&vm->heap.regions, a, b);
         if (!out) out = vm_tensor_matmul(&vm->heap.regions, a, b);
@@ -7226,8 +7814,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 441: case 442: case 443: case 444: case 445: case 446: case 447: { /* tensor binary: +,-,*,/,pow,max,min */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-binary-op");
+        if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-binary-op");
-        if (!a || !b) { vm_push(vm, NIL_VAL); break; }
+        if (!b) break;   /* raised: push nothing */
         /* GPU dispatch for add/sub/mul/div (ops 0-3) */
         VmTensor* out = NULL;
         static const int gpu_binary_ops[] = {0,1,2,3,-1,-1,-1}; /* add,sub,mul,div,pow,max,min */
@@ -7250,8 +7839,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 448: { /* batch-matmul */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* a = vm_tensor_operand(vm, a_val, "batch-matmul");
+        if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "batch-matmul");
-        if (!a || !b) { vm_push(vm, NIL_VAL); break; }
+        if (!b) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_batch_matmul(&vm->heap.regions, a, b);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
@@ -7260,15 +7850,16 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 449: { /* dot */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* a = vm_tensor_operand(vm, a_val, "tensor-dot");
+        if (!a) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "tensor-dot");
-        if (!a || !b) { vm_push(vm, FLOAT_VAL(0.0)); break; }
+        if (!b) break;   /* raised: push nothing */
         vm_push(vm, FLOAT_VAL(vm_tensor_dot(a, b)));
         break;
     }
     case 450: case 451: case 452: case 453: case 454: case 455: { /* tensor unary: neg,abs,sqrt,exp,log,sin,cos */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-unary-op");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         switch (fid) {
             case 450: out = vm_tensor_neg(&vm->heap.regions, t); break;
@@ -7285,7 +7876,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 456: { /* scale(tensor, scalar) */
         Value scalar = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-scale");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_scale(&vm->heap.regions, t, as_number(scalar));
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
@@ -7294,7 +7885,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 457: case 458: case 459: case 460: { /* reduce: sum,mean,max,min (tensor, axis) */
         Value axis_val = vm_pop(vm), t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-reduce");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         int axis = (int)as_number(axis_val);
         /* GPU dispatch for full-tensor reductions (axis=-1 or axis covers all) */
         VmTensor* out = NULL;
@@ -7323,7 +7914,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 461: { /* cos tensor */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-cos");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_cos_op(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
@@ -7349,7 +7940,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         }
         if (!is_tensor_or_vector) { vm_push(vm, NIL_VAL); break; }
         VmTensor* t = vm_tensor_operand(vm, t_val, "tensor-activation");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = NULL;
         /* GPU dispatch for softmax */
         if (fid == 463) out = vm_gpu_try_softmax(&vm->heap.regions, t);
@@ -7370,7 +7961,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 469: { /* swish */
         Value t_val = vm_pop(vm);
         VmTensor* t = vm_tensor_operand(vm, t_val, "swish");
-        if (!t) { vm_push(vm, NIL_VAL); break; }
+        if (!t) break;   /* raised: push nothing */
         VmTensor* out = vm_tensor_swish(&vm->heap.regions, t);
         if (!out) { vm_push(vm, NIL_VAL); break; }
         VM_PUSH_TENSOR(vm, out);
@@ -7412,24 +8003,9 @@ static void vm_dispatch_native(VM* vm, int fid) {
     case 472: { /* linear-solve(A, b) -> x, full-f64 Ax=b (mixed-precision IR) */
         Value b_val = vm_pop(vm), a_val = vm_pop(vm);
         VmTensor* A = vm_tensor_operand(vm, a_val, "linear-solve");
+        if (!A) break;   /* raised: push nothing */
         VmTensor* b = vm_tensor_operand(vm, b_val, "linear-solve");
-        if (!A || !b) {
-            vm->error = 0;
-            VmError* e = vm_error_make(
-                &vm->heap.regions, "error",
-                "linear-solve: expected tensor operands for A and b", NULL, 0);
-            Value exn = NIL_VAL;
-            if (e) {
-                int32_t ep = heap_alloc(&vm->heap);
-                if (ep >= 0) {
-                    vm->heap.objects[ep]->type = HEAP_ERROR;
-                    vm->heap.objects[ep]->opaque.ptr = e;
-                    exn = (Value){.type = VAL_ERROR_OBJ, .as.ptr = ep};
-                }
-            }
-            vm_dispatch_exception(vm, exn);
-            break;
-        }
+        if (!b) break;   /* raised: push nothing */
 
         int64_t a_dims[VM_TENSOR_MAX_DIMS], b_dims[VM_TENSOR_MAX_DIMS];
         for (int i = 0; i < A->n_dims && i < VM_TENSOR_MAX_DIMS; i++) a_dims[i] = A->shape[i];
@@ -11910,9 +12486,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
             vm_push(vm, (Value){.type = VAL_COMPLEX, .as.ptr = p});
         } else if (a_val.type == VAL_RATIONAL || b_val.type == VAL_RATIONAL ||
                    (a_val.type == VAL_INT && b_val.type == VAL_INT)) {
-            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) { vm->error = 1; break; }
+            if ((a_val.type == VAL_INT && b_val.type == VAL_INT && b_val.as.i == 0)) {
+                fprintf(stderr, "DIVIDE BY ZERO\n"); vm->error = 1; break; }
             vm_push(vm, a_val); vm_push(vm, b_val); vm_dispatch_native(vm, 334); /* rational div: reduces, collapses denom==1 to int */
-        } else { vm_push(vm, number_val(as_number(a_val) / as_number(b_val))); }
+        } else if (vm_either_bignum(a_val, b_val)) {
+            /* as_number() answers 0.0 for a heap-boxed bignum, so without this
+             * branch the plain double fallback below silently produced 0 for
+             * every bignum division routed through the variadic `/`. */
+            vm_bignum_arith(vm, a_val, b_val, '/');
+        } else {
+            /* At least one operand is INEXACT here, so a zero divisor is
+             * IEEE-754: ±inf.0 / +nan.0, exactly as native computes it. */
+            vm_push(vm, number_val(as_number(a_val) / as_number(b_val)));
+        }
         break; }
     /* Comparison operators as first-class functions (for sort, map, fold, etc.) */
     case 146: { Value b = vm_pop(vm), a = vm_pop(vm); if (vm_either_bignum(a,b)) { vm_push(vm, BOOL_VAL(vm_bignum_compare_vals(vm,a,b) <  0)); break; } vm_push(vm, BOOL_VAL(as_number(a) < as_number(b))); break; }  /* < */
@@ -11979,8 +12565,78 @@ static void vm_dispatch_native(VM* vm, int fid) {
             else if (pfx == 'd') { radix215 = 10; p215 += 2; }
             else { vm_push(vm, BOOL_VAL(0)); break; }
         }
+        /* R7RS 7.1.1 <infnan>: exactly +inf.0 / -inf.0 / +nan.0 / -nan.0, in
+         * every radix.  Must be matched explicitly — strtod() below also
+         * accepts "inf", "infinity" and "nan", none of which are Scheme
+         * numeric literals, and it stops before the mandatory ".0" so the real
+         * spellings were REJECTED while the bogus ones were accepted.  Kept
+         * byte-identical with eshkol_s2n_infnan() in lib/core/bignum.cpp so a
+         * printed infinity reads back the same on both substrates. */
+        {
+            double infnan215 = 0.0; int matched215 = 0;
+            if (p215[0] == '+' || p215[0] == '-') {
+                double mag215 = 0.0; int have215 = 0;
+                if      (strncmp(p215 + 1, "inf.0", 5) == 0) { mag215 = HUGE_VAL; have215 = 1; }
+                else if (strncmp(p215 + 1, "nan.0", 5) == 0) { mag215 = (double)NAN; have215 = 1; }
+                if (have215) {
+                    const char* rest215 = p215 + 6;
+                    while (*rest215 == ' ' || *rest215 == '\t') rest215++;
+                    if (*rest215 == '\0') {
+                        infnan215 = (p215[0] == '-') ? -mag215 : mag215;
+                        matched215 = 1;
+                    }
+                }
+            }
+            if (matched215) { vm_push(vm, FLOAT_VAL(infnan215)); break; }
+        }
         char* end215 = NULL;
         if (radix215 == 10) {
+            /* A decimal number must begin with a digit or '.' after an
+             * optional sign (mirrors eshkol_s2n_decimal()'s guard).  Without
+             * it strtod() accepted the C-only spellings "inf" / "infinity" /
+             * "nan", which native correctly rejects. */
+            {
+                const char* d215 = p215;
+                while (*d215 == ' ' || *d215 == '\t') d215++;
+                if (*d215 == '+' || *d215 == '-') d215++;
+                if (!(*d215 >= '0' && *d215 <= '9') && *d215 != '.') {
+                    vm_push(vm, BOOL_VAL(0)); break;
+                }
+            }
+            /* Exact rational "num/denom" (R7RS 7.1.1 <ratio>), as native's
+             * eshkol_s2n_decimal() reads it.  The VM had no rational branch, so
+             * (number->string 1/2) printed "1/2" and string->number then
+             * answered #f — the same failure to read back a printed value as
+             * the <infnan> case above. */
+            {
+                const char* slash215 = strchr(p215, '/');
+                if (slash215 && !strpbrk(p215, ".eE")) {
+                    char* nend215 = NULL;
+                    errno = 0;
+                    long long num215 = strtoll(p215, &nend215, 10);
+                    if (nend215 == slash215 && errno != ERANGE) {
+                        char* dend215 = NULL;
+                        errno = 0;
+                        long long den215 = strtoll(slash215 + 1, &dend215, 10);
+                        if (*dend215 == '\0' && dend215 != slash215 + 1
+                            && errno != ERANGE && den215 != 0) {
+                            VmRational* rat215 = vm_rational_make(
+                                vm_active_arena(&vm->heap.regions),
+                                (int64_t)num215, (int64_t)den215);
+                            if (rat215) {
+                                if (rat215->denom == 1) {
+                                    vm_push(vm, INT_VAL(rat215->num));
+                                } else {
+                                    VM_PUSH_HEAP_OPAQUE(vm, HEAP_RATIONAL,
+                                                        VAL_RATIONAL, rat215);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (slash215) { vm_push(vm, BOOL_VAL(0)); break; }
+            }
             /* Try integer first; fall back to float */
             long long iv = strtoll(p215, &end215, 10);
             if (*end215 == '\0' && end215 != p215) { vm_push(vm, INT_VAL((int64_t)iv)); break; }
@@ -12092,6 +12748,35 @@ static void vm_dispatch_native(VM* vm, int fid) {
             if (s) { VM_PUSH_HEAP_OPAQUE(vm, HEAP_STRING, VAL_STRING, s); break; }
         }
         vm_push(vm, NIL_VAL); break;
+    }
+
+    case 152: { /* close a closure's open upvalue slots.
+                 * Snapshots each open slot's CURRENT stack value into the
+                 * closure's own upvalue storage and drops the by-reference
+                 * alias.  Emitted at named-let exit for a loop closure that
+                 * opened slots into the enclosing (non-top-level) frame: the
+                 * references are valid for the whole synchronous loop, but if
+                 * the loop closure is leaked out of the named let (e.g. by
+                 * `(set! g loop)`) the frame is gone afterwards, and reading
+                 * or writing a dead slot would corrupt an unrelated live
+                 * value.  Closing degrades a leaked closure to by-value
+                 * capture instead. */
+        Value cl_val = vm_pop(vm);
+        if (cl_val.type == VAL_CLOSURE && cl_val.as.ptr >= 0 &&
+            cl_val.as.ptr < vm->heap.next_free) {
+            HeapObject* cl = vm->heap.objects[cl_val.as.ptr];
+            if (cl && cl->type == HEAP_CLOSURE) {
+                for (int i = 0; i < cl->closure.n_upvalues && i < 16; i++) {
+                    int32_t open_slot = cl->closure.open_slots[i];
+                    if (open_slot < 0) continue;
+                    if (open_slot < STACK_SIZE)
+                        cl->closure.upvalues[i] = vm->stack[open_slot];
+                    cl->closure.open_slots[i] = -1;
+                }
+            }
+        }
+        vm_push(vm, NIL_VAL);
+        break;
     }
 
     case 151: { /* direct open slot: set closure upvalue to reference a stack slot */
@@ -12265,11 +12950,19 @@ static void vm_dispatch_native(VM* vm, int fid) {
     }
 
     case 237: { /* error */
+        /* Raise it as a catchable condition, like (error msg) on every other
+         * substrate, and keep the text on STDERR. It used to print through
+         * print_value(), which writes to stdout, so a failing run appended its
+         * error text to the PROGRAM's output — and it set vm->error directly,
+         * so no `guard` could intercept `(error ...)` at all. */
         Value msg = vm_pop(vm);
-        fprintf(stderr, "ERROR: ");
-        print_value(vm, msg);
-        fprintf(stderr, "\n");
-        vm->error = 1;
+        const char* text = NULL;
+        if ((msg.type == VAL_STRING || msg.type == VAL_SYMBOL)
+            && is_valid_heap_ptr(vm, msg.as.ptr)) {
+            VmString* s = (VmString*)vm->heap.objects[msg.as.ptr]->opaque.ptr;
+            if (s && s->data) text = s->data;
+        }
+        vm_raise_error_msg(vm, text ? text : "error");
         break;
     }
     case 238: { /* void */
@@ -14142,6 +14835,83 @@ static void vm_dispatch_native(VM* vm, int fid) {
         } else {
             vm_push(vm, FLOAT_VAL(lo + eshkol_qrng_double() * (hi - lo)));
         }
+        break;
+    }
+
+    /* ── User-reachable region handles (#341), IDs 2210-2212 ──────────────
+     *
+     * These call the SAME implementation the native backend does
+     * (lib/core/runtime_regions.cpp), with reclaim = 0: the handle protocol,
+     * its generation-tagged validation and its error text are byte-identical
+     * across substrates, but a close here reclaims nothing because the VM heap
+     * has no escape evacuator to promote kept values out with — exactly why
+     * `with-region` is a pass-through on the VM too. Errors are raised through
+     * vm_raise_error_msg with the shared message text, so a `guard` around a
+     * misused handle observes identical output on both substrates.
+     * See tests/vm_parity/PARITY.tsv. */
+    case 2210: { /* _region-open(name-or-#f, size-or-#f) -> handle token */
+        Value size_val = vm_pop(vm), name_val = vm_pop(vm);
+        const char* name = NULL;
+        uint64_t size_hint = 0;
+        const int have_size = (size_val.type != VAL_BOOL || size_val.as.b) &&
+                              size_val.type != VAL_NIL;
+        const int have_name = (name_val.type != VAL_BOOL || name_val.as.b) &&
+                              name_val.type != VAL_NIL;
+        if (have_size) {
+            const double d = as_number(size_val);
+            size_hint = d > 0 ? (uint64_t)d : 0;
+        }
+        if (have_name) {
+            if (!have_size && (name_val.type == VAL_INT || name_val.type == VAL_FLOAT)) {
+                /* Same rule as the native backend: a lone numeric argument is
+                 * the size hint, not the name. */
+                const double d = as_number(name_val);
+                size_hint = d > 0 ? (uint64_t)d : 0;
+            } else {
+                VmString* s = vm_value_as_string(vm, name_val);
+                if (s) name = s->data;
+            }
+        }
+        int status = ESHKOL_RH_OK;
+        const int64_t token = eshkol_region_handle_open(name, size_hint, 0, &status);
+        if (status != ESHKOL_RH_OK) {
+            vm_raise_error_msg(vm, eshkol_region_handle_status_message(status));
+            break;
+        }
+        vm_push(vm, INT_VAL(token));
+        break;
+    }
+
+    case 2211: { /* _region-close-list(handle, keeps) -> keep | list | '() */
+        Value keeps = vm_pop(vm), handle = vm_pop(vm);
+        if (handle.type != VAL_INT) {
+            vm_raise_error_msg(vm,
+                eshkol_region_handle_status_message(ESHKOL_RH_ERR_STALE));
+            break;
+        }
+        /* No promotion: a bookkeeping-only close reclaims nothing, so every
+         * kept value is already where it will stay. */
+        const int status = eshkol_region_handle_close(handle.as.i, NULL, 0);
+        if (status != ESHKOL_RH_OK) {
+            vm_raise_error_msg(vm, eshkol_region_handle_status_message(status));
+            break;
+        }
+        /* Return shape must match the native backend exactly: '() for no keeps,
+         * the single value for one, the list for several. */
+        if (keeps.type != VAL_PAIR) {
+            vm_push(vm, NIL_VAL);
+        } else if (vm->heap.objects[keeps.as.ptr]->cons.cdr.type != VAL_PAIR) {
+            vm_push(vm, vm->heap.objects[keeps.as.ptr]->cons.car);
+        } else {
+            vm_push(vm, keeps);
+        }
+        break;
+    }
+
+    case 2212: { /* region-open?(handle) -> boolean; never raises */
+        Value handle = vm_pop(vm);
+        vm_push(vm, BOOL_VAL(handle.type == VAL_INT &&
+                             eshkol_region_handle_live(handle.as.i) != 0));
         break;
     }
 

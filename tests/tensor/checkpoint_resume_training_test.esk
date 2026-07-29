@@ -1,0 +1,194 @@
+;; Regression: resuming a large model from a checkpoint and taking another
+;; reverse-mode training step must complete and exit zero.
+;;
+;; Found during tensor-operand and checkpoint-resume hardening. A long-running
+;; optimizer's state necessarily reaches SUBNORMAL magnitudes: a first/second
+;; moment for a parameter that stops receiving gradient decays by beta^step, and
+;; after a few thousand steps that is smaller than the smallest normal double.
+;; A tensor element slot is 64 bits holding either an f64 bit pattern or a
+;; pointer to the reverse-mode tape node standing in for that element, and the
+;; element read used to guess which from the bits — treating a zero IEEE-754
+;; exponent field as "pointer". Every subnormal has a zero exponent field, so
+;; resumed state was handed back as an address and dereferenced, faulting at an
+;; address equal to the stored value. A freshly initialized run never hit it:
+;; its moments are still exactly 0.0.
+;;
+;; So this test does what a resume does: write a checkpoint whose optimizer state
+;; has decayed into the subnormal range, load it back into freshly allocated
+;; buffers, take a reverse-mode gradient step, apply the update, checkpoint
+;; again, and resume once more. It must run to completion with a finite loss and
+;; a strictly advancing step count.
+
+(define failures 0)
+
+(define (check name actual expected)
+  (if (equal? actual expected)
+      #t
+      (begin
+        (set! failures (+ failures 1))
+        (display "FAIL: ") (display name)
+        (display " expected ") (display expected)
+        (display " got ") (display actual)
+        (newline))))
+
+(define (check-true name actual)
+  (check name (if actual #t #f) #t))
+
+(define parameter-count 4096)
+(define ckpt-path "eshkol_resume_training_test.bin")
+(define beta1 0.9)
+(define beta2 0.999)
+(define learning-rate 0.001)
+(define epsilon 1.0e-8)
+
+;; --- a checkpoint whose optimizer state has decayed out of normal range -----
+
+(define (make-buffer n fill)
+  (let ((v (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! v i (fill i)) (loop (+ i 1)))
+          v))))
+
+;; Parameters: ordinary magnitudes, with every 7th one already decayed to a
+;; subnormal so the parameter tensor itself carries the hostile values too.
+(define initial-theta
+  (make-buffer parameter-count
+               (lambda (i)
+                 (if (= 0 (modulo i 7))
+                     ;; ~1e-308 .. 1e-310: subnormal, so the parameter tensor
+                     ;; itself carries the hostile bit patterns.
+                     (/ 1.0e-300 (* 1.0e8 (exact->inexact (+ 1 (modulo i 97)))))
+                     (/ (exact->inexact (- (modulo i 13) 6)) 8.0)))))
+
+;; Moments: a geometric decay sweeping from normal magnitudes down through the
+;; subnormal range to zero, i.e. exactly what beta^step produces.
+(define initial-moment
+  (make-buffer parameter-count
+               (lambda (i) (/ 1.0e-16 (expt 4.0 (exact->inexact (modulo i 512)))))))
+(define initial-variance
+  (make-buffer parameter-count
+               (lambda (i) (/ 1.0e-14 (expt 4.1 (exact->inexact (modulo i 512)))))))
+
+(define subnormal-moments
+  (let loop ((i 0) (n 0))
+    (if (= i parameter-count)
+        n
+        (loop (+ i 1)
+              (if (and (> (vector-ref initial-moment i) 0.0)
+                       (< (vector-ref initial-moment i) 2.3e-308))
+                  (+ n 1)
+                  n)))))
+(check-true "checkpoint state really does reach the subnormal range"
+            (> subnormal-moments 100))
+
+(define subnormal-parameters
+  (let loop ((i 0) (n 0))
+    (if (= i parameter-count)
+        n
+        (loop (+ i 1)
+              (if (and (> (vector-ref initial-theta i) 0.0)
+                       (< (vector-ref initial-theta i) 2.3e-308))
+                  (+ n 1)
+                  n)))))
+(check-true "parameters themselves reach the subnormal range"
+            (> subnormal-parameters 100))
+
+(define (write-checkpoint theta moment variance step)
+  (model-save ckpt-path
+              (list (cons "theta" theta)
+                    (cons "moment" (vector->tensor moment))
+                    (cons "variance" (vector->tensor variance))
+                    (cons "step" (vector->tensor (vector step))))))
+
+(check-true "initial checkpoint written"
+            (write-checkpoint (vector->tensor initial-theta)
+                              initial-moment initial-variance 15750))
+
+;; --- resume: load into freshly allocated buffers ---------------------------
+
+(define (tensor->buffer t)
+  (let* ((n (tensor-length t))
+         (v (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! v i (tensor-ref t i)) (loop (+ i 1)))
+          v))))
+
+(define (entry ck name)
+  (let ((found (assoc name ck)))
+    (if found (cdr found) (error "checkpoint is missing a required tensor"))))
+
+;; A cheap differentiable objective over the whole parameter tensor. Elementwise
+;; so the tape stays proportional to the parameter count.
+(define (loss theta)
+  (tensor-sum (tensor-mul theta theta)))
+
+;; One resume-train-checkpoint cycle. Returns the step count it advanced to.
+(define (resume-and-train!)
+  (let* ((ck (model-load ckpt-path))
+         (theta (entry ck "theta"))
+         (moment (tensor->buffer (entry ck "moment")))
+         (variance (tensor->buffer (entry ck "variance")))
+         (step-tensor (entry ck "step"))
+         (step-before (inexact->exact (tensor-ref step-tensor 0)))
+         (step (+ step-before 1))
+         (gradients (gradient loss theta))
+         (bias1 (- 1.0 (expt beta1 (exact->inexact step))))
+         (bias2 (- 1.0 (expt beta2 (exact->inexact step)))))
+    (check-true "resumed checkpoint is a proper association list" (pair? ck))
+    (check "resumed parameter count" (tensor-length theta) parameter-count)
+    (check "resumed moment count" (vector-length moment) parameter-count)
+    ;; Read every resumed moment/variance, combine with the gradient, and write
+    ;; the updated parameter back. Every one of these reads was a potential
+    ;; fault before the fix.
+    (let update ((i 0) (touched 0))
+      (if (= i parameter-count)
+          (check "every parameter updated" touched parameter-count)
+          (let* ((g (tensor-ref gradients i))
+                 (m (+ (* beta1 (vector-ref moment i)) (* (- 1.0 beta1) g)))
+                 (v (+ (* beta2 (vector-ref variance i)) (* (- 1.0 beta2) g g)))
+                 (mhat (/ m bias1))
+                 (vhat (/ v bias2))
+                 (updated (- (tensor-ref theta i)
+                             (/ (* learning-rate mhat) (+ (sqrt vhat) epsilon)))))
+            (vector-set! moment i m)
+            (vector-set! variance i v)
+            (tensor-set! theta i updated)
+            (update (+ i 1) (+ touched 1)))))
+    (check-true "checkpoint rewritten after the step"
+                (write-checkpoint theta moment variance step))
+    step))
+
+;; Two cycles: the second one resumes state this program itself produced, which
+;; is where the reported fault appeared (save at step N, fault on the next use).
+(define step-1 (resume-and-train!))
+(check "first resumed step advances" step-1 15751)
+
+(define step-2 (resume-and-train!))
+(check "second resumed step advances" step-2 15752)
+
+;; The resumed trajectory must still be numerically sane.
+(define final (model-load ckpt-path))
+(define final-theta (entry final "theta"))
+(define non-finite
+  (let loop ((i 0) (bad 0))
+    (if (= i parameter-count)
+        bad
+        (loop (+ i 1)
+              (let ((x (tensor-ref final-theta i)))
+                (if (and (>= x -1.0e300) (<= x 1.0e300)) bad (+ bad 1)))))))
+(check "every resumed parameter stays finite" non-finite 0)
+(check-true "final loss is finite"
+            (let ((l (loss final-theta))) (and (>= l 0.0) (<= l 1.0e300))))
+
+(delete-file ckpt-path)
+
+;; ---------------------------------------------------------------------------
+
+(display "checkpoint_resume_training: ")
+(if (= failures 0)
+    (display "PASS: resumed model takes another reverse-mode training step")
+    (begin (display "FAIL: ") (display failures) (display " assertion(s)")))
+(newline)
+(if (> failures 0) (exit 1))

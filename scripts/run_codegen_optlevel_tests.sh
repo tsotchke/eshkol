@@ -44,11 +44,35 @@ if [ ! -d "$BUILD_DIR" ] || [ ! -f "$BUILD_DIR/eshkol-run" ]; then
     exit 1
 fi
 RUN="./$BUILD_DIR/eshkol-run"
+# Absolute forms, so each check can run with its cwd inside this run's own
+# scratch directory. The "plain run (no -o)" case is *defined* by having no
+# -o, so eshkol-run writes an implicit a.out next to the cwd — which used to
+# be the repository root, i.e. the shared artifact every other suite was
+# fighting over. Same assertion, private cwd.
+BUILD_DIR_ABS="$(cd "$BUILD_DIR" && pwd)"
+RUN_ABS="$BUILD_DIR_ABS/eshkol-run"
 echo -e "${GREEN}Using build directory: $BUILD_DIR${NC}"
 echo ""
 
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# Per-run, per-repo-root isolation and the shared honest-detection helpers.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "codegen-optlevel"
+WORK="$ESHKOL_TEST_TMPDIR/work"
+mkdir -p "$WORK"
+trap eshkol_test_isolation_cleanup EXIT
 
 PROBE="$WORK/optlevel_probe.esk"
 printf '%s\n' \
@@ -66,7 +90,7 @@ check_level() {
     printf "Testing %-52s " "$name"
 
     local log="$WORK/log.txt"
-    "$RUN" -d -L"./$BUILD_DIR" "$@" > "$log" 2>&1
+    ( cd "$WORK" && "$RUN_ABS" -d -L"$BUILD_DIR_ABS" "$@" ) > "$log" 2>&1
 
     if grep -qE "$expected" "$log"; then
         echo -e "${GREEN}PASS${NC}"
@@ -89,7 +113,27 @@ check_not_optimized() {
     printf "Testing %-52s " "$name"
 
     local log="$WORK/log.txt"
-    "$RUN" -d -L"./$BUILD_DIR" "$@" > "$log" 2>&1
+    local rc=0
+    ( cd "$WORK" && "$RUN_ABS" -d -L"$BUILD_DIR_ABS" "$@" ) > "$log" 2>&1 || rc=$?
+
+    # A compiler that crashed produces no "-O2/-O3" line either, so the plain
+    # "marker absent ⇒ PASS" test scored a failed compile as an assertion pass.
+    # Require the command to have succeeded and to have said *something*.
+    if [ "$rc" -ne 0 ]; then
+        echo -e "${RED}COMPILE FAIL (exit $rc)${NC}"
+        tail -5 "$log" | sed 's/^/      /'
+        FAILED_TESTS+=("$name")
+        ((FAIL++)) || true
+        return
+    fi
+    if eshkol_test_output_is_silent "$log"; then
+        echo -e "${RED}NO DIAGNOSTIC OUTPUT${NC}"
+        echo "    -d produced no pass diagnostics; absence of the -O2/-O3 line"
+        echo "    proves nothing when nothing was printed at all."
+        FAILED_TESTS+=("$name")
+        ((FAIL++)) || true
+        return
+    fi
 
     if grep -qE "optimization passes at -O[123]" "$log"; then
         echo -e "${RED}ASSERTION FAIL${NC}"

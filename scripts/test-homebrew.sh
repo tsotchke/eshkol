@@ -15,6 +15,24 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "homebrew"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -166,14 +184,14 @@ if [ "$LOCAL_TEST" = true ]; then
 
     # Run a quick test
     echo -e "${YELLOW}Running quick test...${NC}"
-    TEST_FILE=$(mktemp /tmp/eshkol-test.XXXXXX.esk)
+    TEST_FILE=$(mktemp "$ESHKOL_TEST_TMPDIR/eshkol-test.XXXXXX.esk")
     write_homebrew_test_file "$TEST_FILE"
 
-    if "$BUILD_DIR/eshkol-run" "$TEST_FILE" -L"$BUILD_DIR"; then
-        if [ -f "a.out" ]; then
+    if "$BUILD_DIR/eshkol-run" "$TEST_FILE" -L"$BUILD_DIR" -o "$ESHKOL_TEST_BIN"; then
+        if [ -f "$ESHKOL_TEST_BIN" ]; then
             echo "Running compiled output..."
-            ./a.out
-            rm -f a.out
+            "$ESHKOL_TEST_BIN"
+            eshkol_test_reset_bin
             echo -e "  ${GREEN}[OK]${NC} Compilation and execution successful"
         fi
     else

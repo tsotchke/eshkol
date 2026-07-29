@@ -306,6 +306,46 @@ eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count) {
  * @param arena Arena to allocate from; must be non-null.
  * @return      Newly initialized node, or nullptr on failure.
  */
+/**
+ * @brief Is @p bits, reinterpreted as an address, a live AD tape node?
+ *
+ * A tensor's element slot is 64 bits holding EITHER an f64 bit pattern or a
+ * pointer to the tape node standing in for that element, and the two ranges
+ * overlap: every SUBNORMAL double has a zero IEEE-754 exponent field and a
+ * bit pattern below the user-space pointer ceiling, so it is indistinguishable
+ * from an arena address by inspection alone. Codegen used to resolve the
+ * ambiguity by dereferencing the candidate and checking the node's op-type tag
+ * — which faults precisely when the candidate is not a pointer. A tensor
+ * element of 1e-309 (bits 0x0000b8157268fdaf) therefore SIGSEGV'd at its own
+ * value.
+ *
+ * This establishes ARENA RESIDENCY FIRST, so the candidate is only ever
+ * dereferenced once the arena confirms it owns that address; only then is the
+ * op-type tag read. A subnormal double's bit pattern is not arena-resident, so
+ * it is rejected without a single load through it.
+ *
+ * @param arena       Arena the tape nodes are allocated from.
+ * @param bits        Candidate element bit pattern.
+ * @param expect_type Required ad_node_type value, or a negative value to accept
+ *                    any plausible tag (0..63).
+ * @return 1 if @p bits is a live node in @p arena matching @p expect_type, else 0.
+ */
+int eshkol_ad_node_probe(const arena_t* arena, uint64_t bits, int32_t expect_type) {
+    if (bits == 0 || !arena) return 0;
+    /* A node allocated with an object header has that header 8 bytes below the
+     * payload, so require room for both before touching anything. */
+    const void* candidate = (const void*)(uintptr_t)bits;
+    if (!arena_contains(arena, candidate)) return 0;
+    /* Both the first and last byte of the tag resident implies they are in the
+     * same block (blocks are disjoint contiguous ranges), so the read is
+     * in-bounds rather than merely starting in bounds. */
+    if (!arena_contains(arena, (const void*)((uintptr_t)bits + sizeof(int32_t) - 1))) return 0;
+    const ad_node_t* node = (const ad_node_t*)candidate;
+    const int32_t type = (int32_t)node->type;
+    if (type < 0 || type > 63) return 0;
+    return (expect_type < 0 || type == expect_type) ? 1 : 0;
+}
+
 ad_node_t* arena_allocate_ad_node(arena_t* arena) {
     if (!arena) {
         eshkol_error("Cannot allocate AD node: null arena");

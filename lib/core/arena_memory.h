@@ -118,6 +118,12 @@ void arena_commit_scope(arena_t* arena);
 /** True if @p ptr points into memory allocated after the innermost scope
  *  mark on @p arena (i.e. it would be reclaimed if that scope were popped). */
 int arena_top_scope_contains(const arena_t* arena, const void* ptr);
+/** True if @p ptr points into ANY live allocation of @p arena (any block,
+ *  below that block's high-water mark). Unlike arena_top_scope_contains this
+ *  is scope-independent: it answers "is this address memory this arena owns
+ *  and has handed out", which is the precondition for dereferencing an
+ *  integer that MIGHT be an arena pointer. */
+int arena_contains(const arena_t* arena, const void* ptr);
 void eshkol_arena_iter_scope_end(arena_t* arena, const eshkol_tagged_value_t* vals, uint64_t n);
 
 // Per-thread arena management (v1.2)
@@ -439,6 +445,14 @@ struct eshkol_region {
     // runtime_regions.cpp touches it.
     void* fwd_map;
     arena_t* fwd_target;   // target arena the fwd_map entries were promoted into
+    // #341: the arena displaced by this region's eshkol_region_enter (or the
+    // REGION_NO_HIJACK sentinel when enter declined). `with-region` codegen keeps
+    // this token in an SSA register and hands it back to eshkol_region_leave, but
+    // a NON-LEXICAL close — a user-reachable region handle, or an unwind crossing
+    // an open region — has no such register to read. Recording it on the region
+    // makes the allocation-slot restore recoverable from the region stack alone,
+    // which is what lets eshkol_region_unwind_to() close regions it did not open.
+    arena_t* entry_saved_arena;
 };
 
 // Thread-local region stack (safe for parallel-map + with-region)
@@ -485,6 +499,122 @@ arena_t* eshkol_region_enter(eshkol_region_t* region);
 void eshkol_region_leave(arena_t* saved);
 void eshkol_parallel_scope_begin(void);
 void eshkol_parallel_scope_end(void);
+
+// ───────────────────────────────────────────────────────────────────────────
+// #341: USER-REACHABLE REGION HANDLES — non-lexical scoped reclamation.
+//
+// `with-region` is the recommended default and stays unchanged: a lexical block
+// cannot be left un-closed. But some loop shapes have no convenient lexical
+// body — most concretely an autodiff training step, whose per-step AD tape the
+// automatic per-iteration nursery (ESH-0214e) deliberately refuses to reclaim
+// because a `gradient` op / `set!` / `tensor-set!` in the body disqualifies its
+// static escape analysis. For those, a handle pair opens and closes the SAME
+// region machinery with no lexical bracket:
+//
+//   (region-open [name] [size])  -> opaque exact-integer handle token
+//   (region-close handle v ...)  -> deep-promoted v ... (region reclaimed)
+//   (region-open? handle)        -> #t while the handle names a live region
+//
+// SAFETY. The token is a slot index plus a GENERATION counter, not a pointer:
+// closing a handle bumps its slot's generation, so every stale token (double
+// close, use after close, a fabricated integer) fails validation and raises a
+// clean catchable error instead of touching freed memory. An out-of-order close
+// (closing an outer handle while an inner one is live) is a DEFINED cascade: it
+// closes the inner handles too, innermost first, and invalidates their tokens —
+// the same operation an unwind performs, so there is exactly one teardown path.
+// Kept values are deep-promoted level by level through the ESH-0214c/d escape
+// evacuator (interior-pointer walk included), never shallow-copied.
+//
+// UNWIND. eshkol_region_unwind_to() is the teardown primitive shared by close,
+// the exception path (eshkol_exception_handler_t::region_mark) and the
+// continuation path (eshkol_continuation_state_t::region_mark). A raise or a
+// call/cc escape crossing an open region closes it and promotes the in-flight
+// value out first. Because it works off the region stack rather than the handle
+// table, `with-region` gets the same guarantee (before this, a raise out of a
+// with-region body leaked the region AND left the allocation slot hijacked).
+// ───────────────────────────────────────────────────────────────────────────
+
+// Maximum simultaneously-open user handles per thread. Bounded by the region
+// stack itself: every open handle holds one region-stack entry.
+#define ESHKOL_MAX_REGION_HANDLES MAX_REGION_DEPTH
+
+// Operation status. The core handle operations NEVER raise: they return a status
+// and the caller raises through its own substrate's mechanism
+// (eshkol_runtime_fatal on native, vm_raise_error_msg in the bytecode VM) using
+// the shared eshkol_region_handle_status_message() text. That is what makes a
+// `guard` around a misused handle observe byte-identical output on both
+// substrates — the same contract the bytevector bounds checks use.
+#define ESHKOL_RH_OK           0  // success
+#define ESHKOL_RH_ERR_STALE    1  // invalid, already-closed, or foreign-thread token
+#define ESHKOL_RH_ERR_NOT_LIVE 2  // token decoded but its region left the stack
+#define ESHKOL_RH_ERR_TOO_MANY 3  // handle table exhausted (a close is missing)
+#define ESHKOL_RH_ERR_DEPTH    4  // region stack exhausted (a close is missing)
+#define ESHKOL_RH_ERR_CREATE   5  // region could not be created/activated
+
+// The canonical message for a status code. Identical on every substrate.
+const char* eshkol_region_handle_status_message(int status);
+
+// Open a region and return its handle token (>0), or 0 with *status set on
+// failure. `name` may be NULL; `size_hint` 0 selects the default. `reclaim`
+// selects the substrate contract: non-zero performs the real
+// region_create/region_push/eshkol_region_enter (native), zero records a
+// bookkeeping-only handle whose close reclaims nothing (the bytecode VM, whose
+// heap has no escape evacuator — see tests/vm_parity/PARITY.tsv).
+int64_t eshkol_region_handle_open(const char* name, uint64_t size_hint, int reclaim,
+                                  int* status);
+
+// Close the handle named by `token`, deep-promoting vals[0..n) out of every
+// region it closes (in place). Returns an ESHKOL_RH_* status; never raises.
+int eshkol_region_handle_close(int64_t token, eshkol_tagged_value_t* vals, uint64_t n);
+
+// Non-raising liveness probe: 1 while `token` names a currently-open handle.
+int eshkol_region_handle_live(int64_t token);
+
+// Unwind mark / unwind for substrates with NO region stack (the bytecode VM,
+// whose handles are bookkeeping-only). Native handles are retired by
+// eshkol_region_unwind_to() off the region stack instead; these use a monotonic
+// open-sequence number, so the two never interfere. The VM records the mark on
+// its handler frame and calls the unwind from vm_dispatch_exception, giving a
+// raise the same observable effect on handle liveness as on native.
+uint64_t eshkol_region_handle_seq_mark(void);
+void eshkol_region_handle_seq_unwind_to(uint64_t mark);
+
+// Region-stack depth, the mark form used by the exception/continuation records.
+uint64_t eshkol_region_mark(void);
+
+// Close every region opened after `mark`, innermost first, deep-promoting
+// vals[0..n) out of each level as it goes, restoring the allocation slot from
+// each region's recorded entry_saved_arena, and invalidating the tokens of any
+// handles that named the closed regions. Safe (a no-op) when the stack is
+// already at or below `mark`.
+void eshkol_region_unwind_to(uint64_t mark, eshkol_tagged_value_t* vals, uint64_t n);
+
+// Close every region entered since a continuation was captured, promoting the
+// value it delivers out of them first. Reads the mark from the continuation
+// state itself (eshkol_continuation_state_t::region_mark), so the invoke path
+// passes only the state pointer — the same shape as eshkol_unwind_dynamic_wind
+// and eshkol_promise_eval_unwind_to next to which it is called.
+void eshkol_region_unwind_for_continuation(void* state);
+
+// Surface entry points, shared verbatim by native codegen and the bytecode VM so
+// arity coercions and error text cannot diverge. Optional arguments are passed
+// as NULL pointers rather than sentinels.
+//   (region-open)          -> a = b = NULL
+//   (region-open n)        -> a = n, b = NULL   (numeric a = size hint, else name)
+//   (region-open 'nm n)    -> a = 'nm, b = n
+void eshkol_region_open_builtin(eshkol_tagged_value_t* out,
+                               const eshkol_tagged_value_t* a,
+                               const eshkol_tagged_value_t* b,
+                               int reclaim);
+// (region-close handle v ...) -> the promoted v for one keep, a list for several,
+// '() for none. `vals` is promoted in place before the region is reclaimed.
+void eshkol_region_close_builtin(eshkol_tagged_value_t* out,
+                                 const eshkol_tagged_value_t* handle,
+                                 eshkol_tagged_value_t* vals,
+                                 uint64_t n);
+// (region-open? handle) -> #t while the handle names a live region. Never raises.
+void eshkol_region_open_p_builtin(eshkol_tagged_value_t* out,
+                                  const eshkol_tagged_value_t* handle);
 
 // Region allocation - allocates in the current region
 void* region_allocate(size_t size);
