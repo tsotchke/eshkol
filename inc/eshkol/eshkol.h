@@ -2337,6 +2337,14 @@ typedef struct eshkol_operation {
 	       struct {
 	           char **export_names;              // Array of exported symbol names
 	           uint64_t num_exports;             // Number of symbols to export
+	           /* Non-NULL only on the marker node a lowered R7RS `define-library`
+	            * appends to its body: the dotted library name (e.g. "my.math")
+	            * this compilation unit establishes. A plain `(provide ...)`
+	            * leaves it NULL. The frontend library registry
+	            * (lib/frontend/library_registry.h) reads it so a subsequent
+	            * `import` of that name resolves from the unit instead of the
+	            * filesystem search path (R7RS-small 5.6.1). */
+	           char *library_name;
 	       } provide_op;
 	       // ===== MEMORY MANAGEMENT OPERATIONS (OALR) =====
 	       struct {
