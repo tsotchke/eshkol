@@ -1,0 +1,82 @@
+;; Fréchet (Karcher) mean on the Poincaré ball — VM behaviour regression.
+;;
+;; frechet-mean used to return the EUCLIDEAN weighted average and discard its
+;; curvature argument entirely. On the Poincaré ball that is not the Riemannian
+;; center of mass and not an approximation of one: geodesics are arcs orthogonal
+;; to the boundary, so the true mean pulls away from the chord midpoint, further
+;; and further as points approach the boundary. It agreed with the real answer
+;; only at the origin or at zero curvature — and nothing in the output revealed
+;; that the curvature had been dropped.
+;;
+;; Case 2 is the load-bearing one: it has a closed form independent of the
+;; implementation. On a diameter of the disc the arc-length coordinate is
+;; t = 2*artanh(x), and the weighted Fréchet mean is the weighted average in t.
+;; For x = +/-0.8 with weights 3 and 1:
+;;   t* = (3*2a - 1*2a)/4 = a,   a = artanh(0.8)
+;;   x* = tanh(t*/2) = tanh(artanh(0.8)/2)
+;; and tanh(artanh(0.5)) = 0.5 with artanh(0.8)/2 = artanh(0.5), so x* = 0.5
+;; EXACTLY, against a Euclidean average of 0.4.
+
+(define (approx= a b tol) (< (abs (- a b)) tol))
+
+(define (check name ok)
+  (display name)
+  (display ": ")
+  (display (if ok "PASS" "FAIL"))
+  (newline))
+
+(define TOL 1e-12)
+
+;; ---- Case 1: two symmetric points, equal weights -> the origin ----------
+(define sym (make-tensor '(2 2) 0.0))
+(tensor-set! sym '(0 0) 0.8)
+(tensor-set! sym '(1 0) -0.8)
+(define w-eq (make-tensor '(2) 1.0))
+(define m1 (frechet-mean sym w-eq -1.0))
+(check "symmetric pair means the origin"
+       (and (approx= (tensor-ref m1 '(0)) 0.0 TOL)
+            (approx= (tensor-ref m1 '(1)) 0.0 TOL)))
+
+;; ---- Case 2: closed form on a diameter, weights 3:1 -> exactly 0.5 ------
+(define w-31 (make-tensor '(2) 1.0))
+(tensor-set! w-31 '(0) 3.0)
+(define m2 (frechet-mean sym w-31 -1.0))
+(check "weighted mean matches the 1-D closed form (0.5)"
+       (and (approx= (tensor-ref m2 '(0)) 0.5 TOL)
+            (approx= (tensor-ref m2 '(1)) 0.0 TOL)))
+
+;; ---- Case 3: the curvature argument actually changes the answer ---------
+(define m3 (frechet-mean sym w-31 0.0))
+(check "K=0 gives the Euclidean average (0.4)"
+       (approx= (tensor-ref m3 '(0)) 0.4 TOL))
+(check "hyperbolic mean differs from the Euclidean one"
+       (> (abs (- (tensor-ref m2 '(0)) (tensor-ref m3 '(0)))) 0.09))
+
+;; ---- Case 4: coincident points -> that point, residual exactly zero -----
+;; Every log_mu(x_i) vanishes to rounding here, so a convergence bar taken
+;; purely relative to the log magnitudes would divide by noise and reject the
+;; most exact input there is.
+(define same (make-tensor '(2 2) 0.1))
+(define m4 (frechet-mean same w-eq -1.0))
+(check "coincident points mean that point"
+       (and (approx= (tensor-ref m4 '(0)) 0.1 TOL)
+            (approx= (tensor-ref m4 '(1)) 0.1 TOL)))
+
+;; ---- Case 5: domain and convergence gates raise CATCHABLE errors --------
+;; An implicit derivative taken at a non-stationary point is a plausible wrong
+;; number, so the forward must refuse rather than hand one downstream. These
+;; must be `guard`-able conditions, not process exits.
+(define outside (make-tensor '(2 2) 0.0))
+(tensor-set! outside '(0 0) 1.5)
+(check "point outside the ball raises a catchable error"
+       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean outside w-eq -1.0))))
+
+(define w-zero (make-tensor '(2) 0.0))
+(check "zero total weight raises a catchable error"
+       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-zero -1.0))))
+
+(check "positive curvature raises a catchable error"
+       (eq? 'caught (guard (e (#t 'caught)) (frechet-mean sym w-eq 1.0))))
+
+(display "frechet-mean surface regression complete")
+(newline)

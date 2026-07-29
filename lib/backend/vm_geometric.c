@@ -58,6 +58,270 @@ static void vm_push_manifold(VM* vm, void* manifold) {
 static VmTensor* vm_tensor_linear_combo_for_geometry(VM* vm, const VmTensor* a, double as,
                                                      const VmTensor* b, double bs);
 
+/* Catchable error, defined in vm_native.c (included after this file by
+ * eshkol_vm.c). Declared here for the same reason vm_native.c declares it ahead
+ * of its own definition: a geometric domain violation must be a Scheme
+ * condition the caller can `guard` on, not a process exit. */
+static void vm_raise_error_msg(VM* vm, const char* msg);
+
+/*******************************************************************************
+ * Weighted Fréchet (Karcher) mean on the Poincaré ball
+ *
+ * frechet-mean(points, weights, curvature) is the Riemannian center of mass:
+ *
+ *     mu* = argmin_mu sum_i w_i d(mu, x_i)^2,
+ *
+ * equivalently the solution of the stationarity condition
+ *
+ *     sum_i w_i log_mu(x_i) = 0.                                          (*)
+ *
+ * WHAT THIS REPLACES. This op used to return the EUCLIDEAN weighted average
+ * sum_i w_i x_i / sum_i w_i, discarding the curvature argument entirely. On the
+ * Poincaré ball that is not the Fréchet mean and not an approximation of it —
+ * the geodesics are circular arcs orthogonal to the boundary, so the Riemannian
+ * center of mass moves away from the chord midpoint, by more and more as the
+ * points approach the boundary. It agreed with the real answer only at the
+ * origin or at zero curvature. A result that carries a curvature parameter it
+ * ignores is the plausible-wrong-number case: nothing in the output shows the
+ * argument was dropped.
+ *
+ * WHY f64 AND NOT THE fp32 PATH. The derivative of this op (see
+ * tensor_frechet_mean_backward in lib/bridge/tensor_backward.cpp) is taken by
+ * implicit differentiation of (*), which is only valid AT the fixed point, and
+ * is therefore gated on the stationarity residual. An fp32 mean carries
+ * |mu - mu*| ~ 1e-7, so its residual sits around 1e-7 relative and can never
+ * satisfy a 1e-9 gate: an fp32 forward makes the exact derivative unavailable by
+ * construction. Both the portable and the linked-library builds therefore use
+ * this f64 iteration, which converges to ~1e-16 relative residual on ordinary
+ * inputs and leaves the gate satisfiable.
+ *
+ * Curvature convention: the argument is the sectional curvature K <= 0, matching
+ * every in-tree call site (make-hyperbolic-manifold 2 -1.0, poincare-distance
+ * ... -1.0). The ball has radius 1/sqrt(-K); K = 0 is the Euclidean case, where
+ * the weighted average IS the Fréchet mean and is used exactly.
+ ******************************************************************************/
+
+/* Iteration budget and relative residual bar. The bar matches the default
+ * tolerance of the backward's gate (kFrechetResidualTol), so a forward that
+ * returns successfully produces a mean the derivative will accept. */
+#define VM_FRECHET_MAX_ITERS 256
+#define VM_FRECHET_RESID_TOL 1e-9
+
+static double vm_frechet_dot(const double* a, const double* b, int n) {
+    double t = 0.0;
+    for (int i = 0; i < n; i++) t += a[i] * b[i];
+    return t;
+}
+
+/** @brief Möbius addition out = a (+)_c x on the ball of curvature -c. */
+static void vm_frechet_mobius_add(const double* a, const double* x, double c,
+                                  int n, double* out) {
+    double ax = vm_frechet_dot(a, x, n);
+    double aa = vm_frechet_dot(a, a, n);
+    double xx = vm_frechet_dot(x, x, n);
+    double A1 = 1.0 + 2.0 * c * ax + c * xx;
+    double B1 = 1.0 - c * aa;
+    double D  = 1.0 + 2.0 * c * ax + c * c * aa * xx;
+    if (D == 0.0) D = 1e-300;
+    for (int i = 0; i < n; i++) out[i] = (A1 * a[i] + B1 * x[i]) / D;
+}
+
+/** @brief log_mu(x) into @p out; scratch must hold n doubles. */
+static void vm_frechet_log_map(const double* mu, const double* x, double c,
+                               int n, double* out, double* scratch) {
+    for (int i = 0; i < n; i++) scratch[i] = -mu[i];
+    vm_frechet_mobius_add(scratch, x, c, n, out);       /* out = u */
+    double s = sqrt(c);
+    double r = sqrt(vm_frechet_dot(out, out, n));
+    if (r <= 0.0) {                                     /* x == mu */
+        for (int i = 0; i < n; i++) out[i] = 0.0;
+        return;
+    }
+    double sr = s * r;
+    if (sr >= 1.0) sr = 1.0 - 1e-15;                    /* caller gates the domain */
+    double k = (1.0 - c * vm_frechet_dot(mu, mu, n)) / s;
+    double f = k * atanh(sr) / r;
+    for (int i = 0; i < n; i++) out[i] *= f;
+}
+
+/** @brief exp_mu(v) into @p out; scratch must hold n doubles. */
+static void vm_frechet_exp_map(const double* mu, const double* v, double c,
+                               int n, double* out, double* scratch) {
+    double s = sqrt(c);
+    double nv = sqrt(vm_frechet_dot(v, v, n));
+    if (nv <= 0.0) {
+        for (int i = 0; i < n; i++) out[i] = mu[i];
+        return;
+    }
+    /* sqrt(c) * lambda_mu / 2 = sqrt(c)/(1 - c|mu|^2) */
+    double denom = 1.0 - c * vm_frechet_dot(mu, mu, n);
+    if (denom <= 0.0) denom = 1e-300;
+    double t = tanh(s * nv / denom) / (s * nv);
+    for (int i = 0; i < n; i++) scratch[i] = t * v[i];
+    vm_frechet_mobius_add(mu, scratch, c, n, out);
+}
+
+/**
+ * @brief Compute the weighted Fréchet mean, or report why it cannot be computed.
+ *
+ * @param pts      n_points x dim, row-major
+ * @param wts      n_points weights (NULL means uniform)
+ * @param n_w      number of entries actually available in @p wts
+ * @param K        sectional curvature, must be <= 0
+ * @param mu       out: dim doubles
+ * @param scratch  3 * dim doubles of scratch
+ * @param resid_out out: the achieved relative stationarity residual
+ * @return NULL on success, else a static human-readable reason. The reason is
+ *         returned rather than raised here so the caller owns the VM error
+ *         path; @p detail receives the numbers for the message.
+ */
+static const char* vm_frechet_mean_compute(const double* pts, const double* wts,
+                                           int64_t n_w, int n_points, int dim,
+                                           double K, double* mu, double* scratch,
+                                           double* resid_out) {
+    *resid_out = 0.0;
+    if (n_points <= 0 || dim <= 0) return "needs at least one point of positive dimension";
+    if (!(K <= 0.0) || !(K == K))
+        return "curvature must be <= 0 (frechet-mean is the hyperbolic/Euclidean "
+               "Riemannian center of mass; the ball has radius 1/sqrt(-K))";
+
+    double wsum = 0.0;
+    for (int i = 0; i < n_points; i++) {
+        double w = (wts && i < n_w) ? wts[i] : 1.0;
+        if (!(w == w)) return "a weight is NaN";
+        if (w < 0.0) return "weights must be non-negative";
+        wsum += w;
+    }
+    if (!(wsum > 0.0)) return "total weight must be positive (the mean is undefined otherwise)";
+
+    for (int64_t t = 0; t < (int64_t)n_points * dim; t++)
+        if (!(pts[t] == pts[t])) return "a point coordinate is NaN";
+
+    /* ---- Euclidean case: the weighted average is exactly the mean ------ */
+    if (K == 0.0) {
+        for (int k = 0; k < dim; k++) mu[k] = 0.0;
+        for (int i = 0; i < n_points; i++) {
+            double w = (wts && i < n_w) ? wts[i] : 1.0;
+            for (int k = 0; k < dim; k++) mu[k] += w * pts[(int64_t)i * dim + k];
+        }
+        for (int k = 0; k < dim; k++) mu[k] /= wsum;
+        return NULL;
+    }
+
+    /* ---- Hyperbolic case ---------------------------------------------- */
+    const double c = -K;
+    const double radius = 1.0 / sqrt(c);
+    for (int i = 0; i < n_points; i++) {
+        const double* xi = pts + (int64_t)i * dim;
+        if (!(sqrt(vm_frechet_dot(xi, xi, dim)) < radius))
+            return "every point must lie strictly inside the Poincare ball of "
+                   "radius 1/sqrt(-K)";
+    }
+
+    double* step  = scratch;
+    double* lg    = scratch + dim;
+    double* tmp   = scratch + 2 * dim;
+
+    /* Seed from the weighted Euclidean average — inside the ball because the
+     * ball is convex in the ambient coordinates. */
+    for (int k = 0; k < dim; k++) mu[k] = 0.0;
+    for (int i = 0; i < n_points; i++) {
+        double w = (wts && i < n_w) ? wts[i] : 1.0;
+        for (int k = 0; k < dim; k++) mu[k] += w * pts[(int64_t)i * dim + k] / wsum;
+    }
+
+    double resid_rel = 0.0;
+    for (int it = 0; it < VM_FRECHET_MAX_ITERS; it++) {
+        for (int k = 0; k < dim; k++) step[k] = 0.0;
+        double max_log = 0.0;
+        for (int i = 0; i < n_points; i++) {
+            double w = (wts && i < n_w) ? wts[i] : 1.0;
+            vm_frechet_log_map(mu, pts + (int64_t)i * dim, c, dim, lg, tmp);
+            for (int k = 0; k < dim; k++) {
+                step[k] += w * lg[k];
+                double a = fabs(lg[k]);
+                if (a > max_log) max_log = a;
+            }
+        }
+        double resid = sqrt(vm_frechet_dot(step, step, dim));
+        /* Relative WITH an absolute floor: 1 + max|log|, not max|log|. When the
+         * points coincide with the iterate every log_mu(x_i) is zero to rounding
+         * (~1e-19), and a purely relative bar would divide a numerically-exact
+         * residual by that noise and report a huge relative error for the most
+         * exact case there is. The 1 + |.| denominator is the same convention the
+         * gradient-oracle comparison helpers use. */
+        resid_rel = resid / (wsum * (1.0 + max_log));
+        *resid_out = resid_rel;
+        if (resid_rel <= VM_FRECHET_RESID_TOL) return NULL;
+
+        for (int k = 0; k < dim; k++) step[k] /= wsum;
+        vm_frechet_exp_map(mu, step, c, dim, tmp, lg);
+        double moved = 0.0;
+        for (int k = 0; k < dim; k++) {
+            double dk = fabs(tmp[k] - mu[k]);
+            if (dk > moved) moved = dk;
+            mu[k] = tmp[k];
+        }
+        /* A step that does not move the iterate at all cannot improve the
+         * residual either; stop rather than spin out the budget. The caller
+         * still applies the residual gate to whatever was reached. */
+        if (moved == 0.0) break;
+    }
+
+    if (resid_rel <= VM_FRECHET_RESID_TOL) return NULL;
+    return "the Karcher iteration did not converge";
+}
+
+/**
+ * @brief Shared implementation of native id 817 for both the portable and the
+ *        linked-library builds: pops (points, weights, curvature), pushes the
+ *        f64 Fréchet mean, or raises a catchable error.
+ *
+ * The residual gate is the point of the error path. A mean that has not reached
+ * stationarity is exactly the input for which the implicit derivative returns a
+ * plausible wrong number, so a silent near-answer here would be laundered into a
+ * wrong gradient downstream.
+ */
+static void vm_dispatch_frechet_mean(VM* vm) {
+    double K = as_number(vm_pop(vm));
+    VmTensor* wv = vm_get_tensor(vm, vm_pop(vm));
+    VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
+
+    if (!pv || !pv->data) {
+        vm_raise_error_msg(vm, "frechet-mean: first argument must be a tensor of points");
+        return;
+    }
+    int dim      = (pv->n_dims >= 2) ? (int)pv->shape[1] : (int)pv->total;
+    int n_points = (pv->n_dims >= 2) ? (int)pv->shape[0] : 1;
+
+    int64_t shape[1] = { dim };
+    VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
+    double* scratch = (double*)vm_alloc(&vm->heap.regions, (size_t)(3 * dim) * sizeof(double));
+    if (!out || !scratch) {
+        vm_raise_error_msg(vm, "frechet-mean: out of memory");
+        return;
+    }
+
+    double resid = 0.0;
+    const char* why = vm_frechet_mean_compute(
+        pv->data, wv ? wv->data : NULL, wv ? wv->total : 0,
+        n_points, dim, K, out->data, scratch, &resid);
+
+    if (why) {
+        char msg[320];
+        snprintf(msg, sizeof msg,
+                 "frechet-mean: %s (points=%d, dim=%d, curvature=%.17g, "
+                 "relative stationarity residual %.3e vs tolerance %.1e). The "
+                 "Frechet mean is the solution of sum_i w_i log_mu(x_i) = 0; a "
+                 "non-stationary iterate is not an approximate answer, because "
+                 "its implicit derivative is a plausible wrong gradient.",
+                 why, n_points, dim, K, resid, VM_FRECHET_RESID_TOL);
+        vm_raise_error_msg(vm, msg);
+        return;
+    }
+    VM_PUSH_TENSOR(vm, out);
+}
+
 #if !defined(ESHKOL_GEOMETRIC_ENABLED)
 typedef struct {
     int type;          /* 0 euclidean, 1 hyperbolic, 2 spherical, 3 product */
@@ -569,26 +833,12 @@ static void vm_dispatch_geometric_fallback(VM* vm, int fid) {
         vm_push_tensor_or_nil(vm, vm_tensor_scale_for_geometry(vm, x, r));
         break;
     }
-    case 817: { /* frechet-mean(points, weights, curvature) */
-        (void)as_number(vm_pop(vm));
-        VmTensor* weights = vm_get_tensor(vm, vm_pop(vm));
-        VmTensor* points = vm_get_tensor(vm, vm_pop(vm));
-        if (!points || !points->data) { vm_push(vm, NIL_VAL); break; }
-        int n = (points->n_dims >= 2) ? (int)points->shape[0] : 1;
-        int dim = (points->n_dims >= 2) ? (int)points->shape[1] : (int)points->total;
-        int64_t shape[1] = {dim};
-        VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
-        if (!out) { vm_push(vm, NIL_VAL); break; }
-        double wsum = 0.0;
-        for (int i = 0; i < n; i++) {
-            double w = (weights && i < weights->total) ? weights->data[i] : 1.0;
-            wsum += w;
-            for (int d = 0; d < dim; d++) out->data[d] += w * points->data[i * dim + d];
-        }
-        if (wsum != 0.0) for (int d = 0; d < dim; d++) out->data[d] /= wsum;
-        VM_PUSH_TENSOR(vm, out);
+    case 817: /* frechet-mean(points, weights, curvature) */
+        /* Real Riemannian center of mass in f64, gated on the stationarity
+         * residual. This used to be the Euclidean weighted average with the
+         * curvature argument discarded — see vm_dispatch_frechet_mean. */
+        vm_dispatch_frechet_mean(vm);
         break;
-    }
 
     case 819: { /* great-circle-distance(x, y) */
         VmTensor* y = vm_get_tensor(vm, vm_pop(vm));
@@ -1236,28 +1486,16 @@ static void vm_dispatch_geometric(VM* vm, int fid) {
         } else vm_push(vm, NIL_VAL);
         break;
     }
-    case 817: { /* frechet-mean(points_tensor, weights_tensor, curvature) */
-        float c = (float)as_number(vm_pop(vm));
-        VmTensor* wv = vm_get_tensor(vm, vm_pop(vm));
-        VmTensor* pv = vm_get_tensor(vm, vm_pop(vm));
-        if (pv && wv) {
-            float* pf = vm_tensor_to_float(vm, pv);
-            float* wf = vm_tensor_to_float(vm, wv);
-            int dim = (pv->n_dims >= 2) ? (int)pv->shape[1] : (int)pv->total;
-            int n_points = (pv->n_dims >= 2) ? (int)pv->shape[0] : 1;
-            qllm_tensor_t* result = qllm_hyperbolic_frechet_mean(pf, wf, n_points, dim, c, 100, 1e-6f);
-            if (result) {
-                float* rd = (float*)qllm_tensor_get_data(result);
-                int64_t shape[1] = {dim};
-                VmTensor* out = vm_tensor_zeros(&vm->heap.regions, shape, 1);
-                if (out && rd) for (int i = 0; i < dim; i++) out->data[i] = rd[i];
-                qllm_tensor_destroy(result);
-                if (out) { VM_PUSH_TENSOR(vm, out); break; }
-            }
-        }
-        vm_push(vm, NIL_VAL);
+    case 817: /* frechet-mean(points_tensor, weights_tensor, curvature) */
+        /* Deliberately NOT routed through qllm_hyperbolic_frechet_mean even when
+         * the library is linked. That entry point works in fp32, and an fp32
+         * mean carries |mu - mu*| ~ 1e-7, so its stationarity residual lands
+         * around 1e-7 relative — two orders above the 1e-9 gate the implicit
+         * derivative requires. Using the shared f64 iteration keeps the op
+         * differentiable in both build configurations; see
+         * vm_dispatch_frechet_mean. */
+        vm_dispatch_frechet_mean(vm);
         break;
-    }
 
     /* ═══ Spherical operations (815-819) ═══ */
     case 819: { /* great-circle-distance(x, y) */

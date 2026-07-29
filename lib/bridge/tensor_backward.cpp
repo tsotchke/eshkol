@@ -14,10 +14,12 @@
  * Copyright (C) Tsotchke Corporation. MIT License.
  */
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 /* Include the Eshkol AD types — eshkol.h is a C++ header, no extern "C" needed */
 #include "eshkol/eshkol.h"
@@ -727,6 +729,524 @@ extern "C" void tensor_embedding_backward(ad_node_t* node) {
     }
 }
 
+/*******************************************************************************
+ * Fréchet mean backward — implicit differentiation at the fixed point
+ *
+ * The weighted Fréchet (Karcher) mean of points x_1..x_n on the Poincaré ball
+ * with weights w_1..w_n is the minimiser of the weighted variance
+ *
+ *     mu* = argmin_mu  sum_i w_i d(mu, x_i)^2
+ *
+ * and is therefore defined IMPLICITLY, as the stationary point of that
+ * functional:
+ *
+ *     F(mu; X, w) := sum_i w_i log_mu(x_i) = 0.                            (*)
+ *
+ * WHY IMPLICIT DIFFERENTIATION AND NOT UNROLLING.  The forward is computed by a
+ * fixed-point iteration, so there are two different things one could
+ * differentiate: the mathematical object mu*(X, w) defined by (*), or the
+ * particular finite iteration that approximates it. They do not agree — the
+ * unrolled derivative carries the iteration's own transient, converges to the
+ * implicit one only as the iterate converges, and depends on the starting point
+ * and the iteration count, none of which are properties of the Fréchet mean.
+ * The derivative of the mathematical object is the implicit one, so that is what
+ * this rule computes: differentiate (*) and solve.
+ *
+ * Differentiating (*) totally at mu = mu*:
+ *
+ *     A dmu + sum_j (dF/dx_j) dx_j + sum_j (dF/dw_j) dw_j = 0,
+ *     A := dF/dmu = sum_i w_i * d log_mu(x_i)/d mu           (d x d)
+ *
+ * so d mu/d x_j = -A^{-1} (w_j * d log_mu(x_j)/d x_j) and
+ *    d mu/d w_j = -A^{-1} log_mu(x_j).
+ *
+ * In reverse mode we are handed g = dL/dmu and want dL/dx_j and dL/dw_j, which
+ * needs only ONE linear solve regardless of n:
+ *
+ *     solve  A^T z = g
+ *     dL/dx_j = -w_j (d log_mu(x_j)/d x_j)^T z
+ *     dL/dw_j = -<log_mu(x_j), z>
+ *
+ * THE RESIDUAL GATE IS NOT OPTIONAL.  Every line above assumes F(mu*) = 0. At a
+ * point that has not converged, F != 0, the implicit function theorem does not
+ * apply, and the formulas still return a smooth, plausible, WRONG vector — the
+ * worst failure class there is, because nothing downstream can tell it from a
+ * correct gradient. So the rule recomputes the residual from the retained mu*,
+ * points and weights and refuses if it is not at the fixed point. Recomputing
+ * rather than trusting a residual stored by the forward is deliberate: a stored
+ * residual can be stale with respect to the operands actually on the node.
+ *
+ * NODE CONTRACT
+ *   node->input1        points node, shape [n_points, dim]
+ *   node->input2        weights node, shape [n_points]
+ *   node->tensor_value  the converged mean mu*, dim doubles
+ *   node->tensor_gradient  upstream dL/dmu, dim doubles
+ *   node->params as int64[6]
+ *       [0] n_points
+ *       [1] dim
+ *       [2] sectional curvature K <= 0, bit-cast from double
+ *           (the "scale_bits" convention already used by the attention params)
+ *       [3] residual tolerance, bit-cast from double; <= 0 or non-finite
+ *           selects the default
+ *       [4] [5] reserved, zero
+ *
+ * The ball has radius 1/sqrt(c) for c = -K; K = 0 is the Euclidean case, where
+ * the mean is linear in the points and the implicit machinery degenerates to the
+ * exact closed form.
+ ******************************************************************************/
+
+/** @brief Default relative tolerance for the stationarity residual. The
+ *  residual is a tangent vector at mu whose scale is set by the spread of the
+ *  data, so the gate is relative to sum_i w_i and to the largest |log_mu(x_i)|
+ *  seen — an absolute bar would be meaningless for tightly or widely spread
+ *  point sets alike. */
+static const double kFrechetResidualTol = 1e-9;
+
+/** @brief Bit-cast an int64 params slot back to the double it was stored from
+ *  (the attention rule's "scale_bits" convention). */
+static double double_from_bits(int64_t bits) {
+    double d;
+    std::memcpy(&d, &bits, sizeof d);
+    return d;
+}
+
+namespace {
+
+/** @brief Small dense workspace for the Poincaré-ball geometry of one Fréchet
+ *  mean backward. All buffers are plain std::vector: the enclosing dispatcher
+ *  runs inside an arena scope that is popped on return, so scratch must not come
+ *  from the arena, and the persistent gradient buffers must not come from here.
+ */
+struct FrechetGeometry {
+    double  c;        /**< -K, so the ball has radius 1/sqrt(c); c > 0 */
+    double  s;        /**< sqrt(c) */
+    int64_t d;        /**< ambient dimension */
+
+    /* Scratch reused per point. */
+    std::vector<double> u;         /**< (-mu) (+)_c x                       */
+    std::vector<double> du_dmu;    /**< d x d                              */
+    std::vector<double> du_dx;     /**< d x d                              */
+    std::vector<double> dlog_dmu;  /**< d x d                              */
+    std::vector<double> dlog_dx;   /**< d x d                              */
+    std::vector<double> logv;      /**< log_mu(x)                          */
+
+    FrechetGeometry(double curvature_K, int64_t dim)
+        : c(-curvature_K), s(std::sqrt(-curvature_K)), d(dim),
+          u((size_t)dim), du_dmu((size_t)(dim * dim)), du_dx((size_t)(dim * dim)),
+          dlog_dmu((size_t)(dim * dim)), dlog_dx((size_t)(dim * dim)),
+          logv((size_t)dim) {}
+
+    static double dot(const double* a, const double* b, int64_t n) {
+        double t = 0.0;
+        for (int64_t i = 0; i < n; i++) t += a[i] * b[i];
+        return t;
+    }
+
+    /**
+     * @brief Möbius addition u = a (+)_c x together with its Jacobians in a and
+     *        in x, all from the one shared set of intermediates.
+     *
+     *   u = (A1 a + B1 x) / D
+     *   A1 = 1 + 2c<a,x> + c|x|^2      B1 = 1 - c|a|^2
+     *   D  = 1 + 2c<a,x> + c^2 |a|^2 |x|^2
+     *
+     * Writing the quotient rule out once for both arguments keeps the two
+     * Jacobians consistent by construction; deriving them separately is how a
+     * sign error in one of them survives a gradient check on the other.
+     */
+    void mobius_add_with_jacobians(const double* a, const double* x,
+                                   double* out,          /* d      */
+                                   double* dout_da,      /* d x d  */
+                                   double* dout_dx)      /* d x d  */
+    {
+        const int64_t n = d;
+        double ax = dot(a, x, n);
+        double aa = dot(a, a, n);
+        double xx = dot(x, x, n);
+
+        double A1 = 1.0 + 2.0 * c * ax + c * xx;
+        double B1 = 1.0 - c * aa;
+        double D  = 1.0 + 2.0 * c * ax + c * c * aa * xx;
+        double invD = 1.0 / D;
+
+        for (int64_t i = 0; i < n; i++) out[i] = (A1 * a[i] + B1 * x[i]) * invD;
+
+        /* Row gradients of the scalars. */
+        for (int64_t j = 0; j < n; j++) {
+            double dA1_da = 2.0 * c * x[j];
+            double dB1_da = -2.0 * c * a[j];
+            double dD_da  = 2.0 * c * x[j] + 2.0 * c * c * xx * a[j];
+
+            double dA1_dx = 2.0 * c * a[j] + 2.0 * c * x[j];
+            /* dB1/dx = 0 */
+            double dD_dx  = 2.0 * c * a[j] + 2.0 * c * c * aa * x[j];
+
+            for (int64_t i = 0; i < n; i++) {
+                double kron = (i == j) ? 1.0 : 0.0;
+                dout_da[i * n + j] =
+                    (A1 * kron + a[i] * dA1_da + x[i] * dB1_da) * invD
+                    - out[i] * dD_da * invD;
+                dout_dx[i * n + j] =
+                    (a[i] * dA1_dx + B1 * kron) * invD
+                    - out[i] * dD_dx * invD;
+            }
+        }
+    }
+
+    /**
+     * @brief log_mu(x) and its Jacobians in mu and in x.
+     *
+     *   log_mu(x) = k(mu) * phi(r) * u,     u = (-mu) (+)_c x,  r = |u|
+     *   k(mu)     = (1 - c|mu|^2)/sqrt(c)   ( = 2/(sqrt(c) lambda_mu) )
+     *   phi(r)    = artanh(sqrt(c) r) / r
+     *
+     * @return false if the pair is outside the differentiable domain (x on the
+     *         ball boundary, or u degenerate), in which case no Jacobian exists
+     *         and the caller must refuse rather than substitute a limit.
+     */
+    bool log_map_with_jacobians(const double* mu, const double* x) {
+        const int64_t n = d;
+
+        std::vector<double> neg_mu((size_t)n);
+        for (int64_t i = 0; i < n; i++) neg_mu[(size_t)i] = -mu[i];
+
+        mobius_add_with_jacobians(neg_mu.data(), x, u.data(),
+                                  du_dmu.data(), du_dx.data());
+        /* d u / d mu = (d u / d a) * (d a / d mu) = -(d u / d a). */
+        for (size_t t = 0; t < du_dmu.size(); t++) du_dmu[t] = -du_dmu[t];
+
+        double r2 = dot(u.data(), u.data(), n);
+        double r  = std::sqrt(r2);
+
+        double mumu = dot(mu, mu, n);
+        double k    = (1.0 - c * mumu) / s;
+
+        /* r == 0 means x == mu exactly: log_mu(mu) = 0 and the Jacobian in x is
+         * k*sqrt(c)... times the identity in the limit, but the u/|u| direction
+         * is undefined at the point itself. Handle the limit exactly rather than
+         * dividing by zero: phi(r) -> sqrt(c) and phi'(r) -> 0 as r -> 0. */
+        double phi, dphi;
+        if (r <= 0.0) {
+            phi  = s;
+            dphi = 0.0;
+        } else {
+            double sr = s * r;
+            if (!(sr < 1.0)) return false;      /* x at/outside the boundary */
+            double at = std::atanh(sr);
+            phi  = at / r;
+            /* d/dr [ artanh(s r)/r ] = s/(r (1 - s^2 r^2)) - artanh(s r)/r^2 */
+            dphi = s / (r * (1.0 - sr * sr)) - at / r2;
+        }
+
+        for (int64_t i = 0; i < n; i++) logv[(size_t)i] = k * phi * u[(size_t)i];
+
+        /* log = k(mu) * phi(r) * u, with r = |u| and u = u(mu, x):
+         *
+         *   d log/d mu = phi * u (dk/dmu) + k [ phi' u u^T/r + phi I ] du/dmu
+         *   d log/d x  =                    k [ phi' u u^T/r + phi I ] du/dx
+         *
+         * dk/dmu = -2 c mu^T / s. The bracket is the same operator in both, so
+         * it is applied once and reused. */
+        double inv_r = (r > 0.0) ? (1.0 / r) : 0.0;
+        for (int64_t i = 0; i < n; i++) {
+            for (int64_t j = 0; j < n; j++) {
+                /* Apply M = phi' u u^T/r + phi I to column j of du/dmu and
+                 * du/dx. Same operator for both, built once per (i, m). */
+                double acc_mu = 0.0, acc_x = 0.0;
+                for (int64_t m = 0; m < n; m++) {
+                    double M_im = dphi * u[(size_t)i] * u[(size_t)m] * inv_r
+                                + ((i == m) ? phi : 0.0);
+                    acc_mu += M_im * du_dmu[(size_t)(m * n + j)];
+                    acc_x  += M_im * du_dx[(size_t)(m * n + j)];
+                }
+                double dk_dmu_j = -2.0 * c * mu[j] / s;
+                dlog_dmu[(size_t)(i * n + j)] =
+                    phi * u[(size_t)i] * dk_dmu_j + k * acc_mu;
+                dlog_dx[(size_t)(i * n + j)] = k * acc_x;
+            }
+        }
+        return true;
+    }
+};
+
+/**
+ * @brief Solve M^T z = rhs in place by LU with partial pivoting.
+ *
+ * @param M   n x n row-major; overwritten.
+ * @param rhs n doubles in, the solution z out.
+ * @return false if M is numerically singular, in which case the fixed point is
+ *         degenerate and no derivative exists.
+ */
+bool solve_transpose(double* M, double* rhs, int64_t n) {
+    /* Transpose in place so the factorisation solves M^T z = rhs. */
+    for (int64_t i = 0; i < n; i++)
+        for (int64_t j = i + 1; j < n; j++)
+            std::swap(M[i * n + j], M[j * n + i]);
+
+    for (int64_t col = 0; col < n; col++) {
+        int64_t piv = col;
+        double best = std::fabs(M[col * n + col]);
+        for (int64_t r = col + 1; r < n; r++) {
+            double v = std::fabs(M[r * n + col]);
+            if (v > best) { best = v; piv = r; }
+        }
+        if (!(best > 0.0) || !(best == best)) return false;
+        if (piv != col) {
+            for (int64_t j = 0; j < n; j++) std::swap(M[col * n + j], M[piv * n + j]);
+            std::swap(rhs[col], rhs[piv]);
+        }
+        double d = M[col * n + col];
+        for (int64_t r = col + 1; r < n; r++) {
+            double f = M[r * n + col] / d;
+            if (f == 0.0) continue;
+            for (int64_t j = col; j < n; j++) M[r * n + j] -= f * M[col * n + j];
+            rhs[r] -= f * rhs[col];
+        }
+    }
+    /* Back substitution. */
+    for (int64_t i = n - 1; i >= 0; i--) {
+        double acc = rhs[i];
+        for (int64_t j = i + 1; j < n; j++) acc -= M[i * n + j] * rhs[j];
+        double d = M[i * n + i];
+        if (d == 0.0) return false;
+        rhs[i] = acc / d;
+    }
+    return true;
+}
+
+}  // namespace
+
+/** @brief Backward pass for the weighted Fréchet (Karcher) mean, by implicit
+ *  differentiation of the stationarity condition sum_i w_i log_mu(x_i) = 0 at
+ *  the converged mean. Gated on the recomputed residual: at a non-stationary mu
+ *  the implicit formulas return a plausible wrong gradient, so the rule refuses
+ *  instead. See the block comment above for the derivation and node contract. */
+extern "C" void tensor_frechet_mean_backward(ad_node_t* node) {
+    if (!node || !node->tensor_gradient) return;
+
+    ad_node_t* pts_node = node->input1;
+    ad_node_t* w_node   = node->input2;
+
+    if (!pts_node || !pts_node->tensor_value) {
+        eshkol_fatal("frechet-mean backward: node->input1 must carry the points "
+                     "tensor [n_points, dim]; refusing to differentiate a fixed "
+                     "point whose operands were not retained.");
+        return;
+    }
+    if (!node->tensor_value) {
+        eshkol_fatal("frechet-mean backward: node->tensor_value must carry the "
+                     "converged mean mu*; the implicit derivative is only defined "
+                     "at the fixed point, so it cannot be recovered here.");
+        return;
+    }
+
+    const int64_t* p = (const int64_t*)&node->params;
+    int64_t n_points = p[0];
+    int64_t dim      = p[1];
+    double  K        = double_from_bits(p[2]);
+    double  tol      = double_from_bits(p[3]);
+
+    if (n_points <= 0)
+        n_points = (pts_node->ndim >= 1 && pts_node->shape) ? pts_node->shape[0] : 0;
+    if (dim <= 0)
+        dim = (node->ndim >= 1 && node->shape) ? node->shape[0]
+            : ((pts_node->ndim >= 2 && pts_node->shape) ? pts_node->shape[1] : 0);
+    if (!(tol > 0.0) || !(tol == tol)) tol = kFrechetResidualTol;
+
+    if (n_points <= 0 || dim <= 0) {
+        eshkol_fatal("frechet-mean backward: degenerate shape (n_points=%lld, "
+                     "dim=%lld).", (long long)n_points, (long long)dim);
+        return;
+    }
+    if (!(K <= 0.0) || !(K == K)) {
+        eshkol_fatal("frechet-mean backward: sectional curvature must be <= 0 "
+                     "(the Poincare ball has radius 1/sqrt(-K)); params slot 2 "
+                     "holds %.17g.", K);
+        return;
+    }
+
+    const double* mu   = (const double*)node->tensor_value;
+    const double* pts  = (const double*)pts_node->tensor_value;
+    const double* g    = (const double*)node->tensor_gradient;
+    const double* wts  = (w_node && w_node->tensor_value)
+                       ? (const double*)w_node->tensor_value : nullptr;
+
+    /* ---- Euclidean limit (K = 0) -------------------------------------
+     * mu = sum_i w_i x_i / sum_i w_i is linear in the points, so the exact
+     * derivative is the closed form and no solve is needed. Routing it through
+     * the hyperbolic path would divide by sqrt(c) = 0. */
+    if (K == 0.0) {
+        double wsum = 0.0;
+        for (int64_t i = 0; i < n_points; i++) wsum += wts ? wts[i] : 1.0;
+        if (!(wsum > 0.0)) {
+            eshkol_fatal("frechet-mean backward: total weight is %.17g; the mean "
+                         "is undefined and so is its derivative.", wsum);
+            return;
+        }
+        size_t pts_total = (size_t)n_points * (size_t)dim;
+        if (pts_node->tensor_gradient == NULL)
+            pts_node->tensor_gradient = alloc_grad(pts_total);
+        double* dpts = (double*)pts_node->tensor_gradient;
+        if (dpts) {
+            for (int64_t i = 0; i < n_points; i++) {
+                double wi = (wts ? wts[i] : 1.0) / wsum;
+                for (int64_t k = 0; k < dim; k++)
+                    dpts[(size_t)(i * dim + k)] += wi * g[k];
+            }
+        }
+        if (w_node) {
+            if (w_node->tensor_gradient == NULL)
+                w_node->tensor_gradient = alloc_grad((size_t)n_points);
+            double* dw = (double*)w_node->tensor_gradient;
+            if (dw) {
+                for (int64_t i = 0; i < n_points; i++) {
+                    /* d mu/d w_i = (x_i - mu)/wsum */
+                    double acc = 0.0;
+                    for (int64_t k = 0; k < dim; k++)
+                        acc += g[k] * (pts[(size_t)(i * dim + k)] - mu[k]);
+                    dw[i] += acc / wsum;
+                }
+            }
+        }
+        return;
+    }
+
+    /* ---- Hyperbolic case --------------------------------------------- */
+    FrechetGeometry geo(K, dim);
+    const double ball_radius = 1.0 / geo.s;
+
+    /* mu* and every point must lie strictly inside the ball, or the log map has
+     * no derivative there and (*) is not the condition being solved. */
+    double mu_norm = std::sqrt(FrechetGeometry::dot(mu, mu, dim));
+    if (!(mu_norm < ball_radius)) {
+        eshkol_fatal("frechet-mean backward: |mu*| = %.17g is not strictly inside "
+                     "the Poincare ball of radius %.17g (curvature K = %.17g); "
+                     "the log map is not differentiable there.",
+                     mu_norm, ball_radius, K);
+        return;
+    }
+
+    std::vector<double> A((size_t)(dim * dim), 0.0);   /* dF/dmu             */
+    std::vector<double> resid((size_t)dim, 0.0);       /* F(mu*) = sum w log */
+    std::vector<double> logs((size_t)(n_points * dim), 0.0);
+    std::vector<double> dlogdx((size_t)(n_points * dim * dim), 0.0);
+
+    double wsum = 0.0, max_log = 0.0;
+    for (int64_t i = 0; i < n_points; i++) {
+        const double* xi = pts + (size_t)i * (size_t)dim;
+        double xn = std::sqrt(FrechetGeometry::dot(xi, xi, dim));
+        if (!(xn < ball_radius)) {
+            eshkol_fatal("frechet-mean backward: point %lld has |x| = %.17g, not "
+                         "strictly inside the Poincare ball of radius %.17g "
+                         "(curvature K = %.17g).",
+                         (long long)i, xn, ball_radius, K);
+            return;
+        }
+        if (!geo.log_map_with_jacobians(mu, xi)) {
+            eshkol_fatal("frechet-mean backward: log_mu(x_%lld) is outside its "
+                         "differentiable domain; refusing to substitute a limit "
+                         "for a derivative that does not exist.", (long long)i);
+            return;
+        }
+        double wi = wts ? wts[i] : 1.0;
+        wsum += wi;
+        for (int64_t k = 0; k < dim; k++) {
+            double lv = geo.logv[(size_t)k];
+            logs[(size_t)(i * dim + k)] = lv;
+            resid[(size_t)k] += wi * lv;
+            double a = std::fabs(lv);
+            if (a > max_log) max_log = a;
+        }
+        for (int64_t t = 0; t < dim * dim; t++) {
+            A[(size_t)t] += wi * geo.dlog_dmu[(size_t)t];
+            dlogdx[(size_t)(i * dim * dim + t)] = geo.dlog_dx[(size_t)t];
+        }
+    }
+
+    if (!(wsum > 0.0)) {
+        eshkol_fatal("frechet-mean backward: total weight is %.17g; the Frechet "
+                     "mean is undefined and so is its derivative.", wsum);
+        return;
+    }
+
+    /* ---- THE RESIDUAL GATE ------------------------------------------------
+     * Everything below assumes F(mu*) = sum_i w_i log_mu*(x_i) = 0. If it does
+     * not, the implicit function theorem does not apply and the solve returns a
+     * smooth, plausible, wrong vector that nothing downstream can distinguish
+     * from a gradient. Refuse.
+     *
+     * The bar is relative with an absolute floor: the residual is a sum of
+     * tangent vectors scaled by the weights, so it is compared against wsum
+     * times (1 + the largest individual |log_mu(x_i)|) — the natural scale of
+     * the terms being cancelled. A purely absolute bar would be vacuous for
+     * tightly clustered points and unsatisfiable for widely spread ones; a
+     * purely relative one divides by zero in the most exact case available,
+     * where every point coincides with the mean and each log is zero to
+     * rounding. The 1 + |.| denominator is the convention the gradient-oracle
+     * comparison helpers already use. */
+    double resid_norm = std::sqrt(FrechetGeometry::dot(resid.data(), resid.data(), dim));
+    double resid_scale = wsum * (1.0 + max_log);
+    double resid_rel = resid_norm / resid_scale;
+    if (!(resid_rel <= tol)) {
+        eshkol_fatal("frechet-mean backward: the retained mean is NOT a converged "
+                     "stationary point — the stationarity residual "
+                     "|sum_i w_i log_mu(x_i)| is %.6e (relative %.6e, tolerance "
+                     "%.6e) over %lld points in dimension %lld. The implicit "
+                     "derivative is only the derivative of the Frechet mean AT "
+                     "the fixed point; away from it these formulas return a "
+                     "plausible but wrong gradient, so this refuses rather than "
+                     "reporting one. Tighten the forward iteration's convergence "
+                     "or raise params slot 3 deliberately.",
+                     resid_norm, resid_rel, tol,
+                     (long long)n_points, (long long)dim);
+        return;
+    }
+
+    /* ---- One solve: A^T z = g --------------------------------------- */
+    std::vector<double> z(g, g + (size_t)dim);
+    std::vector<double> Afac(A);
+    if (!solve_transpose(Afac.data(), z.data(), dim)) {
+        eshkol_fatal("frechet-mean backward: dF/dmu is numerically singular at "
+                     "the fixed point, so the implicit function theorem gives no "
+                     "unique derivative there (degenerate weights, or coincident "
+                     "points in dimension %lld).", (long long)dim);
+        return;
+    }
+
+    /* ---- dL/dx_j = -w_j (d log_mu(x_j)/d x_j)^T z ------------------- */
+    size_t pts_total = (size_t)n_points * (size_t)dim;
+    if (pts_node->tensor_gradient == NULL)
+        pts_node->tensor_gradient = alloc_grad(pts_total);
+    double* dpts = (double*)pts_node->tensor_gradient;
+    if (dpts) {
+        for (int64_t i = 0; i < n_points; i++) {
+            double wi = wts ? wts[i] : 1.0;
+            const double* J = &dlogdx[(size_t)(i * dim * dim)];
+            for (int64_t j = 0; j < dim; j++) {
+                double acc = 0.0;
+                for (int64_t m = 0; m < dim; m++)
+                    acc += J[(size_t)(m * dim + j)] * z[(size_t)m];
+                dpts[(size_t)(i * dim + j)] += -wi * acc;
+            }
+        }
+    }
+
+    /* ---- dL/dw_j = -<log_mu(x_j), z> -------------------------------- */
+    if (w_node) {
+        if (w_node->tensor_gradient == NULL)
+            w_node->tensor_gradient = alloc_grad((size_t)n_points);
+        double* dw = (double*)w_node->tensor_gradient;
+        if (dw) {
+            for (int64_t i = 0; i < n_points; i++) {
+                double acc = 0.0;
+                for (int64_t k = 0; k < dim; k++)
+                    acc += logs[(size_t)(i * dim + k)] * z[(size_t)k];
+                dw[i] += -acc;
+            }
+        }
+    }
+}
+
 /** @brief Backward pass for attention: a conservative identity-like
  *  pass-through for the value input only. Proper scaled-dot-product
  *  backward requires the Q/K/V split in the node — stubbed here to at
@@ -777,6 +1297,7 @@ extern "C" backward_fn_t get_tensor_backward_fn(int node_type) {
         case AD_NODE_TENSOR_BROADCAST_MUL:   return tensor_broadcast_mul_backward;
         case AD_NODE_TENSOR_EMBEDDING:       return tensor_embedding_backward;
         case AD_NODE_TENSOR_ATTENTION:       return tensor_attention_backward;
+        case AD_NODE_FRECHET_MEAN:           return tensor_frechet_mean_backward;
         default:
             /* Previously: return NULL → silent zero-gradient. That
              * meant any op whose forward codegen was emitted without a

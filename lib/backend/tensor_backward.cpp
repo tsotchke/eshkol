@@ -1384,7 +1384,12 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
     case AD_NODE_TENSOR_SUM:
     case AD_NODE_TENSOR_BROADCAST_ADD:
     case AD_NODE_TENSOR_BROADCAST_MUL:
-    case AD_NODE_TENSOR_EMBEDDING: {
+    case AD_NODE_TENSOR_EMBEDDING:
+    /* The Riemannian center of mass is defined implicitly, as the stationary
+     * point of the weighted variance, so its rule differentiates that condition
+     * rather than the iteration that solves it. Lives with the other bridge
+     * geometry in lib/bridge/tensor_backward.cpp. */
+    case AD_NODE_FRECHET_MEAN: {
         /* Use the bridge dispatch table to find the right backward fn */
         bridge_backward_fn_t fn = get_tensor_backward_fn((int)node->type);
         if (!fn) {
@@ -1395,14 +1400,6 @@ extern "C" void eshkol_tensor_backward_dispatch(void* ad_node_ptr) {
         fn(node);
         break;
     }
-
-    case AD_NODE_FRECHET_MEAN:
-        /* No exact backward for the Riemannian center-of-mass node yet. Refuse
-         * rather than leave the gradient at a silent zero. */
-        eshkol_fatal("unsupported AD op: exact backward for the Frechet-mean "
-                     "tensor node is not implemented; refusing to drop the "
-                     "gradient silently.");
-        break;
 
     default:
         /* Scalar activation / geometric / hyperbolic ops (12-18, 33-66) are
