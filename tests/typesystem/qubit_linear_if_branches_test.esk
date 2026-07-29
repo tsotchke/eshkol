@@ -1,5 +1,6 @@
 ;; Type System Test: a linear qubit used once per exclusive if-branch is valid
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: consumed more than once
 ;; EXPECT-NO-STDERR: was not consumed
 

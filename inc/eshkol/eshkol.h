@@ -2731,6 +2731,19 @@ hott_type_expr_t* hott_make_null_type(void);
 hott_type_expr_t* hott_make_any_type(void);
 hott_type_expr_t* hott_make_nothing_type(void);
 
+/**
+ * @brief Construct a payload-free hott_type_expr_t of an arbitrary primitive @p kind.
+ *
+ * The kind-generic form of the constructors above, for callers that carry a
+ * hott_type_kind_t rather than naming one at the call site — notably the
+ * parser, which drives bare type-name spellings from the type system's
+ * canonical registry (eshkol::hott::builtinTypeSpellings()).
+ *
+ * @param kind A primitive (payload-free) HOTT_TYPE_* constant.
+ * @return Newly allocated type expression.
+ */
+hott_type_expr_t* hott_make_primitive_type(hott_type_kind_t kind);
+
 // Create type variables
 /**
  * @brief Construct a HOTT_TYPE_VAR type expression (a type variable, e.g. 'a in forall).
