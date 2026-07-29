@@ -82,6 +82,14 @@ oracles:
 
       - runtime_event:
           event_kinds: [eshkol_smoke]
+          event_names: ["ffi_boundary_fail_open"]
+          event_values: ["PASS"]
+        severity: high
+        label: 'FFI boundary fails closed: an arity error is fatal under -r AND AOT (never a null binding, never a written binary, named diagnostic preserved), and an argument whose type cannot be an address is rejected at every `extern` pointer parameter with a catchable type error instead of being dereferenced'
+        action: ./scripts/run_icc_smoke.sh
+
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
           event_names: ["jit_repl_clean_exit"]
           event_values: ["PASS"]
         severity: medium

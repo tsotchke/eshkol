@@ -469,6 +469,32 @@ void eshkol_frame_stack_reset(void);              /* call at REPL prompt boundar
 void eshkol_type_error_with_value(const char* proc_name, const char* expected_type,
                                    const char* actual_type);
 
+/**
+ * @brief Report a wrong-type argument at an `extern` (FFI) pointer parameter,
+ * and raise a catchable type error. Does not return.
+ *
+ * Emitted by codegen ahead of the IntToPtr that converts a tagged value into a
+ * `ptr` / `string` / `char*` parameter, on the branch where the argument's type
+ * byte shows an immediate (a number, character, symbol, `#t`, …) that cannot be
+ * an address. Without the guard the payload is reinterpreted as a pointer and
+ * the callee faults on it — the reason a positional mistake such as passing a
+ * timeout where a working directory belongs surfaced as `SIGSEGV at 0x1388`
+ * instead of a named error.
+ *
+ * @param extern_name    Eshkol-visible name of the extern (e.g. "process-spawn-argv-raw").
+ * @param real_symbol    Linked C symbol (e.g. "qllm_process_spawn_argv"); may equal @p extern_name.
+ * @param arg_position   1-based position of the offending argument.
+ * @param declared_type  Declared parameter keyword: "ptr", "string" or "char*".
+ * @param observed_type  The argument's tagged type byte, as observed at runtime.
+ * @param observed_bits  The argument's raw 64-bit payload, for rendering the value.
+ */
+void eshkol_ffi_pointer_arg_type_error(const char* extern_name,
+                                       const char* real_symbol,
+                                       int32_t arg_position,
+                                       const char* declared_type,
+                                       uint8_t observed_type,
+                                       uint64_t observed_bits);
+
 // ============================================================================
 // Opt-in executable language-surface coverage
 // ============================================================================

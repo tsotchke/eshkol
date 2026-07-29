@@ -417,6 +417,141 @@ across every new-feature family).
   `HOTT_TYPE_NUMBER` kind, and calling through an ascribed callable
   (`((the procedure f) x)`) no longer hits codegen's "Call expression requires
   variable or inline lambda" bail-out.
+- **ESH-0362: an arity error is now FATAL, on every execution path — no more
+  poisoned handles.** Calling a fixed-arity function with the wrong number of
+  arguments printed a named diagnostic and then *kept going*. Three distinct
+  fail-open cells, all closed at the root:
+  - **Too few arguments** (the reported case). The closure-call arity check
+    emitted `Arity mismatch: f expects 2 arguments but got 1` and returned
+    `nullptr` without marking the compilation fatal. A `nullptr` from codegen is
+    indistinguishable from "this form produced no value", so the enclosing
+    `(define h (f a))` bound `h` to **null** and compilation continued. Under
+    `-r` the program ran with the poisoned binding — `(process-pid h)` answered
+    `0` and the next consumer dereferenced NULL (`SIGSEGV at 0x0`, far from the
+    real mistake); under `-o` the driver wrote a complete binary and **exited
+    0**, shipping the poisoned program.
+  - **Too many arguments.** The argument loop simply never pushed a surplus
+    argument, so the call was emitted at the callee's parameter count and the
+    extra arguments *vanished*: `(add2 1 2 99)` ran as `(add2 1 2)` and printed
+    `3`. The only trace was a gradual-typing `Type warning: function 'add2'
+    expects 2 arguments, got 3`, which by design never fails a build.
+  - **`-r` / REPL slot calls.** The two `__repl_fwd_<name>` indirect-call paths
+    synthesise the callee's signature from the *call's* argument count, so a
+    wrong count was not even a mismatch — it was a silent ABI disagreement, and
+    the callee read its missing parameter out of whatever the register happened
+    to hold. This is the path a `(require …)`d module's functions are called
+    through, so the same file that named the error under `-o` reported nothing
+    under `-r`. Both paths now consult the registered arity, and abstain only
+    when it cannot be established (a genuine forward reference, a variadic
+    callee, or a closure whose signature carries capture slots).
+
+  All three now fail the compilation: `-r` exits nonzero without running, `-o`
+  writes no binary, and the named diagnostic text is preserved verbatim — it is
+  a consumer-facing contract. A related silent rebind is now surfaced too: when
+  an `extern` reuses a C symbol already declared in the module with a *different
+  parameter count* (e.g. `(extern void h :real strlen)` against the runtime's own
+  1-parameter `strlen`), the declaration site warns instead of letting the call
+  site paper the difference over with a null argument.
+
+- **ESH-0363: FFI pointer arguments are type-checked at the boundary — an
+  integer is no longer dereferenced as an address.** An `extern` parameter
+  declared `ptr` / `string` / `char*` was passed to C by unconditionally
+  reinterpreting the tagged value's 64-bit payload as a pointer. A number in a
+  pointer position therefore became a pointer *equal to that number*:
+  `(run-argv-capture argv 5000)` — the timeout supplied where the positional
+  `cwd` belongs — reached the `execvp` shim as `const char* 0x1388` and died with
+  `SIGSEGV at address 0x1388`, with no diagnostic and no exit code. Codegen now
+  emits a check ahead of that conversion for every pointer-declared `extern`
+  parameter and raises a **catchable** `ESHKOL_EXCEPTION_TYPE_ERROR` naming the
+  extern, the argument position, the declared type and the offending value:
+  `FFI type error in process-spawn-argv-flags-raw (C symbol
+  qllm_process_spawn_argv_flags): argument 2 is declared 'ptr' and requires a
+  string or pointer handle, but got the integer 5000`. Applied across the whole
+  `extern` surface — **216 pointer-typed parameters over 323 declarations**, of
+  which 115 across 80 declarations are the `agent.*` FFI surface — not just the
+  reported call. A statically-decidable case (a numeric *literal* in a pointer
+  position) is reported at compile time instead of as an LLVM verifier message.
+  The predicate is a denylist of the immediate tags that cannot denote memory
+  (numbers, characters, symbols, `#t`, dual/complex numbers, logic variables),
+  never an allowlist of pointer tags, so a legitimate handle, port, bytevector,
+  callable, `'()` or `#f` (Eshkol's spelling of a NULL pointer argument) can
+  never be rejected. `--freestanding` and `wasm32` targets are excluded: neither
+  has the hosted error runtime to raise into.
+  `lib/agent/subprocess.esk` additionally validates `cwd` and `timeout-ms` by
+  name, so the reported error identifies the parameter the caller actually got
+  wrong rather than the internal `-raw` extern, and the spawn-family docstrings
+  plus `docs/reference/agent/ffi.md` now state exact arities and positional
+  meanings (`cwd` is the REQUIRED SECOND positional of every `process-spawn*`,
+  and the THIRD positional of the `run-*` wrappers is the timeout).
+
+- **ESH-0364: a diagnostic for code from a `(require …)`d module named the wrong
+  file.** The AOT driver inlines every required module's forms into ONE flat AST
+  array and compiles them as a single unit under a single ambient source context
+  — the entry file. Any diagnostic for a form that came from a module therefore
+  printed the ENTRY file's NAME beside the MODULE's LINE number. For a 3-line
+  entry file requiring a module, the reported location was `entry.esk:6:13` — a
+  line that file does not have; where the entry file was longer, it pointed at
+  real but unrelated source, which is worse than reporting no location at all.
+  (The JIT path was already correct: `executeBatch` takes explicit per-module
+  provenance, which is why the same mistake was named accurately under `-r` and
+  misattributed under `-o`.) Root cause: `eshkol_ast_t` carried `line`/`column`
+  but no FILE, so a location was only meaningful relative to whatever context
+  happened to be ambient. AST nodes now carry `source_file_id`, an id into a
+  process-lifetime interned table, stamped on every top-level form at the single
+  choke point every form passes through (a form cannot span two files, so inner
+  nodes inherit their enclosing form's file). Codegen adopts that file for the
+  duration of the form's codegen, so all of `generateLLVMIR`'s separate top-level
+  walks — externs, function defines, global defines, `createMainWrapper`,
+  `createLibraryInitFunction` — are covered by one scope, along with any future
+  one. The module's source TEXT is resolved with its name, so the caret block
+  renders the offending line from the right file; a file that cannot be read
+  degrades to `file:line:col:` without the excerpt rather than to a wrong
+  excerpt. Deliberately an id rather than a `const char*`: AST nodes are built in
+  many places with no central zero-init, so an unset field holds garbage — a
+  garbage id falls outside the table and reads as "unknown", where a garbage
+  pointer would be dereferenced by the diagnostic printer.
+- **ESH-0365: `(import (lib name))` reported the position of its CLOSING PAREN,
+  and the language-coverage gate was certifying `import` on an accident.** The
+  R7RS import form is lowered to a `require`, and the lowered node took its
+  source position from the token the spec loop had just consumed — which is the
+  form's closing `)`, not the `(import` that begins it. So a diagnostic about a
+  malformed import pointed its caret at the closing paren. It also meant `import`
+  had no execution-backed coverage evidence of its own: the tracker credits a
+  compile-time form only when a parser-dispatch event and an accept/codegen event
+  share an exact source position, and the dispatch event is recorded at the
+  operator token while the accept event took its position from the closing paren.
+  `import` was nonetheless certified covered at 1078/1078 — by a **cross-file
+  collision**. Before ESH-0364, a required module's codegen events were attributed
+  to the REQUIRING file, and in `tests/modules/r7rs_import_modifiers_test.esk` the
+  imported module's `define`s at lines 5-7 column 2 landed on exactly the same
+  positions as that file's own `(import …)` forms at lines 5-7 column 2. The
+  position-only credit rule ignores the operation kind, so an unrelated `define`
+  in another file was granting `import` its coverage. Fixing the attribution
+  removed the collision and exposed the wrong position underneath it. The lowered
+  node now carries the `(import` position, which both puts the caret on the
+  construct and earns `import` genuine same-file evidence in all six import tests
+  — coverage stays 1078/1078 on real evidence rather than a coincidence.
+- **`iota` silently ignored its `start` and `step` arguments.** The stdlib
+  defined `iota` as a strictly 1-argument function while callers (including
+  `tests/features/new_functions_test.esk`, comments and all) were already writing
+  `(iota 5 1)` and `(iota 5 0 2)`. Because codegen discarded arguments past the
+  callee's parameter count (the ESH-0362 fail-open above), both returned
+  `(0 1 2 3 4)` — the wrong list, with no error and no build-failing warning, and
+  a test that "passed" while asserting nothing about start or step. `iota` now
+  takes the optional positional `start` and `step` of SRFI-1 / R7RS-large
+  (`(iota 5 1)` → `(1 2 3 4 5)`, `(iota 5 0 2)` → `(0 2 4 6 8)`), delegating to
+  the existing `iota-from` / `iota-step`. Found by making arity errors fatal,
+  which turned the silent wrong answer into a compile error.
+- **The type-system negative suite aborted at its first fixture.**
+  `scripts/run_typesystem_tests.sh` runs under `set -e` but invoked the compiler
+  unguarded — and it is a *negative* suite, where a nonzero compile exit is the
+  expected outcome. This never fired only because the faults its fixtures inject
+  used to compile successfully anyway (`arity_mismatch_test.esk` reported its
+  error and exited 0). With arity errors now fatal, the first fixture killed the
+  harness mid-file, with no PASS/FAIL line and no summary — a suite that reports
+  nothing looks nothing like a suite that fails. The compile invocation no longer
+  trips `set -e`; verdicts come from the EXPECT-STDERR patterns, never the exit
+  status. All 20 fixtures now run (20/20).
 
 - **Higher-order derivatives through a variable-bound derivative closure were
   silently wrong.** `(define df (derivative f))` followed by `(derivative df)`

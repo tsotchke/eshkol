@@ -624,6 +624,77 @@ static std::string g_debug_source_directory;
 static std::string g_source_text;
 static std::string g_source_filepath;
 
+/* Per-file source text, for diagnostics rendered from a file that is NOT the
+ * ambient source context (ESH-0364).
+ *
+ * The AOT driver inlines every `(require …)`d module's forms into one flat AST
+ * array and compiles them as a single unit under a single ambient context — the
+ * ENTRY file. Any diagnostic for a form that came from a module therefore
+ * printed the entry file's NAME beside the module's LINE number: a location that
+ * resolves to real but unrelated source, which is worse than no location at all.
+ * (The JIT path was already correct — repl_jit.cpp's executeBatch takes explicit
+ * per-module provenance — so the same mistake was named accurately under `-r`
+ * and misattributed under `-o`.)
+ *
+ * Filled lazily and only on a diagnostic path, so the read costs nothing in a
+ * clean compile. A file that cannot be read caches an empty string: the
+ * diagnostic then prints "file:line:col:" without the source line and caret,
+ * which is still a location the reader can act on. */
+static std::map<std::string, std::string> g_source_text_by_file;
+
+static const std::string& sourceTextForFile(const std::string& path) {
+    static const std::string empty;
+    if (path.empty()) return empty;
+    if (path == g_source_filepath && !g_source_text.empty()) return g_source_text;
+    auto it = g_source_text_by_file.find(path);
+    if (it != g_source_text_by_file.end()) return it->second;
+    std::string text;
+    {
+        std::ifstream in(path, std::ios::binary);
+        if (in.is_open()) {
+            text.assign((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+        }
+    }
+    return g_source_text_by_file.emplace(path, std::move(text)).first->second;
+}
+
+/* Make a top-level form's originating file the ambient source context for the
+ * duration of its codegen, restoring the previous one on the way out. Nodes with
+ * no provenance (every inner node) and forms from the ambient file itself are a
+ * no-op, so the cost on the hot path is one integer compare. */
+class ScopedAstProvenance {
+public:
+    explicit ScopedAstProvenance(uint32_t source_file_id) {
+        if (source_file_id == 0) return;
+        const char* name = eshkol_source_file_name(source_file_id);
+        if (!name || !*name || g_source_filepath == name) return;
+        // Resolve the text BEFORE rebinding g_source_filepath: sourceTextForFile
+        // short-circuits on `path == g_source_filepath` to reuse the ambient
+        // text, so assigning the new path first made that test trivially true
+        // and handed back the OUTGOING file's text — the caret then rendered a
+        // line from the wrong file (or nothing, when the new line number ran
+        // past the old file's end).
+        std::string text = sourceTextForFile(std::string(name));
+        saved_path_ = std::move(g_source_filepath);
+        saved_text_ = std::move(g_source_text);
+        active_ = true;
+        g_source_filepath = name;
+        g_source_text = std::move(text);
+    }
+    ~ScopedAstProvenance() {
+        if (!active_) return;
+        g_source_filepath = std::move(saved_path_);
+        g_source_text = std::move(saved_text_);
+    }
+    ScopedAstProvenance(const ScopedAstProvenance&) = delete;
+    ScopedAstProvenance& operator=(const ScopedAstProvenance&) = delete;
+private:
+    std::string saved_path_;
+    std::string saved_text_;
+    bool active_ = false;
+};
+
 struct AotModuleStats {
     uint64_t functions = 0;
     uint64_t definitions = 0;
@@ -1515,6 +1586,27 @@ private:
     // FUNCTION-AS-VALUE FIX: Maps function name to user-facing arity (excludes captures)
     // Used when functions are referenced as values (first-class functions) to wrap them in closures
     std::unordered_map<std::string, uint64_t> function_arity_table;
+
+    // FFI POINTER-ARG GUARD (ESH-0363): the declared parameter type KEYWORDS of
+    // every `extern`, keyed by both the Eshkol-visible name and the real C
+    // symbol (call sites resolve by either).
+    //
+    // The LLVM signature alone cannot tell an FFI pointer parameter from an
+    // internal one — `ptr`, `string` and `char*` all collapse to the same
+    // opaque pointer type, and internal Eshkol functions also take pointer
+    // parameters (closure environments, named-let capture slots). Recording
+    // the declared keyword at `extern` codegen time is what lets the call site
+    // guard exactly the FFI boundary and nothing else.
+    std::unordered_map<std::string, std::vector<std::string>> extern_param_type_names_;
+
+    // True when the emitted module can raise into the hosted error runtime.
+    // Standalone freestanding and wasm32 objects have no hosted exception path
+    // (eshkol_type_error and friends live in the hosted runtime source set), so
+    // the FFI pointer-argument guard — which raises a catchable type error — is
+    // only emitted for hosted native codegen.
+    bool ffiPointerArgGuardEnabled() const {
+        return !freestanding_codegen_ && !wasm_codegen_;
+    }
 
     // ESH-0078: Maps a defined function name to its source body AST, so an AD
     // operator applied to a NAMED function (via var) can run the same
@@ -9670,6 +9762,16 @@ private:
     Value* codegenAST(const eshkol_ast_t* ast) {
         if (!ast) return nullptr;
 
+        // ESH-0364: adopt this form's originating file as the source context, so
+        // `line`/`column` are reported against the file they were measured in.
+        // Placed here rather than in the callers because generateLLVMIR walks the
+        // top-level array from several loops (externs, function defines, global
+        // defines) and createMainWrapper/createLibraryInitFunction walk it again
+        // — one scope at the single entry point covers every one of them, and
+        // any future walk, for free. Only top-level forms carry provenance;
+        // inner nodes are 0 and correctly inherit the enclosing form's file.
+        ScopedAstProvenance provenance(ast->source_file_id);
+
         // Update source location for error context
         if (ast->line > 0) {
             current_source_line = ast->line;
@@ -12496,6 +12598,183 @@ private:
         return builder->CreateLoad(tagged_value_type, result_ptr);
     }
 
+    // ESH-0362 (JIT/REPL half) ────────────────────────────────────────────────
+    //
+    // Authoritative parameter count of a REPL-registered callee, or -1 when it
+    // cannot be established and no arity conclusion may be drawn.
+    //
+    // The two REPL slot-call paths (a `__repl_fwd_<name>` indirect call through
+    // a JIT-resolved function pointer) SYNTHESISE the callee's FunctionType from
+    // the CALL's argument count. An arity mismatch there is therefore not even a
+    // mismatch — it is a silent ABI disagreement: the callee reads its missing
+    // parameter out of whatever the register happened to hold. Under `-r` this
+    // is the path a `(require …)`d module's functions are called through, so
+    // `(process-spawn-argv argv)` against the two-parameter definition handed
+    // the C spawn shim an uninitialised `cwd`, with no diagnostic at all. (The
+    // AOT/direct-call arity check does report it, which is why the same file
+    // compiled with `-o` names the error and this one did not.)
+    //
+    // The registry's arity is F.arg_size() at registration time, i.e. the ABI
+    // parameter count — it counts capture slots and the variadic rest slot too.
+    // So it is only usable as a user-visible arity when the callee has neither,
+    // and every other case returns -1 rather than risk rejecting a legal call.
+    int64_t replEnforceableArity(const std::string& func_name) {
+        if (func_name.empty()) return -1;
+        std::lock_guard<std::mutex> lock(g_repl_mutex);
+        auto arity_it = g_repl_function_arities.find(func_name);
+        if (arity_it == g_repl_function_arities.end()) {
+            return -1;  // genuinely unknown / not yet defined: a real forward ref
+        }
+        auto var_it = g_repl_variadic_functions.find(func_name);
+        if (var_it != g_repl_variadic_functions.end() && var_it->second.second) {
+            return -1;  // rest slot: any count at or above `fixed` is legal
+        }
+        if (g_repl_lambda_captures.count(func_name)) {
+            return -1;  // closure: signature carries capture slots
+        }
+        auto name_it = g_repl_lambda_names.find(func_name);
+        if (name_it != g_repl_lambda_names.end() &&
+            g_repl_lambda_captures.count(name_it->second)) {
+            return -1;
+        }
+        return (int64_t)arity_it->second;
+    }
+
+    // Report a REPL slot-call arity mismatch with the same wording the
+    // AOT/direct-call path uses, and fail the compilation. Returns true when a
+    // mismatch was found (caller must abort codegen of the call).
+    bool replSlotArityMismatch(const std::string& func_name, uint64_t num_call_args) {
+        int64_t expected = replEnforceableArity(func_name);
+        if (expected < 0 || (uint64_t)expected == num_call_args) {
+            return false;
+        }
+        eshkol_error_at(
+            g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+            current_source_line, current_source_column,
+            g_source_text.empty() ? nullptr : g_source_text.c_str(),
+            "Arity mismatch: %s expects %llu arguments but got %llu",
+            func_name.c_str(), (unsigned long long)expected,
+            (unsigned long long)num_call_args);
+        markFatalCodegenError();
+        return true;
+    }
+
+    // FFI POINTER-ARG GUARD (ESH-0363) ────────────────────────────────────────
+    //
+    // An `extern` parameter declared `ptr` / `string` / `char*` is passed to C
+    // by unpacking the tagged value's 64-bit payload and IntToPtr'ing it. That
+    // conversion is unconditional, so a NUMBER lands in the callee as an
+    // address: `(run-argv-capture argv 5000)` — 5000 mistaken for the positional
+    // `cwd` string — reached execvp's C shim as `const char* 0x1388` and died
+    // with SIGSEGV at address 0x1388. No diagnostic, no exit code, just a fault
+    // at a numerically suspicious address, and only because the value happened
+    // to be small; a large fixnum can hit mapped memory and corrupt instead.
+    //
+    // This emits a branch on the argument's tagged TYPE BYTE that rejects the
+    // values which provably cannot be an address, and raises a catchable type
+    // error naming the extern, the argument position, and the declared type.
+    //
+    // The predicate is a DENYLIST of immediate tags, deliberately not an
+    // allowlist of pointer tags. Eshkol's type byte is a crowded encoding: the
+    // multimedia tags (HANDLE/BUFFER/STREAM/EVENT = 16..19), the deprecated
+    // pointer aliases (CONS_PTR/STRING_PTR/… = 32..40) and the port flag bits
+    // OR'd onto HEAP_PTR all denote real addresses, and some codegen paths fold
+    // the exact/inexact flag into the type byte (see i128_runtime.cpp's
+    // TYPE_FLAG_MASK note). An allowlist would have to enumerate all of those
+    // correctly or it would reject a legitimate pointer — a guard that breaks
+    // working programs. Matching only the seven unflagged immediate tags means
+    // the worst case is a MISSED catch on an exotic encoding, never a false
+    // rejection.
+    //
+    // `#f` is exempt: it is how Eshkol spells a NULL pointer argument at this
+    // boundary (`(process-spawn-raw command cwd #f 0)` passes a NULL envp,
+    // `(process-read-all-stdout-raw proc n #f)` a NULL out-param), so BOOL is
+    // rejected only when its payload is non-zero, i.e. `#t`.
+    void emitFfiPointerArgGuard(Value* tagged_arg,
+                                const std::string& extern_name,
+                                const std::string& real_symbol,
+                                uint64_t param_index,
+                                const std::string& declared_type) {
+        if (!ffiPointerArgGuardEnabled() || !tagged_arg) return;
+        if (tagged_arg->getType() != tagged_value_type) return;
+        BasicBlock* current_bb = builder->GetInsertBlock();
+        if (!current_bb || current_bb->getTerminator()) return;
+        Function* current_fn = current_bb->getParent();
+        if (!current_fn) return;
+
+        Value* type_byte = getTaggedValueType(tagged_arg);
+        Value* payload = unpackInt64FromTaggedValue(tagged_arg);
+
+        // tags 1..7: INT64, DOUBLE, BOOL, CHAR, SYMBOL, DUAL_NUMBER, COMPLEX
+        Value* immediate_span = builder->CreateICmpULE(
+            builder->CreateSub(type_byte, ConstantInt::get(int8_type, 1)),
+            ConstantInt::get(int8_type, ESHKOL_VALUE_COMPLEX - 1));
+        Value* is_logic_var = builder->CreateICmpEQ(
+            type_byte, ConstantInt::get(int8_type, ESHKOL_VALUE_LOGIC_VAR));
+        Value* rejected = builder->CreateOr(immediate_span, is_logic_var);
+
+        // …except #f, the canonical spelling of a NULL pointer argument.
+        Value* is_false = builder->CreateAnd(
+            builder->CreateICmpEQ(type_byte,
+                                  ConstantInt::get(int8_type, ESHKOL_VALUE_BOOL)),
+            builder->CreateICmpEQ(payload, ConstantInt::get(int64_type, 0)));
+        rejected = builder->CreateAnd(rejected, builder->CreateNot(is_false));
+
+        BasicBlock* ok_bb = BasicBlock::Create(*context, "ffi_ptr_arg_ok", current_fn);
+        BasicBlock* err_bb = BasicBlock::Create(*context, "ffi_ptr_arg_type_error", current_fn);
+        builder->CreateCondBr(rejected, err_bb, ok_bb);
+
+        builder->SetInsertPoint(err_bb);
+
+        // Source span, so the raised error carries "file:line:col:" like every
+        // other v1.3 runtime type error.
+        if (current_source_line > 0) {
+            Function* set_loc_fn = module->getFunction("eshkol_set_error_location");
+            if (!set_loc_fn) {
+                FunctionType* set_loc_ft = FunctionType::get(
+                    void_type,
+                    {PointerType::getUnqual(*context), int32_type, int32_type},
+                    false);
+                set_loc_fn = Function::Create(set_loc_ft, Function::ExternalLinkage,
+                                              "eshkol_set_error_location", module.get());
+            }
+            Value* file_val = g_source_filepath.empty()
+                ? static_cast<Value*>(ConstantPointerNull::get(PointerType::getUnqual(*context)))
+                : static_cast<Value*>(builder->CreateGlobalStringPtr(g_source_filepath,
+                                                                     "ffi_ptr_arg_file"));
+            builder->CreateCall(set_loc_fn, {
+                file_val,
+                ConstantInt::get(int32_type, current_source_line),
+                ConstantInt::get(int32_type, current_source_column)});
+        }
+
+        Function* err_fn = module->getFunction("eshkol_ffi_pointer_arg_type_error");
+        if (!err_fn) {
+            FunctionType* err_ft = FunctionType::get(
+                void_type,
+                {PointerType::getUnqual(*context),   // extern name (Eshkol-visible)
+                 PointerType::getUnqual(*context),   // real C symbol
+                 int32_type,                          // 1-based argument position
+                 PointerType::getUnqual(*context),   // declared type keyword
+                 int8_type,                           // observed tagged type byte
+                 int64_type},                         // observed payload bits
+                false);
+            err_fn = Function::Create(err_ft, Function::ExternalLinkage,
+                                      "eshkol_ffi_pointer_arg_type_error", module.get());
+            err_fn->setDoesNotReturn();
+        }
+        builder->CreateCall(err_fn, {
+            builder->CreateGlobalStringPtr(extern_name, "ffi_ptr_arg_fn"),
+            builder->CreateGlobalStringPtr(real_symbol, "ffi_ptr_arg_sym"),
+            ConstantInt::get(int32_type, (uint32_t)(param_index + 1)),
+            builder->CreateGlobalStringPtr(declared_type, "ffi_ptr_arg_decl"),
+            type_byte,
+            payload});
+        builder->CreateUnreachable();
+
+        builder->SetInsertPoint(ok_bb);
+    }
+
     /**
      * @brief Hoist a tagged-value alloca (optionally an array) to the current
      *        function's entry block.
@@ -12675,6 +12954,27 @@ private:
         builder->CreateUnreachable();
 
         builder->SetInsertPoint(ok_bb);
+    }
+
+    // Declared type keyword of parameter `param_index` of an `extern`, or an
+    // empty string when `callee_name` is not an extern (or the position is
+    // beyond its declared parameters — a varargs tail). Tries the Eshkol name
+    // first, then the real C symbol, because call sites reach externs by either.
+    std::string externDeclaredParamType(const std::string& eshkol_name,
+                                        const std::string& real_symbol,
+                                        uint64_t param_index) const {
+        for (const std::string& key : {eshkol_name, real_symbol}) {
+            if (key.empty()) continue;
+            auto it = extern_param_type_names_.find(key);
+            if (it == extern_param_type_names_.end()) continue;
+            if (param_index >= it->second.size()) continue;
+            return it->second[param_index];
+        }
+        return std::string();
+    }
+
+    static bool externTypeIsPointerLike(const std::string& declared) {
+        return declared == "ptr" || declared == "string" || declared == "char*";
     }
 
     Value* codegenCall(const eshkol_operations_t* op) {
@@ -17308,6 +17608,12 @@ private:
             }
             if (is_repl_user_func && !is_repl_user_var) {
                 size_t num_call_args = op->call_op.num_vars;
+                // ESH-0362: the slot type below is built from num_call_args, so a
+                // wrong count silently becomes an ABI mismatch instead of an
+                // error. Check the registered arity first.
+                if (replSlotArityMismatch(func_name, num_call_args)) {
+                    return nullptr;
+                }
                 size_t slot_arity = repl_is_variadic ? (repl_fixed_params + 1) : num_call_args;
 
                 // Get-or-create the external __repl_fwd_<func_name> slot in this module.
@@ -17940,6 +18246,15 @@ private:
                     }
 
                     size_t arity = op->call_op.num_vars;
+                    // ESH-0362: same synthesised-signature hazard as the
+                    // is_repl_user_func slot path above — a wrong argument count
+                    // here produces an indirect call whose shape disagrees with
+                    // the callee, not a diagnostic. Reject it when the callee's
+                    // arity is actually known (a true forward reference is not,
+                    // and stays permitted).
+                    if (replSlotArityMismatch(func_name, arity)) {
+                        return nullptr;
+                    }
                     size_t fn_param_count = fwd_is_variadic ? (fwd_fixed_params + 1) : arity;
 
                     // Create function type for the indirect call
@@ -18395,20 +18710,29 @@ private:
                 }
             }
 
-            // Make the call (no captures) — verify arity first
+            // Make the call (no captures) — verify arity first.
+            //
+            // ESH-0362: this used to WARN and then pad the shortfall with null
+            // tagged values (or truncate the excess) and emit the call anyway.
+            // That is the fail-open arity class: the caller keeps running with
+            // a null where a real argument belonged, so the first thing that
+            // dereferences it faults far from the actual mistake (a null
+            // process handle reaching a C shim → SIGSEGV at 0x0). An arity
+            // mismatch is a program error, not a recoverable condition: report
+            // it and fail the compilation. Found during FFI-boundary hardening.
             {
                 FunctionType* ft = callee->getFunctionType();
                 size_t expected = ft->getNumParams();
                 size_t actual = call_args.size();
                 if (actual != expected && !ft->isVarArg()) {
-                    eshkol_warn_at(
+                    eshkol_error_at(
                         g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                         current_source_line, current_source_column,
                         g_source_text.empty() ? nullptr : g_source_text.c_str(),
                         "Arity mismatch in no-capture call to %s: expected %zu, got %zu",
                         callee->getName().str().c_str(), expected, actual);
-                    while (call_args.size() < expected) call_args.push_back(packNullToTaggedValue());
-                    if (call_args.size() > expected) call_args.resize(expected);
+                    markFatalCodegenError();
+                    return nullptr;
                 }
             }
             if (builder->GetInsertBlock()->getTerminator()) {
@@ -18493,6 +18817,21 @@ private:
                 else if (actual_type == tagged_value_type && expected_type != tagged_value_type) {
                     Value* original_tagged = arg;
                     if (expected_type->isPointerTy()) {
+                        // ESH-0363: validate BEFORE the IntToPtr. Only externs
+                        // are guarded — the declared keyword lookup is what
+                        // distinguishes an FFI `ptr`/`string`/`char*` parameter
+                        // from an internal pointer parameter (closure env,
+                        // named-let capture slot), which the LLVM type alone
+                        // cannot.
+                        std::string declared = externDeclaredParamType(
+                            func_name, callee->getName().str(), i);
+                        if (externTypeIsPointerLike(declared)) {
+                            emitFfiPointerArgGuard(original_tagged, func_name,
+                                                   callee->getName().str(), i, declared);
+                            if (builder->GetInsertBlock()->getTerminator()) {
+                                return UndefValue::get(tagged_value_type);
+                            }
+                        }
                         Value* data_i64 = unpackInt64FromTaggedValue(original_tagged);
                         arg = builder->CreateIntToPtr(data_i64, expected_type);
                     } else if (expected_type->isDoubleTy()) {
@@ -18541,7 +18880,53 @@ private:
                 }
                 // Perform type conversion if necessary
                 else if (actual_type != expected_type) {
-                    if (actual_type->isIntegerTy() && expected_type->isIntegerTy()) {
+                    // ESH-0363, static half. A literal number reaches this
+                    // branch as a RAW i64/double rather than a tagged value, so
+                    // the runtime guard above never sees it. Previously nothing
+                    // here handled int→pointer and the mistake surfaced as
+                    //   LLVM module verification failed: Call parameter type does
+                    //   not match function signature! i64 5000 ptr
+                    // — fail-closed, but a compiler-internals message that says
+                    // nothing about the user's `(c-getenv 5000)`. When the
+                    // parameter belongs to an `extern` and was declared
+                    // pointer-like, the mismatch is statically decidable, so
+                    // report it as a proper diagnostic and fail the compilation.
+                    // `0` is exempt: it is a legitimate spelling of NULL.
+                    bool ffi_null_literal_converted = false;
+                    if (expected_type->isPointerTy() && !actual_type->isPointerTy()) {
+                        std::string declared = externDeclaredParamType(
+                            func_name, callee->getName().str(), i);
+                        auto* const_int = dyn_cast<ConstantInt>(arg);
+                        const bool is_null_literal = const_int && const_int->isZero();
+                        if (externTypeIsPointerLike(declared) && !is_null_literal) {
+                            std::string got = "a number";
+                            if (const_int) {
+                                got = "the integer " +
+                                      std::to_string(const_int->getSExtValue());
+                            } else if (auto* const_fp = dyn_cast<ConstantFP>(arg)) {
+                                got = "the number " +
+                                      std::to_string(
+                                          const_fp->getValueAPF().convertToDouble());
+                            }
+                            eshkol_error_at(
+                                g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                                current_source_line, current_source_column,
+                                g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                                "FFI type error in %s: argument %llu is declared `%s` "
+                                "and requires a string or pointer handle, but got %s",
+                                func_name.c_str(), (unsigned long long)(i + 1),
+                                declared.c_str(), got.c_str());
+                            markFatalCodegenError();
+                            return nullptr;
+                        }
+                        if (is_null_literal) {
+                            arg = builder->CreateIntToPtr(arg, expected_type);
+                            ffi_null_literal_converted = true;
+                        }
+                    }
+                    if (ffi_null_literal_converted) {
+                        // already the right type; skip the numeric conversions
+                    } else if (actual_type->isIntegerTy() && expected_type->isIntegerTy()) {
                         // Integer to integer conversion
                         if (actual_type->getIntegerBitWidth() > expected_type->getIntegerBitWidth()) {
                             arg = builder->CreateTrunc(arg, expected_type);
@@ -18599,9 +18984,31 @@ private:
                     }
                 }
                 args.push_back(arg);
+            } else {
+                // ESH-0362: too many arguments. This `else` did not exist — the
+                // surplus argument was simply never pushed, so the call was
+                // emitted with the callee's parameter count and the extra
+                // arguments VANISHED. `(f a b c)` against a two-parameter `f`
+                // ran as `(f a b)` and exited 0; the only trace was a gradual
+                // "Type warning: function 'f' expects 2 arguments, got 3" from
+                // the HoTT checker, which by design never fails the build. The
+                // arity check further down could not catch it either, because
+                // dropping the surplus here made args.size() match exactly.
+                // Silently discarding an argument the programmer wrote is the
+                // same fail-open class as padding a missing one with null.
+                // Found during FFI-boundary hardening.
+                eshkol_error_at(
+                    g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
+                    current_source_line, current_source_column,
+                    g_source_text.empty() ? nullptr : g_source_text.c_str(),
+                    "Arity mismatch: %s expects %u arguments but got %llu",
+                    func_name.c_str(), func_type->getNumParams(),
+                    (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
+                return nullptr;
             }
         }
-        
+
         // Add captured arguments for closure calls
         if (is_closure_call) {
             // ARITY FIX: Use actual capture count from nested_function_captures, not the difference
@@ -18628,6 +19035,20 @@ private:
             size_t expected_params = func_type->getNumParams() - actual_captures;
 
             // Check for arity mismatch (allow variadic: caller can pass fewer args)
+            //
+            // ESH-0362: both branches diagnosed the mismatch and returned
+            // nullptr WITHOUT marking the codegen fatal. A nullptr from
+            // codegenAST() is indistinguishable from "this form produced no
+            // value", so the enclosing (define …) simply bound the name to a
+            // null tagged value and compilation continued — the program ran
+            // with a POISONED HANDLE. Concretely, `(define h (f a))` against a
+            // two-parameter `f` printed the named diagnostic, bound `h` to
+            // null, and the next `(g h)` handed NULL to a C shim → SIGSEGV at
+            // 0x0, far from the real mistake, with a zero exit status from the
+            // compile step. markFatalCodegenError() makes generateLLVMIR()
+            // return no module, which the AOT driver and the JIT batch path
+            // both already turn into a nonzero exit. The diagnostic text is
+            // unchanged — it is the named contract consumers key on.
             bool is_var = variadic_function_info.count(func_name) > 0 &&
                           variadic_function_info[func_name].second;
             size_t min_params = is_var ? variadic_function_info[func_name].first : expected_params;
@@ -18638,6 +19059,7 @@ private:
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s expects %zu arguments but got %llu",
                     func_name.c_str(), expected_params, (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
                 return nullptr;
             }
             if (is_var && op->call_op.num_vars < min_params) {
@@ -18647,6 +19069,7 @@ private:
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch: %s requires at least %zu arguments but got %llu",
                     func_name.c_str(), min_params, (unsigned long long)op->call_op.num_vars);
+                markFatalCodegenError();
                 return nullptr;
             }
 
@@ -18995,20 +19418,28 @@ private:
             }
         }
 
-        // Verify arity before creating the call
+        // Verify arity before creating the call.
+        //
+        // ESH-0362: same fail-open arity class as the no-capture variadic site
+        // above. This branch is where "too many arguments" landed: the excess
+        // was silently RESIZED AWAY and the call emitted, so `(f a b c)` against
+        // a two-parameter `f` dropped `c` with only a warning and ran. Padding
+        // the other direction injected nulls into positions the callee will
+        // dereference. Both are program errors; fail the compilation instead.
+        // Found during FFI-boundary hardening.
         {
             FunctionType* ft = callee->getFunctionType();
             size_t expected = ft->getNumParams();
             size_t actual = args.size();
             if (actual != expected && !ft->isVarArg()) {
-                eshkol_warn_at(
+                eshkol_error_at(
                     g_source_filepath.empty() ? nullptr : g_source_filepath.c_str(),
                     current_source_line, current_source_column,
                     g_source_text.empty() ? nullptr : g_source_text.c_str(),
                     "Arity mismatch in general call to %s: expected %zu, got %zu",
                     callee->getName().str().c_str(), expected, actual);
-                while (args.size() < expected) args.push_back(packNullToTaggedValue());
-                if (args.size() > expected) args.resize(expected);
+                markFatalCodegenError();
+                return nullptr;
             }
         }
         if (builder->GetInsertBlock()->getTerminator()) {
@@ -24340,6 +24771,26 @@ private:
 
         eshkol_debug("Creating external function declaration: %s (real: %s)", func_name, real_func_name);
 
+        // FFI POINTER-ARG GUARD (ESH-0363): record the DECLARED parameter type
+        // keywords before anything can return early. Both the "already
+        // declared" fast paths below skip the type mapping entirely, and a
+        // module that redeclares an extern (e.g. two `(require …)`s reaching the
+        // same wrapper) would otherwise leave its call sites unguarded.
+        {
+            std::vector<std::string> declared;
+            declared.reserve(num_params);
+            for (uint64_t i = 0; i < num_params; i++) {
+                if (op->extern_op.parameters[i].type == ESHKOL_STRING &&
+                    op->extern_op.parameters[i].str_val.ptr) {
+                    declared.emplace_back(op->extern_op.parameters[i].str_val.ptr);
+                } else {
+                    declared.emplace_back();
+                }
+            }
+            extern_param_type_names_[func_name] = declared;
+            extern_param_type_names_[real_func_name] = std::move(declared);
+        }
+
         // EXTERN CONFLICT FIX: Check if function already exists in the module or function_table
         // This avoids creating conflicting declarations (e.g., printf with void vs int return)
         // which causes LLVM to create mangled names like printf.4
@@ -24348,6 +24799,38 @@ private:
             applyExternFunctionAttributes(op->extern_op, existing_func);
             function_table[func_name] = existing_func;
             eshkol_info("External function '%s' already declared, reusing existing declaration", real_func_name);
+            // ESH-0362: reuse binds the Eshkol name to a signature the
+            // declaration did not ask for. That is intentional for benign
+            // return-type disagreements (the `printf` void-vs-int case this path
+            // exists for), but a differing PARAMETER COUNT silently changes the
+            // call shape: `(extern void h :real strlen)` reused the runtime's own
+            // 1-parameter `strlen` declaration, so `(h)` was a 0-vs-1 arity
+            // mismatch that the call site used to paper over by padding a null
+            // argument — i.e. handing `strlen` a null pointer to dereference.
+            // The call site now rejects it, so name the disagreement here, where
+            // it can actually be fixed.
+            FunctionType* existing_ft = existing_func->getFunctionType();
+            bool declared_variadic = false;
+            for (uint64_t p = 0; p < num_params; p++) {
+                if (op->extern_op.parameters[p].type == ESHKOL_STRING &&
+                    op->extern_op.parameters[p].str_val.ptr &&
+                    std::strcmp(op->extern_op.parameters[p].str_val.ptr, "...") == 0) {
+                    declared_variadic = true;
+                    break;
+                }
+            }
+            if (!existing_ft->isVarArg() && !declared_variadic &&
+                existing_ft->getNumParams() != num_params) {
+                eshkol_warn(
+                    "extern '%s' declares %llu parameter(s) but C symbol '%s' is "
+                    "already declared in this module with %u — the existing "
+                    "declaration wins, so calls to '%s' must supply %u argument(s). "
+                    "Declare the extern with the symbol's real signature to avoid "
+                    "the surprise.",
+                    func_name, (unsigned long long)num_params, real_func_name,
+                    existing_ft->getNumParams(), func_name,
+                    existing_ft->getNumParams());
+            }
             return nullptr;
         }
 
