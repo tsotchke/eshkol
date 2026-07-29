@@ -20,6 +20,8 @@ Setup</a></li>
 <li><a href="#reporting-issues">Reporting Issues</a></li>
 <li><a href="#suggesting-enhancements">Suggesting Enhancements</a></li>
 <li><a href="#pull-requests">Pull Requests</a></li>
+<li><a href="#branch-protection-and-required-checks">Branch Protection
+and Required Checks</a></li>
 </ul></li>
 <li><a href="#development-guidelines">Development Guidelines</a>
 <ul>
@@ -136,15 +138,44 @@ ESHKOL_VM_NO_DISASM=1 ./test_vm
 <pre class="bash"><code># Compile the website
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 
-# Rebuild the browser REPL VM
+# Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME=&#39;EshkolVM&#39; \
   -s EXPORTED_RUNTIME_METHODS=&#39;[&quot;ccall&quot;,&quot;cwrap&quot;]&#39; \
+  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I lib/backend lib/backend/vm_wasm_repl.c \
+  -I inc -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
 cd site/static &amp;&amp; python3 -m http.server 8888</code></pre>
+<p>The REPL VM bundle is a <strong>checked-in artifact</strong> and
+neither <code>scripts/build-site.sh</code> nor the Pages deploy
+regenerates it, so it must be rebuilt by hand whenever
+<code>lib/backend/vm_wasm_repl.c</code>,
+<code>lib/backend/eshkol_vm.c</code>, or the prelude cache changes —
+otherwise the browser REPL silently keeps running an older VM. Two flags
+are not optional: <code>-I inc</code> (the VM includes
+<code>eshkol/backend/vm_limits.h</code>) and
+<code>ERROR_ON_UNDEFINED_SYMBOLS=0</code>, which leaves the native leaf
+runtime deps that are not part of the VM WASM
+(<code>eshkol_qrng_uint64</code>, <code>eshkol_qrng_double</code>,
+<code>eshkol_linear_solve</code>) as aborting stubs so a program calling
+them fails cleanly.</p>
+<p>After rebuilding, check the bundle in node before committing it — the
+same <code>repl_eval</code> entry point the site uses:</p>
+<pre class="bash"><code>node -e &#39;
+const f=require(&quot;./site/static/eshkol-vm.js&quot;);
+f({print:t=&gt;console.log(t)}).then(m=&gt;{
+  const ev=m.cwrap(&quot;repl_eval&quot;,&quot;string&quot;,[&quot;string&quot;]);
+  ev(&quot;(display (sqrt 2.0))&quot;);                                   // 1.4142135623730951
+  ev(&quot;(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))&quot;);
+  ev(&quot;(display (gradient v (vector 3.0 4.0)))&quot;);                // #(6 8)
+});&#39;</code></pre>
+<p>Then update the VM WASM size statistic in
+<code>site/src/main.esk</code> (the <code>s2</code> <code>"...KB"</code>
+cell) to match the new artifact —
+<code>scripts/verify_site_release.py</code> fails if the published
+number drifts by more than 1KB.</p>
 <h2 id="how-to-contribute">How to Contribute</h2>
 <h3 id="reporting-issues">Reporting Issues</h3>
 <p>If you find a bug or have a suggestion for improvement:</p>
@@ -184,6 +215,67 @@ standards</a>.</li>
 Eshkol repository.</li>
 <li>Respond to any feedback or questions during the review process.</li>
 </ol>
+<h3 id="branch-protection-and-required-checks">Branch Protection and
+Required Checks</h3>
+<p><code>master</code> is branch-protected. The protection rules
+themselves are applied in the repository settings (Settings → Branches →
+branch protection rule for <code>master</code>); this section is the
+authoritative reference for <em>what</em> that configuration should
+require. It is the enforcement half of the closed-loop assurance
+architecture
+(<code>docs/design/adr/0010-closed-loop-assurance.md</code>, closing AR1
+gap A5): before this was in place, <code>master</code> had zero required
+checks and every lane was advisory.</p>
+<p><strong>Required status checks</strong> (a PR cannot merge until all
+of these are green):</p>
+<ul>
+<li><code>linux-x64-lite</code></li>
+<li><code>linux-arm64-lite</code></li>
+<li><code>macos-arm64-lite</code></li>
+<li><code>macos-x64-lite</code></li>
+<li><code>windows-arm64-lite</code></li>
+<li><code>linux-x64-asan-ubsan</code> — the memory-safety (ASan + UBSan)
+lane; required so address/UB regressions cannot merge behind an advisory
+lane.</li>
+<li><code>identity-guard</code> — enforces the commit-identity allowlist
+on every PR.</li>
+</ul>
+<p>Also enabled in the protection rule: require branches to be up to
+date before merging, require linear history, and dismiss stale approvals
+on new commits.</p>
+<p><strong>Advisory checks</strong> (run on every PR and must be
+<em>reviewed</em> before merge, but do not mechanically block it — they
+depend on optional backends, special hardware, or a networked service
+and cannot gate the default merge):</p>
+<ul>
+<li><code>quantum-macos</code> — opt-in Moonlab quantum lane
+(<code>continue-on-error</code>, networked).</li>
+<li>the XLA lanes (<code>*-xla</code>) — optional XLA backend.</li>
+<li>the CUDA lanes (<code>*-cuda</code>) and the self-hosted GPU
+execution gate — require GPU hardware not present on the default hosted
+runners.</li>
+</ul>
+<p>Advisory does not mean ignorable: a reviewer checks
+<strong>all</strong> lanes, including the advisory ones, before merging,
+and dedupes stale check entries by taking the latest run per lane name.
+Linux lite lanes intermittently hit hosted-runner reclaim (exit 143 /
+<code>BlobNotFound</code>); re-run the failed jobs once before treating
+a red as a real regression.</p>
+<p><strong>Release-blocking readiness.</strong> Publishing a release is
+additionally gated by the <code>release-readiness-gate</code> job in
+<code>.github/workflows/release.yml</code>, which regenerates the oracle
+traces at the tagged SHA and runs <code>icc architecture-verify</code> +
+<code>icc readiness --target v1.3-evolve</code>.
+<code>publish-release</code> depends on it, so <strong>no release asset
+is published unless readiness is ready/100</strong> at the cut SHA. The
+gate requires ICC to be provisioned on the release runner via the
+<code>ICC_BIN</code> repository variable (a path to the ICC binary;
+optionally <code>ICC_REPO</code> for the registered index name, default
+<code>eshkol_lang</code>). If ICC is unavailable on a real tag push the
+gate emits a loud error and blocks the release — it never fail-opens to
+a green publish. A non-publishing <code>workflow_dispatch</code> dry-run
+treats the same conditions as advisory warnings, since it ships
+nothing.</p>
 <h2 id="development-guidelines">Development Guidelines</h2>
 <h3 id="coding-standards">Coding Standards</h3>
 <p>We follow these coding standards for consistency:</p>

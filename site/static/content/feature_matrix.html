@@ -559,7 +559,12 @@ native + VM</td>
 <td>Higher-order derivatives</td>
 <td>Yes</td>
 <td>Forward</td>
-<td>Nested differentials</td>
+<td>Nested differentials; every spelling agrees —
+<code>(derivative-n f x k)</code>, the nested-lambda form, and the
+curried form <code>(define df (derivative f))</code> …
+<code>(derivative df)</code> / <code>(derivative (derivative f))</code>
+(v1.3.4, ESH-0369: the returned closure is dual-transparent, so orders
+1-3 are exact)</td>
 </tr>
 <tr>
 <td>Math function support</td>
@@ -3850,6 +3855,21 @@ share one portable-C routine with native, byte-identical output (R7RS
 / arity-1 whole-vector) incl. the curried form, byte-identical to native
 across <code>vm-src</code>/<code>vm-eskb</code>; higher-order nesting
 (gradient-of-derivative / Taylor tower) stays native-only</td>
+</tr>
+<tr>
+<td>Forward-mode <code>derivative</code>
+(<code>op:DERIVATIVE</code>)</td>
+<td>Yes / first order</td>
+<td>v1.3.4 (ESH-0369): direct <code>(derivative f x)</code> and curried
+<code>((derivative f) x)</code> both lower to the same native call with
+the same <code>(f, x)</code>, so they agree exactly with native. First
+order only — the VM’s carrier is a flat dual
+<code>{value, tangent}</code> with a single perturbation, so
+nested/higher-order differentiation now <strong>raises a catchable
+error</strong> instead of returning the <code>0.0</code> it used to
+fabricate. Higher-order AD needs the native jet’s
+<code>e1</code>/<code>e2</code>/<code>ep</code> slots or a VM Taylor
+tower; native-only until a VM jet carrier is built</td>
 </tr>
 <tr>
 <td>Checked ascription <code>(the &lt;type&gt; expr)</code></td>
