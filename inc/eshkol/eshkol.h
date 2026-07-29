@@ -1327,6 +1327,12 @@ typedef struct eshkol_exception_handler {
     // A raise rolls back every later evaluation before longjmp so failed
     // promise computations remain retryable per R7RS.
     void* promise_mark;
+    // #341: region-stack depth when this handler was installed. A raise closes
+    // every region opened after this point — `with-region` bodies and open
+    // `region-open` handles alike — after deep-promoting the raised value out of
+    // them, so a non-local exit can neither leak a region nor leave the
+    // allocation slot pointing at an arena it is about to free.
+    uint64_t region_mark;
     struct eshkol_exception_handler* prev;  // Previous handler in stack
 } eshkol_exception_handler_t;
 
@@ -1470,6 +1476,10 @@ typedef struct eshkol_continuation_state {
     eshkol_tagged_value_t value;        // Value passed when continuation is invoked
     void* wind_mark;                    // Dynamic-wind stack marker at capture time
     void* promise_mark;                 // Promise-evaluation chain marker at capture time
+    // #341: region-stack depth at capture time. Invoking the continuation closes
+    // every region opened since, after deep-promoting the delivered value out of
+    // them (see eshkol_region_unwind_for_continuation).
+    uint64_t region_mark;
 } eshkol_continuation_state_t;
 
 /**

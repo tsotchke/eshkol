@@ -14,18 +14,18 @@
     }
   },
   "counts": {
-    "builtins_total": 1020,
-    "builtins_in_native_closure_table": 433,
-    "builtins_in_vm_table": 691,
-    "builtins_in_llvm_aot_dispatch": 785,
-    "builtins_aot_only": 284,
+    "builtins_total": 1019,
+    "builtins_in_native_closure_table": 427,
+    "builtins_in_vm_table": 688,
+    "builtins_in_llvm_aot_dispatch": 782,
+    "builtins_aot_only": 286,
     "quantum_agent_ffi_builtins": 22,
     "special_forms": 116,
     "ast_ops": 113,
     "prelude": 16
   },
   "builtins_by_category": {
-    "ffi_system": 299,
+    "ffi_system": 293,
     "tensor_ad": 221,
     "numeric": 90,
     "predicate": 76,
@@ -34,12 +34,13 @@
     "string_char": 42,
     "list_pair": 38,
     "consciousness": 37,
-    "misc": 27,
+    "misc": 28,
     "vector": 23,
     "hash": 22,
     "higher_order": 14,
     "misc_core": 13,
-    "control_flow": 5
+    "control_flow": 5,
+    "memory_region": 4
   },
   "special_forms_by_category": {
     "tensor_ad": 29,
@@ -450,6 +451,28 @@
         "vm"
       ],
       "category": "io_port"
+    },
+    {
+      "name": "_region-close-list",
+      "ids": [
+        2211
+      ],
+      "arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "misc"
+    },
+    {
+      "name": "_region-open",
+      "ids": [
+        2210
+      ],
+      "arity": 2,
+      "backends": [
+        "vm"
+      ],
+      "category": "memory_region"
     },
     {
       "name": "_string-append-2",
@@ -3404,71 +3427,6 @@
       "category": "predicate"
     },
     {
-      "name": "event-loop-add-fd!",
-      "ids": [
-        2211
-      ],
-      "arity": 3,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
-      "name": "event-loop-backend",
-      "ids": [
-        2215
-      ],
-      "arity": 0,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
-      "name": "event-loop-close",
-      "ids": [
-        2214
-      ],
-      "arity": 1,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
-      "name": "event-loop-poll",
-      "ids": [
-        2213
-      ],
-      "arity": 2,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
-      "name": "event-loop-remove-fd!",
-      "ids": [
-        2212
-      ],
-      "arity": 2,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
       "name": "every",
       "ids": [
         228,
@@ -6206,19 +6164,6 @@
       "category": "ffi_system"
     },
     {
-      "name": "make-event-loop",
-      "ids": [
-        2210
-      ],
-      "arity": 1,
-      "backends": [
-        "native",
-        "vm",
-        "native_llvm"
-      ],
-      "category": "ffi_system"
-    },
-    {
       "name": "make-fact",
       "ids": [
         507
@@ -8183,6 +8128,36 @@
         "native_llvm"
       ],
       "category": "ffi_system"
+    },
+    {
+      "name": "region-close",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "memory_region"
+    },
+    {
+      "name": "region-open",
+      "ids": [],
+      "arity": null,
+      "backends": [
+        "native_llvm"
+      ],
+      "category": "memory_region"
+    },
+    {
+      "name": "region-open?",
+      "ids": [
+        2212
+      ],
+      "arity": 1,
+      "backends": [
+        "vm",
+        "native_llvm"
+      ],
+      "category": "memory_region"
     },
     {
       "name": "relu",
