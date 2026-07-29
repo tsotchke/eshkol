@@ -467,6 +467,29 @@ int32_t eshkol_ad_point_is_scalar(const eshkol_tagged_value_t* v) {
     return 0;
 }
 
+/* Narrow companion: is this point an EXACT HEAP scalar (rational or bignum)?
+ *
+ * Deliberately NOT the same question as eshkol_ad_point_is_scalar: it excludes
+ * DUAL_NUMBER and Taylor towers. Some entry points classify a dual point
+ * separately (a dual point means an enclosing differentiation is live), so the
+ * `INT64 | DOUBLE` tests those operators use must be widened by exactly the
+ * exact-heap-numeric case and nothing else -- otherwise widening the entry
+ * classification would silently re-route nested AD as well.
+ *
+ * Both the ENTRY branch (which promotes a scalar point) and the EXIT unwrap
+ * (which returns a bare scalar rather than a 1-vector for a scalar point) must
+ * be widened together: widening only the entry made `(gradient f 1/3)` return
+ * `#(0.666…)` where `(gradient f 0.333…)` returns `0.666…`. */
+int32_t eshkol_ad_point_is_exact_scalar(const eshkol_tagged_value_t* v) {
+    if (!v) return 0;
+    if ((uint8_t)(v->type & 0x0F) != ESHKOL_VALUE_HEAP_PTR || v->data.ptr_val == 0)
+        return 0;
+    const eshkol_object_header_t* hdr =
+        ESHKOL_GET_HEADER((void*)(uintptr_t)v->data.ptr_val);
+    return (hdr && (hdr->subtype == HEAP_SUBTYPE_RATIONAL ||
+                    hdr->subtype == HEAP_SUBTYPE_BIGNUM)) ? 1 : 0;
+}
+
 /* Raise-on-refusal wrapper: the shape the codegen calls, so an AD entry point
  * never has to branch on `ok` in IR. `what` names the operator for the
  * diagnostic (e.g. "derivative", "gradient"). */

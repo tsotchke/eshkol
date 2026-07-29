@@ -235,6 +235,54 @@ distinction.
 
 ---
 
+## Exact vs inexact seeds
+
+The forward jet and the reverse tape both carry a **raw double per component**,
+so every operator on this page coerces its evaluation point to a double at the
+entry boundary. That coercion is decided by the point's **runtime tag**, and it
+happens **exactly once**, at the boundary.
+
+| Seed | `derivative-n` / `taylor` | `derivative`, `gradient`, `jacobian`, `hessian`, `laplacian`, `divergence`, `curl`, `directional-derivative` |
+|---|---|---|
+| exact integer (`3`) | **exact** result | coerced to `3.0` once; result inexact |
+| exact rational (`1/3`) | **exact** result (`2/3`) | coerced to `0.333…` once; result inexact (`0.666…`) |
+| bignum (`123456789012345678901`) | **exact** result | coerced to the nearest double once; result inexact |
+| double (`0.5`) | inexact (f64 tower) | inexact — unchanged |
+| non-numeric point | catchable type error | catchable type error |
+
+Two properties hold for every operator and every point form:
+
+- **An exact seed never disagrees with the same operator applied at
+  `(exact->inexact point)`.** This is the contract. It is what makes the
+  coercion observable-equivalent to writing the inexact point yourself, and it
+  is gated by `tests/ad/exact_point_ad_test.esk` plus the `exactpoint` family of
+  `tests/ad_adversarial/gen_ad_adversarial.py`.
+- **A valid numeric point is never turned into a different number.** An exact
+  rational or bignum is HEAP-tagged, so its tagged data field holds a *pointer*;
+  reinterpreting that field (rather than dispatching on the tag) yields either a
+  value of heap magnitude or a denormal near `5e-314`. Neither can occur: a point
+  that is not a number raises a catchable type error instead.
+
+Only `derivative-n` and `taylor` route an exact seed through the
+**exact-coefficient tier**, where `+ - * /` and non-negative-integer `expt` stay
+exact and the first transcendental demotes the tower to f64 (R7RS exactness
+contagion). That tier is documented in
+[../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md#3-exact-coefficients-bignum--rational)
+section 3 and gated by `tests/ad/exact_taylor_test.esk`.
+
+Extending the exact tier to the jet/tape operators is a **build item**: the jet
+is eight raw doubles and the tape node holds a raw double, so an exact tier there
+needs an exact carrier, not a coercion change. Until then those operators are
+inexact-valued at an exact seed — and, per the contract above, never *wrong*.
+
+> `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
+> constructors drop an exact rational to `0` before any AD operator sees the
+> point (`(display (tensor 1/3))` prints `#(0)`), so an exact seed cannot be
+> expressed in those two forms yet. Use `(vector 1/3)`, `(list 1/3)` or a bare
+> scalar. Tracked with the tensor-literal generality work.
+
+---
+
 ## Binding forms
 
 The function argument may be supplied three ways. All three work for

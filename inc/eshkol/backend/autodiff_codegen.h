@@ -131,6 +131,27 @@ public:
      */
     llvm::Value* adPointIsScalar(llvm::Value* tagged);
 
+    /**
+     * ESH-0393. Is this point an EXACT HEAP scalar (rational or bignum)? i1.
+     *
+     * Narrower than adPointIsScalar on purpose: it excludes DUAL_NUMBER and
+     * Taylor towers. Operators that classify a dual point separately (a dual
+     * point means an enclosing differentiation is live) must have their
+     * `INT64 | DOUBLE` scalar test widened by exactly the exact-heap-numeric
+     * case, or widening the classification would re-route nested AD too.
+     *
+     * A point's ENTRY classification and its EXIT unwrap must be widened
+     * together: widening only the entry made `(gradient f 1/3)` return
+     * `#(0.666…)` where `(gradient f 0.333…)` returns the bare `0.666…`.
+     */
+    llvm::Value* adPointIsExactScalar(llvm::Value* tagged);
+
+    /** Shared emitter for the adPointIs* predicates: spill `tagged` to a
+     *  hoisted entry-block slot and call `runtime_fn`, or fold to a constant
+     *  when the value is already a raw (untagged) scalar. */
+    llvm::Value* adPointPredicate(llvm::Value* tagged, const char* runtime_fn,
+                                  bool raw_is_true);
+
     // ESH-0188 (P3): the compile-time-`int depth` seed/extract pair that used
     // to live here (seedDerivativeInput/extractDerivativeResult) was the
     // pre-ESH-0070 perturbation-tagging mechanism. It was fully superseded by

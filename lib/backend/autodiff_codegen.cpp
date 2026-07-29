@@ -1158,25 +1158,38 @@ llvm::Value* AutodiffCodegen::adPointToDouble(llvm::Value* tagged_val, const cha
     return b.CreateCall(coerce, {slot, name}, "ad_point_dbl");
 }
 
-llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
+llvm::Value* AutodiffCodegen::adPointPredicate(llvm::Value* tagged_val,
+                                               const char* runtime_fn,
+                                               bool raw_is_true) {
     auto& b = ctx_.builder();
-    // A raw double / raw int is unambiguously a scalar.
+    // A raw double / raw int is not tagged, so the answer is static.
     if (!tagged_val || tagged_val->getType() != ctx_.taggedValueType())
-        return llvm::ConstantInt::getTrue(ctx_.context());
+        return raw_is_true ? llvm::ConstantInt::getTrue(ctx_.context())
+                           : llvm::ConstantInt::getFalse(ctx_.context());
 
     llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::AllocaInst* slot;
     {
         llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
-        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_scalar_probe");
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_point_probe");
     }
     b.CreateStore(tagged_val, slot);
 
     llvm::FunctionCallee pred = ctx_.module().getOrInsertFunction(
-        "eshkol_ad_point_is_scalar",
-        llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false));
-    llvm::Value* r = b.CreateCall(pred, {slot}, "ad_pt_is_scalar");
+        runtime_fn, llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false));
+    llvm::Value* r = b.CreateCall(pred, {slot}, "ad_pt_pred");
     return b.CreateICmpNE(r, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+}
+
+llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
+    // A raw double/int reaching here IS a scalar.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_scalar", /*raw_is_true=*/true);
+}
+
+llvm::Value* AutodiffCodegen::adPointIsExactScalar(llvm::Value* tagged_val) {
+    // A raw double/int is not a HEAP exact scalar.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_exact_scalar",
+                            /*raw_is_true=*/false);
 }
 
 llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
@@ -5500,7 +5513,17 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
         ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
     Value* is_double = ctx_.builder().CreateICmpEQ(input_base_type,
         ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-    Value* is_scalar = ctx_.builder().CreateOr(is_int64, is_double);
+    // ESH-0393: an exact rational/bignum is a scalar point too, and it is
+    // HEAP-tagged, so it failed the INT64|DOUBLE test and was routed into the
+    // collection path (its object then read as [dims][rank][elems]). This
+    // predicate feeds BOTH the entry branch below and the exit unwrap that
+    // returns a bare scalar instead of a 1-element vector, so the two agree:
+    // widening only the entry made (gradient f 1/3) answer #(0.666…) where
+    // (gradient f 0.333…) answers 0.666…. Deliberately narrower than
+    // adPointIsScalar (no DUAL_NUMBER), so nested AD keeps its own dispatch.
+    Value* is_scalar = ctx_.builder().CreateOr(
+        ctx_.builder().CreateOr(is_int64, is_double),
+        adPointIsExactScalar(vector_val));
 
     // M1 Migration: Check if input is Scheme vector (HEAP_PTR with HEAP_SUBTYPE_VECTOR) or legacy VECTOR_PTR
     // First check for HEAP_PTR (consolidated format)
@@ -5609,27 +5632,10 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Scheme vector so it goes through the same path as a (vector …) input.
     // Without this, a multi-parameter gradient on a list crashed — the cons
     // cell fell through to the vector path and was misread as [length][elems].
-    // ESH-0393: an EXACT heap scalar is a scalar POINT, not a collection.
-    // `is_scalar` above only recognises INT64/DOUBLE, and this subtype chain
-    // only recognises VECTOR/CONS/TENSOR, so a rational or bignum point fell
-    // through to the tensor path and had its object dereferenced as
-    // [dims][rank][elems] — `(gradient f 1/3)` returned #() and
-    // `(hessian f 1/3)` segfaulted. Route the exact heap numerics to the same
-    // scalar promotion an INT64/DOUBLE point takes.
-    BasicBlock* grad_check_exact_scalar =
-        BasicBlock::Create(ctx_.context(), "grad_check_exact_scalar", current_func);
+    // An exact rational/bignum point never reaches this subtype chain: the
+    // widened `is_scalar` above already routed it to scalar_input (ESH-0393).
     ctx_.builder().SetInsertPoint(grad_check_cons);
-    ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_exact_scalar);
-
-    ctx_.builder().SetInsertPoint(grad_check_exact_scalar);
-    {
-        Value* is_rat = ctx_.builder().CreateICmpEQ(grad_subtype,
-            ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
-        Value* is_big = ctx_.builder().CreateICmpEQ(grad_subtype,
-            ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
-        ctx_.builder().CreateCondBr(ctx_.builder().CreateOr(is_rat, is_big),
-                                    scalar_input, grad_check_tensor);
-    }
+    ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_tensor);
 
     ctx_.builder().SetInsertPoint(grad_list_to_svec);
     {

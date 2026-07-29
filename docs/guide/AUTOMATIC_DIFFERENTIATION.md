@@ -704,6 +704,33 @@ tensor coefficient layouts, and the Taylor-model remainder arithmetic — see
 Points are vectors (`#(…)` or `(vector …)`). Exact seeds (integer/rational)
 yield exact `derivative-n`/`taylor` results for polynomial/rational functions.
 
+### Exact vs inexact seeds, per operator
+
+`derivative-n` and `taylor` carry exact coefficients (section 3). Every other
+operator in the table above carries a **raw double per component** — the forward
+jet is eight doubles, a tape node holds one — so it coerces the point to a double
+**once, at the entry boundary**, dispatching on the point's runtime tag.
+
+| Seed | `derivative-n` / `taylor` | all other operators above |
+|---|---|---|
+| exact integer `3` | exact | `3.0`, coerced once → inexact result |
+| exact rational `1/3` | exact (`2/3`) | `0.333…`, coerced once → inexact (`0.666…`) |
+| bignum | exact | nearest double, coerced once → inexact |
+| double | f64 tower | unchanged |
+| non-numeric | catchable type error | catchable type error |
+
+The contract on the coercion is that **an exact seed never disagrees with the
+same operator applied at `(exact->inexact point)`** — so an exact point is
+observably the same as writing the double yourself, never a different number.
+Gated by `tests/ad/exact_point_ad_test.esk` and the `exactpoint` adversarial
+family.
+
+Extending the exact tier to the jet/tape operators is a build item: it needs an
+exact *carrier* in the jet and the tape, not a change to the coercion. See
+[../reference/ad/operators.md](../reference/ad/operators.md#exact-vs-inexact-seeds)
+for the per-point-form detail, including why `#(1/3)` and `(tensor 1/3)` cannot
+express an exact seed yet.
+
 `gradient` is exact reverse-mode AD **however the callable is reached** — named
 directly, passed in through a function parameter, wrapped, or applied in curried
 form. `(gradient f point)` where `f` arrives through a parameter, and the curried
