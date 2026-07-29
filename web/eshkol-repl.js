@@ -347,6 +347,11 @@ class EshkolRepl {
                 eshkol_set_error_location: () => {},
                 eshkol_deep_equal: (a, b) => false,
                 eshkol_display_value: (val) => {},
+                // R7RS `write` (write/write-shared/write-simple) to stdout:
+                // void eshkol_write_value(const tagged_value_t* value) — same
+                // single-pointer-argument shape as eshkol_display_value above,
+                // degraded the same way (no-op; full fidelity is native-only).
+                eshkol_write_value: (val) => {},
 
                 // Lambda registry
                 eshkol_lambda_registry_init: () => {},
@@ -424,6 +429,15 @@ class EshkolRepl {
                 rename: () => -1,
                 eshkol_rename: () => -1,
                 eshkol_builtin_make_temp_file: () => 0,
+                // __arena-used (ESH-0187): void eshkol_builtin_arena_used(sv_t* out)
+                // — the SystemCodegen all-pointer calling convention (see
+                // getOrDeclareRuntimeFuncAllPtr in system_codegen.cpp), so the only
+                // wasm-side parameter is the result out-slot. The browser build has
+                // no bounded/introspectable arena (a fresh bump allocator per
+                // program, no cap to report), so this degrades the same way as the
+                // error-object accessor stubs below: a no-op that leaves `out`
+                // alone rather than fabricating a byte count.
+                eshkol_builtin_arena_used: (out) => {},
                 mkdir: () => -1,
                 rmdir: () => -1,
                 getcwd: () => 0,
@@ -522,6 +536,15 @@ class EshkolRepl {
                     return dataPtr;
                 },
                 eshkol_display_value_to_port: (value, port) => {
+                    if (!this._stringPorts) this._stringPorts = new Map();
+                    const chunks = this._stringPorts.get(port);
+                    if (chunks) chunks.push(String(value));
+                    else console.log('[port]', value);
+                },
+                // R7RS `write` to an explicit port: same degraded shape as
+                // eshkol_display_value_to_port above (write/display fidelity
+                // is not distinguished in the browser stub).
+                eshkol_write_value_to_port: (value, port) => {
                     if (!this._stringPorts) this._stringPorts = new Map();
                     const chunks = this._stringPorts.get(port);
                     if (chunks) chunks.push(String(value));
