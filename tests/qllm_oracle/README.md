@@ -282,52 +282,78 @@ Things that shaped these exporters and that a qLLM-side reader should know:
 ## Status of the bridge backwards (the oracle's work queue)
 
 The qLLM campaign treats the unsupported-op error list in
-`lib/backend/tensor_backward.cpp` as this instrument's work queue. Assessed on
-this tree, all three remaining entries are blocked **upstream of the
-backward**, so registering a backward today would be dead code no test can
-reach:
+`lib/backend/tensor_backward.cpp` as this instrument's work queue. Two of the
+three entries are now implemented; the third is deliberately deferred.
 
-**None of the three AD node types has a producer.** `AD_NODE_FRECHET_MEAN`
-occurs in exactly two places in the whole tree — the enum at
-`inc/eshkol/eshkol.h:951` and the `eshkol_fatal` at
-`lib/backend/tensor_backward.cpp:1365`. `AD_NODE_TENSOR_ATTENTION` and
-`AD_NODE_TENSOR_EMBEDDING` add only the dispatch-table entries in
-`lib/bridge/tensor_backward.cpp`. Nothing anywhere assigns `ad_node_t.type`
-any of these values, so the errors are unreachable and the dispatch table
-36c2c761 built is, for these ops, a seam waiting for a forward.
+**Embedding — DONE (ESH-0230).** `tensor_embedding_backward` is the exact
+indexed scatter-add `dW[idx[i],:] += dy[i,:]`. The blocker named in the ticket —
+the lookup-index tensor absent from the AD node — is closed by making
+`node->input2` the index operand, with `params` carrying
+`[num_indices, d_model, vocab_size]`. Duplicate indices accumulate (a row looked
+up *k* times receives the sum of all *k* upstream rows) and rows never looked up
+stay bitwise zero. `ctest -R tensor_embedding_backward_gradcheck`: 9 checks
+including central finite differences, the duplicate-index case, and three
+refusals (missing index operand, fractional index, out-of-range index).
 
-- **Fréchet mean** — hardest, and not just plumbing. The forward
-  (`lib/backend/vm_geometric.c:1239`, VM opcode 817) is a forward-only FFI
-  shim: it downcasts to fp32 via `vm_tensor_to_float`, calls
-  `qllm_hyperbolic_frechet_mean(..., 100, 1e-6f)`, copies out `dim` floats and
-  calls `qllm_tensor_destroy(result)`. No tape node, no retained operands, no
-  saved iterate — and not even f64. Beyond the plumbing there is a real
-  mathematical decision: the weighted Fréchet mean `μ` is defined implicitly by
-  `Σ_i w_i log_μ(x_i) = 0`, so the exact `∂μ/∂x_i` comes from implicitly
-  differentiating that stationarity condition, which needs the Hessian of the
-  weighted variance functional at `μ`. qLLM's forward is an iterative fixed
-  point, so *implicit differentiation* (mathematically exact,
-  iteration-count-independent) and *unrolling the 100 iterations* (bit-matches
-  the shipped forward, but is not the derivative of the mathematical map) give
-  different answers. Which one qLLM's C backward should match is a call to make
-  before writing code — and the `exp`/`log` golden vectors in this directory
-  are the prerequisite for building either.
+**Fréchet mean — DONE, by implicit differentiation.** The mathematical decision
+recorded above has been taken: `tensor_frechet_mean_backward` differentiates the
+stationarity condition `Σ_i w_i log_μ(x_i) = 0` at the converged fixed point, not
+the iteration that solves it. Those are different functions — the unrolled
+derivative carries the iteration's transient and depends on the starting point
+and the iteration count, neither of which is a property of the Fréchet mean. The
+gradcheck measures the gap rather than asserting it: on its fixture the
+one-step-unrolled derivative differs from the implicit one by up to `7.8e-2`.
 
-- **Embedding** — the smallest and most tractable. The blocker is already named
-  in the code: "the lookup-index tensor is not threaded through the AD node —
-  ESH-0230" (tracked in `.swarm/tasks/ESH-0230.json`). The backward itself is
-  an indexed scatter-add, straightforward *given* the indices; the work is
-  forward-side, wiring `node->input2` to the index tensor.
+Reverse mode needs one linear solve regardless of the number of points: solve
+`Aᵀz = dL/dμ` with `A = Σ_i w_i ∂log_μ(x_i)/∂μ`, then
+`dL/dx_j = -w_j (∂log_μ(x_j)/∂x_j)ᵀ z` and `dL/dw_j = -⟨log_μ(x_j), z⟩`.
 
-- **Attention** — needs the Q/K/V split and the softmax intermediate retained
-  on the node; the 5-step chain through `softmax(QKᵀ/√d)V` is then standard.
-  Low marginal value for now, because the path users actually differentiate
-  (`scaled-dot-attention`) decomposes to scalar AD nodes in
-  `tensor_transformer_codegen.cpp` and is already exact — which is precisely
-  why the bridge node has no producer.
+**The residual gate is the companion requirement, not a nicety.** Every step of
+that derivation assumes `F(μ*) = 0`. At a non-converged point the implicit
+function theorem does not apply and the formulas still return a smooth,
+plausible, *wrong* vector — which is strictly worse than an error, because
+nothing downstream can distinguish it from a gradient. The rule recomputes the
+residual from the retained `μ*`, points and weights (recomputed, not stored: a
+stored residual can be stale relative to the operands actually on the node) and
+refuses when it is not stationary, including for a displacement of only `1e-6`.
 
-Suggested order: ESH-0230 embedding (forward plumbing + scatter backward) →
-attention → Fréchet mean.
+The forward changed too, and consumers should note it: VM opcode 817 previously
+returned the **Euclidean weighted average** and discarded its curvature argument
+entirely. On the Poincaré ball that is not the Riemannian center of mass and not
+an approximation of one — it agreed only at the origin or at zero curvature, with
+nothing in the output revealing the curvature had been dropped. It is now a real
+f64 Karcher iteration that gates its own convergence and input domain and raises
+catchable errors. **f64, not the fp32 `qllm_hyperbolic_frechet_mean` entry
+point**, and that is forced rather than preferred: an fp32 mean carries
+`|μ − μ*| ~ 1e-7` and therefore a relative stationarity residual around `1e-7`,
+two orders above the `1e-9` gate, so an fp32 forward makes the exact derivative
+unavailable by construction. A qLLM-side backward that wants to match this must
+compute its mean in double precision too, or accept that its own residual gate
+cannot be satisfied.
+
+For a 1-D cross-check independent of any implementation: on a diameter of the
+disc the arc-length coordinate is `t = 2·artanh(x)` and the weighted Fréchet mean
+is the weighted average in `t`, so points at `±0.8` with weights `3:1` give
+exactly `0.5`, against a Euclidean average of `0.4`.
+
+**Attention — deliberately deferred, not blocked.** The exact rule needs the
+Q/K/V split and the softmax intermediate retained on the node; the 5-step chain
+through `softmax(QKᵀ/√d)V` is then standard, decomposed per head with backprop
+into `(W_Q, W_K, W_V, W_O)` for the multi-head case, plus `dL/dβ = Σ dy` for the
+layernorm rule the same forward feeds. Its marginal value is low because the path
+users actually differentiate — `scaled-dot-attention` — decomposes to scalar AD
+nodes in `tensor_transformer_codegen.cpp` and is already exact, which is
+precisely why the bridge node has no producer.
+
+**Reachability caveat, stated plainly.** Both new rules are exercised through the
+C dispatcher (`eshkol_tensor_backward_dispatch`) by their ctest gradchecks, not
+yet through `(gradient (lambda (W) … (embedding idx W)))`. Nothing in the tree
+assigns `ad_node_t.type` any `AD_NODE_TENSOR_*` value: the bridge's *backward*
+half shipped ahead of its forward half, and the forward that would record these
+nodes lives in tensor codegen. Making `(embedding …)` and `(frechet-mean …)`
+record their nodes is a one-site change per op in that layer and is the remaining
+step for Eshkol-level differentiation; the rules themselves, and the gates, are
+complete and verified.
 
 ## Files
 
