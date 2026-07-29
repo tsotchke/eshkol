@@ -909,6 +909,19 @@ oracles:
         label: P11 tower-based user numerics converge on ODE/root/inversion examples
         action: run_ad_numerics_gate
 
+      # ESH-0011 (workplan Tier 0, package P2) — the async foundation every
+      # Tier 1 networking primitive registers its descriptors against. Real
+      # criterion, not a placeholder: the probe runs the acceptance battery on
+      # JIT and AOT, and the battery asserts the pipe round-trip, a measured
+      # timeout, close-then-use failing closed, and 1000 open/close cycles.
+      - runtime_event:
+          event_kinds: [eshkol_smoke]
+          event_names: ["event_loop_works"]
+          event_values: ["PASS"]
+        severity: high
+        label: Portable event loop (kqueue/epoll/IOCP) round-trips a pipe through event-loop-poll and releases the kernel resource on close
+        action: run_icc_smoke
+
       - runtime_event:
           event_kinds: [v1_4_connection]
           event_names: ["connection_theme_deliverables"]

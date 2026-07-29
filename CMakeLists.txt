@@ -3269,6 +3269,22 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 PASS_REGULAR_EXPRESSION "PASS: ad_input2_test"
                 FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     endif()
+    # ESH-0011 portable event loop. Registered on EVERY platform, Windows
+    # included: the IOCP backend must be exercised, not merely compiled, and
+    # `make-pipe` now works there so the pipe round-trip is genuinely runnable.
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk")
+        add_test(
+            NAME v1_3_event_loop_runtime_smoke
+            COMMAND $<TARGET_FILE:eshkol-run>
+                    -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/event_loop_test.esk"
+                    -L"${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(v1_3_event_loop_runtime_smoke
+            PROPERTIES
+                TIMEOUT 300
+                PASS_REGULAR_EXPRESSION "PASS: event_loop_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    endif()
     if(NOT WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/v1_3_edge_cases/jit_cache_test.sh")
         add_test(
             NAME v1_3_jit_cache_runtime_smoke
