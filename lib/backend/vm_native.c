@@ -9602,7 +9602,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
         break;
     }
     /* ═══════════════════════════════════════════════════════════════
-     * ESH-0011 portable event loop — IDs 2210-2215.
+     * ESH-0011 portable event loop — IDs 2220-2225.
      *
      * These forward straight to lib/core/event_loop.c, so handles, interest
      * bits, poll results and the error contract are byte-identical to the
@@ -9612,7 +9612,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
      *   • close of an already-closed handle → #f (observable, not fatal)
      *   • poll timeout → '(), not #f
      * ═══════════════════════════════════════════════════════════════ */
-    case 2210: { /* make-event-loop(max-events) → handle or #f */
+    case 2220: { /* make-event-loop(max-events) → handle or #f */
         Value max_val = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
         int64_t requested = (int64_t)as_number(max_val);
@@ -9628,7 +9628,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
         break;
     }
-    case 2211: { /* event-loop-add-fd!(loop, fd, events) → #t */
+    case 2221: { /* event-loop-add-fd!(loop, fd, events) → #t */
         Value events_val = vm_pop(vm), fd_val = vm_pop(vm), loop_val = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
         eshkol_event_loop_t* loop =
@@ -9661,7 +9661,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
         break;
     }
-    case 2212: { /* event-loop-remove-fd!(loop, fd) → #t or #f */
+    case 2222: { /* event-loop-remove-fd!(loop, fd) → #t or #f */
         Value fd_val = vm_pop(vm), loop_val = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
         eshkol_event_loop_t* loop =
@@ -9679,7 +9679,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
         break;
     }
-    case 2213: { /* event-loop-poll(loop, timeout-ms) → ((fd . events) ...) */
+    case 2223: { /* event-loop-poll(loop, timeout-ms) → ((fd . events) ...) */
         Value timeout_val = vm_pop(vm), loop_val = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
         eshkol_event_loop_t* loop =
@@ -9709,7 +9709,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
         break;
     }
-    case 2214: { /* event-loop-close(loop) → #t, or #f if already closed */
+    case 2224: { /* event-loop-close(loop) → #t, or #f if already closed */
         Value loop_val = vm_pop(vm);
 #ifndef ESHKOL_VM_WASM
         vm_push(vm, BOOL_VAL(eshkol_event_loop_close_handle(
@@ -9721,7 +9721,7 @@ static void vm_dispatch_native(VM* vm, int fid) {
 #endif
         break;
     }
-    case 2215: { /* event-loop-backend() → backend name string */
+    case 2225: { /* event-loop-backend() → backend name string */
 #ifndef ESHKOL_VM_WASM
         vm_push(vm, vm_string_value(vm, eshkol_event_loop_backend_name(), -1));
 #else

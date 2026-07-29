@@ -5859,11 +5859,11 @@ static const BuiltinDef BUILTINS[] = {
     {"make-pipe", 1983, 0}, {"fd-write", 1984, 2},
     {"make-line-reader", 1985, 2}, {"line-reader-poll", 1986, 1},
     {"line-reader-close", 1987, 1}, {"fd-close", 1988, 1},
-    /* ESH-0011 portable event loop — IDs 2210-2215. Keep in step with the same
+    /* ESH-0011 portable event loop — IDs 2220-2225. Keep in step with the same
      * block in lib/backend/eshkol_vm.c. */
-    {"make-event-loop", 2210, 1}, {"event-loop-add-fd!", 2211, 3},
-    {"event-loop-remove-fd!", 2212, 2}, {"event-loop-poll", 2213, 2},
-    {"event-loop-close", 2214, 1}, {"event-loop-backend", 2215, 0},
+    {"make-event-loop", 2220, 1}, {"event-loop-add-fd!", 2221, 3},
+    {"event-loop-remove-fd!", 2222, 2}, {"event-loop-poll", 2223, 2},
+    {"event-loop-close", 2224, 1}, {"event-loop-backend", 2225, 0},
     {"make-lru-cache", 1989, 1}, {"lru-get", 1990, 2},
     {"lru-set!", 1991, 3}, {"lru-has?", 1992, 2},
     {"lru-delete!", 1993, 2}, {"lru-clear!", 1994, 1},
