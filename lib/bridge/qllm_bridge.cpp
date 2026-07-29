@@ -91,6 +91,8 @@ int64_t* copy_shape(const int64_t* shape, size_t ndim) {
     return out;
 }
 
+void ensure_grad(ad_node_t* n);   /* defined below; see its comment for why */
+
 /**
  * @brief Allocate a tensor-valued AD node and, when `tape` is non-NULL, record
  *        it on the tape in evaluation order.
@@ -128,8 +130,46 @@ ad_node_t* make_node(ad_tape_t* tape,
     if (tape) {
         node->id = tape->num_nodes;
         arena_tape_add_node(tape, node);
+        /* Only needed when the chain will actually be differentiated. Covers the
+         * inputs too, so the bridge guarantees a persistent gradient buffer for
+         * every node in the subgraph it records regardless of who created the
+         * input variable nodes. See ensure_grad(). */
+        ensure_grad(node);
+        ensure_grad(in1);
+        ensure_grad(in2);
+        ensure_grad(in3);
     }
     return node;
+}
+
+/**
+ * @brief Give a node a persistent, zero-filled gradient buffer.
+ *
+ * This has to happen at FORWARD time, and the reason is subtle enough to be
+ * worth stating. eshkol_tensor_backward_dispatch() wraps each node's backward
+ * rule in arena_push_scope()/arena_pop_scope(), and arena_pop_scope() rewinds
+ * the arena's bump pointer to the mark taken at push. The backward rules in
+ * lib/bridge/tensor_backward.cpp allocate a destination gradient buffer lazily
+ * ("if (x_node->tensor_gradient == NULL) ... = alloc_grad(n)") from the same
+ * arena -- so that buffer is reclaimed the moment the node's dispatch returns.
+ * The next node upstream then finds a non-NULL pointer into freed arena space
+ * and the entire chain silently produces zeros.
+ *
+ * Allocating the buffers here, outside any backward scope, is what makes a
+ * recorded chain actually differentiable: every lazy branch in the backward
+ * rules is already satisfied, so nothing is allocated inside the scope and
+ * nothing is rewound. Buffers are zero-filled once, which is also what the
+ * rules' "+=" accumulation assumes.
+ *
+ * The codegen path never hit this because it pre-allocates gradient buffers of
+ * its own; the bridge path was unreachable, so nothing had ever exercised it.
+ */
+void ensure_grad(ad_node_t* n) {
+    if (!n || n->tensor_gradient || !n->shape || n->ndim == 0) return;
+    size_t count = elem_count(n->shape, n->ndim);
+    if (count == 0) return;
+    n->tensor_gradient = arena_allocate_zeroed(get_global_arena(),
+                                               count * sizeof(double));
 }
 
 /** @brief Validate that a node carries a usable tensor payload. */
