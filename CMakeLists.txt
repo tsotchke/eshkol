@@ -2122,6 +2122,12 @@ set(ESHKOL_RUNTIME_HOSTED_SRC
   lib/core/linear_solve_hosted.cpp
   lib/core/runtime_string_ports_hosted.cpp
   lib/core/system_builtins.c
+  # ESH-0011 event loop: hosted, not core — it is nothing but OS calls. Must
+  # live in this list rather than only in LIB_SRC, because the event-loop
+  # builtins in system_builtins.c are compiled into libeshkol-runtime.a and
+  # every AOT/JIT user link resolves against that archive alone.
+  lib/core/event_loop.c
+  ${ESHKOL_EVENT_LOOP_SRC}
 )
 
 list(REMOVE_ITEM LIB_SRC
