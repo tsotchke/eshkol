@@ -279,6 +279,56 @@ Things that shaped these exporters and that a qLLM-side reader should know:
   `call-with-output-file` warns that `open-output-file` takes exactly one
   argument and writes nothing.
 
+## Status of the bridge backwards (the oracle's work queue)
+
+The qLLM campaign treats the unsupported-op error list in
+`lib/backend/tensor_backward.cpp` as this instrument's work queue. Assessed on
+this tree, all three remaining entries are blocked **upstream of the
+backward**, so registering a backward today would be dead code no test can
+reach:
+
+**None of the three AD node types has a producer.** `AD_NODE_FRECHET_MEAN`
+occurs in exactly two places in the whole tree — the enum at
+`inc/eshkol/eshkol.h:951` and the `eshkol_fatal` at
+`lib/backend/tensor_backward.cpp:1365`. `AD_NODE_TENSOR_ATTENTION` and
+`AD_NODE_TENSOR_EMBEDDING` add only the dispatch-table entries in
+`lib/bridge/tensor_backward.cpp`. Nothing anywhere assigns `ad_node_t.type`
+any of these values, so the errors are unreachable and the dispatch table
+36c2c761 built is, for these ops, a seam waiting for a forward.
+
+- **Fréchet mean** — hardest, and not just plumbing. The forward
+  (`lib/backend/vm_geometric.c:1239`, VM opcode 817) is a forward-only FFI
+  shim: it downcasts to fp32 via `vm_tensor_to_float`, calls
+  `qllm_hyperbolic_frechet_mean(..., 100, 1e-6f)`, copies out `dim` floats and
+  calls `qllm_tensor_destroy(result)`. No tape node, no retained operands, no
+  saved iterate — and not even f64. Beyond the plumbing there is a real
+  mathematical decision: the weighted Fréchet mean `μ` is defined implicitly by
+  `Σ_i w_i log_μ(x_i) = 0`, so the exact `∂μ/∂x_i` comes from implicitly
+  differentiating that stationarity condition, which needs the Hessian of the
+  weighted variance functional at `μ`. qLLM's forward is an iterative fixed
+  point, so *implicit differentiation* (mathematically exact,
+  iteration-count-independent) and *unrolling the 100 iterations* (bit-matches
+  the shipped forward, but is not the derivative of the mathematical map) give
+  different answers. Which one qLLM's C backward should match is a call to make
+  before writing code — and the `exp`/`log` golden vectors in this directory
+  are the prerequisite for building either.
+
+- **Embedding** — the smallest and most tractable. The blocker is already named
+  in the code: "the lookup-index tensor is not threaded through the AD node —
+  ESH-0230" (tracked in `.swarm/tasks/ESH-0230.json`). The backward itself is
+  an indexed scatter-add, straightforward *given* the indices; the work is
+  forward-side, wiring `node->input2` to the index tensor.
+
+- **Attention** — needs the Q/K/V split and the softmax intermediate retained
+  on the node; the 5-step chain through `softmax(QKᵀ/√d)V` is then standard.
+  Low marginal value for now, because the path users actually differentiate
+  (`scaled-dot-attention`) decomposes to scalar AD nodes in
+  `tensor_transformer_codegen.cpp` and is already exact — which is precisely
+  why the bridge node has no producer.
+
+Suggested order: ESH-0230 embedding (forward plumbing + scatter backward) →
+attention → Fréchet mean.
+
 ## Files
 
 - `qllm_oracle_lib.esk` — shared vector math, exact/FD Jacobian assembly,
