@@ -143,6 +143,37 @@ __attribute__((format(printf, 2, 3)))
 void eshkol_printf(eshkol_logger_t level, const char *msg, ...);
 
 /**
+ * @brief Returns how many error-severity diagnostics have been raised in this
+ *        process so far.
+ *
+ * This is the single authoritative error tally. Every diagnostic primitive in
+ * this header — eshkol_printf(), eshkol_log_with_location(),
+ * eshkol_log_structured() and eshkol_error_at(), and therefore every macro
+ * built on them (eshkol_error(), ESHKOL_ERROR(), eshkol_fatal(), ...) —
+ * increments it when the severity is ESHKOL_ERROR or ESHKOL_FATAL. Warning and
+ * lower severities never do, so eshkol_warn()/eshkol_warn_at() stay purely
+ * advisory.
+ *
+ * The count is what makes an emitted error diagnostic actually fatal. A
+ * compilation stage cannot be trusted to thread a failure status back to its
+ * caller from every one of its several hundred error sites; instead the driver
+ * samples this counter before a compilation unit and again at each gate
+ * (artifact emission, and handing a module to the JIT), and refuses to proceed
+ * if it grew. Callers therefore compare two samples rather than testing for
+ * zero — a REPL session, or a compile that follows an already-reported failure,
+ * must be judged on the errors of the unit at hand.
+ *
+ * A diagnostic counts even when eshkol_set_logger_level() suppresses its
+ * output: lowering verbosity must not convert an error into a silently wrong
+ * artifact. eshkol_stacktrace() does not count, as it annotates a diagnostic
+ * that has already been counted rather than reporting a new one.
+ *
+ * @return Monotonically non-decreasing count of error-severity diagnostics.
+ * @note Thread-safe; maintained in a relaxed atomic counter.
+ */
+unsigned long eshkol_diagnostic_error_count(void);
+
+/**
  * @brief Prints the current call stack at the given severity level.
  *
  * On suppressed levels this is a no-op. On macOS/Linux this uses
