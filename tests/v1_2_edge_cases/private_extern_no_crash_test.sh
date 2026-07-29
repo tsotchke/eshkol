@@ -45,6 +45,14 @@ cat > "$mod_file" <<'ESK'
 ;; it guards — into the failure. Declaring the real signature keeps the guard
 ;; (a private extern plus a private define that references it, in a precompiled
 ;; module) exactly as it was.
+;;
+;; Same defect ESH-0373 records from the driver side: every run printed
+;; "error: Arity mismatch: some-c-helper expects 1 arguments but got 0" and the
+;; driver emitted a binary anyway, so this test asserted rc=0 and went green off
+;; a diagnosed program. Declaring `ptr` here — rather than leaving the parameter
+;; list empty and depending on the reuse path to supply the shape — states the
+;; one-argument contract the call site below already honours, so the fixture is
+;; well-formed whether or not the declaration is reused.
 (extern i64 some-c-helper ptr :real strlen)
 (define (priv-helper) (some-c-helper "x"))
 ESK

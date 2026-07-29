@@ -1785,6 +1785,29 @@ static std::string repl_var_storage_symbol_name(const std::string& name) {
  * or if addIRModule fails.
  */
 void ReplJITContext::addModule(std::unique_ptr<Module> module, std::unique_ptr<LLVMContext> module_context) {
+    // THE JIT-EXECUTION GATE.
+    //
+    // This is the one door through which compiled code becomes reachable by
+    // execution: `-r`, `-e`, the REPL and every require/import module load all
+    // reach the JIT through here. If compiling this unit reported an error, the
+    // module does not go in, so the erroneous program never begins to run —
+    // the counterpart of the artifact-emission gate on the AOT side, and for
+    // the same reason: a program the compiler has already objected to produces
+    // a wrong answer, not a diagnosed failure, once it is allowed to execute.
+    //
+    // Throwing is the right shape for both callers. The driver's existing
+    // handlers turn it into a non-zero exit, and an interactive REPL reports
+    // the failed form and keeps the session — in both cases without running
+    // the code. `module` and `module_context` are destroyed by the unwind, so
+    // refusing to admit a module leaks nothing.
+    if (eshkol_diagnostic_error_count() != diagnostics_at_unit_start_) {
+        throw std::runtime_error(
+            "refusing to execute: compilation reported " +
+            std::to_string(eshkol_diagnostic_error_count() -
+                           diagnostics_at_unit_start_) +
+            " error(s)");
+    }
+
     if (!jit_) {
         initializeJIT();
     }
@@ -2923,7 +2946,16 @@ void ReplJITContext::injectPreviousSymbols(Module* module) {
             // All lambdas have signature: eshkol_tagged_value(*)(eshkol_tagged_value, eshkol_tagged_value, ...)
             Type* tagged_value_type = StructType::getTypeByName(module->getContext(), "eshkol_tagged_value");
             if (!tagged_value_type) {
-                std::cerr << "ERROR: eshkol_tagged_value type not found - skipping lambda injection" << std::endl;
+                // Reported through the logger rather than straight to cerr so
+                // it reaches the error tally and the gate in addModule() below
+                // refuses the module. This is the same fail-open shape the gate
+                // exists to remove: skipping the injection leaves the batch
+                // referring to a lambda it never declared, and "ERROR" followed
+                // by a module that still executes is how a diagnosed program
+                // ends up returning a wrong answer.
+                eshkol_error("eshkol_tagged_value type not found; cannot declare "
+                             "lambda '%s' for JIT module '%s'",
+                             lambda_name.c_str(), module->getName().str().c_str());
                 continue;
             }
 
@@ -3288,6 +3320,16 @@ void* ReplJITContext::executeBatch(std::vector<eshkol_ast_t>& asts, bool silent,
         asts_for_codegen = codegen_asts.data();
         num_asts_for_codegen = codegen_asts.size();
     }
+
+    // The whole batch is codegen'd as one module, so this one span covers every
+    // form in it: an error reported for any of them stops the batch from
+    // executing, which is the only safe answer when later forms depend on the
+    // definitions of earlier ones. The span opens here rather than at function
+    // entry so that it measures compilation only — module loads performed
+    // earlier in this call have already *run* code, and a run-time diagnostic
+    // from code that legitimately executed must not be mistaken for a
+    // compile-time objection to this batch.
+    CompilationUnit compilation_unit(*this);
 
     LLVMModuleRef c_module = source_path.empty()
         ? eshkol_generate_llvm_ir(
@@ -3758,6 +3800,10 @@ void* ReplJITContext::execute(eshkol_ast_t* ast) {
     // Reserve a unique module/eval id up front so failed evaluations do not
     // reuse the same COFF init symbol names on the next attempt.
     const std::uint64_t eval_id = eval_counter_++;
+
+    // Compilation span for the addModule() gate; see executeBatch() for why it
+    // opens immediately before codegen rather than at function entry.
+    CompilationUnit compilation_unit(*this);
 
     // Generate LLVM IR using the existing Eshkol compiler
     std::string module_name = "__repl_module_" + std::to_string(eval_id);
