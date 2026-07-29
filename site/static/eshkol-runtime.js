@@ -730,6 +730,59 @@ class EshkolRuntime {
                 // preceding memmove; nothing to promote -> genuine no-op.
                 eshkol_region_write_barrier_range: () => {},
 
+                // #341 user-reachable region handles + the shared region-teardown
+                // primitive. `with-region` lowering now goes through
+                // eshkol_region_unwind_to (promote the kept value one level out,
+                // restore the allocation slot, pop) instead of open-coding
+                // escape + region_pop + region_leave, so these imports appear in
+                // ANY module that uses with-region — not only ones using handles.
+                //
+                // eshkol_region_unwind_to(mark, vals, n): the caller stores the
+                // result INTO `vals` and reads the same slot back afterwards, so
+                // with no region system to promote out of the correct degradation
+                // is a genuine no-op — the value is already in the slot.
+                eshkol_region_unwind_to:  (_mark, _vals, _n) => {},
+                eshkol_region_mark:       () => 0,
+                // Continuation-crossing unwind: nothing to tear down.
+                eshkol_region_unwind_for_continuation: (_state) => {},
+                // (region-open …) — hand back a nonzero opaque token. Slot 1 /
+                // generation 1 in the runtime encoding ((gen << 8) | (slot+1)).
+                eshkol_region_open_builtin: (out, _a, _b, _reclaim) => {
+                    const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
+                    if (!buf || !out) return;
+                    const o = Number(out);
+                    new Uint8Array(buf).fill(0, o, o + 16);
+                    const dv = new DataView(buf);
+                    dv.setUint8(o, 1);            // ESHKOL_VALUE_INT64
+                    dv.setUint8(o + 1, 1);        // exact flag
+                    dv.setBigInt64(o + 8, 257n, true);  // (1 << 8) | 1
+                },
+                // (region-close handle v …) — same out-slot ABI as the escape
+                // helpers above: shallow-copy the first keep into `out` (nothing
+                // is freed, so nothing needs promoting), or leave the empty list for none.
+                // The n > 1 list form degrades to the first keep in the browser.
+                eshkol_region_close_builtin: (out, _handle, vals, n) => {
+                    const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
+                    if (!buf || !out) return;
+                    const o = Number(out);
+                    const bytes = new Uint8Array(buf);
+                    bytes.fill(0, o, o + 16);     // ESHKOL_VALUE_NULL = the empty list
+                    if (Number(n) >= 1 && vals) {
+                        const v = Number(vals);
+                        bytes.copyWithin(o, v, v + 16);
+                    }
+                },
+                // (region-open? handle) — with no region system a handle is never
+                // actually torn down, so report #f rather than claim a liveness
+                // the browser cannot track.
+                eshkol_region_open_p_builtin: (out, _handle) => {
+                    const buf = rt._importedMemory?.buffer || rt.instance?.exports?.memory?.buffer;
+                    if (!buf || !out) return;
+                    const o = Number(out);
+                    new Uint8Array(buf).fill(0, o, o + 16);
+                    new DataView(buf).setUint8(o, 3);   // ESHKOL_VALUE_BOOL
+                },
+
                 // Tensor runtime helpers
                 eshkol_broadcast_elementwise_f64: () => 0,
                 eshkol_shapes_equal: () => 0,

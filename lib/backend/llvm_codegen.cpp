@@ -2015,6 +2015,11 @@ public:
         function_return_types["executable-path"] = BuiltinTypes::String;
         function_return_types["monotonic-time-ms"] = BuiltinTypes::Integer;
         function_return_types["__arena-used"] = BuiltinTypes::Integer;
+        // #341: user-reachable region handles. The handle token is an opaque
+        // exact integer; region-close returns whatever was kept (so: Value).
+        function_return_types["region-open"] = BuiltinTypes::Integer;
+        function_return_types["region-close"] = BuiltinTypes::Value;
+        function_return_types["region-open?"] = BuiltinTypes::Boolean;
         function_return_types["ad-reset-counters!"] = BuiltinTypes::Null;
         function_return_types["ad-primal-calls"] = BuiltinTypes::Integer;
         function_return_types["ad-reverse-passes"] = BuiltinTypes::Integer;
@@ -7499,6 +7504,25 @@ private:
             }
             builder->CreateCall(promise_unwind_func, {promise_mark});
 
+            // #341: a continuation may also escape from inside an open region —
+            // a `with-region` body or a live `region-open` handle. Close every
+            // region entered since capture, deep-promoting the value we just
+            // stored into state->value out of each one first, so the delivered
+            // value never points into an arena this jump is about to free. The
+            // region mark lives on the same public ABI struct as wind_mark /
+            // promise_mark, so the runtime reads it from `state` itself rather
+            // than us loading and passing it.
+            Function* region_unwind_func =
+                module->getFunction("eshkol_region_unwind_for_continuation");
+            if (!region_unwind_func) {
+                FunctionType* region_unwind_type = FunctionType::get(
+                    builder->getVoidTy(), {builder->getPtrTy()}, false);
+                region_unwind_func = Function::Create(
+                    region_unwind_type, Function::ExternalLinkage,
+                    "eshkol_region_unwind_for_continuation", module.get());
+            }
+            builder->CreateCall(region_unwind_func, {state_ptr});
+
             // Load jmp_buf_ptr and longjmp
             Value* jmp_buf_ptr = builder->CreateLoad(PointerType::getUnqual(*context), state_ptr);
 
@@ -12453,6 +12477,142 @@ private:
     }
 
     /**
+     * @brief Hoist a tagged-value alloca (optionally an array) to the current
+     *        function's entry block.
+     *
+     * The region-handle builtins are designed to be called once per iteration of
+     * a long-running loop, and a TCO'd named-let/do loop is an in-function branch
+     * back to a loop header — an alloca in the body therefore re-adjusts the
+     * stack pointer on every pass and is only reclaimed when the *function*
+     * returns. That is the ESH-0214 leak that presented as a spurious "stack
+     * overflow"; `with-region` fixes it the same way for its own slots.
+     */
+    AllocaInst* entryTaggedAlloca(uint64_t count, const char* name) {
+        Function* fn = builder->GetInsertBlock()->getParent();
+        IRBuilderBase::InsertPoint saved_ip = builder->saveIP();
+        if (fn && !fn->empty()) {
+            BasicBlock& entry = fn->getEntryBlock();
+            builder->SetInsertPoint(&entry, entry.begin());
+        }
+        AllocaInst* slot = builder->CreateAlloca(
+            tagged_value_type,
+            count > 1 ? ConstantInt::get(int64_type, count) : nullptr,
+            name);
+        builder->restoreIP(saved_ip);
+        return slot;
+    }
+
+    /**
+     * @brief Lower `(region-open …)`, `(region-close …)` and `(region-open? …)` —
+     *        the user-reachable, non-lexical region-handle surface (#341).
+     *
+     * All three are thin shims over the shared C entry points in
+     * runtime_regions.cpp, which the bytecode VM calls too, so the handle
+     * protocol and every error message are identical across substrates by
+     * construction rather than by convention.
+     *
+     * `region-close` passes its keep-list as one contiguous array of tagged
+     * values: eshkol_region_unwind_to promotes that array IN PLACE, level by
+     * level, through the same escape evacuator `with-region` uses for its result,
+     * so a kept value's whole reachable subgraph (interior pointers included) is
+     * deep-promoted out before the region arena is freed.
+     */
+    Value* codegenRegionHandleBuiltin(const eshkol_operations_t* op,
+                                      const std::string& func_name) {
+        const uint64_t nargs = op->call_op.num_vars;
+
+        if (func_name == "region-open") {
+            if (nargs > 2) {
+                eshkol_error("region-open expects at most 2 arguments (name, size-hint), got %llu",
+                             (unsigned long long)nargs);
+                return packNullToTaggedValue();
+            }
+            AllocaInst* out = entryTaggedAlloca(1, "region_open_out");
+            Value* null_ptr = ConstantPointerNull::get(PointerType::getUnqual(*context));
+            Value* arg_ptrs[2] = {null_ptr, null_ptr};
+            for (uint64_t i = 0; i < nargs && i < 2; i++) {
+                Value* v = ensureTaggedValue(codegenAST(&op->call_op.variables[i]));
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
+                }
+                if (!v) v = packNullToTaggedValue();
+                AllocaInst* slot = entryTaggedAlloca(1, "region_open_arg");
+                builder->CreateStore(v, slot);
+                arg_ptrs[i] = slot;
+            }
+            FunctionType* ft = FunctionType::get(
+                builder->getVoidTy(),
+                {ptr_type, ptr_type, ptr_type, builder->getInt32Ty()}, false);
+            FunctionCallee fn = module->getOrInsertFunction("eshkol_region_open_builtin", ft);
+            // reclaim = 1: the native substrate has the region machinery and the
+            // escape evacuator, so a close genuinely frees.
+            builder->CreateCall(fn, {out, arg_ptrs[0], arg_ptrs[1],
+                                     ConstantInt::get(builder->getInt32Ty(), 1)});
+            return builder->CreateLoad(tagged_value_type, out);
+        }
+
+        if (func_name == "region-open?") {
+            if (nargs != 1) {
+                eshkol_error("region-open? expects exactly 1 argument, got %llu",
+                             (unsigned long long)nargs);
+                return packNullToTaggedValue();
+            }
+            Value* h = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+            if (builder->GetInsertBlock()->getTerminator()) {
+                return UndefValue::get(tagged_value_type);
+            }
+            if (!h) h = packNullToTaggedValue();
+            AllocaInst* handle_slot = entryTaggedAlloca(1, "region_openp_handle");
+            AllocaInst* out = entryTaggedAlloca(1, "region_openp_out");
+            builder->CreateStore(h, handle_slot);
+            FunctionType* ft = FunctionType::get(
+                builder->getVoidTy(), {ptr_type, ptr_type}, false);
+            FunctionCallee fn = module->getOrInsertFunction("eshkol_region_open_p_builtin", ft);
+            builder->CreateCall(fn, {out, handle_slot});
+            return builder->CreateLoad(tagged_value_type, out);
+        }
+
+        // region-close
+        if (nargs < 1) {
+            eshkol_error("region-close expects at least 1 argument (the handle), got 0");
+            return packNullToTaggedValue();
+        }
+
+        Value* handle = ensureTaggedValue(codegenAST(&op->call_op.variables[0]));
+        if (builder->GetInsertBlock()->getTerminator()) {
+            return UndefValue::get(tagged_value_type);
+        }
+        if (!handle) handle = packNullToTaggedValue();
+        AllocaInst* handle_slot = entryTaggedAlloca(1, "region_close_handle");
+        builder->CreateStore(handle, handle_slot);
+
+        const uint64_t nkeep = nargs - 1;
+        Value* keeps_ptr = ConstantPointerNull::get(PointerType::getUnqual(*context));
+        if (nkeep > 0) {
+            AllocaInst* keeps = entryTaggedAlloca(nkeep, "region_close_keeps");
+            for (uint64_t i = 0; i < nkeep; i++) {
+                Value* v = ensureTaggedValue(codegenAST(&op->call_op.variables[i + 1]));
+                if (builder->GetInsertBlock()->getTerminator()) {
+                    return UndefValue::get(tagged_value_type);
+                }
+                if (!v) v = packNullToTaggedValue();
+                Value* slot = builder->CreateGEP(tagged_value_type, keeps,
+                                                 ConstantInt::get(int64_type, i));
+                builder->CreateStore(v, slot);
+            }
+            keeps_ptr = keeps;
+        }
+
+        AllocaInst* out = entryTaggedAlloca(1, "region_close_out");
+        FunctionType* ft = FunctionType::get(
+            builder->getVoidTy(), {ptr_type, ptr_type, ptr_type, int64_type}, false);
+        FunctionCallee fn = module->getOrInsertFunction("eshkol_region_close_builtin", ft);
+        builder->CreateCall(fn, {out, handle_slot, keeps_ptr,
+                                 ConstantInt::get(int64_type, nkeep)});
+        return builder->CreateLoad(tagged_value_type, out);
+    }
+
+    /**
      * @brief Emit the uniform out-of-range guard shared by every indexed
      *        accessor: when @p bad is true, raise a *catchable*
      *        ESHKOL_EXCEPTION_ERROR carrying @p msg; otherwise fall through
@@ -12807,6 +12967,12 @@ private:
         if (func_name == "remainder") return codegenRemainder(op);
         if (func_name == "quotient") return codegenQuotient(op);
         if (func_name == "format") return codegenFormatBuiltin(op);
+
+        // #341: user-reachable region handles — non-lexical scoped reclamation.
+        if (func_name == "region-open" || func_name == "region-close" ||
+            func_name == "region-open?") {
+            return codegenRegionHandleBuiltin(op, func_name);
+        }
         // R7RS truncate-quotient/truncate-remainder: same as quotient/remainder
         if (func_name == "truncate-quotient") return codegenQuotient(op);
         if (func_name == "truncate-remainder") return codegenRemainder(op);
@@ -31721,11 +31887,25 @@ private:
             false);
         FunctionCallee region_push_fn = module->getOrInsertFunction("region_push", region_push_type);
 
-        FunctionType* region_pop_type = FunctionType::get(
+        // #341: one teardown path. Instead of escape-result + region_pop +
+        // region_leave open-coded here, exit goes through the SAME
+        // eshkol_region_unwind_to() that region-close and the raise/continuation
+        // unwind paths use: promote the kept value one level out, restore the
+        // allocation slot, pop. Identical steps in the balanced case (so
+        // with-region's semantics are unchanged), but it also (a) cannot drift
+        // from the unstructured surface's promotion/ordering rules, and (b) tears
+        // down by MARK rather than by "pop the innermost", so a body that leaked
+        // an open region handle no longer causes this pop to destroy the wrong
+        // region — the leaked inner region is cascade-closed instead.
+        FunctionType* region_unwind_type = FunctionType::get(
             void_type,
-            {},
+            {int64_type, PointerType::getUnqual(*context), int64_type},
             false);
-        FunctionCallee region_pop_fn = module->getOrInsertFunction("region_pop", region_pop_type);
+        FunctionCallee region_unwind_fn =
+            module->getOrInsertFunction("eshkol_region_unwind_to", region_unwind_type);
+        FunctionType* region_mark_type = FunctionType::get(int64_type, {}, false);
+        FunctionCallee region_mark_fn =
+            module->getOrInsertFunction("eshkol_region_mark", region_mark_type);
 
         // Thread-safe region allocation-scope routing (see runtime_regions.cpp).
         // eshkol_region_enter(region) -> arena_t* saved; eshkol_region_leave(saved).
@@ -31752,6 +31932,10 @@ private:
 
         // Create the size hint value
         Value* size_hint = ConstantInt::get(int64_type, op->with_region_op.size_hint);
+
+        // #341: capture the region-stack depth BEFORE pushing, so exit can unwind
+        // back to exactly this shape no matter what the body left open.
+        Value* region_mark = builder->CreateCall(region_mark_fn, {}, "region_mark");
 
         // Call region_create
         Value* region = builder->CreateCall(region_create_fn, {name_ptr, size_hint}, "region");
@@ -31814,29 +31998,39 @@ private:
                 builder->SetInsertPoint(&with_region_entry, with_region_entry.begin());
             }
             AllocaInst* result_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "region_result_slot");
-            AllocaInst* escaped_alloca = builder->CreateAlloca(tagged_value_type, nullptr, "escaped_result_slot");
             builder->restoreIP(with_region_saved_ip);
             builder->CreateStore(result, result_alloca);
-            FunctionType* escape_type = FunctionType::get(
-                void_type,
-                {PointerType::getUnqual(*context), PointerType::getUnqual(*context)},
-                false);
-            FunctionCallee escape_fn = module->getOrInsertFunction(
-                "region_escape_tagged_value_into", escape_type);
 
-            builder->CreateCall(escape_fn, {escaped_alloca, result_alloca});
-            result = builder->CreateLoad(tagged_value_type, escaped_alloca, "escaped_result");
+            // #341: promote the result out AND tear the region down in one call.
+            // eshkol_region_unwind_to promotes in place (so the slot holds the
+            // surviving value afterwards), restores the allocation slot, then
+            // pops — the same three steps, in the same order, that region-close
+            // and the raise/continuation unwind paths perform.
+            builder->CreateCall(region_unwind_fn,
+                                {region_mark, result_alloca,
+                                 ConstantInt::get(int64_type, 1)});
+            result = builder->CreateLoad(tagged_value_type, result_alloca, "escaped_result");
+        } else {
+            // No result to promote, but the region must still come down.
+            builder->CreateCall(region_unwind_fn,
+                                {region_mark,
+                                 ConstantPointerNull::get(PointerType::getUnqual(*context)),
+                                 ConstantInt::get(int64_type, 0)});
         }
-
-        // Call region_pop (this destroys the region and frees all its memory)
-        builder->CreateCall(region_pop_fn, {});
 
         // ESH-0039: Restore the previous arena slot now that the region is gone.
         // Allocations after the region must NOT target the (now-freed) region
-        // arena. region_escape above already copied the result into the parent /
-        // global arena (region_escape is slot-independent), so it survives.
+        // arena. The unwind above already promoted the result into the parent /
+        // global arena, so it survives.
         // eshkol_region_leave is the counterpart to eshkol_region_enter and is a
         // no-op when enter declined to hijack (parallel/worker context).
+        //
+        // #341: eshkol_region_unwind_to already restored the slot from the
+        // region's recorded entry token, so in the normal path this is an
+        // idempotent re-store of the same pointer. It is retained deliberately as
+        // the belt-and-braces case for a region_push that DECLINED (stack
+        // overflow): the depth never changed, so the mark-based unwind is a no-op
+        // and this is the only thing that puts the slot back.
         builder->CreateCall(region_leave_fn, {saved_arena});
 
         if (!result) {

@@ -5,6 +5,25 @@
 
 set -e
 
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "stdlib"
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -24,10 +43,13 @@ ROOT_DIR="$(pwd)"
 BUILD_DIR="${BUILD_DIR:-build}"
 ESHKOL_RUN="$ROOT_DIR/$BUILD_DIR/eshkol-run"
 FAILURE_LINES="${ESHKOL_TEST_FAILURE_LINES:-40}"
-RUN_DIR=$(mktemp -d "${TMPDIR:-/tmp}/eshkol-stdlib-tests.XXXXXX")
+RUN_DIR="$ESHKOL_TEST_TMPDIR/run"
+mkdir -p "$RUN_DIR"
 cleanup() {
-    rm -rf "$RUN_DIR"
-    rm -f "$ROOT_DIR/a.out" "$ROOT_DIR/a.out.tmp.o" 2>/dev/null || true
+    # No repo-root `rm -f "$ROOT_DIR/a.out"` here: this suite compiles to
+    # $RUN_DIR, and reaching into the repo root deleted whatever a *concurrent*
+    # suite had just built there — the cross-suite clobber this pass removes.
+    eshkol_test_isolation_cleanup
 }
 trap cleanup EXIT
 
@@ -67,7 +89,10 @@ for test_file in "$ROOT_DIR"/tests/stdlib/*.esk; do
         # Compilation succeeded, try to run
         if "$test_bin" > "$test_output" 2>&1; then
             # Check if there were any errors in output
-            if grep -q "error:" "$test_output"; then
+            # `error:` alone is a compiler diagnostic, not a verdict: these
+            # programs print their own FAIL lines and exit 0, so scan for
+            # failure markers too — anywhere on the line, not just column 0.
+            if eshkol_test_output_has_failure "$test_output" 'error:'; then
                 echo -e "${YELLOW}⚠ RUNTIME ERROR${NC}"
                 head -n "$FAILURE_LINES" "$test_output" | sed 's/^/    /'
                 RUNTIME_ERRORS+=("$test_name")

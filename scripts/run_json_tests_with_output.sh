@@ -3,6 +3,24 @@
 # JSON Test Suite with Full Output Capture
 # Shows complete compilation and runtime output for all tests
 
+
+# Per-run, per-repo-root isolation for temp files and build artifacts.
+# Two suites (two worktrees, two agents, CI plus a local run) must never share
+# a scratch path or a build artifact — see scripts/lib/test_isolation.sh.
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "json-out"
 set +e  # Don't exit on error, we want to see all failures
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -69,8 +87,7 @@ run_test_verbose() {
     echo "========================================"
 
     # Clean up stale temp files before each test
-    rm -f a.out a.out.tmp.o
-
+    eshkol_test_reset_bin
     # Clear output file
     > "$output_file"
 
@@ -85,7 +102,7 @@ run_test_verbose() {
     # Try to compile with full output
     echo "COMPILATION OUTPUT:" >> "$output_file"
     echo "----------------------------------------" >> "$output_file"
-    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" >> "$output_file" 2>&1; then
+    if ./$BUILD_DIR/eshkol-run -L./$BUILD_DIR "$test_file" -o "$ESHKOL_TEST_BIN" >> "$output_file" 2>&1; then
         echo "----------------------------------------" >> "$output_file"
         echo "COMPILATION: SUCCESS" >> "$output_file"
         echo "" >> "$output_file"
@@ -95,7 +112,22 @@ run_test_verbose() {
         # Try to run with full output
         echo "RUNTIME OUTPUT:" >> "$output_file"
         echo "----------------------------------------" >> "$output_file"
-        if ./a.out >> "$output_file" 2>&1; then
+        # A zero exit status is not a pass. Capture the run output to its own
+        # file (the combined log mixes it with the compilation transcript) and
+        # scan it: these programs print their own FAIL lines and exit 0 either
+        # way, so trusting the status alone certified failing assertions.
+        "$ESHKOL_TEST_BIN" > "$ESHKOL_TEST_OUT" 2>&1
+        RUN_EXIT=$?
+        cat "$ESHKOL_TEST_OUT" >> "$output_file"
+        if [ $RUN_EXIT -eq 0 ] && eshkol_test_output_has_failure "$ESHKOL_TEST_OUT" 'error:'; then
+            echo "----------------------------------------" >> "$output_file"
+            echo "RUNTIME: ASSERTION FAILURE (exit 0, output reports failures)" >> "$output_file"
+            echo "FINAL STATUS: ASSERTION FAIL" >> "$output_file"
+            echo -e "${RED}  ASSERTION FAIL (test exited 0 but reported failures)${NC}"
+            eshkol_test_output_failures "$ESHKOL_TEST_OUT" 'error:' 10 | sed 's/^/    /'
+            ((FAIL++))
+            FAILED_TESTS+=("$test_name")
+        elif [ $RUN_EXIT -eq 0 ]; then
             echo "----------------------------------------" >> "$output_file"
             echo "RUNTIME: SUCCESS" >> "$output_file"
             echo "" >> "$output_file"
@@ -111,7 +143,7 @@ run_test_verbose() {
             tail -20 "$output_file" | grep -v "^========" | grep -v "^RUNTIME" | grep -v "^COMPILATION"
 
         else
-            EXIT_CODE=$?
+            EXIT_CODE=$RUN_EXIT
             echo "----------------------------------------" >> "$output_file"
             echo "RUNTIME: FAILED (exit code: $EXIT_CODE)" >> "$output_file"
 
@@ -215,8 +247,7 @@ echo -e "${BLUE}Summary file: $RESULTS_FILE${NC}"
 echo ""
 
 # Clean up
-rm -f a.out a.out.tmp.o
-
+eshkol_test_reset_bin
 # Exit with appropriate code
 if [ $FAIL -gt 0 ]; then
     exit 1
