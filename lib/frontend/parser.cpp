@@ -20,12 +20,19 @@
 #include <sstream>
 #include <vector>
 #include <set>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 #if defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
 #endif
 
 /* ── Parse context for diagnostic messages ── */
 static thread_local std::string g_parse_filename = "<unknown>";
+/* Interned id of g_parse_filename, stamped onto every top-level form so a
+ * diagnostic can name the file the form really came from rather than whichever
+ * file happened to be the ambient source context at codegen time. */
+static thread_local uint32_t g_parse_filename_id = 0;
 static thread_local const char* g_parse_source = NULL;
 /* Cumulative file line across successive eshkol_parse_next_ast_from_stream
  * calls.  Each call advances the counter by however many newlines it
@@ -9736,7 +9743,34 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
                     }
                     specs.push_back(spec);
                 }
-                return make_r7rs_import_ast(specs, token.line, token.column);
+                // ESH-0365: locate the lowered node at the `import` form's
+                // START, not at `token` — which by here is the form's CLOSING
+                // PAREN, because the spec loop above exits on TOKEN_RPAREN.
+                // `ast.line`/`ast.column` still hold the operator token, i.e.
+                // where the construct actually begins.
+                //
+                // A desugared node that reports its closing paren is the same
+                // defect class as ESH-0364: a location must identify the
+                // construct it describes. Two consequences, both real:
+                //
+                //  * A diagnostic about a bad import pointed a caret at `)`.
+                //  * `import` earned no execution-backed coverage of its own.
+                //    The tracker credits a compile-time form when a parser
+                //    dispatch event and an accept/codegen event share an exact
+                //    source position; the dispatch event is recorded at the
+                //    operator token, while the accept event took its position
+                //    from this call — so they never matched. `import` was
+                //    nonetheless certified covered, by an ACCIDENT: before
+                //    ESH-0364, a required module's codegen events were attributed
+                //    to the REQUIRING file, and in
+                //    tests/modules/r7rs_import_modifiers_test.esk the imported
+                //    module's `define`s at lines 5-7 column 2 collided with that
+                //    file's own `(import …)` forms at lines 5-7 column 2. The
+                //    position-only credit rule ignores the operation kind, so an
+                //    unrelated `define` in another file was granting `import` its
+                //    coverage. Fixing the attribution removed the collision and
+                //    exposed that this position was wrong all along.
+                return make_r7rs_import_ast(specs, ast.line, ast.column);
             }
             if (token.type != TOKEN_STRING) {
                 PARSE_ERROR_AT(token, "import requires a string path or R7RS library import set");
@@ -10879,6 +10913,13 @@ eshkol_ast_t eshkol_parse_next_ast_from_stream(std::istream &in_stream)
             eshkol_ast_t result = parse_expression(tokenizer);
             g_parse_source = NULL;
 
+            /* Stamp the form's originating FILE. This is the one choke point
+             * every top-level form passes through, and a form cannot span two
+             * files, so stamping here (rather than at each of the ~40 places
+             * that assign `line`) gives complete provenance with no chance of a
+             * missed site. Inner nodes stay 0 and inherit this form's file. */
+            result.source_file_id = g_parse_filename_id;
+
             if (result.type == ESHKOL_OP && parser_language_coverage_enabled()) {
                 eshkol_language_coverage_accept(
                     g_parse_filename.c_str(),
@@ -10931,8 +10972,46 @@ extern "C" void eshkol_reset_parse_line_counter(void) {
     g_stream_column = 1;
 }
 
+/* Interned source-file table backing eshkol_ast_t::source_file_id.
+ *
+ * A deque of strings (never reallocates its elements) plus a name->id map. Ids
+ * are 1-based so 0 stays the "unknown" sentinel, and the table is process-
+ * lifetime so an id stamped during parsing resolves correctly at codegen time,
+ * long after the loader's own path string has died. */
+static std::mutex g_source_file_table_mutex;
+static std::deque<std::string>& source_file_table() {
+    static std::deque<std::string> table;
+    return table;
+}
+static std::unordered_map<std::string, uint32_t>& source_file_ids() {
+    static std::unordered_map<std::string, uint32_t> ids;
+    return ids;
+}
+
+extern "C" uint32_t eshkol_intern_source_file(const char* path) {
+    if (!path || !*path) return 0;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& ids = source_file_ids();
+    auto it = ids.find(path);
+    if (it != ids.end()) return it->second;
+    auto& table = source_file_table();
+    table.emplace_back(path);
+    uint32_t id = (uint32_t)table.size();  // 1-based
+    ids.emplace(path, id);
+    return id;
+}
+
+extern "C" const char* eshkol_source_file_name(uint32_t id) {
+    if (id == 0) return NULL;
+    std::lock_guard<std::mutex> lock(g_source_file_table_mutex);
+    auto& table = source_file_table();
+    if (id > table.size()) return NULL;  // unset/garbage id reads as unknown
+    return table[id - 1].c_str();
+}
+
 extern "C" void eshkol_set_parse_source_context(const char* source_name) {
     g_parse_filename = (source_name && *source_name) ? source_name : "<unknown>";
+    g_parse_filename_id = eshkol_intern_source_file(g_parse_filename.c_str());
 }
 
 extern "C" const char* eshkol_get_parse_source_context(void) {
