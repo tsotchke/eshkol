@@ -548,7 +548,7 @@ Eshkol v1.1 introduces a full reverse-mode backward pass for tensor operations, 
 | Normalization | batch norm, layer norm | `eshkol_backward_batchnorm`, `eshkol_backward_layernorm` |
 | Linear algebra | matmul | `eshkol_backward_matmul` |
 | Attention | single-head | `tensor_attention_backward` — **stub in v1.2** (see Known limitations below) |
-| Embedding | embedding lookup | `tensor_embedding_backward` — **stub in v1.2** (see Known limitations below) |
+| Embedding | embedding lookup | `tensor_embedding_backward` — exact indexed scatter-add |
 
 **Matmul backward** implements the standard matrix calculus rules: for a forward pass `C = A @ B` where A is (M,K), B is (K,N), and C is (M,N), the backward pass computes `dA = grad_C @ B^T` and `dB = A^T @ grad_C`. Both input matrices are saved during the forward pass in the `ad_node_t.saved_tensors` array.
 
@@ -566,14 +566,34 @@ for multi-head with backprop through (W_Q, W_K, W_V, W_O) — ships in
 v1.3-evolve as part of the attention-codegen rewrite. Training attention
 layers under v1.2 will not converge correctly.
 
-**Embedding backward** is still a stub as of v1.3.0-evolve
-(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`).
-It scatters the upstream gradient into row 0 of the weight tensor only,
-because the lookup-index tensor is not yet threaded through the AD-node
-shape. A one-shot stderr warning fires on first invocation. The full
-indexed scatter — `dW[idx[i]] += dy[i]` over the lookup-index vector —
-is tracked as `ESH-0230` (`.swarm/tasks/ESH-0230.json`); no target
-release is committed until the index-tensor threading lands.
+**Embedding backward** is the exact indexed scatter-add
+(`tensor_embedding_backward` at `lib/bridge/tensor_backward.cpp`, ESH-0230).
+The forward `y[i,:] = W[idx[i],:]` is a gather, so its adjoint is
+`dW[idx[i],:] += dy[i,:]`. Two properties of that adjoint are load-bearing and
+are asserted by `ctest -R tensor_embedding_backward_gradcheck`:
+
+- **Duplicate indices accumulate.** A weight row looked up *k* times receives
+  the sum of all *k* upstream rows. Assigning instead of accumulating is the
+  classic scatter-add bug and it under-counts every repeated token — the common
+  case in real text — while leaving the gradient the right shape and order of
+  magnitude.
+- **Unselected rows are exactly zero.** The adjoint of a gather is genuinely
+  sparse; a rule that spreads the upstream gradient across other rows is wrong,
+  not approximate.
+
+The lookup indices reach the rule through the AD node itself: `input1` is the
+weight node `[vocab_size, d_model]`, `input2` is the index node whose
+`tensor_value` holds the `num_indices` f64 lookup indices, and `params` carries
+`[num_indices, d_model, vocab_size]`. Because the index operand is
+integer-valued the map is piecewise constant in it, so `input2` receives no
+gradient — its `tensor_gradient` is deliberately left untouched rather than
+seeded with a zero that would read as "differentiated, came out zero". A missing
+index operand, a fractional index, or an index outside `[0, vocab_size)` each
+raise rather than scatter into the wrong row.
+
+Historical note: before ESH-0230 this rule had no way to see the indices. It
+originally scattered everything into row 0 (a wrong gradient behind a one-shot
+stderr warning), and was later changed to refuse outright. Both are gone.
 
 **Integration with the forward-mode dual number system:** Eshkol's AD architecture is a hybrid. Forward-mode uses dual numbers (struct `{double primal, double tangent}`) for scalar derivatives and is implemented entirely in LLVM IR generation (`autodiff_codegen.cpp`). Reverse-mode uses a tape-based computational graph with `ad_node_t` nodes. The key bridge is the `propagateGradient` function in `autodiff_codegen.cpp`, which implements a two-path dispatch:
 

@@ -577,27 +577,154 @@ extern "C" void tensor_broadcast_mul_backward(ad_node_t* node) {
     }
 }
 
-/** @brief Backward pass for embedding lookup (forward is y[i,:] =
- *  W[idx[i],:]); properly it should scatter dL/dy rows into dL/dW at
- *  idx[i]. We don't have the idx vector wired through the node structure
- *  yet — until that's threaded, fall back to the conservative "sum grad
- *  into row 0" so the gradient signal still reaches the weight tensor
- *  non-zero and subsequent training steps don't silently stall. Tracked
- *  as ESH-0230 (.swarm/tasks/ESH-0230.json) — implement once the
- *  forward-pass wiring delivers node->input2 as the index tensor. */
+/*******************************************************************************
+ * Embedding Backward — exact indexed scatter-add (ESH-0230)
+ *
+ * Forward:   y[i, :] = W[idx[i], :]      i = 0 .. num_indices-1
+ * Backward:  dL/dW[idx[i], :] += dL/dy[i, :]
+ *
+ * The lookup is a gather, so its adjoint is a scatter-add. Two properties of
+ * that adjoint are the whole reason this needs its own rule:
+ *
+ *   1. Rows of W never looked up receive EXACTLY zero — the gradient is
+ *      genuinely sparse, not merely small. Any rule that spreads the upstream
+ *      gradient over other rows is wrong, not approximate.
+ *   2. A row looked up k times receives the SUM of all k upstream rows.
+ *      `+=` (not `=`) is load-bearing: overwriting is the classic scatter-add
+ *      bug and it silently under-counts every repeated token — the most common
+ *      case in real text, where frequent tokens repeat within one sequence.
+ *
+ * NODE CONTRACT (this is the threading ESH-0230 asked for)
+ *   node->input1        weight node W, shape [vocab_size, d_model]
+ *   node->input2        index node,   tensor_value = num_indices f64 lookup
+ *                       indices (Eshkol tensors are f64 throughout, so the
+ *                       indices arrive as exactly-representable whole doubles)
+ *   node->shape/ndim    output shape [num_indices, d_model]
+ *   node->params as int64[6]  [num_indices, d_model, vocab_size, 0, 0, 0]
+ *                       (matches the layout documented in
+ *                       inc/eshkol/backend/tensor_backward.h). Zero or absent
+ *                       entries are recovered from the input/output shapes.
+ *
+ * The index tensor is an integer-valued operand, so it carries no gradient:
+ * d y / d idx does not exist (the map is piecewise constant in idx). input2's
+ * tensor_gradient is therefore deliberately left untouched rather than being
+ * seeded with a zero that would read as "differentiated, came out zero".
+ ******************************************************************************/
+
+/** @brief Round an f64 lookup index to int64, rejecting anything that is not a
+ *  whole number. A fractional index means the producer passed something that
+ *  was never an index; silently truncating it would scatter the gradient into
+ *  the wrong row of W, which is the exact failure mode this rule exists to
+ *  prevent. Returns false if @p v is not integral or not finite. */
+static bool exact_index_of(double v, int64_t* out) {
+    if (!(v == v) || v > 9.007199254740992e15 || v < -9.007199254740992e15)
+        return false;                       /* NaN/inf, or beyond exact f64 ints */
+    double r = (v < 0.0) ? -std::floor(-v + 0.5) : std::floor(v + 0.5);
+    if (r != v) return false;               /* fractional — not an index */
+    *out = (int64_t)r;
+    return true;
+}
+
+/** @brief Backward pass for embedding lookup: scatters each upstream output
+ *  row dL/dy[i, :] into dL/dW[idx[i], :], accumulating when an index repeats.
+ *  See the block comment above for the node contract and why `+=` matters. */
 extern "C" void tensor_embedding_backward(ad_node_t* node) {
-    (void)node;
+    if (!node || !node->tensor_gradient) return;
+
+    ad_node_t* w_node   = node->input1;
+    ad_node_t* idx_node = node->input2;
+
     /* HARD CONSTRAINT (exact AD or an explicit error, never a silent/plausible
-     * zero): the correct backward scatters dL/dy[i,:] into dL/dW[idx[i],:], but
-     * the lookup-index tensor is not threaded through the AD node (ESH-0230). The
-     * former "accumulate into row 0" stub dropped every gradient past row 0 and
-     * mis-attributed the rest — a wrong gradient. Refuse instead of corrupting
-     * training. Wire node->input2 as the index tensor and implement the indexed
-     * scatter to restore support. */
-    eshkol_fatal("unsupported AD op: exact backward for the qLLM-bridge tensor "
-                 "embedding node is not implemented (the lookup-index tensor is "
-                 "not threaded through the AD node — ESH-0230); refusing to "
-                 "return an approximate (wrong) gradient.");
+     * zero). Before ESH-0230 this rule could not run at all because the index
+     * operand was not on the node; now that it is part of the contract, a
+     * missing index operand means the *producer* is at fault. Refusing here is
+     * what keeps a mis-wired forward from quietly training on a wrong
+     * gradient. */
+    if (!idx_node || !idx_node->tensor_value) {
+        eshkol_fatal("embedding backward: node->input2 must carry the lookup-index "
+                     "tensor (ESH-0230 contract: input1 = weights [vocab, d_model], "
+                     "input2 = f64 indices [num_indices], params = "
+                     "[num_indices, d_model, vocab_size]); refusing to guess an "
+                     "index and scatter the gradient into the wrong rows.");
+        return;
+    }
+    if (!w_node) return;   /* weights are a constant — nothing to propagate into */
+
+    const double* dy  = (const double*)node->tensor_gradient;
+    const double* idx = (const double*)idx_node->tensor_value;
+
+    /* Dimensions: prefer the declared params, fall back to the shapes. */
+    const int64_t* p = (const int64_t*)&node->params;
+    int64_t num_indices = p[0];
+    int64_t d_model     = p[1];
+    int64_t vocab_size  = p[2];
+
+    if (num_indices <= 0)
+        num_indices = (node->ndim >= 1 && node->shape) ? node->shape[0]
+                    : (int64_t)tensor_size(idx_node->shape, idx_node->ndim);
+    if (d_model <= 0)
+        d_model = (node->ndim >= 2 && node->shape) ? node->shape[1]
+                : ((w_node->ndim >= 2 && w_node->shape) ? w_node->shape[1] : 1);
+    if (vocab_size <= 0)
+        vocab_size = (w_node->ndim >= 1 && w_node->shape) ? w_node->shape[0] : 0;
+
+    if (num_indices <= 0 || d_model <= 0 || vocab_size <= 0) {
+        eshkol_fatal("embedding backward: degenerate shape "
+                     "(num_indices=%lld, d_model=%lld, vocab_size=%lld); the "
+                     "producer must set params [num_indices, d_model, vocab_size] "
+                     "or shapes that imply them.",
+                     (long long)num_indices, (long long)d_model,
+                     (long long)vocab_size);
+        return;
+    }
+
+    /* The index tensor must be long enough to cover every output row, or some
+     * row's gradient would be read from uninitialised memory. */
+    size_t idx_len = tensor_size(idx_node->shape, idx_node->ndim);
+    if (idx_node->ndim > 0 && idx_len < (size_t)num_indices) {
+        eshkol_fatal("embedding backward: index tensor holds %zu entries but the "
+                     "output has %lld rows; refusing to read past the index "
+                     "tensor.", idx_len, (long long)num_indices);
+        return;
+    }
+
+    size_t w_total = (size_t)vocab_size * (size_t)d_model;
+    if (w_node->tensor_gradient == NULL)
+        w_node->tensor_gradient = alloc_grad(w_total);
+    double* dW = (double*)w_node->tensor_gradient;
+    if (!dW) return;
+
+    /* THE SCATTER-ADD.  `+=` on both axes: `+=` into dW accumulates across
+     * repeated indices within this call, and dW itself is the node's running
+     * gradient so it also accumulates across multiple uses of W on the tape.
+     * Rows of W that no index selects are left untouched at zero — that is the
+     * correct sparse adjoint of a gather, not a dropped gradient. */
+    for (int64_t i = 0; i < num_indices; i++) {
+        int64_t row;
+        if (!exact_index_of(idx[i], &row)) {
+            eshkol_fatal("embedding backward: lookup index %lld is %.17g, which is "
+                         "not a whole number; an embedding index must be integral "
+                         "(rounding it would scatter the gradient into the wrong "
+                         "row of the weight matrix).", (long long)i, idx[i]);
+            return;
+        }
+        if (row < 0 || row >= vocab_size) {
+            /* Out of range is a forward-pass bug that already produced garbage
+             * in y. Skipping it here (the old native behaviour) would return a
+             * gradient that is wrong by exactly the contribution of that row —
+             * a plausible number. Refuse. */
+            eshkol_fatal("embedding backward: lookup index %lld is %lld, outside "
+                         "[0, %lld) for a weight matrix with %lld rows; refusing "
+                         "to drop its gradient contribution silently.",
+                         (long long)i, (long long)row, (long long)vocab_size,
+                         (long long)vocab_size);
+            return;
+        }
+        const double* dy_row = dy + (size_t)i * (size_t)d_model;
+        double*       dW_row = dW + (size_t)row * (size_t)d_model;
+        for (int64_t d = 0; d < d_model; d++)
+            dW_row[d] += dy_row[d];
+    }
 }
 
 /** @brief Backward pass for attention: a conservative identity-like
