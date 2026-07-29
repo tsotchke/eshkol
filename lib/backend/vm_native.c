@@ -6422,6 +6422,28 @@ static void vm_write_value_port(VM* vm, Value value, VmPort* port,
     case VAL_SYMBOL: {
         VmString* string = vm_value_as_string(vm, value);
         int quote = write_syntax && value.type == VAL_STRING;
+        /* `write` of a symbol whose name the R7RS 7.1.1 <identifier> grammar
+         * cannot spell bare goes out between vertical lines, escaped — the
+         * same decision, from the same shared predicate, that the native
+         * writer makes, so both substrates emit the same bytes and both
+         * round-trip through their own reader. `display` and bare-spellable
+         * names fall through to the plain emit below. */
+        if (write_syntax && value.type == VAL_SYMBOL && string && string->data &&
+            eshkol_symbol_needs_bars(string->data, (size_t)string->byte_len)) {
+            size_t body_len = eshkol_symbol_escaped_body_len(
+                string->data, (size_t)string->byte_len);
+            char* body = (char*)malloc(body_len + 1);
+            if (body) {
+                eshkol_symbol_escape_body(string->data,
+                                          (size_t)string->byte_len, body);
+                vm_port_write_cstr(port, "|");
+                vm_port_write_bytes(port, body, (int)body_len);
+                vm_port_write_cstr(port, "|");
+                free(body);
+                break;
+            }
+            /* allocation failure: fall through and emit the raw name */
+        }
         if (quote) vm_port_write_cstr(port, "\"");
         if (string && string->data) {
             for (int i = 0; i < string->byte_len; ++i) {
@@ -6667,6 +6689,93 @@ static Value vm_reader_string(VM* vm, VmPort* port, int* ok) {
     return result;
 }
 
+/* R7RS 7.1.1 production 2 — |<symbol element>*| — called with the opening bar
+ * already consumed. Always yields a SYMBOL, never a number: `|1|` is the
+ * symbol named "1", which is the whole point of the notation. Escapes match
+ * the native reader's exactly (shared alphabet in symbol_syntax.h), so a
+ * datum written on either substrate reads back on either substrate.
+ *
+ * Malformed input sets *ok = 0 and vm->error, the same failure channel
+ * vm_reader_string uses, rather than returning a truncated symbol. */
+static Value vm_reader_vertical_line_symbol(VM* vm, VmPort* port, int* ok) {
+    size_t cap = 64, len = 0;
+    char* bytes = (char*)malloc(cap);
+    if (!bytes) { *ok = 0; vm->error = 1; return NIL_VAL; }
+
+#define VM_READER_BAR_PUSH(byte)                                              \
+    do {                                                                      \
+        if (len >= VM_READER_MAX_TOKEN) {                                     \
+            free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;               \
+        }                                                                     \
+        if (len + 1 >= cap) {                                                 \
+            size_t next_cap = cap * 2;                                        \
+            char* grown = (char*)realloc(bytes, next_cap);                    \
+            if (!grown) { free(bytes); *ok = 0; vm->error = 1; return NIL_VAL; } \
+            bytes = grown; cap = next_cap;                                    \
+        }                                                                     \
+        bytes[len++] = (char)(byte);                                          \
+    } while (0)
+
+    for (;;) {
+        int ch = vm_port_read_byte(port);
+        if (ch < 0) {
+            fprintf(stderr, "ERROR: unterminated |...| symbol — no closing "
+                            "vertical line before end of input\n");
+            free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        if (ch == '|') break;
+        if (ch != '\\') { VM_READER_BAR_PUSH(ch); continue; }
+
+        int esc = vm_port_read_byte(port);
+        if (esc < 0) {
+            fprintf(stderr, "ERROR: unterminated |...| symbol — no closing "
+                            "vertical line before end of input\n");
+            free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        if (esc == 'x' || esc == 'X') {
+            unsigned long cp = 0;
+            int digits = 0;
+            int term = -1;
+            char utf8[4];
+            int n_bytes;
+            while (digits < 8) {
+                term = vm_port_read_byte(port);
+                int d = (term < 0) ? -1
+                                   : eshkol_symbol_hex_value((unsigned char)term);
+                if (d < 0) break;
+                cp = (cp << 4) | (unsigned long)d;
+                digits++;
+            }
+            if (digits == 0 || term != ';') {
+                fprintf(stderr, "ERROR: malformed hex escape in |...| symbol — "
+                                "expected \\x<hex digits>;\n");
+                free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+            }
+            n_bytes = eshkol_symbol_utf8_encode(cp, utf8);
+            if (n_bytes == 0) {
+                fprintf(stderr, "ERROR: hex escape \\x%lx; in |...| symbol is "
+                                "outside Unicode range (max 10FFFF)\n", cp);
+                free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+            }
+            for (int i = 0; i < n_bytes; ++i) VM_READER_BAR_PUSH(utf8[i]);
+            continue;
+        }
+        int decoded = eshkol_symbol_escape_value((unsigned char)esc);
+        if (decoded < 0) {
+            fprintf(stderr, "ERROR: unknown escape \\%c in |...| symbol — R7RS "
+                            "7.1.1 allows \\a \\b \\t \\n \\r \\| \\\\ and "
+                            "\\x<hex>;\n", (char)esc);
+            free(bytes); *ok = 0; vm->error = 1; return NIL_VAL;
+        }
+        VM_READER_BAR_PUSH(decoded);
+    }
+#undef VM_READER_BAR_PUSH
+
+    Value result = vm_reader_string_value(vm, bytes, len, 1);
+    free(bytes);
+    return result;
+}
+
 static Value vm_reader_token(VM* vm, VmPort* port, int first, int* ok) {
     size_t cap = 64, len = 0;
     char* token = (char*)malloc(cap);
@@ -6803,6 +6912,7 @@ static Value vm_reader_datum(VM* vm, VmPort* port, int depth, int* ok, int* eof)
     if (ch == '(') return vm_reader_list(vm, port, depth, ok);
     if (ch == ')') { *ok = 0; vm->error = 1; return NIL_VAL; }
     if (ch == '"') return vm_reader_string(vm, port, ok);
+    if (ch == '|') return vm_reader_vertical_line_symbol(vm, port, ok);
     if (ch == '#' && vm_port_peek_byte(port) == '(') {
         (void)vm_port_read_byte(port);
         return vm_reader_vector(vm, port, depth, ok);

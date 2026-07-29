@@ -131,6 +131,12 @@ typedef void regex_t;
  * with the JIT/AOT paths (issue #310, ADR-0003 parity). */
 #include "eshkol/core/dtoa_shortest.h"
 
+/* R7RS 7.1.1 symbol external representation — the needs-bars predicate and
+ * the |...| body escaper, shared byte-for-byte with the native runtime writer
+ * so `(write '|weird sym|)` emits the same thing on both substrates and reads
+ * back through either reader (ADR-0003 parity). */
+#include "eshkol/core/symbol_syntax.h"
+
 /* Runtime type libraries */
 #include "vm_complex.c"
 /* vm_bignum.c FIRST: the rational tower is bignum-capable (SW-18/ESH-0105), so
