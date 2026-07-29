@@ -1,0 +1,262 @@
+;;; poincare_project.esk — golden gradient vectors for qLLM's Poincare
+;;; Riemannian-gradient rescaling.
+;;;
+;;; Reference: python/qllm/torch_geometric.py::poincare_project
+;;;     n2   = |x|^2
+;;;     conf = clamp_min(1 - c*n2, eps)
+;;;     out  = 0.25 * conf^2 * grad
+;;;
+;;; Exports the map's exact Jacobians (d out / d x and d out / d grad), the
+;;; conformal factor itself and its exact gradient, and — at one
+;;; boundary-adjacent point — an exact-rational evaluation of the closed-form
+;;; Jacobian entry to cross-check the f64 reverse-mode value.
+
+(load "qllm_oracle_lib.esk")
+
+;;; ----------------------------------------------------------------------
+;;; The primitive
+;;; ----------------------------------------------------------------------
+
+(define (poincare-conf x c eps)
+  (clamp-min (- 1.0 (* c (vnorm2 x))) eps))
+
+(define (poincare-project x g c eps)
+  (let ((conf (poincare-conf x c eps)))
+    (vscale g (* 0.25 (* conf conf)))))
+
+;;; ----------------------------------------------------------------------
+;;; Operands travel as globals — never as captures of a local parameter
+;;; inside an AD lambda (ESH-0097).
+;;; ----------------------------------------------------------------------
+
+(define *PP-C* 1.0)
+(define *PP-EPS* 1e-6)
+(define *PP-X* (vector 0.0 0.0))
+(define *PP-G* (vector 0.0 0.0))
+
+(define (pp-proj-x v)
+  (vector-ref (poincare-project v *PP-G* *PP-C* *PP-EPS*) *ORACLE-ROW*))
+
+(define (pp-proj-g v)
+  (vector-ref (poincare-project *PP-X* v *PP-C* *PP-EPS*) *ORACLE-ROW*))
+
+(define (pp-conf-scalar v) (poincare-conf v *PP-C* *PP-EPS*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic seed points. No RNG anywhere: directions are hardcoded and
+;;; rescaled to an exact requested radius u = |x| * sqrt(c).
+;;; ----------------------------------------------------------------------
+
+(define DIR2 (vector 0.6 -0.8))
+(define DIR4 (vector 0.5 0.5 -0.5 0.5))
+(define DIR8 (vector 0.25 -0.25 0.5 0.25 -0.5 0.25 0.5 -0.25))
+
+(define GRAD2 (vector 0.4 -0.6))
+(define GRAD4 (vector 0.4 -0.6 0.25 0.125))
+(define GRAD8 (vector 0.4 -0.6 0.25 0.125 -0.75 0.5 0.0625 -0.3125))
+
+(define (dir-for d)
+  (if (= d 2) DIR2 (if (= d 4) DIR4 DIR8)))
+(define (grad-for d)
+  (if (= d 2) GRAD2 (if (= d 4) GRAD4 GRAD8)))
+
+;; (dim curvature radius-u) triples.
+(define CASES
+  (vector (vector 2 1.0 0.0       "d2.c1.u0")
+          (vector 2 1.0 0.5       "d2.c1.u0p5")
+          (vector 2 1.0 0.9       "d2.c1.u0p9")
+          (vector 2 1.0 0.99      "d2.c1.u0p99")
+          (vector 2 1.0 0.999     "d2.c1.u0p999")
+          (vector 2 1.0 0.9999    "d2.c1.u0p9999")
+          (vector 2 1.0 0.9999999 "d2.c1.u0p9999999_conf_clamped")
+          (vector 4 1.0 0.5       "d4.c1.u0p5")
+          (vector 4 1.0 0.999     "d4.c1.u0p999")
+          (vector 4 0.5 0.99      "d4.c0p5.u0p99")
+          (vector 8 1.0 0.5       "d8.c1.u0p5")
+          (vector 8 1.0 0.999     "d8.c1.u0p999")
+          (vector 8 2.0 0.99      "d8.c2.u0p99")))
+
+;;; ----------------------------------------------------------------------
+;;; Exact-rational cross-check
+;;; ----------------------------------------------------------------------
+;;;
+;;; Eshkol's reverse-mode `gradient` requires inexact points: handed a vector
+;;; of exact rationals it returns garbage rather than an exact gradient (see
+;;; tests/qllm_oracle/README.md). The exact-capable AD operators are the
+;;; forward Taylor tower, `derivative-n` / `taylor`, which DO carry exact
+;;; rationals end to end.
+;;;
+;;; So the exact leg differentiates the same primitive restricted to the ray
+;;; x(t) = t * e_0 using `derivative-n` in exact rational arithmetic. Because
+;;; the ray is along e_0, d/dt out_k(x(t)) IS the Jacobian entry
+;;; d out_k / d x_0 at x = (t, 0). Nothing is hand-derived on either leg:
+;;; both numbers come out of an AD engine.
+;;;
+;;; Base point t = 999/1000, i.e. |x|*sqrt(c) = 0.999 — one ulp-hostile step
+;;; from the ball boundary, where the f64 conf = 1 - c|x|^2 is a catastrophic
+;;; cancellation of two nearly equal quantities.
+
+(define EX-T (/ 999 1000))
+(define EX-C 1)
+(define EX-EPS (/ 1 1000000))
+(define EX-G0 (/ 2 5))
+(define EX-G1 (/ -3 5))
+
+;; Exact-rational transcription of poincare-project along the ray, component 0
+;; and component 1. Every literal is exact so the value never demotes to f64.
+(define (ex-conf t)
+  (let ((raw (- 1 (* EX-C (* t t)))))
+    (if (< raw EX-EPS) EX-EPS raw)))
+
+(define (ex-out-0 t) (* (* (/ 1 4) (let ((cf (ex-conf t))) (* cf cf))) EX-G0))
+(define (ex-out-1 t) (* (* (/ 1 4) (let ((cf (ex-conf t))) (* cf cf))) EX-G1))
+
+;;; ----------------------------------------------------------------------
+;;; Run
+;;; ----------------------------------------------------------------------
+
+(json-open "poincare_project.json")
+(json-header "poincare_project"
+             "tests/qllm_oracle/poincare_project.esk"
+             "python/qllm/torch_geometric.py::poincare_project"
+             "conf = clamp_min(1 - c*|x|^2, eps); out = 0.25 * conf^2 * grad")
+
+(define NCASES (vector-length CASES))
+
+(let loop ((ci 0))
+  (if (< ci NCASES)
+      (let* ((spec (vector-ref CASES ci))
+             (d (vector-ref spec 0))
+             (c (vector-ref spec 1))
+             (u (vector-ref spec 2))
+             (eps 1e-6)
+             (r (/ u (sqrt c)))
+             (x (if (= u 0.0) (vzeros d) (vwith-norm (dir-for d) r)))
+             (g (grad-for d))
+             (label (string-append "poincare_project." (vector-ref spec 3))))
+        (set! *PP-C* c)
+        (set! *PP-EPS* eps)
+        (set! *PP-X* x)
+        (set! *PP-G* g)
+
+        (let* ((out (poincare-project x g c eps))
+               (conf (poincare-conf x c eps))
+               (raw-conf (- 1.0 (* c (vnorm2 x))))
+               (clamped (< raw-conf eps))
+               (jx (jac-rows-ad pp-proj-x x d))
+               (jg (jac-rows-ad pp-proj-g g d))
+               (dconf (gradient pp-conf-scalar x))
+               (fdbest (fd-best-rel-diff pp-proj-x x d jx))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+
+          ;; ---- JSON case ------------------------------------------------
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkv-num "curvature" c) (jo ",") (jnl)
+          (jo "      ") (jkv-num "eps" eps) (jo ",") (jnl)
+          (jo "      ") (jkv-num "radius_sqrt_c" u) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "conf_clamped" clamped) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{")
+          (jkv-vec "x" x) (jo ", ") (jkv-vec "grad" g) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ")
+          (jkv-num "conformal_factor" conf) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_x" jx) (jo ",") (jnl)
+          (jo "        ") (jkv-mat "d_out_d_grad" jg) (jo ",") (jnl)
+          (jo "        ") (jkv-vec "d_conformal_factor_d_x" dconf) (jnl)
+          (jo "      },") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+
+          ;; ---- verdict lines -------------------------------------------
+          (chk label
+               #t
+               (string-append "conf=" (number->string conf)
+                              " fd_best_rel=" (number->string fd-rel)
+                              " at h=" (number->string fd-h)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+;;; ----------------------------------------------------------------------
+;;; Exact-rational cross-check, printed and asserted
+;;; ----------------------------------------------------------------------
+
+(set! *PP-C* 1.0)
+(set! *PP-EPS* 1e-6)
+(set! *PP-X* (vector (exact->inexact EX-T) 0.0))
+(set! *PP-G* (vector (exact->inexact EX-G0) (exact->inexact EX-G1)))
+
+(define AD-JAC (jac-rows-ad pp-proj-x *PP-X* 2))
+(define AD-00 (vector-ref (vector-ref AD-JAC 0) 0))
+(define AD-10 (vector-ref (vector-ref AD-JAC 1) 0))
+
+;; Exact leg: forward Taylor tower over exact rationals.
+(define EXACT-00 (derivative-n ex-out-0 EX-T 1))
+(define EXACT-10 (derivative-n ex-out-1 EX-T 1))
+
+(display "EXACT-RATIONAL CROSS-CHECK  poincare_project  c=1  x=(999/1000, 0)  g=(2/5, -3/5)")
+(newline)
+(display "  conf exact               = ") (display (ex-conf EX-T)) (newline)
+(display "  conf exact->f64          = ") (display (exact->inexact (ex-conf EX-T))) (newline)
+(display "  conf f64 (1 - x.x)       = ") (display (- 1.0 (vnorm2 *PP-X*))) (newline)
+(display "  d out_0/d x_0 exact      = ") (display EXACT-00)
+(display "   exact? = ") (display (exact? EXACT-00)) (newline)
+(display "  d out_0/d x_0 exact->f64 = ") (display (exact->inexact EXACT-00)) (newline)
+(display "  d out_0/d x_0 AD f64     = ") (display AD-00) (newline)
+(display "  d out_1/d x_0 exact      = ") (display EXACT-10)
+(display "   exact? = ") (display (exact? EXACT-10)) (newline)
+(display "  d out_1/d x_0 exact->f64 = ") (display (exact->inexact EXACT-10)) (newline)
+(display "  d out_1/d x_0 AD f64     = ") (display AD-10) (newline)
+
+(chk "poincare_project.exact_rational.d_out0_d_x0"
+     (and (exact? EXACT-00)
+          (< (/ (fabs (- AD-00 (exact->inexact EXACT-00)))
+                (fabs (exact->inexact EXACT-00)))
+             1e-12))
+     (string-append "rel|f64_ad - exact| = "
+                    (number->string (/ (fabs (- AD-00 (exact->inexact EXACT-00)))
+                                       (fabs (exact->inexact EXACT-00))))))
+(chk "poincare_project.exact_rational.d_out1_d_x0"
+     (and (exact? EXACT-10)
+          (< (/ (fabs (- AD-10 (exact->inexact EXACT-10)))
+                (fabs (exact->inexact EXACT-10)))
+             1e-12))
+     (string-append "rel|f64_ad - exact| = "
+                    (number->string (/ (fabs (- AD-10 (exact->inexact EXACT-10)))
+                                       (fabs (exact->inexact EXACT-10))))))
+
+;; Record the exact leg alongside the f64 leg in the golden artifact.
+(json-open "poincare_project_exact.json")
+(jo "{") (jnl)
+(jo "  ") (jkv-int "schema_version" SCHEMA-VERSION) (jo ",") (jnl)
+(jo "  ") (jkv-str "primitive" "poincare_project.exact_rational") (jo ",") (jnl)
+(jo "  ") (jkv-str "eshkol_version" ESHKOL-VERSION) (jo ",") (jnl)
+(jo "  ") (jkv-str "generator" "tests/qllm_oracle/poincare_project.esk") (jo ",") (jnl)
+(jo "  ") (jkv-str "reference" "python/qllm/torch_geometric.py::poincare_project") (jo ",") (jnl)
+(jo "  ") (jkv-str "ad_mode" "forward_taylor_tower_exact_rational") (jo ",") (jnl)
+(jo "  ") (jkv-str "point" "x = (999/1000, 0), c = 1, eps = 1/1000000, g = (2/5, -3/5)") (jo ",") (jnl)
+(jo "  ") (jkv-str "d_out0_d_x0_exact" (number->string EXACT-00)) (jo ",") (jnl)
+(jo "  ") (jkv-num "d_out0_d_x0_exact_as_f64" (exact->inexact EXACT-00)) (jo ",") (jnl)
+(jo "  ") (jkv-num "d_out0_d_x0_reverse_f64" AD-00) (jo ",") (jnl)
+(jo "  ") (jkv-str "d_out1_d_x0_exact" (number->string EXACT-10)) (jo ",") (jnl)
+(jo "  ") (jkv-num "d_out1_d_x0_exact_as_f64" (exact->inexact EXACT-10)) (jo ",") (jnl)
+(jo "  ") (jkv-num "d_out1_d_x0_reverse_f64" AD-10) (jo ",") (jnl)
+(jo "  ") (jkv-str "conformal_factor_exact" (number->string (ex-conf EX-T))) (jo ",") (jnl)
+(jo "  ") (jkv-num "conformal_factor_exact_as_f64" (exact->inexact (ex-conf EX-T))) (jo ",") (jnl)
+(jo "  ") (jkv-num "conformal_factor_f64" (- 1.0 (vnorm2 *PP-X*))) (jnl)
+(jo "}") (jnl)
+(json-close)
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))
