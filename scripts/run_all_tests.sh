@@ -21,6 +21,24 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # Change to project directory
 cd "$PROJECT_DIR"
 
+# Per-run, per-repo-root isolation. This aggregator owns its own EXIT trap, so
+# it opts out of the helper's and calls the cleanup from its own.
+ESHKOL_TEST_ISOLATION_NO_TRAP=1
+# Sourcing must be checked *before* the fact: bash 3.2 (macOS) exits the
+# shell when `source` cannot find its file, so a trailing `|| {...}` never
+# runs there. A suite with no prelude has no failure detection and no
+# scratch isolation, and must refuse to run rather than report a PASS.
+ESHKOL_TEST_LIB="$SCRIPT_DIR/lib/test_isolation.sh"
+if [ ! -r "$ESHKOL_TEST_LIB" ]; then
+    echo "FATAL: cannot read $ESHKOL_TEST_LIB" >&2
+    echo "       (the shared test isolation and failure-detection prelude)." >&2
+    echo "       Refusing to run: without it this suite would report a" >&2
+    echo "       meaningless PASS." >&2
+    exit 2
+fi
+source "$ESHKOL_TEST_LIB"
+eshkol_test_isolation_init "all"
+
 # Counters
 SUITES_PASS=0
 SUITES_FAIL=0
@@ -35,27 +53,9 @@ declare -a SKIPPED_SUITES
 declare -a ALL_FAILURES  # "suite: test_name (reason)" entries
 
 cleanup_tests_tmpdir() {
-    local path="${TMPDIR_TESTS:-}"
-
-    if [ -z "$path" ]; then
-        return
-    fi
-
-    case "$path" in
-        /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*)
-            ;;
-        *)
-            echo "Refusing to remove unexpected test temp directory: $path" >&2
-            return
-            ;;
-    esac
-
-    if [ -L "$path" ] || { [ -e "$path" ] && [ ! -d "$path" ]; }; then
-        echo "Refusing to remove non-directory or symlinked test temp path: $path" >&2
-        return
-    fi
-
-    rm -rf -- "$path"
+    # TMPDIR_TESTS lives inside this run's private scratch directory, which the
+    # shared helper owns and removes; nothing here reaches outside it.
+    eshkol_test_isolation_cleanup
 }
 
 require_regular_executable() {
@@ -96,8 +96,11 @@ run_suite_script() {
     bash "$path"
 }
 
-# Temp directory for captured output
-TMPDIR_TESTS=$(mktemp -d)
+# Temp directory for captured output — inside this run's scratch dir, so two
+# aggregators (two worktrees, or CI beside a local run) cannot read each other's
+# suite logs.
+TMPDIR_TESTS="$ESHKOL_TEST_TMPDIR/suite-logs"
+mkdir -p "$TMPDIR_TESTS"
 trap cleanup_tests_tmpdir EXIT
 
 # Test scripts to run (in order)
@@ -166,6 +169,19 @@ fi
 # Check if compiler exists
 require_regular_executable "eshkol-run" "$BUILD_DIR/eshkol-run"
 
+# Pin the compiler for the duration of the run.
+#
+# This aggregator runs for tens of minutes and delegates to sub-suites whose
+# BUILD_DIR contract is repository-relative (`./$BUILD_DIR/eshkol-run`), so we
+# cannot redirect them at a private copy without changing that interface. What
+# we can do is refuse to report results gathered across a rebuild: a run that
+# straddled two relinks once reported "93% pass, 6 failures including SEGFAULT
+# in examples/autodiff.esk" — every one of which passes on a stable build. The
+# crash was the harness inventing a failure, and a harness that can do that
+# cannot certify anything. Fingerprint the relinkable artifacts now, re-check
+# at the end, and if they moved, say so instead of printing a verdict.
+eshkol_test_toolchain_snapshot "$BUILD_DIR"
+
 echo "Running all test suites..."
 echo ""
 
@@ -227,12 +243,24 @@ extract_failures() {
     # Pattern 2: "FAIL: description" assertion lines printed by test programs
     # These appear on their own lines, NOT on the "Testing foo.esk" line
     # e.g. "FAIL: Accumulator pattern: build list of 1000 elements"
+    # The colon is NOT required and the marker is NOT anchored: test programs
+    # print `  <case>: FAIL` (indented, bare FAIL, no colon after it) as often
+    # as they print `FAIL: <case>`. Requiring `^\s*FAIL:` here hid whole classes
+    # of assertion failure — tests/gpu/sf64_primitives_test.esk being the case
+    # that exposed it.
+    # Filter the whole log once — zero-count summaries and decorative titles
+    # out, "Testing foo.esk" result lines out (Pattern 1 owns those) — then take
+    # what is left. Filtering per line would fork two processes per log line.
+    local assert_file="$TMPDIR_TESTS/${suite_name}_assertions.log"
+    grep -v '\.esk' "$clean_file" 2>/dev/null \
+        | eshkol_test_filter_verdict_noise \
+        | grep -E '(^|[^A-Za-z0-9_])FAIL([^A-Za-z0-9_]|$)' \
+        > "$assert_file" 2>/dev/null || true
     while IFS= read -r line; do
-        if echo "$line" | grep -qE '^\s*FAIL:'; then
-            desc=$(echo "$line" | sed -E 's/^\s*FAIL:[[:space:]]*//')
-            ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
-        fi
-    done < "$clean_file"
+        desc=$(printf '%s' "$line" | sed -E 's/^[[:space:]]*//; s/[[:space:]]+$//')
+        [ -n "$desc" ] || continue
+        ALL_FAILURES+=("$suite_name: $desc (ASSERTION)")
+    done < "$assert_file"
 
     # Count passes and fails from suite summary lines.
     # Handles:
@@ -292,6 +320,18 @@ for script in "${TEST_SCRIPTS[@]}"; do
     output_file="$TMPDIR_TESTS/${suite_name}.log"
     run_suite_script "$script_path" 2>&1 | tee "$output_file"
     suite_exit=${PIPESTATUS[0]}
+
+    # Absence of output is not a pass. Every suite prints a banner, so an empty
+    # log means the script died before it produced any evidence — and a suite
+    # that reported nothing must not be scored as one that reported success.
+    if [ $suite_exit -eq 0 ] && eshkol_test_output_is_silent "$output_file"; then
+        echo -e "${RED}>>> $suite_name: FAILED (exited 0 but produced no output)${NC}"
+        FAILED_SUITES+=("$suite_name")
+        ALL_FAILURES+=("$suite_name: <no output> (SILENT SUITE)")
+        ((SUITES_FAIL++)) || true
+        echo ""
+        continue
+    fi
 
     if [ $suite_exit -eq 0 ]; then
         echo -e "${GREEN}>>> $suite_name: PASSED${NC}"
@@ -399,7 +439,29 @@ fi
 
 echo ""
 
-# Exit with appropriate code
+# The compiler must not have changed underneath the run. If it did, no verdict
+# from this run is trustworthy — including the pass count printed above — so
+# exit on a distinct code rather than letting either 0 or 1 be believed.
+if ! eshkol_test_toolchain_verify "$BUILD_DIR"; then
+    exit 3
+fi
+
+# Exit with appropriate code.
+#
+# SUITES_FAIL comes from child exit codes. UNIQUE_FAILURES comes from scraping
+# the suite output. When those two disagree — individual failures were printed
+# yet every suite exited 0 — the aggregator used to print "ALL FAILING TESTS
+# (N total)" and then exit 0, which is the exact false-PASS this pass exists to
+# remove. Treat the contradiction as a failure of the suite that produced it.
+if [ $SUITES_FAIL -eq 0 ] && [ ${#UNIQUE_FAILURES[@]} -gt 0 ]; then
+    echo -e "${RED}${BOLD}Harness contradiction: ${#UNIQUE_FAILURES[@]} individual test failure(s) were" \
+            "reported above, but every suite exited 0.${NC}"
+    echo -e "${RED}A suite is printing failures and returning success. Failing the run:" \
+            "an unreported failure is worse than a red build.${NC}"
+    echo ""
+    exit 1
+fi
+
 if [ $SUITES_FAIL -eq 0 ]; then
     exit 0
 else
