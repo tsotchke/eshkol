@@ -28,6 +28,45 @@ across every new-feature family).
 
 ### Added
 
+- **User-reachable region handles: `region-open` / `region-close` /
+  `region-open?` (#341).** A non-lexical surface over the region machinery
+  `with-region` already uses, for loop shapes where a lexical block is awkward.
+  The motivating case is an autodiff training step: the automatic per-iteration
+  nursery (ESH-0214e) disqualifies any loop body containing a `gradient` op, a
+  `set!` or a `tensor-set!` — a training step trips all three, by design — so a
+  161-parameter MLP doing a full-batch `gradient` per step grew ~123 MB/step
+  unbounded. `(region-open ['name] [size])` returns an opaque exact-integer
+  handle; `(region-close handle v ...)` deep-promotes the named values out
+  through the validated escape evacuator (interior-pointer walk included) and
+  reclaims everything else. Measured on that loop, peak RSS is **flat** at
+  131-132 MB across 5/10/20/40 steps against 632/1258/2510/5013 MB unscoped,
+  with bit-identical trained parameters. `with-region` remains the recommended
+  default and is unchanged: it cannot be left un-closed.
+
+  Safety is the whole design. The handle is a slot index plus a **generation**
+  counter rather than a pointer, so every stale token is detectably stale:
+  double close, use after close, a token from another thread and a fabricated
+  integer all fail validation and raise a clean catchable error instead of
+  touching freed memory. Closing an outer handle while an inner one is live is a
+  **defined cascade** (inner regions closed innermost-first, keeps promoted at
+  every level, inner tokens invalidated) rather than an error, because that is
+  the identical operation an unwind performs. Never closing is bounded: the 65th
+  simultaneous handle raises. A loop using handles is excluded from the
+  automatic nursery, so the two mechanisms never nest unexpectedly.
+
+- **Non-local exits now unwind regions (#341).** A `raise`/`guard` or a `call/cc`
+  escape crossing an open region closes it, after **deep-promoting the in-flight
+  value** (the raised value, or the value delivered to the continuation) out of
+  every region being torn down, and restoring the allocation-routing slot before
+  any arena is freed. The region depth is recorded as a mark beside the existing
+  `wind_mark` / `promise_mark` on the exception-handler record and the captured
+  continuation state. This also **fixes `with-region`**, which previously leaked
+  its region on a `raise` out of the body *and* left the shared allocation slot
+  pointing at an arena that was never freed. All teardown — explicit close,
+  out-of-order cascade, `with-region` exit, raise, continuation escape — now
+  funnels through one `eshkol_region_unwind_to()` primitive, so the structured
+  and unstructured surfaces cannot drift apart.
+
 - **INT8 tensor-core Ozaki f64 GEMM (CUDA, opt-in).** A new f64 GPU matmul path
   recovers FP64-accurate `C = A*B` from the INT8 (IMMA) tensor cores, which run
   ~500x faster than the deliberately crippled native FP64 pipeline on
@@ -299,6 +338,56 @@ across every new-feature family).
 
 ### Fixed
 
+- **Higher-order derivatives through a variable-bound derivative closure were
+  silently wrong.** `(define df (derivative f))` followed by `(derivative df)`
+  returned `0.0` — for `f = x⁴` at `x=2` the second derivative is `48` — and the
+  unnamed spellings `(derivative (derivative f))` / `(derivative (car fs))`
+  printed `Failed to resolve function for higher-order derivative` at compile
+  time while still emitting a binary. The second-derivative *mathematics* was
+  never at fault: `(derivative-n f 2.0 2)` and
+  `(derivative (lambda (x) (derivative f x)) 2.0)` both already returned the
+  exact `48`. Two independent causes, both instances of classifying by the wrong
+  thing. **(1) Resolution.** `derivativeHigherOrder`'s runtime path first
+  required the differentiand to be a bare `ESHKOL_VAR`, then matched the bound
+  `llvm::Value` against a whitelist of subclasses (`Argument` / `AllocaInst` /
+  `LoadInst` / `GlobalVariable`). The `ESHKOL_VAR` gate rejects every *unnamed*
+  differentiand outright, so no whitelist entry could ever have fixed
+  `(derivative (derivative f))` — there is no binding to inspect — and the
+  whitelist itself encodes where the compiler happened to put a binding, which is
+  a storage decision, not a property of the language. Resolution now goes through
+  the ordinary expression codegen (the language's single authority on what an
+  expression denotes) and coerces the result to a tagged value, so named and
+  unnamed, local and global, parameter and computed differentiands all resolve
+  through one path. **(2) Nesting.** The emitted derivative closure unpacked its
+  argument to a raw double and seeded a fixed single-level dual `{x,1,0,0}`; that
+  unpack discards any perturbation the incoming point already carries, so the
+  moment the closure was itself differentiated the outer tangent was destroyed.
+  Both the static and the runtime-closure wrapper now seed *this* perturbation
+  level (`seedForwardAndPush`) and extract *this* level's coefficient
+  (`popAndExtractForward`) — the same shared runtime-level machinery
+  `(derivative f x)` uses — which makes the returned closure **dual-transparent**:
+  it differentiates like any other function. For `f = x⁴`, `derivative-n`, the
+  nested-lambda form, the curried named form and the curried unnamed form now all
+  return `32/48/48` at `x=2` and `108/108/72` at `x=3` on the JIT and the AOT
+  lane, with no compile-time diagnostic. `gradient`'s identical resolution block
+  is routed through the same helper. Regression:
+  `tests/ad/curried_higher_order_derivative_test.esk` (46 cells, both lanes).
+- **Curried `(derivative f)` did not exist on the bytecode VM, and nested VM
+  derivatives silently returned 0.** `derivative` reaches the VM as a native call
+  that pops exactly `(f, x)`, so the curried form popped whatever was below `f`
+  on the operand stack and bound a non-callable — applying it failed with
+  `calling non-function`. The curry is now lowered the same way `gradient`
+  already lowers its own, to `(lambda (__dx__) (derivative f __dx__))`, so both
+  spellings reach the same native call with the same `(f, x)` and agree exactly
+  with native (`32` at `x=2`, `108` at `x=3` for `x⁴`). Separately, the VM's
+  forward-mode carrier is a flat dual `{value, tangent}` with a single
+  perturbation, so a point that was *already* a dual got flattened, the inner
+  pass returned a plain float, and the outer pass read "non-dual result =
+  constant function" and pushed `0.0` — a silently wrong second derivative. The
+  VM now **raises a catchable error** naming the limitation instead. Higher-order
+  AD on the VM needs the native jet's `e1`/`e2`/`ep` slots or a VM Taylor tower
+  and stays native-only, recorded on the `op:DERIVATIVE` row of
+  `tests/vm_parity/PARITY.tsv`.
 - **A compiler could link a stale *system* runtime archive in preference to its
   own, and `ESHKOL_LIB_DIR` could not override it.** `find_runtime_library()`
   searched name-major: every location for `libeshkol-runtime.a` — including

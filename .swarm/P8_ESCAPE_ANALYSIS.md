@@ -44,8 +44,10 @@ All generators are pure Python; the ONLY difference between the columns is the
 `eshkol-run` / VM binary they execute against.
 
 ### Axis 1 — binding-form (`scripts/p8/gen_ad_escape.py`)
-- **master**: 35/35 gated files PASS; the `(list …)` field-op cell is quarantined
-  as XKNOWN (see NEW BUG ESH-0360 below).
+- **master**: 35/35 gated files PASS. The `(list …)` field-op cell was
+  quarantined as XKNOWN when this pillar landed; ESH-0360 was fixed in #354, the
+  ratchet reported XPASS, and the cell is now a hard gate inside
+  `ad_bind_field_linear` (see CLOSED ESH-0360 below).
 - **pre-fix `010053c8`**: **34 / 35 gated files CAUGHT**.
   - scalar hessian/derivative point forms → `SIGSEGV (rc=139)` (the #339 class:
     `hessian` hard-classified `ESHKOL_VAR` as scalar).
@@ -68,27 +70,46 @@ All generators are pure Python; the ONLY difference between the columns is the
   triggers drive detection well above the ~50% single-run rate.
 
 ### Axis 7 — fault injection (`scripts/p8/p8_fault_injection.sh`)
-- 7 hard-gate cells PASS on master (retro-guarding #334: broken `--lib` under
-  `-r`/AOT, malformed-source AOT, bad output dir, undefined symbol, missing
-  source under `-r`).
+- 7 hard-gate cells PASS on master as this pillar landed (retro-guarding #334:
+  broken `--lib` under `-r`/AOT, malformed-source AOT, bad output dir, undefined
+  symbol, missing source under `-r`), plus the bounded-hang cell.
+- Since #354 all **12** cells are hard gates: the five ESH-0361 masking cells
+  (missing AOT input, malformed `-r`, unreadable `-r`, unresolved require under
+  `-r` and AOT) were promoted, so the axis now reports
+  `PASS=13 FAIL=0 XKNOWN=0 XPASS=0`.
 
 ---
 
-## NEW real bugs found by P8 (UNFIXED — recorded, reported, quarantined)
+## NEW real bugs found by P8 — BOTH CLOSED (fixed in #354, cells promoted)
 
-### ESH-0360 — jacobian/divergence/curl SIGSEGV at a `(list …)` point (axis 1)
+Neither ID is tracked-open any more. `tests/escape_matrix/found/` is empty, no
+generator carries a `KNOWN_CRASH` entry, no axis-7 cell carries `xmask=1`, and
+each bug is pinned by a permanent ctest-registered regression test. The gate
+therefore reports zero XKNOWN and zero XPASS: a return of either bug is a hard
+FAIL, not a tolerated cell.
+
+| ID | Fixed in | Promotion | Permanent regression test |
+|---|---|---|---|
+| ESH-0360 | #354 `c09e11f6` | `KNOWN_CRASH = {}` in `scripts/p8/gen_ad_escape.py`; the `(list …)` point forms are gated cells of `ad_bind_field_linear` | `tests/autodiff/field_ops_list_point_test.esk` (ctest `field_ops_list_point_runtime_smoke` + `_aot_smoke`) |
+| ESH-0361 | #354 `c09e11f6` | all five `xmask=1` cells in `scripts/p8/p8_fault_injection.sh` flipped to `xmask=0`, each with the diagnostic token the fix introduced | `tests/toolchain/driver_fault_exit_code_test.sh` (ctest `driver_fault_exit_code_test`) |
+
+The history of both, as found:
+
+### ESH-0360 — jacobian/divergence/curl SIGSEGV at a `(list …)` point (axis 1) — CLOSED
 Found on master `5cb02c8a`. `jacobian` / `divergence` / `curl` SIGSEGV (rc=139)
 when the differentiation point is built with `(list …)`. The identical point as
 `#(…)` / `(vector …)` / `(tensor …)` / VAR-bound / let-bound / fnret /
 `(the (vector any) …)` is correct, AND `gradient`/`hessian`/`laplacian` at a
 `(list …)` point are correct. The #343 `cons->svec` point normalization was
 applied to the scalar-output operators but NOT to the vector-field operators.
-- Repro: `tests/escape_matrix/found/ESH-0360_field_ops_list_point_segv.esk`
-- Quarantine: `KNOWN_CRASH` in `gen_ad_escape.py` → emitted as a `;; P8-XCRASH`
-  file; the runner tolerates it as XKNOWN and reports XPASS (promote to gate)
-  when fixed.
+- Repro as found: `tests/escape_matrix/found/ESH-0360_field_ops_list_point_segv.esk`
+  (retired at closure; superseded by the ctest regression test above and
+  recoverable from git history).
+- Quarantine while open: `KNOWN_CRASH` in `gen_ad_escape.py` → emitted as a
+  `;; P8-XCRASH` file; the runner tolerated it as XKNOWN and reported XPASS
+  (promote to gate) once fixed. That XPASS is what closed it.
 
-### ESH-0361 — exit-0 masking in toolchain fault paths (axis 7)
+### ESH-0361 — exit-0 masking in toolchain fault paths (axis 7) — CLOSED
 Found on master `5cb02c8a`. Several `-r`/AOT fault inputs exit **0**, masking
 the failure from any build system that checks `$?`:
 - **`eshkol-run MISSING.esk -o out` (AOT)** → exit 0 AND writes a 5 MB binary
@@ -98,8 +119,13 @@ the failure from any build system that checks `$?`:
   two are possibly lenient-by-design; quarantined pending triage).
 - Contrast: broken `--lib` and malformed-source-AOT correctly exit nonzero (the
   #334 fix), so the exit-code contract is inconsistent across paths.
-- Repro: `tests/escape_matrix/found/ESH-0361_aot_missing_input_exit0.md`
-- Quarantine: `xmask=1` cells in `p8_fault_injection.sh` (XKNOWN; XPASS-on-fix).
+- Repro as found: `tests/escape_matrix/found/ESH-0361_aot_missing_input_exit0.md`
+  (retired at closure; superseded by the ctest regression test above and
+  recoverable from git history).
+- Quarantine while open: `xmask=1` cells in `p8_fault_injection.sh` (XKNOWN;
+  XPASS-on-fix). Post-fix each cell asserts a nonzero exit **and** the
+  diagnostic token: `File not found`, `unexpected end of input`,
+  `Failed to open file`, and the unresolved module name for both require cells.
 
 ---
 

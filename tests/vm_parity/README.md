@@ -88,10 +88,18 @@ none, so no per-line normalization can align the two streams. The gate
 therefore strips banner/log lines and then removes ALL newline characters
 from both sides before comparing. Value divergences, dropped output and
 fabricated output all still surface; only newline-placement divergences are
-masked — which is exactly the filed quirk. The VM also exits 0 on fatal
-runtime errors (`found/error_exit_code_zero.esk`), so VM failure is detected
-via stderr markers (`ERROR`, `FRAME OVERFLOW`, `unhandled native call`),
-never via exit codes.
+masked — which is exactly the filed quirk. VM failure is detected via BOTH the
+exit status and stderr markers (`ERROR`, `FRAME OVERFLOW`, `unhandled native
+call`); the VM used to exit 0 on every fatal runtime error, which stage 4 now
+gates directly.
+
+## fatal/ — fail-closed probes
+
+Programs whose first failing form is fatal on **both** substrates. Stage 4 of
+the gate requires each to exit NONZERO, name the failure on stderr, and print
+nothing past the fatal form (each probe ends with a `MUST-NOT-PRINT`
+sentinel). This is the fail-open ratchet: a fatal VM error may never again look
+like a successful run to a shell or to CI.
 
 ## found/ — verified divergences (in-subset programs, wrong answers)
 
@@ -101,7 +109,6 @@ header. Filed while building this gate, 2026-07:
 | repro | divergence |
 |---|---|
 | `display_newline_per_call.esk` | display appends a newline per call |
-| `error_exit_code_zero.esk` | exit code 0 after fatal runtime error |
 | `exact_division_lost.esk` | `(/ 1 3)` → `0.333333`, not `1/3` |
 | `expt_bignum_to_float.esk` | `(expt 2 100)` → float, not bignum |
 | `force_returns_promise.esk` | `force` returns the promise object |
@@ -121,8 +128,28 @@ header. Filed while building this gate, 2026-07:
 | `consecutive_do_state_leak.esk` | consecutive top-level `do` loops corrupt each other |
 | `define_after_do_corrupted.esk` | a top-level `do` corrupts later top-level defines |
 | `do_composition_broken.esk` | nested `do` loses iterations; `do`+`when` spins forever |
-| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW, exit 0 |
+| `frame_overflow_exit_zero.esk` | non-tail depth ~300 → FRAME OVERFLOW (the exit-0 half is fixed; the depth limit remains) |
 | `when_tail_call_no_tco.esk` | tail calls through `when` bodies are not TCO'd |
+| `bignum_exact_rational.esk` | exact bignum rationals unrepresentable (int64/int64 `VmRational`) |
+| `internal_define_then_body_form.esk` | internal `define` + any later body form loses its slot |
+| `sqrt_exact_negative.esk` | `(sqrt -4)` → `+nan.0`, not the complex `+2i` |
+| `tensor_shape_empty_vector.esk` | `(tensor-shape #())` → `#()`, not the shape list `(0)` |
+| `error_object_irritants_empty.esk` | `error-object-irritants` always `()` (`error` is a 1-arg native) |
+
+Divergences where **native is the wrong side** (filed rather than "fixed" in
+the VM to match a native bug; native codegen is not VM-owned):
+
+| repro | divergence |
+|---|---|
+| `bignum_div_inexact_zero_native.esk` | `(/ <bignum> 0.0)` → native `0`, VM `+inf.0` |
+| `do_set_param_native.esk` | `set!` of a parameter from a `do` body is dropped natively |
+| `float_remainder_modulo_native.esk` | non-integral float `remainder`/`modulo` → native garbage |
+| `namedlet_escaped_closure_native_segv.esk` | calling a leaked named-let procedure SIGSEGVs natively |
+| `tensor_nested_collection_native.esk` | `(tensor <nested list>)` flattens + zero-fills natively |
+| `tensor_set_oob_silent_native.esk` | out-of-range `tensor-set!` silently discards the write natively |
+| `tensor_ref_component_oob_native.esk` | component past its dimension fabricates natively when the flat offset fits |
+| `tensor_vector_built_nested_native.esk` | a runtime-BUILT nested vector is rejected natively; the identical literal is accepted |
+| `tensor_ragged_literal_native.esk` | a ragged literal fabricates `()` natively instead of raising |
 
 These are deliberately **not** in `corpus/` (they would hold the gate red);
 each is referenced from its `PARITY.tsv` gap row. When a divergence is fixed

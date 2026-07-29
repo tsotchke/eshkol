@@ -102,10 +102,18 @@ ESHKOL_VM_NO_DISASM=1 ./test_vm
 # Build for WebAssembly (browser REPL)
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I lib/backend lib/backend/vm_wasm_repl.c \
+  -I inc -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
 ```
+
+`-I inc` is required (the VM includes `eshkol/backend/vm_limits.h`), and
+`ERROR_ON_UNDEFINED_SYMBOLS=0` leaves the three native leaf runtime deps that
+are not linked into the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`) as aborting stubs, so a program that calls them fails
+cleanly instead of silently mis-executing. `scripts/run_wasm_differential.sh`
+builds the same translation unit with the same two settings.
 
 ## ESKB Binary Format
 

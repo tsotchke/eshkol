@@ -128,16 +128,44 @@ The website is written in Eshkol and compiled to WebAssembly:
 # Compile the website
 ./build/eshkol-run --wasm site/src/main.esk -o site/static/eshkol-site.wasm
 
-# Rebuild the browser REPL VM
+# Rebuild the browser REPL VM (site/static/eshkol-vm.{js,wasm})
 emcc -O2 -s WASM=1 -s MODULARIZE=1 -s EXPORT_NAME='EshkolVM' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap"]' \
+  -s ERROR_ON_UNDEFINED_SYMBOLS=0 \
   -DESHKOL_VM_WASM -DESHKOL_VM_NO_DISASM \
-  -I lib/backend lib/backend/vm_wasm_repl.c \
+  -I inc -I lib/backend lib/backend/vm_wasm_repl.c \
   -o site/static/eshkol-vm.js -lm
 
 # Serve locally
 cd site/static && python3 -m http.server 8888
 ```
+
+The REPL VM bundle is a **checked-in artifact** and neither `scripts/build-site.sh`
+nor the Pages deploy regenerates it, so it must be rebuilt by hand whenever
+`lib/backend/vm_wasm_repl.c`, `lib/backend/eshkol_vm.c`, or the prelude cache
+changes — otherwise the browser REPL silently keeps running an older VM. Two
+flags are not optional: `-I inc` (the VM includes `eshkol/backend/vm_limits.h`)
+and `ERROR_ON_UNDEFINED_SYMBOLS=0`, which leaves the native leaf runtime deps
+that are not part of the VM WASM (`eshkol_qrng_uint64`, `eshkol_qrng_double`,
+`eshkol_linear_solve`) as aborting stubs so a program calling them fails cleanly.
+
+After rebuilding, check the bundle in node before committing it — the same
+`repl_eval` entry point the site uses:
+
+```bash
+node -e '
+const f=require("./site/static/eshkol-vm.js");
+f({print:t=>console.log(t)}).then(m=>{
+  const ev=m.cwrap("repl_eval","string",["string"]);
+  ev("(display (sqrt 2.0))");                                   // 1.4142135623730951
+  ev("(define (v p) (+ (* (vref p 0) (vref p 0)) (* (vref p 1) (vref p 1))))");
+  ev("(display (gradient v (vector 3.0 4.0)))");                // #(6 8)
+});'
+```
+
+Then update the VM WASM size statistic in `site/src/main.esk` (the `s2`
+`"...KB"` cell) to match the new artifact — `scripts/verify_site_release.py`
+fails if the published number drifts by more than 1KB.
 
 ## How to Contribute
 

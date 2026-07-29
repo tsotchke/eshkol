@@ -166,14 +166,27 @@ llvm::Function* ArithmeticCodegen::getOrEmitBinaryOutline(
     llvm::BasicBlock* saved_block = ctx_.builder().GetInsertBlock();
     llvm::BasicBlock::iterator saved_pt;
     if (saved_block) saved_pt = ctx_.builder().GetInsertPoint();
+    // DWARF DEBUG INFO: the current debug location belongs to the caller, and
+    // `fn` is a different function with no DISubprogram of its own -- emitting
+    // the helper body under the caller's location both mis-scopes every
+    // instruction in `fn` and, because the entry-block alloca hoists inside
+    // emitBody reset the shared builder's location via
+    // SetInsertPoint(BB, BB->begin()), leaves the caller with *no* location
+    // afterwards. That produced "inlinable function call in a function with
+    // debug info must have a !dbg location" on the first user call emitted
+    // after any arithmetic operation. Save it, clear it for the helper, restore
+    // it with the insertion point.
+    llvm::DebugLoc saved_loc = ctx_.builder().getCurrentDebugLocation();
 
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(ctx_.context(), "entry", fn);
     ctx_.builder().SetInsertPoint(entry);
+    ctx_.builder().SetCurrentDebugLocation(llvm::DebugLoc());
     llvm::Value* result = emitBody(fn->getArg(0), fn->getArg(1));
     ctx_.builder().CreateRet(result);
 
     // Restore the caller's insertion point.
     if (saved_block) ctx_.builder().SetInsertPoint(saved_block, saved_pt);
+    ctx_.builder().SetCurrentDebugLocation(saved_loc);
 
     return fn;
 }

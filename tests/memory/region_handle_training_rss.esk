@@ -1,0 +1,142 @@
+;; #341 acceptance measurement — user-reachable region handles keep an AD
+;; training loop's peak RSS flat.
+;;
+;; Reproduces the shape from the external report: a 161-parameter MLP
+;; (14 -> 10 -> 1, tanh) with a FULL-BATCH `gradient` every step and a fresh
+;; parameter vector written each step. That body trips all three of the
+;; automatic per-iteration nursery's disqualifiers (a `gradient` op, a `set!`,
+;; and vector mutation of persistent state), so ESH-0214e cannot reclaim it by
+;; construction — the per-step AD tape is the whole cost, and it is what the
+;; region handle reclaims.
+;;
+;; Three modes over the SAME code and the SAME binary, so the comparison is
+;; honest:
+;;   MODE=plain   no scoping at all       (the reported unbounded baseline)
+;;   MODE=region  (with-region ...)/step  (the recommended lexical default)
+;;   MODE=handle  region-open/close/step  (the new non-lexical surface)
+;; MODE defaults to `handle` so a plain suite run exercises the new surface.
+;; STEPS controls the step count. Driver: region_handle_training_rss_test.sh
+
+(define n-in 14)
+(define n-hid 10)
+(define n-param 161)      ; 14*10 W1 + 10 b1 + 10 W2 + 1 b2
+
+(define (env-int name dflt)
+  (let ((v (getenv name)))
+    (if (or (not v) (string=? v "")) dflt (string->number v))))
+
+;; BATCH scales the per-step tape linearly. The default keeps the committed CI
+;; gate fast; the acceptance measurement in the PR uses BATCH=40, which puts the
+;; per-step cost at the ~123 MB/step of the original report.
+(define batch (env-int "BATCH" 8))
+(define steps (env-int "STEPS" 5))
+;; Size hint for the per-step region. A hint large enough to hold one step's work
+;; in a SINGLE arena block keeps the allocator's address ranges stable across
+;; steps, which is what turns sub-linear peak RSS into FLAT peak RSS. Applies
+;; equally to the lexical and the handle form.
+(define region-bytes (env-int "REGION_BYTES" 65536))
+;; Default is the new surface, so a plain suite run (scripts/run_memory_tests.sh
+;; globs this directory) actually exercises region-open / region-close. The
+;; RSS driver always sets MODE explicitly for each of the three comparisons.
+(define mode (let ((m (getenv "MODE"))) (if (or (not m) (string=? m "")) "handle" m)))
+
+;; Deterministic batch: xs is batch*n-in flat, ts is batch targets.
+(define xs (make-vector (* batch n-in) 0.0))
+(define ts (make-vector batch 0.0))
+
+(let fill ((s 0))
+  (if (< s batch)
+      (begin
+        (let fill-i ((i 0))
+          (if (< i n-in)
+              (begin
+                (vector-set! xs (+ (* s n-in) i)
+                             (- (/ (exact->inexact (modulo (+ (* s 31) (* i 17)) 19)) 9.0) 1.0))
+                (fill-i (+ i 1)))))
+        (vector-set! ts s (- (/ (exact->inexact (modulo (* s 7) 5)) 2.0) 1.0))
+        (fill (+ s 1)))))
+
+;; Full-batch mean-squared error of the 161-parameter MLP at parameter vector p.
+;; Layout: W1 [0,140) as j*n-in+i, b1 [140,150), W2 [150,160), b2 at 160.
+(define (loss p)
+  (let batch-loop ((s 0) (acc 0.0))
+    (if (= s batch)
+        (/ acc (exact->inexact batch))
+        (let hidden-loop ((j 0) (y (vref p 160)))
+          (if (= j n-hid)
+              (let ((d (- y (vref ts s))))
+                (batch-loop (+ s 1) (+ acc (* d d))))
+              (let inner ((i 0) (z (vref p (+ 140 j))))
+                (if (= i n-in)
+                    (hidden-loop (+ j 1) (+ y (* (vref p (+ 150 j)) (tanh z))))
+                    (inner (+ i 1)
+                           (+ z (* (vref p (+ (* j n-in) i))
+                                   (vref xs (+ (* s n-in) i))))))))))))
+
+;; One SGD step: fresh parameter vector, written elementwise (persistent mutation).
+(define (sgd-update p g lr)
+  (let ((out (make-vector n-param 0.0)))
+    (let upd ((i 0))
+      (if (= i n-param)
+          out
+          (begin
+            (vector-set! out i (- (vref p i) (* lr (vref g i))))
+            (upd (+ i 1)))))))
+
+(define lr 0.01)
+
+(define (init-params)
+  (let ((p (make-vector n-param 0.0)))
+    (let fill ((i 0))
+      (if (= i n-param)
+          p
+          (begin
+            (vector-set! p i (- (/ (exact->inexact (modulo (* i 13) 11)) 10.0) 0.5))
+            (fill (+ i 1)))))))
+
+;; ── The three loop shapes ──────────────────────────────────────────────────
+
+(define (train-plain p0)
+  (let loop ((k 0) (p p0))
+    (if (= k steps)
+        p
+        (loop (+ k 1) (sgd-update p (gradient loss p) lr)))))
+
+;; The recommended lexical default, for comparison. The size hint is fixed here
+;; because `with-region`'s hint is a parse-time literal, not an expression.
+(define (train-region p0)
+  (let loop ((k 0) (p p0))
+    (if (= k steps)
+        p
+        (loop (+ k 1)
+              (with-region ('step 200000000)
+                (sgd-update p (gradient loss p) lr))))))
+
+;; The new surface: open at the top of the step, do the gradient and the
+;; parameter update, close handing back the new parameters. No lexical block.
+(define (train-handle p0)
+  (let loop ((k 0) (p p0))
+    (if (= k steps)
+        p
+        (let ((h (region-open 'step region-bytes)))
+          (let ((next (sgd-update p (gradient loss p) lr)))
+            (loop (+ k 1) (region-close h next)))))))
+
+(define (main)
+  (let* ((p0 (init-params))
+         (p (cond ((string=? mode "region") (train-region p0))
+                  ((string=? mode "handle") (train-handle p0))
+                  (else (train-plain p0)))))
+    ;; Print a checksum of the trained parameters, not the vector: the three
+    ;; modes must agree EXACTLY, which is what proves the reclamation did not
+    ;; change the numerics.
+    (display "mode=") (display mode)
+    (display " steps=") (display steps)
+    (display " loss=") (display (loss p))
+    (display " checksum=")
+    (display (let sum ((i 0) (acc 0.0))
+               (if (= i n-param) acc (sum (+ i 1) (+ acc (* (vref p i) (vref p i)))))))
+    (newline))
+  0)
+
+(main)

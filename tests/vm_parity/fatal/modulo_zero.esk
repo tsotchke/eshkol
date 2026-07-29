@@ -1,0 +1,4 @@
+; modulo by zero is fatal on both substrates (native raises "division by
+; zero" for (modulo 1 0) and for (modulo 1.0 0.0) alike).
+(display (modulo 1 0))
+(display "MUST-NOT-PRINT")

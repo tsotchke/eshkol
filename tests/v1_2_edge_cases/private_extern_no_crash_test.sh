@@ -34,8 +34,14 @@ cat > "$mod_file" <<'ESK'
 (provide pub-fn)
 (define pub-fn (lambda () 'public))
 ;; Private extern + private function that uses it. Pre-fix: crash here.
+;; strlen takes one argument. Call it with one: this fixture exists to exercise
+;; the symbol-rename pass over a private extern, not to compile an ill-formed
+;; call. It previously passed zero arguments, so every run printed
+;; "error: Arity mismatch: some-c-helper expects 1 arguments but got 0" and the
+;; driver emitted a binary anyway -- the test asserted rc=0 and went green off a
+;; diagnosed program.
 (extern void some-c-helper :real strlen)
-(define (priv-helper) (some-c-helper))
+(define (priv-helper) (some-c-helper "x"))
 ESK
 use_file="$tmp_dir/extern_rename_test_use.esk"
 cat > "$use_file" <<'ESK'

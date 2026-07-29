@@ -17,7 +17,7 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 | deriv | vecref | 8 |  |
 | gofd | vecref | 8 |  |
 | gradn | capnone | 3 |  |
-| gradn | vecref | 1 | ESH-0122 |
+| gradn | vecref | 3 | ESH-0122 |
 | hessod | vecref | 1 | ESH-0121 |
 | jacod | vecref | 8 |  |
 
@@ -96,8 +96,8 @@ Every AD value is swept at nesting depth **d = 1..8** and checked against a **cl
 | `gradn.expc.s.named.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
 | `gradn.mono.s.inline.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
 | `gradn.mono.s.inline.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
-| `gradn.mono.s.inline.vecref` | jit | P | F | F | F | F | F | F | F | **1** |
-| `gradn.mono.s.inline.vecref` | aot | P | F | F | F | F | F | F | F | **1** |
+| `gradn.mono.s.inline.vecref` | jit | P | P | P | F | F | F | F | F | **3** |
+| `gradn.mono.s.inline.vecref` | aot | P | P | P | F | F | F | F | F | **3** |
 | `gradn.mono.s.named.capnone` | jit | P | P | P | F | F | F | F | F | **3** |
 | `gradn.mono.s.named.capnone` | aot | P | P | P | F | F | F | F | F | **3** |
 

@@ -649,8 +649,9 @@ static void test_closures(void) {
  * Called from main() after all modules are included.
  ******************************************************************************/
 
-/* Forward declaration — compile_and_run is defined in eshkol_vm.c hub */
-static void compile_and_run(const char* source);
+/* Forward declaration — compile_and_run is defined in eshkol_vm.c hub.
+ * Returns nonzero when the VM stopped on a fatal runtime error. */
+static int compile_and_run(const char* source);
 
 static int source_test_count = 0, source_test_pass = 0;
 
@@ -866,6 +867,26 @@ static int run_source_tests(void) {
         "(define al (list (cons 'a 1) (cons 'b 2) (cons 'c 3))) (display (cdr (assoc 'b al)))");
     source_test_expect("deep-recursion",
         "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 100))", "100");
+
+    /* User-reachable region handles (#341). On the VM a close is
+     * bookkeeping-only (no escape evacuator in the VM heap), but the handle
+     * PROTOCOL — open, live, close returning the keep, then not live — and every
+     * misuse outcome must match native exactly; tests/vm_parity/corpus/
+     * region_handle_contract.esk pins the full matrix differentially. These
+     * cases keep the VM half executing inside the standard VM suite. */
+    source_test_expect("region-handle-open-live",
+        "(define h (region-open)) (display (region-open? h))", "#t");
+    source_test_expect("region-handle-close-returns-keep",
+        "(define h (region-open)) (display (region-close h 42))", "42");
+    source_test_expect("region-handle-closed-not-live",
+        "(define h (region-open)) (region-close h) (display (region-open? h))", "#f");
+    source_test_expect("region-handle-named-and-sized",
+        "(define h (region-open 'step 4096)) (display (region-close h 'ok))", "ok");
+    source_test_expect("region-handle-double-close-raises",
+        "(define h (region-open)) (region-close h)"
+        "(display (guard (e (#t 'caught)) (region-close h) 'no))", "caught");
+    source_test_expect("region-handle-fabricated-token-not-live",
+        "(display (region-open? 987654321))", "#f");
 
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
     return source_test_count - source_test_pass;
