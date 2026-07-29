@@ -13,6 +13,7 @@
 #include "../../inc/eshkol/core/workspace.h"
 #include "../../inc/eshkol/core/rational.h"
 #include "../../inc/eshkol/core/dtoa_shortest.h"
+#include "../../inc/eshkol/core/symbol_syntax.h"
 
 // Native i128 decimal renderer (lib/core/i128_runtime.cpp).
 extern "C" void eshkol_i128_display(const void* payload, void* stream);
@@ -82,6 +83,43 @@ static void write_escaped_string(FILE* out, const char* data, size_t len) {
         }
     }
     fputc('"', out);
+}
+
+// R7RS `write` symbol external representation. A name the 7.1.1 <identifier>
+// grammar spells without bars goes out bare — `(write 'foo)` is still `foo`
+// — and anything else is wrapped in vertical lines with its <symbol element>*
+// body escaped, so `(write (string->symbol "weird sym"))` emits
+// `|weird sym|` and reads back as the same symbol. The needs-bars predicate
+// and the escaper live in <eshkol/core/symbol_syntax.h> because the VM writer
+// has to make byte-identical decisions. `display` never calls this — only
+// `write` — so display output is unchanged.
+//
+// Length is taken with strlen, matching how symbol names are stored (a
+// NUL-terminated block behind the HEAP_SUBTYPE_SYMBOL header, allocated by
+// several paths that do not agree on what `header->size` counts). A name with
+// an embedded NUL therefore renders up to that NUL; that is a property of the
+// symbol representation, not of this escaper.
+static void write_symbol_name(FILE* out, const char* name) {
+    if (!name) return;
+    size_t len = strlen(name);
+    if (!eshkol_symbol_needs_bars(name, len)) {
+        fwrite(name, 1, len, out);
+        return;
+    }
+    size_t body = eshkol_symbol_escaped_body_len(name, len);
+    char stack_buf[256];
+    char* buf = (body + 1 <= sizeof(stack_buf))
+                    ? stack_buf
+                    : (char*)malloc(body + 1);
+    if (!buf) {  // last resort: emit the raw name rather than nothing
+        fwrite(name, 1, len, out);
+        return;
+    }
+    eshkol_symbol_escape_body(name, len, buf);
+    fputc('|', out);
+    fwrite(buf, 1, body, out);
+    fputc('|', out);
+    if (buf != stack_buf) free(buf);
 }
 
 // ─── R7RS current-output-port / current-input-port / current-error-port ───
@@ -305,8 +343,14 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
                     break;
                 }
                 case HEAP_SUBTYPE_SYMBOL:
-                    // Display symbol name without quotes (homoiconic representation)
-                    fprintf(get_output(opts), "%s", (const char*)data_ptr);
+                    // `display` emits the bare name (homoiconic representation);
+                    // `write` adds R7RS 7.1.1 vertical bars when the name needs
+                    // them to read back as this same symbol.
+                    if (opts->quote_strings) {
+                        write_symbol_name(get_output(opts), (const char*)data_ptr);
+                    } else {
+                        fprintf(get_output(opts), "%s", (const char*)data_ptr);
+                    }
                     break;
                 case HEAP_SUBTYPE_VECTOR:
                     display_vector(value->data.ptr_val, opts);
@@ -427,7 +471,11 @@ void eshkol_display_value_opts(const eshkol_tagged_value_t* value, eshkol_displa
             break;
 
         case ESHKOL_VALUE_SYMBOL:
-            fprintf(get_output(opts), "%s", (const char*)value->data.ptr_val);
+            if (opts->quote_strings) {
+                write_symbol_name(get_output(opts), (const char*)value->data.ptr_val);
+            } else {
+                fprintf(get_output(opts), "%s", (const char*)value->data.ptr_val);
+            }
             break;
 
         case ESHKOL_VALUE_CONS_PTR:

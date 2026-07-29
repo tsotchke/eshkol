@@ -537,6 +537,89 @@ static Node* parse_sexp(void) {
         n->is_inexact = inexact_syntax;
         return n;
     }
+    /* R7RS 7.1.1 production 2 — a vertical-line identifier:
+     *   <identifier> -> <vertical line> <symbol element>* <vertical line>
+     * One symbol, whatever it contains, so `|weird sym|` is a single symbol
+     * whose name has a space rather than the two tokens a bar-unaware
+     * tokenizer splits it into. Escapes accepted: \a \b \t \n \r \| \\ and
+     * the inline hex escape \x<hex>;. `#!fold-case` deliberately does NOT
+     * apply — the bars are a request for verbatim spelling.
+     *
+     * This is checked before the bare-symbol scan below, which would
+     * otherwise swallow the opening bar as an ordinary name character. */
+    if (*src_ptr == '|') {
+        char pipe_buf[128];
+        int pipe_len = 0;
+        int closed = 0;
+        const char* open_at = src_ptr;
+        src_ptr++;  /* consume the opening '|' */
+        while (*src_ptr) {
+            if (*src_ptr == '|') { src_ptr++; closed = 1; break; }
+            if (*src_ptr == '\\' && src_ptr[1]) {
+                unsigned char esc = (unsigned char)src_ptr[1];
+                if (esc == 'x' || esc == 'X') {
+                    const char* scan = src_ptr + 2;
+                    unsigned long cp = 0;
+                    int digits = 0;
+                    while (*scan && digits < 8) {
+                        int d = eshkol_symbol_hex_value((unsigned char)*scan);
+                        if (d < 0) break;
+                        cp = (cp << 4) | (unsigned long)d;
+                        scan++; digits++;
+                    }
+                    if (digits > 0 && *scan == ';') {
+                        char utf8[4];
+                        int n_bytes = eshkol_symbol_utf8_encode(cp, utf8);
+                        if (n_bytes == 0) {
+                            fprintf(stderr, "ERROR: hex escape \\x%lx; in |...| "
+                                            "symbol is outside Unicode range\n", cp);
+                            return NULL;
+                        }
+                        for (int b = 0; b < n_bytes && pipe_len < 127; b++)
+                            pipe_buf[pipe_len++] = utf8[b];
+                        src_ptr = scan + 1;
+                        continue;
+                    }
+                    fprintf(stderr, "ERROR: malformed hex escape in |...| symbol "
+                                    "— expected \\x<hex digits>;\n");
+                    return NULL;
+                }
+                int decoded = eshkol_symbol_escape_value(esc);
+                if (decoded < 0) {
+                    fprintf(stderr, "ERROR: unknown escape \\%c in |...| symbol — "
+                                    "R7RS 7.1.1 allows \\a \\b \\t \\n \\r \\| \\\\ "
+                                    "and \\x<hex>;\n", (char)esc);
+                    return NULL;
+                }
+                if (pipe_len < 127) pipe_buf[pipe_len++] = (char)decoded;
+                src_ptr += 2;
+                continue;
+            }
+            if (pipe_len < 127) pipe_buf[pipe_len++] = *src_ptr;
+            src_ptr++;
+        }
+        if (!closed) {
+            /* The VM tokenizer carries no line/column state, so quote the
+             * offending text instead — enough to find the bar, and a clean
+             * single failure rather than a cascade of bogus symbols. */
+            char excerpt[41];
+            int n_excerpt = 0;
+            while (n_excerpt < 40 && open_at[n_excerpt] &&
+                   open_at[n_excerpt] != '\n')
+                { excerpt[n_excerpt] = open_at[n_excerpt]; n_excerpt++; }
+            excerpt[n_excerpt] = 0;
+            fprintf(stderr, "ERROR: unterminated |...| symbol near \"%s\"%s — no "
+                            "closing vertical line before end of input\n",
+                    excerpt, n_excerpt == 40 ? "..." : "");
+            return NULL;
+        }
+        pipe_buf[pipe_len] = 0;
+        Node* pipe_node = make_node(N_SYMBOL);
+        if (!pipe_node) return NULL;
+        memcpy(pipe_node->symbol, pipe_buf, (size_t)pipe_len + 1);
+        return pipe_node;
+    }
+
     /* Symbol */
     char buf[128]; int i = 0;
     while (*src_ptr && !isspace(*src_ptr) && *src_ptr != '(' && *src_ptr != ')' && *src_ptr != '"' && i < 127)
