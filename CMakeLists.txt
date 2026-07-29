@@ -1765,6 +1765,15 @@ if(NOT APPLE)
             "this host. Install libssl-dev (Debian/Ubuntu), openssl-devel "
             "(Fedora/RHEL), or the platform equivalent.")
     endif()
+
+    # ESH-0011: lib/core/event_loop_iocp.c calls WSAStartup/WSAPoll/getsockopt
+    # for the socket half of its readiness path, so every AOT-linked user
+    # program on Windows needs Winsock in its base runtime closure — the
+    # event-loop builtins are in the always-linked hosted runtime, not the
+    # optional agent-FFI archive.
+    if(WIN32)
+        eshkol_append_host_runtime_link_arg("ws2_32")
+    endif()
 endif()
 
 # Moonlab's QRNG/PQC wrappers are compiled into the ordinary hosted runtime,
@@ -1860,6 +1869,13 @@ list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/[^/]*\\.c$")
 # weight_matrices_v2.c, eshkol_compiler_standalone.c, qllm_interpreter_v1.c).
 # These are reference-only — kept for paper-section history but never linked.
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/archive/.*")
+
+# ESH-0011: exactly one event-loop backend is compiled, chosen below the same
+# way GPU_SOURCES picks gpu_memory.mm / gpu_memory_cuda.cpp / gpu_memory_stub.cpp.
+# file(GLOB_RECURSE) would otherwise sweep all four in and every backend symbol
+# would be multiply defined. lib/core/event_loop.c (the portable half) has no
+# underscore suffix, so it deliberately stays in the glob.
+list(FILTER LIB_SRC EXCLUDE REGEX "lib/core/event_loop_[a-z]+\\.c$")
 
 # Exclude standalone .cpp programs with main()
 list(FILTER LIB_SRC EXCLUDE REGEX "lib/backend/weight_compiler\\.cpp$")
@@ -1989,6 +2005,34 @@ message(STATUS
   "consts=${ESHKOL_VM_MAX_CONSTS}, "
   "code=${ESHKOL_VM_MAX_CODE}"
 )
+
+# ─────────────────────────────────────────────────────────────────────
+# ESH-0011 portable event loop: select the one platform backend.
+#
+# Readiness-style surface (kqueue/epoll shape). The Windows file owns a real
+# completion port but derives readiness from WSAPoll/PeekNamedPipe — see the
+# header comment in lib/core/event_loop_iocp.c for the adaptation and its
+# limits. Emscripten has no descriptors at all, so it gets the fail-closed
+# stub and `(make-event-loop n)` returns #f there.
+# ─────────────────────────────────────────────────────────────────────
+if(EMSCRIPTEN)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (no descriptors on this target)")
+elseif(WIN32)
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_iocp.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "IOCP + WSAPoll/PeekNamedPipe readiness")
+elseif(APPLE OR CMAKE_SYSTEM_NAME MATCHES "BSD|DragonFly")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_kqueue.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "kqueue")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME MATCHES "Android")
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_epoll.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "epoll")
+else()
+    set(ESHKOL_EVENT_LOOP_SRC lib/core/event_loop_stub.c)
+    set(ESHKOL_EVENT_LOOP_BACKEND "stub (unrecognised platform)")
+endif()
+list(APPEND LIB_SRC ${ESHKOL_EVENT_LOOP_SRC})
+message(STATUS "Event-loop backend: ${ESHKOL_EVENT_LOOP_BACKEND} (${ESHKOL_EVENT_LOOP_SRC})")
 
 # Image I/O (native platform/system codec backends)
 list(APPEND LIB_SRC lib/core/image_io.c)
@@ -2368,8 +2412,9 @@ if(APPLE)
     target_link_libraries(eshkol-runtime PUBLIC "-framework Security")
     target_link_libraries(eshkol-static PUBLIC "-framework Security")
 elseif(WIN32)
-    target_link_libraries(eshkol-runtime PUBLIC bcrypt)
-    target_link_libraries(eshkol-static PUBLIC bcrypt)
+    # ws2_32: Winsock for the socket half of lib/core/event_loop_iocp.c (ESH-0011).
+    target_link_libraries(eshkol-runtime PUBLIC bcrypt ws2_32)
+    target_link_libraries(eshkol-static PUBLIC bcrypt ws2_32)
 elseif(OpenSSL_FOUND)
     target_link_libraries(eshkol-runtime PUBLIC OpenSSL::Crypto)
     target_link_libraries(eshkol-static PUBLIC OpenSSL::Crypto)

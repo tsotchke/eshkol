@@ -57,6 +57,7 @@ extern size_t arena_get_used_memory(const void* a);
 #include <process.h>
 #include <sys/stat.h>
 #include <io.h>
+#include <fcntl.h> /* _O_BINARY / _O_NOINHERIT for the Windows _pipe() path. */
 /* Windows POSIX compatibility:
  *   - <limits.h> on MSVC defines _MAX_PATH (260) but not PATH_MAX.
  *   - <libgen.h> (dirname/basename) does not exist on Windows.
@@ -3627,27 +3628,51 @@ typedef struct {
 
 static SysLineReader g_sys_line_readers[32];
 
+/*
+ * ESH-0011 extended make-pipe / fd-write / fd-close to Windows.
+ *
+ * These three previously returned #f on Windows, which left the platform with
+ * no descriptor source at all — and therefore no way to run the event-loop
+ * acceptance test on the required windows-* CI lanes. `_pipe()` is the CRT's
+ * anonymous-pipe primitive and yields ordinary CRT file descriptors, which is
+ * exactly what lib/core/event_loop_iocp.c classifies and watches.
+ *
+ * The flags match lib/agent/c/agent_poll.c's eshkol_make_pipe(), which has
+ * used this call on Windows since v1.2: _O_BINARY so no CRLF translation
+ * corrupts the byte stream, _O_NOINHERIT so a descriptor does not leak into a
+ * spawned child. Keep the two in agreement.
+ */
 static eshkol_sysbuiltin_value_t eshkol_builtin_make_pipe_v(void) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#if defined(ESHKOL_VM_WASM)
+    return sys_make_bool(0);
+#elif defined(_WIN32)
+    int fds[2];
+    if (_pipe(fds, 65536, _O_BINARY | _O_NOINHERIT) != 0) return sys_make_bool(0);
+    return sys_make_pair(sys_make_int64((int64_t)fds[0]), sys_make_int64((int64_t)fds[1]));
+#else
     int fds[2];
     if (pipe(fds) != 0) return sys_make_bool(0);
     return sys_make_pair(sys_make_int64((int64_t)fds[0]), sys_make_int64((int64_t)fds[1]));
-#else
-    return sys_make_bool(0);
 #endif
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_fd_write_v(eshkol_sysbuiltin_value_t fd_val,
                                                             eshkol_sysbuiltin_value_t data_val) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
+#if defined(ESHKOL_VM_WASM)
+    (void)fd_val; (void)data_val;
+    return sys_make_bool(0);
+#else
     int fd = (int)sys_extract_int64(fd_val);
     const char* data = sys_extract_string(data_val);
     if (fd < 0 || !data) return sys_make_bool(0);
-    ssize_t n = write(fd, data, strlen(data));
-    return n >= 0 ? sys_make_int64((int64_t)n) : sys_make_bool(0);
+#if defined(_WIN32)
+    /* _write returns int and takes an unsigned count; see the ESH-0011 note
+     * above make-pipe for why the Windows path exists at all. */
+    int n = _write(fd, data, (unsigned int)strlen(data));
 #else
-    (void)fd_val; (void)data_val;
-    return sys_make_bool(0);
+    ssize_t n = write(fd, data, strlen(data));
+#endif
+    return n >= 0 ? sys_make_int64((int64_t)n) : sys_make_bool(0);
 #endif
 }
 
@@ -3736,13 +3761,190 @@ static eshkol_sysbuiltin_value_t eshkol_builtin_line_reader_close_v(eshkol_sysbu
 }
 
 static eshkol_sysbuiltin_value_t eshkol_builtin_fd_close_v(eshkol_sysbuiltin_value_t fd_val) {
-#if !defined(_WIN32) && !defined(ESHKOL_VM_WASM)
-    int fd = (int)sys_extract_int64(fd_val);
-    return (fd >= 0 && close(fd) == 0) ? sys_make_bool(1) : sys_make_bool(0);
-#else
+#if defined(ESHKOL_VM_WASM)
     (void)fd_val;
     return sys_make_bool(0);
+#elif defined(_WIN32)
+    int fd = (int)sys_extract_int64(fd_val);
+    return (fd >= 0 && _close(fd) == 0) ? sys_make_bool(1) : sys_make_bool(0);
+#else
+    int fd = (int)sys_extract_int64(fd_val);
+    return (fd >= 0 && close(fd) == 0) ? sys_make_bool(1) : sys_make_bool(0);
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * ESH-0011 — portable event loop (kqueue / epoll / IOCP)
+ *
+ * Kernel work lives in lib/core/event_loop.c and its one selected backend;
+ * everything here is tagged-value marshalling. The loop object is malloc'd and
+ * the Scheme value is a plain integer handle, so nothing arena-resident ever
+ * owns a kernel descriptor — see the memory-model note in
+ * inc/eshkol/core/event_loop.h.
+ *
+ * Error contract, uniform across JIT / AOT / VM:
+ *
+ *   • `make-event-loop` returns #f when the platform has no event loop (wasm,
+ *     unrecognised target) or the kernel refused to create one. This is the
+ *     same "#f where descriptors do not exist" degradation `make-pipe` and
+ *     `fd-write` already use, so the whole descriptor family behaves alike.
+ *     A non-integer or out-of-range size raises.
+ *   • Every *use* of a handle that is not currently open — add, remove, poll —
+ *     raises a catchable condition. Use-after-close fails closed; it never
+ *     silently no-ops.
+ *   • `event-loop-close` returns #f rather than raising when the handle is
+ *     already closed or unknown, so a double-close is observable without being
+ *     fatal. That is the contract ESH-0010 specifies for handle lifecycles,
+ *     and it is the one asymmetry in this surface: close is
+ *     idempotent-observable, use fails closed.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#include "eshkol/core/event_loop.h"
+
+/* eshkol_runtime_fatal() is defined in lib/core/runtime_errors_hosted.cpp and
+ * raises a catchable condition through eshkol_raise() before returning — it
+ * never returns. Forward-declared here for the same reason eshkol_type_error
+ * is above: runtime.h pulls in tagged-value typedefs spelled for C++/C23 that
+ * this C11 TU does not use. The first parameter is eshkol_exception_type_t,
+ * whose ESHKOL_EXCEPTION_ERROR member is 0; lib/core/linear_solve_hosted.cpp
+ * forward-declares the same symbol the same way. */
+extern void eshkol_runtime_fatal(int type, const char* fmt, ...);
+#define SYS_EVENT_LOOP_EXC_ERROR 0
+
+/** Resolve a Scheme handle, raising catchably if it is closed or was never a
+ *  loop. Never returns NULL — callers can use the result directly. */
+static eshkol_event_loop_t* sys_event_loop_require(eshkol_sysbuiltin_value_t handle_val,
+                                                   const char* proc_name) {
+    const int64_t handle = sys_extract_int64(handle_val);
+    eshkol_event_loop_t* loop = eshkol_event_loop_from_handle(handle);
+    if (!loop) {
+        eshkol_runtime_fatal(SYS_EVENT_LOOP_EXC_ERROR,
+                             "%s: not an open event loop", proc_name);
+    }
+    return loop;
+}
+
+/** Turn a negative ESHKOL_EVENT_LOOP_* code into a catchable condition whose
+ *  message says which limit was hit, not just that something failed. */
+static void sys_event_loop_raise_rc(const char* proc_name, int rc, int os_error) {
+    const char* why;
+    switch (rc) {
+        case ESHKOL_EVENT_LOOP_EINVAL:
+            why = "invalid file descriptor or interest mask"; break;
+        case ESHKOL_EVENT_LOOP_ENOMEM:
+            why = "out of memory"; break;
+        case ESHKOL_EVENT_LOOP_ENOTSUP:
+            why = "this platform cannot watch that kind of object "
+                  "(Linux epoll refuses regular files; watch pipes, sockets "
+                  "or terminals)"; break;
+        case ESHKOL_EVENT_LOOP_EFULL:
+            why = "event loop is at its max-events capacity"; break;
+        default:
+            why = "operating system reported an error"; break;
+    }
+    eshkol_runtime_fatal(SYS_EVENT_LOOP_EXC_ERROR, "%s: %s (os error %d)",
+                         proc_name, why, os_error);
+}
+
+static eshkol_sysbuiltin_value_t
+eshkol_builtin_make_event_loop_v(eshkol_sysbuiltin_value_t max_events_val) {
+    const int64_t requested = sys_extract_int64(max_events_val);
+    if (requested <= 0 || requested > ESHKOL_EVENT_LOOP_MAX_EVENTS) {
+        eshkol_runtime_fatal(SYS_EVENT_LOOP_EXC_ERROR,
+                             "make-event-loop: max-events must be in 1..%d, got %lld",
+                             ESHKOL_EVENT_LOOP_MAX_EVENTS, (long long)requested);
+    }
+    const int64_t handle = eshkol_event_loop_open_handle((int)requested);
+    /* #f, not a raise: "this platform has no event loop" is a capability
+     * question a program is entitled to ask without installing a handler. */
+    return handle > 0 ? sys_make_int64(handle) : sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t
+eshkol_builtin_event_loop_add_fd_v(eshkol_sysbuiltin_value_t loop_val,
+                                    eshkol_sysbuiltin_value_t fd_val,
+                                    eshkol_sysbuiltin_value_t events_val) {
+    eshkol_event_loop_t* loop = sys_event_loop_require(loop_val, "event-loop-add-fd!");
+    const int64_t fd = sys_extract_int64(fd_val);
+    const int64_t events = sys_extract_int64(events_val);
+
+    if (fd < 0 || fd > 0x7FFFFFFF) {
+        eshkol_runtime_fatal(SYS_EVENT_LOOP_EXC_ERROR,
+                             "event-loop-add-fd!: %lld is not a file descriptor",
+                             (long long)fd);
+    }
+    if ((events & ESHKOL_EVENT_ALL) == 0) {
+        eshkol_runtime_fatal(SYS_EVENT_LOOP_EXC_ERROR,
+                             "event-loop-add-fd!: interest mask must include "
+                             "1 (read) and/or 2 (write), got %lld",
+                             (long long)events);
+    }
+
+    /* user_data carries the descriptor by default so a caller that ignores the
+     * cookie still gets something meaningful back from a poll. */
+    const int rc = eshkol_event_loop_add(loop, (int)fd, (int)events, (uint64_t)fd);
+    if (rc != ESHKOL_EVENT_LOOP_OK)
+        sys_event_loop_raise_rc("event-loop-add-fd!", rc,
+                                eshkol_event_loop_last_os_error(loop));
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t
+eshkol_builtin_event_loop_remove_fd_v(eshkol_sysbuiltin_value_t loop_val,
+                                       eshkol_sysbuiltin_value_t fd_val) {
+    eshkol_event_loop_t* loop = sys_event_loop_require(loop_val, "event-loop-remove-fd!");
+    const int64_t fd = sys_extract_int64(fd_val);
+    if (fd < 0 || fd > 0x7FFFFFFF) return sys_make_bool(0);
+
+    const int rc = eshkol_event_loop_remove(loop, (int)fd);
+    /* ENOENT is an answer, not a failure: "it is not being watched" is exactly
+     * the state the caller asked for. Anything else is a real error. */
+    if (rc == ESHKOL_EVENT_LOOP_ENOENT) return sys_make_bool(0);
+    if (rc != ESHKOL_EVENT_LOOP_OK)
+        sys_event_loop_raise_rc("event-loop-remove-fd!", rc,
+                                eshkol_event_loop_last_os_error(loop));
+    return sys_make_bool(1);
+}
+
+static eshkol_sysbuiltin_value_t
+eshkol_builtin_event_loop_poll_v(eshkol_sysbuiltin_value_t loop_val,
+                                  eshkol_sysbuiltin_value_t timeout_val) {
+    eshkol_event_loop_t* loop = sys_event_loop_require(loop_val, "event-loop-poll");
+    const int64_t timeout_ms = sys_extract_int64(timeout_val);
+
+    const eshkol_event_t* events = NULL;
+    int n = 0;
+    const int rc = eshkol_event_loop_poll(loop, (int)timeout_ms, &events, &n);
+    if (rc != ESHKOL_EVENT_LOOP_OK)
+        sys_event_loop_raise_rc("event-loop-poll", rc,
+                                eshkol_event_loop_last_os_error(loop));
+
+    /* Build ((fd . events) ...) back-to-front so the list comes out in the
+     * order the kernel reported. A timeout is the empty list, not #f — an
+     * ordinary result a `for-each` handles without a special case. */
+    eshkol_sysbuiltin_value_t list = sys_make_null();
+    for (int i = n - 1; i >= 0; --i) {
+        eshkol_sysbuiltin_value_t entry =
+            sys_make_pair(sys_make_int64((int64_t)events[i].fd),
+                          sys_make_int64((int64_t)events[i].events));
+        list = sys_make_pair(entry, list);
+    }
+    return list;
+}
+
+static eshkol_sysbuiltin_value_t
+eshkol_builtin_event_loop_close_v(eshkol_sysbuiltin_value_t loop_val) {
+    const int64_t handle = sys_extract_int64(loop_val);
+    /* Deliberately does not go through sys_event_loop_require: a double-close
+     * reports #f instead of raising. See the contract note above. */
+    return eshkol_event_loop_close_handle(handle) == ESHKOL_EVENT_LOOP_OK
+               ? sys_make_bool(1) : sys_make_bool(0);
+}
+
+static eshkol_sysbuiltin_value_t eshkol_builtin_event_loop_backend_v(void) {
+    /* Lets a test state which implementation it actually exercised instead of
+     * assuming one from the host it happens to run on. */
+    return sys_make_string(eshkol_event_loop_backend_name());
 }
 
 typedef struct {
@@ -5097,6 +5299,13 @@ void eshkol_builtin_make_line_reader(sv_t* out, const sv_t* a, const sv_t* b) { 
 void eshkol_builtin_line_reader_poll(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_poll_v(*a); }
 void eshkol_builtin_line_reader_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_line_reader_close_v(*a); }
 void eshkol_builtin_fd_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_fd_close_v(*a); }
+/* ESH-0011 portable event loop. */
+void eshkol_builtin_make_event_loop(sv_t* out, const sv_t* a) { *out = eshkol_builtin_make_event_loop_v(*a); }
+void eshkol_builtin_event_loop_add_fd(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_event_loop_add_fd_v(*a, *b, *c); }
+void eshkol_builtin_event_loop_remove_fd(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_event_loop_remove_fd_v(*a, *b); }
+void eshkol_builtin_event_loop_poll(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_event_loop_poll_v(*a, *b); }
+void eshkol_builtin_event_loop_close(sv_t* out, const sv_t* a) { *out = eshkol_builtin_event_loop_close_v(*a); }
+void eshkol_builtin_event_loop_backend(sv_t* out) { *out = eshkol_builtin_event_loop_backend_v(); }
 void eshkol_builtin_make_lru_cache(sv_t* out, const sv_t* a) { *out = eshkol_builtin_make_lru_cache_v(*a); }
 void eshkol_builtin_lru_get(sv_t* out, const sv_t* a, const sv_t* b) { *out = eshkol_builtin_lru_get_v(*a, *b); }
 void eshkol_builtin_lru_set(sv_t* out, const sv_t* a, const sv_t* b, const sv_t* c) { *out = eshkol_builtin_lru_set_v(*a, *b, *c); }

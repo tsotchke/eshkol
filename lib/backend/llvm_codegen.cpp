@@ -2115,6 +2115,15 @@ public:
         function_return_types["semver-compare"] = BuiltinTypes::Integer;
         function_return_types["semver-satisfies?"] = BuiltinTypes::Boolean;
         function_return_types["make-pipe"] = BuiltinTypes::Value;
+        /* ESH-0011 event loop. make-event-loop is Value, not Integer: it
+         * returns an integer handle OR #f where the platform has no loop, so
+         * the tagged-value shape is the honest one. poll returns a list. */
+        function_return_types["make-event-loop"] = BuiltinTypes::Value;
+        function_return_types["event-loop-add-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-remove-fd!"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-poll"] = BuiltinTypes::Value;
+        function_return_types["event-loop-close"] = BuiltinTypes::Boolean;
+        function_return_types["event-loop-backend"] = BuiltinTypes::String;
         function_return_types["fd-write"] = BuiltinTypes::Integer;
         function_return_types["make-line-reader"] = BuiltinTypes::Integer;
         function_return_types["line-reader-poll"] = BuiltinTypes::String;
@@ -14793,6 +14802,13 @@ private:
         if (func_name == "semver-compare") return system_->semverCompare(op);
         if (func_name == "semver-satisfies?") return system_->semverSatisfies(op);
         if (func_name == "make-pipe") return system_->makePipe(op);
+        /* ESH-0011 portable event loop. */
+        if (func_name == "make-event-loop") return system_->makeEventLoop(op);
+        if (func_name == "event-loop-add-fd!") return system_->eventLoopAddFd(op);
+        if (func_name == "event-loop-remove-fd!") return system_->eventLoopRemoveFd(op);
+        if (func_name == "event-loop-poll") return system_->eventLoopPoll(op);
+        if (func_name == "event-loop-close") return system_->eventLoopClose(op);
+        if (func_name == "event-loop-backend") return system_->eventLoopBackend(op);
         if (func_name == "fd-write") return system_->fdWrite(op);
         if (func_name == "make-line-reader") return system_->makeLineReader(op);
         if (func_name == "line-reader-poll") return system_->lineReaderPoll(op);
@@ -24444,6 +24460,8 @@ private:
             "semver-compare", "semver-satisfies?",
             "make-pipe", "fd-write", "make-line-reader",
             "line-reader-poll", "line-reader-close", "fd-close",
+            "make-event-loop", "event-loop-add-fd!", "event-loop-remove-fd!",
+            "event-loop-poll", "event-loop-close", "event-loop-backend",
             "make-lru-cache", "lru-get", "lru-set!", "lru-has?",
             "lru-delete!", "lru-clear!", "lru-size", "format", "_format-list",
             "http-server-create", "http-server-port", "http-server-accept",

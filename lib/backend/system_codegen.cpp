@@ -1997,6 +1997,15 @@ ONE_ARG_BUILTIN(semverParse, "eshkol_builtin_semver_parse")
 TWO_ARG_BUILTIN(semverCompare, "eshkol_builtin_semver_compare")
 TWO_ARG_BUILTIN(semverSatisfies, "eshkol_builtin_semver_satisfies")
 ZERO_ARG_BUILTIN(makePipe, "eshkol_builtin_make_pipe")
+
+/* ESH-0011 portable event loop (kqueue / epoll / IOCP). */
+ONE_ARG_BUILTIN(makeEventLoop, "eshkol_builtin_make_event_loop")
+THREE_ARG_BUILTIN(eventLoopAddFd, "eshkol_builtin_event_loop_add_fd")
+TWO_ARG_BUILTIN(eventLoopRemoveFd, "eshkol_builtin_event_loop_remove_fd")
+TWO_ARG_BUILTIN(eventLoopPoll, "eshkol_builtin_event_loop_poll")
+ONE_ARG_BUILTIN(eventLoopClose, "eshkol_builtin_event_loop_close")
+ZERO_ARG_BUILTIN(eventLoopBackend, "eshkol_builtin_event_loop_backend")
+
 TWO_ARG_BUILTIN(fdWrite, "eshkol_builtin_fd_write")
 TWO_ARG_BUILTIN(makeLineReader, "eshkol_builtin_make_line_reader")
 ONE_ARG_BUILTIN(lineReaderPoll, "eshkol_builtin_line_reader_poll")
