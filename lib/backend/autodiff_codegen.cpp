@@ -1129,6 +1129,56 @@ llvm::Value* AutodiffCodegen::unpackDualFromTagged(llvm::Value* tagged_val) {
  * @param tagged_val a tagged value that may or may not carry the DUAL_NUMBER tag.
  * @return the dual struct (loaded, or synthesized with only the primal field set).
  */
+llvm::Value* AutodiffCodegen::adPointToDouble(llvm::Value* tagged_val, const char* what) {
+    if (!tagged_val) return llvm::ConstantFP::get(ctx_.doubleType(), 0.0);
+
+    // Already a raw scalar: nothing is tagged, so nothing can be misread.
+    if (tagged_val->getType()->isDoubleTy()) return tagged_val;
+    if (tagged_val->getType()->isIntegerTy())
+        return ctx_.builder().CreateSIToFP(tagged_val, ctx_.doubleType());
+    if (tagged_val->getType() != ctx_.taggedValueType())
+        return tagged_.unpackDouble(tagged_val);
+
+    auto& b = ctx_.builder();
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+
+    // Hoist the spill slot: these calls sit inside per-element seeding loops.
+    llvm::AllocaInst* slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_point_slot");
+    }
+    b.CreateStore(tagged_val, slot);
+
+    llvm::FunctionCallee coerce = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_point_to_double",
+        llvm::FunctionType::get(ctx_.doubleType(),
+                                {ctx_.ptrType(), ctx_.ptrType()}, false));
+    llvm::Value* name = b.CreateGlobalString(what ? what : "autodiff", ".ad_op_name");
+    return b.CreateCall(coerce, {slot, name}, "ad_point_dbl");
+}
+
+llvm::Value* AutodiffCodegen::adPointIsScalar(llvm::Value* tagged_val) {
+    auto& b = ctx_.builder();
+    // A raw double / raw int is unambiguously a scalar.
+    if (!tagged_val || tagged_val->getType() != ctx_.taggedValueType())
+        return llvm::ConstantInt::getTrue(ctx_.context());
+
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::AllocaInst* slot;
+    {
+        llvm::IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "ad_scalar_probe");
+    }
+    b.CreateStore(tagged_val, slot);
+
+    llvm::FunctionCallee pred = ctx_.module().getOrInsertFunction(
+        "eshkol_ad_point_is_scalar",
+        llvm::FunctionType::get(ctx_.int32Type(), {ctx_.ptrType()}, false));
+    llvm::Value* r = b.CreateCall(pred, {slot}, "ad_pt_is_scalar");
+    return b.CreateICmpNE(r, llvm::ConstantInt::get(ctx_.int32Type(), 0));
+}
+
 llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -1151,16 +1201,19 @@ llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) 
     llvm::BasicBlock* dual_exit = ctx_.builder().GetInsertBlock();
     ctx_.builder().CreateBr(merge_bb);
 
-    // Scalar path: extract a primal double, build {primal, 0.0}.  Use
-    // base_type to pick between bitcast (DOUBLE) and SIToFP (everything
-    // else with a numeric data field — INT64, BOOL, CHAR).
+    // Scalar path: extract a primal double, build {primal, 0.0}.
+    //
+    // ESH-0393: this used to pick between a bitcast (DOUBLE) and SIToFP
+    // ("everything else with a numeric data field — INT64, BOOL, CHAR"). That
+    // enumeration silently assumed a heap pointer never arrives here, but an
+    // EXACT rational or bignum point is HEAP-tagged, so its data field IS a
+    // pointer — and `(derivative (lambda (x) (* x x)) 1/3)` differentiated at
+    // the rational object's ADDRESS, returning a number of heap magnitude.
+    // Classify by the runtime tag instead (adPointToDouble), which converts
+    // every numeric representation to the double it denotes and refuses a
+    // genuinely non-numeric point rather than fabricating one.
     ctx_.builder().SetInsertPoint(scalar_path);
-    llvm::Value* data_int = ctx_.builder().CreateExtractValue(tagged_val, {4}, "sudft_data");
-    llvm::Value* primal_si = ctx_.builder().CreateSIToFP(data_int, ctx_.doubleType(), "sudft_primal_si");
-    llvm::Value* primal_bc = ctx_.builder().CreateBitCast(data_int, ctx_.doubleType(), "sudft_primal_bc");
-    llvm::Value* is_double = ctx_.builder().CreateICmpEQ(base_type,
-        llvm::ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-    llvm::Value* primal_final = ctx_.builder().CreateSelect(is_double, primal_bc, primal_si, "sudft_primal");
+    llvm::Value* primal_final = adPointToDouble(tagged_val, "derivative");
     // ESH-0117: start from a fully-zeroed 8-field dual so the e2/e1e2 and the
     // ep-derivative 4-jet (fields 4-7) are 0; only the primal is filled.
     llvm::Value* synth_dual = llvm::ConstantAggregateZero::get(ctx_.dualNumberType());
@@ -4295,15 +4348,10 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 AllocaInst* rt_result_slot = ctx_.builder().CreateAlloca(
                     ctx_.taggedValueType(), nullptr, "grad_rt_result");
 
-                Value* rt_point_base = tagged_.getBaseType(tagged_.getType(point_val));
-                Value* rt_point_is_double = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-                Value* rt_point_is_int = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-                Value* rt_point_is_dual = ctx_.builder().CreateICmpEQ(rt_point_base,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-                Value* rt_point_is_scalar = ctx_.builder().CreateOr(
-                    ctx_.builder().CreateOr(rt_point_is_double, rt_point_is_int), rt_point_is_dual);
+                // ESH-0393: was an enumeration of DOUBLE/INT64/DUAL_NUMBER, which
+                // sent a HEAP-tagged exact rational/bignum scalar point down the
+                // collection path. One authority decides (adPointIsScalar).
+                Value* rt_point_is_scalar = adPointIsScalar(point_val);
 
                 // Recover the callable's declared input arity so the point
                 // is expanded to match the function's true signature. The closure
@@ -4425,7 +4473,9 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                     b.SetInsertPoint(rvt_vcb);
                     Value* rvt_vsrc_ptr = b.CreateGEP(ctx_.taggedValueType(), rvt_vsrc, rvt_vidx);
                     Value* rvt_vsrc_val = b.CreateLoad(ctx_.taggedValueType(), rvt_vsrc_ptr);
-                    Value* rvt_vdbl = tagged_.unpackDouble(rvt_vsrc_val);
+                    // ESH-0393: classify the point element by its runtime tag
+                    // (an exact rational/bignum element is HEAP-tagged).
+                    Value* rvt_vdbl = adPointToDouble(rvt_vsrc_val, "gradient");
                     b.CreateStore(b.CreateBitCast(rvt_vdbl, ctx_.int64Type()),
                         b.CreateGEP(ctx_.int64Type(), rvt_vdst, rvt_vidx));
                     b.CreateStore(b.CreateAdd(rvt_vidx, ConstantInt::get(ctx_.int64Type(), 1)), rvt_vi);
@@ -4769,7 +4819,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
 
                 // Scalar path - create 1-element Scheme vector
                 ctx_.builder().SetInsertPoint(scalar_path);
-                Value* scalar_val = tagged_.unpackDouble(point_val);
+                Value* scalar_val = adPointToDouble(point_val, "gradient");   // ESH-0393
                 Value* scalar_vec_size = ConstantInt::get(ctx_.int64Type(), 8 + tagged_size);
                 Value* scalar_vec = ctx_.builder().CreateCall(arena_allocate_func, {arena_ptr, scalar_vec_size});
                 ctx_.builder().CreateStore(ConstantInt::get(ctx_.int64Type(), 1), scalar_vec);
@@ -4858,7 +4908,7 @@ llvm::Value* AutodiffCodegen::emitRuntimeClosureGradient(llvm::Value* closure_va
                 // Load primal value at position j from input elements
                 Value* in_elem_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), input_elems, inner_j);
                 Value* in_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), in_elem_ptr);
-                Value* primal_val = tagged_.unpackDouble(in_elem);
+                Value* primal_val = adPointToDouble(in_elem, "gradient");     // ESH-0393
 
                 // Set tangent: 1.0 if j == i, else 0.0
                 Value* is_active = ctx_.builder().CreateICmpEQ(inner_j, dim_i);
@@ -5559,8 +5609,27 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     // Scheme vector so it goes through the same path as a (vector …) input.
     // Without this, a multi-parameter gradient on a list crashed — the cons
     // cell fell through to the vector path and was misread as [length][elems].
+    // ESH-0393: an EXACT heap scalar is a scalar POINT, not a collection.
+    // `is_scalar` above only recognises INT64/DOUBLE, and this subtype chain
+    // only recognises VECTOR/CONS/TENSOR, so a rational or bignum point fell
+    // through to the tensor path and had its object dereferenced as
+    // [dims][rank][elems] — `(gradient f 1/3)` returned #() and
+    // `(hessian f 1/3)` segfaulted. Route the exact heap numerics to the same
+    // scalar promotion an INT64/DOUBLE point takes.
+    BasicBlock* grad_check_exact_scalar =
+        BasicBlock::Create(ctx_.context(), "grad_check_exact_scalar", current_func);
     ctx_.builder().SetInsertPoint(grad_check_cons);
-    ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_tensor);
+    ctx_.builder().CreateCondBr(is_cons_subtype_grad, grad_list_to_svec, grad_check_exact_scalar);
+
+    ctx_.builder().SetInsertPoint(grad_check_exact_scalar);
+    {
+        Value* is_rat = ctx_.builder().CreateICmpEQ(grad_subtype,
+            ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_RATIONAL));
+        Value* is_big = ctx_.builder().CreateICmpEQ(grad_subtype,
+            ConstantInt::get(ctx_.int8Type(), HEAP_SUBTYPE_BIGNUM));
+        ctx_.builder().CreateCondBr(ctx_.builder().CreateOr(is_rat, is_big),
+                                    scalar_input, grad_check_tensor);
+    }
 
     ctx_.builder().SetInsertPoint(grad_list_to_svec);
     {
@@ -5681,14 +5750,12 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(scalar_input);
     eshkol_debug("Gradient: auto-promoting scalar input to 1D vector");
     
-    // Extract scalar value (INT64 or DOUBLE)
-    Value* scalar_val_int = tagged_.unpackInt64(vector_val);
-    
-    // Convert to double if needed
-    Value* scalar_double = ctx_.builder().CreateSelect(is_double,
-        ctx_.builder().CreateBitCast(scalar_val_int, ctx_.doubleType()),
-        ctx_.builder().CreateSIToFP(scalar_val_int, ctx_.doubleType()));
-    
+    // ESH-0393: the point's own tag decides. The predecessor selected between a
+    // bitcast (DOUBLE) and SIToFP (assumed INT64) over the raw data field, so a
+    // HEAP-tagged exact rational/bignum scalar point was promoted as its own
+    // ADDRESS. adPointToDouble converts each numeric representation once.
+    Value* scalar_double = adPointToDouble(vector_val, "gradient");
+
     // Allocate 1D tensor structure for promoted scalar via arena (OALR compliant - no malloc)
     Value* typed_promoted_tensor = ctx_.builder().CreateCall(mem_.getArenaAllocateTensorWithHeader(), {arena_ptr});
 
@@ -6031,7 +6098,7 @@ llvm::Value* AutodiffCodegen::gradient(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(v2t_body);
     Value* v2t_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), v2t_elems, v2t_idx);
     Value* v2t_src_val = ctx_.builder().CreateLoad(ctx_.taggedValueType(), v2t_src_ptr);
-    Value* v2t_dbl = tagged_.unpackDouble(v2t_src_val);
+    Value* v2t_dbl = adPointToDouble(v2t_src_val, "gradient");   // ESH-0393
     Value* v2t_bits = ctx_.builder().CreateBitCast(v2t_dbl, ctx_.int64Type());
     Value* v2t_dst_slot = ctx_.builder().CreateGEP(ctx_.int64Type(), v2t_dst, v2t_idx);
     ctx_.builder().CreateStore(v2t_bits, v2t_dst_slot);
@@ -7467,7 +7534,7 @@ llvm::Value* AutodiffCodegen::jacobian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(jac_svec_copy_body);
     Value* jac_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), jac_scheme_elem_base_typed, jac_svec_i);
     Value* jac_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), jac_svec_src_ptr);
-    Value* jac_svec_double_val = tagged_.unpackDouble(jac_svec_tagged_elem);
+    Value* jac_svec_double_val = adPointToDouble(jac_svec_tagged_elem, "jacobian");   // ESH-0393
     Value* jac_svec_as_int64 = ctx_.builder().CreateBitCast(jac_svec_double_val, ctx_.int64Type());
     Value* jac_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), jac_typed_scheme_elems, jac_svec_i);
     ctx_.builder().CreateStore(jac_svec_as_int64, jac_svec_dst_ptr);
@@ -8985,15 +9052,12 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
             else if (typed_raw_->getType()->isDoubleTy())             rt_tagged = tagged_.packDouble(typed_raw_);
             else if (typed_raw_->getType()->isIntegerTy(64))          rt_tagged = tagged_.packInt64(typed_raw_, true);
             else                                                      rt_tagged = typed_raw_;
-            Value* rt_base = tagged_.getBaseType(tagged_.getType(rt_tagged));
-            Value* rt_is_d = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DOUBLE));
-            Value* rt_is_i = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-            Value* rt_is_du = ctx_.builder().CreateICmpEQ(rt_base,
-                ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_DUAL_NUMBER));
-            Value* rt_is_scalar = ctx_.builder().CreateOr(
-                ctx_.builder().CreateOr(rt_is_d, rt_is_i), rt_is_du);
+            // ESH-0393: this enumerated DOUBLE/INT64/DUAL_NUMBER, so a
+            // HEAP-tagged exact rational or bignum — an ordinary scalar point —
+            // failed the test and was routed into the vector/tensor path, which
+            // dereferenced the rational object as a tensor (SIGSEGV on
+            // `(hessian f 1/3)`). Ask the one authority instead.
+            Value* rt_is_scalar = adPointIsScalar(rt_tagged);
 
             llvm::IRBuilder<> eb(&cur->getEntryBlock(), cur->getEntryBlock().begin());
             hess_rt_slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "hess_rt_result");
@@ -9021,23 +9085,11 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
             }
             // If !func_ptr, scalar_func_ptr stays nullptr and hessian_closure_val is used below.
 
-            // Get the scalar point value as a double. An integer point (e.g.
-            // (hessian cube 2)) must be converted via SIToFP — unpackDouble on
-            // an int-tagged value reads the integer bit pattern as a double.
-            Value* x;
-            if (typed_raw_->getType()->isDoubleTy()) {
-                x = typed_raw_;
-            } else if (typed_raw_->getType()->isIntegerTy(64)) {
-                x = ctx_.builder().CreateSIToFP(typed_raw_, ctx_.doubleType());
-            } else {
-                Value* pt = typed_raw_;
-                Value* base_ty = tagged_.getBaseType(tagged_.getType(pt));
-                Value* is_int = ctx_.builder().CreateICmpEQ(base_ty,
-                    ConstantInt::get(ctx_.int8Type(), ESHKOL_VALUE_INT64));
-                Value* as_int = ctx_.builder().CreateSIToFP(tagged_.unpackInt64(pt), ctx_.doubleType());
-                Value* as_dbl = tagged_.unpackDouble(pt);
-                x = ctx_.builder().CreateSelect(is_int, as_int, as_dbl);
-            }
+            // Get the scalar point value as a double. ESH-0393: the tagged case
+            // used to select between SIToFP (INT64) and unpackDouble (assumed
+            // DOUBLE), which reads a HEAP-tagged exact rational/bignum point as
+            // its own pointer bits. adPointToDouble classifies by runtime tag.
+            Value* x = adPointToDouble(typed_raw_, "hessian");
 
             // EXACT f''(x) via forward-over-forward AD: seed BOTH perturbation
             // slots on the single input, x_jet = {x, 1, 1, 0}. Then
@@ -9332,7 +9384,7 @@ llvm::Value* AutodiffCodegen::hessian(const eshkol_operations_t* op) {
     ctx_.builder().SetInsertPoint(hess_svec_copy_body);
     Value* hess_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), hess_scheme_elem_base_typed, hess_svec_i);
     Value* hess_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), hess_svec_src_ptr);
-    Value* hess_svec_double_val = tagged_.unpackDouble(hess_svec_tagged_elem);
+    Value* hess_svec_double_val = adPointToDouble(hess_svec_tagged_elem, "hessian");   // ESH-0393
     Value* hess_svec_as_int64 = ctx_.builder().CreateBitCast(hess_svec_double_val, ctx_.int64Type());
     Value* hess_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.int64Type(), hess_typed_scheme_elems, hess_svec_i);
     ctx_.builder().CreateStore(hess_svec_as_int64, hess_svec_dst_ptr);
@@ -10463,7 +10515,7 @@ llvm::Value* AutodiffCodegen::directionalDerivative(const eshkol_operations_t* o
     ctx_.builder().SetInsertPoint(dd_svec_copy_body);
     Value* dd_svec_src_ptr = ctx_.builder().CreateGEP(ctx_.taggedValueType(), dd_scheme_elem_base_typed, dd_svec_i);
     Value* dd_svec_tagged_elem = ctx_.builder().CreateLoad(ctx_.taggedValueType(), dd_svec_src_ptr);
-    Value* dd_svec_double_val = tagged_.unpackDouble(dd_svec_tagged_elem);
+    Value* dd_svec_double_val = adPointToDouble(dd_svec_tagged_elem, "directional-derivative");   // ESH-0393
     Value* dd_svec_dst_ptr = ctx_.builder().CreateGEP(ctx_.doubleType(), dd_typed_scheme_elems, dd_svec_i);
     ctx_.builder().CreateStore(dd_svec_double_val, dd_svec_dst_ptr);
     Value* dd_svec_next_i = ctx_.builder().CreateAdd(dd_svec_i, ConstantInt::get(ctx_.int64Type(), 1));

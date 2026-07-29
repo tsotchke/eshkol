@@ -90,6 +90,47 @@ public:
     // stays in the current block.
     llvm::Value* safeUnpackDualFromTagged(llvm::Value* tagged);
 
+    /**
+     * ESH-0393. Coerce an AD evaluation point / seed component to the double
+     * the jet and tape substrates carry, classifying by the value's RUNTIME
+     * TAG rather than by the shape the call site expected.
+     *
+     * `TaggedValueCodegen::unpackDouble` bitcasts the tagged data field, and
+     * the jet seeder used to `SIToFP` it; both are correct only for an
+     * immediate. An exact rational or bignum is HEAP-tagged, so its data
+     * field is a pointer, and either reinterpretation silently differentiates
+     * at the object's ADDRESS (heap-magnitude garbage from SIToFP, a ~5e-314
+     * denormal from the bitcast). Every AD point/seed boundary therefore goes
+     * through here, which defers the dispatch to the one runtime authority
+     * (`eshkol_ad_point_to_double`): int64/double inline-equivalent, rational
+     * and bignum converted exactly once, a jet's primal and a Taylor tower's
+     * c[0] unwrapped, and a genuinely non-numeric point raised as a catchable
+     * type error instead of coerced.
+     *
+     * Emits exactly one call and no basic blocks, so it is a drop-in
+     * replacement at sites that must stay in their current block. The tagged
+     * spill slot is hoisted into the function entry block, so using this
+     * inside a loop body does not grow the frame per iteration.
+     *
+     * @param tagged The point (a tagged value, or an already-raw double/int).
+     * @param what   Operator name used in the diagnostic ("derivative", ...).
+     */
+    llvm::Value* adPointToDouble(llvm::Value* tagged, const char* what);
+
+    /**
+     * ESH-0393. Is this evaluation point a SCALAR (f: R→R) rather than a
+     * collection (f: R^n→R)? Returns an i1.
+     *
+     * Every multivariate entry point has to answer this before it can seed,
+     * and each used to enumerate the tags it expected a scalar to carry
+     * (DOUBLE, INT64, sometimes DUAL_NUMBER). An exact rational or bignum is
+     * an ordinary scalar that happens to be HEAP-tagged, so it failed every
+     * enumeration and was routed down the collection path — where its object
+     * was dereferenced as [dims][rank][elems]. Defers to the one runtime
+     * authority (`eshkol_ad_point_is_scalar`) so all operators agree.
+     */
+    llvm::Value* adPointIsScalar(llvm::Value* tagged);
+
     // ESH-0188 (P3): the compile-time-`int depth` seed/extract pair that used
     // to live here (seedDerivativeInput/extractDerivativeResult) was the
     // pre-ESH-0070 perturbation-tagging mechanism. It was fully superseded by
