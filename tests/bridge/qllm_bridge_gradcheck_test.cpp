@@ -94,12 +94,12 @@ static void backward(ad_tape_t* tape, ad_node_t* loss) {
 }
 
 /** @brief Aggregate L2 relative-error accumulator. */
-struct RelAcc { double dn = 0.0, nn = 0.0, an = 0.0; };
-static void relacc_add(RelAcc* a, double num, double ana) {
+struct BridgeRelAcc { double dn = 0.0, nn = 0.0, an = 0.0; };
+static void bridge_relacc_add(BridgeRelAcc* a, double num, double ana) {
     double d = num - ana;
     a->dn += d * d; a->nn += num * num; a->an += ana * ana;
 }
-static double relacc_value(const RelAcc* a) {
+static double bridge_relacc_value(const BridgeRelAcc* a) {
     double den = std::sqrt(a->nn) + std::sqrt(a->an);
     return (den > 0.0) ? std::sqrt(a->dn) / den : 0.0;
 }
@@ -224,7 +224,7 @@ static double check(Pipeline p, const char* name) {
         return 1.0;
     }
 
-    RelAcc acc;
+    BridgeRelAcc acc;
     for (size_t i = 0; i < nx; ++i) {
         double save = x[i];
         x[i] = save + STEP;
@@ -232,7 +232,7 @@ static double check(Pipeline p, const char* name) {
         x[i] = save - STEP;
         double Lm = run_pipeline(p, nullptr, x, g_w, nullptr, nullptr, nullptr);
         x[i] = save;
-        relacc_add(&acc, (Lp - Lm) / (2.0 * STEP), dx[i]);
+        bridge_relacc_add(&acc, (Lp - Lm) / (2.0 * STEP), dx[i]);
     }
 
     /* Also check the weight gradient where the pipeline has weights. */
@@ -247,11 +247,11 @@ static double check(Pipeline p, const char* name) {
             w[i] = save - STEP;
             double Lm = run_pipeline(p, nullptr, x, w, nullptr, nullptr, nullptr);
             w[i] = save;
-            relacc_add(&acc, (Lp - Lm) / (2.0 * STEP), dw[i]);
+            bridge_relacc_add(&acc, (Lp - Lm) / (2.0 * STEP), dw[i]);
         }
     }
 
-    double err = relacc_value(&acc);
+    double err = bridge_relacc_value(&acc);
     std::printf("  %-22s L2 rel err = %.3e  (tol %.0e)  %s   [loss %.10f]\n",
                 name, err, (double)TOLERANCE, err < TOLERANCE ? "PASS" : "FAIL", L);
     return err;
