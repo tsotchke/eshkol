@@ -8,6 +8,7 @@
 
 #include "arena_memory.h"
 #include "../../inc/eshkol/core/rational.h"
+#include "../../inc/eshkol/core/symbol_syntax.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -616,8 +617,94 @@ static ESHKOL_READER_NOINLINE eshkol_tagged_value_t read_atom_number_or_symbol(
 // Read an atom (number, symbol, string, #t, #f, #\char, #(vector).
 // Thin dispatcher — see the stack-frame-size comment above
 // read_atom_string_literal for why the heavy branches are split out.
+// Leaf: R7RS 7.1.1 vertical-line identifier, called with the opening bar
+// already consumed.
+//
+//   <symbol element> -> <any character other than <vertical line> or \>
+//                     | <inline hex escape> | <mnemonic escape> | \|
+//
+// `\\` is accepted too (a superset of the grammar — R7RS gives a symbol no
+// two-character backslash spelling, so `write` emits `\x5c;`, but refusing to
+// READ `\\` would reject input every other Scheme accepts). Own function, and
+// NOINLINE, for the same reason the string-literal branch is: its 4 KB buffer
+// must not be charged to every frame of a deep `(((...)))` recursion.
+//
+// A malformed or unterminated escape yields the EOF sentinel — the same
+// "malformed datum" signal the rest of this reader uses — plus one diagnostic,
+// rather than a partial symbol that would surface later as a mystery.
+static ESHKOL_READER_NOINLINE eshkol_tagged_value_t
+read_atom_vertical_line_symbol(arena_t* arena, FILE* fp) {
+    char buf[4096];
+    size_t len = 0;
+    int ch;
+
+    auto push = [&buf, &len](char c) {
+        if (len < sizeof(buf) - 1) buf[len++] = c;
+        /* else: silently drop past the cap, matching the string-literal
+         * reader's documented length ceiling. */
+    };
+
+    while ((ch = fgetc(fp)) != EOF) {
+        if (ch == '|') {
+            return make_symbol_tagged(arena, buf, len);
+        }
+        if (ch != '\\') {
+            push((char)ch);
+            continue;
+        }
+
+        int esc = fgetc(fp);
+        if (esc == EOF) break;  // unterminated — reported below
+
+        if (esc == 'x' || esc == 'X') {
+            unsigned long cp = 0;
+            int digits = 0;
+            int term = EOF;
+            while (digits < 8) {
+                term = fgetc(fp);
+                int d = (term == EOF) ? -1
+                                      : eshkol_symbol_hex_value((unsigned char)term);
+                if (d < 0) break;
+                cp = (cp << 4) | (unsigned long)d;
+                digits++;
+            }
+            if (digits == 0 || term != ';') {
+                fprintf(stderr, "read: malformed hex escape in |...| symbol — "
+                                "expected \\x<hex digits>;\n");
+                return make_eof_tagged();
+            }
+            char utf8[4];
+            int n = eshkol_symbol_utf8_encode(cp, utf8);
+            if (n == 0) {
+                fprintf(stderr, "read: hex escape \\x%lx; in |...| symbol is "
+                                "outside Unicode range (max 10FFFF)\n", cp);
+                return make_eof_tagged();
+            }
+            for (int i = 0; i < n; i++) push(utf8[i]);
+            continue;
+        }
+
+        int decoded = eshkol_symbol_escape_value((unsigned char)esc);
+        if (decoded < 0) {
+            fprintf(stderr, "read: unknown escape \\%c in |...| symbol — R7RS "
+                            "7.1.1 allows \\a \\b \\t \\n \\r \\| \\\\ and "
+                            "\\x<hex>;\n", (char)esc);
+            return make_eof_tagged();
+        }
+        push((char)decoded);
+    }
+
+    fprintf(stderr, "read: unterminated |...| symbol — no closing vertical "
+                    "line before end of input\n");
+    return make_eof_tagged();
+}
+
 static eshkol_tagged_value_t read_atom(arena_t* arena, FILE* fp, int first_char) {
     if (first_char == '"') return read_atom_string_literal(arena, fp);
+
+    // R7RS 7.1.1 production 2 — |<symbol element>*| — one symbol whatever it
+    // contains, so `(read)` accepts everything `write` can emit.
+    if (first_char == '|') return read_atom_vertical_line_symbol(arena, fp);
 
     if (first_char == '#') {
         int ch = fgetc(fp);
