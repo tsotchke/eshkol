@@ -697,11 +697,58 @@ class Gen:
         lines.append(self.chk(pid, f"ad{u}", f"fd{u}", xc=xc))
         self.add("nest", pid, lines, 1, xc=xc)
 
+    def nest_curried(self, sh, binding, xc=None):
+        """ESH-0369: the CURRIED spelling of the second derivative —
+        `(define df (derivative f))` then `(derivative df)`, plus the same
+        thing with the differentiand left UNNAMED, `(derivative (derivative
+        f))`. These are a distinct lowering from the nested-lambda form
+        nest_scalar() covers: they differentiate the *closure* `(derivative f)`
+        returns, so they only agree when that closure is dual-transparent
+        (seeds/extracts its own perturbation level rather than unpacking its
+        argument to a raw double). Both used to be silently wrong — 0.0 for the
+        named form, a resolution error plus a 0.0-returning binary for the
+        unnamed one. Ground truth is a central difference of the (separately
+        dofd/deriv-validated) first derivative, exactly as nest_scalar does."""
+        u = self.uid()
+        body = SS_BY_NAME[sh]("y")
+        lines = []
+        if binding == "inline":
+            inner_fn = f"(lambda (y) {body})"
+        elif binding == "named":
+            lines.append(f"(define (cin{u} y) {body})")
+            inner_fn = f"cin{u}"
+        else:  # lamvar
+            lines.append(f"(define cin{u} (lambda (y) {body}))")
+            inner_fn = f"cin{u}"
+        # curried, through a NAMED binding for the derivative closure
+        lines.append(f"(define cdf{u} (derivative {inner_fn}))")
+        lines.append(f"(define ad{u} ((derivative cdf{u}) {X0}))")
+        # curried, differentiand UNNAMED (no binding to look up at all)
+        lines.append(f"(define adu{u} ((derivative (derivative {inner_fn}))"
+                     f" {X0}))")
+        # FD baseline: central diff of the first derivative
+        lines.append(f"(define (g{u} x) (derivative (lambda (y) {body}) x))")
+        lines.append(f"(define fd{u} {self.fd1_scalar(f'g{u}', X0)})")
+        pid = f"nest.curried.{sh}.s.{binding}.capnone"
+        lines.append(self.chk(pid, f"ad{u}", f"fd{u}", second=True, xc=xc))
+        lines.append(self.chk(f"{pid}[unnamed]", f"adu{u}", f"fd{u}",
+                              second=True, xc=xc))
+        # and the two curried spellings must agree with EACH OTHER exactly —
+        # a disagreement between two spellings of one operation is itself the
+        # defect class this cell guards.
+        lines.append(self.chk(f"{pid}[agree]", f"adu{u}", f"ad{u}",
+                              second=True, xc=xc))
+        self.add("nest", pid, lines, 3, xc=xc)
+
     def gen_nest(self):
         # derivative-of-derivative (pure second derivative)
         for sh in ("poly", "prodlin", "rational", "expsin", "letreuse"):
             for b in ("inline", "named", "lamvar"):
                 self.nest_scalar("derivative", sh, b, "dofd")
+        # ESH-0369: the CURRIED second derivative, named and unnamed
+        for sh in ("poly", "prodlin", "rational", "expsin"):
+            for b in ("inline", "named", "lamvar"):
+                self.nest_curried(sh, b)
         # perturbation-confusion patterns
         u = self.uid()
         lines = [

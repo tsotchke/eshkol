@@ -1,0 +1,5 @@
+; Calling an undefined function is fatal.  Previously filed as
+; found/error_exit_code_zero.esk: the VM printed "ERROR: calling non-function"
+; and still exited 0.
+(display (this-function-does-not-exist 1))
+(display "MUST-NOT-PRINT")

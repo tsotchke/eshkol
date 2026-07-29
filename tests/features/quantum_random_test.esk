@@ -1,5 +1,18 @@
 ;; Quantum Random Number Generation Test Suite
 ;; Tests: quantum-random, quantum-random-int, quantum-random-range
+;;
+;; Documented contracts (docs/reference/agent/quantum.md):
+;;   (quantum-random)              -> double in [0, 1)
+;;   (quantum-random-int bound)    -> integer in [0, bound)
+;;   (quantum-random-range min max) -> integer in [min, max], INCLUSIVE
+;;
+;; The range cases used to assert a half-open floating-point interval
+;; (>= min and < max) against that inclusive integer range, so they failed
+;; whenever the draw landed on `max` — 1 run in 6 for a 6-wide range, and one
+;; run in 2 for (quantum-random-range 0.0 1.0), which can only return 0 or 1.
+;; That was the whole of this file's intermittency; the generator itself is
+;; sound. They now assert the documented contract: an integer, inclusive of
+;; both endpoints.
 
 (display "TEST: quantum random number generation") (newline)
 
@@ -35,16 +48,16 @@
 (display ": (quantum-random-int 1) should always be 0")
 (newline)
 
-;; --- Test 6: quantum-random-range in [5.0, 10.0) ---
-(define r6 (quantum-random-range 5.0 10.0))
-(display (if (and (>= r6 5.0) (< r6 10.0)) "PASS" "FAIL"))
-(display ": (quantum-random-range 5.0 10.0) should be >= 5.0 and < 10.0")
+;; --- Test 6: quantum-random-range in [5, 10] (inclusive) ---
+(define r6 (quantum-random-range 5 10))
+(display (if (and (integer? r6) (>= r6 5) (<= r6 10)) "PASS" "FAIL"))
+(display ": (quantum-random-range 5 10) should be an integer in [5, 10]")
 (newline)
 
-;; --- Test 7: quantum-random-range in [0.0, 1.0) ---
-(define r7 (quantum-random-range 0.0 1.0))
-(display (if (and (>= r7 0.0) (< r7 1.0)) "PASS" "FAIL"))
-(display ": (quantum-random-range 0.0 1.0) should be >= 0.0 and < 1.0")
+;; --- Test 7: quantum-random-range in [0, 1] (inclusive) ---
+(define r7 (quantum-random-range 0 1))
+(display (if (and (integer? r7) (or (= r7 0) (= r7 1))) "PASS" "FAIL"))
+(display ": (quantum-random-range 0 1) should be 0 or 1")
 (newline)
 
 ;; --- Test 8: two calls to quantum-random should (almost certainly) differ ---
@@ -61,7 +74,13 @@
 (newline)
 
 ;; --- Test 10: quantum-random-range with negative bounds ---
-(define r10 (quantum-random-range -10.0 -5.0))
-(display (if (and (>= r10 -10.0) (< r10 -5.0)) "PASS" "FAIL"))
-(display ": (quantum-random-range -10.0 -5.0) should be >= -10.0 and < -5.0")
+(define r10 (quantum-random-range -10 -5))
+(display (if (and (integer? r10) (>= r10 -10) (<= r10 -5)) "PASS" "FAIL"))
+(display ": (quantum-random-range -10 -5) should be an integer in [-10, -5]")
+(newline)
+
+;; --- Test 11: quantum-random-range with min = max is that value ---
+(define r11 (quantum-random-range 7 7))
+(display (if (= r11 7) "PASS" "FAIL"))
+(display ": (quantum-random-range 7 7) should be 7")
 (newline)
