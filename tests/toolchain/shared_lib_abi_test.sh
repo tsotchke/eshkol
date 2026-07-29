@@ -87,14 +87,24 @@ case "$(uname -s)" in
     *)      LIB_EXT="so" ;;
 esac
 
+# Both consumers are REQUIRED, and so is `nm`. This test's entire claim is that
+# two independent callers -- a compiled C consumer and a runtime FFI consumer --
+# agree with each other across the boundary. One of them silently sitting out
+# would leave that claim half-checked while still printing PASS, which is the
+# failure mode the defect itself had. A missing tool is a broken environment,
+# reported as such.
 CC="${CC:-cc}"
 command -v "$CC" >/dev/null 2>&1 || fail "no C compiler ('$CC') to build the ABI harness"
+command -v nm >/dev/null 2>&1 \
+    || fail "no 'nm': cannot verify which symbols the library exports"
 
 PYTHON=""
 for candidate in "${PYTHON:-}" python3 python; do
     [ -n "$candidate" ] || continue
     if command -v "$candidate" >/dev/null 2>&1; then PYTHON="$candidate"; break; fi
 done
+[ -n "$PYTHON" ] \
+    || fail "no python3: the ctypes leg is a required second consumer, not an optional one"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eshkol-sharedlibabi.XXXXXX")" || fail "mktemp failed"
 cleanup() { rm -rf "$WORK"; }
@@ -415,6 +425,15 @@ for opt in 0 2; do
     lib_path="$WORK/lib${lib_stem}.${LIB_EXT}"
     if [ $status -ne 0 ]; then
         sed -n '1,40p' "$build_log"
+        # Name the one non-ABI cause that looks identical from here: the Eshkol
+        # runtime archive is not built position-independent, so an ELF linker
+        # refuses to put it in a -shared output. That is a build-configuration
+        # defect, not an export-ABI one, and it must not be misread as this
+        # test's subject.
+        if grep -qE "recompile with -fPIC|can not be used when making a shared object" \
+               "$build_log"; then
+            fail "--shared-lib -O$opt could not be linked: the runtime archive is not position-independent (relocation rejected in a -shared link). This is a BUILD CONFIGURATION defect, not the export ABI: the runtime objects need POSITION_INDEPENDENT_CODE"
+        fi
         fail "--shared-lib -O$opt exited $status"
     fi
     [ -f "$lib_path" ] || {
@@ -424,22 +443,19 @@ for opt in 0 2; do
 
     # The export thunk must be the symbol a host finds under the source name,
     # and the unwrapped body must still be there under its decorated name.
-    if command -v nm >/dev/null 2>&1; then
-        syms="$(nm -g "$lib_path" 2>/dev/null || true)"
+    syms="$(nm -g "$lib_path" 2>/dev/null || true)"
+    [ -n "$syms" ] || fail "-O$opt: nm read no symbols out of '$lib_path'"
+    for want in "abi-int" "abi-add" "abi-int__eshkol_internal_abi" \
+                "abi-add__eshkol_internal_abi" "__eshkol_lib_init__"; do
         case "$syms" in
-            *abi-int__eshkol_internal_abi*) ;;
-            *) fail "-O$opt: no '<name>__eshkol_internal_abi' symbol: the C ABI export thunk was never emitted" ;;
+            *"$want"*) ;;
+            *) fail "-O$opt: '$want' is not exported: the C ABI export thunk was not emitted as specified" ;;
         esac
-    fi
+    done
 
     "$WORK/abi_harness" "$lib_path" || fail "-O$opt: C harness rejected the library ABI"
-
-    if [ -n "$PYTHON" ]; then
-        "$PYTHON" "$WORK/abi_harness.py" "$lib_path" \
-            || fail "-O$opt: ctypes harness rejected the library ABI"
-    else
-        echo "  skip: no python3 for the ctypes leg"
-    fi
+    "$PYTHON" "$WORK/abi_harness.py" "$lib_path" \
+        || fail "-O$opt: ctypes harness rejected the library ABI"
 done
 
 # The relocatable object flavour must NOT be wrapped: those objects are linked
@@ -448,12 +464,17 @@ done
     > "$WORK/build_obj.log" 2>&1 \
     || { sed -n '1,40p' "$WORK/build_obj.log"; fail "--shared-lib -c failed"; }
 [ -f "$WORK/obj_flavour.o" ] || fail "--shared-lib -c produced no object"
-if command -v nm >/dev/null 2>&1; then
-    if nm -g "$WORK/obj_flavour.o" 2>/dev/null | grep -q "__eshkol_internal_abi"; then
-        fail "--shared-lib -c object carries C-ABI export thunks; Eshkol consumers of that object call with the internal convention"
-    fi
-    echo "  ok: --shared-lib -c object keeps the internal convention (no thunks)"
-fi
+obj_syms="$(nm -g "$WORK/obj_flavour.o" 2>/dev/null || true)"
+[ -n "$obj_syms" ] || fail "nm read no symbols out of the --shared-lib -c object"
+case "$obj_syms" in
+    *__eshkol_internal_abi*)
+        fail "--shared-lib -c object carries C-ABI export thunks; Eshkol consumers of that object call with the internal convention" ;;
+esac
+case "$obj_syms" in
+    *abi-int*) ;;
+    *) fail "--shared-lib -c object does not export 'abi-int' at all" ;;
+esac
+echo "  ok: --shared-lib -c object keeps the internal convention (no thunks)"
 
 echo "PASS: $TEST_NAME"
 exit 0

@@ -164,11 +164,26 @@ if [ -f "$XLA_TEST_BIN" ]; then
         FAILED_TESTS+=("C++ Unit Tests")
         ((FAIL++)) || true
     fi
+elif [ "$XLA_ENABLED" = "yes" ]; then
+    # The target IS wired (CMakeLists.txt: xla_codegen_test, guarded by
+    # ESHKOL_XLA_ENABLED). In an XLA-enabled build the binary must therefore
+    # exist, and its absence means the target failed to build or was never
+    # asked for -- a real failure. Reporting it as a skip is how a broken
+    # XLA lane passes for a release.
+    echo -e "${RED}❌ C++ Unit Tests: FAIL (XLA is enabled but $XLA_TEST_BIN was not built)${NC}"
+    echo "  Build it: cmake --build $BUILD_DIR --target xla_codegen_test"
+    FAILED_TESTS+=("C++ Unit Tests")
+    ((FAIL++)) || true
 else
-    echo -e "${YELLOW}⚠ C++ Unit Tests: SKIPPED (test binary not built)${NC}"
-    echo "  To enable: add xla_codegen_test target to CMakeLists.txt"
-    SKIPPED_TESTS+=("C++ Unit Tests")
-    ((SKIP++)) || true
+    # NOT a skipped test: with XLA off, CMake excludes lib/backend/xla/* from
+    # the library entirely (CMakeLists.txt: list(FILTER LIB_SRC EXCLUDE ...)),
+    # so there is no eshkol_xla_matmul to link against and no XLA codegen to
+    # exercise. These tests do not apply to this build rather than having been
+    # passed over, and the XLA language tests below still cover the
+    # BLAS/SIMD fallback path this build DOES have.
+    echo -e "${CYAN}C++ Unit Tests: not applicable to a non-XLA build${NC}"
+    echo "  (XLA sources are excluded from the library when ESHKOL_XLA_ENABLED=OFF;"
+    echo "   run against an XLA build: cmake -DESHKOL_USE_XLA=ON -B build-xla)"
 fi
 
 echo ""

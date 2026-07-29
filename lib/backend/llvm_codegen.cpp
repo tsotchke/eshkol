@@ -5364,9 +5364,8 @@ private:
             case llvm::Triple::aarch64:
             case llvm::Triple::aarch64_be:
             case llvm::Triple::x86_64:
-            case llvm::Triple::riscv64:
-            case llvm::Triple::ppc64le:
-            case llvm::Triple::ppc64:
+            case llvm::Triple::riscv64:   // LP64D: two integer eightbytes -> a0:a1
+            case llvm::Triple::ppc64le:   // ELFv2 -> r3:r4 (NOT ELFv1, which is memory)
             case llvm::Triple::loongarch64:
                 return SharedLibraryExportAbi::RegisterPair;
             default:
@@ -5425,20 +5424,36 @@ private:
                 continue;
             }
             FunctionType* impl_type = impl->getFunctionType();
-            if (impl_type->isVarArg() ||
-                impl_type->getReturnType() != tagged_value_type) {
-                // A specialized/monomorphized signature already speaks a
-                // scalar ABI that C can call directly; nothing to coerce.
-                continue;
-            }
-            bool all_tagged_params = true;
+            bool all_tagged = !impl_type->isVarArg() &&
+                              impl_type->getReturnType() == tagged_value_type;
             for (Type* param : impl_type->params()) {
                 if (param != tagged_value_type) {
-                    all_tagged_params = false;
+                    all_tagged = false;
                     break;
                 }
             }
-            if (!all_tagged_params) {
+            if (!all_tagged) {
+                // A signature of plain scalars already speaks an ABI C can
+                // call directly — LLVM's convention for an i64 or a double IS
+                // the platform's — so there is nothing to coerce and nothing to
+                // say.  But ANY aggregate left in a signature this pass did not
+                // wrap (a partially-tagged specialization, a dual number, a
+                // varargs export) has the same flatten-per-field problem the
+                // pass exists to fix, and the pass does not know its C spelling,
+                // so say so rather than export a convention we cannot vouch for.
+                bool has_unknown_aggregate =
+                    impl_type->getReturnType()->isAggregateType();
+                for (Type* param : impl_type->params()) {
+                    has_unknown_aggregate |= param->isAggregateType();
+                }
+                if (has_unknown_aggregate || impl_type->isVarArg()) {
+                    eshkol_warn(
+                        "--shared-lib: exported function '%s' has a signature "
+                        "this compiler cannot map to the platform C ABI; it is "
+                        "exported with Eshkol's internal convention and is not "
+                        "safe to call from C",
+                        name.c_str());
+                }
                 continue;
             }
 
@@ -5548,6 +5563,14 @@ private:
             // The body keeps whatever linkage finalizeLibrarySymbols chose for
             // it (linkonce_odr / weak, so a user definition can still override
             // a stdlib one); the thunk owns the strong exported name.
+            //
+            // Pin the body's symbol. The thunk is its only caller, so once the
+            // inliner folds the body in, a discardable linkonce_odr definition
+            // with no remaining references is exactly what GlobalDCE deletes --
+            // and `<name>__eshkol_internal_abi` is a documented entry point
+            // (tooling, debuggers, and the ABI test's negative control all name
+            // it). `llvm.used` keeps the symbol without blocking the inlining.
+            markGlobalValueUsed(impl);
             wrapped++;
         }
 
