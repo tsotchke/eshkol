@@ -1,0 +1,463 @@
+;;; poincare_maps.esk — golden gradient vectors for the Poincare exponential
+;;; and logarithmic maps, at the origin and at a base point.
+;;;
+;;; This is the exporter the qLLM A3 manifold-residual backward needs, and the
+;;; one that justifies the whole instrument: artanh's derivative is
+;;; 1/(1 - t^2), so as a point approaches the ball boundary the second and
+;;; third derivatives blow up like (1-t^2)^-2 and (1-t^2)^-3. Central
+;;; differences carry a truncation term proportional to h^2 * f''' and a
+;;; round-off term proportional to eps/h, and near the boundary there is no h
+;;; that makes both small. Worse, once |x|*sqrt(c) sits within one FD step of
+;;; the domain bound the stencil straddles qLLM's artanh clamp and finite
+;;; differences report a confidently wrong number. Exact reverse-mode AD has
+;;; no step size and no such regime.
+;;;
+;;; ORIGIN CASE — transcribed from qLLM src/model/grr.c:
+;;;   fast_exp_map_origin: scale = tanh(sqrt(c)|v|) / (sqrt(c)|v|); out = v*scale
+;;;                        with |v| < 1e-10 and c < 1e-10 short-circuits to v
+;;;   fast_log_map_origin: arg = sqrt(c)|y|, clamped to 1 - 1e-7
+;;;                        artanh = 0.5*log((1+arg)/(1-arg))
+;;;                        scale  = artanh / (sqrt(c)|y|)     [UNCLAMPED denom]
+;;;                        out    = y * scale
+;;;
+;;; BASE-POINT CASE — the standard Mobius/Ganea formulas, with qLLM's clamped
+;;; artanh so the numerics match the C convention:
+;;;   x (+)_c y = ((1 + 2c<x,y> + c|y|^2) x + (1 - c|x|^2) y)
+;;;               / (1 + 2c<x,y> + c^2 |x|^2 |y|^2)
+;;;   lambda_x  = 2 / (1 - c|x|^2)
+;;;   exp_x(v)  = x (+)_c [ tanh(sqrt(c) lambda_x |v| / 2) * v / (sqrt(c)|v|) ]
+;;;   log_x(y)  = (2 / (sqrt(c) lambda_x)) * artanh(sqrt(c)|u|) * u/|u|,
+;;;               u = (-x) (+)_c y
+
+(load "qllm_oracle_lib.esk")
+
+;;; ----------------------------------------------------------------------
+;;; The primitives
+;;; ----------------------------------------------------------------------
+
+(define TINY 1e-10)
+
+(define (poincare-exp0 v c)
+  (let* ((sc (sqrt c))
+         (n (vnorm v))
+         (t (* sc n)))
+    (if (< n TINY) v (vscale v (/ (tanh t) t)))))
+
+(define (poincare-log0 y c)
+  (let* ((sc (sqrt c))
+         (n (vnorm y))
+         (t (* sc n)))
+    (if (< n TINY) y (vscale y (/ (qllm-artanh t) t)))))
+
+(define (mobius-add x y c)
+  (let* ((xy (vdot x y))
+         (x2 (vnorm2 x))
+         (y2 (vnorm2 y))
+         (nx (+ (+ 1.0 (* (* 2.0 c) xy)) (* c y2)))
+         (ny (- 1.0 (* c x2)))
+         (den (+ (+ 1.0 (* (* 2.0 c) xy)) (* (* c c) (* x2 y2)))))
+    (vscale (vadd (vscale x nx) (vscale y ny)) (/ 1.0 den))))
+
+(define (conformal-lambda x c) (/ 2.0 (- 1.0 (* c (vnorm2 x)))))
+
+(define (poincare-expx x v c)
+  (let* ((sc (sqrt c))
+         (nv (vnorm v)))
+    (if (< nv TINY)
+        x
+        (let* ((lam (conformal-lambda x c))
+               (t (/ (* (* sc lam) nv) 2.0))
+               (second (vscale v (/ (tanh t) (* sc nv)))))
+          (mobius-add x second c)))))
+
+(define (poincare-logx x y c)
+  (let* ((sc (sqrt c))
+         (u (mobius-add (vscale x -1.0) y c))
+         (nu (vnorm u)))
+    (if (< nu TINY)
+        (vzeros (vector-length u))
+        (let ((lam (conformal-lambda x c)))
+          (vscale u (/ (* (/ 2.0 (* sc lam)) (qllm-artanh (* sc nu))) nu))))))
+
+;;; ----------------------------------------------------------------------
+;;; Globals
+;;; ----------------------------------------------------------------------
+
+(define *M-C* 1.0)
+(define *M-X* (vector 0.0 0.0))
+(define *M-V* (vector 0.0 0.0))
+(define *M-Y* (vector 0.0 0.0))
+
+(define (exp0-proj v) (vector-ref (poincare-exp0 v *M-C*) *ORACLE-ROW*))
+(define (log0-proj y) (vector-ref (poincare-log0 y *M-C*) *ORACLE-ROW*))
+(define (expx-proj-v v) (vector-ref (poincare-expx *M-X* v *M-C*) *ORACLE-ROW*))
+(define (expx-proj-x x) (vector-ref (poincare-expx x *M-V* *M-C*) *ORACLE-ROW*))
+(define (logx-proj-y y) (vector-ref (poincare-logx *M-X* y *M-C*) *ORACLE-ROW*))
+(define (logx-proj-x x) (vector-ref (poincare-logx x *M-Y* *M-C*) *ORACLE-ROW*))
+
+;;; ----------------------------------------------------------------------
+;;; Deterministic seed directions
+;;; ----------------------------------------------------------------------
+
+(define DIR2 (vector 0.6 -0.8))
+(define DIR4 (vector 0.5 0.5 -0.5 0.5))
+(define DIR8 (vector 0.25 -0.25 0.5 0.25 -0.5 0.25 0.5 -0.25))
+(define BASE2 (vector 0.8 0.6))
+(define BASE4 (vector -0.5 0.5 0.5 0.5))
+(define BASE8 (vector 0.5 0.25 -0.25 0.5 0.25 -0.5 0.25 -0.25))
+
+(define (dir-for d) (if (= d 2) DIR2 (if (= d 4) DIR4 DIR8)))
+(define (base-for d) (if (= d 2) BASE2 (if (= d 4) BASE4 BASE8)))
+
+;;; ======================================================================
+;;; PART 1 — log map at the origin. The FD-hostile primitive.
+;;; ======================================================================
+;;;
+;;; radius u = sqrt(c) * |y|. 1 - 1e-7 is exactly qLLM's artanh clamp, so
+;;; u = 0.99999999 sits ABOVE it: the implementation's output is constant
+;;; there and its exact gradient is identically zero, while a finite
+;;; difference whose stencil reaches back below the clamp reports a large
+;;; nonzero slope. That inverted failure is the most dangerous one — it
+;;; invents a gradient that the shipped operator does not have.
+
+(define LOG0-CASES
+  (vector (vector 2 1.0 0.5        "d2.c1.u0p5")
+          (vector 2 1.0 0.9        "d2.c1.u0p9")
+          (vector 2 1.0 0.99       "d2.c1.u0p99")
+          (vector 2 1.0 0.999      "d2.c1.u0p999")
+          (vector 2 1.0 0.9999     "d2.c1.u0p9999")
+          (vector 2 1.0 0.999999   "d2.c1.u0p999999_near_clamp")
+          (vector 2 1.0 0.99999999 "d2.c1.u0p99999999_past_clamp")
+          (vector 4 1.0 0.9        "d4.c1.u0p9")
+          (vector 4 1.0 0.999      "d4.c1.u0p999")
+          (vector 4 0.5 0.999      "d4.c0p5.u0p999")
+          (vector 8 1.0 0.9        "d8.c1.u0p9")
+          (vector 8 1.0 0.999      "d8.c1.u0p999")
+          (vector 8 2.0 0.99       "d8.c2.u0p99")))
+
+(json-open "poincare_log_map_origin.json")
+(json-header "poincare_log_map_origin"
+             "tests/qllm_oracle/poincare_maps.esk"
+             "src/model/grr.c::fast_log_map_origin"
+             "t = sqrt(c)|y| clamped to 1-1e-7 inside artanh; out = y * artanh(t)/(sqrt(c)|y|)")
+
+(define NLOG0 (vector-length LOG0-CASES))
+
+(let loop ((ci 0))
+  (if (< ci NLOG0)
+      (let* ((spec (vector-ref LOG0-CASES ci))
+             (d (vector-ref spec 0))
+             (c (vector-ref spec 1))
+             (u (vector-ref spec 2))
+             (y (vwith-norm (dir-for d) (/ u (sqrt c))))
+             (label (string-append "poincare_log_map_origin." (vector-ref spec 3))))
+        (set! *M-C* c)
+        (let* ((out (poincare-log0 y c))
+               (t (* (sqrt c) (vnorm y)))
+               (past-clamp (>= t ARTANH-CLAMP))
+               (jy (jac-rows-ad log0-proj y d))
+               (fdbest (fd-best-rel-diff log0-proj y d jy))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkv-num "curvature" c) (jo ",") (jnl)
+          (jo "      ") (jkv-num "radius_sqrt_c" u) (jo ",") (jnl)
+          (jo "      ") (jkv-num "artanh_clamp" ARTANH-CLAMP) (jo ",") (jnl)
+          (jo "      ") (jkv-bool "artanh_clamped" past-clamp) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{") (jkv-vec "y" y) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ") (jkv-num "sqrt_c_norm_y" t) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{")
+          (jkv-mat "d_out_d_y" jy) (jo "},") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+          (chk label #t
+               (string-append "t=" (number->string t)
+                              (if past-clamp " CLAMPED" "")
+                              " fd_best_rel=" (number->string fd-rel)
+                              " at h=" (number->string fd-h)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+;;; ======================================================================
+;;; PART 2 — exp map at the origin
+;;; ======================================================================
+;;;
+;;; tanh saturates: at sqrt(c)|v| = 20 the derivative sech^2 is ~1e-17, below
+;;; fp32's smallest normal relative step, so the fp32 forward is a constant
+;;; and any fp32 finite difference is exactly zero. The f64 exact gradient
+;;; here is the only honest reference an fp32 kernel can be tested against.
+
+(define EXP0-CASES
+  (vector (vector 2 1.0 0.1  #f "d2.c1.tv0p1")
+          (vector 2 1.0 1.0  #f "d2.c1.tv1")
+          (vector 2 1.0 5.0  #f "d2.c1.tv5")
+          (vector 2 1.0 20.0 #t "d2.c1.tv20_f64_boundary_saturated")
+          (vector 4 1.0 0.5  #f "d4.c1.tv0p5")
+          (vector 4 0.5 3.0  #f "d4.c0p5.tv3")
+          (vector 8 1.0 0.5  #f "d8.c1.tv0p5")
+          (vector 8 2.0 8.0  #f "d8.c2.tv8")))
+
+(json-open "poincare_exp_map_origin.json")
+(json-header "poincare_exp_map_origin"
+             "tests/qllm_oracle/poincare_maps.esk"
+             "src/model/grr.c::fast_exp_map_origin"
+             "t = sqrt(c)|v|; out = v * tanh(t)/t")
+
+(define NEXP0 (vector-length EXP0-CASES))
+
+(let loop ((ci 0))
+  (if (< ci NEXP0)
+      (let* ((spec (vector-ref EXP0-CASES ci))
+             (d (vector-ref spec 0))
+             (c (vector-ref spec 1))
+             (tv (vector-ref spec 2))
+             (expect-saturated (vector-ref spec 3))
+             (v (vwith-norm (dir-for d) (/ tv (sqrt c))))
+             (label (string-append "poincare_exp_map_origin." (vector-ref spec 4))))
+        (set! *M-C* c)
+        (let* ((out (poincare-exp0 v c))
+               (t (* (sqrt c) (vnorm v)))
+               (jv (jac-rows-ad exp0-proj v d))
+               (fdbest (fd-best-rel-diff exp0-proj v d jv))
+               (fd-rel (vector-ref fdbest 0))
+               (fd-h (vector-ref fdbest 1))
+               (fd-usable (< fd-rel 1e-6)))
+          (if (> ci 0) (begin (jo ",") (jnl)))
+          (jo "    {") (jnl)
+          (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+          (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+          (jo "      ") (jkv-num "curvature" c) (jo ",") (jnl)
+          (jo "      ") (jkv-num "sqrt_c_norm_v" t) (jo ",") (jnl)
+          (jo "      ") (jkey "inputs") (jo "{") (jkv-vec "v" v) (jo "},") (jnl)
+          (jo "      ") (jkey "primal_outputs") (jo "{")
+          (jkv-vec "out" out) (jo ", ")
+          (jkv-num "out_norm_sqrt_c" (* (sqrt c) (vnorm out))) (jo "},") (jnl)
+          (jo "      ") (jkey "gradients") (jo "{")
+          (jkv-mat "d_out_d_v" jv) (jo "},") (jnl)
+          (jo "      ") (jkey "fd_cross_check") (jo "{")
+          (jkv-num "best_step" fd-h) (jo ", ")
+          (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+          (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+          (jo "    }")
+          ;; exp_0 must land inside the ball, and we record WHERE f64 rounds
+          ;; tanh(t) up to exactly 1: past t ~ 19 the image lands ON the
+          ;; boundary in binary64, so the point has numerically left the
+          ;; manifold and every downstream log map sees the clamp. That is a
+          ;; property an fp32 kernel must be tested against, not hidden.
+          (chk label
+               (and (<= (* (sqrt c) (vnorm out)) 1.0)
+                    (eq? (>= (* (sqrt c) (vnorm out)) 1.0) expect-saturated))
+               (string-append "t=" (number->string t)
+                              " sqrt(c)|out|=" (number->string (* (sqrt c) (vnorm out)))
+                              (if (>= (* (sqrt c) (vnorm out)) 1.0) " F64-BOUNDARY-SATURATED" "")
+                              " fd_best_rel=" (number->string fd-rel)
+                              (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+          (loop (+ ci 1))))))
+
+(json-footer)
+(json-close)
+
+;;; ======================================================================
+;;; PART 3 — exp and log at a base point (Mobius)
+;;; ======================================================================
+
+;; (dim c |x|*sqrt(c) |v| roundtrip-tol expect-saturated label)
+;;
+;; The conformal factor lambda_x = 2/(1-c|x|^2) multiplies the tangent before
+;; tanh sees it, so a tangent that looks small in coordinates is NOT small
+;; geodesically near the boundary: at |x|*sqrt(c) = 0.999, lambda_x = 1000.5
+;; and |v| = 0.05 gives tanh argument 25, which is 1.0 in binary64. exp_x is
+;; then not invertible and log_x(exp_x(v)) != v. The saturating cases assert
+;; that loss instead of hiding it, and each has a geodesic-scaled companion
+;; (|v| ~ 2/lambda_x) at the same base radius that round-trips exactly.
+(define BASEPT-CASES
+  (vector (vector 2 1.0 0.5   0.3    1e-12 #f "d2.c1.base0p5")
+          (vector 2 1.0 0.9   0.3    1e-12 #f "d2.c1.base0p9")
+          (vector 2 1.0 0.99  0.1    1e-9  #f "d2.c1.base0p99")
+          (vector 2 1.0 0.99  0.01   1e-12 #f "d2.c1.base0p99.geodesic_scaled")
+          (vector 2 1.0 0.999 0.001  1e-12 #f "d2.c1.base0p999.geodesic_scaled")
+          (vector 2 1.0 0.999 0.05   1e-12 #t "d2.c1.base0p999.tanh_saturated")
+          (vector 4 1.0 0.9   0.2    1e-12 #f "d4.c1.base0p9")
+          (vector 4 0.5 0.99  0.1    1e-9  #f "d4.c0p5.base0p99")
+          (vector 8 1.0 0.9   0.2    1e-12 #f "d8.c1.base0p9")
+          (vector 8 1.0 0.999 0.001  1e-12 #f "d8.c1.base0p999.geodesic_scaled")
+          (vector 8 1.0 0.999 0.05   1e-12 #t "d8.c1.base0p999.tanh_saturated")))
+
+(json-open "poincare_exp_log_basepoint.json")
+(json-header "poincare_exp_log_basepoint"
+             "tests/qllm_oracle/poincare_maps.esk"
+             "standard Mobius/Ganea exp_x and log_x, qllm-clamped artanh"
+             "lambda_x = 2/(1-c|x|^2); exp_x(v) = x (+)_c tanh(sqrt(c) lambda_x |v|/2) v/(sqrt(c)|v|); log_x(y) = (2/(sqrt(c) lambda_x)) artanh(sqrt(c)|u|) u/|u|, u = (-x) (+)_c y")
+
+(define NBASE (vector-length BASEPT-CASES))
+
+(let loop ((ci 0))
+  (if (< ci NBASE)
+      (let* ((spec (vector-ref BASEPT-CASES ci))
+             (d (vector-ref spec 0))
+             (c (vector-ref spec 1))
+             (ux (vector-ref spec 2))
+             (nv (vector-ref spec 3))
+             (rt-tol (vector-ref spec 4))
+             (expect-saturated (vector-ref spec 5))
+             (x (vwith-norm (base-for d) (/ ux (sqrt c))))
+             (v (vwith-norm (dir-for d) nv))
+             (label (string-append "poincare_exp_log_basepoint." (vector-ref spec 6))))
+        (set! *M-C* c)
+        (set! *M-X* x)
+        (set! *M-V* v)
+        (let* ((yp (poincare-expx x v c)))
+          (set! *M-Y* yp)
+          (let* ((lam (conformal-lambda x c))
+                 (tanh-arg (/ (* (* (sqrt c) lam) (vnorm v)) 2.0))
+                 (back (poincare-logx x yp c))
+                 (roundtrip (vec-rel-diff v back))
+                 (jexp-v (jac-rows-ad expx-proj-v v d))
+                 (jexp-x (jac-rows-ad expx-proj-x x d))
+                 (jlog-y (jac-rows-ad logx-proj-y yp d))
+                 (jlog-x (jac-rows-ad logx-proj-x x d))
+                 (fdbest (fd-best-rel-diff logx-proj-y yp d jlog-y))
+                 (fd-rel (vector-ref fdbest 0))
+                 (fd-h (vector-ref fdbest 1))
+                 (fd-usable (< fd-rel 1e-6)))
+            (if (> ci 0) (begin (jo ",") (jnl)))
+            (jo "    {") (jnl)
+            (jo "      ") (jkv-str "id" label) (jo ",") (jnl)
+            (jo "      ") (jkv-int "dim" d) (jo ",") (jnl)
+            (jo "      ") (jkv-num "curvature" c) (jo ",") (jnl)
+            (jo "      ") (jkv-num "base_radius_sqrt_c" ux) (jo ",") (jnl)
+            (jo "      ") (jkv-num "conformal_lambda" lam) (jo ",") (jnl)
+            (jo "      ") (jkv-num "tanh_arg" tanh-arg) (jo ",") (jnl)
+            (jo "      ") (jkv-bool "tanh_saturated_f64" (>= (tanh tanh-arg) 1.0)) (jo ",") (jnl)
+            (jo "      ") (jkey "inputs") (jo "{")
+            (jkv-vec "x" x) (jo ", ") (jkv-vec "v" v) (jo ", ")
+            (jkv-vec "y" yp) (jo "},") (jnl)
+            (jo "      ") (jkey "primal_outputs") (jo "{")
+            (jkv-vec "exp_x_v" yp) (jo ", ")
+            (jkv-vec "log_x_y" back) (jo ", ")
+            (jkv-num "roundtrip_rel_diff" roundtrip) (jo "},") (jnl)
+            (jo "      ") (jkey "gradients") (jo "{") (jnl)
+            (jo "        ") (jkv-mat "d_expx_d_v" jexp-v) (jo ",") (jnl)
+            (jo "        ") (jkv-mat "d_expx_d_x" jexp-x) (jo ",") (jnl)
+            (jo "        ") (jkv-mat "d_logx_d_y" jlog-y) (jo ",") (jnl)
+            (jo "        ") (jkv-mat "d_logx_d_x" jlog-x) (jnl)
+            (jo "      },") (jnl)
+            (jo "      ") (jkey "fd_cross_check") (jo "{")
+            (jkey "target") (jstr "d_logx_d_y") (jo ", ")
+            (jkv-num "best_step" fd-h) (jo ", ")
+            (jkv-num "best_rel_diff" fd-rel) (jo ", ")
+            (jkv-bool "fd_usable" fd-usable) (jo "}") (jnl)
+            (jo "    }")
+            ;; log_x(exp_x(v)) = v is the defining identity of the pair. Where
+            ;; tanh has saturated in f64 the identity MUST break, and we assert
+            ;; that it does, so the loss is a recorded property and not a
+            ;; tolerance that quietly grew.
+            (chk label
+                 (if expect-saturated
+                     (and (>= (tanh tanh-arg) 1.0) (> roundtrip 1e-3))
+                     (and (< (tanh tanh-arg) 1.0) (< roundtrip rt-tol)))
+                 (string-append "roundtrip_rel=" (number->string roundtrip)
+                                " lambda=" (number->string lam)
+                                " tanh_arg=" (number->string tanh-arg)
+                                (if (>= (tanh tanh-arg) 1.0) " TANH-SATURATED" "")
+                                " fd_best_rel=" (number->string fd-rel)
+                                (if fd-usable " [FD-OK]" " [FD-UNUSABLE]")))
+            (loop (+ ci 1)))))))
+
+(json-footer)
+(json-close)
+
+;;; ======================================================================
+;;; PART 4 — the headline comparison: exact AD vs finite differences as the
+;;; boundary is approached. This table is the reason the instrument exists.
+;;; ======================================================================
+
+(define BOUNDARY-RADII
+  (vector 0.5 0.9 0.99 0.999 0.9999 0.999999 0.99999999))
+
+;;; "Best over the h grid" flatters finite differences: it is the error you
+;;; would get if you already knew the answer and could pick h accordingly. The
+;;; honest number is how many step sizes a caller could have chosen and been
+;;; right. Both are reported, and the count is what the verdict uses.
+(define (report-boundary-row u)
+  (let* ((c 1.0)
+         (y (vector u 0.0)))
+    (set! *M-C* c)
+    (set! *ORACLE-ROW* 0)
+    (let* ((exact (vector-ref (gradient log0-proj y) 0))
+           (ns (vector-length FD-STEPS)))
+      (display "  u=") (display u)
+      (display "  exact d(log0)_0/dy_0 = ") (display exact)
+      (if (>= u ARTANH-CLAMP) (display "   [ABOVE qLLM ARTANH CLAMP]"))
+      (newline)
+      (let loop ((s 0) (best 1e308) (besth 0.0) (worst 0.0) (nok 0))
+        (if (>= s ns)
+            (begin
+              (display "      best rel=") (display best)
+              (display " at h=") (display besth)
+              (display " | worst rel=") (display worst)
+              (display " | usable steps: ") (display nok)
+              (display "/") (display ns)
+              (display (if (= nok ns) "   FD-OK" "   FD-UNRELIABLE"))
+              (newline)
+              (vector best besth worst nok ns))
+            (let* ((h (vector-ref FD-STEPS s))
+                   (fd (vector-ref (fd-grad log0-proj y h) 0))
+                   (rel (/ (fabs (- fd exact)) (+ 1.0 (fabs exact))))
+                   (ok (< rel 1e-6)))
+              (display "      h=") (display h)
+              (display "   fd=") (display fd)
+              (display "   rel=") (display rel)
+              (if (not ok) (display "   <-- WRONG"))
+              (newline)
+              (loop (+ s 1)
+                    (if (< rel best) rel best)
+                    (if (< rel best) h besth)
+                    (if (> rel worst) rel worst)
+                    (if ok (+ nok 1) nok))))))))
+
+(display "FD-vs-EXACT  poincare_log_map_origin  c=1  d=2  y = (u, 0)")
+(newline)
+(display "  exact = reverse-mode AD (no step size); fd = central difference")
+(newline)
+
+(let loop ((i 0) (nbad 0) (nlucky 0))
+  (if (>= i (vector-length BOUNDARY-RADII))
+      (begin
+        ;; The instrument's whole claim: as the boundary is approached there
+        ;; are radii at which SOME finite-difference step sizes are confidently
+        ;; wrong, and radii at which EVERY step size is wrong. Exact
+        ;; reverse-mode AD has no step size and no such regime, so it is the
+        ;; only admissible reference for the fp32 C/Metal kernels.
+        (chk "poincare_log_map_origin.fd_has_no_reliable_step_near_boundary"
+             (> nlucky 0)
+             (string-append (number->string nlucky)
+                            " of " (number->string (vector-length BOUNDARY-RADII))
+                            " radii have at least one WRONG step size"))
+        (chk "poincare_log_map_origin.fd_totally_unusable_at_some_radius"
+             (> nbad 0)
+             (string-append (number->string nbad)
+                            " of " (number->string (vector-length BOUNDARY-RADII))
+                            " radii have NO usable step size at all")))
+      (let* ((u (vector-ref BOUNDARY-RADII i))
+             (r (report-boundary-row u))
+             (best (vector-ref r 0))
+             (nok (vector-ref r 3))
+             (ns (vector-ref r 4)))
+        (loop (+ i 1)
+              (if (< best 1e-6) nbad (+ nbad 1))
+              (if (= nok ns) nlucky (+ nlucky 1))))))
+
+(report-summary)
+(if (> *FAIL-COUNT* 0) (exit 1))

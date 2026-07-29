@@ -1,0 +1,301 @@
+;;; qllm_oracle_lib.esk — shared helpers for the qLLM golden-vector oracle.
+;;;
+;;; Consumed by the per-primitive exporters in tests/qllm_oracle/ via
+;;; (load "qllm_oracle_lib.esk"). Everything here is plain f64 Scheme so the
+;;; primitives themselves stay readable next to their qLLM reference.
+;;;
+;;; AD CONVENTION USED THROUGHOUT
+;;; ----------------------------------------------------------------------
+;;; Eshkol's `gradient` differentiates a SCALAR function of a vector point.
+;;; A qLLM backward is a vector->vector Jacobian, so every Jacobian here is
+;;; assembled row by row: row k is (gradient proj x) where `proj` selects
+;;; output component k through the global *ORACLE-ROW*. The row index and
+;;; every non-differentiated operand travel as GLOBALS, never as variables
+;;; captured by the AD lambda from an enclosing parameter list — capturing a
+;;; local parameter inside an AD lambda over a vector point is a tracked open
+;;; compiler bug (ESH-0097, see tests/ad_oracle/README.md) and would turn
+;;; these golden vectors into silent garbage.
+
+;;; ----------------------------------------------------------------------
+;;; Vector arithmetic
+;;; ----------------------------------------------------------------------
+
+(define (vzeros n) (make-vector n 0.0))
+
+(define (vcopy v)
+  (let* ((n (vector-length v)) (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n) (begin (vector-set! o i (vector-ref v i)) (loop (+ i 1)))))
+    o))
+
+(define (vdot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (acc 0.0))
+      (if (>= i n) acc
+          (loop (+ i 1) (+ acc (* (vector-ref a i) (vector-ref b i))))))))
+
+(define (vnorm2 v) (vdot v v))
+(define (vnorm v) (sqrt (vnorm2 v)))
+
+(define (vadd a b)
+  (let* ((n (vector-length a)) (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! o i (+ (vector-ref a i) (vector-ref b i)))
+                 (loop (+ i 1)))))
+    o))
+
+(define (vsub a b)
+  (let* ((n (vector-length a)) (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! o i (- (vector-ref a i) (vector-ref b i)))
+                 (loop (+ i 1)))))
+    o))
+
+(define (vscale v s)
+  (let* ((n (vector-length v)) (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin (vector-set! o i (* (vector-ref v i) s)) (loop (+ i 1)))))
+    o))
+
+;; Rescale v so that (vnorm v) = target. Used only to place deterministic
+;; seed points at an exact requested radius; never inside an AD lambda.
+(define (vwith-norm v target)
+  (vscale v (/ target (vnorm v))))
+
+;;; ----------------------------------------------------------------------
+;;; Scalar helpers that mirror the qLLM reference exactly
+;;; ----------------------------------------------------------------------
+
+;; torch clamp_min(x, lo): identity above the bound, constant at/below it.
+;; The gradient of the constant branch is 0 — that is a real property of the
+;; qLLM implementation and the golden vectors record it as such.
+(define (clamp-min x lo) (if (< x lo) lo x))
+
+;; artanh as written in qLLM src/model/grr.c::fast_log_map_origin:
+;;   arg clamped to 1 - 1e-7, then 0.5 * log((1+arg)/(1-arg)).
+;; The clamp is part of the operator being differentiated, so above the
+;; threshold the exact gradient is identically zero.
+(define ARTANH-CLAMP (- 1.0 1e-7))
+(define (qllm-artanh arg)
+  (let ((a (if (>= arg ARTANH-CLAMP) ARTANH-CLAMP arg)))
+    (* 0.5 (log (/ (+ 1.0 a) (- 1.0 a))))))
+
+;; Unclamped artanh — the mathematical operator, for showing what the clamp
+;; costs. Diverges as arg -> 1.
+(define (pure-artanh arg) (* 0.5 (log (/ (+ 1.0 arg) (- 1.0 arg)))))
+
+(define (fabs x) (if (< x 0.0) (- 0.0 x) x))
+
+;; NaN fails (= x x); infinities fail the magnitude test. Needed because a
+;; golden vector that quietly carries NaN is worse than no golden vector, and
+;; because a NaN silently loses every subsequent max-comparison.
+(define (finite? x) (and (= x x) (< (fabs x) 1e308)))
+
+(define (vec-all-finite? v)
+  (let ((n (vector-length v)))
+    (let loop ((i 0))
+      (if (>= i n) #t
+          (if (finite? (vector-ref v i)) (loop (+ i 1)) #f)))))
+
+(define (mat-all-finite? m)
+  (let ((n (vector-length m)))
+    (let loop ((i 0))
+      (if (>= i n) #t
+          (if (vec-all-finite? (vector-ref m i)) (loop (+ i 1)) #f)))))
+
+;;; ----------------------------------------------------------------------
+;;; Jacobians: exact (reverse-mode AD) and central finite differences
+;;; ----------------------------------------------------------------------
+
+;; Row selector read by every projection function in the exporters.
+(define *ORACLE-ROW* 0)
+
+;; proj : vector -> scalar, selecting output component *ORACLE-ROW*.
+;; Returns a vector of m rows, each a d-vector.
+(define (jac-rows-ad proj x m)
+  (let ((rows (make-vector m 0)))
+    (let loop ((k 0))
+      (if (< k m)
+          (begin (set! *ORACLE-ROW* k)
+                 (vector-set! rows k (gradient proj x))
+                 (loop (+ k 1)))))
+    rows))
+
+(define (fd-grad proj x h)
+  (let* ((n (vector-length x)) (g (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (let ((xp (vcopy x)) (xm (vcopy x)))
+              (vector-set! xp i (+ (vector-ref x i) h))
+              (vector-set! xm i (- (vector-ref x i) h))
+              (vector-set! g i (/ (- (proj xp) (proj xm)) (* 2.0 h))))
+            (loop (+ i 1)))))
+    g))
+
+(define (jac-rows-fd proj x m h)
+  (let ((rows (make-vector m 0)))
+    (let loop ((k 0))
+      (if (< k m)
+          (begin (set! *ORACLE-ROW* k)
+                 (vector-set! rows k (fd-grad proj x h))
+                 (loop (+ k 1)))))
+    rows))
+
+;;; ----------------------------------------------------------------------
+;;; Comparison
+;;; ----------------------------------------------------------------------
+
+;; max_k,i |a - b| / (1 + |a|) over two row-vectors-of-vectors.
+(define (mat-rel-diff a b)
+  (let ((m (vector-length a)))
+    (let loop ((k 0) (worst 0.0))
+      (if (>= k m) worst
+          (let* ((ra (vector-ref a k)) (rb (vector-ref b k))
+                 (n (vector-length ra)))
+            (let inner ((i 0) (w worst))
+              (if (>= i n) (loop (+ k 1) w)
+                  (let* ((x (vector-ref ra i)) (y (vector-ref rb i))
+                         (raw (/ (fabs (- x y)) (+ 1.0 (fabs x))))
+                         ;; A non-finite entry on either side is maximally bad,
+                         ;; NOT a silent no-op: (> nan w) is false, so leaving
+                         ;; it raw would let a NaN pass every tolerance check.
+                         (d (if (and (finite? x) (finite? y) (finite? raw))
+                                raw 1e308)))
+                    (inner (+ i 1) (if (> d w) d w))))))))))
+
+(define (vec-rel-diff a b)
+  (mat-rel-diff (vector a) (vector b)))
+
+;; Transpose a square rows-of-vectors Jacobian. Used to assert structural
+;; symmetry of operators that must be self-adjoint (e.g. I - dt*L).
+(define (transpose-rows m)
+  (let* ((n (vector-length m)) (o (make-vector n 0)))
+    (let iloop ((i 0))
+      (if (< i n)
+          (begin
+            (let ((row (make-vector n 0.0)))
+              (let jloop ((j 0))
+                (if (< j n)
+                    (begin (vector-set! row j (vector-ref (vector-ref m j) i))
+                           (jloop (+ j 1)))))
+              (vector-set! o i row))
+            (iloop (+ i 1)))))
+    o))
+
+;; Sweep a decade grid of finite-difference steps and return the best
+;; achievable relative disagreement with the exact Jacobian. If the best
+;; entry over the whole grid is still large, no step size works — which is
+;; exactly the claim this instrument exists to make.
+(define FD-STEPS (vector 1e-2 1e-3 1e-4 1e-5 1e-6 1e-7 1e-8))
+
+(define (fd-best-rel-diff proj x m exact-rows)
+  (let ((ns (vector-length FD-STEPS)))
+    (let loop ((s 0) (best 1e308) (besth 0.0))
+      (if (>= s ns) (vector best besth)
+          (let* ((h (vector-ref FD-STEPS s))
+                 (d (mat-rel-diff exact-rows (jac-rows-fd proj x m h))))
+            (if (< d best) (loop (+ s 1) d h) (loop (+ s 1) best besth)))))))
+
+;;; ----------------------------------------------------------------------
+;;; Verdict reporting (mirrors tests/ad_oracle probe output)
+;;; ----------------------------------------------------------------------
+
+(define *PASS-COUNT* 0)
+(define *FAIL-COUNT* 0)
+
+(define (chk label ok detail)
+  (if ok
+      (begin (set! *PASS-COUNT* (+ *PASS-COUNT* 1))
+             (display "PASS: ") (display label)
+             (display "  ") (display detail) (newline))
+      (begin (set! *FAIL-COUNT* (+ *FAIL-COUNT* 1))
+             (display "FAIL: ") (display label)
+             (display "  ") (display detail) (newline))))
+
+(define (report-summary)
+  (begin
+    (display "Passed: ") (display *PASS-COUNT*) (newline)
+    (display "Failed: ") (display *FAIL-COUNT*) (newline)))
+
+;;; ----------------------------------------------------------------------
+;;; JSON emission
+;;; ----------------------------------------------------------------------
+
+(define *JP* #f)
+
+;; Output directory: QLLM_ORACLE_OUT if set, else the in-tree golden/ dir
+;; relative to the repository root (the runner cd's there).
+(define (oracle-out-dir)
+  (let ((e (get-environment-variable "QLLM_ORACLE_OUT")))
+    (if (string? e) e "tests/qllm_oracle/golden")))
+
+(define (json-open name)
+  (set! *JP* (open-output-file (string-append (oracle-out-dir) "/" name))))
+
+(define (json-close) (begin (close-output-port *JP*) (set! *JP* #f)))
+
+(define (jo s) (display s *JP*))
+(define (jnl) (jo "\n"))
+(define (jstr s) (begin (jo "\"") (jo s) (jo "\"")))
+(define (jkey s) (begin (jstr s) (jo ": ")))
+;; JSON has no NaN/Infinity literal. A non-finite gradient entry is written
+;; as null and flagged by the exporter, so a consumer sees "no value here"
+;; instead of a parse error or, worse, a plausible-looking number.
+(define (jnum x)
+  (let ((v (exact->inexact x)))
+    (if (finite? v) (jo (number->string v)) (jo "null"))))
+(define (jint x) (jo (number->string (inexact->exact x))))
+(define (jbool b) (jo (if b "true" "false")))
+
+(define (jkv-str k v) (begin (jkey k) (jstr v)))
+(define (jkv-num k v) (begin (jkey k) (jnum v)))
+(define (jkv-int k v) (begin (jkey k) (jint v)))
+(define (jkv-bool k v) (begin (jkey k) (jbool v)))
+
+(define (jvec v)
+  (begin
+    (jo "[")
+    (let loop ((i 0))
+      (if (< i (vector-length v))
+          (begin (if (> i 0) (jo ", "))
+                 (jnum (vector-ref v i))
+                 (loop (+ i 1)))))
+    (jo "]")))
+
+(define (jmat m)
+  (begin
+    (jo "[")
+    (let loop ((i 0))
+      (if (< i (vector-length m))
+          (begin (if (> i 0) (jo ", "))
+                 (jvec (vector-ref m i))
+                 (loop (+ i 1)))))
+    (jo "]")))
+
+(define (jkv-vec k v) (begin (jkey k) (jvec v)))
+(define (jkv-mat k v) (begin (jkey k) (jmat v)))
+
+;; Standard header written by every exporter. `generator` is the .esk path
+;; relative to the repository root; `reference` is the qLLM source of truth.
+(define ESHKOL-VERSION "1.3.3")
+(define SCHEMA-VERSION 1)
+
+(define (json-header primitive generator reference formula)
+  (begin
+    (jo "{") (jnl)
+    (jo "  ") (jkv-int "schema_version" SCHEMA-VERSION) (jo ",") (jnl)
+    (jo "  ") (jkv-str "primitive" primitive) (jo ",") (jnl)
+    (jo "  ") (jkv-str "eshkol_version" ESHKOL-VERSION) (jo ",") (jnl)
+    (jo "  ") (jkv-str "generator" generator) (jo ",") (jnl)
+    (jo "  ") (jkv-str "reference" reference) (jo ",") (jnl)
+    (jo "  ") (jkv-str "formula" formula) (jo ",") (jnl)
+    (jo "  ") (jkv-str "dtype" "float64") (jo ",") (jnl)
+    (jo "  ") (jkv-str "ad_mode" "reverse") (jo ",") (jnl)
+    (jo "  ") (jkey "cases") (jo "[") (jnl)))
+
+(define (json-footer)
+  (begin (jnl) (jo "  ]") (jnl) (jo "}") (jnl)))
