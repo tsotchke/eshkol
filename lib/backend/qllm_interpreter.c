@@ -50,7 +50,7 @@
  * the producer (weight_matrices.c): it lacked OP_SWAP=83 and used 83 as its
  * OP_COUNT sentinel, so a valid SWAP emitted by the producer decoded here as an
  * out-of-range opcode. Both sides now share one definition. */
-#include "eshkol/backend/sdnc_isa.h"
+#include "sdnc_isa.h"
 
 /* Weight file header (QLMW format) */
 typedef struct {
@@ -111,7 +111,7 @@ static Weights* load_weights(const char* path) {
  * Instruction Embedding
  ******************************************************************************/
 
-static void embed_instruction(const Instr* instr, int pos, float out[D]) {
+static void embed_instruction(const SdncInstr* instr, int pos, float out[D]) {
     memset(out, 0, D * sizeof(float));
     out[0] = (float)pos;
     out[1] = -(float)(pos * pos) / 2.0f;
@@ -161,7 +161,7 @@ static struct {
 } g_wind_stack[MAX_WINDS];
 static int g_wind_depth = 0;
 
-static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
+static void exec_loop_postprocess(float x[D], const SdncInstr* prog, int n_instr) {
     /* IS_NATIVE: DIV, MOD, etc. */
     if (x[S_IS_NATIVE] > 0.5f) {
         int pc = (int)roundf(x[S_PC]) - 1;
@@ -830,7 +830,7 @@ static void forward_pass_qllm(const Weights* w, const float state[D],
 }
 #endif /* USE_QLLM */
 
-static int run_program(const Weights* w, const Instr* prog, int n_instr,
+static int run_program(const Weights* w, const SdncInstr* prog, int n_instr,
                         float* outputs, int max_out) {
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
@@ -863,7 +863,7 @@ static int run_program(const Weights* w, const Instr* prog, int n_instr,
 }
 
 #ifdef USE_QLLM
-static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
+static int run_program_qllm(const Weights* w, const SdncInstr* prog, int n_instr,
                               float* outputs, int max_out, qllm_device_t dev) {
     float pe[256][D];
     memset(pe, 0, sizeof(pe));
@@ -900,7 +900,7 @@ static int run_program_qllm(const Weights* w, const Instr* prog, int n_instr,
  * ESKB Bytecode Loader
  ******************************************************************************/
 
-static Instr* load_eskb(const char* path, int* n_instr_out) {
+static SdncInstr* load_eskb(const char* path, int* n_instr_out) {
     EskbModule mod;
     if (eskb_load_file(path, &mod) < 0) return NULL;
     if (mod.code_len <= 0) {
@@ -908,7 +908,7 @@ static Instr* load_eskb(const char* path, int* n_instr_out) {
         return NULL;
     }
 
-    Instr* prog = (Instr*)calloc((size_t)mod.code_len, sizeof(Instr));
+    SdncInstr* prog = (SdncInstr*)calloc((size_t)mod.code_len, sizeof(SdncInstr));
     if (!prog) {
         eskb_module_free(&mod);
         return NULL;
@@ -922,7 +922,7 @@ static Instr* load_eskb(const char* path, int* n_instr_out) {
             eskb_module_free(&mod);
             return NULL;
         }
-        prog[i].op = (OpCode)mod.opcodes[i];
+        prog[i].op = (SdncOpCode)mod.opcodes[i];
         prog[i].operand = mod.operands[i];
 
         if (prog[i].op == OP_CONST && prog[i].operand >= 0 &&
@@ -988,22 +988,22 @@ int main(int argc, char** argv) {
 
     printf("\n  Built-in tests:\n\n");
 
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("3+5", p, 5, 8); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("(3+5)*2", p, 7, 16); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("10-7", p, 5, 3); }
-    { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("mem[0]=42", p, 5, 42); }
-    { Instr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("7*11", p, 5, 77); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("3<5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("10/2", p, 5, 5); }
     /* Recursive factorial */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,5},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
         {OP_GET_LOCAL,0},{OP_CONST,0},{OP_EQ,0},{OP_JUMP_IF_FALSE,11},
         {OP_CONST,1},{OP_RETURN,0},
@@ -1011,7 +1011,7 @@ int main(int argc, char** argv) {
         {OP_MUL,0},{OP_RETURN,0}};
       QTEST("rec fact(5)", p, 19, 120); }
     /* Cons pair */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
       QTEST("car(cons 3 4)", p, 6, 3); }
 
     #undef QTEST
@@ -1019,7 +1019,7 @@ int main(int argc, char** argv) {
     /* Load external bytecode if provided */
     if (bc_path) {
         int n_instr;
-        Instr* prog = load_eskb(bc_path, &n_instr);
+        SdncInstr* prog = load_eskb(bc_path, &n_instr);
         if (prog) {
             printf("\n  External bytecode: %s (%d instructions)\n", bc_path, n_instr);
             float outputs[64];
@@ -1043,7 +1043,7 @@ int main(int argc, char** argv) {
                dev == QLLM_DEVICE_METAL ? "METAL" : "CPU/NEON");
 
         /* fib(15) = 610 */
-        Instr fib_prog[]={
+        SdncInstr fib_prog[]={
             {OP_CONST,15},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
             {OP_GET_LOCAL,0},{OP_CONST,1},{OP_LE,0},{OP_JUMP_IF_FALSE,11},
             {OP_GET_LOCAL,0},{OP_RETURN,0},

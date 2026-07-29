@@ -54,7 +54,7 @@
  * are shared with the consumer (lib/backend/qllm_interpreter.c) across the QLMW
  * serialization boundary, so they live in one header rather than in two private
  * copies that can drift apart silently. */
-#include "eshkol/backend/sdnc_isa.h"
+#include "sdnc_isa.h"
 /* Temperature for softmax/sigmoid gates.
  *
  * For bit-identical agreement between the matrix forward pass and the
@@ -169,7 +169,7 @@ static float indicator(float x, float k) {
 /** @brief Encode one program instruction as a Layer-0 embedding vector: a
  *         position key (linear + Gaussian-decay term for the attention
  *         softmax) plus the opcode/operand as value fields. */
-static void embed_instruction(const Instr* instr, int position, float out[D]) {
+static void embed_instruction(const SdncInstr* instr, int position, float out[D]) {
     memset(out, 0, D * sizeof(float));
     out[0]  = (float)position;                        /* key[0] = position */
     out[1]  = -(float)(position * position) / 2.0f;   /* key[1] = -pos²/2 */
@@ -186,7 +186,7 @@ typedef struct {
 } CallFrame;
 static CallFrame g_frames[64];
 static int g_frame_count = 0;
-static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr);
+static void exec_loop_postprocess(float x[D], const SdncInstr* prog, int n_instr);
 
 /* Simple heap for CONS/CAR/CDR (pairs stored as consecutive float pairs).
  * WARNING: NOT thread-safe. All globals must be reset between program runs
@@ -257,7 +257,7 @@ static void state_init(State* st) {
  * transformer (execute via layerN_ffn()) and the matrix forward pass
  * (forward_with_weights()) are both verified against.
  */
-static void execute_step(const State* cur, const Instr* prog, int n_instr, State* next) {
+static void execute_step(const State* cur, const SdncInstr* prog, int n_instr, State* next) {
     memcpy(next, cur, sizeof(State));
     next->s[S_OUTPUT] = -1.0f;
     next->s[S_HAS_OUT] = 0;
@@ -780,7 +780,7 @@ static void execute_step(const State* cur, const Instr* prog, int n_instr, State
             float rv = AD_NODE(cur->s, ri, AD_F_VALUE);
             float val = 0, saved = 0;
             float op_type = 0;
-            OpCode cur_op = prog[pc].op;
+            SdncOpCode cur_op = prog[pc].op;
             if (cur_op == OP_AD_ADD) { val = lv + rv; op_type = AD_OP_ADD; }
             else if (cur_op == OP_AD_SUB) { val = lv - rv; op_type = AD_OP_SUB; }
             else if (cur_op == OP_AD_MUL) { val = lv * rv; op_type = AD_OP_MUL; }
@@ -1020,7 +1020,7 @@ static void trace_emit_num(FILE* fp, float v) {
  *        clears it (pass -1 to read it directly from state).
  */
 static void emit_trace_line(FILE* fp, int step, const float* s,
-                            const Instr* prog, int n_instr,
+                            const SdncInstr* prog, int n_instr,
                             int is_native_override) {
     if (!fp || !g_trace_program_name) return;
     int pc = (int)s[S_PC];
@@ -1068,7 +1068,7 @@ static void emit_trace_line(FILE* fp, int step, const float* s,
  *        g_trace_vm_fp is set, emits a JSONL trace line per step.
  * @return The number of outputs produced.
  */
-static int run_reference(const Instr* prog, int n_instr, float* outputs, int max_out) {
+static int run_reference(const SdncInstr* prog, int n_instr, float* outputs, int max_out) {
     /* Double-buffer instead of 8192-entry trace (saves ~1.15 MB stack) */
     State cur, nxt;
     state_init(&cur);
@@ -2207,7 +2207,7 @@ static void layer5_ffn(float x[D], float out[D]) {
  *        ops that don't fit the pure gated-FFN weight computation and are
  *        instead finished here in plain C), then clears IS_NATIVE.
  */
-static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
+static void exec_loop_postprocess(float x[D], const SdncInstr* prog, int n_instr) {
     /* IS_NATIVE: DIV, MOD, etc. */
     if (x[S_IS_NATIVE] > 0.5f) {
         int pc = (int)roundf(x[S_PC]) - 1;
@@ -2822,7 +2822,7 @@ static void exec_loop_postprocess(float x[D], const Instr* prog, int n_instr) {
  *        set, emits a JSONL trace line per step.
  * @return The number of outputs produced.
  */
-static int run_simulated(const Instr* prog, int n_instr, float* outputs, int max_out) {
+static int run_simulated(const SdncInstr* prog, int n_instr, float* outputs, int max_out) {
     /* pe is zero-initialised so out-of-range positions (PC ≥ n_instr) attend
      * to an all-zero embedding (opcode = OP_NOP), avoiding garbage attention
      * scores that would otherwise dispatch arbitrary instructions. The
@@ -5382,7 +5382,7 @@ static void forward_with_weights(const InterpreterWeights* w,
  * @return The number of outputs produced.
  */
 static int run_with_weights(const InterpreterWeights* w,
-                             const Instr* prog, int n_instr,
+                             const SdncInstr* prog, int n_instr,
                              float* outputs, int max_out) {
     /* pe is zero-initialised so out-of-range positions attend to a zero
      * embedding (opcode = OP_NOP). See run_simulated for the rationale. */
@@ -5489,7 +5489,7 @@ static InterpreterWeights* g_weights = NULL;
  *        and against @p expected, and update the global pass/fail counters
  *        (n_pass/n_fail), printing a diagnostic on mismatch.
  */
-static void test(const char* name, const Instr* prog, int n, float expected) {
+static void test(const char* name, const SdncInstr* prog, int n, float expected) {
     float r[64], s[64], m[64];
     g_trace_program_name = name;
     g_trace_program_seq++;
@@ -6174,24 +6174,24 @@ int main(int argc, char** argv) {
     /* ── Stage 0: Original v1 tests (renumbered to canonical opcodes) ── */
     printf("  --- Stage 0: Core arithmetic & control ---\n");
 
-    { Instr p[]={{OP_NOP,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_NOP,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
       test("nop pc++", p, 4, 42); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3+5", p, 5, 8); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_ADD,0},{OP_CONST,2},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("(3+5)*2", p, 7, 16); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,7},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10-7", p, 5, 3); }
     /* SWAP exchanges TOS<->SOS. After CONST 3, CONST 5: TOS=5, SOS=3 → SUB= -2.
      * With SWAP first: TOS=3, SOS=5 → SUB = SOS-TOS = 2. Reveals stack order. */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_SWAP,0},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_SWAP,0},{OP_SUB,0},{OP_PRINT,0},{OP_HALT,0}};
       test("swap then 5-3", p, 6, 2); }
     /* mem[0]=42: SET_LOCAL takes operand as address, TOS as value */
-    { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("mem[0]=42", p, 5, 42); }
 
     /* sum(1..5) = 15: GET_LOCAL/SET_LOCAL with operand-based addressing */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,0},{OP_SET_LOCAL,0},                       /* mem[0]=0 (sum) */
         {OP_CONST,5},{OP_SET_LOCAL,1},                       /* mem[1]=5 (counter) */
         /* loop (pc=4): */
@@ -6208,7 +6208,7 @@ int main(int argc, char** argv) {
       }; test("sum(1..5)", p, 18, 15); }
 
     /* 5! = 120 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,1},{OP_SET_LOCAL,0},                       /* mem[0]=1 (result) */
         {OP_CONST,5},{OP_SET_LOCAL,1},                       /* mem[1]=5 (counter) */
         /* loop (pc=4): */
@@ -6224,7 +6224,7 @@ int main(int argc, char** argv) {
       }; test("5!", p, 18, 120); }
 
     /* fib(7) = 13 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,0},{OP_SET_LOCAL,0},                       /* a = 0 */
         {OP_CONST,1},{OP_SET_LOCAL,1},                       /* b = 1 */
         {OP_CONST,7},{OP_SET_LOCAL,2},                       /* n = 7 */
@@ -6242,63 +6242,63 @@ int main(int argc, char** argv) {
         {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("fib(7)", p, 22, 13); }
 
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,2},{OP_CONST,3},{OP_MUL,0},
         {OP_CONST,4},{OP_CONST,5},{OP_MUL,0},
         {OP_ADD,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("(2*3)+(4*5)", p, 9, 26); }
-    { Instr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,7},{OP_CONST,11},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("7*11", p, 5, 77); }
 
     /* ── Stage 1: Trivial push opcodes ── */
     printf("\n  --- Stage 1: NIL, TRUE, FALSE ---\n");
-    { Instr p[]={{OP_TRUE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_TRUE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("true", p, 3, 1); }
-    { Instr p[]={{OP_FALSE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_FALSE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("false", p, 3, 0); }
-    { Instr p[]={{OP_NIL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_NIL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("nil", p, 3, -1); }
-    { Instr p[]={{OP_CONST,5},{OP_TRUE,0},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_TRUE,0},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5+true(=6)", p, 5, 6); }
 
     /* ── Stage 2: NEG, ABS ── */
     printf("\n  --- Stage 2: NEG, ABS ---\n");
-    { Instr p[]={{OP_CONST,5},{OP_NEG,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_NEG,0},{OP_PRINT,0},{OP_HALT,0}};
       test("neg(5)", p, 4, -5); }
-    { Instr p[]={{OP_CONST,-7},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,-7},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
       test("abs(-7)", p, 4, 7); }
-    { Instr p[]={{OP_CONST,3},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
       test("abs(3)", p, 4, 3); }
-    { Instr p[]={{OP_CONST,5},{OP_NEG,0},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_NEG,0},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
       test("abs(neg(5))", p, 5, 5); }
 
     /* ── Stage 3: Comparisons ── */
     printf("\n  --- Stage 3: EQ, LT, GT, LE, GE, NOT ---\n");
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_EQ,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_EQ,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3==5", p, 5, 0); }
-    { Instr p[]={{OP_CONST,5},{OP_CONST,5},{OP_EQ,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,5},{OP_EQ,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5==5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3<5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,5},{OP_CONST,3},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,3},{OP_LT,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5<3", p, 5, 0); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_GT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_GT,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3>5", p, 5, 0); }
-    { Instr p[]={{OP_CONST,5},{OP_CONST,3},{OP_GT,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,3},{OP_GT,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5>3", p, 5, 1); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,5},{OP_LE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3<=5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,5},{OP_CONST,5},{OP_LE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,5},{OP_LE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5<=5", p, 5, 1); }
-    { Instr p[]={{OP_CONST,5},{OP_CONST,3},{OP_GE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,3},{OP_GE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("5>=3", p, 5, 1); }
-    { Instr p[]={{OP_CONST,3},{OP_CONST,3},{OP_GE,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,3},{OP_GE,0},{OP_PRINT,0},{OP_HALT,0}};
       test("3>=3", p, 5, 1); }
     /* Matrix NOT uses operand as the zero-indicator scale. */
-    { Instr p[]={{OP_CONST,0},{OP_NOT,1},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,0},{OP_NOT,1},{OP_PRINT,0},{OP_HALT,0}};
       test("not(0)=true", p, 4, 1); }
     /* Composite: if (3 < 5) print 42 else print 99 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,3},{OP_CONST,5},{OP_LT,0},
         {OP_JUMP_IF_FALSE,6},{OP_CONST,42},{OP_JUMP,7},
         {OP_CONST,99},{OP_PRINT,0},{OP_HALT,0}};
@@ -6306,19 +6306,19 @@ int main(int argc, char** argv) {
 
     /* ── Stage 4: DIV, MOD (delegated to exec loop) ── */
     printf("\n  --- Stage 4: DIV, MOD, LOOP ---\n");
-    { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10/2", p, 5, 5); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,3},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,3},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10%3", p, 5, 1); }
-    { Instr p[]={{OP_CONST,21},{OP_CONST,7},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,21},{OP_CONST,7},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       test("21/7", p, 5, 3); }
-    { Instr p[]={{OP_CONST,15},{OP_CONST,4},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,15},{OP_CONST,4},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("15%4", p, 5, 3); }
     /* DIV in a computation: (10/2) + 3 = 8 */
-    { Instr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_CONST,3},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,2},{OP_DIV,0},{OP_CONST,3},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("10/2+3", p, 7, 8); }
     /* LOOP opcode: sum counter 3+2+1 into mem0 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,0},{OP_SET_LOCAL,0},
         {OP_CONST,3},{OP_SET_LOCAL,1},
         {OP_GET_LOCAL,1},{OP_CONST,0},{OP_EQ,0},{OP_JUMP_IF_FALSE,11},
@@ -6333,7 +6333,7 @@ int main(int argc, char** argv) {
     /* f(x) = x + 1, call f(5) → 6
      * Layout: CONST 5, CONST func_entry, CALL 1, PRINT, HALT
      *   func_entry(5): GET_LOCAL 0, CONST 1, ADD, RETURN */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,5},{OP_CONST,5},{OP_CALL,1},              /* push arg=5, push func_pc=5, call(argc=1) */
         {OP_PRINT,0},{OP_HALT,0},                           /* print return value, halt */
         /* func entry (pc=5): */
@@ -6341,7 +6341,7 @@ int main(int argc, char** argv) {
       }; test("f(x)=x+1, f(5)", p, 9, 6); }
 
     /* f(x) = x * x, call f(7) → 49 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,7},{OP_CONST,5},{OP_CALL,1},
         {OP_PRINT,0},{OP_HALT,0},
         /* func entry (pc=5): */
@@ -6349,7 +6349,7 @@ int main(int argc, char** argv) {
       }; test("f(x)=x*x, f(7)", p, 9, 49); }
 
     /* f(a,b) = a + b, call f(3,4) → 7 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,3},{OP_CONST,4},{OP_CONST,6},{OP_CALL,2},
         {OP_PRINT,0},{OP_HALT,0},
         /* func entry (pc=6): */
@@ -6359,19 +6359,19 @@ int main(int argc, char** argv) {
     /* ── Stage 6: CONS, CAR, CDR, NULL_P ── */
     printf("\n  --- Stage 6: CONS, CAR, CDR, NULL_P ---\n");
     /* (car (cons 3 4)) → 3 */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0}};
       test("car(cons 3 4)", p, 6, 3); }
     /* (cdr (cons 3 4)) → 4 */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CDR,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,4},{OP_CONS,0},{OP_CDR,0},{OP_PRINT,0},{OP_HALT,0}};
       test("cdr(cons 3 4)", p, 6, 4); }
     /* (null? (cdr (cons 3 nil))) → 1, proving cdr type survives arena round-trip */
-    { Instr p[]={{OP_CONST,3},{OP_NIL,0},{OP_CONS,0},{OP_CDR,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_NIL,0},{OP_CONS,0},{OP_CDR,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("null?(cdr cons nil)", p, 7, 1); }
     /* (null? nil) → 1 */
-    { Instr p[]={{OP_NIL,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_NIL,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("null?(nil)", p, 4, 1); }
     /* (null? 5) → 0 */
-    { Instr p[]={{OP_CONST,5},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("null?(5)", p, 4, 0); }
     /* (car (cdr (cons 1 (cons 2 (cons 3 nil))))) → 2
      * Build list (1 2 3): CONST 3, NIL, CONS → (3), CONST 2, swap args, CONS → (2 3), etc.
@@ -6427,7 +6427,7 @@ int main(int argc, char** argv) {
      *  17: MUL               ; n * fact(n-1)
      *  18: RETURN
      */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,5},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
         /* fact: */
         {OP_GET_LOCAL,0},{OP_CONST,0},{OP_EQ,0},{OP_JUMP_IF_FALSE,11},
@@ -6446,7 +6446,7 @@ int main(int argc, char** argv) {
      *  16: GET_LOCAL 0, CONST 2, SUB, CONST 5, CALL 1   ; fib(n-2)
      *  21: ADD, RETURN
      */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,7},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
         /* fib: */
         {OP_GET_LOCAL,0},{OP_CONST,1},{OP_LE,0},{OP_JUMP_IF_FALSE,11},
@@ -6458,7 +6458,7 @@ int main(int argc, char** argv) {
       }; test("rec fib(7)", p, 23, 13); }
 
     /* set-car!/set-cdr! test: cons pair, mutate, read back */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONS,0},          /* (cons 10 20) → pair_ptr */
         {OP_DUP,0},{OP_CONST,99},{OP_SET_CAR,0},          /* set-car! pair 99 (pops val+pair, but we dup'd) */
         /* Wait — SET_CAR pops TOS=val, SOS=pair. After DUP we have [pair,pair].
@@ -6466,94 +6466,94 @@ int main(int argc, char** argv) {
          * Pops both, leaving [pair] on stack. Then CAR reads the mutated car. */
         {OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("set-car!", p, 9, 99); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONS,0},
         {OP_DUP,0},{OP_CONST,99},{OP_SET_CDR,0},
         {OP_CDR,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("set-cdr!", p, 9, 99); }
 
     /* pair? test */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,1},{OP_CONST,2},{OP_CONS,0},{OP_PAIR_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("pair?(cons 1 2)", p, 6, 1); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,1},{OP_CONST,2},{OP_CONS,0},
         {OP_CONST,3},{OP_CONS,0},{OP_CAR,0},{OP_PAIR_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("pair?(car nested)", p, 9, 1); }
 
     /* Stage-1 VM-as-transformer memory-op regressions */
-    { Instr p[]={{OP_CONST,42},{OP_NUM_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_NUM_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("number?(42)", p, 4, 1); }
-    { Instr p[]={{OP_TRUE,0},{OP_BOOL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_TRUE,0},{OP_BOOL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("boolean?(true)", p, 4, 1); }
-    { Instr p[]={{OP_CONST,42},{OP_STR_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_STR_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("string?(42)", p, 4, 0); }
-    { Instr p[]={{OP_CLOSURE,5},{OP_PROC_P,0},{OP_PRINT,0},{OP_HALT,0},
+    { SdncInstr p[]={{OP_CLOSURE,5},{OP_PROC_P,0},{OP_PRINT,0},{OP_HALT,0},
                  {OP_NOP,0},{OP_CONST,1},{OP_RETURN,0}};
       test("procedure?(closure)", p, 7, 1); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_VEC_CREATE,2},{OP_VEC_P,0},
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,20},{OP_VEC_CREATE,2},{OP_VEC_P,0},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("vector?(vec)", p, 6, 1); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_POPN,1},
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_POPN,1},
                  {OP_POP,0},{OP_PRINT,0},{OP_HALT,0}};
       test("popn1 keeps below", p, 7, 10); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
                  {OP_POPN,2},{OP_POP,0},{OP_PRINT,0},{OP_HALT,0}};
       test("popn2 keeps below", p, 8, 10); }
-    { Instr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
+    { SdncInstr p[]={{OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_CONST,40},
                  {OP_POPN,3},{OP_PRINT,0},{OP_HALT,0}};
       test("popn3 keeps TOS", p, 7, 40); }
-    { Instr p[]={{OP_VOID,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_VOID,0},{OP_CONST,42},{OP_PRINT,0},{OP_HALT,0}};
       test("void pc++", p, 4, 42); }
-    { Instr p[]={{OP_PUSH_HANDLER,4},{OP_POP_HANDLER,0},{OP_CONST,42},
+    { SdncInstr p[]={{OP_PUSH_HANDLER,4},{OP_POP_HANDLER,0},{OP_CONST,42},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("handler push/pop pc++", p, 5, 42); }
-    { Instr p[]={{OP_GET_EXN,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_GET_EXN,0},{OP_PRINT,0},{OP_HALT,0}};
       test("get-exn default zero", p, 3, 0); }
-    { Instr p[]={{OP_CONST,11},{OP_CONST,22},{OP_WIND_PUSH,0},
+    { SdncInstr p[]={{OP_CONST,11},{OP_CONST,22},{OP_WIND_PUSH,0},
                  {OP_WIND_POP,0},{OP_PRINT,0},{OP_HALT,0}};
       test("wind push/pop keeps body value", p, 6, 11); }
-    { Instr p[]={{OP_CONST,4},{OP_CALLCC,0},{OP_PRINT,0},{OP_HALT,0},
+    { SdncInstr p[]={{OP_CONST,4},{OP_CALLCC,0},{OP_PRINT,0},{OP_HALT,0},
                  {OP_GET_LOCAL,0},{OP_CONST,77},{OP_INVOKE_CC,0}};
       test("callcc arena escape", p, 7, 77); }
-    { Instr p[]={{OP_CONST,12},{OP_CONST,6},{OP_CALLCC,0},{OP_ADD,0},
+    { SdncInstr p[]={{OP_CONST,12},{OP_CONST,6},{OP_CALLCC,0},{OP_ADD,0},
                  {OP_PRINT,0},{OP_HALT,0},{OP_GET_LOCAL,0},{OP_CONST,77},
                  {OP_INVOKE_CC,0}};
       test("callcc restores stack", p, 9, 89); }
-    { Instr p[]={{OP_CONST,33},{OP_SET_LOCAL,1},{OP_CONST,8},{OP_CALLCC,0},
+    { SdncInstr p[]={{OP_CONST,33},{OP_SET_LOCAL,1},{OP_CONST,8},{OP_CALLCC,0},
                  {OP_GET_LOCAL,1},{OP_ADD,0},{OP_PRINT,0},{OP_HALT,0},
                  {OP_GET_LOCAL,0},{OP_CONST,44},{OP_SET_LOCAL,1},{OP_CONST,7},
                  {OP_INVOKE_CC,0}};
       test("callcc restores mem", p, 13, 40); }
-    { Instr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
+    { SdncInstr p[]={{OP_CONST,42},{OP_SET_UPVALUE,0},{OP_GET_UPVALUE,0},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue set/get mem0", p, 5, 42); }
-    { Instr p[]={{OP_CONST,17},{OP_SET_LOCAL,1},{OP_GET_UPVALUE,1},
+    { SdncInstr p[]={{OP_CONST,17},{OP_SET_LOCAL,1},{OP_GET_UPVALUE,1},
                  {OP_PRINT,0},{OP_HALT,0}};
       test("upvalue get mem1 fallback", p, 5, 17); }
-    { Instr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_CLOSE_UPVALUE,0},
+    { SdncInstr p[]={{OP_CONST,42},{OP_SET_LOCAL,0},{OP_CLOSE_UPVALUE,0},
                  {OP_GET_LOCAL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("close-upvalue arena no-op", p, 6, 42); }
-    { Instr p[]={{OP_CLOSURE,5},{OP_OPEN_CLOSURE,0},{OP_PROC_P,0},
+    { SdncInstr p[]={{OP_CLOSURE,5},{OP_OPEN_CLOSURE,0},{OP_PROC_P,0},
                  {OP_PRINT,0},{OP_HALT,0},{OP_CONST,1},{OP_RETURN,0}};
       test("open-closure keeps arena closure", p, 7, 1); }
-    { Instr p[]={{OP_CLOSURE,7},{OP_OPEN_CLOSURE,0},{OP_CONST,77},{OP_SET_UPVALUE,0},
+    { SdncInstr p[]={{OP_CLOSURE,7},{OP_OPEN_CLOSURE,0},{OP_CONST,77},{OP_SET_UPVALUE,0},
                  {OP_GET_UPVALUE,0},{OP_PRINT,0},{OP_HALT,0},{OP_CONST,1},{OP_RETURN,0}};
       test("arena upvalue set/get cell", p, 9, 77); }
-    { Instr p[]={{OP_CLOSURE,8},{OP_OPEN_CLOSURE,0},{OP_CONST,55},{OP_SET_LOCAL,0},
+    { SdncInstr p[]={{OP_CLOSURE,8},{OP_OPEN_CLOSURE,0},{OP_CONST,55},{OP_SET_LOCAL,0},
                  {OP_CLOSE_UPVALUE,0},{OP_GET_UPVALUE,0},{OP_PRINT,0},{OP_HALT,0},
                  {OP_CONST,1},{OP_RETURN,0}};
       test("arena close-upvalue cell", p, 10, 55); }
 
     /* Composite: (+ (car (cons 10 20)) (cdr (cons 30 40))) = 10 + 40 = 50 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONS,0},{OP_CAR,0},  /* car(cons 10 20) = 10 */
         {OP_CONST,30},{OP_CONST,40},{OP_CONS,0},{OP_CDR,0},  /* cdr(cons 30 40) = 40 */
         {OP_ADD,0},{OP_PRINT,0},{OP_HALT,0}};
       test("car+cdr", p, 11, 50); }
 
     /* Closure test: create closure on heap, call it via CALL */
-    { Instr p[]={
+    { SdncInstr p[]={
         /* 0 */ {OP_CLOSURE,5},                               /* push closure ptr (entry at pc=5) */
         /* 1 */ {OP_CALL,0},                                  /* call closure (0 args) */
         /* 2 */ {OP_PRINT,0},
@@ -6564,7 +6564,7 @@ int main(int argc, char** argv) {
       }; test("closure()=42", p, 7, 42); }
 
     /* Vector test: create vec, read element */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_VEC_CREATE,3},  /* #(10 20 30) */
         {OP_CONST,1},{OP_VEC_REF,0},                                  /* vec[1] = 20 */
         {OP_PRINT,0},{OP_HALT,0}};
@@ -6572,20 +6572,20 @@ int main(int argc, char** argv) {
       test("vec-ref", p, 8, 20); }
 
     /* Vector length test */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_VEC_CREATE,3},
         {OP_VEC_LEN,0},{OP_PRINT,0},{OP_HALT,0}};
       test("vec-len", p, 7, 3); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,10},{OP_CONST,20},{OP_CONST,30},{OP_VEC_CREATE,3},
         {OP_DUP,0},{OP_CONST,1},{OP_CONST,99},{OP_VEC_SET,0},
         {OP_CONST,1},{OP_VEC_REF,0},{OP_PRINT,0},{OP_HALT,0}};
       test("vec-set/ref", p, 12, 99); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,65},{OP_CONST,66},{OP_VEC_CREATE,2},
         {OP_CONST,1},{OP_STR_REF,0},{OP_PRINT,0},{OP_HALT,0}};
       test("str-ref arena-layout", p, 7, 66); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,65},{OP_CONST,66},{OP_VEC_CREATE,2},
         {OP_STR_LEN,0},{OP_PRINT,0},{OP_HALT,0}};
       test("str-len arena-layout", p, 6, 2); }
@@ -6603,7 +6603,7 @@ int main(int argc, char** argv) {
      *  14: GET_LOCAL 1, GET_LOCAL 0, ADD        ; acc+n
      *  17: CONST 5, TAIL_CALL 2                ; tail-call sum(n-1, acc+n)
      */
-    { Instr p[]={
+    { SdncInstr p[]={
         /* 0 */ {OP_CONST,100},{OP_CONST,0},{OP_CONST,6},{OP_CALL,2},
         /* 4 */ {OP_PRINT,0},{OP_HALT,0},
         /* sum (pc=6): MEM0=acc (first arg=SOS), MEM1=n (second arg=R2) */
@@ -6614,33 +6614,33 @@ int main(int argc, char** argv) {
         /* 15 */ {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},       /* acc+n */
         /* 18 */ {OP_CONST,6},{OP_TAIL_CALL,2},
       }; test("tail sum(100)", p, 20, 5050); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,5},{OP_CALL,0},{OP_PRINT,0},{OP_HALT,0},{OP_NOP,0},
         {OP_CONST,7},{OP_TAIL_CALL,0},
         {OP_CONST,77},{OP_RETURN,0},
       }; test("tail argc0", p, 9, 77); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,12},{OP_CONST,5},{OP_CALL,1},{OP_PRINT,0},{OP_HALT,0},
         {OP_GET_LOCAL,0},{OP_CONST,8},{OP_TAIL_CALL,1},
         {OP_GET_LOCAL,0},{OP_RETURN,0},
       }; test("tail argc1", p, 10, 12); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,1},{OP_CONST,2},{OP_CONST,3},{OP_CONST,7},{OP_CALL,3},
         {OP_PRINT,0},{OP_HALT,0},
         {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_GET_LOCAL,2},{OP_CONST,12},{OP_TAIL_CALL,3},
         {OP_GET_LOCAL,0},{OP_GET_LOCAL,1},{OP_ADD,0},{OP_GET_LOCAL,2},{OP_ADD,0},{OP_RETURN,0},
       }; test("tail argc3", p, 18, 6); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,2},{OP_SET_LOCAL,1},{OP_CONST,3},{OP_SET_LOCAL,2},
         {OP_CONST,4},{OP_SET_LOCAL,3},{OP_PACK_REST,1},
         {OP_GET_LOCAL,1},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("pack-rest car", p, 11, 2); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,2},{OP_SET_LOCAL,1},{OP_CONST,3},{OP_SET_LOCAL,2},
         {OP_CONST,4},{OP_SET_LOCAL,3},{OP_PACK_REST,1},
         {OP_GET_LOCAL,1},{OP_CDR,0},{OP_CAR,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("pack-rest cdr car", p, 12, 3); }
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_CONST,9},{OP_SET_LOCAL,3},{OP_PACK_REST,3},
         {OP_GET_LOCAL,3},{OP_CDR,0},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0},
       }; test("pack-rest single tail nil", p, 8, 1); }
@@ -6649,7 +6649,7 @@ int main(int argc, char** argv) {
     printf("\n  Dynamic multiplication: ");
     int mul_ok = 0;
     for (int a=0; a<10; a++) for (int b=0; b<10; b++) {
-        Instr p[]={{OP_CONST,a},{OP_CONST,b},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+        SdncInstr p[]={{OP_CONST,a},{OP_CONST,b},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
         float r[1],s[1],m[1];
         g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
         if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
@@ -6670,7 +6670,7 @@ int main(int argc, char** argv) {
     printf("\n  --- Stage 8: Edge cases ---\n");
 
     /* Division by zero -> halt */
-    { Instr p[]={{OP_CONST,5},{OP_CONST,0},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,0},{OP_DIV,0},{OP_PRINT,0},{OP_HALT,0}};
       /* Should halt (div by zero), no output */
       float out[1];
       g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
@@ -6681,7 +6681,7 @@ int main(int argc, char** argv) {
     }
 
     /* Modulo by zero -> halt */
-    { Instr p[]={{OP_CONST,5},{OP_CONST,0},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,5},{OP_CONST,0},{OP_MOD,0},{OP_PRINT,0},{OP_HALT,0}};
       float out[1];
       g_frame_count = 0; g_heap_ptr = 0; g_exc_count = 0; g_current_exn = 0.0f; g_current_closure_ptr = -1; g_wind_depth = 0;
     if (g_vm_regions_initialized) { vm_arena_reset(&g_vm_regions.global_arena); }
@@ -6691,15 +6691,15 @@ int main(int argc, char** argv) {
     }
 
     /* NULL_P on non-nil value */
-    { Instr p[]={{OP_CONST,42},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,42},{OP_NULL_P,0},{OP_PRINT,0},{OP_HALT,0}};
       test("null?(42)=false", p, 4, 0); }
 
     /* Nested arithmetic: (3 + 4) * (5 - 2) = 21 */
-    { Instr p[]={{OP_CONST,3},{OP_CONST,4},{OP_ADD,0},{OP_CONST,5},{OP_CONST,2},{OP_SUB,0},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,3},{OP_CONST,4},{OP_ADD,0},{OP_CONST,5},{OP_CONST,2},{OP_SUB,0},{OP_MUL,0},{OP_PRINT,0},{OP_HALT,0}};
       test("(3+4)*(5-2)", p, 9, 21); }
 
     /* ABS of negative */
-    { Instr p[]={{OP_CONST,7},{OP_NEG,0},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
+    { SdncInstr p[]={{OP_CONST,7},{OP_NEG,0},{OP_ABS,0},{OP_PRINT,0},{OP_HALT,0}};
       test("abs(-7)", p, 5, 7); }
 
     /* ── Stage 9: AD — native autodiff in weights ── */
@@ -6708,7 +6708,7 @@ int main(int argc, char** argv) {
     /* (debug trace removed) */
 
     /* f(x) = x^2 at x=3: tape = [var(3), mul(0,0)=9], backward → grad[0] = 6 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},       /* node 0: x=3 */
         {OP_DUP, 0},          /* duplicate node index 0 */
         {OP_DUP, 0},          /* stack: [0, 0, 0] */
@@ -6722,7 +6722,7 @@ int main(int argc, char** argv) {
     /* (backward debug variable removed) */
 
     /* f(x) = x+x at x=5: grad = 2 (fan-out test) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 5},       /* node 0: x=5 */
         {OP_DUP, 0},
         {OP_DUP, 0},
@@ -6735,7 +6735,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx (x+x) at 5 = 2", p, 9, 2); }
 
     /* f(x,y) = x-y at (5,2): df/dy = -1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 5},
         {OP_AD_VAR, 2},
         {OP_AD_SUB, 0},
@@ -6747,7 +6747,7 @@ int main(int argc, char** argv) {
       }; test("AD: d(x-y)/dy at (5,2) = -1", p, 8, -1); }
 
     /* f(x) = -x at x=7: grad = -1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 7},
         {OP_AD_NEG, 0},       /* node 1: -x=-7 */
         {OP_AD_BACKWARD, 0},
@@ -6758,7 +6758,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx (-x) at 7 = -1", p, 7, -1); }
 
     /* f(x) = abs(x): derivative is sign(x) away from zero */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 7},
         {OP_AD_ABS, 0},
         {OP_AD_BACKWARD, 0},
@@ -6768,7 +6768,7 @@ int main(int argc, char** argv) {
         {OP_HALT, 0}
       }; test("AD: d/dx abs(7) = 1", p, 7, 1); }
 
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, -7},
         {OP_AD_ABS, 0},
         {OP_AD_BACKWARD, 0},
@@ -6780,7 +6780,7 @@ int main(int argc, char** argv) {
 
     /* f(x,y) = x*y at (3,4): df/dx=4, df/dy=3.
      * We check df/dx. node 0=x=3, node 1=y=4, node 2=x*y */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},       /* node 0: x=3 */
         {OP_AD_VAR, 4},       /* node 1: y=4 */
         {OP_AD_MUL, 0},       /* node 2: x*y=12. Stack after: [2] (popped 0,1, pushed 2) */
@@ -6792,7 +6792,7 @@ int main(int argc, char** argv) {
       }; test("AD: d(x*y)/dx at (3,4) = 4", p, 8, 4); }
 
     /* Same but check df/dy = 3 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},
         {OP_AD_VAR, 4},
         {OP_AD_MUL, 0},
@@ -6804,7 +6804,7 @@ int main(int argc, char** argv) {
       }; test("AD: d(x*y)/dy at (3,4) = 3", p, 8, 3); }
 
     /* f(x) = x/2 at x=6: df/dx = 1/2 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 6},
         {OP_AD_CONST, 2},
         {OP_AD_DIV, 0},
@@ -6816,7 +6816,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx x/2 at 6 = 0.5", p, 8, 0.5f); }
 
     /* f(y) = 6/y at y=2: df/dy = -6/(2*2) = -1.5 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_CONST, 6},
         {OP_AD_VAR, 2},
         {OP_AD_DIV, 0},
@@ -6828,7 +6828,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dy 6/y at 2 = -1.5", p, 8, -1.5f); }
 
     /* f(x) = x^2 at x=3: df/dx = 2x = 6 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},
         {OP_AD_CONST, 2},
         {OP_AD_POW, 0},
@@ -6840,7 +6840,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx pow(x,2) at 3 = 6", p, 8, 6); }
 
     /* f(y) = 2^y at y=3: df/dy = 2^3 * log(2) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_CONST, 2},
         {OP_AD_VAR, 3},
         {OP_AD_POW, 0},
@@ -6852,7 +6852,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dy pow(2,y) at 3", p, 8, 8.0f * logf(2.0f)); }
 
     /* f(x) = exp(0): grad = exp(0) = 1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 0},       /* node 0: x=0 */
         {OP_AD_EXP, 0},       /* node 1: exp(0)=1 */
         {OP_AD_BACKWARD, 0},
@@ -6863,7 +6863,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx exp(0) = 1", p, 7, 1); }
 
     /* f(x) = sigmoid(0): grad = 0.25 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 0},
         {OP_AD_SIGMOID, 0},
         {OP_AD_BACKWARD, 0},
@@ -6874,7 +6874,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx sigmoid(0) = 0.25", p, 7, 0.25f); }
 
     /* f(x) = tanh(0): grad = 1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 0},
         {OP_AD_TANH, 0},
         {OP_AD_BACKWARD, 0},
@@ -6885,7 +6885,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx tanh(0) = 1", p, 7, 1); }
 
     /* f(x) = log(1): grad = 1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},
         {OP_AD_LOG, 0},
         {OP_AD_BACKWARD, 0},
@@ -6896,7 +6896,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx log(1) = 1", p, 7, 1); }
 
     /* f(x) = sqrt(4): grad = 1/(2*sqrt(4)) = 0.25 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 4},
         {OP_AD_SQRT, 0},
         {OP_AD_BACKWARD, 0},
@@ -6907,7 +6907,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx sqrt(4) = 0.25", p, 7, 0.25f); }
 
     /* f(x) = sin(0): grad = cos(0) = 1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 0},
         {OP_AD_SIN, 0},
         {OP_AD_BACKWARD, 0},
@@ -6918,7 +6918,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx sin(0) = 1", p, 7, 1); }
 
     /* f(x) = sin(1): grad = cos(1) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},
         {OP_AD_SIN, 0},
         {OP_AD_BACKWARD, 0},
@@ -6929,7 +6929,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx sin(1) = cos(1)", p, 7, cosf(1.0f)); }
 
     /* f(x) = cos(0): grad = -sin(0) = 0 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 0},
         {OP_AD_COS, 0},
         {OP_AD_BACKWARD, 0},
@@ -6940,7 +6940,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx cos(0) = 0", p, 7, 0); }
 
     /* f(x) = cos(1): grad = -sin(1) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},
         {OP_AD_COS, 0},
         {OP_AD_BACKWARD, 0},
@@ -6951,7 +6951,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx cos(1) = -sin(1)", p, 7, -sinf(1.0f)); }
 
     /* f(x) = cos(-1): grad = -sin(-1) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, -1},
         {OP_AD_COS, 0},
         {OP_AD_BACKWARD, 0},
@@ -6962,7 +6962,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx cos(-1) = sin(1)", p, 7, sinf(1.0f)); }
 
     /* f(x) = sin(-1): grad = cos(-1), exercising a negative table row */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, -1},
         {OP_AD_SIN, 0},
         {OP_AD_BACKWARD, 0},
@@ -6973,7 +6973,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx sin(-1) = cos(1)", p, 7, cosf(1.0f)); }
 
     /* f(x) = relu(3): grad = 1 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},
         {OP_AD_RELU, 0},
         {OP_AD_BACKWARD, 0},
@@ -6984,7 +6984,7 @@ int main(int argc, char** argv) {
       }; test("AD: d/dx relu(3) = 1", p, 7, 1); }
 
     /* d/dx relu(-1) = 0 (inactive region) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, -1},
         {OP_AD_RELU, 0},
         {OP_AD_BACKWARD, 0},
@@ -6998,7 +6998,7 @@ int main(int argc, char** argv) {
     printf("\n  --- Group A: tape recording ---\n");
 
     /* Verify tape[0].value = 3 after ad_var(3) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},       /* record var(3) as node 0 */
         {OP_PRINT, 0},        /* print tape index = 0 */
         {OP_HALT, 0}
@@ -7008,7 +7008,7 @@ int main(int argc, char** argv) {
      * The value 7 is stored in tape[2]; we can't directly read it, but
      * we verify via backward: f(x,y) = x+y, df/dx = 1, which implies
      * the forward pass computed 3+4=7 correctly. */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},
         {OP_AD_VAR, 4},
         {OP_AD_ADD, 0},       /* node 2: 3+4=7 */
@@ -7020,7 +7020,7 @@ int main(int argc, char** argv) {
       }; test("tape: var(3)+var(4) grad=1", p, 8, 1); }
 
     /* Verify ad_const has no gradient flow */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_CONST, 5},     /* node 0: const(5), no gradient */
         {OP_AD_VAR, 3},       /* node 1: var(3) */
         {OP_AD_ADD, 0},       /* node 2: 5+3=8 */
@@ -7033,7 +7033,7 @@ int main(int argc, char** argv) {
 
     /* ── Tape overflow: verify 8 nodes fill correctly ── */
     printf("\n  --- Tape capacity ---\n");
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},       /* node 0 */
         {OP_AD_VAR, 2},       /* node 1 */
         {OP_AD_VAR, 3},       /* node 2 */
@@ -7057,7 +7057,7 @@ int main(int argc, char** argv) {
      * The cross-check is implicit: both modes produce 12 for d/dx x^3 at 2.
      * For an EXPLICIT cross-check, we compute f(x)=x*x*x via tape and verify. */
     printf("\n  --- Cross-mode: dual vs tape ---\n");
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 2},       /* node 0: x=2 */
         {OP_DUP, 0},
         {OP_DUP, 0},
@@ -7083,7 +7083,7 @@ int main(int argc, char** argv) {
      * df/db = sigmoid'(w*x+b) = 0.7311 * (1 - 0.7311) ≈ 0.1966
      * Uses 6 tape nodes: var(w=1), const(x=2), var(b=-1), mul(w,x), add(wx,b), sigmoid */
     printf("\n  --- MLP gradient demo ---\n");
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},       /* node 0: w=1 */
         {OP_AD_CONST, 2},     /* node 1: x=2 (constant, no gradient) */
         {OP_AD_MUL, 0},       /* node 2: w*x=2 */
@@ -7104,7 +7104,7 @@ int main(int argc, char** argv) {
       }; test("MLP: df/dw sigmoid(w*2+b) at w=1,b=-1", p, 11, 0.3932f); }
 
     /* Same MLP, check df/db */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 1},
         {OP_AD_CONST, 2},
         {OP_AD_MUL, 0},
@@ -7122,7 +7122,7 @@ int main(int argc, char** argv) {
     printf("\n  --- AD edge cases ---\n");
 
     /* Backward on constant: gradient should be 0 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_CONST, 42},
         {OP_AD_BACKWARD, 0},
         {OP_CONST, 0},
@@ -7132,7 +7132,7 @@ int main(int argc, char** argv) {
       }; test("AD edge: grad of output const = 1 (seed)", p, 6, 1); }
 
     /* Backward on lone variable: gradient = 1 (identity) */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 7},
         {OP_DUP, 0},
         {OP_AD_BACKWARD, 0},
@@ -7143,7 +7143,7 @@ int main(int argc, char** argv) {
       }; test("AD edge: grad of var = 1", p, 7, 1); }
 
     /* Chain: f(x) = x^2 + 2x at x=3 → gradient = 2x + 2 = 8 */
-    { Instr p[]={
+    { SdncInstr p[]={
         {OP_AD_VAR, 3},       /* node 0: x=3 */
         {OP_DUP, 0},          /* dup node index 0 */
         {OP_DUP, 0},          /* stack: [0,0,0] */
@@ -7197,12 +7197,12 @@ int main(int argc, char** argv) {
                 /* Load ESKB section-based format via eskb_reader */
                 EskbModule mod;
                 if (eskb_load_file(bc_path, &mod) == 0) {
-                    /* Build Instr array and constants for weight matrix execution */
-                    Instr* prog = (Instr*)calloc(mod.code_len, sizeof(Instr));
+                    /* Build SdncInstr array and constants for weight matrix execution */
+                    SdncInstr* prog = (SdncInstr*)calloc(mod.code_len, sizeof(SdncInstr));
                     float* constants = (float*)calloc(mod.n_constants > 0 ? mod.n_constants : 1, sizeof(float));
                     if (prog && constants) {
                         for (int i = 0; i < mod.code_len; i++) {
-                            prog[i].op = (OpCode)mod.opcodes[i];
+                            prog[i].op = (SdncOpCode)mod.opcodes[i];
                             prog[i].operand = mod.operands[i];
                         }
                         for (int i = 0; i < mod.n_constants; i++) {
@@ -7284,7 +7284,7 @@ int main(int argc, char** argv) {
                         printf("ERROR: truncated bytecode header\n"); fclose(bf);
                     } else if (magic == 0x45534B42 && n_instr < 8192 && n_const < 8192) {
                         /* Read instructions */
-                        Instr* prog = (Instr*)calloc(n_instr, sizeof(Instr));
+                        SdncInstr* prog = (SdncInstr*)calloc(n_instr, sizeof(SdncInstr));
                         float* constants = (float*)calloc(n_const > 0 ? n_const : 1, sizeof(float));
                         if (!prog || !constants) {
                             printf("ERROR: allocation failed for bytecode\n");
@@ -7294,7 +7294,7 @@ int main(int argc, char** argv) {
                         for (uint32_t i = 0; i < n_instr && read_ok; i++) {
                             uint8_t op; int32_t operand;
                             if (fread(&op, 1, 1, bf) != 1 || fread(&operand, 4, 1, bf) != 1) { read_ok = 0; break; }
-                            prog[i].op = (OpCode)op;
+                            prog[i].op = (SdncOpCode)op;
                             prog[i].operand = operand;
                         }
                         /* Read constants */

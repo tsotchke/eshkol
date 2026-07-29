@@ -13,25 +13,29 @@
  *     Loads a QLMW file and executes bytecode by running the transformer
  *     forward pass.
  *
- * Both files previously carried private copies of these tables under identical
- * names (`OpCode`, `Instr`, `S_*`, `TYPE_*`). The copies had drifted: the
- * producer defines `OP_SWAP = 83` with `OP_COUNT = 84`, while the consumer's
- * copy stopped at `OP_COUNT = 83` and therefore decoded a valid SWAP as an
- * out-of-range opcode. Because the drift is on a serialization boundary the
- * compiler could not see it -- a renumbering changes execution silently rather
- * than failing to link. Sharing one header is what makes that class of drift
- * impossible rather than merely unlikely.
+ * Both files previously carried private copies of these tables, each declaring
+ * its own `OpCode` enum, `Instr` struct, `S_*` layout and `TYPE_*` tags. The
+ * copies had drifted: the producer defines `OP_SWAP = 83` with
+ * `OP_COUNT = 84`, while the consumer's copy stopped at `OP_COUNT = 83` and
+ * therefore decoded a valid SWAP as an out-of-range opcode. Because the drift
+ * is on a serialization boundary the compiler could not see it -- a
+ * renumbering changes execution silently rather than failing to link. Sharing
+ * one header is what makes that class of drift impossible rather than merely
+ * unlikely.
+ *
+ * The types are named `SdncOpCode` / `SdncInstr`, NOT `OpCode` / `Instr`. Five
+ * other unrelated translation units in this tree declare their own `OpCode` and
+ * `Instr` for their own, different instruction sets (eshkol_compiler.c,
+ * vm_core.c, stackvm_codegen.c, weight_compiler.c, eshkol_benchmark.c). Reusing
+ * those spellings for a *different* ISA is precisely what let the SWAP drift
+ * hide in plain sight: two things that were never the same thing looked
+ * identical. Distinct concepts get distinct names, so the collision is gone
+ * rather than merely reclassified.
  *
  * Deliberately a PRIVATE header under lib/backend/ rather than a public one
- * under inc/. `OpCode` and `Instr` are names several unrelated translation
- * units in this tree also use for their own, different instruction sets
- * (eshkol_compiler.c, vm_core.c, stackvm_codegen.c, weight_compiler.c,
- * eshkol_benchmark.c). No single translation unit sees two of them, so there is
- * no ODR violation today -- but publishing these particular spellings into the
- * public include path would invite one, and would also put an internal ISA into
- * the generated API documentation. Keeping the header beside its only two
- * consumers, next to sibling private headers like eskb_format.h and
- * vm_numeric.h, gives single-sourcing without widening the surface.
+ * under inc/: this is an internal ISA, and inc/ is scanned by the generated API
+ * documentation. It sits beside its only two consumers, next to sibling private
+ * headers like eskb_format.h and vm_numeric.h.
  *
  * IMPORTANT -- this is NOT the production bytecode VM's instruction set. The
  * production VM (`lib/backend/vm_core.c`) is a separate 66-opcode ISA whose
@@ -100,9 +104,9 @@ typedef enum {
     OP_SWAP=83,
 
     OP_COUNT=84
-} OpCode;
+} SdncOpCode;
 
-typedef struct { OpCode op; int operand; } Instr;
+typedef struct { SdncOpCode op; int operand; } SdncInstr;
 
 /* State vector layout (d_model=256) */
 enum {
