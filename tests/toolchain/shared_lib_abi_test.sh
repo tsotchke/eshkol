@@ -369,16 +369,24 @@ def main(path):
     # Negative direction: the unwrapped internal-convention symbol must look
     # corrupt from here too.
     print("  negative control (unwrapped internal-ABI symbol):")
-    raw = fn("abi-int__eshkol_internal_abi")()
-    report("raw abi-int", raw)
-    if (raw.type == VALUE_INT64 and raw.flags == EXACT_FLAG
-            and raw.data.int_val == 42):
-        failures.append("negative control: the internal-convention symbol read "
-                        "back correctly, so ctypes cannot detect the defect")
-    else:
-        print("    ok: internal-convention symbol reads back corrupt "
-              "(type=%d flags=0x%02x data=%d) as it must"
-              % (raw.type, raw.flags, raw.data.int_val))
+    try:
+        raw_fn = fn("abi-int__eshkol_internal_abi")
+    except (AttributeError, OSError):
+        failures.append("negative control: no abi-int__eshkol_internal_abi "
+                        "symbol -- the export thunk is not in place at all")
+        raw_fn = None
+    if raw_fn is not None:
+        raw = raw_fn()
+        report("raw abi-int", raw)
+        if (raw.type == VALUE_INT64 and raw.flags == EXACT_FLAG
+                and raw.data.int_val == 42):
+            failures.append("negative control: the internal-convention symbol "
+                            "read back correctly, so ctypes cannot detect the "
+                            "defect")
+        else:
+            print("    ok: internal-convention symbol reads back corrupt "
+                  "(type=%d flags=0x%02x data=%d) as it must"
+                  % (raw.type, raw.flags, raw.data.int_val))
 
     if failures:
         for message in failures:
