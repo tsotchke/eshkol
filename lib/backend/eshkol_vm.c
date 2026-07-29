@@ -904,6 +904,10 @@ static int compile_and_run(const char* source) {
     }
 
     /* stack_depth synced via n_locals */
+    /* Everything registered so far belongs to the builtin preamble and the
+     * Scheme prelude; user definitions start here (R7RS 5.3.1 redefinition
+     * may only reassign a location the user program itself created). */
+    vm_set_user_locals_base(main_chunk.n_locals);
     src_ptr = source;
 
     /* TWO-PASS COMPILATION:
@@ -923,6 +927,13 @@ static int compile_and_run(const char* source) {
         if (n_top_exprs < MAX_TOP_EXPRS)
             top_exprs[n_top_exprs++] = expr;
     }
+
+    /* Pass 1b: R7RS §5.3.1 — which top-level names does the program define
+     * more than once?  Must be known before Pass 3 compiles any body, because
+     * a redefinition assigns to the name's existing location instead of
+     * binding a new one, and the grouping below has to leave those defines
+     * ungrouped so no slot is pre-registered for them. */
+    vm_register_redefined_from_forms(top_exprs, n_top_exprs);
 
     /* Pass 2: Scan for top-level defines that need boxing.
      * A define needs boxing if its variable is both:
@@ -967,12 +978,22 @@ static int compile_and_run(const char* source) {
         && (e)->children[1]->n_children >= 1 \
         && (e)->children[1]->children[0]->type == N_SYMBOL)
 
+    /* R7RS §5.3.1: a name defined more than once at top level must NOT join a
+     * mutual-recursion group. The group path pre-registers a NIL local for
+     * every member before compiling any of them, which is indistinguishable
+     * from "this name already has a location" and would make the group's own
+     * first definition look like a redefinition of itself. Leaving those
+     * defines ungrouped sends each through the single-form path, where the
+     * first binds the location and the rest assign to it. */
+    #define IS_GROUPABLE_FUNC_DEFINE(e) (IS_FUNC_DEFINE(e) \
+        && !vm_is_redefined_toplevel_name((e)->children[1]->children[0]->symbol))
+
     /* Pass 3: Compile with boxing + letrec-style groups for mutual recursion */
     int expr_i = 0;
     while (expr_i < n_top_exprs) {
         /* Detect groups of consecutive function defines (size >= 2) */
         int group_start = expr_i;
-        while (expr_i < n_top_exprs && IS_FUNC_DEFINE(top_exprs[expr_i])) expr_i++;
+        while (expr_i < n_top_exprs && IS_GROUPABLE_FUNC_DEFINE(top_exprs[expr_i])) expr_i++;
         int group_size = expr_i - group_start;
 
         if (group_size >= 2) {
@@ -996,6 +1017,10 @@ static int compile_and_run(const char* source) {
              * compile_form_define will add_local (creating slot group_base+group_size+gi).
              * The closure lands at that slot. Then we copy it to the pre-registered slot
              * and pop the extra. */
+            /* Slots for every group member are pre-registered above, so the
+             * R7RS 5.3.1 redefinition rule must stay out of this window (see
+             * IS_GROUPABLE_FUNC_DEFINE and vm_redefinition_target_slot). */
+            g_vm_predeclared_group_depth++;
             for (int gi = 0; gi < group_size; gi++) {
                 int locals_before = main_chunk.n_locals;
                 compile_expr(&main_chunk, top_exprs[group_start + gi], 0);
@@ -1008,6 +1033,7 @@ static int compile_and_run(const char* source) {
                 /* We can't easily un-add a local, so just leave it. The pre-registered
                  * slot has the correct value. The extra slot is dead but harmless. */
             }
+            g_vm_predeclared_group_depth--;
 
             /* Remove duplicate locals created by compile_form_define.
              * Reset n_locals to group_base + group_size so resolve_local
@@ -1054,7 +1080,7 @@ static int compile_and_run(const char* source) {
         }
 
         /* Compile non-define expressions until next define group */
-        while (expr_i < n_top_exprs && !IS_FUNC_DEFINE(top_exprs[expr_i])) {
+        while (expr_i < n_top_exprs && !IS_GROUPABLE_FUNC_DEFINE(top_exprs[expr_i])) {
             Node* expr = top_exprs[expr_i];
             /* Check for simple value define with boxing */
             int do_box = 0;
@@ -1093,6 +1119,7 @@ static int compile_and_run(const char* source) {
             expr_i++;
         }
     }
+    #undef IS_GROUPABLE_FUNC_DEFINE
     #undef IS_FUNC_DEFINE
 
     /* Free repatch arrays */
@@ -1264,7 +1291,16 @@ static void compile_source_to_chunk_with_options(const char* source,
         }
     }
 
-    /* Compile user source */
+    /* Compile user source.
+     *
+     * R7RS 5.3.1: this emitter compiles form-by-form, so the redefined
+     * top-level names have to be pre-scanned from the source before the first
+     * body is compiled — otherwise the ESKB bytecode would keep the stale
+     * binding that source execution no longer has, and the VM parity gate
+     * would see vm-eskb diverge from vm-src. */
+    vm_prescan_redefined_toplevel_names(source);
+    vm_set_user_locals_base(chunk->n_locals);
+
     src_ptr = source;
     while (1) {
         skip_ws(); if (!*src_ptr) break;
@@ -1274,6 +1310,7 @@ static void compile_source_to_chunk_with_options(const char* source,
         if (chunk->n_locals == lb) chunk_emit(chunk, OP_POP, 0);
         free_node(expr);
     }
+    vm_clear_redefined_toplevel_names();
     chunk_emit(chunk, OP_HALT, 0);
 }
 
