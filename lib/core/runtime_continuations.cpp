@@ -43,7 +43,27 @@ extern "C" eshkol_continuation_state_t* eshkol_make_continuation_state(void* are
     state->value.type = ESHKOL_VALUE_NULL;
     state->wind_mark = (void*)g_dynamic_wind_stack;
     state->promise_mark = eshkol_promise_eval_mark();
+    state->region_mark = eshkol_region_mark();  // #341
     return state;
+}
+
+/**
+ * @brief Close every region entered since this continuation was captured,
+ *        promoting the delivered value out of them first (#341).
+ *
+ * The third member of the non-local-exit unwind trio, alongside
+ * eshkol_unwind_dynamic_wind and eshkol_promise_eval_unwind_to, and called from
+ * the same place in the continuation-invoke path. `state->value` (already
+ * written by the invoke site) is passed as the in-flight value so a value
+ * allocated inside a region being torn down is deep-promoted to an arena that
+ * outlives the jump, instead of being delivered as a pointer into a freed arena.
+ *
+ * @param state_void The continuation state being invoked (no-op if NULL).
+ */
+extern "C" void eshkol_region_unwind_for_continuation(void* state_void) {
+    auto* state = (eshkol_continuation_state_t*)state_void;
+    if (!state) return;
+    eshkol_region_unwind_to(state->region_mark, &state->value, 1);
 }
 
 /**

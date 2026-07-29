@@ -502,6 +502,20 @@ probe iter_scope_partial_reclaim 'ESH-0214e: resident tick loop that MUTATES per
      ## re-runs the binary under ESHKOL_ARENA_POISON=1 (dangling-ptr tripwire).
      bash tests/memory/iter_scope_partial_reclaim_test.sh'
 
+probe region_handle_scoped_reclamation '#341: user-reachable region handles keep an AD training loop flat, numerics identical across plain/with-region/handle, full misuse matrix clean under ESHKOL_ARENA_POISON=1' \
+    'cd "$REPO_ROOT";
+     ## #341: the automatic per-iteration nursery (ESH-0214e) disqualifies any
+     ## loop body containing a gradient op, a set! or a tensor-set! — an AD
+     ## training step trips all three — so a 161-param MLP grew ~123MB/step
+     ## unbounded. region-open / region-close give the same region machinery a
+     ## NON-LEXICAL surface. This gate requires flat peak RSS across step counts,
+     ## bit-identical trained parameters against both the unscoped baseline and
+     ## the with-region twin, and the whole safety matrix (double close,
+     ## use-after-close, out-of-order cascade, fabricated tokens, raise and
+     ## call/cc unwind crossing an open handle, slot reuse, never-closed) clean
+     ## on AOT and JIT under the arena poisoner.
+     bash tests/memory/region_handle_training_rss_test.sh'
+
 probe reader_fuzz_smoke 'seeded adversarial reader harness: no crash/hang, depth guard graceful (fixed-seed smoke pass)' \
     'cd "$REPO_ROOT" && bash scripts/run_reader_fuzz.sh --smoke'
 

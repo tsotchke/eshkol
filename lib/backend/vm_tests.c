@@ -868,6 +868,26 @@ static int run_source_tests(void) {
     source_test_expect("deep-recursion",
         "(define (depth n) (if (= n 0) 0 (+ 1 (depth (- n 1))))) (display (depth 100))", "100");
 
+    /* User-reachable region handles (#341). On the VM a close is
+     * bookkeeping-only (no escape evacuator in the VM heap), but the handle
+     * PROTOCOL — open, live, close returning the keep, then not live — and every
+     * misuse outcome must match native exactly; tests/vm_parity/corpus/
+     * region_handle_contract.esk pins the full matrix differentially. These
+     * cases keep the VM half executing inside the standard VM suite. */
+    source_test_expect("region-handle-open-live",
+        "(define h (region-open)) (display (region-open? h))", "#t");
+    source_test_expect("region-handle-close-returns-keep",
+        "(define h (region-open)) (display (region-close h 42))", "42");
+    source_test_expect("region-handle-closed-not-live",
+        "(define h (region-open)) (region-close h) (display (region-open? h))", "#f");
+    source_test_expect("region-handle-named-and-sized",
+        "(define h (region-open 'step 4096)) (display (region-close h 'ok))", "ok");
+    source_test_expect("region-handle-double-close-raises",
+        "(define h (region-open)) (region-close h)"
+        "(display (guard (e (#t 'caught)) (region-close h) 'no))", "caught");
+    source_test_expect("region-handle-fabricated-token-not-live",
+        "(display (region-open? 987654321))", "#f");
+
     printf("\n  Source tests: %d/%d passed\n", source_test_pass, source_test_count);
     return source_test_count - source_test_pass;
 }

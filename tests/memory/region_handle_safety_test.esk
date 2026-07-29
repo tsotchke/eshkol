@@ -1,0 +1,187 @@
+;; #341 — the region-handle SAFETY MATRIX, as an executing test.
+;;
+;; The handle surface is unstructured, so misuse is possible in a way it is not
+;; with `with-region`. Every row below is a misuse whose outcome must be a clean
+;; catchable error or a defined safe operation — never a dangling pointer and
+;; never a silently wrong answer. Run under ESHKOL_ARENA_POISON=1 so that any
+;; value we failed to promote out of a closed region dereferences an obvious
+;; 0xCB.. sentinel and crashes loudly instead of reading plausible stale data.
+;;
+;; Prints one line per case and a final PASS/FAIL tally, so the same file gates
+;; on both the JIT and an AOT binary.
+
+(define failures 0)
+
+(define (check name expected actual)
+  (if (equal? expected actual)
+      (begin (display "  ok   ") (display name) (newline))
+      (begin
+        (set! failures (+ failures 1))
+        (display "  FAIL ") (display name)
+        (display " expected=") (write expected)
+        (display " actual=") (write actual)
+        (newline))))
+
+;; ── 1. the happy path: open, live, close returning the deep-promoted keep ──
+(define h1 (region-open))
+(check "open-returns-live-handle" #t (region-open? h1))
+;; NOTE the shape: the close result is bound FIRST and only then compared.
+;; A literal written inline as `check`'s expected argument would itself be
+;; materialised while the region is open, land in the region arena, and be freed
+;; by the very close being tested — correct behaviour, but it would make the
+;; comparison meaningless. Nothing constructed inside an open region may outlive
+;; it unless it is named in the keep list. See docs/reference/runtime/memory-model.md.
+(define kept-1 (region-close h1 (list 1 2 3)))
+(check "close-returns-kept-value" (list 1 2 3) kept-1)
+(check "closed-handle-is-not-live" #f (region-open? h1))
+
+;; The kept value must survive being READ after the region is gone, and must be
+;; deep — a shallow copy would leave the interior cons cells dangling (ESH-0214d).
+(define h2 (region-open))
+(define kept (region-close h2 (list (list 1 2) (vector 3 4) "five")))
+(check "kept-deep-list-car" '(1 2) (car kept))
+(check "kept-deep-vector" 4 (vector-ref (car (cdr kept)) 1))
+(check "kept-deep-string" "five" (car (cdr (cdr kept))))
+
+;; ── 2. return shapes ──
+(define h3 (region-open))
+(check "no-keeps-returns-empty-list" '() (region-close h3))
+(define h4 (region-open))
+(define kept-many (region-close h4 'a 'b 'c))
+(check "many-keeps-returns-list-in-order" (list 'a 'b 'c) kept-many)
+
+;; ── 3. argument forms ──
+(define h5 (region-open 'named))
+(check "named-region-closes" 'ok (region-close h5 'ok))
+(define h6 (region-open 4096))
+(check "lone-numeric-arg-is-size-hint" 'ok (region-close h6 'ok))
+(define h7 (region-open 'named 4096))
+(check "name-plus-size-closes" 'ok (region-close h7 'ok))
+
+;; ── 4. double close raises, catchably ──
+(define h8 (region-open))
+(region-close h8)
+(check "double-close-raises"
+       'caught
+       (guard (e (#t 'caught)) (region-close h8) 'NOT-CAUGHT))
+
+;; ── 5. use after close: probing is safe and false, closing raises ──
+(check "use-after-close-probe-is-false" #f (region-open? h8))
+(check "use-after-close-with-keeps-raises"
+       'caught
+       (guard (e (#t 'caught)) (region-close h8 'x) 'NOT-CAUGHT))
+
+;; ── 6. fabricated / degenerate tokens never validate ──
+(check "fabricated-token-not-live" #f (region-open? 123456789))
+(check "zero-is-never-a-handle" #f (region-open? 0))
+(check "negative-is-never-a-handle" #f (region-open? -1))
+(check "fabricated-close-raises"
+       'caught
+       (guard (e (#t 'caught)) (region-close 123456789) 'NOT-CAUGHT))
+
+;; ── 7. close out of order: a DEFINED cascade, not an error ──
+;; Closing the outer handle while an inner one is live closes both, innermost
+;; first, promotes the keep out through every level, and invalidates the inner
+;; token so it cannot later tear down an unrelated region.
+(define outer (region-open 'outer))
+(define inner (region-open 'inner))
+(define cascade-kept (region-close outer (list 'deep (list 'nested 7))))
+(check "cascade-keep-survives" '(deep (nested 7)) cascade-kept)
+(check "cascade-keep-is-deep" 7 (car (cdr (car (cdr cascade-kept)))))
+(check "cascade-closed-the-inner-handle" #f (region-open? inner))
+(check "cascade-closed-the-outer-handle" #f (region-open? outer))
+(check "cascaded-inner-close-raises"
+       'caught
+       (guard (e (#t 'caught)) (region-close inner) 'NOT-CAUGHT))
+
+;; ── 8. nested handles closed in the right order work normally ──
+(define n-outer (region-open 'n-outer))
+(define n-inner (region-open 'n-inner))
+(check "lifo-inner-close" 'in (region-close n-inner 'in))
+(check "lifo-outer-still-live" #t (region-open? n-outer))
+(check "lifo-outer-close" 'out (region-close n-outer 'out))
+
+;; ── 9. UNWIND: a raise crossing an open handle closes it, and the raised value
+;;      — allocated INSIDE the region being torn down — reaches the handler
+;;      intact rather than as a pointer into freed memory. ──
+(define crossed #f)
+(define raised
+  (guard (e (#t e))
+    (set! crossed (region-open 'crossed))
+    (raise (list 'payload (list 'inner 42)))))
+(check "raise-crossing-region-delivers-value" '(payload (inner 42)) raised)
+(check "raise-crossing-region-value-is-deep" 42 (car (cdr (car (cdr raised)))))
+(check "raise-closed-the-crossed-handle" #f (region-open? crossed))
+(check "close-after-unwind-raises"
+       'caught
+       (guard (e (#t 'caught)) (region-close crossed) 'NOT-CAUGHT))
+
+;; ── 10. UNWIND: a continuation escape crossing an open handle does the same ──
+(define cc-crossed #f)
+(define cc-value
+  (call/cc (lambda (k)
+             (set! cc-crossed (region-open 'cc-crossed))
+             (k (list 'escaped (list 'inner 9)))
+             'NOT-REACHED)))
+(check "callcc-crossing-region-delivers-value" '(escaped (inner 9)) cc-value)
+(check "callcc-crossing-region-value-is-deep" 9 (car (cdr (car (cdr cc-value)))))
+(check "callcc-closed-the-crossed-handle" #f (region-open? cc-crossed))
+
+;; ── 11. UNWIND also covers `with-region`: a raise out of a lexical region body
+;;      must not leak the region or leave the allocation slot hijacked. If the
+;;      slot were left pointing at the freed region arena, the allocations in the
+;;      cases that follow would be corrupt (and poisoned bytes would crash). ──
+(define wr-raised
+  (guard (e (#t e))
+    (with-region ('scratch 4096) (raise (list 'from-region (list 1 2 3))))))
+(check "raise-out-of-with-region-delivers-value" '(from-region (1 2 3)) wr-raised)
+(define post-unwind (region-open))
+(define post-unwind-kept (region-close post-unwind (list 'still 'fine)))
+(check "handles-work-after-with-region-unwind" (list 'still 'fine) post-unwind-kept)
+
+;; ── 12. slot reuse: a retired slot's OLD token must never validate again even
+;;      though the slot itself is handed back out. ──
+(define reused-old h1)
+(define reused-new (region-open))
+(check "reused-slot-rejects-old-token" #f (region-open? reused-old))
+(check "reused-slot-accepts-new-token" #t (region-open? reused-new))
+(check "reused-slot-closes" 'r (region-close reused-new 'r))
+
+;; ── 13. never closed: bounded, with a clean error naming the cause. Opening
+;;      without closing must hit the handle-table limit rather than grow without
+;;      bound; the error is catchable and the runtime stays usable afterwards. ──
+(define exhausted
+  (guard (e (#t 'caught))
+    (let spin ((i 0))
+      (if (> i 200)
+          'NO-LIMIT
+          (begin (region-open) (spin (+ i 1)))))))
+(check "unclosed-handles-hit-a-clean-limit" 'caught exhausted)
+
+;; ── 14. not kept => not retained. Repeated open/close cycles that allocate a
+;;      lot inside the region and keep nothing must leave the SURVIVING arena
+;;      essentially unchanged. This is the observable form of "values not in the
+;;      keep list are genuinely unreachable": if they were escaping, the arena
+;;      that outlives the region would grow by their size every cycle. ──
+(define arena-before (__arena-used))
+(let churn ((i 0))
+  (if (< i 50)
+      (let ((h (region-open 65536)))
+        ;; Allocate a few kilobytes per cycle and keep NONE of it.
+        (let build ((j 0) (acc '()))
+          (if (< j 40)
+              (build (+ j 1) (cons (list j (vector j j j) "filler") acc))
+              (begin (region-close h) (churn (+ i 1))))))))
+(define arena-after (__arena-used))
+(define arena-growth (- arena-after arena-before))
+;; 50 cycles x ~40 objects would be tens of kilobytes if anything escaped.
+;; A small fixed allowance covers the loop's own bookkeeping in the outer arena.
+(check "unkept-allocations-do-not-escape" #t (< arena-growth 8192))
+(if (>= arena-growth 8192)
+    (begin (display "    (arena grew by ") (display arena-growth)
+           (display " bytes over 50 keep-nothing cycles)") (newline)))
+
+(display "region_handle_safety_test: ")
+(if (= failures 0)
+    (begin (display "PASS") (newline))
+    (begin (display "FAIL (") (display failures) (display " case(s))") (newline)))
