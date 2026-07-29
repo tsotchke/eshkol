@@ -1,0 +1,45 @@
+;; FOUND: the reader does not implement R7RS 7.1.1 vertical-line symbols.
+;;
+;; R7RS 7.1.1 gives three identifier productions, the second being
+;;   <identifier> -> <vertical line> <symbol element>* <vertical line>
+;; so |weird sym| is a single symbol whose name contains a space, and
+;; (symbol? '|weird sym|) must be #t.
+;;
+;; Eshkol lexes '|weird sym| as TWO tokens -- '|weird and sym| -- so the
+;; second becomes a variable reference:
+;;
+;;     error: Undefined variable: sym|
+;;        3 | (display '|weird sym|)
+;;          |                  ^
+;;
+;; and (symbol? '|weird sym|) additionally reports "Type predicate requires
+;; exactly 1 argument", because the split produces two arguments.
+;;
+;; HOW THIS STAYED HIDDEN: scripts/p8/gen_property_oracles.py listed
+;; |weird sym| among its datum atoms, emitted UNQUOTED into evaluated
+;; constructor calls. The generated program therefore referenced undefined
+;; variables, the compiler printed a diagnostic for each one and emitted a
+;; binary anyway, and the property oracle passed. The oracle was green while
+;; pinning nothing. Making an emitted error diagnostic fatal exposed it.
+;;
+;; Expected output once the reader is fixed:
+;;   #t
+;;   weird sym
+;;   #t
+;;   3
+
+(display (symbol? '|weird sym|))
+(newline)
+(display '|weird sym|)
+(newline)
+;; A vertical-line symbol must survive a write/read round trip.
+(display (equal? (read (open-input-string
+                         (let ((o (open-output-string)))
+                           (write '|weird sym| o)
+                           (get-output-string o))))
+                 '|weird sym|))
+(newline)
+;; And must be usable as data inside a collection, which is the shape the
+;; property oracle generates.
+(display (vector-length (vector 0 '|weird sym| 2)))
+(newline)
