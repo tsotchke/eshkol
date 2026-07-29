@@ -1,5 +1,6 @@
 ;; Type System Test: Gradual mode warns but does not error
 ;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
 ;; EXPECT-STDERR: [WARN] Type warning: argument 1
 ;; EXPECT-NO-STDERR: [ERROR]
 

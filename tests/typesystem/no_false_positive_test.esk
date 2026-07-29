@@ -1,5 +1,6 @@
 ;; Type System Test: Valid programs produce no type warnings
 ;; EXPECT-MODE: default
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: [WARN]
 ;; EXPECT-NO-STDERR: [ERROR]
 

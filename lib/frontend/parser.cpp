@@ -8,6 +8,7 @@
 #include <eshkol/core/logic.h>
 #include <eshkol/core/runtime.h>
 #include <eshkol/logger.h>
+#include <eshkol/types/hott_types.h>
 
 #include <string.h>
 #include <algorithm>
@@ -2042,34 +2043,26 @@ static bool parse_extern_var_modifier_tail(SchemeTokenizer& tokenizer,
 // Parse type expressions for the HoTT type system
 // Supports: primitive types, arrow types, container types, forall, etc.
 
-// Parse a primitive type name and return the corresponding type expression
+// Parse a bare type name and return the corresponding type expression.
+//
+// Bare type-name spellings come from the type system's canonical registry
+// (eshkol::hott::builtinTypeSpellings()) — this function must NOT keep a
+// private list of its own. A registry entry either names a dedicated
+// hott_type_kind_t (`integer` -> HOTT_TYPE_INTEGER) or carries HOTT_TYPE_VAR,
+// meaning "resolve by name", which TypeChecker::resolveType() does through the
+// type environment's name table. That table is populated from the very same
+// registry, so a spelling accepted here always resolves to a real type.
+//
+// Anything not in the registry is a type variable (the `a` in
+// `(forall (a) (-> a a))`), unchanged.
 static hott_type_expr_t* parsePrimitiveType(const std::string& name) {
-    // Check for primitive types (case-insensitive)
-    std::string lower = name;
-    for (auto& c : lower) c = std::tolower((unsigned char)c);
+    const eshkol::hott::BuiltinTypeSpelling* spelling =
+        eshkol::hott::lookupBuiltinTypeSpelling(name);
 
-    if (lower == "integer" || lower == "int" || lower == "int64") {
-        return hott_make_integer_type();
-    } else if (lower == "real" || lower == "float" || lower == "double" || lower == "float64") {
-        return hott_make_real_type();
-    } else if (lower == "boolean" || lower == "bool") {
-        return hott_make_boolean_type();
-    } else if (lower == "string" || lower == "str") {
-        return hott_make_string_type();
-    } else if (lower == "char" || lower == "character") {
-        return hott_make_char_type();
-    } else if (lower == "symbol") {
-        return hott_make_symbol_type();
-    } else if (lower == "null" || lower == "nil") {
-        return hott_make_null_type();
-    } else if (lower == "any") {
-        return hott_make_any_type();
-    } else if (lower == "nothing" || lower == "never") {
-        return hott_make_nothing_type();
-    } else {
-        // Treat as type variable (lowercase letters starting with a-z)
-        return hott_make_type_var(name.c_str());
+    if (spelling && spelling->kind != HOTT_TYPE_VAR) {
+        return hott_make_primitive_type(spelling->kind);
     }
+    return hott_make_type_var(name.c_str());
 }
 
 // Parse a type expression from the tokenizer
@@ -4737,22 +4730,19 @@ static eshkol_ast_t parse_list(SchemeTokenizer& tokenizer) {
         // `the` when it heads something that is not a type ascription (e.g. a
         // user procedure named `the`); in that case fall through to the
         // ordinary call path below. An ascription's second element is a type:
-        // either a parenthesised type form `(vector any)` or a primitive type
-        // name. A bare non-type symbol keeps `the` an ordinary call head.
+        // either a parenthesised type form `(vector any)` or a bare type name.
+        // A bare non-type symbol keeps `the` an ordinary call head.
+        //
+        // Bare names are recognised through the type system's canonical registry
+        // (eshkol::hott::isBuiltinTypeName) — the same registry that populates
+        // the type environment's name table and drives parsePrimitiveType above.
+        // A second hand-maintained allow-list lived here, and omitting `number`
+        // from it is exactly what made `(the number 3)` the parse error "Unknown
+        // function: the" while `(the string s)` worked.
         Token t2 = tokenizer.peekToken();  // non-destructive (pushes back)
-        auto isPrimitiveTypeName = [](const std::string& n) {
-            std::string l = n;
-            for (auto& c : l) c = std::tolower((unsigned char)c);
-            return l == "integer" || l == "int" || l == "int64" ||
-                   l == "real" || l == "float" || l == "double" || l == "float64" ||
-                   l == "boolean" || l == "bool" || l == "string" || l == "str" ||
-                   l == "char" || l == "character" || l == "symbol" ||
-                   l == "null" || l == "nil" || l == "any" ||
-                   l == "nothing" || l == "never";
-        };
         bool looks_like_ascription =
             (t2.type == TOKEN_LPAREN) ||
-            (t2.type == TOKEN_SYMBOL && isPrimitiveTypeName(t2.value));
+            (t2.type == TOKEN_SYMBOL && eshkol::hott::isBuiltinTypeName(t2.value));
         if (looks_like_ascription) {
             hott_type_expr_t* type_expr = parseTypeExpression(tokenizer);
             if (!type_expr) {

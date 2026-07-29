@@ -5,6 +5,7 @@
 ;; into a numeric parameter — without narrowing this reported
 ;; "expected Number, got Boolean".
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: ok
 ;; EXPECT-NO-STDERR: [ERROR]
 ;; EXPECT-NO-STDERR: [WARN]
 

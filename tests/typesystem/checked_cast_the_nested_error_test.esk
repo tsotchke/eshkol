@@ -4,6 +4,7 @@
 ;; The ascribed type is string, but the wrapped expression references an unbound
 ;; variable, which must still be reported.
 ;; EXPECT-MODE: strict-types
+;; EXPECT-COMPILE: fail
 ;; EXPECT-STDERR: error
 ;; EXPECT-STDERR: no-such-variable
 

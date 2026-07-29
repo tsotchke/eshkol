@@ -2833,6 +2833,26 @@ public:
                     if (cfg->strict_types) {
                         eshkol_error("HoTT: %zu type errors detected (strict mode)",
                                     type_checker.errors().size());
+                        // `--strict-types` means what --help and
+                        // docs/reference/runtime/eshkol-run.md say it means:
+                        // "Type errors are fatal". It used to only change the
+                        // WORDING of the diagnostic — codegen ran to completion,
+                        // the compile exited 0, and AOT wrote a finished binary
+                        // for a program the type checker had just rejected. Any
+                        // build step trusting $? (or the mere existence of the
+                        // output) therefore certified ill-typed code.
+                        //
+                        // Abort here rather than at the fatal_codegen_error_
+                        // check further down: the program is already rejected,
+                        // so generating code for it can only add noise (or fault
+                        // on the very inconsistency that was reported).
+                        //
+                        // Gradual mode (the default) is untouched: it warns and
+                        // continues, exactly as before. `--unsafe` reports
+                        // nothing and is likewise unaffected.
+                        eshkol_error("Refusing to generate code for a program with "
+                                     "type errors (--strict-types)");
+                        return std::make_pair(nullptr, nullptr);
                     } else if (!cfg->unsafe_mode) {
                         eshkol_warn("HoTT: %zu type warnings detected (gradual typing continues)",
                                    type_checker.errors().size());
@@ -12660,6 +12680,23 @@ private:
     Value* codegenCall(const eshkol_operations_t* op) {
         if (!op->call_op.func) {
             return nullptr;
+        }
+
+        // ((the <type> f) x) — an ascribed head. `the` is a pure no-op at
+        // runtime, so a call through it must behave exactly like a call to the
+        // wrapped expression. Unwrap and re-dispatch rather than teaching each
+        // head form about ascriptions: every case below (variable head, inline
+        // lambda, nested call, operation-result) then works through a cast.
+        // Without this, `((the procedure f) 7)` reached the "Call expression
+        // requires variable or inline lambda" bail-out, which made the
+        // `procedure`/`closure`/`(-> a b)` ascriptions unusable in the one
+        // position where ascribing a callable is the point.
+        if (op->call_op.func->type == ESHKOL_OP &&
+            op->call_op.func->operation.op == ESHKOL_THE_OP &&
+            op->call_op.func->operation.the_op.expr) {
+            eshkol_operations_t unwrapped = *op;
+            unwrapped.call_op.func = op->call_op.func->operation.the_op.expr;
+            return codegenCall(&unwrapped);
         }
 
         // ((lambda (x) body) arg) — inline lambda head
