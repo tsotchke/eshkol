@@ -2099,6 +2099,10 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 )
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
+  # Forward half of the Eshkol <-> qLLM bridge (inc/eshkol/bridge/qllm_bridge.h).
+  # Creates the AD_NODE_TENSOR_* / geometric nodes that lib/bridge/tensor_backward.cpp
+  # already knows how to differentiate; without it those backward rules are unreachable.
+  lib/bridge/qllm_bridge.cpp
   lib/bridge/tensor_backward.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
