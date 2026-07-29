@@ -2215,9 +2215,13 @@ static void print_help(int x = 0)
         "\t    reached via (load …)/(import …)/(require …), so a build system\n"
         "\t    (e.g. ninja DEPFILE) recompiles the object when any of them change.\n"
         "\t--shared-lib:[-s] = Links a loadable shared library (.dylib/.so/.dll)\n"
-        "\t    with no `main` and LinkOnceODR linkage on every definition. Add -c\n"
-        "\t    (or name a `-o <path>.o`) to stop at the library-mode object\n"
-        "\t    instead, which is what a build system linking Eshkol objects wants.\n"
+        "\t    with no `main` and LinkOnceODR linkage on every definition. Its\n"
+        "\t    exported functions use the platform C ABI for tagged values, so a\n"
+        "\t    host can dlopen it, call `__eshkol_lib_init__(arena)` once, then\n"
+        "\t    call them as declared in <eshkol/eshkol.h>. Add -c (or name a\n"
+        "\t    `-o <path>.o`) to stop at the library-mode object instead, which\n"
+        "\t    is what a build system linking Eshkol objects wants; that object\n"
+        "\t    keeps Eshkol's internal convention and is not C-callable.\n"
         "\t-fPIC = Accepted for build-system compatibility.\n"
         "\t-I DIR = Add a source/module search path.\n"
         "\t-D NAME[=VALUE] = Accepted for build-system compatibility.\n"
@@ -4302,6 +4306,20 @@ int main(int argc, char **argv)
             // step below turns that object into the shared library, so the
             // object-only short circuit must not fire.
             compile_only = 0;
+
+            // A LINKED shared library is called by a C host across the real
+            // platform ABI, so its exported functions need the platform C
+            // calling convention for `eshkol_tagged_value_t` rather than
+            // Eshkol's internal first-class-struct convention — the two are
+            // not the same and the difference silently corrupted every return
+            // value and every tagged argument. See
+            // eshkol_set_shared_library_exports().
+            //
+            // Deliberately NOT set for the relocatable object flavour: those
+            // objects are linked into other Eshkol modules that call with the
+            // internal convention (the precompiled stdlib, and
+            // cmake/EshkolCompile.cmake consumers).
+            eshkol_set_shared_library_exports(1);
         }
     }
 

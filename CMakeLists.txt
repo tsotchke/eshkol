@@ -3295,6 +3295,33 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
                 FAIL_REGULAR_EXPRESSION "FAIL:")
     endif()
     if(NOT WIN32 AND
+       EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/shared_lib_abi_test.sh")
+        # `--shared-lib` promises a library a C host can dlopen and call. Eshkol's
+        # internal calling convention returns eshkol_tagged_value_t as an LLVM
+        # first-class struct of five fields, which the backend flattens into one
+        # register per field -- NOT the platform C ABI for the same 16-byte
+        # struct. Every exported return value and every tagged argument was
+        # therefore corrupted (a function returning 42 handed the caller the
+        # flags byte, 16). Asserts the boundary through two independent
+        # consumers -- a clang harness using the real public struct and python
+        # ctypes -- at -O0 and -O2, in both the return and argument directions,
+        # with a negative control that must observe the corruption on the
+        # unwrapped internal-convention symbol.
+        add_test(
+            NAME shared_lib_abi_test
+            COMMAND bash
+                    "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/shared_lib_abi_test.sh"
+                    $<TARGET_FILE:eshkol-run>
+                    "${CMAKE_CURRENT_BINARY_DIR}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        set_tests_properties(shared_lib_abi_test
+            PROPERTIES
+                TIMEOUT 600
+                PASS_REGULAR_EXPRESSION "PASS: shared_lib_abi_test"
+                FAIL_REGULAR_EXPRESSION "FAIL:")
+    endif()
+    if(NOT WIN32 AND
        EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/toolchain/runtime_archive_resolution_test.sh")
         # RC B3: a compiler must link its OWN runtime. The archive co-located
         # with the running eshkol-run (resolved through its real path) beats one
