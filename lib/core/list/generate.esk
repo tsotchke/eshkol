@@ -6,32 +6,38 @@
 
 (provide iota iota-from iota-step repeat make-list range zip)
 
-;;; iota: Generate a list of numbers starting from 0
-;;; (iota 5) => (0 1 2 3 4)
-(define (iota count)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons n acc))))
-  (build (- count 1) '()))
+;;; iota: Generate a list of numbers (SRFI-1 semantics)
+;;; (iota count)             => (0 1 ... count-1)
+;;; (iota count start)       => (start start+1 ... start+count-1)
+;;; (iota count start step)  => (start start+step ... start+(count-1)*step)
+;;; start/step may be exact or inexact; exactness follows the standard
+;;; numeric-tower contagion rule of +/* (any inexact argument makes the
+;;; corresponding elements inexact).
+;;;
+;;; Uses let*/named-let rather than sequential internal (define ...) forms:
+;;; the VM's compile_form_define() leaves an internal define's value on the
+;;; stack and registers it as a local at that slot, but the body sequencer
+;;; then emits OP_POP for every non-final body form, popping the variable's
+;;; own slot out from under it (filed:
+;;; tests/vm_parity/found/internal_define_then_body_form.esk). Two or more
+;;; sequential internal defines hit this on every define but the last.
+(define (iota count . rest)
+  (let* ((start (if (pair? rest) (car rest) 0))
+         (step (if (and (pair? rest) (pair? (cdr rest))) (cadr rest) 1)))
+    (let loop ((n (- count 1)) (acc '()))
+      (if (< n 0)
+          acc
+          (loop (- n 1) (cons (+ start (* n step)) acc))))))
 
-;;; iota-from: Generate a list of numbers starting from a given value
+;;; iota-from: SRFI-1 iota with an explicit start (kept as a public alias)
 ;;; (iota-from 5 1) => (1 2 3 4 5)
 (define (iota-from count start)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons (+ start n) acc))))
-  (build (- count 1) '()))
+  (iota count start))
 
-;;; iota-step: Generate a list of numbers with custom start and step
+;;; iota-step: SRFI-1 iota with an explicit start and step (kept as a public alias)
 ;;; (iota-step 5 0 2) => (0 2 4 6 8)
 (define (iota-step count start step)
-  (define (build n acc)
-    (if (< n 0)
-        acc
-        (build (- n 1) (cons (+ start (* n step)) acc))))
-  (build (- count 1) '()))
+  (iota count start step))
 
 ;;; repeat: Create a list with n copies of x
 (define (repeat n x)
