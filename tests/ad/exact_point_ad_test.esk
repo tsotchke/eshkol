@@ -28,16 +28,27 @@
 ;;
 ;;   * the jet/tape entry points (derivative, gradient, jacobian, hessian,
 ;;     laplacian, divergence, curl, directional-derivative) perform EXACTLY-ONCE
-;;     boundary coercion: the exact seed is converted to the double it denotes,
-;;     once, at the boundary. The result is therefore INEXACT, and -- this is the
-;;     load-bearing property -- it must never disagree with the same computation
-;;     performed at (exact->inexact point). A future exact tier at these entry
-;;     points may tighten the result to exact; it may never disagree with this.
+;;     boundary coercion: an exact seed they cannot carry exactly is converted to
+;;     the double it denotes, once, at the boundary. The load-bearing property is
+;;     that the result must never disagree with the same computation performed at
+;;     (exact->inexact point).
 ;;
-;; The controlling assertion for every operator below is therefore
+;;   * ESH-0394, section 6 below: `derivative`, `gradient` and `hessian` at an
+;;     exact point no longer need that coercion at all. They run the SAME tower
+;;     pass derivative-n runs, so they are EXACT there, and the contract tightens
+;;     from agreement-within-tolerance to an identity with the oracle:
+;;       (derivative f x) == (derivative-n f x 1),
+;;       (gradient   f x) == (derivative-n f x 1),
+;;       (hessian    f x) == (derivative-n f x 2)   at an exact scalar x,
+;;     in value AND in exactness. That is the tightening the previous revision of
+;;     this comment anticipated; the sections below it still hold, because an
+;;     exact answer never disagrees with the inexact one.
+;;
+;; The controlling assertion in sections 1-5 is therefore
 ;;   |op(f, exact-pt) - op(f, (exact->inexact exact-pt))| <= tol,
-;; which is what catches a fabricated number regardless of its magnitude: a heap
-;; address, a 5e-314 denormal and a silent 0 all fail it.
+;; which is what catches a fabricated number regardless of its magnitude (a heap
+;; address, a 5e-314 denormal and a silent 0 all fail it), and in section 6 it is
+;; `exact?` on both sides plus `=` against the tower oracle.
 ;;
 ;; Runs identically under -r (JIT) and AOT.
 
@@ -71,6 +82,39 @@
           (string-append "got=" (number->string got)
                          " exact?=" (if (exact? got) "#t" "#f")
                          " expect=" (number->string expect))))
+
+;; ESH-0394 exact tier. The controlling assertion is against the ORACLE, not
+;; against a tolerance: the operator's answer at an exact point must be EXACT and
+;; numerically identical to the derivative-n/taylor tower's answer for the same
+;; f, point and order. `expect` is stated independently so a wrong oracle cannot
+;; certify a wrong operator.
+(define (check-exact-oracle name got oracle expect)
+  (report name (and (exact? got) (exact? oracle) (= got oracle) (= got expect))
+          (string-append "got=" (number->string got)
+                         " exact?=" (if (exact? got) "#t" "#f")
+                         " oracle=" (number->string oracle)
+                         " exact?=" (if (exact? oracle) "#t" "#f")
+                         " expect=" (number->string expect))))
+
+;; Exactness contagion stops at the first transcendental (R7RS): the answer
+;; DEMOTES to a double. It must then be BIT-IDENTICAL to the oracle -- that is
+;; the contract, `derivative` at an exact point IS the tower's answer -- and
+;; numerically agree with the plain double path.
+;;
+;; Bit-identity to the double path is deliberately NOT asserted, because the two
+;; carriers derive some transcendentals differently and always have. Measured on
+;; this tree, at the same inexact point 0.3333333333333333:
+;;   (derivative-n sqrt … 1) = 0.8660254037844386   (tower: u^(1/2) power recurrence)
+;;   (derivative   sqrt …)   = 0.8660254037844387   (jet: closed-form 0.5/sqrt x)
+;; i.e. one ulp apart, with the SAME inexact input -- so this is a jet-vs-tower
+;; recurrence difference, nothing to do with exactness. exp/log/sin do agree
+;; bit-for-bit, which is why the oracle side is pinned exactly.
+(define (check-demotes name got oracle double-path)
+  (report name (and (not (exact? got)) (= got oracle) (close? got double-path))
+          (string-append "got=" (number->string got)
+                         " exact?=" (if (exact? got) "#t" "#f")
+                         " oracle=" (number->string oracle)
+                         " double-path=" (number->string double-path))))
 
 ;; ---------------------------------------------------------------------
 ;; Section 1 -- derivative-n / taylor keep the EXACT tier (must not degrade).
@@ -264,6 +308,122 @@
                (vector-ref d 0) 4.0)
   (check-close "R->R^n derivative component 1 at an exact integer point"
                (vector-ref d 1) 12.0))
+
+;; ---------------------------------------------------------------------
+;; Section 6 -- THE EXACT TIER (ESH-0394).
+;;
+;; `derivative`, `gradient` and `hessian` at an exact point now run the SAME
+;; tower pass `derivative-n` runs, so the contract is an identity, not a
+;; tolerance:
+;;
+;;     (derivative f x) == (derivative-n f x 1)      at an exact x
+;;     (gradient   f x) == (derivative-n f x 1)      at an exact scalar x
+;;     (hessian    f x) == (derivative-n f x 2)      at an exact scalar x
+;;
+;; in value AND in exactness. Every check below asserts `exact?` on both sides
+;; and `=` between them, plus an independently-stated expected value so a wrong
+;; oracle cannot certify a wrong operator.
+;; ---------------------------------------------------------------------
+(define (cube x) (* x x x))
+(define (poly x) (+ (* 3 x x) (* -5 x) 7))    ; poly'  = 6x - 5 ; poly'' = 6
+(define (ip4 x) (expt x 4))                   ; ip4'   = 4x^3   ; ip4''  = 12x^2
+
+;; --- derivative: exact rational points on polynomials -----------------
+(check-exact-oracle "derivative of x^2 at 1/3 is exactly 2/3"
+                    (derivative sq 1/3) (derivative-n sq 1/3 1) 2/3)
+(check-exact-oracle "derivative of x^3 at 2/5 is exactly 12/25"
+                    (derivative cube 2/5) (derivative-n cube 2/5 1) 12/25)
+(check-exact-oracle "derivative of 3x^2-5x+7 at 1/3 is exactly -3"
+                    (derivative poly 1/3) (derivative-n poly 1/3 1) -3)
+;; A rational FUNCTION (division by a point-dependent denominator) stays exact:
+;; geom' = 1/(1-x)^2, and at 1/2 that is exactly 4.
+(check-exact-oracle "derivative of 1/(1-x) at 1/2 is exactly 4"
+                    (derivative geom 1/2) (derivative-n geom 1/2 1) 4)
+
+;; --- derivative: exact integer and bignum points ----------------------
+(check-exact-oracle "derivative of x^2 at the exact integer 3 is exactly 6"
+                    (derivative sq 3) (derivative-n sq 3 1) 6)
+(check-exact-oracle "derivative of x^2 at a bignum point is exact (no double rounding)"
+                    (derivative sq 123456789012345678901)
+                    (derivative-n sq 123456789012345678901 1)
+                    246913578024691357802)
+
+;; The point may be computed rather than written: exactness is a property of the
+;; VALUE at the boundary, not of the literal's spelling.
+(define pt13 (/ 1 3))
+(check-exact-oracle "derivative at a variable-held exact rational is exact"
+                    (derivative sq pt13) (derivative-n sq pt13 1) 2/3)
+
+;; --- gradient / hessian at an exact scalar point ----------------------
+(check-exact-oracle "gradient of x^2 at 1/3 is exactly 2/3"
+                    (gradient sq 1/3) (derivative-n sq 1/3 1) 2/3)
+(check-exact-oracle "gradient of x^3 at 2/5 is exactly 12/25"
+                    (gradient cube 2/5) (derivative-n cube 2/5 1) 12/25)
+(check-exact-oracle "hessian of x^2 at 1/3 is exactly 2"
+                    (hessian sq 1/3) (derivative-n sq 1/3 2) 2)
+(check-exact-oracle "hessian of 3x^2-5x+7 at 1/3 is exactly 6"
+                    (hessian poly 1/3) (derivative-n poly 1/3 2) 6)
+(check-exact-oracle "hessian of x^3 at 2/5 is exactly 12/5"
+                    (hessian cube 2/5) (derivative-n cube 2/5 2) 12/5)
+
+;; --- integer expt chains stay exact -----------------------------------
+(check-exact-oracle "derivative of x^4 (integer expt) at 1/3 is exactly 4/27"
+                    (derivative ip4 1/3) (derivative-n ip4 1/3 1) 4/27)
+(check-exact-oracle "hessian of x^4 (integer expt) at 1/3 is exactly 4/3"
+                    (hessian ip4 1/3) (derivative-n ip4 1/3 2) 4/3)
+(check-exact-oracle "derivative of x^4 at the exact integer 2 is exactly 32"
+                    (derivative ip4 2) (derivative-n ip4 2 1) 32)
+
+;; --- the first transcendental demotes to a double ---------------------
+;; Not an error and not a tolerance: the answer becomes inexact and must then be
+;; identical to the oracle AND to the plain double path at the same point.
+(define (fexp x) (exp x))
+(define (flog x) (log x))
+(define (fsqrt x) (sqrt x))
+(define (fmix x) (* (sin x) x x))     ; exact * exact * TRANSCENDENTAL
+(check-demotes "exp demotes an exact point to the double tier"
+               (derivative fexp 1/3) (derivative-n fexp 1/3 1)
+               (derivative fexp (exact->inexact 1/3)))
+(check-demotes "log demotes an exact point to the double tier"
+               (derivative flog 1/3) (derivative-n flog 1/3 1)
+               (derivative flog (exact->inexact 1/3)))
+(check-demotes "sqrt of a non-square demotes an exact point to the double tier"
+               (derivative fsqrt 1/3) (derivative-n fsqrt 1/3 1)
+               (derivative fsqrt (exact->inexact 1/3)))
+(check-demotes "one transcendental factor demotes the whole product"
+               (derivative fmix 1/3) (derivative-n fmix 1/3 1)
+               (derivative fmix (exact->inexact 1/3)))
+(check-demotes "hessian demotes at the first transcendental too"
+               (hessian fexp 1/3) (derivative-n fexp 1/3 2)
+               (hessian fexp (exact->inexact 1/3)))
+
+;; --- an INEXACT point is not promoted ---------------------------------
+;; The exact tier must be invisible on the double path: an inexact point keeps
+;; the jet/tape carrier and an inexact answer.
+(report "derivative at an inexact point stays inexact"
+        (not (exact? (derivative sq 0.5))) "")
+(report "gradient at an inexact point stays inexact"
+        (not (exact? (gradient sq 0.5))) "")
+(report "hessian at an inexact point stays inexact"
+        (not (exact? (hessian sq 0.5))) "")
+(check-close "derivative at an inexact point has the unchanged value"
+             (derivative sq 0.5) 1.0)
+(check-close "gradient at an inexact point has the unchanged value"
+             (gradient sq 0.5) 1.0)
+(check-close "hessian at an inexact point has the unchanged value"
+             (hessian sq 0.5) 2.0)
+
+;; --- the exact tier must not disturb nested differentiation -----------
+;; A tower cannot nest as the outer pass, so a body that differentiates again is
+;; declined and keeps the jet path. Pinned here because the failure mode is a
+;; silent 0, not an error:
+;;   d/dx [ d/dy (x*y^2) at y=2 ] = d/dx [4x] = 4.
+(check-close "nested derivative at an exact integer point still answers 4"
+             (derivative (lambda (x) (derivative (lambda (y) (* x (* y y))) 2.0)) 3)
+             4.0)
+(check-close "nested derivative at an inexact point still answers 4"
+             (derivative (lambda (x) (derivative (lambda (y) (* x (* y y))) 2.0)) 3.0)
+             4.0)
 
 ;; ---------------------------------------------------------------------
 (display "----") (newline)

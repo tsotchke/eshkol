@@ -237,43 +237,80 @@ distinction.
 
 ## Exact vs inexact seeds
 
-The forward jet and the reverse tape both carry a **raw double per component**,
-so every operator on this page coerces its evaluation point to a double at the
-entry boundary. That coercion is decided by the point's **runtime tag**, and it
-happens **exactly once**, at the boundary.
+`derivative`, `gradient` and `hessian` are **exact at an exact point**: they run
+the same Taylor-tower pass `derivative-n` runs, whose coefficients are tagged
+values, so the answer is an exact integer or rational rather than a double.
 
-| Seed | `derivative-n` / `taylor` | `derivative`, `gradient`, `jacobian`, `hessian`, `laplacian`, `divergence`, `curl`, `directional-derivative` |
-|---|---|---|
-| exact integer (`3`) | **exact** result | coerced to `3.0` once; result inexact |
-| exact rational (`1/3`) | **exact** result (`2/3`) | coerced to `0.333…` once; result inexact (`0.666…`) |
-| bignum (`123456789012345678901`) | **exact** result | coerced to the nearest double once; result inexact |
-| double (`0.5`) | inexact (f64 tower) | inexact — unchanged |
-| non-numeric point | catchable type error | catchable type error |
+| Seed | `derivative-n` / `taylor` | `derivative`, `gradient`, `hessian` (scalar point) | `jacobian`, `laplacian`, `divergence`, `curl`, `directional-derivative` |
+|---|---|---|---|
+| exact integer (`3`) | **exact** | **exact** (`(derivative x² 3)` → `6`) | coerced to `3.0` once; result inexact |
+| exact rational (`1/3`) | **exact** (`2/3`) | **exact** (`2/3`) | coerced to `0.333…` once; result inexact |
+| bignum | **exact** | **exact** (no double rounding) | coerced to the nearest double once |
+| double (`0.5`) | inexact (f64 tower) | inexact — unchanged | inexact — unchanged |
+| non-numeric point | catchable type error | catchable type error | catchable type error |
 
-Two properties hold for every operator and every point form:
+The **exact tier** keeps `+ - * /` and non-negative-integer `expt` exact and
+demotes to f64 at the first transcendental (R7RS exactness contagion), so
+
+```scheme
+(derivative (lambda (x) (* x x)) 1/3)          ;; => 2/3          (exact? => #t)
+(gradient   (lambda (x) (* x x x)) 2/5)        ;; => 12/25        (exact? => #t)
+(hessian    (lambda (x) (expt x 4)) 1/3)       ;; => 4/3          (exact? => #t)
+(derivative (lambda (x) (/ 1 (- 1 x))) 1/2)    ;; => 4            (exact? => #t)
+(derivative (lambda (x) (exp x)) 1/3)          ;; => 1.3956…      (exact? => #f)
+```
+
+The contract is an **identity with the tower**, not a tolerance:
+
+```
+(derivative f x) == (derivative-n f x 1)      at an exact x
+(gradient   f x) == (derivative-n f x 1)      at an exact scalar x
+(hessian    f x) == (derivative-n f x 2)      at an exact scalar x
+```
+
+in value and in exactness. Gated by `tests/ad/exact_point_ad_test.esk`
+(JIT + AOT in CTest) and the `exactpoint` family of
+`tests/ad_adversarial/gen_ad_adversarial.py`.
+
+Three properties hold for every operator and every point form:
 
 - **An exact seed never disagrees with the same operator applied at
-  `(exact->inexact point)`.** This is the contract. It is what makes the
-  coercion observable-equivalent to writing the inexact point yourself, and it
-  is gated by `tests/ad/exact_point_ad_test.esk` plus the `exactpoint` family of
-  `tests/ad_adversarial/gen_ad_adversarial.py`.
+  `(exact->inexact point)`.** An exact answer is the same number, only not
+  rounded; a coerced answer is observably what writing the inexact point
+  yourself would give.
 - **A valid numeric point is never turned into a different number.** An exact
   rational or bignum is HEAP-tagged, so its tagged data field holds a *pointer*;
   reinterpreting that field (rather than dispatching on the tag) yields either a
   value of heap magnitude or a denormal near `5e-314`. Neither can occur: a point
   that is not a number raises a catchable type error instead.
+- **An inexact point is never promoted.** The exact tier is invisible on the
+  double path: the jet/tape carrier and its result are unchanged.
 
-Only `derivative-n` and `taylor` route an exact seed through the
-**exact-coefficient tier**, where `+ - * /` and non-negative-integer `expt` stay
-exact and the first transcendental demotes the tower to f64 (R7RS exactness
-contagion). That tier is documented in
-[../../guide/AUTOMATIC_DIFFERENTIATION.md](../../guide/AUTOMATIC_DIFFERENTIATION.md#3-exact-coefficients-bignum--rational)
-section 3 and gated by `tests/ad/exact_taylor_test.esk`.
+### When the exact tier defers to the jet
 
-Extending the exact tier to the jet/tape operators is a **build item**: the jet
-is eight raw doubles and the tape node holds a raw double, so an exact tier there
-needs an exact carrier, not a coercion change. Until then those operators are
-inexact-valued at an exact seed — and, per the contract above, never *wrong*.
+The tower is the only exact carrier, but it is not a drop-in replacement for the
+8-jet, so the exact route is taken only where the two cannot be told apart.
+`derivative`/`gradient`/`hessian` keep the (inexact, unchanged) jet path when:
+
+- **the body is not pure tower arithmetic** — the tower has recurrences only for
+  the primitives of `lib/core/taylor_recurrences.def`, so a body that indexes a
+  vector, branches, or calls another function is deferred. This is also what
+  keeps a **nested** differentiation on the jet: a tower cannot nest as the outer
+  pass (`(derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)` answers `0`,
+  a pre-existing `derivative-n` limitation), so a body that differentiates again
+  must not be routed to it;
+- **the function cannot be resolved to a single-parameter body** — an unresolved
+  function may differentiate again;
+- **a differentiation is already live at run time** — a forward pass
+  (`__ad_pert_level > 0`), a tower pass, or a reverse tape, any of which means
+  the point or a capture may carry a perturbation the tower would drop.
+
+**Build items** (capability to add, not limitations to accept):
+`jacobian`/`laplacian`/`divergence`/`curl`/`directional-derivative` and the
+**vector-point** forms of `gradient`/`hessian` need one tower pass per component,
+because the tower is univariate; a body outside the arithmetic whitelist needs
+tower recurrences for the remaining forms; and nested tower passes need the
+epoch-tagged tower-in-tower work that would also fix `derivative-n`'s own nesting.
 
 > `#(1/3)` and `(tensor 1/3)` are a separate, non-AD gap: those literal
 > constructors drop an exact rational to `0` before any AD operator sees the
