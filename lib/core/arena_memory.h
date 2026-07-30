@@ -274,6 +274,14 @@ bool eshkol_deep_equal(const eshkol_tagged_value_t* val1, const eshkol_tagged_va
 eshkol_dual_number_t* arena_allocate_dual_number(arena_t* arena);
 eshkol_dual_number_t* arena_allocate_dual_batch(arena_t* arena, size_t count);
 
+// The arena a tape-retained AD node must be allocated from: the recording
+// tape's owner_arena when a tape is live, else the caller's current arena.
+// An object the tape holds a pointer to lives exactly as long as the tape, so
+// the three allocators below route through this instead of trusting the
+// caller's (possibly nursery/region-scoped) arena. See the definition in
+// runtime_autodiff.cpp for the full invariant and the ESH-0214e interaction.
+arena_t* eshkol_ad_home_arena(arena_t* fallback);
+
 // AD node allocation for computational graphs
 ad_node_t* arena_allocate_ad_node(arena_t* arena);
 ad_node_t* arena_allocate_ad_node_with_header(arena_t* arena);  // For consolidated CALLABLE type

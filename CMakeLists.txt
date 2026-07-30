@@ -176,6 +176,16 @@ set(ESHKOL_TENSORCORE_MIN_VERSION "0.1.22" CACHE STRING
 set(ESHKOL_TENSORCORE_MAX_TESTED_VERSION "0.1.22" CACHE STRING
     "Newest TensorCore public ABI covered by Eshkol release gates")
 
+# The qLLM tensor backend is opt-in, matching docs/SDNC.md §13: the default
+# build of eshkol-qllm-run uses the portable C reference matmul and has no
+# external dependency; -DUSE_QLLM additionally links the qLLM NEON/Metal
+# backend for an accelerated benchmark. Turning this ON is what defines
+# USE_QLLM for that target (see the eshkol-qllm-run section below).
+option(ESHKOL_QLLM_ENABLED
+       "Link the external qLLM NEON/Metal tensor backend into eshkol-qllm-run (defines USE_QLLM)" OFF)
+set(ESHKOL_QLLM_ROOT "" CACHE PATH
+    "Root of an installed libsemiclassical_qllm; expects include/semiclassical_qllm and build/lib or lib")
+
 # Moonlab is deliberately opt-in: normal Eshkol builds neither fetch nor link
 # the simulator.  c613234cd8498804428f3838aa46dd730b1de810 is pinned by object
 # SHA (rather than the mutable v1.1.0-rc name) for reproducible builds.  At the
@@ -2099,6 +2109,10 @@ set(ESHKOL_BACKEND_RUNTIME_SRC
 )
 
 set(ESHKOL_RUNTIME_SUPPORT_SRC
+  # Forward half of the Eshkol <-> qLLM bridge (inc/eshkol/bridge/qllm_bridge.h).
+  # Creates the AD_NODE_TENSOR_* / geometric nodes that lib/bridge/tensor_backward.cpp
+  # already knows how to differentiate; without it those backward rules are unreachable.
+  lib/bridge/qllm_bridge.cpp
   lib/bridge/tensor_backward.cpp
   lib/bridge/tensorcore_adapter.cpp
   lib/core/crypto_primitives.c
@@ -3039,6 +3053,39 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Tape-retained AD nodes vs. per-iteration reclamation.
+    #
+    # ESH-0214e runs an escape-analysed loop body inside a nursery region that is
+    # arena_reset() at every TCO back edge. AD nodes created in the body were
+    # allocated from that nursery while the tape recording them lived outside it,
+    # so the reset recycled them and the next iteration reallocated at the same
+    # addresses — every earlier node's parents resolved to the FINAL iteration's
+    # subgraph. Reverse-mode gradients through a vector filled by vector-set! in
+    # a loop therefore returned the row for the last element written, for every
+    # element read, with exact primals and exit 0. Pins the minimal shape, a
+    # composed vector field against its closed-form Jacobian, and row-index
+    # sensitivity through a mutable selector, on both the JIT and AOT lanes.
+    add_test(
+        NAME tape_nursery_attribution_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tape_nursery_attribution_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tape_nursery_attribution_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot'"
+    )
+    set_tests_properties(tape_nursery_attribution_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Tensor-operand and checkpoint-resume hardening.
     #
     # (1) `embedding` reinterpreted its index/weight operands as tensors without
@@ -3180,6 +3227,64 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
         PROPERTIES
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: taylor_models_test"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0393: EXACT evaluation points at the jet/tape AD entry points. The
+    # boundary coercion used to reinterpret the tagged data field, so a
+    # HEAP-tagged exact rational/bignum point was differentiated at its own
+    # ADDRESS (heap-magnitude garbage), read as a ~5e-314 denormal, or
+    # misclassified as a COLLECTION and dereferenced as [dims][rank][elems]
+    # (`(gradient f 1/3)` => #(), `(hessian f 1/3)` => SIGSEGV). The gate is that
+    # an exact seed never disagrees with the SAME operator at
+    # (exact->inexact point) -- which no fabricated seed can satisfy, whatever
+    # its magnitude -- while derivative-n/taylor keep the exact tier. BOTH lanes:
+    # the JIT and AOT differ in how the point literal reaches codegen.
+    add_test(
+        NAME exact_point_ad_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_point_ad_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_point_ad_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_point_ad_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_point_ad_aot'"
+    )
+    set_tests_properties(exact_point_ad_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-seed AD entry points agree with the inexact seed"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # ESH-0394: the exact-coefficient Taylor tier is the ORACLE the exact tier
+    # routes `derivative`/`gradient`/`hessian` to at an exact point, so a
+    # regression in it is a regression in all three. It was unwired -- nothing in
+    # CTest or any workflow ran it, and tests/ad/ is not globbed by
+    # scripts/run_autodiff_tests.sh (which globs tests/autodiff/ only) -- so it
+    # gates here now, in BOTH lanes.
+    add_test(
+        NAME exact_taylor_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(exact_taylor_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME exact_taylor_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/ad/exact_taylor_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/exact_taylor_aot'"
+    )
+    set_tests_properties(exact_taylor_aot_smoke
+        PROPERTIES
+            TIMEOUT 600
+            PASS_REGULAR_EXPRESSION "PASS: exact-coefficient Taylor tier"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     add_test(
         NAME empty_collection_runtime_smoke
@@ -4231,6 +4336,33 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_backward.c")
     endif()
 endif()
 
+# ===== qLLM bridge end-to-end gate ===========================================
+# Proves the bridge is wired in the only way that counts: a real computation
+# runs through the forward entry points in lib/bridge/qllm_bridge.cpp, is
+# backpropagated through the backward rules in lib/bridge/tensor_backward.cpp
+# (which shipped compiled but unreachable, because nothing created an
+# AD_NODE_TENSOR_* node for them), and the gradients are checked against
+# central finite differences of the same forward. Also covers the float32
+# interop round-trip and the bridge lifecycle.
+if(ESHKOL_BUILD_TESTS AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/bridge/qllm_bridge_gradcheck_test.cpp")
+    add_executable(qllm_bridge_gradcheck_test
+        tests/bridge/qllm_bridge_gradcheck_test.cpp)
+    target_compile_features(qllm_bridge_gradcheck_test PRIVATE cxx_std_20)
+    target_include_directories(qllm_bridge_gradcheck_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/inc)
+    eshkol_target_llvm_includes(qllm_bridge_gradcheck_test)
+    if(LLVM_LIBRARY_DIRS)
+        target_link_directories(qllm_bridge_gradcheck_test PRIVATE ${LLVM_LIBRARY_DIRS})
+    endif()
+    target_link_libraries(qllm_bridge_gradcheck_test PRIVATE
+        eshkol-static ${ESHKOL_EXTRA_LINK_LIBS} ${LLVM_LIBS_LIST} ${LLVM_SYSTEM_LIBS_LIST})
+    add_test(NAME qllm_bridge_gradcheck COMMAND qllm_bridge_gradcheck_test)
+    set_tests_properties(qllm_bridge_gradcheck PROPERTIES
+        PASS_REGULAR_EXPRESSION "Results: 7 passed, 0 failed"
+    )
+endif()
+
 # ===== SDNC runtime tool: execute programs through the weight matrices ========
 # `lib/backend/qllm_interpreter.c` loads a QLMW v3 weight file (produced by the
 # weight_matrices tool) and executes Eshkol bytecode by running the transformer
@@ -4248,6 +4380,51 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/lib/backend/qllm_interpreter.c")
     set_target_properties(eshkol-qllm-run PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/tools
     )
+
+    # Optional accelerated path. docs/SDNC.md §13: "The default build uses the
+    # portable C reference matmul (no external dependency); `-DUSE_QLLM`
+    # additionally links the qLLM NEON/Metal tensor backend for an accelerated
+    # benchmark." So OFF by default is what the documentation promises — the
+    # accelerated path is an opt-in, not a regression when absent.
+    #
+    # Before this option existed, USE_QLLM was guarded code that no target and
+    # no script could ever define: four #ifdef sites reachable only by editing
+    # the source or hand-driving the compiler. The option is what makes the
+    # documented `-DUSE_QLLM` build actually selectable.
+    if(ESHKOL_QLLM_ENABLED)
+        find_path(ESHKOL_QLLM_INCLUDE_DIR
+            NAMES semiclassical_qllm/tensor.h
+            HINTS ${ESHKOL_QLLM_ROOT}/include $ENV{QLLM_ROOT}/include
+        )
+        find_library(ESHKOL_QLLM_LIBRARY
+            NAMES semiclassical_qllm
+            HINTS ${ESHKOL_QLLM_ROOT}/build/lib ${ESHKOL_QLLM_ROOT}/lib
+                  $ENV{QLLM_ROOT}/build/lib $ENV{QLLM_ROOT}/lib
+        )
+        if(NOT ESHKOL_QLLM_INCLUDE_DIR OR NOT ESHKOL_QLLM_LIBRARY)
+            # Fail loudly: silently falling back to the C path would make an
+            # explicit -DESHKOL_QLLM_ENABLED=ON build quietly not do the thing
+            # it was asked to do.
+            message(FATAL_ERROR
+                "ESHKOL_QLLM_ENABLED=ON but libsemiclassical_qllm was not found.\n"
+                "  Set -DESHKOL_QLLM_ROOT=<path> (expects <path>/include/semiclassical_qllm/"
+                "tensor.h and <path>/build/lib or <path>/lib), or set QLLM_ROOT in the "
+                "environment.\n"
+                "  headers: ${ESHKOL_QLLM_INCLUDE_DIR}\n  library: ${ESHKOL_QLLM_LIBRARY}")
+        endif()
+        target_compile_definitions(eshkol-qllm-run PRIVATE USE_QLLM)
+        target_include_directories(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_INCLUDE_DIR})
+        target_link_libraries(eshkol-qllm-run PRIVATE ${ESHKOL_QLLM_LIBRARY})
+        if(APPLE)
+            # The qLLM backend dispatches to Metal on Apple platforms.
+            target_link_libraries(eshkol-qllm-run PRIVATE
+                "-framework Metal" "-framework Foundation")
+        endif()
+        message(STATUS "  qLLM:      ENABLED (USE_QLLM; ${ESHKOL_QLLM_LIBRARY})")
+    else()
+        message(STATUS "  qLLM:      DISABLED (portable C reference matmul; "
+                       "-DESHKOL_QLLM_ENABLED=ON to link the qLLM tensor backend)")
+    endif()
 endif()
 
 # ===== SDNC de-risking experiment: differentiable external memory head ========

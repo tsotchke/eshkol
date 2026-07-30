@@ -155,35 +155,79 @@
                     (display "PASS: ") (display id) (newline)))))))
     (row 0 #f)))
 
-;; probe vecpoint.dot
-(define Cvp (vector 2.0 -1.0 0.5 -0.75))
-(define (loss145 z) (tensor-dot z Cvp))
-(define lit145 (gradient (lambda (z) (loss145 z)) (vector 1.2335 0.5795 1.6262 0.6787)))
-(define var145 (gradient loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
-(define wrp145 (wg loss145 (vector 1.2335 0.5795 1.6262 0.6787)))
-(chk-grad "vecpoint.dot.literal" lit145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.dot.firstclass" var145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.dot.wrapper" wrp145 loss145 (vector 1.2335 0.5795 1.6262 0.6787) 1e-4 1e-4 #f)
+;; probe exactpoint.rat25.gradient-list
+(define (fv156 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g156 (gradient fv156 (list 2/5)))
+(define gr156 (gradient fv156 (list (exact->inexact 2/5))))
+(chk "exactpoint.rat25.gradient-list" (vector-ref g156 0) (vector-ref gr156 0) 1e-4 1e-6)
+(chk-grad "exactpoint.rat25.gradient-list-fd" g156 fv156 (vector (exact->inexact 2/5)) 1e-4 1e-4 #f)
 
-;; probe vecpoint.summul
-(define Cvp2 (vector 0.5 -1.5 0.25))
-(define (loss146 z) (tensor-sum (tensor-mul z Cvp2)))
-(define lit146 (gradient (lambda (z) (loss146 z)) (vector 1.0 2.0 4.0)))
-(define var146 (gradient loss146 (vector 1.0 2.0 4.0)))
-(define wrp146 (wg loss146 (vector 1.0 2.0 4.0)))
-(chk-grad "vecpoint.summul.literal" lit146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.summul.firstclass" var146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.summul.wrapper" wrp146 loss146 (vector 1.0 2.0 4.0) 1e-4 1e-4 #f)
+;; probe exactpoint.rat25.gradient-mixed
+(define (fm157 v) (+ (* (vref v 0) (vref v 0)) (* 2.0 (vref v 1) (vref v 1)) (* 0.5 (vref v 2) (vref v 2))))
+(define gm157 (gradient fm157 (vector 2/5 0.5 2)))
+(define gn157 (gradient fm157 (vector (exact->inexact 2/5) 0.5 2.0)))
+(chk "exactpoint.rat25.gradient-mixed-slot0" (vector-ref gm157 0) (vector-ref gn157 0) 1e-4 1e-6)
+(chk "exactpoint.rat25.gradient-mixed-slot1" (vector-ref gm157 1) (vector-ref gn157 1) 1e-4 1e-6)
+(chk "exactpoint.rat25.gradient-mixed-slot2" (vector-ref gm157 2) (vector-ref gn157 2) 1e-4 1e-6)
+(chk-grad "exactpoint.rat25.gradient-mixed-fd" gm157 fm157 (vector (exact->inexact 2/5) 0.5 2.0) 1e-4 1e-4 #f)
 
-;; probe vecpoint.matmul
-(define Kvp (reshape (vector 1.0 0.0 0.0 1.0) 2 2))
-(define (loss147 z) (tensor-sum (tensor-matmul (reshape z 2 2) Kvp)))
-(define lit147 (gradient (lambda (z) (loss147 z)) (vector 1.0 2.0 3.0 4.0)))
-(define var147 (gradient loss147 (vector 1.0 2.0 3.0 4.0)))
-(define wrp147 (wg loss147 (vector 1.0 2.0 3.0 4.0)))
-(chk-grad "vecpoint.matmul.literal" lit147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.matmul.firstclass" var147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
-(chk-grad "vecpoint.matmul.wrapper" wrp147 loss147 (vector 1.0 2.0 3.0 4.0) 1e-4 1e-4 #f)
+;; probe exactpoint.rat25.hessian
+(define (fq158 v) (* (vref v 0) (vref v 0) (vref v 0) (vref v 0)))
+(define hs158 (vector-ref (vector-ref (hessian fq158 (vector 2/5)) 0) 0))
+(define hi158 (vector-ref (vector-ref (hessian fq158 (vector (exact->inexact 2/5))) 0) 0))
+(chk "exactpoint.rat25.hessian" hs158 hi158 2e-3 1e-4)
+(define lp158 (laplacian fq158 (vector 2/5)))
+(define li158 (laplacian fq158 (vector (exact->inexact 2/5))))
+(chk "exactpoint.rat25.laplacian" lp158 li158 2e-3 1e-4)
+(define dd158 (directional-derivative fq158 (vector 2/5) (vector 1)))
+(define di158 (directional-derivative fq158 (vector (exact->inexact 2/5)) (vector 1)))
+(chk "exactpoint.rat25.directional-derivative" dd158 di158 1e-4 1e-6)
+(define hfd158 (fd-diag fq158 (vector (exact->inexact 2/5)) 0 1e-4))
+(chk "exactpoint.rat25.hessian-fd" hs158 hfd158 2e-3 1e-4)
+(define dfd158 (fd-comp fq158 (vector (exact->inexact 2/5)) 0 1e-4))
+(chk "exactpoint.rat25.directional-derivative-fd" dd158 dfd158 1e-4 1e-6)
+
+;; probe exactpoint.rat25.derivative-n-exact
+(define (fs159 x) (* x x))
+(define dn159 (derivative-n fs159 2/5 1))
+(chk-exact "exactpoint.rat25.derivative-n-exact" dn159 (* 2 2/5) #f)
+
+;; probe exactpoint.rat34.derivative
+(define (fx160 x) (+ (* 1.5 x) (* x x) (* 0.5 x x x)))
+(define ad160 (derivative fx160 3/4))
+(define ai160 (derivative fx160 (exact->inexact 3/4)))
+(chk "exactpoint.rat34.derivative" ad160 ai160 1e-4 1e-6)
+(define fd160 (/ (- (fx160 (+ (exact->inexact 3/4) 1e-5)) (fx160 (- (exact->inexact 3/4) 1e-5))) (* 2.0 1e-5)))
+(chk "exactpoint.rat34.derivative-fd" ad160 fd160 1e-4 1e-6)
+(define pv160 3/4)
+(define adv160 (derivative fx160 pv160))
+(chk "exactpoint.rat34.derivative-var" adv160 ai160 1e-4 1e-6)
+(define gs160 (gradient fx160 3/4))
+(define gi160 (gradient fx160 (exact->inexact 3/4)))
+(chk "exactpoint.rat34.gradient-scalar" gs160 gi160 1e-4 1e-6)
+
+;; probe exactpoint.rat34.gradient-vector
+(define (fv161 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g161 (gradient fv161 (vector 3/4)))
+(define gr161 (gradient fv161 (vector (exact->inexact 3/4))))
+(chk "exactpoint.rat34.gradient-vector" (vector-ref g161 0) (vector-ref gr161 0) 1e-4 1e-6)
+(chk-grad "exactpoint.rat34.gradient-vector-fd" g161 fv161 (vector (exact->inexact 3/4)) 1e-4 1e-4 #f)
+
+;; probe exactpoint.rat34.gradient-list
+(define (fv162 v) (+ (* 1.5 (vref v 0)) (* (vref v 0) (vref v 0))))
+(define g162 (gradient fv162 (list 3/4)))
+(define gr162 (gradient fv162 (list (exact->inexact 3/4))))
+(chk "exactpoint.rat34.gradient-list" (vector-ref g162 0) (vector-ref gr162 0) 1e-4 1e-6)
+(chk-grad "exactpoint.rat34.gradient-list-fd" g162 fv162 (vector (exact->inexact 3/4)) 1e-4 1e-4 #f)
+
+;; probe exactpoint.rat34.gradient-mixed
+(define (fm163 v) (+ (* (vref v 0) (vref v 0)) (* 2.0 (vref v 1) (vref v 1)) (* 0.5 (vref v 2) (vref v 2))))
+(define gm163 (gradient fm163 (vector 3/4 0.5 2)))
+(define gn163 (gradient fm163 (vector (exact->inexact 3/4) 0.5 2.0)))
+(chk "exactpoint.rat34.gradient-mixed-slot0" (vector-ref gm163 0) (vector-ref gn163 0) 1e-4 1e-6)
+(chk "exactpoint.rat34.gradient-mixed-slot1" (vector-ref gm163 1) (vector-ref gn163 1) 1e-4 1e-6)
+(chk "exactpoint.rat34.gradient-mixed-slot2" (vector-ref gm163 2) (vector-ref gn163 2) 1e-4 1e-6)
+(chk-grad "exactpoint.rat34.gradient-mixed-fd" gm163 fm163 (vector (exact->inexact 3/4) 0.5 2.0) 1e-4 1e-4 #f)
 
 (display "Passed: ") (display op-pass) (newline)
 (display "Failed: ") (display op-fail) (newline)

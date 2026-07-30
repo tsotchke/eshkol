@@ -307,7 +307,17 @@ extern "C" void tensor_rmsnorm_backward(ad_node_t* node) {
         for (size_t i = 0; i < last_dim; i++) {
             double xhat = x_row[i] * inv_rms;
             double dy_g = dy_row[i] * (gamma ? gamma[i] : 1.0);
-            dx_row[i] += inv_rms * (dy_g - xhat * sum_dy_x * inv_rms * inv_rms / N);
+            /* y_i = x_i * inv * g_i with inv = (mean(x^2) + eps)^(-1/2), so
+             *   dL/dx_k = inv * (dy_k g_k - inv^2 x_k * sum_i(dy_i g_i x_i) / N).
+             * Since xhat = x_k * inv, the correction term is inv * xhat * sum / N
+             * -- ONE factor of inv, not two. This previously read
+             * "xhat * sum_dy_x * inv_rms * inv_rms", i.e. inv^3 x_k where the
+             * derivative calls for inv^2 x_k, so every gradient was scaled by a
+             * spurious extra 1/rms and was only correct when rms happened to be
+             * 1. Nothing caught it because no code path created an
+             * AD_NODE_TENSOR_RMSNORM node until the bridge forward half landed;
+             * the gradient check now covers it (7.1e-01 -> ~1e-8). */
+            dx_row[i] += inv_rms * (dy_g - xhat * sum_dy_x * inv_rms / N);
 
             if (dgamma) {
                 dgamma[i] += dy_row[i] * xhat;
