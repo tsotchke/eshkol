@@ -1001,13 +1001,32 @@ void eshkol_bignum_binary_tagged(arena_t* arena,
              * truncated division, `remainder` is the TRUNCATED remainder
              * (sign of the dividend = fmod, NOT C's IEEE `remainder()`), and
              * `modulo` is the FLOORED remainder (sign of the divisor). */
-            case 4: {
-                r = std::fmod(ld, rd);
-                if (r != 0.0 && ((r < 0.0) != (rd < 0.0))) r += rd;
+            case 4:
+            case 5:
+            case 6: {
+                /* Unlike `/` above, R7RS 6.2.6 makes a zero divisor an error
+                 * for the integer-division trio regardless of exactness, and
+                 * the generated int64 and double paths raise. Without this the
+                 * mixed bignum route was the one place that answered +nan.0 /
+                 * an infinity instead, i.e. handed the caller a number where
+                 * every other representation stopped. */
+                if (rd == 0.0) {
+                    eshkol_exception_t* exc = eshkol_make_exception(
+                        ESHKOL_EXCEPTION_DIVIDE_BY_ZERO, "division by zero");
+                    eshkol_raise(exc);
+                    *result = eshkol_make_int64(0, true);
+                    return;
+                }
+                if (op == 5) {
+                    r = std::trunc(ld / rd);
+                } else {
+                    r = std::fmod(ld, rd);
+                    /* modulo: fold the truncated remainder into the divisor's
+                     * sign (floored). `remainder` keeps fmod's sign. */
+                    if (op == 4 && r != 0.0 && ((r < 0.0) != (rd < 0.0))) r += rd;
+                }
                 break;
             }
-            case 5: r = std::trunc(ld / rd); break;
-            case 6: r = std::fmod(ld, rd); break;
             default: r = 0.0; break;
         }
         *result = eshkol_make_double(r);
