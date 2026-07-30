@@ -23,6 +23,7 @@
 #include <llvm/IR/Value.h>
 #include <llvm/IR/GlobalVariable.h>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 #include <unordered_map>
@@ -145,6 +146,33 @@ public:
      * `#(0.666…)` where `(gradient f 0.333…)` returns the bare `0.666…`.
      */
     llvm::Value* adPointIsExactScalar(llvm::Value* tagged);
+
+    /** ESH-0394: is this point an EXACT NUMBER (exact int64 / bignum /
+     *  rational)? The gate on the exact tier, and the same question
+     *  `eshkol_taylor_seed_tagged` asks before seeding an exact tower, so the
+     *  codegen route and the runtime seeder cannot disagree. Broader than
+     *  adPointIsExactScalar (which excludes immediate int64), narrower than
+     *  adPointIsScalar (a double is inexact; a dual/tower means an enclosing
+     *  differentiation is live and the exact tier must decline). */
+    llvm::Value* adPointIsExactNumber(llvm::Value* tagged);
+
+    /** ESH-0394: i1 runtime gate for the exact tier — point is exact AND no
+     *  forward pass is live AND no tower pass is live. */
+    llvm::Value* adExactTowerGate(llvm::Value* point_tagged);
+
+    /** ESH-0394: may this (function, point) pair enter the exact tier? Requires
+     *  a resolvable single-parameter body and both that body and the point to
+     *  be pure arithmetic over the Taylor-tower primitive whitelist. */
+    bool adExactTowerEligible(const eshkol_ast* function_ast,
+                              const eshkol_ast* point_ast);
+
+    /** ESH-0394: emit the exact-tier route (tower pass at an exact point, the
+     *  operator's own jet path otherwise), or return nullptr — emitting
+     *  nothing — when the pass is not eligible. */
+    llvm::Value* tryExactTowerRoute(const eshkol_ast* function_ast,
+                                    const eshkol_ast* point_ast, int order,
+                                    const std::function<llvm::Value*()>& jet_arm,
+                                    const char* what);
 
     /** Shared emitter for the adPointIs* predicates: spill `tagged` to a
      *  hoisted entry-block slot and call `runtime_fn`, or fold to a constant

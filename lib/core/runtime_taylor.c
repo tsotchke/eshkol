@@ -490,6 +490,28 @@ int32_t eshkol_ad_point_is_exact_scalar(const eshkol_tagged_value_t* v) {
                     hdr->subtype == HEAP_SUBTYPE_BIGNUM)) ? 1 : 0;
 }
 
+/* Is this evaluation point an EXACT NUMBER -- an R7RS-exact integer (immediate
+ * int64 or heap bignum) or an exact rational?
+ *
+ * This is the gate on the EXACT TIER: `derivative`/`gradient`/`hessian` carry a
+ * raw double per jet/tape component and can only answer exactly by routing the
+ * pass through the Taylor tower, which is the compiler's one exact AD carrier
+ * (eshkol_taylor_alloc_exact). The tower is seeded exact for exactly the points
+ * this predicate accepts -- eshkol_taylor_seed_tagged makes the same
+ * tagged_is_exact_number() decision -- so the two agree by construction: the
+ * codegen never routes a pass to the exact tier that the seeder would then
+ * demote to COEFF_F64.
+ *
+ * Deliberately broader than eshkol_ad_point_is_exact_scalar (which answers only
+ * about HEAP exact scalars, for entry classifications that already enumerate
+ * INT64) and deliberately narrower than eshkol_ad_point_is_scalar: a DOUBLE is
+ * inexact, and a DUAL_NUMBER or a Taylor tower means an enclosing
+ * differentiation is already live, which the exact tier must decline. */
+int32_t eshkol_ad_point_is_exact_number(const eshkol_tagged_value_t* v) {
+    if (!v) return 0;
+    return tagged_is_exact_number(v) ? 1 : 0;
+}
+
 /* Raise-on-refusal wrapper: the shape the codegen calls, so an AD entry point
  * never has to branch on `ok` in IR. `what` names the operator for the
  * diagnostic (e.g. "derivative", "gradient"). */

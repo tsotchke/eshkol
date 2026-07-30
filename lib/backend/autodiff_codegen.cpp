@@ -1192,6 +1192,14 @@ llvm::Value* AutodiffCodegen::adPointIsExactScalar(llvm::Value* tagged_val) {
                             /*raw_is_true=*/false);
 }
 
+llvm::Value* AutodiffCodegen::adPointIsExactNumber(llvm::Value* tagged_val) {
+    // A raw value reaching here is never routed to the exact tier: a raw double
+    // is inexact, and a raw integer is packed as an exact tagged int64 by the
+    // caller before it asks. Answer false for anything still untagged.
+    return adPointPredicate(tagged_val, "eshkol_ad_point_is_exact_number",
+                            /*raw_is_true=*/false);
+}
+
 llvm::Value* AutodiffCodegen::safeUnpackDualFromTagged(llvm::Value* tagged_val) {
     if (!tagged_val) return nullptr;
 
@@ -8183,6 +8191,18 @@ llvm::Value* AutodiffCodegen::derivative(const eshkol_operations_t* op) {
         }
     }
 
+    // ESH-0394: exact tier. At an EXACT point (integer / bignum / rational) the
+    // 8-jet cannot represent the answer -- it carries a raw double per
+    // component -- so run the same order-1 tower pass `derivative-n` runs, which
+    // does. `(derivative f x)` then equals `(derivative-n f x 1)` at an exact x
+    // in value and in exactness. Declines (emitting nothing) unless the body and
+    // the point are pure tower-safe arithmetic; an inexact point never reaches
+    // the test.
+    if (llvm::Value* exact = tryExactTowerRoute(
+            op->derivative_op.function, op->derivative_op.point, /*order=*/1,
+            [&]() { return codegenDerivativeMonolith(op); }, "derivative"))
+        return exact;
+
     if (!resolve_lambda_callback_ || !codegen_ast_callback_) {
         eshkol_error("derivative: Required callbacks not set");
         return tagged_.packNull();
@@ -8271,6 +8291,65 @@ static const std::unordered_map<std::string,int>& monoUnOps() {
 #include "../core/taylor_recurrences.def"
     };
     return m;
+}
+
+// ── ESH-0394: eligibility predicate for the EXACT tier ──────────────────────
+//
+// The Taylor tower is the compiler's only AD carrier with exact coefficients,
+// so it is the only way `derivative`/`gradient`/`hessian` can answer exactly at
+// an exact point. It is NOT, however, a drop-in replacement for the 8-jet, and
+// the exact tier may only be entered where the difference cannot be observed:
+//
+//  1. A tower cannot NEST as the outer pass. Measured on this tree:
+//       (derivative-n (lambda (x) (derivative-n g 2.0 1)) 3.0 1)  =>  0
+//       (derivative   (lambda (x) (derivative   g 2.0))   3.0  )  =>  4  (correct)
+//     because an inner seeder reduces the tower it receives to c[0] and drops
+//     its tangent. Routing a body that differentiates again to the tower would
+//     turn a correct answer into a silent zero.
+//  2. A tower only has recurrences for the primitives in taylor_recurrences.def.
+//     Any other operation applied to a tower-tagged value has no rule to
+//     dispatch to.
+//
+// So the exact tier is entered only for a body this predicate ACCEPTS: numeric
+// literals, variables, exact-rational literals (the parser emits `1/3` as
+// `(make-rational 1 3)`), and the arithmetic heads of the .def table. It is
+// deliberately the same whitelist TaylorMonoEmitter::matchExpr walks, and must
+// be kept in lockstep with it. Everything else keeps the jet path, which stays
+// exactly as correct as it is today and merely answers inexactly.
+//
+// The predicate doubles as a proof of SIDE-EFFECT FREEDOM, which is what lets a
+// caller evaluate the point once to decide the route and once more inside the
+// arm it selects: an accepted expression is arithmetic over literals and
+// variables, so evaluating it twice is unobservable.
+static bool towerSafeExpr(const eshkol_ast* e, int depth) {
+    if (!e || depth > 64) return false;
+    if (e->type == ESHKOL_INT64 || e->type == ESHKOL_DOUBLE ||
+        e->type == ESHKOL_BIGNUM_LITERAL)
+        return true;
+    if (e->type == ESHKOL_VAR) return e->variable.id != nullptr;
+    if (e->type != ESHKOL_OP || e->operation.op != ESHKOL_CALL_OP) return false;
+
+    const auto& call = e->operation.call_op;
+    const eshkol_ast* f = call.func;
+    if (!f || f->type != ESHKOL_VAR || !f->variable.id) return false;
+    const std::string head = f->variable.id;
+
+    // The accepted heads: the .def arithmetic table, the two spellings
+    // matchExpr accepts alongside it, and the rational-literal constructor the
+    // parser desugars `n/d` into (an exact constant the tower kernel's
+    // scalar-operand path handles directly).
+    const bool accepted = monoBinOps().count(head) != 0 ||
+                          monoUnOps().count(head) != 0 ||
+                          head == "expt" || head == "fabs" ||
+                          head == "make-rational";
+    if (!accepted) return false;
+
+    const uint64_t nargs = call.num_vars;
+    const eshkol_ast* args = call.variables;
+    if (nargs > 0 && !args) return false;
+    for (uint64_t i = 0; i < nargs; i++)
+        if (!towerSafeExpr(&args[i], depth + 1)) return false;
+    return true;
 }
 
 class TaylorMonoEmitter {
@@ -8725,6 +8804,196 @@ llvm::Value* AutodiffCodegen::taylorApiCore(const eshkol_ast* function_ast,
     llvm::Value* r = codegenDerivativeMonolith(&tmp);
     adTowerMode_ = saved_mode; adTowerOrder_ = saved_order;
     return r ? r : tagged_.packNull();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ESH-0394: the EXACT TIER for the jet/tape operators
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// `derivative-n` and `taylor` answer an exact point exactly, because they run
+// the pass through the Taylor tower, whose coefficients are tagged values
+// (eshkol_taylor_alloc_exact) and whose arithmetic stays exact through
+// + - * / and non-negative-integer expt, demoting to f64 at the first
+// transcendental. `derivative`, `gradient` and `hessian` carry a raw double per
+// jet component, so they cannot represent an exact coefficient at all and used
+// to answer 0.666… where `derivative-n` answers 2/3.
+//
+// The exact tier closes that by ROUTING THE PASS, not by changing the carrier:
+// at an exact point, and only where the difference between the two carriers is
+// unobservable (towerSafeExpr above), the operator runs the SAME tower pass
+// `derivative-n` runs. The contract is therefore exactly
+//
+//     (derivative f x)  ==  (derivative-n f x 1)         at an exact x
+//     (hessian    f x)  ==  (derivative-n f x 2)         at an exact scalar x
+//
+// in value AND in exactness, with `derivative-n`/`taylor` as the oracle.
+//
+// Everything else is untouched: the decision is a single runtime tag test at
+// the entry of one AD call, the inexact arm is the existing jet path emitted
+// verbatim, and a point that is provably a double at compile time never even
+// reaches the test.
+
+/** @brief i1: may this AD pass enter the exact tier at runtime?
+ *
+ * Three conditions, all of which must hold:
+ *   - the point is an EXACT number (int64 / bignum / rational) — the same
+ *     question eshkol_taylor_seed_tagged asks before it seeds an exact tower,
+ *     so codegen and seeder cannot disagree;
+ *   - no forward differentiation is live (`__ad_pert_level == 0`) — a live jet
+ *     means the point may carry an outer perturbation the tower would drop;
+ *   - no tower pass is live (`__ad_tower_active == 0`) — a tower cannot nest as
+ *     the outer pass (see towerSafeExpr).
+ */
+llvm::Value* AutodiffCodegen::adExactTowerGate(llvm::Value* point_tagged) {
+    auto& b = ctx_.builder();
+    llvm::Value* is_exact = adPointIsExactNumber(point_tagged);
+
+    llvm::Value* gate = is_exact;
+    if (llvm::GlobalVariable* gp = ctx_.adPertLevel()) {
+        llvm::Value* lvl = b.CreateLoad(ctx_.int64Type(), gp, "xt_pert_level");
+        gate = b.CreateAnd(gate,
+            b.CreateICmpEQ(lvl, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    if (llvm::GlobalVariable* gt = ctx_.adTowerActive()) {
+        llvm::Value* dep = b.CreateLoad(ctx_.int64Type(), gt, "xt_twr_depth");
+        gate = b.CreateAnd(gate,
+            b.CreateICmpEQ(dep, llvm::ConstantInt::get(ctx_.int64Type(), 0)));
+    }
+    return gate;
+}
+
+/** @brief Is this (function, point) pair eligible for the exact tier?
+ *
+ * Resolves `function_ast` to a single-parameter body — an inline lambda, or a
+ * VAR naming a one-argument top-level define (via function_def_ast_, the same
+ * resolution tryMonomorphizedTaylor() uses) — and requires BOTH that body and
+ * the point expression to pass towerSafeExpr(). A function this cannot resolve
+ * is declined: its body may differentiate again, and a tower cannot nest.
+ */
+bool AutodiffCodegen::adExactTowerEligible(const eshkol_ast* function_ast,
+                                           const eshkol_ast* point_ast) {
+    if (!function_ast || !point_ast) return false;
+    if (!towerSafeExpr(point_ast, 0)) return false;
+
+    const eshkol_ast* body = nullptr;
+    if (function_ast->type == ESHKOL_OP && function_ast->operation.op == ESHKOL_LAMBDA_OP) {
+        const auto& L = function_ast->operation.lambda_op;
+        if (L.num_params != 1 || !L.parameters || !L.body) return false;
+        body = L.body;
+    } else if (function_ast->type == ESHKOL_VAR) {
+        if (!function_def_ast_ || !function_ast->variable.id) return false;
+        auto it = function_def_ast_->find(function_ast->variable.id);
+        if (it == function_def_ast_->end() || !it->second) return false;
+        const eshkol_ast* def = it->second;
+        if (def->type != ESHKOL_OP || def->operation.op != ESHKOL_DEFINE_OP) return false;
+        const auto& D = def->operation.define_op;
+        if (!D.is_function || D.num_params != 1 || !D.parameters || !D.value) return false;
+        body = D.value;
+    } else {
+        return false;
+    }
+    return towerSafeExpr(body, 0);
+}
+
+/**
+ * @brief Route an AD pass through the exact tier when its point is exact,
+ *        falling back to the operator's own jet path when it is not.
+ *
+ * Emits, in the current block:
+ *
+ *     p    = <point>                      ; once, for the decision
+ *     gate = adExactTowerGate(p)
+ *     br gate, exact, inexact
+ *   exact:    taylorApiCore(f, point, order, DERIV_N)    ; the tower pass
+ *   inexact:  jet_arm()                                  ; verbatim, unchanged
+ *
+ * and merges the two through a tagged slot. Returns nullptr WITHOUT emitting
+ * anything when the pass is not eligible, so every caller keeps its existing
+ * behaviour by simply falling through.
+ *
+ * @param function_ast The function being differentiated.
+ * @param point_ast The evaluation point.
+ * @param order Tower order: 1 for a first derivative, 2 for a scalar Hessian.
+ * @param jet_arm Emits the operator's existing (inexact) implementation.
+ * @param what Operator name, for the log line only.
+ * @return The merged tagged result, or nullptr if the route does not apply.
+ */
+llvm::Value* AutodiffCodegen::tryExactTowerRoute(
+        const eshkol_ast* function_ast, const eshkol_ast* point_ast, int order,
+        const std::function<llvm::Value*()>& jet_arm, const char* what) {
+    using namespace llvm;
+    if (order < 1 || !codegen_ast_callback_) return nullptr;
+    // Already inside a tower pass, or a reverse tape is live in this function:
+    // both are carrier interactions the exact tier deliberately declines.
+    if (adTowerMode_ != TowerMode::NONE) return nullptr;
+    if (ctx_.currentAdTape()) return nullptr;
+    if (!adExactTowerEligible(function_ast, point_ast)) return nullptr;
+
+    auto& b = ctx_.builder();
+    if (!b.GetInsertBlock() || !b.GetInsertBlock()->getParent()) return nullptr;
+
+    // Evaluate the point for the decision. towerSafeExpr proved it is
+    // arithmetic over literals and variables, so the selected arm may evaluate
+    // it again without any observable difference.
+    Value* praw = codegen_ast_callback_(const_cast<eshkol_ast*>(point_ast), callback_context_);
+    if (!praw) return nullptr;
+    Value* ptagged = nullptr;
+    if (praw->getType() == ctx_.taggedValueType()) {
+        ptagged = praw;
+    } else if (praw->getType()->isIntegerTy()) {
+        // A raw integer point is EXACT by R7RS convention.
+        Value* i64v = praw->getType()->isIntegerTy(64)
+                    ? praw : b.CreateSExtOrTrunc(praw, ctx_.int64Type());
+        ptagged = tagged_.packInt64(i64v, /*is_exact=*/true);
+    } else {
+        // A raw double is provably INEXACT: the jet path is already the right
+        // answer, so do not emit a decision at all.
+        return nullptr;
+    }
+
+    eshkol_info("%s: exact-tier route armed (tower order %d)", what ? what : "autodiff", order);
+
+    Function* fn = b.GetInsertBlock()->getParent();
+    AllocaInst* slot;
+    {
+        IRBuilder<> eb(&fn->getEntryBlock(), fn->getEntryBlock().begin());
+        slot = eb.CreateAlloca(ctx_.taggedValueType(), nullptr, "xt_result");
+    }
+
+    // Normalize either arm's result to a tagged value so both can merge. Every
+    // arm wired to this route returns a tagged value or a raw scalar.
+    auto to_tagged = [&](Value* v) -> Value* {
+        if (!v) return tagged_.packNull();
+        if (v->getType() == ctx_.taggedValueType()) return v;
+        if (v->getType()->isDoubleTy()) return tagged_.packDouble(v);
+        if (v->getType()->isIntegerTy(64)) return tagged_.packInt64(v, /*is_exact=*/true);
+        if (v->getType()->isIntegerTy())
+            return tagged_.packInt64(b.CreateSExtOrTrunc(v, ctx_.int64Type()), /*is_exact=*/true);
+        return nullptr;   // unexpected representation: caller falls back
+    };
+
+    Value* gate = adExactTowerGate(ptagged);
+    BasicBlock* exact_bb   = BasicBlock::Create(ctx_.context(), "xt_exact", fn);
+    BasicBlock* inexact_bb = BasicBlock::Create(ctx_.context(), "xt_inexact", fn);
+    BasicBlock* done_bb    = BasicBlock::Create(ctx_.context(), "xt_done", fn);
+    b.CreateCondBr(gate, exact_bb, inexact_bb);
+
+    // ── exact: the same tower pass derivative-n runs ──
+    b.SetInsertPoint(exact_bb);
+    Value* order_i32 = ConstantInt::get(ctx_.int32Type(), order);
+    Value* exact_res = to_tagged(taylorApiCore(function_ast, point_ast, order_i32,
+                                               TowerMode::DERIV_N));
+    b.CreateStore(exact_res ? exact_res : tagged_.packNull(), slot);
+    b.CreateBr(done_bb);
+
+    // ── inexact: the operator's existing implementation, verbatim ──
+    b.SetInsertPoint(inexact_bb);
+    Value* jet_res = to_tagged(jet_arm());
+    b.CreateStore(jet_res ? jet_res : tagged_.packNull(), slot);
+    b.CreateBr(done_bb);
+
+    b.SetInsertPoint(done_bb);
+    return b.CreateLoad(ctx_.taggedValueType(), slot, "xt_selected");
 }
 
 /**
