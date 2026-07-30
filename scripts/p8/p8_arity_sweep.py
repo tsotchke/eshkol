@@ -300,6 +300,7 @@ def main():
     os.makedirs(os.path.join(workdir, "jit"), exist_ok=True)
 
     all_divs = []
+    unmeasured = []
     tested = 0
     for e in cands:
         name, cat, arity = e["name"], e["category"], e["arity"]
@@ -316,7 +317,16 @@ def main():
             nrc, nres, nto = run_native(esk, args.native, workdir, args.timeout)
             vrc, vres, vto = run_vm(esk, args.vm, args.native, workdir, args.timeout)
             if nto or vto:
-                continue  # a timeout is environmental, not a parity claim
+                # A timeout is not a parity claim — the engines were not both
+                # observed — but it must not be SILENT either. A probe slow
+                # enough to trip the budget is exactly where a real divergence
+                # hides: `(make-vector <vector> …)` answers <invalid-vector> on
+                # native after 11-14s and #() on the VM in 0.05s, so the whole
+                # builtin vanished from the old sweep at --timeout 8 and its two
+                # genuine divergences with it. Report which probes were never
+                # measured so a shrinking measured set is visible in the trace.
+                unmeasured.append("%s[%s]" % (key, "native" if nto else "vm"))
+                continue
             ncrash = (nrc not in (0,))
             vcrash = (vrc in ("compile",)) or (isinstance(vrc, int) and vrc not in (0,))
             if diverges(nres, vres, ncrash, vcrash):
@@ -349,12 +359,18 @@ def main():
                 "kind": "escape_matrix", "name": "arity_sweep_native_vm_parity",
                 "value": status, "tested": tested, "new_divergences": new_divs,
                 "total_divergences": len(all_divs),
+                "unmeasured_probes": sorted(unmeasured),
                 "confidence": 0.95}) + "\n")
     print("axis-3 arity sweep: tested=%d builtins, divergences=%d (baseline=%d), NEW=%d"
           % (tested, len(all_divs), len(baseline), len(new_divs)))
     if new_divs:
         print("NEW native-vs-VM divergences (not in baseline):")
         for k in new_divs[:40]:
+            print("   ", k)
+    if unmeasured:
+        print("NOT MEASURED (probe exceeded --timeout %gs, no parity claim made):"
+              % args.timeout)
+        for k in sorted(unmeasured)[:40]:
             print("   ", k)
     print("axis-3 gate: %s" % status)
     return 0 if status == "PASS" else 1
