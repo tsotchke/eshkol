@@ -1367,6 +1367,9 @@ namespace ControlFlowCallbacks {
     static llvm::Value* codegenLambdaWrapper(const eshkol_operations_t* op, void* context);
     static llvm::Value* closureCallWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, void* context);
     static llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    static llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                                  llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                                  void* context);
     static llvm::Function* getClosureAllocWrapper(void* context);
     static llvm::Function* getConsSetPtrWrapper(void* context);
     static llvm::Value* resolveLambdaWrapper(const eshkol_ast_t* ast, size_t arity, void* context);
@@ -1415,6 +1418,9 @@ class EshkolLLVMCodeGen {
     friend llvm::Value* ControlFlowCallbacks::applyBuiltinWrapper(const std::string& func_name, const std::vector<llvm::Value*>& args, llvm::Value* arg_count, void* context);
     friend llvm::Value* ControlFlowCallbacks::applyForwardRefWrapper(const std::string& func_name, llvm::Value* list_int, void* context);
     friend llvm::Value* ControlFlowCallbacks::closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context);
+    friend llvm::Value* ControlFlowCallbacks::gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                                                        llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                                                        void* context);
     friend llvm::Function* ControlFlowCallbacks::getClosureAllocWrapper(void* context);
 
 private:
@@ -4342,6 +4348,7 @@ private:
         autodiff_->setResolveLambdaCallback(ControlFlowCallbacks::resolveLambdaWrapper);
         // Calculus extraction: wire closure call, arity table, captures, closure alloc
         autodiff_->setClosureCallCallback(ControlFlowCallbacks::closureCallWithInfoWrapper);
+        autodiff_->setGradientSpreadCallCallback(ControlFlowCallbacks::gradientSpreadCallWrapper);
         autodiff_->setFunctionArityTable(&function_arity_table);
         autodiff_->setFunctionBodyAstTable(&function_body_ast);
         autodiff_->setFunctionDefAstTable(&function_def_ast);
@@ -7667,14 +7674,72 @@ private:
         return packPtrToTaggedValue(param_ptr, ESHKOL_VALUE_HEAP_PTR);
     }
 
+    /* Argument source for a RUNTIME-COUNTED closure call (see codegenClosureCall).
+     *
+     * Normally a call site knows statically how many arguments it passes, so
+     * `call_args` carries them. A caller that only learns the count at run time
+     * — the AD gradient spreading a point into a runtime closure's declared
+     * number of scalar parameters — instead hands over a staging array plus the
+     * runtime count. The dispatcher already switches on a runtime argument
+     * count (it has to: `fixed_params` comes from the closure), so this mode
+     * reuses that one switch instead of making the caller emit a separate,
+     * fully expanded closure call per possible arity.
+     *
+     * Contract for the caller:
+     *   - `args_ptr` points to `width` contiguous tagged_value slots,
+     *   - slots [0, count) hold the live arguments,
+     *   - slots [count, width) are initialised to tagged null (they are loaded
+     *     unconditionally, and are what the arity-mismatch padding reads),
+     *   - `count` is already clamped to [0, width].
+     */
+    struct ClosureSpreadArgs {
+        Value* args_ptr = nullptr;
+        Value* count = nullptr;
+        int width = 0;
+    };
+
     // Runtime closure call dispatcher - supports variadic closures with up to 16 captures
     // This is essential for N-dimensional lambda calculus and AD operations
     Value* codegenClosureCall(Value* func_result, const std::vector<Value*>& call_args,
                               const char* caller_info = "unknown",
-                              bool parameter_dispatch = true) {
+                              bool parameter_dispatch = true,
+                              const ClosureSpreadArgs* spread = nullptr) {
         func_result = ensureTaggedValue(func_result);
         Function* current_func = builder->GetInsertBlock()->getParent();
         BasicBlock* merge_bb = BasicBlock::Create(*context, "call_merge", current_func);
+
+        // Spread mode: the arguments live in the caller's staging array rather
+        // than in call_args, and the count is a runtime value. Load every slot
+        // once here, in the block that dominates both the variadic and the
+        // non-variadic dispatch, so each arm can share them (the static path
+        // hoists its padded-array loads for the same reason).
+        ArrayType* spread_args_type = spread
+            ? ArrayType::get(tagged_value_type, spread->width) : nullptr;
+        std::vector<Value*> spread_arg_vals;
+        Value* spread_count = nullptr;
+        if (spread) {
+            spread_arg_vals.reserve((size_t)spread->width);
+            for (int i = 0; i < spread->width; i++) {
+                spread_arg_vals.push_back(builder->CreateLoad(tagged_value_type,
+                    builder->CreateGEP(spread_args_type, spread->args_ptr,
+                        {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)}),
+                    "spread_arg"));
+            }
+            // Re-clamp here rather than trusting the caller: this value feeds
+            // both dispatches, and neither may select an arm that does not exist.
+            spread_count = builder->CreateSelect(
+                builder->CreateICmpUGT(spread->count,
+                    ConstantInt::get(int64_type, spread->width)),
+                ConstantInt::get(int64_type, spread->width), spread->count,
+                "spread_count");
+        }
+        // A spread call always carries at least one argument (the caller routes
+        // the zero-argument case to a static call), so the "no arguments" forms
+        // below stay bound to the static path.
+        const bool have_first_arg = spread ? true : !call_args.empty();
+        auto firstArg = [&]() -> Value* {
+            return spread ? spread_arg_vals[0] : call_args[0];
+        };
 
         // A parameter object is both a heap object and a procedure.  Dispatch
         // it before the ordinary closure path so it never gets interpreted as
@@ -7693,11 +7758,11 @@ private:
             Value* parameter_bits = unpackInt64FromTaggedValue(func_result);
             Value* parameter_ptr = builder->CreateIntToPtr(parameter_bits, ptr_type,
                                                            "call_parameter_handle");
-            if (call_args.empty()) {
+            if (!have_first_arg) {
                 parameter_result = codegenParameterRef(parameter_ptr);
             } else {
                 Value* converted = codegenParameterConverterFor(
-                    parameter_ptr, call_args[0], "parameter-procedure-converter");
+                    parameter_ptr, firstArg(), "parameter-procedure-converter");
                 parameter_result = codegenParameterSet(parameter_ptr, converted);
             }
             builder->CreateBr(merge_bb);
@@ -7766,7 +7831,7 @@ private:
                 ConstantInt::get(
                     int64_type,
                     offsetof(eshkol_continuation_state_t, value)));
-            Value* invoke_value = call_args.empty() ? packNullToTaggedValue() : call_args[0];
+            Value* invoke_value = have_first_arg ? firstArg() : packNullToTaggedValue();
             builder->CreateStore(invoke_value, value_slot);
 
             // Unwind dynamic-wind stack before longjmp
@@ -7852,7 +7917,17 @@ private:
         // If so, we need to handle all arguments with polymorphic arithmetic instead of
         // using the fixed-arity function stored in the closure
         // Only do this check if we have arguments (skip for empty arg calls)
-        if (!call_args.empty()) {
+        //
+        // Spread mode skips this fold, and that is a value-preserving skip, not
+        // a dropped case. The fold exists so a 2-ary builtin closure can absorb
+        // MORE than two arguments (`(fold + …)`); with exactly two it computes
+        // polymorphicOp(a, b), which is verbatim the body of the function the
+        // closure points at (createBuiltinArithmeticFunction emits
+        // `builtin_<op>_2arg(a, b) = polymorphicOp(a, b)`), so calling through
+        // the pointer gives the identical value. Those four closures are arity
+        // 2, and a spread arm is only entered when the closure's declared arity
+        // equals the arm, so no other arm can be one of them.
+        if (!spread && !call_args.empty()) {
             Function* builtin_add = createBuiltinArithmeticFunction("+", 2);
             Function* builtin_sub = createBuiltinArithmeticFunction("-", 2);
             Function* builtin_mul = createBuiltinArithmeticFunction("*", 2);
@@ -8091,6 +8166,19 @@ private:
             arg_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_arg_ptr"));
             rest_ptrs.push_back(builder->CreateAlloca(tagged_value_type, nullptr, "var_rest_ptr"));
         }
+        // Spread mode builds the rest list with a runtime loop instead of an
+        // unrolled chain, so it needs one car slot, one accumulator and one
+        // index rather than a slot pair per static argument.
+        Value* spread_car_slot = nullptr;
+        Value* spread_rest_slot = nullptr;
+        Value* spread_rest_acc = nullptr;
+        Value* spread_rest_idx = nullptr;
+        if (spread) {
+            spread_car_slot = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_car");
+            spread_rest_slot = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_cdr");
+            spread_rest_acc = builder->CreateAlloca(tagged_value_type, nullptr, "var_spread_rest");
+            spread_rest_idx = builder->CreateAlloca(int64_type, nullptr, "var_spread_i");
+        }
 
         // Restore insertion point
         builder->restoreIP(saved_ip);
@@ -8102,8 +8190,63 @@ private:
         // list is built once per fixed-arity arm, then specialize only the
         // final call by capture count.
         const int MAX_VARIADIC_FIXED_LIMIT = 16;
-        const int max_variadic_fixed =
-            std::min<int>(MAX_VARIADIC_FIXED_LIMIT, (int)call_args.size());
+        const int max_variadic_fixed = std::min<int>(MAX_VARIADIC_FIXED_LIMIT,
+            spread ? spread->width : (int)call_args.size());
+
+        /* Spread mode: build the rest list ONCE, with a runtime loop bounded
+         * below by the runtime `fixed_params`, instead of an unrolled cons chain
+         * per fixed-arity arm. Arm f is reached only when fixed_params == f, so
+         * a list consed from slots [fixed_params, count) is exactly the list
+         * that arm's unrolled chain would have produced — same elements, same
+         * order, built back to front the same way. Emitting it once is also what
+         * keeps the arm count from multiplying the cons chains: the unrolled
+         * form costs O(width²) cons sites per call.
+         */
+        Value* spread_rest_list = nullptr;
+        if (spread) {
+            Value* null_rest = packPtrToTaggedValue(
+                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+            builder->CreateStore(null_rest, spread_rest_acc);
+            builder->CreateStore(
+                builder->CreateSub(spread_count, ConstantInt::get(int64_type, 1)),
+                spread_rest_idx);
+
+            BasicBlock* rest_cond = BasicBlock::Create(*context, "var_spread_rest_cond", current_func);
+            BasicBlock* rest_body = BasicBlock::Create(*context, "var_spread_rest_body", current_func);
+            BasicBlock* rest_done = BasicBlock::Create(*context, "var_spread_rest_done", current_func);
+            builder->CreateBr(rest_cond);
+
+            builder->SetInsertPoint(rest_cond);
+            Value* rest_i = builder->CreateLoad(int64_type, spread_rest_idx);
+            // Signed: the index walks down to fixed_params - 1, and count may be 0.
+            builder->CreateCondBr(builder->CreateICmpSGE(rest_i, fixed_params),
+                                  rest_body, rest_done);
+
+            builder->SetInsertPoint(rest_body);
+            Value* rest_arena = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+            Value* rest_cons = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {rest_arena});
+            Value* rest_elem = builder->CreateLoad(tagged_value_type,
+                builder->CreateGEP(spread_args_type, spread->args_ptr,
+                    {ConstantInt::get(int64_type, 0), rest_i}));
+            builder->CreateStore(rest_elem, spread_car_slot);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {rest_cons, ConstantInt::get(int1_type, 0), spread_car_slot});
+            builder->CreateStore(builder->CreateLoad(tagged_value_type, spread_rest_acc),
+                                 spread_rest_slot);
+            builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                {rest_cons, ConstantInt::get(int1_type, 1), spread_rest_slot});
+            builder->CreateStore(
+                packPtrToTaggedValue(builder->CreatePtrToInt(rest_cons, int64_type),
+                                     ESHKOL_VALUE_HEAP_PTR),
+                spread_rest_acc);
+            builder->CreateStore(builder->CreateSub(rest_i, ConstantInt::get(int64_type, 1)),
+                                 spread_rest_idx);
+            builder->CreateBr(rest_cond);
+
+            builder->SetInsertPoint(rest_done);
+            spread_rest_list = builder->CreateLoad(tagged_value_type, spread_rest_acc,
+                                                   "var_spread_rest_list");
+        }
         // Hoist the capture-slot GEPs once (loop-invariant across every
         // fixed-arity arm; each over-provisions the same MAX capture pointers).
         // Recomputing them per arm would be O(fixed · MAX_CAP) GEPs and inflate
@@ -8127,22 +8270,25 @@ private:
             var_fixed_sw->addCase(ConstantInt::get(int64_type, fixed_count), fixed_bb);
             builder->SetInsertPoint(fixed_bb);
 
-            Value* rest_list = packPtrToTaggedValue(
-                ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
-            for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
-                Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
-                Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
+            Value* rest_list = spread_rest_list;
+            if (!spread) {
+                rest_list = packPtrToTaggedValue(
+                    ConstantInt::get(int64_type, 0), ESHKOL_VALUE_NULL);
+                for (int64_t i = (int64_t)call_args.size() - 1; i >= fixed_count; i--) {
+                    Value* arena_ptr = builder->CreateLoad(PointerType::getUnqual(*context), global_arena);
+                    Value* cons_cell = builder->CreateCall(getArenaAllocateConsWithHeaderFunc(), {arena_ptr});
 
-                builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
-                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                    {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
+                    builder->CreateStore(call_args[(size_t)i], arg_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 0), arg_ptrs[(size_t)i]});
 
-                builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
-                builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
-                    {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
+                    builder->CreateStore(rest_list, rest_ptrs[(size_t)i]);
+                    builder->CreateCall(getTaggedConsSetTaggedValueFunc(),
+                        {cons_cell, ConstantInt::get(int1_type, 1), rest_ptrs[(size_t)i]});
 
-                Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
-                rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+                    Value* cons_int = builder->CreatePtrToInt(cons_cell, int64_type);
+                    rest_list = packPtrToTaggedValue(cons_int, ESHKOL_VALUE_HEAP_PTR);
+                }
             }
 
             // OVER-PROVISION captures (see the non-variadic switch comment):
@@ -8150,7 +8296,11 @@ private:
             // N. No per-capture switch, so one call per fixed-arity arm.
             std::vector<Value*> full_args;
             for (int i = 0; i < fixed_count; i++) {
-                if ((size_t)i < call_args.size()) {
+                if (spread) {
+                    // Slots at or beyond the runtime count hold tagged null,
+                    // which is the same padding the static path emits below.
+                    full_args.push_back(spread_arg_vals[(size_t)i]);
+                } else if ((size_t)i < call_args.size()) {
                     full_args.push_back(call_args[(size_t)i]);
                 } else {
                     full_args.push_back(packPtrToTaggedValue(
@@ -8199,35 +8349,49 @@ private:
         // preserves the existing partial-application/Y-combinator padding path
         // without emitting the full 16x32 worst-case matrix at every call site.
         const int MAX_CALL_ARGS_LIMIT = 16;
-        const int max_call_args = std::min<int>(
-            MAX_CALL_ARGS_LIMIT,
-            std::max<int>((int)call_args.size(), 4));
-        IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
-        builder->SetInsertPoint(&entry_block, entry_block.begin());
-
-        // Alloca array for padded arguments
+        // Spread mode dispatches over the caller's staging width, so its arms
+        // cover every arity the caller can pass — the static cushion below is
+        // for call sites whose argument count is fixed.
+        const int max_call_args = spread
+            ? spread->width
+            : std::min<int>(MAX_CALL_ARGS_LIMIT,
+                            std::max<int>((int)call_args.size(), 4));
         ArrayType* padded_args_type = ArrayType::get(tagged_value_type, max_call_args);
-        Value* padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
+        Value* padded_args_array = nullptr;
+        if (spread) {
+            // The caller already provided the array, already padded with tagged
+            // null past the live count.
+            padded_args_array = spread->args_ptr;
+        } else {
+            IRBuilderBase::InsertPoint saved_ip_nonvar = builder->saveIP();
+            builder->SetInsertPoint(&entry_block, entry_block.begin());
 
-        builder->restoreIP(saved_ip_nonvar);
+            // Alloca array for padded arguments
+            padded_args_array = builder->CreateAlloca(padded_args_type, nullptr, "padded_args");
 
-        // Store actual call_args into array
-        for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
-            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            builder->CreateStore(call_args[i], slot_ptr);
+            builder->restoreIP(saved_ip_nonvar);
+
+            // Store actual call_args into array
+            for (size_t i = 0; i < call_args.size() && i < (size_t)max_call_args; i++) {
+                Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                builder->CreateStore(call_args[i], slot_ptr);
+            }
+
+            // Fill remaining slots with undefined (null) values for arity mismatch handling
+            Value* undef_val = packNullToTaggedValue();
+            for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
+                Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                builder->CreateStore(undef_val, slot_ptr);
+            }
         }
 
-        // Fill remaining slots with undefined (null) values for arity mismatch handling
-        Value* undef_val = packNullToTaggedValue();
-        for (size_t i = call_args.size(); i < (size_t)max_call_args; i++) {
-            Value* slot_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            builder->CreateStore(undef_val, slot_ptr);
-        }
-
-        // Determine actual arg count to use: max(call_args.size(), fixed_params)
-        Value* call_args_count = ConstantInt::get(int64_type, call_args.size());
+        // Determine actual arg count to use: max(argument count, fixed_params).
+        // Spread mode's argument count is a runtime value; everything downstream
+        // already treats this as one.
+        Value* call_args_count = spread
+            ? spread_count : ConstantInt::get(int64_type, call_args.size());
         Value* use_fixed = builder->CreateICmpUGT(fixed_params, call_args_count);
         Value* actual_arg_count = builder->CreateSelect(use_fixed, fixed_params, call_args_count,
             "actual_arg_count");
@@ -8247,11 +8411,17 @@ private:
         // dominates all arm blocks) and let the arms share them — O(MAX_ARGS +
         // MAX_CAP).
         std::vector<Value*> hoisted_arg_vals;
-        hoisted_arg_vals.reserve((size_t)max_call_args);
-        for (int i = 0; i < max_call_args; i++) {
-            Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
-                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
-            hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+        if (spread) {
+            // Already loaded once, before the variadic split, so both dispatches
+            // share them.
+            hoisted_arg_vals = spread_arg_vals;
+        } else {
+            hoisted_arg_vals.reserve((size_t)max_call_args);
+            for (int i = 0; i < max_call_args; i++) {
+                Value* arg_ptr = builder->CreateGEP(padded_args_type, padded_args_array,
+                    {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)});
+                hoisted_arg_vals.push_back(builder->CreateLoad(tagged_value_type, arg_ptr));
+            }
         }
         std::vector<Value*> hoisted_cap_ptrs;
         hoisted_cap_ptrs.reserve((size_t)MAX_CLOSURE_DISPATCH_CAPTURES);
@@ -8360,22 +8530,53 @@ private:
         Value* direct_func_ptr_i64 = unpackInt64FromTaggedValue(func_result);
         Value* direct_func_ptr = builder->CreateIntToPtr(direct_func_ptr_i64, PointerType::getUnqual(*context));
 
-        std::vector<Type*> direct_param_types(call_args.size(), tagged_value_type);
-        FunctionType* direct_func_type = FunctionType::get(tagged_value_type, direct_param_types, false);
+        // A raw function pointer has no closure metadata to read, so the call
+        // shape is the argument count itself: static here, and in spread mode a
+        // runtime count, which needs the same one-arm-per-count dispatch as the
+        // closure path above.
+        std::vector<std::pair<BasicBlock*, Value*>> direct_results;
+        if (spread) {
+            BasicBlock* direct_default = BasicBlock::Create(*context, "do_direct_default", current_func);
+            SwitchInst* direct_sw = builder->CreateSwitch(spread_count, direct_default,
+                max_call_args + 1);
+            for (int arg_count = 0; arg_count <= max_call_args; arg_count++) {
+                BasicBlock* arm = BasicBlock::Create(*context,
+                    "do_direct_args_" + std::to_string(arg_count), current_func);
+                direct_sw->addCase(ConstantInt::get(int64_type, arg_count), arm);
+                builder->SetInsertPoint(arm);
+                std::vector<Value*> direct_args(spread_arg_vals.begin(),
+                                                spread_arg_vals.begin() + arg_count);
+                std::vector<Type*> direct_types((size_t)arg_count, tagged_value_type);
+                Value* r = builder->CreateCall(
+                    FunctionType::get(tagged_value_type, direct_types, false),
+                    direct_func_ptr, direct_args);
+                builder->CreateBr(merge_bb);
+                direct_results.push_back({builder->GetInsertBlock(), r});
+            }
+            builder->SetInsertPoint(direct_default);
+            direct_results.push_back({direct_default, packNullToTaggedValue()});
+            builder->CreateBr(merge_bb);
+        } else {
+            std::vector<Type*> direct_param_types(call_args.size(), tagged_value_type);
+            FunctionType* direct_func_type = FunctionType::get(tagged_value_type, direct_param_types, false);
 
-        Value* direct_result = builder->CreateCall(direct_func_type, direct_func_ptr, call_args);
-        builder->CreateBr(merge_bb);
-        BasicBlock* direct_exit_bb = builder->GetInsertBlock();
+            Value* direct_result = builder->CreateCall(direct_func_type, direct_func_ptr, call_args);
+            builder->CreateBr(merge_bb);
+            direct_results.push_back({builder->GetInsertBlock(), direct_result});
+        }
 
         // MERGE: PHI node to select result from all paths
         builder->SetInsertPoint(merge_bb);
         PHINode* phi = builder->CreatePHI(tagged_value_type,
-                                          results.size() + (parameter_dispatch ? 3 : 2),
+                                          results.size() + direct_results.size()
+                                              + (parameter_dispatch ? 2 : 1),
                                           "call_result");
         for (auto& [bb, val] : results) {
             phi->addIncoming(val, bb);
         }
-        phi->addIncoming(direct_result, direct_exit_bb);
+        for (auto& [bb, val] : direct_results) {
+            phi->addIncoming(val, bb);
+        }
         phi->addIncoming(as_is_result, as_is_exit_bb);
         if (parameter_dispatch) {
             phi->addIncoming(ensureTaggedValue(parameter_result), parameter_exit_bb);
@@ -8384,6 +8585,174 @@ private:
         return phi;
     }
 
+    /* ================= runtime-closure arity spread (AD gradient) =============
+     *
+     * A gradient of a RUNTIME closure has to call that closure with its own
+     * declared number of scalar arguments, and that number is only known at run
+     * time. GRAD_MAX_ARITY is the supported ceiling; above it the call raises a
+     * named error instead of quietly taking the single-vector path (which would
+     * leave the loss's remaining parameters uninitialised — the silent wrong
+     * answer that raising the ceiling from 8 fixed).
+     *
+     * The dispatch is emitted ONCE PER MODULE, out of line, and every gradient
+     * site calls it. It used to be inlined at each site as a switch with one
+     * fully expanded closure call per arity, whose per-arity cost grows with the
+     * arity (n-ary arithmetic fold, unrolled variadic rest-list chain). With the
+     * ceiling at 32 and six gradient sites in the standard library that came to
+     * ~1.03M lines of IR — 2.7x the entire stdlib (585,967 -> 1,561,902 lines,
+     * stdlib.bc 6.65MB -> 19.76MB). Platforms that emit stdlib definitions
+     * `linkonce_odr` discard the unused ones early; Windows/COFF emits them
+     * `weak_any` (see sexprGlobalLinkage), which cannot be discarded, so every
+     * user compile ran opt and llc over all of it: measured LLVM work per
+     * compile went 25.4s -> 117.7s and every GPU/XLA test hit the harness's 120s
+     * compile budget.
+     *
+     * Out of line the arity dispatch happens once, and it is the closure
+     * dispatcher's OWN runtime argument-count switch (ClosureSpreadArgs) rather
+     * than a second, per-arity one layered on top. Raising the ceiling now costs
+     * one more arm in one function instead of 24 fully expanded calls at every
+     * gradient site.
+     */
+    static constexpr int GRAD_MAX_ARITY = 32;
+    /* Sentinel the closure ABI uses for a variadic callable; it legitimately
+     * wants the vectorized single-argument form. */
+    static constexpr uint64_t GRAD_VARIADIC_ARITY = 255;
+
+    Function* getOrCreateGradSpreadHelper() {
+        const char* helper_name = "__eshkol_ad_gradient_spread_call";
+        if (Function* existing = module->getFunction(helper_name)) {
+            return existing;
+        }
+
+        // (closure, whole-point vector, dual-element array, declared arity)
+        FunctionType* helper_type = FunctionType::get(
+            tagged_value_type,
+            {tagged_value_type, tagged_value_type, PointerType::getUnqual(*context), int64_type},
+            false);
+        // Module-local: the only callers are this module's gradient sites, so it
+        // never needs to be a discardable-or-not linkonce/weak definition.
+        Function* helper = Function::Create(helper_type, Function::InternalLinkage,
+                                           helper_name, module.get());
+        Value* closure_arg = helper->getArg(0);
+        Value* vector_arg = helper->getArg(1);
+        Value* elems_arg = helper->getArg(2);
+        Value* arity_arg = helper->getArg(3);
+        closure_arg->setName("closure");
+        vector_arg->setName("point_vector");
+        elems_arg->setName("dual_elems");
+        arity_arg->setName("declared_arity");
+
+        IRBuilderBase::InsertPoint saved = builder->saveIP();
+        BasicBlock* entry = BasicBlock::Create(*context, "entry", helper);
+        builder->SetInsertPoint(entry);
+
+        ArrayType* args_type = ArrayType::get(tagged_value_type, GRAD_MAX_ARITY);
+        Value* args_array = builder->CreateAlloca(args_type, nullptr, "grad_spread_args");
+        Value* null_tagged = packNullToTaggedValue();
+        for (int i = 0; i < GRAD_MAX_ARITY; i++) {
+            builder->CreateStore(null_tagged, builder->CreateGEP(args_type, args_array,
+                {ConstantInt::get(int64_type, 0), ConstantInt::get(int64_type, i)}));
+        }
+
+        BasicBlock* over_bb = BasicBlock::Create(*context, "grad_arity_over", helper);
+        BasicBlock* within_bb = BasicBlock::Create(*context, "grad_arity_ok", helper);
+        BasicBlock* vector_bb = BasicBlock::Create(*context, "grad_call_vector", helper);
+        BasicBlock* spread_bb = BasicBlock::Create(*context, "grad_call_spread", helper);
+        BasicBlock* done_bb = BasicBlock::Create(*context, "grad_call_done", helper);
+
+        Value* over_ceiling = builder->CreateAnd(
+            builder->CreateICmpUGT(arity_arg, ConstantInt::get(int64_type, GRAD_MAX_ARITY)),
+            builder->CreateICmpNE(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY)));
+        builder->CreateCondBr(over_ceiling, over_bb, within_bb);
+
+        builder->SetInsertPoint(over_bb);
+        {
+            Function* arity_err_fn = module->getFunction("eshkol_type_error_with_operand");
+            if (!arity_err_fn) {
+                FunctionType* ft = FunctionType::get(builder->getVoidTy(),
+                    {builder->getPtrTy(), builder->getPtrTy(), builder->getPtrTy()}, false);
+                arity_err_fn = Function::Create(ft, Function::ExternalLinkage,
+                    "eshkol_type_error_with_operand", module.get());
+                arity_err_fn->setDoesNotReturn();
+            }
+            Value* slot = builder->CreateAlloca(tagged_value_type, nullptr, "grad_arity_err_slot");
+            builder->CreateStore(closure_arg, slot);
+            Value* proc = builder->CreateGlobalString("gradient", "grad_arity_proc");
+            Value* expected = builder->CreateGlobalString(
+                "callable whose argument count is at most "
+                + std::to_string(GRAD_MAX_ARITY)
+                + " (a loss with more coordinates must take its point as one "
+                  "vector argument)",
+                "grad_arity_expected");
+            builder->CreateCall(arity_err_fn, {proc, expected, slot});
+            builder->CreateUnreachable();
+        }
+
+        // Arity 1 is the vectorized single-argument loss; arity 0 (unreadable)
+        // and the variadic sentinel legitimately want that same form.
+        builder->SetInsertPoint(within_bb);
+        Value* wants_vector = builder->CreateOr(
+            builder->CreateICmpULE(arity_arg, ConstantInt::get(int64_type, 1)),
+            builder->CreateICmpEQ(arity_arg, ConstantInt::get(int64_type, GRAD_VARIADIC_ARITY)));
+        builder->CreateCondBr(wants_vector, vector_bb, spread_bb);
+
+        builder->SetInsertPoint(vector_bb);
+        Value* vector_result = ensureTaggedValue(codegenClosureCall(closure_arg,
+            std::vector<Value*>{vector_arg}, "autodiff"));
+        BasicBlock* vector_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        // Arity 2..GRAD_MAX_ARITY: stage that many dual elements and let the
+        // closure dispatcher spread them (see ClosureSpreadArgs).
+        builder->SetInsertPoint(spread_bb);
+        Value* copy_idx = builder->CreateAlloca(int64_type, nullptr, "grad_spread_i");
+        builder->CreateStore(ConstantInt::get(int64_type, 0), copy_idx);
+        BasicBlock* copy_cond = BasicBlock::Create(*context, "grad_spread_copy_cond", helper);
+        BasicBlock* copy_body = BasicBlock::Create(*context, "grad_spread_copy_body", helper);
+        BasicBlock* copy_done = BasicBlock::Create(*context, "grad_spread_copy_done", helper);
+        builder->CreateBr(copy_cond);
+
+        builder->SetInsertPoint(copy_cond);
+        Value* ci = builder->CreateLoad(int64_type, copy_idx);
+        builder->CreateCondBr(builder->CreateICmpULT(ci, arity_arg), copy_body, copy_done);
+
+        builder->SetInsertPoint(copy_body);
+        // Reads exactly the elements the inlined per-arity cases read: the
+        // dual vector's slots [0, arity).
+        Value* src = builder->CreateLoad(tagged_value_type,
+            builder->CreateGEP(tagged_value_type, elems_arg, ci));
+        builder->CreateStore(src, builder->CreateGEP(args_type, args_array,
+            {ConstantInt::get(int64_type, 0), ci}));
+        builder->CreateStore(builder->CreateAdd(ci, ConstantInt::get(int64_type, 1)), copy_idx);
+        builder->CreateBr(copy_cond);
+
+        builder->SetInsertPoint(copy_done);
+        ClosureSpreadArgs spread_args;
+        spread_args.args_ptr = args_array;
+        spread_args.count = arity_arg;
+        spread_args.width = GRAD_MAX_ARITY;
+        Value* spread_result = ensureTaggedValue(codegenClosureCall(closure_arg,
+            std::vector<Value*>{}, "autodiff", true, &spread_args));
+        BasicBlock* spread_exit = builder->GetInsertBlock();
+        builder->CreateBr(done_bb);
+
+        builder->SetInsertPoint(done_bb);
+        PHINode* result = builder->CreatePHI(tagged_value_type, 2, "grad_call_result");
+        result->addIncoming(vector_result, vector_exit);
+        result->addIncoming(spread_result, spread_exit);
+        builder->CreateRet(result);
+
+        if (saved.isSet()) builder->restoreIP(saved);
+        return helper;
+    }
+
+    Value* codegenGradientSpreadCall(Value* closure_val, Value* point_vector,
+                                     Value* dual_elems, Value* declared_arity) {
+        Function* helper = getOrCreateGradSpreadHelper();
+        return builder->CreateCall(helper, {ensureTaggedValue(closure_val),
+                                            ensureTaggedValue(point_vector),
+                                            dual_elems, declared_arity});
+    }
 
     // MIGRATED: Delegates to TaggedValueCodegen
     Value* getTaggedValueType(Value* tagged_val) {
@@ -39182,6 +39551,13 @@ namespace ControlFlowCallbacks {
     llvm::Value* closureCallWithInfoWrapper(llvm::Value* closure, const std::vector<llvm::Value*>& args, const char* info, void* context) {
         auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
         return codegen->codegenClosureCall(closure, args, info);
+    }
+
+    llvm::Value* gradientSpreadCallWrapper(llvm::Value* closure, llvm::Value* point_vector,
+                                           llvm::Value* dual_elems, llvm::Value* declared_arity,
+                                           void* context) {
+        auto* codegen = static_cast<EshkolLLVMCodeGen*>(context);
+        return codegen->codegenGradientSpreadCall(closure, point_vector, dual_elems, declared_arity);
     }
 
     llvm::Function* getClosureAllocWrapper(void* context) {
