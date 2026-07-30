@@ -30,12 +30,13 @@
 // NixOS host.
 //
 // Re-executing ourselves removes the external dependency completely: the one
-// executable we are guaranteed to be able to launch is the one already running.
+// executable we are guaranteed to be able to launch is the one already running,
+// named by argv[0] — which both back ends of run_subprocess resolve exactly the
+// way this process was itself resolved, so no path constant is needed either.
 
 #include <eshkol/pkg/subprocess.h>
 
 #include <chrono>
-#include <filesystem>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -62,35 +63,6 @@ constexpr int kBriefMilliseconds = 150;
 // working timeout is unambiguous, bounded so a broken run cannot wedge CTest.
 constexpr int kHangSeconds = 30;
 
-/**
- * @brief Absolute path to this executable, for use as args[0] of a child.
- *
- * Prefers argv[0] resolved against the current directory — that is literally
- * the file that is running — and falls back to the build-time target path
- * (ESHKOL_SUBPROCESS_TEST_SELF) when argv[0] is a bare name found via PATH, or
- * on Windows where argv[0] may lack the .exe suffix.
- */
-std::string self_executable(const char* argv0) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
-    if (argv0 && *argv0) {
-        fs::path candidate(argv0);
-        if (candidate.is_relative()) {
-            fs::path absolute = fs::absolute(candidate, ec);
-            if (!ec) candidate = absolute;
-        }
-        ec.clear();
-        if (fs::exists(candidate, ec) && !ec) {
-            return candidate.string();
-        }
-    }
-#ifdef ESHKOL_SUBPROCESS_TEST_SELF
-    return ESHKOL_SUBPROCESS_TEST_SELF;
-#else
-    return {};
-#endif
-}
-
 } // namespace
 
 int main(int argc, char** argv) {
@@ -114,10 +86,17 @@ int main(int argc, char** argv) {
     }
 
     // ---- parent ----------------------------------------------------------
-    const std::string self = self_executable(argv[0]);
+    // argv[0] is passed to the child launcher verbatim, and that resolves in
+    // every way this process could itself have been launched: both back ends
+    // of run_subprocess do a PATH search when the program has no separator
+    // (POSIX execvp; CreateProcessW with a null lpApplicationName), and a
+    // relative path still resolves because the child inherits our working
+    // directory (cwd is null below). So no filesystem probing and no
+    // build-time path constant are needed to name ourselves.
+    const std::string self = (argc > 0 && argv[0] && *argv[0]) ? argv[0] : "";
     if (self.empty()) {
-        return fail("could not determine this executable's path (argv[0]=" +
-                    std::string(argv[0] ? argv[0] : "<null>") + ")");
+        return fail("argv[0] is empty — cannot name this executable to re-run "
+                    "it as the child under test");
     }
     const std::vector<std::string> hang_long = {self, kModeHang};
     const std::vector<std::string> quick = {self, kModeQuick};
