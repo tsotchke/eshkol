@@ -15,10 +15,10 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 %	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise	gap	internal codegen helper name leaked into dispatch
 %make-lazy-promise-force	gap	internal codegen helper name leaked into dispatch
-*	vm-supported	a negative zero stays inexact: (* -1.0 0.0) is -0.0 at run time and in the constant folder, not the exact integer 0 (corpus/38_numeric_reader_roundtrip.esk)
-+	vm-supported	
--	vm-supported	
-/	vm-supported	exact/exact division yields an exact rational; a zero divisor is fatal ONLY for exact operands - any inexact operand makes it IEEE-754 (+nan.0/inf.0), and a bignum reaches the bignum domain instead of the double path that read it as 0 (corpus/37_float_div_zero.esk, tests/vm_parity/fatal/); exact bignum RATIONALS are unrepresentable (found/bignum_exact_rational.esk)
+*	vm-supported	a negative zero stays inexact: (* -1.0 0.0) is -0.0 at run time and in the constant folder, not the exact integer 0 (corpus/38_numeric_reader_roundtrip.esk); exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is unrepresentable and falls back to inexact (found/bignum_rational_mixed.esk)
++	vm-supported	exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is unrepresentable and falls back to inexact (found/bignum_rational_mixed.esk)
+-	vm-supported	exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is unrepresentable and falls back to inexact (found/bignum_rational_mixed.esk)
+/	vm-supported	exact/exact division yields an exact rational; a zero divisor is fatal ONLY for exact operands - any inexact operand makes it IEEE-754 (+nan.0/inf.0), and a bignum reaches the bignum domain instead of the double path that read it as 0 (corpus/37_float_div_zero.esk, tests/vm_parity/fatal/); exact bignum RATIONALS are unrepresentable (found/bignum_exact_rational.esk, found/bignum_rational_mixed.esk); exactness follows the operand TAGS, never the result's value shape: any inexact operand makes the result inexact, so (- 2.0 1.0) stays 1.0 and does not become the exact 1; a ratnum mixed with a flonum computes with both operands instead of truncating the flonum into the numerator (corpus/52_numeric_tag_dispatch.esk, tests/vm/numeric_tag_dispatch_surface_regression.esk); an exact bignum-with-ratnum result is unrepresentable and falls back to inexact (found/bignum_rational_mixed.esk)
 /rational	gap	no VM name binding
 <	vm-supported	
 <=	vm-supported	
@@ -28,7 +28,7 @@ __arena-used	native-only-justified	native arena introspection probe; bytecode VM
 _format-list	vm-supported	
 _region-close-list	vm-supported	
 _region-open	vm-supported	
-abs	vm-supported	
+abs	vm-supported	stays in the operand's domain: (abs 1/3) is the exact 1/3 (it used to read the rational's heap pointer as 0) and (abs -2.0) stays inexact (corpus/52_numeric_tag_dispatch.esk)
 acons	gap	no VM name binding
 acos	vm-supported	
 acosh	gap	no VM name binding
@@ -238,7 +238,7 @@ exact	gap	no VM name binding
 exact->inexact	vm-supported	
 exact-integer?	gap	no VM name binding
 exact-rational?	gap	no VM name binding
-exact?	vm-supported	
+exact?	vm-supported	answers for every exact tag - fixnum, ratnum, bignum and i128 (corpus/52_numeric_tag_dispatch.esk)
 executable-exists?	vm-supported	
 executable-path	vm-supported	
 execv	vm-supported	
@@ -282,7 +282,7 @@ filter	vm-supported
 finite?	vm-supported	
 fir-filter	gap	signal faculty has no VM fid coverage
 flatten	vm-supported	
-floor	vm-supported	
+floor	vm-supported	preserves exactness: (floor 2.5) is the inexact 2.0, not the exact 2 (tests/vm/numeric_tag_dispatch_surface_regression.esk)
 floor-quotient	gap	no VM name binding
 floor-remainder	gap	no VM name binding
 floor/	gap	no VM name binding
