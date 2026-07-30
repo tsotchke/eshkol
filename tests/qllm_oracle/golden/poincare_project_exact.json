@@ -7,12 +7,12 @@
   "ad_mode": "forward_taylor_tower_exact_rational",
   "point": "x = (999/1000, 0), c = 1, eps = 1/1000000, g = (2/5, -3/5)",
   "d_out0_d_x0_exact": "-1997001/2500000000",
-  "d_out0_d_x0_exact_as_f64": -0.00079880040000000004,
+  "d_out0_d_x0_exact_as_f64": -0.0007988004,
   "d_out0_d_x0_reverse_f64": -0.0007988003999999893,
   "d_out1_d_x0_exact": "5991003/5000000000",
-  "d_out1_d_x0_exact_as_f64": 0.0011982005999999999,
+  "d_out1_d_x0_exact_as_f64": 0.0011982006,
   "d_out1_d_x0_reverse_f64": 0.0011982005999999837,
   "conformal_factor_exact": "1999/1000000",
-  "conformal_factor_exact_as_f64": 0.0019989999999999999,
+  "conformal_factor_exact_as_f64": 0.001999,
   "conformal_factor_f64": 0.001998999999999973
 }

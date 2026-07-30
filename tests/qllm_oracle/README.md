@@ -111,6 +111,63 @@ know exactly which compiler produced a vector, record the Eshkol commit
 alongside its own test fixture — the exporters do not embed one, because the
 values are a property of the mathematics and the f64 format, not of the build.
 
+### Regeneration provenance (2026-07-30)
+
+The golden vectors were regenerated once on this branch, after a pre-existing
+reverse-mode AD regression that this instrument had detected and refused to
+paper over was fixed upstream.
+
+**What was wrong, and why regeneration was withheld earlier.** `(gradient f
+x)` mis-attributed derivatives when `f` selected a component of a vector that
+was freshly allocated and filled by `vector-set!` inside a loop — the write
+barrier that promotes escaping values out of a loop's nursery arena did not
+recognize a tagged AD dual number as carrying an arena pointer, so the nursery
+reset on the loop's back edge recycled the dual's storage while the tangent
+was still live. Two of the five exporters here (`sphere_ops.esk`,
+`sheaf_ee_step.esk`) hit exactly this pattern through `jac-rows-ad`'s
+row-by-row Jacobian assembly, so on the broken build their self-check against
+finite differences failed. Regenerating anyway would have overwritten a known
+correct golden with a silently wrong one, so the suite was deliberately left
+red (4/10) and the previously committed vectors — generated before the
+regression, and hand-verified against the closed-form Jacobian for
+`sphere_project.d2` — were kept as the reference.
+
+**The fix.** Root-caused and merged as PR #396 (`fix(memory): the iter-scope
+write barrier promotes AD dual numbers before nursery reset`), landing on
+master together with PR #393 (`fix(ad): exact-input derivative/gradient/
+hessian route through the Taylor tower`). Neither touches this branch's own
+files; both change AD behavior generally.
+
+**The regeneration.** `origin/master` at `640faa7d` (which includes both
+fixes) was merged into `feat/qllm-oracle-backwards` at merge commit `3ca121f9`,
+the tree was rebuilt, and `scripts/run_qllm_oracle_tests.sh` was run to
+regenerate all nine `golden/*.json` files.
+
+- Gate: **10/10** (both JIT and AOT lanes of all five exporters), up from the
+  4/10 recorded against the pre-fix build.
+- `schema_version` is unchanged (`1`) in every file.
+- Where the previous (pre-regression) golden was already correct, the
+  regenerated values are the **same IEEE-754 doubles**, just not always the
+  same printed digit string (e.g. `-0.95999999999999996` and `-0.96` are the
+  same double; `float(a) == float(b)` was checked directly, not inferred from
+  the text). `sphere_project.d2`'s `d_out_d_x` regenerated to
+  `[[-0.96, 0.36], [0.32000000000000006, -1.2]]`, matching the closed-form
+  `d out_i/d x_j = -(g_j x_i) - <g,x> delta_ij` used to hand-verify the
+  original golden — the fix restores the pre-regression answer, it does not
+  produce a new one.
+- `fd_cross_check.best_rel_diff` for the polynomial `sphere_project` cases —
+  the ones with a closed-form check and no hyperbolic transcendentals to
+  confound the comparison — came back `2.691449756667046e-15` (d2),
+  `3.970679993953501e-15` (d4), `2.425866844623763e-15` (d8): the same order
+  as the `2.7e-15` recorded when the golden was first generated, before the
+  regression existed. `fd_usable` is `true` everywhere finite-difference
+  agreement is meaningful, and correctly `false` only at the boundary-hostile
+  cases this README's FD-vs-exact section documents by design (near-clamp
+  `log_0`/`exp_x` points, and the `sphere_retract` eps-guard singularity).
+- **Determinism.** The regeneration was run twice against the identical build
+  (`build/eshkol-run`, unchanged between runs). SHA-256 of all nine
+  `golden/*.json` files was identical byte-for-byte across both runs.
+
 ## The FD-vs-exact comparison
 
 `poincare_maps.esk` prints a table sweeping `h` over
