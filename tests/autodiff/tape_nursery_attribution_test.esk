@@ -1,0 +1,211 @@
+;; Regression: reverse-mode gradients through a vector filled by vector-set!
+;; inside a loop.
+;;
+;; A tape-retained AD node must live as long as the tape. It did not: an
+;; escape-analysed loop body runs inside an ESH-0214e nursery region that is
+;; arena_reset() at every TCO back edge, and generated code allocated AD nodes
+;; from the current arena — which region entry points at that nursery — while
+;; the tape recording them lived outside it. The tape append is not one of the
+;; barriered mutation channels ESH-0214e's soundness argument enumerates, so
+;; nothing promoted those nodes out; the reset recycled them and the next
+;; iteration reallocated at the same bump-pointer addresses. Every earlier
+;; node's parents therefore resolved to the FINAL iteration's subgraph.
+;;
+;; The failure was silent in the worst way: a node's `value` field copies
+;; inline, so every PRIMAL stayed exact and only the derivative moved. The
+;; gradient came back as the row for the last element written, for every
+;; element read — exit 0, empty stderr. A Jacobian assembled row-by-row was
+;; therefore uniform garbage while looking entirely plausible.
+;;
+;; Three properties are pinned here, all of them execution-backed:
+;;   A. the minimal shape — derivative lands in the component that was read;
+;;   B. a composed vector field (sphere projection) against its closed-form
+;;      Jacobian, so a sign or row swap cannot pass;
+;;   C. row-index sensitivity through a MUTABLE global selector, the idiom a
+;;      row-by-row Jacobian actually uses.
+;; Each group also asserts the primal, so a future regression that moves the
+;; value instead of the derivative is caught by the same file.
+
+(require stdlib)
+
+(define tests-passed 0)
+(define tests-failed 0)
+
+(define (approx-equal? a b epsilon)
+  (< (abs (- a b)) epsilon))
+
+(define (check name expected actual)
+  (if (approx-equal? expected actual 1e-9)
+      (begin
+        (set! tests-passed (+ tests-passed 1))
+        (display "PASS: ") (display name) (newline))
+      (begin
+        (set! tests-failed (+ tests-failed 1))
+        (display "FAIL: ") (display name)
+        (display " (expected ") (display expected)
+        (display ", got ") (display actual) (display ")") (newline))))
+
+;; ---------------------------------------------------------------------------
+;; A. Minimal shape: allocate a vector inside f, fill it with vector-set! in a
+;;    loop, select one component. Distinct per-component scale factors make a
+;;    collapsed attribution impossible to mistake for a correct answer: with
+;;    out_i = v_i * (i+1), row i is e_i * (i+1), so every row differs in BOTH
+;;    position and magnitude.
+;; ---------------------------------------------------------------------------
+
+(define (scale-by-index v)
+  (let* ((n (vector-length v))
+         (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! o i (* (vector-ref v i) (+ i 1.0)))
+            (loop (+ i 1)))))
+    o))
+
+(define pt3 (vector 1.0 2.0 3.0))
+
+;; primal first: out = (1*1, 2*2, 3*3)
+(define prim3 (scale-by-index pt3))
+(check "A primal out_0" 1.0 (vector-ref prim3 0))
+(check "A primal out_1" 4.0 (vector-ref prim3 1))
+(check "A primal out_2" 9.0 (vector-ref prim3 2))
+
+(define gA0 (gradient (lambda (v) (vector-ref (scale-by-index v) 0)) pt3))
+(define gA1 (gradient (lambda (v) (vector-ref (scale-by-index v) 1)) pt3))
+(define gA2 (gradient (lambda (v) (vector-ref (scale-by-index v) 2)) pt3))
+
+(check "A row0 d out_0/d v_0" 1.0 (vector-ref gA0 0))
+(check "A row0 d out_0/d v_1" 0.0 (vector-ref gA0 1))
+(check "A row0 d out_0/d v_2" 0.0 (vector-ref gA0 2))
+(check "A row1 d out_1/d v_0" 0.0 (vector-ref gA1 0))
+(check "A row1 d out_1/d v_1" 2.0 (vector-ref gA1 1))
+(check "A row1 d out_1/d v_2" 0.0 (vector-ref gA1 2))
+(check "A row2 d out_2/d v_0" 0.0 (vector-ref gA2 0))
+(check "A row2 d out_2/d v_1" 0.0 (vector-ref gA2 1))
+(check "A row2 d out_2/d v_2" 3.0 (vector-ref gA2 2))
+
+;; The historical 6-line reproducer, verbatim in shape: a uniform scale, where
+;; the wrong answer #(0 3) and the right answer #(3 0) hold the SAME multiset of
+;; numbers. Only the position distinguishes them.
+(define (vscale v s)
+  (let* ((n (vector-length v))
+         (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! o i (* (vector-ref v i) s))
+            (loop (+ i 1)))))
+    o))
+
+(define gU (gradient (lambda (v) (vector-ref (vscale v 3.0) 0)) (vector 0.6 -0.8)))
+(check "A uniform-scale row0 component 0" 3.0 (vector-ref gU 0))
+(check "A uniform-scale row0 component 1" 0.0 (vector-ref gU 1))
+
+;; A reverse-order fill makes the LAST element written index 0, so a
+;; last-write-wins attribution fails here in the mirror direction.
+(define (scale-by-index-reverse v)
+  (let* ((n (vector-length v))
+         (o (make-vector n 0.0)))
+    (let loop ((i (- n 1)))
+      (if (>= i 0)
+          (begin
+            (vector-set! o i (* (vector-ref v i) (+ i 1.0)))
+            (loop (- i 1)))))
+    o))
+
+(define gR2 (gradient (lambda (v) (vector-ref (scale-by-index-reverse v) 2)) pt3))
+(check "A reverse-fill row2 component 0" 0.0 (vector-ref gR2 0))
+(check "A reverse-fill row2 component 1" 0.0 (vector-ref gR2 1))
+(check "A reverse-fill row2 component 2" 3.0 (vector-ref gR2 2))
+
+;; Two reads of the same loop-built vector must accumulate as two DIFFERENT
+;; components, not twice the same one.
+(define gS (gradient (lambda (v) (+ (vector-ref (vscale v 3.0) 0)
+                                    (vector-ref (vscale v 3.0) 1)))
+                     (vector 0.6 -0.8)))
+(check "A sum-of-two-reads component 0" 3.0 (vector-ref gS 0))
+(check "A sum-of-two-reads component 1" 3.0 (vector-ref gS 1))
+
+;; ---------------------------------------------------------------------------
+;; B. Composed vector field: sphere projection of a fixed g at a point x,
+;;      out_i = g_i - <g,x> x_i
+;;    with closed-form Jacobian
+;;      d out_i / d x_j = -(g_j x_i) - <g,x> delta_ij.
+;;    At x = (0.6, -0.8), g = (1.0, 2.0):  <g,x> = -1.0
+;;      out = (1.6, 1.2),  J = [[0.4, -1.2], [0.8, 2.6]]
+;;    Both rows are dense and the two rows are not multiples of each other, so
+;;    neither a row swap nor a sign flip can pass.
+;; ---------------------------------------------------------------------------
+
+(define (dot a b)
+  (let ((n (vector-length a)))
+    (let loop ((i 0) (s 0.0))
+      (if (< i n)
+          (loop (+ i 1) (+ s (* (vector-ref a i) (vector-ref b i))))
+          s))))
+
+(define gvec (vector 1.0 2.0))
+
+(define (sphere-project x)
+  (let* ((n (vector-length x))
+         (d (dot gvec x))
+         (o (make-vector n 0.0)))
+    (let loop ((i 0))
+      (if (< i n)
+          (begin
+            (vector-set! o i (- (vector-ref gvec i) (* d (vector-ref x i))))
+            (loop (+ i 1)))))
+    o))
+
+(define xpt (vector 0.6 -0.8))
+
+(define primB (sphere-project xpt))
+(check "B primal out_0" 1.6 (vector-ref primB 0))
+(check "B primal out_1" 1.2 (vector-ref primB 1))
+
+(define jrow0 (gradient (lambda (x) (vector-ref (sphere-project x) 0)) xpt))
+(define jrow1 (gradient (lambda (x) (vector-ref (sphere-project x) 1)) xpt))
+
+(check "B J[0][0]"  0.4 (vector-ref jrow0 0))
+(check "B J[0][1]" -1.2 (vector-ref jrow0 1))
+(check "B J[1][0]"  0.8 (vector-ref jrow1 0))
+(check "B J[1][1]"  2.6 (vector-ref jrow1 1))
+
+;; ---------------------------------------------------------------------------
+;; C. Row-index sensitivity through a MUTABLE global selector — the shape a
+;;    row-by-row Jacobian assembly actually has. Under the defect the gradient
+;;    was insensitive to the selector, so every row came back identical; here
+;;    each row must equal the row group B computed with a literal index.
+;; ---------------------------------------------------------------------------
+
+(define sel 0)
+
+(define (row-of-sphere x) (vector-ref (sphere-project x) sel))
+
+(set! sel 0)
+(define mrow0 (gradient row-of-sphere xpt))
+(set! sel 1)
+(define mrow1 (gradient row-of-sphere xpt))
+
+(check "C mutable-selector row0 [0]"  0.4 (vector-ref mrow0 0))
+(check "C mutable-selector row0 [1]" -1.2 (vector-ref mrow0 1))
+(check "C mutable-selector row1 [0]"  0.8 (vector-ref mrow1 0))
+(check "C mutable-selector row1 [1]"  2.6 (vector-ref mrow1 1))
+
+;; The two rows must actually differ — an insensitive selector would make the
+;; four checks above pass only if both rows happened to be right, but pinning
+;; the difference states the property directly.
+(check "C rows differ in component 0"
+       -0.4 (- (vector-ref mrow0 0) (vector-ref mrow1 0)))
+(check "C rows differ in component 1"
+       -3.8 (- (vector-ref mrow0 1) (vector-ref mrow1 1)))
+
+;; ---------------------------------------------------------------------------
+(newline)
+(display "tape_nursery_attribution: ")
+(display tests-passed) (display " passed, ")
+(display tests-failed) (display " failed") (newline)
+(if (= tests-failed 0)
+    (display "PASS: tape-retained AD nodes survive per-iteration reclamation\n")
+    (display "RESULT: FAILURES\n"))

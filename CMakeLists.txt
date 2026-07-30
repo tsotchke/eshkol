@@ -3053,6 +3053,39 @@ if(ESHKOL_BUILD_TESTS AND TARGET eshkol-run)
             TIMEOUT 300
             PASS_REGULAR_EXPRESSION "PASS: field ops at list point match closed forms and vector point"
             FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    # Tape-retained AD nodes vs. per-iteration reclamation.
+    #
+    # ESH-0214e runs an escape-analysed loop body inside a nursery region that is
+    # arena_reset() at every TCO back edge. AD nodes created in the body were
+    # allocated from that nursery while the tape recording them lived outside it,
+    # so the reset recycled them and the next iteration reallocated at the same
+    # addresses — every earlier node's parents resolved to the FINAL iteration's
+    # subgraph. Reverse-mode gradients through a vector filled by vector-set! in
+    # a loop therefore returned the row for the last element written, for every
+    # element read, with exact primals and exit 0. Pins the minimal shape, a
+    # composed vector field against its closed-form Jacobian, and row-index
+    # sensitivity through a mutable selector, on both the JIT and AOT lanes.
+    add_test(
+        NAME tape_nursery_attribution_runtime_smoke
+        COMMAND $<TARGET_FILE:eshkol-run>
+                -r "${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk"
+                -L"${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(tape_nursery_attribution_runtime_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
+    add_test(
+        NAME tape_nursery_attribution_aot_smoke
+        COMMAND sh -c
+            "'$<TARGET_FILE:eshkol-run>' -o '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot' '${CMAKE_CURRENT_SOURCE_DIR}/tests/autodiff/tape_nursery_attribution_test.esk' -L'${CMAKE_CURRENT_BINARY_DIR}' && '${CMAKE_CURRENT_BINARY_DIR}/tape_nursery_attribution_aot'"
+    )
+    set_tests_properties(tape_nursery_attribution_aot_smoke
+        PROPERTIES
+            TIMEOUT 300
+            PASS_REGULAR_EXPRESSION "PASS: tape-retained AD nodes survive per-iteration reclamation"
+            FAIL_REGULAR_EXPRESSION "FAIL:|LLVM module verification failed|fatal signal")
     # Tensor-operand and checkpoint-resume hardening.
     #
     # (1) `embedding` reinterpreted its index/weight operands as tensors without
